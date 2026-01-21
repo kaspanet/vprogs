@@ -21,7 +21,6 @@ These traits allow the scheduling layer to work with any concrete types that imp
 
 Concurrent atomic wrappers for lock-free programming:
 
-- **AtomicArc** - Atomic reference-counted pointer
 - **AtomicAsyncLatch** - Async-aware latch for signaling completion
 - **AtomicEnum** - Atomic enum wrapper using discriminant mapping
 

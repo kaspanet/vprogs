@@ -4,6 +4,7 @@ name    = "vprogs-scheduling-scheduler"
 version = "0.1.0"
 
 [dependencies]
+arc-swap                            = "1.7"
 crossbeam-deque                     = "0.8.6"
 crossbeam-queue                     = "0.3.12"
 num_cpus                            = "1.17.0"

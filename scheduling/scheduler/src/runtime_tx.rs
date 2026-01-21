@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-use vprogs_core_atomics::AtomicOptionArc;
+use arc_swap::ArcSwapOption;
 use vprogs_core_macros::smart_pointer;
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
@@ -18,7 +18,7 @@ pub struct RuntimeTx<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     batch: RuntimeBatchRef<S, V>,
     resources: Vec<ResourceAccess<S, V>>,
     pending_resources: AtomicU64,
-    effects: AtomicOptionArc<V::TransactionEffects>,
+    effects: ArcSwapOption<V::TransactionEffects>,
     tx: V::Transaction,
 }
 
@@ -28,7 +28,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeTx<S, V> {
     }
 
     pub fn effects(&self) -> Arc<V::TransactionEffects> {
-        self.effects.load().expect("effects not ready")
+        self.effects.load_full().expect("effects not ready")
     }
 
     pub(crate) fn new(
@@ -44,7 +44,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeTx<S, V> {
             RuntimeTxData {
                 vm: vm.clone(),
                 pending_resources: AtomicU64::new(resources.len() as u64),
-                effects: AtomicOptionArc::empty(),
+                effects: ArcSwapOption::empty(),
                 batch,
                 tx,
                 resources,
@@ -76,7 +76,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeTx<S, V> {
             let mut handles = handles.collect::<Vec<_>>();
             match self.vm.process_transaction(&self.tx, &mut handles) {
                 Ok(effects) => {
-                    self.effects.publish(Arc::new(effects));
+                    self.effects.store(Some(Arc::new(effects)));
                     handles.into_iter().for_each(AccessHandle::commit_changes);
                 }
                 // TODO: Handle errors (e.g. store with transaction)

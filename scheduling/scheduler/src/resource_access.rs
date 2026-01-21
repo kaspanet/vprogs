@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use vprogs_core_atomics::{AtomicOptionArc, AtomicWeak};
+use arc_swap::ArcSwapOption;
 use vprogs_core_macros::smart_pointer;
 use vprogs_core_types::{AccessMetadata, AccessType};
 use vprogs_state_space::StateSpace;
@@ -20,10 +20,10 @@ pub struct ResourceAccess<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     is_batch_tail: AtomicBool,
     tx: RuntimeTxRef<S, V>,
     state_diff: StateDiff<S, V>,
-    read_state: AtomicOptionArc<StateVersion<V::ResourceId>>,
-    written_state: AtomicOptionArc<StateVersion<V::ResourceId>>,
-    prev: AtomicOptionArc<Self>,
-    next: AtomicWeak<Self>,
+    read_state: ArcSwapOption<StateVersion<V::ResourceId>>,
+    written_state: ArcSwapOption<StateVersion<V::ResourceId>>,
+    prev: ArcSwapOption<Self>,
+    next: ArcSwapOption<Self>,
 }
 
 impl<S: Store<StateSpace = StateSpace>, V: VmInterface> ResourceAccess<S, V> {
@@ -34,12 +34,12 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> ResourceAccess<S, V> {
 
     #[inline(always)]
     pub fn read_state(&self) -> Arc<StateVersion<V::ResourceId>> {
-        self.read_state.load().expect("read state unknown")
+        self.read_state.load_full().expect("read state unknown")
     }
 
     #[inline(always)]
     pub fn written_state(&self) -> Arc<StateVersion<V::ResourceId>> {
-        self.written_state.load().expect("written state unknown")
+        self.written_state.load_full().expect("written state unknown")
     }
 
     #[inline(always)]
@@ -70,18 +70,18 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> ResourceAccess<S, V> {
             is_batch_tail: AtomicBool::new(true),
             tx,
             state_diff,
-            read_state: AtomicOptionArc::empty(),
-            written_state: AtomicOptionArc::empty(),
-            prev: AtomicOptionArc::new(prev.map(|p| p.0)),
-            next: AtomicWeak::default(),
+            read_state: ArcSwapOption::empty(),
+            written_state: ArcSwapOption::empty(),
+            prev: ArcSwapOption::new(prev.map(|p| p.0)),
+            next: ArcSwapOption::empty(),
         }))
     }
 
     pub(crate) fn connect(&self, storage: &StorageManager<S, Read<S, V>, Write<S, V>>) {
-        match self.prev.load() {
+        match self.prev.load_full() {
             Some(prev) => {
-                prev.next.store(Arc::downgrade(&self.0));
-                if let Some(written_state) = prev.written_state.load() {
+                prev.next.store(Some(self.0.clone()));
+                if let Some(written_state) = prev.written_state.load_full() {
                     self.set_read_state(written_state);
                 }
             }
@@ -102,8 +102,8 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> ResourceAccess<S, V> {
     }
 
     pub(crate) fn set_read_state(&self, state: Arc<StateVersion<V::ResourceId>>) {
-        if self.read_state.publish(state.clone()) {
-            drop(self.prev.take()); // drop the previous reference to allow cleanup
+        if self.read_state.compare_and_swap(&None::<Arc<_>>, Some(state.clone())).is_none() {
+            drop(self.prev.swap(None)); // drop the previous reference to allow cleanup
 
             if self.is_batch_head() {
                 self.state_diff.set_read_state(state.clone());
@@ -120,12 +120,12 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> ResourceAccess<S, V> {
     }
 
     pub(crate) fn set_written_state(&self, state: Arc<StateVersion<V::ResourceId>>) {
-        if self.written_state.publish(state.clone()) {
+        if self.written_state.compare_and_swap(&None::<Arc<_>>, Some(state.clone())).is_none() {
             if self.is_batch_tail() {
                 self.state_diff.set_written_state(state.clone());
             }
 
-            if let Some(next) = self.next.load().upgrade() {
+            if let Some(next) = self.next.swap(None) {
                 Self(next).set_read_state(state)
             }
         }
