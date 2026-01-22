@@ -78,7 +78,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> ResourceAccess<S, V> {
     }
 
     pub(crate) fn connect(&self, storage: &StorageManager<S, Read<S, V>, Write<S, V>>) {
-        match self.prev.load_full() {
+        match &*self.prev.load() {
             Some(prev) => {
                 prev.next.store(Some(self.0.clone()));
                 if let Some(written_state) = prev.written_state.load_full() {
