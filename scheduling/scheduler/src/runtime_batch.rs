@@ -199,13 +199,15 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
     }
 
     pub(crate) fn commit_done(self) {
-        // Register all resources accessed by this batch for potential eviction.
-        // The scheduler will check if each resource's last access still belongs to a committed
-        // batch before actually evicting it.
+        // Mark the batch as committed.
+        self.was_committed.open();
+
+        // Register all resources accessed by this batch for potential eviction. The scheduler will
+        // check if each resource's last access still belongs to a committed batch before actually
+        // evicting it.
         for state_diff in self.state_diffs() {
             self.eviction_queue.push(state_diff.resource_id().clone());
         }
-        self.was_committed.open();
     }
 }
 

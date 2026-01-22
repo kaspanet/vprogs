@@ -32,7 +32,7 @@ pub struct Scheduler<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     worker_loop: WorkerLoop<S, V>,
     /// Thread pool for parallel transaction execution.
     execution_workers: ExecutionWorkers<ManagerTask<S, V>, RuntimeBatch<S, V>>,
-    /// Queue of resource IDs to potentially evict after their batches commit.
+    /// Queue of resource IDs to potentially evict after their batches commited.
     eviction_queue: Arc<SegQueue<V::ResourceId>>,
 }
 
@@ -64,8 +64,10 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
             .tap(|batch| {
                 // Push to the worker loop for lifecycle progression.
                 self.worker_loop.push(batch.clone());
+
                 // Submit to execution workers for parallel processing.
                 self.execution_workers.execute(batch.clone());
+
                 // Process eviction queue after scheduling to avoid race conditions.
                 // Resources touched by this batch will have updated last_access and won't be
                 // evicted.
