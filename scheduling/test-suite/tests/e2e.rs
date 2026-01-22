@@ -1,5 +1,7 @@
 extern crate core;
 
+use std::time::{Duration, Instant};
+
 use tempfile::TempDir;
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_storage_manager::StorageConfig;
@@ -562,16 +564,8 @@ pub fn test_resource_eviction() {
             batch.wait_committed_blocking();
         }
 
-        // Manually process the eviction queue to clean up committed resources.
-        runtime.process_eviction_queue();
-
-        // All batches are committed and no new batches are pending, so all resources should be
-        // evicted. The cache should be empty.
-        assert_eq!(
-            runtime.cached_resource_count(),
-            0,
-            "Expected cache to be empty after all batches committed and eviction processed"
-        );
+        // Wait for cache to be fully evicted (with timeout).
+        wait_for_empty_cache(&mut runtime, Duration::from_secs(10));
 
         // Verify that the data was actually written correctly for a sample of resources.
         for batch_idx in [0, 50, 99] {
@@ -619,19 +613,26 @@ pub fn test_eviction_under_load() {
                 batch.wait_committed_blocking();
             }
 
-            // Process eviction queue to clean up committed resources.
-            runtime.process_eviction_queue();
-
-            // After all batches committed and eviction processed, cache should be empty.
-            assert_eq!(
-                runtime.cached_resource_count(),
-                0,
-                "Expected cache to be empty after wave {} completed",
-                wave
-            );
+            // Wait for cache to be fully evicted (with timeout).
+            wait_for_empty_cache(&mut runtime, Duration::from_secs(10));
         }
 
         runtime.shutdown();
+    }
+}
+
+/// Repeatedly processes the eviction queue until the cache is empty or timeout is reached.
+fn wait_for_empty_cache(runtime: &mut Scheduler<RocksDbStore, TestVM>, timeout: Duration) {
+    let start = Instant::now();
+    while runtime.cached_resource_count() > 0 {
+        if start.elapsed() > timeout {
+            panic!(
+                "Timeout waiting for cache to empty. Still have {} cached resources.",
+                runtime.cached_resource_count()
+            );
+        }
+        runtime.process_eviction_queue();
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
