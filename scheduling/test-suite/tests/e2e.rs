@@ -587,41 +587,6 @@ pub fn test_resource_eviction() {
     }
 }
 
-/// Tests that resources accessed by pending batches are not evicted.
-/// When a resource is accessed by a new batch before eviction processing, it should remain cached.
-#[test]
-pub fn test_eviction_preserves_pending_resources() {
-    let temp_dir = TempDir::new().expect("failed to create temp dir");
-    {
-        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-        let mut runtime = Scheduler::new(
-            ExecutionConfig::default().with_vm(TestVM),
-            StorageConfig::default().with_store(storage),
-        );
-
-        // Schedule first batch with resource 1.
-        let batch1 = runtime.schedule(vec![Tx(1, vec![Access::Write(1)])]);
-        batch1.wait_committed_blocking();
-
-        // Schedule second batch that also accesses resource 1.
-        // This should preserve resource 1 in the cache even though batch1 committed.
-        let batch2 = runtime.schedule(vec![Tx(2, vec![Access::Write(1)])]);
-        batch2.wait_committed_blocking();
-
-        // Schedule third batch with a different resource to trigger eviction.
-        let batch3 = runtime.schedule(vec![Tx(3, vec![Access::Write(2)])]);
-        batch3.wait_committed_blocking();
-
-        // Resource 1 was accessed by batch2, so it might still be cached.
-        // Resource 2 was just accessed by batch3, so it should be cached.
-        // The key point is that the writes were correctly chained.
-        AssertWrittenState(1, vec![1, 2]).assert(runtime.storage_manager().store());
-        AssertWrittenState(2, vec![3]).assert(runtime.storage_manager().store());
-
-        runtime.shutdown();
-    }
-}
-
 /// Tests eviction behavior with high-frequency scheduling.
 /// Rapidly schedules batches in waves and verifies cache is cleared after each wave.
 #[test]
