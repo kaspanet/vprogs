@@ -53,10 +53,10 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> StateDiff<S, V> {
         let Some(batch) = self.batch.upgrade() else {
             panic!("batch must be known at write time");
         };
-        let Some(read_state) = self.read_state.load_full() else {
+        let Some(read_state) = &*self.read_state.load() else {
             panic!("read_state must be known at write time");
         };
-        let Some(written_state) = self.written_state.load_full() else {
+        let Some(written_state) = &*self.written_state.load() else {
             panic!("written_state must be known at write time");
         };
 
