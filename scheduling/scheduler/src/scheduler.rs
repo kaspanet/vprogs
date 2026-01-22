@@ -81,7 +81,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
     /// batch. If so, removes the resource from the cache. Resources that were accessed by a pending
     /// batch (including the one just scheduled) will have an uncommitted last access and be
     /// skipped.
-    fn process_eviction_queue(&mut self) {
+    pub fn process_eviction_queue(&mut self) {
         while let Some(resource_id) = self.eviction_queue.pop() {
             if let Some(resource) = self.resources.get(&resource_id) {
                 if resource.should_evict() {
@@ -130,6 +130,16 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
         &self.storage_manager
     }
 
+    /// Returns a clone of the eviction queue.
+    pub fn eviction_queue(&self) -> Arc<SegQueue<V::ResourceId>> {
+        self.eviction_queue.clone()
+    }
+
+    /// Returns the number of resources currently cached in memory.
+    pub fn cached_resource_count(&self) -> usize {
+        self.resources.len()
+    }
+
     /// Shuts down the scheduler and all its components.
     ///
     /// This stops the worker loop, execution workers, and storage manager in order.
@@ -137,11 +147,6 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
         self.worker_loop.shutdown();
         self.execution_workers.shutdown();
         self.storage_manager.shutdown();
-    }
-
-    /// Returns a clone of the eviction queue for use by batches.
-    pub(crate) fn eviction_queue(&self) -> Arc<SegQueue<V::ResourceId>> {
-        self.eviction_queue.clone()
     }
 
     /// Builds resource accesses for a transaction by linking it into dependency chains.

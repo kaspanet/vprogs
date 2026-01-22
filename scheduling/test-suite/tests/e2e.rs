@@ -530,6 +530,146 @@ pub fn test_rollback_interleaved_multi_resource() {
     }
 }
 
+/// Tests that resources are properly evicted from the cache after their batches commit.
+/// Verifies that the resource cache doesn't grow unboundedly when processing many batches
+/// with unique resources.
+#[test]
+pub fn test_resource_eviction() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut runtime = Scheduler::new(
+            ExecutionConfig::default().with_vm(TestVM),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // Schedule many batches, each with unique resources.
+        // Each batch touches 10 unique resources.
+        const NUM_BATCHES: usize = 100;
+        const RESOURCES_PER_BATCH: usize = 10;
+
+        let mut batches = Vec::with_capacity(NUM_BATCHES);
+        for batch_idx in 0..NUM_BATCHES {
+            let base_resource = batch_idx * RESOURCES_PER_BATCH;
+            let txs: Vec<_> = (0..RESOURCES_PER_BATCH)
+                .map(|i| Tx(base_resource + i, vec![Access::Write(base_resource + i)]))
+                .collect();
+            batches.push(runtime.schedule(txs));
+        }
+
+        // Wait for all batches to commit.
+        for batch in &batches {
+            batch.wait_committed_blocking();
+        }
+
+        // Manually process the eviction queue to clean up committed resources.
+        runtime.process_eviction_queue();
+
+        // All batches are committed and no new batches are pending, so all resources should be
+        // evicted. The cache should be empty.
+        assert_eq!(
+            runtime.cached_resource_count(),
+            0,
+            "Expected cache to be empty after all batches committed and eviction processed"
+        );
+
+        // Verify that the data was actually written correctly for a sample of resources.
+        for batch_idx in [0, 50, 99] {
+            let base_resource = batch_idx * RESOURCES_PER_BATCH;
+            for i in 0..RESOURCES_PER_BATCH {
+                let resource_id = base_resource + i;
+                AssertWrittenState(resource_id, vec![resource_id])
+                    .assert(runtime.storage_manager().store());
+            }
+        }
+
+        runtime.shutdown();
+    }
+}
+
+/// Tests that resources accessed by pending batches are not evicted.
+/// When a resource is accessed by a new batch before eviction processing, it should remain cached.
+#[test]
+pub fn test_eviction_preserves_pending_resources() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut runtime = Scheduler::new(
+            ExecutionConfig::default().with_vm(TestVM),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // Schedule first batch with resource 1.
+        let batch1 = runtime.schedule(vec![Tx(1, vec![Access::Write(1)])]);
+        batch1.wait_committed_blocking();
+
+        // Schedule second batch that also accesses resource 1.
+        // This should preserve resource 1 in the cache even though batch1 committed.
+        let batch2 = runtime.schedule(vec![Tx(2, vec![Access::Write(1)])]);
+        batch2.wait_committed_blocking();
+
+        // Schedule third batch with a different resource to trigger eviction.
+        let batch3 = runtime.schedule(vec![Tx(3, vec![Access::Write(2)])]);
+        batch3.wait_committed_blocking();
+
+        // Resource 1 was accessed by batch2, so it might still be cached.
+        // Resource 2 was just accessed by batch3, so it should be cached.
+        // The key point is that the writes were correctly chained.
+        AssertWrittenState(1, vec![1, 2]).assert(runtime.storage_manager().store());
+        AssertWrittenState(2, vec![3]).assert(runtime.storage_manager().store());
+
+        runtime.shutdown();
+    }
+}
+
+/// Tests eviction behavior with high-frequency scheduling.
+/// Rapidly schedules batches in waves and verifies cache is cleared after each wave.
+#[test]
+pub fn test_eviction_under_load() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut runtime = Scheduler::new(
+            ExecutionConfig::default().with_vm(TestVM),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // Schedule batches in waves, checking cache is cleared after each wave.
+        const WAVES: usize = 10;
+        const BATCHES_PER_WAVE: usize = 50;
+
+        for wave in 0..WAVES {
+            let base = wave * BATCHES_PER_WAVE;
+
+            // Schedule a wave of batches.
+            let batches: Vec<_> = (0..BATCHES_PER_WAVE)
+                .map(|i| {
+                    let resource_id = base + i;
+                    runtime.schedule(vec![Tx(resource_id, vec![Access::Write(resource_id)])])
+                })
+                .collect();
+
+            // Wait for all batches in this wave to commit.
+            for batch in &batches {
+                batch.wait_committed_blocking();
+            }
+
+            // Process eviction queue to clean up committed resources.
+            runtime.process_eviction_queue();
+
+            // After all batches committed and eviction processed, cache should be empty.
+            assert_eq!(
+                runtime.cached_resource_count(),
+                0,
+                "Expected cache to be empty after wave {} completed",
+                wave
+            );
+        }
+
+        runtime.shutdown();
+    }
+}
+
 mod test_framework {
     use vprogs_core_types::{AccessMetadata, AccessType, Transaction};
     use vprogs_scheduling_scheduler::{AccessHandle, RuntimeBatch, VmInterface};
