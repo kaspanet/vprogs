@@ -26,6 +26,8 @@ jobs:
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
+        with:
+          save-always: true
 
       - name: Format check
         run: cargo +nightly fmt -- --check
