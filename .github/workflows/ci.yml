@@ -8,7 +8,23 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          components: rustfmt
+
+      - name: Format check
+        run: cargo +nightly fmt -- --check
+
+  clippy:
+    name: Clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,19 +37,32 @@ jobs:
         with:
           components: clippy
 
-      - name: Install nightly (for fmt)
-        run: rustup toolchain install nightly --component rustfmt
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          shared-key: "rust-cache"
+
+      - name: Clippy
+        run: cargo clippy --tests -- -D warnings
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          save-always: true
-
-      - name: Format check
-        run: cargo +nightly fmt -- --check
-
-      - name: Clippy
-        run: cargo clippy --tests -- -D warnings
+          cache-on-failure: true
+          shared-key: "rust-cache"
 
       - name: Tests
         run: cargo test
