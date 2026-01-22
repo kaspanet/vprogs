@@ -1,5 +1,6 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
+use crossbeam_queue::SegQueue;
 use tap::Tap;
 use vprogs_core_types::{AccessMetadata, Transaction};
 use vprogs_scheduling_execution_workers::ExecutionWorkers;
@@ -31,6 +32,8 @@ pub struct Scheduler<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     worker_loop: WorkerLoop<S, V>,
     /// Thread pool for parallel transaction execution.
     execution_workers: ExecutionWorkers<ManagerTask<S, V>, RuntimeBatch<S, V>>,
+    /// Queue of resource IDs to potentially evict after their batches commit.
+    eviction_queue: Arc<SegQueue<V::ResourceId>>,
 }
 
 impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
@@ -43,6 +46,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
             storage_manager: StorageManager::new(storage_config),
             resources: HashMap::new(),
             execution_workers: ExecutionWorkers::new(worker_count),
+            eviction_queue: Arc::new(SegQueue::new()),
             vm,
         }
     }
@@ -51,7 +55,8 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
     ///
     /// Creates a new `RuntimeBatch`, connects its transactions to resource dependency chains,
     /// pushes it to the worker loop for lifecycle management, and submits it to execution workers
-    /// for parallel processing.
+    /// for parallel processing. After building resource accesses, processes pending eviction
+    /// requests to clean up resources from committed batches.
     pub fn schedule(&mut self, txs: Vec<V::Transaction>) -> RuntimeBatch<S, V> {
         RuntimeBatch::new(self.vm.clone(), self, txs)
             // Connect transactions to resource dependency chains.
@@ -60,8 +65,28 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
                 // Push to the worker loop for lifecycle progression.
                 self.worker_loop.push(batch.clone());
                 // Submit to execution workers for parallel processing.
-                self.execution_workers.execute(batch.clone())
+                self.execution_workers.execute(batch.clone());
+                // Process eviction queue after scheduling to avoid race conditions.
+                // Resources touched by this batch will have updated last_access and won't be
+                // evicted.
+                self.process_eviction_queue()
             })
+    }
+
+    /// Processes pending eviction requests from committed batches.
+    ///
+    /// For each resource ID in the eviction queue, checks if its last access belongs to a committed
+    /// batch. If so, removes the resource from the cache. Resources that were accessed by a pending
+    /// batch (including the one just scheduled) will have an uncommitted last access and be
+    /// skipped.
+    fn process_eviction_queue(&mut self) {
+        while let Some(resource_id) = self.eviction_queue.pop() {
+            if let Some(resource) = self.resources.get(&resource_id) {
+                if resource.should_evict() {
+                    self.resources.remove(&resource_id);
+                }
+            }
+        }
     }
 
     /// Rolls back the runtime state to `target_index` if the current state is ahead of it.
@@ -110,6 +135,11 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
         self.worker_loop.shutdown();
         self.execution_workers.shutdown();
         self.storage_manager.shutdown();
+    }
+
+    /// Returns a clone of the eviction queue for use by batches.
+    pub(crate) fn eviction_queue(&self) -> Arc<SegQueue<V::ResourceId>> {
+        self.eviction_queue.clone()
     }
 
     /// Builds resource accesses for a transaction by linking it into dependency chains.

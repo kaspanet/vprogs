@@ -4,6 +4,7 @@ use std::sync::{
 };
 
 use crossbeam_deque::{Injector, Steal, Worker};
+use crossbeam_queue::SegQueue;
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_macros::smart_pointer;
 use vprogs_state_space::StateSpace;
@@ -20,6 +21,7 @@ pub struct RuntimeBatch<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     runtime_context: RuntimeContext,
     index: u64,
     storage: StorageManager<S, Read<S, V>, Write<S, V>>,
+    eviction_queue: Arc<SegQueue<V::ResourceId>>,
     txs: Vec<RuntimeTx<S, V>>,
     state_diffs: Vec<StateDiff<S, V>>,
     available_txs: Injector<ManagerTask<S, V>>,
@@ -114,6 +116,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
             RuntimeBatchData {
                 index: runtime_context.next_batch_index(),
                 storage: manager.storage_manager().clone(),
+                eviction_queue: manager.eviction_queue(),
                 pending_txs: AtomicU64::new(txs.len() as u64),
                 pending_writes: AtomicI64::new(0),
                 txs: txs
@@ -196,7 +199,12 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
     }
 
     pub(crate) fn commit_done(self) {
-        // TODO: EVICT STUFF FROM STORAGE MANAGER
+        // Register all resources accessed by this batch for potential eviction.
+        // The scheduler will check if each resource's last access still belongs to a committed
+        // batch before actually evicting it.
+        for state_diff in self.state_diffs() {
+            self.eviction_queue.push(state_diff.resource_id().clone());
+        }
         self.was_committed.open();
     }
 }

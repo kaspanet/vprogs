@@ -101,6 +101,11 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> ResourceAccess<S, V> {
         self.state_diff.clone()
     }
 
+    /// Returns true if the state diff this resource access belongs to has been committed.
+    pub(crate) fn was_committed(&self) -> bool {
+        self.state_diff.was_committed()
+    }
+
     pub(crate) fn set_read_state(&self, state: Arc<StateVersion<V::ResourceId>>) {
         if self.read_state.compare_and_swap(&None::<Arc<_>>, Some(state.clone())).is_none() {
             drop(self.prev.swap(None)); // drop the previous reference to allow cleanup

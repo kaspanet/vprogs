@@ -30,6 +30,14 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> StateDiff<S, V> {
         &self.resource_id
     }
 
+    /// Returns true if the batch this state diff belongs to has been committed.
+    ///
+    /// If the batch reference can no longer be upgraded (batch dropped), returns true
+    /// as the batch has completed its lifecycle.
+    pub(crate) fn was_committed(&self) -> bool {
+        self.batch.upgrade().is_none_or(|batch| batch.was_committed())
+    }
+
     pub fn read_state(&self) -> Arc<StateVersion<V::ResourceId>> {
         self.read_state.load_full().expect("read state unknown")
     }

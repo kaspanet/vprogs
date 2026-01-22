@@ -33,4 +33,15 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Resource<S, V> {
         ResourceAccess::new(meta.clone(), tx.clone(), state_diff_ref, prev_access)
             .tap(|this| self.last_access = Some(this.clone()))
     }
+
+    /// Returns true if this resource can be evicted from the cache.
+    ///
+    /// A resource can be evicted if its last access belongs to a batch that has been committed.
+    /// If the access reference has been dropped (upgrade fails), the resource can also be evicted.
+    pub(crate) fn should_evict(&self) -> bool {
+        match &self.last_access {
+            Some(access) => access.was_committed(),
+            None => true, // No access means safe to evict
+        }
+    }
 }
