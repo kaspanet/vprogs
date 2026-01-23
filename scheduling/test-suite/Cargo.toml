@@ -7,6 +7,8 @@ version = "0.1.0"
 tempfile                     = "3.23.0"
 vprogs-core-types            = { path = "../../core/types" }
 vprogs-scheduling-scheduler  = { path = "../scheduler" }
+vprogs-state-metadata        = { path = "../../state/metadata" }
+vprogs-state-ptr-rollback    = { path = "../../state/ptr-rollback" }
 vprogs-state-space           = { path = "../../state/space" }
 vprogs-state-version         = { path = "../../state/version" }
 vprogs-storage-manager       = { path = "../../storage/manager" }

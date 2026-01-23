@@ -1,13 +1,13 @@
-extern crate core;
-
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tempfile::TempDir;
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
+use vprogs_scheduling_test_suite::{
+    Access, AssertResourceDeleted, AssertWrittenState, TestVM, Tx, wait_for_empty_cache,
+    wait_for_pruning,
+};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
-
-use crate::test_framework::{Access, AssertResourceDeleted, AssertWrittenState, TestVM, Tx};
 
 #[test]
 pub fn test_runtime() {
@@ -621,115 +621,306 @@ pub fn test_eviction_under_load() {
     }
 }
 
-/// Repeatedly processes the eviction queue until the cache is empty or timeout is reached.
-fn wait_for_empty_cache(runtime: &mut Scheduler<RocksDbStore, TestVM>, timeout: Duration) {
-    let start = Instant::now();
-    while runtime.cached_resource_count() > 0 {
-        if start.elapsed() > timeout {
-            panic!(
-                "Timeout waiting for cache to empty. Still have {} cached resources.",
-                runtime.cached_resource_count()
-            );
-        }
-        runtime.process_eviction_queue();
-        std::thread::sleep(Duration::from_millis(10));
+/// Tests that pruning deletes rollback pointers for batches below the threshold.
+#[test]
+pub fn test_basic_pruning() {
+    use vprogs_state_ptr_rollback::StatePtrRollback;
+
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut runtime = Scheduler::new(
+            ExecutionConfig::default().with_vm(TestVM),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // Create batches that write to resources (generates rollback pointers).
+        let batch1 = runtime.schedule(vec![Tx(1, vec![Access::Write(1)])]);
+        let batch2 = runtime.schedule(vec![Tx(2, vec![Access::Write(1)])]); // Overwrites resource 1
+        let batch3 = runtime.schedule(vec![Tx(3, vec![Access::Write(1)])]); // Overwrites resource 1
+        batch3.wait_committed_blocking();
+
+        // Verify rollback pointers exist for batches 2 and 3 (batch 1 created resource, no old version).
+        let store = runtime.storage_manager().store();
+        assert_eq!(
+            StatePtrRollback::iter_batch(store.as_ref(), batch2.index()).count(),
+            1,
+            "Batch 2 should have rollback pointer"
+        );
+        assert_eq!(
+            StatePtrRollback::iter_batch(store.as_ref(), batch3.index()).count(),
+            1,
+            "Batch 3 should have rollback pointer"
+        );
+
+        // Set pruning threshold to batch 3 (prune batches 1 and 2).
+        runtime.set_pruning_threshold(batch3.index());
+
+        // Wait for pruning to complete.
+        wait_for_pruning(&runtime, batch2.index(), Duration::from_secs(10));
+
+        // Verify rollback pointers for batches 1 and 2 are deleted.
+        assert_eq!(
+            StatePtrRollback::iter_batch(store.as_ref(), batch1.index()).count(),
+            0,
+            "Batch 1 rollback pointers should be pruned"
+        );
+        assert_eq!(
+            StatePtrRollback::iter_batch(store.as_ref(), batch2.index()).count(),
+            0,
+            "Batch 2 rollback pointers should be pruned"
+        );
+
+        // Batch 3 should still have its rollback pointer (not pruned).
+        assert_eq!(
+            StatePtrRollback::iter_batch(store.as_ref(), batch3.index()).count(),
+            1,
+            "Batch 3 rollback pointer should NOT be pruned"
+        );
+
+        // Data should still be readable.
+        AssertWrittenState(1, vec![1, 2, 3]).assert(store);
+
+        runtime.shutdown();
     }
 }
 
-mod test_framework {
-    use std::sync::Arc;
+/// Tests that pruning preserves batches at or above the threshold.
+#[test]
+pub fn test_pruning_preserves_recent_batches() {
+    use vprogs_state_ptr_rollback::StatePtrRollback;
 
-    use vprogs_core_types::{AccessMetadata, AccessType, Transaction};
-    use vprogs_scheduling_scheduler::{AccessHandle, RuntimeBatch, VmInterface};
-    use vprogs_state_space::StateSpace;
-    use vprogs_state_version::StateVersion;
-    use vprogs_storage_types::{ReadStore, Store};
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut runtime = Scheduler::new(
+            ExecutionConfig::default().with_vm(TestVM),
+            StorageConfig::default().with_store(storage),
+        );
 
-    #[derive(Clone)]
-    pub struct TestVM;
-
-    impl VmInterface for TestVM {
-        type Transaction = Tx;
-        type TransactionEffects = ();
-        type ResourceId = usize;
-        type AccessMetadata = Access;
-        type Error = ();
-
-        fn process_transaction<S: Store<StateSpace = StateSpace>>(
-            &self,
-            tx: &Self::Transaction,
-            resources: &mut [AccessHandle<S, Self>],
-        ) -> Result<(), Self::Error> {
-            for resource in resources {
-                if resource.access_metadata().access_type() == AccessType::Write {
-                    resource.data_mut().extend_from_slice(&tx.0.to_be_bytes());
-                }
-            }
-            Ok::<(), ()>(())
+        // Create 5 batches, each overwriting the same resource.
+        for i in 1..=5 {
+            let batch = runtime.schedule(vec![Tx(i, vec![Access::Write(1)])]);
+            batch.wait_committed_blocking();
         }
 
-        fn notarize_batch<S: Store<StateSpace = StateSpace>>(&self, batch: &RuntimeBatch<S, Self>) {
-            eprintln!(
-                ">> Processed batch with {} transactions and {} state changes",
-                batch.txs().len(),
-                batch.state_diffs().len()
+        let store = runtime.storage_manager().store();
+
+        // Verify all batches 2-5 have rollback pointers (batch 1 created the resource).
+        for batch_idx in 2..=5 {
+            assert_eq!(
+                StatePtrRollback::iter_batch(store.as_ref(), batch_idx).count(),
+                1,
+                "Batch {} should have rollback pointer before pruning",
+                batch_idx
             );
         }
-    }
 
-    pub struct Tx(pub usize, pub Vec<Access>);
+        // Prune batches 1-3 (threshold = 4 means batches < 4 are eligible).
+        runtime.set_pruning_threshold(4);
+        wait_for_pruning(&runtime, 3, Duration::from_secs(10));
 
-    impl Transaction<usize, Access> for Tx {
-        fn accessed_resources(&self) -> &[<TestVM as VmInterface>::AccessMetadata] {
-            &self.1
-        }
-    }
-
-    #[derive(Clone)]
-    pub enum Access {
-        Read(usize),
-        Write(usize),
-    }
-
-    impl AccessMetadata<usize> for Access {
-        fn id(&self) -> usize {
-            match self {
-                Access::Read(id) => *id,
-                Access::Write(id) => *id,
-            }
-        }
-
-        fn access_type(&self) -> AccessType {
-            match self {
-                Access::Read(_) => AccessType::Read,
-                Access::Write(_) => AccessType::Write,
-            }
-        }
-    }
-
-    pub struct AssertWrittenState(pub usize, pub Vec<usize>);
-
-    impl AssertWrittenState {
-        pub fn assert<S: ReadStore<StateSpace = StateSpace>>(&self, store: &Arc<S>) {
-            let writer_count = self.1.len();
-            let writer_log: Vec<u8> = self.1.iter().flat_map(|id| id.to_be_bytes()).collect();
-
-            let versioned_state = StateVersion::<usize>::from_latest_data(store.as_ref(), self.0);
-            assert_eq!(versioned_state.version(), writer_count as u64);
-            assert_eq!(*versioned_state.data(), writer_log);
-        }
-    }
-
-    pub struct AssertResourceDeleted(pub usize);
-
-    impl AssertResourceDeleted {
-        pub fn assert<S: ReadStore<StateSpace = StateSpace>>(&self, store: &Arc<S>) {
-            let id_bytes = self.0.to_be_bytes();
-            assert!(
-                store.get(StateSpace::StatePtrLatest, &id_bytes).is_none(),
-                "Resource {} should have been deleted but still exists",
-                self.0
+        // Batches 1-3 should be pruned.
+        for batch_idx in 1..=3 {
+            assert_eq!(
+                StatePtrRollback::iter_batch(store.as_ref(), batch_idx).count(),
+                0,
+                "Batch {} should be pruned",
+                batch_idx
             );
         }
+
+        // Batches 4-5 should NOT be pruned.
+        for batch_idx in 4..=5 {
+            assert_eq!(
+                StatePtrRollback::iter_batch(store.as_ref(), batch_idx).count(),
+                1,
+                "Batch {} should NOT be pruned",
+                batch_idx
+            );
+        }
+
+        runtime.shutdown();
+    }
+}
+
+/// Tests that pruning is crash-fault tolerant by verifying the last pruned index
+/// is persisted and pruning resumes from that point after restart.
+#[test]
+pub fn test_pruning_crash_recovery() {
+    use vprogs_state_metadata::StateMetadata;
+    use vprogs_state_ptr_rollback::StatePtrRollback;
+
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+
+    // Phase 1: Create batches, prune some, then shutdown.
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut runtime = Scheduler::new(
+            ExecutionConfig::default().with_vm(TestVM),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // Create 5 batches.
+        for i in 1..=5 {
+            let batch = runtime.schedule(vec![Tx(i, vec![Access::Write(1)])]);
+            batch.wait_committed_blocking();
+        }
+
+        // Prune batches 1-2.
+        runtime.set_pruning_threshold(3);
+        wait_for_pruning(&runtime, 2, Duration::from_secs(10));
+
+        // Verify last_pruned_index is persisted.
+        let store = runtime.storage_manager().store();
+        assert_eq!(
+            StateMetadata::get_last_pruned_index(store.as_ref()),
+            Some(2),
+            "Last pruned index should be persisted"
+        );
+
+        runtime.shutdown();
+    }
+
+    // Phase 2: Reopen and verify pruning state is preserved.
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let runtime = Scheduler::new(
+            ExecutionConfig::default().with_vm(TestVM),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // Verify pruning worker resumed from persisted state.
+        assert_eq!(runtime.last_pruned_index(), 2, "Pruning should resume from persisted index");
+
+        let store = runtime.storage_manager().store();
+
+        // Batches 1-2 should still be pruned (from previous run).
+        for batch_idx in 1..=2 {
+            assert_eq!(
+                StatePtrRollback::iter_batch(store.as_ref(), batch_idx).count(),
+                0,
+                "Batch {} should remain pruned after restart",
+                batch_idx
+            );
+        }
+
+        // Batches 3-5 should still have rollback pointers.
+        for batch_idx in 3..=5 {
+            assert_eq!(
+                StatePtrRollback::iter_batch(store.as_ref(), batch_idx).count(),
+                1,
+                "Batch {} should NOT be pruned",
+                batch_idx
+            );
+        }
+
+        // Continue pruning from where we left off.
+        runtime.set_pruning_threshold(5);
+        wait_for_pruning(&runtime, 4, Duration::from_secs(10));
+
+        // Batches 3-4 should now be pruned.
+        for batch_idx in 3..=4 {
+            assert_eq!(
+                StatePtrRollback::iter_batch(store.as_ref(), batch_idx).count(),
+                0,
+                "Batch {} should now be pruned",
+                batch_idx
+            );
+        }
+
+        // Batch 5 should still have its rollback pointer.
+        assert_eq!(
+            StatePtrRollback::iter_batch(store.as_ref(), 5).count(),
+            1,
+            "Batch 5 should NOT be pruned"
+        );
+
+        runtime.shutdown();
+    }
+}
+
+/// Tests pruning with multiple resources per batch.
+#[test]
+pub fn test_pruning_multiple_resources() {
+    use vprogs_state_ptr_rollback::StatePtrRollback;
+
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut runtime = Scheduler::new(
+            ExecutionConfig::default().with_vm(TestVM),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // Batch 1: Create resources 1, 2, 3.
+        let batch1 = runtime.schedule(vec![
+            Tx(1, vec![Access::Write(1)]),
+            Tx(2, vec![Access::Write(2)]),
+            Tx(3, vec![Access::Write(3)]),
+        ]);
+        batch1.wait_committed_blocking();
+
+        // Batch 2: Overwrite all three resources.
+        let batch2 = runtime.schedule(vec![
+            Tx(10, vec![Access::Write(1)]),
+            Tx(20, vec![Access::Write(2)]),
+            Tx(30, vec![Access::Write(3)]),
+        ]);
+        batch2.wait_committed_blocking();
+
+        // Batch 3: Overwrite all three resources again.
+        let batch3 = runtime.schedule(vec![
+            Tx(100, vec![Access::Write(1)]),
+            Tx(200, vec![Access::Write(2)]),
+            Tx(300, vec![Access::Write(3)]),
+        ]);
+        batch3.wait_committed_blocking();
+
+        let store = runtime.storage_manager().store();
+
+        // Batch 2 should have 3 rollback pointers (one for each resource).
+        assert_eq!(
+            StatePtrRollback::iter_batch(store.as_ref(), batch2.index()).count(),
+            3,
+            "Batch 2 should have 3 rollback pointers"
+        );
+
+        // Batch 3 should have 3 rollback pointers.
+        assert_eq!(
+            StatePtrRollback::iter_batch(store.as_ref(), batch3.index()).count(),
+            3,
+            "Batch 3 should have 3 rollback pointers"
+        );
+
+        // Prune batch 1 and 2.
+        runtime.set_pruning_threshold(batch3.index());
+        wait_for_pruning(&runtime, batch2.index(), Duration::from_secs(10));
+
+        // All rollback pointers for batches 1 and 2 should be deleted.
+        assert_eq!(
+            StatePtrRollback::iter_batch(store.as_ref(), batch1.index()).count(),
+            0,
+            "Batch 1 should have no rollback pointers after pruning"
+        );
+        assert_eq!(
+            StatePtrRollback::iter_batch(store.as_ref(), batch2.index()).count(),
+            0,
+            "Batch 2 should have no rollback pointers after pruning"
+        );
+
+        // Batch 3 should still have its rollback pointers.
+        assert_eq!(
+            StatePtrRollback::iter_batch(store.as_ref(), batch3.index()).count(),
+            3,
+            "Batch 3 should still have 3 rollback pointers"
+        );
+
+        // Data should still be readable.
+        AssertWrittenState(1, vec![1, 10, 100]).assert(store);
+        AssertWrittenState(2, vec![2, 20, 200]).assert(store);
+        AssertWrittenState(3, vec![3, 30, 300]).assert(store);
+
+        runtime.shutdown();
     }
 }

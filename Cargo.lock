@@ -787,6 +787,8 @@ dependencies = [
  "tempfile",
  "vprogs-core-types",
  "vprogs-scheduling-scheduler",
+ "vprogs-state-metadata",
+ "vprogs-state-ptr-rollback",
  "vprogs-state-space",
  "vprogs-state-version",
  "vprogs-storage-manager",
