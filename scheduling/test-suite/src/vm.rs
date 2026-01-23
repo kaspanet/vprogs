@@ -3,7 +3,7 @@ use vprogs_scheduling_scheduler::{AccessHandle, RuntimeBatch, VmInterface};
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
-use crate::{Access, Transaction};
+use crate::{Access, Tx};
 
 /// A minimal VM implementation for testing the scheduler.
 #[derive(Clone)]
@@ -31,7 +31,7 @@ impl VmInterface for VM {
         );
     }
 
-    type Transaction = Transaction;
+    type Transaction = Tx;
     type TransactionEffects = ();
     type ResourceId = usize;
     type AccessMetadata = Access;
