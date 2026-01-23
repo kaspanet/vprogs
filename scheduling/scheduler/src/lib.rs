@@ -1,5 +1,5 @@
 mod access_handle;
-mod batch_worker;
+mod batch_lifecycle_worker;
 mod config;
 mod cpu_task;
 mod pruning_worker;
@@ -15,7 +15,7 @@ mod storage_cmd;
 mod vm_interface;
 
 pub use access_handle::AccessHandle;
-pub(crate) use batch_worker::BatchWorker;
+pub(crate) use batch_lifecycle_worker::BatchLifecycleWorker;
 pub use config::ExecutionConfig;
 pub(crate) use pruning_worker::PruningWorker;
 pub(crate) use resource::Resource;

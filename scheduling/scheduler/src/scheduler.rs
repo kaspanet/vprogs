@@ -9,7 +9,7 @@ use vprogs_storage_manager::{StorageConfig, StorageManager};
 use vprogs_storage_types::Store;
 
 use crate::{
-    BatchWorker, ExecutionConfig, PruningWorker, Read, Resource, ResourceAccess, Rollback,
+    BatchLifecycleWorker, ExecutionConfig, PruningWorker, Read, Resource, ResourceAccess, Rollback,
     RuntimeBatch, RuntimeBatchRef, RuntimeContext, RuntimeTxRef, StateDiff, Write,
     cpu_task::ManagerTask, vm_interface::VmInterface,
 };
@@ -29,7 +29,7 @@ pub struct Scheduler<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     /// Maps resource IDs to their in-memory dependency chain heads.
     resources: HashMap<V::ResourceId, Resource<S, V>>,
     /// Background worker that processes batches through their lifecycle stages.
-    batch_worker: BatchWorker<S, V>,
+    batch_lifecycle_worker: BatchLifecycleWorker<S, V>,
     /// Thread pool for parallel transaction execution.
     execution_workers: ExecutionWorkers<ManagerTask<S, V>, RuntimeBatch<S, V>>,
     /// Queue of resource IDs to potentially evict after their batches commited.
@@ -45,7 +45,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
         let (worker_count, vm) = execution_config.unpack();
         Self {
             context: RuntimeContext::new(0),
-            batch_worker: BatchWorker::new(vm.clone()),
+            batch_lifecycle_worker: BatchLifecycleWorker::new(vm.clone()),
             pruning_worker: PruningWorker::new(storage_manager.store().clone()),
             resources: HashMap::new(),
             execution_workers: ExecutionWorkers::new(worker_count),
@@ -66,8 +66,8 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
             // Connect transactions to resource dependency chains.
             .tap(RuntimeBatch::connect)
             .tap(|batch| {
-                // Push to the batch worker for lifecycle progression.
-                self.batch_worker.push(batch.clone());
+                // Push to the batch lifecycle worker for lifecycle progression.
+                self.batch_lifecycle_worker.push(batch.clone());
 
                 // Submit to execution workers for parallel processing.
                 self.execution_workers.execute(batch.clone());
@@ -168,10 +168,11 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
 
     /// Shuts down the scheduler and all its components.
     ///
-    /// This stops the worker loop, pruning worker, execution workers, and storage manager in order.
+    /// This stops the pruning worker, batch lifecycle worker, execution workers, and storage
+    /// manager in order.
     pub fn shutdown(self) {
-        self.batch_worker.shutdown();
         self.pruning_worker.shutdown();
+        self.batch_lifecycle_worker.shutdown();
         self.execution_workers.shutdown();
         self.storage_manager.shutdown();
     }
