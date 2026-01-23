@@ -2,10 +2,7 @@ use std::time::Duration;
 
 use tempfile::TempDir;
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
-use vprogs_scheduling_test_suite::{
-    Access, AssertResourceDeleted, AssertWrittenState, TestVM, Tx, wait_for_empty_cache,
-    wait_for_pruning,
-};
+use vprogs_scheduling_test_suite::{Access, SchedulerExt, StoreExt, Transaction, VM};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 
@@ -15,33 +12,30 @@ pub fn test_runtime() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut runtime = Scheduler::new(
-            ExecutionConfig::default().with_vm(TestVM),
+            ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
         let batch1 = runtime.schedule(vec![
-            Tx(0, vec![Access::Write(1), Access::Read(3)]),
-            Tx(1, vec![Access::Write(1), Access::Write(2)]),
-            Tx(2, vec![Access::Read(3)]),
+            Transaction(0, vec![Access::Write(1), Access::Read(3)]),
+            Transaction(1, vec![Access::Write(1), Access::Write(2)]),
+            Transaction(2, vec![Access::Read(3)]),
         ]);
 
         let batch2 = runtime.schedule(vec![
-            Tx(3, vec![Access::Write(1), Access::Read(3)]),
-            Tx(4, vec![Access::Write(10), Access::Write(20)]),
+            Transaction(3, vec![Access::Write(1), Access::Read(3)]),
+            Transaction(4, vec![Access::Write(10), Access::Write(20)]),
         ]);
 
         batch1.wait_committed_blocking();
         batch2.wait_committed_blocking();
 
-        for assertion in [
-            AssertWrittenState(1, vec![0, 1, 3]),
-            AssertWrittenState(2, vec![1]),
-            AssertWrittenState(3, vec![]),
-            AssertWrittenState(10, vec![4]),
-            AssertWrittenState(20, vec![4]),
-        ] {
-            assertion.assert(runtime.storage_manager().store());
-        }
+        let store = runtime.storage_manager().store();
+        store.assert_written_state(1, vec![0, 1, 3]);
+        store.assert_written_state(2, vec![1]);
+        store.assert_written_state(3, vec![]);
+        store.assert_written_state(10, vec![4]);
+        store.assert_written_state(20, vec![4]);
 
         runtime.shutdown();
     }
@@ -54,40 +48,42 @@ pub fn test_rollback_committed() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut runtime = Scheduler::new(
-            ExecutionConfig::default().with_vm(TestVM),
+            ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
-        runtime.schedule(vec![Tx(0, vec![Access::Write(1)]), Tx(1, vec![Access::Write(2)])]);
-        runtime.schedule(vec![Tx(2, vec![Access::Write(1)]), Tx(3, vec![Access::Write(3)])]);
-        let last_batch =
-            runtime.schedule(vec![Tx(4, vec![Access::Write(1)]), Tx(5, vec![Access::Write(4)])]);
+        runtime.schedule(vec![
+            Transaction(0, vec![Access::Write(1)]),
+            Transaction(1, vec![Access::Write(2)]),
+        ]);
+        runtime.schedule(vec![
+            Transaction(2, vec![Access::Write(1)]),
+            Transaction(3, vec![Access::Write(3)]),
+        ]);
+        let last_batch = runtime.schedule(vec![
+            Transaction(4, vec![Access::Write(1)]),
+            Transaction(5, vec![Access::Write(4)]),
+        ]);
         last_batch.wait_committed_blocking();
 
         // Verify state before rollback
-        for assertion in [
-            AssertWrittenState(1, vec![0, 2, 4]), // Written by tx 0, 2, 4
-            AssertWrittenState(2, vec![1]),       // Written by tx 1
-            AssertWrittenState(3, vec![3]),       // Written by tx 3
-            AssertWrittenState(4, vec![5]),       // Written by tx 5
-        ] {
-            assertion.assert(runtime.storage_manager().store());
-        }
+        let store = runtime.storage_manager().store();
+        store.assert_written_state(1, vec![0, 2, 4]); // Written by tx 0, 2, 4
+        store.assert_written_state(2, vec![1]); // Written by tx 1
+        store.assert_written_state(3, vec![3]); // Written by tx 3
+        store.assert_written_state(4, vec![5]); // Written by tx 5
 
         // Rollback to index 1 (revert batches with index 1 and 2, keep batch with index 0)
         runtime.rollback_to(1);
 
         // Verify state after rollback - only batch0 effects should remain
-        for assertion in [
-            AssertWrittenState(1, vec![0]), // Only tx 0's write remains
-            AssertWrittenState(2, vec![1]), // tx 1's write remains (in batch0)
-        ] {
-            assertion.assert(runtime.storage_manager().store());
-        }
+        let store = runtime.storage_manager().store();
+        store.assert_written_state(1, vec![0]); // Only tx 0's write remains
+        store.assert_written_state(2, vec![1]); // tx 1's write remains (in batch0)
 
         // Resources 3 and 4 should no longer exist (created in rolled-back batches)
-        AssertResourceDeleted(3).assert(runtime.storage_manager().store());
-        AssertResourceDeleted(4).assert(runtime.storage_manager().store());
+        store.assert_resource_deleted(3);
+        store.assert_resource_deleted(4);
 
         runtime.shutdown();
     }
@@ -101,14 +97,14 @@ pub fn test_add_batches_after_rollback() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut runtime = Scheduler::new(
-            ExecutionConfig::default().with_vm(TestVM),
+            ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
         // Schedule initial batches (indices 1, 2, 3)
-        let batch1 = runtime.schedule(vec![Tx(0, vec![Access::Write(1)])]);
-        let batch2 = runtime.schedule(vec![Tx(1, vec![Access::Write(2)])]);
-        let batch3 = runtime.schedule(vec![Tx(2, vec![Access::Write(3)])]);
+        let batch1 = runtime.schedule(vec![Transaction(0, vec![Access::Write(1)])]);
+        let batch2 = runtime.schedule(vec![Transaction(1, vec![Access::Write(2)])]);
+        let batch3 = runtime.schedule(vec![Transaction(2, vec![Access::Write(3)])]);
         batch3.wait_committed_blocking();
 
         assert_eq!(batch1.index(), 1);
@@ -116,32 +112,35 @@ pub fn test_add_batches_after_rollback() {
         assert_eq!(batch3.index(), 3);
 
         // Verify initial state
-        AssertWrittenState(1, vec![0]).assert(runtime.storage_manager().store());
-        AssertWrittenState(2, vec![1]).assert(runtime.storage_manager().store());
-        AssertWrittenState(3, vec![2]).assert(runtime.storage_manager().store());
+        let store = runtime.storage_manager().store();
+        store.assert_written_state(1, vec![0]);
+        store.assert_written_state(2, vec![1]);
+        store.assert_written_state(3, vec![2]);
 
         // Rollback to batch 1 (keep batch 1, remove batches 2 and 3)
         runtime.rollback_to(1);
 
         // Resources 2 and 3 should be deleted
-        AssertResourceDeleted(2).assert(runtime.storage_manager().store());
-        AssertResourceDeleted(3).assert(runtime.storage_manager().store());
+        let store = runtime.storage_manager().store();
+        store.assert_resource_deleted(2);
+        store.assert_resource_deleted(3);
 
         // Resource 1 should still exist
-        AssertWrittenState(1, vec![0]).assert(runtime.storage_manager().store());
+        store.assert_written_state(1, vec![0]);
 
         // Schedule new batches after rollback - should continue from index 2
-        let batch4 = runtime.schedule(vec![Tx(10, vec![Access::Write(10)])]);
-        let batch5 = runtime.schedule(vec![Tx(11, vec![Access::Write(11)])]);
+        let batch4 = runtime.schedule(vec![Transaction(10, vec![Access::Write(10)])]);
+        let batch5 = runtime.schedule(vec![Transaction(11, vec![Access::Write(11)])]);
         batch5.wait_committed_blocking();
 
         assert_eq!(batch4.index(), 2);
         assert_eq!(batch5.index(), 3);
 
         // Verify new state
-        AssertWrittenState(1, vec![0]).assert(runtime.storage_manager().store());
-        AssertWrittenState(10, vec![10]).assert(runtime.storage_manager().store());
-        AssertWrittenState(11, vec![11]).assert(runtime.storage_manager().store());
+        let store = runtime.storage_manager().store();
+        store.assert_written_state(1, vec![0]);
+        store.assert_written_state(10, vec![10]);
+        store.assert_written_state(11, vec![11]);
 
         runtime.shutdown();
     }
@@ -156,18 +155,18 @@ pub fn test_inflight_cancellation_without_waiting() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut runtime = Scheduler::new(
-            ExecutionConfig::default().with_vm(TestVM),
+            ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
         // Schedule a batch and wait for it to commit
-        let batch1 = runtime.schedule(vec![Tx(0, vec![Access::Write(1)])]);
+        let batch1 = runtime.schedule(vec![Transaction(0, vec![Access::Write(1)])]);
         batch1.wait_committed_blocking();
 
         // Schedule multiple batches but don't wait for commitment
-        let batch2 = runtime.schedule(vec![Tx(1, vec![Access::Write(2)])]);
-        let batch3 = runtime.schedule(vec![Tx(2, vec![Access::Write(3)])]);
-        let batch4 = runtime.schedule(vec![Tx(3, vec![Access::Write(4)])]);
+        let batch2 = runtime.schedule(vec![Transaction(1, vec![Access::Write(2)])]);
+        let batch3 = runtime.schedule(vec![Transaction(2, vec![Access::Write(3)])]);
+        let batch4 = runtime.schedule(vec![Transaction(3, vec![Access::Write(4)])]);
 
         // Immediately rollback without waiting for batches 2-4 to commit
         // This tests in-flight cancellation
@@ -179,19 +178,20 @@ pub fn test_inflight_cancellation_without_waiting() {
         assert!(batch4.was_canceled(), "batch4 should be canceled");
 
         // Resource 1 should still exist (from batch1 which was committed)
-        AssertWrittenState(1, vec![0]).assert(runtime.storage_manager().store());
+        let store = runtime.storage_manager().store();
+        store.assert_written_state(1, vec![0]);
 
         // Resources 2, 3, 4 might or might not exist depending on timing,
         // but the rollback should have cleaned them up
-        AssertResourceDeleted(2).assert(runtime.storage_manager().store());
-        AssertResourceDeleted(3).assert(runtime.storage_manager().store());
-        AssertResourceDeleted(4).assert(runtime.storage_manager().store());
+        store.assert_resource_deleted(2);
+        store.assert_resource_deleted(3);
+        store.assert_resource_deleted(4);
 
         // New batches scheduled after rollback should work normally
-        let batch5 = runtime.schedule(vec![Tx(100, vec![Access::Write(100)])]);
+        let batch5 = runtime.schedule(vec![Transaction(100, vec![Access::Write(100)])]);
         batch5.wait_committed_blocking();
         assert!(!batch5.was_canceled(), "batch5 should not be canceled");
-        AssertWrittenState(100, vec![100]).assert(runtime.storage_manager().store());
+        runtime.storage_manager().store().assert_written_state(100, vec![100]);
 
         runtime.shutdown();
     }
@@ -205,26 +205,27 @@ pub fn test_rollback_multiple_contexts() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut runtime = Scheduler::new(
-            ExecutionConfig::default().with_vm(TestVM),
+            ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
         // Phase 1: Apply batches 1-6
         // Using resource IDs that match batch indices for clarity
-        let batch1 = runtime.schedule(vec![Tx(1, vec![Access::Write(1)])]);
-        runtime.schedule(vec![Tx(2, vec![Access::Write(2)])]);
-        runtime.schedule(vec![Tx(3, vec![Access::Write(3)])]);
-        runtime.schedule(vec![Tx(4, vec![Access::Write(4)])]);
-        runtime.schedule(vec![Tx(5, vec![Access::Write(5)])]);
-        let batch6 = runtime.schedule(vec![Tx(6, vec![Access::Write(6)])]);
+        let batch1 = runtime.schedule(vec![Transaction(1, vec![Access::Write(1)])]);
+        runtime.schedule(vec![Transaction(2, vec![Access::Write(2)])]);
+        runtime.schedule(vec![Transaction(3, vec![Access::Write(3)])]);
+        runtime.schedule(vec![Transaction(4, vec![Access::Write(4)])]);
+        runtime.schedule(vec![Transaction(5, vec![Access::Write(5)])]);
+        let batch6 = runtime.schedule(vec![Transaction(6, vec![Access::Write(6)])]);
         batch6.wait_committed_blocking();
 
         assert_eq!(batch1.index(), 1);
         assert_eq!(batch6.index(), 6);
 
         // Verify all resources exist
+        let store = runtime.storage_manager().store();
         for i in 1..=6 {
-            AssertWrittenState(i, vec![i]).assert(runtime.storage_manager().store());
+            store.assert_written_state(i, vec![i]);
         }
 
         // Phase 2: Rollback to 5 (keeps batches 1-5, removes batch 6)
@@ -232,55 +233,59 @@ pub fn test_rollback_multiple_contexts() {
         runtime.rollback_to(5);
 
         // Batch 6's resource should be deleted
-        AssertResourceDeleted(6).assert(runtime.storage_manager().store());
+        let store = runtime.storage_manager().store();
+        store.assert_resource_deleted(6);
         // Batches 1-5 should still exist
         for i in 1..=5 {
-            AssertWrittenState(i, vec![i]).assert(runtime.storage_manager().store());
+            store.assert_written_state(i, vec![i]);
         }
 
         // Phase 3: Apply new batches 6-7 (in the new context after rollback)
         // These get indices 6 and 7, replacing the old batch 6
-        let new_batch6 = runtime.schedule(vec![Tx(60, vec![Access::Write(60)])]);
-        let batch7 = runtime.schedule(vec![Tx(70, vec![Access::Write(70)])]);
+        let new_batch6 = runtime.schedule(vec![Transaction(60, vec![Access::Write(60)])]);
+        let batch7 = runtime.schedule(vec![Transaction(70, vec![Access::Write(70)])]);
         batch7.wait_committed_blocking();
 
         assert_eq!(new_batch6.index(), 6);
         assert_eq!(batch7.index(), 7);
 
-        AssertWrittenState(60, vec![60]).assert(runtime.storage_manager().store());
-        AssertWrittenState(70, vec![70]).assert(runtime.storage_manager().store());
+        let store = runtime.storage_manager().store();
+        store.assert_written_state(60, vec![60]);
+        store.assert_written_state(70, vec![70]);
 
         // Phase 4: Rollback to 3 (must walk parent context chain)
         // This removes batches 4, 5, 6 (new), 7
         runtime.rollback_to(3);
 
         // Batches 1-3 should remain
+        let store = runtime.storage_manager().store();
         for i in 1..=3 {
-            AssertWrittenState(i, vec![i]).assert(runtime.storage_manager().store());
+            store.assert_written_state(i, vec![i]);
         }
 
         // Batches 4, 5 from original context should be deleted
-        AssertResourceDeleted(4).assert(runtime.storage_manager().store());
-        AssertResourceDeleted(5).assert(runtime.storage_manager().store());
+        store.assert_resource_deleted(4);
+        store.assert_resource_deleted(5);
 
         // New batches 6, 7 (resources 60, 70) should also be deleted
-        AssertResourceDeleted(60).assert(runtime.storage_manager().store());
-        AssertResourceDeleted(70).assert(runtime.storage_manager().store());
+        store.assert_resource_deleted(60);
+        store.assert_resource_deleted(70);
 
         // Phase 5: Apply batches 4-5 (in the new context after second rollback)
-        let final_batch4 = runtime.schedule(vec![Tx(40, vec![Access::Write(40)])]);
-        let final_batch5 = runtime.schedule(vec![Tx(50, vec![Access::Write(50)])]);
+        let final_batch4 = runtime.schedule(vec![Transaction(40, vec![Access::Write(40)])]);
+        let final_batch5 = runtime.schedule(vec![Transaction(50, vec![Access::Write(50)])]);
         final_batch5.wait_committed_blocking();
 
         assert_eq!(final_batch4.index(), 4);
         assert_eq!(final_batch5.index(), 5);
 
         // Verify final state: resources 1-3 from original, 40, 50 from final batches
-        AssertWrittenState(1, vec![1]).assert(runtime.storage_manager().store());
-        AssertWrittenState(2, vec![2]).assert(runtime.storage_manager().store());
-        AssertWrittenState(3, vec![3]).assert(runtime.storage_manager().store());
-        AssertWrittenState(40, vec![40]).assert(runtime.storage_manager().store());
-        AssertWrittenState(50, vec![50]).assert(runtime.storage_manager().store());
+        let store = runtime.storage_manager().store();
+        store.assert_written_state(1, vec![1]);
+        store.assert_written_state(2, vec![2]);
+        store.assert_written_state(3, vec![3]);
+        store.assert_written_state(40, vec![40]);
+        store.assert_written_state(50, vec![50]);
 
         runtime.shutdown();
     }
@@ -294,35 +299,37 @@ pub fn test_rollback_to_zero() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut runtime = Scheduler::new(
-            ExecutionConfig::default().with_vm(TestVM),
+            ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
         // Schedule several batches
-        runtime.schedule(vec![Tx(1, vec![Access::Write(1)])]);
-        runtime.schedule(vec![Tx(2, vec![Access::Write(2)])]);
-        let batch3 = runtime.schedule(vec![Tx(3, vec![Access::Write(3)])]);
+        runtime.schedule(vec![Transaction(1, vec![Access::Write(1)])]);
+        runtime.schedule(vec![Transaction(2, vec![Access::Write(2)])]);
+        let batch3 = runtime.schedule(vec![Transaction(3, vec![Access::Write(3)])]);
         batch3.wait_committed_blocking();
 
         // Verify state exists
-        AssertWrittenState(1, vec![1]).assert(runtime.storage_manager().store());
-        AssertWrittenState(2, vec![2]).assert(runtime.storage_manager().store());
-        AssertWrittenState(3, vec![3]).assert(runtime.storage_manager().store());
+        let store = runtime.storage_manager().store();
+        store.assert_written_state(1, vec![1]);
+        store.assert_written_state(2, vec![2]);
+        store.assert_written_state(3, vec![3]);
 
         // Rollback to 0 (before any batches)
         runtime.rollback_to(0);
 
         // All resources should be deleted
-        AssertResourceDeleted(1).assert(runtime.storage_manager().store());
-        AssertResourceDeleted(2).assert(runtime.storage_manager().store());
-        AssertResourceDeleted(3).assert(runtime.storage_manager().store());
+        let store = runtime.storage_manager().store();
+        store.assert_resource_deleted(1);
+        store.assert_resource_deleted(2);
+        store.assert_resource_deleted(3);
 
         // New batches should start from index 1 again
-        let new_batch1 = runtime.schedule(vec![Tx(100, vec![Access::Write(100)])]);
+        let new_batch1 = runtime.schedule(vec![Transaction(100, vec![Access::Write(100)])]);
         new_batch1.wait_committed_blocking();
 
         assert_eq!(new_batch1.index(), 1);
-        AssertWrittenState(100, vec![100]).assert(runtime.storage_manager().store());
+        runtime.storage_manager().store().assert_written_state(100, vec![100]);
 
         runtime.shutdown();
     }
@@ -336,46 +343,50 @@ pub fn test_consecutive_rollbacks() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut runtime = Scheduler::new(
-            ExecutionConfig::default().with_vm(TestVM),
+            ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
         // Create 5 batches
-        runtime.schedule(vec![Tx(1, vec![Access::Write(1)])]);
-        runtime.schedule(vec![Tx(2, vec![Access::Write(2)])]);
-        runtime.schedule(vec![Tx(3, vec![Access::Write(3)])]);
-        runtime.schedule(vec![Tx(4, vec![Access::Write(4)])]);
-        let batch5 = runtime.schedule(vec![Tx(5, vec![Access::Write(5)])]);
+        runtime.schedule(vec![Transaction(1, vec![Access::Write(1)])]);
+        runtime.schedule(vec![Transaction(2, vec![Access::Write(2)])]);
+        runtime.schedule(vec![Transaction(3, vec![Access::Write(3)])]);
+        runtime.schedule(vec![Transaction(4, vec![Access::Write(4)])]);
+        let batch5 = runtime.schedule(vec![Transaction(5, vec![Access::Write(5)])]);
         batch5.wait_committed_blocking();
 
         // Verify all exist
+        let store = runtime.storage_manager().store();
         for i in 1..=5 {
-            AssertWrittenState(i, vec![i]).assert(runtime.storage_manager().store());
+            store.assert_written_state(i, vec![i]);
         }
 
         // First rollback: to 4
         runtime.rollback_to(4);
-        AssertResourceDeleted(5).assert(runtime.storage_manager().store());
+        let store = runtime.storage_manager().store();
+        store.assert_resource_deleted(5);
         for i in 1..=4 {
-            AssertWrittenState(i, vec![i]).assert(runtime.storage_manager().store());
+            store.assert_written_state(i, vec![i]);
         }
 
         // Second rollback: to 3
         runtime.rollback_to(3);
-        AssertResourceDeleted(4).assert(runtime.storage_manager().store());
-        AssertResourceDeleted(5).assert(runtime.storage_manager().store());
+        let store = runtime.storage_manager().store();
+        store.assert_resource_deleted(4);
+        store.assert_resource_deleted(5);
         for i in 1..=3 {
-            AssertWrittenState(i, vec![i]).assert(runtime.storage_manager().store());
+            store.assert_written_state(i, vec![i]);
         }
 
         // Third rollback: to 1
         runtime.rollback_to(1);
-        AssertResourceDeleted(2).assert(runtime.storage_manager().store());
-        AssertResourceDeleted(3).assert(runtime.storage_manager().store());
-        AssertWrittenState(1, vec![1]).assert(runtime.storage_manager().store());
+        let store = runtime.storage_manager().store();
+        store.assert_resource_deleted(2);
+        store.assert_resource_deleted(3);
+        store.assert_written_state(1, vec![1]);
 
         // Verify context indices are correct
-        let new_batch = runtime.schedule(vec![Tx(100, vec![Access::Write(100)])]);
+        let new_batch = runtime.schedule(vec![Transaction(100, vec![Access::Write(100)])]);
         new_batch.wait_committed_blocking();
         assert_eq!(new_batch.index(), 2);
 
@@ -391,38 +402,38 @@ pub fn test_rollback_same_resource_multiple_writes() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut runtime = Scheduler::new(
-            ExecutionConfig::default().with_vm(TestVM),
+            ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
         // Multiple batches all writing to resource 1
-        runtime.schedule(vec![Tx(10, vec![Access::Write(1)])]);
-        runtime.schedule(vec![Tx(20, vec![Access::Write(1)])]);
-        runtime.schedule(vec![Tx(30, vec![Access::Write(1)])]);
-        let batch4 = runtime.schedule(vec![Tx(40, vec![Access::Write(1)])]);
+        runtime.schedule(vec![Transaction(10, vec![Access::Write(1)])]);
+        runtime.schedule(vec![Transaction(20, vec![Access::Write(1)])]);
+        runtime.schedule(vec![Transaction(30, vec![Access::Write(1)])]);
+        let batch4 = runtime.schedule(vec![Transaction(40, vec![Access::Write(1)])]);
         batch4.wait_committed_blocking();
 
         // Resource 1 should have been written by all 4 transactions
-        AssertWrittenState(1, vec![10, 20, 30, 40]).assert(runtime.storage_manager().store());
+        runtime.storage_manager().store().assert_written_state(1, vec![10, 20, 30, 40]);
 
         // Rollback to batch 2 (keep writes from batch 1 and 2)
         runtime.rollback_to(2);
 
         // Resource 1 should only have writes from tx 10 and 20
-        AssertWrittenState(1, vec![10, 20]).assert(runtime.storage_manager().store());
+        runtime.storage_manager().store().assert_written_state(1, vec![10, 20]);
 
         // Add more writes
-        let batch5 = runtime.schedule(vec![Tx(50, vec![Access::Write(1)])]);
+        let batch5 = runtime.schedule(vec![Transaction(50, vec![Access::Write(1)])]);
         batch5.wait_committed_blocking();
 
         // Now should have 10, 20, 50
-        AssertWrittenState(1, vec![10, 20, 50]).assert(runtime.storage_manager().store());
+        runtime.storage_manager().store().assert_written_state(1, vec![10, 20, 50]);
 
         // Rollback to batch 1
         runtime.rollback_to(1);
 
         // Only tx 10's write should remain
-        AssertWrittenState(1, vec![10]).assert(runtime.storage_manager().store());
+        runtime.storage_manager().store().assert_written_state(1, vec![10]);
 
         runtime.shutdown();
     }
@@ -436,18 +447,18 @@ pub fn test_cancellation_skips_writes() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut runtime = Scheduler::new(
-            ExecutionConfig::default().with_vm(TestVM),
+            ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
         // Create and commit a batch to resource 1
-        let batch1 = runtime.schedule(vec![Tx(1, vec![Access::Write(1)])]);
+        let batch1 = runtime.schedule(vec![Transaction(1, vec![Access::Write(1)])]);
         batch1.wait_committed_blocking();
 
         // Schedule batches that access different resources (to avoid dependency chain timing
         // issues)
-        let batch2 = runtime.schedule(vec![Tx(2, vec![Access::Write(100)])]);
-        let batch3 = runtime.schedule(vec![Tx(3, vec![Access::Write(200)])]);
+        let batch2 = runtime.schedule(vec![Transaction(2, vec![Access::Write(100)])]);
+        let batch3 = runtime.schedule(vec![Transaction(3, vec![Access::Write(200)])]);
 
         // Rollback immediately - batch2 and batch3 should be canceled
         runtime.rollback_to(1);
@@ -461,11 +472,12 @@ pub fn test_cancellation_skips_writes() {
         batch3.wait_committed_blocking();
 
         // Resource 1 should only have the write from batch1
-        AssertWrittenState(1, vec![1]).assert(runtime.storage_manager().store());
+        let store = runtime.storage_manager().store();
+        store.assert_written_state(1, vec![1]);
 
         // Resources 100 and 200 should be cleaned up by rollback
-        AssertResourceDeleted(100).assert(runtime.storage_manager().store());
-        AssertResourceDeleted(200).assert(runtime.storage_manager().store());
+        store.assert_resource_deleted(100);
+        store.assert_resource_deleted(200);
 
         runtime.shutdown();
     }
@@ -479,54 +491,66 @@ pub fn test_rollback_interleaved_multi_resource() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut runtime = Scheduler::new(
-            ExecutionConfig::default().with_vm(TestVM),
+            ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
         // Batch 1: Write to resources 1 and 2
-        runtime.schedule(vec![Tx(10, vec![Access::Write(1)]), Tx(11, vec![Access::Write(2)])]);
+        runtime.schedule(vec![
+            Transaction(10, vec![Access::Write(1)]),
+            Transaction(11, vec![Access::Write(2)]),
+        ]);
 
         // Batch 2: Write to resources 2 and 3
-        runtime.schedule(vec![Tx(20, vec![Access::Write(2)]), Tx(21, vec![Access::Write(3)])]);
+        runtime.schedule(vec![
+            Transaction(20, vec![Access::Write(2)]),
+            Transaction(21, vec![Access::Write(3)]),
+        ]);
 
         // Batch 3: Write to resources 1 and 3
-        runtime.schedule(vec![Tx(30, vec![Access::Write(1)]), Tx(31, vec![Access::Write(3)])]);
+        runtime.schedule(vec![
+            Transaction(30, vec![Access::Write(1)]),
+            Transaction(31, vec![Access::Write(3)]),
+        ]);
 
         // Batch 4: Write to all resources
         let batch4 = runtime.schedule(vec![
-            Tx(40, vec![Access::Write(1)]),
-            Tx(41, vec![Access::Write(2)]),
-            Tx(42, vec![Access::Write(3)]),
+            Transaction(40, vec![Access::Write(1)]),
+            Transaction(41, vec![Access::Write(2)]),
+            Transaction(42, vec![Access::Write(3)]),
         ]);
         batch4.wait_committed_blocking();
 
         // Verify state before rollback
-        AssertWrittenState(1, vec![10, 30, 40]).assert(runtime.storage_manager().store());
-        AssertWrittenState(2, vec![11, 20, 41]).assert(runtime.storage_manager().store());
-        AssertWrittenState(3, vec![21, 31, 42]).assert(runtime.storage_manager().store());
+        let store = runtime.storage_manager().store();
+        store.assert_written_state(1, vec![10, 30, 40]);
+        store.assert_written_state(2, vec![11, 20, 41]);
+        store.assert_written_state(3, vec![21, 31, 42]);
 
         // Rollback to batch 2
         runtime.rollback_to(2);
 
         // Resource 1: only from batch 1
-        AssertWrittenState(1, vec![10]).assert(runtime.storage_manager().store());
+        let store = runtime.storage_manager().store();
+        store.assert_written_state(1, vec![10]);
         // Resource 2: from batch 1 and 2
-        AssertWrittenState(2, vec![11, 20]).assert(runtime.storage_manager().store());
+        store.assert_written_state(2, vec![11, 20]);
         // Resource 3: only from batch 2
-        AssertWrittenState(3, vec![21]).assert(runtime.storage_manager().store());
+        store.assert_written_state(3, vec![21]);
 
         // Add new batches after rollback
         let batch5 = runtime.schedule(vec![
-            Tx(50, vec![Access::Write(1)]),
-            Tx(51, vec![Access::Write(4)]), // New resource 4
+            Transaction(50, vec![Access::Write(1)]),
+            Transaction(51, vec![Access::Write(4)]), // New resource 4
         ]);
         batch5.wait_committed_blocking();
 
         // Verify mixed state
-        AssertWrittenState(1, vec![10, 50]).assert(runtime.storage_manager().store());
-        AssertWrittenState(2, vec![11, 20]).assert(runtime.storage_manager().store());
-        AssertWrittenState(3, vec![21]).assert(runtime.storage_manager().store());
-        AssertWrittenState(4, vec![51]).assert(runtime.storage_manager().store());
+        let store = runtime.storage_manager().store();
+        store.assert_written_state(1, vec![10, 50]);
+        store.assert_written_state(2, vec![11, 20]);
+        store.assert_written_state(3, vec![21]);
+        store.assert_written_state(4, vec![51]);
 
         runtime.shutdown();
     }
@@ -541,7 +565,7 @@ pub fn test_resource_eviction() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut runtime = Scheduler::new(
-            ExecutionConfig::default().with_vm(TestVM),
+            ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
@@ -554,7 +578,7 @@ pub fn test_resource_eviction() {
         for batch_idx in 0..NUM_BATCHES {
             let base_resource = batch_idx * RESOURCES_PER_BATCH;
             let txs: Vec<_> = (0..RESOURCES_PER_BATCH)
-                .map(|i| Tx(base_resource + i, vec![Access::Write(base_resource + i)]))
+                .map(|i| Transaction(base_resource + i, vec![Access::Write(base_resource + i)]))
                 .collect();
             batches.push(runtime.schedule(txs));
         }
@@ -565,15 +589,15 @@ pub fn test_resource_eviction() {
         }
 
         // Wait for cache to be fully evicted (with timeout).
-        wait_for_empty_cache(&mut runtime, Duration::from_secs(10));
+        runtime.wait_cache_empty(Duration::from_secs(10));
 
         // Verify that the data was actually written correctly for a sample of resources.
+        let store = runtime.storage_manager().store();
         for batch_idx in [0, 50, 99] {
             let base_resource = batch_idx * RESOURCES_PER_BATCH;
             for i in 0..RESOURCES_PER_BATCH {
                 let resource_id = base_resource + i;
-                AssertWrittenState(resource_id, vec![resource_id])
-                    .assert(runtime.storage_manager().store());
+                store.assert_written_state(resource_id, vec![resource_id]);
             }
         }
 
@@ -589,7 +613,7 @@ pub fn test_eviction_under_load() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut runtime = Scheduler::new(
-            ExecutionConfig::default().with_vm(TestVM),
+            ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
@@ -604,7 +628,8 @@ pub fn test_eviction_under_load() {
             let batches: Vec<_> = (0..BATCHES_PER_WAVE)
                 .map(|i| {
                     let resource_id = base + i;
-                    runtime.schedule(vec![Tx(resource_id, vec![Access::Write(resource_id)])])
+                    runtime
+                        .schedule(vec![Transaction(resource_id, vec![Access::Write(resource_id)])])
                 })
                 .collect();
 
@@ -614,7 +639,7 @@ pub fn test_eviction_under_load() {
             }
 
             // Wait for cache to be fully evicted (with timeout).
-            wait_for_empty_cache(&mut runtime, Duration::from_secs(10));
+            runtime.wait_cache_empty(Duration::from_secs(10));
         }
 
         runtime.shutdown();
@@ -630,17 +655,18 @@ pub fn test_basic_pruning() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut runtime = Scheduler::new(
-            ExecutionConfig::default().with_vm(TestVM),
+            ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
         // Create batches that write to resources (generates rollback pointers).
-        let batch1 = runtime.schedule(vec![Tx(1, vec![Access::Write(1)])]);
-        let batch2 = runtime.schedule(vec![Tx(2, vec![Access::Write(1)])]); // Overwrites resource 1
-        let batch3 = runtime.schedule(vec![Tx(3, vec![Access::Write(1)])]); // Overwrites resource 1
+        let batch1 = runtime.schedule(vec![Transaction(1, vec![Access::Write(1)])]);
+        let batch2 = runtime.schedule(vec![Transaction(2, vec![Access::Write(1)])]); // Overwrites resource 1
+        let batch3 = runtime.schedule(vec![Transaction(3, vec![Access::Write(1)])]); // Overwrites resource 1
         batch3.wait_committed_blocking();
 
-        // Verify rollback pointers exist for batches 2 and 3 (batch 1 created resource, no old version).
+        // Verify rollback pointers exist for batches 2 and 3 (batch 1 created resource, no old
+        // version).
         let store = runtime.storage_manager().store();
         assert_eq!(
             StatePtrRollback::iter_batch(store.as_ref(), batch2.index()).count(),
@@ -657,7 +683,7 @@ pub fn test_basic_pruning() {
         runtime.set_pruning_threshold(batch3.index());
 
         // Wait for pruning to complete.
-        wait_for_pruning(&runtime, batch2.index(), Duration::from_secs(10));
+        runtime.wait_pruned(batch2.index(), Duration::from_secs(10));
 
         // Verify rollback pointers for batches 1 and 2 are deleted.
         assert_eq!(
@@ -679,7 +705,7 @@ pub fn test_basic_pruning() {
         );
 
         // Data should still be readable.
-        AssertWrittenState(1, vec![1, 2, 3]).assert(store);
+        store.assert_written_state(1, vec![1, 2, 3]);
 
         runtime.shutdown();
     }
@@ -694,13 +720,13 @@ pub fn test_pruning_preserves_recent_batches() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut runtime = Scheduler::new(
-            ExecutionConfig::default().with_vm(TestVM),
+            ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
         // Create 5 batches, each overwriting the same resource.
         for i in 1..=5 {
-            let batch = runtime.schedule(vec![Tx(i, vec![Access::Write(1)])]);
+            let batch = runtime.schedule(vec![Transaction(i, vec![Access::Write(1)])]);
             batch.wait_committed_blocking();
         }
 
@@ -718,7 +744,7 @@ pub fn test_pruning_preserves_recent_batches() {
 
         // Prune batches 1-3 (threshold = 4 means batches < 4 are eligible).
         runtime.set_pruning_threshold(4);
-        wait_for_pruning(&runtime, 3, Duration::from_secs(10));
+        runtime.wait_pruned(3, Duration::from_secs(10));
 
         // Batches 1-3 should be pruned.
         for batch_idx in 1..=3 {
@@ -757,19 +783,19 @@ pub fn test_pruning_crash_recovery() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut runtime = Scheduler::new(
-            ExecutionConfig::default().with_vm(TestVM),
+            ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
         // Create 5 batches.
         for i in 1..=5 {
-            let batch = runtime.schedule(vec![Tx(i, vec![Access::Write(1)])]);
+            let batch = runtime.schedule(vec![Transaction(i, vec![Access::Write(1)])]);
             batch.wait_committed_blocking();
         }
 
         // Prune batches 1-2.
         runtime.set_pruning_threshold(3);
-        wait_for_pruning(&runtime, 2, Duration::from_secs(10));
+        runtime.wait_pruned(2, Duration::from_secs(10));
 
         // Verify last_pruned_index is persisted.
         let store = runtime.storage_manager().store();
@@ -786,7 +812,7 @@ pub fn test_pruning_crash_recovery() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let runtime = Scheduler::new(
-            ExecutionConfig::default().with_vm(TestVM),
+            ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
@@ -817,7 +843,7 @@ pub fn test_pruning_crash_recovery() {
 
         // Continue pruning from where we left off.
         runtime.set_pruning_threshold(5);
-        wait_for_pruning(&runtime, 4, Duration::from_secs(10));
+        runtime.wait_pruned(4, Duration::from_secs(10));
 
         // Batches 3-4 should now be pruned.
         for batch_idx in 3..=4 {
@@ -849,31 +875,31 @@ pub fn test_pruning_multiple_resources() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut runtime = Scheduler::new(
-            ExecutionConfig::default().with_vm(TestVM),
+            ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
         // Batch 1: Create resources 1, 2, 3.
         let batch1 = runtime.schedule(vec![
-            Tx(1, vec![Access::Write(1)]),
-            Tx(2, vec![Access::Write(2)]),
-            Tx(3, vec![Access::Write(3)]),
+            Transaction(1, vec![Access::Write(1)]),
+            Transaction(2, vec![Access::Write(2)]),
+            Transaction(3, vec![Access::Write(3)]),
         ]);
         batch1.wait_committed_blocking();
 
         // Batch 2: Overwrite all three resources.
         let batch2 = runtime.schedule(vec![
-            Tx(10, vec![Access::Write(1)]),
-            Tx(20, vec![Access::Write(2)]),
-            Tx(30, vec![Access::Write(3)]),
+            Transaction(10, vec![Access::Write(1)]),
+            Transaction(20, vec![Access::Write(2)]),
+            Transaction(30, vec![Access::Write(3)]),
         ]);
         batch2.wait_committed_blocking();
 
         // Batch 3: Overwrite all three resources again.
         let batch3 = runtime.schedule(vec![
-            Tx(100, vec![Access::Write(1)]),
-            Tx(200, vec![Access::Write(2)]),
-            Tx(300, vec![Access::Write(3)]),
+            Transaction(100, vec![Access::Write(1)]),
+            Transaction(200, vec![Access::Write(2)]),
+            Transaction(300, vec![Access::Write(3)]),
         ]);
         batch3.wait_committed_blocking();
 
@@ -895,7 +921,7 @@ pub fn test_pruning_multiple_resources() {
 
         // Prune batch 1 and 2.
         runtime.set_pruning_threshold(batch3.index());
-        wait_for_pruning(&runtime, batch2.index(), Duration::from_secs(10));
+        runtime.wait_pruned(batch2.index(), Duration::from_secs(10));
 
         // All rollback pointers for batches 1 and 2 should be deleted.
         assert_eq!(
@@ -917,9 +943,9 @@ pub fn test_pruning_multiple_resources() {
         );
 
         // Data should still be readable.
-        AssertWrittenState(1, vec![1, 10, 100]).assert(store);
-        AssertWrittenState(2, vec![2, 20, 200]).assert(store);
-        AssertWrittenState(3, vec![3, 30, 300]).assert(store);
+        store.assert_written_state(1, vec![1, 10, 100]);
+        store.assert_written_state(2, vec![2, 20, 200]);
+        store.assert_written_state(3, vec![3, 30, 300]);
 
         runtime.shutdown();
     }
