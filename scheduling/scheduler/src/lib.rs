@@ -1,6 +1,7 @@
 mod access_handle;
 mod config;
 mod cpu_task;
+mod pruning_worker_loop;
 mod resource;
 mod resource_access;
 mod rollback;
@@ -15,6 +16,7 @@ mod worker_loop;
 
 pub use access_handle::AccessHandle;
 pub use config::ExecutionConfig;
+pub(crate) use pruning_worker_loop::PruningWorkerLoop;
 pub(crate) use resource::Resource;
 pub(crate) use resource_access::ResourceAccess;
 pub(crate) use rollback::Rollback;

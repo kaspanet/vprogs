@@ -637,6 +637,8 @@ fn wait_for_empty_cache(runtime: &mut Scheduler<RocksDbStore, TestVM>, timeout: 
 }
 
 mod test_framework {
+    use std::sync::Arc;
+
     use vprogs_core_types::{AccessMetadata, AccessType, Transaction};
     use vprogs_scheduling_scheduler::{AccessHandle, RuntimeBatch, VmInterface};
     use vprogs_state_space::StateSpace;
@@ -708,11 +710,11 @@ mod test_framework {
     pub struct AssertWrittenState(pub usize, pub Vec<usize>);
 
     impl AssertWrittenState {
-        pub fn assert<S: ReadStore<StateSpace = StateSpace>>(&self, store: &S) {
+        pub fn assert<S: ReadStore<StateSpace = StateSpace>>(&self, store: &Arc<S>) {
             let writer_count = self.1.len();
             let writer_log: Vec<u8> = self.1.iter().flat_map(|id| id.to_be_bytes()).collect();
 
-            let versioned_state = StateVersion::<usize>::from_latest_data(store, self.0);
+            let versioned_state = StateVersion::<usize>::from_latest_data(store.as_ref(), self.0);
             assert_eq!(versioned_state.version(), writer_count as u64);
             assert_eq!(*versioned_state.data(), writer_log);
         }
@@ -721,7 +723,7 @@ mod test_framework {
     pub struct AssertResourceDeleted(pub usize);
 
     impl AssertResourceDeleted {
-        pub fn assert<S: ReadStore<StateSpace = StateSpace>>(&self, store: &S) {
+        pub fn assert<S: ReadStore<StateSpace = StateSpace>>(&self, store: &Arc<S>) {
             let id_bytes = self.0.to_be_bytes();
             assert!(
                 store.get(StateSpace::StatePtrLatest, &id_bytes).is_none(),
