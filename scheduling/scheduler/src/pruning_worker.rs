@@ -9,6 +9,7 @@ use std::{
 
 use tokio::{runtime::Builder, sync::Notify};
 use vprogs_core_types::ResourceId;
+use vprogs_state_metadata::StateMetadata;
 use vprogs_state_ptr_rollback::StatePtrRollback;
 use vprogs_state_space::StateSpace;
 use vprogs_state_version::StateVersion;
@@ -16,11 +17,14 @@ use vprogs_storage_types::Store;
 
 use crate::VmInterface;
 
-/// Background worker loop that processes pruning requests with direct store access.
+/// Background worker that processes pruning requests with direct store access.
 ///
 /// The pruning worker monitors the pruning threshold and deletes old state data (rollback pointers
 /// and their associated versions) for batches that will never be rolled back. This reclaims storage
 /// space while preserving the ability to rollback to recent batches.
+///
+/// Pruning progress is persisted to the Metadata column family, making the process crash-fault
+/// tolerant. On restart, the worker resumes from the last successfully pruned batch.
 ///
 /// Unlike normal write operations, pruning runs on its own dedicated thread with direct store
 /// access, avoiding contention with the main write path.
@@ -28,7 +32,7 @@ use crate::VmInterface;
 /// All coordination uses lock-free primitives:
 /// - `AtomicU64` for threshold and progress tracking
 /// - `Notify` for wakeup signaling
-pub struct PruningWorkerLoop<S: Store<StateSpace = StateSpace>, V: VmInterface> {
+pub struct PruningWorker<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     /// The batch index up to which pruning is allowed (exclusive).
     /// Batches with index < threshold can be pruned.
     pruning_threshold: Arc<AtomicU64>,
@@ -42,14 +46,17 @@ pub struct PruningWorkerLoop<S: Store<StateSpace = StateSpace>, V: VmInterface> 
     _marker: PhantomData<(S, V)>,
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorkerLoop<S, V> {
-    /// Creates a new pruning worker loop with direct store access.
+impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
+    /// Creates a new pruning worker with direct store access.
     ///
-    /// The worker starts with `last_pruned_index` set to `initial_index`, meaning batches
-    /// from `initial_index + 1` onwards are candidates for pruning once the threshold is set.
-    pub fn new(store: Arc<S>, initial_index: u64) -> Self {
-        let pruning_threshold = Arc::new(AtomicU64::new(initial_index));
-        let last_pruned_index = Arc::new(AtomicU64::new(initial_index));
+    /// The worker resumes from the last successfully pruned batch index stored in metadata.
+    /// If no pruning has occurred yet, it starts from 0.
+    pub fn new(store: Arc<S>) -> Self {
+        // Load the last pruned index from persistent storage.
+        let persisted_index = StateMetadata::get_last_pruned_index(store.as_ref()).unwrap_or(0);
+
+        let pruning_threshold = Arc::new(AtomicU64::new(persisted_index));
+        let last_pruned_index = Arc::new(AtomicU64::new(persisted_index));
         let notify = Arc::new(Notify::new());
 
         let handle = Self::start(
@@ -93,6 +100,11 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorkerLoop<S, V> 
         self.handle.join().expect("pruning worker panicked");
     }
 
+    /// Starts the background pruning worker thread.
+    ///
+    /// The worker monitors the pruning threshold and deletes old state data as needed.
+    /// It uses direct store access to avoid contention with the main write path.
+    /// The worker loop exits when the outer struct is dropped (detected via strong_count).
     fn start(
         store: Arc<S>,
         pruning_threshold: Arc<AtomicU64>,
@@ -114,9 +126,9 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorkerLoop<S, V> 
                             let upper_bound = threshold - 1;
 
                             // Execute pruning directly on the store.
-                            Self::execute_pruning(&store, lower_bound, upper_bound);
+                            Self::prune(&store, lower_bound, upper_bound);
 
-                            // Update the last pruned index.
+                            // Update the in-memory last pruned index.
                             last_pruned_index.store(upper_bound, Ordering::Release);
                         } else if Arc::strong_count(&pruning_threshold) != 1 {
                             // No work to do, wait for notification.
@@ -131,7 +143,8 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorkerLoop<S, V> 
     /// Executes pruning directly on the store for the given batch range.
     ///
     /// This runs on the dedicated pruning thread and does not interfere with the main write path.
-    fn execute_pruning(store: &S, lower_bound: u64, upper_bound: u64) {
+    /// The last pruned index is persisted atomically with the deletions for crash-fault tolerance.
+    fn prune(store: &S, lower_bound: u64, upper_bound: u64) {
         let mut write_batch = store.write_batch();
 
         // Walk batches from oldest to newest (order doesn't matter for pruning).
@@ -150,7 +163,11 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorkerLoop<S, V> 
             }
         }
 
-        // Commit all deletions atomically.
+        // Persist the last pruned index atomically with the deletions.
+        // This ensures crash-fault tolerance: on restart, we resume from this point.
+        StateMetadata::set_last_pruned_index(&mut write_batch, upper_bound);
+
+        // Commit all deletions and metadata update atomically.
         store.commit(write_batch);
     }
 }

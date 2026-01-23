@@ -9,8 +9,8 @@ use vprogs_storage_manager::{StorageConfig, StorageManager};
 use vprogs_storage_types::Store;
 
 use crate::{
-    ExecutionConfig, PruningWorkerLoop, Read, Resource, ResourceAccess, Rollback, RuntimeBatch,
-    RuntimeBatchRef, RuntimeContext, RuntimeTxRef, StateDiff, WorkerLoop, Write,
+    BatchWorker, ExecutionConfig, PruningWorker, Read, Resource, ResourceAccess, Rollback,
+    RuntimeBatch, RuntimeBatchRef, RuntimeContext, RuntimeTxRef, StateDiff, Write,
     cpu_task::ManagerTask, vm_interface::VmInterface,
 };
 
@@ -28,14 +28,14 @@ pub struct Scheduler<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     storage_manager: StorageManager<S, Read<S, V>, Write<S, V>>,
     /// Maps resource IDs to their in-memory dependency chain heads.
     resources: HashMap<V::ResourceId, Resource<S, V>>,
-    /// Background loop that processes batches through their lifecycle stages.
-    worker_loop: WorkerLoop<S, V>,
+    /// Background worker that processes batches through their lifecycle stages.
+    batch_worker: BatchWorker<S, V>,
     /// Thread pool for parallel transaction execution.
     execution_workers: ExecutionWorkers<ManagerTask<S, V>, RuntimeBatch<S, V>>,
     /// Queue of resource IDs to potentially evict after their batches commited.
     eviction_queue: Arc<SegQueue<V::ResourceId>>,
-    /// Background loop that prunes old state data when the pruning threshold advances.
-    pruning_worker_loop: PruningWorkerLoop<S, V>,
+    /// Background worker that prunes old state data when the pruning threshold advances.
+    pruning_worker: PruningWorker<S, V>,
 }
 
 impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
@@ -45,8 +45,8 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
         let (worker_count, vm) = execution_config.unpack();
         Self {
             context: RuntimeContext::new(0),
-            worker_loop: WorkerLoop::new(vm.clone()),
-            pruning_worker_loop: PruningWorkerLoop::new(storage_manager.store().clone(), 0),
+            batch_worker: BatchWorker::new(vm.clone()),
+            pruning_worker: PruningWorker::new(storage_manager.store().clone()),
             resources: HashMap::new(),
             execution_workers: ExecutionWorkers::new(worker_count),
             eviction_queue: Arc::new(SegQueue::new()),
@@ -66,8 +66,8 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
             // Connect transactions to resource dependency chains.
             .tap(RuntimeBatch::connect)
             .tap(|batch| {
-                // Push to the worker loop for lifecycle progression.
-                self.worker_loop.push(batch.clone());
+                // Push to the batch worker for lifecycle progression.
+                self.batch_worker.push(batch.clone());
 
                 // Submit to execution workers for parallel processing.
                 self.execution_workers.execute(batch.clone());
@@ -153,25 +153,25 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
     /// The threshold should typically be set to a finalized batch index that will never be
     /// rolled back.
     pub fn set_pruning_threshold(&self, threshold: u64) {
-        self.pruning_worker_loop.set_threshold(threshold);
+        self.pruning_worker.set_threshold(threshold);
     }
 
     /// Returns the current pruning threshold.
     pub fn pruning_threshold(&self) -> u64 {
-        self.pruning_worker_loop.threshold()
+        self.pruning_worker.threshold()
     }
 
     /// Returns the last successfully pruned batch index.
     pub fn last_pruned_index(&self) -> u64 {
-        self.pruning_worker_loop.last_pruned()
+        self.pruning_worker.last_pruned()
     }
 
     /// Shuts down the scheduler and all its components.
     ///
     /// This stops the worker loop, pruning worker, execution workers, and storage manager in order.
     pub fn shutdown(self) {
-        self.worker_loop.shutdown();
-        self.pruning_worker_loop.shutdown();
+        self.batch_worker.shutdown();
+        self.pruning_worker.shutdown();
         self.execution_workers.shutdown();
         self.storage_manager.shutdown();
     }

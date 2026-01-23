@@ -1,7 +1,8 @@
 mod access_handle;
+mod batch_worker;
 mod config;
 mod cpu_task;
-mod pruning_worker_loop;
+mod pruning_worker;
 mod resource;
 mod resource_access;
 mod rollback;
@@ -12,11 +13,11 @@ mod scheduler;
 mod state_diff;
 mod storage_cmd;
 mod vm_interface;
-mod worker_loop;
 
 pub use access_handle::AccessHandle;
+pub(crate) use batch_worker::BatchWorker;
 pub use config::ExecutionConfig;
-pub(crate) use pruning_worker_loop::PruningWorkerLoop;
+pub(crate) use pruning_worker::PruningWorker;
 pub(crate) use resource::Resource;
 pub(crate) use resource_access::ResourceAccess;
 pub(crate) use rollback::Rollback;
@@ -28,4 +29,3 @@ pub use scheduler::Scheduler;
 pub use state_diff::{StateDiff, StateDiffRef};
 pub use storage_cmd::{Read, Write};
 pub use vm_interface::VmInterface;
-pub(crate) use worker_loop::WorkerLoop;

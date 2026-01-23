@@ -10,13 +10,13 @@ use vprogs_storage_types::Store;
 
 use crate::{RuntimeBatch, VmInterface};
 
-pub(crate) struct WorkerLoop<S: Store<StateSpace = StateSpace>, V: VmInterface> {
+pub(crate) struct BatchWorker<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     queue: Arc<SegQueue<RuntimeBatch<S, V>>>,
     notify: Arc<Notify>,
     handle: JoinHandle<()>,
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: VmInterface> WorkerLoop<S, V> {
+impl<S: Store<StateSpace = StateSpace>, V: VmInterface> BatchWorker<S, V> {
     pub(crate) fn new(vm: V) -> Self {
         let queue = Arc::new(SegQueue::new());
         let notify = Arc::new(Notify::new());
