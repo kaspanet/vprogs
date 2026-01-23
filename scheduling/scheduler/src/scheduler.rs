@@ -9,9 +9,9 @@ use vprogs_storage_manager::{StorageConfig, StorageManager};
 use vprogs_storage_types::Store;
 
 use crate::{
-    ExecutionConfig, Read, Resource, ResourceAccess, Rollback, RuntimeBatch, RuntimeBatchRef,
-    RuntimeContext, RuntimeTxRef, StateDiff, WorkerLoop, Write, cpu_task::ManagerTask,
-    vm_interface::VmInterface,
+    BatchLifecycleWorker, ExecutionConfig, PruningWorker, Read, Resource, ResourceAccess, Rollback,
+    RuntimeBatch, RuntimeBatchRef, RuntimeContext, RuntimeTxRef, StateDiff, Write,
+    cpu_task::ManagerTask, vm_interface::VmInterface,
 };
 
 /// Orchestrates transaction execution, state management, and storage coordination.
@@ -28,25 +28,29 @@ pub struct Scheduler<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     storage_manager: StorageManager<S, Read<S, V>, Write<S, V>>,
     /// Maps resource IDs to their in-memory dependency chain heads.
     resources: HashMap<V::ResourceId, Resource<S, V>>,
-    /// Background loop that processes batches through their lifecycle stages.
-    worker_loop: WorkerLoop<S, V>,
+    /// Background worker that processes batches through their lifecycle stages.
+    batch_lifecycle_worker: BatchLifecycleWorker<S, V>,
     /// Thread pool for parallel transaction execution.
     execution_workers: ExecutionWorkers<ManagerTask<S, V>, RuntimeBatch<S, V>>,
     /// Queue of resource IDs to potentially evict after their batches commited.
     eviction_queue: Arc<SegQueue<V::ResourceId>>,
+    /// Background worker that prunes old state data when the pruning threshold advances.
+    pruning_worker: PruningWorker<S, V>,
 }
 
 impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
     /// Creates a new scheduler with the given execution and storage configurations.
     pub fn new(execution_config: ExecutionConfig<V>, storage_config: StorageConfig<S>) -> Self {
+        let storage_manager = StorageManager::new(storage_config);
         let (worker_count, vm) = execution_config.unpack();
         Self {
             context: RuntimeContext::new(0),
-            worker_loop: WorkerLoop::new(vm.clone()),
-            storage_manager: StorageManager::new(storage_config),
+            batch_lifecycle_worker: BatchLifecycleWorker::new(vm.clone()),
+            pruning_worker: PruningWorker::new(storage_manager.store().clone()),
             resources: HashMap::new(),
             execution_workers: ExecutionWorkers::new(worker_count),
             eviction_queue: Arc::new(SegQueue::new()),
+            storage_manager,
             vm,
         }
     }
@@ -62,8 +66,8 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
             // Connect transactions to resource dependency chains.
             .tap(RuntimeBatch::connect)
             .tap(|batch| {
-                // Push to the worker loop for lifecycle progression.
-                self.worker_loop.push(batch.clone());
+                // Push to the batch lifecycle worker for lifecycle progression.
+                self.batch_lifecycle_worker.push(batch.clone());
 
                 // Submit to execution workers for parallel processing.
                 self.execution_workers.execute(batch.clone());
@@ -140,11 +144,35 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
         self.resources.len()
     }
 
+    /// Sets the pruning threshold.
+    ///
+    /// Batches with index < threshold become eligible for pruning. Old state data (rollback
+    /// pointers and their associated versions) for these batches will be deleted asynchronously
+    /// in the background. Setting a threshold lower than the current value has no effect.
+    ///
+    /// The threshold should typically be set to a finalized batch index that will never be
+    /// rolled back.
+    pub fn set_pruning_threshold(&self, threshold: u64) {
+        self.pruning_worker.set_threshold(threshold);
+    }
+
+    /// Returns the current pruning threshold.
+    pub fn pruning_threshold(&self) -> u64 {
+        self.pruning_worker.threshold()
+    }
+
+    /// Returns the last successfully pruned batch index.
+    pub fn last_pruned_index(&self) -> u64 {
+        self.pruning_worker.last_pruned()
+    }
+
     /// Shuts down the scheduler and all its components.
     ///
-    /// This stops the worker loop, execution workers, and storage manager in order.
+    /// This stops the pruning worker, batch lifecycle worker, execution workers, and storage
+    /// manager in order.
     pub fn shutdown(self) {
-        self.worker_loop.shutdown();
+        self.pruning_worker.shutdown();
+        self.batch_lifecycle_worker.shutdown();
         self.execution_workers.shutdown();
         self.storage_manager.shutdown();
     }

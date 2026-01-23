@@ -39,7 +39,7 @@ impl<S: Store, R: ReadCmd<S::StateSpace>, W: WriteCmd<S::StateSpace>> StorageMan
         self.writer.submit(cmd);
     }
 
-    pub fn store(&self) -> &S {
+    pub fn store(&self) -> &Arc<S> {
         &self.store
     }
 

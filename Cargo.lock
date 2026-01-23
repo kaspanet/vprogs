@@ -771,6 +771,7 @@ dependencies = [
  "vprogs-core-macros",
  "vprogs-core-types",
  "vprogs-scheduling-execution-workers",
+ "vprogs-state-metadata",
  "vprogs-state-ptr-latest",
  "vprogs-state-ptr-rollback",
  "vprogs-state-space",
@@ -786,10 +787,20 @@ dependencies = [
  "tempfile",
  "vprogs-core-types",
  "vprogs-scheduling-scheduler",
+ "vprogs-state-metadata",
+ "vprogs-state-ptr-rollback",
  "vprogs-state-space",
  "vprogs-state-version",
  "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
+ "vprogs-storage-types",
+]
+
+[[package]]
+name = "vprogs-state-metadata"
+version = "0.1.0"
+dependencies = [
+ "vprogs-state-space",
  "vprogs-storage-types",
 ]
 
