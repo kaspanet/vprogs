@@ -15,3 +15,13 @@ kaspa-consensus-core = { git = "https://github.com/kaspanet/rusty-kaspa", branch
 kaspa-notify         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
 kaspa-rpc-core       = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
 kaspa-wrpc-client    = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+
+kaspa-addresses           = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+kaspa-core                = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+kaspa-grpc-client         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+kaspa-testing-integration = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+kaspa-wrpc-server         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+kaspad                    = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
