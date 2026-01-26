@@ -4,7 +4,6 @@ use std::{
     time::Duration,
 };
 
-use crossbeam_queue::SegQueue;
 use futures::{FutureExt, select_biased};
 use kaspa_notify::scope::{
     BlockAddedScope, FinalityConflictResolvedScope, FinalityConflictScope, Scope,
@@ -16,71 +15,9 @@ use tokio::{runtime::Builder, sync::Notify};
 use workflow_core::channel::Channel;
 
 use crate::{
-    config::BridgeConfig,
-    error::{L1BridgeError, Result},
-    event::{
-        BlockAdded, DaaScoreChanged, FinalityConflict, FinalityResolved, L1Event,
-        VirtualChainChanged,
-    },
-    state::ConnectionState,
+    BridgeConfig, ConnectionState, EventQueue, L1BridgeError, L1Event, Result,
+    event::{BlockAdded, DaaScoreChanged, FinalityConflict, FinalityResolved, VirtualChainChanged},
 };
-
-/// Lock-free event queue for L1 events.
-#[derive(Clone)]
-pub struct EventQueue {
-    queue: Arc<SegQueue<L1Event>>,
-    notify: Arc<Notify>,
-}
-
-impl EventQueue {
-    fn new() -> Self {
-        Self { queue: Arc::new(SegQueue::new()), notify: Arc::new(Notify::new()) }
-    }
-
-    /// Pushes an event to the queue and notifies waiters.
-    fn push(&self, event: L1Event) {
-        self.queue.push(event);
-        self.notify.notify_one();
-    }
-
-    /// Pops an event from the queue, if available.
-    pub fn pop(&self) -> Option<L1Event> {
-        self.queue.pop()
-    }
-
-    /// Returns true if the queue is empty.
-    pub fn is_empty(&self) -> bool {
-        self.queue.is_empty()
-    }
-
-    /// Waits until an event is available, then returns it.
-    ///
-    /// This is useful for consumers that want to block until events arrive.
-    pub async fn wait_and_pop(&self) -> L1Event {
-        loop {
-            if let Some(event) = self.queue.pop() {
-                return event;
-            }
-            self.notify.notified().await;
-        }
-    }
-
-    /// Waits for notification that events may be available.
-    ///
-    /// After this returns, call `pop()` to drain events.
-    pub async fn wait(&self) {
-        self.notify.notified().await;
-    }
-
-    /// Drains all available events into a vector.
-    pub fn drain(&self) -> Vec<L1Event> {
-        let mut events = Vec::new();
-        while let Some(event) = self.queue.pop() {
-            events.push(event);
-        }
-        events
-    }
-}
 
 /// The main L1 bridge that manages connection to Kaspa and emits events.
 pub struct L1Bridge {
