@@ -5428,20 +5428,31 @@ version = "0.1.0"
 dependencies = [
  "crossbeam-queue",
  "futures",
+ "kaspa-consensus-core",
+ "kaspa-notify",
+ "kaspa-rpc-core",
+ "kaspa-wrpc-client",
+ "log",
+ "thiserror 2.0.18",
+ "tokio",
+ "vprogs-node-test-suite",
+ "workflow-core",
+]
+
+[[package]]
+name = "vprogs-node-test-suite"
+version = "0.1.0"
+dependencies = [
+ "futures",
  "kaspa-addresses",
  "kaspa-consensus-core",
  "kaspa-core",
  "kaspa-grpc-client",
- "kaspa-notify",
  "kaspa-rpc-core",
  "kaspa-testing-integration",
- "kaspa-wrpc-client",
  "kaspa-wrpc-server",
  "kaspad",
- "log",
- "thiserror 2.0.18",
  "tokio",
- "workflow-core",
 ]
 
 [[package]]
