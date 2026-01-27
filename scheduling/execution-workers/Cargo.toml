@@ -1,14 +1,14 @@
 [package]
-edition = "2021"
-name    = "vprogs-scheduling-execution-workers"
-version = "0.1.0"
+edition.workspace = true
+name              = "vprogs-scheduling-execution-workers"
+version.workspace = true
 
 [dependencies]
-crossbeam-deque       = "0.8.6"
-crossbeam-queue       = "0.3.12"
-crossbeam-utils       = "0.8.21"
-fastrand              = "2.3.0"
-intrusive-collections = "0.9.7"
-tap                   = "1.0.1"
-vprogs-core-atomics   = { path = "../../core/atomics" }
-vprogs-core-macros    = { path = "../../core/macros" }
+crossbeam-deque.workspace       = true
+crossbeam-queue.workspace       = true
+crossbeam-utils.workspace       = true
+fastrand.workspace              = true
+intrusive-collections.workspace = true
+tap.workspace                   = true
+vprogs-core-atomics.workspace   = true
+vprogs-core-macros.workspace    = true

@@ -1,7 +1,7 @@
 [package]
-edition = "2021"
-name    = "vprogs-transaction-runtime-error"
-version = "0.1.0"
+edition.workspace = true
+name              = "vprogs-transaction-runtime-error"
+version.workspace = true
 
 [dependencies]
-vprogs-transaction-runtime-address = { path = "../address" }
+vprogs-transaction-runtime-address.workspace = true
