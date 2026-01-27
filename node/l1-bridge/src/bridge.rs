@@ -26,7 +26,7 @@ pub struct L1Bridge {
     /// Lock-free event queue for consumers.
     event_queue: EventQueue,
     /// Connection state tracking.
-    state: Arc<ConnectionState>,
+    connection_state: Arc<ConnectionState>,
     /// Notification signal to shut down the worker.
     notify_shutdown: Arc<Notify>,
     /// Handle to the background worker thread.
@@ -41,7 +41,7 @@ impl L1Bridge {
         Self {
             config,
             event_queue: EventQueue::new(),
-            state: Arc::new(ConnectionState::new()),
+            connection_state: Arc::new(ConnectionState::new()),
             notify_shutdown: Arc::new(Notify::new()),
             handle: None,
         }
@@ -58,7 +58,7 @@ impl L1Bridge {
 
         let config = self.config.clone();
         let event_queue = self.event_queue.clone();
-        let state = self.state.clone();
+        let connection_state = self.connection_state.clone();
         let notify_shutdown = self.notify_shutdown.clone();
 
         let handle = thread::spawn(move || {
@@ -66,7 +66,7 @@ impl L1Bridge {
                 .enable_all()
                 .build()
                 .expect("failed to build tokio runtime")
-                .block_on(run_event_loop(config, event_queue, state, notify_shutdown))
+                .block_on(run_event_loop(config, event_queue, connection_state, notify_shutdown))
         });
 
         self.handle = Some(handle);
@@ -85,36 +85,13 @@ impl L1Bridge {
     }
 
     /// Returns the event queue for consuming L1 events.
-    ///
-    /// The queue is lock-free. Use `pop()` to poll for events, or `wait_and_pop()`
-    /// to block until an event is available.
     pub fn event_queue(&self) -> &EventQueue {
         &self.event_queue
     }
 
-    /// Pops an event from the queue, if available.
-    pub fn pop_event(&self) -> Option<L1Event> {
-        self.event_queue.pop()
-    }
-
-    /// Drains all available events from the queue.
-    pub fn drain_events(&self) -> Vec<L1Event> {
-        self.event_queue.drain()
-    }
-
-    /// Returns whether the bridge is currently connected.
-    pub fn is_connected(&self) -> bool {
-        self.state.is_connected()
-    }
-
-    /// Returns the last known DAA score.
-    pub fn last_daa_score(&self) -> u64 {
-        self.state.last_daa_score()
-    }
-
     /// Returns a reference to the connection state.
-    pub fn state(&self) -> &Arc<ConnectionState> {
-        &self.state
+    pub fn connection_state(&self) -> &ConnectionState {
+        &self.connection_state
     }
 
     /// Returns whether the bridge worker is running.
@@ -137,7 +114,7 @@ impl Drop for L1Bridge {
 async fn run_event_loop(
     config: BridgeConfig,
     event_queue: EventQueue,
-    state: Arc<ConnectionState>,
+    connection_state: Arc<ConnectionState>,
     notify_shutdown: Arc<Notify>,
 ) {
     // Create the RPC client.
@@ -190,8 +167,8 @@ async fn run_event_loop(
                 match msg {
                     Ok(RpcState::Connected) => {
                         log::info!("L1 bridge connected to {}", client.url().unwrap_or_default());
-                        state.set_connected(true);
-                        state.increment_reconnect_count();
+                        connection_state.set_connected(true);
+                        connection_state.increment_reconnect_count();
 
                         // Register notification listener.
                         let id = client.rpc_api().register_new_listener(
@@ -226,7 +203,7 @@ async fn run_event_loop(
                     }
                     Ok(RpcState::Disconnected) => {
                         log::info!("L1 bridge disconnected");
-                        state.set_connected(false);
+                        connection_state.set_connected(false);
 
                         // Unregister listener.
                         if let Some(id) = listener_id.take() {
@@ -247,7 +224,7 @@ async fn run_event_loop(
             notification = notification_channel.receiver.recv().fuse() => {
                 match notification {
                     Ok(notification) => {
-                        if let Some(event) = convert_notification(notification, &state) {
+                        if let Some(event) = convert_notification(notification, &connection_state) {
                             event_queue.push(event);
                         }
                     }
@@ -265,7 +242,7 @@ async fn run_event_loop(
         let _ = client.rpc_api().unregister_listener(id).await;
     }
     let _ = client.disconnect().await;
-    state.set_connected(false);
+    connection_state.set_connected(false);
     log::info!("L1 bridge worker stopped");
 }
 

@@ -60,4 +60,27 @@ impl EventQueue {
         }
         events
     }
+
+    /// Waits until an event matching the predicate is found.
+    ///
+    /// Returns all collected events up to and including the matching event.
+    /// Use `tokio::time::timeout` to add a timeout if needed.
+    pub async fn wait_for<F>(&self, predicate: F) -> Vec<L1Event>
+    where
+        F: Fn(&L1Event) -> bool,
+    {
+        let mut collected = Vec::new();
+        loop {
+            // Drain any currently available events.
+            while let Some(event) = self.queue.pop() {
+                let matches = predicate(&event);
+                collected.push(event);
+                if matches {
+                    return collected;
+                }
+            }
+            // Wait for more events.
+            self.notify.notified().await;
+        }
+    }
 }

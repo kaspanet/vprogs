@@ -6,14 +6,14 @@ version = "0.1.0"
 [dependencies]
 crossbeam-queue      = "0.3.12"
 futures              = "0.3"
-log                  = "0.4"
-thiserror            = "2"
-tokio                = { version = "1", features = ["rt", "sync"] }
-workflow-core        = "0.18.0"
 kaspa-consensus-core = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
 kaspa-notify         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
 kaspa-rpc-core       = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
 kaspa-wrpc-client    = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+log                  = "0.4"
+thiserror            = "2"
+tokio                = { version = "1", features = ["rt", "sync"] }
+workflow-core        = "0.18.0"
 
 [dev-dependencies]
 tokio                  = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

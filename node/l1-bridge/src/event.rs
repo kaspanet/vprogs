@@ -29,15 +29,3 @@ pub enum L1Event {
     /// DAA score changed.
     DaaScoreChanged(DaaScoreChanged),
 }
-
-impl L1Event {
-    /// Returns true if this event indicates a potential reorg.
-    pub fn is_reorg(&self) -> bool {
-        matches!(self, L1Event::VirtualChainChanged(v) if v.is_reorg())
-    }
-
-    /// Returns true if this is a connection state change event.
-    pub fn is_connection_event(&self) -> bool {
-        matches!(self, L1Event::Connected | L1Event::Disconnected)
-    }
-}
