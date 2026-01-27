@@ -1,19 +1,11 @@
 [package]
-edition = "2021"
-name    = "vprogs-storage-rocksdb-store"
-version = "0.1.0"
+edition.workspace = true
+name              = "vprogs-storage-rocksdb-store"
+version.workspace = true
 
 [dependencies]
-num_cpus = "1.17.0"
-rocksdb = { version = "0.24.0", default-features = false, features = [
-  "lz4",
-  "zstd",
-  "snappy",
-  "zlib",
-  "bzip2",
-  "jemalloc",
-  "mt_static",
-] }
-tap = "1.0.1"
-vprogs-state-space = { path = "../../state/space" }
-vprogs-storage-types = { path = "../types" }
+num_cpus.workspace             = true
+rocksdb.workspace              = true
+tap.workspace                  = true
+vprogs-state-space.workspace   = true
+vprogs-storage-types.workspace = true

@@ -1,4 +1,4 @@
 [package]
-edition = "2021"
-name    = "vprogs-transaction-runtime-pubkey"
-version = "0.1.0"
+edition.workspace = true
+name              = "vprogs-transaction-runtime-pubkey"
+version.workspace = true

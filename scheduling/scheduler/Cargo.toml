@@ -1,23 +1,23 @@
 [package]
-edition = "2021"
-name    = "vprogs-scheduling-scheduler"
-version = "0.1.0"
+edition.workspace = true
+name              = "vprogs-scheduling-scheduler"
+version.workspace = true
 
 [dependencies]
-arc-swap                            = "1.7"
-crossbeam-deque                     = "0.8.6"
-crossbeam-queue                     = "0.3.12"
-num_cpus                            = "1.17.0"
-tap                                 = "1.0.1"
-tokio                               = { version = "1.48.0", features = ["rt", "sync"] }
-vprogs-core-atomics                 = { path = "../../core/atomics" }
-vprogs-core-macros                  = { path = "../../core/macros" }
-vprogs-core-types                   = { path = "../../core/types" }
-vprogs-scheduling-execution-workers = { path = "../execution-workers" }
-vprogs-state-metadata               = { path = "../../state/metadata" }
-vprogs-state-ptr-latest             = { path = "../../state/ptr-latest" }
-vprogs-state-ptr-rollback           = { path = "../../state/ptr-rollback" }
-vprogs-state-space                  = { path = "../../state/space" }
-vprogs-state-version                = { path = "../../state/version" }
-vprogs-storage-manager              = { path = "../../storage/manager" }
-vprogs-storage-types                = { path = "../../storage/types" }
+arc-swap.workspace                            = true
+crossbeam-deque.workspace                     = true
+crossbeam-queue.workspace                     = true
+num_cpus.workspace                            = true
+tap.workspace                                 = true
+tokio.workspace                               = true
+vprogs-core-atomics.workspace                 = true
+vprogs-core-macros.workspace                  = true
+vprogs-core-types.workspace                   = true
+vprogs-scheduling-execution-workers.workspace = true
+vprogs-state-metadata.workspace               = true
+vprogs-state-ptr-latest.workspace             = true
+vprogs-state-ptr-rollback.workspace           = true
+vprogs-state-space.workspace                  = true
+vprogs-state-version.workspace                = true
+vprogs-storage-manager.workspace              = true
+vprogs-storage-types.workspace                = true

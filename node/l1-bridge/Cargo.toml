@@ -1,24 +1,24 @@
 [package]
-edition = "2021"
-name    = "vprogs-node-l1-bridge"
-version = "0.1.0"
+edition.workspace = true
+name              = "vprogs-node-l1-bridge"
+version.workspace = true
 
 [dependencies]
-arc-swap             = "1"
-crossbeam-queue      = "0.3.12"
-futures              = "0.3"
-kaspa-consensus-core = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-kaspa-hashes         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-kaspa-notify         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-kaspa-rpc-core       = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-kaspa-wrpc-client    = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-log                  = "0.4"
-tap                  = "1.0.1"
-thiserror            = "2"
-tokio                = { version = "1", features = ["rt", "sync"] }
-vprogs-core-macros   = { path = "../../core/macros" }
-workflow-core        = "0.18.0"
+arc-swap.workspace             = true
+crossbeam-queue.workspace      = true
+futures.workspace              = true
+kaspa-consensus-core.workspace = true
+kaspa-hashes.workspace         = true
+kaspa-notify.workspace         = true
+kaspa-rpc-core.workspace       = true
+kaspa-wrpc-client.workspace    = true
+log.workspace                  = true
+tap.workspace                  = true
+thiserror.workspace            = true
+tokio.workspace                = true
+vprogs-core-macros.workspace   = true
+workflow-core.workspace        = true
 
 [dev-dependencies]
-tokio                  = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
-vprogs-node-test-suite = { path = "../test-suite" }
+tokio                            = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+vprogs-node-test-suite.workspace = true

@@ -1,9 +1,9 @@
 [package]
-edition = "2021"
-name    = "vprogs-transaction-runtime-data-context"
-version = "0.1.0"
+edition.workspace = true
+name              = "vprogs-transaction-runtime-data-context"
+version.workspace = true
 
 [dependencies]
-vprogs-transaction-runtime-address            = { path = "../address" }
-vprogs-transaction-runtime-authenticated-data = { path = "../authenticated-data" }
-vprogs-transaction-runtime-error              = { path = "../error" }
+vprogs-transaction-runtime-address.workspace            = true
+vprogs-transaction-runtime-authenticated-data.workspace = true
+vprogs-transaction-runtime-error.workspace              = true

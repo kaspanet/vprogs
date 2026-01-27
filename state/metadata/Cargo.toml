@@ -1,8 +1,8 @@
 [package]
-edition = "2021"
-name    = "vprogs-state-metadata"
-version = "0.1.0"
+edition.workspace = true
+name              = "vprogs-state-metadata"
+version.workspace = true
 
 [dependencies]
-vprogs-state-space   = { path = "../space" }
-vprogs-storage-types = { path = "../../storage/types" }
+vprogs-state-space.workspace   = true
+vprogs-storage-types.workspace = true

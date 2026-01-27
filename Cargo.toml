@@ -1,15 +1,4 @@
 [workspace]
-resolver = "3"
-
-members = [
-  "core/*",
-  "node/*",
-  "scheduling/*",
-  "state/*",
-  "storage/*",
-  "transaction-runtime/*",
-]
-
 default-members = [
   "core/*",
   "node/*",
@@ -18,5 +7,100 @@ default-members = [
   "storage/*",
   "transaction-runtime/*",
 ]
-
 exclude = []
+members = [
+  "core/*",
+  "node/*",
+  "scheduling/*",
+  "state/*",
+  "storage/*",
+  "transaction-runtime/*",
+]
+resolver = "3"
+
+  [workspace.package]
+  edition = "2021"
+  version = "0.1.0"
+
+  [workspace.dependencies]
+  # External dependencies
+  arc-swap = "1.7"
+  borsh = { version = "1.6.0", features = ["derive"] }
+  crossbeam-deque = "0.8.6"
+  crossbeam-queue = "0.3.12"
+  crossbeam-utils = "0.8.21"
+  fastrand = "2.3.0"
+  futures = "0.3.31"
+  intrusive-collections = "0.9.7"
+  log = "0.4"
+  num_cpus = "1.17.0"
+  proc-macro2 = "1.0.103"
+  quote = "1.0.42"
+  rocksdb = { version = "0.24.0", default-features = false, features = [
+    "lz4",
+    "zstd",
+    "snappy",
+    "zlib",
+    "bzip2",
+    "jemalloc",
+    "mt_static",
+  ] }
+  syn = { version = "2.0.111", features = ["full"] }
+  tap = "1.0.1"
+  tempfile = "3.23.0"
+  thiserror = "2"
+  tokio = { version = "1", features = ["rt", "sync"] }
+  tokio-util = "0.7.17"
+  workflow-core = "0.18.0"
+
+  # Kaspa dependencies
+  kaspa-addresses           = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+  kaspa-consensus-core      = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+  kaspa-hashes              = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+  kaspa-core                = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+  kaspa-grpc-client         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+  kaspa-notify              = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+  kaspa-rpc-core            = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+  kaspa-testing-integration = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+  kaspa-wrpc-client         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+  kaspa-wrpc-server         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+  kaspad                    = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+
+  # Internal dependencies
+  vprogs-core-atomics                             = { path = "core/atomics" }
+  vprogs-core-macros                              = { path = "core/macros" }
+  vprogs-core-types                               = { path = "core/types" }
+  vprogs-node-l1-bridge                             = { path = "node/l1-bridge" }
+  vprogs-node-test-suite                          = { path = "node/test-suite" }
+  vprogs-node-vm                                  = { path = "node/vm" }
+  vprogs-scheduling-execution-workers             = { path = "scheduling/execution-workers" }
+  vprogs-scheduling-scheduler                     = { path = "scheduling/scheduler" }
+  vprogs-scheduling-test-suite                    = { path = "scheduling/test-suite" }
+  vprogs-state-metadata                           = { path = "state/metadata" }
+  vprogs-state-ptr-latest                         = { path = "state/ptr-latest" }
+  vprogs-state-ptr-rollback                       = { path = "state/ptr-rollback" }
+  vprogs-state-space                              = { path = "state/space" }
+  vprogs-state-version                            = { path = "state/version" }
+  vprogs-storage-manager                          = { path = "storage/manager" }
+  vprogs-storage-rocksdb-store                    = { path = "storage/rocksdb-store" }
+  vprogs-storage-types                            = { path = "storage/types" }
+  vprogs-transaction-runtime                      = { path = "transaction-runtime/transaction-runtime" }
+  vprogs-transaction-runtime-address              = { path = "transaction-runtime/address" }
+  vprogs-transaction-runtime-auth-context         = { path = "transaction-runtime/auth-context" }
+  vprogs-transaction-runtime-authenticated-data   = { path = "transaction-runtime/authenticated-data" }
+  vprogs-transaction-runtime-builtin-capabilities = { path = "transaction-runtime/builtin-capabilities" }
+  vprogs-transaction-runtime-data                 = { path = "transaction-runtime/data" }
+  vprogs-transaction-runtime-data-context         = { path = "transaction-runtime/data-context" }
+  vprogs-transaction-runtime-error                = { path = "transaction-runtime/error" }
+  vprogs-transaction-runtime-instruction          = { path = "transaction-runtime/instruction" }
+  vprogs-transaction-runtime-lock                 = { path = "transaction-runtime/lock" }
+  vprogs-transaction-runtime-object-access        = { path = "transaction-runtime/object-access" }
+  vprogs-transaction-runtime-object-id            = { path = "transaction-runtime/object-id" }
+  vprogs-transaction-runtime-program              = { path = "transaction-runtime/program" }
+  vprogs-transaction-runtime-program-arg          = { path = "transaction-runtime/program-arg" }
+  vprogs-transaction-runtime-program-context      = { path = "transaction-runtime/program-context" }
+  vprogs-transaction-runtime-program-type         = { path = "transaction-runtime/program-type" }
+  vprogs-transaction-runtime-pubkey               = { path = "transaction-runtime/pubkey" }
+  vprogs-transaction-runtime-signature-lock       = { path = "transaction-runtime/signature-lock" }
+  vprogs-transaction-runtime-transaction          = { path = "transaction-runtime/transaction" }
+  vprogs-transaction-runtime-transaction-effects  = { path = "transaction-runtime/transaction-effects" }

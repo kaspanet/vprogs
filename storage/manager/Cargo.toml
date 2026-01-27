@@ -1,10 +1,10 @@
 [package]
-edition = "2021"
-name    = "vprogs-storage-manager"
-version = "0.1.0"
+edition.workspace = true
+name              = "vprogs-storage-manager"
+version.workspace = true
 
 [dependencies]
-crossbeam-queue      = "0.3.12"
-crossbeam-utils      = "0.8.21"
-vprogs-core-macros   = { path = "../../core/macros" }
-vprogs-storage-types = { path = "../types" }
+crossbeam-queue.workspace      = true
+crossbeam-utils.workspace      = true
+vprogs-core-macros.workspace   = true
+vprogs-storage-types.workspace = true

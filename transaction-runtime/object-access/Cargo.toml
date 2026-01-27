@@ -1,8 +1,8 @@
 [package]
-edition = "2021"
-name    = "vprogs-transaction-runtime-object-access"
-version = "0.1.0"
+edition.workspace = true
+name              = "vprogs-transaction-runtime-object-access"
+version.workspace = true
 
 [dependencies]
-vprogs-core-types                    = { path = "../../core/types" }
-vprogs-transaction-runtime-object-id = { path = "../object-id" }
+vprogs-core-types.workspace                    = true
+vprogs-transaction-runtime-object-id.workspace = true

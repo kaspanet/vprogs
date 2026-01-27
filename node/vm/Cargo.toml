@@ -1,15 +1,15 @@
 [package]
-edition = "2021"
-name    = "vprogs-node-vm"
-version = "0.1.0"
+edition.workspace = true
+name              = "vprogs-node-vm"
+version.workspace = true
 
 [dependencies]
-vprogs-scheduling-scheduler                    = { path = "../../scheduling/scheduler" }
-vprogs-state-space                             = { path = "../../state/space" }
-vprogs-storage-types                           = { path = "../../storage/types" }
-vprogs-transaction-runtime                     = { path = "../../transaction-runtime/transaction-runtime" }
-vprogs-transaction-runtime-error               = { path = "../../transaction-runtime/error" }
-vprogs-transaction-runtime-object-access       = { path = "../../transaction-runtime/object-access" }
-vprogs-transaction-runtime-object-id           = { path = "../../transaction-runtime/object-id" }
-vprogs-transaction-runtime-transaction         = { path = "../../transaction-runtime/transaction" }
-vprogs-transaction-runtime-transaction-effects = { path = "../../transaction-runtime/transaction-effects" }
+vprogs-scheduling-scheduler.workspace                    = true
+vprogs-state-space.workspace                             = true
+vprogs-storage-types.workspace                           = true
+vprogs-transaction-runtime.workspace                     = true
+vprogs-transaction-runtime-error.workspace               = true
+vprogs-transaction-runtime-object-access.workspace       = true
+vprogs-transaction-runtime-object-id.workspace           = true
+vprogs-transaction-runtime-transaction.workspace         = true
+vprogs-transaction-runtime-transaction-effects.workspace = true
