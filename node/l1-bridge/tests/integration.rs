@@ -1,21 +1,12 @@
-//! Integration tests for the L1 bridge.
-//!
-//! These tests spawn a local simnet node and verify that the bridge
-//! correctly receives and converts notifications.
-
 use std::time::Duration;
 
 use tokio::time::timeout;
 use vprogs_node_l1_bridge::{BridgeConfig, ConnectStrategy, L1Bridge, L1Event, NetworkType};
 use vprogs_node_test_suite::SimnetNode;
 
-// =============================================================================
-// Tests
-// =============================================================================
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_bridge_receives_block_added_events() {
-    let (node, bridge) = setup_node_with_bridge(ConnectStrategy::Fallback).await;
+    let (node, mut bridge) = setup_node_with_bridge(ConnectStrategy::Fallback).await;
 
     const NUM_BLOCKS: usize = 5;
     let mined_hashes = node.mine_blocks(NUM_BLOCKS).await;
@@ -48,12 +39,13 @@ async fn test_bridge_receives_block_added_events() {
 
     assert!(bridge.last_daa_score() >= NUM_BLOCKS as u64);
 
-    shutdown(node, bridge).await;
+    bridge.stop().unwrap();
+    node.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_bridge_receives_daa_score_changed_events() {
-    let (node, bridge) = setup_node_with_bridge(ConnectStrategy::Fallback).await;
+    let (node, mut bridge) = setup_node_with_bridge(ConnectStrategy::Fallback).await;
 
     const NUM_BLOCKS: usize = 3;
     node.mine_blocks(NUM_BLOCKS).await;
@@ -79,24 +71,26 @@ async fn test_bridge_receives_daa_score_changed_events() {
         assert_eq!(bridge.last_daa_score(), last_daa);
     }
 
-    shutdown(node, bridge).await;
+    bridge.stop().unwrap();
+    node.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_bridge_reconnection() {
-    let (node, bridge) = setup_node_with_bridge(ConnectStrategy::Retry).await;
+    let (node, mut bridge) = setup_node_with_bridge(ConnectStrategy::Retry).await;
 
     assert!(bridge.is_connected());
 
     let initial_reconnect_count = bridge.state().reconnect_count();
     assert!(initial_reconnect_count >= 1);
 
-    shutdown(node, bridge).await;
+    bridge.stop().unwrap();
+    node.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_bridge_virtual_chain_changed() {
-    let (node, bridge) = setup_node_with_bridge(ConnectStrategy::Fallback).await;
+    let (node, mut bridge) = setup_node_with_bridge(ConnectStrategy::Fallback).await;
 
     const NUM_BLOCKS: usize = 5;
     node.mine_blocks(NUM_BLOCKS).await;
@@ -119,12 +113,9 @@ async fn test_bridge_virtual_chain_changed() {
         assert!(!vcc.added_block_hashes.is_empty(), "VirtualChainChanged should have added blocks");
     }
 
-    shutdown(node, bridge).await;
+    bridge.stop().unwrap();
+    node.shutdown().await;
 }
-
-// =============================================================================
-// Test utilities
-// =============================================================================
 
 async fn setup_node_with_bridge(strategy: ConnectStrategy) -> (SimnetNode, L1Bridge) {
     let node = SimnetNode::new().await;
@@ -138,7 +129,6 @@ async fn setup_node_with_bridge(strategy: ConnectStrategy) -> (SimnetNode, L1Bri
     let mut bridge = L1Bridge::new(config);
     bridge.start().unwrap();
 
-    // Wait for connection
     let connected = timeout(Duration::from_secs(10), async {
         loop {
             if let Some(event) = bridge.pop_event() {
@@ -153,9 +143,4 @@ async fn setup_node_with_bridge(strategy: ConnectStrategy) -> (SimnetNode, L1Bri
     assert!(connected.is_ok(), "bridge did not connect in time");
 
     (node, bridge)
-}
-
-async fn shutdown(node: SimnetNode, mut bridge: L1Bridge) {
-    bridge.stop().unwrap();
-    node.shutdown().await;
 }
