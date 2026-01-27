@@ -1,16 +1,16 @@
 [package]
-edition = "2021"
-name    = "vprogs-scheduling-test-suite"
-version = "0.1.0"
+edition.workspace = true
+name              = "vprogs-scheduling-test-suite"
+version.workspace = true
 
 [dependencies]
-tempfile                     = "3.23.0"
-vprogs-core-types            = { path = "../../core/types" }
-vprogs-scheduling-scheduler  = { path = "../scheduler" }
-vprogs-state-metadata        = { path = "../../state/metadata" }
-vprogs-state-ptr-rollback    = { path = "../../state/ptr-rollback" }
-vprogs-state-space           = { path = "../../state/space" }
-vprogs-state-version         = { path = "../../state/version" }
-vprogs-storage-manager       = { path = "../../storage/manager" }
-vprogs-storage-rocksdb-store = { path = "../../storage/rocksdb-store" }
-vprogs-storage-types         = { path = "../../storage/types" }
+tempfile.workspace                     = true
+vprogs-core-types.workspace            = true
+vprogs-scheduling-scheduler.workspace  = true
+vprogs-state-metadata.workspace        = true
+vprogs-state-ptr-rollback.workspace    = true
+vprogs-state-space.workspace           = true
+vprogs-state-version.workspace         = true
+vprogs-storage-manager.workspace       = true
+vprogs-storage-rocksdb-store.workspace = true
+vprogs-storage-types.workspace         = true

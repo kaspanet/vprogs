@@ -1,24 +1,24 @@
 [package]
-edition = "2021"
-name    = "vprogs-transaction-runtime"
-version = "0.1.0"
+edition.workspace = true
+name              = "vprogs-transaction-runtime"
+version.workspace = true
 
 [dependencies]
-borsh                                          = "1.6.0"
-vprogs-core-types                              = { path = "../../core/types" }
-vprogs-scheduling-scheduler                    = { path = "../../scheduling/scheduler" }
-vprogs-state-space                             = { path = "../../state/space" }
-vprogs-storage-types                           = { path = "../../storage/types" }
-vprogs-transaction-runtime-address             = { path = "../address" }
-vprogs-transaction-runtime-auth-context        = { path = "../auth-context" }
-vprogs-transaction-runtime-authenticated-data  = { path = "../authenticated-data" }
-vprogs-transaction-runtime-data                = { path = "../data" }
-vprogs-transaction-runtime-data-context        = { path = "../data-context" }
-vprogs-transaction-runtime-error               = { path = "../error" }
-vprogs-transaction-runtime-instruction         = { path = "../instruction" }
-vprogs-transaction-runtime-lock                = { path = "../lock" }
-vprogs-transaction-runtime-object-id           = { path = "../object-id" }
-vprogs-transaction-runtime-program             = { path = "../program" }
-vprogs-transaction-runtime-pubkey              = { path = "../pubkey" }
-vprogs-transaction-runtime-transaction         = { path = "../transaction" }
-vprogs-transaction-runtime-transaction-effects = { path = "../transaction-effects" }
+borsh.workspace                                          = true
+vprogs-core-types.workspace                              = true
+vprogs-scheduling-scheduler.workspace                    = true
+vprogs-state-space.workspace                             = true
+vprogs-storage-types.workspace                           = true
+vprogs-transaction-runtime-address.workspace             = true
+vprogs-transaction-runtime-auth-context.workspace        = true
+vprogs-transaction-runtime-authenticated-data.workspace  = true
+vprogs-transaction-runtime-data.workspace                = true
+vprogs-transaction-runtime-data-context.workspace        = true
+vprogs-transaction-runtime-error.workspace               = true
+vprogs-transaction-runtime-instruction.workspace         = true
+vprogs-transaction-runtime-lock.workspace                = true
+vprogs-transaction-runtime-object-id.workspace           = true
+vprogs-transaction-runtime-program.workspace             = true
+vprogs-transaction-runtime-pubkey.workspace              = true
+vprogs-transaction-runtime-transaction.workspace         = true
+vprogs-transaction-runtime-transaction-effects.workspace = true

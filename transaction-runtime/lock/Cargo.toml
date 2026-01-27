@@ -1,11 +1,11 @@
 [package]
-edition = "2021"
-name    = "vprogs-transaction-runtime-lock"
-version = "0.1.0"
+edition.workspace = true
+name              = "vprogs-transaction-runtime-lock"
+version.workspace = true
 
 [dependencies]
-borsh                                           = "1.6.0"
-vprogs-transaction-runtime-auth-context         = { path = "../auth-context" }
-vprogs-transaction-runtime-builtin-capabilities = { path = "../builtin-capabilities" }
-vprogs-transaction-runtime-data                 = { path = "../data" }
-vprogs-transaction-runtime-signature-lock       = { path = "../signature-lock" }
+borsh.workspace                                           = true
+vprogs-transaction-runtime-auth-context.workspace         = true
+vprogs-transaction-runtime-builtin-capabilities.workspace = true
+vprogs-transaction-runtime-data.workspace                 = true
+vprogs-transaction-runtime-signature-lock.workspace       = true

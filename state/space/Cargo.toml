@@ -1,6 +1,4 @@
 [package]
-edition = "2021"
-name    = "vprogs-state-space"
-version = "0.1.0"
-
-[dependencies]
+edition.workspace = true
+name              = "vprogs-state-space"
+version.workspace = true
