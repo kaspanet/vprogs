@@ -5455,6 +5455,7 @@ dependencies = [
  "kaspa-wrpc-server",
  "kaspad",
  "tokio",
+ "vprogs-node-l1-bridge",
 ]
 
 [[package]]

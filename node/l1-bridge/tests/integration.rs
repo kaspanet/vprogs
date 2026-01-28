@@ -4,7 +4,7 @@ use tokio::time::timeout;
 use vprogs_node_l1_bridge::{
     ChainCoordinate, ConnectStrategy, L1Bridge, L1BridgeConfig, L1Event, NetworkType,
 };
-use vprogs_node_test_suite::L1Node;
+use vprogs_node_test_suite::{EventQueueExt, L1Node};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_bridge_syncs_and_receives_block_events() {

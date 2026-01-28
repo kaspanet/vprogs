@@ -14,3 +14,4 @@ kaspa-testing-integration = { git = "https://github.com/kaspanet/rusty-kaspa", b
 kaspa-wrpc-server         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
 kaspad                    = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
 tokio                     = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+vprogs-node-l1-bridge     = { path = "../l1-bridge" }
