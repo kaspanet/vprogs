@@ -1,136 +1,177 @@
 use std::time::Duration;
 
 use tokio::time::timeout;
-use vprogs_node_l1_bridge::{BridgeConfig, ConnectStrategy, L1Bridge, L1Event, NetworkType};
+use vprogs_node_l1_bridge::{
+    BlockHash, ConnectStrategy, L1Bridge, L1BridgeConfig, L1Event, NetworkType,
+};
 use vprogs_node_test_suite::L1Node;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_bridge_receives_block_added_events() {
-    let (node, mut bridge) = setup_node_with_bridge(ConnectStrategy::Fallback).await;
+async fn test_bridge_syncs_and_receives_block_events() {
+    let (node, mut bridge) = setup_node_with_bridge(ConnectStrategy::Fallback, None, 0).await;
 
+    // Wait for Synced event (initial sync complete).
+    // Note: Connected event was already consumed in setup_node_with_bridge.
+    let events = timeout(
+        Duration::from_secs(10),
+        bridge.event_queue().wait_for(|e| matches!(e, L1Event::Synced)),
+    )
+    .await
+    .expect("timeout waiting for Synced event");
+
+    assert!(events.iter().any(|e| matches!(e, L1Event::Synced)));
+
+    // Mine some blocks.
     const NUM_BLOCKS: usize = 5;
     let mined_hashes = node.mine_blocks(NUM_BLOCKS).await;
     let last_hash = *mined_hashes.last().unwrap();
 
-    // Wait until we see the last mined block
+    // Wait for the last mined block.
     let events = timeout(
         Duration::from_secs(10),
-        bridge
-            .event_queue()
-            .wait_for(|e| matches!(e, L1Event::BlockAdded(b) if b.block_hash == last_hash)),
+        bridge.event_queue().wait_for(
+            |e| matches!(e, L1Event::BlockAdded { block, .. } if block.header.hash == last_hash),
+        ),
     )
     .await
     .expect("timeout waiting for block events");
 
-    let block_added_events: Vec<_> = events
+    // Verify we received BlockAdded events for all mined blocks.
+    let block_added_hashes: Vec<_> = events
         .iter()
         .filter_map(|e| match e {
-            L1Event::BlockAdded(b) => Some(b.block_hash),
+            L1Event::BlockAdded { block, .. } => Some(block.header.hash),
             _ => None,
         })
         .collect();
 
-    assert!(
-        block_added_events.len() >= NUM_BLOCKS,
-        "expected at least {} BlockAdded events, got {}",
-        NUM_BLOCKS,
-        block_added_events.len()
-    );
-
     for hash in &mined_hashes {
         assert!(
-            block_added_events.contains(hash),
+            block_added_hashes.contains(hash),
             "block {} was mined but not received via bridge",
             hash
         );
     }
 
-    assert!(bridge.connection_state().last_daa_score() >= NUM_BLOCKS as u64);
+    // Verify bridge state.
+    assert!(bridge.is_synced());
+    assert!(bridge.is_connected());
+    assert_eq!(bridge.last_block_hash(), Some(last_hash));
 
     bridge.stop().unwrap();
     node.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_bridge_receives_daa_score_changed_events() {
-    let (node, mut bridge) = setup_node_with_bridge(ConnectStrategy::Fallback).await;
+async fn test_bridge_syncs_from_specific_block() {
+    let node = L1Node::new().await;
 
-    const NUM_BLOCKS: usize = 3;
-    node.mine_blocks(NUM_BLOCKS).await;
+    // Mine some initial blocks.
+    let initial_hashes = node.mine_blocks(3).await;
+    let start_from = *initial_hashes.last().unwrap();
 
-    // Wait until DAA score reaches at least NUM_BLOCKS
+    // Start bridge from the last mined block with index 3.
+    let config = L1BridgeConfig::default()
+        .with_url(node.wrpc_borsh_url())
+        .with_network_type(NetworkType::Simnet)
+        .with_blocking_connect(true)
+        .with_connect_strategy(ConnectStrategy::Fallback);
+
+    let mut bridge = L1Bridge::new(config, Some(start_from), 3);
+    bridge.start().unwrap();
+
+    // Wait for connection and sync.
+    let _ = timeout(
+        Duration::from_secs(10),
+        bridge.event_queue().wait_for(|e| matches!(e, L1Event::Synced)),
+    )
+    .await
+    .expect("timeout waiting for Synced event");
+
+    // Mine more blocks.
+    let new_hashes = node.mine_blocks(3).await;
+    let last_hash = *new_hashes.last().unwrap();
+
+    // Wait for the new blocks.
     let events = timeout(
         Duration::from_secs(10),
         bridge.event_queue().wait_for(
-            |e| matches!(e, L1Event::DaaScoreChanged(d) if d.daa_score >= NUM_BLOCKS as u64),
+            |e| matches!(e, L1Event::BlockAdded { block, .. } if block.header.hash == last_hash),
         ),
     )
     .await
-    .expect("timeout waiting for DAA score events");
+    .expect("timeout waiting for new block events");
 
-    let daa_events: Vec<_> = events
+    // Verify we only received the new blocks, not the initial ones.
+    let block_hashes: Vec<_> = events
         .iter()
         .filter_map(|e| match e {
-            L1Event::DaaScoreChanged(d) => Some(d.daa_score),
+            L1Event::BlockAdded { block, .. } => Some(block.header.hash),
             _ => None,
         })
         .collect();
 
-    for window in daa_events.windows(2) {
-        assert!(window[1] > window[0], "DAA scores should be strictly increasing");
+    // We should have the new blocks.
+    for hash in &new_hashes {
+        assert!(block_hashes.contains(hash), "new block {} was mined but not received", hash);
     }
 
-    if let Some(&last_daa) = daa_events.last() {
-        assert_eq!(bridge.connection_state().last_daa_score(), last_daa);
+    // We should NOT have the initial blocks (we started from after them).
+    for hash in &initial_hashes {
+        assert!(
+            !block_hashes.contains(hash),
+            "initial block {} should not have been received (started from after it)",
+            hash
+        );
     }
+
+    // Verify the index is correct (started at 3, added 3 new blocks = 6).
+    assert_eq!(bridge.current_index(), 6);
 
     bridge.stop().unwrap();
     node.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_bridge_reconnection() {
-    let (node, mut bridge) = setup_node_with_bridge(ConnectStrategy::Retry).await;
+async fn test_bridge_block_contains_transactions() {
+    let (node, mut bridge) = setup_node_with_bridge(ConnectStrategy::Fallback, None, 0).await;
 
-    assert!(bridge.connection_state().is_connected());
-
-    let initial_reconnect_count = bridge.connection_state().reconnect_count();
-    assert!(initial_reconnect_count >= 1);
-
-    bridge.stop().unwrap();
-    node.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_bridge_virtual_chain_changed() {
-    let (node, mut bridge) = setup_node_with_bridge(ConnectStrategy::Fallback).await;
-
-    const NUM_BLOCKS: usize = 5;
-    let mined_hashes = node.mine_blocks(NUM_BLOCKS).await;
-    let last_hash = *mined_hashes.last().unwrap();
-
-    // Wait until we see the last mined block in a VirtualChainChanged event
-    let events = timeout(
+    // Wait for sync.
+    let _ = timeout(
         Duration::from_secs(10),
-        bridge.event_queue().wait_for(|e| {
-            matches!(e, L1Event::VirtualChainChanged(v) if v.added_block_hashes.contains(&last_hash))
-        }),
+        bridge.event_queue().wait_for(|e| matches!(e, L1Event::Synced)),
     )
     .await
-    .expect("timeout waiting for VirtualChainChanged events");
+    .expect("timeout waiting for Synced event");
 
-    let vcc_events: Vec<_> = events
+    // Mine a block.
+    let mined_hashes = node.mine_blocks(1).await;
+    let block_hash = mined_hashes[0];
+
+    // Wait for the block.
+    let events = timeout(
+        Duration::from_secs(10),
+        bridge.event_queue().wait_for(
+            |e| matches!(e, L1Event::BlockAdded { block, .. } if block.header.hash == block_hash),
+        ),
+    )
+    .await
+    .expect("timeout waiting for block event");
+
+    // Find the block.
+    let block = events
         .iter()
-        .filter_map(|e| match e {
-            L1Event::VirtualChainChanged(v) => Some(v.clone()),
+        .find_map(|e| match e {
+            L1Event::BlockAdded { block, .. } if block.header.hash == block_hash => Some(block),
             _ => None,
         })
-        .collect();
+        .expect("block should be in events");
 
-    for vcc in &vcc_events {
-        assert!(!vcc.is_reorg(), "no reorg expected in simple linear mining");
-        assert!(!vcc.added_block_hashes.is_empty(), "VirtualChainChanged should have added blocks");
-    }
+    // Block should have at least a coinbase transaction.
+    assert!(!block.transactions.is_empty(), "block should have transactions");
+    // Note: daa_score starts at 0 for genesis and increments from there.
+    // In simnet with freshly mined blocks, it may still be low.
+    assert!(block.header.timestamp > 0, "block should have timestamp > 0");
 
     bridge.stop().unwrap();
     node.shutdown().await;
@@ -138,97 +179,88 @@ async fn test_bridge_virtual_chain_changed() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_bridge_receives_reorg_events() {
-    // This test creates two isolated nodes that mine independently,
-    // then connects them. The node with the shorter chain experiences a reorg
-    // where its blocks are removed from the virtual selected parent chain.
-    //
-    // We verify causal consistency: any block reported as "removed" in the reorg
-    // must have been previously reported as "added". This ensures downstream
-    // consumers can properly maintain state.
+    // Create two isolated nodes that mine independently,
+    // then connect them. The node with the shorter chain experiences a reorg.
 
-    // Create two isolated nodes with their bridges (not connected to each other)
-    let (node0, mut bridge0) = setup_node_with_bridge(ConnectStrategy::Fallback).await;
-    let (node1, mut bridge1) = setup_node_with_bridge(ConnectStrategy::Fallback).await;
+    let (node0, mut bridge0) = setup_node_with_bridge(ConnectStrategy::Fallback, None, 0).await;
+    let (node1, mut bridge1) = setup_node_with_bridge(ConnectStrategy::Fallback, None, 0).await;
 
-    // Mine concurrently on both isolated nodes.
+    // Wait for both to sync.
+    let _ = timeout(
+        Duration::from_secs(10),
+        bridge0.event_queue().wait_for(|e| matches!(e, L1Event::Synced)),
+    )
+    .await
+    .expect("timeout waiting for bridge0 sync");
+    let _ = timeout(
+        Duration::from_secs(10),
+        bridge1.event_queue().wait_for(|e| matches!(e, L1Event::Synced)),
+    )
+    .await
+    .expect("timeout waiting for bridge1 sync");
+
+    // Mine on both isolated nodes concurrently.
     // Node 0 (main) gets a longer chain, node 1 (fork) gets a shorter chain.
     let (main_hashes, fork_hashes) = tokio::join!(node0.mine_blocks(8), node1.mine_blocks(3));
     let last_main_hash = *main_hashes.last().unwrap();
     let last_fork_hash = *fork_hashes.last().unwrap();
 
-    // Wait for both bridges to see their respective last mined blocks
-    let (main_events, fork_events) = tokio::join!(
-        timeout(Duration::from_secs(10), bridge0.event_queue().wait_for(|e| {
-            matches!(e, L1Event::VirtualChainChanged(v) if v.added_block_hashes.contains(&last_main_hash))
-        })),
-        timeout(Duration::from_secs(10), bridge1.event_queue().wait_for(|e| {
-            matches!(e, L1Event::VirtualChainChanged(v) if v.added_block_hashes.contains(&last_fork_hash))
-        })),
+    // Wait for both bridges to see their respective last mined blocks.
+    let (main_result, fork_result) = tokio::join!(
+        timeout(
+            Duration::from_secs(10),
+            bridge0.event_queue().wait_for(|e| {
+                matches!(e, L1Event::BlockAdded { block, .. } if block.header.hash == last_main_hash)
+            })
+        ),
+        timeout(
+            Duration::from_secs(10),
+            bridge1.event_queue().wait_for(|e| {
+                matches!(e, L1Event::BlockAdded { block, .. } if block.header.hash == last_fork_hash)
+            })
+        ),
     );
-    main_events.expect("timeout waiting for main chain events");
-    let fork_events = fork_events.expect("timeout waiting for fork chain events");
+    main_result.expect("timeout waiting for main chain events");
+    fork_result.expect("timeout waiting for fork chain events");
 
-    let fork_added: Vec<_> = fork_events
-        .iter()
-        .filter_map(|e| match e {
-            L1Event::VirtualChainChanged(v) => Some(v.added_block_hashes.clone()),
-            _ => None,
-        })
-        .flatten()
-        .collect();
-
-    // Connect the nodes - node 1 should reorg to node 0's longer chain
+    // Connect the nodes - node 1 should reorg to node 0's longer chain.
     node1.connect_to(&node0).await;
 
-    // Wait for reorg event (VirtualChainChanged with removed blocks)
+    // Wait for reorg event (Rollback).
     let reorg_events = timeout(
         Duration::from_secs(10),
-        bridge1
-            .event_queue()
-            .wait_for(|e| matches!(e, L1Event::VirtualChainChanged(v) if v.is_reorg())),
+        bridge1.event_queue().wait_for(|e| matches!(e, L1Event::Rollback { .. })),
     )
     .await
     .expect("timeout waiting for reorg events");
 
-    // Collect VirtualChainChanged events from the reorg
-    let mut vcc_events: Vec<_> = reorg_events
-        .iter()
-        .filter_map(|e| match e {
-            L1Event::VirtualChainChanged(v) => Some(v.clone()),
-            _ => None,
-        })
-        .collect();
+    // Verify we got a rollback event.
+    let has_rollback = reorg_events.iter().any(|e| matches!(e, L1Event::Rollback { .. }));
+    assert!(has_rollback, "expected Rollback event");
 
-    // Wait for main chain sync to complete (last main block added)
+    // Wait for the main chain blocks to be added.
     let sync_events = timeout(
         Duration::from_secs(10),
         bridge1.event_queue().wait_for(|e| {
-            matches!(e, L1Event::VirtualChainChanged(v) if v.added_block_hashes.contains(&last_main_hash))
+            matches!(e, L1Event::BlockAdded { block, .. } if block.header.hash == last_main_hash)
         }),
     )
     .await
     .expect("timeout waiting for sync events");
 
-    // Collect additional VirtualChainChanged events from sync
-    vcc_events.extend(sync_events.iter().filter_map(|e| match e {
-        L1Event::VirtualChainChanged(v) => Some(v.clone()),
-        _ => None,
-    }));
+    // Verify main chain blocks were added.
+    let added_after_reorg: Vec<_> = sync_events
+        .iter()
+        .filter_map(|e| match e {
+            L1Event::BlockAdded { block, .. } => Some(block.header.hash),
+            _ => None,
+        })
+        .collect();
 
-    // Collect removed blocks from reorg
-    let reorg_removed: Vec<_> =
-        vcc_events.iter().flat_map(|v| &v.removed_block_hashes).cloned().collect();
-
-    // CAUSAL CONSISTENCY CHECK: Every block that is removed in the reorg
-    // must have been previously added. This ensures the event stream is consistent
-    // and downstream consumers can properly roll back state.
-    for hash in &reorg_removed {
-        assert!(
-            fork_added.contains(hash),
-            "block {} was removed in reorg but was never added during fork - causal inconsistency",
-            hash
-        );
-    }
+    assert!(
+        added_after_reorg.contains(&last_main_hash),
+        "main chain tip should be added after reorg"
+    );
 
     bridge0.stop().unwrap();
     bridge1.stop().unwrap();
@@ -236,16 +268,126 @@ async fn test_bridge_receives_reorg_events() {
     node1.shutdown().await;
 }
 
-async fn setup_node_with_bridge(strategy: ConnectStrategy) -> (L1Node, L1Bridge) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_bridge_events_ordered_past_to_present() {
+    let (node, mut bridge) = setup_node_with_bridge(ConnectStrategy::Fallback, None, 0).await;
+
+    // Wait for sync.
+    let _ = timeout(
+        Duration::from_secs(10),
+        bridge.event_queue().wait_for(|e| matches!(e, L1Event::Synced)),
+    )
+    .await
+    .expect("timeout waiting for Synced event");
+
+    // Mine multiple blocks.
+    const NUM_BLOCKS: usize = 5;
+    let mined_hashes = node.mine_blocks(NUM_BLOCKS).await;
+    let last_hash = *mined_hashes.last().unwrap();
+
+    // Wait for all blocks.
+    let events = timeout(
+        Duration::from_secs(10),
+        bridge.event_queue().wait_for(
+            |e| matches!(e, L1Event::BlockAdded { block, .. } if block.header.hash == last_hash),
+        ),
+    )
+    .await
+    .expect("timeout waiting for block events");
+
+    // Extract blocks in order received.
+    let blocks: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            L1Event::BlockAdded { index, block } => Some((*index, block.clone())),
+            _ => None,
+        })
+        .collect();
+
+    // Verify indices are sequential.
+    for window in blocks.windows(2) {
+        assert_eq!(window[1].0, window[0].0 + 1, "indices should be sequential");
+    }
+
+    // Verify DAA scores are increasing (past to present ordering).
+    for window in blocks.windows(2) {
+        assert!(
+            window[1].1.header.daa_score >= window[0].1.header.daa_score,
+            "blocks should be ordered past to present (daa_score should increase)"
+        );
+    }
+
+    bridge.stop().unwrap();
+    node.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_bridge_index_tracking() {
+    let (node, mut bridge) = setup_node_with_bridge(ConnectStrategy::Fallback, None, 0).await;
+
+    // Wait for sync.
+    let _ = timeout(
+        Duration::from_secs(10),
+        bridge.event_queue().wait_for(|e| matches!(e, L1Event::Synced)),
+    )
+    .await
+    .expect("timeout waiting for Synced event");
+
+    // Initial index should be 0.
+    let initial_index = bridge.current_index();
+
+    // Mine blocks.
+    const NUM_BLOCKS: usize = 5;
+    let mined_hashes = node.mine_blocks(NUM_BLOCKS).await;
+    let last_hash = *mined_hashes.last().unwrap();
+
+    // Wait for all blocks.
+    let events = timeout(
+        Duration::from_secs(10),
+        bridge.event_queue().wait_for(
+            |e| matches!(e, L1Event::BlockAdded { block, .. } if block.header.hash == last_hash),
+        ),
+    )
+    .await
+    .expect("timeout waiting for block events");
+
+    // Get the indices from events.
+    let indices: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            L1Event::BlockAdded { index, .. } => Some(*index),
+            _ => None,
+        })
+        .collect();
+
+    // Verify indices start from initial_index + 1 and are sequential.
+    assert!(!indices.is_empty());
+    assert_eq!(indices[0], initial_index + 1);
+    for window in indices.windows(2) {
+        assert_eq!(window[1], window[0] + 1);
+    }
+
+    // Verify bridge's current index matches the last event index.
+    assert_eq!(bridge.current_index(), *indices.last().unwrap());
+
+    bridge.stop().unwrap();
+    node.shutdown().await;
+}
+
+async fn setup_node_with_bridge(
+    strategy: ConnectStrategy,
+    last_processed: Option<BlockHash>,
+    last_index: u64,
+) -> (L1Node, L1Bridge) {
     let node = L1Node::new().await;
 
-    let config = BridgeConfig::default()
+    let config = L1BridgeConfig::default()
         .with_url(node.wrpc_borsh_url())
         .with_network_type(NetworkType::Simnet)
         .with_blocking_connect(true)
         .with_connect_strategy(strategy);
 
-    let mut bridge = L1Bridge::new(config);
+    let mut bridge = L1Bridge::new(config, last_processed, last_index);
     bridge.start().unwrap();
 
     let connected = timeout(

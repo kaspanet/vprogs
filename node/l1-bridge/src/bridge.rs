@@ -5,28 +5,31 @@ use std::{
 };
 
 use futures::{FutureExt, select_biased};
-use kaspa_notify::scope::{
-    BlockAddedScope, FinalityConflictResolvedScope, FinalityConflictScope, Scope,
-    VirtualChainChangedScope, VirtualDaaScoreChangedScope,
+use kaspa_hashes::Hash as BlockHash;
+use kaspa_notify::scope::{PruningPointUtxoSetOverrideScope, Scope, VirtualChainChangedScope};
+use kaspa_rpc_core::{
+    Notification,
+    api::{ctl::RpcState, rpc::RpcApi},
 };
-use kaspa_rpc_core::{Notification, api::ctl::RpcState};
 use kaspa_wrpc_client::prelude::*;
 use tokio::{runtime::Builder, sync::Notify};
 use workflow_core::channel::Channel;
 
 use crate::{
-    BridgeConfig, ConnectionState, EventQueue, L1BridgeError, L1Event, Result,
-    event::{BlockAdded, DaaScoreChanged, FinalityConflict, FinalityResolved, VirtualChainChanged},
+    EventQueue, L1BridgeConfig, L1BridgeError, L1Event, Result,
+    state::BridgeState,
+    sync::{fetch_block, get_block_parents, perform_initial_sync},
 };
 
-/// The main L1 bridge that manages connection to Kaspa and emits events.
+/// The main L1 bridge that connects to Kaspa L1 and emits simplified events
+/// suitable for scheduler integration.
 pub struct L1Bridge {
     /// Configuration for the bridge.
-    config: BridgeConfig,
+    config: L1BridgeConfig,
     /// Lock-free event queue for consumers.
     event_queue: EventQueue,
-    /// Connection state tracking.
-    connection_state: Arc<ConnectionState>,
+    /// Bridge state tracking.
+    state: Arc<BridgeState>,
     /// Notification signal to shut down the worker.
     notify_shutdown: Arc<Notify>,
     /// Handle to the background worker thread.
@@ -36,12 +39,16 @@ pub struct L1Bridge {
 impl L1Bridge {
     /// Creates a new L1 bridge with the given configuration.
     ///
+    /// - `config`: Bridge configuration
+    /// - `last_processed`: Hash of the last processed block (or None to start from pruning point)
+    /// - `last_index`: Index of the last processed block (next block will be last_index + 1)
+    ///
     /// The bridge does not connect automatically; call `start()` to initiate connection.
-    pub fn new(config: BridgeConfig) -> Self {
+    pub fn new(config: L1BridgeConfig, last_processed: Option<BlockHash>, last_index: u64) -> Self {
         Self {
             config,
             event_queue: EventQueue::new(),
-            connection_state: Arc::new(ConnectionState::new()),
+            state: Arc::new(BridgeState::new(last_processed, last_index)),
             notify_shutdown: Arc::new(Notify::new()),
             handle: None,
         }
@@ -49,8 +56,12 @@ impl L1Bridge {
 
     /// Starts the bridge, initiating connection to the L1 node.
     ///
-    /// This spawns a background worker thread that manages the RPC connection
-    /// and forwards notifications to the event queue.
+    /// This spawns a background worker thread that:
+    /// 1. Connects to the L1 node
+    /// 2. Performs initial sync from last_processed to current tip
+    /// 3. Emits BlockAdded events in order with sequential indices
+    /// 4. Emits Synced event when caught up
+    /// 5. Switches to live streaming mode
     pub fn start(&mut self) -> Result<()> {
         if self.handle.is_some() {
             return Err(L1BridgeError::AlreadyStarted);
@@ -58,7 +69,7 @@ impl L1Bridge {
 
         let config = self.config.clone();
         let event_queue = self.event_queue.clone();
-        let connection_state = self.connection_state.clone();
+        let state = self.state.clone();
         let notify_shutdown = self.notify_shutdown.clone();
 
         let handle = thread::spawn(move || {
@@ -66,7 +77,7 @@ impl L1Bridge {
                 .enable_all()
                 .build()
                 .expect("failed to build tokio runtime")
-                .block_on(run_event_loop(config, event_queue, connection_state, notify_shutdown))
+                .block_on(run_event_loop(config, event_queue, state, notify_shutdown))
         });
 
         self.handle = Some(handle);
@@ -89,9 +100,29 @@ impl L1Bridge {
         &self.event_queue
     }
 
-    /// Returns a reference to the connection state.
-    pub fn connection_state(&self) -> &ConnectionState {
-        &self.connection_state
+    /// Returns the last block hash the bridge has processed.
+    pub fn last_block_hash(&self) -> Option<BlockHash> {
+        self.state.last_block_hash()
+    }
+
+    /// Returns the current block index.
+    pub fn current_index(&self) -> u64 {
+        self.state.current_index()
+    }
+
+    /// Returns the initial index (the starting point passed at construction).
+    pub fn initial_index(&self) -> u64 {
+        self.state.initial_index()
+    }
+
+    /// Returns whether the bridge has completed initial sync.
+    pub fn is_synced(&self) -> bool {
+        self.state.is_synced()
+    }
+
+    /// Returns whether the bridge is currently connected.
+    pub fn is_connected(&self) -> bool {
+        self.state.is_connected()
     }
 
     /// Returns whether the bridge worker is running.
@@ -112,9 +143,9 @@ impl Drop for L1Bridge {
 
 /// Runs the main event loop for the bridge worker.
 async fn run_event_loop(
-    config: BridgeConfig,
+    config: L1BridgeConfig,
     event_queue: EventQueue,
-    connection_state: Arc<ConnectionState>,
+    state: Arc<BridgeState>,
     notify_shutdown: Arc<Notify>,
 ) {
     // Create the RPC client.
@@ -153,6 +184,7 @@ async fn run_event_loop(
     }
 
     let mut listener_id: Option<ListenerId> = None;
+    let mut needs_initial_sync = true;
 
     loop {
         select_biased! {
@@ -167,8 +199,8 @@ async fn run_event_loop(
                 match msg {
                     Ok(RpcState::Connected) => {
                         log::info!("L1 bridge connected to {}", client.url().unwrap_or_default());
-                        connection_state.set_connected(true);
-                        connection_state.increment_reconnect_count();
+                        state.set_connected(true);
+                        state.increment_reconnect_count();
 
                         // Register notification listener.
                         let id = client.rpc_api().register_new_listener(
@@ -179,31 +211,72 @@ async fn run_event_loop(
                             )
                         );
 
-                        // Subscribe to relevant scopes.
-                        let scopes: Vec<Scope> = vec![
-                            Scope::BlockAdded(BlockAddedScope {}),
-                            Scope::VirtualChainChanged(VirtualChainChangedScope {
-                                include_accepted_transaction_ids: config.include_accepted_transaction_ids,
-                            }),
-                            Scope::FinalityConflict(FinalityConflictScope {}),
-                            Scope::FinalityConflictResolved(FinalityConflictResolvedScope {}),
-                            Scope::VirtualDaaScoreChanged(VirtualDaaScoreChangedScope {}),
-                        ];
+                        // Subscribe to VirtualChainChanged for reorg detection.
+                        let vcc_scope = Scope::VirtualChainChanged(VirtualChainChangedScope {
+                            include_accepted_transaction_ids: true,
+                        });
 
-                        for scope in scopes {
-                            if let Err(e) = client.rpc_api().start_notify(id, scope).await {
-                                log::error!("Failed to subscribe to scope: {}", e);
-                            }
+                        if let Err(e) = client.rpc_api().start_notify(id, vcc_scope).await {
+                            log::error!("Failed to subscribe to VirtualChainChanged: {}", e);
+                        }
+
+                        // Subscribe to PruningPointUtxoSetOverride for finalization tracking.
+                        let pruning_scope =
+                            Scope::PruningPointUtxoSetOverride(PruningPointUtxoSetOverrideScope {});
+
+                        if let Err(e) = client.rpc_api().start_notify(id, pruning_scope).await {
+                            log::error!("Failed to subscribe to PruningPointUtxoSetOverride: {}", e);
                         }
 
                         listener_id = Some(id);
 
                         // Emit connected event.
                         event_queue.push(L1Event::Connected);
+
+                        // Perform initial sync if needed.
+                        if needs_initial_sync {
+                            let last_processed = state.last_block_hash();
+                            match perform_initial_sync(&client, last_processed, &state, &event_queue).await {
+                                Ok(last_hash) => {
+                                    if let Some(hash) = last_hash {
+                                        state.set_last_block_hash(hash);
+                                    }
+                                    state.set_synced(true);
+                                    event_queue.push(L1Event::Synced);
+                                    needs_initial_sync = false;
+                                    log::info!("L1 bridge initial sync complete");
+                                }
+                                Err(e) => {
+                                    let error_msg = e.to_string().to_lowercase();
+                                    // Check if error indicates starting block is pruned/not found.
+                                    if error_msg.contains("not found")
+                                        || error_msg.contains("pruned")
+                                        || error_msg.contains("not in chain")
+                                        || error_msg.contains("block is not in")
+                                    {
+                                        log::error!(
+                                            "L1 bridge: starting block no longer in chain: {}",
+                                            e
+                                        );
+                                        event_queue.push(L1Event::SyncLost {
+                                            reason: format!(
+                                                "Starting block no longer in chain (pruned or reorged): {}",
+                                                e
+                                            ),
+                                        });
+                                        // Don't retry - consumer must restart with valid checkpoint.
+                                        needs_initial_sync = false;
+                                    } else {
+                                        log::error!("Initial sync failed: {}", e);
+                                        // Will retry on next connection for transient errors.
+                                    }
+                                }
+                            }
+                        }
                     }
                     Ok(RpcState::Disconnected) => {
                         log::info!("L1 bridge disconnected");
-                        connection_state.set_connected(false);
+                        state.set_connected(false);
 
                         // Unregister listener.
                         if let Some(id) = listener_id.take() {
@@ -220,13 +293,96 @@ async fn run_event_loop(
                 }
             }
 
-            // Handle notifications from the node.
+            // Handle notifications from the node (live mode).
             notification = notification_channel.receiver.recv().fuse() => {
                 match notification {
-                    Ok(notification) => {
-                        if let Some(event) = convert_notification(notification, &connection_state) {
-                            event_queue.push(event);
+                    Ok(Notification::VirtualChainChanged(vcc)) => {
+                        // Handle reorg if blocks were removed.
+                        if !vcc.removed_chain_block_hashes.is_empty() {
+                            log::info!(
+                                "L1 bridge: reorg detected, {} blocks removed",
+                                vcc.removed_chain_block_hashes.len()
+                            );
+
+                            // Calculate the rollback index.
+                            let num_removed = vcc.removed_chain_block_hashes.len() as u64;
+                            let current = state.current_index();
+                            let rollback_index = current.saturating_sub(num_removed);
+
+                            if let Some(&first_added) = vcc.added_chain_block_hashes.first() {
+                                // Get the parents of the first added block to find the common ancestor.
+                                if let Ok(parents) = get_block_parents(&client, first_added).await {
+                                    if let Some(&common_ancestor) = parents.first() {
+                                        log::info!(
+                                            "L1 bridge: rolling back to index {} (hash {})",
+                                            rollback_index,
+                                            common_ancestor
+                                        );
+
+                                        state.set_index(rollback_index);
+                                        state.set_last_block_hash(common_ancestor);
+                                        event_queue.push(L1Event::Rollback {
+                                            to_index: rollback_index,
+                                            to_hash: common_ancestor,
+                                        });
+                                    }
+                                }
+                            }
                         }
+
+                        // Process added blocks in order.
+                        for &hash in vcc.added_chain_block_hashes.iter() {
+                            match fetch_block(&client, hash).await {
+                                Ok(block) => {
+                                    let index = state.next_index();
+                                    state.set_last_block_hash(block.header.hash);
+                                    // Record for finalization tracking.
+                                    state.record_block(block.header.hash, index);
+                                    event_queue.push(L1Event::BlockAdded {
+                                        index,
+                                        block: Box::new(block),
+                                    });
+                                }
+                                Err(e) => {
+                                    log::error!("Failed to fetch block {}: {}", hash, e);
+                                }
+                            }
+                        }
+                    }
+                    Ok(Notification::PruningPointUtxoSetOverride(_)) => {
+                        // Pruning point has advanced - query current pruning point.
+                        match client.get_block_dag_info().await {
+                            Ok(dag_info) => {
+                                let pruning_hash = dag_info.pruning_point_hash;
+                                // Look up the index for this hash.
+                                if let Some(index) = state.get_index_for_hash(&pruning_hash) {
+                                    // Only emit if this is a new finalization.
+                                    if index > state.last_finalized_index() {
+                                        log::info!(
+                                            "L1 bridge: pruning point advanced to index {} (hash {})",
+                                            index,
+                                            pruning_hash
+                                        );
+                                        state.set_finalized(index);
+                                        event_queue.push(L1Event::Finalized {
+                                            index,
+                                            hash: pruning_hash,
+                                        });
+                                    }
+                                } else {
+                                    log::debug!(
+                                        "L1 bridge: pruning point {} not in tracked blocks",
+                                        pruning_hash
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                log::error!("Failed to get block dag info: {}", e);
+                            }
+                        }
+                    }
+                    Ok(_) => {
+                        // Ignore other notification types.
                     }
                     Err(e) => {
                         log::error!("Notification channel error: {}", e);
@@ -242,41 +398,6 @@ async fn run_event_loop(
         let _ = client.rpc_api().unregister_listener(id).await;
     }
     let _ = client.disconnect().await;
-    connection_state.set_connected(false);
+    state.set_connected(false);
     log::info!("L1 bridge worker stopped");
-}
-
-/// Converts a Kaspa RPC notification into an L1Event.
-fn convert_notification(notification: Notification, state: &ConnectionState) -> Option<L1Event> {
-    match notification {
-        Notification::BlockAdded(n) => {
-            let header = &n.block.header;
-            Some(L1Event::BlockAdded(BlockAdded {
-                block_hash: header.hash,
-                daa_score: header.daa_score,
-                blue_score: header.blue_score,
-                timestamp: header.timestamp,
-            }))
-        }
-        Notification::VirtualChainChanged(n) => {
-            Some(L1Event::VirtualChainChanged(VirtualChainChanged {
-                removed_block_hashes: n.removed_chain_block_hashes.to_vec(),
-                added_block_hashes: n.added_chain_block_hashes.to_vec(),
-            }))
-        }
-        Notification::FinalityConflict(n) => Some(L1Event::FinalityConflict(FinalityConflict {
-            violating_block_hash: n.violating_block_hash,
-        })),
-        Notification::FinalityConflictResolved(n) => {
-            Some(L1Event::FinalityResolved(FinalityResolved {
-                finality_block_hash: n.finality_block_hash,
-            }))
-        }
-        Notification::VirtualDaaScoreChanged(n) => {
-            state.set_daa_score(n.virtual_daa_score);
-            Some(L1Event::DaaScoreChanged(DaaScoreChanged { daa_score: n.virtual_daa_score }))
-        }
-        // Ignore other notification types.
-        _ => None,
-    }
 }

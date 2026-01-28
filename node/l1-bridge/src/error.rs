@@ -12,6 +12,9 @@ pub enum L1BridgeError {
     #[error("Subscription error: {0}")]
     Subscription(String),
 
+    #[error("Block not found: {0}")]
+    BlockNotFound(String),
+
     #[error("Event channel closed")]
     ChannelClosed,
 

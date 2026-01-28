@@ -3,7 +3,7 @@ use kaspa_wrpc_client::prelude::ConnectStrategy;
 
 /// Configuration for the L1 bridge connection.
 #[derive(Clone, Debug)]
-pub struct BridgeConfig {
+pub struct L1BridgeConfig {
     /// WebSocket URL to connect to (e.g., "ws://localhost:17110").
     /// If None, uses the Resolver to find a public node.
     pub url: Option<String>,
@@ -15,11 +15,9 @@ pub struct BridgeConfig {
     pub block_async_connect: bool,
     /// Reconnection strategy.
     pub connect_strategy: ConnectStrategy,
-    /// Whether to include accepted transaction IDs in VirtualChainChanged events.
-    pub include_accepted_transaction_ids: bool,
 }
 
-impl Default for BridgeConfig {
+impl Default for L1BridgeConfig {
     fn default() -> Self {
         Self {
             url: None,
@@ -27,12 +25,11 @@ impl Default for BridgeConfig {
             connect_timeout_ms: 10_000,
             block_async_connect: false,
             connect_strategy: ConnectStrategy::Retry,
-            include_accepted_transaction_ids: false,
         }
     }
 }
 
-impl BridgeConfig {
+impl L1BridgeConfig {
     /// Creates a new configuration with a specific URL.
     pub fn with_url(mut self, url: impl Into<String>) -> Self {
         self.url = Some(url.into());
@@ -66,12 +63,6 @@ impl BridgeConfig {
     /// Sets the reconnection strategy.
     pub fn with_connect_strategy(mut self, strategy: ConnectStrategy) -> Self {
         self.connect_strategy = strategy;
-        self
-    }
-
-    /// Sets whether to include accepted transaction IDs in chain change events.
-    pub fn with_accepted_transaction_ids(mut self, include: bool) -> Self {
-        self.include_accepted_transaction_ids = include;
         self
     }
 }

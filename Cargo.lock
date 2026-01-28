@@ -5429,23 +5429,6 @@ dependencies = [
  "crossbeam-queue",
  "futures",
  "kaspa-consensus-core",
- "kaspa-notify",
- "kaspa-rpc-core",
- "kaspa-wrpc-client",
- "log",
- "thiserror 2.0.18",
- "tokio",
- "vprogs-node-test-suite",
- "workflow-core",
-]
-
-[[package]]
-name = "vprogs-node-l2-bridge"
-version = "0.1.0"
-dependencies = [
- "crossbeam-queue",
- "futures",
- "kaspa-consensus-core",
  "kaspa-hashes",
  "kaspa-notify",
  "kaspa-rpc-core",
