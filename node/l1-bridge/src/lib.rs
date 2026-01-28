@@ -5,6 +5,7 @@ pub mod event;
 mod event_queue;
 mod state;
 mod sync;
+mod worker;
 
 pub use bridge::L1Bridge;
 pub use config::L1BridgeConfig;

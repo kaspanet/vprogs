@@ -8,7 +8,7 @@ use vprogs_node_test_suite::L1Node;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_bridge_syncs_and_receives_block_events() {
-    let (node, mut bridge) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
+    let (node, bridge) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
 
     // Wait for Synced event (initial sync complete).
     // Note: Connected event was already consumed in setup_node_with_bridge.
@@ -58,7 +58,7 @@ async fn test_bridge_syncs_and_receives_block_events() {
     assert!(bridge.state().is_connected());
     assert_eq!(bridge.state().last_processed().map(|c| c.hash()), Some(last_hash));
 
-    bridge.stop().unwrap();
+    bridge.shutdown();
     node.shutdown().await;
 }
 
@@ -78,8 +78,7 @@ async fn test_bridge_syncs_from_specific_block() {
         .with_connect_strategy(ConnectStrategy::Fallback)
         .with_last_processed(ChainCoordinate::new(start_from, 3));
 
-    let mut bridge = L1Bridge::new(config);
-    bridge.start().unwrap();
+    let bridge = L1Bridge::new(config);
 
     // Wait for connection and sync.
     let _ = timeout(
@@ -129,13 +128,13 @@ async fn test_bridge_syncs_from_specific_block() {
     // Verify the index is correct (started at 3, added 3 new blocks = 6).
     assert_eq!(bridge.state().current_index(), 6);
 
-    bridge.stop().unwrap();
+    bridge.shutdown();
     node.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_bridge_block_contains_transactions() {
-    let (node, mut bridge) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
+    let (node, bridge) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
 
     // Wait for sync.
     let _ = timeout(
@@ -174,7 +173,7 @@ async fn test_bridge_block_contains_transactions() {
     // In simnet with freshly mined blocks, it may still be low.
     assert!(block.header.timestamp > 0, "block should have timestamp > 0");
 
-    bridge.stop().unwrap();
+    bridge.shutdown();
     node.shutdown().await;
 }
 
@@ -183,8 +182,8 @@ async fn test_bridge_receives_reorg_events() {
     // Create two isolated nodes that mine independently,
     // then connect them. The node with the shorter chain experiences a reorg.
 
-    let (node0, mut bridge0) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
-    let (node1, mut bridge1) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
+    let (node0, bridge0) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
+    let (node1, bridge1) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
 
     // Wait for both to sync.
     let _ = timeout(
@@ -230,13 +229,13 @@ async fn test_bridge_receives_reorg_events() {
     // Wait for reorg event (Rollback).
     let reorg_events = timeout(
         Duration::from_secs(10),
-        bridge1.event_queue().wait_for(|e| matches!(e, L1Event::Rollback { .. })),
+        bridge1.event_queue().wait_for(|e| matches!(e, L1Event::Rollback(_))),
     )
     .await
     .expect("timeout waiting for reorg events");
 
     // Verify we got a rollback event.
-    let has_rollback = reorg_events.iter().any(|e| matches!(e, L1Event::Rollback { .. }));
+    let has_rollback = reorg_events.iter().any(|e| matches!(e, L1Event::Rollback(_)));
     assert!(has_rollback, "expected Rollback event");
 
     // Wait for the main chain blocks to be added.
@@ -263,15 +262,15 @@ async fn test_bridge_receives_reorg_events() {
         "main chain tip should be added after reorg"
     );
 
-    bridge0.stop().unwrap();
-    bridge1.stop().unwrap();
+    bridge0.shutdown();
+    bridge1.shutdown();
     node0.shutdown().await;
     node1.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_bridge_events_ordered_past_to_present() {
-    let (node, mut bridge) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
+    let (node, bridge) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
 
     // Wait for sync.
     let _ = timeout(
@@ -318,13 +317,13 @@ async fn test_bridge_events_ordered_past_to_present() {
         );
     }
 
-    bridge.stop().unwrap();
+    bridge.shutdown();
     node.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_bridge_index_tracking() {
-    let (node, mut bridge) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
+    let (node, bridge) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
 
     // Wait for sync.
     let _ = timeout(
@@ -371,7 +370,7 @@ async fn test_bridge_index_tracking() {
     // Verify bridge's current index matches the last event index.
     assert_eq!(bridge.state().current_index(), *indices.last().unwrap());
 
-    bridge.stop().unwrap();
+    bridge.shutdown();
     node.shutdown().await;
 }
 
@@ -391,8 +390,7 @@ async fn setup_node_with_bridge(
         config = config.with_last_processed(coord);
     }
 
-    let mut bridge = L1Bridge::new(config);
-    bridge.start().unwrap();
+    let bridge = L1Bridge::new(config);
 
     let connected = timeout(
         Duration::from_secs(10),

@@ -21,9 +21,6 @@ pub enum L1BridgeError {
     #[error("Bridge not connected")]
     NotConnected,
 
-    #[error("Bridge already started")]
-    AlreadyStarted,
-
     #[error("Bridge shutdown")]
     Shutdown,
 }
