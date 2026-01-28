@@ -1,11 +1,15 @@
 use std::sync::Arc;
 
-use crate::{EventQueue, L1BridgeConfig, state::BridgeState, worker::BridgeWorker};
+use crossbeam_queue::SegQueue;
+use tokio::sync::Notify;
+
+use crate::{L1BridgeConfig, L1Event, state::BridgeState, worker::BridgeWorker};
 
 /// The main L1 bridge that connects to Kaspa L1 and emits simplified events
 /// suitable for scheduler integration.
 pub struct L1Bridge {
-    event_queue: EventQueue,
+    queue: Arc<SegQueue<L1Event>>,
+    notify: Arc<Notify>,
     state: Arc<BridgeState>,
     worker: BridgeWorker,
 }
@@ -21,9 +25,10 @@ impl L1Bridge {
     /// 5. Switches to live streaming mode
     pub fn new(config: L1BridgeConfig) -> Self {
         let state = Arc::new(BridgeState::new(config.last_processed, config.last_finalized));
-        let event_queue = EventQueue::new();
-        let worker = BridgeWorker::spawn(config, event_queue.clone(), state.clone());
-        Self { event_queue, state, worker }
+        let queue = Arc::new(SegQueue::new());
+        let notify = Arc::new(Notify::new());
+        let worker = BridgeWorker::spawn(config, queue.clone(), notify.clone(), state.clone());
+        Self { queue, notify, state, worker }
     }
 
     /// Shuts down the bridge and disconnects from the L1 node.
@@ -31,13 +36,32 @@ impl L1Bridge {
         self.worker.shutdown();
     }
 
-    /// Returns the event queue for consuming L1 events.
-    pub fn event_queue(&self) -> &EventQueue {
-        &self.event_queue
-    }
-
     /// Returns the bridge state.
     pub fn state(&self) -> &Arc<BridgeState> {
         &self.state
+    }
+
+    /// Pops an event from the queue, if available.
+    pub fn pop(&self) -> Option<L1Event> {
+        self.queue.pop()
+    }
+
+    /// Waits until an event is available, then returns it.
+    pub async fn wait_and_pop(&self) -> L1Event {
+        loop {
+            if let Some(event) = self.queue.pop() {
+                return event;
+            }
+            self.notify.notified().await;
+        }
+    }
+
+    /// Drains all available events into a vector.
+    pub fn drain(&self) -> Vec<L1Event> {
+        let mut events = Vec::new();
+        while let Some(event) = self.queue.pop() {
+            events.push(event);
+        }
+        events
     }
 }

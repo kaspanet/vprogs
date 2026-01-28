@@ -1,10 +1,12 @@
 use std::sync::Arc;
 
+use crossbeam_queue::SegQueue;
 use kaspa_hashes::Hash as BlockHash;
 use kaspa_rpc_core::{RpcBlock, api::rpc::RpcApi};
 use kaspa_wrpc_client::KaspaRpcClient;
+use tokio::sync::Notify;
 
-use crate::{ChainCoordinate, EventQueue, L1BridgeError, L1Event, Result, state::BridgeState};
+use crate::{ChainCoordinate, L1BridgeError, L1Event, Result, state::BridgeState};
 
 /// Fetches a block by hash from the L1 node.
 pub async fn fetch_block(client: &Arc<KaspaRpcClient>, hash: BlockHash) -> Result<RpcBlock> {
@@ -30,7 +32,8 @@ pub async fn perform_initial_sync(
     client: &Arc<KaspaRpcClient>,
     last_processed: Option<ChainCoordinate>,
     state: &Arc<BridgeState>,
-    event_queue: &EventQueue,
+    queue: &Arc<SegQueue<L1Event>>,
+    notify: &Arc<Notify>,
 ) -> Result<Option<ChainCoordinate>> {
     // Get DAG info for pruning point.
     let dag_info = client
@@ -92,7 +95,8 @@ pub async fn perform_initial_sync(
         last_block = Some(block_coord);
         // Record the hash->index mapping for finalization tracking.
         state.record_block(block_coord);
-        event_queue.push(L1Event::BlockAdded { index, block: Box::new(block) });
+        queue.push(L1Event::BlockAdded { index, block: Box::new(block) });
+        notify.notify_one();
     }
 
     Ok(last_block)

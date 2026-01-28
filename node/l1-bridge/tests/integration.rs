@@ -4,7 +4,7 @@ use tokio::time::timeout;
 use vprogs_node_l1_bridge::{
     ChainCoordinate, ConnectStrategy, L1Bridge, L1BridgeConfig, L1Event, NetworkType,
 };
-use vprogs_node_test_suite::{EventQueueExt, L1Node};
+use vprogs_node_test_suite::{L1BridgeExt, L1Node};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_bridge_syncs_and_receives_block_events() {
@@ -12,12 +12,10 @@ async fn test_bridge_syncs_and_receives_block_events() {
 
     // Wait for Synced event (initial sync complete).
     // Note: Connected event was already consumed in setup_node_with_bridge.
-    let events = timeout(
-        Duration::from_secs(10),
-        bridge.event_queue().wait_for(|e| matches!(e, L1Event::Synced)),
-    )
-    .await
-    .expect("timeout waiting for Synced event");
+    let events =
+        timeout(Duration::from_secs(10), bridge.wait_for(|e| matches!(e, L1Event::Synced)))
+            .await
+            .expect("timeout waiting for Synced event");
 
     assert!(events.iter().any(|e| matches!(e, L1Event::Synced)));
 
@@ -29,7 +27,7 @@ async fn test_bridge_syncs_and_receives_block_events() {
     // Wait for the last mined block.
     let events = timeout(
         Duration::from_secs(10),
-        bridge.event_queue().wait_for(
+        bridge.wait_for(
             |e| matches!(e, L1Event::BlockAdded { block, .. } if block.header.hash == last_hash),
         ),
     )
@@ -81,12 +79,9 @@ async fn test_bridge_syncs_from_specific_block() {
     let bridge = L1Bridge::new(config);
 
     // Wait for connection and sync.
-    let _ = timeout(
-        Duration::from_secs(10),
-        bridge.event_queue().wait_for(|e| matches!(e, L1Event::Synced)),
-    )
-    .await
-    .expect("timeout waiting for Synced event");
+    let _ = timeout(Duration::from_secs(10), bridge.wait_for(|e| matches!(e, L1Event::Synced)))
+        .await
+        .expect("timeout waiting for Synced event");
 
     // Mine more blocks.
     let new_hashes = node.mine_blocks(3).await;
@@ -95,7 +90,7 @@ async fn test_bridge_syncs_from_specific_block() {
     // Wait for the new blocks.
     let events = timeout(
         Duration::from_secs(10),
-        bridge.event_queue().wait_for(
+        bridge.wait_for(
             |e| matches!(e, L1Event::BlockAdded { block, .. } if block.header.hash == last_hash),
         ),
     )
@@ -137,12 +132,9 @@ async fn test_bridge_block_contains_transactions() {
     let (node, bridge) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
 
     // Wait for sync.
-    let _ = timeout(
-        Duration::from_secs(10),
-        bridge.event_queue().wait_for(|e| matches!(e, L1Event::Synced)),
-    )
-    .await
-    .expect("timeout waiting for Synced event");
+    let _ = timeout(Duration::from_secs(10), bridge.wait_for(|e| matches!(e, L1Event::Synced)))
+        .await
+        .expect("timeout waiting for Synced event");
 
     // Mine a block.
     let mined_hashes = node.mine_blocks(1).await;
@@ -151,7 +143,7 @@ async fn test_bridge_block_contains_transactions() {
     // Wait for the block.
     let events = timeout(
         Duration::from_secs(10),
-        bridge.event_queue().wait_for(
+        bridge.wait_for(
             |e| matches!(e, L1Event::BlockAdded { block, .. } if block.header.hash == block_hash),
         ),
     )
@@ -186,18 +178,12 @@ async fn test_bridge_receives_reorg_events() {
     let (node1, bridge1) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
 
     // Wait for both to sync.
-    let _ = timeout(
-        Duration::from_secs(10),
-        bridge0.event_queue().wait_for(|e| matches!(e, L1Event::Synced)),
-    )
-    .await
-    .expect("timeout waiting for bridge0 sync");
-    let _ = timeout(
-        Duration::from_secs(10),
-        bridge1.event_queue().wait_for(|e| matches!(e, L1Event::Synced)),
-    )
-    .await
-    .expect("timeout waiting for bridge1 sync");
+    let _ = timeout(Duration::from_secs(10), bridge0.wait_for(|e| matches!(e, L1Event::Synced)))
+        .await
+        .expect("timeout waiting for bridge0 sync");
+    let _ = timeout(Duration::from_secs(10), bridge1.wait_for(|e| matches!(e, L1Event::Synced)))
+        .await
+        .expect("timeout waiting for bridge1 sync");
 
     // Mine on both isolated nodes concurrently.
     // Node 0 (main) gets a longer chain, node 1 (fork) gets a shorter chain.
@@ -209,13 +195,13 @@ async fn test_bridge_receives_reorg_events() {
     let (main_result, fork_result) = tokio::join!(
         timeout(
             Duration::from_secs(10),
-            bridge0.event_queue().wait_for(|e| {
+            bridge0.wait_for(|e| {
                 matches!(e, L1Event::BlockAdded { block, .. } if block.header.hash == last_main_hash)
             })
         ),
         timeout(
             Duration::from_secs(10),
-            bridge1.event_queue().wait_for(|e| {
+            bridge1.wait_for(|e| {
                 matches!(e, L1Event::BlockAdded { block, .. } if block.header.hash == last_fork_hash)
             })
         ),
@@ -227,12 +213,10 @@ async fn test_bridge_receives_reorg_events() {
     node1.connect_to(&node0).await;
 
     // Wait for reorg event (Rollback).
-    let reorg_events = timeout(
-        Duration::from_secs(10),
-        bridge1.event_queue().wait_for(|e| matches!(e, L1Event::Rollback(_))),
-    )
-    .await
-    .expect("timeout waiting for reorg events");
+    let reorg_events =
+        timeout(Duration::from_secs(10), bridge1.wait_for(|e| matches!(e, L1Event::Rollback(_))))
+            .await
+            .expect("timeout waiting for reorg events");
 
     // Verify we got a rollback event.
     let has_rollback = reorg_events.iter().any(|e| matches!(e, L1Event::Rollback(_)));
@@ -241,7 +225,7 @@ async fn test_bridge_receives_reorg_events() {
     // Wait for the main chain blocks to be added.
     let sync_events = timeout(
         Duration::from_secs(10),
-        bridge1.event_queue().wait_for(|e| {
+        bridge1.wait_for(|e| {
             matches!(e, L1Event::BlockAdded { block, .. } if block.header.hash == last_main_hash)
         }),
     )
@@ -273,12 +257,9 @@ async fn test_bridge_events_ordered_past_to_present() {
     let (node, bridge) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
 
     // Wait for sync.
-    let _ = timeout(
-        Duration::from_secs(10),
-        bridge.event_queue().wait_for(|e| matches!(e, L1Event::Synced)),
-    )
-    .await
-    .expect("timeout waiting for Synced event");
+    let _ = timeout(Duration::from_secs(10), bridge.wait_for(|e| matches!(e, L1Event::Synced)))
+        .await
+        .expect("timeout waiting for Synced event");
 
     // Mine multiple blocks.
     const NUM_BLOCKS: usize = 5;
@@ -288,7 +269,7 @@ async fn test_bridge_events_ordered_past_to_present() {
     // Wait for all blocks.
     let events = timeout(
         Duration::from_secs(10),
-        bridge.event_queue().wait_for(
+        bridge.wait_for(
             |e| matches!(e, L1Event::BlockAdded { block, .. } if block.header.hash == last_hash),
         ),
     )
@@ -326,12 +307,9 @@ async fn test_bridge_index_tracking() {
     let (node, bridge) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
 
     // Wait for sync.
-    let _ = timeout(
-        Duration::from_secs(10),
-        bridge.event_queue().wait_for(|e| matches!(e, L1Event::Synced)),
-    )
-    .await
-    .expect("timeout waiting for Synced event");
+    let _ = timeout(Duration::from_secs(10), bridge.wait_for(|e| matches!(e, L1Event::Synced)))
+        .await
+        .expect("timeout waiting for Synced event");
 
     // Initial index should be 0.
     let initial_index = bridge.state().current_index();
@@ -344,7 +322,7 @@ async fn test_bridge_index_tracking() {
     // Wait for all blocks.
     let events = timeout(
         Duration::from_secs(10),
-        bridge.event_queue().wait_for(
+        bridge.wait_for(
             |e| matches!(e, L1Event::BlockAdded { block, .. } if block.header.hash == last_hash),
         ),
     )
@@ -392,11 +370,9 @@ async fn setup_node_with_bridge(
 
     let bridge = L1Bridge::new(config);
 
-    let connected = timeout(
-        Duration::from_secs(10),
-        bridge.event_queue().wait_for(|e| matches!(e, L1Event::Connected)),
-    )
-    .await;
+    let connected =
+        timeout(Duration::from_secs(10), bridge.wait_for(|e| matches!(e, L1Event::Connected)))
+            .await;
     assert!(connected.is_ok(), "bridge did not connect in time");
 
     (node, bridge)

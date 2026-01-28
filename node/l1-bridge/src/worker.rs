@@ -1,5 +1,6 @@
 use std::{sync::Arc, thread::JoinHandle, time::Duration};
 
+use crossbeam_queue::SegQueue;
 use futures::{FutureExt, select_biased};
 use kaspa_notify::scope::{PruningPointUtxoSetOverrideScope, Scope, VirtualChainChangedScope};
 use kaspa_rpc_core::{
@@ -11,28 +12,33 @@ use tokio::{runtime::Builder, sync::Notify};
 use workflow_core::channel::Channel;
 
 use crate::{
-    ChainCoordinate, EventQueue, L1BridgeConfig, L1Event,
+    ChainCoordinate, L1BridgeConfig, L1Event,
     state::BridgeState,
     sync::{fetch_block, get_block_parents, perform_initial_sync},
 };
 
 /// Background worker that handles L1 node communication.
 pub struct BridgeWorker {
-    notify: Arc<Notify>,
+    shutdown: Arc<Notify>,
     handle: Option<JoinHandle<()>>,
 }
 
 impl BridgeWorker {
     /// Spawns a new bridge worker.
-    pub fn spawn(config: L1BridgeConfig, event_queue: EventQueue, state: Arc<BridgeState>) -> Self {
-        let notify = Arc::new(Notify::new());
-        let handle = Self::start(config, event_queue, state, notify.clone());
-        Self { notify, handle: Some(handle) }
+    pub fn spawn(
+        config: L1BridgeConfig,
+        queue: Arc<SegQueue<L1Event>>,
+        notify: Arc<Notify>,
+        state: Arc<BridgeState>,
+    ) -> Self {
+        let shutdown = Arc::new(Notify::new());
+        let handle = Self::start(config, queue, notify, state, shutdown.clone());
+        Self { shutdown, handle: Some(handle) }
     }
 
     /// Signals the worker to shut down and waits for completion.
     pub fn shutdown(mut self) {
-        self.notify.notify_one();
+        self.shutdown.notify_one();
         if let Some(handle) = self.handle.take() {
             handle.join().expect("bridge worker panicked");
         }
@@ -40,24 +46,26 @@ impl BridgeWorker {
 
     fn start(
         config: L1BridgeConfig,
-        event_queue: EventQueue,
-        state: Arc<BridgeState>,
+        queue: Arc<SegQueue<L1Event>>,
         notify: Arc<Notify>,
+        state: Arc<BridgeState>,
+        shutdown: Arc<Notify>,
     ) -> JoinHandle<()> {
         std::thread::spawn(move || {
             Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .expect("failed to build tokio runtime")
-                .block_on(Self::run(config, event_queue, state, notify))
+                .block_on(Self::run(config, queue, notify, state, shutdown))
         })
     }
 
     async fn run(
         config: L1BridgeConfig,
-        event_queue: EventQueue,
-        state: Arc<BridgeState>,
+        queue: Arc<SegQueue<L1Event>>,
         notify: Arc<Notify>,
+        state: Arc<BridgeState>,
+        shutdown: Arc<Notify>,
     ) {
         // Create the RPC client.
         let resolver = if config.url.is_none() { Some(Resolver::default()) } else { None };
@@ -97,10 +105,15 @@ impl BridgeWorker {
         let mut listener_id: Option<ListenerId> = None;
         let mut needs_initial_sync = true;
 
+        let push_event = |event: L1Event| {
+            queue.push(event);
+            notify.notify_one();
+        };
+
         loop {
             select_biased! {
                 // Handle shutdown signal (lowest priority to drain other channels first).
-                _ = notify.notified().fuse() => {
+                _ = shutdown.notified().fuse() => {
                     log::info!("L1 bridge shutdown requested");
                     break;
                 }
@@ -132,18 +145,18 @@ impl BridgeWorker {
                             listener_id = Some(id);
 
                             // Emit connected event.
-                            event_queue.push(L1Event::Connected);
+                            push_event(L1Event::Connected);
 
                             // Perform initial sync if needed.
                             if needs_initial_sync {
                                 let last_processed = state.last_processed();
-                                match perform_initial_sync(&client, last_processed, &state, &event_queue).await {
+                                match perform_initial_sync(&client, last_processed, &state, &queue, &notify).await {
                                     Ok(last_coord) => {
                                         if let Some(coord) = last_coord {
                                             state.set_last_processed(coord);
                                         }
                                         state.set_synced(true);
-                                        event_queue.push(L1Event::Synced);
+                                        push_event(L1Event::Synced);
                                         needs_initial_sync = false;
                                         log::info!("L1 bridge initial sync complete");
                                     }
@@ -160,7 +173,7 @@ impl BridgeWorker {
                                                 "L1 bridge: starting block no longer in chain: {}",
                                                 e
                                             );
-                                            event_queue.push(L1Event::SyncLost {
+                                            push_event(L1Event::SyncLost {
                                                 reason: format!(
                                                     "Starting block no longer in chain (pruned or reorged): {}",
                                                     e
@@ -186,7 +199,7 @@ impl BridgeWorker {
                             }
 
                             // Emit disconnected event.
-                            event_queue.push(L1Event::Disconnected);
+                            push_event(L1Event::Disconnected);
                         }
                         Err(e) => {
                             log::error!("RPC control channel error: {}", e);
@@ -224,7 +237,7 @@ impl BridgeWorker {
                                             );
 
                                             state.set_last_processed(rollback_coord);
-                                            event_queue.push(L1Event::Rollback(rollback_coord));
+                                            push_event(L1Event::Rollback(rollback_coord));
                                         }
                                     }
                                 }
@@ -240,7 +253,7 @@ impl BridgeWorker {
                                         state.set_last_processed(block_coord);
                                         // Record for finalization tracking.
                                         state.record_block(block_coord);
-                                        event_queue.push(L1Event::BlockAdded {
+                                        push_event(L1Event::BlockAdded {
                                             index,
                                             block: Box::new(block),
                                         });
@@ -268,7 +281,7 @@ impl BridgeWorker {
                                                 pruning_hash
                                             );
                                             state.set_last_finalized(coord);
-                                            event_queue.push(L1Event::Finalized(coord));
+                                            push_event(L1Event::Finalized(coord));
                                         }
                                     } else {
                                         log::debug!(
@@ -306,7 +319,7 @@ impl BridgeWorker {
 
 impl Drop for BridgeWorker {
     fn drop(&mut self) {
-        self.notify.notify_one();
+        self.shutdown.notify_one();
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }

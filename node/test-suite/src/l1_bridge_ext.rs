@@ -1,7 +1,7 @@
-use vprogs_node_l1_bridge::{EventQueue, L1Event};
+use vprogs_node_l1_bridge::{L1Bridge, L1Event};
 
-/// Extension trait for EventQueue.
-pub trait EventQueueExt {
+/// Extension trait for L1Bridge.
+pub trait L1BridgeExt {
     /// Waits until an event matching the predicate is found.
     ///
     /// Returns all collected events up to and including the matching event.
@@ -11,7 +11,7 @@ pub trait EventQueueExt {
         F: Fn(&L1Event) -> bool + Send;
 }
 
-impl EventQueueExt for EventQueue {
+impl L1BridgeExt for L1Bridge {
     async fn wait_for<F>(&self, predicate: F) -> Vec<L1Event>
     where
         F: Fn(&L1Event) -> bool + Send,
