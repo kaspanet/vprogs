@@ -2,13 +2,13 @@ use std::time::Duration;
 
 use tokio::time::timeout;
 use vprogs_node_l1_bridge::{
-    BlockHash, ConnectStrategy, L1Bridge, L1BridgeConfig, L1Event, NetworkType,
+    ChainCoordinate, ConnectStrategy, L1Bridge, L1BridgeConfig, L1Event, NetworkType,
 };
 use vprogs_node_test_suite::L1Node;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_bridge_syncs_and_receives_block_events() {
-    let (node, mut bridge) = setup_node_with_bridge(ConnectStrategy::Fallback, None, 0).await;
+    let (node, mut bridge) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
 
     // Wait for Synced event (initial sync complete).
     // Note: Connected event was already consumed in setup_node_with_bridge.
@@ -56,7 +56,7 @@ async fn test_bridge_syncs_and_receives_block_events() {
     // Verify bridge state.
     assert!(bridge.state().is_synced());
     assert!(bridge.state().is_connected());
-    assert_eq!(bridge.state().last_block_hash(), Some(last_hash));
+    assert_eq!(bridge.state().last_processed().map(|c| c.hash()), Some(last_hash));
 
     bridge.stop().unwrap();
     node.shutdown().await;
@@ -75,9 +75,10 @@ async fn test_bridge_syncs_from_specific_block() {
         .with_url(node.wrpc_borsh_url())
         .with_network_type(NetworkType::Simnet)
         .with_blocking_connect(true)
-        .with_connect_strategy(ConnectStrategy::Fallback);
+        .with_connect_strategy(ConnectStrategy::Fallback)
+        .with_last_processed(ChainCoordinate::new(start_from, 3));
 
-    let mut bridge = L1Bridge::new(config, Some(start_from), 3);
+    let mut bridge = L1Bridge::new(config);
     bridge.start().unwrap();
 
     // Wait for connection and sync.
@@ -134,7 +135,7 @@ async fn test_bridge_syncs_from_specific_block() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_bridge_block_contains_transactions() {
-    let (node, mut bridge) = setup_node_with_bridge(ConnectStrategy::Fallback, None, 0).await;
+    let (node, mut bridge) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
 
     // Wait for sync.
     let _ = timeout(
@@ -182,8 +183,8 @@ async fn test_bridge_receives_reorg_events() {
     // Create two isolated nodes that mine independently,
     // then connect them. The node with the shorter chain experiences a reorg.
 
-    let (node0, mut bridge0) = setup_node_with_bridge(ConnectStrategy::Fallback, None, 0).await;
-    let (node1, mut bridge1) = setup_node_with_bridge(ConnectStrategy::Fallback, None, 0).await;
+    let (node0, mut bridge0) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
+    let (node1, mut bridge1) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
 
     // Wait for both to sync.
     let _ = timeout(
@@ -270,7 +271,7 @@ async fn test_bridge_receives_reorg_events() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_bridge_events_ordered_past_to_present() {
-    let (node, mut bridge) = setup_node_with_bridge(ConnectStrategy::Fallback, None, 0).await;
+    let (node, mut bridge) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
 
     // Wait for sync.
     let _ = timeout(
@@ -323,7 +324,7 @@ async fn test_bridge_events_ordered_past_to_present() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_bridge_index_tracking() {
-    let (node, mut bridge) = setup_node_with_bridge(ConnectStrategy::Fallback, None, 0).await;
+    let (node, mut bridge) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
 
     // Wait for sync.
     let _ = timeout(
@@ -376,18 +377,21 @@ async fn test_bridge_index_tracking() {
 
 async fn setup_node_with_bridge(
     strategy: ConnectStrategy,
-    last_processed: Option<BlockHash>,
-    last_index: u64,
+    last_processed: Option<ChainCoordinate>,
 ) -> (L1Node, L1Bridge) {
     let node = L1Node::new().await;
 
-    let config = L1BridgeConfig::default()
+    let mut config = L1BridgeConfig::default()
         .with_url(node.wrpc_borsh_url())
         .with_network_type(NetworkType::Simnet)
         .with_blocking_connect(true)
         .with_connect_strategy(strategy);
 
-    let mut bridge = L1Bridge::new(config, last_processed, last_index);
+    if let Some(coord) = last_processed {
+        config = config.with_last_processed(coord);
+    }
+
+    let mut bridge = L1Bridge::new(config);
     bridge.start().unwrap();
 
     let connected = timeout(

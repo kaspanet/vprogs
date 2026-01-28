@@ -1,7 +1,9 @@
 use kaspa_consensus_core::network::{NetworkId, NetworkType};
 use kaspa_wrpc_client::prelude::ConnectStrategy;
 
-/// Configuration for the L1 bridge connection.
+use crate::ChainCoordinate;
+
+/// Configuration for the L1 bridge.
 #[derive(Clone, Debug)]
 pub struct L1BridgeConfig {
     /// WebSocket URL to connect to (e.g., "ws://localhost:17110").
@@ -15,6 +17,10 @@ pub struct L1BridgeConfig {
     pub block_async_connect: bool,
     /// Reconnection strategy.
     pub connect_strategy: ConnectStrategy,
+    /// Last processed coordinate, or None to start from the pruning point.
+    pub last_processed: Option<ChainCoordinate>,
+    /// Last finalized coordinate, or None if unknown.
+    pub last_finalized: Option<ChainCoordinate>,
 }
 
 impl Default for L1BridgeConfig {
@@ -25,6 +31,8 @@ impl Default for L1BridgeConfig {
             connect_timeout_ms: 10_000,
             block_async_connect: false,
             connect_strategy: ConnectStrategy::Retry,
+            last_processed: None,
+            last_finalized: None,
         }
     }
 }
@@ -63,6 +71,18 @@ impl L1BridgeConfig {
     /// Sets the reconnection strategy.
     pub fn with_connect_strategy(mut self, strategy: ConnectStrategy) -> Self {
         self.connect_strategy = strategy;
+        self
+    }
+
+    /// Sets the last processed coordinate.
+    pub fn with_last_processed(mut self, coord: ChainCoordinate) -> Self {
+        self.last_processed = Some(coord);
+        self
+    }
+
+    /// Sets the last finalized coordinate.
+    pub fn with_last_finalized(mut self, coord: ChainCoordinate) -> Self {
+        self.last_finalized = Some(coord);
         self
     }
 }

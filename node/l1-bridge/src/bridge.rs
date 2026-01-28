@@ -5,7 +5,6 @@ use std::{
 };
 
 use futures::{FutureExt, select_biased};
-use kaspa_hashes::Hash as BlockHash;
 use kaspa_notify::scope::{PruningPointUtxoSetOverrideScope, Scope, VirtualChainChangedScope};
 use kaspa_rpc_core::{
     Notification,
@@ -16,7 +15,7 @@ use tokio::{runtime::Builder, sync::Notify};
 use workflow_core::channel::Channel;
 
 use crate::{
-    EventQueue, L1BridgeConfig, L1BridgeError, L1Event, Result,
+    ChainCoordinate, EventQueue, L1BridgeConfig, L1BridgeError, L1Event, Result,
     state::BridgeState,
     sync::{fetch_block, get_block_parents, perform_initial_sync},
 };
@@ -39,16 +38,13 @@ pub struct L1Bridge {
 impl L1Bridge {
     /// Creates a new L1 bridge with the given configuration.
     ///
-    /// - `config`: Bridge configuration
-    /// - `last_processed`: Hash of the last processed block (or None to start from pruning point)
-    /// - `last_index`: Index of the last processed block (next block will be last_index + 1)
-    ///
     /// The bridge does not connect automatically; call `start()` to initiate connection.
-    pub fn new(config: L1BridgeConfig, last_processed: Option<BlockHash>, last_index: u64) -> Self {
+    pub fn new(config: L1BridgeConfig) -> Self {
+        let state = Arc::new(BridgeState::new(config.last_processed, config.last_finalized));
         Self {
             config,
             event_queue: EventQueue::new(),
-            state: Arc::new(BridgeState::new(last_processed, last_index)),
+            state,
             notify_shutdown: Arc::new(Notify::new()),
             handle: None,
         }
@@ -72,15 +68,14 @@ impl L1Bridge {
         let state = self.state.clone();
         let notify_shutdown = self.notify_shutdown.clone();
 
-        let handle = thread::spawn(move || {
+        self.handle = Some(thread::spawn(move || {
             Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .expect("failed to build tokio runtime")
                 .block_on(run_event_loop(config, event_queue, state, notify_shutdown))
-        });
+        }));
 
-        self.handle = Some(handle);
         Ok(())
     }
 
@@ -210,11 +205,11 @@ async fn run_event_loop(
 
                         // Perform initial sync if needed.
                         if needs_initial_sync {
-                            let last_processed = state.last_block_hash();
+                            let last_processed = state.last_processed();
                             match perform_initial_sync(&client, last_processed, &state, &event_queue).await {
-                                Ok(last_hash) => {
-                                    if let Some(hash) = last_hash {
-                                        state.set_last_block_hash(hash);
+                                Ok(last_coord) => {
+                                    if let Some(coord) = last_coord {
+                                        state.set_last_processed(coord);
                                     }
                                     state.set_synced(true);
                                     event_queue.push(L1Event::Synced);
@@ -223,9 +218,10 @@ async fn run_event_loop(
                                 }
                                 Err(e) => {
                                     let error_msg = e.to_string().to_lowercase();
-                                    // Check if error indicates starting block is pruned/not found.
+                                    // Check if error indicates starting block is pruned/reorged/not found.
                                     if error_msg.contains("not found")
                                         || error_msg.contains("pruned")
+                                        || error_msg.contains("reorged")
                                         || error_msg.contains("not in chain")
                                         || error_msg.contains("block is not in")
                                     {
@@ -288,18 +284,16 @@ async fn run_event_loop(
                                 // Get the parents of the first added block to find the common ancestor.
                                 if let Ok(parents) = get_block_parents(&client, first_added).await {
                                     if let Some(&common_ancestor) = parents.first() {
+                                        let rollback_coord =
+                                            ChainCoordinate::new(common_ancestor, rollback_index);
                                         log::info!(
                                             "L1 bridge: rolling back to index {} (hash {})",
                                             rollback_index,
                                             common_ancestor
                                         );
 
-                                        state.set_index(rollback_index);
-                                        state.set_last_block_hash(common_ancestor);
-                                        event_queue.push(L1Event::Rollback {
-                                            to_index: rollback_index,
-                                            to_hash: common_ancestor,
-                                        });
+                                        state.set_last_processed(rollback_coord);
+                                        event_queue.push(L1Event::Rollback(rollback_coord));
                                     }
                                 }
                             }
@@ -310,9 +304,11 @@ async fn run_event_loop(
                             match fetch_block(&client, hash).await {
                                 Ok(block) => {
                                     let index = state.next_index();
-                                    state.set_last_block_hash(block.header.hash);
+                                    let block_coord =
+                                        ChainCoordinate::new(block.header.hash, index);
+                                    state.set_last_processed(block_coord);
                                     // Record for finalization tracking.
-                                    state.record_block(block.header.hash, index);
+                                    state.record_block(block_coord);
                                     event_queue.push(L1Event::BlockAdded {
                                         index,
                                         block: Box::new(block),
@@ -329,20 +325,19 @@ async fn run_event_loop(
                         match client.get_block_dag_info().await {
                             Ok(dag_info) => {
                                 let pruning_hash = dag_info.pruning_point_hash;
-                                // Look up the index for this hash.
-                                if let Some(index) = state.get_index_for_hash(&pruning_hash) {
+                                // Look up the coordinate for this hash.
+                                if let Some(coord) = state.get_coordinate_for_hash(&pruning_hash) {
                                     // Only emit if this is a new finalization.
-                                    if index > state.last_finalized_index() {
+                                    let last_finalized_index =
+                                        state.last_finalized().map(|c| c.index()).unwrap_or(0);
+                                    if coord.index() > last_finalized_index {
                                         log::info!(
                                             "L1 bridge: pruning point advanced to index {} (hash {})",
-                                            index,
+                                            coord.index(),
                                             pruning_hash
                                         );
-                                        state.set_finalized(index);
-                                        event_queue.push(L1Event::Finalized {
-                                            index,
-                                            hash: pruning_hash,
-                                        });
+                                        state.set_last_finalized(coord);
+                                        event_queue.push(L1Event::Finalized(coord));
                                     }
                                 } else {
                                     log::debug!(

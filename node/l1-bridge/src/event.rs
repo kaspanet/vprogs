@@ -2,6 +2,27 @@ pub use kaspa_hashes::Hash;
 use kaspa_hashes::Hash as BlockHash;
 pub use kaspa_rpc_core::RpcBlock;
 
+/// A position in the chain: block hash and sequential index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChainCoordinate(BlockHash, u64);
+
+impl ChainCoordinate {
+    /// Creates a new chain coordinate.
+    pub fn new(hash: BlockHash, index: u64) -> Self {
+        Self(hash, index)
+    }
+
+    /// Returns the block hash.
+    pub fn hash(&self) -> BlockHash {
+        self.0
+    }
+
+    /// Returns the sequential index.
+    pub fn index(&self) -> u64 {
+        self.1
+    }
+}
+
 /// Events emitted by the L1 bridge.
 #[derive(Clone, Debug)]
 pub enum L1Event {
@@ -16,21 +37,11 @@ pub enum L1Event {
         /// The block data.
         block: Box<RpcBlock>,
     },
-    /// Rollback to a previous state.
-    Rollback {
-        /// Index to roll back to (this index stays, later ones removed).
-        to_index: u64,
-        /// Block hash to roll back to (this block stays, later ones removed).
-        to_hash: BlockHash,
-    },
-    /// Blocks up to this index are now finalized (pruning point advanced on L1).
+    /// Rollback to a previous state (the coordinate stays, later ones removed).
+    Rollback(ChainCoordinate),
+    /// Blocks up to this coordinate are now finalized (pruning point advanced on L1).
     /// The scheduler can safely prune state up to and including this index.
-    Finalized {
-        /// The index up to which blocks are finalized.
-        index: u64,
-        /// The hash of the finalized block (the new pruning point).
-        hash: BlockHash,
-    },
+    Finalized(ChainCoordinate),
     /// Bridge has completed initial sync and is now streaming live.
     Synced,
     /// Unrecoverable error: the starting block is no longer in the chain.
