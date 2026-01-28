@@ -15,7 +15,9 @@ async fn test_bridge_receives_block_added_events() {
     // Wait until we see the last mined block
     let events = timeout(
         Duration::from_secs(10),
-        bridge.event_queue().wait_for(|e| matches!(e, L1Event::BlockAdded(b) if b.block_hash == last_hash)),
+        bridge
+            .event_queue()
+            .wait_for(|e| matches!(e, L1Event::BlockAdded(b) if b.block_hash == last_hash)),
     )
     .await
     .expect("timeout waiting for block events");
@@ -59,9 +61,9 @@ async fn test_bridge_receives_daa_score_changed_events() {
     // Wait until DAA score reaches at least NUM_BLOCKS
     let events = timeout(
         Duration::from_secs(10),
-        bridge
-            .event_queue()
-            .wait_for(|e| matches!(e, L1Event::DaaScoreChanged(d) if d.daa_score >= NUM_BLOCKS as u64)),
+        bridge.event_queue().wait_for(
+            |e| matches!(e, L1Event::DaaScoreChanged(d) if d.daa_score >= NUM_BLOCKS as u64),
+        ),
     )
     .await
     .expect("timeout waiting for DAA score events");
@@ -181,7 +183,9 @@ async fn test_bridge_receives_reorg_events() {
     // Wait for reorg event (VirtualChainChanged with removed blocks)
     let reorg_events = timeout(
         Duration::from_secs(10),
-        bridge1.event_queue().wait_for(|e| matches!(e, L1Event::VirtualChainChanged(v) if v.is_reorg())),
+        bridge1
+            .event_queue()
+            .wait_for(|e| matches!(e, L1Event::VirtualChainChanged(v) if v.is_reorg())),
     )
     .await
     .expect("timeout waiting for reorg events");

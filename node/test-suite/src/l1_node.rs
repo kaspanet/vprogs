@@ -22,13 +22,16 @@ impl L1Node {
     pub async fn new() -> Self {
         kaspa_core::log::try_init_logger("INFO");
 
-        let mut daemon = Daemon::new_random_with_args(Args {
-            simnet: true,
-            unsafe_rpc: true,
-            enable_unsynced_mining: true,
-            disable_upnp: true,
-            ..Default::default()
-        }, 10);
+        let mut daemon = Daemon::new_random_with_args(
+            Args {
+                simnet: true,
+                unsafe_rpc: true,
+                enable_unsynced_mining: true,
+                disable_upnp: true,
+                ..Default::default()
+            },
+            10,
+        );
         let grpc_client = daemon.start().await;
 
         let address =
