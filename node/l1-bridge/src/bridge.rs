@@ -7,7 +7,7 @@ use crate::{EventQueue, L1BridgeConfig, state::BridgeState, worker::BridgeWorker
 pub struct L1Bridge {
     event_queue: EventQueue,
     state: Arc<BridgeState>,
-    worker: Option<BridgeWorker>,
+    worker: BridgeWorker,
 }
 
 impl L1Bridge {
@@ -23,14 +23,12 @@ impl L1Bridge {
         let state = Arc::new(BridgeState::new(config.last_processed, config.last_finalized));
         let event_queue = EventQueue::new();
         let worker = BridgeWorker::spawn(config, event_queue.clone(), state.clone());
-        Self { event_queue, state, worker: Some(worker) }
+        Self { event_queue, state, worker }
     }
 
     /// Shuts down the bridge and disconnects from the L1 node.
-    pub fn shutdown(mut self) {
-        if let Some(worker) = self.worker.take() {
-            worker.shutdown();
-        }
+    pub fn shutdown(self) {
+        self.worker.shutdown();
     }
 
     /// Returns the event queue for consuming L1 events.
@@ -41,13 +39,5 @@ impl L1Bridge {
     /// Returns the bridge state.
     pub fn state(&self) -> &Arc<BridgeState> {
         &self.state
-    }
-}
-
-impl Drop for L1Bridge {
-    fn drop(&mut self) {
-        if let Some(worker) = self.worker.take() {
-            worker.shutdown();
-        }
     }
 }

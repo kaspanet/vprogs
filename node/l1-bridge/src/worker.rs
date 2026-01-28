@@ -19,7 +19,7 @@ use crate::{
 /// Background worker that handles L1 node communication.
 pub struct BridgeWorker {
     notify: Arc<Notify>,
-    handle: JoinHandle<()>,
+    handle: Option<JoinHandle<()>>,
 }
 
 impl BridgeWorker {
@@ -27,13 +27,15 @@ impl BridgeWorker {
     pub fn spawn(config: L1BridgeConfig, event_queue: EventQueue, state: Arc<BridgeState>) -> Self {
         let notify = Arc::new(Notify::new());
         let handle = Self::start(config, event_queue, state, notify.clone());
-        Self { notify, handle }
+        Self { notify, handle: Some(handle) }
     }
 
     /// Signals the worker to shut down and waits for completion.
-    pub fn shutdown(self) {
+    pub fn shutdown(mut self) {
         self.notify.notify_one();
-        self.handle.join().expect("bridge worker panicked");
+        if let Some(handle) = self.handle.take() {
+            handle.join().expect("bridge worker panicked");
+        }
     }
 
     fn start(
@@ -299,5 +301,14 @@ impl BridgeWorker {
         let _ = client.disconnect().await;
         state.set_connected(false);
         log::info!("L1 bridge worker stopped");
+    }
+}
+
+impl Drop for BridgeWorker {
+    fn drop(&mut self) {
+        self.notify.notify_one();
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
     }
 }
