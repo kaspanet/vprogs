@@ -54,9 +54,9 @@ async fn test_bridge_syncs_and_receives_block_events() {
     }
 
     // Verify bridge state.
-    assert!(bridge.is_synced());
-    assert!(bridge.is_connected());
-    assert_eq!(bridge.last_block_hash(), Some(last_hash));
+    assert!(bridge.state().is_synced());
+    assert!(bridge.state().is_connected());
+    assert_eq!(bridge.state().last_block_hash(), Some(last_hash));
 
     bridge.stop().unwrap();
     node.shutdown().await;
@@ -126,7 +126,7 @@ async fn test_bridge_syncs_from_specific_block() {
     }
 
     // Verify the index is correct (started at 3, added 3 new blocks = 6).
-    assert_eq!(bridge.current_index(), 6);
+    assert_eq!(bridge.state().current_index(), 6);
 
     bridge.stop().unwrap();
     node.shutdown().await;
@@ -334,7 +334,7 @@ async fn test_bridge_index_tracking() {
     .expect("timeout waiting for Synced event");
 
     // Initial index should be 0.
-    let initial_index = bridge.current_index();
+    let initial_index = bridge.state().current_index();
 
     // Mine blocks.
     const NUM_BLOCKS: usize = 5;
@@ -368,7 +368,7 @@ async fn test_bridge_index_tracking() {
     }
 
     // Verify bridge's current index matches the last event index.
-    assert_eq!(bridge.current_index(), *indices.last().unwrap());
+    assert_eq!(bridge.state().current_index(), *indices.last().unwrap());
 
     bridge.stop().unwrap();
     node.shutdown().await;

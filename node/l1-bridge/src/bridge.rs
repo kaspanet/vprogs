@@ -100,34 +100,9 @@ impl L1Bridge {
         &self.event_queue
     }
 
-    /// Returns the last block hash the bridge has processed.
-    pub fn last_block_hash(&self) -> Option<BlockHash> {
-        self.state.last_block_hash()
-    }
-
-    /// Returns the current block index.
-    pub fn current_index(&self) -> u64 {
-        self.state.current_index()
-    }
-
-    /// Returns the initial index (the starting point passed at construction).
-    pub fn initial_index(&self) -> u64 {
-        self.state.initial_index()
-    }
-
-    /// Returns whether the bridge has completed initial sync.
-    pub fn is_synced(&self) -> bool {
-        self.state.is_synced()
-    }
-
-    /// Returns whether the bridge is currently connected.
-    pub fn is_connected(&self) -> bool {
-        self.state.is_connected()
-    }
-
-    /// Returns whether the bridge worker is running.
-    pub fn is_running(&self) -> bool {
-        self.handle.is_some()
+    /// Returns the bridge state.
+    pub fn state(&self) -> &Arc<BridgeState> {
+        &self.state
     }
 }
 

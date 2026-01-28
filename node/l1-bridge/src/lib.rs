@@ -13,3 +13,4 @@ pub use event::{Hash as BlockHash, L1Event, RpcBlock};
 pub use event_queue::EventQueue;
 pub use kaspa_consensus_core::network::{NetworkId, NetworkType};
 pub use kaspa_wrpc_client::prelude::ConnectStrategy;
+pub use state::BridgeState;
