@@ -23,7 +23,7 @@ impl KaspaRpcClientExt for KaspaRpcClient {
     async fn fetch_block(&self, hash: BlockHash) -> Result<RpcBlock> {
         self.get_block(hash, true)
             .await
-            .map_err(|e| L1BridgeError::RpcCall(format!("get_block failed: {}", e)))
+            .map_err(|e| L1BridgeError::Rpc(format!("get_block failed: {}", e)))
     }
 
     async fn fetch_block_parents(&self, hash: BlockHash) -> Result<Vec<BlockHash>> {

@@ -35,6 +35,8 @@ pub struct BridgeWorker {
     listener_id: Option<ListenerId>,
     /// Whether initial sync is still pending.
     needs_initial_sync: bool,
+    /// Whether a fatal error has occurred.
+    fatal: bool,
 }
 
 impl BridgeWorker {
@@ -57,7 +59,10 @@ impl BridgeWorker {
         ) {
             Ok(client) => Arc::new(client),
             Err(e) => {
-                log::error!("Failed to create RPC client: {}", e);
+                let reason = format!("failed to create RPC client: {}", e);
+                log::error!("L1 bridge: {}", reason);
+                queue.push(L1Event::Fatal { reason });
+                event_signal.notify_one();
                 return None;
             }
         };
@@ -75,7 +80,10 @@ impl BridgeWorker {
             }))
             .await
         {
-            log::error!("Failed to initiate connection: {}", e);
+            let reason = format!("failed to connect: {}", e);
+            log::error!("L1 bridge: {}", reason);
+            queue.push(L1Event::Fatal { reason });
+            event_signal.notify_one();
             return None;
         }
 
@@ -88,12 +96,18 @@ impl BridgeWorker {
             rpc_ctl_channel,
             listener_id: None,
             needs_initial_sync: true,
+            fatal: false,
         })
     }
 
     /// Runs the event loop.
     pub async fn run(mut self, shutdown: Arc<Notify>) {
         loop {
+            if self.fatal {
+                log::error!("L1 bridge: stopping due to fatal error");
+                break;
+            }
+
             // Priority: shutdown > connection state > chain notifications.
             select_biased! {
                 _ = shutdown.notified().fuse() => {
@@ -106,8 +120,7 @@ impl BridgeWorker {
                         Ok(RpcState::Connected) => self.handle_connected().await,
                         Ok(RpcState::Disconnected) => self.handle_disconnected().await,
                         Err(e) => {
-                            log::error!("RPC control channel error: {}", e);
-                            break;
+                            self.fatal_error(format!("RPC control channel closed: {}", e));
                         }
                     }
                 }
@@ -122,8 +135,7 @@ impl BridgeWorker {
                         }
                         Ok(_) => {}
                         Err(e) => {
-                            log::error!("Notification channel error: {}", e);
-                            break;
+                            self.fatal_error(format!("notification channel closed: {}", e));
                         }
                     }
                 }
@@ -138,6 +150,13 @@ impl BridgeWorker {
     fn push_event(&self, event: L1Event) {
         self.queue.push(event);
         self.event_signal.notify_one();
+    }
+
+    /// Emits a fatal error event and marks the worker for shutdown.
+    fn fatal_error(&mut self, reason: String) {
+        log::error!("L1 bridge fatal error: {}", reason);
+        self.push_event(L1Event::Fatal { reason });
+        self.fatal = true;
     }
 
     /// Cleans up resources.
@@ -158,7 +177,11 @@ impl BridgeWorker {
     async fn handle_connected(&mut self) {
         log::info!("L1 bridge connected to {}", self.client.url().unwrap_or_default());
 
-        self.subscribe_to_notifications().await;
+        if let Err(e) = self.subscribe_to_notifications().await {
+            self.fatal_error(format!("failed to subscribe to notifications: {}", e));
+            return;
+        }
+
         self.push_event(L1Event::Connected);
 
         if self.needs_initial_sync {
@@ -178,7 +201,7 @@ impl BridgeWorker {
     }
 
     /// Subscribes to chain notifications.
-    async fn subscribe_to_notifications(&mut self) {
+    async fn subscribe_to_notifications(&mut self) -> Result<()> {
         let id = self.client.rpc_api().register_new_listener(ChannelConnection::new(
             "vprogs-l1-bridge",
             self.notification_channel.sender.clone(),
@@ -190,12 +213,15 @@ impl BridgeWorker {
             Scope::VirtualChainChanged(VirtualChainChangedScope::new(true)),
             Scope::PruningPointUtxoSetOverride(PruningPointUtxoSetOverrideScope {}),
         ] {
-            if let Err(e) = self.client.rpc_api().start_notify(id, scope).await {
-                log::error!("Failed to subscribe to notification: {}", e);
-            }
+            self.client
+                .rpc_api()
+                .start_notify(id, scope)
+                .await
+                .map_err(|e| L1BridgeError::Rpc(e.to_string()))?;
         }
 
         self.listener_id = Some(id);
+        Ok(())
     }
 }
 
@@ -230,7 +256,7 @@ impl BridgeWorker {
             .client
             .get_block_dag_info()
             .await
-            .map_err(|e| L1BridgeError::RpcCall(format!("get_block_dag_info failed: {}", e)))?;
+            .map_err(|e| L1BridgeError::Rpc(format!("get_block_dag_info failed: {}", e)))?;
 
         let start_hash = last_processed.map(|c| c.hash()).unwrap_or(dag_info.pruning_point_hash);
 
@@ -244,12 +270,12 @@ impl BridgeWorker {
 
         let virtual_chain =
             self.client.get_virtual_chain_from_block(start_hash, true, None).await.map_err(
-                |e| L1BridgeError::RpcCall(format!("get_virtual_chain_from_block failed: {}", e)),
+                |e| L1BridgeError::Rpc(format!("get_virtual_chain_from_block failed: {}", e)),
             )?;
 
         // Check if our checkpoint was reorged out.
         if !virtual_chain.removed_chain_block_hashes.is_empty() {
-            return Err(L1BridgeError::RpcCall(format!(
+            return Err(L1BridgeError::Rpc(format!(
                 "starting block {} was reorged out ({} blocks removed)",
                 start_hash,
                 virtual_chain.removed_chain_block_hashes.len()
@@ -271,9 +297,8 @@ impl BridgeWorker {
 
         let mut last_block = None;
         for &hash in &*added_hashes {
-            if let Some(coord) = self.fetch_and_emit_block(hash).await {
-                last_block = Some(coord);
-            }
+            let coord = self.fetch_and_emit_block(hash).await?;
+            last_block = Some(coord);
         }
 
         Ok(last_block)
@@ -283,6 +308,8 @@ impl BridgeWorker {
     fn handle_sync_error(&mut self, e: L1BridgeError) {
         let error_msg = e.to_string().to_lowercase();
 
+        // Check if this is a "checkpoint lost" error (pruned or reorged).
+        // This is a special case where we emit SyncLost instead of Error.
         let is_checkpoint_lost = error_msg.contains("not found")
             || error_msg.contains("pruned")
             || error_msg.contains("reorged")
@@ -291,13 +318,14 @@ impl BridgeWorker {
 
         if is_checkpoint_lost {
             log::error!("L1 bridge: starting block no longer in chain: {}", e);
-            self.push_event(L1Event::SyncLost {
-                reason: format!("Starting block no longer in chain (pruned or reorged): {}", e),
+            self.push_event(L1Event::Fatal {
+                reason: format!("starting block no longer in chain (pruned or reorged): {}", e),
             });
             self.needs_initial_sync = false;
+            self.fatal = true;
         } else {
-            log::error!("Initial sync failed: {}", e);
-            // Will retry on next connection.
+            // Other sync errors (connection issues) - will retry on reconnect.
+            log::warn!("L1 bridge: sync failed, will retry on reconnect: {}", e);
         }
     }
 }
@@ -309,17 +337,25 @@ impl BridgeWorker {
 impl BridgeWorker {
     /// Handles a chain change.
     async fn handle_chain_changed(&mut self, vcc: VirtualChainChangedNotification) {
+        // Handle reorg first if there are removed blocks.
         if !vcc.removed_chain_block_hashes.is_empty() {
-            self.handle_reorg(&vcc).await;
+            if let Err(e) = self.handle_reorg(&vcc).await {
+                self.fatal_error(format!("failed to handle reorg: {}", e));
+                return;
+            }
         }
 
+        // Process added blocks.
         for &hash in vcc.added_chain_block_hashes.iter() {
-            self.fetch_and_emit_block(hash).await;
+            if let Err(e) = self.fetch_and_emit_block(hash).await {
+                self.fatal_error(format!("failed to fetch block {}: {}", hash, e));
+                return;
+            }
         }
     }
 
     /// Handles a reorg.
-    async fn handle_reorg(&mut self, vcc: &VirtualChainChangedNotification) {
+    async fn handle_reorg(&mut self, vcc: &VirtualChainChangedNotification) -> Result<()> {
         log::info!(
             "L1 bridge: reorg detected, {} blocks removed",
             vcc.removed_chain_block_hashes.len()
@@ -330,19 +366,17 @@ impl BridgeWorker {
         let rollback_index = self.chain_state.current_index().saturating_sub(num_removed);
 
         // Find the common ancestor: parent of the first block in the new chain.
-        let Some(&first_added) = vcc.added_chain_block_hashes.first() else {
-            return;
-        };
+        let first_added = vcc.added_chain_block_hashes.first().ok_or_else(|| {
+            L1BridgeError::Rpc("reorg notification has removed blocks but no added blocks".into())
+        })?;
 
-        let Ok(parents) = self.client.fetch_block_parents(first_added).await else {
-            return;
-        };
+        let parents = self.client.fetch_block_parents(*first_added).await?;
 
-        let Some(&common_ancestor) = parents.first() else {
-            return;
-        };
+        let common_ancestor = parents
+            .first()
+            .ok_or_else(|| L1BridgeError::Rpc(format!("block {} has no parents", first_added)))?;
 
-        let rollback_coord = ChainCoordinate::new(common_ancestor, rollback_index);
+        let rollback_coord = ChainCoordinate::new(*common_ancestor, rollback_index);
         log::info!(
             "L1 bridge: rolling back to index {} (hash {})",
             rollback_index,
@@ -351,15 +385,20 @@ impl BridgeWorker {
 
         self.chain_state.set_last_processed(rollback_coord);
         self.push_event(L1Event::Rollback(rollback_coord));
+
+        Ok(())
     }
 
-    /// Handles finalization.
+    /// Handles finalization (pruning point advancement).
+    ///
+    /// Note: Finalization errors are logged but not fatal - missing a finalization
+    /// event doesn't corrupt state, the consumer just won't prune as aggressively.
     async fn handle_finalization(&mut self) {
         // Fetch current pruning point from the node.
         let dag_info = match self.client.get_block_dag_info().await {
             Ok(info) => info,
             Err(e) => {
-                log::error!("Failed to get block dag info: {}", e);
+                log::warn!("L1 bridge: failed to get dag info for finalization: {}", e);
                 return;
             }
         };
@@ -368,6 +407,7 @@ impl BridgeWorker {
 
         // Look up the index we assigned to this block when we processed it.
         let Some(coord) = self.chain_state.get_coordinate_for_hash(&pruning_hash) else {
+            // This can happen normally if the pruning point is before our starting point.
             log::debug!("L1 bridge: pruning point {} not in tracked blocks", pruning_hash);
             return;
         };
@@ -387,15 +427,9 @@ impl BridgeWorker {
         }
     }
 
-    /// Fetches and emits a block.
-    async fn fetch_and_emit_block(&mut self, hash: BlockHash) -> Option<ChainCoordinate> {
-        let block = match self.client.fetch_block(hash).await {
-            Ok(block) => block,
-            Err(e) => {
-                log::error!("Failed to fetch block {}: {}", hash, e);
-                return None;
-            }
-        };
+    /// Fetches a block and emits a BlockAdded event.
+    async fn fetch_and_emit_block(&mut self, hash: BlockHash) -> Result<ChainCoordinate> {
+        let block = self.client.fetch_block(hash).await?;
 
         // Assign sequential index and update state.
         let index = self.chain_state.next_index();
@@ -405,6 +439,6 @@ impl BridgeWorker {
         self.chain_state.record_block(coord);
         self.push_event(L1Event::BlockAdded { index, block: Box::new(block) });
 
-        Some(coord)
+        Ok(coord)
     }
 }

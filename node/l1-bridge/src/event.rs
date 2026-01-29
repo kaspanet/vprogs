@@ -44,9 +44,8 @@ pub enum L1Event {
     Finalized(ChainCoordinate),
     /// Bridge has completed initial sync and is now streaming live.
     Synced,
-    /// Unrecoverable error: the starting block is no longer in the chain.
-    /// The consumer must restart the bridge from a valid checkpoint.
-    SyncLost {
+    /// Bridge encountered a fatal error and stopped.
+    Fatal {
         /// Descriptive message about what happened.
         reason: String,
     },
