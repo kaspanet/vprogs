@@ -1,8 +1,8 @@
 mod bridge;
+mod chain_state;
 mod config;
 mod error;
 pub mod event;
-mod state;
 mod worker;
 
 pub use bridge::L1Bridge;

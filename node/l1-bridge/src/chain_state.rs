@@ -4,9 +4,9 @@ use kaspa_hashes::Hash as BlockHash;
 
 use crate::ChainCoordinate;
 
-/// Tracks the internal state of the L1 bridge worker.
+/// Tracks the chain synchronization state.
 /// This is only accessed from the single-threaded worker runtime.
-pub struct BridgeState {
+pub struct ChainState {
     /// The last processed block.
     last_processed_block: Option<ChainCoordinate>,
     /// The initial index passed at construction (reference point for index calculations).
@@ -19,8 +19,8 @@ pub struct BridgeState {
     last_finalized_block: Option<ChainCoordinate>,
 }
 
-impl BridgeState {
-    /// Creates a new bridge state tracker.
+impl ChainState {
+    /// Creates a new chain state tracker.
     pub fn new(
         last_processed_block: Option<ChainCoordinate>,
         last_finalized_block: Option<ChainCoordinate>,

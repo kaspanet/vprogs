@@ -1,4 +1,4 @@
-use std::{sync::Arc, thread::JoinHandle, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use crossbeam_queue::SegQueue;
 use futures::{FutureExt, select_biased};
@@ -9,75 +9,17 @@ use kaspa_rpc_core::{
     api::{ctl::RpcState, rpc::RpcApi},
 };
 use kaspa_wrpc_client::prelude::*;
-use tokio::{runtime::Builder, sync::Notify};
+use tokio::sync::Notify;
 use workflow_core::channel::Channel;
 
-use crate::{ChainCoordinate, L1BridgeConfig, L1BridgeError, L1Event, Result, state::BridgeState};
+use crate::{
+    ChainCoordinate, L1BridgeConfig, L1BridgeError, L1Event, Result, chain_state::ChainState,
+};
 
 /// Background worker that handles L1 node communication.
 pub struct BridgeWorker {
-    shutdown: Arc<Notify>,
-    handle: Option<JoinHandle<()>>,
-}
-
-impl BridgeWorker {
-    /// Spawns a new bridge worker.
-    pub fn spawn(
-        config: L1BridgeConfig,
-        queue: Arc<SegQueue<L1Event>>,
-        event_signal: Arc<Notify>,
-    ) -> Self {
-        let shutdown = Arc::new(Notify::new());
-        let handle = Self::start(config, queue, event_signal, shutdown.clone());
-        Self { shutdown, handle: Some(handle) }
-    }
-
-    /// Signals the worker to shut down and waits for completion.
-    pub fn shutdown(mut self) {
-        self.shutdown.notify_one();
-        if let Some(handle) = self.handle.take() {
-            handle.join().expect("bridge worker panicked");
-        }
-    }
-
-    fn start(
-        config: L1BridgeConfig,
-        queue: Arc<SegQueue<L1Event>>,
-        event_signal: Arc<Notify>,
-        shutdown: Arc<Notify>,
-    ) -> JoinHandle<()> {
-        std::thread::spawn(move || {
-            let runtime = Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("failed to build tokio runtime");
-
-            runtime.block_on(async {
-                if let Some(ctx) = WorkerContext::new(config, queue, event_signal).await {
-                    ctx.run(shutdown).await;
-                }
-            });
-        })
-    }
-}
-
-impl Drop for BridgeWorker {
-    fn drop(&mut self) {
-        self.shutdown.notify_one();
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
-    }
-}
-
-// ============================================================================
-// Worker Context
-// ============================================================================
-
-/// Holds the runtime state for the worker event loop.
-struct WorkerContext {
     client: Arc<KaspaRpcClient>,
-    state: BridgeState,
+    chain_state: ChainState,
     queue: Arc<SegQueue<L1Event>>,
     event_signal: Arc<Notify>,
     notification_channel: Channel<Notification>,
@@ -86,14 +28,14 @@ struct WorkerContext {
     needs_initial_sync: bool,
 }
 
-impl WorkerContext {
-    /// Creates a new worker context, connecting to the L1 node.
-    async fn new(
-        config: L1BridgeConfig,
+impl BridgeWorker {
+    /// Creates a new bridge worker, connecting to the L1 node.
+    pub async fn new(
+        config: &L1BridgeConfig,
         queue: Arc<SegQueue<L1Event>>,
         event_signal: Arc<Notify>,
     ) -> Option<Self> {
-        let state = BridgeState::new(config.last_processed, config.last_finalized);
+        let chain_state = ChainState::new(config.last_processed, config.last_finalized);
 
         let resolver = if config.url.is_none() { Some(Resolver::default()) } else { None };
         let client = match KaspaRpcClient::new_with_args(
@@ -127,7 +69,7 @@ impl WorkerContext {
 
         Some(Self {
             client,
-            state,
+            chain_state,
             queue,
             event_signal,
             notification_channel: Channel::unbounded(),
@@ -137,22 +79,8 @@ impl WorkerContext {
         })
     }
 
-    /// Emits an event to the queue and signals consumers.
-    fn push_event(&self, event: L1Event) {
-        self.queue.push(event);
-        self.event_signal.notify_one();
-    }
-
-    /// Cleans up resources on shutdown.
-    async fn cleanup(&mut self) {
-        if let Some(id) = self.listener_id.take() {
-            let _ = self.client.rpc_api().unregister_listener(id).await;
-        }
-        let _ = self.client.disconnect().await;
-    }
-
     /// Runs the event loop until shutdown is signaled.
-    async fn run(mut self, shutdown: Arc<Notify>) {
+    pub async fn run(mut self, shutdown: Arc<Notify>) {
         loop {
             select_biased! {
                 _ = shutdown.notified().fuse() => {
@@ -192,13 +120,27 @@ impl WorkerContext {
         self.cleanup().await;
         log::info!("L1 bridge worker stopped");
     }
+
+    /// Emits an event to the queue and signals consumers.
+    fn push_event(&self, event: L1Event) {
+        self.queue.push(event);
+        self.event_signal.notify_one();
+    }
+
+    /// Cleans up resources on shutdown.
+    async fn cleanup(&mut self) {
+        if let Some(id) = self.listener_id.take() {
+            let _ = self.client.rpc_api().unregister_listener(id).await;
+        }
+        let _ = self.client.disconnect().await;
+    }
 }
 
 // ============================================================================
 // Connection Handlers
 // ============================================================================
 
-impl WorkerContext {
+impl BridgeWorker {
     /// Handles successful connection to the L1 node.
     async fn handle_connected(&mut self) {
         log::info!("L1 bridge connected to {}", self.client.url().unwrap_or_default());
@@ -247,15 +189,15 @@ impl WorkerContext {
 // Sync Handlers
 // ============================================================================
 
-impl WorkerContext {
+impl BridgeWorker {
     /// Performs initial sync from last checkpoint to current chain tip.
     async fn perform_initial_sync(&mut self) {
-        let last_processed = self.state.last_processed();
+        let last_processed = self.chain_state.last_processed();
 
         match self.sync_from_checkpoint(last_processed).await {
             Ok(last_coord) => {
                 if let Some(coord) = last_coord {
-                    self.state.set_last_processed(coord);
+                    self.chain_state.set_last_processed(coord);
                 }
                 self.push_event(L1Event::Synced);
                 self.needs_initial_sync = false;
@@ -280,9 +222,9 @@ impl WorkerContext {
 
         // Record pruning point if starting fresh.
         if last_processed.is_none() {
-            self.state.record_block(ChainCoordinate::new(
+            self.chain_state.record_block(ChainCoordinate::new(
                 dag_info.pruning_point_hash,
-                self.state.initial_index(),
+                self.chain_state.initial_index(),
             ));
         }
 
@@ -314,7 +256,7 @@ impl WorkerContext {
         );
 
         let mut last_block = None;
-        for &hash in &added_hashes {
+        for &hash in &*added_hashes {
             if let Some(coord) = self.fetch_and_emit_block(hash).await {
                 last_block = Some(coord);
             }
@@ -350,7 +292,7 @@ impl WorkerContext {
 // Chain Event Handlers
 // ============================================================================
 
-impl WorkerContext {
+impl BridgeWorker {
     /// Handles a virtual chain change notification.
     async fn handle_chain_changed(&mut self, vcc: VirtualChainChangedNotification) {
         if !vcc.removed_chain_block_hashes.is_empty() {
@@ -370,7 +312,7 @@ impl WorkerContext {
         );
 
         let num_removed = vcc.removed_chain_block_hashes.len() as u64;
-        let rollback_index = self.state.current_index().saturating_sub(num_removed);
+        let rollback_index = self.chain_state.current_index().saturating_sub(num_removed);
 
         let Some(&first_added) = vcc.added_chain_block_hashes.first() else {
             return;
@@ -391,7 +333,7 @@ impl WorkerContext {
             common_ancestor
         );
 
-        self.state.set_last_processed(rollback_coord);
+        self.chain_state.set_last_processed(rollback_coord);
         self.push_event(L1Event::Rollback(rollback_coord));
     }
 
@@ -407,12 +349,13 @@ impl WorkerContext {
 
         let pruning_hash = dag_info.pruning_point_hash;
 
-        let Some(coord) = self.state.get_coordinate_for_hash(&pruning_hash) else {
+        let Some(coord) = self.chain_state.get_coordinate_for_hash(&pruning_hash) else {
             log::debug!("L1 bridge: pruning point {} not in tracked blocks", pruning_hash);
             return;
         };
 
-        let last_finalized_index = self.state.last_finalized().map(|c| c.index()).unwrap_or(0);
+        let last_finalized_index =
+            self.chain_state.last_finalized().map(|c| c.index()).unwrap_or(0);
 
         if coord.index() > last_finalized_index {
             log::info!(
@@ -420,7 +363,7 @@ impl WorkerContext {
                 coord.index(),
                 pruning_hash
             );
-            self.state.set_last_finalized(coord);
+            self.chain_state.set_last_finalized(coord);
             self.push_event(L1Event::Finalized(coord));
         }
     }
@@ -435,11 +378,11 @@ impl WorkerContext {
             }
         };
 
-        let index = self.state.next_index();
+        let index = self.chain_state.next_index();
         let coord = ChainCoordinate::new(block.header.hash, index);
 
-        self.state.set_last_processed(coord);
-        self.state.record_block(coord);
+        self.chain_state.set_last_processed(coord);
+        self.chain_state.record_block(coord);
         self.push_event(L1Event::BlockAdded { index, block: Box::new(block) });
 
         Some(coord)
