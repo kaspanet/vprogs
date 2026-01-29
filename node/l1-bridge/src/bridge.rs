@@ -11,7 +11,7 @@ pub struct L1Bridge {
     queue: Arc<SegQueue<L1Event>>,
     event_signal: Arc<Notify>,
     shutdown: Arc<Notify>,
-    handle: Option<JoinHandle<()>>,
+    handle: JoinHandle<()>,
 }
 
 impl L1Bridge {
@@ -47,7 +47,7 @@ impl L1Bridge {
             }
         });
 
-        Self { queue, event_signal, shutdown, handle: Some(handle) }
+        Self { queue, event_signal, shutdown, handle }
     }
 
     /// Pops an event from the queue, if available.
@@ -75,19 +75,8 @@ impl L1Bridge {
     }
 
     /// Shuts down the bridge and disconnects from the L1 node.
-    pub fn shutdown(mut self) {
+    pub fn shutdown(self) {
         self.shutdown.notify_one();
-        if let Some(handle) = self.handle.take() {
-            handle.join().expect("bridge worker panicked");
-        }
-    }
-}
-
-impl Drop for L1Bridge {
-    fn drop(&mut self) {
-        self.shutdown.notify_one();
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
+        self.handle.join().expect("bridge worker panicked");
     }
 }
