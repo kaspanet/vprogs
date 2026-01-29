@@ -3,7 +3,6 @@ mod config;
 mod error;
 pub mod event;
 mod state;
-mod sync;
 mod worker;
 
 pub use bridge::L1Bridge;
