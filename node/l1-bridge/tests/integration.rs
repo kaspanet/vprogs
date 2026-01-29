@@ -73,7 +73,7 @@ async fn test_bridge_syncs_from_specific_block() {
         .with_url(node.wrpc_borsh_url())
         .with_network_type(NetworkType::Simnet)
         .with_connect_strategy(ConnectStrategy::Fallback)
-        .with_last_processed(ChainCoordinate::new(start_from, 3));
+        .with_last_processed(Some(ChainCoordinate::new(start_from, 3)));
 
     let bridge = L1Bridge::new(config);
 
@@ -362,14 +362,11 @@ async fn setup_node_with_bridge(
 ) -> (L1Node, L1Bridge) {
     let node = L1Node::new().await;
 
-    let mut config = L1BridgeConfig::default()
+    let config = L1BridgeConfig::default()
         .with_url(node.wrpc_borsh_url())
         .with_network_type(NetworkType::Simnet)
-        .with_connect_strategy(strategy);
-
-    if let Some(coord) = last_processed {
-        config = config.with_last_processed(coord);
-    }
+        .with_connect_strategy(strategy)
+        .with_last_processed(last_processed);
 
     let bridge = L1Bridge::new(config);
 

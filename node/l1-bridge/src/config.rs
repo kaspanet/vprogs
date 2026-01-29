@@ -66,14 +66,14 @@ impl L1BridgeConfig {
     }
 
     /// Sets the last processed coordinate.
-    pub fn with_last_processed(mut self, coord: ChainCoordinate) -> Self {
-        self.last_processed = Some(coord);
+    pub fn with_last_processed(mut self, coord: Option<ChainCoordinate>) -> Self {
+        self.last_processed = coord;
         self
     }
 
     /// Sets the last finalized coordinate.
-    pub fn with_last_finalized(mut self, coord: ChainCoordinate) -> Self {
-        self.last_finalized = Some(coord);
+    pub fn with_last_finalized(mut self, coord: Option<ChainCoordinate>) -> Self {
+        self.last_finalized = coord;
         self
     }
 }
