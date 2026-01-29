@@ -18,13 +18,21 @@ use crate::{
 
 /// Background worker for L1 communication.
 pub struct BridgeWorker {
+    /// RPC client for L1 node communication.
     client: Arc<KaspaRpcClient>,
+    /// Tracks processed and finalized blocks.
     chain_state: ChainState,
+    /// Shared queue for emitting events to consumers.
     queue: Arc<SegQueue<L1Event>>,
+    /// Signal to wake consumers waiting for events.
     event_signal: Arc<Notify>,
+    /// Channel for receiving L1 chain notifications.
     notification_channel: Channel<Notification>,
+    /// Channel for RPC connection state changes.
     rpc_ctl_channel: workflow_core::channel::MultiplexerChannel<RpcState>,
+    /// Active notification listener ID, if subscribed.
     listener_id: Option<ListenerId>,
+    /// Whether initial sync is still pending.
     needs_initial_sync: bool,
 }
 
@@ -37,6 +45,7 @@ impl BridgeWorker {
     ) -> Option<Self> {
         let chain_state = ChainState::new(config.last_processed, config.last_finalized);
 
+        // Use resolver for public node discovery when no explicit URL is provided.
         let resolver = if config.url.is_none() { Some(Resolver::default()) } else { None };
         let client = match KaspaRpcClient::new_with_args(
             WrpcEncoding::Borsh,
@@ -55,14 +64,16 @@ impl BridgeWorker {
         // Get RPC control channel BEFORE connecting to not miss the Connected event.
         let rpc_ctl_channel = client.rpc_ctl().multiplexer().channel();
 
-        let connect_options = ConnectOptions {
-            block_async_connect: true,
-            connect_timeout: Some(Duration::from_millis(config.connect_timeout_ms)),
-            strategy: config.connect_strategy,
-            ..Default::default()
-        };
-
-        if let Err(e) = client.connect(Some(connect_options)).await {
+        // Initiate connection.
+        if let Err(e) = client
+            .connect(Some(ConnectOptions {
+                block_async_connect: true,
+                connect_timeout: Some(Duration::from_millis(config.connect_timeout_ms)),
+                strategy: config.connect_strategy,
+                ..Default::default()
+            }))
+            .await
+        {
             log::error!("Failed to initiate connection: {}", e);
             return None;
         }
@@ -82,6 +93,7 @@ impl BridgeWorker {
     /// Runs the event loop.
     pub async fn run(mut self, shutdown: Arc<Notify>) {
         loop {
+            // Priority: shutdown > connection state > chain notifications.
             select_biased! {
                 _ = shutdown.notified().fuse() => {
                     log::info!("L1 bridge shutdown requested");
@@ -172,6 +184,7 @@ impl BridgeWorker {
             ChannelType::Persistent,
         ));
 
+        // Subscribe to chain changes (new blocks, reorgs) and finalization (pruning point).
         for scope in [
             Scope::VirtualChainChanged(VirtualChainChangedScope::new(true)),
             Scope::PruningPointUtxoSetOverride(PruningPointUtxoSetOverrideScope {}),
@@ -311,9 +324,11 @@ impl BridgeWorker {
             vcc.removed_chain_block_hashes.len()
         );
 
+        // Calculate the index we're rolling back to.
         let num_removed = vcc.removed_chain_block_hashes.len() as u64;
         let rollback_index = self.chain_state.current_index().saturating_sub(num_removed);
 
+        // Find the common ancestor: parent of the first block in the new chain.
         let Some(&first_added) = vcc.added_chain_block_hashes.first() else {
             return;
         };
@@ -339,6 +354,7 @@ impl BridgeWorker {
 
     /// Handles finalization.
     async fn handle_finalization(&mut self) {
+        // Fetch current pruning point from the node.
         let dag_info = match self.client.get_block_dag_info().await {
             Ok(info) => info,
             Err(e) => {
@@ -349,11 +365,13 @@ impl BridgeWorker {
 
         let pruning_hash = dag_info.pruning_point_hash;
 
+        // Look up the index we assigned to this block when we processed it.
         let Some(coord) = self.chain_state.get_coordinate_for_hash(&pruning_hash) else {
             log::debug!("L1 bridge: pruning point {} not in tracked blocks", pruning_hash);
             return;
         };
 
+        // Only emit if the pruning point actually advanced.
         let last_finalized_index =
             self.chain_state.last_finalized().map(|c| c.index()).unwrap_or(0);
 
@@ -378,6 +396,7 @@ impl BridgeWorker {
             }
         };
 
+        // Assign sequential index and update state.
         let index = self.chain_state.next_index();
         let coord = ChainCoordinate::new(block.header.hash, index);
 

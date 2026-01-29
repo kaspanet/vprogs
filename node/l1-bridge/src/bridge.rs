@@ -7,9 +7,13 @@ use crate::{L1BridgeConfig, L1Event, worker::BridgeWorker};
 
 /// Bridge to the Kaspa L1 network that emits chain events.
 pub struct L1Bridge {
+    /// Lock-free queue for events produced by the worker.
     queue: Arc<SegQueue<L1Event>>,
+    /// Signal to wake consumers waiting for events.
     event_signal: Arc<Notify>,
+    /// Signal to request worker shutdown.
     shutdown: Arc<Notify>,
+    /// Worker thread handle.
     handle: JoinHandle<()>,
 }
 
@@ -20,6 +24,8 @@ impl L1Bridge {
         let event_signal = Arc::new(Notify::new());
         let shutdown = Arc::new(Notify::new());
 
+        // Spawn worker in a dedicated thread with its own single-threaded tokio runtime.
+        // This keeps async RPC operations isolated from the caller's runtime.
         let handle = std::thread::spawn({
             let queue = queue.clone();
             let event_signal = event_signal.clone();
