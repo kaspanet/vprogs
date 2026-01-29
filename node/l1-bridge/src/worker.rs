@@ -303,15 +303,19 @@ impl BridgeWorker {
 
     /// Handles sync errors.
     fn handle_sync_error(&mut self, e: String) {
-        let error_msg = e.to_string().to_lowercase();
+        let error_msg = e.to_lowercase();
 
-        // Check if this is a "checkpoint lost" error (pruned or reorged).
-        // This is a special case where we emit SyncLost instead of Error.
-        let is_checkpoint_lost = error_msg.contains("not found")
-            || error_msg.contains("pruned")
-            || error_msg.contains("reorged")
-            || error_msg.contains("not in chain")
-            || error_msg.contains("block is not in");
+        // Check if this is a "checkpoint lost" error (block pruned or no longer in chain).
+        //
+        // The RPC layer serializes errors to strings, so we must match on message contents.
+        // These patterns are based on kaspa-consensus-core error messages:
+        // - ConsensusError::BlockNotFound: "cannot find full block {hash}"
+        // - ConsensusError::HeaderNotFound: "cannot find header {hash}"
+        // - ConsensusError::MissingData: "some data is missing for block {hash}"
+        // - SyncManagerError::BlockNotInSelectedParentChain: "is not in selected parent chain"
+        let is_checkpoint_lost = error_msg.contains("cannot find")
+            || error_msg.contains("data is missing")
+            || error_msg.contains("not in selected parent chain");
 
         if is_checkpoint_lost {
             log::error!("L1 bridge: starting block no longer in chain: {}", e);
