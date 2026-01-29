@@ -47,11 +47,16 @@ impl BridgeWorker {
         shutdown: Arc<Notify>,
     ) -> JoinHandle<()> {
         std::thread::spawn(move || {
-            Builder::new_current_thread()
+            let runtime = Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .expect("failed to build tokio runtime")
-                .block_on(run_event_loop(config, queue, event_signal, shutdown))
+                .expect("failed to build tokio runtime");
+
+            runtime.block_on(async {
+                if let Some(ctx) = WorkerContext::new(config, queue, event_signal).await {
+                    ctx.run(shutdown).await;
+                }
+            });
         })
     }
 }
@@ -63,60 +68,6 @@ impl Drop for BridgeWorker {
             let _ = handle.join();
         }
     }
-}
-
-// ============================================================================
-// Event Loop
-// ============================================================================
-
-async fn run_event_loop(
-    config: L1BridgeConfig,
-    queue: Arc<SegQueue<L1Event>>,
-    event_signal: Arc<Notify>,
-    shutdown: Arc<Notify>,
-) {
-    let Some(mut ctx) = WorkerContext::new(config, queue, event_signal).await else {
-        return;
-    };
-
-    loop {
-        select_biased! {
-            _ = shutdown.notified().fuse() => {
-                log::info!("L1 bridge shutdown requested");
-                break;
-            }
-
-            msg = ctx.rpc_ctl_channel.receiver.recv().fuse() => {
-                match msg {
-                    Ok(RpcState::Connected) => ctx.handle_connected().await,
-                    Ok(RpcState::Disconnected) => ctx.handle_disconnected().await,
-                    Err(e) => {
-                        log::error!("RPC control channel error: {}", e);
-                        break;
-                    }
-                }
-            }
-
-            notification = ctx.notification_channel.receiver.recv().fuse() => {
-                match notification {
-                    Ok(Notification::VirtualChainChanged(vcc)) => {
-                        ctx.handle_chain_changed(vcc).await;
-                    }
-                    Ok(Notification::PruningPointUtxoSetOverride(_)) => {
-                        ctx.handle_finalization().await;
-                    }
-                    Ok(_) => {}
-                    Err(e) => {
-                        log::error!("Notification channel error: {}", e);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    ctx.cleanup().await;
-    log::info!("L1 bridge worker stopped");
 }
 
 // ============================================================================
@@ -198,6 +149,48 @@ impl WorkerContext {
             let _ = self.client.rpc_api().unregister_listener(id).await;
         }
         let _ = self.client.disconnect().await;
+    }
+
+    /// Runs the event loop until shutdown is signaled.
+    async fn run(mut self, shutdown: Arc<Notify>) {
+        loop {
+            select_biased! {
+                _ = shutdown.notified().fuse() => {
+                    log::info!("L1 bridge shutdown requested");
+                    break;
+                }
+
+                msg = self.rpc_ctl_channel.receiver.recv().fuse() => {
+                    match msg {
+                        Ok(RpcState::Connected) => self.handle_connected().await,
+                        Ok(RpcState::Disconnected) => self.handle_disconnected().await,
+                        Err(e) => {
+                            log::error!("RPC control channel error: {}", e);
+                            break;
+                        }
+                    }
+                }
+
+                notification = self.notification_channel.receiver.recv().fuse() => {
+                    match notification {
+                        Ok(Notification::VirtualChainChanged(vcc)) => {
+                            self.handle_chain_changed(vcc).await;
+                        }
+                        Ok(Notification::PruningPointUtxoSetOverride(_)) => {
+                            self.handle_finalization().await;
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            log::error!("Notification channel error: {}", e);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        self.cleanup().await;
+        log::info!("L1 bridge worker stopped");
     }
 }
 
