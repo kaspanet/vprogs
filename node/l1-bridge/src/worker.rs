@@ -13,7 +13,7 @@ use tokio::sync::Notify;
 use workflow_core::channel::Channel;
 
 use crate::{
-    ChainCoordinate, L1BridgeConfig, L1BridgeError, L1Event, Result, chain_state::ChainState,
+    ChainCoordinate, L1BridgeConfig, L1Event, chain_state::ChainState,
     kaspa_rpc_client_ext::KaspaRpcClientExt,
 };
 
@@ -201,7 +201,7 @@ impl BridgeWorker {
     }
 
     /// Subscribes to chain notifications.
-    async fn subscribe_to_notifications(&mut self) -> Result<()> {
+    async fn subscribe_to_notifications(&mut self) -> Result<(), String> {
         let id = self.client.rpc_api().register_new_listener(ChannelConnection::new(
             "vprogs-l1-bridge",
             self.notification_channel.sender.clone(),
@@ -213,11 +213,7 @@ impl BridgeWorker {
             Scope::VirtualChainChanged(VirtualChainChangedScope::new(true)),
             Scope::PruningPointUtxoSetOverride(PruningPointUtxoSetOverrideScope {}),
         ] {
-            self.client
-                .rpc_api()
-                .start_notify(id, scope)
-                .await
-                .map_err(|e| L1BridgeError::Rpc(e.to_string()))?;
+            self.client.rpc_api().start_notify(id, scope).await.map_err(|e| e.to_string())?;
         }
 
         self.listener_id = Some(id);
@@ -251,12 +247,12 @@ impl BridgeWorker {
     async fn sync_from_checkpoint(
         &mut self,
         last_processed: Option<ChainCoordinate>,
-    ) -> Result<Option<ChainCoordinate>> {
+    ) -> Result<Option<ChainCoordinate>, String> {
         let dag_info = self
             .client
             .get_block_dag_info()
             .await
-            .map_err(|e| L1BridgeError::Rpc(format!("get_block_dag_info failed: {}", e)))?;
+            .map_err(|e| format!("get_block_dag_info failed: {}", e))?;
 
         let start_hash = last_processed.map(|c| c.hash()).unwrap_or(dag_info.pruning_point_hash);
 
@@ -268,18 +264,19 @@ impl BridgeWorker {
             ));
         }
 
-        let virtual_chain =
-            self.client.get_virtual_chain_from_block(start_hash, true, None).await.map_err(
-                |e| L1BridgeError::Rpc(format!("get_virtual_chain_from_block failed: {}", e)),
-            )?;
+        let virtual_chain = self
+            .client
+            .get_virtual_chain_from_block(start_hash, true, None)
+            .await
+            .map_err(|e| format!("get_virtual_chain_from_block failed: {}", e))?;
 
         // Check if our checkpoint was reorged out.
         if !virtual_chain.removed_chain_block_hashes.is_empty() {
-            return Err(L1BridgeError::Rpc(format!(
+            return Err(format!(
                 "starting block {} was reorged out ({} blocks removed)",
                 start_hash,
                 virtual_chain.removed_chain_block_hashes.len()
-            )));
+            ));
         }
 
         let added_hashes = virtual_chain.added_chain_block_hashes;
@@ -305,7 +302,7 @@ impl BridgeWorker {
     }
 
     /// Handles sync errors.
-    fn handle_sync_error(&mut self, e: L1BridgeError) {
+    fn handle_sync_error(&mut self, e: String) {
         let error_msg = e.to_string().to_lowercase();
 
         // Check if this is a "checkpoint lost" error (pruned or reorged).
@@ -355,7 +352,7 @@ impl BridgeWorker {
     }
 
     /// Handles a reorg.
-    async fn handle_reorg(&mut self, vcc: &VirtualChainChangedNotification) -> Result<()> {
+    async fn handle_reorg(&mut self, vcc: &VirtualChainChangedNotification) -> Result<(), String> {
         log::info!(
             "L1 bridge: reorg detected, {} blocks removed",
             vcc.removed_chain_block_hashes.len()
@@ -366,15 +363,15 @@ impl BridgeWorker {
         let rollback_index = self.chain_state.current_index().saturating_sub(num_removed);
 
         // Find the common ancestor: parent of the first block in the new chain.
-        let first_added = vcc.added_chain_block_hashes.first().ok_or_else(|| {
-            L1BridgeError::Rpc("reorg notification has removed blocks but no added blocks".into())
-        })?;
+        let first_added = vcc
+            .added_chain_block_hashes
+            .first()
+            .ok_or("reorg notification has removed blocks but no added blocks")?;
 
         let parents = self.client.fetch_block_parents(*first_added).await?;
 
-        let common_ancestor = parents
-            .first()
-            .ok_or_else(|| L1BridgeError::Rpc(format!("block {} has no parents", first_added)))?;
+        let common_ancestor =
+            parents.first().ok_or_else(|| format!("block {} has no parents", first_added))?;
 
         let rollback_coord = ChainCoordinate::new(*common_ancestor, rollback_index);
         log::info!(
@@ -428,7 +425,7 @@ impl BridgeWorker {
     }
 
     /// Fetches a block and emits a BlockAdded event.
-    async fn fetch_and_emit_block(&mut self, hash: BlockHash) -> Result<ChainCoordinate> {
+    async fn fetch_and_emit_block(&mut self, hash: BlockHash) -> Result<ChainCoordinate, String> {
         let block = self.client.fetch_block(hash).await?;
 
         // Assign sequential index and update state.
