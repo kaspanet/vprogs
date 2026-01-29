@@ -65,7 +65,7 @@ impl BridgeWorker {
         shutdown: Arc<Notify>,
     ) {
         // Create internal state for tracking.
-        let state = BridgeState::new(config.last_processed, config.last_finalized);
+        let mut state = BridgeState::new(config.last_processed, config.last_finalized);
         // Create the RPC client.
         let resolver = if config.url.is_none() { Some(Resolver::default()) } else { None };
         let client = match KaspaRpcClient::new_with_args(
@@ -147,7 +147,7 @@ impl BridgeWorker {
                             // Perform initial sync if needed.
                             if needs_initial_sync {
                                 let last_processed = state.last_processed();
-                                match perform_initial_sync(&client, last_processed, &state, &queue, &notify).await {
+                                match perform_initial_sync(&client, last_processed, &mut state, &queue, &notify).await {
                                     Ok(last_coord) => {
                                         if let Some(coord) = last_coord {
                                             state.set_last_processed(coord);

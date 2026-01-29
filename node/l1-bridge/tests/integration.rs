@@ -126,7 +126,7 @@ async fn test_bridge_syncs_from_specific_block() {
             L1Event::BlockAdded { index, .. } => Some(*index),
             _ => None,
         })
-        .last()
+        .next_back()
         .unwrap();
     assert_eq!(last_index, 6);
 

@@ -1,25 +1,22 @@
-use std::{
-    collections::HashMap,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::collections::HashMap;
 
 use kaspa_hashes::Hash as BlockHash;
-use parking_lot::RwLock;
 
 use crate::ChainCoordinate;
 
 /// Tracks the internal state of the L1 bridge worker.
+/// This is only accessed from the single-threaded worker runtime.
 pub struct BridgeState {
     /// The last processed block.
-    last_processed_block: RwLock<Option<ChainCoordinate>>,
+    last_processed_block: Option<ChainCoordinate>,
     /// The initial index passed at construction (reference point for index calculations).
     initial_index: u64,
     /// Current block index (incremented for each block added).
-    current_index: AtomicU64,
+    current_index: u64,
     /// Mapping from block hash to index for finalization tracking.
-    hash_to_index: RwLock<HashMap<BlockHash, u64>>,
+    hash_to_index: HashMap<BlockHash, u64>,
     /// The last finalized block we've reported.
-    last_finalized_block: RwLock<Option<ChainCoordinate>>,
+    last_finalized_block: Option<ChainCoordinate>,
 }
 
 impl BridgeState {
@@ -43,11 +40,11 @@ impl BridgeState {
         }
 
         Self {
-            last_processed_block: RwLock::new(last_processed_block),
+            last_processed_block,
             initial_index: last_index,
-            current_index: AtomicU64::new(last_index),
-            hash_to_index: RwLock::new(hash_to_index),
-            last_finalized_block: RwLock::new(last_finalized_block),
+            current_index: last_index,
+            hash_to_index,
+            last_finalized_block,
         }
     }
 
@@ -57,45 +54,46 @@ impl BridgeState {
     }
 
     /// Records a block coordinate for finalization tracking.
-    pub fn record_block(&self, block: ChainCoordinate) {
-        self.hash_to_index.write().insert(block.hash(), block.index());
+    pub fn record_block(&mut self, block: ChainCoordinate) {
+        self.hash_to_index.insert(block.hash(), block.index());
     }
 
     /// Looks up the coordinate for a block hash (if tracked).
     pub fn get_coordinate_for_hash(&self, hash: &BlockHash) -> Option<ChainCoordinate> {
-        self.hash_to_index.read().get(hash).map(|&index| ChainCoordinate::new(*hash, index))
+        self.hash_to_index.get(hash).map(|&index| ChainCoordinate::new(*hash, index))
     }
 
     /// Returns the last finalized coordinate.
     pub fn last_finalized(&self) -> Option<ChainCoordinate> {
-        *self.last_finalized_block.read()
+        self.last_finalized_block
     }
 
     /// Updates the last finalized coordinate and prunes old hash mappings.
-    pub fn set_last_finalized(&self, coord: ChainCoordinate) {
-        *self.last_finalized_block.write() = Some(coord);
+    pub fn set_last_finalized(&mut self, coord: ChainCoordinate) {
+        self.last_finalized_block = Some(coord);
         // Prune hash mappings for blocks before the finalized index.
-        self.hash_to_index.write().retain(|_, &mut i| i >= coord.index());
+        self.hash_to_index.retain(|_, &mut i| i >= coord.index());
     }
 
     /// Returns the last processed coordinate.
     pub fn last_processed(&self) -> Option<ChainCoordinate> {
-        *self.last_processed_block.read()
+        self.last_processed_block
     }
 
     /// Updates the last processed coordinate.
-    pub fn set_last_processed(&self, coord: ChainCoordinate) {
-        *self.last_processed_block.write() = Some(coord);
-        self.current_index.store(coord.index(), Ordering::Release);
+    pub fn set_last_processed(&mut self, coord: ChainCoordinate) {
+        self.last_processed_block = Some(coord);
+        self.current_index = coord.index();
     }
 
     /// Returns the current block index.
     pub fn current_index(&self) -> u64 {
-        self.current_index.load(Ordering::Acquire)
+        self.current_index
     }
 
     /// Increments the index and returns the new value.
-    pub fn next_index(&self) -> u64 {
-        self.current_index.fetch_add(1, Ordering::AcqRel) + 1
+    pub fn next_index(&mut self) -> u64 {
+        self.current_index += 1;
+        self.current_index
     }
 }
