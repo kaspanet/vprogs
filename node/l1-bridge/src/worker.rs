@@ -16,7 +16,7 @@ use crate::{
     ChainCoordinate, L1BridgeConfig, L1BridgeError, L1Event, Result, chain_state::ChainState,
 };
 
-/// Background worker that handles L1 node communication.
+/// Background worker for L1 communication.
 pub struct BridgeWorker {
     client: Arc<KaspaRpcClient>,
     chain_state: ChainState,
@@ -29,7 +29,7 @@ pub struct BridgeWorker {
 }
 
 impl BridgeWorker {
-    /// Creates a new bridge worker, connecting to the L1 node.
+    /// Creates a new bridge worker.
     pub async fn new(
         config: &L1BridgeConfig,
         queue: Arc<SegQueue<L1Event>>,
@@ -79,7 +79,7 @@ impl BridgeWorker {
         })
     }
 
-    /// Runs the event loop until shutdown is signaled.
+    /// Runs the event loop.
     pub async fn run(mut self, shutdown: Arc<Notify>) {
         loop {
             select_biased! {
@@ -121,13 +121,13 @@ impl BridgeWorker {
         log::info!("L1 bridge worker stopped");
     }
 
-    /// Emits an event to the queue and signals consumers.
+    /// Emits an event.
     fn push_event(&self, event: L1Event) {
         self.queue.push(event);
         self.event_signal.notify_one();
     }
 
-    /// Cleans up resources on shutdown.
+    /// Cleans up resources.
     async fn cleanup(&mut self) {
         if let Some(id) = self.listener_id.take() {
             let _ = self.client.rpc_api().unregister_listener(id).await;
@@ -141,7 +141,7 @@ impl BridgeWorker {
 // ============================================================================
 
 impl BridgeWorker {
-    /// Handles successful connection to the L1 node.
+    /// Handles connection.
     async fn handle_connected(&mut self) {
         log::info!("L1 bridge connected to {}", self.client.url().unwrap_or_default());
 
@@ -153,7 +153,7 @@ impl BridgeWorker {
         }
     }
 
-    /// Handles disconnection from the L1 node.
+    /// Handles disconnection.
     async fn handle_disconnected(&mut self) {
         log::info!("L1 bridge disconnected");
 
@@ -164,7 +164,7 @@ impl BridgeWorker {
         self.push_event(L1Event::Disconnected);
     }
 
-    /// Subscribes to chain notifications from the L1 node.
+    /// Subscribes to chain notifications.
     async fn subscribe_to_notifications(&mut self) {
         let id = self.client.rpc_api().register_new_listener(ChannelConnection::new(
             "vprogs-l1-bridge",
@@ -190,7 +190,7 @@ impl BridgeWorker {
 // ============================================================================
 
 impl BridgeWorker {
-    /// Performs initial sync from last checkpoint to current chain tip.
+    /// Performs initial sync.
     async fn perform_initial_sync(&mut self) {
         let last_processed = self.chain_state.last_processed();
 
@@ -207,7 +207,7 @@ impl BridgeWorker {
         }
     }
 
-    /// Syncs blocks from a checkpoint to the current chain tip.
+    /// Syncs blocks from a checkpoint.
     async fn sync_from_checkpoint(
         &mut self,
         last_processed: Option<ChainCoordinate>,
@@ -265,7 +265,7 @@ impl BridgeWorker {
         Ok(last_block)
     }
 
-    /// Handles sync errors, distinguishing recoverable from fatal errors.
+    /// Handles sync errors.
     fn handle_sync_error(&mut self, e: L1BridgeError) {
         let error_msg = e.to_string().to_lowercase();
 
@@ -293,7 +293,7 @@ impl BridgeWorker {
 // ============================================================================
 
 impl BridgeWorker {
-    /// Handles a virtual chain change notification.
+    /// Handles a chain change.
     async fn handle_chain_changed(&mut self, vcc: VirtualChainChangedNotification) {
         if !vcc.removed_chain_block_hashes.is_empty() {
             self.handle_reorg(&vcc).await;
@@ -304,7 +304,7 @@ impl BridgeWorker {
         }
     }
 
-    /// Handles a chain reorganization.
+    /// Handles a reorg.
     async fn handle_reorg(&mut self, vcc: &VirtualChainChangedNotification) {
         log::info!(
             "L1 bridge: reorg detected, {} blocks removed",
@@ -337,7 +337,7 @@ impl BridgeWorker {
         self.push_event(L1Event::Rollback(rollback_coord));
     }
 
-    /// Handles a pruning point advancement (finalization).
+    /// Handles finalization.
     async fn handle_finalization(&mut self) {
         let dag_info = match self.client.get_block_dag_info().await {
             Ok(info) => info,
@@ -368,7 +368,7 @@ impl BridgeWorker {
         }
     }
 
-    /// Fetches a block and emits a BlockAdded event.
+    /// Fetches and emits a block.
     async fn fetch_and_emit_block(&mut self, hash: BlockHash) -> Option<ChainCoordinate> {
         let block = match fetch_block(&self.client, hash).await {
             Ok(block) => block,

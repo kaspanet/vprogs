@@ -4,8 +4,7 @@ use kaspa_hashes::Hash as BlockHash;
 
 use crate::ChainCoordinate;
 
-/// Tracks the chain synchronization state.
-/// This is only accessed from the single-threaded worker runtime.
+/// Tracks chain synchronization state.
 pub struct ChainState {
     /// The last processed block.
     last_processed_block: Option<ChainCoordinate>,
@@ -20,7 +19,7 @@ pub struct ChainState {
 }
 
 impl ChainState {
-    /// Creates a new chain state tracker.
+    /// Creates a new chain state.
     pub fn new(
         last_processed_block: Option<ChainCoordinate>,
         last_finalized_block: Option<ChainCoordinate>,
@@ -48,17 +47,17 @@ impl ChainState {
         }
     }
 
-    /// Returns the initial index (the starting point for index calculations).
+    /// Returns the initial index.
     pub fn initial_index(&self) -> u64 {
         self.initial_index
     }
 
-    /// Records a block coordinate for finalization tracking.
+    /// Records a block coordinate.
     pub fn record_block(&mut self, block: ChainCoordinate) {
         self.hash_to_index.insert(block.hash(), block.index());
     }
 
-    /// Looks up the coordinate for a block hash (if tracked).
+    /// Looks up the coordinate for a block hash.
     pub fn get_coordinate_for_hash(&self, hash: &BlockHash) -> Option<ChainCoordinate> {
         self.hash_to_index.get(hash).map(|&index| ChainCoordinate::new(*hash, index))
     }
@@ -68,7 +67,7 @@ impl ChainState {
         self.last_finalized_block
     }
 
-    /// Updates the last finalized coordinate and prunes old hash mappings.
+    /// Sets the last finalized coordinate and prunes old hash mappings.
     pub fn set_last_finalized(&mut self, coord: ChainCoordinate) {
         self.last_finalized_block = Some(coord);
         // Prune hash mappings for blocks before the finalized index.
@@ -80,7 +79,7 @@ impl ChainState {
         self.last_processed_block
     }
 
-    /// Updates the last processed coordinate.
+    /// Sets the last processed coordinate.
     pub fn set_last_processed(&mut self, coord: ChainCoordinate) {
         self.last_processed_block = Some(coord);
         self.current_index = coord.index();
@@ -91,7 +90,7 @@ impl ChainState {
         self.current_index
     }
 
-    /// Increments the index and returns the new value.
+    /// Returns the next index.
     pub fn next_index(&mut self) -> u64 {
         self.current_index += 1;
         self.current_index
