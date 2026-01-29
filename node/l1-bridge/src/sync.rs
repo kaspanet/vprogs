@@ -33,7 +33,7 @@ pub async fn perform_initial_sync(
     last_processed: Option<ChainCoordinate>,
     state: &mut BridgeState,
     queue: &Arc<SegQueue<L1Event>>,
-    notify: &Arc<Notify>,
+    event_signal: &Arc<Notify>,
 ) -> Result<Option<ChainCoordinate>> {
     // Get DAG info for pruning point.
     let dag_info = client
@@ -96,7 +96,7 @@ pub async fn perform_initial_sync(
         // Record the hash->index mapping for finalization tracking.
         state.record_block(block_coord);
         queue.push(L1Event::BlockAdded { index, block: Box::new(block) });
-        notify.notify_one();
+        event_signal.notify_one();
     }
 
     Ok(last_block)

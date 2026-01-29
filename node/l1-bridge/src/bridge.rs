@@ -9,7 +9,7 @@ use crate::{L1BridgeConfig, L1Event, worker::BridgeWorker};
 /// suitable for scheduler integration.
 pub struct L1Bridge {
     queue: Arc<SegQueue<L1Event>>,
-    notify: Arc<Notify>,
+    event_signal: Arc<Notify>,
     worker: BridgeWorker,
 }
 
@@ -24,13 +24,9 @@ impl L1Bridge {
     /// 5. Switches to live streaming mode
     pub fn new(config: L1BridgeConfig) -> Self {
         let queue = Arc::new(SegQueue::new());
-        let notify = Arc::new(Notify::new());
-        Self { worker: BridgeWorker::spawn(config, queue.clone(), notify.clone()), queue, notify }
-    }
-
-    /// Shuts down the bridge and disconnects from the L1 node.
-    pub fn shutdown(self) {
-        self.worker.shutdown();
+        let event_signal = Arc::new(Notify::new());
+        let worker = BridgeWorker::spawn(config, queue.clone(), event_signal.clone());
+        Self { queue, event_signal, worker }
     }
 
     /// Pops an event from the queue, if available.
@@ -44,7 +40,7 @@ impl L1Bridge {
             if let Some(event) = self.queue.pop() {
                 return event;
             }
-            self.notify.notified().await;
+            self.event_signal.notified().await;
         }
     }
 
@@ -55,5 +51,10 @@ impl L1Bridge {
             events.push(event);
         }
         events
+    }
+
+    /// Shuts down the bridge and disconnects from the L1 node.
+    pub fn shutdown(self) {
+        self.worker.shutdown();
     }
 }

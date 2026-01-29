@@ -28,10 +28,10 @@ impl BridgeWorker {
     pub fn spawn(
         config: L1BridgeConfig,
         queue: Arc<SegQueue<L1Event>>,
-        notify: Arc<Notify>,
+        event_signal: Arc<Notify>,
     ) -> Self {
         let shutdown = Arc::new(Notify::new());
-        let handle = Self::start(config, queue, notify, shutdown.clone());
+        let handle = Self::start(config, queue, event_signal, shutdown.clone());
         Self { shutdown, handle: Some(handle) }
     }
 
@@ -46,7 +46,7 @@ impl BridgeWorker {
     fn start(
         config: L1BridgeConfig,
         queue: Arc<SegQueue<L1Event>>,
-        notify: Arc<Notify>,
+        event_signal: Arc<Notify>,
         shutdown: Arc<Notify>,
     ) -> JoinHandle<()> {
         std::thread::spawn(move || {
@@ -54,14 +54,14 @@ impl BridgeWorker {
                 .enable_all()
                 .build()
                 .expect("failed to build tokio runtime")
-                .block_on(Self::run(config, queue, notify, shutdown))
+                .block_on(Self::run(config, queue, event_signal, shutdown))
         })
     }
 
     async fn run(
         config: L1BridgeConfig,
         queue: Arc<SegQueue<L1Event>>,
-        notify: Arc<Notify>,
+        event_signal: Arc<Notify>,
         shutdown: Arc<Notify>,
     ) {
         // Create internal state for tracking.
@@ -106,7 +106,7 @@ impl BridgeWorker {
 
         let push_event = |event: L1Event| {
             queue.push(event);
-            notify.notify_one();
+            event_signal.notify_one();
         };
 
         loop {
@@ -147,7 +147,7 @@ impl BridgeWorker {
                             // Perform initial sync if needed.
                             if needs_initial_sync {
                                 let last_processed = state.last_processed();
-                                match perform_initial_sync(&client, last_processed, &mut state, &queue, &notify).await {
+                                match perform_initial_sync(&client, last_processed, &mut state, &queue, &event_signal).await {
                                     Ok(last_coord) => {
                                         if let Some(coord) = last_coord {
                                             state.set_last_processed(coord);
