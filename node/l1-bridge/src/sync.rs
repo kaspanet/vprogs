@@ -31,7 +31,7 @@ pub async fn get_block_parents(
 pub async fn perform_initial_sync(
     client: &Arc<KaspaRpcClient>,
     last_processed: Option<ChainCoordinate>,
-    state: &Arc<BridgeState>,
+    state: &BridgeState,
     queue: &Arc<SegQueue<L1Event>>,
     notify: &Arc<Notify>,
 ) -> Result<Option<ChainCoordinate>> {

@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use kaspa_hashes::Hash as BlockHash;
@@ -8,10 +8,8 @@ use parking_lot::RwLock;
 
 use crate::ChainCoordinate;
 
-/// Tracks the state of the L1 bridge.
+/// Tracks the internal state of the L1 bridge worker.
 pub struct BridgeState {
-    connected: AtomicBool,
-    synced: AtomicBool,
     /// The last processed block.
     last_processed_block: RwLock<Option<ChainCoordinate>>,
     /// The initial index passed at construction (reference point for index calculations).
@@ -22,14 +20,10 @@ pub struct BridgeState {
     hash_to_index: RwLock<HashMap<BlockHash, u64>>,
     /// The last finalized block we've reported.
     last_finalized_block: RwLock<Option<ChainCoordinate>>,
-    reconnect_count: AtomicU64,
 }
 
 impl BridgeState {
     /// Creates a new bridge state tracker.
-    ///
-    /// - `last_processed_block`: The last processed block, or None to start fresh
-    /// - `last_finalized_block`: The last finalized block, or None if unknown
     pub fn new(
         last_processed_block: Option<ChainCoordinate>,
         last_finalized_block: Option<ChainCoordinate>,
@@ -49,14 +43,11 @@ impl BridgeState {
         }
 
         Self {
-            connected: AtomicBool::new(false),
-            synced: AtomicBool::new(false),
             last_processed_block: RwLock::new(last_processed_block),
             initial_index: last_index,
             current_index: AtomicU64::new(last_index),
             hash_to_index: RwLock::new(hash_to_index),
             last_finalized_block: RwLock::new(last_finalized_block),
-            reconnect_count: AtomicU64::new(0),
         }
     }
 
@@ -87,26 +78,6 @@ impl BridgeState {
         self.hash_to_index.write().retain(|_, &mut i| i >= coord.index());
     }
 
-    /// Returns whether the bridge is currently connected.
-    pub fn is_connected(&self) -> bool {
-        self.connected.load(Ordering::Acquire)
-    }
-
-    /// Sets the connection state.
-    pub fn set_connected(&self, connected: bool) {
-        self.connected.store(connected, Ordering::Release);
-    }
-
-    /// Returns whether the bridge has completed initial sync.
-    pub fn is_synced(&self) -> bool {
-        self.synced.load(Ordering::Acquire)
-    }
-
-    /// Sets the synced state.
-    pub fn set_synced(&self, synced: bool) {
-        self.synced.store(synced, Ordering::Release);
-    }
-
     /// Returns the last processed coordinate.
     pub fn last_processed(&self) -> Option<ChainCoordinate> {
         *self.last_processed_block.read()
@@ -126,10 +97,5 @@ impl BridgeState {
     /// Increments the index and returns the new value.
     pub fn next_index(&self) -> u64 {
         self.current_index.fetch_add(1, Ordering::AcqRel) + 1
-    }
-
-    /// Increments the reconnect count and returns the new value.
-    pub(crate) fn increment_reconnect_count(&self) -> u64 {
-        self.reconnect_count.fetch_add(1, Ordering::Relaxed) + 1
     }
 }

@@ -35,26 +35,26 @@ async fn test_bridge_syncs_and_receives_block_events() {
     .expect("timeout waiting for block events");
 
     // Verify we received BlockAdded events for all mined blocks.
-    let block_added_hashes: Vec<_> = events
+    let block_added: Vec<_> = events
         .iter()
         .filter_map(|e| match e {
-            L1Event::BlockAdded { block, .. } => Some(block.header.hash),
+            L1Event::BlockAdded { index, block } => Some((*index, block.header.hash)),
             _ => None,
         })
         .collect();
 
     for hash in &mined_hashes {
         assert!(
-            block_added_hashes.contains(hash),
+            block_added.iter().any(|(_, h)| h == hash),
             "block {} was mined but not received via bridge",
             hash
         );
     }
 
-    // Verify bridge state.
-    assert!(bridge.state().is_synced());
-    assert!(bridge.state().is_connected());
-    assert_eq!(bridge.state().last_processed().map(|c| c.hash()), Some(last_hash));
+    // Verify last block hash matches.
+    let (last_index, last_received_hash) = block_added.last().unwrap();
+    assert_eq!(*last_received_hash, last_hash);
+    assert_eq!(*last_index, block_added.len() as u64);
 
     bridge.shutdown();
     node.shutdown().await;
@@ -121,7 +121,15 @@ async fn test_bridge_syncs_from_specific_block() {
     }
 
     // Verify the index is correct (started at 3, added 3 new blocks = 6).
-    assert_eq!(bridge.state().current_index(), 6);
+    let last_index = events
+        .iter()
+        .filter_map(|e| match e {
+            L1Event::BlockAdded { index, .. } => Some(*index),
+            _ => None,
+        })
+        .last()
+        .unwrap();
+    assert_eq!(last_index, 6);
 
     bridge.shutdown();
     node.shutdown().await;
@@ -311,9 +319,6 @@ async fn test_bridge_index_tracking() {
         .await
         .expect("timeout waiting for Synced event");
 
-    // Initial index should be 0.
-    let initial_index = bridge.state().current_index();
-
     // Mine blocks.
     const NUM_BLOCKS: usize = 5;
     let mined_hashes = node.mine_blocks(NUM_BLOCKS).await;
@@ -338,15 +343,15 @@ async fn test_bridge_index_tracking() {
         })
         .collect();
 
-    // Verify indices start from initial_index + 1 and are sequential.
+    // Verify indices start from 1 (fresh bridge starts at 0) and are sequential.
     assert!(!indices.is_empty());
-    assert_eq!(indices[0], initial_index + 1);
+    assert_eq!(indices[0], 1);
     for window in indices.windows(2) {
         assert_eq!(window[1], window[0] + 1);
     }
 
-    // Verify bridge's current index matches the last event index.
-    assert_eq!(bridge.state().current_index(), *indices.last().unwrap());
+    // Verify last index matches expected count.
+    assert_eq!(*indices.last().unwrap(), NUM_BLOCKS as u64);
 
     bridge.shutdown();
     node.shutdown().await;

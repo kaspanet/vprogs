@@ -29,10 +29,9 @@ impl BridgeWorker {
         config: L1BridgeConfig,
         queue: Arc<SegQueue<L1Event>>,
         notify: Arc<Notify>,
-        state: Arc<BridgeState>,
     ) -> Self {
         let shutdown = Arc::new(Notify::new());
-        let handle = Self::start(config, queue, notify, state, shutdown.clone());
+        let handle = Self::start(config, queue, notify, shutdown.clone());
         Self { shutdown, handle: Some(handle) }
     }
 
@@ -48,7 +47,6 @@ impl BridgeWorker {
         config: L1BridgeConfig,
         queue: Arc<SegQueue<L1Event>>,
         notify: Arc<Notify>,
-        state: Arc<BridgeState>,
         shutdown: Arc<Notify>,
     ) -> JoinHandle<()> {
         std::thread::spawn(move || {
@@ -56,7 +54,7 @@ impl BridgeWorker {
                 .enable_all()
                 .build()
                 .expect("failed to build tokio runtime")
-                .block_on(Self::run(config, queue, notify, state, shutdown))
+                .block_on(Self::run(config, queue, notify, shutdown))
         })
     }
 
@@ -64,9 +62,10 @@ impl BridgeWorker {
         config: L1BridgeConfig,
         queue: Arc<SegQueue<L1Event>>,
         notify: Arc<Notify>,
-        state: Arc<BridgeState>,
         shutdown: Arc<Notify>,
     ) {
+        // Create internal state for tracking.
+        let state = BridgeState::new(config.last_processed, config.last_finalized);
         // Create the RPC client.
         let resolver = if config.url.is_none() { Some(Resolver::default()) } else { None };
         let client = match KaspaRpcClient::new_with_args(
@@ -123,8 +122,6 @@ impl BridgeWorker {
                     match msg {
                         Ok(RpcState::Connected) => {
                             log::info!("L1 bridge connected to {}", client.url().unwrap_or_default());
-                            state.set_connected(true);
-                            state.increment_reconnect_count();
 
                             // Register notification listener and subscribe to notifications.
                             let id = client.rpc_api().register_new_listener(
@@ -155,7 +152,6 @@ impl BridgeWorker {
                                         if let Some(coord) = last_coord {
                                             state.set_last_processed(coord);
                                         }
-                                        state.set_synced(true);
                                         push_event(L1Event::Synced);
                                         needs_initial_sync = false;
                                         log::info!("L1 bridge initial sync complete");
@@ -191,7 +187,6 @@ impl BridgeWorker {
                         }
                         Ok(RpcState::Disconnected) => {
                             log::info!("L1 bridge disconnected");
-                            state.set_connected(false);
 
                             // Unregister listener.
                             if let Some(id) = listener_id.take() {
@@ -312,7 +307,6 @@ impl BridgeWorker {
             let _ = client.rpc_api().unregister_listener(id).await;
         }
         let _ = client.disconnect().await;
-        state.set_connected(false);
         log::info!("L1 bridge worker stopped");
     }
 }
