@@ -5,7 +5,7 @@ use futures::{FutureExt, select_biased};
 use kaspa_hashes::Hash as BlockHash;
 use kaspa_notify::scope::{PruningPointUtxoSetOverrideScope, Scope, VirtualChainChangedScope};
 use kaspa_rpc_core::{
-    Notification, RpcBlock, VirtualChainChangedNotification,
+    Notification, VirtualChainChangedNotification,
     api::{ctl::RpcState, rpc::RpcApi},
 };
 use kaspa_wrpc_client::prelude::*;
@@ -14,6 +14,7 @@ use workflow_core::channel::Channel;
 
 use crate::{
     ChainCoordinate, L1BridgeConfig, L1BridgeError, L1Event, Result, chain_state::ChainState,
+    kaspa_rpc_client_ext::KaspaRpcClientExt,
 };
 
 /// Background worker for L1 communication.
@@ -333,7 +334,7 @@ impl BridgeWorker {
             return;
         };
 
-        let Ok(parents) = fetch_block_parents(&self.client, first_added).await else {
+        let Ok(parents) = self.client.fetch_block_parents(first_added).await else {
             return;
         };
 
@@ -388,7 +389,7 @@ impl BridgeWorker {
 
     /// Fetches and emits a block.
     async fn fetch_and_emit_block(&mut self, hash: BlockHash) -> Option<ChainCoordinate> {
-        let block = match fetch_block(&self.client, hash).await {
+        let block = match self.client.fetch_block(hash).await {
             Ok(block) => block,
             Err(e) => {
                 log::error!("Failed to fetch block {}: {}", hash, e);
@@ -406,20 +407,4 @@ impl BridgeWorker {
 
         Some(coord)
     }
-}
-
-// ============================================================================
-// RPC Helpers
-// ============================================================================
-
-async fn fetch_block(client: &KaspaRpcClient, hash: BlockHash) -> Result<RpcBlock> {
-    client
-        .get_block(hash, true)
-        .await
-        .map_err(|e| L1BridgeError::RpcCall(format!("get_block failed: {}", e)))
-}
-
-async fn fetch_block_parents(client: &KaspaRpcClient, hash: BlockHash) -> Result<Vec<BlockHash>> {
-    let block = fetch_block(client, hash).await?;
-    Ok(block.header.parents_by_level.first().cloned().unwrap_or_default())
 }

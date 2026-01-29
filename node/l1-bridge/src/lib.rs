@@ -3,6 +3,7 @@ mod chain_state;
 mod config;
 mod error;
 pub mod event;
+mod kaspa_rpc_client_ext;
 mod worker;
 
 pub use bridge::L1Bridge;
