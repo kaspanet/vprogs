@@ -90,7 +90,7 @@ impl BridgeWorker {
 
         // Connect with configured options.
         let connect_options = ConnectOptions {
-            block_async_connect: config.block_async_connect,
+            block_async_connect: true,
             connect_timeout: Some(Duration::from_millis(config.connect_timeout_ms)),
             strategy: config.connect_strategy,
             ..Default::default()

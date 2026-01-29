@@ -13,8 +13,6 @@ pub struct L1BridgeConfig {
     pub network_id: NetworkId,
     /// Connection timeout in milliseconds.
     pub connect_timeout_ms: u64,
-    /// Whether to block on initial connection.
-    pub block_async_connect: bool,
     /// Reconnection strategy.
     pub connect_strategy: ConnectStrategy,
     /// Last processed coordinate, or None to start from the pruning point.
@@ -29,7 +27,6 @@ impl Default for L1BridgeConfig {
             url: None,
             network_id: NetworkId::new(NetworkType::Mainnet),
             connect_timeout_ms: 10_000,
-            block_async_connect: false,
             connect_strategy: ConnectStrategy::Retry,
             last_processed: None,
             last_finalized: None,
@@ -59,12 +56,6 @@ impl L1BridgeConfig {
     /// Sets the connection timeout in milliseconds.
     pub fn with_connect_timeout(mut self, timeout_ms: u64) -> Self {
         self.connect_timeout_ms = timeout_ms;
-        self
-    }
-
-    /// Sets whether to block on initial connection.
-    pub fn with_blocking_connect(mut self, block: bool) -> Self {
-        self.block_async_connect = block;
         self
     }
 

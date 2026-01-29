@@ -25,8 +25,7 @@ impl L1Bridge {
     pub fn new(config: L1BridgeConfig) -> Self {
         let queue = Arc::new(SegQueue::new());
         let notify = Arc::new(Notify::new());
-        let worker = BridgeWorker::spawn(config, queue.clone(), notify.clone());
-        Self { queue, notify, worker }
+        Self { worker: BridgeWorker::spawn(config, queue.clone(), notify.clone()), queue, notify }
     }
 
     /// Shuts down the bridge and disconnects from the L1 node.
