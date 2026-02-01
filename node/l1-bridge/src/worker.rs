@@ -13,8 +13,7 @@ use tokio::sync::Notify;
 use workflow_core::channel::Channel;
 
 use crate::{
-    ChainCoordinate, L1BridgeConfig, L1Event, chain_state::ChainState,
-    kaspa_rpc_client_ext::KaspaRpcClientExt,
+    ChainStateCoordinate, ChainState, L1BridgeConfig, L1Event, kaspa_rpc_client_ext::KaspaRpcClientExt,
 };
 
 /// Background worker for L1 communication.
@@ -46,7 +45,7 @@ impl BridgeWorker {
         queue: Arc<SegQueue<L1Event>>,
         event_signal: Arc<Notify>,
     ) -> Option<Self> {
-        let chain_state = ChainState::new(config.last_processed, config.last_finalized);
+        let chain_state = ChainState::new_legacy(config.last_processed, config.last_finalized);
 
         // Use resolver for public node discovery when no explicit URL is provided.
         let resolver = if config.url.is_none() { Some(Resolver::default()) } else { None };
@@ -246,8 +245,8 @@ impl BridgeWorker {
     /// Syncs blocks from a checkpoint.
     async fn sync_from_checkpoint(
         &mut self,
-        last_processed: Option<ChainCoordinate>,
-    ) -> Result<Option<ChainCoordinate>, String> {
+        last_processed: Option<ChainStateCoordinate>,
+    ) -> Result<Option<ChainStateCoordinate>, String> {
         let dag_info = self
             .client
             .get_block_dag_info()
@@ -258,7 +257,7 @@ impl BridgeWorker {
 
         // Record pruning point if starting fresh.
         if last_processed.is_none() {
-            self.chain_state.record_block(ChainCoordinate::new(
+            self.chain_state.record_block(ChainStateCoordinate::new(
                 dag_info.pruning_point_hash,
                 self.chain_state.initial_index(),
             ));
@@ -377,7 +376,7 @@ impl BridgeWorker {
         let common_ancestor =
             parents.first().ok_or_else(|| format!("block {} has no parents", first_added))?;
 
-        let rollback_coord = ChainCoordinate::new(*common_ancestor, rollback_index);
+        let rollback_coord = ChainStateCoordinate::new(*common_ancestor, rollback_index);
         log::info!(
             "L1 bridge: rolling back to index {} (hash {})",
             rollback_index,
@@ -429,12 +428,12 @@ impl BridgeWorker {
     }
 
     /// Fetches a block and emits a BlockAdded event.
-    async fn fetch_and_emit_block(&mut self, hash: BlockHash) -> Result<ChainCoordinate, String> {
+    async fn fetch_and_emit_block(&mut self, hash: BlockHash) -> Result<ChainStateCoordinate, String> {
         let block = self.client.fetch_block(hash).await?;
 
         // Assign sequential index and update state.
         let index = self.chain_state.next_index();
-        let coord = ChainCoordinate::new(block.header.hash, index);
+        let coord = ChainStateCoordinate::new(block.header.hash, index);
 
         self.chain_state.set_last_processed(coord);
         self.chain_state.record_block(coord);

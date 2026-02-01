@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use tokio::time::timeout;
 use vprogs_node_l1_bridge::{
-    ChainCoordinate, ConnectStrategy, L1Bridge, L1BridgeConfig, L1Event, NetworkType,
+    ChainStateCoordinate, ConnectStrategy, L1Bridge, L1BridgeConfig, L1Event, NetworkType,
 };
 use vprogs_node_test_suite::{L1BridgeExt, L1Node};
 
@@ -73,7 +73,7 @@ async fn test_bridge_syncs_from_specific_block() {
         .with_url(node.wrpc_borsh_url())
         .with_network_type(NetworkType::Simnet)
         .with_connect_strategy(ConnectStrategy::Fallback)
-        .with_last_processed(Some(ChainCoordinate::new(start_from, 3)));
+        .with_last_processed(Some(ChainStateCoordinate::new(start_from, 3)));
 
     let bridge = L1Bridge::new(config);
 
@@ -358,7 +358,7 @@ async fn test_bridge_index_tracking() {
 
 async fn setup_node_with_bridge(
     strategy: ConnectStrategy,
-    last_processed: Option<ChainCoordinate>,
+    last_processed: Option<ChainStateCoordinate>,
 ) -> (L1Node, L1Bridge) {
     let node = L1Node::new().await;
 

@@ -897,6 +897,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dashmap"
+version = "6.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5041cc499144891f3790297212f32a74fb938e5136a14943f338ef9e0ae276cf"
+dependencies = [
+ "cfg-if",
+ "crossbeam-utils",
+ "hashbrown 0.14.5",
+ "lock_api",
+ "once_cell",
+ "parking_lot_core",
+]
+
+[[package]]
 name = "data-encoding"
 version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5423,6 +5437,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-node-chain-state"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "crossbeam-queue",
+ "dashmap",
+ "kaspa-hashes",
+ "once_cell",
+ "vprogs-core-atomics",
+ "vprogs-core-macros",
+]
+
+[[package]]
 name = "vprogs-node-l1-bridge"
 version = "0.1.0"
 dependencies = [
@@ -5436,6 +5463,7 @@ dependencies = [
  "log",
  "thiserror 2.0.18",
  "tokio",
+ "vprogs-node-chain-state",
  "vprogs-node-test-suite",
  "workflow-core",
 ]

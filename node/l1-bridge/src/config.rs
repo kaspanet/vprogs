@@ -1,7 +1,7 @@
 use kaspa_consensus_core::network::{NetworkId, NetworkType};
 use kaspa_wrpc_client::prelude::ConnectStrategy;
 
-use crate::ChainCoordinate;
+use crate::ChainStateCoordinate;
 
 /// Configuration for the L1 bridge.
 #[derive(Clone, Debug)]
@@ -16,9 +16,9 @@ pub struct L1BridgeConfig {
     /// Reconnection strategy.
     pub connect_strategy: ConnectStrategy,
     /// Last processed coordinate, or None to start from the pruning point.
-    pub last_processed: Option<ChainCoordinate>,
+    pub last_processed: Option<ChainStateCoordinate>,
     /// Last finalized coordinate, or None if unknown.
-    pub last_finalized: Option<ChainCoordinate>,
+    pub last_finalized: Option<ChainStateCoordinate>,
 }
 
 impl Default for L1BridgeConfig {
@@ -66,13 +66,13 @@ impl L1BridgeConfig {
     }
 
     /// Sets the last processed coordinate.
-    pub fn with_last_processed(mut self, coord: Option<ChainCoordinate>) -> Self {
+    pub fn with_last_processed(mut self, coord: Option<ChainStateCoordinate>) -> Self {
         self.last_processed = coord;
         self
     }
 
     /// Sets the last finalized coordinate.
-    pub fn with_last_finalized(mut self, coord: Option<ChainCoordinate>) -> Self {
+    pub fn with_last_finalized(mut self, coord: Option<ChainStateCoordinate>) -> Self {
         self.last_finalized = coord;
         self
     }

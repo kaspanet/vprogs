@@ -1,0 +1,13 @@
+[package]
+edition = "2021"
+name    = "vprogs-node-chain-state"
+version = "0.1.0"
+
+[dependencies]
+arc-swap              = "1.7"
+crossbeam-queue       = "0.3"
+dashmap               = "6"
+kaspa-hashes          = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+once_cell             = "1"
+vprogs-core-atomics   = { path = "../../core/atomics" }
+vprogs-core-macros    = { path = "../../core/macros" }

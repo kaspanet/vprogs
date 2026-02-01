@@ -4,17 +4,18 @@ name    = "vprogs-node-l1-bridge"
 version = "0.1.0"
 
 [dependencies]
-crossbeam-queue      = "0.3.12"
-futures              = "0.3"
-kaspa-consensus-core = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-kaspa-hashes         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-kaspa-notify         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-kaspa-rpc-core       = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-kaspa-wrpc-client    = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-log                  = "0.4"
-thiserror            = "2"
-tokio                = { version = "1", features = ["rt", "sync"] }
-workflow-core        = "0.18.0"
+crossbeam-queue          = "0.3.12"
+futures                  = "0.3"
+kaspa-consensus-core     = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+kaspa-hashes             = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+kaspa-notify             = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+kaspa-rpc-core           = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+kaspa-wrpc-client        = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+log                      = "0.4"
+thiserror                = "2"
+tokio                    = { version = "1", features = ["rt", "sync"] }
+vprogs-node-chain-state  = { path = "../chain-state" }
+workflow-core            = "0.18.0"
 
 [dev-dependencies]
 tokio                  = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
