@@ -9,4 +9,4 @@ pub use config::L1BridgeConfig;
 pub use event::{L1Event, RpcBlock};
 pub use kaspa_consensus_core::network::{NetworkId, NetworkType};
 pub use kaspa_wrpc_client::prelude::ConnectStrategy;
-pub use vprogs_node_chain_state::{BlockHash, ChainStateCoordinate, ChainState};
+pub use vprogs_node_chain_state::{BlockHash, ChainState, ChainStateCoordinate};

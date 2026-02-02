@@ -13,7 +13,8 @@ use tokio::sync::Notify;
 use workflow_core::channel::Channel;
 
 use crate::{
-    ChainStateCoordinate, ChainState, L1BridgeConfig, L1Event, kaspa_rpc_client_ext::KaspaRpcClientExt,
+    ChainState, ChainStateCoordinate, L1BridgeConfig, L1Event,
+    kaspa_rpc_client_ext::KaspaRpcClientExt,
 };
 
 /// Background worker for L1 communication.
@@ -428,7 +429,10 @@ impl BridgeWorker {
     }
 
     /// Fetches a block and emits a BlockAdded event.
-    async fn fetch_and_emit_block(&mut self, hash: BlockHash) -> Result<ChainStateCoordinate, String> {
+    async fn fetch_and_emit_block(
+        &mut self,
+        hash: BlockHash,
+    ) -> Result<ChainStateCoordinate, String> {
         let block = self.client.fetch_block(hash).await?;
 
         // Assign sequential index and update state.

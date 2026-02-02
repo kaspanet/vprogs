@@ -92,9 +92,7 @@ impl HeaderEntry {
         self.daa_score.store(daa_score, Ordering::Release);
 
         // Transition state.
-        let _ = self
-            .state
-            .compare_exchange(BlockState::HeaderPending, BlockState::HeaderKnown);
+        let _ = self.state.compare_exchange(BlockState::HeaderPending, BlockState::HeaderKnown);
 
         true
     }
@@ -107,18 +105,12 @@ impl HeaderEntry {
         debug_assert!(index != 0, "index 0 is reserved for unassigned");
 
         // Try to set index (only succeeds if currently 0).
-        if self
-            .index
-            .compare_exchange(0, index, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
+        if self.index.compare_exchange(0, index, Ordering::AcqRel, Ordering::Acquire).is_err() {
             return None;
         }
 
         // Transition state if in HeaderKnown.
-        let _ = self
-            .state
-            .compare_exchange(BlockState::HeaderKnown, BlockState::ContentPending);
+        let _ = self.state.compare_exchange(BlockState::HeaderKnown, BlockState::ContentPending);
 
         // Collect children that need their indices re-evaluated.
         let mut children_to_notify = Vec::new();
@@ -140,11 +132,7 @@ impl HeaderEntry {
 
         // Check if index was set while we were adding.
         // If so, return the child hash so the caller can propagate.
-        if self.index() != 0 {
-            child_hash
-        } else {
-            None
-        }
+        if self.index() != 0 { child_hash } else { None }
     }
 
     /// Receives content. Returns true if this was the first time receiving.
@@ -157,9 +145,7 @@ impl HeaderEntry {
         }
 
         // Transition state.
-        let _ = self
-            .state
-            .compare_exchange(BlockState::ContentPending, BlockState::ContentKnown);
+        let _ = self.state.compare_exchange(BlockState::ContentPending, BlockState::ContentKnown);
 
         true
     }

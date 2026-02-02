@@ -8,8 +8,8 @@ use crossbeam_queue::SegQueue;
 use dashmap::DashMap;
 
 use crate::{
-    BlockHash, BlockState, ChainStateConfig, ChainStateCoordinate, ContentEntry,
-    ContentRingBuffer, HeaderEntry, HeaderEntryData,
+    BlockHash, BlockState, ChainStateConfig, ChainStateCoordinate, ContentEntry, HeaderEntry,
+    HeaderEntryData,
 };
 
 /// Manages the chain perception window with DAG support.
@@ -20,9 +20,6 @@ pub struct ChainState {
     /// Header entries indexed by hash.
     entries: DashMap<BlockHash, HeaderEntry>,
 
-    /// Index to hashes mapping (multiple blocks can share same index in DAG).
-    index_to_hashes: DashMap<u64, Vec<BlockHash>>,
-
     /// Blocks awaiting parent indices (separate from main entries for clarity).
     pending_index: DashMap<BlockHash, HeaderEntry>,
 
@@ -31,9 +28,6 @@ pub struct ChainState {
 
     /// Queue of hashes needing content download (past -> present direction).
     content_queue: SegQueue<BlockHash>,
-
-    /// Ring buffer for block content.
-    content_buffer: ContentRingBuffer,
 
     /// Latest processed block pointer.
     latest: ArcSwapOption<HeaderEntryData>,
@@ -59,11 +53,9 @@ impl ChainState {
     pub fn new(config: ChainStateConfig) -> Self {
         Self {
             entries: DashMap::new(),
-            index_to_hashes: DashMap::new(),
             pending_index: DashMap::new(),
             header_queue: SegQueue::new(),
             content_queue: SegQueue::new(),
-            content_buffer: ContentRingBuffer::new(config.content_buffer_capacity),
             latest: ArcSwapOption::empty(),
             pruning_point: ArcSwapOption::empty(),
             last_finalized: ArcSwapOption::empty(),
@@ -91,7 +83,6 @@ impl ChainState {
                 let entry = HeaderEntry::new(coord.hash());
                 let _ = entry.set_index(index);
                 state.entries.insert(coord.hash(), entry.clone());
-                state.register_index(index, coord.hash());
                 state.latest.store(Some(entry.0));
                 index
             }
@@ -106,7 +97,6 @@ impl ChainState {
                 let e = HeaderEntry::new(coord.hash());
                 let _ = e.set_index(index);
                 state.entries.insert(coord.hash(), e.clone());
-                state.register_index(index, coord.hash());
                 e
             };
             state.last_finalized.store(Some(entry.0));
@@ -131,7 +121,6 @@ impl ChainState {
         let pruning_entry = HeaderEntry::new(pruning.hash());
         let _ = pruning_entry.set_index(pruning.index().max(1)); // Ensure at least 1
         state.entries.insert(pruning.hash(), pruning_entry.clone());
-        state.register_index(pruning_entry.index(), pruning.hash());
         state.pruning_point.store(Some(pruning_entry.0.clone()));
         state.last_finalized.store(Some(pruning_entry.0));
 
@@ -144,7 +133,6 @@ impl ChainState {
                 let latest_entry = HeaderEntry::new(latest_coord.hash());
                 let _ = latest_entry.set_index(latest_coord.index());
                 state.entries.insert(latest_coord.hash(), latest_entry.clone());
-                state.register_index(latest_entry.index(), latest_coord.hash());
                 state.latest.store(Some(latest_entry.0));
             } else {
                 state.latest.store(state.pruning_point.load_full());
@@ -203,7 +191,6 @@ impl ChainState {
         if parents.is_empty() {
             // Genesis or pruning point - assign index 1 if not already set.
             if let Some(children) = entry.set_index(1) {
-                self.register_index(1, entry.hash());
                 self.content_queue.push(entry.hash());
                 // Propagate to children.
                 for child_hash in children {
@@ -235,7 +222,6 @@ impl ChainState {
         if all_parents_have_index {
             let new_index = max_parent_index + 1;
             if let Some(children) = entry.set_index(new_index) {
-                self.register_index(new_index, entry.hash());
                 self.pending_index.remove(&entry.hash());
                 self.content_queue.push(entry.hash());
                 // Propagate to children.
@@ -247,7 +233,7 @@ impl ChainState {
     }
 
     /// Called when a parent's index becomes known to re-check pending children.
-    pub fn try_assign_index(&self, hash: BlockHash) {
+    fn try_assign_index(&self, hash: BlockHash) {
         let entry = {
             let Some(entry_ref) = self.pending_index.get(&hash) else {
                 return;
@@ -279,7 +265,6 @@ impl ChainState {
         if all_parents_have_index {
             let new_index = max_parent_index + 1;
             if let Some(children) = entry.set_index(new_index) {
-                self.register_index(new_index, entry.hash());
                 self.pending_index.remove(&hash);
                 self.content_queue.push(hash);
                 // Propagate to children (recursive).
@@ -288,11 +273,6 @@ impl ChainState {
                 }
             }
         }
-    }
-
-    /// Registers a hash at a given index.
-    fn register_index(&self, index: u64, hash: BlockHash) {
-        self.index_to_hashes.entry(index).or_default().push(hash);
     }
 
     /// Receives block content.
@@ -307,12 +287,7 @@ impl ChainState {
         }
 
         let content = Arc::new(ContentEntry { index, data });
-
-        // Store in entry.
-        entry.receive_content(content.clone());
-
-        // Store in ring buffer.
-        self.content_buffer.insert(index, content);
+        entry.receive_content(content);
     }
 
     // =========================================================================
@@ -386,11 +361,7 @@ impl ChainState {
     pub fn get_coordinate(&self, hash: &BlockHash) -> Option<ChainStateCoordinate> {
         let entry = self.entries.get(hash)?;
         let index = entry.index();
-        if index == 0 {
-            None
-        } else {
-            Some(ChainStateCoordinate::new(*hash, index))
-        }
+        if index == 0 { None } else { Some(ChainStateCoordinate::new(*hash, index)) }
     }
 
     /// Gets content for a hash.
@@ -399,14 +370,21 @@ impl ChainState {
         entry.content()
     }
 
-    /// Gets content by index from the ring buffer.
+    /// Gets content by index (returns first match if multiple blocks share the index).
     pub fn get_content_by_index(&self, index: u64) -> Option<Arc<ContentEntry>> {
-        self.content_buffer.get(index)
+        for entry in self.entries.iter() {
+            if entry.index() == index {
+                if let Some(content) = entry.content() {
+                    return Some(content);
+                }
+            }
+        }
+        None
     }
 
     /// Gets all hashes at a given index.
     pub fn get_hashes_at_index(&self, index: u64) -> Vec<BlockHash> {
-        self.index_to_hashes.get(&index).map(|v| v.clone()).unwrap_or_default()
+        self.entries.iter().filter(|e| e.index() == index).map(|e| e.hash()).collect()
     }
 
     /// Returns the number of tracked entries.
@@ -459,15 +437,11 @@ impl ChainState {
 
     /// Prunes all entries with index < pruning_index.
     fn prune_to(&self, pruning_index: u64) {
-        // Remove indices below pruning point.
-        self.index_to_hashes.retain(|&idx, _| idx >= pruning_index);
-
         // Remove entries below pruning point.
         self.entries.retain(|_, entry| entry.index() >= pruning_index || entry.index() == 0);
 
         // Remove pending entries below pruning point.
-        self.pending_index
-            .retain(|_, entry| entry.index() >= pruning_index || entry.index() == 0);
+        self.pending_index.retain(|_, entry| entry.index() >= pruning_index || entry.index() == 0);
     }
 
     /// Returns the configuration.
@@ -500,7 +474,6 @@ impl ChainState {
         let index = coord.index().max(1);
         let entry = self.discover(coord.hash());
         let _ = entry.set_index(index);
-        self.register_index(index, coord.hash());
     }
 
     /// Returns the last processed coordinate (backward compatibility).
@@ -550,8 +523,9 @@ impl Default for ChainState {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use kaspa_hashes::Hash;
+
+    use super::*;
 
     fn hash(n: u8) -> BlockHash {
         Hash::from_bytes([n; 32])
