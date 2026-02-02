@@ -48,8 +48,6 @@ pub enum L1Event {
     /// Blocks up to this coordinate are now finalized (pruning point advanced on L1).
     /// The scheduler can safely prune state up to and including this index.
     Finalized(ChainCoordinate),
-    /// Bridge has completed initial sync and is now streaming live.
-    Synced,
     /// Bridge encountered a fatal error and stopped.
     Fatal {
         /// Descriptive message about what happened.

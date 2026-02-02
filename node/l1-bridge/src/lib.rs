@@ -1,6 +1,7 @@
 mod bridge;
 mod chain_state;
 mod config;
+mod error;
 pub mod event;
 mod worker;
 

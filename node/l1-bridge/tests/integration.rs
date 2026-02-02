@@ -27,12 +27,6 @@ fn extract_chain_blocks(
 async fn test_bridge_syncs_and_receives_block_events() {
     let (node, bridge) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
 
-    // Wait for Synced event (initial sync complete).
-    // Note: Connected event was already consumed in setup_node_with_bridge.
-    let events = bridge.wait_for(TIMEOUT, |e| matches!(e, L1Event::Synced)).await;
-    assert_eq!(events.len(), 1);
-    assert!(matches!(events[0], L1Event::Synced));
-
     // Mine some blocks.
     const NUM_BLOCKS: usize = 5;
     let mined_hashes = node.mine_blocks(NUM_BLOCKS).await;
@@ -76,11 +70,10 @@ async fn test_bridge_syncs_from_specific_block() {
 
     let bridge = L1Bridge::new(config);
 
-    // Wait for connection and sync - should be Connected then Synced with no blocks in between.
-    let events = bridge.wait_for(TIMEOUT, |e| matches!(e, L1Event::Synced)).await;
-    assert_eq!(events.len(), 2);
+    // Wait for connection.
+    let events = bridge.wait_for(TIMEOUT, |e| matches!(e, L1Event::Connected)).await;
+    assert_eq!(events.len(), 1);
     assert!(matches!(events[0], L1Event::Connected));
-    assert!(matches!(events[1], L1Event::Synced));
 
     // Mine more blocks.
     let new_hashes = node.mine_blocks(3).await;
@@ -111,11 +104,6 @@ async fn test_bridge_syncs_from_specific_block() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_bridge_block_contains_transactions() {
     let (node, bridge) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
-
-    // Wait for sync.
-    let events = bridge.wait_for(TIMEOUT, |e| matches!(e, L1Event::Synced)).await;
-    assert_eq!(events.len(), 1);
-    assert!(matches!(events[0], L1Event::Synced));
 
     // Mine a single block.
     let mined_hashes = node.mine_blocks(1).await;
@@ -155,10 +143,6 @@ async fn test_bridge_receives_reorg_events() {
 
     let (node0, bridge0) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
     let (node1, bridge1) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
-
-    // Wait for both to sync.
-    bridge0.wait_for(TIMEOUT, |e| matches!(e, L1Event::Synced)).await;
-    bridge1.wait_for(TIMEOUT, |e| matches!(e, L1Event::Synced)).await;
 
     // Mine on both isolated nodes concurrently.
     // Node 0 (main) gets a longer chain, node 1 (fork) gets a shorter chain.
@@ -244,9 +228,6 @@ async fn test_bridge_receives_reorg_events() {
 async fn test_bridge_events_ordered_past_to_present() {
     let (node, bridge) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
 
-    // Wait for sync.
-    bridge.wait_for(TIMEOUT, |e| matches!(e, L1Event::Synced)).await;
-
     // Mine multiple blocks.
     const NUM_BLOCKS: usize = 5;
     let mined_hashes = node.mine_blocks(NUM_BLOCKS).await;
@@ -285,9 +266,6 @@ async fn test_bridge_events_ordered_past_to_present() {
 async fn test_bridge_index_tracking() {
     let (node, bridge) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
 
-    // Wait for sync.
-    bridge.wait_for(TIMEOUT, |e| matches!(e, L1Event::Synced)).await;
-
     // Mine blocks.
     const NUM_BLOCKS: usize = 5;
     let mined_hashes = node.mine_blocks(NUM_BLOCKS).await;
@@ -318,22 +296,22 @@ async fn test_bridge_catches_up_after_reconnection() {
     // while it was disconnected (i.e., missed VirtualChainChanged events).
     //
     // Scenario:
-    // 1. Bridge connects, syncs, and receives some blocks
+    // 1. Bridge connects and receives some blocks
     // 2. Bridge shuts down (simulating disconnect)
     // 3. Blocks are mined while bridge is down (missed events)
     // 4. New bridge starts from the last known checkpoint
-    // 5. Bridge should catch up on missed blocks via initial sync
+    // 5. Bridge should catch up on missed blocks during sync after connect
 
     let node = L1Node::new().await;
 
-    // Create first bridge and let it sync.
+    // Create first bridge.
     let config = L1BridgeConfig::default()
         .with_url(node.wrpc_borsh_url())
         .with_network_type(NetworkType::Simnet)
         .with_connect_strategy(ConnectStrategy::Fallback);
 
     let bridge1 = L1Bridge::new(config);
-    bridge1.wait_for(TIMEOUT, |e| matches!(e, L1Event::Synced)).await;
+    bridge1.wait_for(TIMEOUT, |e| matches!(e, L1Event::Connected)).await;
 
     // Mine some blocks that the first bridge will see.
     let initial_hashes = node.mine_blocks(3).await;
@@ -359,6 +337,7 @@ async fn test_bridge_catches_up_after_reconnection() {
 
     // Mine blocks while the bridge is down - these VirtualChainChanged events are missed.
     let missed_hashes = node.mine_blocks(5).await;
+    let last_missed_hash = *missed_hashes.last().unwrap();
 
     // Start a new bridge from the checkpoint (simulating reconnection with saved state).
     let config = L1BridgeConfig::default()
@@ -369,15 +348,18 @@ async fn test_bridge_catches_up_after_reconnection() {
 
     let bridge2 = L1Bridge::new(config);
 
-    // Wait for Synced event. Events should be: Connected, ChainBlockAdded x5, Synced.
-    let events = bridge2.wait_for(TIMEOUT, |e| matches!(e, L1Event::Synced)).await;
+    // Wait for the last missed block. Events should be: Connected, then ChainBlockAdded x5.
+    let events = bridge2
+        .wait_for(TIMEOUT, |e| {
+            matches!(e, L1Event::ChainBlockAdded { header, .. } if header.hash == Some(last_missed_hash))
+        })
+        .await;
 
-    // Verify exact sequence: Connected, 5x ChainBlockAdded, Synced.
-    assert_eq!(events.len(), 7, "expected Connected + 5 blocks + Synced");
+    // Verify sequence: Connected, 5x ChainBlockAdded.
+    assert_eq!(events.len(), 6, "expected Connected + 5 blocks");
     assert!(matches!(events[0], L1Event::Connected));
-    assert!(matches!(events[6], L1Event::Synced));
 
-    // Verify the 5 ChainBlockAdded events in between.
+    // Verify the 5 ChainBlockAdded events.
     for (i, event) in events[1..6].iter().enumerate() {
         match event {
             L1Event::ChainBlockAdded { index, header, .. } => {

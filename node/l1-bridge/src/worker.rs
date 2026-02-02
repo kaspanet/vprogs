@@ -11,7 +11,7 @@ use kaspa_wrpc_client::prelude::*;
 use tokio::sync::Notify;
 use workflow_core::channel::Channel;
 
-use crate::{ChainCoordinate, L1BridgeConfig, L1Event, chain_state::ChainState};
+use crate::{ChainCoordinate, L1BridgeConfig, L1Event, chain_state::ChainState, error::Error};
 
 /// Background worker for L1 communication.
 pub struct BridgeWorker {
@@ -29,8 +29,6 @@ pub struct BridgeWorker {
     rpc_ctl_channel: workflow_core::channel::MultiplexerChannel<RpcState>,
     /// Active notification listener ID, if subscribed.
     listener_id: Option<ListenerId>,
-    /// Whether initial sync is still pending.
-    needs_initial_sync: bool,
     /// Whether a fatal error has occurred.
     fatal: bool,
 }
@@ -91,7 +89,6 @@ impl BridgeWorker {
             notification_channel: Channel::unbounded(),
             rpc_ctl_channel,
             listener_id: None,
-            needs_initial_sync: true,
             fatal: false,
         })
     }
@@ -181,8 +178,9 @@ impl BridgeWorker {
 
         self.push_event(L1Event::Connected);
 
-        if self.needs_initial_sync {
-            self.perform_initial_sync().await;
+        // Sync up to current chain state.
+        if let Err(e) = self.fetch_chain_updates().await {
+            self.handle_sync_error(e);
         }
     }
 
@@ -198,7 +196,7 @@ impl BridgeWorker {
     }
 
     /// Subscribes to chain notifications.
-    async fn subscribe_to_notifications(&mut self) -> Result<(), String> {
+    async fn subscribe_to_notifications(&mut self) -> Result<(), Error> {
         let id = self.client.rpc_api().register_new_listener(ChannelConnection::new(
             "vprogs-l1-bridge",
             self.notification_channel.sender.clone(),
@@ -211,7 +209,7 @@ impl BridgeWorker {
             Scope::VirtualChainChanged(VirtualChainChangedScope::new(false)),
             Scope::PruningPointUtxoSetOverride(PruningPointUtxoSetOverrideScope {}),
         ] {
-            self.client.rpc_api().start_notify(id, scope).await.map_err(|e| e.to_string())?;
+            self.client.rpc_api().start_notify(id, scope).await?;
         }
 
         self.listener_id = Some(id);
@@ -224,35 +222,10 @@ impl BridgeWorker {
 // ============================================================================
 
 impl BridgeWorker {
-    /// Performs initial sync using the v2 API.
-    async fn perform_initial_sync(&mut self) {
-        match self.fetch_chain_updates().await {
-            Ok(_) => {
-                self.push_event(L1Event::Synced);
-                self.needs_initial_sync = false;
-                log::info!("L1 bridge initial sync complete");
-            }
-            Err(e) => self.handle_sync_error(e),
-        }
-    }
-
-    /// Handles live chain updates triggered by VCC notifications.
+    /// Handles chain updates triggered by VCC notifications.
     async fn handle_chain_update(&mut self) {
         if let Err(e) = self.fetch_chain_updates().await {
             self.fatal_error(format!("chain update failed: {}", e));
-        }
-    }
-
-    /// Fetches the current block DAG info.
-    async fn block_dag_info(&mut self) -> GetBlockDagInfoResponse {
-        self.client.get_block_dag_info().await.expect("failed to get dag info")
-    }
-
-    /// Determines the last processed hash.
-    async fn last_processed_hash(&mut self) -> RpcHash {
-        match self.chain_state.last_processed() {
-            Some(coord) => coord.hash(),
-            None => self.block_dag_info().await.pruning_point_hash,
         }
     }
 
@@ -262,15 +235,17 @@ impl BridgeWorker {
     /// - Calls get_virtual_chain_from_block_v2 from our last checkpoint
     /// - Handles reorgs (removed blocks) if any
     /// - Emits events for added blocks with their accepted transactions
-    async fn fetch_chain_updates(&mut self) -> Result<(), String> {
+    async fn fetch_chain_updates(&mut self) -> Result<(), Error> {
         // Start from last processed hash, or pruning point if starting fresh.
-        let start_hash = self.last_processed_hash().await;
+        let start_hash = match self.chain_state.last_processed() {
+            Some(coord) => coord.hash(),
+            None => self.client.get_block_dag_info().await?.pruning_point_hash,
+        };
 
         let response = self
             .client
             .get_virtual_chain_from_block_v2(start_hash, Some(RpcDataVerbosityLevel::High), None)
-            .await
-            .map_err(|e| format!("get_virtual_chain_from_block_v2 failed: {}", e))?;
+            .await?;
 
         // Handle reorg if there are removed blocks.
         if !response.removed_chain_block_hashes.is_empty() {
@@ -289,10 +264,7 @@ impl BridgeWorker {
         );
 
         for acd in response.chain_block_accepted_transactions.iter() {
-            let Some(hash) = acd.chain_block_header.hash else {
-                return Err("chain_block_header.hash is missing".to_string());
-            };
-
+            let hash = acd.chain_block_header.hash.expect("hash missing despite High verbosity");
             let index = self.chain_state.add_block(hash);
             self.push_event(L1Event::ChainBlockAdded {
                 index,
@@ -319,8 +291,8 @@ impl BridgeWorker {
     }
 
     /// Handles sync errors.
-    fn handle_sync_error(&mut self, e: String) {
-        let error_msg = e.to_lowercase();
+    fn handle_sync_error(&mut self, e: Error) {
+        let error_msg = e.to_string().to_lowercase();
 
         // Check if this is a "checkpoint lost" error (block pruned or no longer in chain).
         let is_checkpoint_lost = error_msg.contains("cannot find")
@@ -332,7 +304,6 @@ impl BridgeWorker {
             self.push_event(L1Event::Fatal {
                 reason: format!("starting block no longer in chain (pruned or reorged): {}", e),
             });
-            self.needs_initial_sync = false;
             self.fatal = true;
         } else {
             // Other sync errors (connection issues) - will retry on reconnect.
