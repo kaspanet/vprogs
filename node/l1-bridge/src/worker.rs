@@ -268,7 +268,7 @@ impl BridgeWorker {
 
         // Handle reorg if there are removed blocks.
         if !response.removed_chain_block_hashes.is_empty() {
-            self.handle_reorg(&response)?;
+            self.handle_reorg(&response);
         }
 
         // Process added blocks.
@@ -299,43 +299,17 @@ impl BridgeWorker {
     }
 
     /// Handles a reorg by rolling back and emitting a Rollback event.
-    fn handle_reorg(
-        &mut self,
-        response: &GetVirtualChainFromBlockV2Response,
-    ) -> Result<(), String> {
+    fn handle_reorg(&mut self, response: &GetVirtualChainFromBlockV2Response) {
         let num_removed = response.removed_chain_block_hashes.len() as u64;
-        log::info!("L1 bridge: reorg detected, {} blocks removed", num_removed);
-
-        // Calculate rollback index.
-        let rollback_index = self.chain_state.current_index().saturating_sub(num_removed);
-
-        // Find the common ancestor from the first added block's parents.
-        // Level 0 contains the direct parents in the selected chain.
-        let first_added = response
-            .chain_block_accepted_transactions
-            .first()
-            .ok_or("reorg has removed blocks but no added blocks")?;
-
-        let parents = first_added
-            .chain_block_header
-            .parents_by_level
-            .as_ref()
-            .and_then(|p| p.get(0))
-            .ok_or("first added block has no parents_by_level")?;
-
-        let common_ancestor =
-            *parents.first().ok_or("first added block's first parent level is empty")?;
+        let rollback_index = self.chain_state.rollback(num_removed);
 
         log::info!(
-            "L1 bridge: rolling back to index {} (common ancestor {})",
-            rollback_index,
-            common_ancestor
+            "L1 bridge: reorg detected, {} blocks removed, rolling back to index {}",
+            num_removed,
+            rollback_index
         );
 
-        self.chain_state.rollback_to(common_ancestor, rollback_index);
-        self.push_event(L1Event::Rollback(ChainCoordinate::new(common_ancestor, rollback_index)));
-
-        Ok(())
+        self.push_event(L1Event::Rollback(rollback_index));
     }
 
     /// Handles sync errors.

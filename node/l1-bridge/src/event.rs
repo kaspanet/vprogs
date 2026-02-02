@@ -43,8 +43,8 @@ pub enum L1Event {
         /// Transactions accepted by this chain block (from its mergeset).
         accepted_transactions: Vec<RpcOptionalTransaction>,
     },
-    /// Rollback to a previous state (the coordinate stays, later ones removed).
-    Rollback(ChainCoordinate),
+    /// Rollback to a previous index (blocks after this index are removed).
+    Rollback(u64),
     /// Blocks up to this coordinate are now finalized (pruning point advanced on L1).
     /// The scheduler can safely prune state up to and including this index.
     Finalized(ChainCoordinate),

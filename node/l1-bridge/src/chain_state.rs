@@ -65,12 +65,13 @@ impl ChainState {
         self.current_index
     }
 
-    /// Rolls back to a given index and hash.
-    pub fn rollback_to(&mut self, hash: BlockHash, index: u64) {
-        self.current_index = index;
-        self.last_processed_hash = Some(hash);
+    /// Rolls back by the given number of blocks, returning the new index.
+    pub fn rollback(&mut self, num_blocks: u64) -> u64 {
+        self.current_index = self.current_index.saturating_sub(num_blocks);
+        // last_processed_hash will be updated when we add the first new block.
         // Prune entries after rollback point.
-        self.hash_to_index.retain(|_, &mut i| i <= index);
+        self.hash_to_index.retain(|_, &mut i| i <= self.current_index);
+        self.current_index
     }
 
     /// Looks up the index for a block hash.
