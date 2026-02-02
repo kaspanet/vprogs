@@ -356,6 +356,134 @@ async fn test_bridge_index_tracking() {
     node.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_bridge_catches_up_after_reconnection() {
+    // This test verifies that a bridge correctly resolves blocks that were mined
+    // while it was disconnected (i.e., missed VirtualChainChanged events).
+    //
+    // Scenario:
+    // 1. Bridge connects, syncs, and receives some blocks
+    // 2. Bridge shuts down (simulating disconnect)
+    // 3. Blocks are mined while bridge is down (missed events)
+    // 4. New bridge starts from the last known checkpoint
+    // 5. Bridge should catch up on missed blocks via initial sync
+
+    let node = L1Node::new().await;
+
+    // Create first bridge and let it sync.
+    let config = L1BridgeConfig::default()
+        .with_url(node.wrpc_borsh_url())
+        .with_network_type(NetworkType::Simnet)
+        .with_connect_strategy(ConnectStrategy::Fallback);
+
+    let bridge1 = L1Bridge::new(config);
+
+    let _ = timeout(Duration::from_secs(10), bridge1.wait_for(|e| matches!(e, L1Event::Synced)))
+        .await
+        .expect("timeout waiting for initial sync");
+
+    // Mine some blocks that the first bridge will see.
+    let initial_hashes = node.mine_blocks(3).await;
+    let last_initial_hash = *initial_hashes.last().unwrap();
+
+    // Wait for the bridge to receive these blocks.
+    let events = timeout(
+        Duration::from_secs(10),
+        bridge1.wait_for(|e| {
+            matches!(e, L1Event::BlockAdded { block, .. } if block.header.hash == last_initial_hash)
+        }),
+    )
+    .await
+    .expect("timeout waiting for initial blocks");
+
+    // Record the last processed coordinate before shutdown.
+    let last_index = events
+        .iter()
+        .filter_map(|e| match e {
+            L1Event::BlockAdded { index, block } if block.header.hash == last_initial_hash => {
+                Some((*index, block.header.hash))
+            }
+            _ => None,
+        })
+        .next_back()
+        .expect("should have received the last block");
+
+    let checkpoint = ChainCoordinate::new(last_index.1, last_index.0);
+
+    // Shutdown the first bridge (simulating disconnect).
+    bridge1.shutdown();
+
+    // Mine blocks while the bridge is down - these VirtualChainChanged events are missed.
+    let missed_hashes = node.mine_blocks(5).await;
+
+    // Start a new bridge from the checkpoint (simulating reconnection with saved state).
+    let config = L1BridgeConfig::default()
+        .with_url(node.wrpc_borsh_url())
+        .with_network_type(NetworkType::Simnet)
+        .with_connect_strategy(ConnectStrategy::Fallback)
+        .with_last_processed(Some(checkpoint));
+
+    let bridge2 = L1Bridge::new(config);
+
+    // Wait for Synced event. During initial sync, the bridge calls sync_from_checkpoint()
+    // which fetches and emits BlockAdded events for all missed blocks, then emits Synced.
+    // By waiting for Synced, we capture all events including the missed blocks.
+    let events = timeout(Duration::from_secs(10), bridge2.wait_for(|e| matches!(e, L1Event::Synced)))
+        .await
+        .expect("timeout waiting for sync");
+
+    // Verify we received all the missed blocks.
+    let received_hashes: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            L1Event::BlockAdded { block, .. } => Some(block.header.hash),
+            _ => None,
+        })
+        .collect();
+
+    for hash in &missed_hashes {
+        assert!(
+            received_hashes.contains(hash),
+            "missed block {} should have been received after reconnection",
+            hash
+        );
+    }
+
+    // Verify we did NOT re-receive the initial blocks (we started from after them).
+    for hash in &initial_hashes {
+        assert!(
+            !received_hashes.contains(hash),
+            "initial block {} should not be re-received (started from checkpoint after it)",
+            hash
+        );
+    }
+
+    // Verify indices continue sequentially from the checkpoint.
+    let indices: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            L1Event::BlockAdded { index, .. } => Some(*index),
+            _ => None,
+        })
+        .collect();
+
+    assert!(!indices.is_empty());
+    // First index after checkpoint should be checkpoint.index + 1.
+    assert_eq!(
+        indices[0],
+        checkpoint.index() + 1,
+        "first block after reconnection should continue from checkpoint index"
+    );
+
+    // Indices should be sequential.
+    for window in indices.windows(2) {
+        assert_eq!(window[1], window[0] + 1, "indices should be sequential after reconnection");
+    }
+
+    bridge2.shutdown();
+    node.shutdown().await;
+}
+
 async fn setup_node_with_bridge(
     strategy: ConnectStrategy,
     last_processed: Option<ChainCoordinate>,
