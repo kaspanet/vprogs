@@ -2,10 +2,26 @@ use std::time::Duration;
 
 use vprogs_node_l1_bridge::{
     ChainCoordinate, ConnectStrategy, L1Bridge, L1BridgeConfig, L1Event, NetworkType,
+    RpcOptionalHeader, RpcOptionalTransaction,
 };
 use vprogs_node_test_suite::{L1BridgeExt, L1Node};
 
 const TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Extracts ChainBlockAdded events, asserting no other event types are present.
+fn extract_chain_blocks(
+    events: Vec<L1Event>,
+) -> Vec<(u64, Box<RpcOptionalHeader>, Vec<RpcOptionalTransaction>)> {
+    events
+        .into_iter()
+        .map(|e| match e {
+            L1Event::ChainBlockAdded { index, header, accepted_transactions } => {
+                (index, header, accepted_transactions)
+            }
+            other => panic!("expected ChainBlockAdded, got {:?}", other),
+        })
+        .collect()
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_bridge_syncs_and_receives_block_events() {
@@ -14,7 +30,8 @@ async fn test_bridge_syncs_and_receives_block_events() {
     // Wait for Synced event (initial sync complete).
     // Note: Connected event was already consumed in setup_node_with_bridge.
     let events = bridge.wait_for(TIMEOUT, |e| matches!(e, L1Event::Synced)).await;
-    assert!(events.iter().any(|e| matches!(e, L1Event::Synced)));
+    assert_eq!(events.len(), 1);
+    assert!(matches!(events[0], L1Event::Synced));
 
     // Mine some blocks.
     const NUM_BLOCKS: usize = 5;
@@ -28,27 +45,15 @@ async fn test_bridge_syncs_and_receives_block_events() {
         })
         .await;
 
-    // Verify we received ChainBlockAdded events for all mined blocks.
-    let block_added: Vec<_> = events
-        .iter()
-        .filter_map(|e| match e {
-            L1Event::ChainBlockAdded { index, header, .. } => Some((*index, header.hash)),
-            _ => None,
-        })
-        .collect();
+    // Should receive exactly NUM_BLOCKS ChainBlockAdded events.
+    let blocks = extract_chain_blocks(events);
+    assert_eq!(blocks.len(), NUM_BLOCKS);
 
-    for hash in &mined_hashes {
-        assert!(
-            block_added.iter().any(|(_, h)| *h == Some(*hash)),
-            "block {} was mined but not received via bridge",
-            hash
-        );
+    // Verify hashes match in order.
+    for (i, (index, header, _)) in blocks.iter().enumerate() {
+        assert_eq!(*index, (i + 1) as u64, "index should be sequential starting from 1");
+        assert_eq!(header.hash, Some(mined_hashes[i]), "hash at position {} should match", i);
     }
-
-    // Verify last block hash matches.
-    let (last_index, last_received_hash) = block_added.last().unwrap();
-    assert_eq!(*last_received_hash, Some(last_hash));
-    assert_eq!(*last_index, block_added.len() as u64);
 
     bridge.shutdown();
     node.shutdown().await;
@@ -71,8 +76,11 @@ async fn test_bridge_syncs_from_specific_block() {
 
     let bridge = L1Bridge::new(config);
 
-    // Wait for connection and sync.
-    bridge.wait_for(TIMEOUT, |e| matches!(e, L1Event::Synced)).await;
+    // Wait for connection and sync - should be Connected then Synced with no blocks in between.
+    let events = bridge.wait_for(TIMEOUT, |e| matches!(e, L1Event::Synced)).await;
+    assert_eq!(events.len(), 2);
+    assert!(matches!(events[0], L1Event::Connected));
+    assert!(matches!(events[1], L1Event::Synced));
 
     // Mine more blocks.
     let new_hashes = node.mine_blocks(3).await;
@@ -85,39 +93,16 @@ async fn test_bridge_syncs_from_specific_block() {
         })
         .await;
 
-    // Verify we only received the new blocks, not the initial ones.
-    let block_hashes: Vec<_> = events
-        .iter()
-        .filter_map(|e| match e {
-            L1Event::ChainBlockAdded { header, .. } => header.hash,
-            _ => None,
-        })
-        .collect();
+    // Should receive exactly 3 new blocks.
+    let blocks = extract_chain_blocks(events);
+    assert_eq!(blocks.len(), 3);
 
-    // We should have the new blocks.
-    for hash in &new_hashes {
-        assert!(block_hashes.contains(hash), "new block {} was mined but not received", hash);
+    // Verify hashes and indices.
+    for (i, (index, header, _)) in blocks.iter().enumerate() {
+        // Started at index 3, so new blocks are 4, 5, 6.
+        assert_eq!(*index, (i + 4) as u64);
+        assert_eq!(header.hash, Some(new_hashes[i]));
     }
-
-    // We should NOT have the initial blocks (we started from after them).
-    for hash in &initial_hashes {
-        assert!(
-            !block_hashes.contains(hash),
-            "initial block {} should not have been received (started from after it)",
-            hash
-        );
-    }
-
-    // Verify the index is correct (started at 3, added 3 new blocks = 6).
-    let last_index = events
-        .iter()
-        .filter_map(|e| match e {
-            L1Event::ChainBlockAdded { index, .. } => Some(*index),
-            _ => None,
-        })
-        .next_back()
-        .unwrap();
-    assert_eq!(last_index, 6);
 
     bridge.shutdown();
     node.shutdown().await;
@@ -128,32 +113,32 @@ async fn test_bridge_block_contains_transactions() {
     let (node, bridge) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
 
     // Wait for sync.
-    bridge.wait_for(TIMEOUT, |e| matches!(e, L1Event::Synced)).await;
+    let events = bridge.wait_for(TIMEOUT, |e| matches!(e, L1Event::Synced)).await;
+    assert_eq!(events.len(), 1);
+    assert!(matches!(events[0], L1Event::Synced));
 
-    // Mine a block.
+    // Mine a single block.
     let mined_hashes = node.mine_blocks(1).await;
     let block_hash = mined_hashes[0];
 
-    // Wait for the block.
+    // Wait for the block - should get exactly one ChainBlockAdded.
     let events = bridge
         .wait_for(TIMEOUT, |e| {
             matches!(e, L1Event::ChainBlockAdded { header, .. } if header.hash == Some(block_hash))
         })
         .await;
 
-    // Find the block event.
-    let (header, accepted_transactions) = events
-        .iter()
-        .find_map(|e| match e {
-            L1Event::ChainBlockAdded { header, accepted_transactions, .. }
-                if header.hash == Some(block_hash) =>
-            {
-                Some((header, accepted_transactions))
-            }
-            _ => None,
-        })
-        .expect("block should be in events");
+    // Exactly one event.
+    assert_eq!(events.len(), 1);
+    let (index, header, accepted_transactions) = match &events[0] {
+        L1Event::ChainBlockAdded { index, header, accepted_transactions } => {
+            (*index, header, accepted_transactions)
+        }
+        other => panic!("expected ChainBlockAdded, got {:?}", other),
+    };
 
+    assert_eq!(index, 1);
+    assert_eq!(header.hash, Some(block_hash));
     // Block should have at least a coinbase transaction in its accepted set.
     assert!(!accepted_transactions.is_empty(), "block should have accepted transactions");
     // Header should have a timestamp.
@@ -182,7 +167,7 @@ async fn test_bridge_receives_reorg_events() {
     let last_fork_hash = *fork_hashes.last().unwrap();
 
     // Wait for both bridges to see their respective last mined blocks.
-    let (main_events, fork_events) = tokio::join!(
+    tokio::join!(
         bridge0.wait_for(TIMEOUT, |e| {
             matches!(e, L1Event::ChainBlockAdded { header, .. } if header.hash == Some(last_main_hash))
         }),
@@ -190,38 +175,59 @@ async fn test_bridge_receives_reorg_events() {
             matches!(e, L1Event::ChainBlockAdded { header, .. } if header.hash == Some(last_fork_hash))
         }),
     );
-    let _ = (main_events, fork_events); // Consume to avoid warnings.
 
     // Connect the nodes - node 1 should reorg to node 0's longer chain.
     node1.connect_to(&node0).await;
 
-    // Wait for reorg event (Rollback).
-    let reorg_events = bridge1.wait_for(TIMEOUT, |e| matches!(e, L1Event::Rollback(_))).await;
-
-    // Verify we got a rollback event.
-    let has_rollback = reorg_events.iter().any(|e| matches!(e, L1Event::Rollback(_)));
-    assert!(has_rollback, "expected Rollback event");
-
-    // Wait for the main chain blocks to be added.
-    let sync_events = bridge1
+    // Wait for the main chain tip to appear on bridge1.
+    // During reorg, we expect: Rollback followed by ChainBlockAdded events for the main chain.
+    // Note: The exact number of ChainBlockAdded events in this batch may vary based on
+    // timing (some blocks might propagate before the reorg is fully detected).
+    let events = bridge1
         .wait_for(TIMEOUT, |e| {
             matches!(e, L1Event::ChainBlockAdded { header, .. } if header.hash == Some(last_main_hash))
         })
         .await;
 
-    // Verify main chain blocks were added.
-    let added_after_reorg: Vec<_> = sync_events
+    // Find the Rollback event - it should be present.
+    let rollback_pos = events
         .iter()
-        .filter_map(|e| match e {
-            L1Event::ChainBlockAdded { header, .. } => header.hash,
-            _ => None,
+        .position(|e| matches!(e, L1Event::Rollback(_)))
+        .expect("expected Rollback event during reorg");
+
+    // All events after Rollback should be ChainBlockAdded.
+    let blocks_after_rollback: Vec<_> = events[rollback_pos + 1..]
+        .iter()
+        .map(|e| match e {
+            L1Event::ChainBlockAdded { index, header, .. } => (*index, header.hash),
+            other => panic!("expected ChainBlockAdded after Rollback, got {:?}", other),
         })
         .collect();
 
+    // The blocks after rollback should be in order and end with the main chain tip.
     assert!(
-        added_after_reorg.contains(&last_main_hash),
-        "main chain tip should be added after reorg"
+        !blocks_after_rollback.is_empty(),
+        "expected at least one ChainBlockAdded after Rollback"
     );
+    assert_eq!(
+        blocks_after_rollback.last().unwrap().1,
+        Some(last_main_hash),
+        "last block after reorg should be main chain tip"
+    );
+
+    // Verify indices are sequential.
+    for window in blocks_after_rollback.windows(2) {
+        assert_eq!(window[1].0, window[0].0 + 1, "indices should be sequential after rollback");
+    }
+
+    // Verify the fork blocks are NOT in the post-rollback sequence.
+    for fork_hash in &fork_hashes {
+        assert!(
+            !blocks_after_rollback.iter().any(|(_, h)| *h == Some(*fork_hash)),
+            "fork block {} should not appear after rollback",
+            fork_hash
+        );
+    }
 
     bridge0.shutdown();
     bridge1.shutdown();
@@ -248,18 +254,12 @@ async fn test_bridge_events_ordered_past_to_present() {
         })
         .await;
 
-    // Extract blocks in order received.
-    let blocks: Vec<_> = events
-        .iter()
-        .filter_map(|e| match e {
-            L1Event::ChainBlockAdded { index, header, .. } => Some((*index, header.clone())),
-            _ => None,
-        })
-        .collect();
+    let blocks = extract_chain_blocks(events);
+    assert_eq!(blocks.len(), NUM_BLOCKS);
 
-    // Verify indices are sequential.
-    for window in blocks.windows(2) {
-        assert_eq!(window[1].0, window[0].0 + 1, "indices should be sequential");
+    // Verify indices are sequential starting from 1.
+    for (i, (index, _, _)) in blocks.iter().enumerate() {
+        assert_eq!(*index, (i + 1) as u64, "indices should be sequential");
     }
 
     // Verify DAA scores are increasing (past to present ordering).
@@ -295,24 +295,13 @@ async fn test_bridge_index_tracking() {
         })
         .await;
 
-    // Get the indices from events.
-    let indices: Vec<_> = events
-        .iter()
-        .filter_map(|e| match e {
-            L1Event::ChainBlockAdded { index, .. } => Some(*index),
-            _ => None,
-        })
-        .collect();
+    let blocks = extract_chain_blocks(events);
+    assert_eq!(blocks.len(), NUM_BLOCKS);
 
-    // Verify indices start from 1 (fresh bridge starts at 0) and are sequential.
-    assert!(!indices.is_empty());
-    assert_eq!(indices[0], 1);
-    for window in indices.windows(2) {
-        assert_eq!(window[1], window[0] + 1);
+    // Verify indices start from 1 and are sequential.
+    for (i, (index, _, _)) in blocks.iter().enumerate() {
+        assert_eq!(*index, (i + 1) as u64);
     }
-
-    // Verify last index matches expected count.
-    assert_eq!(*indices.last().unwrap(), NUM_BLOCKS as u64);
 
     bridge.shutdown();
     node.shutdown().await;
@@ -352,21 +341,13 @@ async fn test_bridge_catches_up_after_reconnection() {
         })
         .await;
 
-    // Record the last processed coordinate before shutdown.
-    let last_index = events
-        .iter()
-        .filter_map(|e| match e {
-            L1Event::ChainBlockAdded { index, header, .. }
-                if header.hash == Some(last_initial_hash) =>
-            {
-                Some((*index, header.hash.unwrap()))
-            }
-            _ => None,
-        })
-        .next_back()
-        .expect("should have received the last block");
+    let blocks = extract_chain_blocks(events);
+    assert_eq!(blocks.len(), 3);
 
-    let checkpoint = ChainCoordinate::new(last_index.1, last_index.0);
+    // Record the last processed coordinate before shutdown.
+    let (last_index, last_header, _) = &blocks[2];
+    let checkpoint = ChainCoordinate::new(last_header.hash.unwrap(), *last_index);
+    assert_eq!(*last_index, 3);
 
     // Shutdown the first bridge (simulating disconnect).
     bridge1.shutdown();
@@ -383,57 +364,24 @@ async fn test_bridge_catches_up_after_reconnection() {
 
     let bridge2 = L1Bridge::new(config);
 
-    // Wait for Synced event. During initial sync, the bridge calls fetch_chain_updates()
-    // which fetches and emits ChainBlockAdded events for all missed blocks, then emits Synced.
-    // By waiting for Synced, we capture all events including the missed blocks.
+    // Wait for Synced event. Events should be: Connected, ChainBlockAdded x5, Synced.
     let events = bridge2.wait_for(TIMEOUT, |e| matches!(e, L1Event::Synced)).await;
 
-    // Verify we received all the missed blocks.
-    let received_hashes: Vec<_> = events
-        .iter()
-        .filter_map(|e| match e {
-            L1Event::ChainBlockAdded { header, .. } => header.hash,
-            _ => None,
-        })
-        .collect();
+    // Verify exact sequence: Connected, 5x ChainBlockAdded, Synced.
+    assert_eq!(events.len(), 7, "expected Connected + 5 blocks + Synced");
+    assert!(matches!(events[0], L1Event::Connected));
+    assert!(matches!(events[6], L1Event::Synced));
 
-    for hash in &missed_hashes {
-        assert!(
-            received_hashes.contains(hash),
-            "missed block {} should have been received after reconnection",
-            hash
-        );
-    }
-
-    // Verify we did NOT re-receive the initial blocks (we started from after them).
-    for hash in &initial_hashes {
-        assert!(
-            !received_hashes.contains(hash),
-            "initial block {} should not be re-received (started from checkpoint after it)",
-            hash
-        );
-    }
-
-    // Verify indices continue sequentially from the checkpoint.
-    let indices: Vec<_> = events
-        .iter()
-        .filter_map(|e| match e {
-            L1Event::ChainBlockAdded { index, .. } => Some(*index),
-            _ => None,
-        })
-        .collect();
-
-    assert!(!indices.is_empty());
-    // First index after checkpoint should be checkpoint.index + 1.
-    assert_eq!(
-        indices[0],
-        checkpoint.index() + 1,
-        "first block after reconnection should continue from checkpoint index"
-    );
-
-    // Indices should be sequential.
-    for window in indices.windows(2) {
-        assert_eq!(window[1], window[0] + 1, "indices should be sequential after reconnection");
+    // Verify the 5 ChainBlockAdded events in between.
+    for (i, event) in events[1..6].iter().enumerate() {
+        match event {
+            L1Event::ChainBlockAdded { index, header, .. } => {
+                // Indices continue from checkpoint: 4, 5, 6, 7, 8.
+                assert_eq!(*index, (i + 4) as u64);
+                assert_eq!(header.hash, Some(missed_hashes[i]));
+            }
+            other => panic!("expected ChainBlockAdded at position {}, got {:?}", i + 1, other),
+        }
     }
 
     bridge2.shutdown();
@@ -453,7 +401,11 @@ async fn setup_node_with_bridge(
         .with_last_processed(last_processed);
 
     let bridge = L1Bridge::new(config);
-    bridge.wait_for(TIMEOUT, |e| matches!(e, L1Event::Connected)).await;
+
+    // Wait for Connected - should be exactly one event.
+    let events = bridge.wait_for(TIMEOUT, |e| matches!(e, L1Event::Connected)).await;
+    assert_eq!(events.len(), 1);
+    assert!(matches!(events[0], L1Event::Connected));
 
     (node, bridge)
 }
