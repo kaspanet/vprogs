@@ -28,24 +28,24 @@ async fn test_bridge_syncs_and_receives_block_events() {
     let events = timeout(
         Duration::from_secs(10),
         bridge.wait_for(
-            |e| matches!(e, L1Event::BlockAdded { block, .. } if block.header.hash == last_hash),
+            |e| matches!(e, L1Event::ChainBlockAdded { header, .. } if header.hash == Some(last_hash)),
         ),
     )
     .await
     .expect("timeout waiting for block events");
 
-    // Verify we received BlockAdded events for all mined blocks.
+    // Verify we received ChainBlockAdded events for all mined blocks.
     let block_added: Vec<_> = events
         .iter()
         .filter_map(|e| match e {
-            L1Event::BlockAdded { index, block } => Some((*index, block.header.hash)),
+            L1Event::ChainBlockAdded { index, header, .. } => Some((*index, header.hash)),
             _ => None,
         })
         .collect();
 
     for hash in &mined_hashes {
         assert!(
-            block_added.iter().any(|(_, h)| h == hash),
+            block_added.iter().any(|(_, h)| *h == Some(*hash)),
             "block {} was mined but not received via bridge",
             hash
         );
@@ -53,7 +53,7 @@ async fn test_bridge_syncs_and_receives_block_events() {
 
     // Verify last block hash matches.
     let (last_index, last_received_hash) = block_added.last().unwrap();
-    assert_eq!(*last_received_hash, last_hash);
+    assert_eq!(*last_received_hash, Some(last_hash));
     assert_eq!(*last_index, block_added.len() as u64);
 
     bridge.shutdown();
@@ -90,7 +90,7 @@ async fn test_bridge_syncs_from_specific_block() {
     let events = timeout(
         Duration::from_secs(10),
         bridge.wait_for(
-            |e| matches!(e, L1Event::BlockAdded { block, .. } if block.header.hash == last_hash),
+            |e| matches!(e, L1Event::ChainBlockAdded { header, .. } if header.hash == Some(last_hash)),
         ),
     )
     .await
@@ -100,7 +100,7 @@ async fn test_bridge_syncs_from_specific_block() {
     let block_hashes: Vec<_> = events
         .iter()
         .filter_map(|e| match e {
-            L1Event::BlockAdded { block, .. } => Some(block.header.hash),
+            L1Event::ChainBlockAdded { header, .. } => header.hash,
             _ => None,
         })
         .collect();
@@ -123,7 +123,7 @@ async fn test_bridge_syncs_from_specific_block() {
     let last_index = events
         .iter()
         .filter_map(|e| match e {
-            L1Event::BlockAdded { index, .. } => Some(*index),
+            L1Event::ChainBlockAdded { index, .. } => Some(*index),
             _ => None,
         })
         .next_back()
@@ -151,26 +151,29 @@ async fn test_bridge_block_contains_transactions() {
     let events = timeout(
         Duration::from_secs(10),
         bridge.wait_for(
-            |e| matches!(e, L1Event::BlockAdded { block, .. } if block.header.hash == block_hash),
+            |e| matches!(e, L1Event::ChainBlockAdded { header, .. } if header.hash == Some(block_hash)),
         ),
     )
     .await
     .expect("timeout waiting for block event");
 
-    // Find the block.
-    let block = events
+    // Find the block event.
+    let (header, accepted_transactions) = events
         .iter()
         .find_map(|e| match e {
-            L1Event::BlockAdded { block, .. } if block.header.hash == block_hash => Some(block),
+            L1Event::ChainBlockAdded { header, accepted_transactions, .. }
+                if header.hash == Some(block_hash) =>
+            {
+                Some((header, accepted_transactions))
+            }
             _ => None,
         })
         .expect("block should be in events");
 
-    // Block should have at least a coinbase transaction.
-    assert!(!block.transactions.is_empty(), "block should have transactions");
-    // Note: daa_score starts at 0 for genesis and increments from there.
-    // In simnet with freshly mined blocks, it may still be low.
-    assert!(block.header.timestamp > 0, "block should have timestamp > 0");
+    // Block should have at least a coinbase transaction in its accepted set.
+    assert!(!accepted_transactions.is_empty(), "block should have accepted transactions");
+    // Header should have a timestamp.
+    assert!(header.timestamp.is_some_and(|t| t > 0), "block should have timestamp > 0");
 
     bridge.shutdown();
     node.shutdown().await;
@@ -203,13 +206,13 @@ async fn test_bridge_receives_reorg_events() {
         timeout(
             Duration::from_secs(10),
             bridge0.wait_for(|e| {
-                matches!(e, L1Event::BlockAdded { block, .. } if block.header.hash == last_main_hash)
+                matches!(e, L1Event::ChainBlockAdded { header, .. } if header.hash == Some(last_main_hash))
             })
         ),
         timeout(
             Duration::from_secs(10),
             bridge1.wait_for(|e| {
-                matches!(e, L1Event::BlockAdded { block, .. } if block.header.hash == last_fork_hash)
+                matches!(e, L1Event::ChainBlockAdded { header, .. } if header.hash == Some(last_fork_hash))
             })
         ),
     );
@@ -233,7 +236,7 @@ async fn test_bridge_receives_reorg_events() {
     let sync_events = timeout(
         Duration::from_secs(10),
         bridge1.wait_for(|e| {
-            matches!(e, L1Event::BlockAdded { block, .. } if block.header.hash == last_main_hash)
+            matches!(e, L1Event::ChainBlockAdded { header, .. } if header.hash == Some(last_main_hash))
         }),
     )
     .await
@@ -243,7 +246,7 @@ async fn test_bridge_receives_reorg_events() {
     let added_after_reorg: Vec<_> = sync_events
         .iter()
         .filter_map(|e| match e {
-            L1Event::BlockAdded { block, .. } => Some(block.header.hash),
+            L1Event::ChainBlockAdded { header, .. } => header.hash,
             _ => None,
         })
         .collect();
@@ -277,7 +280,7 @@ async fn test_bridge_events_ordered_past_to_present() {
     let events = timeout(
         Duration::from_secs(10),
         bridge.wait_for(
-            |e| matches!(e, L1Event::BlockAdded { block, .. } if block.header.hash == last_hash),
+            |e| matches!(e, L1Event::ChainBlockAdded { header, .. } if header.hash == Some(last_hash)),
         ),
     )
     .await
@@ -287,7 +290,7 @@ async fn test_bridge_events_ordered_past_to_present() {
     let blocks: Vec<_> = events
         .iter()
         .filter_map(|e| match e {
-            L1Event::BlockAdded { index, block } => Some((*index, block.clone())),
+            L1Event::ChainBlockAdded { index, header, .. } => Some((*index, header.clone())),
             _ => None,
         })
         .collect();
@@ -299,8 +302,10 @@ async fn test_bridge_events_ordered_past_to_present() {
 
     // Verify DAA scores are increasing (past to present ordering).
     for window in blocks.windows(2) {
+        let daa0 = window[0].1.daa_score.unwrap_or(0);
+        let daa1 = window[1].1.daa_score.unwrap_or(0);
         assert!(
-            window[1].1.header.daa_score >= window[0].1.header.daa_score,
+            daa1 >= daa0,
             "blocks should be ordered past to present (daa_score should increase)"
         );
     }
@@ -327,7 +332,7 @@ async fn test_bridge_index_tracking() {
     let events = timeout(
         Duration::from_secs(10),
         bridge.wait_for(
-            |e| matches!(e, L1Event::BlockAdded { block, .. } if block.header.hash == last_hash),
+            |e| matches!(e, L1Event::ChainBlockAdded { header, .. } if header.hash == Some(last_hash)),
         ),
     )
     .await
@@ -337,7 +342,7 @@ async fn test_bridge_index_tracking() {
     let indices: Vec<_> = events
         .iter()
         .filter_map(|e| match e {
-            L1Event::BlockAdded { index, .. } => Some(*index),
+            L1Event::ChainBlockAdded { index, .. } => Some(*index),
             _ => None,
         })
         .collect();
@@ -390,7 +395,7 @@ async fn test_bridge_catches_up_after_reconnection() {
     let events = timeout(
         Duration::from_secs(10),
         bridge1.wait_for(|e| {
-            matches!(e, L1Event::BlockAdded { block, .. } if block.header.hash == last_initial_hash)
+            matches!(e, L1Event::ChainBlockAdded { header, .. } if header.hash == Some(last_initial_hash))
         }),
     )
     .await
@@ -400,8 +405,10 @@ async fn test_bridge_catches_up_after_reconnection() {
     let last_index = events
         .iter()
         .filter_map(|e| match e {
-            L1Event::BlockAdded { index, block } if block.header.hash == last_initial_hash => {
-                Some((*index, block.header.hash))
+            L1Event::ChainBlockAdded { index, header, .. }
+                if header.hash == Some(last_initial_hash) =>
+            {
+                Some((*index, header.hash.unwrap()))
             }
             _ => None,
         })
@@ -425,18 +432,19 @@ async fn test_bridge_catches_up_after_reconnection() {
 
     let bridge2 = L1Bridge::new(config);
 
-    // Wait for Synced event. During initial sync, the bridge calls sync_from_checkpoint()
-    // which fetches and emits BlockAdded events for all missed blocks, then emits Synced.
+    // Wait for Synced event. During initial sync, the bridge calls fetch_chain_updates()
+    // which fetches and emits ChainBlockAdded events for all missed blocks, then emits Synced.
     // By waiting for Synced, we capture all events including the missed blocks.
-    let events = timeout(Duration::from_secs(10), bridge2.wait_for(|e| matches!(e, L1Event::Synced)))
-        .await
-        .expect("timeout waiting for sync");
+    let events =
+        timeout(Duration::from_secs(10), bridge2.wait_for(|e| matches!(e, L1Event::Synced)))
+            .await
+            .expect("timeout waiting for sync");
 
     // Verify we received all the missed blocks.
     let received_hashes: Vec<_> = events
         .iter()
         .filter_map(|e| match e {
-            L1Event::BlockAdded { block, .. } => Some(block.header.hash),
+            L1Event::ChainBlockAdded { header, .. } => header.hash,
             _ => None,
         })
         .collect();
@@ -462,7 +470,7 @@ async fn test_bridge_catches_up_after_reconnection() {
     let indices: Vec<_> = events
         .iter()
         .filter_map(|e| match e {
-            L1Event::BlockAdded { index, .. } => Some(*index),
+            L1Event::ChainBlockAdded { index, .. } => Some(*index),
             _ => None,
         })
         .collect();

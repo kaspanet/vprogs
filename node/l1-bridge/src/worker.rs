@@ -2,26 +2,22 @@ use std::{sync::Arc, time::Duration};
 
 use crossbeam_queue::SegQueue;
 use futures::{FutureExt, select_biased};
-use kaspa_hashes::Hash as BlockHash;
 use kaspa_notify::scope::{PruningPointUtxoSetOverrideScope, Scope, VirtualChainChangedScope};
 use kaspa_rpc_core::{
-    Notification, VirtualChainChangedNotification,
+    GetVirtualChainFromBlockV2Response, Notification, RpcDataVerbosityLevel,
     api::{ctl::RpcState, rpc::RpcApi},
 };
 use kaspa_wrpc_client::prelude::*;
 use tokio::sync::Notify;
 use workflow_core::channel::Channel;
 
-use crate::{
-    ChainCoordinate, L1BridgeConfig, L1Event, chain_state::ChainState,
-    kaspa_rpc_client_ext::KaspaRpcClientExt,
-};
+use crate::{ChainCoordinate, L1BridgeConfig, L1Event, chain_state::ChainState};
 
 /// Background worker for L1 communication.
 pub struct BridgeWorker {
     /// RPC client for L1 node communication.
     client: Arc<KaspaRpcClient>,
-    /// Tracks processed and finalized blocks.
+    /// Tracks processed blocks and finalization.
     chain_state: ChainState,
     /// Shared queue for emitting events to consumers.
     queue: Arc<SegQueue<L1Event>>,
@@ -127,8 +123,9 @@ impl BridgeWorker {
 
                 notification = self.notification_channel.receiver.recv().fuse() => {
                     match notification {
-                        Ok(Notification::VirtualChainChanged(vcc)) => {
-                            self.handle_chain_changed(vcc).await;
+                        Ok(Notification::VirtualChainChanged(_)) => {
+                            // VCC notification triggers a v2 fetch from our last checkpoint.
+                            self.handle_chain_update().await;
                         }
                         Ok(Notification::PruningPointUtxoSetOverride(_)) => {
                             self.handle_finalization().await;
@@ -208,9 +205,10 @@ impl BridgeWorker {
             ChannelType::Persistent,
         ));
 
-        // Subscribe to chain changes (new blocks, reorgs) and finalization (pruning point).
+        // Subscribe to chain changes (triggers v2 fetch) and finalization (pruning point).
+        // Note: We don't need accepted_transaction_ids from VCC since we fetch via v2.
         for scope in [
-            Scope::VirtualChainChanged(VirtualChainChangedScope::new(true)),
+            Scope::VirtualChainChanged(VirtualChainChangedScope::new(false)),
             Scope::PruningPointUtxoSetOverride(PruningPointUtxoSetOverrideScope {}),
         ] {
             self.client.rpc_api().start_notify(id, scope).await.map_err(|e| e.to_string())?;
@@ -222,19 +220,14 @@ impl BridgeWorker {
 }
 
 // ============================================================================
-// Sync Handlers
+// Chain Update Handlers
 // ============================================================================
 
 impl BridgeWorker {
-    /// Performs initial sync.
+    /// Performs initial sync using the v2 API.
     async fn perform_initial_sync(&mut self) {
-        let last_processed = self.chain_state.last_processed();
-
-        match self.sync_from_checkpoint(last_processed).await {
-            Ok(last_coord) => {
-                if let Some(coord) = last_coord {
-                    self.chain_state.set_last_processed(coord);
-                }
+        match self.fetch_chain_updates().await {
+            Ok(_) => {
                 self.push_event(L1Event::Synced);
                 self.needs_initial_sync = false;
                 log::info!("L1 bridge initial sync complete");
@@ -243,62 +236,106 @@ impl BridgeWorker {
         }
     }
 
-    /// Syncs blocks from a checkpoint.
-    async fn sync_from_checkpoint(
-        &mut self,
-        last_processed: Option<ChainCoordinate>,
-    ) -> Result<Option<ChainCoordinate>, String> {
+    /// Handles live chain updates triggered by VCC notifications.
+    async fn handle_chain_update(&mut self) {
+        if let Err(e) = self.fetch_chain_updates().await {
+            self.fatal_error(format!("chain update failed: {}", e));
+        }
+    }
+
+    /// Fetches and processes chain updates using the v2 API.
+    ///
+    /// This single method handles both initial sync and live updates:
+    /// - Calls get_virtual_chain_from_block_v2 from our last checkpoint
+    /// - Handles reorgs (removed blocks) if any
+    /// - Emits events for added blocks with their accepted transactions
+    async fn fetch_chain_updates(&mut self) -> Result<(), String> {
         let dag_info = self
             .client
             .get_block_dag_info()
             .await
             .map_err(|e| format!("get_block_dag_info failed: {}", e))?;
 
-        let start_hash = last_processed.map(|c| c.hash()).unwrap_or(dag_info.pruning_point_hash);
+        // Start from last processed hash, or pruning point if starting fresh.
+        let start_hash =
+            self.chain_state.last_processed_hash().unwrap_or(dag_info.pruning_point_hash);
 
-        // Record pruning point if starting fresh.
-        if last_processed.is_none() {
-            self.chain_state.record_block(ChainCoordinate::new(
-                dag_info.pruning_point_hash,
-                self.chain_state.initial_index(),
-            ));
-        }
-
-        let virtual_chain = self
+        let response = self
             .client
-            .get_virtual_chain_from_block(start_hash, true, None)
+            .get_virtual_chain_from_block_v2(start_hash, Some(RpcDataVerbosityLevel::High), None)
             .await
-            .map_err(|e| format!("get_virtual_chain_from_block failed: {}", e))?;
+            .map_err(|e| format!("get_virtual_chain_from_block_v2 failed: {}", e))?;
 
-        // Check if our checkpoint was reorged out.
-        if !virtual_chain.removed_chain_block_hashes.is_empty() {
-            return Err(format!(
-                "starting block {} was reorged out ({} blocks removed)",
-                start_hash,
-                virtual_chain.removed_chain_block_hashes.len()
-            ));
+        // Handle reorg if there are removed blocks.
+        if !response.removed_chain_block_hashes.is_empty() {
+            self.handle_reorg(&response)?;
         }
 
-        let added_hashes = virtual_chain.added_chain_block_hashes;
-
-        if added_hashes.is_empty() {
-            log::info!("L1 bridge: already synced, no new blocks");
-            return Ok(last_processed);
+        // Process added blocks.
+        if response.added_chain_block_hashes.is_empty() {
+            log::debug!("L1 bridge: no new blocks");
+            return Ok(());
         }
 
         log::info!(
-            "L1 bridge: syncing {} blocks from {:?}",
-            added_hashes.len(),
-            last_processed.map(|c| c.hash())
+            "L1 bridge: processing {} new chain blocks",
+            response.chain_block_accepted_transactions.len()
         );
 
-        let mut last_block = None;
-        for &hash in &*added_hashes {
-            let coord = self.fetch_and_emit_block(hash).await?;
-            last_block = Some(coord);
+        for acd in response.chain_block_accepted_transactions.iter() {
+            let Some(hash) = acd.chain_block_header.hash else {
+                return Err("chain_block_header.hash is missing".to_string());
+            };
+
+            let index = self.chain_state.add_block(hash);
+            self.push_event(L1Event::ChainBlockAdded {
+                index,
+                header: Box::new(acd.chain_block_header.clone()),
+                accepted_transactions: acd.accepted_transactions.clone(),
+            });
         }
 
-        Ok(last_block)
+        Ok(())
+    }
+
+    /// Handles a reorg by rolling back and emitting a Rollback event.
+    fn handle_reorg(
+        &mut self,
+        response: &GetVirtualChainFromBlockV2Response,
+    ) -> Result<(), String> {
+        let num_removed = response.removed_chain_block_hashes.len() as u64;
+        log::info!("L1 bridge: reorg detected, {} blocks removed", num_removed);
+
+        // Calculate rollback index.
+        let rollback_index = self.chain_state.current_index().saturating_sub(num_removed);
+
+        // Find the common ancestor from the first added block's parents.
+        // Level 0 contains the direct parents in the selected chain.
+        let first_added = response
+            .chain_block_accepted_transactions
+            .first()
+            .ok_or("reorg has removed blocks but no added blocks")?;
+
+        let parents = first_added
+            .chain_block_header
+            .parents_by_level
+            .as_ref()
+            .and_then(|p| p.get(0))
+            .ok_or("first added block has no parents_by_level")?;
+
+        let common_ancestor =
+            *parents.first().ok_or("first added block's first parent level is empty")?;
+
+        log::info!(
+            "L1 bridge: rolling back to index {} (common ancestor {})",
+            rollback_index,
+            common_ancestor
+        );
+
+        self.chain_state.rollback_to(common_ancestor, rollback_index);
+        self.push_event(L1Event::Rollback(ChainCoordinate::new(common_ancestor, rollback_index)));
+
+        Ok(())
     }
 
     /// Handles sync errors.
@@ -306,13 +343,6 @@ impl BridgeWorker {
         let error_msg = e.to_lowercase();
 
         // Check if this is a "checkpoint lost" error (block pruned or no longer in chain).
-        //
-        // The RPC layer serializes errors to strings, so we must match on message contents.
-        // These patterns are based on kaspa-consensus-core error messages:
-        // - ConsensusError::BlockNotFound: "cannot find full block {hash}"
-        // - ConsensusError::HeaderNotFound: "cannot find header {hash}"
-        // - ConsensusError::MissingData: "some data is missing for block {hash}"
-        // - SyncManagerError::BlockNotInSelectedParentChain: "is not in selected parent chain"
         let is_checkpoint_lost = error_msg.contains("cannot find")
             || error_msg.contains("data is missing")
             || error_msg.contains("not in selected parent chain");
@@ -329,71 +359,8 @@ impl BridgeWorker {
             log::warn!("L1 bridge: sync failed, will retry on reconnect: {}", e);
         }
     }
-}
-
-// ============================================================================
-// Chain Event Handlers
-// ============================================================================
-
-impl BridgeWorker {
-    /// Handles a chain change.
-    async fn handle_chain_changed(&mut self, vcc: VirtualChainChangedNotification) {
-        // Handle reorg first if there are removed blocks.
-        if !vcc.removed_chain_block_hashes.is_empty() {
-            if let Err(e) = self.handle_reorg(&vcc).await {
-                self.fatal_error(format!("failed to handle reorg: {}", e));
-                return;
-            }
-        }
-
-        // Process added blocks.
-        for &hash in vcc.added_chain_block_hashes.iter() {
-            if let Err(e) = self.fetch_and_emit_block(hash).await {
-                self.fatal_error(format!("failed to fetch block {}: {}", hash, e));
-                return;
-            }
-        }
-    }
-
-    /// Handles a reorg.
-    async fn handle_reorg(&mut self, vcc: &VirtualChainChangedNotification) -> Result<(), String> {
-        log::info!(
-            "L1 bridge: reorg detected, {} blocks removed",
-            vcc.removed_chain_block_hashes.len()
-        );
-
-        // Calculate the index we're rolling back to.
-        let num_removed = vcc.removed_chain_block_hashes.len() as u64;
-        let rollback_index = self.chain_state.current_index().saturating_sub(num_removed);
-
-        // Find the common ancestor: parent of the first block in the new chain.
-        let first_added = vcc
-            .added_chain_block_hashes
-            .first()
-            .ok_or("reorg notification has removed blocks but no added blocks")?;
-
-        let parents = self.client.fetch_block_parents(*first_added).await?;
-
-        let common_ancestor =
-            parents.first().ok_or_else(|| format!("block {} has no parents", first_added))?;
-
-        let rollback_coord = ChainCoordinate::new(*common_ancestor, rollback_index);
-        log::info!(
-            "L1 bridge: rolling back to index {} (hash {})",
-            rollback_index,
-            common_ancestor
-        );
-
-        self.chain_state.set_last_processed(rollback_coord);
-        self.push_event(L1Event::Rollback(rollback_coord));
-
-        Ok(())
-    }
 
     /// Handles finalization (pruning point advancement).
-    ///
-    /// Note: Finalization errors are logged but not fatal - missing a finalization
-    /// event doesn't corrupt state, the consumer just won't prune as aggressively.
     async fn handle_finalization(&mut self) {
         // Fetch current pruning point from the node.
         let dag_info = match self.client.get_block_dag_info().await {
@@ -407,39 +374,26 @@ impl BridgeWorker {
         let pruning_hash = dag_info.pruning_point_hash;
 
         // Look up the index we assigned to this block when we processed it.
-        let Some(coord) = self.chain_state.get_coordinate_for_hash(&pruning_hash) else {
+        let Some(index) = self.chain_state.get_index(&pruning_hash) else {
             // This can happen normally if the pruning point is before our starting point.
             log::debug!("L1 bridge: pruning point {} not in tracked blocks", pruning_hash);
             return;
         };
 
+        let coord = ChainCoordinate::new(pruning_hash, index);
+
         // Only emit if the pruning point actually advanced.
         let last_finalized_index =
             self.chain_state.last_finalized().map(|c| c.index()).unwrap_or(0);
 
-        if coord.index() > last_finalized_index {
+        if index > last_finalized_index {
             log::info!(
                 "L1 bridge: pruning point advanced to index {} (hash {})",
-                coord.index(),
+                index,
                 pruning_hash
             );
             self.chain_state.set_last_finalized(coord);
             self.push_event(L1Event::Finalized(coord));
         }
-    }
-
-    /// Fetches a block and emits a BlockAdded event.
-    async fn fetch_and_emit_block(&mut self, hash: BlockHash) -> Result<ChainCoordinate, String> {
-        let block = self.client.fetch_block(hash).await?;
-
-        // Assign sequential index and update state.
-        let index = self.chain_state.next_index();
-        let coord = ChainCoordinate::new(block.header.hash, index);
-
-        self.chain_state.set_last_processed(coord);
-        self.chain_state.record_block(coord);
-        self.push_event(L1Event::BlockAdded { index, block: Box::new(block) });
-
-        Ok(coord)
     }
 }

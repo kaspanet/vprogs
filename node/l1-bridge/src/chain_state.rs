@@ -4,85 +4,52 @@ use kaspa_hashes::Hash as BlockHash;
 
 use crate::ChainCoordinate;
 
-/// Tracks chain synchronization state.
+/// Minimal chain state tracking for the L1 bridge.
+///
+/// Tracks the last processed block hash (for v2 API calls), current index counter,
+/// and a hash→index map for finalization lookups.
 pub struct ChainState {
-    /// The last processed block.
-    last_processed_block: Option<ChainCoordinate>,
-    /// The initial index passed at construction (reference point for index calculations).
-    initial_index: u64,
+    /// The last processed block hash.
+    last_processed_hash: Option<BlockHash>,
     /// Current block index (incremented for each block added).
     current_index: u64,
     /// Mapping from block hash to index for finalization tracking.
     hash_to_index: HashMap<BlockHash, u64>,
-    /// The last finalized block we've reported.
-    last_finalized_block: Option<ChainCoordinate>,
+    /// The last finalized coordinate.
+    last_finalized: Option<ChainCoordinate>,
 }
 
 impl ChainState {
     /// Creates a new chain state.
     pub fn new(
-        last_processed_block: Option<ChainCoordinate>,
-        last_finalized_block: Option<ChainCoordinate>,
+        last_processed: Option<ChainCoordinate>,
+        last_finalized: Option<ChainCoordinate>,
     ) -> Self {
         let mut hash_to_index = HashMap::new();
 
-        let last_index = match last_processed_block {
+        let (last_hash, last_index) = match last_processed {
             Some(coord) => {
                 hash_to_index.insert(coord.hash(), coord.index());
-                coord.index()
+                (Some(coord.hash()), coord.index())
             }
-            None => 0,
+            None => (None, 0),
         };
 
-        if let Some(coord) = last_finalized_block {
+        if let Some(coord) = last_finalized {
             hash_to_index.insert(coord.hash(), coord.index());
         }
 
         Self {
-            last_processed_block,
-            initial_index: last_index,
+            last_processed_hash: last_hash,
             current_index: last_index,
             hash_to_index,
-            last_finalized_block,
+            last_finalized,
         }
     }
 
-    /// Returns the initial index.
-    pub fn initial_index(&self) -> u64 {
-        self.initial_index
-    }
-
-    /// Records a block coordinate.
-    pub fn record_block(&mut self, block: ChainCoordinate) {
-        self.hash_to_index.insert(block.hash(), block.index());
-    }
-
-    /// Looks up the coordinate for a block hash.
-    pub fn get_coordinate_for_hash(&self, hash: &BlockHash) -> Option<ChainCoordinate> {
-        self.hash_to_index.get(hash).map(|&index| ChainCoordinate::new(*hash, index))
-    }
-
-    /// Returns the last finalized coordinate.
-    pub fn last_finalized(&self) -> Option<ChainCoordinate> {
-        self.last_finalized_block
-    }
-
-    /// Sets the last finalized coordinate and prunes old hash mappings.
-    pub fn set_last_finalized(&mut self, coord: ChainCoordinate) {
-        self.last_finalized_block = Some(coord);
-        // Prune hash mappings for blocks before the finalized index.
-        self.hash_to_index.retain(|_, &mut i| i >= coord.index());
-    }
-
-    /// Returns the last processed coordinate.
-    pub fn last_processed(&self) -> Option<ChainCoordinate> {
-        self.last_processed_block
-    }
-
-    /// Sets the last processed coordinate.
-    pub fn set_last_processed(&mut self, coord: ChainCoordinate) {
-        self.last_processed_block = Some(coord);
-        self.current_index = coord.index();
+    /// Returns the last processed block hash (used as start_hash for v2 API).
+    pub fn last_processed_hash(&self) -> Option<BlockHash> {
+        self.last_processed_hash
     }
 
     /// Returns the current block index.
@@ -90,9 +57,36 @@ impl ChainState {
         self.current_index
     }
 
-    /// Returns the next index.
-    pub fn next_index(&mut self) -> u64 {
+    /// Allocates the next index and records the block.
+    pub fn add_block(&mut self, hash: BlockHash) -> u64 {
         self.current_index += 1;
+        self.last_processed_hash = Some(hash);
+        self.hash_to_index.insert(hash, self.current_index);
         self.current_index
+    }
+
+    /// Rolls back to a given index and hash.
+    pub fn rollback_to(&mut self, hash: BlockHash, index: u64) {
+        self.current_index = index;
+        self.last_processed_hash = Some(hash);
+        // Prune entries after rollback point.
+        self.hash_to_index.retain(|_, &mut i| i <= index);
+    }
+
+    /// Looks up the index for a block hash.
+    pub fn get_index(&self, hash: &BlockHash) -> Option<u64> {
+        self.hash_to_index.get(hash).copied()
+    }
+
+    /// Returns the last finalized coordinate.
+    pub fn last_finalized(&self) -> Option<ChainCoordinate> {
+        self.last_finalized
+    }
+
+    /// Sets the last finalized coordinate and prunes old hash mappings.
+    pub fn set_last_finalized(&mut self, coord: ChainCoordinate) {
+        self.last_finalized = Some(coord);
+        // Prune hash mappings for blocks before the finalized index.
+        self.hash_to_index.retain(|_, &mut i| i >= coord.index());
     }
 }
