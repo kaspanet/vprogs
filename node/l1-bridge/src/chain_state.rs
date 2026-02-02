@@ -6,13 +6,11 @@ use crate::ChainCoordinate;
 
 /// Minimal chain state tracking for the L1 bridge.
 ///
-/// Tracks the last processed block hash (for v2 API calls), current index counter,
+/// Tracks the last processed coordinate (for v2 API calls and index tracking),
 /// and a hash→index map for finalization lookups.
 pub struct ChainState {
-    /// The last processed block hash.
-    last_processed_hash: Option<BlockHash>,
-    /// Current block index (incremented for each block added).
-    current_index: u64,
+    /// The last processed coordinate (hash + index).
+    last_processed: Option<ChainCoordinate>,
     /// Mapping from block hash to index for finalization tracking.
     hash_to_index: HashMap<BlockHash, u64>,
     /// The last finalized coordinate.
@@ -27,51 +25,43 @@ impl ChainState {
     ) -> Self {
         let mut hash_to_index = HashMap::new();
 
-        let (last_hash, last_index) = match last_processed {
-            Some(coord) => {
-                hash_to_index.insert(coord.hash(), coord.index());
-                (Some(coord.hash()), coord.index())
-            }
-            None => (None, 0),
-        };
+        if let Some(coord) = last_processed {
+            hash_to_index.insert(coord.hash(), coord.index());
+        }
 
         if let Some(coord) = last_finalized {
             hash_to_index.insert(coord.hash(), coord.index());
         }
 
-        Self {
-            last_processed_hash: last_hash,
-            current_index: last_index,
-            hash_to_index,
-            last_finalized,
-        }
+        Self { last_processed, hash_to_index, last_finalized }
     }
 
-    /// Returns the last processed block hash (used as start_hash for v2 API).
-    pub fn last_processed_hash(&self) -> Option<BlockHash> {
-        self.last_processed_hash
-    }
-
-    /// Returns the current block index.
-    pub fn current_index(&self) -> u64 {
-        self.current_index
+    /// Returns the last processed coordinate.
+    pub fn last_processed(&self) -> Option<ChainCoordinate> {
+        self.last_processed
     }
 
     /// Allocates the next index and records the block.
     pub fn add_block(&mut self, hash: BlockHash) -> u64 {
-        self.current_index += 1;
-        self.last_processed_hash = Some(hash);
-        self.hash_to_index.insert(hash, self.current_index);
-        self.current_index
+        let index = self.last_processed.map(|c| c.index()).unwrap_or(0) + 1;
+        self.last_processed = Some(ChainCoordinate::new(hash, index));
+        self.hash_to_index.insert(hash, index);
+        index
     }
 
     /// Rolls back by the given number of blocks, returning the new index.
     pub fn rollback(&mut self, num_blocks: u64) -> u64 {
-        self.current_index = self.current_index.saturating_sub(num_blocks);
-        // last_processed_hash will be updated when we add the first new block.
+        let current = self.last_processed.map(|c| c.index()).unwrap_or(0);
+        let new_index = current.saturating_sub(num_blocks);
         // Prune entries after rollback point.
-        self.hash_to_index.retain(|_, &mut i| i <= self.current_index);
-        self.current_index
+        self.hash_to_index.retain(|_, &mut i| i <= new_index);
+        // Restore last_processed from hash_to_index.
+        self.last_processed = self
+            .hash_to_index
+            .iter()
+            .find(|(_, &i)| i == new_index)
+            .map(|(h, _)| ChainCoordinate::new(*h, new_index));
+        new_index
     }
 
     /// Looks up the index for a block hash.

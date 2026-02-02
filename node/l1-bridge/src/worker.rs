@@ -243,6 +243,19 @@ impl BridgeWorker {
         }
     }
 
+    /// Fetches the current block DAG info.
+    async fn block_dag_info(&mut self) -> GetBlockDagInfoResponse {
+        self.client.get_block_dag_info().await.expect("failed to get dag info")
+    }
+
+    /// Determines the last processed hash.
+    async fn last_processed_hash(&mut self) -> RpcHash {
+        match self.chain_state.last_processed() {
+            Some(coord) => coord.hash(),
+            None => self.block_dag_info().await.pruning_point_hash,
+        }
+    }
+
     /// Fetches and processes chain updates using the v2 API.
     ///
     /// This single method handles both initial sync and live updates:
@@ -250,15 +263,8 @@ impl BridgeWorker {
     /// - Handles reorgs (removed blocks) if any
     /// - Emits events for added blocks with their accepted transactions
     async fn fetch_chain_updates(&mut self) -> Result<(), String> {
-        let dag_info = self
-            .client
-            .get_block_dag_info()
-            .await
-            .map_err(|e| format!("get_block_dag_info failed: {}", e))?;
-
         // Start from last processed hash, or pruning point if starting fresh.
-        let start_hash =
-            self.chain_state.last_processed_hash().unwrap_or(dag_info.pruning_point_hash);
+        let start_hash = self.last_processed_hash().await;
 
         let response = self
             .client
