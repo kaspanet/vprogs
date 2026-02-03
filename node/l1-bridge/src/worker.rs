@@ -11,7 +11,11 @@ use kaspa_wrpc_client::prelude::*;
 use tokio::sync::Notify;
 use workflow_core::channel::Channel;
 
-use crate::{ChainBlock, L1BridgeConfig, L1Event, error::Error, virtual_chain::VirtualChain};
+use crate::{
+    ChainBlock, L1BridgeConfig, L1Event,
+    error::{Error, Result},
+    virtual_chain::VirtualChain,
+};
 
 /// Background worker for L1 communication.
 pub struct BridgeWorker {
@@ -141,7 +145,9 @@ impl BridgeWorker {
                             }
                         }
                         Ok(Notification::PruningPointUtxoSetOverride(_)) => {
-                            self.handle_finalization().await;
+                            if let Err(e) = self.handle_finalization().await {
+                                self.handle_sync_error(e);
+                            }
                         }
                         Ok(_) => {}
                         Err(e) => {
@@ -220,7 +226,7 @@ impl BridgeWorker {
     }
 
     /// Subscribes to chain notifications.
-    async fn subscribe_to_notifications(&mut self) -> Result<(), Error> {
+    async fn subscribe_to_notifications(&mut self) -> Result<()> {
         let id = self.client.rpc_api().register_new_listener(ChannelConnection::new(
             "vprogs-l1-bridge",
             self.notification_channel.sender.clone(),
@@ -249,7 +255,7 @@ impl BridgeWorker {
     /// Recovers the gap between `root` and `tip` by fetching chain block
     /// hashes without verbose data. This rebuilds the linked list so that rollback and
     /// finalization can walk the full chain.
-    async fn recover_gap(&mut self, target: &ChainBlock) -> Result<(), Error> {
+    async fn recover_gap(&mut self, target: &ChainBlock) -> Result<()> {
         let start = self.virtual_chain.root();
 
         log::info!(
@@ -274,7 +280,7 @@ impl BridgeWorker {
         }
 
         if !found {
-            return Err("recovery target hash not found in chain".into());
+            return Err(Error::RecoveryTargetNotFound);
         }
 
         log::info!("L1 bridge: recovered gap up to index {}", self.virtual_chain.tip().index(),);
@@ -287,7 +293,7 @@ impl BridgeWorker {
     /// - Calls get_virtual_chain_from_block_v2 from our last checkpoint
     /// - Handles reorgs (removed blocks) if any
     /// - Emits events for added blocks with their accepted transactions
-    async fn fetch_chain_updates(&mut self) -> Result<(), Error> {
+    async fn fetch_chain_updates(&mut self) -> Result<()> {
         // Start from the tip hash, or query the L1 pruning point if starting fresh
         // (sentinel root at index 0 means no blocks have been processed yet).
         let tip = self.virtual_chain.tip();
@@ -332,13 +338,9 @@ impl BridgeWorker {
     }
 
     /// Handles a reorg by rolling back and emitting a Rollback event.
-    fn handle_reorg(&mut self, response: &GetVirtualChainFromBlockV2Response) -> Result<(), Error> {
+    fn handle_reorg(&mut self, response: &GetVirtualChainFromBlockV2Response) -> Result<()> {
         let num_removed = response.removed_chain_block_hashes.len() as u64;
-
-        let rollback_index = self
-            .virtual_chain
-            .rollback(num_removed)
-            .map_err(|()| Error::from("reorg would roll back past finalization boundary"))?;
+        let rollback_index = self.virtual_chain.rollback(num_removed)?;
 
         log::info!(
             "L1 bridge: reorg detected, {} blocks removed, rolling back to index {}",
@@ -351,48 +353,26 @@ impl BridgeWorker {
 
     /// Handles sync errors.
     fn handle_sync_error(&mut self, e: Error) {
-        let error_msg = e.to_string().to_lowercase();
-
-        // Check if this is a "checkpoint lost" error (block pruned or no longer in chain).
-        let is_checkpoint_lost = error_msg.contains("cannot find")
-            || error_msg.contains("data is missing")
-            || error_msg.contains("not in selected parent chain");
-
-        if is_checkpoint_lost {
-            log::error!("L1 bridge: starting block no longer in chain: {}", e);
-            self.push_event(L1Event::Fatal {
-                reason: format!("starting block no longer in chain (pruned or reorged): {}", e),
-            });
-            self.fatal = true;
+        if e.is_fatal() {
+            self.fatal_error(e.to_string());
         } else {
-            // Other sync errors (connection issues) - will retry on reconnect.
             log::warn!("L1 bridge: sync failed, will retry on reconnect: {}", e);
         }
     }
 
     /// Handles finalization (pruning point advancement).
-    async fn handle_finalization(&mut self) {
-        let pruning_hash = match self.client.get_block_dag_info().await {
-            Ok(info) => info.pruning_point_hash,
-            Err(e) => {
-                log::warn!("L1 bridge: failed to get dag info for finalization: {}", e);
-                return;
-            }
-        };
+    async fn handle_finalization(&mut self) -> Result<()> {
+        let pruning_hash = self.client.get_block_dag_info().await?.pruning_point_hash;
 
-        match self.virtual_chain.advance_root(&pruning_hash) {
-            Ok(Some(new_root)) => {
-                log::info!(
-                    "L1 bridge: pruning point advanced to index {} (hash {})",
-                    new_root.index(),
-                    pruning_hash
-                );
-                self.push_event(L1Event::Finalized(new_root));
-            }
-            Ok(None) => {}
-            Err(()) => {
-                self.fatal_error(format!("pruning point hash {} not found in chain", pruning_hash));
-            }
+        if let Some(new_root) = self.virtual_chain.advance_root(&pruning_hash)? {
+            log::info!(
+                "L1 bridge: pruning point advanced to index {} (hash {})",
+                new_root.index(),
+                pruning_hash
+            );
+            self.push_event(L1Event::Finalized(new_root));
         }
+
+        Ok(())
     }
 }

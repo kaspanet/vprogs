@@ -1,6 +1,9 @@
 use kaspa_hashes::Hash as BlockHash;
 
-use crate::chain_block::ChainBlock;
+use crate::{
+    chain_block::ChainBlock,
+    error::{Error, Result},
+};
 
 /// Virtual chain tracking using a doubly-linked list of coordinates.
 ///
@@ -43,12 +46,12 @@ impl VirtualChain {
     /// Rolls back by the given number of blocks, returning the new index.
     ///
     /// Returns `Ok(index)` on success, or `Err` if the rollback would go past `root`.
-    pub fn rollback(&mut self, num_blocks: u64) -> Result<u64, ()> {
+    pub fn rollback(&mut self, num_blocks: u64) -> Result<u64> {
         let root_index = self.root.index();
 
         for _ in 0..num_blocks {
             if self.tip.index() <= root_index {
-                return Err(());
+                return Err(Error::RollbackPastRoot { num_blocks });
             }
             let prev = self.tip.prev().expect("non-root node must have prev");
             self.tip.clear_prev();
@@ -66,7 +69,7 @@ impl VirtualChain {
     ///
     /// This walks forward from `root`, unlinking each node it passes. If the hash is
     /// not found, the chain is destroyed and the bridge must stop.
-    pub fn advance_root(&mut self, hash: &BlockHash) -> Result<Option<ChainBlock>, ()> {
+    pub fn advance_root(&mut self, hash: &BlockHash) -> Result<Option<ChainBlock>> {
         // Already at this pruning point.
         if self.root.hash() == *hash {
             return Ok(None);
@@ -89,6 +92,6 @@ impl VirtualChain {
         }
 
         // Hash not found — chain is destroyed.
-        Err(())
+        Err(Error::HashNotFound(*hash))
     }
 }
