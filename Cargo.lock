@@ -5435,6 +5435,7 @@ dependencies = [
  "kaspa-rpc-core",
  "kaspa-wrpc-client",
  "log",
+ "tap",
  "thiserror 2.0.18",
  "tokio",
  "vprogs-core-macros",

@@ -1,5 +1,10 @@
+use std::fmt;
+use std::fmt::{Debug, Formatter};
+use std::sync::Arc;
+
 use arc_swap::ArcSwapOption;
 use kaspa_hashes::{Hash as BlockHash, ZERO_HASH};
+use tap::{Tap, TapOptional};
 use vprogs_core_macros::smart_pointer;
 
 /// A position in the chain: block hash and sequential index.
@@ -25,33 +30,32 @@ impl ChainBlock {
 
     /// Creates and attaches a new block after this one, returning it.
     pub(crate) fn attach(&self, hash: BlockHash) -> Self {
-        let next = Self(std::sync::Arc::new(ChainBlockData {
+        Self(Arc::new(ChainBlockData {
             hash,
             index: self.index + 1,
             prev: ArcSwapOption::new(Some(self.0.clone())),
             next: ArcSwapOption::empty(),
-        }));
-        self.next.store(Some(next.clone().0));
-        next
+        }))
+        .tap(|next| {
+            self.next.store(Some(next.0.clone()));
+        })
     }
 
     /// Unlinks this block from its predecessor and returns the predecessor.
     ///
     /// Panics if this block has no predecessor (i.e. it is the root).
     pub(crate) fn rollback_tip(&self) -> Self {
-        let prev = Self(self.prev.swap(None).expect("tried to rollback root"));
-        prev.next.store(None);
-        prev
+        self.prev.swap(None).map(Self).expect("tried to rollback root").tap(|prev| {
+            prev.next.store(None);
+        })
     }
 
     /// Unlinks this block from its successor and returns it.
     /// The returned successor's prev pointer is cleared.
     pub(crate) fn advance_root(&self) -> Option<Self> {
-        let next = self.next.swap(None).map(Self);
-        if let Some(next) = &next {
+        self.next.swap(None).map(Self).tap_some(|next| {
             next.prev.store(None);
-        }
-        next
+        })
     }
 
     /// Returns the block hash.
@@ -82,8 +86,8 @@ impl Default for ChainBlock {
     }
 }
 
-impl std::fmt::Debug for ChainBlock {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for ChainBlock {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("ChainBlock").field("hash", &self.hash).field("index", &self.index).finish()
     }
 }
