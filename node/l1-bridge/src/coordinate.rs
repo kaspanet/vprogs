@@ -29,11 +29,11 @@ impl ChainCoordinate {
     }
 
     /// Creates a new chain coordinate linked to a previous one.
-    pub(crate) fn new_linked(hash: BlockHash, index: u64, prev: Option<ChainCoordinate>) -> Self {
+    pub(crate) fn new_linked(hash: BlockHash, index: u64, prev: ChainCoordinate) -> Self {
         Self(std::sync::Arc::new(ChainCoordinateData {
             hash,
             index,
-            prev: ArcSwapOption::new(prev.map(|c| c.0)),
+            prev: ArcSwapOption::new(Some(prev.0)),
             next: ArcSwapOption::empty(),
         }))
     }

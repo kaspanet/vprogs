@@ -143,7 +143,7 @@ impl BridgeWorker {
                     match notification {
                         Ok(Notification::VirtualChainChanged(_)) => {
                             if let Err(e) = self.fetch_chain_updates().await {
-                                self.fatal_error(format!("chain update failed: {}", e));
+                                self.handle_sync_error(e);
                             }
                         }
                         Ok(Notification::PruningPointUtxoSetOverride(_)) => {

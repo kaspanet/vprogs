@@ -37,7 +37,7 @@ impl ChainState {
     /// Allocates the next index and records the block.
     pub fn add_block(&mut self, hash: BlockHash) -> u64 {
         let index = self.last_processed.index() + 1;
-        let coord = ChainCoordinate::new_linked(hash, index, Some(self.last_processed.clone()));
+        let coord = ChainCoordinate::new_linked(hash, index, self.last_processed.clone());
         self.last_processed.set_next(Some(coord.clone()));
         self.last_processed = coord;
         index
@@ -77,7 +77,6 @@ impl ChainState {
 
         // Walk forward, unlinking each node we pass.
         let mut current = self.last_pruned.next();
-        self.last_pruned.clear_prev();
         self.last_pruned.set_next(None);
 
         while let Some(coord) = current {
