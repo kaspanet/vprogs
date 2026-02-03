@@ -15,6 +15,10 @@ pub struct L1BridgeConfig {
     pub connect_timeout_ms: u64,
     /// Reconnection strategy.
     pub connect_strategy: ConnectStrategy,
+    /// Last pruned coordinate (finalization threshold), or None to start from the L1 pruning
+    /// point. When set together with `last_processed`, the bridge will recover the gap between
+    /// the two on startup using a lightweight (non-verbose) sync.
+    pub last_pruned: Option<ChainCoordinate>,
     /// Last processed coordinate, or None to start from the pruning point.
     pub last_processed: Option<ChainCoordinate>,
 }
@@ -26,6 +30,7 @@ impl Default for L1BridgeConfig {
             network_id: NetworkId::new(NetworkType::Mainnet),
             connect_timeout_ms: 10_000,
             connect_strategy: ConnectStrategy::Retry,
+            last_pruned: None,
             last_processed: None,
         }
     }
@@ -59,6 +64,12 @@ impl L1BridgeConfig {
     /// Sets the reconnection strategy.
     pub fn with_connect_strategy(mut self, strategy: ConnectStrategy) -> Self {
         self.connect_strategy = strategy;
+        self
+    }
+
+    /// Sets the last pruned coordinate (finalization threshold).
+    pub fn with_last_pruned(mut self, coord: Option<ChainCoordinate>) -> Self {
+        self.last_pruned = coord;
         self
     }
 

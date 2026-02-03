@@ -11,7 +11,7 @@ use kaspa_wrpc_client::prelude::*;
 use tokio::sync::Notify;
 use workflow_core::channel::Channel;
 
-use crate::{L1BridgeConfig, L1Event, chain_state::ChainState, error::Error};
+use crate::{ChainCoordinate, L1BridgeConfig, L1Event, chain_state::ChainState, error::Error};
 
 /// Background worker for L1 communication.
 pub struct BridgeWorker {
@@ -31,6 +31,9 @@ pub struct BridgeWorker {
     listener_id: Option<ListenerId>,
     /// Whether a fatal error has occurred.
     fatal: bool,
+    /// Target coordinate for gap recovery when resuming with a separate last_pruned.
+    /// Once the gap is filled on first connect, this is set to None.
+    recovery_target: Option<ChainCoordinate>,
 }
 
 impl BridgeWorker {
@@ -40,7 +43,14 @@ impl BridgeWorker {
         queue: Arc<SegQueue<L1Event>>,
         event_signal: Arc<Notify>,
     ) -> Option<Self> {
-        let chain_state = ChainState::new(config.last_processed.clone());
+        // Initialize chain state from last_pruned if available, otherwise last_processed.
+        let starting_coordinate = config.last_pruned.clone().or(config.last_processed.clone());
+        let chain_state = ChainState::new(starting_coordinate);
+
+        // When last_pruned is set, we need to recover the gap to last_processed on first
+        // connect (lightweight sync without verbose block data).
+        let recovery_target =
+            if config.last_pruned.is_some() { config.last_processed.clone() } else { None };
 
         // Use resolver for public node discovery when no explicit URL is provided.
         let resolver = if config.url.is_none() { Some(Resolver::default()) } else { None };
@@ -90,6 +100,7 @@ impl BridgeWorker {
             rpc_ctl_channel,
             listener_id: None,
             fatal: false,
+            recovery_target,
         })
     }
 
@@ -176,6 +187,14 @@ impl BridgeWorker {
             return;
         }
 
+        // Recover the gap between last_pruned and last_processed if needed.
+        if let Some(target) = self.recovery_target.take() {
+            if let Err(e) = self.recover_gap(&target).await {
+                self.handle_sync_error(e);
+                return;
+            }
+        }
+
         self.push_event(L1Event::Connected);
 
         // Sync up to current chain state.
@@ -222,6 +241,39 @@ impl BridgeWorker {
 // ============================================================================
 
 impl BridgeWorker {
+    /// Recovers the gap between `last_pruned` and `last_processed` by fetching chain block
+    /// hashes without verbose data. This rebuilds the linked list so that rollback and
+    /// finalization can walk the full chain.
+    async fn recover_gap(&mut self, target: &ChainCoordinate) -> Result<(), Error> {
+        let start_hash = match self.chain_state.last_pruned() {
+            Some(coord) => coord.hash(),
+            None => return Ok(()),
+        };
+
+        log::info!(
+            "L1 bridge: recovering gap from index {} to index {}",
+            self.chain_state.last_pruned().map(|c| c.index()).unwrap_or(0),
+            target.index(),
+        );
+
+        // Fetch chain block hashes without verbose data (no headers/transactions needed).
+        let response = self.client.get_virtual_chain_from_block_v2(start_hash, None, None).await?;
+
+        let target_hash = target.hash();
+        let mut recovered = 0u64;
+
+        for hash in response.added_chain_block_hashes.iter() {
+            self.chain_state.add_block(*hash);
+            recovered += 1;
+            if *hash == target_hash {
+                break;
+            }
+        }
+
+        log::info!("L1 bridge: recovered {} chain block indexes", recovered);
+        Ok(())
+    }
+
     /// Handles chain updates triggered by VCC notifications.
     async fn handle_chain_update(&mut self) {
         if let Err(e) = self.fetch_chain_updates().await {
