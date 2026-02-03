@@ -5426,6 +5426,7 @@ dependencies = [
 name = "vprogs-node-l1-bridge"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "crossbeam-queue",
  "futures",
  "kaspa-consensus-core",
@@ -5436,6 +5437,7 @@ dependencies = [
  "log",
  "thiserror 2.0.18",
  "tokio",
+ "vprogs-core-macros",
  "vprogs-node-test-suite",
  "workflow-core",
 ]

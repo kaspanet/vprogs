@@ -11,7 +11,7 @@ use kaspa_wrpc_client::prelude::*;
 use tokio::sync::Notify;
 use workflow_core::channel::Channel;
 
-use crate::{ChainCoordinate, L1BridgeConfig, L1Event, chain_state::ChainState, error::Error};
+use crate::{L1BridgeConfig, L1Event, chain_state::ChainState, error::Error};
 
 /// Background worker for L1 communication.
 pub struct BridgeWorker {
@@ -40,7 +40,7 @@ impl BridgeWorker {
         queue: Arc<SegQueue<L1Event>>,
         event_signal: Arc<Notify>,
     ) -> Option<Self> {
-        let chain_state = ChainState::new(config.last_processed, config.last_finalized);
+        let chain_state = ChainState::new(config.last_processed.clone());
 
         // Use resolver for public node discovery when no explicit URL is provided.
         let resolver = if config.url.is_none() { Some(Resolver::default()) } else { None };
@@ -324,26 +324,23 @@ impl BridgeWorker {
 
         let pruning_hash = dag_info.pruning_point_hash;
 
-        // Look up the index we assigned to this block when we processed it.
-        let Some(index) = self.chain_state.get_index(&pruning_hash) else {
+        // Look up the coordinate we assigned to this block when we processed it.
+        let Some(coord) = self.chain_state.find_by_hash(&pruning_hash) else {
             // This can happen normally if the pruning point is before our starting point.
             log::debug!("L1 bridge: pruning point {} not in tracked blocks", pruning_hash);
             return;
         };
 
-        let coord = ChainCoordinate::new(pruning_hash, index);
+        // Only emit if the pruning point actually advanced past our current head.
+        let finalized_index = self.chain_state.finalized().map(|c| c.index()).unwrap_or(0);
 
-        // Only emit if the pruning point actually advanced.
-        let last_finalized_index =
-            self.chain_state.last_finalized().map(|c| c.index()).unwrap_or(0);
-
-        if index > last_finalized_index {
+        if coord.index() > finalized_index {
             log::info!(
                 "L1 bridge: pruning point advanced to index {} (hash {})",
-                index,
+                coord.index(),
                 pruning_hash
             );
-            self.chain_state.set_last_finalized(coord);
+            self.chain_state.advance_finalized(&coord);
             self.push_event(L1Event::Finalized(coord));
         }
     }

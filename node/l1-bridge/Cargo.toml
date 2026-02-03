@@ -4,7 +4,9 @@ name    = "vprogs-node-l1-bridge"
 version = "0.1.0"
 
 [dependencies]
+arc-swap             = "1"
 crossbeam-queue      = "0.3.12"
+vprogs-core-macros   = { path = "../../core/macros" }
 futures              = "0.3"
 kaspa-consensus-core = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
 kaspa-hashes         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }

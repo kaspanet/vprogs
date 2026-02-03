@@ -1,83 +1,112 @@
-use std::collections::HashMap;
-
+use arc_swap::ArcSwapOption;
 use kaspa_hashes::Hash as BlockHash;
 
-use crate::ChainCoordinate;
+use crate::coordinate::{ChainCoordinate, ChainCoordinateData};
 
-/// Minimal chain state tracking for the L1 bridge.
+/// Chain state tracking using a doubly-linked list of coordinates.
 ///
-/// Tracks the last processed coordinate (for v2 API calls and index tracking),
-/// and a hash→index map for finalization lookups.
+/// Supports O(1) append, O(n) rollback, and O(n) hash lookup by walking the list.
+/// Head represents the finalized/pruning threshold, tail is the latest processed.
 pub struct ChainState {
-    /// The last processed coordinate (hash + index).
-    last_processed: Option<ChainCoordinate>,
-    /// Mapping from block hash to index for finalization tracking.
-    hash_to_index: HashMap<BlockHash, u64>,
-    /// The last finalized coordinate.
-    last_finalized: Option<ChainCoordinate>,
+    /// Head of the list (finalized/pruning threshold).
+    head: ArcSwapOption<ChainCoordinateData>,
+    /// Tail of the list (latest processed).
+    tail: ArcSwapOption<ChainCoordinateData>,
 }
 
 impl ChainState {
     /// Creates a new chain state.
-    pub fn new(
-        last_processed: Option<ChainCoordinate>,
-        last_finalized: Option<ChainCoordinate>,
-    ) -> Self {
-        let mut hash_to_index = HashMap::new();
+    pub fn new(last_processed: Option<ChainCoordinate>) -> Self {
+        let state = Self { head: ArcSwapOption::empty(), tail: ArcSwapOption::empty() };
 
         if let Some(coord) = last_processed {
-            hash_to_index.insert(coord.hash(), coord.index());
+            state.head.store(Some(coord.0.clone()));
+            state.tail.store(Some(coord.0.clone()));
         }
 
-        if let Some(coord) = last_finalized {
-            hash_to_index.insert(coord.hash(), coord.index());
-        }
-
-        Self { last_processed, hash_to_index, last_finalized }
+        state
     }
 
     /// Returns the last processed coordinate.
     pub fn last_processed(&self) -> Option<ChainCoordinate> {
-        self.last_processed
+        self.tail.load_full().map(ChainCoordinate)
     }
 
     /// Allocates the next index and records the block.
     pub fn add_block(&mut self, hash: BlockHash) -> u64 {
-        let index = self.last_processed.map(|c| c.index()).unwrap_or(0) + 1;
-        self.last_processed = Some(ChainCoordinate::new(hash, index));
-        self.hash_to_index.insert(hash, index);
+        let prev = self.last_processed();
+        let index = prev.as_ref().map(|c| c.index()).unwrap_or(0) + 1;
+
+        let coord = ChainCoordinate::new_linked(hash, index, prev.clone());
+
+        // Link previous coordinate's next to new one.
+        if let Some(prev_coord) = prev {
+            prev_coord.set_next(Some(coord.clone()));
+        } else {
+            // First coordinate - also set as head.
+            self.head.store(Some(coord.0.clone()));
+        }
+
+        self.tail.store(Some(coord.0.clone()));
         index
     }
 
     /// Rolls back by the given number of blocks, returning the new index.
     pub fn rollback(&mut self, num_blocks: u64) -> u64 {
-        let current = self.last_processed.map(|c| c.index()).unwrap_or(0);
-        let new_index = current.saturating_sub(num_blocks);
-        // Prune entries after rollback point.
-        self.hash_to_index.retain(|_, &mut i| i <= new_index);
-        // Restore last_processed from hash_to_index.
-        self.last_processed = self
-            .hash_to_index
-            .iter()
-            .find(|(_, &i)| i == new_index)
-            .map(|(h, _)| ChainCoordinate::new(*h, new_index));
-        new_index
+        let mut current = self.last_processed();
+        let mut remaining = num_blocks;
+
+        // Walk back n nodes.
+        while remaining > 0 && current.is_some() {
+            current = current.unwrap().prev();
+            remaining -= 1;
+        }
+
+        // Update tail.
+        if let Some(new_tail) = &current {
+            new_tail.set_next(None);
+            self.tail.store(Some(new_tail.0.clone()));
+        } else {
+            // Rolled back everything.
+            self.tail.store(None);
+            self.head.store(None);
+        }
+
+        current.map(|c| c.index()).unwrap_or(0)
     }
 
-    /// Looks up the index for a block hash.
-    pub fn get_index(&self, hash: &BlockHash) -> Option<u64> {
-        self.hash_to_index.get(hash).copied()
+    /// Finds a coordinate by hash, walking forward from head.
+    pub fn find_by_hash(&self, hash: &BlockHash) -> Option<ChainCoordinate> {
+        let mut current = self.head.load_full().map(ChainCoordinate);
+        while let Some(coord) = current {
+            if coord.hash() == *hash {
+                return Some(coord);
+            }
+            current = coord.next();
+        }
+        None
     }
 
-    /// Returns the last finalized coordinate.
-    pub fn last_finalized(&self) -> Option<ChainCoordinate> {
-        self.last_finalized
+    /// Returns the finalized coordinate (head of the list).
+    pub fn finalized(&self) -> Option<ChainCoordinate> {
+        self.head.load_full().map(ChainCoordinate)
     }
 
-    /// Sets the last finalized coordinate and prunes old hash mappings.
-    pub fn set_last_finalized(&mut self, coord: ChainCoordinate) {
-        self.last_finalized = Some(coord);
-        // Prune hash mappings for blocks before the finalized index.
-        self.hash_to_index.retain(|_, &mut i| i >= coord.index());
+    /// Advances the finalized threshold and prunes old nodes.
+    pub fn advance_finalized(&mut self, coord: &ChainCoordinate) {
+        // Prune coordinates before this one by advancing head.
+        let mut current = self.head.load_full().map(ChainCoordinate);
+        while let Some(ref head) = current {
+            if head.index() >= coord.index() {
+                break;
+            }
+            current = head.next();
+        }
+
+        // Update head.
+        if let Some(new_head) = current {
+            new_head.clear_prev();
+            self.head.store(Some(new_head.0));
+        }
     }
 }

@@ -17,8 +17,6 @@ pub struct L1BridgeConfig {
     pub connect_strategy: ConnectStrategy,
     /// Last processed coordinate, or None to start from the pruning point.
     pub last_processed: Option<ChainCoordinate>,
-    /// Last finalized coordinate, or None if unknown.
-    pub last_finalized: Option<ChainCoordinate>,
 }
 
 impl Default for L1BridgeConfig {
@@ -29,7 +27,6 @@ impl Default for L1BridgeConfig {
             connect_timeout_ms: 10_000,
             connect_strategy: ConnectStrategy::Retry,
             last_processed: None,
-            last_finalized: None,
         }
     }
 }
@@ -68,12 +65,6 @@ impl L1BridgeConfig {
     /// Sets the last processed coordinate.
     pub fn with_last_processed(mut self, coord: Option<ChainCoordinate>) -> Self {
         self.last_processed = coord;
-        self
-    }
-
-    /// Sets the last finalized coordinate.
-    pub fn with_last_finalized(mut self, coord: Option<ChainCoordinate>) -> Self {
-        self.last_finalized = coord;
         self
     }
 }
