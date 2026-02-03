@@ -1,4 +1,5 @@
-use arc_swap::ArcSwapOption;
+use std::sync::Arc;
+
 use kaspa_hashes::Hash as BlockHash;
 
 use crate::coordinate::{ChainCoordinate, ChainCoordinateData};
@@ -10,9 +11,9 @@ use crate::coordinate::{ChainCoordinate, ChainCoordinateData};
 /// processed block.
 pub struct ChainState {
     /// Finalized/pruning threshold (oldest block we track).
-    last_pruned: ArcSwapOption<ChainCoordinateData>,
+    last_pruned: Option<Arc<ChainCoordinateData>>,
     /// Latest processed block.
-    last_processed: ArcSwapOption<ChainCoordinateData>,
+    last_processed: Option<Arc<ChainCoordinateData>>,
 }
 
 impl ChainState {
@@ -21,25 +22,22 @@ impl ChainState {
     /// Both pointers start at the given coordinate. The caller advances `last_processed`
     /// by calling [`add_block`].
     pub fn new(starting_coordinate: Option<ChainCoordinate>) -> Self {
-        let state =
-            Self { last_pruned: ArcSwapOption::empty(), last_processed: ArcSwapOption::empty() };
-
-        if let Some(coord) = starting_coordinate {
-            state.last_pruned.store(Some(coord.0.clone()));
-            state.last_processed.store(Some(coord.0));
+        match starting_coordinate {
+            Some(coord) => {
+                Self { last_pruned: Some(coord.0.clone()), last_processed: Some(coord.0) }
+            }
+            None => Self { last_pruned: None, last_processed: None },
         }
-
-        state
     }
 
     /// Returns the last processed coordinate.
     pub fn last_processed(&self) -> Option<ChainCoordinate> {
-        self.last_processed.load_full().map(ChainCoordinate)
+        self.last_processed.clone().map(ChainCoordinate)
     }
 
     /// Returns the last pruned coordinate.
     pub fn last_pruned(&self) -> Option<ChainCoordinate> {
-        self.last_pruned.load_full().map(ChainCoordinate)
+        self.last_pruned.clone().map(ChainCoordinate)
     }
 
     /// Allocates the next index and records the block.
@@ -54,10 +52,10 @@ impl ChainState {
             prev_coord.set_next(Some(coord.clone()));
         } else {
             // First coordinate - also set as last_pruned.
-            self.last_pruned.store(Some(coord.0.clone()));
+            self.last_pruned = Some(coord.0.clone());
         }
 
-        self.last_processed.store(Some(coord.0.clone()));
+        self.last_processed = Some(coord.0.clone());
         index
     }
 
@@ -65,7 +63,7 @@ impl ChainState {
     ///
     /// Returns `Ok(index)` on success, or `Err` if the rollback would go past `last_pruned`.
     pub fn rollback(&mut self, num_blocks: u64) -> Result<u64, ()> {
-        let pruned_index = self.last_pruned.load_full().map(|c| c.index()).unwrap_or(0);
+        let pruned_index = self.last_pruned.as_ref().map(|c| c.index()).unwrap_or(0);
         let mut current = self.last_processed();
         let mut remaining = num_blocks;
 
@@ -85,10 +83,10 @@ impl ChainState {
         // Update last_processed.
         if let Some(new_tail) = &current {
             new_tail.set_next(None);
-            self.last_processed.store(Some(new_tail.0.clone()));
+            self.last_processed = Some(new_tail.0.clone());
         } else {
-            self.last_processed.store(None);
-            self.last_pruned.store(None);
+            self.last_processed = None;
+            self.last_pruned = None;
         }
 
         Ok(current.map(|c| c.index()).unwrap_or(0))
@@ -102,8 +100,8 @@ impl ChainState {
     /// This walks forward from `last_pruned`, unlinking each node it passes. If the hash is
     /// not found, the chain is destroyed and the bridge must stop.
     pub fn try_finalize(&mut self, hash: &BlockHash) -> Result<Option<ChainCoordinate>, ()> {
-        let current_pruned = match self.last_pruned.load_full().map(ChainCoordinate) {
-            Some(coord) => coord,
+        let current_pruned = match &self.last_pruned {
+            Some(arc) => ChainCoordinate(arc.clone()),
             None => return Ok(None),
         };
 
@@ -120,7 +118,7 @@ impl ChainState {
         while let Some(coord) = current {
             if coord.hash() == *hash {
                 coord.clear_prev();
-                self.last_pruned.store(Some(coord.0.clone()));
+                self.last_pruned = Some(coord.0.clone());
                 return Ok(Some(coord));
             }
             let next = coord.next();

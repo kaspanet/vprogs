@@ -6,7 +6,6 @@ version = "0.1.0"
 [dependencies]
 arc-swap             = "1"
 crossbeam-queue      = "0.3.12"
-vprogs-core-macros   = { path = "../../core/macros" }
 futures              = "0.3"
 kaspa-consensus-core = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
 kaspa-hashes         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
@@ -16,6 +15,7 @@ kaspa-wrpc-client    = { git = "https://github.com/kaspanet/rusty-kaspa", branch
 log                  = "0.4"
 thiserror            = "2"
 tokio                = { version = "1", features = ["rt", "sync"] }
+vprogs-core-macros   = { path = "../../core/macros" }
 workflow-core        = "0.18.0"
 
 [dev-dependencies]
