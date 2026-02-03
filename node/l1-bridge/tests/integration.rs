@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use vprogs_node_l1_bridge::{
-    ChainCoordinate, ConnectStrategy, L1Bridge, L1BridgeConfig, L1Event, NetworkType,
-    RpcOptionalHeader, RpcOptionalTransaction,
+    ChainBlock, ConnectStrategy, L1Bridge, L1BridgeConfig, L1Event, NetworkType, RpcOptionalHeader,
+    RpcOptionalTransaction,
 };
 use vprogs_node_test_suite::{L1BridgeExt, L1Node};
 
@@ -66,7 +66,7 @@ async fn test_bridge_syncs_from_specific_block() {
         .with_url(node.wrpc_borsh_url())
         .with_network_type(NetworkType::Simnet)
         .with_connect_strategy(ConnectStrategy::Fallback)
-        .with_last_processed(Some(ChainCoordinate::new(start_from, 3)));
+        .with_tip(Some(ChainBlock::new(start_from, 3)));
 
     let bridge = L1Bridge::new(config);
 
@@ -329,7 +329,7 @@ async fn test_bridge_catches_up_after_reconnection() {
 
     // Record the last processed coordinate before shutdown.
     let (last_index, last_header, _) = &blocks[2];
-    let checkpoint = ChainCoordinate::new(last_header.hash.unwrap(), *last_index);
+    let checkpoint = ChainBlock::new(last_header.hash.unwrap(), *last_index);
     assert_eq!(*last_index, 3);
 
     // Shutdown the first bridge (simulating disconnect).
@@ -344,7 +344,7 @@ async fn test_bridge_catches_up_after_reconnection() {
         .with_url(node.wrpc_borsh_url())
         .with_network_type(NetworkType::Simnet)
         .with_connect_strategy(ConnectStrategy::Fallback)
-        .with_last_processed(Some(checkpoint));
+        .with_tip(Some(checkpoint));
 
     let bridge2 = L1Bridge::new(config);
 
@@ -377,7 +377,7 @@ async fn test_bridge_catches_up_after_reconnection() {
 
 async fn setup_node_with_bridge(
     strategy: ConnectStrategy,
-    last_processed: Option<ChainCoordinate>,
+    tip: Option<ChainBlock>,
 ) -> (L1Node, L1Bridge) {
     let node = L1Node::new().await;
 
@@ -385,7 +385,7 @@ async fn setup_node_with_bridge(
         .with_url(node.wrpc_borsh_url())
         .with_network_type(NetworkType::Simnet)
         .with_connect_strategy(strategy)
-        .with_last_processed(last_processed);
+        .with_tip(tip);
 
     let bridge = L1Bridge::new(config);
 

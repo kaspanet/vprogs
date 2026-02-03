@@ -1,7 +1,7 @@
 use kaspa_consensus_core::network::{NetworkId, NetworkType};
 use kaspa_wrpc_client::prelude::ConnectStrategy;
 
-use crate::ChainCoordinate;
+use crate::ChainBlock;
 
 /// Configuration for the L1 bridge.
 #[derive(Clone, Debug)]
@@ -15,12 +15,12 @@ pub struct L1BridgeConfig {
     pub connect_timeout_ms: u64,
     /// Reconnection strategy.
     pub connect_strategy: ConnectStrategy,
-    /// Last pruned coordinate (finalization threshold), or None to start from the L1 pruning
-    /// point. When set together with `last_processed`, the bridge will recover the gap between
+    /// Root coordinate (finalization threshold), or None to start from the L1 pruning
+    /// point. When set together with `tip`, the bridge will recover the gap between
     /// the two on startup using a lightweight (non-verbose) sync.
-    pub last_pruned: Option<ChainCoordinate>,
-    /// Last processed coordinate, or None to start from the pruning point.
-    pub last_processed: Option<ChainCoordinate>,
+    pub root: Option<ChainBlock>,
+    /// Tip coordinate, or None to start from the pruning point.
+    pub tip: Option<ChainBlock>,
 }
 
 impl Default for L1BridgeConfig {
@@ -30,8 +30,8 @@ impl Default for L1BridgeConfig {
             network_id: NetworkId::new(NetworkType::Mainnet),
             connect_timeout_ms: 10_000,
             connect_strategy: ConnectStrategy::Retry,
-            last_pruned: None,
-            last_processed: None,
+            root: None,
+            tip: None,
         }
     }
 }
@@ -67,15 +67,15 @@ impl L1BridgeConfig {
         self
     }
 
-    /// Sets the last pruned coordinate (finalization threshold).
-    pub fn with_last_pruned(mut self, coord: Option<ChainCoordinate>) -> Self {
-        self.last_pruned = coord;
+    /// Sets the root coordinate (finalization threshold).
+    pub fn with_root(mut self, coord: Option<ChainBlock>) -> Self {
+        self.root = coord;
         self
     }
 
-    /// Sets the last processed coordinate.
-    pub fn with_last_processed(mut self, coord: Option<ChainCoordinate>) -> Self {
-        self.last_processed = coord;
+    /// Sets the tip coordinate.
+    pub fn with_tip(mut self, coord: Option<ChainBlock>) -> Self {
+        self.tip = coord;
         self
     }
 }

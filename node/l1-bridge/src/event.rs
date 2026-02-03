@@ -1,7 +1,7 @@
 pub use kaspa_hashes::Hash;
 pub use kaspa_rpc_core::{RpcOptionalHeader, RpcOptionalTransaction};
 
-use crate::ChainCoordinate;
+use crate::ChainBlock;
 
 /// Events emitted by the L1 bridge.
 #[derive(Clone, Debug)]
@@ -27,7 +27,7 @@ pub enum L1Event {
     Rollback(u64),
     /// Blocks up to this coordinate are now finalized (pruning point advanced on L1).
     /// The scheduler can safely prune state up to and including this index.
-    Finalized(ChainCoordinate),
+    Finalized(ChainBlock),
     /// Bridge encountered a fatal error and stopped.
     Fatal {
         /// Descriptive message about what happened.

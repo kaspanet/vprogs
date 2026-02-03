@@ -11,14 +11,14 @@ use kaspa_wrpc_client::prelude::*;
 use tokio::sync::Notify;
 use workflow_core::channel::Channel;
 
-use crate::{ChainCoordinate, L1BridgeConfig, L1Event, chain_state::ChainState, error::Error};
+use crate::{ChainBlock, L1BridgeConfig, L1Event, error::Error, virtual_chain::VirtualChain};
 
 /// Background worker for L1 communication.
 pub struct BridgeWorker {
     /// RPC client for L1 node communication.
     client: Arc<KaspaRpcClient>,
     /// Tracks processed blocks and finalization.
-    chain_state: ChainState,
+    virtual_chain: VirtualChain,
     /// Shared queue for emitting events to consumers.
     queue: Arc<SegQueue<L1Event>>,
     /// Signal to wake consumers waiting for events.
@@ -31,9 +31,9 @@ pub struct BridgeWorker {
     listener_id: Option<ListenerId>,
     /// Whether a fatal error has occurred.
     fatal: bool,
-    /// Target coordinate for gap recovery when resuming with a separate last_pruned.
+    /// Target coordinate for gap recovery when resuming with a separate root.
     /// Once the gap is filled on first connect, this is set to None.
-    recovery_target: Option<ChainCoordinate>,
+    recovery_target: Option<ChainBlock>,
 }
 
 impl BridgeWorker {
@@ -43,22 +43,16 @@ impl BridgeWorker {
         queue: Arc<SegQueue<L1Event>>,
         event_signal: Arc<Notify>,
     ) -> Option<Self> {
-        // Initialize chain state: prefer last_pruned, fall back to last_processed, or use
+        // Initialize virtual chain: prefer root, fall back to tip, or use
         // a sentinel root. When starting fresh (sentinel root), fetch_chain_updates will
         // query the L1 pruning point to begin syncing.
-        let root = config
-            .last_pruned
-            .clone()
-            .or(config.last_processed.clone())
-            .unwrap_or_else(ChainCoordinate::root);
-        let chain_state = ChainState::new(root);
+        let root = config.root.clone().or(config.tip.clone()).unwrap_or_else(ChainBlock::root);
+        let virtual_chain = VirtualChain::new(root);
 
-        // When last_pruned and last_processed are both set and differ, we need to recover the
+        // When root and tip are both set and differ, we need to recover the
         // gap between them on first connect (lightweight sync without verbose block data).
-        let recovery_target = match (&config.last_pruned, &config.last_processed) {
-            (Some(pruned), Some(processed)) if pruned.hash() != processed.hash() => {
-                Some(processed.clone())
-            }
+        let recovery_target = match (&config.root, &config.tip) {
+            (Some(root), Some(tip)) if root.hash() != tip.hash() => Some(tip.clone()),
             _ => None,
         };
 
@@ -103,7 +97,7 @@ impl BridgeWorker {
 
         Some(Self {
             client,
-            chain_state,
+            virtual_chain,
             queue,
             event_signal,
             notification_channel: Channel::unbounded(),
@@ -198,7 +192,7 @@ impl BridgeWorker {
             return;
         }
 
-        // Recover the gap between last_pruned and last_processed if needed.
+        // Recover the gap between root and tip if needed.
         if let Some(target) = self.recovery_target.take() {
             if let Err(e) = self.recover_gap(&target).await {
                 self.handle_sync_error(e);
@@ -252,11 +246,11 @@ impl BridgeWorker {
 // ============================================================================
 
 impl BridgeWorker {
-    /// Recovers the gap between `last_pruned` and `last_processed` by fetching chain block
+    /// Recovers the gap between `root` and `tip` by fetching chain block
     /// hashes without verbose data. This rebuilds the linked list so that rollback and
     /// finalization can walk the full chain.
-    async fn recover_gap(&mut self, target: &ChainCoordinate) -> Result<(), Error> {
-        let start = self.chain_state.last_pruned();
+    async fn recover_gap(&mut self, target: &ChainBlock) -> Result<(), Error> {
+        let start = self.virtual_chain.root();
 
         log::info!(
             "L1 bridge: recovering gap from index {} to index {}",
@@ -272,7 +266,7 @@ impl BridgeWorker {
         let mut found = false;
 
         for hash in response.added_chain_block_hashes.iter() {
-            self.chain_state.add_block(*hash);
+            self.virtual_chain.add_block(*hash);
             if *hash == target_hash {
                 found = true;
                 break;
@@ -283,10 +277,7 @@ impl BridgeWorker {
             return Err("recovery target hash not found in chain".into());
         }
 
-        log::info!(
-            "L1 bridge: recovered gap up to index {}",
-            self.chain_state.last_processed().index(),
-        );
+        log::info!("L1 bridge: recovered gap up to index {}", self.virtual_chain.tip().index(),);
         Ok(())
     }
 
@@ -297,13 +288,13 @@ impl BridgeWorker {
     /// - Handles reorgs (removed blocks) if any
     /// - Emits events for added blocks with their accepted transactions
     async fn fetch_chain_updates(&mut self) -> Result<(), Error> {
-        // Start from last processed hash, or query the L1 pruning point if starting fresh
+        // Start from the tip hash, or query the L1 pruning point if starting fresh
         // (sentinel root at index 0 means no blocks have been processed yet).
-        let last = self.chain_state.last_processed();
-        let start_hash = if last.index() == 0 {
+        let tip = self.virtual_chain.tip();
+        let start_hash = if tip.index() == 0 {
             self.client.get_block_dag_info().await?.pruning_point_hash
         } else {
-            last.hash()
+            tip.hash()
         };
 
         let response = self
@@ -329,7 +320,7 @@ impl BridgeWorker {
 
         for acd in response.chain_block_accepted_transactions.iter() {
             let hash = acd.chain_block_header.hash.expect("hash missing despite High verbosity");
-            let index = self.chain_state.add_block(hash);
+            let index = self.virtual_chain.add_block(hash);
             self.push_event(L1Event::ChainBlockAdded {
                 index,
                 header: Box::new(acd.chain_block_header.clone()),
@@ -345,7 +336,7 @@ impl BridgeWorker {
         let num_removed = response.removed_chain_block_hashes.len() as u64;
 
         let rollback_index = self
-            .chain_state
+            .virtual_chain
             .rollback(num_removed)
             .map_err(|()| Error::from("reorg would roll back past finalization boundary"))?;
 
@@ -389,7 +380,7 @@ impl BridgeWorker {
             }
         };
 
-        match self.chain_state.try_finalize(&pruning_hash) {
+        match self.virtual_chain.advance_root(&pruning_hash) {
             Ok(Some(coord)) => {
                 log::info!(
                     "L1 bridge: pruning point advanced to index {} (hash {})",
