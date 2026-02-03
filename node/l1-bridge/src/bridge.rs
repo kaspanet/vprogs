@@ -56,10 +56,13 @@ impl L1Bridge {
     /// Waits for an event and returns it.
     pub async fn wait_and_pop(&self) -> L1Event {
         loop {
+            // Register the notified future before checking the queue to avoid a missed-wakeup
+            // race where a notification fires between pop() and notified().await.
+            let notified = self.event_signal.notified();
             if let Some(event) = self.queue.pop() {
                 return event;
             }
-            self.event_signal.notified().await;
+            notified.await;
         }
     }
 

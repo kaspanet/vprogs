@@ -261,17 +261,24 @@ impl BridgeWorker {
         let response = self.client.get_virtual_chain_from_block_v2(start_hash, None, None).await?;
 
         let target_hash = target.hash();
-        let mut recovered = 0u64;
+        let mut found = false;
 
         for hash in response.added_chain_block_hashes.iter() {
             self.chain_state.add_block(*hash);
-            recovered += 1;
             if *hash == target_hash {
+                found = true;
                 break;
             }
         }
 
-        log::info!("L1 bridge: recovered {} chain block indexes", recovered);
+        if !found {
+            return Err("recovery target hash not found in chain".into());
+        }
+
+        log::info!(
+            "L1 bridge: recovered gap up to index {}",
+            self.chain_state.last_processed().map(|c| c.index()).unwrap_or(0),
+        );
         Ok(())
     }
 
@@ -325,15 +332,23 @@ impl BridgeWorker {
     /// Handles a reorg by rolling back and emitting a Rollback event.
     fn handle_reorg(&mut self, response: &GetVirtualChainFromBlockV2Response) {
         let num_removed = response.removed_chain_block_hashes.len() as u64;
-        let rollback_index = self.chain_state.rollback(num_removed);
 
-        log::info!(
-            "L1 bridge: reorg detected, {} blocks removed, rolling back to index {}",
-            num_removed,
-            rollback_index
-        );
-
-        self.push_event(L1Event::Rollback(rollback_index));
+        match self.chain_state.rollback(num_removed) {
+            Ok(rollback_index) => {
+                log::info!(
+                    "L1 bridge: reorg detected, {} blocks removed, rolling back to index {}",
+                    num_removed,
+                    rollback_index
+                );
+                self.push_event(L1Event::Rollback(rollback_index));
+            }
+            Err(()) => {
+                self.fatal_error(format!(
+                    "reorg of {} blocks would roll back past finalization boundary",
+                    num_removed
+                ));
+            }
+        }
     }
 
     /// Handles sync errors.
@@ -367,13 +382,19 @@ impl BridgeWorker {
             }
         };
 
-        if let Some(coord) = self.chain_state.try_finalize(&pruning_hash) {
-            log::info!(
-                "L1 bridge: pruning point advanced to index {} (hash {})",
-                coord.index(),
-                pruning_hash
-            );
-            self.push_event(L1Event::Finalized(coord));
+        match self.chain_state.try_finalize(&pruning_hash) {
+            Ok(Some(coord)) => {
+                log::info!(
+                    "L1 bridge: pruning point advanced to index {} (hash {})",
+                    coord.index(),
+                    pruning_hash
+                );
+                self.push_event(L1Event::Finalized(coord));
+            }
+            Ok(None) => {}
+            Err(()) => {
+                self.fatal_error(format!("pruning point hash {} not found in chain", pruning_hash));
+            }
         }
     }
 }

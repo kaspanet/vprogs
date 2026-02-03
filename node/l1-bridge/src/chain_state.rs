@@ -62,13 +62,23 @@ impl ChainState {
     }
 
     /// Rolls back by the given number of blocks, returning the new index.
-    pub fn rollback(&mut self, num_blocks: u64) -> u64 {
+    ///
+    /// Returns `Ok(index)` on success, or `Err` if the rollback would go past `last_pruned`.
+    pub fn rollback(&mut self, num_blocks: u64) -> Result<u64, ()> {
+        let pruned_index = self.last_pruned.load_full().map(|c| c.index()).unwrap_or(0);
         let mut current = self.last_processed();
         let mut remaining = num_blocks;
 
-        // Walk back n nodes.
+        // Walk back n nodes, unlinking each removed node to break Arc cycles.
         while remaining > 0 && current.is_some() {
-            current = current.unwrap().prev();
+            let node = current.unwrap();
+            if node.index() <= pruned_index {
+                return Err(());
+            }
+            let prev = node.prev();
+            node.clear_prev();
+            node.set_next(None);
+            current = prev;
             remaining -= 1;
         }
 
@@ -77,33 +87,49 @@ impl ChainState {
             new_tail.set_next(None);
             self.last_processed.store(Some(new_tail.0.clone()));
         } else {
-            // Rolled back everything.
             self.last_processed.store(None);
             self.last_pruned.store(None);
         }
 
-        current.map(|c| c.index()).unwrap_or(0)
+        Ok(current.map(|c| c.index()).unwrap_or(0))
     }
 
     /// Tries to advance finalization to the given hash.
-    /// Returns the coordinate if it was found and is past `last_pruned`, None otherwise.
-    pub fn try_finalize(&mut self, hash: &BlockHash) -> Option<ChainCoordinate> {
-        let pruned_index = self.last_pruned.load_full().map(|h| h.index()).unwrap_or(0);
+    ///
+    /// Returns `Ok(Some(coord))` if finalization advanced, `Ok(None)` if the hash matches the
+    /// current `last_pruned` (no-op), or `Err` if the hash was not found in the chain.
+    ///
+    /// This walks forward from `last_pruned`, unlinking each node it passes. If the hash is
+    /// not found, the chain is destroyed and the bridge must stop.
+    pub fn try_finalize(&mut self, hash: &BlockHash) -> Result<Option<ChainCoordinate>, ()> {
+        let current_pruned = match self.last_pruned.load_full().map(ChainCoordinate) {
+            Some(coord) => coord,
+            None => return Ok(None),
+        };
 
-        // Walk forward from last_pruned looking for the hash.
-        let mut current = self.last_pruned.load_full().map(ChainCoordinate);
+        // Already at this pruning point.
+        if current_pruned.hash() == *hash {
+            return Ok(None);
+        }
+
+        // Walk forward, unlinking each node we pass.
+        let mut current = current_pruned.next();
+        current_pruned.clear_prev();
+        current_pruned.set_next(None);
+
         while let Some(coord) = current {
             if coord.hash() == *hash {
-                // Found it - only advance if past current last_pruned.
-                if coord.index() > pruned_index {
-                    coord.clear_prev();
-                    self.last_pruned.store(Some(coord.0.clone()));
-                    return Some(coord);
-                }
-                return None;
+                coord.clear_prev();
+                self.last_pruned.store(Some(coord.0.clone()));
+                return Ok(Some(coord));
             }
-            current = coord.next();
+            let next = coord.next();
+            coord.clear_prev();
+            coord.set_next(None);
+            current = next;
         }
-        None
+
+        // Hash not found — chain is destroyed.
+        Err(())
     }
 }
