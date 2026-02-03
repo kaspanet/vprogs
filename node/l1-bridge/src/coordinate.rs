@@ -1,5 +1,5 @@
 use arc_swap::ArcSwapOption;
-use kaspa_hashes::Hash as BlockHash;
+use kaspa_hashes::{Hash as BlockHash, ZERO_HASH};
 use vprogs_core_macros::smart_pointer;
 
 /// A position in the chain: block hash and sequential index.
@@ -13,6 +13,11 @@ pub struct ChainCoordinate {
 }
 
 impl ChainCoordinate {
+    /// Creates a sentinel root coordinate (ZERO_HASH, index 0, no links).
+    pub fn root() -> Self {
+        Self::new(ZERO_HASH, 0)
+    }
+
     /// Creates a new standalone chain coordinate (no links).
     pub fn new(hash: BlockHash, index: u64) -> Self {
         Self(std::sync::Arc::new(ChainCoordinateData {

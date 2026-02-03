@@ -43,14 +43,24 @@ impl BridgeWorker {
         queue: Arc<SegQueue<L1Event>>,
         event_signal: Arc<Notify>,
     ) -> Option<Self> {
-        // Initialize chain state from last_pruned if available, otherwise last_processed.
-        let starting_coordinate = config.last_pruned.clone().or(config.last_processed.clone());
-        let chain_state = ChainState::new(starting_coordinate);
+        // Initialize chain state: prefer last_pruned, fall back to last_processed, or use
+        // a sentinel root. When starting fresh (sentinel root), fetch_chain_updates will
+        // query the L1 pruning point to begin syncing.
+        let root = config
+            .last_pruned
+            .clone()
+            .or(config.last_processed.clone())
+            .unwrap_or_else(ChainCoordinate::root);
+        let chain_state = ChainState::new(root);
 
-        // When last_pruned is set, we need to recover the gap to last_processed on first
-        // connect (lightweight sync without verbose block data).
-        let recovery_target =
-            if config.last_pruned.is_some() { config.last_processed.clone() } else { None };
+        // When last_pruned and last_processed are both set and differ, we need to recover the
+        // gap between them on first connect (lightweight sync without verbose block data).
+        let recovery_target = match (&config.last_pruned, &config.last_processed) {
+            (Some(pruned), Some(processed)) if pruned.hash() != processed.hash() => {
+                Some(processed.clone())
+            }
+            _ => None,
+        };
 
         // Use resolver for public node discovery when no explicit URL is provided.
         let resolver = if config.url.is_none() { Some(Resolver::default()) } else { None };
@@ -246,19 +256,17 @@ impl BridgeWorker {
     /// hashes without verbose data. This rebuilds the linked list so that rollback and
     /// finalization can walk the full chain.
     async fn recover_gap(&mut self, target: &ChainCoordinate) -> Result<(), Error> {
-        let start_hash = match self.chain_state.last_pruned() {
-            Some(coord) => coord.hash(),
-            None => return Ok(()),
-        };
+        let start = self.chain_state.last_pruned();
 
         log::info!(
             "L1 bridge: recovering gap from index {} to index {}",
-            self.chain_state.last_pruned().map(|c| c.index()).unwrap_or(0),
+            start.index(),
             target.index(),
         );
 
         // Fetch chain block hashes without verbose data (no headers/transactions needed).
-        let response = self.client.get_virtual_chain_from_block_v2(start_hash, None, None).await?;
+        let response =
+            self.client.get_virtual_chain_from_block_v2(start.hash(), None, None).await?;
 
         let target_hash = target.hash();
         let mut found = false;
@@ -277,7 +285,7 @@ impl BridgeWorker {
 
         log::info!(
             "L1 bridge: recovered gap up to index {}",
-            self.chain_state.last_processed().map(|c| c.index()).unwrap_or(0),
+            self.chain_state.last_processed().index(),
         );
         Ok(())
     }
@@ -289,10 +297,13 @@ impl BridgeWorker {
     /// - Handles reorgs (removed blocks) if any
     /// - Emits events for added blocks with their accepted transactions
     async fn fetch_chain_updates(&mut self) -> Result<(), Error> {
-        // Start from last processed hash, or pruning point if starting fresh.
-        let start_hash = match self.chain_state.last_processed() {
-            Some(coord) => coord.hash(),
-            None => self.client.get_block_dag_info().await?.pruning_point_hash,
+        // Start from last processed hash, or query the L1 pruning point if starting fresh
+        // (sentinel root at index 0 means no blocks have been processed yet).
+        let last = self.chain_state.last_processed();
+        let start_hash = if last.index() == 0 {
+            self.client.get_block_dag_info().await?.pruning_point_hash
+        } else {
+            last.hash()
         };
 
         let response = self
@@ -302,7 +313,7 @@ impl BridgeWorker {
 
         // Handle reorg if there are removed blocks.
         if !response.removed_chain_block_hashes.is_empty() {
-            self.handle_reorg(&response);
+            self.handle_reorg(&response)?;
         }
 
         // Process added blocks.
@@ -330,25 +341,21 @@ impl BridgeWorker {
     }
 
     /// Handles a reorg by rolling back and emitting a Rollback event.
-    fn handle_reorg(&mut self, response: &GetVirtualChainFromBlockV2Response) {
+    fn handle_reorg(&mut self, response: &GetVirtualChainFromBlockV2Response) -> Result<(), Error> {
         let num_removed = response.removed_chain_block_hashes.len() as u64;
 
-        match self.chain_state.rollback(num_removed) {
-            Ok(rollback_index) => {
-                log::info!(
-                    "L1 bridge: reorg detected, {} blocks removed, rolling back to index {}",
-                    num_removed,
-                    rollback_index
-                );
-                self.push_event(L1Event::Rollback(rollback_index));
-            }
-            Err(()) => {
-                self.fatal_error(format!(
-                    "reorg of {} blocks would roll back past finalization boundary",
-                    num_removed
-                ));
-            }
-        }
+        let rollback_index = self
+            .chain_state
+            .rollback(num_removed)
+            .map_err(|()| Error::from("reorg would roll back past finalization boundary"))?;
+
+        log::info!(
+            "L1 bridge: reorg detected, {} blocks removed, rolling back to index {}",
+            num_removed,
+            rollback_index
+        );
+        self.push_event(L1Event::Rollback(rollback_index));
+        Ok(())
     }
 
     /// Handles sync errors.
