@@ -132,8 +132,9 @@ impl BridgeWorker {
                 notification = self.notification_channel.receiver.recv().fuse() => {
                     match notification {
                         Ok(Notification::VirtualChainChanged(_)) => {
-                            // VCC notification triggers a v2 fetch from our last checkpoint.
-                            self.handle_chain_update().await;
+                            if let Err(e) = self.fetch_chain_updates().await {
+                                self.fatal_error(format!("chain update failed: {}", e));
+                            }
                         }
                         Ok(Notification::PruningPointUtxoSetOverride(_)) => {
                             self.handle_finalization().await;
@@ -272,13 +273,6 @@ impl BridgeWorker {
 
         log::info!("L1 bridge: recovered {} chain block indexes", recovered);
         Ok(())
-    }
-
-    /// Handles chain updates triggered by VCC notifications.
-    async fn handle_chain_update(&mut self) {
-        if let Err(e) = self.fetch_chain_updates().await {
-            self.fatal_error(format!("chain update failed: {}", e));
-        }
     }
 
     /// Fetches and processes chain updates using the v2 API.
