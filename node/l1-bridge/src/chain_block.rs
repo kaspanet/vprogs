@@ -13,12 +13,7 @@ pub struct ChainBlock {
 }
 
 impl ChainBlock {
-    /// Creates a sentinel root coordinate (ZERO_HASH, index 0, no links).
-    pub fn root() -> Self {
-        Self::new(ZERO_HASH, 0)
-    }
-
-    /// Creates a new standalone chain block coordinate (no links).
+    /// Creates a new standalone chain block (no links).
     pub fn new(hash: BlockHash, index: u64) -> Self {
         Self(std::sync::Arc::new(ChainBlockData {
             hash,
@@ -28,18 +23,18 @@ impl ChainBlock {
         }))
     }
 
-    /// Creates a new chain block coordinate linked to a previous one.
-    pub(crate) fn new_linked(hash: BlockHash, index: u64, prev: ChainBlock) -> Self {
-        Self(std::sync::Arc::new(ChainBlockData {
+    /// Creates and appends a new block after this one, returning it.
+    pub(crate) fn append_next(&self, hash: BlockHash) -> Self {
+        let next = Self(std::sync::Arc::new(ChainBlockData {
             hash,
-            index,
-            prev: ArcSwapOption::new(Some(prev.0)),
+            index: self.index + 1,
+            prev: ArcSwapOption::new(Some(self.0.clone())),
             next: ArcSwapOption::empty(),
-        }))
+        }));
+        self.next.store(Some(next.clone().0));
+        next
     }
-}
 
-impl ChainBlockData {
     /// Returns the block hash.
     pub fn hash(&self) -> BlockHash {
         self.hash
@@ -50,24 +45,31 @@ impl ChainBlockData {
         self.index
     }
 
-    /// Returns the previous coordinate in the chain.
+    /// Returns the previous block in the chain.
     pub fn prev(&self) -> Option<ChainBlock> {
         self.prev.load_full().map(ChainBlock)
     }
 
-    /// Returns the next coordinate in the chain.
+    /// Returns the next block in the chain.
     pub fn next(&self) -> Option<ChainBlock> {
         self.next.load_full().map(ChainBlock)
     }
 
-    /// Sets the next coordinate.
-    pub(crate) fn set_next(&self, next: Option<ChainBlock>) {
-        self.next.store(next.map(|c| c.0));
+    /// Clears the next pointer.
+    pub(crate) fn clear_next(&self) {
+        self.next.store(None);
     }
 
     /// Clears the previous pointer.
     pub(crate) fn clear_prev(&self) {
         self.prev.store(None);
+    }
+}
+
+impl Default for ChainBlock {
+    /// Creates a sentinel root block (ZERO_HASH, index 0, no links).
+    fn default() -> Self {
+        Self::new(ZERO_HASH, 0)
     }
 }
 

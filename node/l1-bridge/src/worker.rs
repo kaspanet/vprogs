@@ -46,7 +46,7 @@ impl BridgeWorker {
         // Initialize virtual chain: prefer root, fall back to tip, or use
         // a sentinel root. When starting fresh (sentinel root), fetch_chain_updates will
         // query the L1 pruning point to begin syncing.
-        let root = config.root.clone().or(config.tip.clone()).unwrap_or_else(ChainBlock::root);
+        let root = config.root.clone().or(config.tip.clone()).unwrap_or_default();
         let virtual_chain = VirtualChain::new(root);
 
         // When root and tip are both set and differ, we need to recover the
@@ -381,13 +381,13 @@ impl BridgeWorker {
         };
 
         match self.virtual_chain.advance_root(&pruning_hash) {
-            Ok(Some(coord)) => {
+            Ok(Some(new_root)) => {
                 log::info!(
                     "L1 bridge: pruning point advanced to index {} (hash {})",
-                    coord.index(),
+                    new_root.index(),
                     pruning_hash
                 );
-                self.push_event(L1Event::Finalized(coord));
+                self.push_event(L1Event::Finalized(new_root));
             }
             Ok(None) => {}
             Err(()) => {

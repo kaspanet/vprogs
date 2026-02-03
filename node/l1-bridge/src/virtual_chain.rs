@@ -36,11 +36,8 @@ impl VirtualChain {
 
     /// Allocates the next index and records the block.
     pub fn add_block(&mut self, hash: BlockHash) -> u64 {
-        let index = self.tip.index() + 1;
-        let coord = ChainBlock::new_linked(hash, index, self.tip.clone());
-        self.tip.set_next(Some(coord.clone()));
-        self.tip = coord;
-        index
+        self.tip = self.tip.append_next(hash);
+        self.tip.index()
     }
 
     /// Rolls back by the given number of blocks, returning the new index.
@@ -55,7 +52,7 @@ impl VirtualChain {
             }
             let prev = self.tip.prev().expect("non-root node must have prev");
             self.tip.clear_prev();
-            prev.set_next(None);
+            prev.clear_next();
             self.tip = prev;
         }
 
@@ -77,7 +74,7 @@ impl VirtualChain {
 
         // Walk forward, unlinking each node we pass.
         let mut current = self.root.next();
-        self.root.set_next(None);
+        self.root.clear_next();
 
         while let Some(coord) = current {
             if coord.hash() == *hash {
@@ -87,7 +84,7 @@ impl VirtualChain {
             }
             let next = coord.next();
             coord.clear_prev();
-            coord.set_next(None);
+            coord.clear_next();
             current = next;
         }
 
