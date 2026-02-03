@@ -313,34 +313,20 @@ impl BridgeWorker {
 
     /// Handles finalization (pruning point advancement).
     async fn handle_finalization(&mut self) {
-        // Fetch current pruning point from the node.
-        let dag_info = match self.client.get_block_dag_info().await {
-            Ok(info) => info,
+        let pruning_hash = match self.client.get_block_dag_info().await {
+            Ok(info) => info.pruning_point_hash,
             Err(e) => {
                 log::warn!("L1 bridge: failed to get dag info for finalization: {}", e);
                 return;
             }
         };
 
-        let pruning_hash = dag_info.pruning_point_hash;
-
-        // Look up the coordinate we assigned to this block when we processed it.
-        let Some(coord) = self.chain_state.find_by_hash(&pruning_hash) else {
-            // This can happen normally if the pruning point is before our starting point.
-            log::debug!("L1 bridge: pruning point {} not in tracked blocks", pruning_hash);
-            return;
-        };
-
-        // Only emit if the pruning point actually advanced past our current head.
-        let finalized_index = self.chain_state.finalized().map(|c| c.index()).unwrap_or(0);
-
-        if coord.index() > finalized_index {
+        if let Some(coord) = self.chain_state.try_finalize(&pruning_hash) {
             log::info!(
                 "L1 bridge: pruning point advanced to index {} (hash {})",
                 coord.index(),
                 pruning_hash
             );
-            self.chain_state.advance_finalized(&coord);
             self.push_event(L1Event::Finalized(coord));
         }
     }

@@ -75,38 +75,25 @@ impl ChainState {
         current.map(|c| c.index()).unwrap_or(0)
     }
 
-    /// Finds a coordinate by hash, walking forward from head.
-    pub fn find_by_hash(&self, hash: &BlockHash) -> Option<ChainCoordinate> {
+    /// Tries to advance finalization to the given hash.
+    /// Returns the coordinate if it was found and is past the current head, None otherwise.
+    pub fn try_finalize(&mut self, hash: &BlockHash) -> Option<ChainCoordinate> {
+        let head_index = self.head.load_full().map(|h| h.index()).unwrap_or(0);
+
+        // Walk forward from head looking for the hash.
         let mut current = self.head.load_full().map(ChainCoordinate);
         while let Some(coord) = current {
             if coord.hash() == *hash {
-                return Some(coord);
+                // Found it - only advance if past current head.
+                if coord.index() > head_index {
+                    coord.clear_prev();
+                    self.head.store(Some(coord.0.clone()));
+                    return Some(coord);
+                }
+                return None;
             }
             current = coord.next();
         }
         None
-    }
-
-    /// Returns the finalized coordinate (head of the list).
-    pub fn finalized(&self) -> Option<ChainCoordinate> {
-        self.head.load_full().map(ChainCoordinate)
-    }
-
-    /// Advances the finalized threshold and prunes old nodes.
-    pub fn advance_finalized(&mut self, coord: &ChainCoordinate) {
-        // Prune coordinates before this one by advancing head.
-        let mut current = self.head.load_full().map(ChainCoordinate);
-        while let Some(ref head) = current {
-            if head.index() >= coord.index() {
-                break;
-            }
-            current = head.next();
-        }
-
-        // Update head.
-        if let Some(new_head) = current {
-            new_head.clear_prev();
-            self.head.store(Some(new_head.0));
-        }
     }
 }
