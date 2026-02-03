@@ -23,8 +23,8 @@ impl ChainBlock {
         }))
     }
 
-    /// Creates and appends a new block after this one, returning it.
-    pub(crate) fn append_next(&self, hash: BlockHash) -> Self {
+    /// Creates and attaches a new block after this one, returning it.
+    pub(crate) fn attach(&self, hash: BlockHash) -> Self {
         let next = Self(std::sync::Arc::new(ChainBlockData {
             hash,
             index: self.index + 1,
@@ -32,6 +32,25 @@ impl ChainBlock {
             next: ArcSwapOption::empty(),
         }));
         self.next.store(Some(next.clone().0));
+        next
+    }
+
+    /// Unlinks this block from its predecessor and returns the predecessor.
+    ///
+    /// Panics if this block has no predecessor (i.e. it is the root).
+    pub(crate) fn rollback_tip(&self) -> Self {
+        let prev = Self(self.prev.swap(None).expect("tried to rollback root"));
+        prev.next.store(None);
+        prev
+    }
+
+    /// Unlinks this block from its successor and returns it.
+    /// The returned successor's prev pointer is cleared.
+    pub(crate) fn advance_root(&self) -> Option<Self> {
+        let next = self.next.swap(None).map(Self);
+        if let Some(next) = &next {
+            next.prev.store(None);
+        }
         next
     }
 
@@ -53,16 +72,6 @@ impl ChainBlock {
     /// Returns the next block in the chain.
     pub fn next(&self) -> Option<ChainBlock> {
         self.next.load_full().map(ChainBlock)
-    }
-
-    /// Clears the next pointer.
-    pub(crate) fn clear_next(&self) {
-        self.next.store(None);
-    }
-
-    /// Clears the previous pointer.
-    pub(crate) fn clear_prev(&self) {
-        self.prev.store(None);
     }
 }
 

@@ -39,7 +39,7 @@ impl VirtualChain {
 
     /// Allocates the next index and records the block.
     pub fn add_block(&mut self, hash: BlockHash) -> u64 {
-        self.tip = self.tip.append_next(hash);
+        self.tip = self.tip.attach(hash);
         self.tip.index()
     }
 
@@ -47,16 +47,12 @@ impl VirtualChain {
     ///
     /// Returns `Ok(index)` on success, or `Err` if the rollback would go past `root`.
     pub fn rollback(&mut self, num_blocks: u64) -> Result<u64> {
-        let root_index = self.root.index();
+        if self.tip.index().saturating_sub(self.root.index()) < num_blocks {
+            return Err(Error::RollbackPastRoot { num_blocks });
+        }
 
         for _ in 0..num_blocks {
-            if self.tip.index() <= root_index {
-                return Err(Error::RollbackPastRoot { num_blocks });
-            }
-            let prev = self.tip.prev().expect("non-root node must have prev");
-            self.tip.clear_prev();
-            prev.clear_next();
-            self.tip = prev;
+            self.tip = self.tip.rollback_tip();
         }
 
         Ok(self.tip.index())
@@ -76,19 +72,14 @@ impl VirtualChain {
         }
 
         // Walk forward, unlinking each node we pass.
-        let mut current = self.root.next();
-        self.root.clear_next();
+        let mut current = self.root.advance_root();
 
         while let Some(coord) = current {
             if coord.hash() == *hash {
-                coord.clear_prev();
                 self.root = coord.clone();
                 return Ok(Some(coord));
             }
-            let next = coord.next();
-            coord.clear_prev();
-            coord.clear_next();
-            current = next;
+            current = coord.advance_root();
         }
 
         // Hash not found — chain is destroyed.
