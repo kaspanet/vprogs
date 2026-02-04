@@ -12,7 +12,7 @@ pub struct L1BridgeConfig {
     /// Reconnection strategy.
     pub connect_strategy: ConnectStrategy,
     /// Finalization boundary, or `None` to start from the L1 pruning point. When set together with
-    /// `tip`, the bridge fills the gap on startup.
+    /// `tip`, the bridge backfills the chain between them on startup.
     pub root: Option<ChainBlock>,
     /// Last known tip, or `None` to start from the L1 pruning point.
     pub tip: Option<ChainBlock>,
@@ -64,14 +64,14 @@ impl L1BridgeConfig {
     }
 
     /// Sets the finalization boundary to resume from.
-    pub fn with_root(mut self, coord: Option<ChainBlock>) -> Self {
-        self.root = coord;
+    pub fn with_root(mut self, block: Option<ChainBlock>) -> Self {
+        self.root = block;
         self
     }
 
     /// Sets the last known tip to resume from.
-    pub fn with_tip(mut self, coord: Option<ChainBlock>) -> Self {
-        self.tip = coord;
+    pub fn with_tip(mut self, block: Option<ChainBlock>) -> Self {
+        self.tip = block;
         self
     }
 }

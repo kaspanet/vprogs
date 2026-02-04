@@ -34,9 +34,9 @@ pub(crate) struct BridgeWorker {
     rpc_ctl_channel: MultiplexerChannel<RpcState>,
     /// Set to `true` on fatal errors to break out of the event loop.
     fatal: bool,
-    /// When resuming with both root and tip set, holds the tip coordinate until the gap between
-    /// root and tip is recovered on first connect.
-    recovery_target: Option<ChainBlock>,
+    /// When resuming with both root and tip set, holds the tip block until the chain between root
+    /// and tip is backfilled on first connect.
+    backfill_target: Option<ChainBlock>,
 }
 
 impl BridgeWorker {
@@ -51,9 +51,9 @@ impl BridgeWorker {
         let root = config.root.clone().or(config.tip.clone()).unwrap_or_default();
         let virtual_chain = VirtualChain::new(root);
 
-        // If both root and tip are provided and differ, we need to fill the gap between them on
-        // first connect (lightweight, non-verbose sync).
-        let recovery_target = match (&config.root, &config.tip) {
+        // If both root and tip are provided and differ, we need to backfill the chain between them
+        // on first connect (lightweight, non-verbose sync).
+        let backfill_target = match (&config.root, &config.tip) {
             (Some(root), Some(tip)) if root.hash() != tip.hash() => Some(tip.clone()),
             _ => None,
         };
@@ -105,7 +105,7 @@ impl BridgeWorker {
             notification_channel: Channel::unbounded(),
             rpc_ctl_channel,
             fatal: false,
-            recovery_target,
+            backfill_target,
         })
     }
 
@@ -184,8 +184,8 @@ impl BridgeWorker {
         }
     }
 
-    /// Called on RPC connect: subscribes to notifications, recovers any gap, then syncs to the
-    /// current chain state.
+    /// Called on RPC connect: subscribes to notifications, backfills the chain if resuming, then
+    /// syncs to the current chain state.
     async fn handle_connected(&mut self) {
         log::info!("L1 bridge connected to {}", self.client.url().unwrap_or_default());
 
@@ -195,16 +195,16 @@ impl BridgeWorker {
             return;
         }
 
-        // Step 2: If resuming, fill the gap between saved root and tip.
-        if let Some(target) = self.recovery_target.take() {
-            let result = self.recover_gap(&target).await;
+        // Step 2: If resuming, backfill the chain between root and tip.
+        if let Some(target) = self.backfill_target.take() {
+            let result = self.backfill_chain(&target).await;
             self.handle_sync_result(result);
             if self.fatal {
                 return;
             }
         }
 
-        // Notify consumer only after recovery succeeds.
+        // Notify consumer only after backfill succeeds.
         self.push_event(L1Event::Connected);
 
         // Step 3: Sync to the current chain state.
@@ -241,13 +241,13 @@ impl BridgeWorker {
         Ok(())
     }
 
-    /// Fills the linked list between root and `target` using a lightweight (non-verbose) fetch.
+    /// Backfills the linked list between root and `target` using a lightweight (non-verbose) fetch.
     /// Only runs once on first connect when resuming with a saved root/tip pair.
-    async fn recover_gap(&mut self, target: &ChainBlock) -> Result<()> {
+    async fn backfill_chain(&mut self, target: &ChainBlock) -> Result<()> {
         let start = self.virtual_chain.root();
 
         log::info!(
-            "L1 bridge: recovering gap from index {} to index {}",
+            "L1 bridge: backfilling chain from index {} to index {}",
             start.index(),
             target.index(),
         );
@@ -270,10 +270,10 @@ impl BridgeWorker {
         }
 
         if !found {
-            return Err(Error::RecoveryTargetNotFound);
+            return Err(Error::BackfillTargetNotFound);
         }
 
-        log::info!("L1 bridge: recovered gap up to index {}", self.virtual_chain.tip().index());
+        log::info!("L1 bridge: backfill complete up to index {}", self.virtual_chain.tip().index());
         Ok(())
     }
 

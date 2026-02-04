@@ -21,9 +21,9 @@ pub(crate) enum Error {
     #[error("pruning point hash {0} not found in chain")]
     HashNotFound(BlockHash),
 
-    /// The recovery target hash was not found during gap recovery.
-    #[error("recovery target hash not found in chain")]
-    RecoveryTargetNotFound,
+    /// The backfill target hash was not found in the chain.
+    #[error("backfill target hash not found in chain")]
+    BackfillTargetNotFound,
 
     /// An internal channel closed unexpectedly.
     #[error("notification channel closed: {0}")]

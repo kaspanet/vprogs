@@ -45,8 +45,8 @@
 //! # Resuming
 //!
 //! To resume from a previously known chain position, pass both `root` and `tip`
-//! in the config. The bridge will fill the gap between them on first connect
-//! before emitting new events.
+//! in the config. The bridge will backfill the chain between them on first
+//! connect before emitting new events.
 
 mod bridge;
 mod chain_block;

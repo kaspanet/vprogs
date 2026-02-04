@@ -21,7 +21,7 @@ pub enum L1Event {
     },
     /// Blocks after this index have been removed due to a reorg.
     Rollback(u64),
-    /// Blocks up to this coordinate are finalized and can be pruned.
+    /// Blocks up to this block are finalized and can be pruned.
     Finalized(ChainBlock),
     /// The bridge encountered a fatal error and stopped.
     Fatal {
