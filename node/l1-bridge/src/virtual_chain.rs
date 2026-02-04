@@ -75,3 +75,13 @@ impl VirtualChain {
         Err(Error::HashNotFound(*hash))
     }
 }
+
+impl Drop for VirtualChain {
+    /// Walks from root to tip, breaking Arc cycles between adjacent nodes.
+    fn drop(&mut self) {
+        let mut current = self.root.advance_root();
+        while let Some(block) = current {
+            current = block.advance_root();
+        }
+    }
+}
