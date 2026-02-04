@@ -1,7 +1,4 @@
-use kaspa_consensus_core::network::{NetworkId, NetworkType};
-use kaspa_wrpc_client::prelude::ConnectStrategy;
-
-use crate::ChainBlock;
+use crate::{ChainBlock, ConnectStrategy, NetworkId, NetworkType};
 
 /// Configuration for the L1 bridge.
 #[derive(Clone, Debug)]

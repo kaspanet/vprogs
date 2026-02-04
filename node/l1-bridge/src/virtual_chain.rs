@@ -1,6 +1,5 @@
-use kaspa_hashes::Hash as BlockHash;
-
 use crate::{
+    BlockHash,
     chain_block::ChainBlock,
     error::{Error, Result},
 };
@@ -11,7 +10,7 @@ use crate::{
 /// `root` represents the finalized/pruning threshold, `tip` is the latest
 /// processed block. Both always point to a valid coordinate — on a fresh start, they point
 /// to a sentinel root at index 0.
-pub struct VirtualChain {
+pub(crate) struct VirtualChain {
     /// Finalized/pruning threshold (oldest block we track).
     root: ChainBlock,
     /// Latest processed block.
@@ -23,22 +22,22 @@ impl VirtualChain {
     ///
     /// Both pointers start at the root. The caller advances `tip`
     /// by calling [`add_block`].
-    pub fn new(root: ChainBlock) -> Self {
+    pub(crate) fn new(root: ChainBlock) -> Self {
         Self { root: root.clone(), tip: root }
     }
 
     /// Returns the tip coordinate.
-    pub fn tip(&self) -> ChainBlock {
+    pub(crate) fn tip(&self) -> ChainBlock {
         self.tip.clone()
     }
 
     /// Returns the root coordinate.
-    pub fn root(&self) -> ChainBlock {
+    pub(crate) fn root(&self) -> ChainBlock {
         self.root.clone()
     }
 
     /// Allocates the next index and records the block.
-    pub fn add_block(&mut self, hash: BlockHash) -> u64 {
+    pub(crate) fn add_block(&mut self, hash: BlockHash) -> u64 {
         self.tip = self.tip.attach(hash);
         self.tip.index()
     }
@@ -46,7 +45,7 @@ impl VirtualChain {
     /// Rolls back by the given number of blocks, returning the new index.
     ///
     /// Returns `Ok(index)` on success, or `Err` if the rollback would go past `root`.
-    pub fn rollback(&mut self, num_blocks: u64) -> Result<u64> {
+    pub(crate) fn rollback(&mut self, num_blocks: u64) -> Result<u64> {
         if self.tip.index().saturating_sub(self.root.index()) < num_blocks {
             return Err(Error::RollbackPastRoot { num_blocks });
         }
@@ -65,7 +64,7 @@ impl VirtualChain {
     ///
     /// This walks forward from `root`, unlinking each node it passes. If the hash is
     /// not found, the chain is destroyed and the bridge must stop.
-    pub fn advance_root(&mut self, hash: &BlockHash) -> Result<Option<ChainBlock>> {
+    pub(crate) fn advance_root(&mut self, hash: &BlockHash) -> Result<Option<ChainBlock>> {
         // Already at this pruning point.
         if self.root.hash() == *hash {
             return Ok(None);

@@ -9,7 +9,7 @@ use kaspa_rpc_core::{
 };
 use kaspa_wrpc_client::prelude::*;
 use tokio::sync::Notify;
-use workflow_core::channel::Channel;
+use workflow_core::channel::{Channel, MultiplexerChannel};
 
 use crate::{
     ChainBlock, L1BridgeConfig, L1Event,
@@ -18,7 +18,7 @@ use crate::{
 };
 
 /// Background worker for L1 communication.
-pub struct BridgeWorker {
+pub(crate) struct BridgeWorker {
     /// RPC client for L1 node communication.
     client: Arc<KaspaRpcClient>,
     /// Tracks processed blocks and finalization.
@@ -30,7 +30,7 @@ pub struct BridgeWorker {
     /// Channel for receiving L1 chain notifications.
     notification_channel: Channel<Notification>,
     /// Channel for RPC connection state changes.
-    rpc_ctl_channel: workflow_core::channel::MultiplexerChannel<RpcState>,
+    rpc_ctl_channel: MultiplexerChannel<RpcState>,
     /// Whether a fatal error has occurred.
     fatal: bool,
     /// Target coordinate for gap recovery when resuming with a separate root.
@@ -40,7 +40,7 @@ pub struct BridgeWorker {
 
 impl BridgeWorker {
     /// Creates a new bridge worker.
-    pub async fn new(
+    pub(crate) async fn new(
         config: &L1BridgeConfig,
         queue: Arc<SegQueue<L1Event>>,
         event_signal: Arc<Notify>,
@@ -110,7 +110,7 @@ impl BridgeWorker {
     }
 
     /// Runs the event loop.
-    pub async fn run(mut self, shutdown: Arc<Notify>) {
+    pub(crate) async fn run(mut self, shutdown: Arc<Notify>) {
         loop {
             if self.fatal {
                 log::error!("L1 bridge: stopping due to fatal error");
@@ -127,7 +127,7 @@ impl BridgeWorker {
                 msg = self.rpc_ctl_channel.receiver.recv().fuse() => {
                     match msg {
                         Ok(RpcState::Connected) => self.handle_connected().await,
-                        Ok(RpcState::Disconnected) => self.handle_disconnected().await,
+                        Ok(RpcState::Disconnected) => self.handle_disconnected(),
                         Err(e) => {
                             self.fatal_error(format!("RPC control channel closed: {}", e));
                         }
@@ -155,6 +155,10 @@ impl BridgeWorker {
         log::info!("L1 bridge worker stopped");
     }
 
+    // ========================================================================
+    // Private helpers
+    // ========================================================================
+
     /// Emits an event.
     fn push_event(&self, event: L1Event) {
         self.queue.push(event);
@@ -167,13 +171,18 @@ impl BridgeWorker {
         self.push_event(L1Event::Fatal { reason });
         self.fatal = true;
     }
-}
 
-// ============================================================================
-// Connection Handlers
-// ============================================================================
+    /// Handles a sync result, logging and escalating errors as appropriate.
+    fn handle_sync_result(&mut self, result: Result<()>) {
+        if let Err(e) = result {
+            if e.is_fatal() {
+                self.fatal_error(e.to_string());
+            } else {
+                log::warn!("L1 bridge: sync failed, will retry on reconnect: {}", e);
+            }
+        }
+    }
 
-impl BridgeWorker {
     /// Handles connection.
     async fn handle_connected(&mut self) {
         log::info!("L1 bridge connected to {}", self.client.url().unwrap_or_default());
@@ -200,7 +209,7 @@ impl BridgeWorker {
     }
 
     /// Handles disconnection.
-    async fn handle_disconnected(&mut self) {
+    fn handle_disconnected(&mut self) {
         log::info!("L1 bridge disconnected");
         self.push_event(L1Event::Disconnected);
     }
@@ -224,13 +233,7 @@ impl BridgeWorker {
 
         Ok(())
     }
-}
 
-// ============================================================================
-// Chain Update Handlers
-// ============================================================================
-
-impl BridgeWorker {
     /// Recovers the gap between `root` and `tip` by fetching chain block
     /// hashes without verbose data. This rebuilds the linked list so that rollback and
     /// finalization can walk the full chain.
@@ -328,17 +331,6 @@ impl BridgeWorker {
         );
         self.push_event(L1Event::Rollback(rollback_index));
         Ok(())
-    }
-
-    /// Handles a sync result, logging and escalating errors as appropriate.
-    fn handle_sync_result(&mut self, result: Result<()>) {
-        if let Err(e) = result {
-            if e.is_fatal() {
-                self.fatal_error(e.to_string());
-            } else {
-                log::warn!("L1 bridge: sync failed, will retry on reconnect: {}", e);
-            }
-        }
     }
 
     /// Handles finalization (pruning point advancement).

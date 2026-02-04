@@ -1,9 +1,10 @@
-use kaspa_hashes::Hash as BlockHash;
 use kaspa_rpc_core::RpcError;
+
+use crate::BlockHash;
 
 /// Error type for L1 bridge operations.
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub(crate) enum Error {
     /// Recoverable RPC/network error — will retry on reconnect.
     #[error("RPC error: {0}")]
     Rpc(RpcError),
@@ -31,7 +32,7 @@ pub enum Error {
 
 impl Error {
     /// Returns `true` if this error is fatal and the bridge must stop.
-    pub fn is_fatal(&self) -> bool {
+    pub(crate) fn is_fatal(&self) -> bool {
         !matches!(self, Error::Rpc(_))
     }
 }
@@ -49,4 +50,4 @@ impl From<RpcError> for Error {
     }
 }
 
-pub type Result<T> = std::result::Result<T, Error>;
+pub(crate) type Result<T> = std::result::Result<T, Error>;

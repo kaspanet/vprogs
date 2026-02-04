@@ -5,9 +5,11 @@ use std::{
 };
 
 use arc_swap::ArcSwapOption;
-use kaspa_hashes::{Hash as BlockHash, ZERO_HASH};
+use kaspa_hashes::ZERO_HASH;
 use tap::{Tap, TapOptional};
 use vprogs_core_macros::smart_pointer;
+
+use crate::BlockHash;
 
 /// A position in the chain: block hash and sequential index.
 /// Forms a doubly-linked list for efficient traversal.
@@ -22,12 +24,22 @@ pub struct ChainBlock {
 impl ChainBlock {
     /// Creates a new standalone chain block (no links).
     pub fn new(hash: BlockHash, index: u64) -> Self {
-        Self(std::sync::Arc::new(ChainBlockData {
+        Self(Arc::new(ChainBlockData {
             hash,
             index,
             prev: ArcSwapOption::empty(),
             next: ArcSwapOption::empty(),
         }))
+    }
+
+    /// Returns the block hash.
+    pub fn hash(&self) -> BlockHash {
+        self.hash
+    }
+
+    /// Returns the sequential index.
+    pub fn index(&self) -> u64 {
+        self.index
     }
 
     /// Creates and attaches a new block after this one, returning it.
@@ -58,26 +70,6 @@ impl ChainBlock {
         self.next.swap(None).map(Self).tap_some(|next| {
             next.prev.store(None);
         })
-    }
-
-    /// Returns the block hash.
-    pub fn hash(&self) -> BlockHash {
-        self.hash
-    }
-
-    /// Returns the sequential index.
-    pub fn index(&self) -> u64 {
-        self.index
-    }
-
-    /// Returns the previous block in the chain.
-    pub fn prev(&self) -> Option<ChainBlock> {
-        self.prev.load_full().map(ChainBlock)
-    }
-
-    /// Returns the next block in the chain.
-    pub fn next(&self) -> Option<ChainBlock> {
-        self.next.load_full().map(ChainBlock)
     }
 }
 
