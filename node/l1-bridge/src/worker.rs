@@ -135,20 +135,18 @@ impl BridgeWorker {
                 }
 
                 notification = self.notification_channel.receiver.recv().fuse() => {
-                    match notification {
+                    let result = match notification {
                         Ok(Notification::VirtualChainChanged(_)) => {
-                            let result = self.fetch_chain_updates().await;
-                            self.handle_sync_result(result);
+                            self.fetch_chain_updates().await
                         }
                         Ok(Notification::PruningPointUtxoSetOverride(_)) => {
-                            let result = self.handle_finalization().await;
-                            self.handle_sync_result(result);
+                            self.handle_finalization().await
                         }
-                        Ok(_) => {}
-                        Err(e) => {
-                            self.fatal_error(format!("notification channel closed: {}", e));
-                        }
-                    }
+                        Ok(_) => Ok(()),
+                        Err(e) => Err(Error::ChannelClosed(e.to_string())),
+                    };
+
+                    self.handle_sync_result(result);
                 }
             }
         }

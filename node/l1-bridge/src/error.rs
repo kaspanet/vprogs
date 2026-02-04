@@ -23,6 +23,10 @@ pub enum Error {
     /// The recovery target hash was not found during gap recovery.
     #[error("recovery target hash not found in chain")]
     RecoveryTargetNotFound,
+
+    /// An internal channel was closed unexpectedly.
+    #[error("notification channel closed: {0}")]
+    ChannelClosed(String),
 }
 
 impl Error {
