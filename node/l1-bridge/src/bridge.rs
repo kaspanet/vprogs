@@ -7,9 +7,9 @@ use crate::{L1BridgeConfig, L1Event, worker::BridgeWorker};
 
 /// Bridge to the Kaspa L1 network that emits chain events.
 ///
-/// Spawns a background worker thread that communicates with the L1 node over
-/// RPC. Events are delivered through a lock-free queue and can be consumed
-/// via [`pop`], [`wait_and_pop`], or [`drain`].
+/// Spawns a background worker thread that communicates with the L1 node over RPC. Events are
+/// delivered through a lock-free queue and can be consumed via [`pop`], [`wait_and_pop`], or
+/// [`drain`].
 pub struct L1Bridge {
     /// Event queue shared with the worker.
     queue: Arc<SegQueue<L1Event>>,
@@ -22,15 +22,15 @@ pub struct L1Bridge {
 }
 
 impl L1Bridge {
-    /// Creates and starts a new bridge. The worker runs on a dedicated thread
-    /// with its own tokio runtime, isolated from the caller's runtime.
+    /// Creates and starts a new bridge. The worker runs on a dedicated thread with its own tokio
+    /// runtime, isolated from the caller's runtime.
     pub fn new(config: L1BridgeConfig) -> Self {
         let queue = Arc::new(SegQueue::new());
         let event_signal = Arc::new(Notify::new());
         let shutdown = Arc::new(Notify::new());
 
-        // Spawn the worker on a dedicated thread with its own single-threaded
-        // tokio runtime so async RPC I/O doesn't block the caller's executor.
+        // Spawn the worker on a dedicated thread with its own single-threaded tokio runtime so
+        // async RPC I/O doesn't block the caller's executor.
         let handle = std::thread::spawn({
             let queue = queue.clone();
             let event_signal = event_signal.clone();
@@ -61,8 +61,8 @@ impl L1Bridge {
     /// Asynchronously waits until an event is available and returns it.
     pub async fn wait_and_pop(&self) -> L1Event {
         loop {
-            // Register the notification future *before* checking the queue so
-            // that a push between `pop()` and `notified().await` is not lost.
+            // Register the notification future *before* checking the queue so that a push between
+            // `pop()` and `notified().await` is not lost.
             let notified = self.event_signal.notified();
             if let Some(event) = self.queue.pop() {
                 return event;
@@ -89,8 +89,8 @@ impl L1Bridge {
     }
 }
 
-/// Ensures the worker thread receives a shutdown signal even if the bridge
-/// is dropped without an explicit [`shutdown`] call.
+/// Ensures the worker thread receives a shutdown signal even if the bridge is dropped without an
+/// explicit [`shutdown`] call.
 impl Drop for L1Bridge {
     fn drop(&mut self) {
         self.shutdown.notify_one();

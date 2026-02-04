@@ -12,8 +12,8 @@ use kaspad_lib::args::Args;
 
 /// An in-process Kaspa simnet node for integration tests.
 ///
-/// Wraps a [`Daemon`] and its gRPC client, providing helpers for mining
-/// blocks and connecting peers. The daemon shuts down automatically on drop.
+/// Wraps a [`Daemon`] and its gRPC client, providing helpers for mining blocks and connecting
+/// peers. The daemon shuts down automatically on drop.
 pub struct L1Node {
     /// Kaspa daemon process.
     daemon: Daemon,
@@ -28,8 +28,8 @@ impl L1Node {
     pub async fn new() -> Self {
         kaspa_core::log::try_init_logger("INFO");
 
-        // Spawn a simnet daemon with unsafe RPC and unsynced mining enabled
-        // so we can mine blocks without waiting for IBD.
+        // Spawn a simnet daemon with unsafe RPC and unsynced mining enabled so we can mine blocks
+        // without waiting for IBD.
         let mut daemon = Daemon::new_random_with_args(
             Args {
                 simnet: true,

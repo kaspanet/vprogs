@@ -4,8 +4,8 @@ use crate::{
     error::{Error, Result},
 };
 
-/// Tracks the virtual chain as a doubly-linked list between a finalized `root`
-/// and the latest processed `tip`.
+/// Tracks the virtual chain as a doubly-linked list between a finalized `root` and the latest
+/// processed `tip`.
 pub(crate) struct VirtualChain {
     /// Finalization boundary — blocks at or before this point are considered final.
     root: ChainBlock,
@@ -35,15 +35,15 @@ impl VirtualChain {
         self.tip.index()
     }
 
-    /// Rolls back `num_blocks` from the tip and returns the new tip index.
-    /// Returns an error if the rollback would go past the root.
+    /// Rolls back `num_blocks` from the tip and returns the new tip index. Returns an error if the
+    /// rollback would go past the root.
     pub(crate) fn rollback(&mut self, num_blocks: u64) -> Result<u64> {
         // Ensure we don't roll back past the finalization boundary.
         if self.tip.index().saturating_sub(self.root.index()) < num_blocks {
             return Err(Error::RollbackPastRoot { num_blocks });
         }
 
-        // Walk backwards, detaching each block from its predecessor.
+        // Walk backwards, unlinking each block from its predecessor.
         for _ in 0..num_blocks {
             self.tip = self.tip.rollback_tip();
         }
@@ -51,16 +51,16 @@ impl VirtualChain {
         Ok(self.tip.index())
     }
 
-    /// Advances the root forward to the block matching `hash`, unlinking all
-    /// nodes it passes. Returns the new root, `None` if already there, or an
-    /// error if the hash is not found (which destroys the chain — fatal).
+    /// Advances the root forward to the block matching `hash`, unlinking all nodes it passes.
+    /// Returns the new root, `None` if already there, or an error if the hash is not found (which
+    /// destroys the chain — fatal).
     pub(crate) fn advance_root(&mut self, hash: &BlockHash) -> Result<Option<ChainBlock>> {
         // Already at this pruning point — nothing to do.
         if self.root.hash() == *hash {
             return Ok(None);
         }
 
-        // Walk forward from root, detaching each node until we find the target.
+        // Walk forward from root, unlinking each node until we find the target.
         let mut current = self.root.advance_root();
         while let Some(block) = current {
             if block.hash() == *hash {
@@ -70,8 +70,7 @@ impl VirtualChain {
             current = block.advance_root();
         }
 
-        // The target hash was not found — the chain is now destroyed and the
-        // bridge must stop.
+        // The target hash was not found — the chain is now destroyed and the bridge must stop.
         Err(Error::HashNotFound(*hash))
     }
 }

@@ -11,7 +11,7 @@ use vprogs_core_macros::smart_pointer;
 
 use crate::BlockHash;
 
-/// A block position in the virtual chain, forming a doubly-linked list.
+/// A block in the virtual chain, forming a doubly-linked list.
 #[smart_pointer]
 pub struct ChainBlock {
     /// L1 block hash.
@@ -60,24 +60,24 @@ impl ChainBlock {
         })
     }
 
-    /// Detaches this block from its predecessor and returns the predecessor.
-    /// Used during rollback to walk backwards from the tip.
+    /// Unlinks this block from the chain and returns its predecessor. Used during rollback to walk
+    /// backwards from the tip.
     ///
     /// Panics if this block has no predecessor (i.e. it is the root).
     pub(crate) fn rollback_tip(&self) -> Self {
         // Take the prev pointer, clearing this block's back-link.
         self.prev.swap(None).map(Self).expect("tried to rollback root").tap(|prev| {
-            // Clear the predecessor's forward link to fully detach.
+            // Clear the predecessor's forward link to fully unlink.
             prev.next.store(None);
         })
     }
 
-    /// Detaches this block from its successor and returns the successor.
-    /// Used during finalization to walk forward from the root.
+    /// Unlinks this block from the chain and returns its successor. Used during finalization to
+    /// walk forward from the root.
     pub(crate) fn advance_root(&self) -> Option<Self> {
         // Take the next pointer, clearing this block's forward link.
         self.next.swap(None).map(Self).tap_some(|next| {
-            // Clear the successor's back-link to fully detach.
+            // Clear the successor's back-link to fully unlink.
             next.prev.store(None);
         })
     }

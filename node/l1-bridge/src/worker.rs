@@ -34,14 +34,14 @@ pub(crate) struct BridgeWorker {
     rpc_ctl_channel: MultiplexerChannel<RpcState>,
     /// Set to `true` on fatal errors to break out of the event loop.
     fatal: bool,
-    /// When resuming with both root and tip set, holds the tip coordinate
-    /// until the gap between root and tip is recovered on first connect.
+    /// When resuming with both root and tip set, holds the tip coordinate until the gap between
+    /// root and tip is recovered on first connect.
     recovery_target: Option<ChainBlock>,
 }
 
 impl BridgeWorker {
-    /// Connects to the L1 node and returns a ready worker, or `None` if
-    /// connection fails (a `Fatal` event is pushed in that case).
+    /// Connects to the L1 node and returns a ready worker, or `None` if connection fails (a `Fatal`
+    /// event is pushed in that case).
     pub(crate) async fn new(
         config: &L1BridgeConfig,
         queue: Arc<SegQueue<L1Event>>,
@@ -51,8 +51,8 @@ impl BridgeWorker {
         let root = config.root.clone().or(config.tip.clone()).unwrap_or_default();
         let virtual_chain = VirtualChain::new(root);
 
-        // If both root and tip are provided and differ, we need to fill the
-        // gap between them on first connect (lightweight, non-verbose sync).
+        // If both root and tip are provided and differ, we need to fill the gap between them on
+        // first connect (lightweight, non-verbose sync).
         let recovery_target = match (&config.root, &config.tip) {
             (Some(root), Some(tip)) if root.hash() != tip.hash() => Some(tip.clone()),
             _ => None,
@@ -77,8 +77,8 @@ impl BridgeWorker {
             }
         };
 
-        // Subscribe to RPC state changes before connecting so we don't miss
-        // the initial Connected event.
+        // Subscribe to RPC state changes before connecting so we don't miss the initial Connected
+        // event.
         let rpc_ctl_channel = client.rpc_ctl().multiplexer().channel();
 
         if let Err(e) = client
@@ -184,8 +184,8 @@ impl BridgeWorker {
         }
     }
 
-    /// Called on RPC connect: subscribes to notifications, recovers any gap,
-    /// then syncs to the current chain state.
+    /// Called on RPC connect: subscribes to notifications, recovers any gap, then syncs to the
+    /// current chain state.
     async fn handle_connected(&mut self) {
         log::info!("L1 bridge connected to {}", self.client.url().unwrap_or_default());
 
@@ -218,9 +218,9 @@ impl BridgeWorker {
         self.push_event(L1Event::Disconnected);
     }
 
-    /// Registers a notification listener for VirtualChainChanged (used as a
-    /// "something changed" signal — actual data is fetched via the v2 API)
-    /// and PruningPointUtxoSetOverride (finalization).
+    /// Registers a notification listener for VirtualChainChanged (used as a "something changed"
+    /// signal — actual data is fetched via the v2 API) and PruningPointUtxoSetOverride
+    /// (finalization).
     async fn subscribe_to_notifications(&mut self) -> Result<()> {
         // Register a persistent listener that pipes notifications into our channel.
         let id = self.client.rpc_api().register_new_listener(ChannelConnection::new(
@@ -229,8 +229,8 @@ impl BridgeWorker {
             ChannelType::Persistent,
         ));
 
-        // VCC is subscribed without accepted_transaction_ids — we only use it as
-        // a "something changed" signal and fetch verbose data via the v2 API.
+        // VCC is subscribed without accepted_transaction_ids — we only use it as a "something
+        // changed" signal and fetch verbose data via the v2 API.
         for scope in [
             Scope::VirtualChainChanged(VirtualChainChangedScope::new(false)),
             Scope::PruningPointUtxoSetOverride(PruningPointUtxoSetOverrideScope {}),
@@ -241,9 +241,8 @@ impl BridgeWorker {
         Ok(())
     }
 
-    /// Fills the linked list between root and `target` using a lightweight
-    /// (non-verbose) fetch. Only runs once on first connect when resuming
-    /// with a saved root/tip pair.
+    /// Fills the linked list between root and `target` using a lightweight (non-verbose) fetch.
+    /// Only runs once on first connect when resuming with a saved root/tip pair.
     async fn recover_gap(&mut self, target: &ChainBlock) -> Result<()> {
         let start = self.virtual_chain.root();
 
@@ -253,8 +252,8 @@ impl BridgeWorker {
             target.index(),
         );
 
-        // Lightweight fetch (no verbosity) — we only need hashes to rebuild
-        // the linked list, not headers or transactions.
+        // Lightweight fetch (no verbosity) — we only need hashes to rebuild the linked list, not
+        // headers or transactions.
         let response =
             self.client.get_virtual_chain_from_block_v2(start.hash(), None, None).await?;
 
@@ -278,13 +277,12 @@ impl BridgeWorker {
         Ok(())
     }
 
-    /// Fetches chain updates from the current tip (or the L1 pruning point on
-    /// first sync). Handles reorgs and emits `ChainBlockAdded` events.
+    /// Fetches chain updates from the current tip (or the L1 pruning point on first sync). Handles
+    /// reorgs and emits `ChainBlockAdded` events.
     async fn fetch_chain_updates(&mut self) -> Result<()> {
         let tip = self.virtual_chain.tip();
 
-        // Index 0 is the sentinel — no blocks processed yet, start from the
-        // L1 pruning point.
+        // Index 0 is the sentinel — no blocks processed yet, start from the L1 pruning point.
         let start_hash = if tip.index() == 0 {
             self.client.get_block_dag_info().await?.pruning_point_hash
         } else {

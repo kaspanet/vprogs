@@ -5,9 +5,8 @@ use vprogs_node_l1_bridge::{L1Bridge, L1Event};
 
 /// Convenience methods for [`L1Bridge`] in test scenarios.
 pub trait L1BridgeExt {
-    /// Collects events until one matches `predicate`, or panics on timeout.
-    ///
-    /// Returns all collected events up to and including the matching one.
+    /// Collects events until one matches `predicate`, or panics on timeout. Returns all collected
+    /// events up to and including the matching one.
     fn wait_for<F>(
         &self,
         timeout: Duration,

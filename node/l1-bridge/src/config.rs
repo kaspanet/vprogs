@@ -11,21 +11,22 @@ pub struct L1BridgeConfig {
     pub connect_timeout_ms: u64,
     /// Reconnection strategy.
     pub connect_strategy: ConnectStrategy,
-    /// Finalization boundary, or `None` to start from the L1 pruning point.
-    /// When set together with `tip`, the bridge fills the gap on startup.
+    /// Finalization boundary, or `None` to start from the L1 pruning point. When set together with
+    /// `tip`, the bridge fills the gap on startup.
     pub root: Option<ChainBlock>,
     /// Last known tip, or `None` to start from the L1 pruning point.
     pub tip: Option<ChainBlock>,
 }
 
 impl Default for L1BridgeConfig {
+    /// Defaults to mainnet with a 10-second timeout, automatic reconnection, and no resume state.
     fn default() -> Self {
         Self {
-            url: None,
+            url: None, // Use the public resolver.
             network_id: NetworkId::new(NetworkType::Mainnet),
             connect_timeout_ms: 10_000,
-            connect_strategy: ConnectStrategy::Retry,
-            root: None,
+            connect_strategy: ConnectStrategy::Retry, // Reconnect automatically on disconnect.
+            root: None,                               // Start from the L1 pruning point.
             tip: None,
         }
     }
