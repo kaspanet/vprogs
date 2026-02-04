@@ -10,27 +10,22 @@ pub enum L1Event {
     Connected,
     /// Connection to L1 node lost.
     Disconnected,
-    /// A chain block was added (in order, past to present).
-    ///
-    /// Contains the chain block header and all transactions accepted by this chain block.
-    /// The accepted transactions are the transactions from this block's mergeset that
-    /// became confirmed when this block was added to the selected parent chain.
+    /// A new chain block with its accepted transactions.
     ChainBlockAdded {
-        /// Sequential index of this chain block, relative to the starting point.
+        /// Sequential index relative to the bridge's starting point.
         index: u64,
-        /// The chain block header.
+        /// Block header.
         header: Box<RpcOptionalHeader>,
-        /// Transactions accepted by this chain block (from its mergeset).
+        /// Transactions from this block's mergeset that became confirmed.
         accepted_transactions: Vec<RpcOptionalTransaction>,
     },
-    /// Rollback to a previous index (blocks after this index are removed).
+    /// Blocks after this index have been removed due to a reorg.
     Rollback(u64),
-    /// Blocks up to this coordinate are now finalized (pruning point advanced on L1).
-    /// The scheduler can safely prune state up to and including this index.
+    /// Blocks up to this coordinate are finalized and can be pruned.
     Finalized(ChainBlock),
-    /// Bridge encountered a fatal error and stopped.
+    /// The bridge encountered a fatal error and stopped.
     Fatal {
-        /// Descriptive message about what happened.
+        /// What went wrong.
         reason: String,
     },
 }

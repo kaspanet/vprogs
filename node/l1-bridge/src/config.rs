@@ -3,20 +3,18 @@ use crate::{ChainBlock, ConnectStrategy, NetworkId, NetworkType};
 /// Configuration for the L1 bridge.
 #[derive(Clone, Debug)]
 pub struct L1BridgeConfig {
-    /// WebSocket URL to connect to (e.g., "ws://localhost:17110").
-    /// If None, uses the Resolver to find a public node.
+    /// WebSocket URL (e.g. `ws://localhost:17110`), or `None` to use the public resolver.
     pub url: Option<String>,
-    /// Network identifier (mainnet, testnet, devnet, simnet).
+    /// Target network (mainnet, testnet, devnet, simnet).
     pub network_id: NetworkId,
     /// Connection timeout in milliseconds.
     pub connect_timeout_ms: u64,
     /// Reconnection strategy.
     pub connect_strategy: ConnectStrategy,
-    /// Root coordinate (finalization threshold), or None to start from the L1 pruning
-    /// point. When set together with `tip`, the bridge will recover the gap between
-    /// the two on startup using a lightweight (non-verbose) sync.
+    /// Finalization boundary, or `None` to start from the L1 pruning point.
+    /// When set together with `tip`, the bridge fills the gap on startup.
     pub root: Option<ChainBlock>,
-    /// Tip coordinate, or None to start from the pruning point.
+    /// Last known tip, or `None` to start from the L1 pruning point.
     pub tip: Option<ChainBlock>,
 }
 
@@ -34,19 +32,19 @@ impl Default for L1BridgeConfig {
 }
 
 impl L1BridgeConfig {
-    /// Creates a new configuration with a specific URL.
+    /// Sets the WebSocket URL for the L1 node.
     pub fn with_url(mut self, url: impl Into<String>) -> Self {
         self.url = Some(url.into());
         self
     }
 
-    /// Sets the network ID.
+    /// Sets the target network by full identifier.
     pub fn with_network_id(mut self, network_id: NetworkId) -> Self {
         self.network_id = network_id;
         self
     }
 
-    /// Sets the network type (creates a NetworkId from it).
+    /// Sets the target network by type (uses default suffix).
     pub fn with_network_type(mut self, network_type: NetworkType) -> Self {
         self.network_id = NetworkId::new(network_type);
         self
@@ -64,13 +62,13 @@ impl L1BridgeConfig {
         self
     }
 
-    /// Sets the root coordinate (finalization threshold).
+    /// Sets the finalization boundary to resume from.
     pub fn with_root(mut self, coord: Option<ChainBlock>) -> Self {
         self.root = coord;
         self
     }
 
-    /// Sets the tip coordinate.
+    /// Sets the last known tip to resume from.
     pub fn with_tip(mut self, coord: Option<ChainBlock>) -> Self {
         self.tip = coord;
         self

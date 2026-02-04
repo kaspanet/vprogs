@@ -11,18 +11,21 @@ use vprogs_core_macros::smart_pointer;
 
 use crate::BlockHash;
 
-/// A position in the chain: block hash and sequential index.
-/// Forms a doubly-linked list for efficient traversal.
+/// A block position in the virtual chain, forming a doubly-linked list.
 #[smart_pointer]
 pub struct ChainBlock {
+    /// L1 block hash.
     hash: BlockHash,
+    /// Sequential index relative to the bridge's starting point.
     index: u64,
+    /// Link to the preceding block, or empty if this is the root.
     prev: ArcSwapOption<ChainBlockData>,
+    /// Link to the following block, or empty if this is the tip.
     next: ArcSwapOption<ChainBlockData>,
 }
 
 impl ChainBlock {
-    /// Creates a new standalone chain block (no links).
+    /// Creates a standalone block with no links.
     pub fn new(hash: BlockHash, index: u64) -> Self {
         Self(Arc::new(ChainBlockData {
             hash,
@@ -42,8 +45,9 @@ impl ChainBlock {
         self.index
     }
 
-    /// Creates and attaches a new block after this one, returning it.
+    /// Creates a new block after this one and links them in both directions.
     pub(crate) fn attach(&self, hash: BlockHash) -> Self {
+        // Create the new block with a back-link to self.
         Self(Arc::new(ChainBlockData {
             hash,
             index: self.index + 1,
@@ -51,30 +55,36 @@ impl ChainBlock {
             next: ArcSwapOption::empty(),
         }))
         .tap(|next| {
+            // Complete the forward link from self to the new block.
             self.next.store(Some(next.0.clone()));
         })
     }
 
-    /// Unlinks this block from its predecessor and returns the predecessor.
+    /// Detaches this block from its predecessor and returns the predecessor.
+    /// Used during rollback to walk backwards from the tip.
     ///
     /// Panics if this block has no predecessor (i.e. it is the root).
     pub(crate) fn rollback_tip(&self) -> Self {
+        // Take the prev pointer, clearing this block's back-link.
         self.prev.swap(None).map(Self).expect("tried to rollback root").tap(|prev| {
+            // Clear the predecessor's forward link to fully detach.
             prev.next.store(None);
         })
     }
 
-    /// Unlinks this block from its successor and returns it.
-    /// The returned successor's prev pointer is cleared.
+    /// Detaches this block from its successor and returns the successor.
+    /// Used during finalization to walk forward from the root.
     pub(crate) fn advance_root(&self) -> Option<Self> {
+        // Take the next pointer, clearing this block's forward link.
         self.next.swap(None).map(Self).tap_some(|next| {
+            // Clear the successor's back-link to fully detach.
             next.prev.store(None);
         })
     }
 }
 
 impl Default for ChainBlock {
-    /// Creates a sentinel root block (ZERO_HASH, index 0, no links).
+    /// Returns a sentinel root (zero hash, index 0).
     fn default() -> Self {
         Self::new(ZERO_HASH, 0)
     }

@@ -17,48 +17,48 @@ use crate::{
     virtual_chain::VirtualChain,
 };
 
-/// Background worker for L1 communication.
+/// Runs inside a dedicated thread and communicates with the L1 node over RPC.
+/// Pushes [`L1Event`]s to a shared queue for the [`L1Bridge`] consumer.
 pub(crate) struct BridgeWorker {
-    /// RPC client for L1 node communication.
+    /// RPC client for L1 communication.
     client: Arc<KaspaRpcClient>,
-    /// Tracks processed blocks and finalization.
+    /// Local view of the selected parent chain.
     virtual_chain: VirtualChain,
-    /// Shared queue for emitting events to consumers.
+    /// Event queue shared with the bridge consumer.
     queue: Arc<SegQueue<L1Event>>,
-    /// Signal to wake consumers waiting for events.
+    /// Wakes the consumer after pushing an event.
     event_signal: Arc<Notify>,
-    /// Channel for receiving L1 chain notifications.
+    /// Receives L1 chain notifications (VCC, pruning point).
     notification_channel: Channel<Notification>,
-    /// Channel for RPC connection state changes.
+    /// Receives RPC connection state changes.
     rpc_ctl_channel: MultiplexerChannel<RpcState>,
-    /// Whether a fatal error has occurred.
+    /// Set to `true` on fatal errors to break out of the event loop.
     fatal: bool,
-    /// Target coordinate for gap recovery when resuming with a separate root.
-    /// Once the gap is filled on first connect, this is set to None.
+    /// When resuming with both root and tip set, holds the tip coordinate
+    /// until the gap between root and tip is recovered on first connect.
     recovery_target: Option<ChainBlock>,
 }
 
 impl BridgeWorker {
-    /// Creates a new bridge worker.
+    /// Connects to the L1 node and returns a ready worker, or `None` if
+    /// connection fails (a `Fatal` event is pushed in that case).
     pub(crate) async fn new(
         config: &L1BridgeConfig,
         queue: Arc<SegQueue<L1Event>>,
         event_signal: Arc<Notify>,
     ) -> Option<Self> {
-        // Initialize virtual chain: prefer root, fall back to tip, or use
-        // a sentinel root. When starting fresh (sentinel root), fetch_chain_updates will
-        // query the L1 pruning point to begin syncing.
+        // Prefer root, fall back to tip, or default to a sentinel at index 0.
         let root = config.root.clone().or(config.tip.clone()).unwrap_or_default();
         let virtual_chain = VirtualChain::new(root);
 
-        // When root and tip are both set and differ, we need to recover the
-        // gap between them on first connect (lightweight sync without verbose block data).
+        // If both root and tip are provided and differ, we need to fill the
+        // gap between them on first connect (lightweight, non-verbose sync).
         let recovery_target = match (&config.root, &config.tip) {
             (Some(root), Some(tip)) if root.hash() != tip.hash() => Some(tip.clone()),
             _ => None,
         };
 
-        // Use resolver for public node discovery when no explicit URL is provided.
+        // Use the public resolver when no explicit URL is given.
         let resolver = if config.url.is_none() { Some(Resolver::default()) } else { None };
         let client = match KaspaRpcClient::new_with_args(
             WrpcEncoding::Borsh,
@@ -77,10 +77,10 @@ impl BridgeWorker {
             }
         };
 
-        // Get RPC control channel BEFORE connecting to not miss the Connected event.
+        // Subscribe to RPC state changes before connecting so we don't miss
+        // the initial Connected event.
         let rpc_ctl_channel = client.rpc_ctl().multiplexer().channel();
 
-        // Initiate connection.
         if let Err(e) = client
             .connect(Some(ConnectOptions {
                 block_async_connect: true,
@@ -109,7 +109,7 @@ impl BridgeWorker {
         })
     }
 
-    /// Runs the event loop.
+    /// Priority-based event loop: shutdown > RPC state > chain notifications.
     pub(crate) async fn run(mut self, shutdown: Arc<Notify>) {
         loop {
             if self.fatal {
@@ -151,6 +151,7 @@ impl BridgeWorker {
             }
         }
 
+        // Clean up the RPC connection before exiting.
         let _ = self.client.disconnect().await;
         log::info!("L1 bridge worker stopped");
     }
@@ -159,20 +160,20 @@ impl BridgeWorker {
     // Private helpers
     // ========================================================================
 
-    /// Emits an event.
+    /// Pushes an event and wakes the consumer.
     fn push_event(&self, event: L1Event) {
         self.queue.push(event);
         self.event_signal.notify_one();
     }
 
-    /// Emits a fatal error event and marks the worker for shutdown.
+    /// Pushes a fatal event and flags the worker for shutdown.
     fn fatal_error(&mut self, reason: String) {
         log::error!("L1 bridge fatal error: {}", reason);
         self.push_event(L1Event::Fatal { reason });
         self.fatal = true;
     }
 
-    /// Handles a sync result, logging and escalating errors as appropriate.
+    /// Logs or escalates a sync result depending on whether the error is fatal.
     fn handle_sync_result(&mut self, result: Result<()>) {
         if let Err(e) = result {
             if e.is_fatal() {
@@ -183,16 +184,18 @@ impl BridgeWorker {
         }
     }
 
-    /// Handles connection.
+    /// Called on RPC connect: subscribes to notifications, recovers any gap,
+    /// then syncs to the current chain state.
     async fn handle_connected(&mut self) {
         log::info!("L1 bridge connected to {}", self.client.url().unwrap_or_default());
 
+        // Step 1: Subscribe to chain notifications.
         if let Err(e) = self.subscribe_to_notifications().await {
             self.fatal_error(format!("failed to subscribe to notifications: {}", e));
             return;
         }
 
-        // Recover the gap between root and tip if needed.
+        // Step 2: If resuming, fill the gap between saved root and tip.
         if let Some(target) = self.recovery_target.take() {
             let result = self.recover_gap(&target).await;
             self.handle_sync_result(result);
@@ -201,29 +204,33 @@ impl BridgeWorker {
             }
         }
 
+        // Notify consumer only after recovery succeeds.
         self.push_event(L1Event::Connected);
 
-        // Sync up to current chain state.
+        // Step 3: Sync to the current chain state.
         let result = self.fetch_chain_updates().await;
         self.handle_sync_result(result);
     }
 
-    /// Handles disconnection.
+    /// Notifies the consumer that the connection was lost.
     fn handle_disconnected(&mut self) {
         log::info!("L1 bridge disconnected");
         self.push_event(L1Event::Disconnected);
     }
 
-    /// Subscribes to chain notifications.
+    /// Registers a notification listener for VirtualChainChanged (used as a
+    /// "something changed" signal — actual data is fetched via the v2 API)
+    /// and PruningPointUtxoSetOverride (finalization).
     async fn subscribe_to_notifications(&mut self) -> Result<()> {
+        // Register a persistent listener that pipes notifications into our channel.
         let id = self.client.rpc_api().register_new_listener(ChannelConnection::new(
             "vprogs-l1-bridge",
             self.notification_channel.sender.clone(),
             ChannelType::Persistent,
         ));
 
-        // Subscribe to chain changes (triggers v2 fetch) and finalization (pruning point).
-        // Note: We don't need accepted_transaction_ids from VCC since we fetch via v2.
+        // VCC is subscribed without accepted_transaction_ids — we only use it as
+        // a "something changed" signal and fetch verbose data via the v2 API.
         for scope in [
             Scope::VirtualChainChanged(VirtualChainChangedScope::new(false)),
             Scope::PruningPointUtxoSetOverride(PruningPointUtxoSetOverrideScope {}),
@@ -234,9 +241,9 @@ impl BridgeWorker {
         Ok(())
     }
 
-    /// Recovers the gap between `root` and `tip` by fetching chain block
-    /// hashes without verbose data. This rebuilds the linked list so that rollback and
-    /// finalization can walk the full chain.
+    /// Fills the linked list between root and `target` using a lightweight
+    /// (non-verbose) fetch. Only runs once on first connect when resuming
+    /// with a saved root/tip pair.
     async fn recover_gap(&mut self, target: &ChainBlock) -> Result<()> {
         let start = self.virtual_chain.root();
 
@@ -246,10 +253,12 @@ impl BridgeWorker {
             target.index(),
         );
 
-        // Fetch chain block hashes without verbose data (no headers/transactions needed).
+        // Lightweight fetch (no verbosity) — we only need hashes to rebuild
+        // the linked list, not headers or transactions.
         let response =
             self.client.get_virtual_chain_from_block_v2(start.hash(), None, None).await?;
 
+        // Walk the added hashes until we reach the target.
         let target_hash = target.hash();
         let mut found = false;
 
@@ -265,37 +274,34 @@ impl BridgeWorker {
             return Err(Error::RecoveryTargetNotFound);
         }
 
-        log::info!("L1 bridge: recovered gap up to index {}", self.virtual_chain.tip().index(),);
+        log::info!("L1 bridge: recovered gap up to index {}", self.virtual_chain.tip().index());
         Ok(())
     }
 
-    /// Fetches and processes chain updates using the v2 API.
-    ///
-    /// This single method handles both initial sync and live updates:
-    /// - Calls get_virtual_chain_from_block_v2 from our last checkpoint
-    /// - Handles reorgs (removed blocks) if any
-    /// - Emits events for added blocks with their accepted transactions
+    /// Fetches chain updates from the current tip (or the L1 pruning point on
+    /// first sync). Handles reorgs and emits `ChainBlockAdded` events.
     async fn fetch_chain_updates(&mut self) -> Result<()> {
-        // Start from the tip hash, or query the L1 pruning point if starting fresh
-        // (sentinel root at index 0 means no blocks have been processed yet).
         let tip = self.virtual_chain.tip();
+
+        // Index 0 is the sentinel — no blocks processed yet, start from the
+        // L1 pruning point.
         let start_hash = if tip.index() == 0 {
             self.client.get_block_dag_info().await?.pruning_point_hash
         } else {
             tip.hash()
         };
 
+        // Fetch with High verbosity to get full headers and accepted transactions.
         let response = self
             .client
             .get_virtual_chain_from_block_v2(start_hash, Some(RpcDataVerbosityLevel::High), None)
             .await?;
 
-        // Handle reorg if there are removed blocks.
+        // Removed hashes indicate a reorg — roll back before processing additions.
         if !response.removed_chain_block_hashes.is_empty() {
             self.handle_reorg(&response)?;
         }
 
-        // Process added blocks.
         if response.added_chain_block_hashes.is_empty() {
             log::debug!("L1 bridge: no new blocks");
             return Ok(());
@@ -306,6 +312,7 @@ impl BridgeWorker {
             response.chain_block_accepted_transactions.len()
         );
 
+        // Extend the virtual chain and emit an event for each new block.
         for acd in response.chain_block_accepted_transactions.iter() {
             let hash = acd.chain_block_header.hash.expect("hash missing despite High verbosity");
             let index = self.virtual_chain.add_block(hash);
@@ -319,7 +326,7 @@ impl BridgeWorker {
         Ok(())
     }
 
-    /// Handles a reorg by rolling back and emitting a Rollback event.
+    /// Rolls back the virtual chain and emits a `Rollback` event.
     fn handle_reorg(&mut self, response: &GetVirtualChainFromBlockV2Response) -> Result<()> {
         let num_removed = response.removed_chain_block_hashes.len() as u64;
         let rollback_index = self.virtual_chain.rollback(num_removed)?;
@@ -333,7 +340,7 @@ impl BridgeWorker {
         Ok(())
     }
 
-    /// Handles finalization (pruning point advancement).
+    /// Advances the root to the L1 pruning point and emits a `Finalized` event.
     async fn handle_finalization(&mut self) -> Result<()> {
         let pruning_hash = self.client.get_block_dag_info().await?.pruning_point_hash;
 
