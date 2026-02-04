@@ -3,12 +3,11 @@ use std::time::Duration;
 use tokio::time::timeout;
 use vprogs_node_l1_bridge::{L1Bridge, L1Event};
 
-/// Extension trait for L1Bridge.
+/// Convenience methods for [`L1Bridge`] in test scenarios.
 pub trait L1BridgeExt {
-    /// Waits until an event matching the predicate is found, with a timeout.
+    /// Collects events until one matches `predicate`, or panics on timeout.
     ///
-    /// Returns all collected events up to and including the matching event.
-    /// Panics if the timeout expires before a matching event is found.
+    /// Returns all collected events up to and including the matching one.
     fn wait_for<F>(
         &self,
         timeout: Duration,
@@ -26,7 +25,7 @@ impl L1BridgeExt for L1Bridge {
         let fut = async {
             let mut collected = Vec::new();
             loop {
-                // Drain any currently available events.
+                // Drain any events that are already queued.
                 while let Some(event) = self.pop() {
                     let matches = predicate(&event);
                     collected.push(event);
@@ -34,7 +33,7 @@ impl L1BridgeExt for L1Bridge {
                         return collected;
                     }
                 }
-                // Wait for an event and check it.
+                // Block until the next event arrives.
                 let event = self.wait_and_pop().await;
                 let matches = predicate(&event);
                 collected.push(event);

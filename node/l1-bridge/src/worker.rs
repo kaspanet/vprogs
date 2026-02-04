@@ -302,11 +302,6 @@ impl BridgeWorker {
             self.handle_reorg(&response)?;
         }
 
-        if response.added_chain_block_hashes.is_empty() {
-            log::debug!("L1 bridge: no new blocks");
-            return Ok(());
-        }
-
         log::info!(
             "L1 bridge: processing {} new chain blocks",
             response.chain_block_accepted_transactions.len()
