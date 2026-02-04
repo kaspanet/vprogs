@@ -26,7 +26,7 @@ async fn test_bridge_syncs_and_receives_block_events() {
         })
         .await;
 
-    let blocks = extract_chain_blocks(events);
+    let blocks = unwrap_chain_blocks(events);
     assert_eq!(blocks.len(), NUM_BLOCKS);
 
     // Verify hashes and indices match in order.
@@ -110,7 +110,7 @@ async fn test_bridge_syncs_from_specific_block() {
         })
         .await;
 
-    let blocks = extract_chain_blocks(events);
+    let blocks = unwrap_chain_blocks(events);
     assert_eq!(blocks.len(), 3);
 
     // Indices should continue from the checkpoint: 4, 5, 6.
@@ -147,7 +147,7 @@ async fn test_bridge_catches_up_after_reconnection() {
         })
         .await;
 
-    let blocks = extract_chain_blocks(events);
+    let blocks = unwrap_chain_blocks(events);
     assert_eq!(blocks.len(), 3);
 
     // Save the last processed position as a checkpoint.
@@ -301,7 +301,7 @@ async fn setup_node_with_bridge(
 
 /// Unwraps a list of events into `ChainBlockAdded` tuples.
 /// Panics if any event is not `ChainBlockAdded`.
-fn extract_chain_blocks(
+fn unwrap_chain_blocks(
     events: Vec<L1Event>,
 ) -> Vec<(u64, Box<RpcOptionalHeader>, Vec<RpcOptionalTransaction>)> {
     events
