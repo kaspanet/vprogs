@@ -82,7 +82,10 @@ impl L1Node {
             if peers.peer_info.iter().any(|p| p.address.port == other_port) {
                 break;
             }
-            assert!(tokio::time::Instant::now() < deadline, "timed out waiting for peer connection");
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for peer connection"
+            );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
