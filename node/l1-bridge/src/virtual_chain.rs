@@ -30,8 +30,8 @@ impl VirtualChain {
     }
 
     /// Appends a block at the tip and returns its index.
-    pub(crate) fn add_block(&mut self, hash: BlockHash) -> u64 {
-        self.tip = self.tip.attach(hash);
+    pub(crate) fn advance_tip(&mut self, hash: BlockHash) -> u64 {
+        self.tip = self.tip.advance_tip(hash);
         self.tip.index()
     }
 

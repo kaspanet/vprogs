@@ -45,8 +45,8 @@ impl ChainBlock {
         self.index
     }
 
-    /// Creates a new block after this one and links them in both directions.
-    pub(crate) fn attach(&self, hash: BlockHash) -> Self {
+    /// Appends a new block after this one and links them in both directions.
+    pub(crate) fn advance_tip(&self, hash: BlockHash) -> Self {
         // Create the new block with a back-link to self.
         Self(Arc::new(ChainBlockData {
             hash,

@@ -263,7 +263,7 @@ impl BridgeWorker {
         let mut found = false;
 
         for hash in response.added_chain_block_hashes.iter() {
-            self.virtual_chain.add_block(*hash);
+            self.virtual_chain.advance_tip(*hash);
             if *hash == target_hash {
                 found = true;
                 break;
@@ -310,7 +310,7 @@ impl BridgeWorker {
         // Extend the virtual chain and emit an event for each new block.
         for acd in response.chain_block_accepted_transactions.iter() {
             let hash = acd.chain_block_header.hash.expect("hash missing despite High verbosity");
-            let index = self.virtual_chain.add_block(hash);
+            let index = self.virtual_chain.advance_tip(hash);
             self.push_event(L1Event::ChainBlockAdded {
                 index,
                 header: Box::new(acd.chain_block_header.clone()),
