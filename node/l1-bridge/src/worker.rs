@@ -270,7 +270,7 @@ impl BridgeWorker {
         }
 
         if !found {
-            return Err(Error::BackfillTargetNotFound);
+            return Err(Error::BackfillTargetNotFound(target_hash));
         }
 
         log::info!("L1 bridge: backfill complete up to index {}", self.virtual_chain.tip().index());

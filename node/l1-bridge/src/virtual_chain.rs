@@ -39,8 +39,9 @@ impl VirtualChain {
     /// rollback would go past the root.
     pub(crate) fn rollback(&mut self, num_blocks: u64) -> Result<u64> {
         // Ensure we don't roll back past the finalization boundary.
-        if self.tip.index().saturating_sub(self.root.index()) < num_blocks {
-            return Err(Error::RollbackPastRoot { num_blocks });
+        let target_index = self.tip.index().saturating_sub(num_blocks);
+        if target_index < self.root.index() {
+            return Err(Error::RollbackPastRoot { target_index, root_index: self.root.index() });
         }
 
         // Walk backwards, unlinking each block from its predecessor.

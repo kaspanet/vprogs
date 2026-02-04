@@ -14,16 +14,18 @@ pub(crate) enum Error {
     CheckpointLost(RpcError),
 
     /// A reorg would roll back past the finalization boundary.
-    #[error("reorg of {num_blocks} blocks would roll back past finalization boundary")]
-    RollbackPastRoot { num_blocks: u64 },
+    #[error(
+        "rollback to index {target_index} would go past finalization boundary at index {root_index}"
+    )]
+    RollbackPastRoot { target_index: u64, root_index: u64 },
 
     /// A pruning point hash was not found in the virtual chain.
     #[error("pruning point hash {0} not found in chain")]
     HashNotFound(BlockHash),
 
     /// The backfill target hash was not found in the chain.
-    #[error("backfill target hash not found in chain")]
-    BackfillTargetNotFound,
+    #[error("backfill target hash {0} not found in chain")]
+    BackfillTargetNotFound(BlockHash),
 
     /// An internal channel closed unexpectedly.
     #[error("notification channel closed: {0}")]
