@@ -62,13 +62,12 @@ impl VirtualChain {
 
         // Walk forward from root, detaching each node until we find the target.
         let mut current = self.root.advance_root();
-
-        while let Some(coord) = current {
-            if coord.hash() == *hash {
-                self.root = coord.clone();
-                return Ok(Some(coord));
+        while let Some(block) = current {
+            if block.hash() == *hash {
+                self.root = block.clone();
+                return Ok(Some(block));
             }
-            current = coord.advance_root();
+            current = block.advance_root();
         }
 
         // The target hash was not found — the chain is now destroyed and the

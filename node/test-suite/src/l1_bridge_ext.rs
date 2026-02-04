@@ -22,18 +22,10 @@ impl L1BridgeExt for L1Bridge {
     where
         F: Fn(&L1Event) -> bool + Send + Sync,
     {
+        // Collect events one by one until the predicate matches.
         let fut = async {
             let mut collected = Vec::new();
             loop {
-                // Drain any events that are already queued.
-                while let Some(event) = self.pop() {
-                    let matches = predicate(&event);
-                    collected.push(event);
-                    if matches {
-                        return collected;
-                    }
-                }
-                // Block until the next event arrives.
                 let event = self.wait_and_pop().await;
                 let matches = predicate(&event);
                 collected.push(event);
