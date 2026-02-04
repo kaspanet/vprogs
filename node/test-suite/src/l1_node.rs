@@ -76,11 +76,13 @@ impl L1Node {
             .unwrap();
 
         // Poll until the peer shows up in the connected peer list.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         loop {
             let peers = self.grpc_client.get_connected_peer_info().await.unwrap();
             if peers.peer_info.iter().any(|p| p.address.port == other_port) {
                 break;
             }
+            assert!(tokio::time::Instant::now() < deadline, "timed out waiting for peer connection");
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
