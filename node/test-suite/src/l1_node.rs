@@ -66,14 +66,23 @@ impl L1Node {
     }
 
     /// Connects this node to another node as a peer.
+    /// Polls until the peer appears in the connected peer list.
     pub async fn connect_to(&self, other: &L1Node) {
+        let other_port = other.daemon().p2p_port;
+
         self.grpc_client
-            .add_peer(format!("127.0.0.1:{}", other.daemon().p2p_port).try_into().unwrap(), true)
+            .add_peer(format!("127.0.0.1:{}", other_port).try_into().unwrap(), true)
             .await
             .unwrap();
 
-        // Give the P2P handshake time to complete.
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        // Poll until the peer shows up in the connected peer list.
+        loop {
+            let peers = self.grpc_client.get_connected_peer_info().await.unwrap();
+            if peers.peer_info.iter().any(|p| p.address.port == other_port) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     /// Mines `count` blocks sequentially and returns their hashes.
