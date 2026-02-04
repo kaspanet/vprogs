@@ -13,8 +13,8 @@ pub struct L1Bridge {
     event_signal: Arc<Notify>,
     /// Signal to request worker shutdown.
     shutdown: Arc<Notify>,
-    /// Worker thread handle.
-    handle: JoinHandle<()>,
+    /// Worker thread handle (wrapped in Option so `shutdown()` can join it).
+    handle: Option<JoinHandle<()>>,
 }
 
 impl L1Bridge {
@@ -45,7 +45,7 @@ impl L1Bridge {
             }
         });
 
-        Self { queue, event_signal, shutdown, handle }
+        Self { queue, event_signal, shutdown, handle: Some(handle) }
     }
 
     /// Pops an event from the queue.
@@ -75,9 +75,17 @@ impl L1Bridge {
         events
     }
 
-    /// Shuts down the bridge.
-    pub fn shutdown(self) {
+    /// Shuts down the bridge and waits for the worker to finish.
+    pub fn shutdown(mut self) {
         self.shutdown.notify_one();
-        self.handle.join().expect("bridge worker panicked");
+        if let Some(handle) = self.handle.take() {
+            handle.join().expect("bridge worker panicked");
+        }
+    }
+}
+
+impl Drop for L1Bridge {
+    fn drop(&mut self) {
+        self.shutdown.notify_one();
     }
 }

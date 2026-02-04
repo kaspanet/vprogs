@@ -33,6 +33,8 @@ impl Error {
 }
 
 impl From<RpcError> for Error {
+    /// Classifies RPC errors by inspecting the error message. The Kaspa RPC library does not
+    /// expose structured error variants, so string matching is the only option for now.
     fn from(e: RpcError) -> Self {
         let msg = e.to_string().to_lowercase();
         let is_checkpoint_lost = msg.contains("cannot find")

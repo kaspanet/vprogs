@@ -31,8 +31,6 @@ pub struct BridgeWorker {
     notification_channel: Channel<Notification>,
     /// Channel for RPC connection state changes.
     rpc_ctl_channel: workflow_core::channel::MultiplexerChannel<RpcState>,
-    /// Active notification listener ID, if subscribed.
-    listener_id: Option<ListenerId>,
     /// Whether a fatal error has occurred.
     fatal: bool,
     /// Target coordinate for gap recovery when resuming with a separate root.
@@ -106,7 +104,6 @@ impl BridgeWorker {
             event_signal,
             notification_channel: Channel::unbounded(),
             rpc_ctl_channel,
-            listener_id: None,
             fatal: false,
             recovery_target,
         })
@@ -140,14 +137,12 @@ impl BridgeWorker {
                 notification = self.notification_channel.receiver.recv().fuse() => {
                     match notification {
                         Ok(Notification::VirtualChainChanged(_)) => {
-                            if let Err(e) = self.fetch_chain_updates().await {
-                                self.handle_sync_error(e);
-                            }
+                            let result = self.fetch_chain_updates().await;
+                            self.handle_sync_result(result);
                         }
                         Ok(Notification::PruningPointUtxoSetOverride(_)) => {
-                            if let Err(e) = self.handle_finalization().await {
-                                self.handle_sync_error(e);
-                            }
+                            let result = self.handle_finalization().await;
+                            self.handle_sync_result(result);
                         }
                         Ok(_) => {}
                         Err(e) => {
@@ -158,7 +153,7 @@ impl BridgeWorker {
             }
         }
 
-        self.cleanup().await;
+        let _ = self.client.disconnect().await;
         log::info!("L1 bridge worker stopped");
     }
 
@@ -173,14 +168,6 @@ impl BridgeWorker {
         log::error!("L1 bridge fatal error: {}", reason);
         self.push_event(L1Event::Fatal { reason });
         self.fatal = true;
-    }
-
-    /// Cleans up resources.
-    async fn cleanup(&mut self) {
-        if let Some(id) = self.listener_id.take() {
-            let _ = self.client.rpc_api().unregister_listener(id).await;
-        }
-        let _ = self.client.disconnect().await;
     }
 }
 
@@ -200,8 +187,9 @@ impl BridgeWorker {
 
         // Recover the gap between root and tip if needed.
         if let Some(target) = self.recovery_target.take() {
-            if let Err(e) = self.recover_gap(&target).await {
-                self.handle_sync_error(e);
+            let result = self.recover_gap(&target).await;
+            self.handle_sync_result(result);
+            if self.fatal {
                 return;
             }
         }
@@ -209,19 +197,13 @@ impl BridgeWorker {
         self.push_event(L1Event::Connected);
 
         // Sync up to current chain state.
-        if let Err(e) = self.fetch_chain_updates().await {
-            self.handle_sync_error(e);
-        }
+        let result = self.fetch_chain_updates().await;
+        self.handle_sync_result(result);
     }
 
     /// Handles disconnection.
     async fn handle_disconnected(&mut self) {
         log::info!("L1 bridge disconnected");
-
-        if let Some(id) = self.listener_id.take() {
-            let _ = self.client.rpc_api().unregister_listener(id).await;
-        }
-
         self.push_event(L1Event::Disconnected);
     }
 
@@ -242,7 +224,6 @@ impl BridgeWorker {
             self.client.rpc_api().start_notify(id, scope).await?;
         }
 
-        self.listener_id = Some(id);
         Ok(())
     }
 }
@@ -351,12 +332,14 @@ impl BridgeWorker {
         Ok(())
     }
 
-    /// Handles sync errors.
-    fn handle_sync_error(&mut self, e: Error) {
-        if e.is_fatal() {
-            self.fatal_error(e.to_string());
-        } else {
-            log::warn!("L1 bridge: sync failed, will retry on reconnect: {}", e);
+    /// Handles a sync result, logging and escalating errors as appropriate.
+    fn handle_sync_result(&mut self, result: Result<()>) {
+        if let Err(e) = result {
+            if e.is_fatal() {
+                self.fatal_error(e.to_string());
+            } else {
+                log::warn!("L1 bridge: sync failed, will retry on reconnect: {}", e);
+            }
         }
     }
 

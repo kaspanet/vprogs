@@ -1,6 +1,8 @@
-use std::fmt;
-use std::fmt::{Debug, Formatter};
-use std::sync::Arc;
+use std::{
+    fmt,
+    fmt::{Debug, Formatter},
+    sync::Arc,
+};
 
 use arc_swap::ArcSwapOption;
 use kaspa_hashes::{Hash as BlockHash, ZERO_HASH};
