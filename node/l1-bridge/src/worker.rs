@@ -256,18 +256,19 @@ impl BridgeWorker {
             target.index(),
         );
 
-        // Fetch with default verbosity (server defaults to Full) so we get headers with blue
-        // scores needed for the chain blocks.
-        let response =
-            self.client.get_virtual_chain_from_block_v2(start.hash(), None, None).await?;
+        // Fetch with Low verbosity — sufficient for hash and blue_score needed for chain blocks.
+        let response = self
+            .client
+            .get_virtual_chain_from_block_v2(start.hash(), Some(RpcDataVerbosityLevel::Low), None)
+            .await?;
 
         // Walk the chain block accepted transactions to get both hash and blue_score.
         let target_hash = target.hash();
         let mut found = false;
 
-        for acd in response.chain_block_accepted_transactions.iter() {
-            let hash = acd.chain_block_header.hash.unwrap_or_default();
-            let blue_score = acd.chain_block_header.blue_score.unwrap_or(0);
+        for chain_block in response.chain_block_accepted_transactions.iter() {
+            let hash = chain_block.chain_block_header.hash.unwrap_or_default();
+            let blue_score = chain_block.chain_block_header.blue_score.unwrap_or(0);
             self.virtual_chain.advance_tip(hash, blue_score);
             if hash == target_hash {
                 found = true;

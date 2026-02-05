@@ -45,14 +45,13 @@ impl VirtualChain {
             return Err(Error::RollbackPastRoot { target_index, root_index: self.root.index() });
         }
 
+        // Calculate reorg_depth and walk backwards, unlinking each block from its predecessor.
         let old_blue_score = self.tip.blue_score();
-
-        // Walk backwards, unlinking each block from its predecessor.
         for _ in 0..num_blocks {
             self.tip = self.tip.rollback_tip();
         }
-
         let blue_score_depth = old_blue_score.saturating_sub(self.tip.blue_score());
+
         Ok((self.tip.index(), blue_score_depth))
     }
 
