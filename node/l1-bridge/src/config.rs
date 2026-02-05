@@ -20,7 +20,7 @@ pub struct L1BridgeConfig {
     pub tip: Option<ChainBlock>,
     /// Reorg filter halving period. Observed reorg depths accumulate into a threshold that halves
     /// every period until it reaches zero. Set to `Duration::ZERO` to disable (default).
-    pub reorg_filter_period: Duration,
+    pub reorg_filter_halving_period: Duration,
 }
 
 impl Default for L1BridgeConfig {
@@ -33,7 +33,7 @@ impl Default for L1BridgeConfig {
             connect_strategy: ConnectStrategy::Retry, // Reconnect automatically on disconnect.
             root: None,                               // Start from the L1 pruning point.
             tip: None,
-            reorg_filter_period: Duration::ZERO, // Disabled by default.
+            reorg_filter_halving_period: Duration::ZERO, // Disabled by default.
         }
     }
 }
@@ -83,8 +83,8 @@ impl L1BridgeConfig {
 
     /// Sets the reorg filter halving period. Observed reorg depths accumulate into a threshold that
     /// halves every period, filtering smaller reorgs until the threshold decays to zero.
-    pub fn with_reorg_filter_period(mut self, period: Duration) -> Self {
-        self.reorg_filter_period = period;
+    pub fn with_reorg_filter_halving_period(mut self, period: Duration) -> Self {
+        self.reorg_filter_halving_period = period;
         self
     }
 }
