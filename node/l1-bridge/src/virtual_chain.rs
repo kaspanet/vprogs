@@ -30,26 +30,30 @@ impl VirtualChain {
     }
 
     /// Appends a block at the tip and returns its index.
-    pub(crate) fn advance_tip(&mut self, hash: BlockHash) -> u64 {
-        self.tip = self.tip.advance_tip(hash);
+    pub(crate) fn advance_tip(&mut self, hash: BlockHash, blue_score: u64) -> u64 {
+        self.tip = self.tip.advance_tip(hash, blue_score);
         self.tip.index()
     }
 
-    /// Rolls back `num_blocks` from the tip and returns the new tip index. Returns an error if the
-    /// rollback would go past the root.
-    pub(crate) fn rollback(&mut self, num_blocks: u64) -> Result<u64> {
+    /// Rolls back `num_blocks` from the tip and returns `(new_tip_index, blue_score_depth)`.
+    /// The blue score depth is the difference between the old and new tip blue scores. Returns an
+    /// error if the rollback would go past the root.
+    pub(crate) fn rollback(&mut self, num_blocks: u64) -> Result<(u64, u64)> {
         // Ensure we don't roll back past the finalization boundary.
         let target_index = self.tip.index().saturating_sub(num_blocks);
         if target_index < self.root.index() {
             return Err(Error::RollbackPastRoot { target_index, root_index: self.root.index() });
         }
 
+        let old_blue_score = self.tip.blue_score();
+
         // Walk backwards, unlinking each block from its predecessor.
         for _ in 0..num_blocks {
             self.tip = self.tip.rollback_tip();
         }
 
-        Ok(self.tip.index())
+        let blue_score_depth = old_blue_score.saturating_sub(self.tip.blue_score());
+        Ok((self.tip.index(), blue_score_depth))
     }
 
     /// Advances the root forward to the block matching `hash`, unlinking all nodes it passes.

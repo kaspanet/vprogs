@@ -241,8 +241,8 @@ impl BridgeWorker {
         Ok(())
     }
 
-    /// Backfills the linked list between root and `target` using a lightweight (non-verbose) fetch.
-    /// Only runs once on first connect when resuming with a saved root/tip pair.
+    /// Backfills the linked list between root and `target`. Only runs once on first connect when
+    /// resuming with a saved root/tip pair.
     async fn backfill_chain(&mut self, target: &ChainBlock) -> Result<()> {
         let start = self.virtual_chain.root();
 
@@ -252,18 +252,20 @@ impl BridgeWorker {
             target.index(),
         );
 
-        // Lightweight fetch (no verbosity) — we only need hashes to rebuild the linked list, not
-        // headers or transactions.
+        // Fetch with default verbosity (server defaults to Full) so we get headers with blue
+        // scores needed for the chain blocks.
         let response =
             self.client.get_virtual_chain_from_block_v2(start.hash(), None, None).await?;
 
-        // Walk the added hashes until we reach the target.
+        // Walk the chain block accepted transactions to get both hash and blue_score.
         let target_hash = target.hash();
         let mut found = false;
 
-        for hash in response.added_chain_block_hashes.iter() {
-            self.virtual_chain.advance_tip(*hash);
-            if *hash == target_hash {
+        for acd in response.chain_block_accepted_transactions.iter() {
+            let hash = acd.chain_block_header.hash.unwrap_or_default();
+            let blue_score = acd.chain_block_header.blue_score.unwrap_or(0);
+            self.virtual_chain.advance_tip(hash, blue_score);
+            if hash == target_hash {
                 found = true;
                 break;
             }
@@ -308,7 +310,11 @@ impl BridgeWorker {
         // Extend the virtual chain and emit an event for each new block.
         for acd in response.chain_block_accepted_transactions.iter() {
             let hash = acd.chain_block_header.hash.expect("hash missing despite High verbosity");
-            let index = self.virtual_chain.advance_tip(hash);
+            let blue_score = acd
+                .chain_block_header
+                .blue_score
+                .expect("blue_score missing despite High verbosity");
+            let index = self.virtual_chain.advance_tip(hash, blue_score);
             self.push_event(L1Event::ChainBlockAdded {
                 index,
                 header: Box::new(acd.chain_block_header.clone()),
@@ -322,14 +328,16 @@ impl BridgeWorker {
     /// Rolls back the virtual chain and emits a `Rollback` event.
     fn handle_reorg(&mut self, response: &GetVirtualChainFromBlockV2Response) -> Result<()> {
         let num_removed = response.removed_chain_block_hashes.len() as u64;
-        let rollback_index = self.virtual_chain.rollback(num_removed)?;
+        let (rollback_index, blue_score_depth) = self.virtual_chain.rollback(num_removed)?;
 
         log::info!(
-            "L1 bridge: reorg detected, {} blocks removed, rolling back to index {}",
+            "L1 bridge: reorg detected, {} blocks removed, rolling back to index {} \
+             (blue score depth: {})",
             num_removed,
-            rollback_index
+            rollback_index,
+            blue_score_depth,
         );
-        self.push_event(L1Event::Rollback(rollback_index));
+        self.push_event(L1Event::Rollback { index: rollback_index, blue_score_depth });
         Ok(())
     }
 

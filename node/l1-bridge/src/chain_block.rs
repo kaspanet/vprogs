@@ -18,6 +18,8 @@ pub struct ChainBlock {
     hash: BlockHash,
     /// Sequential index relative to the bridge's starting point.
     index: u64,
+    /// Blue score from the L1 block header.
+    blue_score: u64,
     /// Link to the preceding block, or empty if this is the root.
     prev: ArcSwapOption<ChainBlockData>,
     /// Link to the following block, or empty if this is the tip.
@@ -26,10 +28,11 @@ pub struct ChainBlock {
 
 impl ChainBlock {
     /// Creates a standalone block with no links.
-    pub fn new(hash: BlockHash, index: u64) -> Self {
+    pub fn new(hash: BlockHash, index: u64, blue_score: u64) -> Self {
         Self(Arc::new(ChainBlockData {
             hash,
             index,
+            blue_score,
             prev: ArcSwapOption::empty(),
             next: ArcSwapOption::empty(),
         }))
@@ -45,12 +48,18 @@ impl ChainBlock {
         self.index
     }
 
+    /// Returns the blue score from the L1 block header.
+    pub fn blue_score(&self) -> u64 {
+        self.blue_score
+    }
+
     /// Appends a new block after this one and links them in both directions.
-    pub(crate) fn advance_tip(&self, hash: BlockHash) -> Self {
+    pub(crate) fn advance_tip(&self, hash: BlockHash, blue_score: u64) -> Self {
         // Create the new block with a back-link to self.
         Self(Arc::new(ChainBlockData {
             hash,
             index: self.index + 1,
+            blue_score,
             prev: ArcSwapOption::new(Some(self.0.clone())),
             next: ArcSwapOption::empty(),
         }))
@@ -86,12 +95,16 @@ impl ChainBlock {
 impl Default for ChainBlock {
     /// Returns a sentinel root (zero hash, index 0).
     fn default() -> Self {
-        Self::new(ZERO_HASH, 0)
+        Self::new(ZERO_HASH, 0, 0)
     }
 }
 
 impl Debug for ChainBlock {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ChainBlock").field("hash", &self.hash).field("index", &self.index).finish()
+        f.debug_struct("ChainBlock")
+            .field("hash", &self.hash)
+            .field("index", &self.index)
+            .field("blue_score", &self.blue_score)
+            .finish()
     }
 }

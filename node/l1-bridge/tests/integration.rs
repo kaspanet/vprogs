@@ -93,7 +93,7 @@ async fn test_bridge_syncs_from_specific_block() {
         .with_url(node.wrpc_borsh_url())
         .with_network_type(NetworkType::Simnet)
         .with_connect_strategy(ConnectStrategy::Fallback)
-        .with_tip(Some(ChainBlock::new(start_from, 3)));
+        .with_tip(Some(ChainBlock::new(start_from, 3, 0)));
 
     let bridge = L1Bridge::new(config);
 
@@ -152,7 +152,7 @@ async fn test_bridge_catches_up_after_reconnection() {
 
     // Save the last processed position as a checkpoint.
     let (last_index, last_header, _) = &blocks[2];
-    let checkpoint = ChainBlock::new(last_header.hash.unwrap(), *last_index);
+    let checkpoint = ChainBlock::new(last_header.hash.unwrap(), *last_index, 0);
     assert_eq!(*last_index, 3);
 
     // Phase 2: Shutdown the bridge, mine blocks while it's down.
@@ -229,7 +229,7 @@ async fn test_bridge_receives_reorg_events() {
 
     // Depending on Kaspa's internal timing, we may see a discrete Rollback
     // event or blocks may propagate incrementally without one.
-    let rollback_pos = events.iter().position(|e| matches!(e, L1Event::Rollback(_)));
+    let rollback_pos = events.iter().position(|e| matches!(e, L1Event::Rollback { .. }));
 
     if let Some(pos) = rollback_pos {
         // Reorg detected — verify blocks after rollback are from the main chain.
