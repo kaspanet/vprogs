@@ -278,6 +278,152 @@ async fn test_bridge_receives_reorg_events() {
     node1.shutdown().await;
 }
 
+/// Verifies that the reorg filter causes a bridge to lag behind the chain tip after a reorg.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_reorg_filter_causes_lag() {
+    const NODE1_BLOCKS: usize = 5;
+    const NODE2_BLOCKS: usize = 20;
+
+    // Use a very long filter period so no halving occurs during the test.
+    let filter_period = Duration::from_secs(3600);
+
+    // Create two isolated nodes.
+    let node1 = L1Node::new().await;
+    let node2 = L1Node::new().await;
+
+    // Create two bridges to node1: one with filter, one without.
+    let bridge_filtered = L1Bridge::new(
+        L1BridgeConfig::default()
+            .with_url(node1.wrpc_borsh_url())
+            .with_network_type(NetworkType::Simnet)
+            .with_connect_strategy(ConnectStrategy::Fallback)
+            .with_reorg_filter_period(filter_period),
+    );
+    let bridge_unfiltered = L1Bridge::new(
+        L1BridgeConfig::default()
+            .with_url(node1.wrpc_borsh_url())
+            .with_network_type(NetworkType::Simnet)
+            .with_connect_strategy(ConnectStrategy::Fallback),
+    );
+
+    // Wait for both bridges to connect.
+    tokio::join!(
+        bridge_filtered.wait_for(TIMEOUT, |e| matches!(e, L1Event::Connected)),
+        bridge_unfiltered.wait_for(TIMEOUT, |e| matches!(e, L1Event::Connected)),
+    );
+
+    // Mine chains on both nodes in isolation. Wait for node1's chain to be fully synced.
+    let hashes1 = node1.mine_blocks(NODE1_BLOCKS).await;
+    let last_hash1 = *hashes1.last().unwrap();
+
+    tokio::join!(
+        bridge_filtered.wait_for(TIMEOUT, |e| {
+            matches!(e, L1Event::ChainBlockAdded { header, .. } if header.hash == Some(last_hash1))
+        }),
+        bridge_unfiltered.wait_for(TIMEOUT, |e| {
+            matches!(e, L1Event::ChainBlockAdded { header, .. } if header.hash == Some(last_hash1))
+        }),
+    );
+
+    // Mine the longer chain on node2 and wait for its last block to be accepted.
+    let hashes2 = node2.mine_blocks(NODE2_BLOCKS).await;
+    let last_hash2 = *hashes2.last().unwrap();
+
+    // Create a temporary bridge to node2 to ensure all blocks are mined before connecting.
+    let bridge_node2 = L1Bridge::new(
+        L1BridgeConfig::default()
+            .with_url(node2.wrpc_borsh_url())
+            .with_network_type(NetworkType::Simnet)
+            .with_connect_strategy(ConnectStrategy::Fallback),
+    );
+    bridge_node2
+        .wait_for(TIMEOUT, |e| {
+            matches!(e, L1Event::ChainBlockAdded { header, .. } if header.hash == Some(last_hash2))
+        })
+        .await;
+    bridge_node2.shutdown();
+
+    // Connect nodes - node1 reorgs to node2's longer chain.
+    node1.connect_to(&node2).await;
+
+    // Wait for the unfiltered bridge to see the last block from node2.
+    let events_unfiltered = bridge_unfiltered
+        .wait_for(TIMEOUT, |e| {
+            matches!(e, L1Event::ChainBlockAdded { header, .. } if header.hash == Some(last_hash2))
+        })
+        .await;
+
+    // Verify we saw the rollback with the expected depth.
+    let rollback_depth = events_unfiltered
+        .iter()
+        .find_map(|e| match e {
+            L1Event::Rollback { blue_score_depth, .. } => Some(*blue_score_depth),
+            _ => None,
+        })
+        .expect("unfiltered bridge should see rollback");
+
+    assert_eq!(
+        rollback_depth, NODE1_BLOCKS as u64,
+        "rollback depth should equal {} (node1's original chain)",
+        NODE1_BLOCKS
+    );
+
+    // The unfiltered bridge's max index should be NODE2_BLOCKS.
+    let max_index_unfiltered = events_unfiltered
+        .iter()
+        .filter_map(|e| match e {
+            L1Event::ChainBlockAdded { index, .. } => Some(*index),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+
+    assert_eq!(
+        max_index_unfiltered, NODE2_BLOCKS as u64,
+        "unfiltered bridge should reach index {}",
+        NODE2_BLOCKS
+    );
+
+    // Give the filtered bridge time to process, then check its max index.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let events_filtered = bridge_filtered.drain();
+
+    let rollback_filtered = events_filtered
+        .iter()
+        .find_map(|e| match e {
+            L1Event::Rollback { blue_score_depth, .. } => Some(*blue_score_depth),
+            _ => None,
+        })
+        .expect("filtered bridge should see rollback");
+
+    assert_eq!(rollback_filtered, NODE1_BLOCKS as u64);
+
+    let max_index_filtered = events_filtered
+        .iter()
+        .filter_map(|e| match e {
+            L1Event::ChainBlockAdded { index, .. } => Some(*index),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+
+    // The filtered bridge should lag behind. The API filters blocks where distance > threshold,
+    // so with threshold=5 and tip=20, we see blocks 1-14 (distance 6+). To be protected from
+    // reorgs of depth N, we must not show blocks at distance ≤ N, hence the lag is threshold+1.
+    let expected_lag = NODE1_BLOCKS + 1;
+    let expected_filtered_max = (NODE2_BLOCKS - expected_lag) as u64;
+    assert_eq!(
+        max_index_filtered, expected_filtered_max,
+        "filtered bridge should lag by {} blocks (max index {} vs {})",
+        expected_lag, max_index_filtered, max_index_unfiltered
+    );
+
+    bridge_filtered.shutdown();
+    bridge_unfiltered.shutdown();
+    node1.shutdown().await;
+    node2.shutdown().await;
+}
+
 /// Starts an L1 node and a connected bridge, waiting for the `Connected` event.
 async fn setup_node_with_bridge(
     strategy: ConnectStrategy,
