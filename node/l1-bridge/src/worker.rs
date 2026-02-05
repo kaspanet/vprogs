@@ -14,6 +14,7 @@ use workflow_core::channel::{Channel, MultiplexerChannel};
 use crate::{
     ChainBlock, L1BridgeConfig, L1Event,
     error::{Error, Result},
+    reorg_filter::ReorgFilter,
     virtual_chain::VirtualChain,
 };
 
@@ -37,6 +38,8 @@ pub(crate) struct BridgeWorker {
     /// When resuming with both root and tip set, holds the tip block until the chain between root
     /// and tip is backfilled on first connect.
     backfill_target: Option<ChainBlock>,
+    /// Filters shallow reorgs based on accumulated depth.
+    reorg_filter: ReorgFilter,
 }
 
 impl BridgeWorker {
@@ -106,6 +109,7 @@ impl BridgeWorker {
             rpc_ctl_channel,
             fatal: false,
             backfill_target,
+            reorg_filter: ReorgFilter::new(config.reorg_filter_period),
         })
     }
 
@@ -294,7 +298,11 @@ impl BridgeWorker {
         // Fetch with High verbosity to get full headers and accepted transactions.
         let response = self
             .client
-            .get_virtual_chain_from_block_v2(start_hash, Some(RpcDataVerbosityLevel::High), None)
+            .get_virtual_chain_from_block_v2(
+                start_hash,
+                Some(RpcDataVerbosityLevel::High),
+                self.reorg_filter.threshold(),
+            )
             .await?;
 
         // Removed hashes indicate a reorg — roll back before processing additions.
@@ -325,17 +333,19 @@ impl BridgeWorker {
         Ok(())
     }
 
-    /// Rolls back the virtual chain and emits a `Rollback` event.
+    /// Rolls back the virtual chain, updates the reorg filter, and emits a `Rollback` event.
     fn handle_reorg(&mut self, response: &GetVirtualChainFromBlockV2Response) -> Result<()> {
         let num_removed = response.removed_chain_block_hashes.len() as u64;
         let (rollback_index, blue_score_depth) = self.virtual_chain.rollback(num_removed)?;
+        self.reorg_filter.record(blue_score_depth);
 
         log::info!(
             "L1 bridge: reorg detected, {} blocks removed, rolling back to index {} \
-             (blue score depth: {})",
+             (blue score depth: {}, filter threshold: {:?})",
             num_removed,
             rollback_index,
             blue_score_depth,
+            self.reorg_filter.threshold(),
         );
         self.push_event(L1Event::Rollback { index: rollback_index, blue_score_depth });
         Ok(())

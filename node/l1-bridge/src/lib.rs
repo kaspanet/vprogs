@@ -55,6 +55,7 @@ mod chain_block;
 mod config;
 mod error;
 mod event;
+mod reorg_filter;
 mod virtual_chain;
 mod worker;
 
