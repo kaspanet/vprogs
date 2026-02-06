@@ -1,6 +1,6 @@
 use std::{hint::spin_loop, sync::Arc, thread::JoinHandle};
 
-use crossbeam_deque::{Steal, Stealer};
+use crossbeam_deque::{Injector, Steal, Stealer};
 use crossbeam_queue::ArrayQueue;
 use crossbeam_utils::sync::Unparker;
 use tap::Tap;
@@ -15,6 +15,7 @@ pub struct WorkersApi<T: Task, B: Batch<T>> {
     inboxes: Vec<Arc<ArrayQueue<B>>>,
     stealers: Vec<Stealer<T>>,
     unparkers: Vec<Unparker>,
+    global_tasks: Injector<T>,
     shutdown: AtomicAsyncLatch,
 }
 
@@ -25,6 +26,7 @@ impl<T: Task, B: Batch<T>> WorkersApi<T, B> {
             stealers: Vec::with_capacity(worker_count),
             unparkers: Vec::with_capacity(worker_count),
             inboxes: Vec::with_capacity(worker_count),
+            global_tasks: Injector::new(),
             shutdown: AtomicAsyncLatch::new(),
         };
 
@@ -57,6 +59,21 @@ impl<T: Task, B: Batch<T>> WorkersApi<T, B> {
                 }
             }
             unparker.unpark();
+        }
+    }
+
+    pub fn push_task(&self, task: T) {
+        self.global_tasks.push(task);
+        self.unparkers[fastrand::usize(..self.worker_count)].unpark();
+    }
+
+    pub fn steal_global_task(&self) -> Option<T> {
+        loop {
+            match self.global_tasks.steal() {
+                Steal::Success(task) => return Some(task),
+                Steal::Retry => continue,
+                Steal::Empty => return None,
+            }
         }
     }
 

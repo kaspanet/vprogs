@@ -70,6 +70,7 @@ resolver = "3"
   vprogs-core-atomics                             = { path = "core/atomics" }
   vprogs-core-macros                              = { path = "core/macros" }
   vprogs-core-types                               = { path = "core/types" }
+  vprogs-node-framework                           = { path = "node/framework" }
   vprogs-node-l1-bridge                           = { path = "node/l1-bridge" }
   vprogs-node-test-suite                          = { path = "node/test-suite" }
   vprogs-node-vm                                  = { path = "node/vm" }

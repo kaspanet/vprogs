@@ -4,6 +4,7 @@ use crossbeam_queue::SegQueue;
 use tap::Tap;
 use vprogs_core_types::{AccessMetadata, Transaction};
 use vprogs_scheduling_execution_workers::ExecutionWorkers;
+use vprogs_state_metadata::StateMetadata;
 use vprogs_state_space::StateSpace;
 use vprogs_storage_manager::{StorageConfig, StorageManager};
 use vprogs_storage_types::Store;
@@ -40,11 +41,16 @@ pub struct Scheduler<S: Store<StateSpace = StateSpace>, V: VmInterface> {
 
 impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
     /// Creates a new scheduler with the given execution and storage configurations.
+    ///
+    /// The batch starting index is determined by reading `last_pruned_index` from the store. On a
+    /// fresh database this defaults to 0; on subsequent launches it resumes from the pruning point.
     pub fn new(execution_config: ExecutionConfig<V>, storage_config: StorageConfig<S>) -> Self {
         let storage_manager = StorageManager::new(storage_config);
+        let starting_index =
+            StateMetadata::get_last_pruned_index(storage_manager.store().as_ref()).unwrap_or(0);
         let (worker_count, vm) = execution_config.unpack();
         Self {
-            context: RuntimeContext::new(0),
+            context: RuntimeContext::new(starting_index),
             batch_lifecycle_worker: BatchLifecycleWorker::new(vm.clone()),
             pruning_worker: PruningWorker::new(storage_manager.store().clone()),
             resources: HashMap::new(),
@@ -129,9 +135,22 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
         &self.context
     }
 
+    /// Returns a reference to the VM implementation.
+    pub fn vm(&self) -> &V {
+        &self.vm
+    }
+
     /// Returns a reference to the storage manager.
     pub fn storage_manager(&self) -> &StorageManager<S, Read<S, V>, Write<S, V>> {
         &self.storage_manager
+    }
+
+    /// Submits a standalone function for execution on a worker thread.
+    ///
+    /// The function is injected into the global task queue and picked up by the next available
+    /// execution worker as a last-resort fallback in the steal chain.
+    pub fn submit_function(&self, func: impl FnOnce() + Send + Sync + 'static) {
+        self.execution_workers.submit_task(ManagerTask::ExecuteFunction(Box::new(func)));
     }
 
     /// Returns a clone of the eviction queue.
