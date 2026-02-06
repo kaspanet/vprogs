@@ -20,7 +20,12 @@ pub enum L1Event {
         accepted_transactions: Vec<RpcOptionalTransaction>,
     },
     /// Blocks after this index have been removed due to a reorg.
-    Rollback(u64),
+    Rollback {
+        /// New tip index after the rollback.
+        index: u64,
+        /// Blue score difference between old and new tip.
+        blue_score_depth: u64,
+    },
     /// Blocks up to this block are finalized and can be pruned.
     Finalized(ChainBlock),
     /// The bridge encountered a fatal error and stopped.

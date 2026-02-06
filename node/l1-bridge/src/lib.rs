@@ -23,7 +23,9 @@
 //!         Some(L1Event::ChainBlockAdded { index, .. }) => {
 //!             println!("block {index}");
 //!         }
-//!         Some(L1Event::Rollback(index)) => println!("rollback to {index}"),
+//!         Some(L1Event::Rollback { index, blue_score_depth }) => {
+//!             println!("rollback to {index} (depth: {blue_score_depth})");
+//!         }
 //!         Some(L1Event::Finalized(block)) => {
 //!             println!("finalized up to index {}", block.index());
 //!         }
@@ -53,6 +55,7 @@ mod chain_block;
 mod config;
 mod error;
 mod event;
+mod reorg_filter;
 mod virtual_chain;
 mod worker;
 

@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::{ChainBlock, ConnectStrategy, NetworkId, NetworkType};
 
 /// Configuration for the L1 bridge.
@@ -16,6 +18,9 @@ pub struct L1BridgeConfig {
     pub root: Option<ChainBlock>,
     /// Last known tip, or `None` to start from the L1 pruning point.
     pub tip: Option<ChainBlock>,
+    /// Reorg filter halving period. Observed reorg depths accumulate into a threshold that halves
+    /// every period until it reaches zero. Set to `Duration::ZERO` to disable (default).
+    pub reorg_filter_halving_period: Duration,
 }
 
 impl Default for L1BridgeConfig {
@@ -28,6 +33,7 @@ impl Default for L1BridgeConfig {
             connect_strategy: ConnectStrategy::Retry, // Reconnect automatically on disconnect.
             root: None,                               // Start from the L1 pruning point.
             tip: None,
+            reorg_filter_halving_period: Duration::ZERO, // Disabled by default.
         }
     }
 }
@@ -72,6 +78,13 @@ impl L1BridgeConfig {
     /// Sets the last known tip to resume from.
     pub fn with_tip(mut self, block: Option<ChainBlock>) -> Self {
         self.tip = block;
+        self
+    }
+
+    /// Sets the reorg filter halving period. Observed reorg depths accumulate into a threshold that
+    /// halves every period, filtering smaller reorgs until the threshold decays to zero.
+    pub fn with_reorg_filter_halving_period(mut self, period: Duration) -> Self {
+        self.reorg_filter_halving_period = period;
         self
     }
 }

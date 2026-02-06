@@ -4,7 +4,8 @@ use crossbeam_queue::SegQueue;
 use futures::{FutureExt, select_biased};
 use kaspa_notify::scope::{PruningPointUtxoSetOverrideScope, Scope, VirtualChainChangedScope};
 use kaspa_rpc_core::{
-    GetVirtualChainFromBlockV2Response, Notification, RpcDataVerbosityLevel,
+    GetVirtualChainFromBlockV2Response, Notification,
+    RpcDataVerbosityLevel::{High, Low},
     api::{ctl::RpcState, rpc::RpcApi},
 };
 use kaspa_wrpc_client::prelude::*;
@@ -14,6 +15,7 @@ use workflow_core::channel::{Channel, MultiplexerChannel};
 use crate::{
     ChainBlock, L1BridgeConfig, L1Event,
     error::{Error, Result},
+    reorg_filter::ReorgFilter,
     virtual_chain::VirtualChain,
 };
 
@@ -37,6 +39,8 @@ pub(crate) struct BridgeWorker {
     /// When resuming with both root and tip set, holds the tip block until the chain between root
     /// and tip is backfilled on first connect.
     backfill_target: Option<ChainBlock>,
+    /// Filters shallow reorgs based on accumulated depth.
+    reorg_filter: ReorgFilter,
 }
 
 impl BridgeWorker {
@@ -106,6 +110,7 @@ impl BridgeWorker {
             rpc_ctl_channel,
             fatal: false,
             backfill_target,
+            reorg_filter: ReorgFilter::new(config.reorg_filter_halving_period),
         })
     }
 
@@ -241,8 +246,8 @@ impl BridgeWorker {
         Ok(())
     }
 
-    /// Backfills the linked list between root and `target` using a lightweight (non-verbose) fetch.
-    /// Only runs once on first connect when resuming with a saved root/tip pair.
+    /// Backfills the linked list between root and `target`. Only runs once on first connect when
+    /// resuming with a saved root/tip pair.
     async fn backfill_chain(&mut self, target: &ChainBlock) -> Result<()> {
         let start = self.virtual_chain.root();
 
@@ -252,18 +257,19 @@ impl BridgeWorker {
             target.index(),
         );
 
-        // Lightweight fetch (no verbosity) — we only need hashes to rebuild the linked list, not
-        // headers or transactions.
+        // Fetch with Low verbosity — sufficient for hash and blue_score needed for chain blocks.
         let response =
-            self.client.get_virtual_chain_from_block_v2(start.hash(), None, None).await?;
+            self.client.get_virtual_chain_from_block_v2(start.hash(), Some(Low), None).await?;
 
-        // Walk the added hashes until we reach the target.
+        // Walk the chain block accepted transactions to get both hash and blue_score.
         let target_hash = target.hash();
         let mut found = false;
 
-        for hash in response.added_chain_block_hashes.iter() {
-            self.virtual_chain.advance_tip(*hash);
-            if *hash == target_hash {
+        for chain_block in response.chain_block_accepted_transactions.iter() {
+            let hash = chain_block.chain_block_header.hash.unwrap_or_default();
+            let blue_score = chain_block.chain_block_header.blue_score.unwrap_or(0);
+            self.virtual_chain.advance_tip(hash, blue_score);
+            if hash == target_hash {
                 found = true;
                 break;
             }
@@ -292,7 +298,7 @@ impl BridgeWorker {
         // Fetch with High verbosity to get full headers and accepted transactions.
         let response = self
             .client
-            .get_virtual_chain_from_block_v2(start_hash, Some(RpcDataVerbosityLevel::High), None)
+            .get_virtual_chain_from_block_v2(start_hash, Some(High), self.reorg_filter.threshold())
             .await?;
 
         // Removed hashes indicate a reorg — roll back before processing additions.
@@ -306,30 +312,39 @@ impl BridgeWorker {
         );
 
         // Extend the virtual chain and emit an event for each new block.
-        for acd in response.chain_block_accepted_transactions.iter() {
-            let hash = acd.chain_block_header.hash.expect("hash missing despite High verbosity");
-            let index = self.virtual_chain.advance_tip(hash);
+        for chain_block in response.chain_block_accepted_transactions.iter() {
+            let hash =
+                chain_block.chain_block_header.hash.expect("hash missing despite High verbosity");
+            let blue_score = chain_block
+                .chain_block_header
+                .blue_score
+                .expect("blue_score missing despite High verbosity");
+            let index = self.virtual_chain.advance_tip(hash, blue_score);
             self.push_event(L1Event::ChainBlockAdded {
                 index,
-                header: Box::new(acd.chain_block_header.clone()),
-                accepted_transactions: acd.accepted_transactions.clone(),
+                header: Box::new(chain_block.chain_block_header.clone()),
+                accepted_transactions: chain_block.accepted_transactions.clone(),
             });
         }
 
         Ok(())
     }
 
-    /// Rolls back the virtual chain and emits a `Rollback` event.
+    /// Rolls back the virtual chain, updates the reorg filter, and emits a `Rollback` event.
     fn handle_reorg(&mut self, response: &GetVirtualChainFromBlockV2Response) -> Result<()> {
         let num_removed = response.removed_chain_block_hashes.len() as u64;
-        let rollback_index = self.virtual_chain.rollback(num_removed)?;
+        let (rollback_index, blue_score_depth) = self.virtual_chain.rollback(num_removed)?;
+        self.reorg_filter.record(blue_score_depth);
 
         log::info!(
-            "L1 bridge: reorg detected, {} blocks removed, rolling back to index {}",
+            "L1 bridge: reorg detected, {} blocks removed, rolling back to index {} \
+             (blue score depth: {}, filter threshold: {:?})",
             num_removed,
-            rollback_index
+            rollback_index,
+            blue_score_depth,
+            self.reorg_filter.threshold(),
         );
-        self.push_event(L1Event::Rollback(rollback_index));
+        self.push_event(L1Event::Rollback { index: rollback_index, blue_score_depth });
         Ok(())
     }
 
