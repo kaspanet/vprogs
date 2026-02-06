@@ -56,9 +56,9 @@ resolver = "3"
   # Kaspa dependencies
   kaspa-addresses           = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
   kaspa-consensus-core      = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-  kaspa-hashes              = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
   kaspa-core                = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
   kaspa-grpc-client         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+  kaspa-hashes              = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
   kaspa-notify              = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
   kaspa-rpc-core            = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
   kaspa-testing-integration = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
@@ -70,7 +70,7 @@ resolver = "3"
   vprogs-core-atomics                             = { path = "core/atomics" }
   vprogs-core-macros                              = { path = "core/macros" }
   vprogs-core-types                               = { path = "core/types" }
-  vprogs-node-l1-bridge                             = { path = "node/l1-bridge" }
+  vprogs-node-l1-bridge                           = { path = "node/l1-bridge" }
   vprogs-node-test-suite                          = { path = "node/test-suite" }
   vprogs-node-vm                                  = { path = "node/vm" }
   vprogs-scheduling-execution-workers             = { path = "scheduling/execution-workers" }
