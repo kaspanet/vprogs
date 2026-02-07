@@ -5481,6 +5481,7 @@ name = "vprogs-node-vm"
 version = "0.1.0"
 dependencies = [
  "vprogs-core-types",
+ "vprogs-node-framework",
  "vprogs-node-l1-bridge",
  "vprogs-scheduling-scheduler",
  "vprogs-state-space",
@@ -5551,8 +5552,8 @@ dependencies = [
 name = "vprogs-state-batch-metadata"
 version = "0.1.0"
 dependencies = [
+ "vprogs-core-types",
  "vprogs-state-space",
- "vprogs-storage-manager",
  "vprogs-storage-types",
 ]
 
@@ -5560,6 +5561,7 @@ dependencies = [
 name = "vprogs-state-metadata"
 version = "0.1.0"
 dependencies = [
+ "vprogs-core-types",
  "vprogs-state-space",
  "vprogs-storage-types",
 ]

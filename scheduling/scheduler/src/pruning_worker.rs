@@ -10,7 +10,7 @@ use std::{
 use tap::Tap;
 use tokio::{runtime::Builder, sync::Notify};
 use vprogs_core_types::ResourceId;
-use vprogs_state_batch_metadata::BatchMetadata;
+use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_ptr_rollback::StatePtrRollback;
 use vprogs_state_space::StateSpace;
@@ -55,7 +55,8 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
     /// If no pruning has occurred yet, it starts from 0.
     pub fn new(store: Arc<S>) -> Self {
         // Load the last pruned index from persistent storage.
-        let persisted_index = StateMetadata::last_pruned(store.as_ref()).0;
+        let (persisted_index, _): (u64, V::BatchMetadata) =
+            StateMetadata::last_pruned(store.as_ref());
 
         let pruning_threshold = Arc::new(AtomicU64::new(persisted_index));
         let last_pruned_index = Arc::new(AtomicU64::new(persisted_index));
@@ -150,9 +151,10 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
     fn prune(store: &S, lower_bound: u64, upper_bound: u64) {
         // Commit all deletions and metadata update atomically.
         store.commit(store.write_batch().tap_mut(|wb| {
-            // Read the batch id at the upper bound and persist pruning metadata upfront.
+            // Read the metadata at the upper bound and persist pruning metadata upfront.
             // This is committed atomically with the deletions below for crash-fault tolerance.
-            StateMetadata::set_last_pruned(wb, upper_bound, &BatchMetadata::id(store, upper_bound));
+            let metadata: V::BatchMetadata = StoredBatchMetadata::get(store, upper_bound);
+            StateMetadata::set_last_pruned(wb, upper_bound, &metadata);
 
             // Walk batches from oldest to newest (order doesn't matter for pruning).
             for index in lower_bound..=upper_bound {
@@ -171,7 +173,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
                 }
 
                 // Delete batch metadata entries for this batch.
-                BatchMetadata::delete(store, wb, index);
+                StoredBatchMetadata::delete(wb, index);
             }
         }));
     }

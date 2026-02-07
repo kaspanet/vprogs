@@ -48,10 +48,13 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
         let storage_manager = StorageManager::new(storage_config);
         let (worker_count, vm) = execution_config.unpack();
         Self {
-            context: RuntimeContext::new(
-                StateMetadata::last_pruned(storage_manager.store().as_ref()).0,
-                StateMetadata::last_processed(storage_manager.store().as_ref()).0,
-            ),
+            context: {
+                let (pruned_index, _): (u64, V::BatchMetadata) =
+                    StateMetadata::last_pruned(storage_manager.store().as_ref());
+                let (processed_index, _): (u64, V::BatchMetadata) =
+                    StateMetadata::last_processed(storage_manager.store().as_ref());
+                RuntimeContext::new(pruned_index, processed_index)
+            },
             batch_lifecycle_worker: BatchLifecycleWorker::new(vm.clone()),
             pruning_worker: PruningWorker::new(storage_manager.store().clone()),
             resources: HashMap::new(),

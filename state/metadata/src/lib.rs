@@ -1,11 +1,12 @@
+use vprogs_core_types::BatchMetadata;
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::{ReadStore, WriteBatch};
 
 /// Well-known metadata keys.
 mod keys {
-    /// Key for the last successfully pruned batch (index + id stored together).
+    /// Key for the last successfully pruned batch (index + metadata stored together).
     pub const LAST_PRUNED: &[u8] = b"last_pruned";
-    /// Key for the last processed batch (index + id stored together).
+    /// Key for the last processed batch (index + metadata stored together).
     pub const LAST_PROCESSED: &[u8] = b"last_processed";
 }
 
@@ -16,9 +17,9 @@ mod keys {
 pub struct StateMetadata;
 
 impl StateMetadata {
-    /// Returns the last successfully pruned batch (index and id), or `(0, [0; 32])` if no
+    /// Returns the last successfully pruned batch (index and metadata), or defaults if no
     /// pruning has occurred yet.
-    pub fn last_pruned<S>(store: &S) -> (u64, [u8; 32])
+    pub fn last_pruned<M: BatchMetadata, S>(store: &S) -> (u64, M)
     where
         S: ReadStore<StateSpace = StateSpace>,
     {
@@ -26,26 +27,27 @@ impl StateMetadata {
             .get(StateSpace::Metadata, keys::LAST_PRUNED)
             .map(|bytes| {
                 let index = u64::from_be_bytes(bytes[..8].try_into().unwrap());
-                let id: [u8; 32] = bytes[8..40].try_into().unwrap();
-                (index, id)
+                let metadata = M::from_bytes(&bytes[8..]);
+                (index, metadata)
             })
             .unwrap_or_default()
     }
 
-    /// Sets the last successfully pruned batch (index and id).
-    pub fn set_last_pruned<W>(store: &mut W, index: u64, id: &[u8; 32])
+    /// Sets the last successfully pruned batch (index and metadata).
+    pub fn set_last_pruned<M: BatchMetadata, W>(store: &mut W, index: u64, metadata: &M)
     where
         W: WriteBatch<StateSpace = StateSpace>,
     {
-        let mut value = [0u8; 40];
-        value[..8].copy_from_slice(&index.to_be_bytes());
-        value[8..40].copy_from_slice(id);
+        let metadata_bytes = metadata.to_bytes();
+        let mut value = Vec::with_capacity(8 + metadata_bytes.len());
+        value.extend_from_slice(&index.to_be_bytes());
+        value.extend_from_slice(&metadata_bytes);
         store.put(StateSpace::Metadata, keys::LAST_PRUNED, &value);
     }
 
-    /// Returns the last processed batch (index and id), or `(0, [0; 32])` if no batches have
+    /// Returns the last processed batch (index and metadata), or defaults if no batches have
     /// been processed yet.
-    pub fn last_processed<S>(store: &S) -> (u64, [u8; 32])
+    pub fn last_processed<M: BatchMetadata, S>(store: &S) -> (u64, M)
     where
         S: ReadStore<StateSpace = StateSpace>,
     {
@@ -53,20 +55,21 @@ impl StateMetadata {
             .get(StateSpace::Metadata, keys::LAST_PROCESSED)
             .map(|bytes| {
                 let index = u64::from_be_bytes(bytes[..8].try_into().unwrap());
-                let id: [u8; 32] = bytes[8..40].try_into().unwrap();
-                (index, id)
+                let metadata = M::from_bytes(&bytes[8..]);
+                (index, metadata)
             })
             .unwrap_or_default()
     }
 
-    /// Sets the last processed batch (index and id).
-    pub fn set_last_processed<W>(store: &mut W, index: u64, id: &[u8; 32])
+    /// Sets the last processed batch (index and metadata).
+    pub fn set_last_processed<M: BatchMetadata, W>(store: &mut W, index: u64, metadata: &M)
     where
         W: WriteBatch<StateSpace = StateSpace>,
     {
-        let mut value = [0u8; 40];
-        value[..8].copy_from_slice(&index.to_be_bytes());
-        value[8..40].copy_from_slice(id);
+        let metadata_bytes = metadata.to_bytes();
+        let mut value = Vec::with_capacity(8 + metadata_bytes.len());
+        value.extend_from_slice(&index.to_be_bytes());
+        value.extend_from_slice(&metadata_bytes);
         store.put(StateSpace::Metadata, keys::LAST_PROCESSED, &value);
     }
 }

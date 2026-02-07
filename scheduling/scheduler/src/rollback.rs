@@ -3,7 +3,7 @@ use std::{marker::PhantomData, sync::Arc};
 use tap::Tap;
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_types::ResourceId;
-use vprogs_state_batch_metadata::BatchMetadata;
+use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_ptr_latest::StatePtrLatest;
 use vprogs_state_ptr_rollback::StatePtrRollback;
@@ -71,7 +71,8 @@ impl<V: VmInterface> Rollback<V> {
             // Update tip atomically with the rollback.
             // This is written upfront but committed atomically with the reversions below.
             let index = self.lower_bound - 1;
-            StateMetadata::set_last_processed(wb, index, &BatchMetadata::id(store, index));
+            let metadata: V::BatchMetadata = StoredBatchMetadata::get(store, index);
+            StateMetadata::set_last_processed(wb, index, &metadata);
 
             // Walk batches from newest to oldest.
             for index in (self.lower_bound..=self.upper_bound).rev() {
@@ -82,7 +83,7 @@ impl<V: VmInterface> Rollback<V> {
                 }
 
                 // Delete batch metadata entries for this batch.
-                BatchMetadata::delete(store, wb, index);
+                StoredBatchMetadata::delete(wb, index);
             }
         })
     }

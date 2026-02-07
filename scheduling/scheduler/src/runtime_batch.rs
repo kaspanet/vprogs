@@ -7,7 +7,6 @@ use crossbeam_deque::{Injector, Steal, Worker};
 use crossbeam_queue::SegQueue;
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_macros::smart_pointer;
-use vprogs_core_types::BatchMetadata;
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_space::StateSpace;
@@ -205,9 +204,8 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
             for state_diff in self.state_diffs() {
                 state_diff.written_state().write_latest_ptr(store);
             }
-            let batch_id = self.batch_metadata.batch_id();
-            StoredBatchMetadata::set_id(store, self.index, &batch_id);
-            StateMetadata::set_last_processed(store, self.index, &batch_id);
+            StoredBatchMetadata::set(store, self.index, &self.batch_metadata);
+            StateMetadata::set_last_processed(store, self.index, &self.batch_metadata);
         }
     }
 

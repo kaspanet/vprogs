@@ -4,5 +4,6 @@ name              = "vprogs-state-metadata"
 version.workspace = true
 
 [dependencies]
+vprogs-core-types.workspace    = true
 vprogs-state-space.workspace   = true
 vprogs-storage-types.workspace = true

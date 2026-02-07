@@ -8,21 +8,21 @@ use crate::NodeVm;
 /// One-shot container for pre-processing results.
 ///
 /// A `PreparedBatch` is created when a chain block arrives and handed to an execution worker for
-/// pre-processing. The worker fills in the resulting transactions via [`set_txs`](Self::set_txs)
-/// and opens the latch, signaling the event loop that this batch is ready.
+/// pre-processing. The worker fills in the resulting transactions and metadata via
+/// [`set`](Self::set) and opens the latch, signaling the event loop that this batch is ready.
 ///
-/// Fully lock-free: transactions are published through an [`ArcSwapOption`] and coordination goes
+/// Fully lock-free: results are published through an [`ArcSwapOption`] and coordination goes
 /// through the [`AtomicAsyncLatch`].
 pub struct PreparedBatch<V: NodeVm> {
     index: u64,
-    txs: ArcSwapOption<Vec<V::Transaction>>,
+    result: ArcSwapOption<(Vec<V::Transaction>, V::BatchMetadata)>,
     ready: AtomicAsyncLatch,
 }
 
 impl<V: NodeVm> PreparedBatch<V> {
     /// Creates a new empty batch for the given block index.
     pub fn new(index: u64) -> Arc<Self> {
-        Arc::new(Self { index, txs: ArcSwapOption::empty(), ready: AtomicAsyncLatch::new() })
+        Arc::new(Self { index, result: ArcSwapOption::empty(), ready: AtomicAsyncLatch::new() })
     }
 
     /// Returns the block index this batch corresponds to.
@@ -45,20 +45,20 @@ impl<V: NodeVm> PreparedBatch<V> {
         self.ready.wait_blocking();
     }
 
-    /// Stores the pre-processed transactions and signals readiness.
+    /// Stores the pre-processed transactions and metadata, and signals readiness.
     ///
     /// Called by the execution worker after [`NodeVm::pre_process_block`] returns.
-    pub fn set_txs(&self, txs: Vec<V::Transaction>) {
-        self.txs.store(Some(Arc::new(txs)));
+    pub fn set(&self, txs: Vec<V::Transaction>, metadata: V::BatchMetadata) {
+        self.result.store(Some(Arc::new((txs, metadata))));
         self.ready.open();
     }
 
-    /// Takes the pre-processed transactions out of the batch.
+    /// Takes the pre-processed transactions and metadata out of the batch.
     ///
     /// Must only be called after [`wait`](Self::wait) or [`is_ready`](Self::is_ready) returns
-    /// `true`. Panics if the transactions have already been taken.
-    pub fn take_txs(&self) -> Vec<V::Transaction> {
-        let arc = self.txs.swap(None).expect("transactions already taken");
-        Arc::into_inner(arc).expect("outstanding references to transactions")
+    /// `true`. Panics if the results have already been taken.
+    pub fn take(&self) -> (Vec<V::Transaction>, V::BatchMetadata) {
+        let arc = self.result.swap(None).expect("results already taken");
+        Arc::into_inner(arc).expect("outstanding references to results")
     }
 }

@@ -6,18 +6,12 @@ use std::{
 
 use tokio::runtime::Builder;
 use vprogs_core_atomics::AtomicAsyncLatch;
-use vprogs_node_l1_bridge::{BlockHash, L1Bridge, L1Event};
+use vprogs_node_l1_bridge::{L1Bridge, L1Event};
 use vprogs_scheduling_scheduler::Scheduler;
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
 use crate::{NodeVm, PreparedBatch};
-
-/// A pending block in the event loop queue.
-struct PendingBlock<V: NodeVm> {
-    prepared: Arc<PreparedBatch<V>>,
-    hash: BlockHash,
-}
 
 /// Dedicated event loop thread that connects the L1 bridge to the scheduler.
 ///
@@ -65,17 +59,17 @@ async fn event_loop<S: Store<StateSpace = StateSpace>, V: NodeVm>(
     vm: V,
     shutdown: Arc<AtomicAsyncLatch>,
 ) {
-    let mut queue: VecDeque<PendingBlock<V>> = VecDeque::new();
+    let mut queue: VecDeque<Arc<PreparedBatch<V>>> = VecDeque::new();
 
     loop {
         // Phase 1: Drain all ready batches from the front of the queue (non-blocking).
         while let Some(front) = queue.front() {
-            if !front.prepared.is_ready() {
+            if !front.is_ready() {
                 break;
             }
-            let pending = queue.pop_front().unwrap();
-            let txs = pending.prepared.take_txs();
-            scheduler.schedule(vm.batch_metadata(pending.hash), txs);
+            let prepared = queue.pop_front().unwrap();
+            let (txs, metadata) = prepared.take();
+            scheduler.schedule(metadata, txs);
         }
 
         // Phase 2: select! between shutdown, front batch ready, or bridge event.
@@ -86,7 +80,7 @@ async fn event_loop<S: Store<StateSpace = StateSpace>, V: NodeVm>(
 
             () = async {
                 if let Some(front) = queue.front() {
-                    front.prepared.wait().await;
+                    front.wait().await;
                 } else {
                     // Queue is empty — this branch should never fire.
                     std::future::pending::<()>().await;
@@ -111,7 +105,7 @@ fn handle_event<S: Store<StateSpace = StateSpace>, V: NodeVm>(
     event: L1Event,
     scheduler: &mut Scheduler<S, V>,
     vm: &V,
-    queue: &mut VecDeque<PendingBlock<V>>,
+    queue: &mut VecDeque<Arc<PreparedBatch<V>>>,
 ) -> bool {
     match event {
         L1Event::Connected => {
@@ -125,26 +119,24 @@ fn handle_event<S: Store<StateSpace = StateSpace>, V: NodeVm>(
         L1Event::ChainBlockAdded { index, header, accepted_transactions } => {
             let prepared = PreparedBatch::new(index);
 
-            // Extract hash from the header before moving it into the closure.
-            let hash = header.hash.unwrap_or_default();
-
             // Submit pre-processing to an execution worker.
             scheduler.submit_function({
                 let vm = vm.clone();
                 let prepared = prepared.clone();
                 move || {
-                    let txs = vm.pre_process_block(index, &header, &accepted_transactions);
-                    prepared.set_txs(txs);
+                    let (txs, metadata) =
+                        vm.pre_process_block(index, &header, &accepted_transactions);
+                    prepared.set(txs, metadata);
                 }
             });
 
-            queue.push_back(PendingBlock { prepared, hash });
+            queue.push_back(prepared);
         }
 
         L1Event::Rollback { index, .. } => {
             // Pop pending batches from the back where index > target.
             while let Some(back) = queue.back() {
-                if back.prepared.index() > index {
+                if back.index() > index {
                     queue.pop_back();
                 } else {
                     break;

@@ -1,4 +1,4 @@
-use vprogs_node_l1_bridge::{BlockHash, RpcOptionalHeader, RpcOptionalTransaction};
+use vprogs_node_l1_bridge::{ChainBlock, RpcOptionalHeader, RpcOptionalTransaction};
 use vprogs_scheduling_scheduler::VmInterface;
 
 /// Extension of [`VmInterface`] with L1 block pre-processing.
@@ -7,7 +7,7 @@ use vprogs_scheduling_scheduler::VmInterface;
 /// transactions. This runs on an execution worker thread and may complete out of order relative to
 /// block index.
 pub trait NodeVm: VmInterface {
-    /// Translates an L1 chain block into L2 transactions.
+    /// Translates an L1 chain block into L2 transactions and batch metadata.
     ///
     /// Called on an execution worker thread. The returned transactions are later fed to the
     /// scheduler in index order.
@@ -16,8 +16,8 @@ pub trait NodeVm: VmInterface {
         index: u64,
         header: &RpcOptionalHeader,
         accepted_transactions: &[RpcOptionalTransaction],
-    ) -> Vec<Self::Transaction>;
+    ) -> (Vec<Self::Transaction>, Self::BatchMetadata);
 
-    /// Creates batch metadata from a block hash.
-    fn batch_metadata(&self, hash: BlockHash) -> Self::BatchMetadata;
+    /// Reconstructs a [`ChainBlock`] from stored metadata (used for bridge resume).
+    fn chain_block(&self, index: u64, metadata: &Self::BatchMetadata) -> ChainBlock;
 }
