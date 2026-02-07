@@ -26,7 +26,7 @@ pub(crate) struct NodeWorker<S: Store<StateSpace = StateSpace>, V: NodeVm> {
 
 impl<S: Store<StateSpace = StateSpace>, V: NodeVm> NodeWorker<S, V> {
     /// Spawns the event loop thread.
-    pub(crate) fn new(scheduler: Scheduler<S, V>, bridge: L1Bridge, vm: V) -> Self {
+    pub(crate) fn new(scheduler: Scheduler<S, V>, bridge: L1Bridge) -> Self {
         let shutdown = Arc::new(AtomicAsyncLatch::new());
 
         let handle = thread::spawn({
@@ -36,7 +36,7 @@ impl<S: Store<StateSpace = StateSpace>, V: NodeVm> NodeWorker<S, V> {
                     .enable_all()
                     .build()
                     .expect("failed to build tokio runtime")
-                    .block_on(event_loop(scheduler, bridge, vm, shutdown));
+                    .block_on(event_loop(scheduler, bridge, shutdown));
             }
         });
 
@@ -56,7 +56,6 @@ impl<S: Store<StateSpace = StateSpace>, V: NodeVm> NodeWorker<S, V> {
 async fn event_loop<S: Store<StateSpace = StateSpace>, V: NodeVm>(
     mut scheduler: Scheduler<S, V>,
     bridge: L1Bridge,
-    vm: V,
     shutdown: Arc<AtomicAsyncLatch>,
 ) {
     let mut queue: VecDeque<Arc<PreparedBatch<V>>> = VecDeque::new();
@@ -88,7 +87,7 @@ async fn event_loop<S: Store<StateSpace = StateSpace>, V: NodeVm>(
             } => continue,
 
             event = bridge.wait_and_pop() => {
-                if !handle_event(event, &mut scheduler, &vm, &mut queue) {
+                if !handle_event(event, &mut scheduler, &mut queue) {
                     break;
                 }
             }
@@ -104,7 +103,6 @@ async fn event_loop<S: Store<StateSpace = StateSpace>, V: NodeVm>(
 fn handle_event<S: Store<StateSpace = StateSpace>, V: NodeVm>(
     event: L1Event,
     scheduler: &mut Scheduler<S, V>,
-    vm: &V,
     queue: &mut VecDeque<Arc<PreparedBatch<V>>>,
 ) -> bool {
     match event {
@@ -121,7 +119,7 @@ fn handle_event<S: Store<StateSpace = StateSpace>, V: NodeVm>(
 
             // Submit pre-processing to an execution worker.
             scheduler.submit_function({
-                let vm = vm.clone();
+                let vm = scheduler.vm().clone();
                 let prepared = prepared.clone();
                 move || {
                     let txs = vm.pre_process_block(index, &header, &accepted_transactions);

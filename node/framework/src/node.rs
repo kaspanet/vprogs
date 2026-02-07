@@ -30,11 +30,8 @@ impl<S: Store<StateSpace = StateSpace>, V: NodeVm> Node<S, V> {
         // Create the scheduler — internally reads last_processed as starting batch index.
         let scheduler = Scheduler::new(execution_config, storage_config);
 
-        // Clone the VM for the worker before the scheduler takes ownership.
-        let vm = scheduler.vm().clone();
-
         // Load resume state from the store.
-        let store = scheduler.storage_manager().store().clone();
+        let store = scheduler.storage_manager().store();
 
         let (tip_index, tip_metadata): (u64, ChainBlockMetadata) =
             StateMetadata::last_processed(store.as_ref());
@@ -49,7 +46,7 @@ impl<S: Store<StateSpace = StateSpace>, V: NodeVm> Node<S, V> {
         let bridge = L1Bridge::new(l1_bridge_config);
 
         // Spawn the event loop.
-        let worker = NodeWorker::new(scheduler, bridge, vm);
+        let worker = NodeWorker::new(scheduler, bridge);
 
         Self { worker: Some(worker) }
     }
