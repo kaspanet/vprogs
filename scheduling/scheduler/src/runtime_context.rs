@@ -23,15 +23,16 @@ pub struct RuntimeContext {
 }
 
 impl RuntimeContext {
-    /// Creates a new root context starting at the given batch index.
+    /// Creates a new root context with the given batch index bounds.
     ///
-    /// The context has no parent and an unlimited cancel threshold, meaning no batches are
-    /// initially canceled.
-    pub fn new(index: u64) -> Self {
+    /// `first_index` is the lower bound (pruning point), `last_index` is the upper bound (last
+    /// processed batch). The context has no parent and an unlimited cancel threshold, meaning no
+    /// batches are initially canceled.
+    pub fn new(first_index: u64, last_index: u64) -> Self {
         Self(Arc::new(RuntimeContextData {
             parent_context: None,
-            first_index: index,
-            last_batch_index: AtomicU64::new(index),
+            first_index,
+            last_batch_index: AtomicU64::new(last_index),
             cancel_threshold: AtomicU64::new(u64::MAX),
         }))
     }
