@@ -5432,7 +5432,6 @@ dependencies = [
  "vprogs-core-atomics",
  "vprogs-node-l1-bridge",
  "vprogs-scheduling-scheduler",
- "vprogs-state-metadata",
  "vprogs-state-space",
  "vprogs-storage-manager",
  "vprogs-storage-types",

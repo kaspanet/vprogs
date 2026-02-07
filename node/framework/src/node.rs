@@ -1,6 +1,5 @@
-use vprogs_node_l1_bridge::{ChainBlock, ChainBlockMetadata, L1Bridge};
+use vprogs_node_l1_bridge::L1Bridge;
 use vprogs_scheduling_scheduler::Scheduler;
-use vprogs_state_metadata::StateMetadata;
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
@@ -15,7 +14,7 @@ use crate::{NodeConfig, NodeVm, worker::NodeWorker};
 ///
 /// 1. Unpack config into sub-configs
 /// 2. Create [`Scheduler`] (reads `last_processed` from store as starting batch index)
-/// 3. Load resume state from store (last_processed + last_pruned)
+/// 3. Load resume state from scheduler (last_processed + last_pruned)
 /// 4. Create [`L1Bridge`] with resume state
 /// 5. Spawn [`NodeWorker`] event loop
 pub struct Node<S: Store<StateSpace = StateSpace>, V: NodeVm> {
@@ -25,30 +24,19 @@ pub struct Node<S: Store<StateSpace = StateSpace>, V: NodeVm> {
 impl<S: Store<StateSpace = StateSpace>, V: NodeVm> Node<S, V> {
     /// Creates and starts a new node.
     pub fn new(config: NodeConfig<S, V>) -> Self {
-        let (execution_config, storage_config, mut l1_bridge_config) = config.unpack();
+        let (execution_config, storage_config, l1_bridge_config) = config.unpack();
 
         // Create the scheduler — internally reads last_processed as starting batch index.
         let scheduler = Scheduler::new(execution_config, storage_config);
 
-        // Load resume state from the store.
-        let store = scheduler.storage_manager().store();
-
-        let (tip_index, tip_metadata): (u64, ChainBlockMetadata) =
-            StateMetadata::last_processed(store.as_ref());
-        let tip = ChainBlock::new(tip_index, tip_metadata);
-
-        let (root_index, root_metadata): (u64, ChainBlockMetadata) =
-            StateMetadata::last_pruned(store.as_ref());
-        let root = ChainBlock::new(root_index, root_metadata);
-
         // Configure the bridge with resume state.
-        l1_bridge_config = l1_bridge_config.with_root(Some(root)).with_tip(Some(tip));
-        let bridge = L1Bridge::new(l1_bridge_config);
+        let bridge = L1Bridge::new(
+            l1_bridge_config
+                .with_root(Some(scheduler.last_pruned().into()))
+                .with_tip(Some(scheduler.last_processed().into())),
+        );
 
-        // Spawn the event loop.
-        let worker = NodeWorker::new(scheduler, bridge);
-
-        Self { worker: Some(worker) }
+        Self { worker: Some(NodeWorker::new(scheduler, bridge)) }
     }
 
     /// Shuts down the node and all its components.

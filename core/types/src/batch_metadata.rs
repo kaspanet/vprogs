@@ -1,4 +1,4 @@
-pub trait BatchMetadata: Default + Send + Sync + 'static {
+pub trait BatchMetadata: Clone + Default + Send + Sync + 'static {
     fn id(&self) -> [u8; 32];
     fn to_bytes(&self) -> Vec<u8>;
     fn from_bytes(bytes: &[u8]) -> Self;

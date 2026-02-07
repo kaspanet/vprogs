@@ -10,7 +10,6 @@ tokio.workspace                       = true
 vprogs-core-atomics.workspace         = true
 vprogs-node-l1-bridge.workspace       = true
 vprogs-scheduling-scheduler.workspace = true
-vprogs-state-metadata.workspace       = true
 vprogs-state-space.workspace          = true
 vprogs-storage-manager.workspace      = true
 vprogs-storage-types.workspace        = true

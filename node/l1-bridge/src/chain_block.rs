@@ -82,6 +82,12 @@ impl ChainBlock {
     }
 }
 
+impl From<(u64, ChainBlockMetadata)> for ChainBlock {
+    fn from((index, metadata): (u64, ChainBlockMetadata)) -> Self {
+        Self::new(index, metadata)
+    }
+}
+
 impl Default for ChainBlock {
     /// Returns a sentinel root (zero hash, index 0).
     fn default() -> Self {

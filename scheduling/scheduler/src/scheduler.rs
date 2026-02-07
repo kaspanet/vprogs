@@ -188,9 +188,14 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
         self.pruning_worker.threshold()
     }
 
-    /// Returns the last successfully pruned batch index.
-    pub fn last_pruned_index(&self) -> u64 {
+    /// Returns the last successfully pruned batch (index and metadata) from cache.
+    pub fn last_pruned(&self) -> (u64, V::BatchMetadata) {
         self.pruning_worker.last_pruned()
+    }
+
+    /// Returns the last processed batch (index and metadata) from the store.
+    pub fn last_processed(&self) -> (u64, V::BatchMetadata) {
+        StateMetadata::last_processed(self.storage_manager.store().as_ref())
     }
 
     /// Shuts down the scheduler and all its components.

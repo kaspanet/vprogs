@@ -7,6 +7,7 @@ use std::{
     thread::{self, JoinHandle},
 };
 
+use arc_swap::ArcSwap;
 use tap::Tap;
 use tokio::{runtime::Builder, sync::Notify};
 use vprogs_core_types::ResourceId;
@@ -38,8 +39,9 @@ pub struct PruningWorker<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     /// The batch index up to which pruning is allowed (exclusive).
     /// Batches with index < threshold can be pruned.
     pruning_threshold: Arc<AtomicU64>,
-    /// The last batch index that was successfully pruned.
-    last_pruned_index: Arc<AtomicU64>,
+    /// Cached last pruned batch (index + metadata). Updated atomically after each pruning pass
+    /// to avoid disk reads on the query path.
+    last_pruned: Arc<ArcSwap<(u64, V::BatchMetadata)>>,
     /// Notification signal to wake up the worker when the threshold changes.
     notify: Arc<Notify>,
     /// Handle to the background worker thread.
@@ -54,22 +56,18 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
     /// The worker resumes from the last successfully pruned batch index stored in metadata.
     /// If no pruning has occurred yet, it starts from 0.
     pub fn new(store: Arc<S>) -> Self {
-        // Load the last pruned index from persistent storage.
-        let (persisted_index, _): (u64, V::BatchMetadata) =
+        // Load the last pruned state from persistent storage.
+        let (persisted_index, persisted_metadata): (u64, V::BatchMetadata) =
             StateMetadata::last_pruned(store.as_ref());
 
         let pruning_threshold = Arc::new(AtomicU64::new(persisted_index));
-        let last_pruned_index = Arc::new(AtomicU64::new(persisted_index));
+        let last_pruned = Arc::new(ArcSwap::from_pointee((persisted_index, persisted_metadata)));
         let notify = Arc::new(Notify::new());
 
-        let handle = Self::start(
-            store,
-            pruning_threshold.clone(),
-            last_pruned_index.clone(),
-            notify.clone(),
-        );
+        let handle =
+            Self::start(store, pruning_threshold.clone(), last_pruned.clone(), notify.clone());
 
-        Self { pruning_threshold, last_pruned_index, notify, handle, _marker: PhantomData }
+        Self { pruning_threshold, last_pruned, notify, handle, _marker: PhantomData }
     }
 
     /// Sets the pruning threshold.
@@ -91,9 +89,10 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
         self.pruning_threshold.load(Ordering::Acquire)
     }
 
-    /// Returns the last successfully pruned batch index.
-    pub fn last_pruned(&self) -> u64 {
-        self.last_pruned_index.load(Ordering::Acquire)
+    /// Returns the last successfully pruned batch (index and metadata) from cache.
+    pub fn last_pruned(&self) -> (u64, V::BatchMetadata) {
+        let cached = self.last_pruned.load();
+        (cached.0, cached.1.clone())
     }
 
     /// Shuts down the pruning worker and waits for it to complete.
@@ -111,7 +110,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
     fn start(
         store: Arc<S>,
         pruning_threshold: Arc<AtomicU64>,
-        last_pruned_index: Arc<AtomicU64>,
+        last_pruned: Arc<ArcSwap<(u64, V::BatchMetadata)>>,
         notify: Arc<Notify>,
     ) -> JoinHandle<()> {
         thread::spawn(move || {
@@ -120,19 +119,19 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
                     // Use strong_count to detect shutdown (when the outer struct is dropped).
                     while Arc::strong_count(&pruning_threshold) != 1 {
                         let threshold = pruning_threshold.load(Ordering::Acquire);
-                        let last_pruned = last_pruned_index.load(Ordering::Acquire);
+                        let last_pruned_index = last_pruned.load().0;
 
                         // Check if there's pruning work to do.
-                        if threshold > last_pruned + 1 {
+                        if threshold > last_pruned_index + 1 {
                             // Prune batches from (last_pruned + 1) to (threshold - 1) inclusive.
-                            let lower_bound = last_pruned + 1;
+                            let lower_bound = last_pruned_index + 1;
                             let upper_bound = threshold - 1;
 
                             // Execute pruning directly on the store.
-                            Self::prune(&store, lower_bound, upper_bound);
+                            let metadata = Self::prune(&store, lower_bound, upper_bound);
 
-                            // Update the in-memory last pruned index.
-                            last_pruned_index.store(upper_bound, Ordering::Release);
+                            // Update the cached last pruned state.
+                            last_pruned.store(Arc::new((upper_bound, metadata)));
                         } else if Arc::strong_count(&pruning_threshold) != 1 {
                             // No work to do, wait for notification.
                             notify.notified().await;
@@ -148,12 +147,13 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
     /// This runs on the dedicated pruning thread and does not interfere with the main write path.
     /// The last pruned index and batch id are persisted atomically with the deletions for
     /// crash-fault tolerance.
-    fn prune(store: &S, lower_bound: u64, upper_bound: u64) {
+    fn prune(store: &S, lower_bound: u64, upper_bound: u64) -> V::BatchMetadata {
+        let metadata: V::BatchMetadata = StoredBatchMetadata::get(store, upper_bound);
+
         // Commit all deletions and metadata update atomically.
         store.commit(store.write_batch().tap_mut(|wb| {
-            // Read the metadata at the upper bound and persist pruning metadata upfront.
-            // This is committed atomically with the deletions below for crash-fault tolerance.
-            let metadata: V::BatchMetadata = StoredBatchMetadata::get(store, upper_bound);
+            // Persist pruning metadata upfront. This is committed atomically with the deletions
+            // below for crash-fault tolerance.
             StateMetadata::set_last_pruned(wb, upper_bound, &metadata);
 
             // Walk batches from oldest to newest (order doesn't matter for pruning).
@@ -176,5 +176,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
                 StoredBatchMetadata::delete(wb, index);
             }
         }));
+
+        metadata
     }
 }

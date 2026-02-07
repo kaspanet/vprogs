@@ -772,7 +772,7 @@ pub fn test_pruning_crash_recovery() {
             StorageConfig::default().with_store(storage),
         );
 
-        assert_eq!(runtime.last_pruned_index(), 2, "Pruning should resume from persisted index");
+        assert_eq!(runtime.last_pruned().0, 2, "Pruning should resume from persisted index");
 
         let store = runtime.storage_manager().store();
 
