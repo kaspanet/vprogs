@@ -35,5 +35,6 @@ impl VmInterface for VM {
     type TransactionEffects = ();
     type ResourceId = usize;
     type AccessMetadata = Access;
+    type BatchMetadata = ();
     type Error = ();
 }

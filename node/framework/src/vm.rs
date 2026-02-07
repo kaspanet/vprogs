@@ -1,4 +1,4 @@
-use vprogs_node_l1_bridge::{RpcOptionalHeader, RpcOptionalTransaction};
+use vprogs_node_l1_bridge::{BlockHash, RpcOptionalHeader, RpcOptionalTransaction};
 use vprogs_scheduling_scheduler::VmInterface;
 
 /// Extension of [`VmInterface`] with L1 block pre-processing.
@@ -17,4 +17,7 @@ pub trait NodeVm: VmInterface {
         header: &RpcOptionalHeader,
         accepted_transactions: &[RpcOptionalTransaction],
     ) -> Vec<Self::Transaction>;
+
+    /// Creates batch metadata from a block hash.
+    fn batch_metadata(&self, hash: BlockHash) -> Self::BatchMetadata;
 }

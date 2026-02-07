@@ -1,0 +1,9 @@
+[package]
+edition.workspace = true
+name              = "vprogs-state-batch-metadata"
+version.workspace = true
+
+[dependencies]
+vprogs-state-space.workspace     = true
+vprogs-storage-manager.workspace = true
+vprogs-storage-types.workspace   = true

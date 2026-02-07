@@ -4,6 +4,8 @@ name              = "vprogs-node-vm"
 version.workspace = true
 
 [dependencies]
+vprogs-core-types.workspace                              = true
+vprogs-node-l1-bridge.workspace                          = true
 vprogs-scheduling-scheduler.workspace                    = true
 vprogs-state-space.workspace                             = true
 vprogs-storage-types.workspace                           = true

@@ -14,6 +14,7 @@ vprogs-core-atomics.workspace                 = true
 vprogs-core-macros.workspace                  = true
 vprogs-core-types.workspace                   = true
 vprogs-scheduling-execution-workers.workspace = true
+vprogs-state-batch-metadata.workspace         = true
 vprogs-state-metadata.workspace               = true
 vprogs-state-ptr-latest.workspace             = true
 vprogs-state-ptr-rollback.workspace           = true

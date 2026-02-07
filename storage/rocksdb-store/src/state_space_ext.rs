@@ -14,6 +14,7 @@ impl<C: Config> StateSpaceExt<C> for StateSpace {
             StateSpace::StateVersion => "data",
             StateSpace::StatePtrLatest => "latest_ptr",
             StateSpace::StatePtrRollback => "rollback_ptr",
+            StateSpace::BatchMetadata => "batch_metadata",
             StateSpace::Metadata => "metas",
         }
     }
@@ -25,6 +26,7 @@ impl<C: Config> StateSpaceExt<C> for StateSpace {
             ColumnFamilyDescriptor::new(cf_name(&StateVersion), C::cf_data_opts()),
             ColumnFamilyDescriptor::new(cf_name(&StatePtrLatest), C::cf_latest_ptr_opts()),
             ColumnFamilyDescriptor::new(cf_name(&StatePtrRollback), C::cf_rollback_ptr_opts()),
+            ColumnFamilyDescriptor::new(cf_name(&BatchMetadata), C::cf_batch_metadata_opts()),
             ColumnFamilyDescriptor::new(cf_name(&Metadata), C::cf_metas_opts()),
         ]
     }

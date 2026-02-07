@@ -23,7 +23,6 @@
 //! ```
 
 mod config;
-mod metadata;
 mod node;
 mod prepared_batch;
 mod vm;

@@ -9,6 +9,7 @@ use std::{
 
 use tokio::{runtime::Builder, sync::Notify};
 use vprogs_core_types::ResourceId;
+use vprogs_state_batch_metadata::BatchMetadata;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_ptr_rollback::StatePtrRollback;
 use vprogs_state_space::StateSpace;
@@ -143,9 +144,15 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
     /// Executes pruning directly on the store for the given batch range.
     ///
     /// This runs on the dedicated pruning thread and does not interfere with the main write path.
-    /// The last pruned index is persisted atomically with the deletions for crash-fault tolerance.
+    /// The last pruned index and batch id are persisted atomically with the deletions for
+    /// crash-fault tolerance.
     fn prune(store: &S, lower_bound: u64, upper_bound: u64) {
-        let mut write_batch = store.write_batch();
+        let mut wb = store.write_batch();
+
+        // Read the batch id at the upper bound and persist pruning metadata upfront.
+        // This is committed atomically with the deletions below for crash-fault tolerance.
+        StateMetadata::set_last_pruned_index(&mut wb, upper_bound);
+        StateMetadata::set_last_pruned_batch_id(&mut wb, &BatchMetadata::id(store, upper_bound));
 
         // Walk batches from oldest to newest (order doesn't matter for pruning).
         for index in lower_bound..=upper_bound {
@@ -155,19 +162,18 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
 
                 // Delete the old version data if it exists (version 0 means resource didn't exist).
                 if old_version != 0 {
-                    StateVersion::delete(&mut write_batch, old_version, &resource_id);
+                    StateVersion::delete(&mut wb, old_version, &resource_id);
                 }
 
                 // Delete the rollback pointer itself.
-                StatePtrRollback::delete(&mut write_batch, index, &resource_id);
+                StatePtrRollback::delete(&mut wb, index, &resource_id);
             }
+
+            // Delete batch metadata entries for this batch.
+            BatchMetadata::delete(store, &mut wb, index);
         }
 
-        // Persist the last pruned index atomically with the deletions.
-        // This ensures crash-fault tolerance: on restart, we resume from this point.
-        StateMetadata::set_last_pruned_index(&mut write_batch, upper_bound);
-
         // Commit all deletions and metadata update atomically.
-        store.commit(write_batch);
+        store.commit(wb);
     }
 }

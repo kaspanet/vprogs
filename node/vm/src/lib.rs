@@ -1,3 +1,5 @@
+use vprogs_core_types::BatchMetadata;
+use vprogs_node_l1_bridge::BlockHash;
 use vprogs_scheduling_scheduler::{AccessHandle, RuntimeBatch, VmInterface};
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
@@ -7,6 +9,15 @@ use vprogs_transaction_runtime_object_access::ObjectAccess;
 use vprogs_transaction_runtime_object_id::ObjectId;
 use vprogs_transaction_runtime_transaction::Transaction;
 use vprogs_transaction_runtime_transaction_effects::TransactionEffects;
+
+#[derive(Default)]
+pub struct BlockBatchMetadata(pub BlockHash);
+
+impl BatchMetadata for BlockBatchMetadata {
+    fn batch_id(&self) -> [u8; 32] {
+        self.0.as_bytes()
+    }
+}
 
 #[derive(Clone)]
 pub struct VM;
@@ -26,5 +37,6 @@ impl VmInterface for VM {
     type TransactionEffects = TransactionEffects;
     type ResourceId = ObjectId;
     type AccessMetadata = ObjectAccess;
+    type BatchMetadata = BlockBatchMetadata;
     type Error = VmError;
 }

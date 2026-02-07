@@ -1,4 +1,4 @@
-use vprogs_core_types::{AccessMetadata, ResourceId, Transaction};
+use vprogs_core_types::{AccessMetadata, BatchMetadata, ResourceId, Transaction};
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
@@ -21,5 +21,6 @@ pub trait VmInterface: Clone + Sized + Send + Sync + 'static {
     type TransactionEffects: Send + Sync + 'static;
     type ResourceId: ResourceId;
     type AccessMetadata: AccessMetadata<Self::ResourceId>;
+    type BatchMetadata: BatchMetadata;
     type Error;
 }

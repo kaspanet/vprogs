@@ -6,12 +6,12 @@ use std::{
 
 use tokio::runtime::Builder;
 use vprogs_core_atomics::AtomicAsyncLatch;
-use vprogs_node_l1_bridge::{BlockHash, ChainBlock, L1Bridge, L1Event};
+use vprogs_node_l1_bridge::{BlockHash, L1Bridge, L1Event};
 use vprogs_scheduling_scheduler::Scheduler;
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
-use crate::{NodeVm, PreparedBatch, metadata};
+use crate::{NodeVm, PreparedBatch};
 
 /// A pending block in the event loop queue.
 struct PendingBlock<V: NodeVm> {
@@ -32,7 +32,7 @@ pub(crate) struct NodeWorker<S: Store<StateSpace = StateSpace>, V: NodeVm> {
 
 impl<S: Store<StateSpace = StateSpace>, V: NodeVm> NodeWorker<S, V> {
     /// Spawns the event loop thread.
-    pub(crate) fn new(scheduler: Scheduler<S, V>, bridge: L1Bridge, store: Arc<S>, vm: V) -> Self {
+    pub(crate) fn new(scheduler: Scheduler<S, V>, bridge: L1Bridge, vm: V) -> Self {
         let shutdown = Arc::new(AtomicAsyncLatch::new());
 
         let handle = thread::spawn({
@@ -42,7 +42,7 @@ impl<S: Store<StateSpace = StateSpace>, V: NodeVm> NodeWorker<S, V> {
                     .enable_all()
                     .build()
                     .expect("failed to build tokio runtime")
-                    .block_on(event_loop(scheduler, bridge, store, vm, shutdown));
+                    .block_on(event_loop(scheduler, bridge, vm, shutdown));
             }
         });
 
@@ -62,7 +62,6 @@ impl<S: Store<StateSpace = StateSpace>, V: NodeVm> NodeWorker<S, V> {
 async fn event_loop<S: Store<StateSpace = StateSpace>, V: NodeVm>(
     mut scheduler: Scheduler<S, V>,
     bridge: L1Bridge,
-    store: Arc<S>,
     vm: V,
     shutdown: Arc<AtomicAsyncLatch>,
 ) {
@@ -76,10 +75,7 @@ async fn event_loop<S: Store<StateSpace = StateSpace>, V: NodeVm>(
             }
             let pending = queue.pop_front().unwrap();
             let txs = pending.prepared.take_txs();
-            scheduler.schedule(txs);
-
-            let tip = ChainBlock::new(pending.hash, pending.prepared.index(), 0);
-            metadata::persist_tip(&store, &tip);
+            scheduler.schedule(vm.batch_metadata(pending.hash), txs);
         }
 
         // Phase 2: select! between shutdown, front batch ready, or bridge event.
@@ -98,7 +94,7 @@ async fn event_loop<S: Store<StateSpace = StateSpace>, V: NodeVm>(
             } => continue,
 
             event = bridge.wait_and_pop() => {
-                if !handle_event(event, &mut scheduler, &store, &vm, &mut queue) {
+                if !handle_event(event, &mut scheduler, &vm, &mut queue) {
                     break;
                 }
             }
@@ -114,7 +110,6 @@ async fn event_loop<S: Store<StateSpace = StateSpace>, V: NodeVm>(
 fn handle_event<S: Store<StateSpace = StateSpace>, V: NodeVm>(
     event: L1Event,
     scheduler: &mut Scheduler<S, V>,
-    store: &Arc<S>,
     vm: &V,
     queue: &mut VecDeque<PendingBlock<V>>,
 ) -> bool {
@@ -160,7 +155,6 @@ fn handle_event<S: Store<StateSpace = StateSpace>, V: NodeVm>(
 
         L1Event::Finalized(block) => {
             scheduler.set_pruning_threshold(block.index());
-            metadata::persist_root(store, &block);
         }
 
         L1Event::Fatal { reason } => {

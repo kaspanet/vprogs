@@ -77,6 +77,7 @@ resolver = "3"
   vprogs-scheduling-execution-workers             = { path = "scheduling/execution-workers" }
   vprogs-scheduling-scheduler                     = { path = "scheduling/scheduler" }
   vprogs-scheduling-test-suite                    = { path = "scheduling/test-suite" }
+  vprogs-state-batch-metadata                     = { path = "state/batch-metadata" }
   vprogs-state-metadata                           = { path = "state/metadata" }
   vprogs-state-ptr-latest                         = { path = "state/ptr-latest" }
   vprogs-state-ptr-rollback                       = { path = "state/ptr-rollback" }

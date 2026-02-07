@@ -42,12 +42,14 @@ pub struct Scheduler<S: Store<StateSpace = StateSpace>, V: VmInterface> {
 impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
     /// Creates a new scheduler with the given execution and storage configurations.
     ///
-    /// The batch starting index is determined by reading `last_pruned_index` from the store. On a
-    /// fresh database this defaults to 0; on subsequent launches it resumes from the pruning point.
+    /// The batch starting index is determined by reading `tip_batch_index` from the store, falling
+    /// back to `last_pruned_index`, then 0. This ensures the scheduler resumes from the latest
+    /// committed batch on restart.
     pub fn new(execution_config: ExecutionConfig<V>, storage_config: StorageConfig<S>) -> Self {
         let storage_manager = StorageManager::new(storage_config);
-        let starting_index =
-            StateMetadata::get_last_pruned_index(storage_manager.store().as_ref()).unwrap_or(0);
+        let starting_index = StateMetadata::get_tip_batch_index(storage_manager.store().as_ref())
+            .or_else(|| StateMetadata::get_last_pruned_index(storage_manager.store().as_ref()))
+            .unwrap_or(0);
         let (worker_count, vm) = execution_config.unpack();
         Self {
             context: RuntimeContext::new(starting_index),
@@ -67,8 +69,12 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
     /// pushes it to the worker loop for lifecycle management, and submits it to execution workers
     /// for parallel processing. After building resource accesses, processes pending eviction
     /// requests to clean up resources from committed batches.
-    pub fn schedule(&mut self, txs: Vec<V::Transaction>) -> RuntimeBatch<S, V> {
-        RuntimeBatch::new(self.vm.clone(), self, txs)
+    pub fn schedule(
+        &mut self,
+        metadata: V::BatchMetadata,
+        txs: Vec<V::Transaction>,
+    ) -> RuntimeBatch<S, V> {
+        RuntimeBatch::new(self.vm.clone(), self, txs, metadata)
             // Connect transactions to resource dependency chains.
             .tap(RuntimeBatch::connect)
             .tap(|batch| {

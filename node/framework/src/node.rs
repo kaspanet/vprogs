@@ -1,9 +1,10 @@
-use vprogs_node_l1_bridge::L1Bridge;
+use vprogs_node_l1_bridge::{BlockHash, ChainBlock, L1Bridge};
 use vprogs_scheduling_scheduler::Scheduler;
+use vprogs_state_metadata::StateMetadata;
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
-use crate::{NodeConfig, NodeVm, metadata, worker::NodeWorker};
+use crate::{NodeConfig, NodeVm, worker::NodeWorker};
 
 /// A running node that processes L1 chain blocks through the L2 scheduler.
 ///
@@ -13,7 +14,7 @@ use crate::{NodeConfig, NodeVm, metadata, worker::NodeWorker};
 /// # Startup Flow
 ///
 /// 1. Unpack config into sub-configs
-/// 2. Create [`Scheduler`] (reads `last_pruned_index` from store as starting batch index)
+/// 2. Create [`Scheduler`] (reads `tip_batch_index` from store as starting batch index)
 /// 3. Load resume state from store (root + tip)
 /// 4. Create [`L1Bridge`] with resume state
 /// 5. Spawn [`NodeWorker`] event loop
@@ -26,7 +27,7 @@ impl<S: Store<StateSpace = StateSpace>, V: NodeVm> Node<S, V> {
     pub fn new(config: NodeConfig<S, V>) -> Self {
         let (execution_config, storage_config, mut l1_bridge_config) = config.unpack();
 
-        // Create the scheduler — internally reads last_pruned_index as starting batch index.
+        // Create the scheduler — internally reads tip_batch_index as starting batch index.
         let scheduler = Scheduler::new(execution_config, storage_config);
 
         // Clone the VM for the worker before the scheduler takes ownership.
@@ -34,14 +35,21 @@ impl<S: Store<StateSpace = StateSpace>, V: NodeVm> Node<S, V> {
 
         // Load resume state from the store.
         let store = scheduler.storage_manager().store().clone();
-        let (root, tip) = metadata::load_resume_state(&store);
+
+        let tip = StateMetadata::get_tip_batch_index(store.as_ref())
+            .zip(StateMetadata::get_tip_batch_id(store.as_ref()))
+            .map(|(index, id)| ChainBlock::new(BlockHash::from_slice(&id), index, 0));
+
+        let root = StateMetadata::get_last_pruned_index(store.as_ref())
+            .zip(StateMetadata::get_last_pruned_batch_id(store.as_ref()))
+            .map(|(index, id)| ChainBlock::new(BlockHash::from_slice(&id), index, 0));
 
         // Configure the bridge with resume state.
         l1_bridge_config = l1_bridge_config.with_root(root).with_tip(tip);
         let bridge = L1Bridge::new(l1_bridge_config);
 
         // Spawn the event loop.
-        let worker = NodeWorker::new(scheduler, bridge, store, vm);
+        let worker = NodeWorker::new(scheduler, bridge, vm);
 
         Self { worker: Some(worker) }
     }
