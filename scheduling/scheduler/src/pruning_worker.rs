@@ -7,6 +7,7 @@ use std::{
     thread::{self, JoinHandle},
 };
 
+use tap::Tap;
 use tokio::{runtime::Builder, sync::Notify};
 use vprogs_core_types::ResourceId;
 use vprogs_state_batch_metadata::BatchMetadata;
@@ -147,36 +148,31 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
     /// The last pruned index and batch id are persisted atomically with the deletions for
     /// crash-fault tolerance.
     fn prune(store: &S, lower_bound: u64, upper_bound: u64) {
-        let mut wb = store.write_batch();
+        // Commit all deletions and metadata update atomically.
+        store.commit(store.write_batch().tap_mut(|wb| {
+            // Read the batch id at the upper bound and persist pruning metadata upfront.
+            // This is committed atomically with the deletions below for crash-fault tolerance.
+            StateMetadata::set_last_pruned(wb, upper_bound, &BatchMetadata::id(store, upper_bound));
 
-        // Read the batch id at the upper bound and persist pruning metadata upfront.
-        // This is committed atomically with the deletions below for crash-fault tolerance.
-        StateMetadata::set_last_pruned(
-            &mut wb,
-            upper_bound,
-            &BatchMetadata::id(store, upper_bound),
-        );
+            // Walk batches from oldest to newest (order doesn't matter for pruning).
+            for index in lower_bound..=upper_bound {
+                // Delete all rollback pointers and their referenced old versions for this batch.
+                for (resource_id_bytes, old_version) in StatePtrRollback::iter_batch(store, index) {
+                    let resource_id = V::ResourceId::from_bytes(&resource_id_bytes);
 
-        // Walk batches from oldest to newest (order doesn't matter for pruning).
-        for index in lower_bound..=upper_bound {
-            // Delete all rollback pointers and their referenced old versions for this batch.
-            for (resource_id_bytes, old_version) in StatePtrRollback::iter_batch(store, index) {
-                let resource_id = V::ResourceId::from_bytes(&resource_id_bytes);
+                    // Delete the old version data if it exists (version 0 means resource didn't
+                    // exist).
+                    if old_version != 0 {
+                        StateVersion::delete(wb, old_version, &resource_id);
+                    }
 
-                // Delete the old version data if it exists (version 0 means resource didn't exist).
-                if old_version != 0 {
-                    StateVersion::delete(&mut wb, old_version, &resource_id);
+                    // Delete the rollback pointer itself.
+                    StatePtrRollback::delete(wb, index, &resource_id);
                 }
 
-                // Delete the rollback pointer itself.
-                StatePtrRollback::delete(&mut wb, index, &resource_id);
+                // Delete batch metadata entries for this batch.
+                BatchMetadata::delete(store, wb, index);
             }
-
-            // Delete batch metadata entries for this batch.
-            BatchMetadata::delete(store, &mut wb, index);
-        }
-
-        // Commit all deletions and metadata update atomically.
-        store.commit(wb);
+        }));
     }
 }
