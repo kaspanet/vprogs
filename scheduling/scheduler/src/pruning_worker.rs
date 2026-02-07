@@ -54,7 +54,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
     /// If no pruning has occurred yet, it starts from 0.
     pub fn new(store: Arc<S>) -> Self {
         // Load the last pruned index from persistent storage.
-        let persisted_index = StateMetadata::get_last_pruned_index(store.as_ref()).unwrap_or(0);
+        let persisted_index = StateMetadata::last_pruned(store.as_ref()).0;
 
         let pruning_threshold = Arc::new(AtomicU64::new(persisted_index));
         let last_pruned_index = Arc::new(AtomicU64::new(persisted_index));
@@ -151,8 +151,11 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
 
         // Read the batch id at the upper bound and persist pruning metadata upfront.
         // This is committed atomically with the deletions below for crash-fault tolerance.
-        StateMetadata::set_last_pruned_index(&mut wb, upper_bound);
-        StateMetadata::set_last_pruned_batch_id(&mut wb, &BatchMetadata::id(store, upper_bound));
+        StateMetadata::set_last_pruned(
+            &mut wb,
+            upper_bound,
+            &BatchMetadata::id(store, upper_bound),
+        );
 
         // Walk batches from oldest to newest (order doesn't matter for pruning).
         for index in lower_bound..=upper_bound {

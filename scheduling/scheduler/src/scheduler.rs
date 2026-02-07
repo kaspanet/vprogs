@@ -42,14 +42,11 @@ pub struct Scheduler<S: Store<StateSpace = StateSpace>, V: VmInterface> {
 impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
     /// Creates a new scheduler with the given execution and storage configurations.
     ///
-    /// The batch starting index is determined by reading `tip_batch_index` from the store, falling
-    /// back to `last_pruned_index`, then 0. This ensures the scheduler resumes from the latest
-    /// committed batch on restart.
+    /// The batch starting index is read from `last_processed` in the store. This ensures the
+    /// scheduler resumes from the latest committed batch on restart.
     pub fn new(execution_config: ExecutionConfig<V>, storage_config: StorageConfig<S>) -> Self {
         let storage_manager = StorageManager::new(storage_config);
-        let starting_index = StateMetadata::get_tip_batch_index(storage_manager.store().as_ref())
-            .or_else(|| StateMetadata::get_last_pruned_index(storage_manager.store().as_ref()))
-            .unwrap_or(0);
+        let starting_index = StateMetadata::last_processed(storage_manager.store().as_ref()).0;
         let (worker_count, vm) = execution_config.unpack();
         Self {
             context: RuntimeContext::new(starting_index),

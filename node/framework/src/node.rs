@@ -14,8 +14,8 @@ use crate::{NodeConfig, NodeVm, worker::NodeWorker};
 /// # Startup Flow
 ///
 /// 1. Unpack config into sub-configs
-/// 2. Create [`Scheduler`] (reads `tip_batch_index` from store as starting batch index)
-/// 3. Load resume state from store (root + tip)
+/// 2. Create [`Scheduler`] (reads `last_processed` from store as starting batch index)
+/// 3. Load resume state from store (last_processed + last_pruned)
 /// 4. Create [`L1Bridge`] with resume state
 /// 5. Spawn [`NodeWorker`] event loop
 pub struct Node<S: Store<StateSpace = StateSpace>, V: NodeVm> {
@@ -27,7 +27,7 @@ impl<S: Store<StateSpace = StateSpace>, V: NodeVm> Node<S, V> {
     pub fn new(config: NodeConfig<S, V>) -> Self {
         let (execution_config, storage_config, mut l1_bridge_config) = config.unpack();
 
-        // Create the scheduler — internally reads tip_batch_index as starting batch index.
+        // Create the scheduler — internally reads last_processed as starting batch index.
         let scheduler = Scheduler::new(execution_config, storage_config);
 
         // Clone the VM for the worker before the scheduler takes ownership.
@@ -36,16 +36,14 @@ impl<S: Store<StateSpace = StateSpace>, V: NodeVm> Node<S, V> {
         // Load resume state from the store.
         let store = scheduler.storage_manager().store().clone();
 
-        let tip = StateMetadata::get_tip_batch_index(store.as_ref())
-            .zip(StateMetadata::get_tip_batch_id(store.as_ref()))
-            .map(|(index, id)| ChainBlock::new(BlockHash::from_slice(&id), index, 0));
+        let (tip_index, tip_id) = StateMetadata::last_processed(store.as_ref());
+        let tip = ChainBlock::new(BlockHash::from_slice(&tip_id), tip_index, 0);
 
-        let root = StateMetadata::get_last_pruned_index(store.as_ref())
-            .zip(StateMetadata::get_last_pruned_batch_id(store.as_ref()))
-            .map(|(index, id)| ChainBlock::new(BlockHash::from_slice(&id), index, 0));
+        let (root_index, root_id) = StateMetadata::last_pruned(store.as_ref());
+        let root = ChainBlock::new(BlockHash::from_slice(&root_id), root_index, 0);
 
         // Configure the bridge with resume state.
-        l1_bridge_config = l1_bridge_config.with_root(root).with_tip(tip);
+        l1_bridge_config = l1_bridge_config.with_root(Some(root)).with_tip(Some(tip));
         let bridge = L1Bridge::new(l1_bridge_config);
 
         // Spawn the event loop.

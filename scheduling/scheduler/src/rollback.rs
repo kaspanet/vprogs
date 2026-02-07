@@ -1,5 +1,6 @@
 use std::{marker::PhantomData, sync::Arc};
 
+use tap::Tap;
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_types::ResourceId;
 use vprogs_state_batch_metadata::BatchMetadata;
@@ -66,32 +67,24 @@ impl<V: VmInterface> Rollback<V> {
 
     /// Builds a write batch containing all rollback operations.
     fn build_rollback_batch<S: Store<StateSpace = StateSpace>>(&self, store: &S) -> S::WriteBatch {
-        let mut write_batch = store.write_batch();
+        store.write_batch().tap_mut(|wb| {
+            // Update tip atomically with the rollback.
+            // This is written upfront but committed atomically with the reversions below.
+            let index = self.lower_bound - 1;
+            StateMetadata::set_last_processed(wb, index, &BatchMetadata::id(store, index));
 
-        // Update tip atomically with the rollback.
-        // This is written upfront but committed atomically with the reversions below.
-        let target_index = self.lower_bound - 1;
-        if target_index == 0 {
-            StateMetadata::delete_tip(&mut write_batch);
-        } else {
-            let batch_id = BatchMetadata::id(store, target_index);
-            StateMetadata::set_tip_batch_index(&mut write_batch, target_index);
-            StateMetadata::set_tip_batch_id(&mut write_batch, &batch_id);
-        }
+            // Walk batches from newest to oldest.
+            for index in (self.lower_bound..=self.upper_bound).rev() {
+                // Apply all rollback pointers associated with this batch.
+                for (resource_id_bytes, old_version) in StatePtrRollback::iter_batch(store, index) {
+                    let resource_id = V::ResourceId::from_bytes(&resource_id_bytes);
+                    self.apply_rollback_ptr(store, wb, index, resource_id, old_version);
+                }
 
-        // Walk batches from newest to oldest.
-        for index in (self.lower_bound..=self.upper_bound).rev() {
-            // Apply all rollback pointers associated with this batch.
-            for (resource_id_bytes, old_version) in StatePtrRollback::iter_batch(store, index) {
-                let resource_id = V::ResourceId::from_bytes(&resource_id_bytes);
-                self.apply_rollback_ptr(store, &mut write_batch, index, resource_id, old_version);
+                // Delete batch metadata entries for this batch.
+                BatchMetadata::delete(store, wb, index);
             }
-
-            // Delete batch metadata entries for this batch.
-            BatchMetadata::delete(store, &mut write_batch, index);
-        }
-
-        write_batch
+        })
     }
 
     /// Applies a single rollback pointer to the write batch.

@@ -14,11 +14,7 @@ mod fields {
 pub struct BatchMetadata;
 
 impl BatchMetadata {
-    /// Returns the batch id (hash) for a given batch index.
-    ///
-    /// # Panics
-    ///
-    /// Panics if no batch metadata exists for the given index.
+    /// Returns the batch id (hash) for a given batch index, or a zero hash if not found.
     pub fn id<S>(store: &S, batch_index: u64) -> [u8; 32]
     where
         S: Store<StateSpace = StateSpace>,
@@ -27,7 +23,7 @@ impl BatchMetadata {
         store
             .get(StateSpace::BatchMetadata, &key)
             .map(|bytes| bytes[..32].try_into().unwrap())
-            .expect("batch metadata must exist for committed batch")
+            .unwrap_or_default()
     }
 
     /// Sets the batch id (hash) for a given batch index.

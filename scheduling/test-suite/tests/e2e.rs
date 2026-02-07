@@ -754,10 +754,10 @@ pub fn test_pruning_crash_recovery() {
         runtime.set_pruning_threshold(3);
         runtime.wait_pruned(2, Duration::from_secs(10));
 
-        // Verify last_pruned_index is persisted
+        // Verify last_pruned is persisted
         assert_eq!(
-            StateMetadata::get_last_pruned_index(runtime.storage_manager().store().as_ref()),
-            Some(2),
+            StateMetadata::last_pruned(runtime.storage_manager().store().as_ref()).0,
+            2,
             "Last pruned index should be persisted"
         );
 

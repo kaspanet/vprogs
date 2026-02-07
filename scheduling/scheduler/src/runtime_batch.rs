@@ -207,8 +207,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
             }
             let batch_id = self.batch_metadata.batch_id();
             StoredBatchMetadata::set_id(store, self.index, &batch_id);
-            StateMetadata::set_tip_batch_index(store, self.index);
-            StateMetadata::set_tip_batch_id(store, &batch_id);
+            StateMetadata::set_last_processed(store, self.index, &batch_id);
         }
     }
 
