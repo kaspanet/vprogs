@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use vprogs_node_l1_bridge::{
-    ChainBlock, ConnectStrategy, L1Bridge, L1BridgeConfig, L1Event, NetworkType, RpcOptionalHeader,
-    RpcOptionalTransaction,
+    ChainBlock, ChainBlockMetadata, ConnectStrategy, L1Bridge, L1BridgeConfig, L1Event,
+    NetworkType, RpcOptionalHeader, RpcOptionalTransaction,
 };
 use vprogs_node_test_suite::{L1BridgeExt, L1Node};
 
@@ -63,7 +63,7 @@ async fn test_bridge_block_contains_transactions() {
 
     assert_eq!(events.len(), 1);
     let (index, header, accepted_transactions) = match &events[0] {
-        L1Event::ChainBlockAdded { index, header, accepted_transactions } => {
+        L1Event::ChainBlockAdded { index, header, accepted_transactions, .. } => {
             (*index, header, accepted_transactions)
         }
         other => panic!("expected ChainBlockAdded, got {:?}", other),
@@ -93,7 +93,7 @@ async fn test_bridge_syncs_from_specific_block() {
         .with_url(node.wrpc_borsh_url())
         .with_network_type(NetworkType::Simnet)
         .with_connect_strategy(ConnectStrategy::Fallback)
-        .with_tip(Some(ChainBlock::new(start_from, 3, 0)));
+        .with_tip(Some(ChainBlock::new(3, ChainBlockMetadata { hash: start_from, blue_score: 0 })));
 
     let bridge = L1Bridge::new(config);
 
@@ -152,7 +152,10 @@ async fn test_bridge_catches_up_after_reconnection() {
 
     // Save the last processed position as a checkpoint.
     let (last_index, last_header, _) = &blocks[2];
-    let checkpoint = ChainBlock::new(last_header.hash.unwrap(), *last_index, 0);
+    let checkpoint = ChainBlock::new(
+        *last_index,
+        ChainBlockMetadata { hash: last_header.hash.unwrap(), blue_score: 0 },
+    );
     assert_eq!(*last_index, 3);
 
     // Phase 2: Shutdown the bridge, mine blocks while it's down.
@@ -404,7 +407,7 @@ fn unwrap_chain_blocks(
     events
         .into_iter()
         .map(|e| match e {
-            L1Event::ChainBlockAdded { index, header, accepted_transactions } => {
+            L1Event::ChainBlockAdded { index, header, accepted_transactions, .. } => {
                 (index, header, accepted_transactions)
             }
             other => panic!("expected ChainBlockAdded, got {:?}", other),

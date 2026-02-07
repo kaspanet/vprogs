@@ -1,4 +1,4 @@
-use vprogs_node_l1_bridge::L1Bridge;
+use vprogs_node_l1_bridge::{ChainBlock, ChainBlockMetadata, L1Bridge};
 use vprogs_scheduling_scheduler::Scheduler;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_space::StateSpace;
@@ -36,13 +36,13 @@ impl<S: Store<StateSpace = StateSpace>, V: NodeVm> Node<S, V> {
         // Load resume state from the store.
         let store = scheduler.storage_manager().store().clone();
 
-        let (tip_index, tip_metadata): (u64, V::BatchMetadata) =
+        let (tip_index, tip_metadata): (u64, ChainBlockMetadata) =
             StateMetadata::last_processed(store.as_ref());
-        let tip = vm.chain_block(tip_index, &tip_metadata);
+        let tip = ChainBlock::new(tip_index, tip_metadata);
 
-        let (root_index, root_metadata): (u64, V::BatchMetadata) =
+        let (root_index, root_metadata): (u64, ChainBlockMetadata) =
             StateMetadata::last_pruned(store.as_ref());
-        let root = vm.chain_block(root_index, &root_metadata);
+        let root = ChainBlock::new(root_index, root_metadata);
 
         // Configure the bridge with resume state.
         l1_bridge_config = l1_bridge_config.with_root(Some(root)).with_tip(Some(tip));

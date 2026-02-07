@@ -5455,6 +5455,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "vprogs-core-macros",
+ "vprogs-core-types",
  "vprogs-node-test-suite",
  "workflow-core",
 ]
@@ -5480,7 +5481,6 @@ dependencies = [
 name = "vprogs-node-vm"
 version = "0.1.0"
 dependencies = [
- "vprogs-core-types",
  "vprogs-node-framework",
  "vprogs-node-l1-bridge",
  "vprogs-scheduling-scheduler",

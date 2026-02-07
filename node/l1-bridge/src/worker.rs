@@ -13,7 +13,7 @@ use tokio::sync::Notify;
 use workflow_core::channel::{Channel, MultiplexerChannel};
 
 use crate::{
-    ChainBlock, L1BridgeConfig, L1Event,
+    ChainBlock, ChainBlockMetadata, L1BridgeConfig, L1Event,
     error::{Error, Result},
     reorg_filter::ReorgFilter,
     virtual_chain::VirtualChain,
@@ -58,7 +58,9 @@ impl BridgeWorker {
         // If both root and tip are provided and differ, we need to backfill the chain between them
         // on first connect (lightweight, non-verbose sync).
         let backfill_target = match (&config.root, &config.tip) {
-            (Some(root), Some(tip)) if root.hash() != tip.hash() => Some(tip.clone()),
+            (Some(root), Some(tip)) if root.metadata().hash != tip.metadata().hash => {
+                Some(tip.clone())
+            }
             _ => None,
         };
 
@@ -258,17 +260,19 @@ impl BridgeWorker {
         );
 
         // Fetch with Low verbosity — sufficient for hash and blue_score needed for chain blocks.
-        let response =
-            self.client.get_virtual_chain_from_block_v2(start.hash(), Some(Low), None).await?;
+        let response = self
+            .client
+            .get_virtual_chain_from_block_v2(start.metadata().hash, Some(Low), None)
+            .await?;
 
         // Walk the chain block accepted transactions to get both hash and blue_score.
-        let target_hash = target.hash();
+        let target_hash = target.metadata().hash;
         let mut found = false;
 
         for chain_block in response.chain_block_accepted_transactions.iter() {
             let hash = chain_block.chain_block_header.hash.unwrap_or_default();
             let blue_score = chain_block.chain_block_header.blue_score.unwrap_or(0);
-            self.virtual_chain.advance_tip(hash, blue_score);
+            self.virtual_chain.advance_tip(ChainBlockMetadata { hash, blue_score });
             if hash == target_hash {
                 found = true;
                 break;
@@ -292,7 +296,7 @@ impl BridgeWorker {
         let start_hash = if tip.index() == 0 {
             self.client.get_block_dag_info().await?.pruning_point_hash
         } else {
-            tip.hash()
+            tip.metadata().hash
         };
 
         // Fetch with High verbosity to get full headers and accepted transactions.
@@ -319,9 +323,11 @@ impl BridgeWorker {
                 .chain_block_header
                 .blue_score
                 .expect("blue_score missing despite High verbosity");
-            let index = self.virtual_chain.advance_tip(hash, blue_score);
+            let metadata = ChainBlockMetadata { hash, blue_score };
+            let index = self.virtual_chain.advance_tip(metadata);
             self.push_event(L1Event::ChainBlockAdded {
                 index,
+                metadata,
                 header: Box::new(chain_block.chain_block_header.clone()),
                 accepted_transactions: chain_block.accepted_transactions.clone(),
             });

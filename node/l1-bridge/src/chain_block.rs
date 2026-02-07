@@ -5,21 +5,18 @@ use std::{
 };
 
 use arc_swap::ArcSwapOption;
-use kaspa_hashes::ZERO_HASH;
 use tap::{Tap, TapOptional};
 use vprogs_core_macros::smart_pointer;
 
-use crate::BlockHash;
+use crate::ChainBlockMetadata;
 
 /// A block in the virtual chain, forming a doubly-linked list.
 #[smart_pointer]
 pub struct ChainBlock {
-    /// L1 block hash.
-    hash: BlockHash,
     /// Sequential index relative to the bridge's starting point.
     index: u64,
-    /// Blue score from the L1 block header.
-    blue_score: u64,
+    /// Persistable metadata (hash, blue score).
+    metadata: ChainBlockMetadata,
     /// Link to the preceding block, or empty if this is the root.
     prev: ArcSwapOption<ChainBlockData>,
     /// Link to the following block, or empty if this is the tip.
@@ -28,19 +25,13 @@ pub struct ChainBlock {
 
 impl ChainBlock {
     /// Creates a standalone block with no links.
-    pub fn new(hash: BlockHash, index: u64, blue_score: u64) -> Self {
+    pub fn new(index: u64, metadata: ChainBlockMetadata) -> Self {
         Self(Arc::new(ChainBlockData {
-            hash,
             index,
-            blue_score,
+            metadata,
             prev: ArcSwapOption::empty(),
             next: ArcSwapOption::empty(),
         }))
-    }
-
-    /// Returns the block hash.
-    pub fn hash(&self) -> BlockHash {
-        self.hash
     }
 
     /// Returns the sequential index.
@@ -48,18 +39,17 @@ impl ChainBlock {
         self.index
     }
 
-    /// Returns the blue score from the L1 block header.
-    pub fn blue_score(&self) -> u64 {
-        self.blue_score
+    /// Returns the persistable metadata (hash, blue score).
+    pub fn metadata(&self) -> ChainBlockMetadata {
+        self.metadata
     }
 
     /// Appends a new block after this one and links them in both directions.
-    pub(crate) fn advance_tip(&self, hash: BlockHash, blue_score: u64) -> Self {
+    pub(crate) fn advance_tip(&self, metadata: ChainBlockMetadata) -> Self {
         // Create the new block with a back-link to self.
         Self(Arc::new(ChainBlockData {
-            hash,
             index: self.index + 1,
-            blue_score,
+            metadata,
             prev: ArcSwapOption::new(Some(self.0.clone())),
             next: ArcSwapOption::empty(),
         }))
@@ -95,16 +85,15 @@ impl ChainBlock {
 impl Default for ChainBlock {
     /// Returns a sentinel root (zero hash, index 0).
     fn default() -> Self {
-        Self::new(ZERO_HASH, 0, 0)
+        Self::new(0, ChainBlockMetadata::default())
     }
 }
 
 impl Debug for ChainBlock {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("ChainBlock")
-            .field("hash", &self.hash)
             .field("index", &self.index)
-            .field("blue_score", &self.blue_score)
+            .field("metadata", &self.metadata)
             .finish()
     }
 }

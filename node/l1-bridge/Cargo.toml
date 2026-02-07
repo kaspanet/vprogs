@@ -17,6 +17,7 @@ tap.workspace                  = true
 thiserror.workspace            = true
 tokio.workspace                = true
 vprogs-core-macros.workspace   = true
+vprogs-core-types.workspace    = true
 workflow-core.workspace        = true
 
 [dev-dependencies]

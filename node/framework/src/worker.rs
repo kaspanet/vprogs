@@ -116,7 +116,7 @@ fn handle_event<S: Store<StateSpace = StateSpace>, V: NodeVm>(
             log::warn!("L1 bridge disconnected");
         }
 
-        L1Event::ChainBlockAdded { index, header, accepted_transactions } => {
+        L1Event::ChainBlockAdded { index, metadata, header, accepted_transactions } => {
             let prepared = PreparedBatch::new(index);
 
             // Submit pre-processing to an execution worker.
@@ -124,8 +124,7 @@ fn handle_event<S: Store<StateSpace = StateSpace>, V: NodeVm>(
                 let vm = vm.clone();
                 let prepared = prepared.clone();
                 move || {
-                    let (txs, metadata) =
-                        vm.pre_process_block(index, &header, &accepted_transactions);
+                    let txs = vm.pre_process_block(index, &header, &accepted_transactions);
                     prepared.set(txs, metadata);
                 }
             });
