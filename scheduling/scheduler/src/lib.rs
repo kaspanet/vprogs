@@ -17,7 +17,7 @@ mod vm_interface;
 pub use access_handle::AccessHandle;
 pub(crate) use batch_lifecycle_worker::BatchLifecycleWorker;
 pub use config::ExecutionConfig;
-pub(crate) use pruning_worker::PruningWorker;
+pub use pruning_worker::PruningWorker;
 pub(crate) use resource::Resource;
 pub(crate) use resource_access::ResourceAccess;
 pub(crate) use rollback::Rollback;

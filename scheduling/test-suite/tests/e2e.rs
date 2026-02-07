@@ -641,7 +641,7 @@ pub fn test_basic_pruning() {
         );
 
         // Set pruning threshold to batch 3 (prune batches 1 and 2)
-        runtime.set_pruning_threshold(batch3.index());
+        runtime.pruning().set_threshold(batch3.index());
         runtime.wait_pruned(batch2.index(), Duration::from_secs(10));
 
         // Verify rollback pointers for batches 1 and 2 are deleted
@@ -702,7 +702,7 @@ pub fn test_pruning_preserves_recent_batches() {
         }
 
         // Prune batches 1-3 (threshold = 4 means batches < 4 are eligible)
-        runtime.set_pruning_threshold(4);
+        runtime.pruning().set_threshold(4);
         runtime.wait_pruned(3, Duration::from_secs(10));
 
         // Batches 1-3 should be pruned
@@ -751,7 +751,7 @@ pub fn test_pruning_crash_recovery() {
         }
 
         // Prune batches 1-2
-        runtime.set_pruning_threshold(3);
+        runtime.pruning().set_threshold(3);
         runtime.wait_pruned(2, Duration::from_secs(10));
 
         // Verify last_pruned is persisted
@@ -772,7 +772,11 @@ pub fn test_pruning_crash_recovery() {
             StorageConfig::default().with_store(storage),
         );
 
-        assert_eq!(runtime.last_pruned().0, 2, "Pruning should resume from persisted index");
+        assert_eq!(
+            runtime.pruning().last_pruned().0,
+            2,
+            "Pruning should resume from persisted index"
+        );
 
         let store = runtime.storage_manager().store();
 
@@ -797,7 +801,7 @@ pub fn test_pruning_crash_recovery() {
         }
 
         // Continue pruning from where we left off
-        runtime.set_pruning_threshold(5);
+        runtime.pruning().set_threshold(5);
         runtime.wait_pruned(4, Duration::from_secs(10));
 
         // Batches 3-4 should now be pruned
@@ -882,7 +886,7 @@ pub fn test_pruning_multiple_resources() {
         );
 
         // Prune batch 1 and 2
-        runtime.set_pruning_threshold(batch3.index());
+        runtime.pruning().set_threshold(batch3.index());
         runtime.wait_pruned(batch2.index(), Duration::from_secs(10));
 
         // All rollback pointers for batches 1 and 2 should be deleted

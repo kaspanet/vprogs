@@ -51,25 +51,6 @@ pub struct PruningWorker<S: Store<StateSpace = StateSpace>, V: VmInterface> {
 }
 
 impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
-    /// Creates a new pruning worker with direct store access.
-    ///
-    /// The worker resumes from the last successfully pruned batch index stored in metadata.
-    /// If no pruning has occurred yet, it starts from 0.
-    pub fn new(store: Arc<S>) -> Self {
-        // Load the last pruned state from persistent storage.
-        let (persisted_index, persisted_metadata): (u64, V::BatchMetadata) =
-            StateMetadata::last_pruned(store.as_ref());
-
-        let pruning_threshold = Arc::new(AtomicU64::new(persisted_index));
-        let last_pruned = Arc::new(ArcSwap::from_pointee((persisted_index, persisted_metadata)));
-        let notify = Arc::new(Notify::new());
-
-        let handle =
-            Self::start(store, pruning_threshold.clone(), last_pruned.clone(), notify.clone());
-
-        Self { pruning_threshold, last_pruned, notify, handle, _marker: PhantomData }
-    }
-
     /// Sets the pruning threshold.
     ///
     /// Batches with index < threshold become eligible for pruning. The actual pruning happens
@@ -95,8 +76,27 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
         (cached.0, cached.1.clone())
     }
 
+    /// Creates a new pruning worker with direct store access.
+    ///
+    /// The worker resumes from the last successfully pruned batch index stored in metadata.
+    /// If no pruning has occurred yet, it starts from 0.
+    pub(crate) fn new(store: Arc<S>) -> Self {
+        // Load the last pruned state from persistent storage.
+        let (persisted_index, persisted_metadata): (u64, V::BatchMetadata) =
+            StateMetadata::last_pruned(store.as_ref());
+
+        let pruning_threshold = Arc::new(AtomicU64::new(persisted_index));
+        let last_pruned = Arc::new(ArcSwap::from_pointee((persisted_index, persisted_metadata)));
+        let notify = Arc::new(Notify::new());
+
+        let handle =
+            Self::start(store, pruning_threshold.clone(), last_pruned.clone(), notify.clone());
+
+        Self { pruning_threshold, last_pruned, notify, handle, _marker: PhantomData }
+    }
+
     /// Shuts down the pruning worker and waits for it to complete.
-    pub fn shutdown(self) {
+    pub(crate) fn shutdown(self) {
         drop(self.pruning_threshold);
         self.notify.notify_one();
         self.handle.join().expect("pruning worker panicked");

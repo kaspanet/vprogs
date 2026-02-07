@@ -171,26 +171,9 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
         self.resources.len()
     }
 
-    /// Sets the pruning threshold.
-    ///
-    /// Batches with index < threshold become eligible for pruning. Old state data (rollback
-    /// pointers and their associated versions) for these batches will be deleted asynchronously
-    /// in the background. Setting a threshold lower than the current value has no effect.
-    ///
-    /// The threshold should typically be set to a finalized batch index that will never be
-    /// rolled back.
-    pub fn set_pruning_threshold(&self, threshold: u64) {
-        self.pruning_worker.set_threshold(threshold);
-    }
-
-    /// Returns the current pruning threshold.
-    pub fn pruning_threshold(&self) -> u64 {
-        self.pruning_worker.threshold()
-    }
-
-    /// Returns the last successfully pruned batch (index and metadata) from cache.
-    pub fn last_pruned(&self) -> (u64, V::BatchMetadata) {
-        self.pruning_worker.last_pruned()
+    /// Returns a reference to the pruning worker.
+    pub fn pruning(&self) -> &PruningWorker<S, V> {
+        &self.pruning_worker
     }
 
     /// Returns the last processed batch (index and metadata) from the store.

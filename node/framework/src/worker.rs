@@ -143,7 +143,7 @@ fn handle_event<S: Store<StateSpace = StateSpace>, V: NodeVm>(
         }
 
         L1Event::Finalized(block) => {
-            scheduler.set_pruning_threshold(block.index());
+            scheduler.pruning().set_threshold(block.index());
         }
 
         L1Event::Fatal { reason } => {

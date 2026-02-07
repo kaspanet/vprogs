@@ -32,7 +32,7 @@ impl<S: Store<StateSpace = StateSpace>, V: NodeVm> Node<S, V> {
         // Configure the bridge with resume state.
         let bridge = L1Bridge::new(
             l1_bridge_config
-                .with_root(Some(scheduler.last_pruned().into()))
+                .with_root(Some(scheduler.pruning().last_pruned().into()))
                 .with_tip(Some(scheduler.last_processed().into())),
         );
 
