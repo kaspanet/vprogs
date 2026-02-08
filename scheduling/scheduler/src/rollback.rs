@@ -2,7 +2,7 @@ use std::{marker::PhantomData, sync::Arc};
 
 use tap::Tap;
 use vprogs_core_atomics::AtomicAsyncLatch;
-use vprogs_core_types::ResourceId;
+use vprogs_core_types::{Checkpoint, ResourceId};
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_ptr_latest::StatePtrLatest;
@@ -72,7 +72,7 @@ impl<V: VmInterface> Rollback<V> {
             // This is written upfront but committed atomically with the reversions below.
             let index = self.lower_bound - 1;
             let metadata: V::BatchMetadata = StoredBatchMetadata::get(store, index);
-            StateMetadata::set_last_processed(wb, index, &metadata);
+            StateMetadata::set_last_processed(wb, &Checkpoint::new(index, metadata));
 
             // Walk batches from newest to oldest.
             for index in (self.lower_bound..=self.upper_bound).rev() {

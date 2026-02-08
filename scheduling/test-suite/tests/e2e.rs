@@ -756,7 +756,7 @@ pub fn test_pruning_crash_recovery() {
 
         // Verify last_pruned is persisted
         assert_eq!(
-            StateMetadata::last_pruned::<(), _>(runtime.storage_manager().store().as_ref()).0,
+            StateMetadata::last_pruned::<(), _>(runtime.storage_manager().store().as_ref()).index(),
             2,
             "Last pruned index should be persisted"
         );
@@ -773,7 +773,7 @@ pub fn test_pruning_crash_recovery() {
         );
 
         assert_eq!(
-            runtime.pruning().last_pruned().0,
+            runtime.pruning().last_pruned().index(),
             2,
             "Pruning should resume from persisted index"
         );

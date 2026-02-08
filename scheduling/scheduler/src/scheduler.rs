@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use crossbeam_queue::SegQueue;
 use tap::Tap;
-use vprogs_core_types::{AccessMetadata, Transaction};
+use vprogs_core_types::{AccessMetadata, Checkpoint, Transaction};
 use vprogs_scheduling_execution_workers::ExecutionWorkers;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_space::StateSpace;
@@ -49,11 +49,11 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
         let (worker_count, vm) = execution_config.unpack();
         Self {
             context: {
-                let (pruned_index, _): (u64, V::BatchMetadata) =
+                let pruned: Checkpoint<V::BatchMetadata> =
                     StateMetadata::last_pruned(storage_manager.store().as_ref());
-                let (processed_index, _): (u64, V::BatchMetadata) =
+                let processed: Checkpoint<V::BatchMetadata> =
                     StateMetadata::last_processed(storage_manager.store().as_ref());
-                RuntimeContext::new(pruned_index, processed_index)
+                RuntimeContext::new(pruned.index(), processed.index())
             },
             batch_lifecycle_worker: BatchLifecycleWorker::new(vm.clone()),
             pruning_worker: PruningWorker::new(storage_manager.store().clone()),
@@ -176,8 +176,8 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
         &self.pruning_worker
     }
 
-    /// Returns the last processed batch (index and metadata) from the store.
-    pub fn last_processed(&self) -> (u64, V::BatchMetadata) {
+    /// Returns the last processed batch from the store.
+    pub fn last_processed(&self) -> Checkpoint<V::BatchMetadata> {
         StateMetadata::last_processed(self.storage_manager.store().as_ref())
     }
 

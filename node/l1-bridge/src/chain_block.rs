@@ -7,6 +7,7 @@ use std::{
 use arc_swap::ArcSwapOption;
 use tap::{Tap, TapOptional};
 use vprogs_core_macros::smart_pointer;
+use vprogs_core_types::Checkpoint;
 
 use crate::ChainBlockMetadata;
 
@@ -82,9 +83,9 @@ impl ChainBlock {
     }
 }
 
-impl From<(u64, ChainBlockMetadata)> for ChainBlock {
-    fn from((index, metadata): (u64, ChainBlockMetadata)) -> Self {
-        Self::new(index, metadata)
+impl From<Checkpoint<ChainBlockMetadata>> for ChainBlock {
+    fn from(checkpoint: Checkpoint<ChainBlockMetadata>) -> Self {
+        Self::new(checkpoint.index(), *checkpoint.metadata())
     }
 }
 
