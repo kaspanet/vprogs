@@ -1,5 +1,5 @@
 use crate::{
-    BlockHash,
+    BlockHash, ChainBlockMetadata,
     chain_block::ChainBlock,
     error::{Error, Result},
 };
@@ -30,8 +30,8 @@ impl VirtualChain {
     }
 
     /// Appends a block at the tip and returns its index.
-    pub(crate) fn advance_tip(&mut self, hash: BlockHash, blue_score: u64) -> u64 {
-        self.tip = self.tip.advance_tip(hash, blue_score);
+    pub(crate) fn advance_tip(&mut self, metadata: ChainBlockMetadata) -> u64 {
+        self.tip = self.tip.advance_tip(metadata);
         self.tip.index()
     }
 
@@ -46,11 +46,11 @@ impl VirtualChain {
         }
 
         // Calculate reorg_depth and walk backwards, unlinking each block from its predecessor.
-        let old_blue_score = self.tip.blue_score();
+        let old_blue_score = self.tip.metadata().blue_score;
         for _ in 0..num_blocks {
             self.tip = self.tip.rollback_tip();
         }
-        let blue_score_depth = old_blue_score.saturating_sub(self.tip.blue_score());
+        let blue_score_depth = old_blue_score.saturating_sub(self.tip.metadata().blue_score);
 
         Ok((self.tip.index(), blue_score_depth))
     }
@@ -60,14 +60,14 @@ impl VirtualChain {
     /// destroys the chain — fatal).
     pub(crate) fn advance_root(&mut self, hash: &BlockHash) -> Result<Option<ChainBlock>> {
         // Already at this pruning point — nothing to do.
-        if self.root.hash() == *hash {
+        if self.root.metadata().hash == *hash {
             return Ok(None);
         }
 
         // Walk forward from root, unlinking each node until we find the target.
         let mut current = self.root.advance_root();
         while let Some(block) = current {
-            if block.hash() == *hash {
+            if block.metadata().hash == *hash {
                 self.root = block.clone();
                 return Ok(Some(block));
             }

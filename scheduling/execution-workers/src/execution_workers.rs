@@ -17,6 +17,10 @@ impl<T: Task, B: Batch<T>> ExecutionWorkers<T, B> {
         self.workers.push_batch(batch);
     }
 
+    pub fn submit_task(&self, task: T) {
+        self.workers.push_task(task);
+    }
+
     pub fn shutdown(self) {
         self.workers.shutdown();
         for handle in self.handles {

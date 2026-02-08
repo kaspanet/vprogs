@@ -70,12 +70,14 @@ resolver = "3"
   vprogs-core-atomics                             = { path = "core/atomics" }
   vprogs-core-macros                              = { path = "core/macros" }
   vprogs-core-types                               = { path = "core/types" }
+  vprogs-node-framework                           = { path = "node/framework" }
   vprogs-node-l1-bridge                           = { path = "node/l1-bridge" }
   vprogs-node-test-suite                          = { path = "node/test-suite" }
   vprogs-node-vm                                  = { path = "node/vm" }
   vprogs-scheduling-execution-workers             = { path = "scheduling/execution-workers" }
   vprogs-scheduling-scheduler                     = { path = "scheduling/scheduler" }
   vprogs-scheduling-test-suite                    = { path = "scheduling/test-suite" }
+  vprogs-state-batch-metadata                     = { path = "state/batch-metadata" }
   vprogs-state-metadata                           = { path = "state/metadata" }
   vprogs-state-ptr-latest                         = { path = "state/ptr-latest" }
   vprogs-state-ptr-rollback                       = { path = "state/ptr-rollback" }

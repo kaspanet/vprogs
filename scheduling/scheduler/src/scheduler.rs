@@ -2,8 +2,9 @@ use std::{collections::HashMap, sync::Arc};
 
 use crossbeam_queue::SegQueue;
 use tap::Tap;
-use vprogs_core_types::{AccessMetadata, Transaction};
+use vprogs_core_types::{AccessMetadata, Checkpoint, Transaction};
 use vprogs_scheduling_execution_workers::ExecutionWorkers;
+use vprogs_state_metadata::StateMetadata;
 use vprogs_state_space::StateSpace;
 use vprogs_storage_manager::{StorageConfig, StorageManager};
 use vprogs_storage_types::Store;
@@ -40,11 +41,20 @@ pub struct Scheduler<S: Store<StateSpace = StateSpace>, V: VmInterface> {
 
 impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
     /// Creates a new scheduler with the given execution and storage configurations.
+    ///
+    /// The context bounds are read from `last_pruned` (lower) and `last_processed` (upper) in the
+    /// store. This ensures the scheduler resumes from the correct position on restart.
     pub fn new(execution_config: ExecutionConfig<V>, storage_config: StorageConfig<S>) -> Self {
         let storage_manager = StorageManager::new(storage_config);
         let (worker_count, vm) = execution_config.unpack();
         Self {
-            context: RuntimeContext::new(0),
+            context: {
+                let pruned: Checkpoint<V::BatchMetadata> =
+                    StateMetadata::last_pruned(storage_manager.store().as_ref());
+                let processed: Checkpoint<V::BatchMetadata> =
+                    StateMetadata::last_processed(storage_manager.store().as_ref());
+                RuntimeContext::new(pruned.index(), processed.index())
+            },
             batch_lifecycle_worker: BatchLifecycleWorker::new(vm.clone()),
             pruning_worker: PruningWorker::new(storage_manager.store().clone()),
             resources: HashMap::new(),
@@ -61,8 +71,12 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
     /// pushes it to the worker loop for lifecycle management, and submits it to execution workers
     /// for parallel processing. After building resource accesses, processes pending eviction
     /// requests to clean up resources from committed batches.
-    pub fn schedule(&mut self, txs: Vec<V::Transaction>) -> RuntimeBatch<S, V> {
-        RuntimeBatch::new(self.vm.clone(), self, txs)
+    pub fn schedule(
+        &mut self,
+        metadata: V::BatchMetadata,
+        txs: Vec<V::Transaction>,
+    ) -> RuntimeBatch<S, V> {
+        RuntimeBatch::new(self.vm.clone(), self, txs, metadata)
             // Connect transactions to resource dependency chains.
             .tap(RuntimeBatch::connect)
             .tap(|batch| {
@@ -129,9 +143,22 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
         &self.context
     }
 
+    /// Returns a reference to the VM implementation.
+    pub fn vm(&self) -> &V {
+        &self.vm
+    }
+
     /// Returns a reference to the storage manager.
     pub fn storage_manager(&self) -> &StorageManager<S, Read<S, V>, Write<S, V>> {
         &self.storage_manager
+    }
+
+    /// Submits a standalone function for execution on a worker thread.
+    ///
+    /// The function is injected into the global task queue and picked up by the next available
+    /// execution worker as a last-resort fallback in the steal chain.
+    pub fn submit_function(&self, func: impl FnOnce() + Send + Sync + 'static) {
+        self.execution_workers.submit_task(ManagerTask::ExecuteFunction(Box::new(func)));
     }
 
     /// Returns a clone of the eviction queue.
@@ -144,26 +171,14 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
         self.resources.len()
     }
 
-    /// Sets the pruning threshold.
-    ///
-    /// Batches with index < threshold become eligible for pruning. Old state data (rollback
-    /// pointers and their associated versions) for these batches will be deleted asynchronously
-    /// in the background. Setting a threshold lower than the current value has no effect.
-    ///
-    /// The threshold should typically be set to a finalized batch index that will never be
-    /// rolled back.
-    pub fn set_pruning_threshold(&self, threshold: u64) {
-        self.pruning_worker.set_threshold(threshold);
+    /// Returns a reference to the pruning worker.
+    pub fn pruning(&self) -> &PruningWorker<S, V> {
+        &self.pruning_worker
     }
 
-    /// Returns the current pruning threshold.
-    pub fn pruning_threshold(&self) -> u64 {
-        self.pruning_worker.threshold()
-    }
-
-    /// Returns the last successfully pruned batch index.
-    pub fn last_pruned_index(&self) -> u64 {
-        self.pruning_worker.last_pruned()
+    /// Returns the last processed batch from the store.
+    pub fn last_processed(&self) -> Checkpoint<V::BatchMetadata> {
+        StateMetadata::last_processed(self.storage_manager.store().as_ref())
     }
 
     /// Shuts down the scheduler and all its components.

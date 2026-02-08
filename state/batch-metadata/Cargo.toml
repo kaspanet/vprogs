@@ -1,6 +1,6 @@
 [package]
 edition.workspace = true
-name              = "vprogs-state-metadata"
+name              = "vprogs-state-batch-metadata"
 version.workspace = true
 
 [dependencies]

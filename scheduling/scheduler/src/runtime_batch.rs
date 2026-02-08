@@ -7,6 +7,9 @@ use crossbeam_deque::{Injector, Steal, Worker};
 use crossbeam_queue::SegQueue;
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_macros::smart_pointer;
+use vprogs_core_types::Checkpoint;
+use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
+use vprogs_state_metadata::StateMetadata;
 use vprogs_state_space::StateSpace;
 use vprogs_storage_manager::StorageManager;
 use vprogs_storage_types::{Store, WriteBatch};
@@ -20,6 +23,7 @@ use crate::{
 pub struct RuntimeBatch<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     runtime_context: RuntimeContext,
     index: u64,
+    batch_metadata: V::BatchMetadata,
     storage: StorageManager<S, Read<S, V>, Write<S, V>>,
     eviction_queue: Arc<SegQueue<V::ResourceId>>,
     txs: Vec<RuntimeTx<S, V>>,
@@ -108,13 +112,19 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
         self
     }
 
-    pub(crate) fn new(vm: V, manager: &mut Scheduler<S, V>, txs: Vec<V::Transaction>) -> Self {
+    pub(crate) fn new(
+        vm: V,
+        manager: &mut Scheduler<S, V>,
+        txs: Vec<V::Transaction>,
+        metadata: V::BatchMetadata,
+    ) -> Self {
         Self(Arc::new_cyclic(|this| {
             let mut state_diffs = Vec::new();
             let runtime_context = manager.context().clone();
 
             RuntimeBatchData {
                 index: runtime_context.next_batch_index(),
+                batch_metadata: metadata,
                 storage: manager.storage_manager().clone(),
                 eviction_queue: manager.eviction_queue(),
                 pending_txs: AtomicU64::new(txs.len() as u64),
@@ -195,6 +205,9 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
             for state_diff in self.state_diffs() {
                 state_diff.written_state().write_latest_ptr(store);
             }
+            StoredBatchMetadata::set(store, self.index, &self.batch_metadata);
+            let checkpoint = Checkpoint::new(self.index, self.batch_metadata.clone());
+            StateMetadata::set_last_processed(store, &checkpoint);
         }
     }
 

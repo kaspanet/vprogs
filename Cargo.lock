@@ -5423,6 +5423,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-node-framework"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "log",
+ "tokio",
+ "vprogs-core-atomics",
+ "vprogs-node-l1-bridge",
+ "vprogs-scheduling-scheduler",
+ "vprogs-state-space",
+ "vprogs-storage-manager",
+ "vprogs-storage-types",
+]
+
+[[package]]
 name = "vprogs-node-l1-bridge"
 version = "0.1.0"
 dependencies = [
@@ -5439,6 +5454,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "vprogs-core-macros",
+ "vprogs-core-types",
  "vprogs-node-test-suite",
  "workflow-core",
 ]
@@ -5464,6 +5480,8 @@ dependencies = [
 name = "vprogs-node-vm"
 version = "0.1.0"
 dependencies = [
+ "vprogs-node-framework",
+ "vprogs-node-l1-bridge",
  "vprogs-scheduling-scheduler",
  "vprogs-state-space",
  "vprogs-storage-types",
@@ -5503,6 +5521,7 @@ dependencies = [
  "vprogs-core-macros",
  "vprogs-core-types",
  "vprogs-scheduling-execution-workers",
+ "vprogs-state-batch-metadata",
  "vprogs-state-metadata",
  "vprogs-state-ptr-latest",
  "vprogs-state-ptr-rollback",
@@ -5529,9 +5548,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-state-batch-metadata"
+version = "0.1.0"
+dependencies = [
+ "vprogs-core-types",
+ "vprogs-state-space",
+ "vprogs-storage-types",
+]
+
+[[package]]
 name = "vprogs-state-metadata"
 version = "0.1.0"
 dependencies = [
+ "vprogs-core-types",
  "vprogs-state-space",
  "vprogs-storage-types",
 ]

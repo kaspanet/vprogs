@@ -1,3 +1,5 @@
+use vprogs_node_framework::NodeVm;
+use vprogs_node_l1_bridge::{ChainBlockMetadata, RpcOptionalHeader, RpcOptionalTransaction};
 use vprogs_scheduling_scheduler::{AccessHandle, RuntimeBatch, VmInterface};
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
@@ -26,5 +28,17 @@ impl VmInterface for VM {
     type TransactionEffects = TransactionEffects;
     type ResourceId = ObjectId;
     type AccessMetadata = ObjectAccess;
+    type BatchMetadata = ChainBlockMetadata;
     type Error = VmError;
+}
+
+impl NodeVm for VM {
+    fn pre_process_block(
+        &self,
+        _index: u64,
+        _header: &RpcOptionalHeader,
+        _accepted_transactions: &[RpcOptionalTransaction],
+    ) -> Vec<Transaction> {
+        vec![]
+    }
 }
