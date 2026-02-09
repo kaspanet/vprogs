@@ -26,7 +26,7 @@ pub struct Scheduler<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     /// Tracks runtime state such as batch indices, cached checkpoints, and cancellation states.
     batch_execution: BatchExecutionContext<V::BatchMetadata>,
     /// Handles persistence of state diffs and rollback operations.
-    storage_manager: StorageManager<S, Read<S, V>, Write<S, V>>,
+    storage: StorageManager<S, Read<S, V>, Write<S, V>>,
     /// Maps resource IDs to their in-memory dependency chain heads.
     resources: HashMap<V::ResourceId, Resource<S, V>>,
     /// Background worker that processes batches through their lifecycle stages.
@@ -45,22 +45,19 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
     /// The batch execution bounds are read from `last_pruned` (lower) and `last_processed` (upper)
     /// in the store. This ensures the scheduler resumes from the correct position on restart.
     pub fn new(execution_config: ExecutionConfig<V>, storage_config: StorageConfig<S>) -> Self {
-        let storage_manager = StorageManager::new(storage_config);
+        let storage = StorageManager::new(storage_config);
         let (worker_count, vm) = execution_config.unpack();
         Self {
-            batch_execution: {
-                let pruned: Checkpoint<V::BatchMetadata> =
-                    StateMetadata::last_pruned(storage_manager.store().as_ref());
-                let processed: Checkpoint<V::BatchMetadata> =
-                    StateMetadata::last_processed(storage_manager.store().as_ref());
-                BatchExecutionContext::new(pruned.index(), processed)
-            },
+            batch_execution: BatchExecutionContext::new(
+                StateMetadata::last_pruned::<V::BatchMetadata, S>(&**storage.store()).index(),
+                StateMetadata::last_processed(&**storage.store()),
+            ),
             batch_lifecycle_worker: BatchLifecycleWorker::new(vm.clone()),
-            pruning_worker: PruningWorker::new(storage_manager.store().clone()),
+            pruning_worker: PruningWorker::new(storage.store().clone()),
             resources: HashMap::new(),
             execution_workers: ExecutionWorkers::new(worker_count),
             eviction_queue: Arc::new(SegQueue::new()),
-            storage_manager,
+            storage,
             vm,
         }
     }
@@ -126,7 +123,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
 
             // Submit the rollback command and wait for its completion.
             let done_signal = Default::default();
-            self.storage_manager.submit_write(Write::Rollback(Rollback::new(
+            self.storage.submit_write(Write::Rollback(Rollback::new(
                 lower_bound,
                 upper_bound,
                 &done_signal,
@@ -150,7 +147,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
 
     /// Returns a reference to the storage manager.
     pub fn storage(&self) -> &StorageManager<S, Read<S, V>, Write<S, V>> {
-        &self.storage_manager
+        &self.storage
     }
 
     /// Submits a standalone function for execution on a worker thread.
@@ -184,7 +181,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
         self.pruning_worker.shutdown();
         self.batch_lifecycle_worker.shutdown();
         self.execution_workers.shutdown();
-        self.storage_manager.shutdown();
+        self.storage.shutdown();
     }
 
     /// Builds resource accesses for a transaction by linking it into dependency chains.

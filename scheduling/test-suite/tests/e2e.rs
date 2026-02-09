@@ -783,8 +783,7 @@ pub fn test_pruning_crash_recovery() {
 
         // Verify last_pruned is persisted
         assert_eq!(
-            StateMetadata::last_pruned::<BatchMetadata, _>(runtime.storage().store().as_ref())
-                .index(),
+            StateMetadata::last_pruned::<BatchMetadata, _>(&**runtime.storage().store()).index(),
             2,
             "Last pruned index should be persisted"
         );

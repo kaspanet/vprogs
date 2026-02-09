@@ -19,6 +19,6 @@ where
     W: WriteCmd<StateSpace>,
 {
     fn last_checkpoint<M: BatchMetadata>(&self) -> Checkpoint<M> {
-        StateMetadata::last_processed(self.store().as_ref())
+        StateMetadata::last_processed(&**self.store())
     }
 }
