@@ -22,20 +22,20 @@ impl StatePtrLatest {
     }
 
     /// Sets the current version for a resource.
-    pub fn put<W, R>(store: &mut W, resource_id: &R, version: u64)
+    pub fn put<W, R>(wb: &mut W, resource_id: &R, version: u64)
     where
         W: WriteBatch<StateSpace = StateSpace>,
         R: ResourceId,
     {
-        store.put(StateSpace::StatePtrLatest, &resource_id.to_bytes(), &version.to_be_bytes());
+        wb.put(StateSpace::StatePtrLatest, &resource_id.to_bytes(), &version.to_be_bytes());
     }
 
     /// Deletes the latest pointer for a resource.
-    pub fn delete<W, R>(store: &mut W, resource_id: &R)
+    pub fn delete<W, R>(wb: &mut W, resource_id: &R)
     where
         W: WriteBatch<StateSpace = StateSpace>,
         R: ResourceId,
     {
-        store.delete(StateSpace::StatePtrLatest, &resource_id.to_bytes());
+        wb.delete(StateSpace::StatePtrLatest, &resource_id.to_bytes());
     }
 }

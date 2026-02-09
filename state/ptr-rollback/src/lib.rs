@@ -14,23 +14,23 @@ pub struct StatePtrRollback;
 
 impl StatePtrRollback {
     /// Stores the version a resource had before a batch was applied.
-    pub fn put<W, R>(store: &mut W, batch_index: u64, resource_id: &R, old_version: u64)
+    pub fn put<W, R>(wb: &mut W, batch_index: u64, resource_id: &R, old_version: u64)
     where
         W: WriteBatch<StateSpace = StateSpace>,
         R: ResourceId,
     {
         let key = concat_bytes!(&batch_index.to_be_bytes(), &resource_id.to_bytes());
-        store.put(StateSpace::StatePtrRollback, &key, &old_version.to_be_bytes());
+        wb.put(StateSpace::StatePtrRollback, &key, &old_version.to_be_bytes());
     }
 
     /// Deletes a rollback pointer entry.
-    pub fn delete<W, R>(store: &mut W, batch_index: u64, resource_id: &R)
+    pub fn delete<W, R>(wb: &mut W, batch_index: u64, resource_id: &R)
     where
         W: WriteBatch<StateSpace = StateSpace>,
         R: ResourceId,
     {
         let key = concat_bytes!(&batch_index.to_be_bytes(), &resource_id.to_bytes());
-        store.delete(StateSpace::StatePtrRollback, &key);
+        wb.delete(StateSpace::StatePtrRollback, &key);
     }
 
     /// Iterates all rollback pointers for a given batch index.

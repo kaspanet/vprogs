@@ -25,12 +25,12 @@ pub trait SchedulerExt {
 impl SchedulerExt for Scheduler<RocksDbStore, VM> {
     fn wait_pruned(&self, expected: u64, timeout: Duration) -> &Self {
         let start = Instant::now();
-        while self.last_pruned_index() < expected {
+        while self.pruning().last_checkpoint().index() < expected {
             if start.elapsed() > timeout {
                 panic!(
-                    "Timeout waiting for pruning. Expected last_pruned_index >= {}, got {}.",
+                    "Timeout waiting for pruning. Expected last checkpoint >= {}, got {}.",
                     expected,
-                    self.last_pruned_index()
+                    self.pruning().last_checkpoint().index()
                 );
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -54,7 +54,7 @@ impl SchedulerExt for Scheduler<RocksDbStore, VM> {
     }
 
     fn assert_written_state(&self, resource_id: usize, writers: Vec<usize>) -> &Self {
-        let store = self.storage_manager().store();
+        let store = self.storage().store();
         let writer_count = writers.len();
         let writer_log: Vec<u8> = writers.iter().flat_map(|id| id.to_be_bytes()).collect();
 
@@ -67,7 +67,7 @@ impl SchedulerExt for Scheduler<RocksDbStore, VM> {
     fn assert_resource_deleted(&self, resource_id: usize) -> &Self {
         use vprogs_storage_types::ReadStore;
 
-        let store = self.storage_manager().store();
+        let store = self.storage().store();
         let id_bytes = resource_id.to_be_bytes();
         assert!(
             store.get(StateSpace::StatePtrLatest, &id_bytes).is_none(),

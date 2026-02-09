@@ -7,19 +7,23 @@ use crossbeam_deque::{Injector, Steal, Worker};
 use crossbeam_queue::SegQueue;
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_macros::smart_pointer;
+use vprogs_core_types::Checkpoint;
+use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
+use vprogs_state_metadata::StateMetadata;
 use vprogs_state_space::StateSpace;
 use vprogs_storage_manager::StorageManager;
 use vprogs_storage_types::{Store, WriteBatch};
 
 use crate::{
-    Read, RuntimeContext, RuntimeTx, Scheduler, StateDiff, Write, cpu_task::ManagerTask,
+    BatchExecutionContext, Read, RuntimeTx, Scheduler, StateDiff, Write, cpu_task::ManagerTask,
     vm_interface::VmInterface,
 };
 
 #[smart_pointer]
 pub struct RuntimeBatch<S: Store<StateSpace = StateSpace>, V: VmInterface> {
-    runtime_context: RuntimeContext,
+    batch_execution: BatchExecutionContext<V::BatchMetadata>,
     index: u64,
+    batch_metadata: V::BatchMetadata,
     storage: StorageManager<S, Read<S, V>, Write<S, V>>,
     eviction_queue: Arc<SegQueue<V::ResourceId>>,
     txs: Vec<RuntimeTx<S, V>>,
@@ -54,7 +58,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
     }
 
     pub fn was_canceled(&self) -> bool {
-        self.index > self.runtime_context.cancel_threshold()
+        self.index > self.batch_execution.cancel_threshold()
     }
 
     pub fn was_processed(&self) -> bool {
@@ -108,14 +112,20 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
         self
     }
 
-    pub(crate) fn new(vm: V, manager: &mut Scheduler<S, V>, txs: Vec<V::Transaction>) -> Self {
+    pub(crate) fn new(
+        vm: V,
+        manager: &mut Scheduler<S, V>,
+        txs: Vec<V::Transaction>,
+        metadata: V::BatchMetadata,
+    ) -> Self {
         Self(Arc::new_cyclic(|this| {
             let mut state_diffs = Vec::new();
-            let runtime_context = manager.context().clone();
+            let batch_execution = manager.batch_execution().clone();
 
             RuntimeBatchData {
-                index: runtime_context.next_batch_index(),
-                storage: manager.storage_manager().clone(),
+                index: batch_execution.assign_next_batch(metadata.clone()),
+                batch_metadata: metadata,
+                storage: manager.storage().clone(),
                 eviction_queue: manager.eviction_queue(),
                 pending_txs: AtomicU64::new(txs.len() as u64),
                 pending_writes: AtomicI64::new(0),
@@ -132,7 +142,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
                     })
                     .collect(),
                 state_diffs,
-                runtime_context,
+                batch_execution,
                 available_txs: Injector::new(),
                 was_processed: Default::default(),
                 was_persisted: Default::default(),
@@ -187,14 +197,19 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
         }
     }
 
-    pub(crate) fn commit<W>(&self, store: &mut W)
+    pub(crate) fn commit<W>(&self, wb: &mut W)
     where
         W: WriteBatch<StateSpace = StateSpace>,
     {
         if !self.was_canceled() {
             for state_diff in self.state_diffs() {
-                state_diff.written_state().write_latest_ptr(store);
+                state_diff.written_state().write_latest_ptr(wb);
             }
+            StoredBatchMetadata::set(wb, self.index, &self.batch_metadata);
+            StateMetadata::set_last_processed(
+                wb,
+                &Checkpoint::new(self.index, self.batch_metadata.clone()),
+            );
         }
     }
 

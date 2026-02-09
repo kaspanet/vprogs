@@ -48,6 +48,7 @@ impl<T: Task, B: Batch<T>> Worker<T, B> {
                 .pop()
                 .or_else(|| pending_batches.steal(&self.local_queue))
                 .or_else(|| workers_api.steal_from_other_workers(self.id))
+                .or_else(|| workers_api.steal_global_task())
             {
                 Some(task) => task.execute(),
                 None => self.parker.park_timeout(Duration::from_millis(100)),

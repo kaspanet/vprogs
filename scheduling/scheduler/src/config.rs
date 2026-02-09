@@ -16,8 +16,8 @@ impl<V: VmInterface> ExecutionConfig<V> {
         self
     }
 
-    pub fn with_vm(mut self, store: V) -> Self {
-        self.vm = Some(store);
+    pub fn with_vm(mut self, vm: V) -> Self {
+        self.vm = Some(vm);
         self
     }
 

@@ -23,7 +23,7 @@ impl VmInterface for VM {
         Ok(())
     }
 
-    fn notarize_batch<S: Store<StateSpace = StateSpace>>(&self, batch: &RuntimeBatch<S, Self>) {
+    fn post_process_batch<S: Store<StateSpace = StateSpace>>(&self, batch: &RuntimeBatch<S, Self>) {
         eprintln!(
             ">> Processed batch with {} transactions and {} state changes",
             batch.txs().len(),
@@ -35,5 +35,6 @@ impl VmInterface for VM {
     type TransactionEffects = ();
     type ResourceId = usize;
     type AccessMetadata = Access;
+    type BatchMetadata = crate::BatchMetadata;
     type Error = ();
 }

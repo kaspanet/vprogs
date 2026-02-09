@@ -52,6 +52,7 @@
 
 mod bridge;
 mod chain_block;
+mod chain_block_metadata;
 mod config;
 mod error;
 mod event;
@@ -61,6 +62,7 @@ mod worker;
 
 pub use bridge::L1Bridge;
 pub use chain_block::ChainBlock;
+pub use chain_block_metadata::ChainBlockMetadata;
 pub use config::L1BridgeConfig;
 pub use event::{Hash as BlockHash, L1Event, RpcOptionalHeader, RpcOptionalTransaction};
 pub use kaspa_consensus_core::network::{NetworkId, NetworkType};

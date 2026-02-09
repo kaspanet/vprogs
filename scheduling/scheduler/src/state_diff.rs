@@ -57,7 +57,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> StateDiff<S, V> {
         }
     }
 
-    pub(crate) fn write<W: WriteBatch<StateSpace = StateSpace>>(&self, store: &mut W) {
+    pub(crate) fn write<W: WriteBatch<StateSpace = StateSpace>>(&self, wb: &mut W) {
         let Some(batch) = self.batch.upgrade() else {
             panic!("batch must be known at write time");
         };
@@ -69,8 +69,8 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> StateDiff<S, V> {
         };
 
         if !batch.was_canceled() {
-            written_state.write_data(store);
-            read_state.write_rollback_ptr(store, batch.index());
+            written_state.write_data(wb);
+            read_state.write_rollback_ptr(wb, batch.index());
         }
     }
 

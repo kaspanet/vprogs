@@ -47,7 +47,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> BatchLifecycleWorker<S, 
                     while Arc::strong_count(&queue) != 1 {
                         while let Some(batch) = queue.pop() {
                             batch.wait_processed().await;
-                            vm.notarize_batch(&batch);
+                            vm.post_process_batch(&batch);
                             batch.wait_persisted().await;
                             batch.schedule_commit();
                             batch.wait_committed().await;

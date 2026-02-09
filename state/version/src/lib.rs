@@ -45,25 +45,25 @@ impl<R: ResourceId> StateVersion<R> {
         &mut Arc::make_mut(self).tap_mut(|s| s.version += 1).data
     }
 
-    pub fn write_data<W>(&self, store: &mut W)
+    pub fn write_data<W>(&self, wb: &mut W)
     where
         W: WriteBatch<StateSpace = StateSpace>,
     {
-        Self::put(store, self.version, &self.resource_id, &self.data);
+        Self::put(wb, self.version, &self.resource_id, &self.data);
     }
 
-    pub fn write_latest_ptr<W>(&self, store: &mut W)
+    pub fn write_latest_ptr<W>(&self, wb: &mut W)
     where
         W: WriteBatch<StateSpace = StateSpace>,
     {
-        StatePtrLatest::put(store, &self.resource_id, self.version);
+        StatePtrLatest::put(wb, &self.resource_id, self.version);
     }
 
-    pub fn write_rollback_ptr<W>(&self, store: &mut W, batch_index: u64)
+    pub fn write_rollback_ptr<W>(&self, wb: &mut W, batch_index: u64)
     where
         W: WriteBatch<StateSpace = StateSpace>,
     {
-        StatePtrRollback::put(store, batch_index, &self.resource_id, self.version);
+        StatePtrRollback::put(wb, batch_index, &self.resource_id, self.version);
     }
 
     /// Gets the data for a specific version of a resource.
@@ -80,23 +80,23 @@ impl<R: ResourceId> StateVersion<R> {
     /// Stores data for a specific version of a resource.
     ///
     /// Key layout: `version.to_be_bytes() || resource_id.to_bytes()`
-    pub fn put<W>(store: &mut W, version: u64, resource_id: &R, data: &[u8])
+    pub fn put<W>(wb: &mut W, version: u64, resource_id: &R, data: &[u8])
     where
         W: WriteBatch<StateSpace = StateSpace>,
     {
         let key = concat_bytes!(&version.to_be_bytes(), &resource_id.to_bytes());
-        store.put(StateSpace::StateVersion, &key, data);
+        wb.put(StateSpace::StateVersion, &key, data);
     }
 
     /// Deletes data for a specific version of a resource.
     ///
     /// Key layout: `version.to_be_bytes() || resource_id.to_bytes()`
-    pub fn delete<W>(store: &mut W, version: u64, resource_id: &R)
+    pub fn delete<W>(wb: &mut W, version: u64, resource_id: &R)
     where
         W: WriteBatch<StateSpace = StateSpace>,
     {
         let key = concat_bytes!(&version.to_be_bytes(), &resource_id.to_bytes());
-        store.delete(StateSpace::StateVersion, &key);
+        wb.delete(StateSpace::StateVersion, &key);
     }
 }
 
