@@ -9,7 +9,7 @@ use vprogs_core_types::{BatchMetadata, Checkpoint};
 
 /// Tracks the execution context for a sequence of batches, supporting rollback operations.
 ///
-/// A `BatchExecutionContext` maintains batch indexing, a cached checkpoint of the last assigned
+/// A `BatchExecutionContext` maintains the last checkpoint of the most recently assigned
 /// batch, and cancellation state. When a rollback occurs, a new context is created starting from
 /// the rollback point, with a weak reference to the previous context. This forms a chain that
 /// allows in-flight batches to detect when they've been canceled.
@@ -19,9 +19,7 @@ pub struct BatchExecutionContext<M: BatchMetadata> {
     parent_context: Option<BatchExecutionContextRef<M>>,
     /// The first batch index assigned in this context.
     first_index: u64,
-    /// The most recently assigned batch index (atomically updated).
-    last_batch_index: AtomicU64,
-    /// Cached checkpoint of the most recently assigned batch.
+    /// Checkpoint of the most recently assigned batch.
     last_checkpoint: ArcSwap<Checkpoint<M>>,
     /// Batch index threshold for cancellation. Batches with index > threshold are canceled.
     cancel_threshold: AtomicU64,
@@ -37,26 +35,19 @@ impl<M: BatchMetadata> BatchExecutionContext<M> {
         Self(Arc::new(BatchExecutionContextData {
             parent_context: None,
             first_index,
-            last_batch_index: AtomicU64::new(last_checkpoint.index()),
             last_checkpoint: ArcSwap::from_pointee(last_checkpoint),
             cancel_threshold: AtomicU64::new(u64::MAX),
         }))
     }
 
-    /// Returns the most recently assigned batch index.
-    pub fn last_batch_index(&self) -> u64 {
-        self.last_batch_index.load(Ordering::Acquire)
-    }
-
-    /// Returns the cached checkpoint of the most recently assigned batch.
+    /// Returns the checkpoint of the most recently assigned batch.
     pub fn last_checkpoint(&self) -> Checkpoint<M> {
         self.last_checkpoint.load().as_ref().clone()
     }
 
-    /// Atomically increments the batch index and updates the cached checkpoint. Returns the new
-    /// batch index.
+    /// Increments the batch index and updates the checkpoint. Returns the new batch index.
     pub fn assign_next_batch(&self, metadata: M) -> u64 {
-        let index = self.last_batch_index.fetch_add(1, Ordering::Relaxed) + 1;
+        let index = self.last_checkpoint.load().index() + 1;
         self.last_checkpoint.store(Arc::new(Checkpoint::new(index, metadata)));
         index
     }
@@ -76,7 +67,6 @@ impl<M: BatchMetadata> BatchExecutionContext<M> {
         self.0 = Arc::new(BatchExecutionContextData {
             parent_context: self.canceled_parent_context(index),
             first_index: index,
-            last_batch_index: AtomicU64::new(index),
             last_checkpoint: ArcSwap::from_pointee(target),
             cancel_threshold: AtomicU64::new(u64::MAX),
         });

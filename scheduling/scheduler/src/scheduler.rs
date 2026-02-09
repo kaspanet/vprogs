@@ -115,11 +115,9 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
     /// command to the storage manager. The call blocks until the rollback completes, after which
     /// all in-memory resource pointers are cleared, as their state may have changed.
     pub fn rollback_to(&mut self, target: Checkpoint<V::BatchMetadata>) {
-        let target_index = target.index();
-
         // Determine the range of batches to roll back.
-        let lower_bound = target_index + 1;
-        let upper_bound = self.batch_execution.last_batch_index();
+        let lower_bound = target.index() + 1;
+        let upper_bound = self.batch_execution.last_checkpoint().index();
 
         // Only perform a rollback if there is state to revert.
         if upper_bound >= lower_bound {
