@@ -32,7 +32,7 @@ pub struct Scheduler<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     batch_lifecycle_worker: BatchLifecycleWorker<S, V>,
     /// Thread pool for parallel transaction execution.
     execution_workers: ExecutionWorkers<ManagerTask<S, V>, RuntimeBatch<S, V>>,
-    /// Queue of resource IDs to potentially evict after their batches commited.
+    /// Queue of resource IDs to potentially evict after their batches committed.
     eviction_queue: Arc<SegQueue<V::ResourceId>>,
     /// Background worker that prunes old state data when the pruning threshold advances.
     pruning_worker: PruningWorker<S, V>,

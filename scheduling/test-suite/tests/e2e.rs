@@ -262,7 +262,7 @@ pub fn test_rollback_multiple_contexts() {
 
         runtime.assert_written_state(60, vec![60]).assert_written_state(70, vec![70]);
 
-        // Phase 4: Rollback to 3 (must walk parent batch execution chain)
+        // Phase 4: Rollback to 3 (must walk parent cancellation chain)
         runtime.rollback_to(3);
 
         // Batches 1-3 should remain, 4-5 and new 6-7 should be deleted

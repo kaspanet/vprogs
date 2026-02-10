@@ -28,7 +28,7 @@ impl SchedulerExt for Scheduler<RocksDbStore, VM> {
         while self.pruning().last_pruned().index() < expected {
             if start.elapsed() > timeout {
                 panic!(
-                    "Timeout waiting for pruning. Expected last checkpoint >= {}, got {}.",
+                    "Timeout waiting for pruning. Expected last pruned index >= {}, got {}.",
                     expected,
                     self.pruning().last_pruned().index()
                 );

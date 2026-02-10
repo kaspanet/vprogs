@@ -24,11 +24,13 @@ impl VmInterface for VM {
     }
 
     fn post_process_batch<S: Store<StateSpace = StateSpace>>(&self, batch: &RuntimeBatch<S, Self>) {
-        eprintln!(
-            ">> Processed batch with {} transactions and {} state changes",
-            batch.txs().len(),
-            batch.state_diffs().len()
-        );
+        if !batch.was_canceled() {
+            eprintln!(
+                ">> Processed batch with {} transactions and {} state changes",
+                batch.txs().len(),
+                batch.state_diffs().len()
+            );
+        }
     }
 
     type Transaction = Tx;
