@@ -5,7 +5,7 @@ use std::sync::{
 
 use tap::Tap;
 use vprogs_core_atomics::AtomicAsyncLatch;
-use vprogs_core_types::{Checkpoint, ResourceId};
+use vprogs_core_types::Checkpoint;
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_ptr_latest::StatePtrLatest;

@@ -4,7 +4,6 @@ name              = "vprogs-scheduling-test-suite"
 version.workspace = true
 
 [dependencies]
-borsh.workspace                        = true
 tempfile.workspace                     = true
 vprogs-core-types.workspace            = true
 vprogs-scheduling-scheduler.workspace  = true

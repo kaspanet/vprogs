@@ -10,7 +10,7 @@ use std::{
 use arc_swap::ArcSwap;
 use tap::Tap;
 use tokio::{runtime::Builder, sync::Notify};
-use vprogs_core_types::{Checkpoint, ResourceId};
+use vprogs_core_types::Checkpoint;
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_ptr_rollback::StatePtrRollback;

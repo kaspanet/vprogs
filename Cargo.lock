@@ -5521,7 +5521,6 @@ dependencies = [
 name = "vprogs-scheduling-test-suite"
 version = "0.1.0"
 dependencies = [
- "borsh",
  "tempfile",
  "vprogs-core-types",
  "vprogs-scheduling-scheduler",

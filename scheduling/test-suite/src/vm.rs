@@ -35,6 +35,6 @@ impl VmInterface for VM {
     type TransactionEffects = ();
     type ResourceId = usize;
     type AccessMetadata = Access;
-    type BatchMetadata = crate::BatchMetadata;
+    type BatchMetadata = u64;
     type Error = ();
 }
