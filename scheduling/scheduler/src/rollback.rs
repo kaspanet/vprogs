@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 use tap::Tap;
 use vprogs_core_atomics::AtomicAsyncLatch;
@@ -23,6 +26,9 @@ pub struct Rollback<V: VmInterface> {
     target: Checkpoint<V::BatchMetadata>,
     /// Upper bound of the batch index range to roll back (inclusive).
     upper_bound: u64,
+    /// Shared commit frontier, reset in `done()` to guard against a stale `commit_done`
+    /// advancing it past the target (see `done()` for details).
+    commit_frontier: Arc<AtomicU64>,
     /// Signal that resolves when the rollback operation is complete.
     done_signal: Arc<AtomicAsyncLatch>,
 }
@@ -33,9 +39,10 @@ impl<V: VmInterface> Rollback<V> {
     pub fn new(
         target: Checkpoint<V::BatchMetadata>,
         upper_bound: u64,
+        commit_frontier: Arc<AtomicU64>,
         done_signal: &Arc<AtomicAsyncLatch>,
     ) -> Self {
-        Rollback { target, upper_bound, done_signal: done_signal.clone() }
+        Rollback { target, upper_bound, commit_frontier, done_signal: done_signal.clone() }
     }
 
     /// Executes the rollback on `store`.
@@ -59,8 +66,15 @@ impl<V: VmInterface> Rollback<V> {
     }
 
     /// Signals that the rollback operation has completed.
+    ///
+    /// Stores the target index into the commit frontier before signaling. This guards against a
+    /// race where a canceled batch's `commit_done` re-advances the frontier via `fetch_max`
+    /// between the scheduler's `fetch_min` and this point. A plain `store` (rather than
+    /// `fetch_min`) is safe because `done()` runs on the write worker after all prior
+    /// `commit_done` calls have completed.
     pub fn done(&self) {
-        self.done_signal.open()
+        self.commit_frontier.store(self.target.index(), Ordering::Release);
+        self.done_signal.open();
     }
 
     /// Builds a write batch containing all rollback operations.

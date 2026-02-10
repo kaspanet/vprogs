@@ -105,13 +105,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
     }
 
     /// Rolls back the runtime state to the given batch index, returning the target checkpoint.
-    ///
-    /// The target's metadata is resolved from the in-memory pending queue when possible, falling
-    /// back to disk for already-committed batches. This avoids a race condition where the target
-    /// batch's data might not yet be persisted by the write worker.
-    ///
-    /// If the current state is already at or behind the target, no rollback is performed and the
-    /// current last processed checkpoint is returned.
+    /// If the current state is already at or behind the target, returns the current checkpoint.
     pub fn rollback_to(&mut self, target_index: u64) -> Checkpoint<V::BatchMetadata> {
         // Determine the range of batches to roll back.
         let upper_bound = self.batch_execution.last_processed().index();
@@ -119,13 +113,14 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
         // Only perform a rollback if there is state to revert.
         if upper_bound > target_index {
             // Look up target metadata and update batch execution context.
-            let target = self.batch_execution.rollback(target_index);
+            let (target, commit_frontier) = self.batch_execution.rollback(target_index);
 
             // Submit the rollback command and wait for its completion.
             let done_signal = Default::default();
             self.storage.submit_write(Write::Rollback(Rollback::new(
                 target.clone(),
                 upper_bound,
+                commit_frontier,
                 &done_signal,
             )));
             done_signal.wait_blocking();

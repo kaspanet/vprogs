@@ -89,13 +89,14 @@ impl<S: Store<StateSpace = StateSpace>, M: BatchMetadata> BatchExecutionContext<
         (checkpoint, self.cancellation.clone(), self.commit_frontier.clone())
     }
 
-    /// Rolls back to the given batch index, returning the target checkpoint.
+    /// Rolls back to the given batch index, returning the target checkpoint and a clone of the
+    /// commit frontier (needed by the `Rollback` command to reset after completion).
     ///
     /// Looks up the target's metadata in memory first (pending queue), falling back to disk for
     /// already-committed batches. Caps the commit frontier to prevent stale `commit_done` calls
     /// from advancing past the target, truncates the pending queue, and delegates cancellation to
     /// the shared context.
-    pub fn rollback(&mut self, target_index: u64) -> Checkpoint<M> {
+    pub fn rollback(&mut self, target_index: u64) -> (Checkpoint<M>, Arc<AtomicU64>) {
         let target = self.lookup_checkpoint(target_index);
 
         // Cap the commit frontier so stale commit_done calls don't advance past the target.
@@ -113,7 +114,7 @@ impl<S: Store<StateSpace = StateSpace>, M: BatchMetadata> BatchExecutionContext<
         // Propagate cancellation through the context chain.
         self.cancellation.rollback(target_index);
 
-        target
+        (target, self.commit_frontier.clone())
     }
 
     /// Looks up a checkpoint by index, searching the in-memory pending queue first, then disk.
