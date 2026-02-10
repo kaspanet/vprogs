@@ -2,7 +2,7 @@
 ///
 /// Stores a single `u64` counter that is serialized as 8 big-endian bytes and
 /// zero-padded to 32 bytes for the id.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct BatchMetadata(u64);
 
 impl BatchMetadata {

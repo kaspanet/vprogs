@@ -44,7 +44,9 @@ impl BatchMetadata for ChainBlockMetadata {
         }
         Self {
             hash: BlockHash::from_slice(&bytes[..32]),
-            blue_score: u64::from_be_bytes(bytes[32..40].try_into().unwrap()),
+            blue_score: u64::from_be_bytes(
+                bytes[32..40].try_into().expect("corrupted store: unrecoverable"),
+            ),
         }
     }
 }

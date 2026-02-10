@@ -39,7 +39,8 @@ impl<M: BatchMetadata> Checkpoint<M> {
 
     /// Deserializes from `index (8 bytes BE) || metadata bytes`.
     pub fn from_bytes(bytes: &[u8]) -> Self {
-        let index = u64::from_be_bytes(bytes[..8].try_into().unwrap());
+        let index =
+            u64::from_be_bytes(bytes[..8].try_into().expect("corrupted store: unrecoverable"));
         let metadata = M::from_bytes(&bytes[8..]);
         Self { index, metadata }
     }

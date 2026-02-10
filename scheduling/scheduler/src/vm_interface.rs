@@ -16,8 +16,18 @@ pub trait VmInterface: Clone + Sized + Send + Sync + 'static {
         resources: &mut [AccessHandle<S, Self>],
     ) -> Result<Self::TransactionEffects, Self::Error>;
 
-    /// Optional hook called after all transactions in a batch have been
-    /// processed. The default implementation is a no-op.
+    /// Optional hook called after all transactions in a batch have been processed.
+    /// The default implementation is a no-op.
+    ///
+    /// Implementations should check [`RuntimeBatch::was_canceled`] before performing
+    /// any work, as canceled batches still pass through this method:
+    /// ```ignore
+    /// fn post_process_batch<S: Store<StateSpace = StateSpace>>(&self, batch: &RuntimeBatch<S, Self>) {
+    ///     if !batch.was_canceled() {
+    ///         // ...
+    ///     }
+    /// }
+    /// ```
     fn post_process_batch<S: Store<StateSpace = StateSpace>>(&self, _: &RuntimeBatch<S, Self>) {}
 
     /// The transaction type submitted to the scheduler.

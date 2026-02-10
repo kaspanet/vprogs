@@ -71,10 +71,7 @@ pub trait Config: Send + Sync + 'static {
     }
 
     fn cf_batch_metadata_opts() -> Options {
-        Options::default().tap_mut(|o| {
-            // BatchMetadata keys are: batch_index (u64 big-endian).
-            o.set_prefix_extractor(SliceTransform::create_fixed_prefix(U64_PREFIX_LEN));
-        })
+        Options::default()
     }
 
     fn cf_metas_opts() -> Options {

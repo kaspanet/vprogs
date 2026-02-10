@@ -70,6 +70,8 @@ impl<V: VmInterface> Rollback<V> {
         store.write_batch().tap_mut(|wb| {
             // Update tip atomically with the rollback.
             // This is written upfront but committed atomically with the reversions below.
+            // Note: lower_bound is always >= 1 because `rollback_to` sets it to
+            // `target.index() + 1`, and only enters this path when there is state to revert.
             let index = self.lower_bound - 1;
             let metadata: V::BatchMetadata = StoredBatchMetadata::get(store, index);
             StateMetadata::set_last_processed(wb, &Checkpoint::new(index, metadata));

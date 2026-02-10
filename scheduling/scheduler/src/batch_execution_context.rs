@@ -46,6 +46,10 @@ impl<M: BatchMetadata> BatchExecutionContext<M> {
     }
 
     /// Increments the batch index and updates the checkpoint. Returns the new batch index.
+    ///
+    /// This is not thread-safe for concurrent writers. The `Arc` wrapper exists to allow
+    /// parallel reads (e.g. cancel threshold checks) while the scheduler's `&mut self`
+    /// guarantee ensures only a single writer calls this method.
     pub fn assign_next_batch(&self, metadata: M) -> u64 {
         let index = self.last_checkpoint.load().index() + 1;
         self.last_checkpoint.store(Arc::new(Checkpoint::new(index, metadata)));
