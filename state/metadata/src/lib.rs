@@ -6,8 +6,8 @@ use vprogs_storage_types::{ReadStore, WriteBatch};
 mod keys {
     /// Key for the last successfully pruned batch (index + metadata stored together).
     pub const LAST_PRUNED: &[u8] = b"last_pruned";
-    /// Key for the last processed batch (index + metadata stored together).
-    pub const LAST_PROCESSED: &[u8] = b"last_processed";
+    /// Key for the last committed batch (index + metadata stored together).
+    pub const LAST_COMMITTED: &[u8] = b"last_committed";
 }
 
 /// Provides type-safe operations for the Metadata column family.
@@ -36,22 +36,22 @@ impl StateMetadata {
         wb.put(StateSpace::Metadata, keys::LAST_PRUNED, &checkpoint.to_bytes());
     }
 
-    /// Returns the last processed batch, or defaults if no batches have been processed yet.
-    pub fn last_processed<M: BatchMetadata, S>(store: &S) -> Checkpoint<M>
+    /// Returns the last committed batch, or defaults if no batches have been committed yet.
+    pub fn last_committed<M: BatchMetadata, S>(store: &S) -> Checkpoint<M>
     where
         S: ReadStore<StateSpace = StateSpace>,
     {
         store
-            .get(StateSpace::Metadata, keys::LAST_PROCESSED)
+            .get(StateSpace::Metadata, keys::LAST_COMMITTED)
             .map(|bytes| Checkpoint::from_bytes(&bytes))
             .unwrap_or_default()
     }
 
-    /// Sets the last processed batch.
-    pub fn set_last_processed<M: BatchMetadata, W>(wb: &mut W, checkpoint: &Checkpoint<M>)
+    /// Sets the last committed batch.
+    pub fn set_last_committed<M: BatchMetadata, W>(wb: &mut W, checkpoint: &Checkpoint<M>)
     where
         W: WriteBatch<StateSpace = StateSpace>,
     {
-        wb.put(StateSpace::Metadata, keys::LAST_PROCESSED, &checkpoint.to_bytes());
+        wb.put(StateSpace::Metadata, keys::LAST_COMMITTED, &checkpoint.to_bytes());
     }
 }

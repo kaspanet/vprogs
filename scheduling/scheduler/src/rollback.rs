@@ -13,32 +13,29 @@ use vprogs_storage_types::Store;
 
 use crate::VmInterface;
 
-/// Represents a rollback operation that reverts state changes made within an inclusive range of
-/// batch indices.
+/// Represents a rollback operation that reverts all batches after a target checkpoint.
 ///
-/// A rollback walks batches in reverse order and restores each affected resource to the version it
-/// had before the batch was applied.
+/// Walks batches from `upper_bound` down to `target.index() + 1` in reverse order, restoring each
+/// affected resource to the version it had before the batch was applied.
 pub struct Rollback<V: VmInterface> {
-    /// Lower bound of the batch index range to roll back (inclusive).
-    lower_bound: u64,
+    /// The checkpoint we're rolling back to. Its metadata is resolved by the scheduler from
+    /// in-memory state to avoid a disk read race condition.
+    target: Checkpoint<V::BatchMetadata>,
     /// Upper bound of the batch index range to roll back (inclusive).
     upper_bound: u64,
-    /// Metadata for the target batch (the batch we're rolling back to), resolved by the scheduler
-    /// from its in-memory state to avoid a disk read race condition.
-    target_metadata: V::BatchMetadata,
     /// Signal that resolves when the rollback operation is complete.
     done_signal: Arc<AtomicAsyncLatch>,
 }
 
 impl<V: VmInterface> Rollback<V> {
-    /// Creates a new rollback operation for the given inclusive batch range.
+    /// Creates a new rollback operation that reverts all batches from `target.index() + 1` through
+    /// `upper_bound` (inclusive).
     pub fn new(
-        lower_bound: u64,
+        target: Checkpoint<V::BatchMetadata>,
         upper_bound: u64,
-        target_metadata: V::BatchMetadata,
         done_signal: &Arc<AtomicAsyncLatch>,
     ) -> Self {
-        Rollback { lower_bound, upper_bound, target_metadata, done_signal: done_signal.clone() }
+        Rollback { target, upper_bound, done_signal: done_signal.clone() }
     }
 
     /// Executes the rollback on `store`.
@@ -69,18 +66,11 @@ impl<V: VmInterface> Rollback<V> {
     /// Builds a write batch containing all rollback operations.
     fn build_rollback_batch<S: Store<StateSpace = StateSpace>>(&self, store: &S) -> S::WriteBatch {
         store.write_batch().tap_mut(|wb| {
-            // Update tip atomically with the rollback.
             // This is written upfront but committed atomically with the reversions below.
-            // Note: lower_bound is always >= 1 because `rollback_to` sets it to
-            // `target.index() + 1`, and only enters this path when there is state to revert.
-            let index = self.lower_bound - 1;
-            StateMetadata::set_last_processed(
-                wb,
-                &Checkpoint::new(index, self.target_metadata.clone()),
-            );
+            StateMetadata::set_last_committed(wb, &self.target);
 
             // Walk batches from newest to oldest.
-            for index in (self.lower_bound..=self.upper_bound).rev() {
+            for index in (self.target.index() + 1..=self.upper_bound).rev() {
                 // Apply all rollback pointers associated with this batch.
                 for (resource_id_bytes, old_version) in StatePtrRollback::iter_batch(store, index) {
                     let resource_id = V::ResourceId::from_bytes(&resource_id_bytes);

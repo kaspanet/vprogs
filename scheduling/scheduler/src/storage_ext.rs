@@ -6,7 +6,7 @@ use vprogs_storage_types::Store;
 
 /// Extension trait that provides a `last_checkpoint` method on [`StorageManager`].
 ///
-/// This reads the last processed checkpoint directly from disk, making it explicit at the call
+/// This reads the last committed checkpoint directly from disk, making it explicit at the call
 /// site that a disk read is involved (via the turbofish on the metadata type).
 pub trait StorageExt {
     fn last_checkpoint<M: BatchMetadata>(&self) -> Checkpoint<M>;
@@ -19,6 +19,6 @@ where
     W: WriteCmd<StateSpace>,
 {
     fn last_checkpoint<M: BatchMetadata>(&self) -> Checkpoint<M> {
-        StateMetadata::last_processed(&**self.store())
+        StateMetadata::last_committed(&**self.store())
     }
 }

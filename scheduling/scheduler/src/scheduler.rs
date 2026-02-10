@@ -4,7 +4,6 @@ use crossbeam_queue::SegQueue;
 use tap::Tap;
 use vprogs_core_types::{AccessMetadata, Checkpoint, Transaction};
 use vprogs_scheduling_execution_workers::ExecutionWorkers;
-use vprogs_state_metadata::StateMetadata;
 use vprogs_state_space::StateSpace;
 use vprogs_storage_manager::{StorageConfig, StorageManager};
 use vprogs_storage_types::Store;
@@ -24,7 +23,7 @@ pub struct Scheduler<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     /// The VM implementation used to execute transactions.
     vm: V,
     /// Tracks runtime state such as batch indices, cached checkpoints, and cancellation states.
-    batch_execution: BatchExecutionContext<V::BatchMetadata>,
+    batch_execution: BatchExecutionContext<S, V::BatchMetadata>,
     /// Handles persistence of state diffs and rollback operations.
     storage: StorageManager<S, Read<S, V>, Write<S, V>>,
     /// Maps resource IDs to their in-memory dependency chain heads.
@@ -41,17 +40,11 @@ pub struct Scheduler<S: Store<StateSpace = StateSpace>, V: VmInterface> {
 
 impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
     /// Creates a new scheduler with the given execution and storage configurations.
-    ///
-    /// The batch execution bounds are read from `last_pruned` (lower) and `last_processed` (upper)
-    /// in the store. This ensures the scheduler resumes from the correct position on restart.
     pub fn new(execution_config: ExecutionConfig<V>, storage_config: StorageConfig<S>) -> Self {
         let storage = StorageManager::new(storage_config);
         let (worker_count, vm) = execution_config.unpack();
         Self {
-            batch_execution: BatchExecutionContext::new(
-                StateMetadata::last_pruned::<V::BatchMetadata, S>(&**storage.store()).index(),
-                StateMetadata::last_processed(&**storage.store()),
-            ),
+            batch_execution: BatchExecutionContext::new(storage.store().clone()),
             batch_lifecycle_worker: BatchLifecycleWorker::new(vm.clone()),
             pruning_worker: PruningWorker::new(storage.store().clone()),
             resources: HashMap::new(),
@@ -118,23 +111,21 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
     /// batch's data might not yet be persisted by the write worker.
     ///
     /// If the current state is already at or behind the target, no rollback is performed and the
-    /// current last checkpoint is returned.
+    /// current last processed checkpoint is returned.
     pub fn rollback_to(&mut self, target_index: u64) -> Checkpoint<V::BatchMetadata> {
         // Determine the range of batches to roll back.
-        let lower_bound = target_index + 1;
         let upper_bound = self.batch_execution.last_processed().index();
 
         // Only perform a rollback if there is state to revert.
-        if upper_bound >= lower_bound {
+        if upper_bound > target_index {
             // Look up target metadata and update batch execution context.
-            let target = self.batch_execution.rollback(target_index, &**self.storage.store());
+            let target = self.batch_execution.rollback(target_index);
 
             // Submit the rollback command and wait for its completion.
             let done_signal = Default::default();
             self.storage.submit_write(Write::Rollback(Rollback::new(
-                lower_bound,
+                target.clone(),
                 upper_bound,
-                target.metadata().clone(),
                 &done_signal,
             )));
             done_signal.wait_blocking();
@@ -149,7 +140,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
     }
 
     /// Returns a reference to the batch execution context.
-    pub fn batch_execution(&self) -> &BatchExecutionContext<V::BatchMetadata> {
+    pub fn batch_execution(&self) -> &BatchExecutionContext<S, V::BatchMetadata> {
         &self.batch_execution
     }
 

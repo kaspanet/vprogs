@@ -207,7 +207,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
                 state_diff.written_state().write_latest_ptr(wb);
             }
             StoredBatchMetadata::set(wb, self.checkpoint.index(), self.checkpoint.metadata());
-            StateMetadata::set_last_processed(wb, &self.checkpoint);
+            StateMetadata::set_last_committed(wb, &self.checkpoint);
         }
     }
 
