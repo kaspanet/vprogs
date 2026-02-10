@@ -1,4 +1,3 @@
-use vprogs_node_l1_bridge::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{AccessHandle, RuntimeBatch, VmInterface};
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
@@ -35,6 +34,6 @@ impl VmInterface for VM {
     type TransactionEffects = TransactionEffects;
     type ResourceId = ObjectId;
     type AccessMetadata = ObjectAccess;
-    type BatchMetadata = ChainBlockMetadata;
+    type BatchMetadata = ();
     type Error = VmError;
 }
