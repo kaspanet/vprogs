@@ -32,10 +32,10 @@ impl BatchMetadata {
     }
 
     /// Deletes the metadata entry for a single batch index.
-    pub fn delete<W>(write_batch: &mut W, batch_index: u64)
+    pub fn delete<W>(wb: &mut W, batch_index: u64)
     where
         W: WriteBatch<StateSpace = StateSpace>,
     {
-        write_batch.delete(StateSpace::BatchMetadata, &batch_index.to_be_bytes());
+        wb.delete(StateSpace::BatchMetadata, &batch_index.to_be_bytes());
     }
 }

@@ -206,7 +206,7 @@ pub fn test_inflight_cancellation_without_waiting() {
     }
 }
 
-/// Tests rollback across multiple BatchExecutionContext objects with parent chain traversal.
+/// Tests rollback across multiple cancellation contexts with parent chain traversal.
 /// This complex scenario tests: apply 1-6; rollback to 5; apply 6-7; rollback to 3; apply 4-5.
 #[test]
 pub fn test_rollback_multiple_contexts() {
