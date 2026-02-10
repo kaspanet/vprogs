@@ -13,7 +13,6 @@ mod runtime_tx;
 mod scheduler;
 mod state_diff;
 mod storage_cmd;
-mod storage_ext;
 mod vm_interface;
 
 pub use access_handle::AccessHandle;
@@ -31,5 +30,4 @@ pub(crate) use runtime_tx::RuntimeTxRef;
 pub use scheduler::Scheduler;
 pub use state_diff::{StateDiff, StateDiffRef};
 pub use storage_cmd::{Read, Write};
-pub use storage_ext::StorageExt;
 pub use vm_interface::VmInterface;

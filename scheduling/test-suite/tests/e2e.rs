@@ -1,8 +1,10 @@
 use std::time::Duration;
 
 use tempfile::TempDir;
-use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler, StorageExt};
+use vprogs_core_types::Checkpoint;
+use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_scheduling_test_suite::{Access, BatchMetadata, SchedulerExt, Tx, VM};
+use vprogs_state_metadata::StateMetadata;
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 
@@ -79,8 +81,9 @@ pub fn test_rollback_committed() {
             .assert_written_state(3, vec![3]) // Written by tx 3
             .assert_written_state(4, vec![5]); // Written by tx 5
 
-        // Verify last_processed metadata after commit
-        let checkpoint = runtime.storage().last_checkpoint::<BatchMetadata>();
+        // Verify last committed checkpoint on disk
+        let checkpoint: Checkpoint<BatchMetadata> =
+            StateMetadata::last_committed(&**runtime.storage().store());
         assert_eq!(checkpoint.index(), 3);
         assert_eq!(*checkpoint.metadata(), BatchMetadata::new(3));
 
@@ -96,8 +99,9 @@ pub fn test_rollback_committed() {
             .assert_resource_deleted(3)
             .assert_resource_deleted(4);
 
-        // Verify last_processed metadata after rollback (should reflect batch 1's metadata)
-        let checkpoint = runtime.storage().last_checkpoint::<BatchMetadata>();
+        // Verify last committed checkpoint on disk after rollback
+        let checkpoint: Checkpoint<BatchMetadata> =
+            StateMetadata::last_committed(&**runtime.storage().store());
         assert_eq!(checkpoint.index(), 1);
         assert_eq!(*checkpoint.metadata(), BatchMetadata::new(1));
 
