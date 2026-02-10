@@ -156,7 +156,8 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
                     // Delete all rollback pointers and their referenced old versions for this
                     // batch.
                     for (resource_id, old_version) in StatePtrRollback::iter_batch(store, index) {
-                        let resource_id = V::ResourceId::from_bytes(&resource_id);
+                        let resource_id: V::ResourceId = borsh::from_slice(&resource_id)
+                            .expect("corrupted store: unrecoverable");
 
                         // Delete the old version data if it exists (version 0 means resource didn't
                         // exist).

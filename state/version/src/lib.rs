@@ -68,34 +68,37 @@ impl<R: ResourceId> StateVersion<R> {
 
     /// Gets the data for a specific version of a resource.
     ///
-    /// Key layout: `version.to_be_bytes() || resource_id.to_bytes()`
+    /// Key layout: `version (u64 BE) || resource_id (borsh)`
     pub fn get<S>(store: &S, version: u64, resource_id: &R) -> Option<Vec<u8>>
     where
         S: ReadStore<StateSpace = StateSpace>,
     {
-        let key = concat_bytes!(&version.to_be_bytes(), &resource_id.to_bytes());
+        let rid = borsh::to_vec(resource_id).expect("failed to serialize ResourceId");
+        let key = concat_bytes!(&version.to_be_bytes(), &rid);
         store.get(StateSpace::StateVersion, &key)
     }
 
     /// Stores data for a specific version of a resource.
     ///
-    /// Key layout: `version.to_be_bytes() || resource_id.to_bytes()`
+    /// Key layout: `version (u64 BE) || resource_id (borsh)`
     pub fn put<W>(wb: &mut W, version: u64, resource_id: &R, data: &[u8])
     where
         W: WriteBatch<StateSpace = StateSpace>,
     {
-        let key = concat_bytes!(&version.to_be_bytes(), &resource_id.to_bytes());
+        let rid = borsh::to_vec(resource_id).expect("failed to serialize ResourceId");
+        let key = concat_bytes!(&version.to_be_bytes(), &rid);
         wb.put(StateSpace::StateVersion, &key, data);
     }
 
     /// Deletes data for a specific version of a resource.
     ///
-    /// Key layout: `version.to_be_bytes() || resource_id.to_bytes()`
+    /// Key layout: `version (u64 BE) || resource_id (borsh)`
     pub fn delete<W>(wb: &mut W, version: u64, resource_id: &R)
     where
         W: WriteBatch<StateSpace = StateSpace>,
     {
-        let key = concat_bytes!(&version.to_be_bytes(), &resource_id.to_bytes());
+        let rid = borsh::to_vec(resource_id).expect("failed to serialize ResourceId");
+        let key = concat_bytes!(&version.to_be_bytes(), &rid);
         wb.delete(StateSpace::StateVersion, &key);
     }
 }

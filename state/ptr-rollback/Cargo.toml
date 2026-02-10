@@ -4,6 +4,7 @@ name              = "vprogs-state-ptr-rollback"
 version.workspace = true
 
 [dependencies]
+borsh.workspace                  = true
 vprogs-core-types.workspace      = true
 vprogs-state-space.workspace     = true
 vprogs-storage-manager.workspace = true

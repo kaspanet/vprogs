@@ -15,7 +15,7 @@ impl BatchMetadata {
     {
         store
             .get(StateSpace::BatchMetadata, &batch_index.to_be_bytes())
-            .map(|bytes| M::from_bytes(&bytes))
+            .map(|bytes| borsh::from_slice(&bytes).expect("corrupted store: unrecoverable"))
             .unwrap_or_default()
     }
 
@@ -24,7 +24,11 @@ impl BatchMetadata {
     where
         W: WriteBatch<StateSpace = StateSpace>,
     {
-        wb.put(StateSpace::BatchMetadata, &batch_index.to_be_bytes(), &metadata.to_bytes());
+        wb.put(
+            StateSpace::BatchMetadata,
+            &batch_index.to_be_bytes(),
+            &borsh::to_vec(metadata).expect("failed to serialize BatchMetadata"),
+        );
     }
 
     /// Deletes the metadata entry for a single batch index.

@@ -24,7 +24,7 @@ impl StateMetadata {
     {
         store
             .get(StateSpace::Metadata, keys::LAST_PRUNED)
-            .map(|bytes| Checkpoint::from_bytes(&bytes))
+            .map(|bytes| borsh::from_slice(&bytes).expect("corrupted store: unrecoverable"))
             .unwrap_or_default()
     }
 
@@ -33,7 +33,11 @@ impl StateMetadata {
     where
         W: WriteBatch<StateSpace = StateSpace>,
     {
-        wb.put(StateSpace::Metadata, keys::LAST_PRUNED, &checkpoint.to_bytes());
+        wb.put(
+            StateSpace::Metadata,
+            keys::LAST_PRUNED,
+            &borsh::to_vec(checkpoint).expect("failed to serialize Checkpoint"),
+        );
     }
 
     /// Returns the last committed batch, or defaults if no batches have been committed yet.
@@ -43,7 +47,7 @@ impl StateMetadata {
     {
         store
             .get(StateSpace::Metadata, keys::LAST_COMMITTED)
-            .map(|bytes| Checkpoint::from_bytes(&bytes))
+            .map(|bytes| borsh::from_slice(&bytes).expect("corrupted store: unrecoverable"))
             .unwrap_or_default()
     }
 
@@ -52,6 +56,10 @@ impl StateMetadata {
     where
         W: WriteBatch<StateSpace = StateSpace>,
     {
-        wb.put(StateSpace::Metadata, keys::LAST_COMMITTED, &checkpoint.to_bytes());
+        wb.put(
+            StateSpace::Metadata,
+            keys::LAST_COMMITTED,
+            &borsh::to_vec(checkpoint).expect("failed to serialize Checkpoint"),
+        );
     }
 }

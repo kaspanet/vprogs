@@ -5427,6 +5427,7 @@ name = "vprogs-node-l1-bridge"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
+ "borsh",
  "crossbeam-queue",
  "futures",
  "kaspa-consensus-core",
@@ -5496,6 +5497,7 @@ name = "vprogs-scheduling-scheduler"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
+ "borsh",
  "crossbeam-deque",
  "crossbeam-queue",
  "num_cpus",
@@ -5519,6 +5521,7 @@ dependencies = [
 name = "vprogs-scheduling-test-suite"
 version = "0.1.0"
 dependencies = [
+ "borsh",
  "tempfile",
  "vprogs-core-types",
  "vprogs-scheduling-scheduler",
@@ -5535,6 +5538,7 @@ dependencies = [
 name = "vprogs-state-batch-metadata"
 version = "0.1.0"
 dependencies = [
+ "borsh",
  "vprogs-core-types",
  "vprogs-state-space",
  "vprogs-storage-types",
@@ -5544,6 +5548,7 @@ dependencies = [
 name = "vprogs-state-metadata"
 version = "0.1.0"
 dependencies = [
+ "borsh",
  "vprogs-core-types",
  "vprogs-state-space",
  "vprogs-storage-types",
@@ -5553,6 +5558,7 @@ dependencies = [
 name = "vprogs-state-ptr-latest"
 version = "0.1.0"
 dependencies = [
+ "borsh",
  "vprogs-core-types",
  "vprogs-state-space",
  "vprogs-storage-types",
@@ -5562,6 +5568,7 @@ dependencies = [
 name = "vprogs-state-ptr-rollback"
 version = "0.1.0"
 dependencies = [
+ "borsh",
  "vprogs-core-types",
  "vprogs-state-space",
  "vprogs-storage-manager",
@@ -5576,6 +5583,7 @@ version = "0.1.0"
 name = "vprogs-state-version"
 version = "0.1.0"
 dependencies = [
+ "borsh",
  "tap",
  "vprogs-core-types",
  "vprogs-state-ptr-latest",

@@ -23,7 +23,7 @@ Key flows:
 2. Transactions are linked into resource dependency chains
 3. Execution workers process transactions in parallel
 4. State diffs are persisted, then committed
-5. `scheduler.rollback_to(checkpoint)` - Revert to previous state if needed
+5. `scheduler.rollback_to(index)` - Revert to previous state if needed
 
 ### execution-workers/
 `vprogs-scheduling-execution-workers`

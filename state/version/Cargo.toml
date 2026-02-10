@@ -4,6 +4,7 @@ name              = "vprogs-state-version"
 version.workspace = true
 
 [dependencies]
+borsh.workspace                     = true
 tap.workspace                       = true
 vprogs-core-types.workspace         = true
 vprogs-state-ptr-latest.workspace   = true

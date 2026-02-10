@@ -5,6 +5,7 @@ version.workspace = true
 
 [dependencies]
 arc-swap.workspace                            = true
+borsh.workspace                               = true
 crossbeam-deque.workspace                     = true
 crossbeam-queue.workspace                     = true
 num_cpus.workspace                            = true

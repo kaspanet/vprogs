@@ -87,7 +87,8 @@ impl<V: VmInterface> Rollback<V> {
             for index in (self.target.index() + 1..=self.upper_bound).rev() {
                 // Apply all rollback pointers associated with this batch.
                 for (resource_id_bytes, old_version) in StatePtrRollback::iter_batch(store, index) {
-                    let resource_id = V::ResourceId::from_bytes(&resource_id_bytes);
+                    let resource_id: V::ResourceId = borsh::from_slice(&resource_id_bytes)
+                        .expect("corrupted store: unrecoverable");
                     self.apply_rollback_ptr(store, wb, index, resource_id, old_version);
                 }
 
