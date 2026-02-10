@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use tempfile::TempDir;
-use vprogs_core_types::Checkpoint;
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler, StorageExt};
 use vprogs_scheduling_test_suite::{Access, BatchMetadata, SchedulerExt, Tx, VM};
 use vprogs_storage_manager::StorageConfig;
@@ -85,13 +84,15 @@ pub fn test_rollback_committed() {
         assert_eq!(checkpoint.index(), 3);
         assert_eq!(*checkpoint.metadata(), BatchMetadata::new(3));
 
-        // Rollback to index 1 (revert batches with index 1 and 2, keep batch with index 0)
-        runtime.rollback_to(Checkpoint::new(1, BatchMetadata::new(1)));
+        // Rollback to index 1 (revert batches with index 2 and 3, keep batch with index 1)
+        let target = runtime.rollback_to(1);
+        assert_eq!(target.index(), 1);
+        assert_eq!(*target.metadata(), BatchMetadata::new(1));
 
-        // Verify state after rollback - only batch0 effects should remain
+        // Verify state after rollback - only batch1 effects should remain
         runtime
             .assert_written_state(1, vec![0]) // Only tx 0's write remains
-            .assert_written_state(2, vec![1]) // tx 1's write remains (in batch0)
+            .assert_written_state(2, vec![1]) // tx 1's write remains (in batch1)
             .assert_resource_deleted(3)
             .assert_resource_deleted(4);
 
@@ -134,7 +135,7 @@ pub fn test_add_batches_after_rollback() {
             .assert_written_state(3, vec![2]);
 
         // Rollback to batch 1 (keep batch 1, remove batches 2 and 3)
-        runtime.rollback_to(Checkpoint::new(1, BatchMetadata::new(1)));
+        runtime.rollback_to(1);
 
         // Resources 2 and 3 should be deleted, resource 1 should still exist
         runtime
@@ -184,7 +185,7 @@ pub fn test_inflight_cancellation_without_waiting() {
 
         // Immediately rollback without waiting for batches 2-4 to commit
         // This tests in-flight cancellation
-        runtime.rollback_to(Checkpoint::new(1, BatchMetadata::new(1)));
+        runtime.rollback_to(1);
 
         // After rollback, the canceled batches should have was_canceled() == true
         assert!(batch2.was_canceled(), "batch2 should be canceled");
@@ -245,7 +246,7 @@ pub fn test_rollback_multiple_contexts() {
             .assert_written_state(6, vec![6]);
 
         // Phase 2: Rollback to 5 (keeps batches 1-5, removes batch 6)
-        runtime.rollback_to(Checkpoint::new(5, BatchMetadata::new(5)));
+        runtime.rollback_to(5);
 
         // Batch 6's resource should be deleted, batches 1-5 should still exist
         runtime
@@ -269,7 +270,7 @@ pub fn test_rollback_multiple_contexts() {
         runtime.assert_written_state(60, vec![60]).assert_written_state(70, vec![70]);
 
         // Phase 4: Rollback to 3 (must walk parent batch execution chain)
-        runtime.rollback_to(Checkpoint::new(3, BatchMetadata::new(3)));
+        runtime.rollback_to(3);
 
         // Batches 1-3 should remain, 4-5 and new 6-7 should be deleted
         runtime
@@ -328,7 +329,7 @@ pub fn test_rollback_to_zero() {
             .assert_written_state(3, vec![3]);
 
         // Rollback to 0 (before any batches)
-        runtime.rollback_to(Checkpoint::new(0, BatchMetadata::default()));
+        runtime.rollback_to(0);
 
         // All resources should be deleted
         runtime.assert_resource_deleted(1).assert_resource_deleted(2).assert_resource_deleted(3);
@@ -374,7 +375,7 @@ pub fn test_consecutive_rollbacks() {
             .assert_written_state(5, vec![5]);
 
         // First rollback: to 4
-        runtime.rollback_to(Checkpoint::new(4, BatchMetadata::new(4)));
+        runtime.rollback_to(4);
         runtime
             .assert_resource_deleted(5)
             .assert_written_state(1, vec![1])
@@ -383,7 +384,7 @@ pub fn test_consecutive_rollbacks() {
             .assert_written_state(4, vec![4]);
 
         // Second rollback: to 3
-        runtime.rollback_to(Checkpoint::new(3, BatchMetadata::new(3)));
+        runtime.rollback_to(3);
         runtime
             .assert_resource_deleted(4)
             .assert_resource_deleted(5)
@@ -392,7 +393,7 @@ pub fn test_consecutive_rollbacks() {
             .assert_written_state(3, vec![3]);
 
         // Third rollback: to 1
-        runtime.rollback_to(Checkpoint::new(1, BatchMetadata::new(1)));
+        runtime.rollback_to(1);
         runtime
             .assert_resource_deleted(2)
             .assert_resource_deleted(3)
@@ -431,7 +432,7 @@ pub fn test_rollback_same_resource_multiple_writes() {
         runtime.assert_written_state(1, vec![10, 20, 30, 40]);
 
         // Rollback to batch 2 (keep writes from batch 1 and 2)
-        runtime.rollback_to(Checkpoint::new(2, BatchMetadata::new(2)));
+        runtime.rollback_to(2);
         runtime.assert_written_state(1, vec![10, 20]);
 
         // Add more writes
@@ -442,7 +443,7 @@ pub fn test_rollback_same_resource_multiple_writes() {
         runtime.assert_written_state(1, vec![10, 20, 50]);
 
         // Rollback to batch 1
-        runtime.rollback_to(Checkpoint::new(1, BatchMetadata::new(1)));
+        runtime.rollback_to(1);
         runtime.assert_written_state(1, vec![10]);
 
         runtime.shutdown();
@@ -470,7 +471,7 @@ pub fn test_cancellation_skips_writes() {
         let batch3 = runtime.schedule(BatchMetadata::new(3), vec![Tx(3, vec![Access::Write(200)])]);
 
         // Rollback immediately - batch2 and batch3 should be canceled
-        runtime.rollback_to(Checkpoint::new(1, BatchMetadata::new(1)));
+        runtime.rollback_to(1);
 
         // Verify both batches were canceled
         assert!(batch2.was_canceled(), "batch2 should be canceled");
@@ -539,7 +540,7 @@ pub fn test_rollback_interleaved_multi_resource() {
             .assert_written_state(3, vec![21, 31, 42]);
 
         // Rollback to batch 2
-        runtime.rollback_to(Checkpoint::new(2, BatchMetadata::new(2)));
+        runtime.rollback_to(2);
 
         runtime
             .assert_written_state(1, vec![10]) // Only from batch 1

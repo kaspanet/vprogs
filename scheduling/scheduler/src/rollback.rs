@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, sync::Arc};
+use std::sync::Arc;
 
 use tap::Tap;
 use vprogs_core_atomics::AtomicAsyncLatch;
@@ -23,21 +23,22 @@ pub struct Rollback<V: VmInterface> {
     lower_bound: u64,
     /// Upper bound of the batch index range to roll back (inclusive).
     upper_bound: u64,
+    /// Metadata for the target batch (the batch we're rolling back to), resolved by the scheduler
+    /// from its in-memory state to avoid a disk read race condition.
+    target_metadata: V::BatchMetadata,
     /// Signal that resolves when the rollback operation is complete.
     done_signal: Arc<AtomicAsyncLatch>,
-    /// Marker for the VM interface type.
-    _marker: PhantomData<V>,
 }
 
 impl<V: VmInterface> Rollback<V> {
     /// Creates a new rollback operation for the given inclusive batch range.
-    pub fn new(lower_bound: u64, upper_bound: u64, done_signal: &Arc<AtomicAsyncLatch>) -> Self {
-        Rollback {
-            lower_bound,
-            upper_bound,
-            done_signal: done_signal.clone(),
-            _marker: PhantomData,
-        }
+    pub fn new(
+        lower_bound: u64,
+        upper_bound: u64,
+        target_metadata: V::BatchMetadata,
+        done_signal: &Arc<AtomicAsyncLatch>,
+    ) -> Self {
+        Rollback { lower_bound, upper_bound, target_metadata, done_signal: done_signal.clone() }
     }
 
     /// Executes the rollback on `store`.
@@ -73,8 +74,10 @@ impl<V: VmInterface> Rollback<V> {
             // Note: lower_bound is always >= 1 because `rollback_to` sets it to
             // `target.index() + 1`, and only enters this path when there is state to revert.
             let index = self.lower_bound - 1;
-            let metadata: V::BatchMetadata = StoredBatchMetadata::get(store, index);
-            StateMetadata::set_last_processed(wb, &Checkpoint::new(index, metadata));
+            StateMetadata::set_last_processed(
+                wb,
+                &Checkpoint::new(index, self.target_metadata.clone()),
+            );
 
             // Walk batches from newest to oldest.
             for index in (self.lower_bound..=self.upper_bound).rev() {

@@ -15,13 +15,14 @@ use vprogs_storage_manager::StorageManager;
 use vprogs_storage_types::{Store, WriteBatch};
 
 use crate::{
-    BatchExecutionContext, Read, RuntimeTx, Scheduler, StateDiff, Write, cpu_task::ManagerTask,
+    CancellationContext, Read, RuntimeTx, Scheduler, StateDiff, Write, cpu_task::ManagerTask,
     vm_interface::VmInterface,
 };
 
 #[smart_pointer]
 pub struct RuntimeBatch<S: Store<StateSpace = StateSpace>, V: VmInterface> {
-    batch_execution: BatchExecutionContext<V::BatchMetadata>,
+    cancellation: CancellationContext,
+    commit_frontier: Arc<AtomicU64>,
     index: u64,
     batch_metadata: V::BatchMetadata,
     storage: StorageManager<S, Read<S, V>, Write<S, V>>,
@@ -58,7 +59,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
     }
 
     pub fn was_canceled(&self) -> bool {
-        self.index > self.batch_execution.cancel_threshold()
+        self.index > self.cancellation.cancel_threshold()
     }
 
     pub fn was_processed(&self) -> bool {
@@ -118,13 +119,18 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
         txs: Vec<V::Transaction>,
         metadata: V::BatchMetadata,
     ) -> Self {
+        let index = manager.batch_execution_mut().assign_next_batch(metadata.clone());
+        let cancellation = manager.batch_execution().cancellation().clone();
+        let commit_frontier = manager.batch_execution().commit_frontier();
+
         Self(Arc::new_cyclic(|this| {
             let mut state_diffs = Vec::new();
-            let batch_execution = manager.batch_execution().clone();
 
             RuntimeBatchData {
-                index: batch_execution.assign_next_batch(metadata.clone()),
+                index,
                 batch_metadata: metadata,
+                cancellation,
+                commit_frontier,
                 storage: manager.storage().clone(),
                 eviction_queue: manager.eviction_queue(),
                 pending_txs: AtomicU64::new(txs.len() as u64),
@@ -142,7 +148,6 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
                     })
                     .collect(),
                 state_diffs,
-                batch_execution,
                 available_txs: Injector::new(),
                 was_processed: Default::default(),
                 was_persisted: Default::default(),
@@ -214,6 +219,11 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
     }
 
     pub(crate) fn commit_done(self) {
+        // Advance the commit frontier only for non-canceled batches.
+        if !self.was_canceled() {
+            self.commit_frontier.fetch_max(self.index, Ordering::Release);
+        }
+
         // Mark the batch as committed.
         self.was_committed.open();
 

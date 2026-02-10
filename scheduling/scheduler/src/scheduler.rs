@@ -106,38 +106,51 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
         }
     }
 
-    /// Rolls back the runtime state to `target` if the current state is ahead of it.
+    /// Rolls back the runtime state to the given batch index, returning the target checkpoint.
     ///
-    /// This updates the batch execution context to reflect the rollback and submits a rollback
-    /// command to the storage manager. The call blocks until the rollback completes, after which
-    /// all in-memory resource pointers are cleared, as their state may have changed.
-    pub fn rollback_to(&mut self, target: Checkpoint<V::BatchMetadata>) {
+    /// The target's metadata is resolved from the in-memory pending queue when possible, falling
+    /// back to disk for already-committed batches. This avoids a race condition where the target
+    /// batch's data might not yet be persisted by the write worker.
+    ///
+    /// If the current state is already at or behind the target, no rollback is performed and the
+    /// current last checkpoint is returned.
+    pub fn rollback_to(&mut self, target_index: u64) -> Checkpoint<V::BatchMetadata> {
         // Determine the range of batches to roll back.
-        let lower_bound = target.index() + 1;
+        let lower_bound = target_index + 1;
         let upper_bound = self.batch_execution.last_checkpoint().index();
 
         // Only perform a rollback if there is state to revert.
         if upper_bound >= lower_bound {
-            // Update the batch execution context and cancel in-flight batches.
-            self.batch_execution.rollback(target);
+            // Look up target metadata and update batch execution context.
+            let target = self.batch_execution.rollback(target_index, &**self.storage.store());
 
             // Submit the rollback command and wait for its completion.
             let done_signal = Default::default();
             self.storage.submit_write(Write::Rollback(Rollback::new(
                 lower_bound,
                 upper_bound,
+                target.metadata().clone(),
                 &done_signal,
             )));
             done_signal.wait_blocking();
 
             // Clear in-memory resource pointers, as their state may no longer be valid.
             self.resources.clear();
+
+            target
+        } else {
+            self.batch_execution.last_checkpoint().clone()
         }
     }
 
     /// Returns a reference to the batch execution context.
     pub fn batch_execution(&self) -> &BatchExecutionContext<V::BatchMetadata> {
         &self.batch_execution
+    }
+
+    /// Returns a mutable reference to the batch execution context.
+    pub(crate) fn batch_execution_mut(&mut self) -> &mut BatchExecutionContext<V::BatchMetadata> {
+        &mut self.batch_execution
     }
 
     /// Returns a reference to the VM implementation.

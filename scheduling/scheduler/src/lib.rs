@@ -1,6 +1,7 @@
 mod access_handle;
 mod batch_execution_context;
 mod batch_lifecycle_worker;
+mod cancellation_context;
 mod config;
 mod cpu_task;
 mod pruning_worker;
@@ -18,6 +19,7 @@ mod vm_interface;
 pub use access_handle::AccessHandle;
 pub use batch_execution_context::BatchExecutionContext;
 pub(crate) use batch_lifecycle_worker::BatchLifecycleWorker;
+pub use cancellation_context::CancellationContext;
 pub use config::ExecutionConfig;
 pub use pruning_worker::PruningWorker;
 pub(crate) use resource::Resource;
