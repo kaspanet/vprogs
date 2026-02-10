@@ -23,8 +23,7 @@ use crate::{
 pub struct RuntimeBatch<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     cancellation: CancellationContext,
     commit_frontier: Arc<AtomicU64>,
-    index: u64,
-    batch_metadata: V::BatchMetadata,
+    checkpoint: Checkpoint<V::BatchMetadata>,
     storage: StorageManager<S, Read<S, V>, Write<S, V>>,
     eviction_queue: Arc<SegQueue<V::ResourceId>>,
     txs: Vec<RuntimeTx<S, V>>,
@@ -38,8 +37,8 @@ pub struct RuntimeBatch<S: Store<StateSpace = StateSpace>, V: VmInterface> {
 }
 
 impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
-    pub fn index(&self) -> u64 {
-        self.index
+    pub fn checkpoint(&self) -> &Checkpoint<V::BatchMetadata> {
+        &self.checkpoint
     }
 
     pub fn txs(&self) -> &[RuntimeTx<S, V>] {
@@ -59,7 +58,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
     }
 
     pub fn was_canceled(&self) -> bool {
-        self.index > self.cancellation.cancel_threshold()
+        self.checkpoint.index() > self.cancellation.threshold()
     }
 
     pub fn was_processed(&self) -> bool {
@@ -117,18 +116,15 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
         vm: V,
         manager: &mut Scheduler<S, V>,
         txs: Vec<V::Transaction>,
-        metadata: V::BatchMetadata,
+        checkpoint: Checkpoint<V::BatchMetadata>,
+        cancellation: CancellationContext,
+        commit_frontier: Arc<AtomicU64>,
     ) -> Self {
-        let index = manager.batch_execution_mut().assign_next_batch(metadata.clone());
-        let cancellation = manager.batch_execution().cancellation().clone();
-        let commit_frontier = manager.batch_execution().commit_frontier();
-
         Self(Arc::new_cyclic(|this| {
             let mut state_diffs = Vec::new();
 
             RuntimeBatchData {
-                index,
-                batch_metadata: metadata,
+                checkpoint,
                 cancellation,
                 commit_frontier,
                 storage: manager.storage().clone(),
@@ -210,18 +206,15 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
             for state_diff in self.state_diffs() {
                 state_diff.written_state().write_latest_ptr(wb);
             }
-            StoredBatchMetadata::set(wb, self.index, &self.batch_metadata);
-            StateMetadata::set_last_processed(
-                wb,
-                &Checkpoint::new(self.index, self.batch_metadata.clone()),
-            );
+            StoredBatchMetadata::set(wb, self.checkpoint.index(), self.checkpoint.metadata());
+            StateMetadata::set_last_processed(wb, &self.checkpoint);
         }
     }
 
     pub(crate) fn commit_done(self) {
         // Advance the commit frontier only for non-canceled batches.
         if !self.was_canceled() {
-            self.commit_frontier.fetch_max(self.index, Ordering::Release);
+            self.commit_frontier.fetch_max(self.checkpoint.index(), Ordering::Release);
         }
 
         // Mark the batch as committed.

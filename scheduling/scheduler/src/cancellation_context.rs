@@ -34,7 +34,7 @@ impl CancellationContext {
     }
 
     /// Returns the cancel threshold. Batches with index > threshold should abort.
-    pub fn cancel_threshold(&self) -> u64 {
+    pub fn threshold(&self) -> u64 {
         self.cancel_threshold.load(Ordering::Acquire)
     }
 

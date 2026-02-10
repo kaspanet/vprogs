@@ -124,9 +124,9 @@ pub fn test_add_batches_after_rollback() {
         let batch3 = runtime.schedule(BatchMetadata::new(3), vec![Tx(2, vec![Access::Write(3)])]);
         batch3.wait_committed_blocking();
 
-        assert_eq!(batch1.index(), 1);
-        assert_eq!(batch2.index(), 2);
-        assert_eq!(batch3.index(), 3);
+        assert_eq!(batch1.checkpoint().index(), 1);
+        assert_eq!(batch2.checkpoint().index(), 2);
+        assert_eq!(batch3.checkpoint().index(), 3);
 
         // Verify initial state
         runtime
@@ -148,8 +148,8 @@ pub fn test_add_batches_after_rollback() {
         let batch5 = runtime.schedule(BatchMetadata::new(5), vec![Tx(11, vec![Access::Write(11)])]);
         batch5.wait_committed_blocking();
 
-        assert_eq!(batch4.index(), 2);
-        assert_eq!(batch5.index(), 3);
+        assert_eq!(batch4.checkpoint().index(), 2);
+        assert_eq!(batch5.checkpoint().index(), 3);
 
         // Verify new state
         runtime
@@ -233,8 +233,8 @@ pub fn test_rollback_multiple_contexts() {
         let batch6 = runtime.schedule(BatchMetadata::new(6), vec![Tx(6, vec![Access::Write(6)])]);
         batch6.wait_committed_blocking();
 
-        assert_eq!(batch1.index(), 1);
-        assert_eq!(batch6.index(), 6);
+        assert_eq!(batch1.checkpoint().index(), 1);
+        assert_eq!(batch6.checkpoint().index(), 6);
 
         // Verify all resources exist
         runtime
@@ -264,8 +264,8 @@ pub fn test_rollback_multiple_contexts() {
             runtime.schedule(BatchMetadata::new(70), vec![Tx(70, vec![Access::Write(70)])]);
         batch7.wait_committed_blocking();
 
-        assert_eq!(new_batch6.index(), 6);
-        assert_eq!(batch7.index(), 7);
+        assert_eq!(new_batch6.checkpoint().index(), 6);
+        assert_eq!(batch7.checkpoint().index(), 7);
 
         runtime.assert_written_state(60, vec![60]).assert_written_state(70, vec![70]);
 
@@ -289,8 +289,8 @@ pub fn test_rollback_multiple_contexts() {
             runtime.schedule(BatchMetadata::new(50), vec![Tx(50, vec![Access::Write(50)])]);
         final_batch5.wait_committed_blocking();
 
-        assert_eq!(final_batch4.index(), 4);
-        assert_eq!(final_batch5.index(), 5);
+        assert_eq!(final_batch4.checkpoint().index(), 4);
+        assert_eq!(final_batch5.checkpoint().index(), 5);
 
         // Verify final state
         runtime
@@ -339,7 +339,7 @@ pub fn test_rollback_to_zero() {
             runtime.schedule(BatchMetadata::new(100), vec![Tx(100, vec![Access::Write(100)])]);
         new_batch1.wait_committed_blocking();
 
-        assert_eq!(new_batch1.index(), 1);
+        assert_eq!(new_batch1.checkpoint().index(), 1);
         runtime.assert_written_state(100, vec![100]);
 
         runtime.shutdown();
@@ -403,7 +403,7 @@ pub fn test_consecutive_rollbacks() {
         let new_batch =
             runtime.schedule(BatchMetadata::new(100), vec![Tx(100, vec![Access::Write(100)])]);
         new_batch.wait_committed_blocking();
-        assert_eq!(new_batch.index(), 2);
+        assert_eq!(new_batch.checkpoint().index(), 2);
 
         runtime.shutdown();
     }
@@ -670,35 +670,35 @@ pub fn test_basic_pruning() {
         // Verify rollback pointers exist for batches 2 and 3
         let store = runtime.storage().store();
         assert_eq!(
-            StatePtrRollback::iter_batch(store.as_ref(), batch2.index()).count(),
+            StatePtrRollback::iter_batch(store.as_ref(), batch2.checkpoint().index()).count(),
             1,
             "Batch 2 should have rollback pointer"
         );
         assert_eq!(
-            StatePtrRollback::iter_batch(store.as_ref(), batch3.index()).count(),
+            StatePtrRollback::iter_batch(store.as_ref(), batch3.checkpoint().index()).count(),
             1,
             "Batch 3 should have rollback pointer"
         );
 
         // Set pruning threshold to batch 3 (prune batches 1 and 2)
-        runtime.pruning().set_threshold(batch3.index());
-        runtime.wait_pruned(batch2.index(), Duration::from_secs(10));
+        runtime.pruning().set_threshold(batch3.checkpoint().index());
+        runtime.wait_pruned(batch2.checkpoint().index(), Duration::from_secs(10));
 
         // Verify rollback pointers for batches 1 and 2 are deleted
         assert_eq!(
-            StatePtrRollback::iter_batch(store.as_ref(), batch1.index()).count(),
+            StatePtrRollback::iter_batch(store.as_ref(), batch1.checkpoint().index()).count(),
             0,
             "Batch 1 rollback pointers should be pruned"
         );
         assert_eq!(
-            StatePtrRollback::iter_batch(store.as_ref(), batch2.index()).count(),
+            StatePtrRollback::iter_batch(store.as_ref(), batch2.checkpoint().index()).count(),
             0,
             "Batch 2 rollback pointers should be pruned"
         );
 
         // Batch 3 should still have its rollback pointer (not pruned)
         assert_eq!(
-            StatePtrRollback::iter_batch(store.as_ref(), batch3.index()).count(),
+            StatePtrRollback::iter_batch(store.as_ref(), batch3.checkpoint().index()).count(),
             1,
             "Batch 3 rollback pointer should NOT be pruned"
         );
@@ -921,35 +921,35 @@ pub fn test_pruning_multiple_resources() {
 
         // Batch 2 and 3 should have 3 rollback pointers each
         assert_eq!(
-            StatePtrRollback::iter_batch(store.as_ref(), batch2.index()).count(),
+            StatePtrRollback::iter_batch(store.as_ref(), batch2.checkpoint().index()).count(),
             3,
             "Batch 2 should have 3 rollback pointers"
         );
         assert_eq!(
-            StatePtrRollback::iter_batch(store.as_ref(), batch3.index()).count(),
+            StatePtrRollback::iter_batch(store.as_ref(), batch3.checkpoint().index()).count(),
             3,
             "Batch 3 should have 3 rollback pointers"
         );
 
         // Prune batch 1 and 2
-        runtime.pruning().set_threshold(batch3.index());
-        runtime.wait_pruned(batch2.index(), Duration::from_secs(10));
+        runtime.pruning().set_threshold(batch3.checkpoint().index());
+        runtime.wait_pruned(batch2.checkpoint().index(), Duration::from_secs(10));
 
         // All rollback pointers for batches 1 and 2 should be deleted
         assert_eq!(
-            StatePtrRollback::iter_batch(store.as_ref(), batch1.index()).count(),
+            StatePtrRollback::iter_batch(store.as_ref(), batch1.checkpoint().index()).count(),
             0,
             "Batch 1 should have no rollback pointers after pruning"
         );
         assert_eq!(
-            StatePtrRollback::iter_batch(store.as_ref(), batch2.index()).count(),
+            StatePtrRollback::iter_batch(store.as_ref(), batch2.checkpoint().index()).count(),
             0,
             "Batch 2 should have no rollback pointers after pruning"
         );
 
         // Batch 3 should still have its rollback pointers
         assert_eq!(
-            StatePtrRollback::iter_batch(store.as_ref(), batch3.index()).count(),
+            StatePtrRollback::iter_batch(store.as_ref(), batch3.checkpoint().index()).count(),
             3,
             "Batch 3 should still have 3 rollback pointers"
         );

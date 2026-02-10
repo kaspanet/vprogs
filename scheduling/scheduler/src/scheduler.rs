@@ -73,7 +73,12 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
         metadata: V::BatchMetadata,
         txs: Vec<V::Transaction>,
     ) -> RuntimeBatch<S, V> {
-        RuntimeBatch::new(self.vm.clone(), self, txs, metadata)
+        // Advance the batch sequence and obtain the shared state needed by the runtime batch:
+        // the checkpoint identity, cancellation context for rollback detection, and the atomic
+        // commit frontier that workers advance when a batch commits.
+        let (checkpoint, cancel, commit) = self.batch_execution.next_checkpoint(metadata);
+
+        RuntimeBatch::new(self.vm.clone(), self, txs, checkpoint, cancel, commit)
             // Connect transactions to resource dependency chains.
             .tap(RuntimeBatch::connect)
             .tap(|batch| {
@@ -117,7 +122,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
     pub fn rollback_to(&mut self, target_index: u64) -> Checkpoint<V::BatchMetadata> {
         // Determine the range of batches to roll back.
         let lower_bound = target_index + 1;
-        let upper_bound = self.batch_execution.last_checkpoint().index();
+        let upper_bound = self.batch_execution.last_processed().index();
 
         // Only perform a rollback if there is state to revert.
         if upper_bound >= lower_bound {
@@ -139,18 +144,13 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
 
             target
         } else {
-            self.batch_execution.last_checkpoint().clone()
+            self.batch_execution.last_processed().clone()
         }
     }
 
     /// Returns a reference to the batch execution context.
     pub fn batch_execution(&self) -> &BatchExecutionContext<V::BatchMetadata> {
         &self.batch_execution
-    }
-
-    /// Returns a mutable reference to the batch execution context.
-    pub(crate) fn batch_execution_mut(&mut self) -> &mut BatchExecutionContext<V::BatchMetadata> {
-        &mut self.batch_execution
     }
 
     /// Returns a reference to the VM implementation.

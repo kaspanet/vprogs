@@ -70,7 +70,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> StateDiff<S, V> {
 
         if !batch.was_canceled() {
             written_state.write_data(wb);
-            read_state.write_rollback_ptr(wb, batch.index());
+            read_state.write_rollback_ptr(wb, batch.checkpoint().index());
         }
     }
 
