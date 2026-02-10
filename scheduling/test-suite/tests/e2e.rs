@@ -790,7 +790,7 @@ pub fn test_pruning_crash_recovery() {
             StorageConfig::default().with_store(storage),
         );
 
-        let pruned = runtime.pruning().last_checkpoint();
+        let pruned = runtime.pruning().last_pruned();
         assert_eq!(pruned.index(), 2, "Pruning should resume from persisted index");
         assert_eq!(*pruned.metadata(), 2, "Pruning metadata should survive restart");
 

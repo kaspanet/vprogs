@@ -33,7 +33,8 @@ use crate::VmInterface;
 /// access, avoiding contention with the main write path.
 ///
 /// All coordination uses lock-free primitives:
-/// - `AtomicU64` for threshold and progress tracking
+/// - `AtomicU64` for threshold tracking
+/// - `ArcSwap` for caching the last pruned checkpoint
 /// - `Notify` for wakeup signaling
 pub struct PruningWorker<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     /// The batch index up to which pruning is allowed (exclusive).
@@ -69,7 +70,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
     }
 
     /// Returns the last successfully pruned checkpoint from cache.
-    pub fn last_checkpoint(&self) -> Checkpoint<V::BatchMetadata> {
+    pub fn last_pruned(&self) -> Checkpoint<V::BatchMetadata> {
         self.last_pruned.load().as_ref().clone()
     }
 
@@ -141,8 +142,8 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
     /// Executes pruning directly on the store for the given batch range.
     ///
     /// This runs on the dedicated pruning thread and does not interfere with the main write path.
-    /// The last pruned index and batch id are persisted atomically with the deletions for
-    /// crash-fault tolerance.
+    /// The last pruned checkpoint is persisted atomically with the deletions for crash-fault
+    /// tolerance.
     fn prune(store: &S, lower_bound: u64, upper_bound: u64) -> V::BatchMetadata {
         StoredBatchMetadata::get::<V::BatchMetadata, S>(store, upper_bound).tap(|metadata| {
             // Commit all deletions and metadata update atomically.
