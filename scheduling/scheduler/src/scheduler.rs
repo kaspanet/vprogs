@@ -10,8 +10,8 @@ use vprogs_storage_types::Store;
 
 use crate::{
     BatchExecutionContext, BatchLifecycleWorker, ExecutionConfig, PruningWorker, Read, Resource,
-    ResourceAccess, Rollback, RuntimeBatch, RuntimeBatchRef, RuntimeTxRef, StateDiff, Write,
-    cpu_task::ManagerTask, vm_interface::VmInterface,
+    ResourceAccess, Rollback, RuntimeBatch, RuntimeBatchRef, RuntimeTxRef, SchedulerError,
+    SchedulerResult, StateDiff, Write, cpu_task::ManagerTask, vm_interface::VmInterface,
 };
 
 /// Orchestrates transaction execution, state management, and storage coordination.
@@ -106,12 +106,24 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
 
     /// Rolls back the runtime state to the given batch index, returning the target checkpoint.
     /// If the current state is already at or behind the target, returns the current checkpoint.
-    pub fn rollback_to(&mut self, target_index: u64) -> Checkpoint<V::BatchMetadata> {
+    ///
+    /// Returns [`SchedulerError::PruningConflict`] if pruning has advanced past the
+    /// rollback target and the required rollback pointers have been deleted.
+    pub fn rollback_to(
+        &mut self,
+        target_index: u64,
+    ) -> SchedulerResult<Checkpoint<V::BatchMetadata>> {
         // Determine the range of batches to roll back.
         let upper_bound = self.batch_execution.last_processed().index();
 
         // Only perform a rollback if there is state to revert.
         if upper_bound > target_index {
+            // Prevent the pruning worker from pruning into the rollback range.
+            // Returns false if pruning has already advanced past the target.
+            if !self.pruning_worker.pause(target_index) {
+                return Err(SchedulerError::PruningConflict);
+            }
+
             // Look up target metadata and update batch execution context.
             let (target, commit_frontier) = self.batch_execution.rollback(target_index);
 
@@ -125,12 +137,15 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
             )));
             done_signal.wait_blocking();
 
+            // Rollback complete — allow pruning to resume.
+            self.pruning_worker.unpause();
+
             // Clear in-memory resource pointers, as their state may no longer be valid.
             self.resources.clear();
 
-            target
+            Ok(target)
         } else {
-            self.batch_execution.last_processed().clone()
+            Ok(self.batch_execution.last_processed().clone())
         }
     }
 

@@ -80,7 +80,7 @@ pub fn test_rollback_committed() {
         assert_eq!(*checkpoint.metadata(), 3);
 
         // Rollback to index 1 (revert batches with index 2 and 3, keep batch with index 1)
-        let target = runtime.rollback_to(1);
+        let target = runtime.rollback_to(1).expect("rollback should succeed");
         assert_eq!(target.index(), 1);
         assert_eq!(*target.metadata(), 1);
 
@@ -131,7 +131,7 @@ pub fn test_add_batches_after_rollback() {
             .assert_written_state(3, vec![2]);
 
         // Rollback to batch 1 (keep batch 1, remove batches 2 and 3)
-        runtime.rollback_to(1);
+        runtime.rollback_to(1).expect("rollback should succeed");
 
         // Resources 2 and 3 should be deleted, resource 1 should still exist
         runtime
@@ -181,7 +181,7 @@ pub fn test_inflight_cancellation_without_waiting() {
 
         // Immediately rollback without waiting for batches 2-4 to commit
         // This tests in-flight cancellation
-        runtime.rollback_to(1);
+        runtime.rollback_to(1).expect("rollback should succeed");
 
         // After rollback, the canceled batches should have was_canceled() == true
         assert!(batch2.was_canceled(), "batch2 should be canceled");
@@ -241,7 +241,7 @@ pub fn test_rollback_multiple_contexts() {
             .assert_written_state(6, vec![6]);
 
         // Phase 2: Rollback to 5 (keeps batches 1-5, removes batch 6)
-        runtime.rollback_to(5);
+        runtime.rollback_to(5).expect("rollback should succeed");
 
         // Batch 6's resource should be deleted, batches 1-5 should still exist
         runtime
@@ -263,7 +263,7 @@ pub fn test_rollback_multiple_contexts() {
         runtime.assert_written_state(60, vec![60]).assert_written_state(70, vec![70]);
 
         // Phase 4: Rollback to 3 (must walk parent cancellation chain)
-        runtime.rollback_to(3);
+        runtime.rollback_to(3).expect("rollback should succeed");
 
         // Batches 1-3 should remain, 4-5 and new 6-7 should be deleted
         runtime
@@ -320,7 +320,7 @@ pub fn test_rollback_to_zero() {
             .assert_written_state(3, vec![3]);
 
         // Rollback to 0 (before any batches)
-        runtime.rollback_to(0);
+        runtime.rollback_to(0).expect("rollback should succeed");
 
         // All resources should be deleted
         runtime.assert_resource_deleted(1).assert_resource_deleted(2).assert_resource_deleted(3);
@@ -365,7 +365,7 @@ pub fn test_consecutive_rollbacks() {
             .assert_written_state(5, vec![5]);
 
         // First rollback: to 4
-        runtime.rollback_to(4);
+        runtime.rollback_to(4).expect("rollback should succeed");
         runtime
             .assert_resource_deleted(5)
             .assert_written_state(1, vec![1])
@@ -374,7 +374,7 @@ pub fn test_consecutive_rollbacks() {
             .assert_written_state(4, vec![4]);
 
         // Second rollback: to 3
-        runtime.rollback_to(3);
+        runtime.rollback_to(3).expect("rollback should succeed");
         runtime
             .assert_resource_deleted(4)
             .assert_resource_deleted(5)
@@ -383,7 +383,7 @@ pub fn test_consecutive_rollbacks() {
             .assert_written_state(3, vec![3]);
 
         // Third rollback: to 1
-        runtime.rollback_to(1);
+        runtime.rollback_to(1).expect("rollback should succeed");
         runtime
             .assert_resource_deleted(2)
             .assert_resource_deleted(3)
@@ -421,7 +421,7 @@ pub fn test_rollback_same_resource_multiple_writes() {
         runtime.assert_written_state(1, vec![10, 20, 30, 40]);
 
         // Rollback to batch 2 (keep writes from batch 1 and 2)
-        runtime.rollback_to(2);
+        runtime.rollback_to(2).expect("rollback should succeed");
         runtime.assert_written_state(1, vec![10, 20]);
 
         // Add more writes
@@ -432,7 +432,7 @@ pub fn test_rollback_same_resource_multiple_writes() {
         runtime.assert_written_state(1, vec![10, 20, 50]);
 
         // Rollback to batch 1
-        runtime.rollback_to(1);
+        runtime.rollback_to(1).expect("rollback should succeed");
         runtime.assert_written_state(1, vec![10]);
 
         runtime.shutdown();
@@ -460,7 +460,7 @@ pub fn test_cancellation_skips_writes() {
         let batch3 = runtime.schedule(3, vec![Tx(3, vec![Access::Write(200)])]);
 
         // Rollback immediately - batch2 and batch3 should be canceled
-        runtime.rollback_to(1);
+        runtime.rollback_to(1).expect("rollback should succeed");
 
         // Verify both batches were canceled
         assert!(batch2.was_canceled(), "batch2 should be canceled");
@@ -520,7 +520,7 @@ pub fn test_rollback_interleaved_multi_resource() {
             .assert_written_state(3, vec![21, 31, 42]);
 
         // Rollback to batch 2
-        runtime.rollback_to(2);
+        runtime.rollback_to(2).expect("rollback should succeed");
 
         runtime
             .assert_written_state(1, vec![10]) // Only from batch 1
@@ -929,6 +929,108 @@ pub fn test_pruning_multiple_resources() {
             .assert_written_state(1, vec![1, 10, 100])
             .assert_written_state(2, vec![2, 20, 200])
             .assert_written_state(3, vec![3, 30, 300]);
+
+        runtime.shutdown();
+    }
+}
+
+/// Tests that `pause()` constrains the pruning worker and `unpause()` releases it.
+///
+/// Calls `pause(ceiling)` directly, then advances the pruning threshold well past the
+/// ceiling. The worker must not prune at or above the ceiling. After `unpause()`, the
+/// worker must catch up to the full threshold.
+#[test]
+pub fn test_pruning_pause_and_unpause() {
+    use vprogs_state_ptr_rollback::StatePtrRollback;
+
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut runtime = Scheduler::new(
+            ExecutionConfig::default().with_vm(VM),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // Create 6 committed batches, each overwriting the same resource.
+        for i in 1..=6 {
+            let batch = runtime.schedule(i as u64, vec![Tx(i, vec![Access::Write(1)])]);
+            batch.wait_committed_blocking();
+        }
+
+        // Pause pruning at batch 3: the worker may only prune batches 1-2.
+        assert!(runtime.pruning().pause(3));
+
+        // Advance threshold so batches 1-5 become eligible.
+        runtime.pruning().set_threshold(6);
+
+        // Wait for the worker to prune what it can (batches 1-2, below the ceiling).
+        runtime.wait_pruned(2, Duration::from_secs(10));
+
+        let store = runtime.storage().store();
+
+        // Batches at or above the ceiling must still have their rollback pointers.
+        for batch_idx in 3..=6 {
+            assert_eq!(
+                StatePtrRollback::iter_batch(store.as_ref(), batch_idx).count(),
+                1,
+                "Batch {batch_idx} should NOT be pruned while paused"
+            );
+        }
+
+        // Unpause — the worker should now catch up to the full threshold.
+        runtime.pruning().unpause();
+        runtime.wait_pruned(5, Duration::from_secs(10));
+
+        for batch_idx in 1..=5 {
+            assert_eq!(
+                StatePtrRollback::iter_batch(store.as_ref(), batch_idx).count(),
+                0,
+                "Batch {batch_idx} should be pruned after unpause"
+            );
+        }
+
+        // Batch 6 (at threshold) must still have its rollback pointer.
+        assert_eq!(
+            StatePtrRollback::iter_batch(store.as_ref(), 6).count(),
+            1,
+            "Batch 6 should NOT be pruned (at threshold)"
+        );
+
+        runtime.shutdown();
+    }
+}
+
+/// Tests that `rollback_to` returns `PruningConflict` when the rollback target
+/// has already been pruned past.
+#[test]
+pub fn test_rollback_pruning_conflict() {
+    use vprogs_scheduling_scheduler::SchedulerError;
+
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut runtime = Scheduler::new(
+            ExecutionConfig::default().with_vm(VM),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // Create 5 committed batches.
+        for i in 1..=5 {
+            let batch = runtime.schedule(i as u64, vec![Tx(i, vec![Access::Write(1)])]);
+            batch.wait_committed_blocking();
+        }
+
+        // Prune batches 1-3 (threshold = 4, batches < 4 eligible).
+        runtime.pruning().set_threshold(4);
+        runtime.wait_pruned(3, Duration::from_secs(10));
+
+        // Rollback to batch 2 should fail — its rollback pointers are gone.
+        let err = runtime.rollback_to(2).unwrap_err();
+        assert!(matches!(err, SchedulerError::PruningConflict));
+
+        // Rollback to batch 4 should still succeed — above the pruned range.
+        let target = runtime.rollback_to(4).expect("rollback should succeed");
+        assert_eq!(target.index(), 4);
 
         runtime.shutdown();
     }

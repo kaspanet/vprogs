@@ -40,6 +40,15 @@ pub struct PruningWorker<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     /// The batch index up to which pruning is allowed (exclusive).
     /// Batches with index < threshold can be pruned.
     pruning_threshold: Arc<AtomicU64>,
+    /// Upper bound on effective pruning threshold. `u64::MAX` means unconstrained.
+    /// Set before a rollback to prevent the pruning worker from pruning into the
+    /// rollback range; cleared after the rollback completes.
+    pause_ceiling: Arc<AtomicU64>,
+    /// Tracks the upper bound of the last completed (or in-flight) prune pass.
+    /// Monotonically increasing. Used together with `pause_ceiling` in a
+    /// Dekker-style handshake (both use `SeqCst`) so that `pause` can detect
+    /// an in-flight or already-completed prune that overlaps the rollback range.
+    pruning_cursor: Arc<AtomicU64>,
     /// Cached last pruned batch (index + metadata). Updated atomically after each pruning pass
     /// to avoid disk reads on the query path.
     last_pruned: Arc<ArcSwap<Checkpoint<V::BatchMetadata>>>,
@@ -74,6 +83,36 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
         self.last_pruned.load().as_ref().clone()
     }
 
+    /// Pauses pruning at or above the given index.
+    ///
+    /// Called before a rollback to ensure the pruning worker does not delete state
+    /// that the rollback needs. The ceiling is applied as
+    /// `effective_threshold = threshold.min(ceiling)`.
+    ///
+    /// Returns `true` if the pruning cursor is at or below the ceiling (no
+    /// completed or in-flight prune has deleted data the rollback needs),
+    /// `false` otherwise. On failure the ceiling is reset to `u64::MAX` so
+    /// pruning is not permanently throttled. Both sides use `SeqCst`
+    /// (Dekker-style) so at least one side detects the conflict: either the
+    /// worker aborts its pass, or this method returns `false`.
+    pub fn pause(&self, ceiling: u64) -> bool {
+        self.pause_ceiling.store(ceiling, Ordering::SeqCst);
+        if self.pruning_cursor.load(Ordering::SeqCst) <= ceiling {
+            true
+        } else {
+            self.pause_ceiling.store(u64::MAX, Ordering::Release);
+            false
+        }
+    }
+
+    /// Unpauses pruning (restores the ceiling to `u64::MAX`) and wakes the worker.
+    ///
+    /// Called after a rollback completes so pruning can resume normally.
+    pub fn unpause(&self) {
+        self.pause_ceiling.store(u64::MAX, Ordering::Release);
+        self.notify.notify_one();
+    }
+
     /// Creates a new pruning worker with direct store access.
     ///
     /// The worker resumes from the last successfully pruned batch index stored in metadata.
@@ -83,13 +122,29 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
         let persisted: Checkpoint<V::BatchMetadata> = StateMetadata::last_pruned(store.as_ref());
 
         let pruning_threshold = Arc::new(AtomicU64::new(persisted.index()));
+        let pause_ceiling = Arc::new(AtomicU64::new(u64::MAX));
+        let pruning_cursor = Arc::new(AtomicU64::new(persisted.index()));
         let last_pruned = Arc::new(ArcSwap::from_pointee(persisted));
         let notify = Arc::new(Notify::new());
 
-        let handle =
-            Self::start(store, pruning_threshold.clone(), last_pruned.clone(), notify.clone());
+        let handle = Self::start(
+            store,
+            pruning_threshold.clone(),
+            pause_ceiling.clone(),
+            pruning_cursor.clone(),
+            last_pruned.clone(),
+            notify.clone(),
+        );
 
-        Self { pruning_threshold, last_pruned, notify, handle, _marker: PhantomData }
+        Self {
+            pruning_threshold,
+            pause_ceiling,
+            pruning_cursor,
+            last_pruned,
+            notify,
+            handle,
+            _marker: PhantomData,
+        }
     }
 
     /// Shuts down the pruning worker and waits for it to complete.
@@ -107,6 +162,8 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
     fn start(
         store: Arc<S>,
         pruning_threshold: Arc<AtomicU64>,
+        pause_ceiling: Arc<AtomicU64>,
+        pruning_cursor: Arc<AtomicU64>,
         last_pruned: Arc<ArcSwap<Checkpoint<V::BatchMetadata>>>,
         notify: Arc<Notify>,
     ) -> JoinHandle<()> {
@@ -115,16 +172,29 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
                 async move {
                     // Use strong_count to detect shutdown (when the outer struct is dropped).
                     while Arc::strong_count(&pruning_threshold) != 1 {
-                        let threshold = pruning_threshold.load(Ordering::Acquire);
+                        let effective_threshold = pruning_threshold
+                            .load(Ordering::Acquire)
+                            .min(pause_ceiling.load(Ordering::Acquire));
                         let last_pruned_index = last_pruned.load().index();
 
                         // Check if there's pruning work to do.
-                        if threshold > last_pruned_index + 1 {
-                            // Prune batches from (last_pruned + 1) to (threshold - 1) inclusive.
+                        if effective_threshold > last_pruned_index + 1 {
                             let lower_bound = last_pruned_index + 1;
-                            let upper_bound = threshold - 1;
+                            let upper_bound = effective_threshold - 1;
+
+                            // Advance cursor to signal our prune range (Dekker step 1).
+                            let prev = pruning_cursor.swap(upper_bound, Ordering::SeqCst);
+
+                            // Re-check ceiling (Dekker step 2: read their flag). A ceiling may have
+                            // been set between our initial read and the store above. If so, restore
+                            // the cursor and abort this pass.
+                            if pause_ceiling.load(Ordering::SeqCst) < upper_bound {
+                                pruning_cursor.store(prev, Ordering::Release);
+                                continue;
+                            }
 
                             // Execute pruning directly on the store.
+                            // The cursor stays at upper_bound — it now reflects completed progress.
                             let metadata = Self::prune(&store, lower_bound, upper_bound);
 
                             // Update the cached last pruned state.
