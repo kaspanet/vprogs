@@ -10,6 +10,7 @@ crossbeam-deque.workspace                     = true
 crossbeam-queue.workspace                     = true
 num_cpus.workspace                            = true
 tap.workspace                                 = true
+thiserror.workspace                           = true
 tokio.workspace                               = true
 vprogs-core-atomics.workspace                 = true
 vprogs-core-macros.workspace                  = true

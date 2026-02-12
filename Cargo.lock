@@ -5499,6 +5499,7 @@ dependencies = [
  "crossbeam-queue",
  "num_cpus",
  "tap",
+ "thiserror 2.0.18",
  "tokio",
  "vprogs-core-atomics",
  "vprogs-core-macros",
