@@ -172,16 +172,20 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
                 async move {
                     // Use strong_count to detect shutdown (when the outer struct is dropped).
                     while Arc::strong_count(&pruning_threshold) != 1 {
-                        let effective_threshold = pruning_threshold
+                        // First batch not yet pruned (one past the last completed).
+                        let lower_bound = last_pruned.load().index() + 1;
+
+                        // Last batch eligible for pruning: (min of requested threshold and pause
+                        // ceiling) converted from exclusive to inclusive. `saturating_sub` guards
+                        // against underflow when the effective threshold is 0 (e.g. fresh start
+                        // before any `set_threshold` call).
+                        let upper_bound = pruning_threshold
                             .load(Ordering::Acquire)
-                            .min(pause_ceiling.load(Ordering::Acquire));
-                        let last_pruned_index = last_pruned.load().index();
+                            .min(pause_ceiling.load(Ordering::Acquire))
+                            .saturating_sub(1);
 
                         // Check if there's pruning work to do.
-                        if effective_threshold > last_pruned_index + 1 {
-                            let lower_bound = last_pruned_index + 1;
-                            let upper_bound = effective_threshold - 1;
-
+                        if upper_bound >= lower_bound {
                             // Advance cursor to signal our prune range (Dekker step 1).
                             let prev = pruning_cursor.swap(upper_bound, Ordering::SeqCst);
 
