@@ -2,9 +2,8 @@ use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::BlockHash;
 
-/// Persistable metadata extracted from an L1 chain block.
+/// Relevant metadata extracted from an L1 chain block.
 ///
-/// Contains the fields needed to reconstruct a [`ChainBlock`](crate::ChainBlock) on resume.
 /// Satisfies the [`BatchMetadata`](vprogs_core_types::BatchMetadata) blanket impl via its derived
 /// traits.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
