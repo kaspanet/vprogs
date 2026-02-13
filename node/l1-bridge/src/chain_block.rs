@@ -83,12 +83,14 @@ impl ChainBlock {
     }
 }
 
+/// Extracts the persistable checkpoint (index + metadata) from a chain block.
 impl From<ChainBlock> for Checkpoint<ChainBlockMetadata> {
     fn from(block: ChainBlock) -> Self {
         Self::new(block.index(), block.metadata())
     }
 }
 
+/// Reconstructs an unlinked chain block from a persisted checkpoint.
 impl From<Checkpoint<ChainBlockMetadata>> for ChainBlock {
     fn from(checkpoint: Checkpoint<ChainBlockMetadata>) -> Self {
         Self::new(checkpoint.index(), *checkpoint.metadata())

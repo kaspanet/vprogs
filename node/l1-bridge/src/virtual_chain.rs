@@ -53,7 +53,7 @@ impl VirtualChain {
             return Err(Error::RollbackPastRoot { target_index, root_index: self.root.index() });
         }
 
-        // Walk backwards, unlinking each block from its predecessor.
+        // Calculate reorg_depth and walk backwards, unlinking each block from its predecessor.
         let old_blue_score = self.tip.metadata().blue_score();
         for _ in 0..num_blocks {
             self.tip = self.tip.rollback_tip();
