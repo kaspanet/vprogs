@@ -86,8 +86,8 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
     /// Pauses pruning at or above the given index.
     ///
     /// Called before a rollback to ensure the pruning worker does not delete state
-    /// that the rollback needs. The ceiling is applied as
-    /// `effective_threshold = threshold.min(ceiling)`.
+    /// that the rollback needs. The ceiling clamps the worker's upper bound as
+    /// `upper_bound = threshold.min(ceiling) - 1`.
     ///
     /// Returns `true` if the pruning cursor is at or below the ceiling (no
     /// completed or in-flight prune has deleted data the rollback needs),
