@@ -5470,6 +5470,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-node-framework"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "log",
+ "thiserror 2.0.18",
+ "tokio",
+ "vprogs-core-atomics",
+ "vprogs-core-types",
+ "vprogs-node-l1-bridge",
+ "vprogs-scheduling-scheduler",
+ "vprogs-state-space",
+ "vprogs-storage-manager",
+ "vprogs-storage-types",
+]
+
+[[package]]
 name = "vprogs-node-l1-bridge"
 version = "0.1.0"
 dependencies = [
@@ -5518,6 +5535,8 @@ dependencies = [
 name = "vprogs-node-vm"
 version = "0.1.0"
 dependencies = [
+ "vprogs-node-framework",
+ "vprogs-node-l1-bridge",
  "vprogs-scheduling-scheduler",
  "vprogs-state-space",
  "vprogs-storage-types",
