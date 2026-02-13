@@ -26,9 +26,12 @@ resolver = "3"
   # External dependencies
   arc-swap = "1.7"
   borsh = { version = "1.6.0", features = ["derive"] }
+  clap = { version = "4", features = ["derive"] }
   crossbeam-deque = "0.8.6"
   crossbeam-queue = "0.3.12"
   crossbeam-utils = "0.8.21"
+  ctrlc = { version = "3", features = ["termination"] }
+  env_logger = "0.11"
   fastrand = "2.3.0"
   futures = "0.3.31"
   intrusive-collections = "0.9.7"
@@ -45,6 +48,7 @@ resolver = "3"
     "jemalloc",
     "mt_static",
   ] }
+  serde = { version = "1", features = ["derive"] }
   serde_json = "1"
   syn = { version = "2.0.111", features = ["full"] }
   tap = "1.0.1"
@@ -52,6 +56,7 @@ resolver = "3"
   thiserror = "2"
   tokio = { version = "1", features = ["rt", "sync"] }
   tokio-util = "0.7.17"
+  toml = "0.8"
   workflow-core = "0.18.0"
 
   secp256k1 = { version = "0.29.1", features = ["rand-std"] }
@@ -74,6 +79,7 @@ resolver = "3"
   vprogs-core-atomics                             = { path = "core/atomics" }
   vprogs-core-macros                              = { path = "core/macros" }
   vprogs-core-types                               = { path = "core/types" }
+  vprogs-node-cli                                 = { path = "node/cli" }
   vprogs-node-framework                           = { path = "node/framework" }
   vprogs-node-l1-bridge                           = { path = "node/l1-bridge" }
   vprogs-node-test-suite                          = { path = "node/test-suite" }

@@ -36,5 +36,5 @@ pub(crate) mod write {
 
 pub use config::StorageConfig;
 pub use manager::StorageManager;
-pub use read::ReadCmd;
-pub use write::WriteCmd;
+pub use read::{ReadCmd, ReadConfig};
+pub use write::{WriteCmd, WriteConfig};
