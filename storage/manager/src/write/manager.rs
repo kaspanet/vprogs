@@ -30,7 +30,7 @@ impl<K: Store, W: WriteCmd<K::StateSpace>> WriteManager<K, W> {
     }
 
     pub fn submit(&self, write: W) {
-        if self.queue.push(write) >= self.config.max_batch_size() && self.worker.is_parked() {
+        if self.queue.push(write) >= self.config.max_batch_size && self.worker.is_parked() {
             self.worker.wake();
         }
     }

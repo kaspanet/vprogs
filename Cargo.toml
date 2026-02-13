@@ -33,6 +33,7 @@ resolver = "3"
   ctrlc = { version = "3", features = ["termination"] }
   env_logger = "0.11"
   fastrand = "2.3.0"
+  figment = { version = "0.10", features = ["toml", "env"] }
   futures = "0.3.31"
   intrusive-collections = "0.9.7"
   log = "0.4"

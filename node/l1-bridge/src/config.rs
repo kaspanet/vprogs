@@ -42,8 +42,8 @@ impl Default for L1BridgeConfig {
 
 impl L1BridgeConfig {
     /// Sets the WebSocket URL for the L1 node.
-    pub fn with_url(mut self, url: impl Into<String>) -> Self {
-        self.url = Some(url.into());
+    pub fn with_url(mut self, url: Option<impl Into<String>>) -> Self {
+        self.url = url.map(Into::into);
         self
     }
 

@@ -19,7 +19,7 @@
 //! // Connect a bridge to it.
 //! let bridge = L1Bridge::new(
 //!     L1BridgeConfig::default()
-//!         .with_url(node.wrpc_borsh_url())
+//!         .with_url(Some(node.wrpc_borsh_url()))
 //!         .with_network_type(NetworkType::Simnet),
 //! );
 //!

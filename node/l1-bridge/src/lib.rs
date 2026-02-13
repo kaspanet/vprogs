@@ -12,7 +12,7 @@
 //!
 //! let bridge = L1Bridge::new(
 //!     L1BridgeConfig::default()
-//!         .with_url("ws://localhost:17110")
+//!         .with_url(Some("ws://localhost:17110"))
 //!         .with_network_type(NetworkType::Mainnet),
 //! );
 //!

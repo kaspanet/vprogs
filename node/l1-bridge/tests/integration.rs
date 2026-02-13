@@ -91,7 +91,7 @@ async fn test_bridge_syncs_from_specific_block() {
 
     // Start bridge from the last mined block at index 3.
     let config = L1BridgeConfig::default()
-        .with_url(node.wrpc_borsh_url())
+        .with_url(Some(node.wrpc_borsh_url()))
         .with_network_type(NetworkType::Simnet)
         .with_connect_strategy(ConnectStrategy::Fallback)
         .with_tip(Some(Checkpoint::new(3, ChainBlockMetadata::new(start_from, 0))));
@@ -132,7 +132,7 @@ async fn test_bridge_catches_up_after_reconnection() {
 
     // Phase 1: First bridge receives some blocks.
     let config = L1BridgeConfig::default()
-        .with_url(node.wrpc_borsh_url())
+        .with_url(Some(node.wrpc_borsh_url()))
         .with_network_type(NetworkType::Simnet)
         .with_connect_strategy(ConnectStrategy::Fallback);
 
@@ -165,7 +165,7 @@ async fn test_bridge_catches_up_after_reconnection() {
 
     // Phase 3: New bridge resumes from the checkpoint and catches up.
     let config = L1BridgeConfig::default()
-        .with_url(node.wrpc_borsh_url())
+        .with_url(Some(node.wrpc_borsh_url()))
         .with_network_type(NetworkType::Simnet)
         .with_connect_strategy(ConnectStrategy::Fallback)
         .with_tip(Some(checkpoint));
@@ -295,14 +295,14 @@ async fn test_reorg_filter_causes_lag() {
     // Two bridges to node1: one with reorg filter (1h period), one without.
     let filtered = L1Bridge::new(
         L1BridgeConfig::default()
-            .with_url(node1.wrpc_borsh_url())
+            .with_url(Some(node1.wrpc_borsh_url()))
             .with_network_type(NetworkType::Simnet)
             .with_connect_strategy(ConnectStrategy::Fallback)
             .with_reorg_filter_halving_period(Duration::from_secs(3600)),
     );
     let unfiltered = L1Bridge::new(
         L1BridgeConfig::default()
-            .with_url(node1.wrpc_borsh_url())
+            .with_url(Some(node1.wrpc_borsh_url()))
             .with_network_type(NetworkType::Simnet)
             .with_connect_strategy(ConnectStrategy::Fallback),
     );
@@ -387,7 +387,7 @@ async fn setup_node_with_bridge(
     let node = L1Node::new(None).await;
 
     let config = L1BridgeConfig::default()
-        .with_url(node.wrpc_borsh_url())
+        .with_url(Some(node.wrpc_borsh_url()))
         .with_network_type(NetworkType::Simnet)
         .with_connect_strategy(strategy)
         .with_tip(tip);

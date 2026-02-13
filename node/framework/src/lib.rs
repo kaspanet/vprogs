@@ -11,7 +11,10 @@
 //! use vprogs_node_framework::{Node, NodeConfig};
 //!
 //! // Configure and start the node.
-//! let config = NodeConfig::new(execution_config, storage_config, l1_bridge_config);
+//! let config = NodeConfig::default()
+//!     .with_execution_config(execution_config)
+//!     .with_storage_config(storage_config)
+//!     .with_l1_bridge_config(l1_bridge_config);
 //! let node = Node::new(config);
 //!
 //! // Query the scheduler through the API.

@@ -18,14 +18,12 @@ pub struct StorageManager<S: Store, R: ReadCmd<S::StateSpace>, W: WriteCmd<S::St
 
 impl<S: Store, R: ReadCmd<S::StateSpace>, W: WriteCmd<S::StateSpace>> StorageManager<S, R, W> {
     pub fn new(config: StorageConfig<S>) -> Self {
-        let (store, write_config, read_config) = config.unpack();
-
-        let store = Arc::new(store);
+        let store = Arc::new(config.store.expect("StorageConfig requires a store"));
         let is_shutdown = Arc::new(AtomicBool::new(false));
 
         Self(Arc::new(StorageManagerData {
-            reader: ReadManager::new(read_config, &store, &is_shutdown),
-            writer: WriteManager::new(write_config, &store, &is_shutdown),
+            reader: ReadManager::new(config.read_config, &store, &is_shutdown),
+            writer: WriteManager::new(config.write_config, &store, &is_shutdown),
             store,
             is_shutdown,
         }))

@@ -49,7 +49,7 @@ impl<K: Store, W: WriteCmd<K::StateSpace>> WriteWorker<K, W> {
     }
 
     fn run(self) {
-        let mut batch_cmds = Vec::with_capacity(self.config.max_batch_size());
+        let mut batch_cmds = Vec::with_capacity(self.config.max_batch_size);
         let mut write_batch = self.store.write_batch();
         let mut created = Instant::now();
 
@@ -73,12 +73,12 @@ impl<K: Store, W: WriteCmd<K::StateSpace>> WriteWorker<K, W> {
     }
 
     fn should_commit(&self, batch_size: usize, created: Instant) -> bool {
-        self.batch_is_full(batch_size) || created.elapsed() >= self.config.max_batch_duration()
+        self.batch_is_full(batch_size) || created.elapsed() >= self.config.max_batch_duration
     }
 
     #[inline(always)]
     fn batch_is_full(&self, batch_size: usize) -> bool {
-        batch_size >= self.config.max_batch_size()
+        batch_size >= self.config.max_batch_size
     }
 
     #[inline(always)]
@@ -89,7 +89,7 @@ impl<K: Store, W: WriteCmd<K::StateSpace>> WriteWorker<K, W> {
     fn park(&self) {
         self.is_parked.store(true, Ordering::Relaxed);
         if !self.is_shutdown() && self.queue.is_empty() {
-            self.parker.park_timeout(self.config.max_batch_duration());
+            self.parker.park_timeout(self.config.max_batch_duration);
         }
         self.is_parked.store(false, Ordering::Relaxed);
     }

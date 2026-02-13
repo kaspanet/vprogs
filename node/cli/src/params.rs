@@ -1,7 +1,10 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use vprogs_node_framework::NodeConfig;
+use vprogs_node_vm::VM;
+use vprogs_storage_rocksdb_store::{DefaultConfig, RocksDbStore};
 
 use crate::{
     execution_params::ExecutionParams, l1_bridge_params::L1BridgeParams,
@@ -9,23 +12,38 @@ use crate::{
 };
 
 /// vprogs L2 node for the Kaspa network.
-#[derive(Parser, Deserialize)]
-#[command(name = "vprogs-node", version)]
+#[derive(Parser, Serialize, Deserialize)]
+#[command(
+    name = "vprogs-node",
+    version,
+    before_help = "\
+╻ ╻┏━┓┏━┓┏━┓┏━╸┏━┓   ┏┓╻┏━┓╺┳┓┏━╸
+┃┏┛┣━┛┣┳┛┃ ┃┃╺┓┗━┓╺━╸┃┗┫┃ ┃ ┃┃┣╸
+┗┛ ╹  ╹┗╸┗━┛┗━┛┗━┛   ╹ ╹┗━┛╺┻┛┗━╸",
+    about = "vprogs L2 node for the Kaspa network.",
+    long_about = "\
+vprogs L2 node for the Kaspa network.
+
+Runs a Layer 2 execution engine that processes transactions scheduled against \
+Kaspa L1 blocks. Configuration is layered: built-in defaults → TOML config \
+file → environment variables (VPROGS_*) → CLI arguments."
+)]
 pub struct NodeParams {
     /// Path to TOML config file.
     #[arg(long, default_value = "vprogs.toml")]
     #[serde(skip)]
     pub config_file: PathBuf,
 
-    /// Log level: error, warn, info, debug, trace. Overridden by RUST_LOG if set.
-    #[arg(long, default_value = "info")]
-    #[serde(default = "default_log_level")]
-    pub log_level: String,
+    /// Log level: error, warn, info, debug, trace [default: info].
+    /// Overridden by RUST_LOG if set.
+    #[arg(long)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_level: Option<String>,
 
-    /// Bounded capacity of the node API request channel.
-    #[arg(long, default_value_t = 64)]
-    #[serde(default = "default_api_channel_capacity")]
-    pub api_channel_capacity: usize,
+    /// Bounded capacity of the node API request channel [default: 64].
+    #[arg(long)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_channel_capacity: Option<usize>,
 
     #[command(flatten)]
     pub execution: ExecutionParams,
@@ -37,20 +55,16 @@ pub struct NodeParams {
     pub l1_bridge: L1BridgeParams,
 }
 
-impl NodeParams {
-    /// Merges with file-based params. `self` (CLI) takes precedence for `Option` fields;
-    /// file values fill in anything the CLI left unset.
-    pub fn merge(mut self, file: NodeParams) -> Self {
-        self.execution.workers = self.execution.workers.or(file.execution.workers);
-        self.l1_bridge.kaspa_url = self.l1_bridge.kaspa_url.take().or(file.l1_bridge.kaspa_url);
-        self
+impl Default for NodeParams {
+    fn default() -> Self {
+        let default_config = NodeConfig::<RocksDbStore<DefaultConfig>, VM>::default();
+        Self {
+            config_file: PathBuf::from("vprogs.toml"),
+            log_level: Some("info".to_string()),
+            api_channel_capacity: Some(default_config.api_channel_capacity),
+            execution: ExecutionParams::default(),
+            storage: StorageParams::default(),
+            l1_bridge: L1BridgeParams::default(),
+        }
     }
-}
-
-fn default_log_level() -> String {
-    "info".to_string()
-}
-
-fn default_api_channel_capacity() -> usize {
-    64
 }
