@@ -1,7 +1,8 @@
 use std::time::Duration;
 
+use vprogs_core_types::Checkpoint;
 use vprogs_node_l1_bridge::{
-    ChainBlock, ChainBlockMetadata, Checkpoint, ConnectStrategy, L1Bridge, L1BridgeConfig, L1Event,
+    ChainBlock, ChainBlockMetadata, ConnectStrategy, L1Bridge, L1BridgeConfig, L1Event,
     NetworkType, RpcOptionalHeader, RpcOptionalTransaction,
 };
 use vprogs_node_test_suite::{L1BridgeExt, L1Node};

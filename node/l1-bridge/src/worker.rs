@@ -124,7 +124,7 @@ impl BridgeWorker {
     }
 
     /// Priority-based event loop: shutdown > RPC state > chain notifications.
-    async fn run(&mut self) {
+    async fn run(mut self) {
         loop {
             if self.fatal {
                 log::error!("L1 bridge: stopping due to fatal error");

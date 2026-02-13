@@ -5,8 +5,9 @@ use crate::BlockHash;
 /// Persistable metadata extracted from an L1 chain block.
 ///
 /// Contains the fields needed to reconstruct a [`ChainBlock`](crate::ChainBlock) on resume.
-/// Implements [`BatchMetadata`](vprogs_core_types::BatchMetadata) automatically via Borsh.
-#[derive(Clone, Copy, Debug, Default, BorshSerialize, BorshDeserialize)]
+/// Satisfies the [`BatchMetadata`](vprogs_core_types::BatchMetadata) blanket impl via its derived
+/// traits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct ChainBlockMetadata {
     /// L1 block hash.
     hash: BlockHash,
