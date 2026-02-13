@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use crate::{ChainBlock, ConnectStrategy, NetworkId, NetworkType};
+use vprogs_core_types::Checkpoint;
+
+use crate::{ChainBlockMetadata, ConnectStrategy, NetworkId, NetworkType};
 
 /// Configuration for the L1 bridge.
 #[derive(Clone, Debug)]
@@ -15,9 +17,9 @@ pub struct L1BridgeConfig {
     pub connect_strategy: ConnectStrategy,
     /// Finalization boundary, or `None` to start from the L1 pruning point. When set together with
     /// `tip`, the bridge backfills the chain between them on startup.
-    pub root: Option<ChainBlock>,
+    pub root: Option<Checkpoint<ChainBlockMetadata>>,
     /// Last known tip, or `None` to start from the L1 pruning point.
-    pub tip: Option<ChainBlock>,
+    pub tip: Option<Checkpoint<ChainBlockMetadata>>,
     /// Reorg filter halving period. Observed reorg depths accumulate into a threshold that halves
     /// every period until it reaches zero. Set to `Duration::ZERO` to disable (default).
     pub reorg_filter_halving_period: Duration,
@@ -70,14 +72,14 @@ impl L1BridgeConfig {
     }
 
     /// Sets the finalization boundary to resume from.
-    pub fn with_root(mut self, block: Option<ChainBlock>) -> Self {
-        self.root = block;
+    pub fn with_root(mut self, checkpoint: Option<Checkpoint<ChainBlockMetadata>>) -> Self {
+        self.root = checkpoint;
         self
     }
 
     /// Sets the last known tip to resume from.
-    pub fn with_tip(mut self, block: Option<ChainBlock>) -> Self {
-        self.tip = block;
+    pub fn with_tip(mut self, checkpoint: Option<Checkpoint<ChainBlockMetadata>>) -> Self {
+        self.tip = checkpoint;
         self
     }
 

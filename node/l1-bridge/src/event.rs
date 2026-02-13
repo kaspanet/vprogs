@@ -2,7 +2,7 @@ pub use kaspa_hashes::Hash;
 pub use kaspa_rpc_core::{RpcOptionalHeader, RpcOptionalTransaction};
 use vprogs_core_types::Checkpoint;
 
-use crate::{ChainBlock, ChainBlockMetadata};
+use crate::ChainBlockMetadata;
 
 /// Events emitted by the L1 bridge.
 #[derive(Clone, Debug)]
@@ -27,8 +27,8 @@ pub enum L1Event {
         /// Blue score difference between old and new tip.
         blue_score_depth: u64,
     },
-    /// Blocks up to this block are finalized and can be pruned.
-    Finalized(ChainBlock),
+    /// Blocks up to this checkpoint are finalized and can be pruned.
+    Finalized(Checkpoint<ChainBlockMetadata>),
     /// The bridge encountered a fatal error and stopped.
     Fatal {
         /// What went wrong.

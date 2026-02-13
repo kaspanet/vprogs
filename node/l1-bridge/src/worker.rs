@@ -10,10 +10,11 @@ use kaspa_rpc_core::{
 };
 use kaspa_wrpc_client::prelude::*;
 use tokio::sync::Notify;
+use vprogs_core_types::Checkpoint;
 use workflow_core::channel::{Channel, MultiplexerChannel};
 
 use crate::{
-    ChainBlock, ChainBlockMetadata, L1BridgeConfig, L1Event,
+    ChainBlockMetadata, L1BridgeConfig, L1Event,
     error::{Error, Result},
     reorg_filter::ReorgFilter,
     virtual_chain::VirtualChain,
@@ -38,9 +39,9 @@ pub(crate) struct BridgeWorker {
     rpc_ctl_channel: MultiplexerChannel<RpcState>,
     /// Set to `true` on fatal errors to break out of the event loop.
     fatal: bool,
-    /// When resuming with both root and tip set, holds the tip block until the chain between root
-    /// and tip is backfilled on first connect.
-    backfill_target: Option<ChainBlock>,
+    /// When resuming with both root and tip set, holds the tip checkpoint until the chain between
+    /// root and tip is backfilled on first connect.
+    backfill_target: Option<Checkpoint<ChainBlockMetadata>>,
     /// Filters shallow reorgs based on accumulated depth.
     reorg_filter: ReorgFilter,
 }
@@ -56,8 +57,8 @@ impl BridgeWorker {
         shutdown: Arc<Notify>,
     ) {
         // Prefer root, fall back to tip, or default to a sentinel at index 0.
-        let root = config.root.clone().or(config.tip.clone()).unwrap_or_default();
-        let virtual_chain = VirtualChain::new(root);
+        let root_checkpoint = config.root.clone().or(config.tip.clone()).unwrap_or_default();
+        let virtual_chain = VirtualChain::new(root_checkpoint);
 
         // If both root and tip are provided and differ, we need to backfill the chain between them
         // on first connect (lightweight, non-verbose sync).
@@ -255,9 +256,9 @@ impl BridgeWorker {
         Ok(())
     }
 
-    /// Backfills the linked list between root and `target`. Only runs once on first connect when
-    /// resuming with a saved root/tip pair.
-    async fn backfill_chain(&mut self, target: &ChainBlock) -> Result<()> {
+    /// Backfills the chain between root and `target`. Only runs once on first connect when resuming
+    /// with a saved root/tip pair.
+    async fn backfill_chain(&mut self, target: &Checkpoint<ChainBlockMetadata>) -> Result<()> {
         let start = self.virtual_chain.root();
 
         log::info!(

@@ -26,8 +26,8 @@
 //!         Some(L1Event::Rollback { checkpoint, blue_score_depth }) => {
 //!             println!("rollback to {} (depth: {blue_score_depth})", checkpoint.index());
 //!         }
-//!         Some(L1Event::Finalized(block)) => {
-//!             println!("finalized up to index {}", block.index());
+//!         Some(L1Event::Finalized(checkpoint)) => {
+//!             println!("finalized up to index {}", checkpoint.index());
 //!         }
 //!         Some(L1Event::Disconnected) => println!("disconnected"),
 //!         Some(L1Event::Fatal { reason }) => {
@@ -61,7 +61,6 @@ mod virtual_chain;
 mod worker;
 
 pub use bridge::L1Bridge;
-pub use chain_block::ChainBlock;
 pub use chain_block_metadata::ChainBlockMetadata;
 pub use config::L1BridgeConfig;
 pub use event::{Hash as BlockHash, L1Event, RpcOptionalHeader, RpcOptionalTransaction};

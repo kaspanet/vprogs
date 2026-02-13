@@ -16,22 +16,23 @@ pub(crate) struct VirtualChain {
 }
 
 impl VirtualChain {
-    /// Creates a new chain where both root and tip point to the given block.
-    pub(crate) fn new(root: ChainBlock) -> Self {
+    /// Creates a new chain where both root and tip point to the given checkpoint.
+    pub(crate) fn new(checkpoint: Checkpoint<ChainBlockMetadata>) -> Self {
+        let root = ChainBlock::new(checkpoint);
         Self { root: root.clone(), tip: root }
     }
 
-    /// Returns the current tip.
-    pub(crate) fn tip(&self) -> ChainBlock {
-        self.tip.clone()
+    /// Returns the checkpoint for the current tip.
+    pub(crate) fn tip(&self) -> Checkpoint<ChainBlockMetadata> {
+        self.tip.checkpoint().clone()
     }
 
-    /// Returns the current root.
-    pub(crate) fn root(&self) -> ChainBlock {
-        self.root.clone()
+    /// Returns the checkpoint for the current root.
+    pub(crate) fn root(&self) -> Checkpoint<ChainBlockMetadata> {
+        self.root.checkpoint().clone()
     }
 
-    /// Appends a block at the tip and returns a checkpoint for the new tip.
+    /// Appends a checkpoint at the tip and returns it.
     pub(crate) fn advance_tip(
         &mut self,
         metadata: ChainBlockMetadata,
@@ -40,22 +41,22 @@ impl VirtualChain {
         self.tip.checkpoint().clone()
     }
 
-    /// Rolls back `num_blocks` from the tip and returns a checkpoint for the new tip along with
-    /// the blue score depth (difference between old and new tip). Returns an error if the rollback
+    /// Rolls back `num_checkpoints` from the tip and returns the new tip checkpoint along with the
+    /// blue score depth (difference between old and new tip). Returns an error if the rollback
     /// would go past the root.
     pub(crate) fn rollback(
         &mut self,
-        num_blocks: u64,
+        num_checkpoints: u64,
     ) -> Result<(Checkpoint<ChainBlockMetadata>, u64)> {
         // Ensure we don't roll back past the finalization boundary.
-        let target_index = self.tip.index().saturating_sub(num_blocks);
+        let target_index = self.tip.index().saturating_sub(num_checkpoints);
         if target_index < self.root.index() {
             return Err(Error::RollbackPastRoot { target_index, root_index: self.root.index() });
         }
 
-        // Calculate reorg_depth and walk backwards, unlinking each block from its predecessor.
+        // Calculate reorg depth and walk backwards, unlinking each node from its predecessor.
         let old_blue_score = self.tip.metadata().blue_score();
-        for _ in 0..num_blocks {
+        for _ in 0..num_checkpoints {
             self.tip = self.tip.rollback_tip();
         }
         let blue_score_depth = old_blue_score.saturating_sub(self.tip.metadata().blue_score());
@@ -63,10 +64,13 @@ impl VirtualChain {
         Ok((self.tip.checkpoint().clone(), blue_score_depth))
     }
 
-    /// Advances the root forward to the block matching `hash`, unlinking all nodes it passes.
-    /// Returns the new root, `None` if already there, or an error if the hash is not found (which
-    /// destroys the chain — fatal).
-    pub(crate) fn advance_root(&mut self, hash: &BlockHash) -> Result<Option<ChainBlock>> {
+    /// Advances the root forward to the checkpoint matching `hash`, unlinking all nodes it passes.
+    /// Returns the new root checkpoint, `None` if already there, or an error if the hash is not
+    /// found (which destroys the chain - fatal).
+    pub(crate) fn advance_root(
+        &mut self,
+        hash: &BlockHash,
+    ) -> Result<Option<Checkpoint<ChainBlockMetadata>>> {
         // Already at this pruning point — nothing to do.
         if self.root.metadata().hash() == *hash {
             return Ok(None);
@@ -76,8 +80,8 @@ impl VirtualChain {
         let mut current = self.root.advance_root();
         while let Some(block) = current {
             if block.metadata().hash() == *hash {
-                self.root = block.clone();
-                return Ok(Some(block));
+                self.root = block;
+                return Ok(Some(self.root.checkpoint().clone()));
             }
             current = block.advance_root();
         }
@@ -88,7 +92,7 @@ impl VirtualChain {
 }
 
 impl Drop for VirtualChain {
-    /// Walks from root to tip, breaking Arc cycles between adjacent nodes.
+    /// Walks from root to tip, breaking Arc cycles between adjacent chain nodes.
     fn drop(&mut self) {
         let mut current = self.root.advance_root();
         while let Some(block) = current {
