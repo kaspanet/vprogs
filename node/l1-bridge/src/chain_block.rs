@@ -11,7 +11,7 @@ use vprogs_core_types::Checkpoint;
 
 use crate::ChainBlockMetadata;
 
-/// A block in the virtual chain — a [`Checkpoint`] with doubly-linked list pointers.
+/// A block in the virtual chain - a [`Checkpoint`] with doubly-linked list pointers.
 #[smart_pointer(deref = checkpoint)]
 pub struct ChainBlock {
     /// Persistable state (index + metadata).
@@ -23,11 +23,6 @@ pub struct ChainBlock {
 }
 
 impl ChainBlock {
-    /// Returns the persistable checkpoint (index + metadata).
-    pub fn checkpoint(&self) -> &Checkpoint<ChainBlockMetadata> {
-        &self.checkpoint
-    }
-
     /// Creates a standalone block with no links.
     pub fn new(checkpoint: Checkpoint<ChainBlockMetadata>) -> Self {
         Self(Arc::new(ChainBlockData {
@@ -35,6 +30,11 @@ impl ChainBlock {
             prev: ArcSwapOption::empty(),
             next: ArcSwapOption::empty(),
         }))
+    }
+
+    /// Returns the persistable checkpoint (index + metadata).
+    pub fn checkpoint(&self) -> &Checkpoint<ChainBlockMetadata> {
+        &self.checkpoint
     }
 
     /// Appends a new block after this one and links them in both directions.
