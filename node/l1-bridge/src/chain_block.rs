@@ -11,13 +11,11 @@ use vprogs_core_types::Checkpoint;
 
 use crate::ChainBlockMetadata;
 
-/// A block in the virtual chain, forming a doubly-linked list.
-#[smart_pointer]
+/// A block in the virtual chain — a [`Checkpoint`] with doubly-linked list pointers.
+#[smart_pointer(deref = checkpoint)]
 pub struct ChainBlock {
-    /// Sequential index relative to the bridge's starting point.
-    index: u64,
-    /// Persistable metadata.
-    metadata: ChainBlockMetadata,
+    /// Persistable state (index + metadata).
+    checkpoint: Checkpoint<ChainBlockMetadata>,
     /// Link to the preceding block, or empty if this is the root.
     prev: ArcSwapOption<ChainBlockData>,
     /// Link to the following block, or empty if this is the tip.
@@ -25,32 +23,25 @@ pub struct ChainBlock {
 }
 
 impl ChainBlock {
+    /// Returns the persistable checkpoint (index + metadata).
+    pub fn checkpoint(&self) -> &Checkpoint<ChainBlockMetadata> {
+        &self.checkpoint
+    }
+
     /// Creates a standalone block with no links.
-    pub fn new(index: u64, metadata: ChainBlockMetadata) -> Self {
+    pub fn new(checkpoint: Checkpoint<ChainBlockMetadata>) -> Self {
         Self(Arc::new(ChainBlockData {
-            index,
-            metadata,
+            checkpoint,
             prev: ArcSwapOption::empty(),
             next: ArcSwapOption::empty(),
         }))
-    }
-
-    /// Returns the sequential index.
-    pub fn index(&self) -> u64 {
-        self.index
-    }
-
-    /// Returns the persistable metadata.
-    pub fn metadata(&self) -> ChainBlockMetadata {
-        self.metadata
     }
 
     /// Appends a new block after this one and links them in both directions.
     pub(crate) fn advance_tip(&self, metadata: ChainBlockMetadata) -> Self {
         // Create the new block with a back-link to self.
         Self(Arc::new(ChainBlockData {
-            index: self.index + 1,
-            metadata,
+            checkpoint: Checkpoint::new(self.index() + 1, metadata),
             prev: ArcSwapOption::new(Some(self.0.clone())),
             next: ArcSwapOption::empty(),
         }))
@@ -83,32 +74,15 @@ impl ChainBlock {
     }
 }
 
-/// Extracts the persistable checkpoint (index + metadata) from a chain block.
-impl From<ChainBlock> for Checkpoint<ChainBlockMetadata> {
-    fn from(block: ChainBlock) -> Self {
-        Self::new(block.index(), block.metadata())
-    }
-}
-
-/// Reconstructs an unlinked chain block from a persisted checkpoint.
-impl From<Checkpoint<ChainBlockMetadata>> for ChainBlock {
-    fn from(checkpoint: Checkpoint<ChainBlockMetadata>) -> Self {
-        Self::new(checkpoint.index(), *checkpoint.metadata())
-    }
-}
-
 impl Default for ChainBlock {
     /// Returns a sentinel root (zero hash, index 0).
     fn default() -> Self {
-        Self::new(0, ChainBlockMetadata::default())
+        Self::new(Checkpoint::default())
     }
 }
 
 impl Debug for ChainBlock {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ChainBlock")
-            .field("index", &self.index)
-            .field("metadata", &self.metadata)
-            .finish()
+        f.debug_struct("ChainBlock").field("checkpoint", &self.checkpoint).finish()
     }
 }

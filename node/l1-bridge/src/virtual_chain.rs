@@ -37,7 +37,7 @@ impl VirtualChain {
         metadata: ChainBlockMetadata,
     ) -> Checkpoint<ChainBlockMetadata> {
         self.tip = self.tip.advance_tip(metadata);
-        self.tip.clone().into()
+        self.tip.checkpoint().clone()
     }
 
     /// Rolls back `num_blocks` from the tip and returns a checkpoint for the new tip along with
@@ -60,7 +60,7 @@ impl VirtualChain {
         }
         let blue_score_depth = old_blue_score.saturating_sub(self.tip.metadata().blue_score());
 
-        Ok((self.tip.clone().into(), blue_score_depth))
+        Ok((self.tip.checkpoint().clone(), blue_score_depth))
     }
 
     /// Advances the root forward to the block matching `hash`, unlinking all nodes it passes.

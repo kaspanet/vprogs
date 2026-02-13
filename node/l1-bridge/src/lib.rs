@@ -67,3 +67,4 @@ pub use config::L1BridgeConfig;
 pub use event::{Hash as BlockHash, L1Event, RpcOptionalHeader, RpcOptionalTransaction};
 pub use kaspa_consensus_core::network::{NetworkId, NetworkType};
 pub use kaspa_wrpc_client::prelude::ConnectStrategy;
+pub use vprogs_core_types::Checkpoint;
