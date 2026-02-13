@@ -7,20 +7,20 @@ use vprogs_scheduling_scheduler::{ExecutionConfig, VmInterface};
 #[command(next_help_heading = "Execution")]
 pub struct ExecutionParams {
     /// Number of execution worker threads [default: physical CPU count].
-    #[arg(long)]
+    #[arg(long = "execution-worker-count")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub workers: Option<usize>,
+    pub worker_count: Option<usize>,
+}
+
+impl ExecutionParams {
+    pub fn to_config<V: VmInterface>(self, vm: V) -> ExecutionConfig<V> {
+        ExecutionConfig { worker_count: self.worker_count.expect("worker_count"), vm: Some(vm) }
+    }
 }
 
 impl Default for ExecutionParams {
     fn default() -> Self {
         let default_config = ExecutionConfig::<VM>::default();
-        Self { workers: Some(default_config.worker_count) }
-    }
-}
-
-impl<V: VmInterface> From<ExecutionParams> for ExecutionConfig<V> {
-    fn from(params: ExecutionParams) -> Self {
-        Self::default().with_worker_count(params.workers.expect("workers"))
+        Self { worker_count: Some(default_config.worker_count) }
     }
 }

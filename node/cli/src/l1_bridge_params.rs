@@ -9,39 +9,59 @@ use vprogs_node_l1_bridge::{ConnectStrategy, L1BridgeConfig};
 pub struct L1BridgeParams {
     /// WebSocket URL for the Kaspa L1 node (e.g. ws://localhost:17110).
     /// Omit to use the public resolver.
-    #[arg(long)]
+    #[arg(long = "l1-bridge-url")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub kaspa_url: Option<String>,
+    pub url: Option<String>,
 
     /// Target network: mainnet, testnet-10, testnet-11, devnet, simnet [default: mainnet].
-    #[arg(long)]
+    #[arg(long = "l1-bridge-network-id")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub network: Option<String>,
+    pub network_id: Option<String>,
 
     /// L1 connection timeout in milliseconds [default: 10000].
-    #[arg(long)]
+    #[arg(long = "l1-bridge-connect-timeout-ms")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connect_timeout_ms: Option<u64>,
 
     /// Connection strategy: retry (block until connected) or fallback (fail fast) [default:
     /// retry].
-    #[arg(long)]
+    #[arg(long = "l1-bridge-connect-strategy")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connect_strategy: Option<String>,
 
     /// Reorg filter halving period in seconds. Observed reorg depths accumulate into a
-    /// threshold that halves every period. Set to 0 to disable [default: 3600].
-    #[arg(long)]
+    /// threshold that halves every period. Set to 0 to disable [default: 0 (disabled)].
+    #[arg(long = "l1-bridge-reorg-filter-halving-period-secs")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reorg_filter_halving_period_secs: Option<u64>,
+}
+
+impl L1BridgeParams {
+    pub fn to_config(self) -> L1BridgeConfig {
+        L1BridgeConfig {
+            url: self.url,
+            network_id: self.network_id.expect("network_id").parse().expect("invalid network id"),
+            connect_timeout_ms: self.connect_timeout_ms.expect("connect_timeout_ms"),
+            connect_strategy: self
+                .connect_strategy
+                .expect("connect_strategy")
+                .parse()
+                .expect("invalid connect strategy"),
+            reorg_filter_halving_period: Duration::from_secs(
+                self.reorg_filter_halving_period_secs.expect("reorg_filter_halving_period_secs"),
+            ),
+            root: None,
+            tip: None,
+        }
+    }
 }
 
 impl Default for L1BridgeParams {
     fn default() -> Self {
         let default_config = L1BridgeConfig::default();
         Self {
-            kaspa_url: default_config.url,
-            network: Some(default_config.network_id.to_string()),
+            url: default_config.url,
+            network_id: Some(default_config.network_id.to_string()),
             connect_timeout_ms: Some(default_config.connect_timeout_ms),
             connect_strategy: Some(
                 match default_config.connect_strategy {
@@ -54,24 +74,5 @@ impl Default for L1BridgeParams {
                 default_config.reorg_filter_halving_period.as_secs(),
             ),
         }
-    }
-}
-
-impl From<L1BridgeParams> for L1BridgeConfig {
-    fn from(params: L1BridgeParams) -> Self {
-        Self::default()
-            .with_url(params.kaspa_url)
-            .with_network_id(params.network.expect("network").parse().expect("invalid network id"))
-            .with_connect_timeout(params.connect_timeout_ms.expect("connect_timeout_ms"))
-            .with_connect_strategy(
-                params
-                    .connect_strategy
-                    .expect("connect_strategy")
-                    .parse()
-                    .expect("invalid connect strategy"),
-            )
-            .with_reorg_filter_halving_period(Duration::from_secs(
-                params.reorg_filter_halving_period_secs.expect("reorg_filter_halving_period_secs"),
-            ))
     }
 }

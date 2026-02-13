@@ -5572,6 +5572,7 @@ dependencies = [
  "vprogs-node-l1-bridge",
  "vprogs-node-vm",
  "vprogs-scheduling-scheduler",
+ "vprogs-state-space",
  "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",

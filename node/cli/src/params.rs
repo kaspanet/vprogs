@@ -2,9 +2,11 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use serde::{Deserialize, Serialize};
-use vprogs_node_framework::NodeConfig;
+use vprogs_node_framework::{NodeConfig, NodeVm};
 use vprogs_node_vm::VM;
+use vprogs_state_space::StateSpace;
 use vprogs_storage_rocksdb_store::{DefaultConfig, RocksDbStore};
+use vprogs_storage_types::Store;
 
 use crate::{
     execution_params::ExecutionParams, l1_bridge_params::L1BridgeParams,
@@ -58,6 +60,21 @@ pub struct NodeParams {
 
     #[command(flatten)]
     pub l1_bridge: L1BridgeParams,
+}
+
+impl NodeParams {
+    pub fn to_config<S: Store<StateSpace = StateSpace>, V: NodeVm>(
+        self,
+        vm: V,
+        store: S,
+    ) -> NodeConfig<S, V> {
+        NodeConfig {
+            api_channel_capacity: self.api_channel_capacity.expect("api_channel_capacity"),
+            execution_config: self.execution.to_config(vm),
+            storage_config: self.storage.to_config(store),
+            l1_bridge_config: self.l1_bridge.to_config(),
+        }
+    }
 }
 
 impl Default for NodeParams {
