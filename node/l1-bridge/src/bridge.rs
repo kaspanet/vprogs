@@ -37,16 +37,11 @@ impl L1Bridge {
             let shutdown = shutdown.clone();
 
             move || {
-                let runtime = Builder::new_current_thread()
+                Builder::new_current_thread()
                     .enable_all()
                     .build()
-                    .expect("failed to build tokio runtime");
-
-                runtime.block_on(async {
-                    if let Some(worker) = BridgeWorker::new(&config, queue, event_signal).await {
-                        worker.run(shutdown).await;
-                    }
-                });
+                    .expect("failed to build tokio runtime")
+                    .block_on(BridgeWorker::spawn(&config, queue, event_signal, shutdown));
             }
         });
 

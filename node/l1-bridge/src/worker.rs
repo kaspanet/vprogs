@@ -13,7 +13,7 @@ use tokio::sync::Notify;
 use workflow_core::channel::{Channel, MultiplexerChannel};
 
 use crate::{
-    ChainBlock, L1BridgeConfig, L1Event,
+    ChainBlock, ChainBlockMetadata, L1BridgeConfig, L1Event,
     error::{Error, Result},
     reorg_filter::ReorgFilter,
     virtual_chain::VirtualChain,
@@ -30,6 +30,8 @@ pub(crate) struct BridgeWorker {
     queue: Arc<SegQueue<L1Event>>,
     /// Wakes the consumer after pushing an event.
     event_signal: Arc<Notify>,
+    /// Signals the worker to shut down.
+    shutdown: Arc<Notify>,
     /// Receives L1 chain notifications (VCC, pruning point).
     notification_channel: Channel<Notification>,
     /// Receives RPC connection state changes.
@@ -44,13 +46,15 @@ pub(crate) struct BridgeWorker {
 }
 
 impl BridgeWorker {
-    /// Connects to the L1 node and returns a ready worker, or `None` if connection fails (a `Fatal`
-    /// event is pushed in that case).
-    pub(crate) async fn new(
+    /// Connects to the L1 node and runs the event loop until shutdown or a fatal error.
+    ///
+    /// If connection fails, pushes a [`L1Event::Fatal`] and returns immediately.
+    pub(crate) async fn spawn(
         config: &L1BridgeConfig,
         queue: Arc<SegQueue<L1Event>>,
         event_signal: Arc<Notify>,
-    ) -> Option<Self> {
+        shutdown: Arc<Notify>,
+    ) {
         // Prefer root, fall back to tip, or default to a sentinel at index 0.
         let root = config.root.clone().or(config.tip.clone()).unwrap_or_default();
         let virtual_chain = VirtualChain::new(root);
@@ -58,7 +62,9 @@ impl BridgeWorker {
         // If both root and tip are provided and differ, we need to backfill the chain between them
         // on first connect (lightweight, non-verbose sync).
         let backfill_target = match (&config.root, &config.tip) {
-            (Some(root), Some(tip)) if root.hash() != tip.hash() => Some(tip.clone()),
+            (Some(root), Some(tip)) if root.metadata().hash() != tip.metadata().hash() => {
+                Some(tip.clone())
+            }
             _ => None,
         };
 
@@ -77,7 +83,7 @@ impl BridgeWorker {
                 log::error!("L1 bridge: {}", reason);
                 queue.push(L1Event::Fatal { reason });
                 event_signal.notify_one();
-                return None;
+                return;
             }
         };
 
@@ -98,24 +104,27 @@ impl BridgeWorker {
             log::error!("L1 bridge: {}", reason);
             queue.push(L1Event::Fatal { reason });
             event_signal.notify_one();
-            return None;
+            return;
         }
 
-        Some(Self {
+        Self {
             client,
             virtual_chain,
             queue,
             event_signal,
+            shutdown,
             notification_channel: Channel::unbounded(),
             rpc_ctl_channel,
             fatal: false,
             backfill_target,
             reorg_filter: ReorgFilter::new(config.reorg_filter_halving_period),
-        })
+        }
+        .run()
+        .await;
     }
 
     /// Priority-based event loop: shutdown > RPC state > chain notifications.
-    pub(crate) async fn run(mut self, shutdown: Arc<Notify>) {
+    async fn run(&mut self) {
         loop {
             if self.fatal {
                 log::error!("L1 bridge: stopping due to fatal error");
@@ -124,7 +133,7 @@ impl BridgeWorker {
 
             // Priority: shutdown > connection state > chain notifications.
             select_biased! {
-                _ = shutdown.notified().fuse() => {
+                _ = self.shutdown.notified().fuse() => {
                     log::info!("L1 bridge shutdown requested");
                     break;
                 }
@@ -258,17 +267,19 @@ impl BridgeWorker {
         );
 
         // Fetch with Low verbosity — sufficient for hash and blue_score needed for chain blocks.
-        let response =
-            self.client.get_virtual_chain_from_block_v2(start.hash(), Some(Low), None).await?;
+        let response = self
+            .client
+            .get_virtual_chain_from_block_v2(start.metadata().hash(), Some(Low), None)
+            .await?;
 
         // Walk the chain block accepted transactions to get both hash and blue_score.
-        let target_hash = target.hash();
+        let target_hash = target.metadata().hash();
         let mut found = false;
 
         for chain_block in response.chain_block_accepted_transactions.iter() {
             let hash = chain_block.chain_block_header.hash.unwrap_or_default();
             let blue_score = chain_block.chain_block_header.blue_score.unwrap_or(0);
-            self.virtual_chain.advance_tip(hash, blue_score);
+            self.virtual_chain.advance_tip(ChainBlockMetadata::new(hash, blue_score));
             if hash == target_hash {
                 found = true;
                 break;
@@ -292,7 +303,7 @@ impl BridgeWorker {
         let start_hash = if tip.index() == 0 {
             self.client.get_block_dag_info().await?.pruning_point_hash
         } else {
-            tip.hash()
+            tip.metadata().hash()
         };
 
         // Fetch with High verbosity to get full headers and accepted transactions.
@@ -319,9 +330,10 @@ impl BridgeWorker {
                 .chain_block_header
                 .blue_score
                 .expect("blue_score missing despite High verbosity");
-            let index = self.virtual_chain.advance_tip(hash, blue_score);
+            let metadata = ChainBlockMetadata::new(hash, blue_score);
+            let checkpoint = self.virtual_chain.advance_tip(metadata);
             self.push_event(L1Event::ChainBlockAdded {
-                index,
+                checkpoint,
                 header: Box::new(chain_block.chain_block_header.clone()),
                 accepted_transactions: chain_block.accepted_transactions.clone(),
             });
@@ -333,18 +345,18 @@ impl BridgeWorker {
     /// Rolls back the virtual chain, updates the reorg filter, and emits a `Rollback` event.
     fn handle_reorg(&mut self, response: &GetVirtualChainFromBlockV2Response) -> Result<()> {
         let num_removed = response.removed_chain_block_hashes.len() as u64;
-        let (rollback_index, blue_score_depth) = self.virtual_chain.rollback(num_removed)?;
+        let (checkpoint, blue_score_depth) = self.virtual_chain.rollback(num_removed)?;
         self.reorg_filter.record(blue_score_depth);
 
         log::info!(
             "L1 bridge: reorg detected, {} blocks removed, rolling back to index {} \
              (blue score depth: {}, filter threshold: {:?})",
             num_removed,
-            rollback_index,
+            checkpoint.index(),
             blue_score_depth,
             self.reorg_filter.threshold(),
         );
-        self.push_event(L1Event::Rollback { index: rollback_index, blue_score_depth });
+        self.push_event(L1Event::Rollback { checkpoint, blue_score_depth });
         Ok(())
     }
 

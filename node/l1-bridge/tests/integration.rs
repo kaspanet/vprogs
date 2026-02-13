@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use vprogs_node_l1_bridge::{
-    ChainBlock, ConnectStrategy, L1Bridge, L1BridgeConfig, L1Event, NetworkType, RpcOptionalHeader,
-    RpcOptionalTransaction,
+    ChainBlock, ChainBlockMetadata, ConnectStrategy, L1Bridge, L1BridgeConfig, L1Event,
+    NetworkType, RpcOptionalHeader, RpcOptionalTransaction,
 };
 use vprogs_node_test_suite::{L1BridgeExt, L1Node};
 
@@ -63,8 +63,8 @@ async fn test_bridge_block_contains_transactions() {
 
     assert_eq!(events.len(), 1);
     let (index, header, accepted_transactions) = match &events[0] {
-        L1Event::ChainBlockAdded { index, header, accepted_transactions } => {
-            (*index, header, accepted_transactions)
+        L1Event::ChainBlockAdded { checkpoint, header, accepted_transactions } => {
+            (checkpoint.index(), header, accepted_transactions)
         }
         other => panic!("expected ChainBlockAdded, got {:?}", other),
     };
@@ -93,7 +93,7 @@ async fn test_bridge_syncs_from_specific_block() {
         .with_url(node.wrpc_borsh_url())
         .with_network_type(NetworkType::Simnet)
         .with_connect_strategy(ConnectStrategy::Fallback)
-        .with_tip(Some(ChainBlock::new(start_from, 3, 0)));
+        .with_tip(Some(ChainBlock::new(3, ChainBlockMetadata::new(start_from, 0))));
 
     let bridge = L1Bridge::new(config);
 
@@ -152,7 +152,8 @@ async fn test_bridge_catches_up_after_reconnection() {
 
     // Save the last processed position as a checkpoint.
     let (last_index, last_header, _) = &blocks[2];
-    let checkpoint = ChainBlock::new(last_header.hash.unwrap(), *last_index, 0);
+    let checkpoint =
+        ChainBlock::new(*last_index, ChainBlockMetadata::new(last_header.hash.unwrap(), 0));
     assert_eq!(*last_index, 3);
 
     // Phase 2: Shutdown the bridge, mine blocks while it's down.
@@ -183,8 +184,8 @@ async fn test_bridge_catches_up_after_reconnection() {
     // Indices continue from the checkpoint: 4, 5, 6, 7, 8.
     for (i, event) in events[1..6].iter().enumerate() {
         match event {
-            L1Event::ChainBlockAdded { index, header, .. } => {
-                assert_eq!(*index, (i + 4) as u64);
+            L1Event::ChainBlockAdded { checkpoint, header, .. } => {
+                assert_eq!(checkpoint.index(), (i + 4) as u64);
                 assert_eq!(header.hash, Some(missed_hashes[i]));
             }
             other => panic!("expected ChainBlockAdded at position {}, got {:?}", i + 1, other),
@@ -236,7 +237,9 @@ async fn test_bridge_receives_reorg_events() {
         let blocks_after_rollback: Vec<_> = events[pos + 1..]
             .iter()
             .filter_map(|e| match e {
-                L1Event::ChainBlockAdded { index, header, .. } => Some((*index, header.hash)),
+                L1Event::ChainBlockAdded { checkpoint, header, .. } => {
+                    Some((checkpoint.index(), header.hash))
+                }
                 _ => None,
             })
             .collect();
@@ -346,7 +349,7 @@ async fn test_reorg_filter_causes_lag() {
         events
             .iter()
             .filter_map(|e| match e {
-                L1Event::ChainBlockAdded { index, .. } => Some(*index),
+                L1Event::ChainBlockAdded { checkpoint, .. } => Some(checkpoint.index()),
                 _ => None,
             })
             .max()
@@ -404,8 +407,8 @@ fn unwrap_chain_blocks(
     events
         .into_iter()
         .map(|e| match e {
-            L1Event::ChainBlockAdded { index, header, accepted_transactions } => {
-                (index, header, accepted_transactions)
+            L1Event::ChainBlockAdded { checkpoint, header, accepted_transactions } => {
+                (checkpoint.index(), header, accepted_transactions)
             }
             other => panic!("expected ChainBlockAdded, got {:?}", other),
         })

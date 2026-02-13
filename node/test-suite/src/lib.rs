@@ -30,7 +30,7 @@
 //! node.mine_blocks(5).await;
 //! bridge
 //!     .wait_for(Duration::from_secs(10), |e| {
-//!         matches!(e, L1Event::ChainBlockAdded { index: 5, .. })
+//!         matches!(e, L1Event::ChainBlockAdded { checkpoint, .. } if checkpoint.index() == 5)
 //!     })
 //!     .await;
 //!

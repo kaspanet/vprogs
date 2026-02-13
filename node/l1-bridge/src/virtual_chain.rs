@@ -1,5 +1,7 @@
+use vprogs_core_types::Checkpoint;
+
 use crate::{
-    BlockHash,
+    BlockHash, ChainBlockMetadata,
     chain_block::ChainBlock,
     error::{Error, Result},
 };
@@ -29,30 +31,36 @@ impl VirtualChain {
         self.root.clone()
     }
 
-    /// Appends a block at the tip and returns its index.
-    pub(crate) fn advance_tip(&mut self, hash: BlockHash, blue_score: u64) -> u64 {
-        self.tip = self.tip.advance_tip(hash, blue_score);
-        self.tip.index()
+    /// Appends a block at the tip and returns a checkpoint for the new tip.
+    pub(crate) fn advance_tip(
+        &mut self,
+        metadata: ChainBlockMetadata,
+    ) -> Checkpoint<ChainBlockMetadata> {
+        self.tip = self.tip.advance_tip(metadata);
+        self.tip.clone().into()
     }
 
-    /// Rolls back `num_blocks` from the tip and returns `(new_tip_index, blue_score_depth)`.
-    /// The blue score depth is the difference between the old and new tip blue scores. Returns an
-    /// error if the rollback would go past the root.
-    pub(crate) fn rollback(&mut self, num_blocks: u64) -> Result<(u64, u64)> {
+    /// Rolls back `num_blocks` from the tip and returns a checkpoint for the new tip along with
+    /// the blue score depth (difference between old and new tip). Returns an error if the rollback
+    /// would go past the root.
+    pub(crate) fn rollback(
+        &mut self,
+        num_blocks: u64,
+    ) -> Result<(Checkpoint<ChainBlockMetadata>, u64)> {
         // Ensure we don't roll back past the finalization boundary.
         let target_index = self.tip.index().saturating_sub(num_blocks);
         if target_index < self.root.index() {
             return Err(Error::RollbackPastRoot { target_index, root_index: self.root.index() });
         }
 
-        // Calculate reorg_depth and walk backwards, unlinking each block from its predecessor.
-        let old_blue_score = self.tip.blue_score();
+        // Walk backwards, unlinking each block from its predecessor.
+        let old_blue_score = self.tip.metadata().blue_score();
         for _ in 0..num_blocks {
             self.tip = self.tip.rollback_tip();
         }
-        let blue_score_depth = old_blue_score.saturating_sub(self.tip.blue_score());
+        let blue_score_depth = old_blue_score.saturating_sub(self.tip.metadata().blue_score());
 
-        Ok((self.tip.index(), blue_score_depth))
+        Ok((self.tip.clone().into(), blue_score_depth))
     }
 
     /// Advances the root forward to the block matching `hash`, unlinking all nodes it passes.
@@ -60,14 +68,14 @@ impl VirtualChain {
     /// destroys the chain — fatal).
     pub(crate) fn advance_root(&mut self, hash: &BlockHash) -> Result<Option<ChainBlock>> {
         // Already at this pruning point — nothing to do.
-        if self.root.hash() == *hash {
+        if self.root.metadata().hash() == *hash {
             return Ok(None);
         }
 
         // Walk forward from root, unlinking each node until we find the target.
         let mut current = self.root.advance_root();
         while let Some(block) = current {
-            if block.hash() == *hash {
+            if block.metadata().hash() == *hash {
                 self.root = block.clone();
                 return Ok(Some(block));
             }

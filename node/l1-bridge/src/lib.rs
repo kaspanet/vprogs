@@ -20,11 +20,11 @@
 //! loop {
 //!     match bridge.pop() {
 //!         Some(L1Event::Connected) => println!("connected"),
-//!         Some(L1Event::ChainBlockAdded { index, .. }) => {
-//!             println!("block {index}");
+//!         Some(L1Event::ChainBlockAdded { checkpoint, .. }) => {
+//!             println!("block {}", checkpoint.index());
 //!         }
-//!         Some(L1Event::Rollback { index, blue_score_depth }) => {
-//!             println!("rollback to {index} (depth: {blue_score_depth})");
+//!         Some(L1Event::Rollback { checkpoint, blue_score_depth }) => {
+//!             println!("rollback to {} (depth: {blue_score_depth})", checkpoint.index());
 //!         }
 //!         Some(L1Event::Finalized(block)) => {
 //!             println!("finalized up to index {}", block.index());
@@ -52,6 +52,7 @@
 
 mod bridge;
 mod chain_block;
+mod chain_block_metadata;
 mod config;
 mod error;
 mod event;
@@ -61,6 +62,7 @@ mod worker;
 
 pub use bridge::L1Bridge;
 pub use chain_block::ChainBlock;
+pub use chain_block_metadata::ChainBlockMetadata;
 pub use config::L1BridgeConfig;
 pub use event::{Hash as BlockHash, L1Event, RpcOptionalHeader, RpcOptionalTransaction};
 pub use kaspa_consensus_core::network::{NetworkId, NetworkType};
