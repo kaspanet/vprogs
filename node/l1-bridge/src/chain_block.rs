@@ -16,7 +16,7 @@ use crate::ChainBlockMetadata;
 pub struct ChainBlock {
     /// Sequential index relative to the bridge's starting point.
     index: u64,
-    /// Persistable metadata (hash, blue score).
+    /// Persistable metadata.
     metadata: ChainBlockMetadata,
     /// Link to the preceding block, or empty if this is the root.
     prev: ArcSwapOption<ChainBlockData>,
@@ -40,7 +40,7 @@ impl ChainBlock {
         self.index
     }
 
-    /// Returns the persistable metadata (hash, blue score).
+    /// Returns the persistable metadata.
     pub fn metadata(&self) -> ChainBlockMetadata {
         self.metadata
     }
