@@ -3,7 +3,7 @@ mod l1_bridge_params;
 mod params;
 mod storage_params;
 
-use std::sync::mpsc;
+use std::{fs, sync::mpsc};
 
 use clap::Parser;
 use figment::{
@@ -23,6 +23,7 @@ use crate::params::NodeParams;
 fn main() {
     let params = NodeParams::parse();
     let config_file = params.config_file.clone();
+    let reset = params.reset;
 
     // Initialize logging early. RUST_LOG overrides --log-level when set.
     let log_level = params.log_level.as_deref().unwrap_or("info");
@@ -40,6 +41,10 @@ fn main() {
 
     // Build runtime objects.
     let data_dir = params.storage.data_dir.clone().expect("data_dir");
+    if reset && data_dir.exists() {
+        info!("--reset: removing {}", data_dir.display());
+        fs::remove_dir_all(&data_dir).expect("failed to remove data directory");
+    }
     let store = RocksDbStore::<DefaultConfig>::open(&data_dir);
 
     // Start the node.

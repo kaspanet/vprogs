@@ -22,3 +22,6 @@ target
 
 #  AI tool files
 CLAUDE.md
+
+# Node data directory
+.data/

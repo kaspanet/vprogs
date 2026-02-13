@@ -8,7 +8,7 @@ use vprogs_storage_types::Store;
 #[derive(Args, Serialize, Deserialize)]
 #[command(next_help_heading = "Storage")]
 pub struct StorageParams {
-    /// RocksDB data directory [default: ./data].
+    /// RocksDB data directory [default: .data].
     #[arg(long)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data_dir: Option<PathBuf>,
@@ -39,7 +39,7 @@ impl Default for StorageParams {
         let default_read_config = ReadConfig::default();
         let default_write_config = WriteConfig::default();
         Self {
-            data_dir: Some(PathBuf::from("./data")),
+            data_dir: Some(PathBuf::from(".data")),
             max_readers: Some(default_read_config.max_readers),
             buffer_depth_per_reader: Some(default_read_config.buffer_depth_per_reader),
             max_batch_size: Some(default_write_config.max_batch_size),

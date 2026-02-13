@@ -45,6 +45,11 @@ pub struct NodeParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_channel_capacity: Option<usize>,
 
+    /// Delete the data directory on startup before opening the store.
+    #[arg(long)]
+    #[serde(skip)]
+    pub reset: bool,
+
     #[command(flatten)]
     pub execution: ExecutionParams,
 
@@ -62,6 +67,7 @@ impl Default for NodeParams {
             config_file: PathBuf::from("vprogs.toml"),
             log_level: Some("info".to_string()),
             api_channel_capacity: Some(default_config.api_channel_capacity),
+            reset: false,
             execution: ExecutionParams::default(),
             storage: StorageParams::default(),
             l1_bridge: L1BridgeParams::default(),
