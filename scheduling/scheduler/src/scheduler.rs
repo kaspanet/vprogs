@@ -45,8 +45,8 @@ pub struct Scheduler<S: Store<StateSpace = StateSpace>, V: VmInterface> {
 impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
     /// Creates a new scheduler with the given execution and storage configurations.
     pub fn new(execution_config: ExecutionConfig<V>, storage_config: StorageConfig<S>) -> Self {
-        let storage = StorageManager::new(storage_config);
         let vm = execution_config.vm.expect("ExecutionConfig requires a vm");
+        let storage = StorageManager::new(storage_config);
         let pruning_worker = PruningWorker::new(storage.store().clone());
         let root = pruning_worker.root_shared();
         Self {

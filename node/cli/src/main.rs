@@ -22,6 +22,7 @@ use crate::params::NodeParams;
 
 fn main() {
     let params = NodeParams::parse();
+    let config_file = params.config_file.clone();
 
     // Initialize logging early. RUST_LOG overrides --log-level when set.
     let log_level = params.log_level.as_deref().unwrap_or("info");
@@ -29,13 +30,13 @@ fn main() {
 
     // Layered config: defaults → TOML file → env vars → CLI args.
     let params: NodeParams = Figment::from(Serialized::defaults(NodeParams::default()))
-        .merge(Toml::file(&params.config_file))
+        .merge(Toml::file(&config_file))
         .merge(Env::prefixed("VPROGS_").split("__"))
         .merge(Serialized::globals(&params))
         .extract()
         .expect("invalid configuration");
 
-    info!("loaded config from: defaults → {} → env → cli", params.config_file.display());
+    info!("loaded config from: defaults → {} → env → cli", config_file.display());
 
     // Build runtime objects.
     let data_dir = params.storage.data_dir.clone().expect("data_dir");
