@@ -35,8 +35,8 @@ impl<S: Store<StateSpace = StateSpace>, V: NodeVm> Node<S, V> {
         let bridge = L1Bridge::new(
             config
                 .l1_bridge
-                .with_root(Some(scheduler.pruning().last_pruned().into()))
-                .with_tip(Some(scheduler.batch_execution().last_committed().clone().into())),
+                .with_root(Some(scheduler.pruning().last_pruned()))
+                .with_tip(Some(scheduler.batch_execution().last_committed().clone())),
         );
 
         // Create the shutdown latch and API channel.
