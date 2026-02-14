@@ -298,7 +298,7 @@ async fn test_reorg_filter_causes_lag() {
             .with_url(Some(node1.wrpc_borsh_url()))
             .with_network_type(NetworkType::Simnet)
             .with_connect_strategy(ConnectStrategy::Fallback)
-            .with_reorg_filter_halving_period(Duration::from_secs(3600)),
+            .with_filter_half_life(Duration::from_secs(3600)),
     );
     let unfiltered = L1Bridge::new(
         L1BridgeConfig::default()

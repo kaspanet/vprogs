@@ -18,26 +18,23 @@ impl CliProvider {
                 matches,
                 &[
                     ("log_level", params.log_level.clone().into()),
-                    ("api_channel_capacity", (params.api_channel_capacity as u128).into()),
+                    ("api_channel_capacity", params.api_channel_capacity.into()),
                 ],
             );
             p.section(
                 matches,
                 "execution",
-                &[("worker_count", (params.execution.worker_count as u128).into())],
+                &[("worker_count", params.execution.worker_count.into())],
             );
             p.section(
                 matches,
                 "storage",
                 &[
                     ("data_dir", params.storage.data_dir.display().to_string().into()),
-                    ("read_worker_count", (params.storage.read_worker_count as u128).into()),
-                    ("read_buffer_depth", (params.storage.read_buffer_depth as u128).into()),
-                    ("write_batch_size", (params.storage.write_batch_size as u128).into()),
-                    (
-                        "write_batch_duration_ms",
-                        (params.storage.write_batch_duration_ms as u128).into(),
-                    ),
+                    ("read_worker_count", params.storage.read_worker_count.into()),
+                    ("read_buffer_depth", params.storage.read_buffer_depth.into()),
+                    ("write_batch_size", params.storage.write_batch_size.into()),
+                    ("write_batch_duration_ms", params.storage.write_batch_duration_ms.into()),
                 ],
             );
             p.section(
@@ -46,12 +43,9 @@ impl CliProvider {
                 &[
                     ("url", params.l1_bridge.url.clone().unwrap_or_default().into()),
                     ("network_id", params.l1_bridge.network_id.clone().into()),
-                    ("connect_timeout_ms", (params.l1_bridge.connect_timeout_ms as u128).into()),
+                    ("connect_timeout_ms", params.l1_bridge.connect_timeout_ms.into()),
                     ("connect_strategy", params.l1_bridge.connect_strategy.clone().into()),
-                    (
-                        "reorg_filter_halving_period_secs",
-                        (params.l1_bridge.reorg_filter_halving_period_secs as u128).into(),
-                    ),
+                    ("filter_half_life_secs", params.l1_bridge.filter_half_life_secs.into()),
                 ],
             );
         })

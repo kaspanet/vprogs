@@ -20,10 +20,10 @@ pub struct L1BridgeParams {
     /// Connection strategy: retry (block until connected) or fallback (fail fast).
     #[arg(long = "l1-bridge-connect-strategy", default_value_t = connect_strategy_str(L1BridgeConfig::default().connect_strategy))]
     pub connect_strategy: String,
-    /// Reorg filter halving period in seconds. Observed reorg depths accumulate into a
-    /// threshold that halves every period. Set to 0 to disable.
-    #[arg(long = "l1-bridge-reorg-filter-halving-period-secs", default_value_t = L1BridgeConfig::default().reorg_filter_halving_period.as_secs())]
-    pub reorg_filter_halving_period_secs: u64,
+    /// Reorg filter half-life in seconds. Observed reorg depths accumulate into a threshold
+    /// that halves every half-life. Set to 0 to disable.
+    #[arg(long = "l1-bridge-filter-half-life-secs", default_value_t = L1BridgeConfig::default().filter_half_life.as_secs())]
+    pub filter_half_life_secs: u64,
 }
 
 impl L1BridgeParams {
@@ -33,7 +33,7 @@ impl L1BridgeParams {
             network_id: self.network_id.parse().expect("invalid network id"),
             connect_timeout_ms: self.connect_timeout_ms,
             connect_strategy: self.connect_strategy.parse().expect("invalid connect strategy"),
-            reorg_filter_halving_period: Duration::from_secs(self.reorg_filter_halving_period_secs),
+            filter_half_life: Duration::from_secs(self.filter_half_life_secs),
             root: None,
             tip: None,
         }

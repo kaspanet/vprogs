@@ -118,7 +118,7 @@ impl BridgeWorker {
             rpc_ctl_channel,
             fatal: false,
             backfill_target,
-            reorg_filter: ReorgFilter::new(config.reorg_filter_halving_period),
+            reorg_filter: ReorgFilter::new(config.filter_half_life),
         }
         .run()
         .await;
