@@ -13,7 +13,7 @@ pub struct StorageParams {
     pub data_dir: PathBuf,
     /// Maximum number of concurrent read workers.
     #[arg(long = "storage-read-worker-count", default_value_t = ReadConfig::default().worker_count)]
-    pub read_workers: usize,
+    pub read_worker_count: usize,
     /// Per-reader request buffer depth.
     #[arg(long = "storage-read-buffer-depth", default_value_t = ReadConfig::default().worker_buffer_depth)]
     pub read_buffer_depth: usize,
@@ -29,7 +29,7 @@ impl StorageParams {
     pub fn to_config<S: Store>(self, store: S) -> StorageConfig<S> {
         StorageConfig {
             read_config: ReadConfig {
-                worker_count: self.read_workers,
+                worker_count: self.read_worker_count,
                 worker_buffer_depth: self.read_buffer_depth,
             },
             write_config: WriteConfig {

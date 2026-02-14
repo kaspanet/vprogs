@@ -14,6 +14,7 @@ env_logger.workspace                   = true
 figment.workspace                      = true
 log.workspace                          = true
 serde.workspace                        = true
+tap.workspace                          = true
 vprogs-node-framework.workspace        = true
 vprogs-node-l1-bridge.workspace        = true
 vprogs-node-vm.workspace               = true

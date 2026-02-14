@@ -5568,6 +5568,7 @@ dependencies = [
  "figment",
  "log",
  "serde",
+ "tap",
  "vprogs-node-framework",
  "vprogs-node-l1-bridge",
  "vprogs-node-vm",

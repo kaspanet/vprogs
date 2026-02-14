@@ -16,7 +16,7 @@ use log::info;
 use vprogs_node_framework::Node;
 use vprogs_node_vm::VM;
 
-use crate::{cli_provider::CliOverrides, params::NodeParams};
+use crate::{cli_provider::CliProvider, params::NodeParams};
 
 fn main() {
     let matches = NodeParams::command().get_matches();
@@ -34,7 +34,7 @@ fn main() {
     let params: NodeParams = Figment::from(Serialized::defaults(&params))
         .merge(Toml::file(&config_file))
         .merge(Env::prefixed("VPROGS_").split("__"))
-        .merge(CliOverrides::from_matches(&matches, &params))
+        .merge(CliProvider::from_matches(&matches, &params))
         .extract()
         .expect("invalid configuration");
 
