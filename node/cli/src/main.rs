@@ -1,3 +1,5 @@
+mod backend;
+mod cli_provider;
 mod execution_params;
 mod l1_bridge_params;
 mod params;
@@ -5,7 +7,7 @@ mod storage_params;
 
 use std::{fs, sync::mpsc};
 
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 use figment::{
     Figment,
     providers::{Env, Format, Serialized, Toml},
@@ -13,36 +15,38 @@ use figment::{
 use log::info;
 use vprogs_node_framework::Node;
 use vprogs_node_vm::VM;
-use vprogs_storage_rocksdb_store::{DefaultConfig, RocksDbStore};
 
-use crate::params::NodeParams;
+use crate::{cli_provider::CliOverrides, params::NodeParams};
 
 fn main() {
-    let params = NodeParams::parse();
+    let matches = NodeParams::command().get_matches();
+    let params = NodeParams::from_arg_matches(&matches).expect("invalid arguments");
     let config_file = params.config_file.clone();
     let reset = params.reset;
 
     // Initialize logging early. RUST_LOG overrides --log-level when set.
-    let log_level = params.log_level.as_deref().unwrap_or("info");
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_level)).init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(&params.log_level))
+        .init();
 
     // Layered config: defaults → TOML file → env vars → CLI args.
-    let params: NodeParams = Figment::from(Serialized::defaults(NodeParams::default()))
+    // CliOverrides only includes args explicitly set on the command line,
+    // preventing clap defaults from overriding TOML and environment layers.
+    let params: NodeParams = Figment::from(Serialized::defaults(&params))
         .merge(Toml::file(&config_file))
         .merge(Env::prefixed("VPROGS_").split("__"))
-        .merge(Serialized::globals(&params))
+        .merge(CliOverrides::from_matches(&matches, &params))
         .extract()
         .expect("invalid configuration");
 
     info!("loaded config from: defaults → {} → env → cli", config_file.display());
 
     // Build runtime objects.
-    let data_dir = params.storage.data_dir.clone().expect("data_dir");
+    let data_dir = params.storage.data_dir.clone();
     if reset && data_dir.exists() {
         info!("--reset: removing {}", data_dir.display());
         fs::remove_dir_all(&data_dir).expect("failed to remove data directory");
     }
-    let store = RocksDbStore::<DefaultConfig>::open(&data_dir);
+    let store = backend::Store::open(&data_dir);
 
     // Start the node.
     info!("starting vprogs node");

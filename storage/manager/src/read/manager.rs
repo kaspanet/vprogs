@@ -29,7 +29,7 @@ impl<K: Store, R: ReadCmd<K::StateSpace>> ReadManager<K, R> {
         let active_readers = Arc::new(CachePadded::new(AtomicUsize::new(0)));
         Self {
             worker_handles: Vec::from_iter(
-                (0..config.max_readers)
+                (0..config.worker_count)
                     .map(|i| ReadWorker::spawn(i, &queue, store, &active_readers, is_shutdown)),
             ),
             config,
@@ -40,11 +40,11 @@ impl<K: Store, R: ReadCmd<K::StateSpace>> ReadManager<K, R> {
     }
 
     pub fn submit(&self, read: R) {
-        self.tune_active_readers(self.queue.push(read) / self.config.buffer_depth_per_reader + 1)
+        self.tune_active_readers(self.queue.push(read) / self.config.worker_buffer_depth + 1)
     }
 
     pub fn shutdown(&self) {
-        self.wake_readers(self.config.max_readers, true);
+        self.wake_readers(self.config.worker_count, true);
 
         for handle in &self.worker_handles {
             if let Some(handle) = handle.take_join() {
