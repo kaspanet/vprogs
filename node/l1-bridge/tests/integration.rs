@@ -94,6 +94,7 @@ async fn test_bridge_syncs_from_specific_block() {
         .with_url(Some(node.wrpc_borsh_url()))
         .with_network_type(NetworkType::Simnet)
         .with_connect_strategy(ConnectStrategy::Fallback)
+        .with_filter_half_life(Duration::ZERO)
         .with_tip(Some(Checkpoint::new(3, ChainBlockMetadata::new(start_from, 0))));
 
     let bridge = L1Bridge::new(config);
@@ -134,7 +135,8 @@ async fn test_bridge_catches_up_after_reconnection() {
     let config = L1BridgeConfig::default()
         .with_url(Some(node.wrpc_borsh_url()))
         .with_network_type(NetworkType::Simnet)
-        .with_connect_strategy(ConnectStrategy::Fallback);
+        .with_connect_strategy(ConnectStrategy::Fallback)
+        .with_filter_half_life(Duration::ZERO);
 
     let bridge1 = L1Bridge::new(config);
     bridge1.wait_for(TIMEOUT, |e| matches!(e, L1Event::Connected)).await;
@@ -168,6 +170,7 @@ async fn test_bridge_catches_up_after_reconnection() {
         .with_url(Some(node.wrpc_borsh_url()))
         .with_network_type(NetworkType::Simnet)
         .with_connect_strategy(ConnectStrategy::Fallback)
+        .with_filter_half_life(Duration::ZERO)
         .with_tip(Some(checkpoint));
 
     let bridge2 = L1Bridge::new(config);
@@ -304,7 +307,8 @@ async fn test_reorg_filter_causes_lag() {
         L1BridgeConfig::default()
             .with_url(Some(node1.wrpc_borsh_url()))
             .with_network_type(NetworkType::Simnet)
-            .with_connect_strategy(ConnectStrategy::Fallback),
+            .with_connect_strategy(ConnectStrategy::Fallback)
+            .with_filter_half_life(Duration::ZERO),
     );
 
     // Wait for both bridges to connect.
@@ -390,6 +394,7 @@ async fn setup_node_with_bridge(
         .with_url(Some(node.wrpc_borsh_url()))
         .with_network_type(NetworkType::Simnet)
         .with_connect_strategy(strategy)
+        .with_filter_half_life(Duration::ZERO)
         .with_tip(tip);
 
     let bridge = L1Bridge::new(config);

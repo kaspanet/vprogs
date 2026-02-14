@@ -21,7 +21,7 @@ pub struct L1BridgeConfig {
     /// Last known tip, or `None` to start from the L1 pruning point.
     pub tip: Option<Checkpoint<ChainBlockMetadata>>,
     /// Reorg filter half-life. Observed reorg depths accumulate into a threshold that halves
-    /// every half-life until it decays to zero. Set to `Duration::ZERO` to disable (default).
+    /// every half-life until it decays to zero. Set to `Duration::ZERO` to disable.
     pub filter_half_life: Duration,
 }
 
@@ -35,7 +35,7 @@ impl Default for L1BridgeConfig {
             connect_strategy: ConnectStrategy::Retry, // Reconnect automatically on disconnect.
             root: None,                               // Start from the L1 pruning point.
             tip: None,
-            filter_half_life: Duration::ZERO, // Disabled by default.
+            filter_half_life: Duration::from_secs(3600), // 1 hour.
         }
     }
 }
