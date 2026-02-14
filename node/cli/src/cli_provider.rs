@@ -1,6 +1,7 @@
-use clap::parser::{ValueSource, ValueSource::CommandLine};
+use clap::parser::ValueSource::CommandLine;
 use figment::{
-    Metadata, Profile,
+    Metadata, Profile, Provider,
+    providers::Serialized,
     value::{Dict, Map, Value},
 };
 use tap::Tap;
@@ -8,75 +9,65 @@ use tap::Tap;
 use crate::params::NodeParams;
 
 /// Figment provider that only includes CLI arguments explicitly set by the user.
-/// This prevents clap's default values from overriding TOML and environment layers.
+///
+/// Clap populates default values for every declared argument, so naively serializing `NodeParams`
+/// would override TOML and environment layers. This provider solves that by serializing the full
+/// params struct, then filtering the resulting dict to only retain values whose corresponding clap
+/// arg has `ValueSource::CommandLine`.
 pub struct CliProvider(Dict);
 
 impl CliProvider {
-    pub fn from_matches(matches: &clap::ArgMatches, params: &NodeParams) -> Self {
-        Self(Dict::new()).tap_mut(|p| {
-            p.put(
-                matches,
-                &[
-                    ("log_level", params.log_level.clone().into()),
-                    ("api_channel_capacity", params.api_channel_capacity.into()),
-                ],
-            );
-            p.section(
-                matches,
-                "execution",
-                &[("worker_count", params.execution.worker_count.into())],
-            );
-            p.section(
-                matches,
-                "storage",
-                &[
-                    ("data_dir", params.storage.data_dir.display().to_string().into()),
-                    ("read_worker_count", params.storage.read_worker_count.into()),
-                    ("read_buffer_depth", params.storage.read_buffer_depth.into()),
-                    ("write_batch_size", params.storage.write_batch_size.into()),
-                    ("write_batch_duration_ms", params.storage.write_batch_duration_ms.into()),
-                ],
-            );
-            p.section(
-                matches,
-                "l1_bridge",
-                &[
-                    ("url", params.l1_bridge.url.clone().unwrap_or_default().into()),
-                    ("network_id", params.l1_bridge.network_id.clone().into()),
-                    ("connect_timeout_ms", params.l1_bridge.connect_timeout_ms.into()),
-                    ("connect_strategy", params.l1_bridge.connect_strategy.clone().into()),
-                    ("filter_half_life_secs", params.l1_bridge.filter_half_life_secs.into()),
-                ],
-            );
+    /// Serializes `params` into a figment dict, then filters it to only retain values
+    /// whose corresponding clap arg was explicitly set on the command line.
+    pub fn new(matches: &clap::ArgMatches, params: &NodeParams) -> Self {
+        // Serialize all params (including clap defaults) into a figment dict, then strip it
+        // down to only the values the user actually passed on the command line.
+        Self(Self::filter(
+            matches,
+            &Serialized::defaults(params)
+                .data()
+                .expect("params serialization failed")
+                .remove(&Profile::Default)
+                .unwrap_or_default(),
+            "",
+        ))
+    }
+
+    /// Recursively filters a dict to only include values explicitly set on the command line.
+    ///
+    /// Clap arg names are derived from the dict path by joining nested keys with `-` and
+    /// replacing underscores with hyphens (e.g. `l1_bridge.connect_timeout_ms` becomes
+    /// `l1-bridge-connect-timeout-ms`). This convention must match the `#[arg(long = "...")]`
+    /// declarations on the param structs.
+    fn filter(matches: &clap::ArgMatches, dict: &Dict, prefix: &str) -> Dict {
+        Dict::new().tap_mut(|filtered| {
+            for (key, value) in dict {
+                let segment = key.replace('_', "-");
+                let arg =
+                    if prefix.is_empty() { segment.clone() } else { format!("{prefix}-{segment}") };
+                match value {
+                    // Nested struct - recurse with the extended prefix.
+                    Value::Dict(tag, nested) => {
+                        let nested = Self::filter(matches, nested, &arg);
+                        if !nested.is_empty() {
+                            filtered.insert(key.clone(), Value::Dict(*tag, nested));
+                        }
+                    }
+                    // Leaf value - only include if the user explicitly set it.
+                    _ => {
+                        if matches.value_source(arg.as_str()) == Some(CommandLine) {
+                            filtered.insert(key.clone(), value.clone());
+                        }
+                    }
+                }
+            }
         })
-    }
-
-    fn put(&mut self, matches: &clap::ArgMatches, entries: &[(&str, Value)]) {
-        for (key, val) in entries {
-            if matches.value_source(key.replace('_', "-").as_str()) == Some(CommandLine) {
-                self.0.insert((*key).into(), val.clone());
-            }
-        }
-    }
-
-    /// Inserts a nested dict for `name`, auto-prefixing each arg with `name` (underscores →
-    /// hyphens).
-    fn section(&mut self, matches: &clap::ArgMatches, name: &str, entries: &[(&str, Value)]) {
-        let prefix = name.replace('_', "-");
-        let mut nested = Dict::new();
-        for (field, val) in entries {
-            let arg = format!("{prefix}-{}", field.replace('_', "-"));
-            if matches.value_source(arg.as_str()) == Some(ValueSource::CommandLine) {
-                nested.insert((*field).into(), val.clone());
-            }
-        }
-        if !nested.is_empty() {
-            self.0.insert(name.into(), nested.into());
-        }
     }
 }
 
-impl figment::Provider for CliProvider {
+/// Exposes the filtered dict to figment under the default profile, tagged as "CLI" in
+/// error messages and provenance tracking.
+impl Provider for CliProvider {
     fn metadata(&self) -> Metadata {
         Metadata::named("CLI")
     }

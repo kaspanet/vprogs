@@ -1,6 +1,7 @@
 mod backend;
 mod cli_provider;
 mod execution_params;
+mod extensions;
 mod l1_bridge_params;
 mod params;
 mod storage_params;
@@ -29,12 +30,12 @@ fn main() {
         .init();
 
     // Layered config: defaults → TOML file → env vars → CLI args.
-    // CliOverrides only includes args explicitly set on the command line,
+    // CliProvider only includes args explicitly set on the command line,
     // preventing clap defaults from overriding TOML and environment layers.
     let params: NodeParams = Figment::from(Serialized::defaults(&params))
         .merge(Toml::file(&config_file))
         .merge(Env::prefixed("VPROGS_").split("__"))
-        .merge(CliProvider::from_matches(&matches, &params))
+        .merge(CliProvider::new(&matches, &params))
         .extract()
         .expect("invalid configuration");
 
@@ -50,7 +51,7 @@ fn main() {
 
     // Start the node.
     info!("starting vprogs node");
-    let node = Node::new(params.to_config(VM, store));
+    let node = Node::new(params.into_config(VM, store));
 
     // Wait for shutdown signal (Ctrl-C / SIGTERM).
     let (tx, rx) = mpsc::channel();

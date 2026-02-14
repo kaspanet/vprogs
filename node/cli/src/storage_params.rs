@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use vprogs_storage_manager::{ReadConfig, StorageConfig, WriteConfig};
 use vprogs_storage_types::Store;
 
+/// CLI arguments for the storage manager (read pool, write batching, data directory).
 #[derive(Args, Serialize, Deserialize)]
 #[command(next_help_heading = "Storage")]
 pub struct StorageParams {
@@ -26,7 +27,8 @@ pub struct StorageParams {
 }
 
 impl StorageParams {
-    pub fn to_config<S: Store>(self, store: S) -> StorageConfig<S> {
+    /// Converts CLI params into a [`StorageConfig`], injecting the given store implementation.
+    pub fn into_config<S: Store>(self, store: S) -> StorageConfig<S> {
         StorageConfig {
             read_config: ReadConfig {
                 worker_count: self.read_worker_count,

@@ -4,6 +4,7 @@ use vprogs_scheduling_scheduler::{ExecutionConfig, VmInterface};
 
 use crate::backend::Vm;
 
+/// CLI arguments for the execution worker pool.
 #[derive(Args, Serialize, Deserialize)]
 #[command(next_help_heading = "Execution")]
 pub struct ExecutionParams {
@@ -13,7 +14,8 @@ pub struct ExecutionParams {
 }
 
 impl ExecutionParams {
-    pub fn to_config<V: VmInterface>(self, vm: V) -> ExecutionConfig<V> {
+    /// Converts CLI params into an [`ExecutionConfig`], injecting the given VM implementation.
+    pub fn into_config<V: VmInterface>(self, vm: V) -> ExecutionConfig<V> {
         ExecutionConfig { worker_count: self.worker_count, vm: Some(vm) }
     }
 }

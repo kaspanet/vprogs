@@ -13,7 +13,7 @@ use crate::{
     storage_params::StorageParams,
 };
 
-/// vprogs L2 node for the Kaspa network.
+/// Top-level CLI arguments and configuration for the vprogs node.
 #[derive(Parser, Serialize, Deserialize)]
 #[command(
     name = "vprogs-node",
@@ -33,7 +33,7 @@ file → environment variables (VPROGS_*) → CLI arguments."
 pub struct NodeParams {
     /// Path to TOML config file.
     #[arg(long, default_value = "vprogs.toml")]
-    #[serde(skip)]
+    #[serde(skip)] // Not part of the config - only controls where to load the TOML from.
     pub config_file: PathBuf,
     /// Log level: error, warn, info, debug, trace. Overridden by RUST_LOG if set.
     #[arg(long, default_value = "info")]
@@ -43,7 +43,7 @@ pub struct NodeParams {
     pub api_channel_capacity: usize,
     /// Delete the data directory on startup before opening the store.
     #[arg(long)]
-    #[serde(skip)]
+    #[serde(skip)] // One-shot action, not persisted config.
     pub reset: bool,
     #[command(flatten)]
     pub execution: ExecutionParams,
@@ -54,16 +54,18 @@ pub struct NodeParams {
 }
 
 impl NodeParams {
-    pub fn to_config<S: Store<StateSpace = StateSpace>, V: NodeVm>(
+    /// Converts the top-level CLI params into a [`NodeConfig`], recursively converting each
+    /// subsection and injecting the VM and store implementations.
+    pub fn into_config<S: Store<StateSpace = StateSpace>, V: NodeVm>(
         self,
         vm: V,
         store: S,
     ) -> NodeConfig<S, V> {
         NodeConfig {
             api_channel_capacity: self.api_channel_capacity,
-            execution_config: self.execution.to_config(vm),
-            storage_config: self.storage.to_config(store),
-            l1_bridge_config: self.l1_bridge.to_config(),
+            execution_config: self.execution.into_config(vm),
+            storage_config: self.storage.into_config(store),
+            l1_bridge_config: self.l1_bridge.into_config(),
         }
     }
 }
