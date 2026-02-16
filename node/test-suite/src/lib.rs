@@ -41,6 +41,8 @@
 
 mod l1_bridge_ext;
 mod l1_node;
+mod node_ext;
+mod vm;
 
 pub use kaspa_consensus_core::{
     Hash,
@@ -48,3 +50,6 @@ pub use kaspa_consensus_core::{
 };
 pub use l1_bridge_ext::L1BridgeExt;
 pub use l1_node::L1Node;
+pub use node_ext::NodeExt;
+pub use vm::TestNodeVm;
+pub use vprogs_scheduling_test_suite::{Access, Tx};

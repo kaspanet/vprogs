@@ -15,3 +15,10 @@ vprogs-scheduling-scheduler.workspace = true
 vprogs-state-space.workspace          = true
 vprogs-storage-manager.workspace      = true
 vprogs-storage-types.workspace        = true
+
+[dev-dependencies]
+tempfile.workspace                     = true
+tokio                                  = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+vprogs-node-test-suite.workspace       = true
+vprogs-state-metadata.workspace        = true
+vprogs-storage-rocksdb-store.workspace = true
