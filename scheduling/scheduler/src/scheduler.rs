@@ -1,5 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
+use arc_swap::ArcSwap;
 use crossbeam_queue::SegQueue;
 use tap::Tap;
 use vprogs_core_types::{AccessMetadata, Checkpoint, Transaction};
@@ -34,6 +35,9 @@ pub struct Scheduler<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     execution_workers: ExecutionWorkers<ManagerTask<S, V>, RuntimeBatch<S, V>>,
     /// Queue of resource IDs to potentially evict after their batches committed.
     eviction_queue: Arc<SegQueue<V::ResourceId>>,
+    /// Shared root checkpoint (oldest surviving batch). Shared with PruningWorker, RuntimeBatch,
+    /// and Rollback for lock-free reads and atomic updates.
+    root: Arc<ArcSwap<Checkpoint<V::BatchMetadata>>>,
     /// Background worker that prunes old state data when the pruning threshold advances.
     pruning_worker: PruningWorker<S, V>,
 }
@@ -43,10 +47,13 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
     pub fn new(execution_config: ExecutionConfig<V>, storage_config: StorageConfig<S>) -> Self {
         let storage = StorageManager::new(storage_config);
         let (worker_count, vm) = execution_config.unpack();
+        let pruning_worker = PruningWorker::new(storage.store().clone());
+        let root = pruning_worker.root_shared();
         Self {
             batch_execution: BatchExecutionContext::new(storage.store().clone()),
             batch_lifecycle_worker: BatchLifecycleWorker::new(vm.clone()),
-            pruning_worker: PruningWorker::new(storage.store().clone()),
+            pruning_worker,
+            root,
             resources: HashMap::new(),
             execution_workers: ExecutionWorkers::new(worker_count),
             eviction_queue: Arc::new(SegQueue::new()),
@@ -71,7 +78,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
         // commit frontier that workers advance when a batch commits.
         let (checkpoint, cancel, commit) = self.batch_execution.next_checkpoint(metadata);
 
-        RuntimeBatch::new(self.vm.clone(), self, txs, checkpoint, cancel, commit)
+        RuntimeBatch::new(self.vm.clone(), self, txs, checkpoint, cancel, commit, self.root.clone())
             // Connect transactions to resource dependency chains.
             .tap(RuntimeBatch::connect)
             .tap(|batch| {
@@ -133,6 +140,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
                 target.clone(),
                 upper_bound,
                 commit_frontier,
+                self.root.clone(),
                 &done_signal,
             )));
             done_signal.wait_blocking();

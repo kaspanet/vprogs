@@ -9,7 +9,8 @@ use crate::VM;
 
 /// Extension trait for scheduler test helpers.
 pub trait SchedulerExt {
-    /// Waits until the last pruned index reaches the expected value or timeout is reached.
+    /// Waits until pruning has progressed past `expected` (root index > expected), or panics on
+    /// timeout.
     fn wait_pruned(&self, expected: u64, timeout: Duration) -> &Self;
 
     /// Repeatedly processes the eviction queue until the cache is empty or timeout is reached.
@@ -25,12 +26,12 @@ pub trait SchedulerExt {
 impl SchedulerExt for Scheduler<RocksDbStore, VM> {
     fn wait_pruned(&self, expected: u64, timeout: Duration) -> &Self {
         let start = Instant::now();
-        while self.pruning().last_pruned().index() < expected {
+        while self.pruning().root().index() <= expected {
             if start.elapsed() > timeout {
                 panic!(
-                    "Timeout waiting for pruning. Expected last pruned index >= {}, got {}.",
+                    "Timeout waiting for pruning. Expected root index > {}, got {}.",
                     expected,
-                    self.pruning().last_pruned().index()
+                    self.pruning().root().index()
                 );
             }
             std::thread::sleep(Duration::from_millis(10));

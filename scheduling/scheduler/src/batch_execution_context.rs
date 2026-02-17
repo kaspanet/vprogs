@@ -39,16 +39,16 @@ pub struct BatchExecutionContext<S: Store<StateSpace = StateSpace>, M: BatchMeta
 impl<S: Store<StateSpace = StateSpace>, M: BatchMetadata> BatchExecutionContext<S, M> {
     /// Creates a new context by reading persisted state from the store.
     ///
-    /// The cancellation context starts from the pruning point (lower bound). Both `last_processed`
-    /// and `last_committed` are initialized to the last committed checkpoint on disk, since no new
-    /// batches have been scheduled yet. The commit frontier matches this index.
+    /// The cancellation context starts from the root (oldest surviving batch). Both
+    /// `last_processed` and `last_committed` are initialized to the last committed checkpoint on
+    /// disk, since no new batches have been scheduled yet. The commit frontier matches this index.
     pub fn new(store: Arc<S>) -> Self {
-        let last_pruned: Checkpoint<M> = StateMetadata::last_pruned(&*store);
+        let root: Checkpoint<M> = StateMetadata::root(&*store);
         let last_committed: Checkpoint<M> = StateMetadata::last_committed(&*store);
         let frontier = last_committed.index();
         Self {
             store,
-            cancellation: CancellationContext::new(last_pruned.index()),
+            cancellation: CancellationContext::new(root.index()),
             last_processed: last_committed.clone(),
             last_committed,
             pending: VecDeque::new(),

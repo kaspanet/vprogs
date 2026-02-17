@@ -3,6 +3,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
+use arc_swap::ArcSwap;
 use tap::Tap;
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_types::Checkpoint;
@@ -29,6 +30,9 @@ pub struct Rollback<V: VmInterface> {
     /// Shared commit frontier, reset in `done()` to guard against a stale `commit_done`
     /// advancing it past the target (see `done()` for details).
     commit_frontier: Arc<AtomicU64>,
+    /// Shared root checkpoint. Reset to default when rolling back to genesis (target index 0)
+    /// so that root is re-initialized on the next first commit.
+    root: Arc<ArcSwap<Checkpoint<V::BatchMetadata>>>,
     /// Signal that resolves when the rollback operation is complete.
     done_signal: Arc<AtomicAsyncLatch>,
 }
@@ -40,9 +44,10 @@ impl<V: VmInterface> Rollback<V> {
         target: Checkpoint<V::BatchMetadata>,
         upper_bound: u64,
         commit_frontier: Arc<AtomicU64>,
+        root: Arc<ArcSwap<Checkpoint<V::BatchMetadata>>>,
         done_signal: &Arc<AtomicAsyncLatch>,
     ) -> Self {
-        Rollback { target, upper_bound, commit_frontier, done_signal: done_signal.clone() }
+        Rollback { target, upper_bound, commit_frontier, root, done_signal: done_signal.clone() }
     }
 
     /// Executes the rollback on `store`.
@@ -74,6 +79,9 @@ impl<V: VmInterface> Rollback<V> {
     /// `commit_done` calls have completed.
     pub fn done(&self) {
         self.commit_frontier.store(self.target.index(), Ordering::Release);
+        if self.target.index() == 0 {
+            self.root.store(Arc::new(Checkpoint::default()));
+        }
         self.done_signal.open();
     }
 
@@ -82,6 +90,12 @@ impl<V: VmInterface> Rollback<V> {
         store.write_batch().tap_mut(|wb| {
             // This is written upfront but committed atomically with the reversions below.
             StateMetadata::set_last_committed(wb, &self.target);
+
+            // When rolling back to genesis (all batches deleted), reset root so it gets
+            // re-initialized on the next first commit.
+            if self.target.index() == 0 {
+                StateMetadata::set_root(wb, &self.target);
+            }
 
             // Walk batches from newest to oldest.
             for index in (self.target.index() + 1..=self.upper_bound).rev() {

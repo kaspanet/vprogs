@@ -774,10 +774,11 @@ pub fn test_pruning_crash_recovery() {
         runtime.pruning().set_threshold(3);
         runtime.wait_pruned(2, Duration::from_secs(10));
 
-        // Verify last_pruned is persisted with correct metadata
-        let pruned = StateMetadata::last_pruned::<u64, _>(&**runtime.storage().store());
-        assert_eq!(pruned.index(), 2, "Last pruned index should be persisted");
-        assert_eq!(*pruned.metadata(), 2, "Last pruned metadata should be persisted");
+        // Verify root has advanced past the pruned batches.
+        // Root = oldest surviving batch = 3 (since batches 1-2 were pruned).
+        let root = StateMetadata::root::<u64, _>(&**runtime.storage().store());
+        assert_eq!(root.index(), 3, "Root should point to first surviving batch");
+        assert_eq!(*root.metadata(), 3, "Root metadata should match batch 3");
 
         runtime.shutdown();
     }
@@ -790,9 +791,9 @@ pub fn test_pruning_crash_recovery() {
             StorageConfig::default().with_store(storage),
         );
 
-        let pruned = runtime.pruning().last_pruned();
-        assert_eq!(pruned.index(), 2, "Pruning should resume from persisted index");
-        assert_eq!(*pruned.metadata(), 2, "Pruning metadata should survive restart");
+        let root = runtime.pruning().root();
+        assert_eq!(root.index(), 3, "Root should resume from persisted index");
+        assert_eq!(*root.metadata(), 3, "Root metadata should survive restart");
 
         let store = runtime.storage().store();
 

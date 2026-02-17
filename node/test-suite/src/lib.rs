@@ -14,7 +14,7 @@
 //!
 //! # async fn example() {
 //! // Start an isolated simnet node.
-//! let node = L1Node::new().await;
+//! let node = L1Node::new(None).await;
 //!
 //! // Connect a bridge to it.
 //! let bridge = L1Bridge::new(

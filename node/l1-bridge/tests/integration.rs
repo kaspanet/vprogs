@@ -83,7 +83,7 @@ async fn test_bridge_block_contains_transactions() {
 /// with indices continuing from the given starting point.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_bridge_syncs_from_specific_block() {
-    let node = L1Node::new().await;
+    let node = L1Node::new(None).await;
 
     // Mine initial blocks that the bridge will skip over.
     let initial_hashes = node.mine_blocks(3).await;
@@ -128,7 +128,7 @@ async fn test_bridge_syncs_from_specific_block() {
 /// blocks that were mined while no bridge was running.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_bridge_catches_up_after_reconnection() {
-    let node = L1Node::new().await;
+    let node = L1Node::new(None).await;
 
     // Phase 1: First bridge receives some blocks.
     let config = L1BridgeConfig::default()
@@ -289,8 +289,8 @@ async fn test_reorg_filter_causes_lag() {
     const LONG_CHAIN: usize = 20;
 
     // Create two isolated nodes.
-    let node1 = L1Node::new().await;
-    let node2 = L1Node::new().await;
+    let node1 = L1Node::new(None).await;
+    let node2 = L1Node::new(None).await;
 
     // Two bridges to node1: one with reorg filter (1h period), one without.
     let filtered = L1Bridge::new(
@@ -384,7 +384,7 @@ async fn setup_node_with_bridge(
     strategy: ConnectStrategy,
     tip: Option<Checkpoint<ChainBlockMetadata>>,
 ) -> (L1Node, L1Bridge) {
-    let node = L1Node::new().await;
+    let node = L1Node::new(None).await;
 
     let config = L1BridgeConfig::default()
         .with_url(node.wrpc_borsh_url())

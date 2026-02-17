@@ -3,6 +3,7 @@ use std::sync::{
     atomic::{AtomicI64, AtomicU64, Ordering},
 };
 
+use arc_swap::ArcSwap;
 use crossbeam_deque::{Injector, Steal, Worker};
 use crossbeam_queue::SegQueue;
 use vprogs_core_atomics::AtomicAsyncLatch;
@@ -23,6 +24,8 @@ use crate::{
 pub struct RuntimeBatch<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     cancellation: CancellationContext,
     commit_frontier: Arc<AtomicU64>,
+    /// Shared root checkpoint. Initialized on first commit (when root.index() == 0).
+    root: Arc<ArcSwap<Checkpoint<V::BatchMetadata>>>,
     checkpoint: Checkpoint<V::BatchMetadata>,
     storage: StorageManager<S, Read<S, V>, Write<S, V>>,
     eviction_queue: Arc<SegQueue<V::ResourceId>>,
@@ -119,14 +122,26 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
         checkpoint: Checkpoint<V::BatchMetadata>,
         cancellation: CancellationContext,
         commit_frontier: Arc<AtomicU64>,
+        root: Arc<ArcSwap<Checkpoint<V::BatchMetadata>>>,
     ) -> Self {
         Self(Arc::new_cyclic(|this| {
+            let was_processed = AtomicAsyncLatch::default();
+            let was_persisted = AtomicAsyncLatch::default();
+
+            // An empty batch has nothing to process or persist — open the latches
+            // immediately so the lifecycle worker can commit it right away.
+            if txs.is_empty() {
+                was_processed.open();
+                was_persisted.open();
+            }
+
             let mut state_diffs = Vec::new();
 
             RuntimeBatchData {
                 checkpoint,
                 cancellation,
                 commit_frontier,
+                root,
                 storage: manager.storage().clone(),
                 eviction_queue: manager.eviction_queue(),
                 pending_txs: AtomicU64::new(txs.len() as u64),
@@ -145,8 +160,8 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
                     .collect(),
                 state_diffs,
                 available_txs: Injector::new(),
-                was_processed: Default::default(),
-                was_persisted: Default::default(),
+                was_processed,
+                was_persisted,
                 was_committed: Default::default(),
             }
         }))
@@ -208,6 +223,12 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
             }
             StoredBatchMetadata::set(wb, self.checkpoint.index(), self.checkpoint.metadata());
             StateMetadata::set_last_committed(wb, &self.checkpoint);
+
+            // Initialize root on first commit. This is a single atomic load per batch (no disk).
+            if self.root.load().index() == 0 {
+                StateMetadata::set_root(wb, &self.checkpoint);
+                self.root.store(Arc::new(self.checkpoint.clone()));
+            }
         }
     }
 
