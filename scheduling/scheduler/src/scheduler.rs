@@ -53,7 +53,10 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
         )));
         let pruning_worker = PruningWorker::new(storage.store().clone(), root.clone());
         Self {
-            batch_execution: BatchExecutionContext::new(storage.store().clone()),
+            batch_execution: BatchExecutionContext::new(
+                storage.store().clone(),
+                root.load().index(),
+            ),
             batch_lifecycle_worker: BatchLifecycleWorker::new(vm.clone()),
             pruning_worker,
             root,
