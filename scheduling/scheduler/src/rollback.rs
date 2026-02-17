@@ -54,8 +54,28 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Rollback<S, V> {
         // Commit any existing changes so the rollback sees a consistent state.
         store.commit(write_batch);
 
-        // Perform the rollback and commit the resulting changes.
-        store.commit(self.build_rollback_batch(store));
+        // Update `last_committed` in memory after the commit to reflect the rollback target.
+        self.context.last_committed.store(Arc::new(self.target.clone().tap(|target| {
+            store.commit(store.write_batch().tap_mut(|wb| {
+                // Update `last_committed` on disk to reflect the rollback target.
+                StateMetadata::set_last_committed(wb, target);
+
+                // Walk batches from newest to oldest.
+                for index in (target.index() + 1..=self.upper_bound).rev() {
+                    // Apply all rollback pointers associated with this batch.
+                    for (resource_id_bytes, old_version) in
+                        StatePtrRollback::iter_batch(store, index)
+                    {
+                        let resource_id: V::ResourceId = borsh::from_slice(&resource_id_bytes)
+                            .expect("corrupted store: unrecoverable");
+                        self.apply_rollback_ptr(store, wb, index, resource_id, old_version);
+                    }
+
+                    // Delete batch metadata entries for this batch.
+                    StoredBatchMetadata::delete(wb, index);
+                }
+            }))
+        })));
 
         // Return a new empty write batch for further operations.
         store.write_batch()
@@ -64,33 +84,6 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Rollback<S, V> {
     /// Signals that the rollback operation has completed.
     pub fn done(&self) {
         self.done_signal.open();
-    }
-
-    /// Builds a write batch containing all rollback operations.
-    fn build_rollback_batch<ST: Store<StateSpace = StateSpace>>(
-        &self,
-        store: &ST,
-    ) -> ST::WriteBatch {
-        store.write_batch().tap_mut(|wb| {
-            // Set last_committed on disk and in memory together. The in-memory store also
-            // serves as the definitive correction for any stale `commit_done()` that raced
-            // with cancellation (all prior commits have flushed by this point).
-            StateMetadata::set_last_committed(wb, &self.target);
-            self.context.last_committed.store(Arc::new(self.target.clone()));
-
-            // Walk batches from newest to oldest.
-            for index in (self.target.index() + 1..=self.upper_bound).rev() {
-                // Apply all rollback pointers associated with this batch.
-                for (resource_id_bytes, old_version) in StatePtrRollback::iter_batch(store, index) {
-                    let resource_id: V::ResourceId = borsh::from_slice(&resource_id_bytes)
-                        .expect("corrupted store: unrecoverable");
-                    self.apply_rollback_ptr(store, wb, index, resource_id, old_version);
-                }
-
-                // Delete batch metadata entries for this batch.
-                StoredBatchMetadata::delete(wb, index);
-            }
-        })
     }
 
     /// Applies a single rollback pointer to the write batch.
