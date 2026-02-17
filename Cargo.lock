@@ -5470,14 +5470,17 @@ dependencies = [
 name = "vprogs-node-test-suite"
 version = "0.1.0"
 dependencies = [
+ "borsh",
  "kaspa-addresses",
  "kaspa-consensus-core",
  "kaspa-core",
  "kaspa-grpc-client",
  "kaspa-rpc-core",
  "kaspa-testing-integration",
+ "kaspa-txscript",
  "kaspa-wrpc-server",
  "kaspad",
+ "secp256k1",
  "tokio",
  "vprogs-core-types",
  "vprogs-node-framework",
@@ -5552,6 +5555,7 @@ dependencies = [
 name = "vprogs-scheduling-test-suite"
 version = "0.1.0"
 dependencies = [
+ "borsh",
  "tempfile",
  "vprogs-core-types",
  "vprogs-scheduling-scheduler",

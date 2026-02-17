@@ -3,7 +3,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 use vprogs_node_framework::{Node, NodeConfig};
 use vprogs_node_l1_bridge::{L1BridgeConfig, NetworkType};
-use vprogs_node_test_suite::{L1Node, NodeExt, TestNodeVm};
+use vprogs_node_test_suite::{Access, L1Node, NodeExt, TestNodeVm, Tx};
 use vprogs_scheduling_scheduler::ExecutionConfig;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_storage_manager::StorageConfig;
@@ -34,13 +34,6 @@ async fn test_basic_block_processing() {
 
     node.api().wait_committed(5, TIMEOUT).await;
 
-    // Each block produces at least one accepted transaction (coinbase).
-    // Verify at least one resource was written per block.
-    for block_index in 1..=5u64 {
-        let resource_id = block_index as usize * 1000;
-        node.api().assert_written_state(resource_id, vec![resource_id]).await;
-    }
-
     node.shutdown();
     l1.shutdown().await;
 }
@@ -60,10 +53,6 @@ async fn test_processes_blocks_mined_after_connect() {
 
     node.api().wait_committed(5, TIMEOUT).await;
 
-    // Verify state for the first block.
-    let resource_id = 1000;
-    node.api().assert_written_state(resource_id, vec![resource_id]).await;
-
     node.shutdown();
     l1.shutdown().await;
 }
@@ -76,11 +65,10 @@ async fn test_processes_blocks_mined_after_connect() {
 #[tokio::test]
 async fn test_pruning_via_threshold() {
     let l1 = L1Node::new().await;
-    l1.mine_blocks(10).await;
-
     let temp_dir = TempDir::new().unwrap();
     let node = create_node(&l1, &temp_dir);
 
+    l1.mine_blocks(10).await;
     node.api().wait_committed(10, TIMEOUT).await;
 
     // Set pruning threshold so batches 1-4 become eligible for pruning.
@@ -101,11 +89,10 @@ async fn test_pruning_via_threshold() {
 #[tokio::test]
 async fn test_clean_shutdown() {
     let l1 = L1Node::new().await;
-    l1.mine_blocks(3).await;
-
     let temp_dir = TempDir::new().unwrap();
     let node = create_node(&l1, &temp_dir);
 
+    l1.mine_blocks(3).await;
     node.api().wait_committed(3, TIMEOUT).await;
 
     // Shutdown should not panic.
@@ -120,13 +107,13 @@ async fn test_clean_shutdown() {
 #[tokio::test]
 async fn test_resume_from_checkpoint() {
     let l1 = L1Node::new().await;
-    l1.mine_blocks(10).await;
-
     let temp_dir = TempDir::new().unwrap();
 
     // Phase 1: Process initial blocks, trigger pruning, then shutdown.
     {
         let node = create_node(&l1, &temp_dir);
+
+        l1.mine_blocks(10).await;
         node.api().wait_committed(10, TIMEOUT).await;
 
         // Trigger pruning so last_pruned gets a valid L1 block hash. Without this,
@@ -157,16 +144,35 @@ async fn test_resume_from_checkpoint() {
         let node = create_node(&l1, &temp_dir);
         node.api().wait_committed(15, TIMEOUT).await;
 
-        // Verify state from phase 1 (block index 5, above pruning point).
-        let resource_id = 5000;
-        node.api().assert_written_state(resource_id, vec![resource_id]).await;
-
-        // Verify state from phase 2.
-        let resource_id = 11000;
-        node.api().assert_written_state(resource_id, vec![resource_id]).await;
-
         node.shutdown();
     }
 
+    l1.shutdown().await;
+}
+
+/// Submit L2 transactions via L1 payload and verify L2 state is written.
+#[tokio::test]
+async fn test_l2_transactions_via_l1_payload() {
+    let l1 = L1Node::new().await;
+    let temp_dir = TempDir::new().unwrap();
+    let node = create_node(&l1, &temp_dir);
+
+    // Mine enough blocks so coinbase UTXOs reach maturity (1 UTXO needed).
+    let maturity_hashes = l1.mine_utxos(1).await;
+    let maturity_blocks = maturity_hashes.len() as u64;
+    node.api().wait_committed(maturity_blocks, Duration::from_secs(120)).await;
+
+    // Submit an L2 transaction via L1 payload.
+    l1.mine_block(Some(&[Tx(42, vec![Access::Write(42)])])).await;
+
+    // In Kaspa DAG consensus, a block's transactions are accepted by the next chain
+    // block. Mine one more block so the payload transactions get accepted.
+    l1.mine_blocks(1).await;
+    node.api().wait_committed(maturity_blocks + 2, Duration::from_secs(30)).await;
+
+    // Verify L2 state: resource 42 was written by tx id 42.
+    node.api().assert_written_state(42, vec![42]).await;
+
+    node.shutdown();
     l1.shutdown().await;
 }
