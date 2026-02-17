@@ -14,13 +14,16 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 /// Creates a Node connected to the given L1 simnet node using a temporary RocksDB store.
 fn create_node(l1: &L1Node, temp_dir: &TempDir) -> Node<RocksDbStore, TestNodeVm> {
     let store = RocksDbStore::open(temp_dir.path());
-    Node::new(NodeConfig::new(
-        ExecutionConfig::default().with_vm(TestNodeVm),
-        StorageConfig::default().with_store(store),
-        L1BridgeConfig::default()
-            .with_url(l1.wrpc_borsh_url())
-            .with_network_type(NetworkType::Simnet),
-    ))
+    Node::new(
+        NodeConfig::default()
+            .with_execution_config(ExecutionConfig::default().with_vm(TestNodeVm))
+            .with_storage_config(StorageConfig::default().with_store(store))
+            .with_l1_bridge_config(
+                L1BridgeConfig::default()
+                    .with_url(Some(l1.wrpc_borsh_url()))
+                    .with_network_type(NetworkType::Simnet),
+            ),
+    )
 }
 
 /// Mines L2 payload blocks and one acceptance block, returning the total number of blocks mined.
