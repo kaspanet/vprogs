@@ -30,9 +30,9 @@ impl<S: Store<StateSpace = StateSpace>, V: NodeVm> NodeApi<S, V> {
         self.with_scheduler(|s| s.batch_execution().last_processed().clone()).await
     }
 
-    /// Returns the last pruned checkpoint.
-    pub async fn last_pruned(&self) -> NodeResult<Checkpoint<ChainBlockMetadata>> {
-        self.with_scheduler(|s| s.pruning().last_pruned()).await
+    /// Returns the root checkpoint (oldest surviving batch).
+    pub async fn root(&self) -> NodeResult<Checkpoint<ChainBlockMetadata>> {
+        self.with_scheduler(|s| s.pruning().root()).await
     }
 
     /// Returns the current pruning threshold.
