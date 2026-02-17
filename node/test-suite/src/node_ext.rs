@@ -19,7 +19,8 @@ pub trait NodeExt {
         timeout: Duration,
     ) -> impl std::future::Future<Output = ()> + Send;
 
-    /// Polls until `last_pruned` index reaches `expected`, or panics on timeout.
+    /// Polls until pruning has progressed past `expected` (root index > expected), or panics on
+    /// timeout.
     fn wait_pruned(
         &self,
         expected: u64,
@@ -69,16 +70,16 @@ impl NodeExt for NodeApi<RocksDbStore, TestNodeVm> {
     async fn wait_pruned(&self, expected: u64, timeout: Duration) {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
-            let index = self
-                .with_scheduler(|scheduler| scheduler.pruning().last_pruned().index())
+            let root_index = self
+                .with_scheduler(|scheduler| scheduler.pruning().root().index())
                 .await
                 .expect("api call failed");
-            if index >= expected {
+            if root_index > expected {
                 return;
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "Timeout waiting for pruned index >= {expected}, got {index}",
+                "Timeout waiting for root index > {expected}, got {root_index}",
             );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }

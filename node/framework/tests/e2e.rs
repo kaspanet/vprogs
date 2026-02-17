@@ -105,8 +105,8 @@ async fn test_pruning_via_threshold() {
 
     node.api().wait_pruned(4, TIMEOUT).await;
 
-    let pruned = node.api().last_pruned().await.expect("api call failed");
-    assert!(pruned.index() >= 4, "Expected last_pruned >= 4, got {}", pruned.index());
+    let root = node.api().root().await.expect("api call failed");
+    assert!(root.index() > 4, "Expected root > 4, got {}", root.index());
 
     // L2 state written after the prune point must still be readable.
     assert_l2_state(&node, 3).await;
@@ -134,15 +134,12 @@ async fn test_clean_shutdown() {
 }
 
 /// Process blocks with L2 state, shutdown, reopen from checkpoint, mine more, verify continuity.
-///
-/// Pruning must happen before shutdown so that `last_pruned` has a valid L1 block hash
-/// for the bridge to resume from.
 #[tokio::test]
 async fn test_resume_from_checkpoint() {
     let l1 = L1Node::new(Some(|p| p.blockrate.coinbase_maturity = 1)).await;
     let temp_dir = TempDir::new().unwrap();
 
-    // Phase 1: Process L2 transactions, trigger pruning, then shutdown.
+    // Phase 1: Process L2 transactions, then shutdown.
     let phase1_total;
     {
         let node = create_node(&l1, &temp_dir);
@@ -154,20 +151,10 @@ async fn test_resume_from_checkpoint() {
 
         assert_l2_state(&node, 3).await;
 
-        // Trigger pruning so last_pruned gets a valid L1 block hash. Without this,
-        // the bridge can't resume because the default root hash (0000...0000) doesn't
-        // exist in the L1 node.
-        let keep = phase1_total - 4;
-        node.api()
-            .with_scheduler(move |s| s.pruning().set_threshold(keep))
-            .await
-            .expect("api call failed");
-        node.api().wait_pruned(4, TIMEOUT).await;
-
         node.shutdown();
     }
 
-    // Verify checkpoints were persisted.
+    // Verify checkpoint was persisted.
     {
         let store: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let committed: vprogs_core_types::Checkpoint<vprogs_node_l1_bridge::ChainBlockMetadata> =
@@ -178,10 +165,6 @@ async fn test_resume_from_checkpoint() {
             "Last committed index should be {} after phase 1",
             phase1_total
         );
-
-        let pruned: vprogs_core_types::Checkpoint<vprogs_node_l1_bridge::ChainBlockMetadata> =
-            StateMetadata::last_pruned(&store);
-        assert!(pruned.index() >= 4, "Last pruned should be >= 4 after phase 1");
     }
 
     // Phase 2: Mine more blocks and reopen — the node should resume from where it left off.
