@@ -174,10 +174,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
 
                             // Execute pruning directly on the store.
                             // The cursor stays at upper_bound — it now reflects completed progress.
-                            let new_root = Self::prune(&context.store, lower_bound, upper_bound);
-
-                            // Advance root to the first surviving batch after the pruned range.
-                            context.root.store(Arc::new(new_root));
+                            Self::prune(&context, lower_bound, upper_bound);
                         } else if Arc::strong_count(&pruning_threshold) != 1 {
                             // No work to do, wait for notification.
                             notify.notified().await;
@@ -190,10 +187,15 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
 
     /// Executes pruning directly on the store for the given batch range.
     ///
-    /// This runs on the dedicated pruning thread and does not interfere with the main write path.
-    /// Returns the new root checkpoint (first surviving batch after the pruned range).
-    /// The root is persisted atomically with the deletions for crash-fault tolerance.
-    fn prune(store: &S, lower_bound: u64, upper_bound: u64) -> Checkpoint<V::BatchMetadata> {
+    /// Runs on the dedicated pruning thread. Sets root on disk and in memory together,
+    /// committed atomically with the deletions for crash-fault tolerance.
+    fn prune(
+        context: &SchedulerContext<S, V::BatchMetadata>,
+        lower_bound: u64,
+        upper_bound: u64,
+    ) {
+        let store = &*context.store;
+
         // New root is the first surviving batch after the pruned range.
         let new_root_index = upper_bound + 1;
         let new_root = Checkpoint::new(
@@ -206,6 +208,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
             // Persist new root upfront. This is committed atomically with the deletions below
             // for crash-fault tolerance.
             StateMetadata::set_root(wb, &new_root);
+            context.root.store(Arc::new(new_root));
 
             // Walk batches from oldest to newest (order doesn't matter for pruning).
             for index in lower_bound..=upper_bound {
@@ -227,8 +230,6 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
                 // Delete batch metadata entries for this batch.
                 StoredBatchMetadata::delete(wb, index);
             }
-        }));
-
-        new_root
+        }))
     }
 }
