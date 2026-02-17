@@ -5481,6 +5481,8 @@ dependencies = [
  "kaspa-wrpc-server",
  "kaspad",
  "secp256k1",
+ "serde_json",
+ "tempfile",
  "tokio",
  "vprogs-core-types",
  "vprogs-node-framework",
