@@ -46,11 +46,11 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Rollback<S, V> {
     /// Any pending writes in `write_batch` are committed first so that the rollback operates on a
     /// consistent view of state. The rollback changes are then applied and committed, and a fresh
     /// write batch is returned for further writes.
-    pub fn execute<ST: Store<StateSpace = StateSpace>>(
+    pub fn execute<S: Store<StateSpace = StateSpace>>(
         &self,
         store: &ST,
-        write_batch: ST::WriteBatch,
-    ) -> ST::WriteBatch {
+        write_batch: S::WriteBatch,
+    ) -> S::WriteBatch {
         // Commit any existing changes so the rollback sees a consistent state.
         store.commit(write_batch);
 
@@ -90,10 +90,10 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Rollback<S, V> {
     ///
     /// This removes the current version of the resource (if any), restores the previous version,
     /// and deletes the rollback pointer entry.
-    fn apply_rollback_ptr<ST: Store<StateSpace = StateSpace>>(
+    fn apply_rollback_ptr<S: Store<StateSpace = StateSpace>>(
         &self,
         store: &ST,
-        write_batch: &mut ST::WriteBatch,
+        write_batch: &mut S::WriteBatch,
         batch_index: u64,
         resource_id: V::ResourceId,
         old_version: u64,
