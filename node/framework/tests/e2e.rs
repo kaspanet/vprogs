@@ -23,25 +23,46 @@ fn create_node(l1: &L1Node, temp_dir: &TempDir) -> Node<RocksDbStore, TestNodeVm
     ))
 }
 
-/// Mine blocks before creating the Node, then verify they are all processed.
+/// Mines L2 payload blocks and one acceptance block, returning the total number of blocks mined.
+async fn mine_l2_blocks(l1: &L1Node, count: usize) -> u64 {
+    for i in 1..=count {
+        l1.mine_block(Some(&[Tx(i, vec![Access::Write(i)])])).await;
+    }
+    // In Kaspa DAG consensus, a block's transactions are accepted by the next chain
+    // block. Mine one more so the last payload gets accepted.
+    l1.mine_blocks(1).await;
+    count as u64 + 1
+}
+
+/// Asserts that L2 state was written for transactions 1..=count.
+async fn assert_l2_state(node: &Node<RocksDbStore, TestNodeVm>, count: usize) {
+    for i in 1..=count {
+        node.api().assert_written_state(i, vec![i]).await;
+    }
+}
+
+/// Mine blocks with L2 payloads before creating the Node, then verify they are all processed.
 #[tokio::test]
 async fn test_basic_block_processing() {
-    let l1 = L1Node::new().await;
-    l1.mine_blocks(5).await;
+    let l1 = L1Node::new(Some(|p| p.blockrate.coinbase_maturity = 1)).await;
+
+    let maturity = l1.mine_utxos(3).await.len() as u64;
+    let payload_blocks = mine_l2_blocks(&l1, 3).await;
 
     let temp_dir = TempDir::new().unwrap();
     let node = create_node(&l1, &temp_dir);
 
-    node.api().wait_committed(5, TIMEOUT).await;
+    node.api().wait_committed(maturity + payload_blocks, TIMEOUT).await;
+    assert_l2_state(&node, 3).await;
 
     node.shutdown();
     l1.shutdown().await;
 }
 
-/// Create the node first, then mine blocks — verify real-time processing.
+/// Create the node first, then mine blocks with L2 payloads — verify real-time processing.
 #[tokio::test]
 async fn test_processes_blocks_mined_after_connect() {
-    let l1 = L1Node::new().await;
+    let l1 = L1Node::new(Some(|p| p.blockrate.coinbase_maturity = 1)).await;
 
     let temp_dir = TempDir::new().unwrap();
     let node = create_node(&l1, &temp_dir);
@@ -49,9 +70,11 @@ async fn test_processes_blocks_mined_after_connect() {
     // Give the bridge time to connect before mining.
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    l1.mine_blocks(5).await;
+    let maturity = l1.mine_utxos(3).await.len() as u64;
+    let payload_blocks = mine_l2_blocks(&l1, 3).await;
 
-    node.api().wait_committed(5, TIMEOUT).await;
+    node.api().wait_committed(maturity + payload_blocks, TIMEOUT).await;
+    assert_l2_state(&node, 3).await;
 
     node.shutdown();
     l1.shutdown().await;
@@ -61,65 +84,84 @@ async fn test_processes_blocks_mined_after_connect() {
 ///
 /// Instead of relying on L1 finalization events (which require hundreds of simnet blocks),
 /// we manually set the pruning threshold through the API and verify the pruning worker
-/// processes it.
+/// processes it. L2 state written after the prune point must survive.
 #[tokio::test]
 async fn test_pruning_via_threshold() {
-    let l1 = L1Node::new().await;
+    let l1 = L1Node::new(Some(|p| p.blockrate.coinbase_maturity = 1)).await;
     let temp_dir = TempDir::new().unwrap();
     let node = create_node(&l1, &temp_dir);
 
-    l1.mine_blocks(10).await;
-    node.api().wait_committed(10, TIMEOUT).await;
+    let maturity = l1.mine_utxos(3).await.len() as u64;
+    let payload_blocks = mine_l2_blocks(&l1, 3).await;
+    let total = maturity + payload_blocks;
+    node.api().wait_committed(total, TIMEOUT).await;
 
-    // Set pruning threshold so batches 1-4 become eligible for pruning.
-    node.api().with_scheduler(|s| s.pruning().set_threshold(5)).await.expect("api call failed");
+    // Set pruning threshold so early batches become eligible for pruning.
+    let keep = total - 4;
+    node.api()
+        .with_scheduler(move |s| s.pruning().set_threshold(keep))
+        .await
+        .expect("api call failed");
 
-    // Wait for the pruning worker to process through index 4.
     node.api().wait_pruned(4, TIMEOUT).await;
 
-    // Verify the pruned index is persisted.
     let pruned = node.api().last_pruned().await.expect("api call failed");
     assert!(pruned.index() >= 4, "Expected last_pruned >= 4, got {}", pruned.index());
+
+    // L2 state written after the prune point must still be readable.
+    assert_l2_state(&node, 3).await;
 
     node.shutdown();
     l1.shutdown().await;
 }
 
-/// Verify the node shuts down cleanly without panics after processing blocks.
+/// Verify the node shuts down cleanly without panics after processing L2 state.
 #[tokio::test]
 async fn test_clean_shutdown() {
-    let l1 = L1Node::new().await;
+    let l1 = L1Node::new(Some(|p| p.blockrate.coinbase_maturity = 1)).await;
     let temp_dir = TempDir::new().unwrap();
     let node = create_node(&l1, &temp_dir);
 
-    l1.mine_blocks(3).await;
-    node.api().wait_committed(3, TIMEOUT).await;
+    let maturity = l1.mine_utxos(2).await.len() as u64;
+    let payload_blocks = mine_l2_blocks(&l1, 2).await;
+
+    node.api().wait_committed(maturity + payload_blocks, TIMEOUT).await;
+    assert_l2_state(&node, 2).await;
 
     // Shutdown should not panic.
     node.shutdown();
     l1.shutdown().await;
 }
 
-/// Process blocks, shutdown, reopen from checkpoint, mine more, verify continuity.
+/// Process blocks with L2 state, shutdown, reopen from checkpoint, mine more, verify continuity.
 ///
 /// Pruning must happen before shutdown so that `last_pruned` has a valid L1 block hash
 /// for the bridge to resume from.
 #[tokio::test]
 async fn test_resume_from_checkpoint() {
-    let l1 = L1Node::new().await;
+    let l1 = L1Node::new(Some(|p| p.blockrate.coinbase_maturity = 1)).await;
     let temp_dir = TempDir::new().unwrap();
 
-    // Phase 1: Process initial blocks, trigger pruning, then shutdown.
+    // Phase 1: Process L2 transactions, trigger pruning, then shutdown.
+    let phase1_total;
     {
         let node = create_node(&l1, &temp_dir);
 
-        l1.mine_blocks(10).await;
-        node.api().wait_committed(10, TIMEOUT).await;
+        let maturity = l1.mine_utxos(3).await.len() as u64;
+        let payload_blocks = mine_l2_blocks(&l1, 3).await;
+        phase1_total = maturity + payload_blocks;
+        node.api().wait_committed(phase1_total, TIMEOUT).await;
+
+        assert_l2_state(&node, 3).await;
 
         // Trigger pruning so last_pruned gets a valid L1 block hash. Without this,
         // the bridge can't resume because the default root hash (0000...0000) doesn't
         // exist in the L1 node.
-        node.api().with_scheduler(|s| s.pruning().set_threshold(5)).await.expect("api call failed");
+        let keep = phase1_total - 4;
+        node.api()
+            .with_scheduler(move |s| s.pruning().set_threshold(keep))
+            .await
+            .expect("api call failed");
         node.api().wait_pruned(4, TIMEOUT).await;
 
         node.shutdown();
@@ -130,7 +172,12 @@ async fn test_resume_from_checkpoint() {
         let store: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let committed: vprogs_core_types::Checkpoint<vprogs_node_l1_bridge::ChainBlockMetadata> =
             StateMetadata::last_committed(&store);
-        assert_eq!(committed.index(), 10, "Last committed index should be 10 after phase 1");
+        assert_eq!(
+            committed.index(),
+            phase1_total,
+            "Last committed index should be {} after phase 1",
+            phase1_total
+        );
 
         let pruned: vprogs_core_types::Checkpoint<vprogs_node_l1_bridge::ChainBlockMetadata> =
             StateMetadata::last_pruned(&store);
@@ -142,7 +189,10 @@ async fn test_resume_from_checkpoint() {
 
     {
         let node = create_node(&l1, &temp_dir);
-        node.api().wait_committed(15, TIMEOUT).await;
+        node.api().wait_committed(phase1_total + 5, TIMEOUT).await;
+
+        // L2 state from phase 1 must survive the restart.
+        assert_l2_state(&node, 3).await;
 
         node.shutdown();
     }
@@ -153,7 +203,8 @@ async fn test_resume_from_checkpoint() {
 /// Submit L2 transactions via L1 payload and verify L2 state is written.
 #[tokio::test]
 async fn test_l2_transactions_via_l1_payload() {
-    let l1 = L1Node::new().await;
+    // Reduce coinbase maturity so mine_utxos doesn't need to mine 1000+ blocks.
+    let l1 = L1Node::new(Some(|p| p.blockrate.coinbase_maturity = 1)).await;
     let temp_dir = TempDir::new().unwrap();
     let node = create_node(&l1, &temp_dir);
 
