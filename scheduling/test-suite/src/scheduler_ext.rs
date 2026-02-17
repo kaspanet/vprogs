@@ -26,12 +26,12 @@ pub trait SchedulerExt {
 impl SchedulerExt for Scheduler<RocksDbStore, VM> {
     fn wait_pruned(&self, expected: u64, timeout: Duration) -> &Self {
         let start = Instant::now();
-        while self.pruning().root().index() <= expected {
+        while self.context().root().index() <= expected {
             if start.elapsed() > timeout {
                 panic!(
                     "Timeout waiting for pruning. Expected root index > {}, got {}.",
                     expected,
-                    self.pruning().root().index()
+                    self.context().root().index()
                 );
             }
             std::thread::sleep(Duration::from_millis(10));

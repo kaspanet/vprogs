@@ -3,7 +3,6 @@ use std::sync::{
     atomic::{AtomicI64, AtomicU64, Ordering},
 };
 
-use arc_swap::ArcSwap;
 use crossbeam_deque::{Injector, Steal, Worker};
 use crossbeam_queue::SegQueue;
 use vprogs_core_atomics::AtomicAsyncLatch;
@@ -17,15 +16,13 @@ use vprogs_storage_types::{Store, WriteBatch};
 
 use crate::{
     CancellationContext, Read, RuntimeTx, Scheduler, StateDiff, Write, cpu_task::ManagerTask,
-    vm_interface::VmInterface,
+    scheduler_context::SchedulerContext, vm_interface::VmInterface,
 };
 
 #[smart_pointer]
 pub struct RuntimeBatch<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     cancellation: CancellationContext,
-    commit_frontier: Arc<AtomicU64>,
-    /// Shared root checkpoint. Initialized on first commit (when root.index() == 0).
-    root: Arc<ArcSwap<Checkpoint<V::BatchMetadata>>>,
+    context: SchedulerContext<S, V::BatchMetadata>,
     checkpoint: Checkpoint<V::BatchMetadata>,
     storage: StorageManager<S, Read<S, V>, Write<S, V>>,
     eviction_queue: Arc<SegQueue<V::ResourceId>>,
@@ -121,8 +118,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
         txs: Vec<V::Transaction>,
         checkpoint: Checkpoint<V::BatchMetadata>,
         cancellation: CancellationContext,
-        commit_frontier: Arc<AtomicU64>,
-        root: Arc<ArcSwap<Checkpoint<V::BatchMetadata>>>,
+        context: SchedulerContext<S, V::BatchMetadata>,
     ) -> Self {
         Self(Arc::new_cyclic(|this| {
             let was_processed = AtomicAsyncLatch::default();
@@ -140,8 +136,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
             RuntimeBatchData {
                 checkpoint,
                 cancellation,
-                commit_frontier,
-                root,
+                context,
                 storage: manager.storage().clone(),
                 eviction_queue: manager.eviction_queue(),
                 pending_txs: AtomicU64::new(txs.len() as u64),
@@ -224,18 +219,18 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
             StoredBatchMetadata::set(wb, self.checkpoint.index(), self.checkpoint.metadata());
             StateMetadata::set_last_committed(wb, &self.checkpoint);
 
-            // Initialize root on first commit. This is a single atomic load per batch (no disk).
-            if self.root.load().index() == 0 {
+            // Persist root on first commit for crash-fault tolerance. Root was already set
+            // in-memory when this batch was scheduled (see next_checkpoint).
+            if self.checkpoint.index() == self.context.root().index() {
                 StateMetadata::set_root(wb, &self.checkpoint);
-                self.root.store(Arc::new(self.checkpoint.clone()));
             }
         }
     }
 
     pub(crate) fn commit_done(self) {
-        // Advance the commit frontier only for non-canceled batches.
         if !self.was_canceled() {
-            self.commit_frontier.fetch_max(self.checkpoint.index(), Ordering::Release);
+            // Eagerly update last_committed in the shared context.
+            self.context.last_committed.store(Arc::new(self.checkpoint.clone()));
         }
 
         // Mark the batch as committed.

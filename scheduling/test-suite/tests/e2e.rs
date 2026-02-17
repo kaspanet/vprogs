@@ -791,7 +791,7 @@ pub fn test_pruning_crash_recovery() {
             StorageConfig::default().with_store(storage),
         );
 
-        let root = runtime.pruning().root();
+        let root = runtime.context().root();
         assert_eq!(root.index(), 3, "Root should resume from persisted index");
         assert_eq!(*root.metadata(), 3, "Root metadata should survive restart");
 

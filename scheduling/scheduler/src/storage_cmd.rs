@@ -21,7 +21,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> ReadCmd<StateSpace> for 
 pub enum Write<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     StateDiff(StateDiff<S, V>),
     CommitBatch(RuntimeBatch<S, V>),
-    Rollback(Rollback<V>),
+    Rollback(Rollback<S, V>),
 }
 
 impl<S: Store<StateSpace = StateSpace>, V: VmInterface> WriteCmd<StateSpace> for Write<S, V> {

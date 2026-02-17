@@ -7,7 +7,6 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use arc_swap::ArcSwap;
 use tap::Tap;
 use tokio::{runtime::Builder, sync::Notify};
 use vprogs_core_types::Checkpoint;
@@ -18,7 +17,7 @@ use vprogs_state_space::StateSpace;
 use vprogs_state_version::StateVersion;
 use vprogs_storage_types::Store;
 
-use crate::VmInterface;
+use crate::{VmInterface, scheduler_context::SchedulerContext};
 
 /// Background worker that processes pruning requests with direct store access.
 ///
@@ -35,7 +34,7 @@ use crate::VmInterface;
 ///
 /// All coordination uses lock-free primitives:
 /// - `AtomicU64` for threshold tracking
-/// - `ArcSwap` for caching the root checkpoint
+/// - `ArcSwap` for caching the root checkpoint (via `SchedulerContext`)
 /// - `Notify` for wakeup signaling
 pub struct PruningWorker<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     /// The batch index up to which pruning is allowed (exclusive).
@@ -50,9 +49,6 @@ pub struct PruningWorker<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     /// Dekker-style handshake (both use `SeqCst`) so that `pause` can detect
     /// an in-flight or already-completed prune that overlaps the rollback range.
     pruning_cursor: Arc<AtomicU64>,
-    /// Cached root checkpoint (oldest surviving batch). Updated atomically after each pruning pass
-    /// and on first commit. A default (index 0) indicates no batches have been committed yet.
-    root: Arc<ArcSwap<Checkpoint<V::BatchMetadata>>>,
     /// Notification signal to wake up the worker when the threshold changes.
     notify: Arc<Notify>,
     /// Handle to the background worker thread.
@@ -77,13 +73,6 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
     /// Returns the current pruning threshold.
     pub fn threshold(&self) -> u64 {
         self.pruning_threshold.load(Ordering::Acquire)
-    }
-
-    /// Returns the root checkpoint (oldest surviving batch) from cache.
-    ///
-    /// A default (index 0) indicates no batches have been committed yet.
-    pub fn root(&self) -> Checkpoint<V::BatchMetadata> {
-        self.root.load().as_ref().clone()
     }
 
     /// Pauses pruning at or above the given index.
@@ -116,13 +105,13 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
         self.notify.notify_one();
     }
 
-    /// Creates a new pruning worker with direct store access.
+    /// Creates a new pruning worker with direct store access via the shared context.
     ///
-    /// The `root` checkpoint (oldest surviving batch) is owned by the scheduler and shared here
+    /// The `root` checkpoint (oldest surviving batch) is managed through the context and shared
     /// for atomic updates. The worker resumes from the persisted root. On a fresh database
     /// (root index 0), no pruning occurs until the first batch commits and initializes root.
-    pub(crate) fn new(store: Arc<S>, root: Arc<ArcSwap<Checkpoint<V::BatchMetadata>>>) -> Self {
-        let root_index = root.load().index();
+    pub(crate) fn new(context: SchedulerContext<S, V::BatchMetadata>) -> Self {
+        let root_index = context.root().index();
         let pruning_threshold = Arc::new(AtomicU64::new(root_index));
         let pause_ceiling = Arc::new(AtomicU64::new(u64::MAX));
         // The cursor tracks the upper bound of the last completed prune pass.
@@ -131,11 +120,10 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
         let notify = Arc::new(Notify::new());
 
         let handle = Self::start(
-            store,
+            context.clone(),
             pruning_threshold.clone(),
             pause_ceiling.clone(),
             pruning_cursor.clone(),
-            root.clone(),
             notify.clone(),
         );
 
@@ -143,7 +131,6 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
             pruning_threshold,
             pause_ceiling,
             pruning_cursor,
-            root,
             notify,
             handle,
             _marker: PhantomData,
@@ -163,11 +150,10 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
     /// It uses direct store access to avoid contention with the main write path.
     /// The worker loop exits when the outer struct is dropped (detected via strong_count).
     fn start(
-        store: Arc<S>,
+        context: SchedulerContext<S, V::BatchMetadata>,
         pruning_threshold: Arc<AtomicU64>,
         pause_ceiling: Arc<AtomicU64>,
         pruning_cursor: Arc<AtomicU64>,
-        root: Arc<ArcSwap<Checkpoint<V::BatchMetadata>>>,
         notify: Arc<Notify>,
     ) -> JoinHandle<()> {
         thread::spawn(move || {
@@ -176,7 +162,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
                     // Use strong_count to detect shutdown (when the outer struct is dropped).
                     while Arc::strong_count(&pruning_threshold) != 1 {
                         // Root is the oldest surviving batch — the first candidate for pruning.
-                        let lower_bound = root.load().index();
+                        let lower_bound = context.root().index();
 
                         // Last batch eligible for pruning: (min of requested threshold and pause
                         // ceiling) converted from exclusive to inclusive. `saturating_sub` guards
@@ -202,10 +188,10 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
 
                             // Execute pruning directly on the store.
                             // The cursor stays at upper_bound — it now reflects completed progress.
-                            let new_root = Self::prune(&store, lower_bound, upper_bound);
+                            let new_root = Self::prune(&context.store, lower_bound, upper_bound);
 
                             // Advance root to the first surviving batch after the pruned range.
-                            root.store(Arc::new(new_root));
+                            context.root.store(Arc::new(new_root));
                         } else if Arc::strong_count(&pruning_threshold) != 1 {
                             // No work to do, wait for notification.
                             notify.notified().await;
