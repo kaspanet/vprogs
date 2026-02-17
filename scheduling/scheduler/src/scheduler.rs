@@ -5,6 +5,7 @@ use crossbeam_queue::SegQueue;
 use tap::Tap;
 use vprogs_core_types::{AccessMetadata, Checkpoint, Transaction};
 use vprogs_scheduling_execution_workers::ExecutionWorkers;
+use vprogs_state_metadata::StateMetadata;
 use vprogs_state_space::StateSpace;
 use vprogs_storage_manager::{StorageConfig, StorageManager};
 use vprogs_storage_types::Store;
@@ -47,8 +48,10 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
     pub fn new(execution_config: ExecutionConfig<V>, storage_config: StorageConfig<S>) -> Self {
         let storage = StorageManager::new(storage_config);
         let (worker_count, vm) = execution_config.unpack();
-        let pruning_worker = PruningWorker::new(storage.store().clone());
-        let root = pruning_worker.root_shared();
+        let root = Arc::new(ArcSwap::from_pointee(StateMetadata::root::<V::BatchMetadata, S>(
+            storage.store().as_ref(),
+        )));
+        let pruning_worker = PruningWorker::new(storage.store().clone(), root.clone());
         Self {
             batch_execution: BatchExecutionContext::new(storage.store().clone()),
             batch_lifecycle_worker: BatchLifecycleWorker::new(vm.clone()),

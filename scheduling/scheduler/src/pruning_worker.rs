@@ -86,12 +86,6 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
         self.root.load().as_ref().clone()
     }
 
-    /// Returns a shared reference to the root checkpoint for use by other components
-    /// (e.g. RuntimeBatch for first-commit initialization, Rollback for reset on rollback to 0).
-    pub fn root_shared(&self) -> Arc<ArcSwap<Checkpoint<V::BatchMetadata>>> {
-        self.root.clone()
-    }
-
     /// Pauses pruning at or above the given index.
     ///
     /// Called before a rollback to ensure the pruning worker does not delete state
@@ -124,18 +118,16 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
 
     /// Creates a new pruning worker with direct store access.
     ///
-    /// The worker resumes from the persisted root checkpoint. On a fresh database (root index 0),
-    /// no pruning occurs until the first batch commits and initializes root.
-    pub(crate) fn new(store: Arc<S>) -> Self {
-        // Load the root (oldest surviving batch) from persistent storage.
-        let persisted: Checkpoint<V::BatchMetadata> = StateMetadata::root(store.as_ref());
-
-        let pruning_threshold = Arc::new(AtomicU64::new(persisted.index()));
+    /// The `root` checkpoint (oldest surviving batch) is owned by the scheduler and shared here
+    /// for atomic updates. The worker resumes from the persisted root. On a fresh database
+    /// (root index 0), no pruning occurs until the first batch commits and initializes root.
+    pub(crate) fn new(store: Arc<S>, root: Arc<ArcSwap<Checkpoint<V::BatchMetadata>>>) -> Self {
+        let root_index = root.load().index();
+        let pruning_threshold = Arc::new(AtomicU64::new(root_index));
         let pause_ceiling = Arc::new(AtomicU64::new(u64::MAX));
         // The cursor tracks the upper bound of the last completed prune pass.
         // Since root = old_upper_bound + 1, the cursor starts one behind root.
-        let pruning_cursor = Arc::new(AtomicU64::new(persisted.index().saturating_sub(1)));
-        let root = Arc::new(ArcSwap::from_pointee(persisted));
+        let pruning_cursor = Arc::new(AtomicU64::new(root_index.saturating_sub(1)));
         let notify = Arc::new(Notify::new());
 
         let handle = Self::start(
