@@ -18,12 +18,13 @@ use kaspa_consensus_core::{
     },
 };
 use kaspa_grpc_client::GrpcClient;
-use kaspa_rpc_core::{RpcTransaction, RpcUtxoEntry, api::rpc::RpcApi};
+use kaspa_rpc_core::{RpcTransaction, api::rpc::RpcApi};
 use kaspa_testing_integration::common::daemon::Daemon;
 use kaspa_txscript::pay_to_address_script;
 use kaspa_wrpc_server::address::WrpcNetAddress;
 use kaspad_lib::args::Args;
 use secp256k1::Keypair;
+use tap::Tap;
 
 /// An in-process Kaspa simnet node for integration tests.
 ///
@@ -267,8 +268,8 @@ impl L1Node {
                         <= virtual_daa_score
             })
             .map(|e| (TransactionOutpoint::from(e.outpoint), UtxoEntry::from(e.utxo_entry)))
-            .collect()
-            .map_mut(|utxos| utxos.sort_by(|a, b| b.1.amount.cmp(&a.1.amount)))
+            .collect::<Vec<_>>()
+            .tap_mut(|utxos| utxos.sort_by(|a, b| b.1.amount.cmp(&a.1.amount)))
     }
 
     /// Disconnects the gRPC client. The daemon shuts down on drop.

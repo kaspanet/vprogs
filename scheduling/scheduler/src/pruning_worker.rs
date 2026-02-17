@@ -222,6 +222,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
     /// Returns the new root checkpoint (first surviving batch after the pruned range).
     /// The root is persisted atomically with the deletions for crash-fault tolerance.
     fn prune(store: &S, lower_bound: u64, upper_bound: u64) -> Checkpoint<V::BatchMetadata> {
+        // New root is the first surviving batch after the pruned range.
         let new_root_index = upper_bound + 1;
         let new_root = Checkpoint::new(
             new_root_index,
