@@ -13,7 +13,6 @@ use vprogs_storage_types::Store;
 
 use crate::{VmInterface, scheduler_context::SchedulerContext};
 
-
 /// Represents a rollback operation that reverts all batches after a target checkpoint.
 ///
 /// Walks batches from `upper_bound` down to `target.index() + 1` in reverse order, restoring each

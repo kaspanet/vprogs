@@ -19,23 +19,11 @@ use vprogs_storage_types::Store;
 
 use crate::{VmInterface, scheduler_context::SchedulerContext};
 
-/// Background worker that processes pruning requests with direct store access.
+/// Background worker that deletes old state data (rollback pointers and versions) for batches
+/// that will never be rolled back, advancing the **root** (oldest surviving batch) forward.
 ///
-/// The pruning worker monitors the pruning threshold and deletes old state data (rollback pointers
-/// and their associated versions) for batches that will never be rolled back. This reclaims storage
-/// space while preserving the ability to rollback to recent batches.
-///
-/// Tracks the **root** — the oldest surviving batch. Root is initialized when the first batch
-/// commits and advances forward as pruning deletes older batches. This is persisted to the Metadata
-/// column family for crash-fault tolerance.
-///
-/// Unlike normal write operations, pruning runs on its own dedicated thread with direct store
-/// access, avoiding contention with the main write path.
-///
-/// All coordination uses lock-free primitives:
-/// - `AtomicU64` for threshold tracking
-/// - `ArcSwap` for caching the root checkpoint (via `SchedulerContext`)
-/// - `Notify` for wakeup signaling
+/// Runs on a dedicated thread with direct store access to avoid contention with the main
+/// write path.
 pub struct PruningWorker<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     /// The batch index up to which pruning is allowed (exclusive).
     /// Batches with index < threshold can be pruned.
