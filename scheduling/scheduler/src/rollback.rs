@@ -13,6 +13,7 @@ use vprogs_storage_types::Store;
 
 use crate::{VmInterface, scheduler_context::SchedulerContext};
 
+
 /// Represents a rollback operation that reverts all batches after a target checkpoint.
 ///
 /// Walks batches from `upper_bound` down to `target.index() + 1` in reverse order, restoring each
@@ -23,7 +24,7 @@ pub struct Rollback<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     target: Checkpoint<V::BatchMetadata>,
     /// Upper bound of the batch index range to roll back (inclusive).
     upper_bound: u64,
-    /// Shared scheduler context. Used to reset `root` when rolling back to genesis.
+    /// Shared scheduler context. Used to set `last_committed` in memory alongside the disk write.
     context: SchedulerContext<S, V::BatchMetadata>,
     /// Signal that resolves when the rollback operation is complete.
     done_signal: Arc<AtomicAsyncLatch>,
@@ -62,16 +63,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Rollback<S, V> {
     }
 
     /// Signals that the rollback operation has completed.
-    ///
-    /// Resets root to default when rolling back to genesis (target index 0) so that root is
-    /// re-initialized on the next first commit.
-    ///
-    /// Note: `last_committed` does not need updating here — the scheduler already set it via
-    /// `batch_execution.rollback()` before submitting this command.
     pub fn done(&self) {
-        if self.target.index() == 0 {
-            self.context.root.store(Arc::new(Checkpoint::default()));
-        }
         self.done_signal.open();
     }
 
@@ -81,14 +73,11 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Rollback<S, V> {
         store: &ST,
     ) -> ST::WriteBatch {
         store.write_batch().tap_mut(|wb| {
-            // This is written upfront but committed atomically with the reversions below.
+            // Set last_committed on disk and in memory together. The in-memory store also
+            // serves as the definitive correction for any stale `commit_done()` that raced
+            // with cancellation (all prior commits have flushed by this point).
             StateMetadata::set_last_committed(wb, &self.target);
-
-            // When rolling back to genesis (all batches deleted), reset root so it gets
-            // re-initialized on the next first commit.
-            if self.target.index() == 0 {
-                StateMetadata::set_root(wb, &self.target);
-            }
+            self.context.last_committed.store(Arc::new(self.target.clone()));
 
             // Walk batches from newest to oldest.
             for index in (self.target.index() + 1..=self.upper_bound).rev() {

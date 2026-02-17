@@ -114,8 +114,6 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
         let root_index = context.root().index();
         let pruning_threshold = Arc::new(AtomicU64::new(root_index));
         let pause_ceiling = Arc::new(AtomicU64::new(u64::MAX));
-        // The cursor tracks the upper bound of the last completed prune pass.
-        // Since root = old_upper_bound + 1, the cursor starts one behind root.
         let pruning_cursor = Arc::new(AtomicU64::new(root_index.saturating_sub(1)));
         let notify = Arc::new(Notify::new());
 
