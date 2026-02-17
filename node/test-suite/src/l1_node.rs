@@ -253,51 +253,26 @@ impl L1Node {
 
     /// Fetches spendable UTXOs for the miner address, sorted by amount (largest first).
     async fn fetch_spendable_utxos(&self) -> Vec<(TransactionOutpoint, UtxoEntry)> {
-        let resp =
-            self.grpc_client.get_utxos_by_addresses(vec![self.address.clone()]).await.unwrap();
         let virtual_daa_score = self.grpc_client.get_server_info().await.unwrap().virtual_daa_score;
 
-        if let Some(first) = resp.first() {
-            let min_daa = resp.iter().map(|e| e.utxo_entry.block_daa_score).min().unwrap();
-            let max_daa = resp.iter().map(|e| e.utxo_entry.block_daa_score).max().unwrap();
-            eprintln!(
-                "[L1Node] fetch_spendable_utxos: total_utxos={}, virtual_daa_score={}, \
-                 min_block_daa={}, max_block_daa={}, is_coinbase={}",
-                resp.len(),
-                virtual_daa_score,
-                min_daa,
-                max_daa,
-                first.utxo_entry.is_coinbase,
-            );
-        } else {
-            eprintln!(
-                "[L1Node] fetch_spendable_utxos: total_utxos=0, virtual_daa_score={}",
-                virtual_daa_score,
-            );
-        }
-
-        let mut utxos: Vec<(TransactionOutpoint, UtxoEntry)> = resp
+        self.grpc_client
+            .get_utxos_by_addresses(vec![self.address.clone()])
+            .await
+            .unwrap()
             .into_iter()
             .filter(|e| {
-                is_utxo_spendable(
-                    &e.utxo_entry,
-                    virtual_daa_score,
-                    self.params.blockrate.coinbase_maturity,
-                )
+                // Coinbase UTXOs require `coinbase_maturity` confirmations before spending
+                !e.utxo_entry.is_coinbase
+                    || e.utxo_entry.block_daa_score + self.params.blockrate.coinbase_maturity
+                        <= virtual_daa_score
             })
             .map(|e| (TransactionOutpoint::from(e.outpoint), UtxoEntry::from(e.utxo_entry)))
-            .collect();
-        utxos.sort_by(|a, b| b.1.amount.cmp(&a.1.amount));
-        utxos
+            .collect()
+            .map_mut(|utxos| utxos.sort_by(|a, b| b.1.amount.cmp(&a.1.amount)))
     }
 
     /// Disconnects the gRPC client. The daemon shuts down on drop.
     pub async fn shutdown(self) {
         self.grpc_client.disconnect().await.unwrap();
     }
-}
-
-fn is_utxo_spendable(entry: &RpcUtxoEntry, virtual_daa_score: u64, coinbase_maturity: u64) -> bool {
-    let needed_confirmations = if !entry.is_coinbase { 10 } else { coinbase_maturity };
-    entry.block_daa_score + needed_confirmations <= virtual_daa_score
 }
