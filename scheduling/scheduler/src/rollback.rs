@@ -54,11 +54,14 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Rollback<S, V> {
         // Commit any existing changes so the rollback sees a consistent state.
         store.commit(write_batch);
 
-        // Update `last_committed` in memory, correcting any stale update from a `commit_done()`
-        // that raced with cancellation.
-        self.context.last_committed.store(Arc::new(self.target.clone()));
+        // Only update `last_committed` in memory if the target is already committed. If the target
+        // batch hasn't committed yet, its `commit_done()` will advance `last_committed`.
+        let target_committed = self.target.index() < self.context.last_committed().index();
+        if target_committed {
+            self.context.last_committed.store(Arc::new(self.target.clone()));
+        }
 
-        // Commit all deletions and root update atomically.
+        // Commit all deletions atomically.
         store.commit(store.write_batch().tap_mut(|wb| {
             // Walk batches from newest to oldest.
             for index in (self.target.index() + 1..=self.upper_bound).rev() {
@@ -73,8 +76,11 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Rollback<S, V> {
                 StoredBatchMetadata::delete(wb, index);
             }
 
-            // Update `last_committed` on disk.
-            StateMetadata::set_last_committed(wb, &self.target);
+            // Only update `last_committed` on disk if the target is already committed. If the
+            // target batch hasn't committed yet, its `commit_done()` will advance `last_committed`.
+            if target_committed {
+                StateMetadata::set_last_committed(wb, &self.target);
+            }
         }));
 
         // Return a new empty write batch for further operations.

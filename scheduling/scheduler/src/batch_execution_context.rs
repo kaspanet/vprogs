@@ -65,14 +65,15 @@ impl<S: Store<StateSpace = StateSpace>, M: BatchMetadata> BatchExecutionContext<
     pub fn rollback(&mut self, target_index: u64) -> Checkpoint<M> {
         let target = self.lookup_checkpoint(target_index);
 
+        // Cancel in-flight batches first so `commit_done()` sees the cancellation before
+        // we update shared state.
+        self.cancellation.rollback(target_index);
+
         // Update last_processed and last_committed via the shared context.
         self.context.last_processed.store(target.clone().into());
         if target_index < self.context.last_committed().index() {
             self.context.last_committed.store(target.clone().into());
         }
-
-        // Propagate cancellation through the context chain so in-flight batches detect it.
-        self.cancellation.rollback(target_index);
 
         // Pop canceled entries from the tip. Must happen after lookup_checkpoint (which
         // searches the pending queue) but before returning.
@@ -93,16 +94,18 @@ impl<S: Store<StateSpace = StateSpace>, M: BatchMetadata> BatchExecutionContext<
 
     /// Looks up a checkpoint by index, searching the in-memory pending queue first, then disk.
     fn lookup_checkpoint(&self, index: u64) -> Checkpoint<M> {
-        // Search pending queue (uncommitted batches still in memory).
-        for cp in &self.pending {
-            if cp.index() == index {
-                return cp.clone();
-            }
-        }
-
         // Index 0 is the genesis state — no batch exists on disk for it.
         if index == 0 {
             return Checkpoint::default();
+        }
+
+        // Search pending queue (sorted ascending by index).
+        for cp in &self.pending {
+            if cp.index() == index {
+                return cp.clone();
+            } else if cp.index() > index {
+                break;
+            }
         }
 
         // Fall back to disk for committed batches.
