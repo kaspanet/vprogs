@@ -4,28 +4,24 @@ use std::sync::{
 };
 
 use crossbeam_deque::{Injector, Steal, Worker};
-use crossbeam_queue::SegQueue;
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_macros::smart_pointer;
 use vprogs_core_types::Checkpoint;
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_space::StateSpace;
-use vprogs_storage_manager::StorageManager;
 use vprogs_storage_types::{Store, WriteBatch};
 
 use crate::{
-    CancellationContext, Read, RuntimeTx, Scheduler, StateDiff, Write, context::SchedulerContext,
-    cpu_task::ManagerTask, vm_interface::VmInterface,
+    CancellationContext, RuntimeTx, Scheduler, StateDiff, Write, cpu_task::ManagerTask,
+    state::SchedulerState, vm_interface::VmInterface,
 };
 
 #[smart_pointer]
 pub struct RuntimeBatch<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     cancellation: CancellationContext,
-    context: SchedulerContext<S, V::BatchMetadata>,
+    state: SchedulerState<S, V>,
     checkpoint: Checkpoint<V::BatchMetadata>,
-    storage: StorageManager<S, Read<S, V>, Write<S, V>>,
-    eviction_queue: Arc<SegQueue<V::ResourceId>>,
     txs: Vec<RuntimeTx<S, V>>,
     state_diffs: Vec<StateDiff<S, V>>,
     available_txs: Injector<ManagerTask<S, V>>,
@@ -113,12 +109,9 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
     }
 
     pub(crate) fn new(
-        vm: V,
-        manager: &mut Scheduler<S, V>,
+        scheduler: &mut Scheduler<S, V>,
         txs: Vec<V::Transaction>,
         checkpoint: Checkpoint<V::BatchMetadata>,
-        cancellation: CancellationContext,
-        context: SchedulerContext<S, V::BatchMetadata>,
     ) -> Self {
         Self(Arc::new_cyclic(|this| {
             let was_processed = AtomicAsyncLatch::default();
@@ -135,18 +128,15 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
 
             RuntimeBatchData {
                 checkpoint,
-                cancellation,
-                context,
-                storage: manager.storage().clone(),
-                eviction_queue: manager.eviction_queue(),
+                cancellation: scheduler.cancellation().clone(),
+                state: scheduler.state().clone(),
                 pending_txs: AtomicU64::new(txs.len() as u64),
                 pending_writes: AtomicI64::new(0),
                 txs: txs
                     .into_iter()
                     .map(|tx| {
                         RuntimeTx::new(
-                            &vm,
-                            manager,
+                            scheduler,
                             &mut state_diffs,
                             RuntimeBatchRef(this.clone()),
                             tx,
@@ -165,7 +155,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
     pub(crate) fn connect(&self) {
         for tx in self.txs() {
             for resource in tx.accessed_resources() {
-                resource.connect(&self.storage);
+                resource.connect(self.state.storage());
             }
         }
     }
@@ -188,7 +178,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
     pub(crate) fn submit_write(&self, write: Write<S, V>) {
         if !self.was_canceled() {
             self.pending_writes.fetch_add(1, Ordering::AcqRel);
-            self.storage.submit_write(write);
+            self.state.storage().submit_write(write);
         }
     }
 
@@ -204,7 +194,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
 
     pub fn schedule_commit(&self) {
         if !self.was_canceled() {
-            self.storage.submit_write(Write::CommitBatch(self.clone()));
+            self.state.storage().submit_write(Write::CommitBatch(self.clone()));
         }
     }
 
@@ -221,7 +211,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
 
             // Persist root on first commit for crash-fault tolerance. Root was already set
             // in-memory when this batch was scheduled (see next_checkpoint).
-            if self.checkpoint.index() == self.context.root().index() {
+            if self.checkpoint.index() == self.state.root().index() {
                 StateMetadata::set_root(wb, &self.checkpoint);
             }
         }
@@ -229,8 +219,8 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
 
     pub(crate) fn commit_done(self) {
         if !self.was_canceled() {
-            // Eagerly update last_committed in the shared context.
-            self.context.last_committed.store(Arc::new(self.checkpoint.clone()));
+            // Eagerly update last_committed in the shared state.
+            self.state.set_last_committed(Arc::new(self.checkpoint.clone()));
         }
 
         // Mark the batch as committed.
@@ -240,7 +230,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
         // check if each resource's last access still belongs to a committed batch before actually
         // evicting it.
         for state_diff in self.state_diffs() {
-            self.eviction_queue.push(state_diff.resource_id().clone());
+            self.state.eviction_queue().push(state_diff.resource_id().clone());
         }
     }
 }

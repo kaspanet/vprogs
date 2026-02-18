@@ -32,7 +32,6 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeTx<S, V> {
     }
 
     pub(crate) fn new(
-        vm: &V,
         scheduler: &mut Scheduler<S, V>,
         state_diffs: &mut Vec<StateDiff<S, V>>,
         batch: RuntimeBatchRef<S, V>,
@@ -42,7 +41,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeTx<S, V> {
             let resources =
                 scheduler.resources(&tx, RuntimeTxRef(this.clone()), &batch, state_diffs);
             RuntimeTxData {
-                vm: vm.clone(),
+                vm: scheduler.vm().clone(),
                 pending_resources: AtomicU64::new(resources.len() as u64),
                 effects: ArcSwapOption::empty(),
                 batch,

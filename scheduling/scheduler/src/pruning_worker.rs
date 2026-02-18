@@ -17,7 +17,7 @@ use vprogs_state_space::StateSpace;
 use vprogs_state_version::StateVersion;
 use vprogs_storage_types::Store;
 
-use crate::{VmInterface, context::SchedulerContext};
+use crate::{VmInterface, state::SchedulerState};
 
 /// Background worker that deletes old state data (rollback pointers and versions) for batches
 /// that will never be rolled back, advancing the **root** (oldest surviving batch) forward.
@@ -93,20 +93,20 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
         self.notify.notify_one();
     }
 
-    /// Creates a new pruning worker with direct store access via the shared context.
+    /// Creates a new pruning worker with direct store access via the shared state.
     ///
-    /// The `root` checkpoint (oldest surviving batch) is managed through the context and shared
-    /// for atomic updates. The worker resumes from the persisted root. On a fresh database
+    /// The `root` checkpoint (oldest surviving batch) is managed through the shared state for
+    /// atomic updates. The worker resumes from the persisted root. On a fresh database
     /// (root index 0), no pruning occurs until the first batch commits and initializes root.
-    pub(crate) fn new(context: SchedulerContext<S, V::BatchMetadata>) -> Self {
-        let root_index = context.root().index();
+    pub(crate) fn new(state: SchedulerState<S, V>) -> Self {
+        let root_index = state.root().index();
         let pruning_threshold = Arc::new(AtomicU64::new(root_index));
         let pause_ceiling = Arc::new(AtomicU64::new(u64::MAX));
         let pruning_cursor = Arc::new(AtomicU64::new(root_index.saturating_sub(1)));
         let notify = Arc::new(Notify::new());
 
         let handle = Self::start(
-            context.clone(),
+            state.clone(),
             pruning_threshold.clone(),
             pause_ceiling.clone(),
             pruning_cursor.clone(),
@@ -136,7 +136,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
     /// It uses direct store access to avoid contention with the main write path.
     /// The worker loop exits when the outer struct is dropped (detected via strong_count).
     fn start(
-        context: SchedulerContext<S, V::BatchMetadata>,
+        state: SchedulerState<S, V>,
         pruning_threshold: Arc<AtomicU64>,
         pause_ceiling: Arc<AtomicU64>,
         pruning_cursor: Arc<AtomicU64>,
@@ -148,7 +148,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
                     // Use strong_count to detect shutdown (when the outer struct is dropped).
                     while Arc::strong_count(&pruning_threshold) != 1 {
                         // Root is the oldest surviving batch — the first candidate for pruning.
-                        let lower_bound = context.root().index();
+                        let lower_bound = state.root().index();
 
                         // Last batch eligible for pruning: (min of requested threshold and pause
                         // ceiling) converted from exclusive to inclusive. `saturating_sub` guards
@@ -174,7 +174,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
 
                             // Execute pruning directly on the store.
                             // The cursor stays at upper_bound — it now reflects completed progress.
-                            Self::prune(&context, lower_bound, upper_bound);
+                            Self::prune(&state, lower_bound, upper_bound);
                         } else if Arc::strong_count(&pruning_threshold) != 1 {
                             // No work to do, wait for notification.
                             notify.notified().await;
@@ -190,23 +190,26 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
     /// Runs on the dedicated pruning thread. Root is advanced in memory first so observers
     /// never see root pointing to already-pruned data. The disk write is committed atomically
     /// with the deletions for crash-fault tolerance.
-    fn prune(context: &SchedulerContext<S, V::BatchMetadata>, lower_bound: u64, upper_bound: u64) {
+    fn prune(state: &SchedulerState<S, V>, lower_bound: u64, upper_bound: u64) {
+        // Get a direct reference to the store for this operation.
+        let store = state.storage().store();
+
         // New root is the first surviving batch after the pruned range.
         let new_root = Arc::new(Checkpoint::new(
             upper_bound + 1,
-            StoredBatchMetadata::get(&*context.store, upper_bound + 1),
+            StoredBatchMetadata::get(store.as_ref(), upper_bound + 1),
         ));
 
         // Advance root in memory before deleting so no observer sees root pointing to pruned data.
-        context.root.store(new_root.clone());
+        state.set_root(new_root.clone());
 
         // Commit all deletions and root update atomically.
-        context.store.commit(context.store.write_batch().tap_mut(|wb| {
+        store.commit(store.write_batch().tap_mut(|wb| {
             // Walk batches from oldest to newest (order doesn't matter for pruning).
             for index in lower_bound..=upper_bound {
                 // Delete all rollback pointers and their referenced old versions for this batch.
                 for (resource_id, old_version) in
-                    StatePtrRollback::iter_batch(&*context.store, index)
+                    StatePtrRollback::iter_batch(store.as_ref(), index)
                 {
                     let resource_id: V::ResourceId =
                         borsh::from_slice(&resource_id).expect("corrupted store: unrecoverable");

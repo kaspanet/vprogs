@@ -29,7 +29,7 @@ impl SchedulerExt for Scheduler<RocksDbStore, VM> {
         let start = Instant::now();
         let key = expected.to_be_bytes();
         loop {
-            if self.storage().store().get(StateSpace::BatchMetadata, &key).is_none() {
+            if self.state().storage().store().get(StateSpace::BatchMetadata, &key).is_none() {
                 return self;
             }
             if start.elapsed() > timeout {
@@ -55,7 +55,7 @@ impl SchedulerExt for Scheduler<RocksDbStore, VM> {
     }
 
     fn assert_written_state(&self, resource_id: usize, writers: Vec<usize>) -> &Self {
-        let store = self.storage().store();
+        let store = self.state().storage().store();
         let writer_count = writers.len();
         let writer_log: Vec<u8> = writers.iter().flat_map(|id| id.to_be_bytes()).collect();
 
@@ -68,7 +68,7 @@ impl SchedulerExt for Scheduler<RocksDbStore, VM> {
     fn assert_resource_deleted(&self, resource_id: usize) -> &Self {
         use vprogs_storage_types::ReadStore;
 
-        let store = self.storage().store();
+        let store = self.state().storage().store();
         let id_bytes = resource_id.to_be_bytes();
         assert!(
             store.get(StateSpace::StatePtrLatest, &id_bytes).is_none(),

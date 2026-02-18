@@ -11,7 +11,7 @@ use vprogs_state_space::StateSpace;
 use vprogs_state_version::StateVersion;
 use vprogs_storage_types::Store;
 
-use crate::{VmInterface, context::SchedulerContext};
+use crate::{VmInterface, state::SchedulerState};
 
 /// Represents a rollback operation that reverts all batches after a target checkpoint.
 ///
@@ -23,8 +23,8 @@ pub struct Rollback<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     target: Checkpoint<V::BatchMetadata>,
     /// Upper bound of the batch index range to roll back (inclusive).
     upper_bound: u64,
-    /// Shared scheduler context. Used to set `last_committed` in memory alongside the disk write.
-    context: SchedulerContext<S, V::BatchMetadata>,
+    /// Shared scheduler state. Used to set `last_committed` in memory alongside the disk write.
+    state: SchedulerState<S, V>,
     /// Signal that resolves when the rollback operation is complete.
     done_signal: Arc<AtomicAsyncLatch>,
 }
@@ -35,10 +35,10 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Rollback<S, V> {
     pub fn new(
         target: Checkpoint<V::BatchMetadata>,
         upper_bound: u64,
-        context: SchedulerContext<S, V::BatchMetadata>,
+        state: SchedulerState<S, V>,
         done_signal: &Arc<AtomicAsyncLatch>,
     ) -> Self {
-        Rollback { target, upper_bound, context, done_signal: done_signal.clone() }
+        Rollback { target, upper_bound, state, done_signal: done_signal.clone() }
     }
 
     /// Executes the rollback on `store`.
@@ -56,9 +56,9 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Rollback<S, V> {
 
         // Only update `last_committed` in memory if the target is already committed. If the target
         // batch hasn't committed yet, its `commit_done()` will advance `last_committed`.
-        let target_committed = self.target.index() < self.context.last_committed().index();
+        let target_committed = self.target.index() < self.state.last_committed().index();
         if target_committed {
-            self.context.last_committed.store(Arc::new(self.target.clone()));
+            self.state.set_last_committed(Arc::new(self.target.clone()));
         }
 
         // Commit all deletions atomically.
