@@ -14,8 +14,8 @@ use crate::{
 
 /// A transaction progressing through the scheduler's execution pipeline.
 ///
-/// Wraps a user-submitted transaction with its resource access handles, execution state,
-/// and a back-reference to the owning batch. Derefs to the inner `V::Transaction`.
+/// Wraps a user-submitted transaction with its resource access handles, execution state, and a
+/// back-reference to the owning batch. Derefs to the inner `V::Transaction`.
 #[smart_pointer(deref(tx))]
 pub struct RuntimeTx<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     /// VM implementation used to execute this transaction.

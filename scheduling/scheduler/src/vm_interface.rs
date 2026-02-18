@@ -6,8 +6,8 @@ use crate::{AccessHandle, RuntimeBatch};
 
 /// Abstract transaction processor that the scheduler invokes.
 ///
-/// Implementations define how individual transactions are executed and may
-/// optionally hook into batch lifecycle events via [`Self::post_process_batch`].
+/// Implementations define how individual transactions are executed and may optionally hook into
+/// batch lifecycle events via [`Self::post_process_batch`].
 pub trait VmInterface: Clone + Sized + Send + Sync + 'static {
     /// Executes a single transaction against its accessed resources.
     fn process_transaction<S: Store<StateSpace = StateSpace>>(
@@ -16,11 +16,11 @@ pub trait VmInterface: Clone + Sized + Send + Sync + 'static {
         resources: &mut [AccessHandle<S, Self>],
     ) -> Result<Self::TransactionEffects, Self::Error>;
 
-    /// Optional hook called after all transactions in a batch have been processed.
-    /// The default implementation is a no-op.
+    /// Optional hook called after all transactions in a batch have been processed. The default
+    /// implementation is a no-op.
     ///
-    /// Implementations should check [`RuntimeBatch::was_canceled`] before performing
-    /// any work, as canceled batches still pass through this method:
+    /// Implementations should check [`RuntimeBatch::was_canceled`] before performing any work, as
+    /// canceled batches still pass through this method:
     /// ```ignore
     /// fn post_process_batch<S: Store<StateSpace = StateSpace>>(&self, batch: &RuntimeBatch<S, Self>) {
     ///     if !batch.was_canceled() {

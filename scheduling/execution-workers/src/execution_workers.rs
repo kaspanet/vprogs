@@ -4,8 +4,8 @@ use crate::{Batch, WorkersApi, task::Task};
 
 /// Thread pool for parallel task execution using work-stealing.
 ///
-/// Workers pull tasks from batch queues and a global task queue, stealing from
-/// each other when idle.
+/// Workers pull tasks from batch queues and a global task queue, stealing from each other when
+/// idle.
 pub struct ExecutionWorkers<T: Task, B: Batch<T>> {
     workers: WorkersApi<T, B>,
     handles: Vec<JoinHandle<()>>,

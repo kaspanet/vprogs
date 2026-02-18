@@ -10,9 +10,9 @@ use crate::{RuntimeBatchRef, Write, vm_interface::VmInterface};
 
 /// Tracks the state change for a single resource within a batch.
 ///
-/// Each unique resource accessed by a batch gets one `StateDiff`. It records the read state
-/// (before execution) and the written state (after execution), which are used to persist
-/// versioned data and rollback pointers.
+/// Each unique resource accessed by a batch gets one `StateDiff`. It records the read state (before
+/// execution) and the written state (after execution), which are used to persist versioned data and
+/// rollback pointers.
 #[smart_pointer]
 pub struct StateDiff<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     /// Weak reference to the owning batch (used for commit checks and write submission).
@@ -42,8 +42,8 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> StateDiff<S, V> {
 
     /// Returns true if the batch this state diff belongs to has been committed.
     ///
-    /// If the batch reference can no longer be upgraded (batch dropped), returns true
-    /// as the batch has completed its lifecycle.
+    /// If the batch reference can no longer be upgraded (batch dropped), returns true as the batch
+    /// has completed its lifecycle.
     pub(crate) fn was_committed(&self) -> bool {
         self.batch.upgrade().is_none_or(|batch| batch.was_committed())
     }

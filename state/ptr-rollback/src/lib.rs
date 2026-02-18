@@ -5,8 +5,8 @@ use vprogs_storage_types::{Store, WriteBatch};
 
 /// Provides type-safe operations for the RollbackPtr column family.
 ///
-/// StatePtrRollback stores the version a resource had before a batch was applied,
-/// allowing state to be reverted during chain reorganization.
+/// StatePtrRollback stores the version a resource had before a batch was applied, allowing state to
+/// be reverted during chain reorganization.
 ///
 /// Key layout: `batch_index (u64 BE) || resource_id (borsh)`
 /// Value layout: `old_version (u64 BE)`
@@ -37,8 +37,8 @@ impl StatePtrRollback {
 
     /// Iterates all rollback pointers for a given batch index.
     ///
-    /// Returns an iterator yielding `(resource_id_bytes, old_version)` pairs.
-    /// The caller must decode the resource ID bytes using `borsh::from_slice`.
+    /// Returns an iterator yielding `(resource_id_bytes, old_version)` pairs. The caller must
+    /// decode the resource ID bytes using `borsh::from_slice`.
     pub fn iter_batch<S>(store: &S, batch_index: u64) -> impl Iterator<Item = (Vec<u8>, u64)> + '_
     where
         S: Store<StateSpace = StateSpace>,

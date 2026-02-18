@@ -11,8 +11,8 @@ use vprogs_core_macros::smart_pointer;
 /// reference to the previous context. This forms a chain that allows in-flight batches to detect
 /// when they've been canceled by comparing their index against the cancel threshold.
 ///
-/// The `Arc` wrapper allows parallel reads (e.g. cancel threshold checks from worker threads)
-/// while the scheduler's `&mut self` guarantee ensures only a single writer mutates the chain.
+/// The `Arc` wrapper allows parallel reads (e.g. cancel threshold checks from worker threads) while
+/// the scheduler's `&mut self` guarantee ensures only a single writer mutates the chain.
 #[smart_pointer]
 pub struct CancellationContext {
     /// Weak reference to the parent context, used to propagate cancellation during rollbacks.
@@ -53,8 +53,8 @@ impl CancellationContext {
 
     /// Sets the cancel threshold and finds the appropriate parent context for a rollback.
     ///
-    /// Walks up the context chain to find the context that contains `index` within its range.
-    /// Each visited context has its cancel threshold updated.
+    /// Walks up the context chain to find the context that contains `index` within its range. Each
+    /// visited context has its cancel threshold updated.
     fn canceled_parent_context(&self, index: u64) -> Option<CancellationContextRef> {
         // Mark batches after this index as canceled in the current context.
         self.cancel_threshold.store(index, Ordering::Release);

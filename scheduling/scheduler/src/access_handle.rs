@@ -9,8 +9,8 @@ use crate::{ResourceAccess, vm_interface::VmInterface};
 
 /// A handle to a resource's state during transaction execution.
 ///
-/// Passed to [`VmInterface::process_transaction`] so the VM can read and mutate resource data.
-/// On success the changes are committed; on failure they are rolled back.
+/// Passed to [`VmInterface::process_transaction`] so the VM can read and mutate resource data. On
+/// success the changes are committed; on failure they are rolled back.
 pub struct AccessHandle<'a, S: Store<StateSpace = StateSpace>, V: VmInterface> {
     state_version: Arc<StateVersion<V::ResourceId>>,
     access: &'a ResourceAccess<S, V>,

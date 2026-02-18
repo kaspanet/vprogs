@@ -105,11 +105,11 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
         }
     }
 
-    /// Rolls back the runtime state to the given batch index, returning the target checkpoint.
-    /// If the current state is already at or behind the target, returns the current checkpoint.
+    /// Rolls back the runtime state to the given batch index, returning the target checkpoint. If
+    /// the current state is already at or behind the target, returns the current checkpoint.
     ///
-    /// Returns [`SchedulerError::PruningConflict`] if pruning has advanced past the
-    /// rollback target and the required rollback pointers have been deleted.
+    /// Returns [`SchedulerError::PruningConflict`] if pruning has advanced past the rollback target
+    /// and the required rollback pointers have been deleted.
     pub fn rollback_to(
         &mut self,
         target_index: u64,

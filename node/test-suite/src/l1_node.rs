@@ -46,9 +46,8 @@ pub struct L1Node {
 impl L1Node {
     /// Creates and starts a new isolated simnet node.
     ///
-    /// Pass a customization closure to override consensus parameters. The
-    /// closure receives the default simnet [`Params`] to mutate.
-    /// Pass `None` for vanilla simnet defaults.
+    /// Pass a customization closure to override consensus parameters. The closure receives the
+    /// default simnet [`Params`] to mutate. Pass `None` for vanilla simnet defaults.
     ///
     /// ```no_run
     /// # use vprogs_node_test_suite::L1Node;
@@ -123,8 +122,8 @@ impl L1Node {
         format!("ws://127.0.0.1:{}", port)
     }
 
-    /// Connects this node to another node as a peer.
-    /// Polls until the peer appears in the connected peer list.
+    /// Connects this node to another node as a peer. Polls until the peer appears in the connected
+    /// peer list.
     pub async fn connect_to(&self, other: &L1Node) {
         let other_port = other.daemon().p2p_port;
 
@@ -150,13 +149,12 @@ impl L1Node {
 
     /// Mines a single block, optionally injecting L2 transactions into the block template.
     ///
-    /// Each L2 transaction is borsh-serialized into the `payload` field of a separate
-    /// L1 transaction. Requires mature UTXOs when payloads are provided (call
+    /// Each L2 transaction is borsh-serialized into the `payload` field of a separate L1
+    /// transaction. Requires mature UTXOs when payloads are provided (call
     /// [`mine_utxos`](Self::mine_utxos) first).
     ///
-    /// Note: in Kaspa DAG consensus, a block's transactions are accepted by the
-    /// next chain block. The caller must mine an additional block for the
-    /// transactions to be accepted.
+    /// Note: in Kaspa DAG consensus, a block's transactions are accepted by the next chain block.
+    /// The caller must mine an additional block for the transactions to be accepted.
     pub async fn mine_block<T: BorshSerialize>(&self, txs: Option<&[T]>) -> Hash {
         let mut template =
             self.grpc_client.get_block_template(self.address.clone(), vec![]).await.unwrap();
@@ -195,9 +193,9 @@ impl L1Node {
 
     /// Mines enough blocks so that `num_utxos` coinbase UTXOs become spendable.
     ///
-    /// Each block produces one coinbase UTXO that matures after `coinbase_maturity`
-    /// blocks. The genesis child starts at `daa_score = 2`, so we add a small offset
-    /// to ensure the requested UTXOs are fully mature.
+    /// Each block produces one coinbase UTXO that matures after `coinbase_maturity` blocks. The
+    /// genesis child starts at `daa_score = 2`, so we add a small offset to ensure the requested
+    /// UTXOs are fully mature.
     pub async fn mine_utxos(&self, num_utxos: usize) -> Vec<Hash> {
         // +2 accounts for the genesis daa_score offset.
         self.mine_blocks(self.params.blockrate.coinbase_maturity as usize + num_utxos + 2).await

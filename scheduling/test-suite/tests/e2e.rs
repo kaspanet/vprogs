@@ -101,9 +101,8 @@ pub fn test_rollback_committed() {
     }
 }
 
-/// Tests that new batches can be scheduled after a rollback and receive correct indices.
-/// After rollback, the scheduler state resets to the target index and new batches continue
-/// from there.
+/// Tests that new batches can be scheduled after a rollback and receive correct indices. After
+/// rollback, the scheduler state resets to the target index and new batches continue from there.
 #[test]
 pub fn test_add_batches_after_rollback() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
@@ -157,9 +156,9 @@ pub fn test_add_batches_after_rollback() {
     }
 }
 
-/// Tests in-flight batch cancellation without waiting for commitment.
-/// When a rollback occurs, batches that haven't been committed yet should detect
-/// cancellation via was_canceled() and skip their writes.
+/// Tests in-flight batch cancellation without waiting for commitment. When a rollback occurs,
+/// batches that haven't been committed yet should detect cancellation via was_canceled() and skip
+/// their writes.
 #[test]
 pub fn test_inflight_cancellation_without_waiting() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
@@ -206,8 +205,8 @@ pub fn test_inflight_cancellation_without_waiting() {
     }
 }
 
-/// Tests rollback across multiple cancellation contexts with parent chain traversal.
-/// This complex scenario tests: apply 1-6; rollback to 5; apply 6-7; rollback to 3; apply 4-5.
+/// Tests rollback across multiple cancellation contexts with parent chain traversal. This complex
+/// scenario tests: apply 1-6; rollback to 5; apply 6-7; rollback to 3; apply 4-5.
 #[test]
 pub fn test_rollback_multiple_contexts() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
@@ -295,8 +294,7 @@ pub fn test_rollback_multiple_contexts() {
     }
 }
 
-/// Tests rollback to batch 0 (complete revert to initial state).
-/// All state should be cleared.
+/// Tests rollback to batch 0 (complete revert to initial state). All state should be cleared.
 #[test]
 pub fn test_rollback_to_zero() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
@@ -336,8 +334,8 @@ pub fn test_rollback_to_zero() {
     }
 }
 
-/// Tests multiple consecutive rollbacks without adding new batches in between.
-/// Verifies that consecutive rollbacks properly reduce state.
+/// Tests multiple consecutive rollbacks without adding new batches in between. Verifies that
+/// consecutive rollbacks properly reduce state.
 #[test]
 pub fn test_consecutive_rollbacks() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
@@ -398,8 +396,8 @@ pub fn test_consecutive_rollbacks() {
     }
 }
 
-/// Tests rollback of batches that modify the same resource multiple times.
-/// This exercises the resource dependency chain and version restoration.
+/// Tests rollback of batches that modify the same resource multiple times. This exercises the
+/// resource dependency chain and version restoration.
 #[test]
 pub fn test_rollback_same_resource_multiple_writes() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
@@ -439,8 +437,8 @@ pub fn test_rollback_same_resource_multiple_writes() {
     }
 }
 
-/// Tests that canceled batches are marked as canceled and wait functions
-/// return immediately without blocking.
+/// Tests that canceled batches are marked as canceled and wait functions return immediately without
+/// blocking.
 #[test]
 pub fn test_cancellation_skips_writes() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
@@ -481,8 +479,8 @@ pub fn test_cancellation_skips_writes() {
     }
 }
 
-/// Tests complex scenario with interleaved writes to multiple resources
-/// followed by rollback and new writes.
+/// Tests complex scenario with interleaved writes to multiple resources followed by rollback and
+/// new writes.
 #[test]
 pub fn test_rollback_interleaved_multi_resource() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
@@ -937,9 +935,9 @@ pub fn test_pruning_multiple_resources() {
 
 /// Tests that `pause()` constrains the pruning worker and `unpause()` releases it.
 ///
-/// Calls `pause(ceiling)` directly, then advances the pruning threshold well past the
-/// ceiling. The worker must not prune at or above the ceiling. After `unpause()`, the
-/// worker must catch up to the full threshold.
+/// Calls `pause(ceiling)` directly, then advances the pruning threshold well past the ceiling. The
+/// worker must not prune at or above the ceiling. After `unpause()`, the worker must catch up to
+/// the full threshold.
 #[test]
 pub fn test_pruning_pause_and_unpause() {
     use vprogs_state_ptr_rollback::StatePtrRollback;
@@ -1001,8 +999,8 @@ pub fn test_pruning_pause_and_unpause() {
     }
 }
 
-/// Tests that `rollback_to` returns `PruningConflict` when the rollback target
-/// has already been pruned past.
+/// Tests that `rollback_to` returns `PruningConflict` when the rollback target has already been
+/// pruned past.
 #[test]
 pub fn test_rollback_pruning_conflict() {
     use vprogs_scheduling_scheduler::SchedulerError;

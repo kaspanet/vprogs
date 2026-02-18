@@ -10,8 +10,8 @@ use vprogs_transaction_runtime_transaction_effects::TransactionEffects;
 
 /// Concrete VM implementation backed by the transaction runtime.
 ///
-/// Delegates transaction execution to [`TransactionRuntime`] and serves as the
-/// production [`VmInterface`] used by the node.
+/// Delegates transaction execution to [`TransactionRuntime`] and serves as the production
+/// [`VmInterface`] used by the node.
 #[derive(Clone)]
 pub struct VM;
 

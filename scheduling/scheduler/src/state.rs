@@ -22,16 +22,16 @@ pub struct SchedulerState<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     root: ArcSwap<Checkpoint<V::BatchMetadata>>,
     /// Most recently committed batch. Advanced by `commit_done`, reset on rollback.
     last_committed: ArcSwap<Checkpoint<V::BatchMetadata>>,
-    /// Most recently scheduled batch. Advanced by `next_checkpoint`, reset on rollback.
-    /// Only mutated from `&mut Scheduler`.
+    /// Most recently scheduled batch. Advanced by `next_checkpoint`, reset on rollback. Only
+    /// mutated from `&mut Scheduler`.
     last_processed: ArcSwap<Checkpoint<V::BatchMetadata>>,
 }
 
 impl<S: Store<StateSpace = StateSpace>, V: VmInterface> SchedulerState<S, V> {
     /// Creates a new state from a storage configuration.
     ///
-    /// `root` and `last_committed` are loaded from `StateMetadata`. `last_processed` is
-    /// initialized to `last_committed` since no new batches have been scheduled yet.
+    /// `root` and `last_committed` are loaded from `StateMetadata`. `last_processed` is initialized
+    /// to `last_committed` since no new batches have been scheduled yet.
     pub fn new(storage_config: StorageConfig<S>) -> Self {
         let storage = StorageManager::new(storage_config);
         let root: Checkpoint<V::BatchMetadata> = StateMetadata::root(storage.store().as_ref());

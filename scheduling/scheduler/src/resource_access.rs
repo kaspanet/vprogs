@@ -15,9 +15,9 @@ use crate::{Read, RuntimeTxRef, StateDiff, Write, vm_interface::VmInterface};
 
 /// A single resource access within a transaction, forming a linked chain across the batch.
 ///
-/// Each `ResourceAccess` represents one transaction's claim on a resource. Within a batch,
-/// accesses to the same resource are linked via `prev`/`next` pointers so that write results
-/// flow forward to dependent reads. Derefs to the inner `V::AccessMetadata`.
+/// Each `ResourceAccess` represents one transaction's claim on a resource. Within a batch, accesses
+/// to the same resource are linked via `prev`/`next` pointers so that write results flow forward to
+/// dependent reads. Derefs to the inner `V::AccessMetadata`.
 #[smart_pointer(deref(metadata))]
 pub struct ResourceAccess<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     /// Per-access metadata (deref target).

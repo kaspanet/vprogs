@@ -19,24 +19,23 @@ use vprogs_storage_types::Store;
 
 use crate::{VmInterface, state::SchedulerState};
 
-/// Background worker that deletes old state data (rollback pointers and versions) for batches
-/// that will never be rolled back, advancing the **root** (oldest surviving batch) forward.
+/// Background worker that deletes old state data (rollback pointers and versions) for batches that
+/// will never be rolled back, advancing the **root** (oldest surviving batch) forward.
 ///
-/// Runs on a dedicated thread with direct store access to avoid contention with the main
-/// write path.
+/// Runs on a dedicated thread with direct store access to avoid contention with the main write
+/// path.
 pub struct PruningWorker<S: Store<StateSpace = StateSpace>, V: VmInterface> {
-    /// The batch index up to which pruning is allowed (exclusive).
-    /// Batches with index < threshold can be pruned.
+    /// The batch index up to which pruning is allowed (exclusive). Batches with index < threshold
+    /// can be pruned.
     pruning_threshold: Arc<AtomicU64>,
-    /// Upper bound on effective pruning threshold. `u64::MAX` means unconstrained.
-    /// Set before a rollback to prevent the pruning worker from pruning into the
-    /// rollback range; cleared after the rollback completes.
+    /// Upper bound on effective pruning threshold. `u64::MAX` means unconstrained. Set before a
+    /// rollback to prevent the pruning worker from pruning into the rollback range; cleared after
+    /// the rollback completes.
     pause_ceiling: Arc<AtomicU64>,
-    /// Tracks the upper bound of the last completed (or in-flight) prune pass.
-    /// Generally increasing; temporarily restored on aborted passes. Forms a
-    /// Dekker-style handshake with `pause_ceiling` (both use `SeqCst`) so that
-    /// `pause` can detect an in-flight or already-completed prune that overlaps
-    /// the rollback range.
+    /// Tracks the upper bound of the last completed (or in-flight) prune pass. Generally
+    /// increasing; temporarily restored on aborted passes. Forms a Dekker-style handshake with
+    /// `pause_ceiling` (both use `SeqCst`) so that `pause` can detect an in-flight or
+    /// already-completed prune that overlaps the rollback range.
     pruning_cursor: Arc<AtomicU64>,
     /// Notification signal to wake up the worker when the threshold changes.
     notify: Arc<Notify>,
@@ -66,16 +65,15 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
 
     /// Pauses pruning at or above the given index.
     ///
-    /// Called before a rollback to ensure the pruning worker does not delete state
-    /// that the rollback needs. The ceiling clamps the worker's upper bound as
-    /// `upper_bound = threshold.min(ceiling) - 1`.
+    /// Called before a rollback to ensure the pruning worker does not delete state that the
+    /// rollback needs. The ceiling clamps the worker's upper bound as `upper_bound =
+    /// threshold.min(ceiling) - 1`.
     ///
-    /// Returns `true` if the pruning cursor is at or below the ceiling (no
-    /// completed or in-flight prune has deleted data the rollback needs),
-    /// `false` otherwise. On failure the ceiling is reset to `u64::MAX` so
-    /// pruning is not permanently throttled. Both sides use `SeqCst`
-    /// (Dekker-style) so at least one side detects the conflict: either the
-    /// worker aborts its pass, or this method returns `false`.
+    /// Returns `true` if the pruning cursor is at or below the ceiling (no completed or in-flight
+    /// prune has deleted data the rollback needs), `false` otherwise. On failure the ceiling is
+    /// reset to `u64::MAX` so pruning is not permanently throttled. Both sides use `SeqCst`
+    /// (Dekker-style) so at least one side detects the conflict: either the worker aborts its pass,
+    /// or this method returns `false`.
     pub fn pause(&self, ceiling: u64) -> bool {
         self.pause_ceiling.store(ceiling, Ordering::SeqCst);
         if self.pruning_cursor.load(Ordering::SeqCst) <= ceiling {
@@ -97,8 +95,8 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
     /// Creates a new pruning worker with direct store access via the shared state.
     ///
     /// The `root` checkpoint (oldest surviving batch) is managed through the shared state for
-    /// atomic updates. The worker resumes from the persisted root. On a fresh database
-    /// (root index 0), no pruning occurs until the first batch commits and initializes root.
+    /// atomic updates. The worker resumes from the persisted root. On a fresh database (root index
+    /// 0), no pruning occurs until the first batch commits and initializes root.
     pub(crate) fn new(state: SchedulerState<S, V>) -> Self {
         let root_index = state.root().index();
         let pruning_threshold = Arc::new(AtomicU64::new(root_index));
@@ -133,9 +131,9 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
 
     /// Starts the background pruning worker thread.
     ///
-    /// The worker monitors the pruning threshold and deletes old state data as needed.
-    /// It uses direct store access to avoid contention with the main write path.
-    /// The worker loop exits when the outer struct is dropped (detected via strong_count).
+    /// The worker monitors the pruning threshold and deletes old state data as needed. It uses
+    /// direct store access to avoid contention with the main write path. The worker loop exits when
+    /// the outer struct is dropped (detected via strong_count).
     fn start(
         state: SchedulerState<S, V>,
         pruning_threshold: Arc<AtomicU64>,
@@ -188,9 +186,9 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
 
     /// Executes pruning directly on the store for the given batch range.
     ///
-    /// Runs on the dedicated pruning thread. Root is advanced in memory first so observers
-    /// never see root pointing to already-pruned data. The disk write is committed atomically
-    /// with the deletions for crash-fault tolerance.
+    /// Runs on the dedicated pruning thread. Root is advanced in memory first so observers never
+    /// see root pointing to already-pruned data. The disk write is committed atomically with the
+    /// deletions for crash-fault tolerance.
     fn prune(state: &SchedulerState<S, V>, lower_bound: u64, upper_bound: u64) {
         // Get a direct reference to the store for this operation.
         let store = state.storage().store();
