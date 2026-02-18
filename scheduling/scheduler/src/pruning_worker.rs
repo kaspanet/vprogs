@@ -17,7 +17,7 @@ use vprogs_state_space::StateSpace;
 use vprogs_state_version::StateVersion;
 use vprogs_storage_types::Store;
 
-use crate::{VmInterface, scheduler_context::SchedulerContext};
+use crate::{VmInterface, context::SchedulerContext};
 
 /// Background worker that deletes old state data (rollback pointers and versions) for batches
 /// that will never be rolled back, advancing the **root** (oldest surviving batch) forward.

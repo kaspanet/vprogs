@@ -5,7 +5,7 @@ use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
-use crate::{CancellationContext, scheduler_context::SchedulerContext};
+use crate::{CancellationContext, context::SchedulerContext};
 
 /// Tracks the execution context for a sequence of batches, including cancellation state.
 ///

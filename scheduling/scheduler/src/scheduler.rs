@@ -11,8 +11,8 @@ use vprogs_storage_types::Store;
 use crate::{
     BatchExecutionContext, BatchLifecycleWorker, ExecutionConfig, PruningWorker, Read, Resource,
     ResourceAccess, RuntimeBatch, RuntimeBatchRef, RuntimeTxRef, SchedulerError, SchedulerResult,
-    StateDiff, Write, cpu_task::ManagerTask, rollback::Rollback,
-    scheduler_context::SchedulerContext, vm_interface::VmInterface,
+    StateDiff, Write, context::SchedulerContext, cpu_task::ManagerTask, rollback::Rollback,
+    vm_interface::VmInterface,
 };
 
 /// Orchestrates transaction execution, state management, and storage coordination.
@@ -51,10 +51,10 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
             batch_execution: BatchExecutionContext::new(context.clone()),
             batch_lifecycle_worker: BatchLifecycleWorker::new(vm.clone()),
             pruning_worker: PruningWorker::new(context.clone()),
-            context,
             resources: HashMap::new(),
             execution_workers: ExecutionWorkers::new(worker_count),
             eviction_queue: Arc::new(SegQueue::new()),
+            context,
             storage,
             vm,
         }

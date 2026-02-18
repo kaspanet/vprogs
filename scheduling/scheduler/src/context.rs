@@ -7,21 +7,16 @@ use vprogs_state_metadata::StateMetadata;
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
-/// Shared scheduler state accessible by all components (runtime batches, pruning worker, rollback).
-///
-/// Unifies the store handle and three key checkpoints into a single `Arc`-wrapped handle:
-/// - **root** — oldest surviving batch (advanced by pruning, reset on rollback-to-genesis).
-/// - **last_committed** — most recently committed batch (advanced eagerly by `commit_done`, reset
-///   on rollback).
-/// - **last_processed** — most recently scheduled batch (advanced by `next_checkpoint`, reset on
-///   rollback). Only mutated from `&mut Scheduler` context.
-///
-/// Uses `#[smart_pointer]` so cloning is just `Arc::clone`.
+/// Shared scheduler state accessible by all components.
 #[smart_pointer]
 pub struct SchedulerContext<S: Store<StateSpace = StateSpace>, M: BatchMetadata> {
     pub(crate) store: Arc<S>,
+    /// Oldest surviving batch. Advanced by pruning.
     pub(crate) root: ArcSwap<Checkpoint<M>>,
+    /// Most recently committed batch. Advanced by `commit_done`, reset on rollback.
     pub(crate) last_committed: ArcSwap<Checkpoint<M>>,
+    /// Most recently scheduled batch. Advanced by `next_checkpoint`, reset on rollback.
+    /// Only mutated from `&mut Scheduler` context.
     pub(crate) last_processed: ArcSwap<Checkpoint<M>>,
 }
 

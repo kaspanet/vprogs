@@ -15,8 +15,8 @@ use vprogs_storage_manager::StorageManager;
 use vprogs_storage_types::{Store, WriteBatch};
 
 use crate::{
-    CancellationContext, Read, RuntimeTx, Scheduler, StateDiff, Write, cpu_task::ManagerTask,
-    scheduler_context::SchedulerContext, vm_interface::VmInterface,
+    CancellationContext, Read, RuntimeTx, Scheduler, StateDiff, Write, context::SchedulerContext,
+    cpu_task::ManagerTask, vm_interface::VmInterface,
 };
 
 #[smart_pointer]

@@ -11,7 +11,7 @@ use vprogs_state_space::StateSpace;
 use vprogs_state_version::StateVersion;
 use vprogs_storage_types::Store;
 
-use crate::{VmInterface, scheduler_context::SchedulerContext};
+use crate::{VmInterface, context::SchedulerContext};
 
 /// Represents a rollback operation that reverts all batches after a target checkpoint.
 ///
