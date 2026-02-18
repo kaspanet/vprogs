@@ -197,18 +197,14 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
             StoredBatchMetadata::get(&*context.store, upper_bound + 1),
         ));
 
-        // Advance root in memory before deleting data so no observer sees root pointing to
-        // pruned batches.
+        // Advance root in memory before deleting so no observer sees root pointing to pruned data.
         context.root.store(new_root.clone());
 
         // Commit all deletions and root update atomically.
         context.store.commit(context.store.write_batch().tap_mut(|wb| {
-            StateMetadata::set_root(wb, &new_root);
-
             // Walk batches from oldest to newest (order doesn't matter for pruning).
             for index in lower_bound..=upper_bound {
-                // Delete all rollback pointers and their referenced old versions for this
-                // batch.
+                // Delete all rollback pointers and their referenced old versions for this batch.
                 for (resource_id, old_version) in
                     StatePtrRollback::iter_batch(&*context.store, index)
                 {
@@ -228,6 +224,9 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
                 // Delete batch metadata entries for this batch.
                 StoredBatchMetadata::delete(wb, index);
             }
+
+            // Advance root on disk.
+            StateMetadata::set_root(wb, &new_root);
         }));
     }
 }
