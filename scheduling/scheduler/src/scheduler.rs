@@ -155,11 +155,6 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
         &self.state
     }
 
-    /// Returns a reference to the cancellation context.
-    pub(crate) fn cancellation(&self) -> &CancellationContext {
-        &self.cancellation
-    }
-
     /// Returns a reference to the VM implementation.
     pub fn vm(&self) -> &V {
         &self.vm
@@ -192,6 +187,41 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
         self.batch_lifecycle_worker.shutdown();
         self.execution_workers.shutdown();
         self.state.storage().shutdown();
+    }
+
+    /// Returns a reference to the cancellation context.
+    pub(crate) fn cancellation(&self) -> &CancellationContext {
+        &self.cancellation
+    }
+
+    /// Builds resource accesses for a transaction by linking it into dependency chains.
+    ///
+    /// For each resource the transaction accesses, this either creates a new dependency chain or
+    /// appends the transaction to an existing one. When a transaction is the first in its batch to
+    /// access a resource, a new state diff is created and added to `state_diffs`.
+    pub(crate) fn resources(
+        &mut self,
+        tx: &V::Transaction,
+        runtime_tx: RuntimeTxRef<S, V>,
+        batch: &RuntimeBatchRef<S, V>,
+        state_diffs: &mut Vec<StateDiff<S, V>>,
+    ) -> Vec<ResourceAccess<S, V>> {
+        tx.accessed_resources()
+            .iter()
+            .map(|access| {
+                // Get or create the resource entry and link this transaction into its chain.
+                self.resources
+                    .entry(access.id())
+                    .or_default()
+                    .access(access, &runtime_tx, batch)
+                    .tap(|access| {
+                        // If this is the first access in the batch, create a state diff.
+                        if access.is_batch_head() {
+                            state_diffs.push(access.state_diff());
+                        }
+                    })
+            })
+            .collect()
     }
 
     /// Advances to the next batch, returning its checkpoint.
@@ -259,35 +289,5 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
 
         // Fall back to disk for committed batches.
         Checkpoint::new(index, StoredBatchMetadata::get(&**self.state.storage().store(), index))
-    }
-
-    /// Builds resource accesses for a transaction by linking it into dependency chains.
-    ///
-    /// For each resource the transaction accesses, this either creates a new dependency chain or
-    /// appends the transaction to an existing one. When a transaction is the first in its batch to
-    /// access a resource, a new state diff is created and added to `state_diffs`.
-    pub(crate) fn resources(
-        &mut self,
-        tx: &V::Transaction,
-        runtime_tx: RuntimeTxRef<S, V>,
-        batch: &RuntimeBatchRef<S, V>,
-        state_diffs: &mut Vec<StateDiff<S, V>>,
-    ) -> Vec<ResourceAccess<S, V>> {
-        tx.accessed_resources()
-            .iter()
-            .map(|access| {
-                // Get or create the resource entry and link this transaction into its chain.
-                self.resources
-                    .entry(access.id())
-                    .or_default()
-                    .access(access, &runtime_tx, batch)
-                    .tap(|access| {
-                        // If this is the first access in the batch, create a state diff.
-                        if access.is_batch_head() {
-                            state_diffs.push(access.state_diff());
-                        }
-                    })
-            })
-            .collect()
     }
 }
