@@ -70,10 +70,7 @@ impl NodeExt for NodeApi<RocksDbStore, TestNodeVm> {
     async fn wait_pruned(&self, expected: u64, timeout: Duration) {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
-            let root_index = self
-                .with_scheduler(|scheduler| scheduler.pruning().root().index())
-                .await
-                .expect("api call failed");
+            let root_index = self.root().index();
             if root_index > expected {
                 return;
             }

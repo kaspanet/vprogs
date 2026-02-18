@@ -38,9 +38,10 @@ impl<S: Store<StateSpace = StateSpace>, V: NodeVm> Node<S, V> {
         let tip = scheduler.batch_execution().last_committed().clone();
         let bridge = L1Bridge::new(config.l1_bridge.with_root(Some(root)).with_tip(Some(tip)));
 
-        // Create the shutdown latch and API channel.
+        // Create the shutdown latch and the API.
         let shutdown = Arc::new(AtomicAsyncLatch::new());
         let (tx, rx) = mpsc::channel(config.api_channel_capacity);
+        let api = NodeApi::new(scheduler.state().clone(), tx);
 
         // Spawn the worker on a dedicated thread.
         let worker = NodeWorker::spawn(bridge, scheduler, rx, shutdown.clone());
@@ -53,7 +54,7 @@ impl<S: Store<StateSpace = StateSpace>, V: NodeVm> Node<S, V> {
                     .block_on(worker)
             })),
             shutdown,
-            api: NodeApi(tx),
+            api,
         }
     }
 

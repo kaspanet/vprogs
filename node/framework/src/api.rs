@@ -1,7 +1,6 @@
 use tokio::sync::{mpsc::Sender, oneshot};
-use vprogs_core_types::Checkpoint;
-use vprogs_node_l1_bridge::ChainBlockMetadata;
-use vprogs_scheduling_scheduler::Scheduler;
+use vprogs_core_macros::smart_pointer;
+use vprogs_scheduling_scheduler::{Scheduler, SchedulerState};
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
@@ -12,37 +11,23 @@ use crate::{
 
 /// Cloneable handle for querying the scheduler from outside the worker thread.
 ///
-/// Sends closures over a channel to the worker thread, where they execute against the
-/// [`Scheduler`]. Each closure captures a [`oneshot::Sender`] for the response. The worker
-/// executes the closure and the caller awaits the oneshot.
-pub struct NodeApi<S: Store<StateSpace = StateSpace>, V: NodeVm>(
-    pub(crate) Sender<ApiRequest<S, V>>,
-);
+/// Derefs to [`SchedulerState`], exposing lock-free reads for `root`, `last_committed`,
+/// `last_processed`, and `storage` without going through the worker channel.
+///
+/// For operations that need `&mut Scheduler` (e.g. pruning), use
+/// [`with_scheduler`](Self::with_scheduler).
+#[smart_pointer(deref(state))]
+pub struct NodeApi<S: Store<StateSpace = StateSpace>, V: NodeVm> {
+    /// Shared scheduler state for lock-free reads (deref target).
+    state: SchedulerState<S, V>,
+    /// Channel for sending closures to the worker thread for `&mut Scheduler` access.
+    api_requests: Sender<ApiRequest<S, V>>,
+}
 
 impl<S: Store<StateSpace = StateSpace>, V: NodeVm> NodeApi<S, V> {
-    /// Returns the last committed checkpoint.
-    pub async fn last_committed(&self) -> NodeResult<Checkpoint<ChainBlockMetadata>> {
-        self.with_scheduler(|s| s.batch_execution().last_committed().clone()).await
-    }
-
-    /// Returns the last processed checkpoint.
-    pub async fn last_processed(&self) -> NodeResult<Checkpoint<ChainBlockMetadata>> {
-        self.with_scheduler(|s| s.batch_execution().last_processed().clone()).await
-    }
-
-    /// Returns the root checkpoint (oldest surviving batch).
-    pub async fn root(&self) -> NodeResult<Checkpoint<ChainBlockMetadata>> {
-        self.with_scheduler(|s| s.pruning().root()).await
-    }
-
-    /// Returns the current pruning threshold.
-    pub async fn pruning_threshold(&self) -> NodeResult<u64> {
-        self.with_scheduler(|s| s.pruning().threshold()).await
-    }
-
-    /// Returns the number of resources currently cached in the scheduler.
-    pub async fn cached_resource_count(&self) -> NodeResult<usize> {
-        self.with_scheduler(|s| s.cached_resource_count()).await
+    /// Creates a new API handle with shared state and a channel to the worker thread.
+    pub(crate) fn new(state: SchedulerState<S, V>, sender: Sender<ApiRequest<S, V>>) -> Self {
+        Self(std::sync::Arc::new(NodeApiData { state, api_requests: sender }))
     }
 
     /// Executes a closure against the scheduler on the worker thread and returns the result.
@@ -55,7 +40,7 @@ impl<S: Store<StateSpace = StateSpace>, V: NodeVm> NodeApi<S, V> {
 
         // Wrap the user's closure to capture the oneshot sender. The worker will execute
         // this against &mut Scheduler and send the return value back.
-        self.0
+        self.api_requests
             .send(Box::new(move |scheduler| {
                 // Ignore send errors - the caller may have timed out or dropped the future.
                 let _ = tx.send(f(scheduler));
@@ -65,13 +50,6 @@ impl<S: Store<StateSpace = StateSpace>, V: NodeVm> NodeApi<S, V> {
 
         // Await the response from the worker thread.
         rx.await.map_err(|_| NodeError::RequestDropped)
-    }
-}
-
-// Manual Clone impl to avoid unnecessary bounds on S and V.
-impl<S: Store<StateSpace = StateSpace>, V: NodeVm> Clone for NodeApi<S, V> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
     }
 }
 
