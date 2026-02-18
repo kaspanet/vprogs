@@ -47,11 +47,10 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
         let storage = StorageManager::new(storage_config);
         let (worker_count, vm) = execution_config.unpack();
         let context = SchedulerContext::new(storage.store().clone());
-        let pruning_worker = PruningWorker::new(context.clone());
         Self {
             batch_execution: BatchExecutionContext::new(context.clone()),
             batch_lifecycle_worker: BatchLifecycleWorker::new(vm.clone()),
-            pruning_worker,
+            pruning_worker: PruningWorker::new(context.clone()),
             context,
             resources: HashMap::new(),
             execution_workers: ExecutionWorkers::new(worker_count),
