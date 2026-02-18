@@ -187,49 +187,47 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
 
     /// Executes pruning directly on the store for the given batch range.
     ///
-    /// Runs on the dedicated pruning thread. Root is persisted atomically with the deletions
-    /// for crash-fault tolerance, then advanced in memory after the commit so observers never
-    /// see root ahead of the actual disk state.
+    /// Runs on the dedicated pruning thread. Root is advanced in memory first so observers
+    /// never see root pointing to already-pruned data. The disk write is committed atomically
+    /// with the deletions for crash-fault tolerance.
     fn prune(context: &SchedulerContext<S, V::BatchMetadata>, lower_bound: u64, upper_bound: u64) {
         // New root is the first surviving batch after the pruned range.
-        let new_root_index = upper_bound + 1;
+        let new_root = Arc::new(Checkpoint::new(
+            upper_bound + 1,
+            StoredBatchMetadata::get(&*context.store, upper_bound + 1),
+        ));
 
-        // Persist the new root and deletions in a single atomic commit, then update the in-memory
-        // values.
-        context.root.store(Arc::new(
-            Checkpoint::new(
-                new_root_index,
-                StoredBatchMetadata::get::<V::BatchMetadata, S>(&*context.store, new_root_index),
-            )
-            .tap(|new_root| {
-                context.store.commit(context.store.write_batch().tap_mut(|wb| {
-                    StateMetadata::set_root(wb, &new_root);
+        // Advance root in memory before deleting data so no observer sees root pointing to
+        // pruned batches.
+        context.root.store(new_root.clone());
 
-                    // Walk batches from oldest to newest (order doesn't matter for pruning).
-                    for index in lower_bound..=upper_bound {
-                        // Delete all rollback pointers and their referenced old versions for this
-                        // batch.
-                        for (resource_id, old_version) in
-                            StatePtrRollback::iter_batch(&*context.store, index)
-                        {
-                            let resource_id: V::ResourceId = borsh::from_slice(&resource_id)
-                                .expect("corrupted store: unrecoverable");
+        // Commit all deletions and root update atomically.
+        context.store.commit(context.store.write_batch().tap_mut(|wb| {
+            StateMetadata::set_root(wb, &new_root);
 
-                            // Delete the old version data if it exists (version 0 means resource
-                            // didn't exist).
-                            if old_version != 0 {
-                                StateVersion::delete(wb, old_version, &resource_id);
-                            }
+            // Walk batches from oldest to newest (order doesn't matter for pruning).
+            for index in lower_bound..=upper_bound {
+                // Delete all rollback pointers and their referenced old versions for this
+                // batch.
+                for (resource_id, old_version) in
+                    StatePtrRollback::iter_batch(&*context.store, index)
+                {
+                    let resource_id: V::ResourceId =
+                        borsh::from_slice(&resource_id).expect("corrupted store: unrecoverable");
 
-                            // Delete the rollback pointer itself.
-                            StatePtrRollback::delete(wb, index, &resource_id);
-                        }
-
-                        // Delete batch metadata entries for this batch.
-                        StoredBatchMetadata::delete(wb, index);
+                    // Delete the old version data if it exists (version 0 means resource
+                    // didn't exist).
+                    if old_version != 0 {
+                        StateVersion::delete(wb, old_version, &resource_id);
                     }
-                }))
-            }),
-        ))
+
+                    // Delete the rollback pointer itself.
+                    StatePtrRollback::delete(wb, index, &resource_id);
+                }
+
+                // Delete batch metadata entries for this batch.
+                StoredBatchMetadata::delete(wb, index);
+            }
+        }));
     }
 }

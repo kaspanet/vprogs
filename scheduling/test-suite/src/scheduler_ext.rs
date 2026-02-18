@@ -4,13 +4,14 @@ use vprogs_scheduling_scheduler::Scheduler;
 use vprogs_state_space::StateSpace;
 use vprogs_state_version::StateVersion;
 use vprogs_storage_rocksdb_store::RocksDbStore;
+use vprogs_storage_types::ReadStore;
 
 use crate::VM;
 
 /// Extension trait for scheduler test helpers.
 pub trait SchedulerExt {
-    /// Waits until pruning has progressed past `expected` (root index > expected), or panics on
-    /// timeout.
+    /// Waits until batch `expected` has been fully pruned (metadata deleted from disk), or panics
+    /// on timeout.
     fn wait_pruned(&self, expected: u64, timeout: Duration) -> &Self;
 
     /// Repeatedly processes the eviction queue until the cache is empty or timeout is reached.
@@ -26,17 +27,16 @@ pub trait SchedulerExt {
 impl SchedulerExt for Scheduler<RocksDbStore, VM> {
     fn wait_pruned(&self, expected: u64, timeout: Duration) -> &Self {
         let start = Instant::now();
-        while self.context().root().index() <= expected {
+        let key = expected.to_be_bytes();
+        loop {
+            if self.storage().store().get(StateSpace::BatchMetadata, &key).is_none() {
+                return self;
+            }
             if start.elapsed() > timeout {
-                panic!(
-                    "Timeout waiting for pruning. Expected root index > {}, got {}.",
-                    expected,
-                    self.context().root().index()
-                );
+                panic!("Timeout waiting for batch {} to be pruned from disk.", expected);
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        self
     }
 
     fn wait_cache_empty(&mut self, timeout: Duration) -> &mut Self {
