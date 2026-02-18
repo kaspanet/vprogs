@@ -105,7 +105,7 @@ async fn test_pruning_via_threshold() {
 
     node.api().wait_pruned(4, TIMEOUT).await;
 
-    let root = node.api().root().await.expect("api call failed");
+    let root = node.api().root();
     assert!(root.index() > 4, "Expected root > 4, got {}", root.index());
 
     // L2 state written after the prune point must still be readable.
