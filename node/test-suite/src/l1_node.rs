@@ -201,6 +201,11 @@ impl L1Node {
         self.mine_blocks(self.params.blockrate.coinbase_maturity as usize + num_utxos + 2).await
     }
 
+    /// Disconnects the gRPC client. The daemon shuts down on drop.
+    pub async fn shutdown(self) {
+        self.grpc_client.disconnect().await.unwrap();
+    }
+
     /// Builds signed L1 transactions, each carrying the given payload.
     ///
     /// Requires enough spendable UTXOs (call [`mine_utxos`](Self::mine_utxos) first).
@@ -268,10 +273,5 @@ impl L1Node {
             .map(|e| (TransactionOutpoint::from(e.outpoint), UtxoEntry::from(e.utxo_entry)))
             .collect::<Vec<_>>()
             .tap_mut(|utxos| utxos.sort_by(|a, b| b.1.amount.cmp(&a.1.amount)))
-    }
-
-    /// Disconnects the gRPC client. The daemon shuts down on drop.
-    pub async fn shutdown(self) {
-        self.grpc_client.disconnect().await.unwrap();
     }
 }

@@ -140,6 +140,13 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
         self
     }
 
+    /// Submits this batch for commit on the write worker. No-op if canceled.
+    pub fn schedule_commit(&self) {
+        if !self.was_canceled() {
+            self.state.storage().submit_write(Write::CommitBatch(self.clone()));
+        }
+    }
+
     pub(crate) fn new(
         scheduler: &mut Scheduler<S, V>,
         txs: Vec<V::Transaction>,
@@ -221,13 +228,6 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
             if self.num_pending() == 0 && self.pending_writes.load(Ordering::Acquire) == 0 {
                 self.was_persisted.open();
             }
-        }
-    }
-
-    /// Submits this batch for commit on the write worker. No-op if canceled.
-    pub fn schedule_commit(&self) {
-        if !self.was_canceled() {
-            self.state.storage().submit_write(Write::CommitBatch(self.clone()));
         }
     }
 

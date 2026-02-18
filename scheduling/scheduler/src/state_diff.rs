@@ -26,26 +26,9 @@ pub struct StateDiff<S: Store<StateSpace = StateSpace>, V: VmInterface> {
 }
 
 impl<S: Store<StateSpace = StateSpace>, V: VmInterface> StateDiff<S, V> {
-    pub(crate) fn new(batch: RuntimeBatchRef<S, V>, resource_id: V::ResourceId) -> Self {
-        Self(Arc::new(StateDiffData {
-            batch,
-            resource_id,
-            read_state: ArcSwapOption::empty(),
-            written_state: ArcSwapOption::empty(),
-        }))
-    }
-
     /// Returns the resource ID this state diff tracks.
     pub fn resource_id(&self) -> &V::ResourceId {
         &self.resource_id
-    }
-
-    /// Returns true if the batch this state diff belongs to has been committed.
-    ///
-    /// If the batch reference can no longer be upgraded (batch dropped), returns true as the batch
-    /// has completed its lifecycle.
-    pub(crate) fn was_committed(&self) -> bool {
-        self.batch.upgrade().is_none_or(|batch| batch.was_committed())
     }
 
     /// Returns the resource state as it was before this batch executed.
@@ -62,6 +45,23 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> StateDiff<S, V> {
     /// Panics if called before the written state has been resolved.
     pub fn written_state(&self) -> Arc<StateVersion<V::ResourceId>> {
         self.written_state.load_full().expect("written state unknown")
+    }
+
+    pub(crate) fn new(batch: RuntimeBatchRef<S, V>, resource_id: V::ResourceId) -> Self {
+        Self(Arc::new(StateDiffData {
+            batch,
+            resource_id,
+            read_state: ArcSwapOption::empty(),
+            written_state: ArcSwapOption::empty(),
+        }))
+    }
+
+    /// Returns true if the batch this state diff belongs to has been committed.
+    ///
+    /// If the batch reference can no longer be upgraded (batch dropped), returns true as the batch
+    /// has completed its lifecycle.
+    pub(crate) fn was_committed(&self) -> bool {
+        self.batch.upgrade().is_none_or(|batch| batch.was_committed())
     }
 
     pub(crate) fn set_read_state(&self, state: Arc<StateVersion<V::ResourceId>>) {
