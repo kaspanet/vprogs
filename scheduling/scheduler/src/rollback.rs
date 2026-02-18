@@ -23,7 +23,7 @@ pub struct Rollback<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     target: Checkpoint<V::BatchMetadata>,
     /// Upper bound of the batch index range to roll back (inclusive).
     upper_bound: u64,
-    /// Shared scheduler state. Used to set `last_committed` in memory alongside the disk write.
+    /// Shared scheduler state. Used to update `last_committed` and `root` alongside disk writes.
     state: SchedulerState<S, V>,
     /// Signal that resolves when the rollback operation is complete.
     done_signal: Arc<AtomicAsyncLatch>,
@@ -61,6 +61,13 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Rollback<S, V> {
             self.state.set_last_committed(Arc::new(self.target.clone()));
         }
 
+        // On rollback-to-genesis, reset root to default so that `next_checkpoint` can
+        // re-initialize it for the next scheduled batch.
+        let rollback_to_genesis = self.target.index() == 0;
+        if rollback_to_genesis {
+            self.state.set_root(Arc::new(self.target.clone()));
+        }
+
         // Commit all deletions atomically.
         store.commit(store.write_batch().tap_mut(|wb| {
             // Walk batches from newest to oldest.
@@ -68,7 +75,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Rollback<S, V> {
                 // Apply all rollback pointers associated with this batch.
                 for (resource_id, old_version) in StatePtrRollback::iter_batch(store, index) {
                     let resource_id =
-                        borsh::from_slice(&resource_id).expect("store corrupted: unrecoverable");
+                        borsh::from_slice(&resource_id).expect("corrupted store: unrecoverable");
                     self.apply_rollback_ptr(store, wb, index, resource_id, old_version);
                 }
 
@@ -80,6 +87,11 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Rollback<S, V> {
             // target batch hasn't committed yet, its `commit_done()` will advance `last_committed`.
             if target_committed {
                 StateMetadata::set_last_committed(wb, &self.target);
+            }
+
+            // Persist root reset for crash-fault tolerance.
+            if rollback_to_genesis {
+                StateMetadata::set_root(wb, &self.target);
             }
         }));
 

@@ -20,14 +20,23 @@ use crate::{Read, RuntimeTxRef, StateDiff, Write, vm_interface::VmInterface};
 /// flow forward to dependent reads. Derefs to the inner `V::AccessMetadata`.
 #[smart_pointer(deref(metadata))]
 pub struct ResourceAccess<S: Store<StateSpace = StateSpace>, V: VmInterface> {
+    /// Per-access metadata (deref target).
     metadata: V::AccessMetadata,
+    /// True if this is the first access to the resource in this batch.
     is_batch_head: AtomicBool,
+    /// True if this is the last access to the resource in this batch.
     is_batch_tail: AtomicBool,
+    /// Weak reference to the owning transaction.
     tx: RuntimeTxRef<S, V>,
+    /// Shared state diff for this resource within the batch.
     state_diff: StateDiff<S, V>,
+    /// Resource state before this access (resolved from disk or the previous access).
     read_state: ArcSwapOption<StateVersion<V::ResourceId>>,
+    /// Resource state after this access (set on commit or forwarded from read for reads).
     written_state: ArcSwapOption<StateVersion<V::ResourceId>>,
+    /// Previous access to the same resource in this batch (cleared once read state resolves).
     prev: ArcSwapOption<Self>,
+    /// Next access to the same resource in this batch (cleared once written state propagates).
     next: ArcSwapOption<Self>,
 }
 

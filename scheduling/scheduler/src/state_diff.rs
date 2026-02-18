@@ -15,14 +15,18 @@ use crate::{RuntimeBatchRef, Write, vm_interface::VmInterface};
 /// versioned data and rollback pointers.
 #[smart_pointer]
 pub struct StateDiff<S: Store<StateSpace = StateSpace>, V: VmInterface> {
+    /// Weak reference to the owning batch (used for commit checks and write submission).
     batch: RuntimeBatchRef<S, V>,
+    /// The resource this diff tracks.
     resource_id: V::ResourceId,
+    /// Resource state before the batch executed (set when the first access resolves).
     read_state: ArcSwapOption<StateVersion<V::ResourceId>>,
+    /// Resource state after the batch executed (set when the last access commits).
     written_state: ArcSwapOption<StateVersion<V::ResourceId>>,
 }
 
 impl<S: Store<StateSpace = StateSpace>, V: VmInterface> StateDiff<S, V> {
-    pub fn new(batch: RuntimeBatchRef<S, V>, resource_id: V::ResourceId) -> Self {
+    pub(crate) fn new(batch: RuntimeBatchRef<S, V>, resource_id: V::ResourceId) -> Self {
         Self(Arc::new(StateDiffData {
             batch,
             resource_id,

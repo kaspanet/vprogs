@@ -18,11 +18,17 @@ use crate::{
 /// and a back-reference to the owning batch. Derefs to the inner `V::Transaction`.
 #[smart_pointer(deref(tx))]
 pub struct RuntimeTx<S: Store<StateSpace = StateSpace>, V: VmInterface> {
+    /// VM implementation used to execute this transaction.
     vm: V,
+    /// Weak reference to the owning batch.
     batch: RuntimeBatchRef<S, V>,
+    /// Resources accessed by this transaction, one per declared access.
     resources: Vec<ResourceAccess<S, V>>,
+    /// Number of resources whose data hasn't been resolved yet.
     pending_resources: AtomicU64,
+    /// Execution result, set after `process_transaction` succeeds.
     effects: ArcSwapOption<V::TransactionEffects>,
+    /// The user-submitted transaction (deref target).
     tx: V::Transaction,
 }
 

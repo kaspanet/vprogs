@@ -25,16 +25,27 @@ use crate::{
 /// case the wait methods return immediately.
 #[smart_pointer]
 pub struct RuntimeBatch<S: Store<StateSpace = StateSpace>, V: VmInterface> {
+    /// Cancellation context captured at creation time for rollback detection.
     cancellation: CancellationContext,
+    /// Shared scheduler state for storage access and eviction.
     state: SchedulerState<S, V>,
+    /// This batch's sequential index and metadata.
     checkpoint: Checkpoint<V::BatchMetadata>,
+    /// All transactions in this batch.
     txs: Vec<RuntimeTx<S, V>>,
+    /// One state diff per unique resource accessed by this batch.
     state_diffs: Vec<StateDiff<S, V>>,
+    /// Work-stealing queue of transactions ready for execution.
     available_txs: Injector<ManagerTask<S, V>>,
+    /// Number of transactions not yet fully executed.
     pending_txs: AtomicU64,
+    /// Number of state diff writes not yet persisted to disk.
     pending_writes: AtomicI64,
+    /// Opens when all transactions have been executed.
     was_processed: AtomicAsyncLatch,
+    /// Opens when all state diffs have been written to disk.
     was_persisted: AtomicAsyncLatch,
+    /// Opens when batch metadata has been committed.
     was_committed: AtomicAsyncLatch,
 }
 

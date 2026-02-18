@@ -6,7 +6,9 @@ use crate::{RuntimeTx, VmInterface};
 
 /// Tasks dispatched to the execution worker pool.
 pub enum ManagerTask<S: Store<StateSpace = StateSpace>, V: VmInterface> {
+    /// Execute a transaction against its accessed resources.
     ExecuteTransaction(RuntimeTx<S, V>),
+    /// Execute an arbitrary function on a worker thread.
     ExecuteFunction(Box<dyn FnOnce() + Send + Sync + 'static>),
 }
 
