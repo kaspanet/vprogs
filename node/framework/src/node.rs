@@ -17,7 +17,7 @@ use crate::{NodeVm, api::NodeApi, config::NodeConfig, worker::NodeWorker};
 /// Created via [`Node::new`], which starts all background components (bridge, scheduler, event
 /// loop). The node runs autonomously until [`shutdown`](Self::shutdown) is called.
 pub struct Node<S: Store<StateSpace = StateSpace>, V: NodeVm> {
-    /// Cloneable handle for querying the scheduler from outside the worker thread.
+    /// Cloneable handle for interacting with the node.
     api: NodeApi<S, V>,
     /// Worker thread running the event loop.
     handle: Option<JoinHandle<()>>,
@@ -58,7 +58,7 @@ impl<S: Store<StateSpace = StateSpace>, V: NodeVm> Node<S, V> {
         }
     }
 
-    /// Returns a handle for querying the scheduler.
+    /// Returns a handle for interacting with the node.
     pub fn api(&self) -> &NodeApi<S, V> {
         &self.api
     }

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use tokio::sync::{mpsc::Sender, oneshot};
 use vprogs_core_macros::smart_pointer;
 use vprogs_scheduling_scheduler::{Scheduler, SchedulerState};
@@ -9,13 +11,11 @@ use crate::{
     error::{NodeError, NodeResult},
 };
 
-/// Cloneable handle for querying the scheduler from outside the worker thread.
+/// Cloneable handle for interacting with the node.
 ///
 /// Derefs to [`SchedulerState`], exposing lock-free reads for `root`, `last_committed`,
-/// `last_processed`, and `storage` without going through the worker channel.
-///
-/// For operations that need `&mut Scheduler` (e.g. pruning), use
-/// [`with_scheduler`](Self::with_scheduler).
+/// `last_processed`, and `storage`. For operations that need `&mut Scheduler` (e.g. pruning),
+/// use [`with_scheduler`](Self::with_scheduler).
 #[smart_pointer(deref(state))]
 pub struct NodeApi<S: Store<StateSpace = StateSpace>, V: NodeVm> {
     /// Shared scheduler state for lock-free reads (deref target).
@@ -27,7 +27,7 @@ pub struct NodeApi<S: Store<StateSpace = StateSpace>, V: NodeVm> {
 impl<S: Store<StateSpace = StateSpace>, V: NodeVm> NodeApi<S, V> {
     /// Creates a new API handle with shared state and a channel to the worker thread.
     pub(crate) fn new(state: SchedulerState<S, V>, sender: Sender<ApiRequest<S, V>>) -> Self {
-        Self(std::sync::Arc::new(NodeApiData { state, api_requests: sender }))
+        Self(Arc::new(NodeApiData { state, api_requests: sender }))
     }
 
     /// Executes a closure against the scheduler on the worker thread and returns the result.
