@@ -34,8 +34,8 @@ impl<S: Store<StateSpace = StateSpace>, V: NodeVm> Node<S, V> {
         // Configure the bridge with resume state. Root is the oldest surviving batch
         // (initialized on first commit, advanced on prune). On a fresh database both
         // root and tip are default (index 0), so the bridge starts from genesis.
-        let root = scheduler.pruning().root();
-        let tip = scheduler.batch_execution().last_committed().clone();
+        let root = (*scheduler.state().root()).clone();
+        let tip = (*scheduler.state().last_committed()).clone();
         let bridge = L1Bridge::new(config.l1_bridge.with_root(Some(root)).with_tip(Some(tip)));
 
         // Create the shutdown latch and API channel.

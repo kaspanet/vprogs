@@ -7,31 +7,40 @@ use vprogs_storage_types::Store;
 
 use crate::{ResourceAccess, vm_interface::VmInterface};
 
+/// A handle to a resource's state during transaction execution.
+///
+/// Passed to [`VmInterface::process_transaction`] so the VM can read and mutate resource data. On
+/// success the changes are committed; on failure they are rolled back.
 pub struct AccessHandle<'a, S: Store<StateSpace = StateSpace>, V: VmInterface> {
     state_version: Arc<StateVersion<V::ResourceId>>,
     access: &'a ResourceAccess<S, V>,
 }
 
 impl<'a, S: Store<StateSpace = StateSpace>, V: VmInterface> AccessHandle<'a, S, V> {
+    /// Returns the access metadata for this resource.
     #[inline]
     pub fn access_metadata(&self) -> &V::AccessMetadata {
         self.access.metadata()
     }
 
+    /// Returns the current version number of this resource (0 if new).
     pub fn version(&self) -> u64 {
         self.state_version.version()
     }
 
+    /// Returns the serialized resource data.
     #[inline]
     pub fn data(&self) -> &Vec<u8> {
         self.state_version.data()
     }
 
+    /// Returns a mutable reference to the serialized resource data.
     #[inline]
     pub fn data_mut(&mut self) -> &mut Vec<u8> {
         self.state_version.data_mut()
     }
 
+    /// Returns true if this resource was created by the current transaction (version 0).
     #[inline]
     pub fn is_new(&self) -> bool {
         self.state_version.version() == 0

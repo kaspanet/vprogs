@@ -22,17 +22,17 @@ pub struct NodeApi<S: Store<StateSpace = StateSpace>, V: NodeVm>(
 impl<S: Store<StateSpace = StateSpace>, V: NodeVm> NodeApi<S, V> {
     /// Returns the last committed checkpoint.
     pub async fn last_committed(&self) -> NodeResult<Checkpoint<ChainBlockMetadata>> {
-        self.with_scheduler(|s| s.batch_execution().last_committed().clone()).await
+        self.with_scheduler(|s| (*s.state().last_committed()).clone()).await
     }
 
     /// Returns the last processed checkpoint.
     pub async fn last_processed(&self) -> NodeResult<Checkpoint<ChainBlockMetadata>> {
-        self.with_scheduler(|s| s.batch_execution().last_processed().clone()).await
+        self.with_scheduler(|s| (*s.state().last_processed()).clone()).await
     }
 
     /// Returns the root checkpoint (oldest surviving batch).
     pub async fn root(&self) -> NodeResult<Checkpoint<ChainBlockMetadata>> {
-        self.with_scheduler(|s| s.pruning().root()).await
+        self.with_scheduler(|s| (*s.state().root()).clone()).await
     }
 
     /// Returns the current pruning threshold.

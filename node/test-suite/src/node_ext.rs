@@ -50,7 +50,7 @@ impl NodeExt for NodeApi<RocksDbStore, TestNodeVm> {
             let index = self
                 .with_scheduler(|scheduler| {
                     StateMetadata::last_committed::<ChainBlockMetadata, _>(
-                        &**scheduler.storage().store(),
+                        &**scheduler.state().storage().store(),
                     )
                     .index()
                 })
@@ -71,7 +71,7 @@ impl NodeExt for NodeApi<RocksDbStore, TestNodeVm> {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             let root_index = self
-                .with_scheduler(|scheduler| scheduler.pruning().root().index())
+                .with_scheduler(|scheduler| scheduler.state().root().index())
                 .await
                 .expect("api call failed");
             if root_index > expected {
@@ -87,7 +87,7 @@ impl NodeExt for NodeApi<RocksDbStore, TestNodeVm> {
 
     async fn assert_written_state(&self, resource_id: usize, writers: Vec<usize>) {
         self.with_scheduler(move |scheduler| {
-            let store = scheduler.storage().store();
+            let store = scheduler.state().storage().store();
             let writer_count = writers.len();
             let writer_log: Vec<u8> = writers.iter().flat_map(|id| id.to_be_bytes()).collect();
 
@@ -111,7 +111,7 @@ impl NodeExt for NodeApi<RocksDbStore, TestNodeVm> {
 
     async fn assert_resource_deleted(&self, resource_id: usize) {
         self.with_scheduler(move |scheduler| {
-            let store = scheduler.storage().store();
+            let store = scheduler.state().storage().store();
             let id_bytes = resource_id.to_be_bytes();
             assert!(
                 store.get(StateSpace::StatePtrLatest, &id_bytes).is_none(),

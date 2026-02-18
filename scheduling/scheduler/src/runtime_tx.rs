@@ -12,27 +12,41 @@ use crate::{
     AccessHandle, ResourceAccess, RuntimeBatchRef, Scheduler, StateDiff, vm_interface::VmInterface,
 };
 
+/// A transaction progressing through the scheduler's execution pipeline.
+///
+/// Wraps a user-submitted transaction with its resource access handles, execution state, and a
+/// back-reference to the owning batch. Derefs to the inner `V::Transaction`.
 #[smart_pointer(deref(tx))]
 pub struct RuntimeTx<S: Store<StateSpace = StateSpace>, V: VmInterface> {
+    /// VM implementation used to execute this transaction.
     vm: V,
+    /// Weak reference to the owning batch.
     batch: RuntimeBatchRef<S, V>,
+    /// Resources accessed by this transaction, one per declared access.
     resources: Vec<ResourceAccess<S, V>>,
+    /// Number of resources whose data hasn't been resolved yet.
     pending_resources: AtomicU64,
+    /// Execution result, set after `process_transaction` succeeds.
     effects: ArcSwapOption<V::TransactionEffects>,
+    /// The user-submitted transaction (deref target).
     tx: V::Transaction,
 }
 
 impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeTx<S, V> {
+    /// Returns the resources accessed by this transaction.
     pub fn accessed_resources(&self) -> &[ResourceAccess<S, V>] {
         &self.resources
     }
 
+    /// Returns the effects produced by executing this transaction.
+    ///
+    /// # Panics
+    /// Panics if called before execution completes.
     pub fn effects(&self) -> Arc<V::TransactionEffects> {
         self.effects.load_full().expect("effects not ready")
     }
 
     pub(crate) fn new(
-        vm: &V,
         scheduler: &mut Scheduler<S, V>,
         state_diffs: &mut Vec<StateDiff<S, V>>,
         batch: RuntimeBatchRef<S, V>,
@@ -42,7 +56,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeTx<S, V> {
             let resources =
                 scheduler.resources(&tx, RuntimeTxRef(this.clone()), &batch, state_diffs);
             RuntimeTxData {
-                vm: vm.clone(),
+                vm: scheduler.vm().clone(),
                 pending_resources: AtomicU64::new(resources.len() as u64),
                 effects: ArcSwapOption::empty(),
                 batch,

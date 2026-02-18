@@ -5482,6 +5482,7 @@ dependencies = [
  "kaspad",
  "secp256k1",
  "serde_json",
+ "tap",
  "tempfile",
  "tokio",
  "vprogs-core-types",

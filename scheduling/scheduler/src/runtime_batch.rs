@@ -3,77 +3,96 @@ use std::sync::{
     atomic::{AtomicI64, AtomicU64, Ordering},
 };
 
-use arc_swap::ArcSwap;
 use crossbeam_deque::{Injector, Steal, Worker};
-use crossbeam_queue::SegQueue;
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_macros::smart_pointer;
 use vprogs_core_types::Checkpoint;
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_space::StateSpace;
-use vprogs_storage_manager::StorageManager;
 use vprogs_storage_types::{Store, WriteBatch};
 
 use crate::{
-    CancellationContext, Read, RuntimeTx, Scheduler, StateDiff, Write, cpu_task::ManagerTask,
-    vm_interface::VmInterface,
+    CancellationContext, RuntimeTx, Scheduler, StateDiff, Write, cpu_task::ManagerTask,
+    state::SchedulerState, vm_interface::VmInterface,
 };
 
+/// A batch of transactions progressing through the scheduler's lifecycle.
+///
+/// Each batch moves through three stages: processed (all transactions executed), persisted (all
+/// state diffs written to disk), and committed (batch metadata finalized). Callers can observe
+/// progress via the `was_*` / `wait_*` methods. A batch may be canceled by a rollback, in which
+/// case the wait methods return immediately.
 #[smart_pointer]
 pub struct RuntimeBatch<S: Store<StateSpace = StateSpace>, V: VmInterface> {
+    /// Cancellation context captured at creation time for rollback detection.
     cancellation: CancellationContext,
-    commit_frontier: Arc<AtomicU64>,
-    /// Shared root checkpoint. Initialized on first commit (when root.index() == 0).
-    root: Arc<ArcSwap<Checkpoint<V::BatchMetadata>>>,
+    /// Shared scheduler state for storage access and eviction.
+    state: SchedulerState<S, V>,
+    /// This batch's sequential index and metadata.
     checkpoint: Checkpoint<V::BatchMetadata>,
-    storage: StorageManager<S, Read<S, V>, Write<S, V>>,
-    eviction_queue: Arc<SegQueue<V::ResourceId>>,
+    /// All transactions in this batch.
     txs: Vec<RuntimeTx<S, V>>,
+    /// One state diff per unique resource accessed by this batch.
     state_diffs: Vec<StateDiff<S, V>>,
+    /// Work-stealing queue of transactions ready for execution.
     available_txs: Injector<ManagerTask<S, V>>,
+    /// Number of transactions not yet fully executed.
     pending_txs: AtomicU64,
+    /// Number of state diff writes not yet persisted to disk.
     pending_writes: AtomicI64,
+    /// Opens when all transactions have been executed.
     was_processed: AtomicAsyncLatch,
+    /// Opens when all state diffs have been written to disk.
     was_persisted: AtomicAsyncLatch,
+    /// Opens when batch metadata has been committed.
     was_committed: AtomicAsyncLatch,
 }
 
 impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
+    /// Returns the checkpoint (index + metadata) identifying this batch.
     pub fn checkpoint(&self) -> &Checkpoint<V::BatchMetadata> {
         &self.checkpoint
     }
 
+    /// Returns the transactions in this batch.
     pub fn txs(&self) -> &[RuntimeTx<S, V>] {
         &self.txs
     }
 
+    /// Returns the state diffs produced by this batch (one per unique resource).
     pub fn state_diffs(&self) -> &[StateDiff<S, V>] {
         &self.state_diffs
     }
 
+    /// Returns the number of transactions ready for execution.
     pub fn num_available(&self) -> u64 {
         self.available_txs.len() as u64
     }
 
+    /// Returns the number of transactions not yet fully executed.
     pub fn num_pending(&self) -> u64 {
         self.pending_txs.load(Ordering::Acquire)
     }
 
+    /// Returns true if this batch was canceled by a rollback.
     pub fn was_canceled(&self) -> bool {
         self.checkpoint.index() > self.cancellation.threshold()
     }
 
+    /// Returns true if all transactions have been executed.
     pub fn was_processed(&self) -> bool {
         self.was_processed.is_open()
     }
 
+    /// Waits until all transactions have been executed, or returns immediately if canceled.
     pub async fn wait_processed(&self) {
         if !self.was_canceled() {
             self.was_processed.wait().await
         }
     }
 
+    /// Blocking version of [`wait_processed`](Self::wait_processed).
     pub fn wait_processed_blocking(&self) -> &Self {
         if !self.was_canceled() {
             self.was_processed.wait_blocking();
@@ -81,16 +100,19 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
         self
     }
 
+    /// Returns true if all state diffs have been written to disk.
     pub fn was_persisted(&self) -> bool {
         self.was_persisted.is_open()
     }
 
+    /// Waits until all state diffs have been written to disk, or returns immediately if canceled.
     pub async fn wait_persisted(&self) {
         if !self.was_canceled() {
             self.was_persisted.wait().await
         }
     }
 
+    /// Blocking version of [`wait_persisted`](Self::wait_persisted).
     pub fn wait_persisted_blocking(&self) -> &Self {
         if !self.was_canceled() {
             self.was_persisted.wait_blocking();
@@ -98,16 +120,19 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
         self
     }
 
+    /// Returns true if the batch metadata has been committed to disk.
     pub fn was_committed(&self) -> bool {
         self.was_committed.is_open()
     }
 
+    /// Waits until the batch has been committed, or returns immediately if canceled.
     pub async fn wait_committed(&self) {
         if !self.was_canceled() {
             self.was_committed.wait().await
         }
     }
 
+    /// Blocking version of [`wait_committed`](Self::wait_committed).
     pub fn wait_committed_blocking(&self) -> &Self {
         if !self.was_canceled() {
             self.was_committed.wait_blocking();
@@ -116,13 +141,9 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
     }
 
     pub(crate) fn new(
-        vm: V,
-        manager: &mut Scheduler<S, V>,
+        scheduler: &mut Scheduler<S, V>,
         txs: Vec<V::Transaction>,
         checkpoint: Checkpoint<V::BatchMetadata>,
-        cancellation: CancellationContext,
-        commit_frontier: Arc<AtomicU64>,
-        root: Arc<ArcSwap<Checkpoint<V::BatchMetadata>>>,
     ) -> Self {
         Self(Arc::new_cyclic(|this| {
             let was_processed = AtomicAsyncLatch::default();
@@ -139,19 +160,15 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
 
             RuntimeBatchData {
                 checkpoint,
-                cancellation,
-                commit_frontier,
-                root,
-                storage: manager.storage().clone(),
-                eviction_queue: manager.eviction_queue(),
+                cancellation: scheduler.cancellation().clone(),
+                state: scheduler.state().clone(),
                 pending_txs: AtomicU64::new(txs.len() as u64),
                 pending_writes: AtomicI64::new(0),
                 txs: txs
                     .into_iter()
                     .map(|tx| {
                         RuntimeTx::new(
-                            &vm,
-                            manager,
+                            scheduler,
                             &mut state_diffs,
                             RuntimeBatchRef(this.clone()),
                             tx,
@@ -170,7 +187,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
     pub(crate) fn connect(&self) {
         for tx in self.txs() {
             for resource in tx.accessed_resources() {
-                resource.connect(&self.storage);
+                resource.connect(self.state.storage());
             }
         }
     }
@@ -193,7 +210,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
     pub(crate) fn submit_write(&self, write: Write<S, V>) {
         if !self.was_canceled() {
             self.pending_writes.fetch_add(1, Ordering::AcqRel);
-            self.storage.submit_write(write);
+            self.state.storage().submit_write(write);
         }
     }
 
@@ -207,9 +224,10 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
         }
     }
 
+    /// Submits this batch for commit on the write worker. No-op if canceled.
     pub fn schedule_commit(&self) {
         if !self.was_canceled() {
-            self.storage.submit_write(Write::CommitBatch(self.clone()));
+            self.state.storage().submit_write(Write::CommitBatch(self.clone()));
         }
     }
 
@@ -224,18 +242,18 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
             StoredBatchMetadata::set(wb, self.checkpoint.index(), self.checkpoint.metadata());
             StateMetadata::set_last_committed(wb, &self.checkpoint);
 
-            // Initialize root on first commit. This is a single atomic load per batch (no disk).
-            if self.root.load().index() == 0 {
+            // Persist root on first commit for crash-fault tolerance. Root was already set
+            // in-memory when this batch was scheduled (see next_checkpoint).
+            if self.checkpoint.index() == self.state.root().index() {
                 StateMetadata::set_root(wb, &self.checkpoint);
-                self.root.store(Arc::new(self.checkpoint.clone()));
             }
         }
     }
 
     pub(crate) fn commit_done(self) {
-        // Advance the commit frontier only for non-canceled batches.
         if !self.was_canceled() {
-            self.commit_frontier.fetch_max(self.checkpoint.index(), Ordering::Release);
+            // Eagerly update last_committed in the shared state.
+            self.state.set_last_committed(Arc::new(self.checkpoint.clone()));
         }
 
         // Mark the batch as committed.
@@ -245,7 +263,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
         // check if each resource's last access still belongs to a committed batch before actually
         // evicting it.
         for state_diff in self.state_diffs() {
-            self.eviction_queue.push(state_diff.resource_id().clone());
+            self.state.eviction_queue().push(state_diff.resource_id().clone());
         }
     }
 }
