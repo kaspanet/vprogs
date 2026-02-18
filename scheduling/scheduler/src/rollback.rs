@@ -54,26 +54,28 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Rollback<S, V> {
         // Commit any existing changes so the rollback sees a consistent state.
         store.commit(write_batch);
 
-        // Update `last_committed` in memory after the commit to reflect the rollback target.
-        self.context.last_committed.store(Arc::new(self.target.clone().tap(|target| {
-            store.commit(store.write_batch().tap_mut(|wb| {
-                // Update `last_committed` on disk to reflect the rollback target.
-                StateMetadata::set_last_committed(wb, target);
+        // Update `last_committed` in memory, correcting any stale update from a `commit_done()`
+        // that raced with cancellation.
+        self.context.last_committed.store(Arc::new(self.target.clone()));
 
-                // Walk batches from newest to oldest.
-                for index in (target.index() + 1..=self.upper_bound).rev() {
-                    // Apply all rollback pointers associated with this batch.
-                    for (resource_id, old_version) in StatePtrRollback::iter_batch(store, index) {
-                        let resource_id = borsh::from_slice(&resource_id)
-                            .expect("store corrupted: unrecoverable");
-                        self.apply_rollback_ptr(store, wb, index, resource_id, old_version);
-                    }
-
-                    // Delete batch metadata entries for this batch.
-                    StoredBatchMetadata::delete(wb, index);
+        // Commit all deletions and root update atomically.
+        store.commit(store.write_batch().tap_mut(|wb| {
+            // Walk batches from newest to oldest.
+            for index in (self.target.index() + 1..=self.upper_bound).rev() {
+                // Apply all rollback pointers associated with this batch.
+                for (resource_id, old_version) in StatePtrRollback::iter_batch(store, index) {
+                    let resource_id =
+                        borsh::from_slice(&resource_id).expect("store corrupted: unrecoverable");
+                    self.apply_rollback_ptr(store, wb, index, resource_id, old_version);
                 }
-            }))
-        })));
+
+                // Delete batch metadata entries for this batch.
+                StoredBatchMetadata::delete(wb, index);
+            }
+
+            // Update `last_committed` on disk.
+            StateMetadata::set_last_committed(wb, &self.target);
+        }));
 
         // Return a new empty write batch for further operations.
         store.write_batch()
