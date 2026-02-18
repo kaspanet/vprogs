@@ -12,6 +12,10 @@ use crate::{
     AccessHandle, ResourceAccess, RuntimeBatchRef, Scheduler, StateDiff, vm_interface::VmInterface,
 };
 
+/// A transaction progressing through the scheduler's execution pipeline.
+///
+/// Wraps a user-submitted transaction with its resource access handles, execution state,
+/// and a back-reference to the owning batch. Derefs to the inner `V::Transaction`.
 #[smart_pointer(deref(tx))]
 pub struct RuntimeTx<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     vm: V,
@@ -23,10 +27,15 @@ pub struct RuntimeTx<S: Store<StateSpace = StateSpace>, V: VmInterface> {
 }
 
 impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeTx<S, V> {
+    /// Returns the resources accessed by this transaction.
     pub fn accessed_resources(&self) -> &[ResourceAccess<S, V>] {
         &self.resources
     }
 
+    /// Returns the effects produced by executing this transaction.
+    ///
+    /// # Panics
+    /// Panics if called before execution completes.
     pub fn effects(&self) -> Arc<V::TransactionEffects> {
         self.effects.load_full().expect("effects not ready")
     }

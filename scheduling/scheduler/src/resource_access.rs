@@ -13,6 +13,11 @@ use vprogs_storage_types::{ReadStore, Store};
 
 use crate::{Read, RuntimeTxRef, StateDiff, Write, vm_interface::VmInterface};
 
+/// A single resource access within a transaction, forming a linked chain across the batch.
+///
+/// Each `ResourceAccess` represents one transaction's claim on a resource. Within a batch,
+/// accesses to the same resource are linked via `prev`/`next` pointers so that write results
+/// flow forward to dependent reads. Derefs to the inner `V::AccessMetadata`.
 #[smart_pointer(deref(metadata))]
 pub struct ResourceAccess<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     metadata: V::AccessMetadata,
@@ -27,26 +32,31 @@ pub struct ResourceAccess<S: Store<StateSpace = StateSpace>, V: VmInterface> {
 }
 
 impl<S: Store<StateSpace = StateSpace>, V: VmInterface> ResourceAccess<S, V> {
+    /// Returns the access metadata describing which resource is accessed and how.
     #[inline(always)]
     pub fn metadata(&self) -> &V::AccessMetadata {
         &self.metadata
     }
 
+    /// Returns the resource state as it was before this access.
     #[inline(always)]
     pub fn read_state(&self) -> Arc<StateVersion<V::ResourceId>> {
         self.read_state.load_full().expect("read state unknown")
     }
 
+    /// Returns the resource state after this access completed.
     #[inline(always)]
     pub fn written_state(&self) -> Arc<StateVersion<V::ResourceId>> {
         self.written_state.load_full().expect("written state unknown")
     }
 
+    /// Returns true if this is the first access to the resource within the batch.
     #[inline(always)]
     pub fn is_batch_head(&self) -> bool {
         self.is_batch_head.load(Ordering::Relaxed)
     }
 
+    /// Returns true if this is the last access to the resource within the batch.
     #[inline(always)]
     pub fn is_batch_tail(&self) -> bool {
         self.is_batch_tail.load(Ordering::Relaxed)

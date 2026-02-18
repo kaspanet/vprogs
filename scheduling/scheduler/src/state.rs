@@ -14,6 +14,7 @@ use crate::{Read, Write, vm_interface::VmInterface};
 /// Shared scheduler state accessible by all components.
 #[smart_pointer]
 pub struct SchedulerState<S: Store<StateSpace = StateSpace>, V: VmInterface> {
+    /// Storage manager for read/write coordination with background workers.
     storage: StorageManager<S, Read<S, V>, Write<S, V>>,
     /// Queue of resource IDs to potentially evict after their batches committed.
     eviction_queue: SegQueue<V::ResourceId>,

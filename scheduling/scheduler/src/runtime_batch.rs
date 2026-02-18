@@ -17,6 +17,12 @@ use crate::{
     state::SchedulerState, vm_interface::VmInterface,
 };
 
+/// A batch of transactions progressing through the scheduler's lifecycle.
+///
+/// Each batch moves through three stages: processed (all transactions executed), persisted (all
+/// state diffs written to disk), and committed (batch metadata finalized). Callers can observe
+/// progress via the `was_*` / `wait_*` methods. A batch may be canceled by a rollback, in which
+/// case the wait methods return immediately.
 #[smart_pointer]
 pub struct RuntimeBatch<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     cancellation: CancellationContext,
@@ -33,40 +39,49 @@ pub struct RuntimeBatch<S: Store<StateSpace = StateSpace>, V: VmInterface> {
 }
 
 impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
+    /// Returns the checkpoint (index + metadata) identifying this batch.
     pub fn checkpoint(&self) -> &Checkpoint<V::BatchMetadata> {
         &self.checkpoint
     }
 
+    /// Returns the transactions in this batch.
     pub fn txs(&self) -> &[RuntimeTx<S, V>] {
         &self.txs
     }
 
+    /// Returns the state diffs produced by this batch (one per unique resource).
     pub fn state_diffs(&self) -> &[StateDiff<S, V>] {
         &self.state_diffs
     }
 
+    /// Returns the number of transactions ready for execution.
     pub fn num_available(&self) -> u64 {
         self.available_txs.len() as u64
     }
 
+    /// Returns the number of transactions not yet fully executed.
     pub fn num_pending(&self) -> u64 {
         self.pending_txs.load(Ordering::Acquire)
     }
 
+    /// Returns true if this batch was canceled by a rollback.
     pub fn was_canceled(&self) -> bool {
         self.checkpoint.index() > self.cancellation.threshold()
     }
 
+    /// Returns true if all transactions have been executed.
     pub fn was_processed(&self) -> bool {
         self.was_processed.is_open()
     }
 
+    /// Waits until all transactions have been executed, or returns immediately if canceled.
     pub async fn wait_processed(&self) {
         if !self.was_canceled() {
             self.was_processed.wait().await
         }
     }
 
+    /// Blocking version of [`wait_processed`](Self::wait_processed).
     pub fn wait_processed_blocking(&self) -> &Self {
         if !self.was_canceled() {
             self.was_processed.wait_blocking();
@@ -74,16 +89,19 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
         self
     }
 
+    /// Returns true if all state diffs have been written to disk.
     pub fn was_persisted(&self) -> bool {
         self.was_persisted.is_open()
     }
 
+    /// Waits until all state diffs have been written to disk, or returns immediately if canceled.
     pub async fn wait_persisted(&self) {
         if !self.was_canceled() {
             self.was_persisted.wait().await
         }
     }
 
+    /// Blocking version of [`wait_persisted`](Self::wait_persisted).
     pub fn wait_persisted_blocking(&self) -> &Self {
         if !self.was_canceled() {
             self.was_persisted.wait_blocking();
@@ -91,16 +109,19 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
         self
     }
 
+    /// Returns true if the batch metadata has been committed to disk.
     pub fn was_committed(&self) -> bool {
         self.was_committed.is_open()
     }
 
+    /// Waits until the batch has been committed, or returns immediately if canceled.
     pub async fn wait_committed(&self) {
         if !self.was_canceled() {
             self.was_committed.wait().await
         }
     }
 
+    /// Blocking version of [`wait_committed`](Self::wait_committed).
     pub fn wait_committed_blocking(&self) -> &Self {
         if !self.was_canceled() {
             self.was_committed.wait_blocking();
@@ -192,6 +213,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
         }
     }
 
+    /// Submits this batch for commit on the write worker. No-op if canceled.
     pub fn schedule_commit(&self) {
         if !self.was_canceled() {
             self.state.storage().submit_write(Write::CommitBatch(self.clone()));

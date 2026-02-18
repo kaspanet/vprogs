@@ -26,7 +26,7 @@ use crate::{
 pub struct Scheduler<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     /// The VM implementation used to execute transactions.
     vm: V,
-    /// Shared scheduler state (store, storage, root, last_committed, last_processed).
+    /// Shared scheduler state (storage, eviction_queue, root, last_committed, last_processed).
     state: SchedulerState<S, V>,
     /// Shared cancellation state for in-flight batch detection.
     cancellation: CancellationContext,

@@ -66,8 +66,6 @@ impl SchedulerExt for Scheduler<RocksDbStore, VM> {
     }
 
     fn assert_resource_deleted(&self, resource_id: usize) -> &Self {
-        use vprogs_storage_types::ReadStore;
-
         let store = self.state().storage().store();
         let id_bytes = resource_id.to_be_bytes();
         assert!(

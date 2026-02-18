@@ -8,6 +8,11 @@ use vprogs_storage_types::{Store, WriteBatch};
 
 use crate::{RuntimeBatchRef, Write, vm_interface::VmInterface};
 
+/// Tracks the state change for a single resource within a batch.
+///
+/// Each unique resource accessed by a batch gets one `StateDiff`. It records the read state
+/// (before execution) and the written state (after execution), which are used to persist
+/// versioned data and rollback pointers.
 #[smart_pointer]
 pub struct StateDiff<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     batch: RuntimeBatchRef<S, V>,
@@ -26,6 +31,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> StateDiff<S, V> {
         }))
     }
 
+    /// Returns the resource ID this state diff tracks.
     pub fn resource_id(&self) -> &V::ResourceId {
         &self.resource_id
     }
@@ -38,10 +44,18 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> StateDiff<S, V> {
         self.batch.upgrade().is_none_or(|batch| batch.was_committed())
     }
 
+    /// Returns the resource state as it was before this batch executed.
+    ///
+    /// # Panics
+    /// Panics if called before the read state has been resolved.
     pub fn read_state(&self) -> Arc<StateVersion<V::ResourceId>> {
         self.read_state.load_full().expect("read state unknown")
     }
 
+    /// Returns the resource state after this batch executed.
+    ///
+    /// # Panics
+    /// Panics if called before the written state has been resolved.
     pub fn written_state(&self) -> Arc<StateVersion<V::ResourceId>> {
         self.written_state.load_full().expect("written state unknown")
     }

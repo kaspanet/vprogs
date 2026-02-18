@@ -4,6 +4,7 @@ use vprogs_storage_types::Store;
 
 use crate::{RuntimeTx, VmInterface};
 
+/// Tasks dispatched to the execution worker pool.
 pub enum ManagerTask<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     ExecuteTransaction(RuntimeTx<S, V>),
     ExecuteFunction(Box<dyn FnOnce() + Send + Sync + 'static>),

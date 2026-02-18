@@ -6,6 +6,7 @@ use crate::{
     ResourceAccess, RuntimeBatch, StateDiff, rollback::Rollback, vm_interface::VmInterface,
 };
 
+/// Commands dispatched to the storage manager's read worker.
 pub enum Read<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     LatestData(ResourceAccess<S, V>),
 }
@@ -18,6 +19,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> ReadCmd<StateSpace> for 
     }
 }
 
+/// Commands dispatched to the storage manager's write worker.
 pub enum Write<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     StateDiff(StateDiff<S, V>),
     CommitBatch(RuntimeBatch<S, V>),

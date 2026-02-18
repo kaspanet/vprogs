@@ -33,7 +33,8 @@ pub struct PruningWorker<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     /// rollback range; cleared after the rollback completes.
     pause_ceiling: Arc<AtomicU64>,
     /// Tracks the upper bound of the last completed (or in-flight) prune pass.
-    /// Monotonically increasing. Used together with `pause_ceiling` in a
+    /// Generally increasing; temporarily restored on aborted passes. Used together
+    /// with `pause_ceiling` in a
     /// Dekker-style handshake (both use `SeqCst`) so that `pause` can detect
     /// an in-flight or already-completed prune that overlaps the rollback range.
     pruning_cursor: Arc<AtomicU64>,
@@ -167,7 +168,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
                             // Re-check ceiling (Dekker step 2: read their flag). A ceiling may have
                             // been set between our initial read and the store above. If so, restore
                             // the cursor and abort this pass.
-                            if pause_ceiling.load(Ordering::SeqCst) < upper_bound {
+                            if pause_ceiling.load(Ordering::SeqCst) <= upper_bound {
                                 pruning_cursor.store(prev, Ordering::Release);
                                 continue;
                             }
