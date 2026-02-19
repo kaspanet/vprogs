@@ -10,8 +10,8 @@ use vprogs_node_test_suite::{L1BridgeExt, L1Node};
 // Timeout for waiting for events.
 const TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Verifies that the bridge receives block events with correct hashes,
-/// sequential indices, and chronological ordering after mining.
+/// Verifies that the bridge receives block events with correct hashes, sequential indices, and
+/// chronological ordering after mining.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_bridge_syncs_and_receives_block_events() {
     let (node, bridge) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
@@ -47,8 +47,8 @@ async fn test_bridge_syncs_and_receives_block_events() {
     node.shutdown().await;
 }
 
-/// Verifies that block events include header fields (timestamp) and at least
-/// a coinbase transaction in the accepted set.
+/// Verifies that block events include header fields (timestamp) and at least a coinbase transaction
+/// in the accepted set.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_bridge_block_contains_transactions() {
     let (node, bridge) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
@@ -79,8 +79,8 @@ async fn test_bridge_block_contains_transactions() {
     node.shutdown().await;
 }
 
-/// Verifies that a bridge started with a `tip` config picks up new blocks
-/// with indices continuing from the given starting point.
+/// Verifies that a bridge started with a `tip` config picks up new blocks with indices continuing
+/// from the given starting point.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_bridge_syncs_from_specific_block() {
     let node = L1Node::new(None).await;
@@ -125,8 +125,8 @@ async fn test_bridge_syncs_from_specific_block() {
     node.shutdown().await;
 }
 
-/// Verifies that a new bridge started from a saved checkpoint catches up on
-/// blocks that were mined while no bridge was running.
+/// Verifies that a new bridge started from a saved checkpoint catches up on blocks that were mined
+/// while no bridge was running.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_bridge_catches_up_after_reconnection() {
     let node = L1Node::new(None).await;
@@ -200,8 +200,8 @@ async fn test_bridge_catches_up_after_reconnection() {
     node.shutdown().await;
 }
 
-/// Verifies reorg handling when two isolated nodes with different chain
-/// lengths are connected. The shorter chain should reorg to the longer one.
+/// Verifies reorg handling when two isolated nodes with different chain lengths are connected. The
+/// shorter chain should reorg to the longer one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_bridge_receives_reorg_events() {
     let (node0, bridge0) = setup_node_with_bridge(ConnectStrategy::Fallback, None).await;
@@ -405,8 +405,8 @@ async fn setup_node_with_bridge(
     (node, bridge)
 }
 
-/// Unwraps a list of events into `ChainBlockAdded` tuples.
-/// Panics if any event is not `ChainBlockAdded`.
+/// Unwraps a list of events into `ChainBlockAdded` tuples. Panics if any event is not
+/// `ChainBlockAdded`.
 fn unwrap_chain_blocks(
     events: Vec<L1Event>,
 ) -> Vec<(u64, Box<RpcOptionalHeader>, Vec<RpcOptionalTransaction>)> {

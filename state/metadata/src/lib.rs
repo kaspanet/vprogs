@@ -12,16 +12,16 @@ mod keys {
 
 /// Provides type-safe operations for the Metadata column family.
 ///
-/// StateMetadata stores system-level metadata such as root tracking and commit progress,
-/// allowing crash-fault tolerant operations.
+/// StateMetadata stores system-level metadata such as root tracking and commit progress, allowing
+/// crash-fault tolerant operations.
 pub struct StateMetadata;
 
 impl StateMetadata {
     /// Returns the root checkpoint (oldest surviving batch), or defaults if no batches have been
     /// committed yet.
     ///
-    /// The root is initialized when the first batch commits and advances forward as pruning
-    /// deletes older batches. A default (index 0) indicates a fresh database with no commits.
+    /// The root is initialized when the first batch commits and advances forward as pruning deletes
+    /// older batches. A default (index 0) indicates a fresh database with no commits.
     pub fn root<M: BatchMetadata, S>(store: &S) -> Checkpoint<M>
     where
         S: ReadStore<StateSpace = StateSpace>,

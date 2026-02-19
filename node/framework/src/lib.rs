@@ -17,9 +17,11 @@
 //!     .with_l1_bridge_config(l1_bridge_config);
 //! let node = Node::new(config);
 //!
-//! // Query the scheduler through the API.
-//! let checkpoint = node.api().last_committed().await?;
-//! let threshold = node.api().pruning_threshold().await?;
+//! // Query state directly (lock-free, synchronous via SchedulerState deref).
+//! let checkpoint = node.api().last_committed();
+//!
+//! // Operations needing &mut Scheduler go through the worker thread.
+//! let threshold = node.api().with_scheduler(|s| s.pruning().threshold()).await?;
 //!
 //! // The node runs autonomously until shut down.
 //! node.shutdown();

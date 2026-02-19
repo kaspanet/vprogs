@@ -1,8 +1,8 @@
 /// Errors produced by the scheduler.
 #[derive(Debug, Clone, Copy, thiserror::Error)]
 pub enum SchedulerError {
-    /// Pruning has advanced past the rollback target. The rollback pointers
-    /// needed to restore state have been deleted.
+    /// Pruning has advanced past the rollback target. The rollback pointers needed to restore state
+    /// have been deleted.
     #[error("pruning has advanced past the rollback target")]
     PruningConflict,
 }

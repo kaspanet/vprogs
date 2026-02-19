@@ -6,7 +6,9 @@ use crate::{
     ResourceAccess, RuntimeBatch, StateDiff, rollback::Rollback, vm_interface::VmInterface,
 };
 
+/// Commands dispatched to the storage manager's read worker.
 pub enum Read<S: Store<StateSpace = StateSpace>, V: VmInterface> {
+    /// Fetch the latest version data for a resource from disk.
     LatestData(ResourceAccess<S, V>),
 }
 
@@ -18,10 +20,14 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> ReadCmd<StateSpace> for 
     }
 }
 
+/// Commands dispatched to the storage manager's write worker.
 pub enum Write<S: Store<StateSpace = StateSpace>, V: VmInterface> {
+    /// Persist a resource's versioned data and rollback pointer.
     StateDiff(StateDiff<S, V>),
+    /// Finalize a batch by writing latest pointers and batch metadata.
     CommitBatch(RuntimeBatch<S, V>),
-    Rollback(Rollback<V>),
+    /// Revert all batches after a target checkpoint.
+    Rollback(Rollback<S, V>),
 }
 
 impl<S: Store<StateSpace = StateSpace>, V: VmInterface> WriteCmd<StateSpace> for Write<S, V> {

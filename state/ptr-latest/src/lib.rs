@@ -5,6 +5,7 @@ use vprogs_storage_types::{ReadStore, WriteBatch};
 /// Provides type-safe operations for the LatestPtr column family.
 ///
 /// StatePtrLatest maps resource IDs to their current version number.
+///
 /// Key layout: `resource_id (borsh)`
 /// Value layout: `version (u64 BE)`
 pub struct StatePtrLatest;

@@ -18,12 +18,13 @@ use kaspa_consensus_core::{
     },
 };
 use kaspa_grpc_client::GrpcClient;
-use kaspa_rpc_core::{RpcTransaction, RpcUtxoEntry, api::rpc::RpcApi};
+use kaspa_rpc_core::{RpcTransaction, api::rpc::RpcApi};
 use kaspa_testing_integration::common::daemon::Daemon;
 use kaspa_txscript::pay_to_address_script;
 use kaspa_wrpc_server::address::WrpcNetAddress;
 use kaspad_lib::args::Args;
 use secp256k1::Keypair;
+use tap::Tap;
 
 /// An in-process Kaspa simnet node for integration tests.
 ///
@@ -45,9 +46,8 @@ pub struct L1Node {
 impl L1Node {
     /// Creates and starts a new isolated simnet node.
     ///
-    /// Pass a customization closure to override consensus parameters. The
-    /// closure receives the default simnet [`Params`] to mutate.
-    /// Pass `None` for vanilla simnet defaults.
+    /// Pass a customization closure to override consensus parameters. The closure receives the
+    /// default simnet [`Params`] to mutate. Pass `None` for vanilla simnet defaults.
     ///
     /// ```no_run
     /// # use vprogs_node_test_suite::L1Node;
@@ -122,8 +122,8 @@ impl L1Node {
         format!("ws://127.0.0.1:{}", port)
     }
 
-    /// Connects this node to another node as a peer.
-    /// Polls until the peer appears in the connected peer list.
+    /// Connects this node to another node as a peer. Polls until the peer appears in the connected
+    /// peer list.
     pub async fn connect_to(&self, other: &L1Node) {
         let other_port = other.daemon().p2p_port;
 
@@ -149,13 +149,12 @@ impl L1Node {
 
     /// Mines a single block, optionally injecting L2 transactions into the block template.
     ///
-    /// Each L2 transaction is borsh-serialized into the `payload` field of a separate
-    /// L1 transaction. Requires mature UTXOs when payloads are provided (call
+    /// Each L2 transaction is borsh-serialized into the `payload` field of a separate L1
+    /// transaction. Requires mature UTXOs when payloads are provided (call
     /// [`mine_utxos`](Self::mine_utxos) first).
     ///
-    /// Note: in Kaspa DAG consensus, a block's transactions are accepted by the
-    /// next chain block. The caller must mine an additional block for the
-    /// transactions to be accepted.
+    /// Note: in Kaspa DAG consensus, a block's transactions are accepted by the next chain block.
+    /// The caller must mine an additional block for the transactions to be accepted.
     pub async fn mine_block<T: BorshSerialize>(&self, txs: Option<&[T]>) -> Hash {
         let mut template =
             self.grpc_client.get_block_template(self.address.clone(), vec![]).await.unwrap();
@@ -194,12 +193,17 @@ impl L1Node {
 
     /// Mines enough blocks so that `num_utxos` coinbase UTXOs become spendable.
     ///
-    /// Each block produces one coinbase UTXO that matures after `coinbase_maturity`
-    /// blocks. The genesis child starts at `daa_score = 2`, so we add a small offset
-    /// to ensure the requested UTXOs are fully mature.
+    /// Each block produces one coinbase UTXO that matures after `coinbase_maturity` blocks. The
+    /// genesis child starts at `daa_score = 2`, so we add a small offset to ensure the requested
+    /// UTXOs are fully mature.
     pub async fn mine_utxos(&self, num_utxos: usize) -> Vec<Hash> {
         // +2 accounts for the genesis daa_score offset.
         self.mine_blocks(self.params.blockrate.coinbase_maturity as usize + num_utxos + 2).await
+    }
+
+    /// Disconnects the gRPC client. The daemon shuts down on drop.
+    pub async fn shutdown(self) {
+        self.grpc_client.disconnect().await.unwrap();
     }
 
     /// Builds signed L1 transactions, each carrying the given payload.
@@ -253,51 +257,21 @@ impl L1Node {
 
     /// Fetches spendable UTXOs for the miner address, sorted by amount (largest first).
     async fn fetch_spendable_utxos(&self) -> Vec<(TransactionOutpoint, UtxoEntry)> {
-        let resp =
-            self.grpc_client.get_utxos_by_addresses(vec![self.address.clone()]).await.unwrap();
         let virtual_daa_score = self.grpc_client.get_server_info().await.unwrap().virtual_daa_score;
 
-        if let Some(first) = resp.first() {
-            let min_daa = resp.iter().map(|e| e.utxo_entry.block_daa_score).min().unwrap();
-            let max_daa = resp.iter().map(|e| e.utxo_entry.block_daa_score).max().unwrap();
-            eprintln!(
-                "[L1Node] fetch_spendable_utxos: total_utxos={}, virtual_daa_score={}, \
-                 min_block_daa={}, max_block_daa={}, is_coinbase={}",
-                resp.len(),
-                virtual_daa_score,
-                min_daa,
-                max_daa,
-                first.utxo_entry.is_coinbase,
-            );
-        } else {
-            eprintln!(
-                "[L1Node] fetch_spendable_utxos: total_utxos=0, virtual_daa_score={}",
-                virtual_daa_score,
-            );
-        }
-
-        let mut utxos: Vec<(TransactionOutpoint, UtxoEntry)> = resp
+        self.grpc_client
+            .get_utxos_by_addresses(vec![self.address.clone()])
+            .await
+            .unwrap()
             .into_iter()
             .filter(|e| {
-                is_utxo_spendable(
-                    &e.utxo_entry,
-                    virtual_daa_score,
-                    self.params.blockrate.coinbase_maturity,
-                )
+                // Coinbase UTXOs require `coinbase_maturity` confirmations before spending
+                !e.utxo_entry.is_coinbase
+                    || e.utxo_entry.block_daa_score + self.params.blockrate.coinbase_maturity
+                        <= virtual_daa_score
             })
             .map(|e| (TransactionOutpoint::from(e.outpoint), UtxoEntry::from(e.utxo_entry)))
-            .collect();
-        utxos.sort_by(|a, b| b.1.amount.cmp(&a.1.amount));
-        utxos
+            .collect::<Vec<_>>()
+            .tap_mut(|utxos| utxos.sort_by(|a, b| b.1.amount.cmp(&a.1.amount)))
     }
-
-    /// Disconnects the gRPC client. The daemon shuts down on drop.
-    pub async fn shutdown(self) {
-        self.grpc_client.disconnect().await.unwrap();
-    }
-}
-
-fn is_utxo_spendable(entry: &RpcUtxoEntry, virtual_daa_score: u64, coinbase_maturity: u64) -> bool {
-    let needed_confirmations = if !entry.is_coinbase { 10 } else { coinbase_maturity };
-    entry.block_daa_score + needed_confirmations <= virtual_daa_score
 }
