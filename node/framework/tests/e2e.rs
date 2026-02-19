@@ -35,9 +35,9 @@ async fn mine_l2_blocks(l1: &L1Node, count: usize) -> u64 {
 }
 
 /// Asserts that L2 state was written for transactions 1..=count.
-async fn assert_l2_state(node: &Node<RocksDbStore, TestNodeVm>, count: usize) {
+fn assert_l2_state(node: &Node<RocksDbStore, TestNodeVm>, count: usize) {
     for i in 1..=count {
-        node.api().assert_written_state(i, vec![i]).await;
+        node.api().assert_written_state(i, vec![i]);
     }
 }
 
@@ -52,8 +52,8 @@ async fn test_basic_block_processing() {
     let temp_dir = TempDir::new().unwrap();
     let node = create_node(&l1, &temp_dir);
 
-    node.api().wait_committed(maturity + payload_blocks, TIMEOUT).await;
-    assert_l2_state(&node, 3).await;
+    node.api().wait_committed(maturity + payload_blocks, TIMEOUT);
+    assert_l2_state(&node, 3);
 
     node.shutdown();
     l1.shutdown().await;
@@ -73,8 +73,8 @@ async fn test_processes_blocks_mined_after_connect() {
     let maturity = l1.mine_utxos(3).await.len() as u64;
     let payload_blocks = mine_l2_blocks(&l1, 3).await;
 
-    node.api().wait_committed(maturity + payload_blocks, TIMEOUT).await;
-    assert_l2_state(&node, 3).await;
+    node.api().wait_committed(maturity + payload_blocks, TIMEOUT);
+    assert_l2_state(&node, 3);
 
     node.shutdown();
     l1.shutdown().await;
@@ -94,7 +94,7 @@ async fn test_pruning_via_threshold() {
     let maturity = l1.mine_utxos(3).await.len() as u64;
     let payload_blocks = mine_l2_blocks(&l1, 3).await;
     let total = maturity + payload_blocks;
-    node.api().wait_committed(total, TIMEOUT).await;
+    node.api().wait_committed(total, TIMEOUT);
 
     // Set pruning threshold so early batches become eligible for pruning.
     let keep = total - 4;
@@ -103,13 +103,13 @@ async fn test_pruning_via_threshold() {
         .await
         .expect("api call failed");
 
-    node.api().wait_pruned(4, TIMEOUT).await;
+    node.api().wait_pruned(4, TIMEOUT);
 
     let root = node.api().root();
     assert!(root.index() > 4, "Expected root > 4, got {}", root.index());
 
     // L2 state written after the prune point must still be readable.
-    assert_l2_state(&node, 3).await;
+    assert_l2_state(&node, 3);
 
     node.shutdown();
     l1.shutdown().await;
@@ -125,8 +125,8 @@ async fn test_clean_shutdown() {
     let maturity = l1.mine_utxos(2).await.len() as u64;
     let payload_blocks = mine_l2_blocks(&l1, 2).await;
 
-    node.api().wait_committed(maturity + payload_blocks, TIMEOUT).await;
-    assert_l2_state(&node, 2).await;
+    node.api().wait_committed(maturity + payload_blocks, TIMEOUT);
+    assert_l2_state(&node, 2);
 
     // Shutdown should not panic.
     node.shutdown();
@@ -147,9 +147,9 @@ async fn test_resume_from_checkpoint() {
         let maturity = l1.mine_utxos(3).await.len() as u64;
         let payload_blocks = mine_l2_blocks(&l1, 3).await;
         phase1_total = maturity + payload_blocks;
-        node.api().wait_committed(phase1_total, TIMEOUT).await;
+        node.api().wait_committed(phase1_total, TIMEOUT);
 
-        assert_l2_state(&node, 3).await;
+        assert_l2_state(&node, 3);
 
         node.shutdown();
     }
@@ -172,10 +172,10 @@ async fn test_resume_from_checkpoint() {
 
     {
         let node = create_node(&l1, &temp_dir);
-        node.api().wait_committed(phase1_total + 5, TIMEOUT).await;
+        node.api().wait_committed(phase1_total + 5, TIMEOUT);
 
         // L2 state from phase 1 must survive the restart.
-        assert_l2_state(&node, 3).await;
+        assert_l2_state(&node, 3);
 
         node.shutdown();
     }
@@ -194,7 +194,7 @@ async fn test_l2_transactions_via_l1_payload() {
     // Mine enough blocks so coinbase UTXOs reach maturity (1 UTXO needed).
     let maturity_hashes = l1.mine_utxos(1).await;
     let maturity_blocks = maturity_hashes.len() as u64;
-    node.api().wait_committed(maturity_blocks, Duration::from_secs(120)).await;
+    node.api().wait_committed(maturity_blocks, Duration::from_secs(120));
 
     // Submit an L2 transaction via L1 payload.
     l1.mine_block(Some(&[Tx(42, vec![Access::Write(42)])])).await;
@@ -202,10 +202,10 @@ async fn test_l2_transactions_via_l1_payload() {
     // In Kaspa DAG consensus, a block's transactions are accepted by the next chain
     // block. Mine one more block so the payload transactions get accepted.
     l1.mine_blocks(1).await;
-    node.api().wait_committed(maturity_blocks + 2, Duration::from_secs(30)).await;
+    node.api().wait_committed(maturity_blocks + 2, Duration::from_secs(30));
 
     // Verify L2 state: resource 42 was written by tx id 42.
-    node.api().assert_written_state(42, vec![42]).await;
+    node.api().assert_written_state(42, vec![42]);
 
     node.shutdown();
     l1.shutdown().await;
