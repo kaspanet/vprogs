@@ -291,7 +291,7 @@ async fn test_reorg_filter_causes_lag() {
     const SHORT_CHAIN: usize = 5;
     const LONG_CHAIN: usize = 20;
 
-    // Create two isolated nodes.
+    // Create two isolated nodes with bridges.
     let node1 = L1Node::new(None).await;
     let node2 = L1Node::new(None).await;
 
@@ -310,11 +310,20 @@ async fn test_reorg_filter_causes_lag() {
             .with_connect_strategy(ConnectStrategy::Fallback)
             .with_filter_half_life(Duration::ZERO),
     );
+    // Bridge to node2 for waiting on block processing.
+    let node2_bridge = L1Bridge::new(
+        L1BridgeConfig::default()
+            .with_url(Some(node2.wrpc_borsh_url()))
+            .with_network_type(NetworkType::Simnet)
+            .with_connect_strategy(ConnectStrategy::Fallback)
+            .with_filter_half_life(Duration::ZERO),
+    );
 
-    // Wait for both bridges to connect.
+    // Wait for all bridges to connect.
     tokio::join!(
         filtered.wait_for(TIMEOUT, |e| matches!(e, L1Event::Connected)),
         unfiltered.wait_for(TIMEOUT, |e| matches!(e, L1Event::Connected)),
+        node2_bridge.wait_for(TIMEOUT, |e| matches!(e, L1Event::Connected)),
     );
 
     // Mine the short chain on node1 and wait for both bridges to sync.
@@ -330,10 +339,16 @@ async fn test_reorg_filter_causes_lag() {
         }),
     );
 
-    // Mine the longer chain on node2, then connect to trigger a reorg.
+    // Mine the longer chain on node2 and wait for it to be fully processed.
     let long_hashes = node2.mine_blocks(LONG_CHAIN).await;
     let long_tip = *long_hashes.last().unwrap();
+    node2_bridge
+        .wait_for(TIMEOUT, |e| {
+            matches!(e, L1Event::ChainBlockAdded { header, .. } if header.hash == Some(long_tip))
+        })
+        .await;
 
+    // Connect to trigger a reorg.
     node1.connect_to(&node2).await;
 
     // Wait for the unfiltered bridge to fully sync to the new chain.
@@ -379,6 +394,7 @@ async fn test_reorg_filter_causes_lag() {
 
     filtered.shutdown();
     unfiltered.shutdown();
+    node2_bridge.shutdown();
     node1.shutdown().await;
     node2.shutdown().await;
 }
