@@ -1,6 +1,6 @@
 use vprogs_node_framework::NodeVm;
 use vprogs_node_l1_bridge::{ChainBlockMetadata, RpcOptionalHeader, RpcOptionalTransaction};
-use vprogs_scheduling_scheduler::{AccessHandle, RuntimeBatch, VmInterface};
+use vprogs_scheduling_scheduler::{AccessHandle, VmInterface};
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 use vprogs_transaction_runtime::TransactionRuntime;
