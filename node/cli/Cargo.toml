@@ -4,7 +4,7 @@ name              = "vprogs-node-cli"
 version.workspace = true
 
 [[bin]]
-name = "vprogs-node"
+name = "vprogs-node-cli"
 path = "src/main.rs"
 
 [dependencies]

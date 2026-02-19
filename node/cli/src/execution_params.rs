@@ -8,7 +8,7 @@ use crate::backend::Vm;
 #[derive(Args, Serialize, Deserialize)]
 #[command(next_help_heading = "Execution")]
 pub struct ExecutionParams {
-    /// Number of execution worker threads.
+    /// Number of execution worker threads (defaults to physical CPU count).
     #[arg(long = "execution-worker-count", default_value_t = ExecutionConfig::<Vm>::default().worker_count)]
     pub worker_count: usize,
 }
