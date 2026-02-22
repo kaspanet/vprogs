@@ -41,6 +41,13 @@ impl<R: ResourceId> StateVersion<R> {
         &self.data
     }
 
+    /// Blake3 hash of the serialized resource data.
+    ///
+    /// Enables commitment chaining for ZK proofs.
+    pub fn state_hash(&self) -> [u8; 32] {
+        *blake3::hash(&self.data).as_bytes()
+    }
+
     pub fn data_mut(self: &mut Arc<Self>) -> &mut Vec<u8> {
         &mut Arc::make_mut(self).tap_mut(|s| s.version += 1).data
     }

@@ -7,7 +7,9 @@ default-members = [
   "storage/*",
   "transaction-runtime/*",
 ]
-exclude = []
+exclude = [
+  "node/zk-vm-stitcher-guest",
+]
 members = [
   "core/*",
   "node/*",
@@ -25,7 +27,9 @@ resolver = "3"
   [workspace.dependencies]
   # External dependencies
   arc-swap = "1.7"
+  blake3 = { version = "1", default-features = false }
   borsh = { version = "1.6.0", features = ["derive"] }
+  bytemuck = { version = "1", features = ["derive"] }
   clap = { version = "4", features = ["derive"] }
   crossbeam-deque = "0.8.6"
   crossbeam-queue = "0.3.12"
@@ -81,6 +85,8 @@ resolver = "3"
   vprogs-core-macros                              = { path = "core/macros" }
   vprogs-core-types                               = { path = "core/types" }
   vprogs-node-cli                                 = { path = "node/cli" }
+  vprogs-node-zk-vm                               = { path = "node/zk-vm" }
+  vprogs-node-zk-vm-core                          = { path = "node/zk-vm-core" }
   vprogs-node-framework                           = { path = "node/framework" }
   vprogs-node-l1-bridge                           = { path = "node/l1-bridge" }
   vprogs-node-test-suite                          = { path = "node/test-suite" }

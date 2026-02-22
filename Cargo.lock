@@ -6399,6 +6399,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-node-zk-vm"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "borsh",
+ "log",
+ "vprogs-core-types",
+ "vprogs-node-zk-vm-core",
+ "vprogs-scheduling-scheduler",
+ "vprogs-state-space",
+ "vprogs-state-version",
+ "vprogs-storage-types",
+]
+
+[[package]]
+name = "vprogs-node-zk-vm-core"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "bytemuck",
+]
+
+[[package]]
 name = "vprogs-scheduling-execution-workers"
 version = "0.1.0"
 dependencies = [
@@ -6504,6 +6527,7 @@ version = "0.1.0"
 name = "vprogs-state-version"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "borsh",
  "tap",
  "vprogs-core-types",

@@ -1,0 +1,12 @@
+[package]
+edition.workspace = true
+name              = "vprogs-node-zk-vm-core"
+version.workspace = true
+
+[features]
+default = []
+std = []
+
+[dependencies]
+blake3 = { workspace = true }
+bytemuck = { workspace = true }

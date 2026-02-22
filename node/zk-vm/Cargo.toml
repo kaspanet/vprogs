@@ -1,0 +1,15 @@
+[package]
+edition.workspace = true
+name              = "vprogs-node-zk-vm"
+version.workspace = true
+
+[dependencies]
+blake3 = { workspace = true, features = ["std"] }
+borsh.workspace                      = true
+log.workspace                        = true
+vprogs-core-types.workspace          = true
+vprogs-node-zk-vm-core               = { workspace = true, features = ["std"] }
+vprogs-scheduling-scheduler.workspace = true
+vprogs-state-space.workspace         = true
+vprogs-state-version.workspace       = true
+vprogs-storage-types.workspace       = true
