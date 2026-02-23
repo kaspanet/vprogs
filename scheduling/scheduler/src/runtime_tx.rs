@@ -28,6 +28,8 @@ pub struct RuntimeTx<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     pending_resources: AtomicU64,
     /// Execution result, set after `process_transaction` succeeds.
     effects: ArcSwapOption<V::TransactionEffects>,
+    /// Position of this transaction within its batch.
+    tx_index: u32,
     /// The user-submitted transaction (deref target).
     tx: V::Transaction,
 }
@@ -51,6 +53,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeTx<S, V> {
         state_diffs: &mut Vec<StateDiff<S, V>>,
         batch: RuntimeBatchRef<S, V>,
         tx: V::Transaction,
+        tx_index: u32,
     ) -> Self {
         Self(Arc::new_cyclic(|this: &Weak<RuntimeTxData<S, V>>| {
             let resources =
@@ -59,6 +62,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeTx<S, V> {
                 vm: scheduler.vm().clone(),
                 pending_resources: AtomicU64::new(resources.len() as u64),
                 effects: ArcSwapOption::empty(),
+                tx_index,
                 batch,
                 tx,
                 resources,
@@ -88,7 +92,9 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeTx<S, V> {
 
             // Process the transaction using the VM.
             let mut handles = handles.collect::<Vec<_>>();
-            match self.vm.process_transaction(&self.tx, &mut handles) {
+            let batch_metadata = batch.checkpoint().metadata();
+            match self.vm.process_transaction(&self.tx, self.tx_index, batch_metadata, &mut handles)
+            {
                 Ok(effects) => {
                     self.effects.store(Some(Arc::new(effects)));
                     handles.into_iter().for_each(AccessHandle::commit_changes);

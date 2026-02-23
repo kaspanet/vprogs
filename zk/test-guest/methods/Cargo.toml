@@ -1,5 +1,5 @@
 [package]
-name = "vprogs-zk-vm-stitcher-methods"
+name = "vprogs-zk-test-methods"
 version = "0.1.0"
 edition = "2021"
 

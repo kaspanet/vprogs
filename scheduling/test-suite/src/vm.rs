@@ -13,6 +13,8 @@ impl VmInterface for VM {
     fn process_transaction<S: Store<StateSpace = StateSpace>>(
         &self,
         tx: &Self::Transaction,
+        _tx_index: u32,
+        _batch_metadata: &u64,
         resources: &mut [AccessHandle<S, Self>],
     ) -> Result<(), Self::Error> {
         for resource in resources {

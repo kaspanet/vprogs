@@ -6,9 +6,11 @@ default-members = [
   "state/*",
   "storage/*",
   "transaction-runtime/*",
+  "zk/*",
 ]
 exclude = [
-  "node/zk-vm-stitcher-guest",
+  "zk/stitcher-guest",
+  "zk/test-guest",
 ]
 members = [
   "core/*",
@@ -17,6 +19,7 @@ members = [
   "state/*",
   "storage/*",
   "transaction-runtime/*",
+  "zk/*",
 ]
 resolver = "3"
 
@@ -85,8 +88,9 @@ resolver = "3"
   vprogs-core-macros                              = { path = "core/macros" }
   vprogs-core-types                               = { path = "core/types" }
   vprogs-node-cli                                 = { path = "node/cli" }
-  vprogs-node-zk-vm                               = { path = "node/zk-vm" }
-  vprogs-node-zk-vm-core                          = { path = "node/zk-vm-core" }
+  vprogs-zk-core                                   = { path = "zk/core" }
+  vprogs-zk-prover                                 = { path = "zk/prover" }
+  vprogs-zk-vm                                     = { path = "zk/vm" }
   vprogs-node-framework                           = { path = "node/framework" }
   vprogs-node-l1-bridge                           = { path = "node/l1-bridge" }
   vprogs-node-test-suite                          = { path = "node/test-suite" }

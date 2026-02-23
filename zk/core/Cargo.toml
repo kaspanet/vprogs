@@ -1,6 +1,6 @@
 [package]
 edition.workspace = true
-name              = "vprogs-node-zk-vm-core"
+name              = "vprogs-zk-core"
 version.workspace = true
 
 [features]

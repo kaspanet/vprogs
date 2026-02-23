@@ -13,6 +13,8 @@ pub trait VmInterface: Clone + Sized + Send + Sync + 'static {
     fn process_transaction<S: Store<StateSpace = StateSpace>>(
         &self,
         tx: &Self::Transaction,
+        tx_index: u32,
+        batch_metadata: &Self::BatchMetadata,
         resources: &mut [AccessHandle<S, Self>],
     ) -> Result<Self::TransactionEffects, Self::Error>;
 

@@ -2,38 +2,46 @@
 //!
 //! Builds the witness data that gets fed to RISC-0 guest programs as stdin.
 
-use vprogs_node_zk_vm_core::effects::AccessEffect;
+use vprogs_zk_core::effects::AccessEffect;
 
 use crate::TxEffects;
 
 /// Builds witness data for a sub-proof guest.
 ///
-/// The witness contains the transaction data and pre-state for each
-/// accessed resource, so the guest can re-execute and verify.
+/// The witness contains the transaction data and pre/post-state for each
+/// accessed resource, so the guest can verify state transitions.
 pub struct WitnessBuilder;
 
 impl WitnessBuilder {
     /// Build witness bytes for a sub-proof guest.
     ///
-    /// Layout:
+    /// Uses `SubProofInput::to_bytes()` wire format directly:
     /// - `tx_index: u32` (4 bytes, LE)
-    /// - `num_effects: u32` (4 bytes, LE)
-    /// - For each effect:
-    ///   - `AccessEffect` (97 bytes)
-    /// - `tx_data_len: u32` (4 bytes, LE)
-    /// - `tx_data: [u8]`
-    /// - For each effect:
+    /// - `num_resources: u32` (4 bytes, LE)
+    /// - For each resource:
+    ///   - `resource_id_hash: [u8; 32]`
+    ///   - `access_type: u8`
     ///   - `pre_state_len: u32` (4 bytes, LE)
     ///   - `pre_state: [u8]`
+    ///   - `post_state_len: u32` (4 bytes, LE)
+    ///   - `post_state: [u8]`
+    /// - `tx_data_len: u32` (4 bytes, LE)
+    /// - `tx_data: [u8]`
     pub fn build_sub_proof_witness(
         tx_effects: &TxEffects,
         tx_data: &[u8],
         pre_states: &[Vec<u8>],
+        post_states: &[Vec<u8>],
     ) -> Vec<u8> {
         assert_eq!(
             tx_effects.effects.len(),
             pre_states.len(),
             "pre_states must match effects count"
+        );
+        assert_eq!(
+            tx_effects.effects.len(),
+            post_states.len(),
+            "post_states must match effects count"
         );
 
         let mut buf = Vec::new();
@@ -41,23 +49,22 @@ impl WitnessBuilder {
         // tx_index
         buf.extend_from_slice(&tx_effects.tx_index.to_le_bytes());
 
-        // num_effects
+        // num_resources
         buf.extend_from_slice(&(tx_effects.effects.len() as u32).to_le_bytes());
 
-        // effects
-        for effect in &tx_effects.effects {
-            buf.extend_from_slice(&effect.to_bytes());
+        // per-resource data
+        for (i, effect) in tx_effects.effects.iter().enumerate() {
+            buf.extend_from_slice(&effect.resource_id_hash);
+            buf.push(effect.access_type);
+            buf.extend_from_slice(&(pre_states[i].len() as u32).to_le_bytes());
+            buf.extend_from_slice(&pre_states[i]);
+            buf.extend_from_slice(&(post_states[i].len() as u32).to_le_bytes());
+            buf.extend_from_slice(&post_states[i]);
         }
 
         // tx_data
         buf.extend_from_slice(&(tx_data.len() as u32).to_le_bytes());
         buf.extend_from_slice(tx_data);
-
-        // pre_states
-        for pre_state in pre_states {
-            buf.extend_from_slice(&(pre_state.len() as u32).to_le_bytes());
-            buf.extend_from_slice(pre_state);
-        }
 
         buf
     }
@@ -68,6 +75,7 @@ impl WitnessBuilder {
     /// produced by the sub-proof guests after proof generation.
     ///
     /// Layout:
+    /// - `program_image_id: [u8; 32]`
     /// - `num_txs: u32` (4 bytes, LE)
     /// - `prev_state_root: [u8; 32]`
     /// - `prev_seq_commitment: [u8; 32]`
@@ -82,8 +90,9 @@ impl WitnessBuilder {
         prev_state_root: [u8; 32],
         prev_seq_commitment: [u8; 32],
         covenant_id: [u8; 32],
+        program_image_id: [u8; 32],
     ) -> Vec<u8> {
-        use vprogs_node_zk_vm_core::journal::SubProofJournal;
+        use vprogs_zk_core::journal::SubProofJournal;
 
         assert_eq!(
             tx_effects_list.len(),
@@ -92,6 +101,9 @@ impl WitnessBuilder {
         );
 
         let mut buf = Vec::new();
+
+        // program_image_id
+        buf.extend_from_slice(&program_image_id);
 
         // num_txs
         buf.extend_from_slice(&(tx_effects_list.len() as u32).to_le_bytes());
@@ -126,7 +138,7 @@ impl WitnessBuilder {
     pub fn parse_effects_from_witness(
         data: &[u8],
     ) -> Option<Vec<(u32, [u8; 32], Vec<AccessEffect>)>> {
-        use vprogs_node_zk_vm_core::journal::SUB_PROOF_JOURNAL_SIZE;
+        use vprogs_zk_core::journal::SUB_PROOF_JOURNAL_SIZE;
 
         let mut pos = 0;
 
@@ -149,6 +161,9 @@ impl WitnessBuilder {
             Some(out)
         };
 
+        // program_image_id (new)
+        let _program_image_id = read_32(&mut pos)?;
+
         let num_txs = read_u32(&mut pos)?;
         let _prev_state_root = read_32(&mut pos)?;
         let _prev_seq_commitment = read_32(&mut pos)?;
@@ -161,7 +176,7 @@ impl WitnessBuilder {
             if pos + SUB_PROOF_JOURNAL_SIZE > data.len() {
                 return None;
             }
-            let sub_journal = vprogs_node_zk_vm_core::journal::SubProofJournal::from_bytes(
+            let sub_journal = vprogs_zk_core::journal::SubProofJournal::from_bytes(
                 &data[pos..pos + SUB_PROOF_JOURNAL_SIZE],
             )?;
             pos += SUB_PROOF_JOURNAL_SIZE;

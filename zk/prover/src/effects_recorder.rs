@@ -5,13 +5,13 @@
 //! commitments using `state_hash()`.
 
 use vprogs_core_types::AccessMetadata;
-use vprogs_node_zk_vm_core::{
-    effects::{AccessEffect, effects_root},
-    hashing::state_hash,
-};
 use vprogs_scheduling_scheduler::{RuntimeBatch, VmInterface};
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
+use vprogs_zk_core::{
+    effects::{AccessEffect, effects_root},
+    hashing::state_hash,
+};
 
 /// Recorded effects for a single transaction.
 #[derive(Clone, Debug)]

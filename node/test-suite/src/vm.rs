@@ -29,6 +29,8 @@ impl VmInterface for TestNodeVm {
     fn process_transaction<S: Store<StateSpace = StateSpace>>(
         &self,
         tx: &Self::Transaction,
+        _tx_index: u32,
+        _batch_metadata: &ChainBlockMetadata,
         resources: &mut [AccessHandle<S, Self>],
     ) -> Result<(), Self::Error> {
         for resource in resources {

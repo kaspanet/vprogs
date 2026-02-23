@@ -5,17 +5,18 @@
 //! - `effects_root`  (32 bytes) — merkle root of per-resource AccessEffects
 //! - `context_hash`  (32 bytes) — blake3 hash of the witness data the guest received
 //!
-//! ## Stitcher journal (160 bytes)
+//! ## Stitcher journal (192 bytes)
 //! - `prev_state_root`     (32 bytes)
 //! - `prev_seq_commitment` (32 bytes)
 //! - `new_state_root`      (32 bytes)
 //! - `new_seq_commitment`  (32 bytes)
 //! - `covenant_id`         (32 bytes)
+//! - `program_image_id`    (32 bytes)
 
 use crate::hashing::domain_to_key;
 
 /// Size of the stitcher journal in bytes.
-pub const STITCHER_JOURNAL_SIZE: usize = 160;
+pub const STITCHER_JOURNAL_SIZE: usize = 192;
 
 /// Parsed stitcher journal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,10 +26,12 @@ pub struct StitcherJournal {
     pub new_state_root: [u8; 32],
     pub new_seq_commitment: [u8; 32],
     pub covenant_id: [u8; 32],
+    /// The image ID of the sub-proof guest program that was verified.
+    pub program_image_id: [u8; 32],
 }
 
 impl StitcherJournal {
-    /// Serialize to a 160-byte array.
+    /// Serialize to a 192-byte array.
     pub fn to_bytes(&self) -> [u8; STITCHER_JOURNAL_SIZE] {
         let mut out = [0u8; STITCHER_JOURNAL_SIZE];
         out[0..32].copy_from_slice(&self.prev_state_root);
@@ -36,10 +39,11 @@ impl StitcherJournal {
         out[64..96].copy_from_slice(&self.new_state_root);
         out[96..128].copy_from_slice(&self.new_seq_commitment);
         out[128..160].copy_from_slice(&self.covenant_id);
+        out[160..192].copy_from_slice(&self.program_image_id);
         out
     }
 
-    /// Deserialize from a 160-byte slice. Returns `None` if wrong length.
+    /// Deserialize from a 192-byte slice. Returns `None` if wrong length.
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
         if bytes.len() != STITCHER_JOURNAL_SIZE {
             return None;
@@ -49,17 +53,20 @@ impl StitcherJournal {
         let mut new_state_root = [0u8; 32];
         let mut new_seq_commitment = [0u8; 32];
         let mut covenant_id = [0u8; 32];
+        let mut program_image_id = [0u8; 32];
         prev_state_root.copy_from_slice(&bytes[0..32]);
         prev_seq_commitment.copy_from_slice(&bytes[32..64]);
         new_state_root.copy_from_slice(&bytes[64..96]);
         new_seq_commitment.copy_from_slice(&bytes[96..128]);
         covenant_id.copy_from_slice(&bytes[128..160]);
+        program_image_id.copy_from_slice(&bytes[160..192]);
         Some(Self {
             prev_state_root,
             prev_seq_commitment,
             new_state_root,
             new_seq_commitment,
             covenant_id,
+            program_image_id,
         })
     }
 }
@@ -128,6 +135,7 @@ mod tests {
             new_state_root: [3u8; 32],
             new_seq_commitment: [4u8; 32],
             covenant_id: [5u8; 32],
+            program_image_id: [6u8; 32],
         };
         let bytes = journal.to_bytes();
         assert_eq!(bytes.len(), STITCHER_JOURNAL_SIZE);

@@ -1,5 +1,5 @@
 [package]
-name = "vprogs-zk-vm-stitcher-guest"
+name = "vprogs-zk-stitcher-guest"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 risc0-zkvm = { version = "^3.0.4", default-features = false, features = ["getrandom"] }
-vprogs-node-zk-vm-core = { path = "../../../zk-vm-core" }
+vprogs-zk-core = { path = "../../../core" }
 
 # Always optimize; building and running the guest takes much longer without.
 [profile.dev]

@@ -167,6 +167,7 @@ fn empty_subtree_hash(level: usize) -> [u8; 32] {
 /// - `prev_state_root`: state root before this batch range
 /// - `prev_seq_commitment`: seq commitment before this batch range
 /// - `covenant_id`: the covenant this proof is for
+/// - `program_image_id`: the image ID of the sub-proof guest program
 ///
 /// # Returns
 /// The `StitcherJournal` on success, or a `StitcherError` on verification failure.
@@ -175,6 +176,7 @@ pub fn run_stitcher(
     prev_state_root: [u8; 32],
     prev_seq_commitment: [u8; 32],
     covenant_id: [u8; 32],
+    program_image_id: [u8; 32],
 ) -> Result<StitcherJournal, StitcherError> {
     // 1. Verify each tx's effects match its committed root.
     verify_effects_roots(txs)?;
@@ -194,6 +196,7 @@ pub fn run_stitcher(
         new_state_root,
         new_seq_commitment,
         covenant_id,
+        program_image_id,
     })
 }
 
@@ -370,11 +373,12 @@ mod tests {
             ],
         );
 
-        let result = run_stitcher(&[tx0, tx1], [0u8; 32], [0u8; 32], [0xAA; 32]);
+        let result = run_stitcher(&[tx0, tx1], [0u8; 32], [0u8; 32], [0xAA; 32], [0xBB; 32]);
         assert!(result.is_ok());
         let journal = result.unwrap();
         assert_eq!(journal.prev_state_root, [0u8; 32]);
         assert_eq!(journal.covenant_id, [0xAA; 32]);
+        assert_eq!(journal.program_image_id, [0xBB; 32]);
         assert_ne!(journal.new_state_root, [0u8; 32]);
         assert_ne!(journal.new_seq_commitment, [0u8; 32]);
     }

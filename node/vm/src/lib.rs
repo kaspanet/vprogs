@@ -21,6 +21,8 @@ impl VmInterface for VM {
     fn process_transaction<S: Store<StateSpace = StateSpace>>(
         &self,
         tx: &Transaction,
+        _tx_index: u32,
+        _batch_metadata: &ChainBlockMetadata,
         resources: &mut [AccessHandle<S, Self>],
     ) -> VmResult<TransactionEffects> {
         TransactionRuntime::execute(tx, resources)

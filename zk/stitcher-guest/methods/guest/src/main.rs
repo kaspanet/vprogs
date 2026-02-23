@@ -19,7 +19,7 @@
 //!     effect_words : [u32; 25]  (100 bytes — 97 bytes of AccessEffect + 3 padding)
 //! ```
 //!
-//! ## Output (journal, 160 bytes = 40 words)
+//! ## Output (journal, 192 bytes = 48 words)
 //!
 //! See [`StitcherJournal`].
 
@@ -33,7 +33,7 @@ use risc0_zkvm::{
     guest::env,
     serde::{WordRead, WordWrite},
 };
-use vprogs_node_zk_vm_core::{
+use vprogs_zk_core::{
     effects::AccessEffect,
     journal::SubProofJournal,
     stitcher::{VerifiedTx, run_stitcher},
@@ -89,13 +89,20 @@ pub fn main() {
 
     // --- Stitcher verification ---
 
-    let journal = run_stitcher(&txs, prev_state_root, prev_seq_commitment, covenant_id)
-        .expect("stitcher verification failed");
+    let program_image_id_bytes = words_to_bytes(program_image_id);
+    let journal = run_stitcher(
+        &txs,
+        prev_state_root,
+        prev_seq_commitment,
+        covenant_id,
+        program_image_id_bytes,
+    )
+    .expect("stitcher verification failed");
 
-    // --- Write output journal (160 bytes = 40 words) ---
+    // --- Write output journal (192 bytes = 48 words) ---
 
     let journal_bytes = journal.to_bytes();
-    let journal_words: [u32; 40] = bytemuck::cast(journal_bytes);
+    let journal_words: [u32; 48] = bytemuck::cast(journal_bytes);
     let mut out = env::journal();
     out.write_words(&journal_words).unwrap();
 }

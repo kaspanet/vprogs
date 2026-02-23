@@ -3,7 +3,7 @@
 //! Maintains the host-side Sparse Merkle Tree and produces roots and proofs
 //! for the stitcher.
 
-use vprogs_node_zk_vm_core::smt::Smt;
+use vprogs_zk_core::smt::Smt;
 
 use crate::BatchEffects;
 
