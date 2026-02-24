@@ -7063,7 +7063,6 @@ version = "0.1.0"
 name = "vprogs-zk-proof-provider"
 version = "0.1.0"
 dependencies = [
- "risc0-zkvm",
  "thiserror 2.0.18",
 ]
 
@@ -7071,13 +7070,19 @@ dependencies = [
 name = "vprogs-zk-prover"
 version = "0.1.0"
 dependencies = [
- "borsh",
  "log",
- "risc0-build",
- "risc0-zkvm",
  "tokio",
  "vprogs-zk-proof-provider",
  "vprogs-zk-types",
+]
+
+[[package]]
+name = "vprogs-zk-risc0-backend"
+version = "0.1.0"
+dependencies = [
+ "risc0-build",
+ "risc0-zkvm",
+ "vprogs-zk-proof-provider",
 ]
 
 [[package]]
@@ -7099,6 +7104,7 @@ dependencies = [
  "vprogs-scheduling-scheduler",
  "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
+ "vprogs-zk-risc0-backend",
  "vprogs-zk-types",
  "vprogs-zk-vm",
 ]
@@ -7115,14 +7121,13 @@ name = "vprogs-zk-vm"
 version = "0.1.0"
 dependencies = [
  "borsh",
- "risc0-build",
- "risc0-zkvm",
  "thiserror 2.0.18",
  "tokio",
  "vprogs-core-types",
  "vprogs-scheduling-scheduler",
  "vprogs-state-space",
  "vprogs-storage-types",
+ "vprogs-zk-proof-provider",
  "vprogs-zk-types",
 ]
 

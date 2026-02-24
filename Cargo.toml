@@ -8,6 +8,7 @@ default-members = [
   "transaction-runtime/*",
   "zk/proof-provider",
   "zk/prover",
+  "zk-risc-0/backend",
   "zk-risc-0/guest-env",
   "zk/test-suite",
   "zk/types",
@@ -23,6 +24,7 @@ members = [
   "transaction-runtime/*",
   "zk/proof-provider",
   "zk/prover",
+  "zk-risc-0/backend",
   "zk-risc-0/guest-env",
   "zk/test-suite",
   "zk/types",
@@ -134,6 +136,7 @@ resolver = "3"
   vprogs-transaction-runtime-signature-lock       = { path = "transaction-runtime/signature-lock" }
   vprogs-transaction-runtime-transaction          = { path = "transaction-runtime/transaction" }
   vprogs-transaction-runtime-transaction-effects  = { path = "transaction-runtime/transaction-effects" }
+  vprogs-zk-risc0-backend                          = { path = "zk-risc-0/backend" }
   vprogs-zk-risc0-guest-env                        = { path = "zk-risc-0/guest-env" }
   vprogs-zk-proof-provider                        = { path = "zk/proof-provider" }
   vprogs-zk-prover                                = { path = "zk/prover" }

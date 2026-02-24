@@ -1,56 +1,24 @@
-use risc0_zkvm::{ExecutorEnv, ProverOpts, Receipt, default_executor, default_prover};
-
-/// Errors returned by proof providers.
+/// Errors returned by ZK backend operations.
 #[derive(Debug, thiserror::Error)]
-pub enum ProofError {
-    #[error("proving failed: {0}")]
-    ProvingFailed(String),
+pub enum BackendError {
+  #[error("{0}")]
+  Failed(String),
 }
 
-/// Trait for components that can produce a RISC-0 receipt from a guest ELF and witness.
+/// Abstraction over a zero-knowledge VM backend (e.g. RISC-0, SP1).
 ///
-/// Implementations are synchronous because proving is CPU-bound.
-pub trait ProofProvider: Send + Sync + 'static {
-    fn prove(&self, elf: &[u8], witness_bytes: &[u8]) -> Result<Receipt, ProofError>;
-}
+/// Implementations provide execution-only mode (for scheduling) and proving mode (for proof
+/// generation). The associated [`Receipt`](ZkBackend::Receipt) type is backend-specific.
+pub trait ZkBackend: Clone + Send + Sync + 'static {
+  /// The proof receipt type produced by this backend.
+  type Receipt: Send + Sync + 'static;
 
-/// Produces real succinct proofs via the local RISC-0 prover.
-pub struct LocalProofProvider;
+  /// Execute a guest program without generating a proof. Returns journal bytes.
+  fn execute(&self, elf: &[u8], witness_bytes: &[u8]) -> Result<Vec<u8>, BackendError>;
 
-impl ProofProvider for LocalProofProvider {
-    fn prove(&self, elf: &[u8], witness_bytes: &[u8]) -> Result<Receipt, ProofError> {
-        let env = ExecutorEnv::builder()
-            .write_slice(witness_bytes)
-            .build()
-            .map_err(|e| ProofError::ProvingFailed(e.to_string()))?;
+  /// Prove a guest program execution. Returns a receipt containing the proof and journal.
+  fn prove(&self, elf: &[u8], witness_bytes: &[u8]) -> Result<Self::Receipt, BackendError>;
 
-        let prove_info = default_prover()
-            .prove_with_opts(env, elf, &ProverOpts::succinct())
-            .map_err(|e| ProofError::ProvingFailed(e.to_string()))?;
-
-        Ok(prove_info.receipt)
-    }
-}
-
-/// Runs execution only (no real proof) — suitable for testing.
-pub struct MockProofProvider;
-
-impl ProofProvider for MockProofProvider {
-    fn prove(&self, elf: &[u8], witness_bytes: &[u8]) -> Result<Receipt, ProofError> {
-        let env = ExecutorEnv::builder()
-            .write_slice(witness_bytes)
-            .build()
-            .map_err(|e| ProofError::ProvingFailed(e.to_string()))?;
-
-        let session = default_executor()
-            .execute(env, elf)
-            .map_err(|e| ProofError::ProvingFailed(e.to_string()))?;
-
-        Ok(Receipt::new(
-            risc0_zkvm::InnerReceipt::Fake(risc0_zkvm::FakeReceipt::new(
-                session.receipt_claim.unwrap(),
-            )),
-            session.journal.bytes,
-        ))
-    }
+  /// Extract journal bytes from a receipt.
+  fn journal_bytes(receipt: &Self::Receipt) -> Vec<u8>;
 }

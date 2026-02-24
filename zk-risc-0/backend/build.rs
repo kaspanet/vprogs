@@ -3,9 +3,10 @@ use std::collections::HashMap;
 use risc0_build::{DockerOptionsBuilder, GuestOptions, GuestOptionsBuilder};
 
 fn main() {
-    let guest_opts = guest_options();
-    let opts =
-        HashMap::from([("vprogs-zk-risc0-stitcher", guest_opts)]);
+    let opts = HashMap::from([
+        ("vprogs-zk-risc0-guest", guest_options()),
+        ("vprogs-zk-risc0-stitcher", guest_options()),
+    ]);
     risc0_build::embed_methods_with_options(opts);
 }
 
