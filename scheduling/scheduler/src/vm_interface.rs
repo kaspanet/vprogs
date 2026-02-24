@@ -2,7 +2,7 @@ use vprogs_core_types::{AccessMetadata, BatchMetadata, ResourceId, Transaction};
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
-use crate::{AccessHandle, RuntimeBatch};
+use crate::{AccessHandle, ProcessingContext, RuntimeBatch};
 
 /// Abstract transaction processor that the scheduler invokes.
 ///
@@ -10,10 +10,13 @@ use crate::{AccessHandle, RuntimeBatch};
 /// batch lifecycle events via [`Self::post_process_batch`].
 pub trait VmInterface: Clone + Sized + Send + Sync + 'static {
     /// Executes a single transaction against its accessed resources.
+    ///
+    /// The transaction, its batch-relative index, and the batch metadata are available via
+    /// the [`ProcessingContext`].
     fn process_transaction<S: Store<StateSpace = StateSpace>>(
         &self,
-        tx: &Self::Transaction,
         resources: &mut [AccessHandle<S, Self>],
+        ctx: &ProcessingContext<Self>,
     ) -> Result<Self::TransactionEffects, Self::Error>;
 
     /// Optional hook called after all transactions in a batch have been processed. The default

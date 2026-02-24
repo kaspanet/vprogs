@@ -173,11 +173,13 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
                 pending_writes: AtomicI64::new(0),
                 txs: txs
                     .into_iter()
-                    .map(|tx| {
+                    .enumerate()
+                    .map(|(i, tx)| {
                         RuntimeTx::new(
                             scheduler,
                             &mut state_diffs,
                             RuntimeBatchRef(this.clone()),
+                            i as u32,
                             tx,
                         )
                     })

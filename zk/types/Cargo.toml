@@ -1,0 +1,11 @@
+[package]
+edition.workspace = true
+name              = "vprogs-zk-types"
+version.workspace = true
+
+[features]
+default = ["std"]
+std     = []
+
+[dependencies]
+borsh.workspace = true

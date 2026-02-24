@@ -1,6 +1,6 @@
 use vprogs_node_framework::NodeVm;
 use vprogs_node_l1_bridge::{ChainBlockMetadata, RpcOptionalHeader, RpcOptionalTransaction};
-use vprogs_scheduling_scheduler::{AccessHandle, VmInterface};
+use vprogs_scheduling_scheduler::{AccessHandle, ProcessingContext, VmInterface};
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 use vprogs_transaction_runtime::TransactionRuntime;
@@ -20,10 +20,10 @@ pub struct VM;
 impl VmInterface for VM {
     fn process_transaction<S: Store<StateSpace = StateSpace>>(
         &self,
-        tx: &Transaction,
         resources: &mut [AccessHandle<S, Self>],
+        ctx: &ProcessingContext<Self>,
     ) -> VmResult<TransactionEffects> {
-        TransactionRuntime::execute(tx, resources)
+        TransactionRuntime::execute(ctx.transaction(), resources)
     }
 
     type Transaction = Transaction;

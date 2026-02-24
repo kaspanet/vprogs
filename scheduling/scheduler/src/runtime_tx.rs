@@ -9,7 +9,8 @@ use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
 use crate::{
-    AccessHandle, ResourceAccess, RuntimeBatchRef, Scheduler, StateDiff, vm_interface::VmInterface,
+    AccessHandle, ProcessingContext, ResourceAccess, RuntimeBatchRef, Scheduler, StateDiff,
+    vm_interface::VmInterface,
 };
 
 /// A transaction progressing through the scheduler's execution pipeline.
@@ -28,6 +29,8 @@ pub struct RuntimeTx<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     pending_resources: AtomicU64,
     /// Execution result, set after `process_transaction` succeeds.
     effects: ArcSwapOption<V::TransactionEffects>,
+    /// Zero-based position of this transaction within its batch.
+    tx_index: u32,
     /// The user-submitted transaction (deref target).
     tx: V::Transaction,
 }
@@ -50,6 +53,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeTx<S, V> {
         scheduler: &mut Scheduler<S, V>,
         state_diffs: &mut Vec<StateDiff<S, V>>,
         batch: RuntimeBatchRef<S, V>,
+        tx_index: u32,
         tx: V::Transaction,
     ) -> Self {
         Self(Arc::new_cyclic(|this: &Weak<RuntimeTxData<S, V>>| {
@@ -60,6 +64,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeTx<S, V> {
                 pending_resources: AtomicU64::new(resources.len() as u64),
                 effects: ArcSwapOption::empty(),
                 batch,
+                tx_index,
                 tx,
                 resources,
             }
@@ -86,9 +91,13 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeTx<S, V> {
                 return;
             }
 
+            // Build the processing context from the tx index and batch metadata.
+            let ctx =
+                ProcessingContext::new(&self.tx, self.tx_index, batch.checkpoint().metadata());
+
             // Process the transaction using the VM.
             let mut handles = handles.collect::<Vec<_>>();
-            match self.vm.process_transaction(&self.tx, &mut handles) {
+            match self.vm.process_transaction(&mut handles, &ctx) {
                 Ok(effects) => {
                     self.effects.store(Some(Arc::new(effects)));
                     handles.into_iter().for_each(AccessHandle::commit_changes);

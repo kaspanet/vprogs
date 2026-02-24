@@ -1,0 +1,21 @@
+[package]
+edition.workspace = true
+name              = "vprogs-zk-vm"
+version.workspace = true
+
+[build-dependencies]
+risc0-build.workspace = true
+
+[package.metadata.risc0]
+methods = ["../default-guest"]
+
+[dependencies]
+borsh.workspace                        = true
+risc0-zkvm                             = { workspace = true, features = ["client"] }
+thiserror.workspace                    = true
+tokio.workspace                        = true
+vprogs-core-types.workspace            = true
+vprogs-scheduling-scheduler.workspace  = true
+vprogs-state-space.workspace           = true
+vprogs-storage-types.workspace         = true
+vprogs-zk-types.workspace              = true

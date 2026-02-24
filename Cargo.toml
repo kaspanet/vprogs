@@ -6,8 +6,14 @@ default-members = [
   "state/*",
   "storage/*",
   "transaction-runtime/*",
+  "zk/guest-env",
+  "zk/proof-provider",
+  "zk/prover",
+  "zk/test-suite",
+  "zk/types",
+  "zk/vm",
 ]
-exclude = []
+exclude = ["zk/default-guest", "zk/stitcher-guest"]
 members = [
   "core/*",
   "node/*",
@@ -15,6 +21,7 @@ members = [
   "state/*",
   "storage/*",
   "transaction-runtime/*",
+  "zk/*",
 ]
 resolver = "3"
 
@@ -61,6 +68,11 @@ resolver = "3"
   workflow-core = "0.18.0"
 
   secp256k1 = { version = "0.29.1", features = ["rand-std"] }
+
+  # ZK dependencies
+  blake3 = { version = "1", default-features = false }
+  risc0-build = "3.0"
+  risc0-zkvm = { version = "3.0", default-features = false }
 
   # Kaspa dependencies
   kaspa-addresses           = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
@@ -117,3 +129,9 @@ resolver = "3"
   vprogs-transaction-runtime-signature-lock       = { path = "transaction-runtime/signature-lock" }
   vprogs-transaction-runtime-transaction          = { path = "transaction-runtime/transaction" }
   vprogs-transaction-runtime-transaction-effects  = { path = "transaction-runtime/transaction-effects" }
+  vprogs-zk-guest-env                             = { path = "zk/guest-env" }
+  vprogs-zk-proof-provider                        = { path = "zk/proof-provider" }
+  vprogs-zk-prover                                = { path = "zk/prover" }
+  vprogs-zk-test-suite                            = { path = "zk/test-suite" }
+  vprogs-zk-types                                 = { path = "zk/types" }
+  vprogs-zk-vm                                    = { path = "zk/vm" }

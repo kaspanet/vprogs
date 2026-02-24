@@ -1,0 +1,8 @@
+[env]
+# Skip RISC-0 guest compilation by default. The build scripts produce stub ELF constants so
+# host-side code compiles without the RISC-0 toolchain.
+#
+# To build real guest ELFs, unset this and either:
+#   - Install the RISC-0 toolchain: `rzup install rust`
+#   - Or use Docker: set RISC0_USE_DOCKER=1 (also requires `rzup` for version detection)
+RISC0_SKIP_BUILD = "1"

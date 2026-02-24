@@ -1,0 +1,18 @@
+[package]
+edition.workspace = true
+name              = "vprogs-zk-prover"
+version.workspace = true
+
+[build-dependencies]
+risc0-build.workspace = true
+
+[package.metadata.risc0]
+methods = ["../stitcher-guest"]
+
+[dependencies]
+borsh.workspace                    = true
+log.workspace                      = true
+risc0-zkvm                         = { workspace = true, features = ["client"] }
+tokio                              = { workspace = true, features = ["rt", "sync", "macros"] }
+vprogs-zk-proof-provider.workspace = true
+vprogs-zk-types.workspace         = true

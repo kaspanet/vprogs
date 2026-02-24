@@ -1,0 +1,13 @@
+[package]
+edition.workspace = true
+name              = "vprogs-zk-test-suite"
+version.workspace = true
+
+[dependencies]
+tempfile.workspace                     = true
+vprogs-core-types.workspace            = true
+vprogs-scheduling-scheduler.workspace  = true
+vprogs-storage-manager.workspace       = true
+vprogs-storage-rocksdb-store.workspace = true
+vprogs-zk-types.workspace             = true
+vprogs-zk-vm.workspace                = true
