@@ -5,10 +5,10 @@ version.workspace = true
 
 [features]
 default = ["std"]
-std     = []
+std     = ["borsh/std", "vprogs-zk-types/std"]
 
 [dependencies]
 blake3                    = { workspace = true }
-borsh.workspace           = true
+borsh                     = { workspace = true, default-features = false }
 risc0-zkvm.workspace      = true
-vprogs-zk-types.workspace = true
+vprogs-zk-types           = { workspace = true, default-features = false }
