@@ -15,7 +15,9 @@ pub fn parse_witness(buf: &[u8]) -> WitnessRef<'_> {
 /// Reads the raw witness bytes from the RISC-0 guest environment.
 pub fn read_witness() -> alloc::vec::Vec<u8> {
     #[cfg(target_os = "zkvm")]
-    { risc0_zkvm::guest::env::read() }
+    {
+        risc0_zkvm::guest::env::read()
+    }
 
     #[cfg(not(target_os = "zkvm"))]
     panic!("read_witness() is only available inside the RISC-0 guest (target_os = \"zkvm\")")
@@ -30,5 +32,8 @@ pub fn commit_journal(journal: &vprogs_zk_types::Journal) {
     }
 
     #[cfg(not(target_os = "zkvm"))]
-    { let _ = journal; panic!("commit_journal() is only available inside the RISC-0 guest (target_os = \"zkvm\")") }
+    {
+        let _ = journal;
+        panic!("commit_journal() is only available inside the RISC-0 guest (target_os = \"zkvm\")")
+    }
 }

@@ -13,10 +13,7 @@ fn main() {
 fn guest_options() -> GuestOptions {
     let mut builder = GuestOptionsBuilder::default();
     if std::env::var("RISC0_USE_DOCKER").is_ok() {
-        let docker_opts = DockerOptionsBuilder::default()
-            .root_dir("../../")
-            .build()
-            .unwrap();
+        let docker_opts = DockerOptionsBuilder::default().root_dir("../../").build().unwrap();
         builder.use_docker(docker_opts);
     }
     builder.build().unwrap()

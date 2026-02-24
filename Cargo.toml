@@ -77,9 +77,9 @@ resolver = "3"
   secp256k1 = { version = "0.29.1", features = ["rand-std"] }
 
   # ZK dependencies
-  blake3 = { version = "1", default-features = false }
+  blake3      = { version = "1", default-features = false }
   risc0-build = "3.0"
-  risc0-zkvm = { version = "3.0", default-features = false }
+  risc0-zkvm  = { version = "3.0", default-features = false }
 
   # Kaspa dependencies
   kaspa-addresses           = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
@@ -136,10 +136,10 @@ resolver = "3"
   vprogs-transaction-runtime-signature-lock       = { path = "transaction-runtime/signature-lock" }
   vprogs-transaction-runtime-transaction          = { path = "transaction-runtime/transaction" }
   vprogs-transaction-runtime-transaction-effects  = { path = "transaction-runtime/transaction-effects" }
-  vprogs-zk-risc0-backend                          = { path = "zk-risc-0/backend" }
-  vprogs-zk-risc0-guest-env                        = { path = "zk-risc-0/guest-env" }
   vprogs-zk-proof-provider                        = { path = "zk/proof-provider" }
   vprogs-zk-prover                                = { path = "zk/prover" }
+  vprogs-zk-risc0-backend                         = { path = "zk-risc-0/backend" }
+  vprogs-zk-risc0-guest-env                       = { path = "zk-risc-0/guest-env" }
   vprogs-zk-test-suite                            = { path = "zk/test-suite" }
   vprogs-zk-types                                 = { path = "zk/types" }
   vprogs-zk-vm                                    = { path = "zk/vm" }

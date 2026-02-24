@@ -6,9 +6,9 @@ version.workspace = true
 [build-dependencies]
 risc0-build.workspace = true
 
-[package.metadata.risc0]
-methods = ["../guest", "../stitcher"]
+  [package.metadata.risc0]
+  methods = ["../guest", "../stitcher"]
 
 [dependencies]
-risc0-zkvm                    = { workspace = true, features = ["client"] }
+risc0-zkvm                         = { workspace = true, features = ["client"] }
 vprogs-zk-proof-provider.workspace = true

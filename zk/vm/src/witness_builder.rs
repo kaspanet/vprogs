@@ -20,40 +20,40 @@ use crate::ZkVm;
 ///     [version: u64]
 /// ```
 pub(crate) fn build_witness<S: Store<StateSpace = StateSpace>, B: ZkBackend>(
-  resources: &[AccessHandle<S, ZkVm<B>>],
-  ctx: &ProcessingContext<ZkVm<B>>,
+    resources: &[AccessHandle<S, ZkVm<B>>],
+    ctx: &ProcessingContext<ZkVm<B>>,
 ) -> Vec<u8> {
-  let tx = ctx.transaction();
-  let batch_metadata_bytes = borsh::to_vec(ctx.batch_metadata()).unwrap();
+    let tx = ctx.transaction();
+    let batch_metadata_bytes = borsh::to_vec(ctx.batch_metadata()).unwrap();
 
-  let mut buf = Vec::new();
-  // Reserve space for total_len (will be filled at the end).
-  buf.extend_from_slice(&0u32.to_le_bytes());
+    let mut buf = Vec::new();
+    // Reserve space for total_len (will be filled at the end).
+    buf.extend_from_slice(&0u32.to_le_bytes());
 
-  write_bytes_aligned(&mut buf, &tx.tx_bytes);
-  buf.extend_from_slice(&ctx.tx_index().to_le_bytes());
-  write_bytes_aligned(&mut buf, &batch_metadata_bytes);
+    write_bytes_aligned(&mut buf, &tx.tx_bytes);
+    buf.extend_from_slice(&ctx.tx_index().to_le_bytes());
+    write_bytes_aligned(&mut buf, &batch_metadata_bytes);
 
-  buf.extend_from_slice(&(resources.len() as u32).to_le_bytes());
-  for resource in resources {
-    let id_bytes = borsh::to_vec(&resource.access_metadata().id).unwrap();
-    write_bytes_aligned(&mut buf, &id_bytes);
-    write_bytes_aligned(&mut buf, resource.data());
-    buf.extend_from_slice(&resource.version().to_le_bytes());
-  }
+    buf.extend_from_slice(&(resources.len() as u32).to_le_bytes());
+    for resource in resources {
+        let id_bytes = borsh::to_vec(&resource.access_metadata().id).unwrap();
+        write_bytes_aligned(&mut buf, &id_bytes);
+        write_bytes_aligned(&mut buf, resource.data());
+        buf.extend_from_slice(&resource.version().to_le_bytes());
+    }
 
-  // Fill in total_len.
-  let total_len = buf.len() as u32;
-  buf[..4].copy_from_slice(&total_len.to_le_bytes());
+    // Fill in total_len.
+    let total_len = buf.len() as u32;
+    buf[..4].copy_from_slice(&total_len.to_le_bytes());
 
-  buf
+    buf
 }
 
 fn write_bytes_aligned(buf: &mut Vec<u8>, data: &[u8]) {
-  buf.extend_from_slice(&(data.len() as u32).to_le_bytes());
-  buf.extend_from_slice(data);
-  let rem = buf.len() % 4;
-  if rem != 0 {
-    buf.resize(buf.len() + (4 - rem), 0);
-  }
+    buf.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    buf.extend_from_slice(data);
+    let rem = buf.len() % 4;
+    if rem != 0 {
+        buf.resize(buf.len() + (4 - rem), 0);
+    }
 }

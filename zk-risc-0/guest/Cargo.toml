@@ -4,6 +4,6 @@ name    = "vprogs-zk-risc0-guest"
 version = "0.1.0"
 
 [dependencies]
-risc0-zkvm               = { version = "3.0", default-features = false }
+risc0-zkvm                = { version = "3.0", default-features = false }
 vprogs-zk-risc0-guest-env = { path = "../guest-env", default-features = false }
 vprogs-zk-types           = { path = "../../zk/types", default-features = false }
