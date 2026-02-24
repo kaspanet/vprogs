@@ -7708,7 +7708,6 @@ name = "vprogs-zk-risc0-backend"
 version = "0.1.0"
 dependencies = [
  "risc0-binfmt",
- "risc0-build",
  "risc0-zkos-v1compat",
  "risc0-zkvm",
  "vprogs-zk-proof-provider",

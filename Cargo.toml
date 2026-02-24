@@ -39,7 +39,7 @@ resolver = "3"
   [workspace.dependencies]
   # External dependencies
   arc-swap = "1.7"
-  borsh = { version = "1.6.0", features = ["derive"] }
+  borsh = { version = "1.6.0", default-features = false, features = ["derive"] }
   clap = { version = "4", features = ["derive"] }
   crossbeam-deque = "0.8.6"
   crossbeam-queue = "0.3.12"
@@ -81,7 +81,6 @@ resolver = "3"
   risc0-binfmt = { version = "3.0.4", default-features = false, features = [
     "std",
   ] }
-  risc0-build = "3.0"
   risc0-zkos-v1compat = "2.2.2"
   risc0-zkvm = { version = "3.0", default-features = false }
 
@@ -145,5 +144,5 @@ resolver = "3"
   vprogs-zk-risc0-backend                         = { path = "zk-risc-0/backend" }
   vprogs-zk-risc0-guest-env                       = { path = "zk-risc-0/guest-env" }
   vprogs-zk-test-suite                            = { path = "zk/test-suite" }
-  vprogs-zk-types                                 = { path = "zk/types" }
+  vprogs-zk-types                                 = { path = "zk/types", default-features = false }
   vprogs-zk-vm                                    = { path = "zk/vm" }
