@@ -9,12 +9,16 @@ default-members = [
   "zk/proof-provider",
   "zk/prover",
   "zk-risc-0/backend",
-  "zk-risc-0/guest-env",
+  "zk-risc-0/transaction-processor-abi",
   "zk/test-suite",
   "zk/types",
   "zk/vm",
 ]
-exclude = ["zk-risc-0/elf-wrapper", "zk-risc-0/guest", "zk-risc-0/stitcher"]
+exclude = [
+  "zk-risc-0/elf-wrapper",
+  "zk-risc-0/transaction-processor",
+  "zk-risc-0/batch-processor",
+]
 members = [
   "core/*",
   "node/*",
@@ -25,7 +29,7 @@ members = [
   "zk/proof-provider",
   "zk/prover",
   "zk-risc-0/backend",
-  "zk-risc-0/guest-env",
+  "zk-risc-0/transaction-processor-abi",
   "zk/test-suite",
   "zk/types",
   "zk/vm",
@@ -138,7 +142,7 @@ resolver = "3"
   vprogs-zk-proof-provider                        = { path = "zk/proof-provider" }
   vprogs-zk-prover                                = { path = "zk/prover" }
   vprogs-zk-risc0-backend                         = { path = "zk-risc-0/backend" }
-  vprogs-zk-risc0-guest-env                       = { path = "zk-risc-0/guest-env" }
+  vprogs-zk-risc0-transaction-processor-abi       = { path = "zk-risc-0/transaction-processor-abi" }
   vprogs-zk-test-suite                            = { path = "zk/test-suite" }
   vprogs-zk-types                                 = { path = "zk/types", default-features = false }
   vprogs-zk-vm                                    = { path = "zk/vm" }

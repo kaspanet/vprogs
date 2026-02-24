@@ -14,7 +14,7 @@ pub struct BatchProof {
 /// Receives proof requests from the ZK VM, groups them by batch, and proves each transaction.
 ///
 /// When all transactions for a batch have been proven, emits a [`BatchProof`] containing the
-/// ordered journal bytes. Aggregation via the stitcher guest is deferred to a future milestone.
+/// ordered journal bytes. Aggregation via the batch processor is deferred to a future milestone.
 pub struct BatchProver<B: ZkBackend> {
     backend: Arc<B>,
     inner_elf: Arc<Vec<u8>>,

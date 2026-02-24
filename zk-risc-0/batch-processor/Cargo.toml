@@ -1,6 +1,6 @@
 [package]
 edition = "2021"
-name    = "vprogs-zk-risc0-stitcher"
+name    = "vprogs-zk-risc0-batch-processor"
 version = "0.1.0"
 
 [dependencies]

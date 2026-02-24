@@ -8,24 +8,25 @@ use vprogs_zk_risc0_backend::Risc0Prover;
 use vprogs_zk_types::Journal;
 use vprogs_zk_vm::{ZkAccessMetadata, ZkBatchMetadata, ZkResourceId, ZkTransaction, ZkVm};
 
-/// Loads the pre-built guest ELF from the repository.
+/// Loads the pre-built transaction processor ELF from the repository.
 ///
-/// The ELF is committed at `zk-risc-0/guest/compiled/guest.elf` and can be rebuilt
-/// with `./zk-risc-0/build-guests.sh guest`.
-fn guest_elf() -> Vec<u8> {
+/// The ELF is committed at `zk-risc-0/transaction-processor/compiled/program.elf` and can be
+/// rebuilt with `./zk-risc-0/build-guests.sh transaction-processor`.
+fn transaction_processor_elf() -> Vec<u8> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let elf_path = format!("{manifest_dir}/../../zk-risc-0/guest/compiled/program.elf");
+    let elf_path =
+        format!("{manifest_dir}/../../zk-risc-0/transaction-processor/compiled/program.elf");
     std::fs::read(&elf_path).unwrap_or_else(|e| {
         panic!(
-            "guest ELF not found at {elf_path}: {e}\n\
-             Run `./zk-risc-0/build-guests.sh guest` to rebuild it."
+            "transaction processor ELF not found at {elf_path}: {e}\n\
+             Run `./zk-risc-0/build-guests.sh transaction-processor` to rebuild it."
         )
     })
 }
 
 #[test]
 fn test_zk_scheduler_e2e() {
-    let elf = guest_elf();
+    let elf = transaction_processor_elf();
 
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
@@ -58,7 +59,7 @@ fn test_zk_scheduler_e2e() {
 
     batch.wait_committed_blocking();
 
-    // The guest calls `compute_output_commitment(&[])` — empty ops, so ops_hash
+    // The transaction processor calls `compute_output_commitment(&[])` — empty ops, so ops_hash
     // is the BLAKE3 digest of an empty sequence.
     let expected_ops_hash: [u8; 32] = blake3::Hasher::new().finalize().into();
 

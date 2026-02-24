@@ -12,7 +12,7 @@ use vprogs_zk_types::Journal;
 risc0_zkvm::guest::entry!(main);
 
 fn main() {
-    // Read stitcher parameters from stdin.
+    // Read batch processor parameters from stdin.
     let image_id: [u8; 32] = env::read();
     let batch_index: u64 = env::read();
     let count: u32 = env::read();

@@ -7712,7 +7712,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "vprogs-zk-risc0-guest-env"
+name = "vprogs-zk-risc0-transaction-processor-abi"
 version = "0.1.0"
 dependencies = [
  "blake3",
