@@ -8,7 +8,7 @@ default = ["std"]
 std     = ["borsh/std", "vprogs-zk-types/std"]
 
 [dependencies]
-blake3                    = { workspace = true }
-borsh                     = { workspace = true, default-features = false }
-risc0-zkvm.workspace      = true
-vprogs-zk-types           = { workspace = true, default-features = false }
+blake3               = { workspace = true }
+borsh                = { workspace = true, default-features = false }
+risc0-zkvm.workspace = true
+vprogs-zk-types      = { workspace = true, default-features = false }

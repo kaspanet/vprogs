@@ -4,6 +4,8 @@ name              = "vprogs-zk-test-suite"
 version.workspace = true
 
 [dependencies]
+blake3.workspace                       = true
+borsh.workspace                        = true
 tempfile.workspace                     = true
 vprogs-core-types.workspace            = true
 vprogs-scheduling-scheduler.workspace  = true

@@ -10,5 +10,7 @@ risc0-build.workspace = true
   methods = ["../guest", "../stitcher"]
 
 [dependencies]
-risc0-zkvm                         = { workspace = true, features = ["client"] }
+risc0-binfmt.workspace             = true
+risc0-zkos-v1compat.workspace      = true
+risc0-zkvm                         = { workspace = true, features = ["prove"] }
 vprogs-zk-proof-provider.workspace = true
