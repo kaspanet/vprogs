@@ -1,9 +1,0 @@
-[package]
-edition = "2021"
-name    = "vprogs-zk-default-guest"
-version = "0.1.0"
-
-[dependencies]
-risc0-zkvm          = { version = "3.0", default-features = false }
-vprogs-zk-guest-env = { path = "../guest-env", default-features = false }
-vprogs-zk-types     = { path = "../types", default-features = false }

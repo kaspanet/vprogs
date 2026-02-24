@@ -1,9 +1,9 @@
 [package]
 edition = "2021"
-name    = "vprogs-zk-stitcher-guest"
+name    = "vprogs-zk-risc0-stitcher"
 version = "0.1.0"
 
 [dependencies]
 borsh           = { version = "1.6.0", features = ["derive"] }
 risc0-zkvm      = { version = "3.0", default-features = false }
-vprogs-zk-types = { path = "../types", default-features = false }
+vprogs-zk-types = { path = "../../zk/types", default-features = false }

@@ -7060,16 +7060,6 @@ name = "vprogs-transaction-runtime-transaction-effects"
 version = "0.1.0"
 
 [[package]]
-name = "vprogs-zk-guest-env"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "borsh",
- "risc0-zkvm",
- "vprogs-zk-types",
-]
-
-[[package]]
 name = "vprogs-zk-proof-provider"
 version = "0.1.0"
 dependencies = [
@@ -7087,6 +7077,16 @@ dependencies = [
  "risc0-zkvm",
  "tokio",
  "vprogs-zk-proof-provider",
+ "vprogs-zk-types",
+]
+
+[[package]]
+name = "vprogs-zk-risc0-guest-env"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "borsh",
+ "risc0-zkvm",
  "vprogs-zk-types",
 ]
 

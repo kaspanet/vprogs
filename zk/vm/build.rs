@@ -5,7 +5,7 @@ use risc0_build::{DockerOptionsBuilder, GuestOptions, GuestOptionsBuilder};
 fn main() {
     let guest_opts = guest_options();
     let opts =
-        HashMap::from([("vprogs-zk-default-guest", guest_opts)]);
+        HashMap::from([("vprogs-zk-risc0-guest", guest_opts)]);
     risc0_build::embed_methods_with_options(opts);
 }
 

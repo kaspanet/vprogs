@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use vprogs_zk_guest_env::{
+use vprogs_zk_risc0_guest_env::{
     commit_journal, compute_input_commitment, compute_output_commitment, parse_witness,
     read_witness,
 };

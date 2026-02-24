@@ -1,0 +1,14 @@
+[package]
+edition.workspace = true
+name              = "vprogs-zk-risc0-guest-env"
+version.workspace = true
+
+[features]
+default = ["std"]
+std     = []
+
+[dependencies]
+blake3                    = { workspace = true }
+borsh.workspace           = true
+risc0-zkvm.workspace      = true
+vprogs-zk-types.workspace = true
