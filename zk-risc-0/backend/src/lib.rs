@@ -1,16 +1,5 @@
-use risc0_binfmt::ProgramBinary;
 use risc0_zkvm::{ExecutorEnv, ProverOpts, Receipt, default_executor, default_prover};
 use vprogs_zk_proof_provider::{BackendError, ZkBackend};
-
-/// Wraps a raw RISC-V ELF (as produced by `cargo build --target riscv32im-risc0-zkvm-elf`)
-/// into the `ProgramBinary` format expected by the RISC-0 executor.
-///
-/// The Docker build script (`zk-risc-0/build-guests.sh`) produces raw ELFs that need this
-/// post-processing step before they can be executed.
-pub fn wrap_raw_elf(user_elf: &[u8]) -> Vec<u8> {
-    let kernel_elf = risc0_zkos_v1compat::V1COMPAT_ELF;
-    ProgramBinary::new(user_elf, kernel_elf).encode()
-}
 
 /// Shared executor helper — builds env and runs the guest.
 fn execute_guest(

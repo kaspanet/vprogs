@@ -54,9 +54,17 @@ RUN RUSTFLAGS='-Cpasses=lower-atomic -Clink-arg=-Ttext=0x00200800 -Clink-arg=--f
 RUN RUSTFLAGS='-Cpasses=lower-atomic -Clink-arg=-Ttext=0x00200800 -Clink-arg=--fatal-warnings -Cpanic=abort --cfg getrandom_backend="custom"' \
     cargo +risc0 build --release --target riscv32im-risc0-zkvm-elf --manifest-path \$CARGO_MANIFEST_PATH
 
+# Build the elf-wrapper tool (host binary) and wrap the raw ELF into ProgramBinary format.
+RUN cargo build --release --manifest-path zk-risc-0/elf-wrapper/Cargo.toml
+RUN ./target/release/elf-wrapper target/riscv32im-risc0-zkvm-elf/release/vprogs-zk-risc0-${guest}
+
 FROM scratch AS export
 COPY --from=build /src/target/riscv32im-risc0-zkvm-elf/release/ /
 DOCKERFILE
 
-  echo "Done: ${guest}"
+  # Copy the wrapped ELF into the guest crate's compiled/ directory.
+  elf_dest="$SCRIPT_DIR/${guest}/compiled/program.elf"
+  mkdir -p "$(dirname "$elf_dest")"
+  cp "$out_dir/vprogs-zk-risc0-${guest}" "$elf_dest"
+  echo "Done: ${guest} → ${elf_dest}"
 done

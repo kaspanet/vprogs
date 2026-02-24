@@ -4,7 +4,5 @@ name              = "vprogs-zk-risc0-backend"
 version.workspace = true
 
 [dependencies]
-risc0-binfmt.workspace             = true
-risc0-zkos-v1compat.workspace      = true
 risc0-zkvm                         = { workspace = true, features = ["prove"] }
 vprogs-zk-proof-provider.workspace = true

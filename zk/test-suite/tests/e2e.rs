@@ -4,31 +4,23 @@ use vprogs_core_types::AccessType;
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
-use vprogs_zk_risc0_backend::{Risc0Prover, wrap_raw_elf};
+use vprogs_zk_risc0_backend::Risc0Prover;
 use vprogs_zk_types::Journal;
 use vprogs_zk_vm::{ZkAccessMetadata, ZkBatchMetadata, ZkResourceId, ZkTransaction, ZkVm};
 
-/// Loads the Docker-built guest ELF from disk.
+/// Loads the pre-built guest ELF from the repository.
 ///
-/// The ELF is produced by `zk-risc-0/build-guests.sh` and written to
-/// `target/riscv-guest/riscv32im-risc0-zkvm-elf/docker/`.
-///
-/// Panics if the file does not exist — run `./zk-risc-0/build-guests.sh guest` first.
+/// The ELF is committed at `zk-risc-0/guest/compiled/guest.elf` and can be rebuilt
+/// with `./zk-risc-0/build-guests.sh guest`.
 fn guest_elf() -> Vec<u8> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let elf_path = format!(
-        "{manifest_dir}/../../target/riscv-guest/riscv32im-risc0-zkvm-elf/docker/\
-         vprogs_zk_risc0_guest/vprogs-zk-risc0-guest"
-    );
-    let raw_elf = std::fs::read(&elf_path).unwrap_or_else(|e| {
+    let elf_path = format!("{manifest_dir}/../../zk-risc-0/guest/compiled/program.elf");
+    std::fs::read(&elf_path).unwrap_or_else(|e| {
         panic!(
             "guest ELF not found at {elf_path}: {e}\n\
-             Run `./zk-risc-0/build-guests.sh guest` to build it."
+             Run `./zk-risc-0/build-guests.sh guest` to rebuild it."
         )
-    });
-    // Docker builds produce a raw RISC-V ELF; wrap it into the ProgramBinary
-    // format expected by the RISC-0 executor.
-    wrap_raw_elf(&raw_elf)
+    })
 }
 
 #[test]
