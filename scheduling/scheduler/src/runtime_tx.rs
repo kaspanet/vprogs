@@ -81,12 +81,11 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeTx<S, V> {
 
     pub(crate) fn execute(&self) {
         if let Some(batch) = self.batch.upgrade() {
-            let handles = self.resources.iter().map(AccessHandle::new).collect();
             let mut ctx = TransactionContext::new(
                 &self.tx,
                 self.tx_index,
                 batch.checkpoint().metadata(),
-                handles,
+                self.resources.iter().map(AccessHandle::new).collect(),
             );
 
             // If the batch was canceled, roll back all changes and exit early.

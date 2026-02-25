@@ -9,10 +9,7 @@ use crate::{RuntimeBatch, TransactionContext};
 /// Implementations define how individual transactions are executed and may optionally hook into
 /// batch lifecycle events via [`Self::post_process_batch`].
 pub trait VmInterface: Clone + Sized + Send + Sync + 'static {
-    /// Executes a single transaction against its accessed resources.
-    ///
-    /// The transaction, its batch-relative index, the batch metadata, and the resource access
-    /// handles are all available via the [`TransactionContext`].
+    /// Executes a single transaction against its local [`TransactionContext`].
     fn process_transaction<S: Store<StateSpace = StateSpace>>(
         &self,
         ctx: &mut TransactionContext<S, Self>,
