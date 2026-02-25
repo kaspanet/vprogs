@@ -11,4 +11,5 @@ std     = ["borsh/std", "vprogs-zk-types/std"]
 blake3               = { workspace = true }
 borsh                = { workspace = true, default-features = false }
 risc0-zkvm.workspace = true
+rkyv                 = { workspace = true, default-features = false }
 vprogs-zk-types      = { workspace = true, default-features = false }

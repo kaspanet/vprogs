@@ -5,6 +5,7 @@ version.workspace = true
 
 [dependencies]
 borsh.workspace                       = true
+rkyv.workspace                        = true
 thiserror.workspace                   = true
 tokio.workspace                       = true
 vprogs-core-types.workspace           = true

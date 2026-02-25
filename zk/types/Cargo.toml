@@ -5,7 +5,8 @@ version.workspace = true
 
 [features]
 default = ["std"]
-std     = ["borsh/std"]
+std     = ["borsh/std", "rkyv/std"]
 
 [dependencies]
 borsh = { workspace = true, default-features = false }
+rkyv  = { workspace = true, default-features = false }

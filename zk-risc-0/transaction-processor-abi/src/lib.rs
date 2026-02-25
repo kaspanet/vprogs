@@ -5,11 +5,11 @@ extern crate alloc;
 mod commitment;
 
 pub use commitment::{compute_input_commitment, compute_output_commitment};
-pub use vprogs_zk_types::{WitnessReader, WitnessRef};
+pub use vprogs_zk_types::{ArchivedAccount, ArchivedWitness};
 
-/// Parses a raw witness byte buffer into a zero-copy [`WitnessRef`].
-pub fn parse_witness(buf: &[u8]) -> WitnessRef<'_> {
-    WitnessReader::new(buf).read()
+/// Zero-copy access to the rkyv-archived witness from raw bytes.
+pub fn access_witness(buf: &[u8]) -> &ArchivedWitness {
+    rkyv::access::<ArchivedWitness, rkyv::rancor::Error>(buf).expect("invalid witness archive")
 }
 
 /// Reads the raw witness bytes from the RISC-0 zkVM environment.

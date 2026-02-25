@@ -1,17 +1,18 @@
-use vprogs_zk_types::{AccountInputRef, InputCommitment, OutputCommitment, StateOp};
+use vprogs_zk_types::{ArchivedAccount, InputCommitment, OutputCommitment, StateOp};
 
 /// Computes a deterministic commitment over the pre-execution account state.
 ///
 /// Accounts are sorted by `account_id` before hashing to ensure determinism regardless of
 /// iteration order.
-pub fn compute_input_commitment(accounts: &mut [AccountInputRef<'_>]) -> InputCommitment {
-    accounts.sort_unstable_by(|a, b| a.account_id.cmp(b.account_id));
+pub fn compute_input_commitment(accounts: &[ArchivedAccount]) -> InputCommitment {
+    let mut sorted: Vec<&ArchivedAccount> = accounts.iter().collect();
+    sorted.sort_unstable_by(|a, b| a.account_id.as_slice().cmp(b.account_id.as_slice()));
 
     let mut hasher = blake3::Hasher::new();
-    for account in accounts.iter() {
-        hasher.update(account.account_id);
-        hasher.update(account.data);
-        hasher.update(&account.version.to_le_bytes());
+    for account in &sorted {
+        hasher.update(&account.account_id);
+        hasher.update(&account.data);
+        hasher.update(&account.version.to_native().to_le_bytes());
     }
 
     InputCommitment { state_root: *hasher.finalize().as_bytes() }

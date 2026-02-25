@@ -33,13 +33,14 @@ impl<B: Backend> Processor for Vm<B> {
         &self,
         ctx: &mut TransactionContext<S, Self>,
     ) -> Result<(), Error> {
-        // 1. Snapshot context into an owned witness.
-        let transaction_context = ctx.witness();
+        // 1. Serialize witness to rkyv bytes.
+        let witness_bytes = ctx.witness();
+        let num_accounts = ctx.resources().len();
 
         // 2. Execute via backend — returns one optional op per account.
         let ops = self
             .backend
-            .execute(&transaction_context)
+            .execute(&witness_bytes, num_accounts)
             .map_err(|e| Error::ExecutorFailed(e.to_string()))?;
 
         // 3. Apply ops to resource handles.
@@ -61,7 +62,8 @@ impl<B: Backend> Processor for Vm<B> {
         if let Some(ref proof_tx) = self.proof_tx {
             let _ = proof_tx.send(ProofRequest {
                 batch_index: ctx.batch_metadata().batch_index,
-                witness: transaction_context,
+                tx_index: ctx.tx_index(),
+                witness_bytes,
                 ops,
             });
         }
