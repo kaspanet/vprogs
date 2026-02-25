@@ -12,4 +12,4 @@ pub use account_input::AccountInput;
 pub use journal::{InputCommitment, Journal, OutputCommitment};
 pub use proof_request::ProofRequest;
 pub use state_op::StateOp;
-pub use witness::{AccountInputRef, WitnessReader, WitnessRef};
+pub use witness::{AccountInputRef, Witness, WitnessReader, WitnessRef};

@@ -44,7 +44,7 @@ pub struct ZkBatchMetadata {
 
 /// Effects produced by executing a ZK transaction.
 pub struct ZkTransactionEffects {
-    pub journal_bytes: Vec<u8>,
+    pub ops: Vec<vprogs_zk_types::StateOp>,
 }
 
 /// Errors returned by the ZK VM during transaction processing.
@@ -60,6 +60,6 @@ pub enum ZkVmError {
 
 impl fmt::Display for ZkTransactionEffects {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ZkTransactionEffects({} bytes)", self.journal_bytes.len())
+        write!(f, "ZkTransactionEffects({} ops)", self.ops.len())
     }
 }

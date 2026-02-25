@@ -7700,9 +7700,7 @@ name = "vprogs-zk-risc0-backend"
 version = "0.1.0"
 dependencies = [
  "risc0-zkvm",
- "vprogs-scheduling-scheduler",
- "vprogs-state-space",
- "vprogs-storage-types",
+ "vprogs-zk-types",
  "vprogs-zk-vm",
 ]
 

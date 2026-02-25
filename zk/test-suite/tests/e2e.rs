@@ -1,11 +1,9 @@
-use borsh::BorshDeserialize;
 use tempfile::TempDir;
 use vprogs_core_types::AccessType;
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_risc0_backend::Risc0Backend;
-use vprogs_zk_types::Journal;
 use vprogs_zk_vm::{ZkAccessMetadata, ZkBatchMetadata, ZkResourceId, ZkTransaction, ZkVm};
 
 /// Loads the pre-built transaction processor ELF from the repository.
@@ -70,20 +68,9 @@ fn test_zk_scheduler_e2e() {
 
     batch.wait_committed_blocking();
 
-    // The transaction processor calls `compute_output_commitment(&[])` — empty ops, so ops_hash
-    // is the BLAKE3 digest of an empty sequence.
-    let expected_ops_hash: [u8; 32] = blake3::Hasher::new().finalize().into();
-
     for (i, tx) in batch.txs().iter().enumerate() {
         let effects = tx.effects();
-        assert!(!effects.journal_bytes.is_empty(), "expected non-empty journal bytes for tx {i}");
-
-        let journal =
-            Journal::try_from_slice(&effects.journal_bytes).expect("failed to deserialize journal");
-
-        assert_eq!(journal.tx_index, i as u32, "tx_index mismatch for tx {i}");
-        assert_ne!(journal.input.state_root, [0u8; 32], "expected non-zero state_root for tx {i}");
-        assert_eq!(journal.output.ops_hash, expected_ops_hash, "ops_hash mismatch for tx {i}");
+        assert!(effects.ops.is_empty(), "expected no ops for tx {i}");
     }
 
     scheduler.shutdown();

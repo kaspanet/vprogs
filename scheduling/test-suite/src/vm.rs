@@ -1,5 +1,5 @@
 use vprogs_core_types::{AccessMetadata, AccessType};
-use vprogs_scheduling_scheduler::{AccessHandle, RuntimeBatch, TransactionContext, VmInterface};
+use vprogs_scheduling_scheduler::{RuntimeBatch, TransactionContext, VmInterface};
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
@@ -12,13 +12,12 @@ pub struct VM;
 impl VmInterface for VM {
     fn process_transaction<S: Store<StateSpace = StateSpace>>(
         &self,
-        resources: &mut [AccessHandle<S, Self>],
-        ctx: &TransactionContext<Self>,
+        ctx: &mut TransactionContext<S, Self>,
     ) -> Result<(), Self::Error> {
-        let tx = ctx.transaction();
-        for resource in resources {
+        let tx_id = ctx.transaction().0;
+        for resource in ctx.resources_mut() {
             if resource.access_metadata().access_type() == AccessType::Write {
-                resource.data_mut().extend_from_slice(&tx.0.to_be_bytes());
+                resource.data_mut().extend_from_slice(&tx_id.to_be_bytes());
             }
         }
         Ok(())

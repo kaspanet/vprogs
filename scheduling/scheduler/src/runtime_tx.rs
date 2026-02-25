@@ -81,29 +81,29 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeTx<S, V> {
 
     pub(crate) fn execute(&self) {
         if let Some(batch) = self.batch.upgrade() {
-            // Create access handles for all accessed resources.
-            let handles = self.resources.iter().map(AccessHandle::new);
+            let handles = self.resources.iter().map(AccessHandle::new).collect();
+            let mut ctx = TransactionContext::new(
+                &self.tx,
+                self.tx_index,
+                batch.checkpoint().metadata(),
+                handles,
+            );
 
             // If the batch was canceled, roll back all changes and exit early.
             if batch.was_canceled() {
-                handles.for_each(AccessHandle::rollback_changes);
+                ctx.rollback_all();
                 batch.decrease_pending_txs();
                 return;
             }
 
-            // Build the transaction context from the tx index and batch metadata.
-            let ctx =
-                TransactionContext::new(&self.tx, self.tx_index, batch.checkpoint().metadata());
-
             // Process the transaction using the VM.
-            let mut handles = handles.collect::<Vec<_>>();
-            match self.vm.process_transaction(&mut handles, &ctx) {
+            match self.vm.process_transaction(&mut ctx) {
                 Ok(effects) => {
                     self.effects.store(Some(Arc::new(effects)));
-                    handles.into_iter().for_each(AccessHandle::commit_changes);
+                    ctx.commit_all();
                 }
                 // TODO: Handle errors (e.g. store with transaction)
-                Err(_) => handles.into_iter().for_each(AccessHandle::rollback_changes),
+                Err(_) => ctx.rollback_all(),
             }
 
             // Notify the batch that this transaction has been processed.

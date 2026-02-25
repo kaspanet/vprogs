@@ -42,26 +42,25 @@ impl<B: ZkBackend + 'static> BatchProver<B> {
 
             while let Some(request) = self.rx.recv().await {
                 let backend = self.backend.clone();
-                let witness_bytes = request.witness_bytes.clone();
+                let witness = request.witness.clone();
                 let batch_index = request.batch_index;
                 let tx_index = request.tx_index;
 
                 // Prove on a blocking thread.
-                let receipt = match tokio::task::spawn_blocking(move || {
-                    backend.prove_transaction(&witness_bytes)
-                })
-                .await
-                {
-                    Ok(Ok(receipt)) => receipt,
-                    Ok(Err(e)) => {
-                        log::error!("proof failed for batch {batch_index} tx {tx_index}: {e}");
-                        continue;
-                    }
-                    Err(e) => {
-                        log::error!("proof task panicked: {e}");
-                        continue;
-                    }
-                };
+                let receipt =
+                    match tokio::task::spawn_blocking(move || backend.prove_transaction(&witness))
+                        .await
+                    {
+                        Ok(Ok(receipt)) => receipt,
+                        Ok(Err(e)) => {
+                            log::error!("proof failed for batch {batch_index} tx {tx_index}: {e}");
+                            continue;
+                        }
+                        Err(e) => {
+                            log::error!("proof task panicked: {e}");
+                            continue;
+                        }
+                    };
 
                 let entry = pending.entry(batch_index).or_default();
                 entry.push((tx_index, receipt));
