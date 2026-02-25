@@ -32,15 +32,15 @@ fn main() {
     // Chain verification: output of tx[n] feeds into input of tx[n+1].
     for window in journals.windows(2) {
         assert_eq!(
-            window[0].output.ops_hash, window[1].input.state_root,
+            window[0].output, window[1].input,
             "chain break between tx {} and tx {}",
             window[0].tx_index, window[1].tx_index
         );
     }
 
     // Commit aggregated result: (initial_root, final_root, batch_index).
-    let initial_root = journals.first().map(|j| j.input.state_root).unwrap_or([0u8; 32]);
-    let final_root = journals.last().map(|j| j.output.ops_hash).unwrap_or([0u8; 32]);
+    let initial_root = journals.first().map(|j| j.input).unwrap_or([0u8; 32]);
+    let final_root = journals.last().map(|j| j.output).unwrap_or([0u8; 32]);
 
     env::commit_slice(&initial_root);
     env::commit_slice(&final_root);

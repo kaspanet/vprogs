@@ -4,6 +4,10 @@ name    = "vprogs-zk-risc0-batch-processor"
 version = "0.1.0"
 
 [dependencies]
-borsh           = { version = "1.6.0", features = ["derive"] }
-risc0-zkvm      = { version = "3.0", default-features = false, features = ["std"] }
+borsh = { version = "1.6.0", features = ["derive"] }
+risc0-zkvm = { version = "3.0", default-features = false, features = ["std"] }
+rkyv = { version = "0.8", default-features = false, features = [
+  "alloc",
+  "bytecheck",
+] }
 vprogs-zk-types = { path = "../../zk/types", default-features = false }

@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use vprogs_zk_types::{ArchivedAccount, StateOp};
 
 /// Computes a deterministic commitment over the pre-execution account state.

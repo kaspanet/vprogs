@@ -14,7 +14,7 @@ fn main() {
     let witness = access_witness(&witness_bytes);
 
     let input = compute_input_commitment(&witness.accounts);
-    let output = compute_output_commitment(&[]);
+    let output = compute_output_commitment(&witness.accounts, &[]);
 
     commit_journal(&Journal { tx_index: witness.tx_index.to_native(), input, output });
 }
