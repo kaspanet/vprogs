@@ -120,10 +120,11 @@ impl<S: Store<StateSpace = StateSpace>, V: NodeVm> NodeWorker<S, V> {
                 // Submit pre-processing to an execution worker. The closure captures the VM
                 // and batch handle so it can run independently on the thread pool.
                 self.scheduler.submit_function({
-                    let vm = self.scheduler.vm().clone();
+                    let processor = self.scheduler.processor().clone();
                     let batch = batch.clone();
                     move || {
-                        let txs = vm.pre_process_block(index, &header, &accepted_transactions);
+                        let txs =
+                            processor.pre_process_block(index, &header, &accepted_transactions);
                         batch.set(txs, *checkpoint.metadata());
                     }
                 });

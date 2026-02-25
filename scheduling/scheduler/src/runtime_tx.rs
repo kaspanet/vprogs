@@ -10,34 +10,34 @@ use vprogs_storage_types::Store;
 
 use crate::{
     AccessHandle, ResourceAccess, RuntimeBatchRef, Scheduler, StateDiff, TransactionContext,
-    transaction_processor::TransactionProcessor,
+    processor::Processor,
 };
 
 /// A transaction progressing through the scheduler's execution pipeline.
 ///
 /// Wraps a user-submitted transaction with its resource access handles, execution state, and a
-/// back-reference to the owning batch. Derefs to the inner `V::Transaction`.
+/// back-reference to the owning batch. Derefs to the inner `P::Transaction`.
 #[smart_pointer(deref(tx))]
-pub struct RuntimeTx<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> {
-    /// VM implementation used to execute this transaction.
-    vm: V,
+pub struct RuntimeTx<S: Store<StateSpace = StateSpace>, P: Processor> {
+    /// Processor used to execute this transaction.
+    processor: P,
     /// Weak reference to the owning batch.
-    batch: RuntimeBatchRef<S, V>,
+    batch: RuntimeBatchRef<S, P>,
     /// Resources accessed by this transaction, one per declared access.
-    resources: Vec<ResourceAccess<S, V>>,
+    resources: Vec<ResourceAccess<S, P>>,
     /// Number of resources whose data hasn't been resolved yet.
     pending_resources: AtomicU64,
     /// Execution result, set after `process_transaction` succeeds.
-    effects: ArcSwapOption<V::TransactionEffects>,
+    effects: ArcSwapOption<P::TransactionEffects>,
     /// Zero-based position of this transaction within its batch.
     tx_index: u32,
     /// The user-submitted transaction (deref target).
-    tx: V::Transaction,
+    tx: P::Transaction,
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> RuntimeTx<S, V> {
+impl<S: Store<StateSpace = StateSpace>, P: Processor> RuntimeTx<S, P> {
     /// Returns the resources accessed by this transaction.
-    pub fn accessed_resources(&self) -> &[ResourceAccess<S, V>] {
+    pub fn accessed_resources(&self) -> &[ResourceAccess<S, P>] {
         &self.resources
     }
 
@@ -45,22 +45,22 @@ impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> RuntimeTx<S, V>
     ///
     /// # Panics
     /// Panics if called before execution completes.
-    pub fn effects(&self) -> Arc<V::TransactionEffects> {
+    pub fn effects(&self) -> Arc<P::TransactionEffects> {
         self.effects.load_full().expect("effects not ready")
     }
 
     pub(crate) fn new(
-        scheduler: &mut Scheduler<S, V>,
-        state_diffs: &mut Vec<StateDiff<S, V>>,
-        batch: RuntimeBatchRef<S, V>,
+        scheduler: &mut Scheduler<S, P>,
+        state_diffs: &mut Vec<StateDiff<S, P>>,
+        batch: RuntimeBatchRef<S, P>,
         tx_index: u32,
-        tx: V::Transaction,
+        tx: P::Transaction,
     ) -> Self {
-        Self(Arc::new_cyclic(|this: &Weak<RuntimeTxData<S, V>>| {
+        Self(Arc::new_cyclic(|this: &Weak<RuntimeTxData<S, P>>| {
             let resources =
                 scheduler.resources(&tx, RuntimeTxRef(this.clone()), &batch, state_diffs);
             RuntimeTxData {
-                vm: scheduler.vm().clone(),
+                processor: scheduler.processor().clone(),
                 pending_resources: AtomicU64::new(resources.len() as u64),
                 effects: ArcSwapOption::empty(),
                 batch,
@@ -95,8 +95,8 @@ impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> RuntimeTx<S, V>
                 return;
             }
 
-            // Process the transaction using the VM.
-            match self.vm.process_transaction(&mut ctx) {
+            // Process the transaction using the processor.
+            match self.processor.process_transaction(&mut ctx) {
                 Ok(effects) => {
                     self.effects.store(Some(Arc::new(effects)));
                     ctx.commit_all();
@@ -110,13 +110,13 @@ impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> RuntimeTx<S, V>
         }
     }
 
-    pub(crate) fn batch(&self) -> &RuntimeBatchRef<S, V> {
+    pub(crate) fn batch(&self) -> &RuntimeBatchRef<S, P> {
         &self.batch
     }
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> RuntimeTxRef<S, V> {
-    pub(crate) fn belongs_to_batch(&self, batch: &RuntimeBatchRef<S, V>) -> bool {
+impl<S: Store<StateSpace = StateSpace>, P: Processor> RuntimeTxRef<S, P> {
+    pub(crate) fn belongs_to_batch(&self, batch: &RuntimeBatchRef<S, P>) -> bool {
         self.upgrade().is_some_and(|tx| tx.batch() == batch)
     }
 }

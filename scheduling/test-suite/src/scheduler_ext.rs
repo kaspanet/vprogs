@@ -6,7 +6,7 @@ use vprogs_state_version::StateVersion;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_storage_types::ReadStore;
 
-use crate::VM;
+use crate::Processor;
 
 /// Extension trait for scheduler test helpers.
 pub trait SchedulerExt {
@@ -24,7 +24,7 @@ pub trait SchedulerExt {
     fn assert_resource_deleted(&self, resource_id: usize) -> &Self;
 }
 
-impl SchedulerExt for Scheduler<RocksDbStore, VM> {
+impl SchedulerExt for Scheduler<RocksDbStore, Processor> {
     fn wait_pruned(&self, expected: u64, timeout: Duration) -> &Self {
         let start = Instant::now();
         let key = expected.to_be_bytes();

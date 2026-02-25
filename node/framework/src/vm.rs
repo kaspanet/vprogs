@@ -1,12 +1,12 @@
 use vprogs_node_l1_bridge::{ChainBlockMetadata, RpcOptionalHeader, RpcOptionalTransaction};
-use vprogs_scheduling_scheduler::TransactionProcessor;
+use vprogs_scheduling_scheduler::Processor;
 
-/// Extension of [`TransactionProcessor`] with L1 block pre-processing.
+/// Extension of [`Processor`] with L1 block pre-processing.
 ///
 /// Implementors translate an L1 chain block (header + accepted transactions) into a batch of L2
 /// transactions. This runs on an execution worker thread and may complete out of order relative to
 /// block index.
-pub trait NodeVm: TransactionProcessor<BatchMetadata = ChainBlockMetadata> {
+pub trait NodeVm: Processor<BatchMetadata = ChainBlockMetadata> {
     /// Translates an L1 chain block into L2 transactions.
     ///
     /// Called on an execution worker thread. The returned transactions are later fed to the

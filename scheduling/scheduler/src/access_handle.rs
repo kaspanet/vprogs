@@ -5,21 +5,21 @@ use vprogs_state_space::StateSpace;
 use vprogs_state_version::StateVersion;
 use vprogs_storage_types::Store;
 
-use crate::{ResourceAccess, transaction_processor::TransactionProcessor};
+use crate::{ResourceAccess, processor::Processor};
 
 /// A handle to a resource's state during transaction execution.
 ///
-/// Passed to [`TransactionProcessor::process_transaction`] so the VM can read and mutate resource
+/// Passed to [`Processor::process_transaction`] so the processor can read and mutate resource
 /// data. On success the changes are committed; on failure they are rolled back.
-pub struct AccessHandle<'a, S: Store<StateSpace = StateSpace>, V: TransactionProcessor> {
-    state_version: Arc<StateVersion<V::ResourceId>>,
-    access: &'a ResourceAccess<S, V>,
+pub struct AccessHandle<'a, S: Store<StateSpace = StateSpace>, P: Processor> {
+    state_version: Arc<StateVersion<P::ResourceId>>,
+    access: &'a ResourceAccess<S, P>,
 }
 
-impl<'a, S: Store<StateSpace = StateSpace>, V: TransactionProcessor> AccessHandle<'a, S, V> {
+impl<'a, S: Store<StateSpace = StateSpace>, P: Processor> AccessHandle<'a, S, P> {
     /// Returns the access metadata for this resource.
     #[inline]
-    pub fn access_metadata(&self) -> &V::AccessMetadata {
+    pub fn access_metadata(&self) -> &P::AccessMetadata {
         self.access.metadata()
     }
 
@@ -46,7 +46,7 @@ impl<'a, S: Store<StateSpace = StateSpace>, V: TransactionProcessor> AccessHandl
         self.state_version.version() == 0
     }
 
-    pub(crate) fn new(access: &'a ResourceAccess<S, V>) -> Self {
+    pub(crate) fn new(access: &'a ResourceAccess<S, P>) -> Self {
         Self { state_version: access.read_state(), access }
     }
 

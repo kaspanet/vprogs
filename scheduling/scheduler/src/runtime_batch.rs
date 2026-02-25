@@ -14,7 +14,7 @@ use vprogs_storage_types::{Store, WriteBatch};
 
 use crate::{
     CancellationContext, RuntimeTx, Scheduler, StateDiff, Write, cpu_task::ManagerTask,
-    state::SchedulerState, transaction_processor::TransactionProcessor,
+    processor::Processor, state::SchedulerState,
 };
 
 /// A batch of transactions progressing through the scheduler's lifecycle.
@@ -24,19 +24,19 @@ use crate::{
 /// progress via the `was_*` / `wait_*` methods. A batch may be canceled by a rollback, in which
 /// case the wait methods return immediately.
 #[smart_pointer]
-pub struct RuntimeBatch<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> {
+pub struct RuntimeBatch<S: Store<StateSpace = StateSpace>, P: Processor> {
     /// Cancellation context captured at creation time for rollback detection.
     cancellation: CancellationContext,
     /// Shared scheduler state for storage access and eviction.
-    state: SchedulerState<S, V>,
+    state: SchedulerState<S, P>,
     /// This batch's sequential index and metadata.
-    checkpoint: Checkpoint<V::BatchMetadata>,
+    checkpoint: Checkpoint<P::BatchMetadata>,
     /// All transactions in this batch.
-    txs: Vec<RuntimeTx<S, V>>,
+    txs: Vec<RuntimeTx<S, P>>,
     /// One state diff per unique resource accessed by this batch.
-    state_diffs: Vec<StateDiff<S, V>>,
+    state_diffs: Vec<StateDiff<S, P>>,
     /// Work-stealing queue of transactions ready for execution.
-    available_txs: Injector<ManagerTask<S, V>>,
+    available_txs: Injector<ManagerTask<S, P>>,
     /// Number of transactions not yet fully executed.
     pending_txs: AtomicU64,
     /// Number of state diff writes not yet persisted to disk.
@@ -49,19 +49,19 @@ pub struct RuntimeBatch<S: Store<StateSpace = StateSpace>, V: TransactionProcess
     was_committed: AtomicAsyncLatch,
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> RuntimeBatch<S, V> {
+impl<S: Store<StateSpace = StateSpace>, P: Processor> RuntimeBatch<S, P> {
     /// Returns the checkpoint (index + metadata) identifying this batch.
-    pub fn checkpoint(&self) -> &Checkpoint<V::BatchMetadata> {
+    pub fn checkpoint(&self) -> &Checkpoint<P::BatchMetadata> {
         &self.checkpoint
     }
 
     /// Returns the transactions in this batch.
-    pub fn txs(&self) -> &[RuntimeTx<S, V>] {
+    pub fn txs(&self) -> &[RuntimeTx<S, P>] {
         &self.txs
     }
 
     /// Returns the state diffs produced by this batch (one per unique resource).
-    pub fn state_diffs(&self) -> &[StateDiff<S, V>] {
+    pub fn state_diffs(&self) -> &[StateDiff<S, P>] {
         &self.state_diffs
     }
 
@@ -148,9 +148,9 @@ impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> RuntimeBatch<S,
     }
 
     pub(crate) fn new(
-        scheduler: &mut Scheduler<S, V>,
-        txs: Vec<V::Transaction>,
-        checkpoint: Checkpoint<V::BatchMetadata>,
+        scheduler: &mut Scheduler<S, P>,
+        txs: Vec<P::Transaction>,
+        checkpoint: Checkpoint<P::BatchMetadata>,
     ) -> Self {
         Self(Arc::new_cyclic(|this| {
             let was_processed = AtomicAsyncLatch::default();
@@ -201,7 +201,7 @@ impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> RuntimeBatch<S,
         }
     }
 
-    pub(crate) fn push_available_tx(&self, tx: &RuntimeTx<S, V>) {
+    pub(crate) fn push_available_tx(&self, tx: &RuntimeTx<S, P>) {
         self.available_txs.push(ManagerTask::ExecuteTransaction(tx.clone()));
     }
 
@@ -216,7 +216,7 @@ impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> RuntimeBatch<S,
         }
     }
 
-    pub(crate) fn submit_write(&self, write: Write<S, V>) {
+    pub(crate) fn submit_write(&self, write: Write<S, P>) {
         if !self.was_canceled() {
             self.pending_writes.fetch_add(1, Ordering::AcqRel);
             self.state.storage().submit_write(write);
@@ -270,13 +270,13 @@ impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> RuntimeBatch<S,
     }
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor>
-    vprogs_scheduling_execution_workers::Batch<ManagerTask<S, V>> for RuntimeBatch<S, V>
+impl<S: Store<StateSpace = StateSpace>, P: Processor>
+    vprogs_scheduling_execution_workers::Batch<ManagerTask<S, P>> for RuntimeBatch<S, P>
 {
     fn steal_available_tasks(
         &self,
-        worker: &Worker<ManagerTask<S, V>>,
-    ) -> Option<ManagerTask<S, V>> {
+        worker: &Worker<ManagerTask<S, P>>,
+    ) -> Option<ManagerTask<S, P>> {
         loop {
             match self.available_txs.steal_batch_and_pop(worker) {
                 Steal::Success(task) => return Some(task),

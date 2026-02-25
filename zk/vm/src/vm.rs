@@ -1,5 +1,5 @@
 use tokio::sync::mpsc;
-use vprogs_scheduling_scheduler::{TransactionContext, TransactionProcessor};
+use vprogs_scheduling_scheduler::{Processor, TransactionContext};
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 use vprogs_zk_types::{ProofRequest, StateOp};
@@ -8,7 +8,7 @@ use crate::{
     AccessMetadata, Backend, BatchMetadata, Error, ResourceId, Transaction, TransactionContextExt,
 };
 
-/// ZK VM that executes programs via a [`Backend`] and optionally sends proof requests
+/// ZK processor that executes programs via a [`Backend`] and optionally sends proof requests
 /// to a proving pipeline.
 #[derive(Clone)]
 pub struct Vm<B: Backend> {
@@ -28,7 +28,7 @@ impl<B: Backend> Vm<B> {
     }
 }
 
-impl<B: Backend> TransactionProcessor for Vm<B> {
+impl<B: Backend> Processor for Vm<B> {
     fn process_transaction<S: Store<StateSpace = StateSpace>>(
         &self,
         ctx: &mut TransactionContext<S, Self>,
@@ -45,7 +45,15 @@ impl<B: Backend> TransactionProcessor for Vm<B> {
         // 3. Apply ops to resource handles.
         for (i, op) in ops.iter().enumerate() {
             if let Some(op) = op {
-                apply_op(ctx.resources_mut()[i].data_mut(), op);
+                let data = ctx.resources_mut()[i].data_mut();
+                match op {
+                    StateOp::Create { data: new_data, .. }
+                    | StateOp::Update { data: new_data, .. } => {
+                        data.clear();
+                        data.extend_from_slice(new_data);
+                    }
+                    StateOp::Delete { .. } => data.clear(),
+                }
             }
         }
 
@@ -67,14 +75,4 @@ impl<B: Backend> TransactionProcessor for Vm<B> {
     type AccessMetadata = AccessMetadata;
     type BatchMetadata = BatchMetadata;
     type Error = Error;
-}
-
-fn apply_op(data: &mut Vec<u8>, op: &StateOp) {
-    match op {
-        StateOp::Create { data: new_data, .. } | StateOp::Update { data: new_data, .. } => {
-            data.clear();
-            data.extend_from_slice(new_data);
-        }
-        StateOp::Delete { .. } => data.clear(),
-    }
 }

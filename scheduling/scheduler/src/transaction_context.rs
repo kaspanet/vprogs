@@ -1,29 +1,29 @@
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
-use crate::{AccessHandle, transaction_processor::TransactionProcessor};
+use crate::{AccessHandle, processor::Processor};
 
-/// Context passed to [`TransactionProcessor::process_transaction`] providing the transaction, its
+/// Context passed to [`Processor::process_transaction`] providing the transaction, its
 /// position within the batch, the batch's opaque metadata, and the resource access handles.
-pub struct TransactionContext<'a, S: Store<StateSpace = StateSpace>, V: TransactionProcessor> {
-    tx: &'a V::Transaction,
+pub struct TransactionContext<'a, S: Store<StateSpace = StateSpace>, P: Processor> {
+    tx: &'a P::Transaction,
     tx_index: u32,
-    batch_metadata: &'a V::BatchMetadata,
-    resources: Vec<AccessHandle<'a, S, V>>,
+    batch_metadata: &'a P::BatchMetadata,
+    resources: Vec<AccessHandle<'a, S, P>>,
 }
 
-impl<'a, S: Store<StateSpace = StateSpace>, V: TransactionProcessor> TransactionContext<'a, S, V> {
+impl<'a, S: Store<StateSpace = StateSpace>, P: Processor> TransactionContext<'a, S, P> {
     pub(crate) fn new(
-        tx: &'a V::Transaction,
+        tx: &'a P::Transaction,
         tx_index: u32,
-        batch_metadata: &'a V::BatchMetadata,
-        resources: Vec<AccessHandle<'a, S, V>>,
+        batch_metadata: &'a P::BatchMetadata,
+        resources: Vec<AccessHandle<'a, S, P>>,
     ) -> Self {
         Self { tx, tx_index, batch_metadata, resources }
     }
 
     /// Returns the transaction being processed.
-    pub fn transaction(&self) -> &V::Transaction {
+    pub fn transaction(&self) -> &P::Transaction {
         self.tx
     }
 
@@ -33,22 +33,22 @@ impl<'a, S: Store<StateSpace = StateSpace>, V: TransactionProcessor> Transaction
     }
 
     /// Returns the batch metadata associated with this execution context.
-    pub fn batch_metadata(&self) -> &V::BatchMetadata {
+    pub fn batch_metadata(&self) -> &P::BatchMetadata {
         self.batch_metadata
     }
 
     /// Returns the resource access handles.
-    pub fn resources(&self) -> &[AccessHandle<'a, S, V>] {
+    pub fn resources(&self) -> &[AccessHandle<'a, S, P>] {
         &self.resources
     }
 
     /// Returns mutable resource access handles.
-    pub fn resources_mut(&mut self) -> &mut [AccessHandle<'a, S, V>] {
+    pub fn resources_mut(&mut self) -> &mut [AccessHandle<'a, S, P>] {
         &mut self.resources
     }
 
     /// Split borrow: returns (&Transaction, &mut [AccessHandle]) simultaneously.
-    pub fn parts_mut(&mut self) -> (&V::Transaction, &mut [AccessHandle<'a, S, V>]) {
+    pub fn parts_mut(&mut self) -> (&P::Transaction, &mut [AccessHandle<'a, S, P>]) {
         (self.tx, &mut self.resources)
     }
 

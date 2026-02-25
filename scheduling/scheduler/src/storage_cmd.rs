@@ -2,20 +2,15 @@ use vprogs_state_space::StateSpace;
 use vprogs_storage_manager::{ReadCmd, WriteCmd};
 use vprogs_storage_types::{ReadStore, Store};
 
-use crate::{
-    ResourceAccess, RuntimeBatch, StateDiff, rollback::Rollback,
-    transaction_processor::TransactionProcessor,
-};
+use crate::{ResourceAccess, RuntimeBatch, StateDiff, processor::Processor, rollback::Rollback};
 
 /// Commands dispatched to the storage manager's read worker.
-pub enum Read<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> {
+pub enum Read<S: Store<StateSpace = StateSpace>, P: Processor> {
     /// Fetch the latest version data for a resource from disk.
-    LatestData(ResourceAccess<S, V>),
+    LatestData(ResourceAccess<S, P>),
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> ReadCmd<StateSpace>
-    for Read<S, V>
-{
+impl<S: Store<StateSpace = StateSpace>, P: Processor> ReadCmd<StateSpace> for Read<S, P> {
     fn exec<RS: ReadStore<StateSpace = StateSpace>>(&self, store: &RS) {
         match self {
             Read::LatestData(resource_access) => resource_access.read_latest_data(store),
@@ -24,18 +19,16 @@ impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> ReadCmd<StateSp
 }
 
 /// Commands dispatched to the storage manager's write worker.
-pub enum Write<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> {
+pub enum Write<S: Store<StateSpace = StateSpace>, P: Processor> {
     /// Persist a resource's versioned data and rollback pointer.
-    StateDiff(StateDiff<S, V>),
+    StateDiff(StateDiff<S, P>),
     /// Finalize a batch by writing latest pointers and batch metadata.
-    CommitBatch(RuntimeBatch<S, V>),
+    CommitBatch(RuntimeBatch<S, P>),
     /// Revert all batches after a target checkpoint.
-    Rollback(Rollback<S, V>),
+    Rollback(Rollback<S, P>),
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> WriteCmd<StateSpace>
-    for Write<S, V>
-{
+impl<S: Store<StateSpace = StateSpace>, P: Processor> WriteCmd<StateSpace> for Write<S, P> {
     fn exec<ST: Store<StateSpace = StateSpace>>(
         &self,
         store: &ST,

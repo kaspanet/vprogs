@@ -3,28 +3,25 @@ use vprogs_core_types::AccessMetadata;
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
-use crate::{
-    ResourceAccess, RuntimeBatchRef, RuntimeTxRef, StateDiff,
-    transaction_processor::TransactionProcessor,
-};
+use crate::{ResourceAccess, RuntimeBatchRef, RuntimeTxRef, StateDiff, processor::Processor};
 
-pub(crate) struct Resource<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> {
-    last_access: Option<ResourceAccess<S, V>>,
+pub(crate) struct Resource<S: Store<StateSpace = StateSpace>, P: Processor> {
+    last_access: Option<ResourceAccess<S, P>>,
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> Default for Resource<S, V> {
+impl<S: Store<StateSpace = StateSpace>, P: Processor> Default for Resource<S, P> {
     fn default() -> Self {
         Self { last_access: None }
     }
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> Resource<S, V> {
+impl<S: Store<StateSpace = StateSpace>, P: Processor> Resource<S, P> {
     pub(crate) fn access(
         &mut self,
-        meta: &V::AccessMetadata,
-        tx: &RuntimeTxRef<S, V>,
-        batch: &RuntimeBatchRef<S, V>,
-    ) -> ResourceAccess<S, V> {
+        meta: &P::AccessMetadata,
+        tx: &RuntimeTxRef<S, P>,
+        batch: &RuntimeBatchRef<S, P>,
+    ) -> ResourceAccess<S, P> {
         let (state_diff_ref, prev_access) = match self.last_access.take() {
             Some(prev_access) if prev_access.tx().belongs_to_batch(batch) => {
                 assert!(prev_access.tx() != tx, "duplicate access to resource");

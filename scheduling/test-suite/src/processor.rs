@@ -1,15 +1,15 @@
 use vprogs_core_types::{AccessMetadata, AccessType};
-use vprogs_scheduling_scheduler::{TransactionContext, TransactionProcessor};
+use vprogs_scheduling_scheduler::TransactionContext;
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
 use crate::{Access, Tx};
 
-/// A minimal VM implementation for testing the scheduler.
+/// A minimal processor implementation for testing the scheduler.
 #[derive(Clone)]
-pub struct VM;
+pub struct Processor;
 
-impl TransactionProcessor for VM {
+impl vprogs_scheduling_scheduler::Processor for Processor {
     fn process_transaction<S: Store<StateSpace = StateSpace>>(
         &self,
         ctx: &mut TransactionContext<S, Self>,

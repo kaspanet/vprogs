@@ -2,12 +2,12 @@ use borsh::BorshDeserialize;
 use vprogs_core_types::{AccessMetadata, AccessType};
 use vprogs_node_framework::NodeVm;
 use vprogs_node_l1_bridge::{ChainBlockMetadata, RpcOptionalHeader, RpcOptionalTransaction};
-use vprogs_scheduling_scheduler::{TransactionContext, TransactionProcessor};
+use vprogs_scheduling_scheduler::{Processor, TransactionContext};
 use vprogs_scheduling_test_suite::{Access, Tx};
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
-/// A minimal VM implementing [`NodeVm`] for testing the node framework.
+/// A minimal processor implementing [`NodeVm`] for testing the node framework.
 #[derive(Clone)]
 pub struct TestNodeVm;
 
@@ -25,7 +25,7 @@ impl NodeVm for TestNodeVm {
     }
 }
 
-impl TransactionProcessor for TestNodeVm {
+impl Processor for TestNodeVm {
     fn process_transaction<S: Store<StateSpace = StateSpace>>(
         &self,
         ctx: &mut TransactionContext<S, Self>,

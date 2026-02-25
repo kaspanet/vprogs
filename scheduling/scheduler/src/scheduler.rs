@@ -14,8 +14,8 @@ use vprogs_storage_types::Store;
 use crate::{
     BatchLifecycleWorker, CancellationContext, ExecutionConfig, PruningWorker, Resource,
     ResourceAccess, RuntimeBatch, RuntimeBatchRef, RuntimeTxRef, SchedulerError, SchedulerResult,
-    StateDiff, Write, cpu_task::ManagerTask, rollback::Rollback, state::SchedulerState,
-    transaction_processor::TransactionProcessor,
+    StateDiff, Write, cpu_task::ManagerTask, processor::Processor, rollback::Rollback,
+    state::SchedulerState,
 };
 
 /// Orchestrates transaction execution, state management, and storage coordination.
@@ -23,29 +23,29 @@ use crate::{
 /// The scheduler is the main entry point for batch processing. It schedules transactions, manages
 /// resource dependency chains, coordinates parallel execution via worker threads, and handles
 /// rollbacks when chain reorganization occurs.
-pub struct Scheduler<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> {
-    /// The VM implementation used to execute transactions.
-    vm: V,
+pub struct Scheduler<S: Store<StateSpace = StateSpace>, P: Processor> {
+    /// The processor used to execute transactions.
+    processor: P,
     /// Shared scheduler state (storage, eviction_queue, root, last_committed, last_processed).
-    state: SchedulerState<S, V>,
+    state: SchedulerState<S, P>,
     /// Shared cancellation state for in-flight batch detection.
     cancellation: CancellationContext,
     /// Checkpoints for batches that have not yet committed, in index order.
-    pending_batches: VecDeque<Checkpoint<V::BatchMetadata>>,
+    pending_batches: VecDeque<Checkpoint<P::BatchMetadata>>,
     /// Maps resource IDs to their in-memory dependency chain heads.
-    resources: HashMap<V::ResourceId, Resource<S, V>>,
+    resources: HashMap<P::ResourceId, Resource<S, P>>,
     /// Background worker that processes batches through their lifecycle stages.
-    batch_lifecycle_worker: BatchLifecycleWorker<S, V>,
+    batch_lifecycle_worker: BatchLifecycleWorker<S, P>,
     /// Thread pool for parallel transaction execution.
-    execution_workers: ExecutionWorkers<ManagerTask<S, V>, RuntimeBatch<S, V>>,
+    execution_workers: ExecutionWorkers<ManagerTask<S, P>, RuntimeBatch<S, P>>,
     /// Background worker that prunes old state data when the pruning threshold advances.
-    pruning_worker: PruningWorker<S, V>,
+    pruning_worker: PruningWorker<S, P>,
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> Scheduler<S, V> {
+impl<S: Store<StateSpace = StateSpace>, P: Processor> Scheduler<S, P> {
     /// Creates a new scheduler with the given execution and storage configurations.
-    pub fn new(execution_config: ExecutionConfig<V>, storage_config: StorageConfig<S>) -> Self {
-        let (worker_count, vm) = execution_config.unpack();
+    pub fn new(execution_config: ExecutionConfig<P>, storage_config: StorageConfig<S>) -> Self {
+        let (worker_count, processor) = execution_config.unpack();
         let state = SchedulerState::new(storage_config);
         Self {
             batch_lifecycle_worker: BatchLifecycleWorker::new(),
@@ -55,7 +55,7 @@ impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> Scheduler<S, V>
             pending_batches: VecDeque::new(),
             cancellation: CancellationContext::new(state.root().index()),
             state,
-            vm,
+            processor,
         }
     }
 
@@ -67,9 +67,9 @@ impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> Scheduler<S, V>
     /// requests to clean up resources from committed batches.
     pub fn schedule(
         &mut self,
-        metadata: V::BatchMetadata,
-        txs: Vec<V::Transaction>,
-    ) -> RuntimeBatch<S, V> {
+        metadata: P::BatchMetadata,
+        txs: Vec<P::Transaction>,
+    ) -> RuntimeBatch<S, P> {
         let checkpoint = self.next_checkpoint(metadata);
 
         RuntimeBatch::new(self, txs, checkpoint)
@@ -113,7 +113,7 @@ impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> Scheduler<S, V>
     pub fn rollback_to(
         &mut self,
         target_index: u64,
-    ) -> SchedulerResult<Checkpoint<V::BatchMetadata>> {
+    ) -> SchedulerResult<Checkpoint<P::BatchMetadata>> {
         // Determine the range of batches to roll back.
         let upper_bound = self.state.last_processed().index();
 
@@ -151,13 +151,13 @@ impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> Scheduler<S, V>
     }
 
     /// Returns a reference to the shared scheduler state.
-    pub fn state(&self) -> &SchedulerState<S, V> {
+    pub fn state(&self) -> &SchedulerState<S, P> {
         &self.state
     }
 
-    /// Returns a reference to the VM implementation.
-    pub fn vm(&self) -> &V {
-        &self.vm
+    /// Returns a reference to the processor.
+    pub fn processor(&self) -> &P {
+        &self.processor
     }
 
     /// Submits a standalone function for execution on a worker thread.
@@ -174,7 +174,7 @@ impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> Scheduler<S, V>
     }
 
     /// Returns a reference to the pruning worker.
-    pub fn pruning(&self) -> &PruningWorker<S, V> {
+    pub fn pruning(&self) -> &PruningWorker<S, P> {
         &self.pruning_worker
     }
 
@@ -201,11 +201,11 @@ impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> Scheduler<S, V>
     /// access a resource, a new state diff is created and added to `state_diffs`.
     pub(crate) fn resources(
         &mut self,
-        tx: &V::Transaction,
-        runtime_tx: RuntimeTxRef<S, V>,
-        batch: &RuntimeBatchRef<S, V>,
-        state_diffs: &mut Vec<StateDiff<S, V>>,
-    ) -> Vec<ResourceAccess<S, V>> {
+        tx: &P::Transaction,
+        runtime_tx: RuntimeTxRef<S, P>,
+        batch: &RuntimeBatchRef<S, P>,
+        state_diffs: &mut Vec<StateDiff<S, P>>,
+    ) -> Vec<ResourceAccess<S, P>> {
         tx.accessed_resources()
             .iter()
             .map(|access| {
@@ -225,7 +225,7 @@ impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> Scheduler<S, V>
     }
 
     /// Advances to the next batch, returning its checkpoint.
-    fn next_checkpoint(&mut self, metadata: V::BatchMetadata) -> Checkpoint<V::BatchMetadata> {
+    fn next_checkpoint(&mut self, metadata: P::BatchMetadata) -> Checkpoint<P::BatchMetadata> {
         self.drain_committed();
 
         let checkpoint = Checkpoint::new(self.state.last_processed().index() + 1, metadata);
@@ -243,7 +243,7 @@ impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> Scheduler<S, V>
     }
 
     /// Cancels in-flight batches and rolls back shared state to the given index.
-    fn cancel_and_rollback(&mut self, target_index: u64) -> Checkpoint<V::BatchMetadata> {
+    fn cancel_and_rollback(&mut self, target_index: u64) -> Checkpoint<P::BatchMetadata> {
         let target = self.lookup_checkpoint(target_index);
 
         // Cancel in-flight batches first so `commit_done()` sees the cancellation before
@@ -272,7 +272,7 @@ impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> Scheduler<S, V>
     }
 
     /// Looks up a checkpoint by index, searching the pending batch queue first, then disk.
-    fn lookup_checkpoint(&self, index: u64) -> Checkpoint<V::BatchMetadata> {
+    fn lookup_checkpoint(&self, index: u64) -> Checkpoint<P::BatchMetadata> {
         // Index 0 is the genesis state — no batch exists on disk for it.
         if index == 0 {
             return Checkpoint::default();

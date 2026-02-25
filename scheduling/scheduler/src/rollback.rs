@@ -11,31 +11,31 @@ use vprogs_state_space::StateSpace;
 use vprogs_state_version::StateVersion;
 use vprogs_storage_types::Store;
 
-use crate::{TransactionProcessor, state::SchedulerState};
+use crate::{Processor, state::SchedulerState};
 
 /// Represents a rollback operation that reverts all batches after a target checkpoint.
 ///
 /// Walks batches from `upper_bound` down to `target.index() + 1` in reverse order, restoring each
 /// affected resource to the version it had before the batch was applied.
-pub struct Rollback<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> {
+pub struct Rollback<S: Store<StateSpace = StateSpace>, P: Processor> {
     /// The checkpoint we're rolling back to. Its metadata is resolved by the scheduler from
     /// in-memory state to avoid a disk read race condition.
-    target: Checkpoint<V::BatchMetadata>,
+    target: Checkpoint<P::BatchMetadata>,
     /// Upper bound of the batch index range to roll back (inclusive).
     upper_bound: u64,
     /// Shared scheduler state. Used to update `last_committed` and `root` alongside disk writes.
-    state: SchedulerState<S, V>,
+    state: SchedulerState<S, P>,
     /// Signal that resolves when the rollback operation is complete.
     done_signal: Arc<AtomicAsyncLatch>,
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> Rollback<S, V> {
+impl<S: Store<StateSpace = StateSpace>, P: Processor> Rollback<S, P> {
     /// Creates a new rollback operation that reverts all batches from `target.index() + 1` through
     /// `upper_bound` (inclusive).
     pub fn new(
-        target: Checkpoint<V::BatchMetadata>,
+        target: Checkpoint<P::BatchMetadata>,
         upper_bound: u64,
-        state: SchedulerState<S, V>,
+        state: SchedulerState<S, P>,
         done_signal: &Arc<AtomicAsyncLatch>,
     ) -> Self {
         Rollback { target, upper_bound, state, done_signal: done_signal.clone() }
@@ -113,7 +113,7 @@ impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> Rollback<S, V> 
         store: &ST,
         write_batch: &mut ST::WriteBatch,
         batch_index: u64,
-        resource_id: V::ResourceId,
+        resource_id: P::ResourceId,
         old_version: u64,
     ) {
         // Remove the currently live version, if present.

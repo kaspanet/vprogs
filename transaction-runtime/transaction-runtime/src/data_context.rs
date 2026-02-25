@@ -1,4 +1,4 @@
-use vprogs_scheduling_scheduler::TransactionProcessor;
+use vprogs_scheduling_scheduler::Processor;
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 use vprogs_transaction_runtime_address::Address;
@@ -9,10 +9,10 @@ use vprogs_transaction_runtime_object_id::ObjectId;
 
 use crate::TransactionRuntime;
 
-impl<'a, 'b, S, V> DataContext for TransactionRuntime<'a, 'b, S, V>
+impl<'a, 'b, S, P> DataContext for TransactionRuntime<'a, 'b, S, P>
 where
     S: Store<StateSpace = StateSpace>,
-    V: TransactionProcessor<ResourceId = ObjectId>,
+    P: Processor<ResourceId = ObjectId>,
 {
     fn borrow(&mut self, address: Address) -> VmResult<&AuthenticatedData> {
         self.loaded_data.get(&address).ok_or(VmError::DataNotFound(address))

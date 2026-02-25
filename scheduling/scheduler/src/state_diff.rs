@@ -6,7 +6,7 @@ use vprogs_state_space::StateSpace;
 use vprogs_state_version::StateVersion;
 use vprogs_storage_types::{Store, WriteBatch};
 
-use crate::{RuntimeBatchRef, Write, transaction_processor::TransactionProcessor};
+use crate::{RuntimeBatchRef, Write, processor::Processor};
 
 /// Tracks the state change for a single resource within a batch.
 ///
@@ -14,20 +14,20 @@ use crate::{RuntimeBatchRef, Write, transaction_processor::TransactionProcessor}
 /// execution) and the written state (after execution), which are used to persist versioned data and
 /// rollback pointers.
 #[smart_pointer]
-pub struct StateDiff<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> {
+pub struct StateDiff<S: Store<StateSpace = StateSpace>, P: Processor> {
     /// Weak reference to the owning batch (used for commit checks and write submission).
-    batch: RuntimeBatchRef<S, V>,
+    batch: RuntimeBatchRef<S, P>,
     /// The resource this diff tracks.
-    resource_id: V::ResourceId,
+    resource_id: P::ResourceId,
     /// Resource state before the batch executed (set when the first access resolves).
-    read_state: ArcSwapOption<StateVersion<V::ResourceId>>,
+    read_state: ArcSwapOption<StateVersion<P::ResourceId>>,
     /// Resource state after the batch executed (set when the last access commits).
-    written_state: ArcSwapOption<StateVersion<V::ResourceId>>,
+    written_state: ArcSwapOption<StateVersion<P::ResourceId>>,
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> StateDiff<S, V> {
+impl<S: Store<StateSpace = StateSpace>, P: Processor> StateDiff<S, P> {
     /// Returns the resource ID this state diff tracks.
-    pub fn resource_id(&self) -> &V::ResourceId {
+    pub fn resource_id(&self) -> &P::ResourceId {
         &self.resource_id
     }
 
@@ -35,7 +35,7 @@ impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> StateDiff<S, V>
     ///
     /// # Panics
     /// Panics if called before the read state has been resolved.
-    pub fn read_state(&self) -> Arc<StateVersion<V::ResourceId>> {
+    pub fn read_state(&self) -> Arc<StateVersion<P::ResourceId>> {
         self.read_state.load_full().expect("read state unknown")
     }
 
@@ -43,11 +43,11 @@ impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> StateDiff<S, V>
     ///
     /// # Panics
     /// Panics if called before the written state has been resolved.
-    pub fn written_state(&self) -> Arc<StateVersion<V::ResourceId>> {
+    pub fn written_state(&self) -> Arc<StateVersion<P::ResourceId>> {
         self.written_state.load_full().expect("written state unknown")
     }
 
-    pub(crate) fn new(batch: RuntimeBatchRef<S, V>, resource_id: V::ResourceId) -> Self {
+    pub(crate) fn new(batch: RuntimeBatchRef<S, P>, resource_id: P::ResourceId) -> Self {
         Self(Arc::new(StateDiffData {
             batch,
             resource_id,
@@ -64,11 +64,11 @@ impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> StateDiff<S, V>
         self.batch.upgrade().is_none_or(|batch| batch.was_committed())
     }
 
-    pub(crate) fn set_read_state(&self, state: Arc<StateVersion<V::ResourceId>>) {
+    pub(crate) fn set_read_state(&self, state: Arc<StateVersion<P::ResourceId>>) {
         self.read_state.store(Some(state))
     }
 
-    pub(crate) fn set_written_state(&self, state: Arc<StateVersion<V::ResourceId>>) {
+    pub(crate) fn set_written_state(&self, state: Arc<StateVersion<P::ResourceId>>) {
         self.written_state.store(Some(state));
         if let Some(batch) = self.batch.upgrade() {
             batch.submit_write(Write::StateDiff(self.clone()));

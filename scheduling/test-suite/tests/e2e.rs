@@ -3,7 +3,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 use vprogs_core_types::Checkpoint;
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
-use vprogs_scheduling_test_suite::{Access, SchedulerExt, Tx, VM};
+use vprogs_scheduling_test_suite::{Access, Processor, SchedulerExt, Tx};
 use vprogs_state_metadata::StateMetadata;
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
@@ -14,7 +14,7 @@ pub fn test_scheduler() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut scheduler = Scheduler::new(
-            ExecutionConfig::default().with_vm(VM),
+            ExecutionConfig::default().with_processor(Processor),
             StorageConfig::default().with_store(storage),
         );
 
@@ -56,7 +56,7 @@ pub fn test_rollback_committed() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut scheduler = Scheduler::new(
-            ExecutionConfig::default().with_vm(VM),
+            ExecutionConfig::default().with_processor(Processor),
             StorageConfig::default().with_store(storage),
         );
 
@@ -109,7 +109,7 @@ pub fn test_add_batches_after_rollback() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut scheduler = Scheduler::new(
-            ExecutionConfig::default().with_vm(VM),
+            ExecutionConfig::default().with_processor(Processor),
             StorageConfig::default().with_store(storage),
         );
 
@@ -165,7 +165,7 @@ pub fn test_inflight_cancellation_without_waiting() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut scheduler = Scheduler::new(
-            ExecutionConfig::default().with_vm(VM),
+            ExecutionConfig::default().with_processor(Processor),
             StorageConfig::default().with_store(storage),
         );
 
@@ -213,7 +213,7 @@ pub fn test_rollback_multiple_contexts() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut scheduler = Scheduler::new(
-            ExecutionConfig::default().with_vm(VM),
+            ExecutionConfig::default().with_processor(Processor),
             StorageConfig::default().with_store(storage),
         );
 
@@ -301,7 +301,7 @@ pub fn test_rollback_to_zero() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut scheduler = Scheduler::new(
-            ExecutionConfig::default().with_vm(VM),
+            ExecutionConfig::default().with_processor(Processor),
             StorageConfig::default().with_store(storage),
         );
 
@@ -342,7 +342,7 @@ pub fn test_consecutive_rollbacks() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut scheduler = Scheduler::new(
-            ExecutionConfig::default().with_vm(VM),
+            ExecutionConfig::default().with_processor(Processor),
             StorageConfig::default().with_store(storage),
         );
 
@@ -404,7 +404,7 @@ pub fn test_rollback_same_resource_multiple_writes() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut scheduler = Scheduler::new(
-            ExecutionConfig::default().with_vm(VM),
+            ExecutionConfig::default().with_processor(Processor),
             StorageConfig::default().with_store(storage),
         );
 
@@ -445,7 +445,7 @@ pub fn test_cancellation_skips_writes() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut scheduler = Scheduler::new(
-            ExecutionConfig::default().with_vm(VM),
+            ExecutionConfig::default().with_processor(Processor),
             StorageConfig::default().with_store(storage),
         );
 
@@ -487,7 +487,7 @@ pub fn test_rollback_interleaved_multi_resource() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut scheduler = Scheduler::new(
-            ExecutionConfig::default().with_vm(VM),
+            ExecutionConfig::default().with_processor(Processor),
             StorageConfig::default().with_store(storage),
         );
 
@@ -553,7 +553,7 @@ pub fn test_resource_eviction() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut scheduler = Scheduler::new(
-            ExecutionConfig::default().with_vm(VM),
+            ExecutionConfig::default().with_processor(Processor),
             StorageConfig::default().with_store(storage),
         );
 
@@ -595,7 +595,7 @@ pub fn test_eviction_under_load() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut scheduler = Scheduler::new(
-            ExecutionConfig::default().with_vm(VM),
+            ExecutionConfig::default().with_processor(Processor),
             StorageConfig::default().with_store(storage),
         );
 
@@ -635,7 +635,7 @@ pub fn test_basic_pruning() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut scheduler = Scheduler::new(
-            ExecutionConfig::default().with_vm(VM),
+            ExecutionConfig::default().with_processor(Processor),
             StorageConfig::default().with_store(storage),
         );
 
@@ -697,7 +697,7 @@ pub fn test_pruning_preserves_recent_batches() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut scheduler = Scheduler::new(
-            ExecutionConfig::default().with_vm(VM),
+            ExecutionConfig::default().with_processor(Processor),
             StorageConfig::default().with_store(storage),
         );
 
@@ -759,7 +759,7 @@ pub fn test_pruning_crash_recovery() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut scheduler = Scheduler::new(
-            ExecutionConfig::default().with_vm(VM),
+            ExecutionConfig::default().with_processor(Processor),
             StorageConfig::default().with_store(storage),
         );
 
@@ -785,7 +785,7 @@ pub fn test_pruning_crash_recovery() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let scheduler = Scheduler::new(
-            ExecutionConfig::default().with_vm(VM),
+            ExecutionConfig::default().with_processor(Processor),
             StorageConfig::default().with_store(storage),
         );
 
@@ -849,7 +849,7 @@ pub fn test_pruning_multiple_resources() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut scheduler = Scheduler::new(
-            ExecutionConfig::default().with_vm(VM),
+            ExecutionConfig::default().with_processor(Processor),
             StorageConfig::default().with_store(storage),
         );
 
@@ -946,7 +946,7 @@ pub fn test_pruning_pause_and_unpause() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut scheduler = Scheduler::new(
-            ExecutionConfig::default().with_vm(VM),
+            ExecutionConfig::default().with_processor(Processor),
             StorageConfig::default().with_store(storage),
         );
 
@@ -1009,7 +1009,7 @@ pub fn test_rollback_pruning_conflict() {
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let mut scheduler = Scheduler::new(
-            ExecutionConfig::default().with_vm(VM),
+            ExecutionConfig::default().with_processor(Processor),
             StorageConfig::default().with_store(storage),
         );
 

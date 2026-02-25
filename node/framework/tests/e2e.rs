@@ -16,7 +16,7 @@ fn create_node(l1: &L1Node, temp_dir: &TempDir) -> Node<RocksDbStore, TestNodeVm
     let store = RocksDbStore::open(temp_dir.path());
     Node::new(
         NodeConfig::default()
-            .with_execution_config(ExecutionConfig::default().with_vm(TestNodeVm))
+            .with_execution_config(ExecutionConfig::default().with_processor(TestNodeVm))
             .with_storage_config(StorageConfig::default().with_store(store))
             .with_l1_bridge_config(
                 L1BridgeConfig::default()

@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use borsh::BorshDeserialize;
 use vprogs_core_types::AccessMetadata;
-use vprogs_scheduling_scheduler::{AccessHandle, TransactionProcessor};
+use vprogs_scheduling_scheduler::{AccessHandle, Processor};
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 use vprogs_transaction_runtime_address::Address;
@@ -17,25 +17,25 @@ use vprogs_transaction_runtime_pubkey::PubKey;
 use vprogs_transaction_runtime_transaction::Transaction;
 use vprogs_transaction_runtime_transaction_effects::TransactionEffects;
 
-pub struct TransactionRuntime<'a, 'b, S, V>
+pub struct TransactionRuntime<'a, 'b, S, P>
 where
     S: Store<StateSpace = StateSpace>,
-    V: TransactionProcessor<ResourceId = ObjectId>,
+    P: Processor<ResourceId = ObjectId>,
 {
-    handles: &'a mut [AccessHandle<'b, S, V>],
+    handles: &'a mut [AccessHandle<'b, S, P>],
     signers: HashSet<PubKey>,
     loaded_data: HashMap<Address, AuthenticatedData>,
     loaded_programs: HashMap<Address, Program>,
 }
 
-impl<'a, 'b, S, V> TransactionRuntime<'a, 'b, S, V>
+impl<'a, 'b, S, P> TransactionRuntime<'a, 'b, S, P>
 where
     S: Store<StateSpace = StateSpace>,
-    V: TransactionProcessor<ResourceId = ObjectId>,
+    P: Processor<ResourceId = ObjectId>,
 {
     pub fn execute(
         tx: &'a Transaction,
-        handles: &'a mut [AccessHandle<'b, S, V>],
+        handles: &'a mut [AccessHandle<'b, S, P>],
     ) -> VmResult<TransactionEffects> {
         let signers = HashSet::new();
         let loaded_data = HashMap::new();
