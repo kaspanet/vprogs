@@ -2,13 +2,13 @@ use crate::vm_interface::VmInterface;
 
 /// Context passed to [`VmInterface::process_transaction`] providing the transaction, its position
 /// within the batch, and the batch's opaque metadata.
-pub struct ProcessingContext<'a, V: VmInterface> {
+pub struct TransactionContext<'a, V: VmInterface> {
     tx: &'a V::Transaction,
     tx_index: u32,
     batch_metadata: &'a V::BatchMetadata,
 }
 
-impl<'a, V: VmInterface> ProcessingContext<'a, V> {
+impl<'a, V: VmInterface> TransactionContext<'a, V> {
     pub(crate) fn new(
         tx: &'a V::Transaction,
         tx_index: u32,

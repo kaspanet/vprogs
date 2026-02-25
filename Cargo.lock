@@ -3283,7 +3283,6 @@ dependencies = [
 [[package]]
 name = "kaspa-math"
 version = "1.1.0-rc.3"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=master#c01841ce353a92445cda679a59546160e8627c70"
 dependencies = [
  "borsh",
  "faster-hex",

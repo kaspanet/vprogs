@@ -1,4 +1,4 @@
-use vprogs_scheduling_scheduler::{AccessHandle, ProcessingContext};
+use vprogs_scheduling_scheduler::{AccessHandle, TransactionContext};
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 use vprogs_zk_proof_provider::ZkBackend;
@@ -21,7 +21,7 @@ use crate::ZkVm;
 /// ```
 pub(crate) fn build_witness<S: Store<StateSpace = StateSpace>, B: ZkBackend>(
     resources: &[AccessHandle<S, ZkVm<B>>],
-    ctx: &ProcessingContext<ZkVm<B>>,
+    ctx: &TransactionContext<ZkVm<B>>,
 ) -> Vec<u8> {
     let tx = ctx.transaction();
     let batch_metadata_bytes = borsh::to_vec(ctx.batch_metadata()).unwrap();

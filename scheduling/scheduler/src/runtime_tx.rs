@@ -9,7 +9,7 @@ use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
 use crate::{
-    AccessHandle, ProcessingContext, ResourceAccess, RuntimeBatchRef, Scheduler, StateDiff,
+    AccessHandle, ResourceAccess, RuntimeBatchRef, Scheduler, StateDiff, TransactionContext,
     vm_interface::VmInterface,
 };
 
@@ -91,9 +91,9 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeTx<S, V> {
                 return;
             }
 
-            // Build the processing context from the tx index and batch metadata.
+            // Build the transaction context from the tx index and batch metadata.
             let ctx =
-                ProcessingContext::new(&self.tx, self.tx_index, batch.checkpoint().metadata());
+                TransactionContext::new(&self.tx, self.tx_index, batch.checkpoint().metadata());
 
             // Process the transaction using the VM.
             let mut handles = handles.collect::<Vec<_>>();

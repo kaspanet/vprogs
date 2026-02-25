@@ -18,6 +18,7 @@ exclude = [
   "zk-risc-0/elf-wrapper",
   "zk-risc-0/transaction-processor",
   "zk-risc-0/batch-processor",
+  "vendor/kaspa-math",
 ]
 members = [
   "core/*",
@@ -146,3 +147,6 @@ resolver = "3"
   vprogs-zk-test-suite                            = { path = "zk/test-suite" }
   vprogs-zk-types                                 = { path = "zk/types", default-features = false }
   vprogs-zk-vm                                    = { path = "zk/vm" }
+
+[patch.'https://github.com/kaspanet/rusty-kaspa']
+kaspa-math = { path = "vendor/kaspa-math" }

@@ -1,5 +1,5 @@
 use vprogs_core_types::{AccessMetadata, AccessType};
-use vprogs_scheduling_scheduler::{AccessHandle, ProcessingContext, RuntimeBatch, VmInterface};
+use vprogs_scheduling_scheduler::{AccessHandle, RuntimeBatch, TransactionContext, VmInterface};
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
@@ -13,7 +13,7 @@ impl VmInterface for VM {
     fn process_transaction<S: Store<StateSpace = StateSpace>>(
         &self,
         resources: &mut [AccessHandle<S, Self>],
-        ctx: &ProcessingContext<Self>,
+        ctx: &TransactionContext<Self>,
     ) -> Result<(), Self::Error> {
         let tx = ctx.transaction();
         for resource in resources {

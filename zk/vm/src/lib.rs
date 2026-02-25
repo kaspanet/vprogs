@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 pub use types::*;
-use vprogs_scheduling_scheduler::{AccessHandle, ProcessingContext, RuntimeBatch, VmInterface};
+use vprogs_scheduling_scheduler::{AccessHandle, RuntimeBatch, TransactionContext, VmInterface};
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 use vprogs_zk_proof_provider::ZkBackend;
@@ -40,7 +40,7 @@ impl<B: ZkBackend> VmInterface for ZkVm<B> {
     fn process_transaction<S: Store<StateSpace = StateSpace>>(
         &self,
         resources: &mut [AccessHandle<S, Self>],
-        ctx: &ProcessingContext<Self>,
+        ctx: &TransactionContext<Self>,
     ) -> Result<ZkTransactionEffects, ZkVmError> {
         // 1. Build the witness from transaction data and resource state.
         let witness_bytes = witness_builder::build_witness(resources, ctx);
