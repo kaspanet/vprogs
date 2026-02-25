@@ -6,7 +6,7 @@ use vprogs_state_space::StateSpace;
 use vprogs_state_version::StateVersion;
 use vprogs_storage_types::{Store, WriteBatch};
 
-use crate::{RuntimeBatchRef, Write, vm_interface::VmInterface};
+use crate::{RuntimeBatchRef, Write, transaction_processor::TransactionProcessor};
 
 /// Tracks the state change for a single resource within a batch.
 ///
@@ -14,7 +14,7 @@ use crate::{RuntimeBatchRef, Write, vm_interface::VmInterface};
 /// execution) and the written state (after execution), which are used to persist versioned data and
 /// rollback pointers.
 #[smart_pointer]
-pub struct StateDiff<S: Store<StateSpace = StateSpace>, V: VmInterface> {
+pub struct StateDiff<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> {
     /// Weak reference to the owning batch (used for commit checks and write submission).
     batch: RuntimeBatchRef<S, V>,
     /// The resource this diff tracks.
@@ -25,7 +25,7 @@ pub struct StateDiff<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     written_state: ArcSwapOption<StateVersion<V::ResourceId>>,
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: VmInterface> StateDiff<S, V> {
+impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> StateDiff<S, V> {
     /// Returns the resource ID this state diff tracks.
     pub fn resource_id(&self) -> &V::ResourceId {
         &self.resource_id

@@ -16,10 +16,16 @@ pub trait Backend: Clone + Send + Sync + 'static {
     type Receipt: Send + Sync + 'static;
 
     /// Execute a transaction from a witness snapshot. Returns one optional state op per account.
-    fn execute(&self, witness: &TransactionContextWitness) -> Result<Vec<Option<StateOp>>, BackendError>;
+    fn execute(
+        &self,
+        witness: &TransactionContextWitness,
+    ) -> Result<Vec<Option<StateOp>>, BackendError>;
 
     /// Prove a previously executed transaction from its witness.
-    fn prove_transaction(&self, witness: &TransactionContextWitness) -> Result<Self::Receipt, BackendError>;
+    fn prove_transaction(
+        &self,
+        witness: &TransactionContextWitness,
+    ) -> Result<Self::Receipt, BackendError>;
 
     /// Prove a batch of transactions.
     fn prove_batch(

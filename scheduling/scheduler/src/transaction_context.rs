@@ -1,18 +1,18 @@
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
-use crate::{AccessHandle, vm_interface::VmInterface};
+use crate::{AccessHandle, transaction_processor::TransactionProcessor};
 
-/// Context passed to [`VmInterface::process_transaction`] providing the transaction, its position
-/// within the batch, the batch's opaque metadata, and the resource access handles.
-pub struct TransactionContext<'a, S: Store<StateSpace = StateSpace>, V: VmInterface> {
+/// Context passed to [`TransactionProcessor::process_transaction`] providing the transaction, its
+/// position within the batch, the batch's opaque metadata, and the resource access handles.
+pub struct TransactionContext<'a, S: Store<StateSpace = StateSpace>, V: TransactionProcessor> {
     tx: &'a V::Transaction,
     tx_index: u32,
     batch_metadata: &'a V::BatchMetadata,
     resources: Vec<AccessHandle<'a, S, V>>,
 }
 
-impl<'a, S: Store<StateSpace = StateSpace>, V: VmInterface> TransactionContext<'a, S, V> {
+impl<'a, S: Store<StateSpace = StateSpace>, V: TransactionProcessor> TransactionContext<'a, S, V> {
     pub(crate) fn new(
         tx: &'a V::Transaction,
         tx_index: u32,

@@ -15,7 +15,7 @@ mod state;
 mod state_diff;
 mod storage_cmd;
 mod transaction_context;
-mod vm_interface;
+mod transaction_processor;
 
 pub use access_handle::AccessHandle;
 pub(crate) use batch_lifecycle_worker::BatchLifecycleWorker;
@@ -33,4 +33,4 @@ pub use state::SchedulerState;
 pub use state_diff::{StateDiff, StateDiffRef};
 pub use storage_cmd::{Read, Write};
 pub use transaction_context::TransactionContext;
-pub use vm_interface::VmInterface;
+pub use transaction_processor::TransactionProcessor;

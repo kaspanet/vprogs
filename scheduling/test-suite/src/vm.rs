@@ -1,5 +1,5 @@
 use vprogs_core_types::{AccessMetadata, AccessType};
-use vprogs_scheduling_scheduler::{RuntimeBatch, TransactionContext, VmInterface};
+use vprogs_scheduling_scheduler::{TransactionContext, TransactionProcessor};
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
@@ -9,7 +9,7 @@ use crate::{Access, Tx};
 #[derive(Clone)]
 pub struct VM;
 
-impl VmInterface for VM {
+impl TransactionProcessor for VM {
     fn process_transaction<S: Store<StateSpace = StateSpace>>(
         &self,
         ctx: &mut TransactionContext<S, Self>,
@@ -21,16 +21,6 @@ impl VmInterface for VM {
             }
         }
         Ok(())
-    }
-
-    fn post_process_batch<S: Store<StateSpace = StateSpace>>(&self, batch: &RuntimeBatch<S, Self>) {
-        if !batch.was_canceled() {
-            eprintln!(
-                ">> Processed batch with {} transactions and {} state changes",
-                batch.txs().len(),
-                batch.state_diffs().len()
-            );
-        }
     }
 
     type Transaction = Tx;

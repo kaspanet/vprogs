@@ -1,5 +1,5 @@
 use tokio::sync::mpsc;
-use vprogs_scheduling_scheduler::{RuntimeBatch, TransactionContext, VmInterface};
+use vprogs_scheduling_scheduler::{TransactionContext, TransactionProcessor};
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 use vprogs_zk_types::{ProofRequest, StateOp};
@@ -28,7 +28,7 @@ impl<B: Backend> Vm<B> {
     }
 }
 
-impl<B: Backend> VmInterface for Vm<B> {
+impl<B: Backend> TransactionProcessor for Vm<B> {
     fn process_transaction<S: Store<StateSpace = StateSpace>>(
         &self,
         ctx: &mut TransactionContext<S, Self>,
@@ -37,8 +37,10 @@ impl<B: Backend> VmInterface for Vm<B> {
         let transaction_context = ctx.witness();
 
         // 2. Execute via backend — returns one optional op per account.
-        let ops =
-            self.backend.execute(&transaction_context).map_err(|e| Error::ExecutorFailed(e.to_string()))?;
+        let ops = self
+            .backend
+            .execute(&transaction_context)
+            .map_err(|e| Error::ExecutorFailed(e.to_string()))?;
 
         // 3. Apply ops to resource handles.
         for (i, op) in ops.iter().enumerate() {
@@ -57,12 +59,6 @@ impl<B: Backend> VmInterface for Vm<B> {
         }
 
         Ok(())
-    }
-
-    fn post_process_batch<S: Store<StateSpace = StateSpace>>(
-        &self,
-        _batch: &RuntimeBatch<S, Self>,
-    ) {
     }
 
     type Transaction = Transaction;

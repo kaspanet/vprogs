@@ -15,7 +15,7 @@ use crate::{
     BatchLifecycleWorker, CancellationContext, ExecutionConfig, PruningWorker, Resource,
     ResourceAccess, RuntimeBatch, RuntimeBatchRef, RuntimeTxRef, SchedulerError, SchedulerResult,
     StateDiff, Write, cpu_task::ManagerTask, rollback::Rollback, state::SchedulerState,
-    vm_interface::VmInterface,
+    transaction_processor::TransactionProcessor,
 };
 
 /// Orchestrates transaction execution, state management, and storage coordination.
@@ -23,7 +23,7 @@ use crate::{
 /// The scheduler is the main entry point for batch processing. It schedules transactions, manages
 /// resource dependency chains, coordinates parallel execution via worker threads, and handles
 /// rollbacks when chain reorganization occurs.
-pub struct Scheduler<S: Store<StateSpace = StateSpace>, V: VmInterface> {
+pub struct Scheduler<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> {
     /// The VM implementation used to execute transactions.
     vm: V,
     /// Shared scheduler state (storage, eviction_queue, root, last_committed, last_processed).
@@ -42,13 +42,13 @@ pub struct Scheduler<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     pruning_worker: PruningWorker<S, V>,
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Scheduler<S, V> {
+impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> Scheduler<S, V> {
     /// Creates a new scheduler with the given execution and storage configurations.
     pub fn new(execution_config: ExecutionConfig<V>, storage_config: StorageConfig<S>) -> Self {
         let (worker_count, vm) = execution_config.unpack();
         let state = SchedulerState::new(storage_config);
         Self {
-            batch_lifecycle_worker: BatchLifecycleWorker::new(vm.clone()),
+            batch_lifecycle_worker: BatchLifecycleWorker::new(),
             pruning_worker: PruningWorker::new(state.clone()),
             execution_workers: ExecutionWorkers::new(worker_count),
             resources: HashMap::new(),

@@ -2,7 +2,7 @@ use borsh::BorshDeserialize;
 use vprogs_core_types::{AccessMetadata, AccessType};
 use vprogs_node_framework::NodeVm;
 use vprogs_node_l1_bridge::{ChainBlockMetadata, RpcOptionalHeader, RpcOptionalTransaction};
-use vprogs_scheduling_scheduler::{RuntimeBatch, TransactionContext, VmInterface};
+use vprogs_scheduling_scheduler::{TransactionContext, TransactionProcessor};
 use vprogs_scheduling_test_suite::{Access, Tx};
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
@@ -25,7 +25,7 @@ impl NodeVm for TestNodeVm {
     }
 }
 
-impl VmInterface for TestNodeVm {
+impl TransactionProcessor for TestNodeVm {
     fn process_transaction<S: Store<StateSpace = StateSpace>>(
         &self,
         ctx: &mut TransactionContext<S, Self>,
@@ -37,16 +37,6 @@ impl VmInterface for TestNodeVm {
             }
         }
         Ok(())
-    }
-
-    fn post_process_batch<S: Store<StateSpace = StateSpace>>(&self, batch: &RuntimeBatch<S, Self>) {
-        if !batch.was_canceled() {
-            eprintln!(
-                ">> Post Processed batch with {} transactions and {} state changes",
-                batch.txs().len(),
-                batch.state_diffs().len()
-            );
-        }
     }
 
     type Transaction = Tx;

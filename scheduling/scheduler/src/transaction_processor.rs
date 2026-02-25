@@ -2,32 +2,15 @@ use vprogs_core_types::{AccessMetadata, BatchMetadata, ResourceId, Transaction};
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
-use crate::{RuntimeBatch, TransactionContext};
+use crate::TransactionContext;
 
-/// Abstract transaction processor that the scheduler invokes.
-///
-/// Implementations define how individual transactions are executed and may optionally hook into
-/// batch lifecycle events via [`Self::post_process_batch`].
-pub trait VmInterface: Clone + Sized + Send + Sync + 'static {
+/// Abstract transaction processor that the scheduler invokes for each transaction.
+pub trait TransactionProcessor: Clone + Sized + Send + Sync + 'static {
     /// Executes a single transaction against its local [`TransactionContext`].
     fn process_transaction<S: Store<StateSpace = StateSpace>>(
         &self,
         ctx: &mut TransactionContext<S, Self>,
     ) -> Result<Self::TransactionEffects, Self::Error>;
-
-    /// Optional hook called after all transactions in a batch have been processed. The default
-    /// implementation is a no-op.
-    ///
-    /// Implementations should check [`RuntimeBatch::was_canceled`] before performing any work, as
-    /// canceled batches still pass through this method:
-    /// ```ignore
-    /// fn post_process_batch<S: Store<StateSpace = StateSpace>>(&self, batch: &RuntimeBatch<S, Self>) {
-    ///     if !batch.was_canceled() {
-    ///         // ...
-    ///     }
-    /// }
-    /// ```
-    fn post_process_batch<S: Store<StateSpace = StateSpace>>(&self, _: &RuntimeBatch<S, Self>) {}
 
     /// The transaction type submitted to the scheduler.
     type Transaction: Transaction<Self::ResourceId, Self::AccessMetadata>;

@@ -2,7 +2,8 @@ use risc0_zkvm::ExecutorEnv;
 use vprogs_zk_types::TransactionContextWitness;
 use vprogs_zk_vm::BackendError;
 
-/// Serializes a [`TransactionContextWitness`] into the flat wire format consumed by the guest program.
+/// Serializes a [`TransactionContextWitness`] into the flat wire format consumed by the guest
+/// program.
 ///
 /// Wire format (all integers little-endian, fields padded to 4-byte alignment):
 /// ```text

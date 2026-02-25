@@ -1,6 +1,6 @@
 use vprogs_node_framework::NodeVm;
 use vprogs_node_l1_bridge::{ChainBlockMetadata, RpcOptionalHeader, RpcOptionalTransaction};
-use vprogs_scheduling_scheduler::{TransactionContext, VmInterface};
+use vprogs_scheduling_scheduler::{TransactionContext, TransactionProcessor};
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 use vprogs_transaction_runtime::TransactionRuntime;
@@ -13,11 +13,11 @@ use vprogs_transaction_runtime_transaction_effects::TransactionEffects;
 /// Concrete VM implementation backed by the transaction runtime.
 ///
 /// Delegates transaction execution to [`TransactionRuntime`] and serves as the production
-/// [`VmInterface`] used by the node.
+/// [`TransactionProcessor`] used by the node.
 #[derive(Clone)]
 pub struct VM;
 
-impl VmInterface for VM {
+impl TransactionProcessor for VM {
     fn process_transaction<S: Store<StateSpace = StateSpace>>(
         &self,
         ctx: &mut TransactionContext<S, Self>,

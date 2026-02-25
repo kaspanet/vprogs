@@ -11,13 +11,13 @@ use vprogs_state_space::StateSpace;
 use vprogs_state_version::StateVersion;
 use vprogs_storage_types::Store;
 
-use crate::{VmInterface, state::SchedulerState};
+use crate::{TransactionProcessor, state::SchedulerState};
 
 /// Represents a rollback operation that reverts all batches after a target checkpoint.
 ///
 /// Walks batches from `upper_bound` down to `target.index() + 1` in reverse order, restoring each
 /// affected resource to the version it had before the batch was applied.
-pub struct Rollback<S: Store<StateSpace = StateSpace>, V: VmInterface> {
+pub struct Rollback<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> {
     /// The checkpoint we're rolling back to. Its metadata is resolved by the scheduler from
     /// in-memory state to avoid a disk read race condition.
     target: Checkpoint<V::BatchMetadata>,
@@ -29,7 +29,7 @@ pub struct Rollback<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     done_signal: Arc<AtomicAsyncLatch>,
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Rollback<S, V> {
+impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> Rollback<S, V> {
     /// Creates a new rollback operation that reverts all batches from `target.index() + 1` through
     /// `upper_bound` (inclusive).
     pub fn new(

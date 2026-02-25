@@ -5,18 +5,18 @@ use vprogs_state_space::StateSpace;
 use vprogs_state_version::StateVersion;
 use vprogs_storage_types::Store;
 
-use crate::{ResourceAccess, vm_interface::VmInterface};
+use crate::{ResourceAccess, transaction_processor::TransactionProcessor};
 
 /// A handle to a resource's state during transaction execution.
 ///
-/// Passed to [`VmInterface::process_transaction`] so the VM can read and mutate resource data. On
-/// success the changes are committed; on failure they are rolled back.
-pub struct AccessHandle<'a, S: Store<StateSpace = StateSpace>, V: VmInterface> {
+/// Passed to [`TransactionProcessor::process_transaction`] so the VM can read and mutate resource
+/// data. On success the changes are committed; on failure they are rolled back.
+pub struct AccessHandle<'a, S: Store<StateSpace = StateSpace>, V: TransactionProcessor> {
     state_version: Arc<StateVersion<V::ResourceId>>,
     access: &'a ResourceAccess<S, V>,
 }
 
-impl<'a, S: Store<StateSpace = StateSpace>, V: VmInterface> AccessHandle<'a, S, V> {
+impl<'a, S: Store<StateSpace = StateSpace>, V: TransactionProcessor> AccessHandle<'a, S, V> {
     /// Returns the access metadata for this resource.
     #[inline]
     pub fn access_metadata(&self) -> &V::AccessMetadata {

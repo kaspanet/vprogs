@@ -11,7 +11,7 @@ use vprogs_state_version::StateVersion;
 use vprogs_storage_manager::StorageManager;
 use vprogs_storage_types::{ReadStore, Store};
 
-use crate::{Read, RuntimeTxRef, StateDiff, Write, vm_interface::VmInterface};
+use crate::{Read, RuntimeTxRef, StateDiff, Write, transaction_processor::TransactionProcessor};
 
 /// A single resource access within a transaction, forming a linked chain across the batch.
 ///
@@ -19,7 +19,7 @@ use crate::{Read, RuntimeTxRef, StateDiff, Write, vm_interface::VmInterface};
 /// to the same resource are linked via `prev`/`next` pointers so that write results flow forward to
 /// dependent reads. Derefs to the inner `V::AccessMetadata`.
 #[smart_pointer(deref(metadata))]
-pub struct ResourceAccess<S: Store<StateSpace = StateSpace>, V: VmInterface> {
+pub struct ResourceAccess<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> {
     /// Per-access metadata (deref target).
     metadata: V::AccessMetadata,
     /// True if this is the first access to the resource in this batch.
@@ -40,7 +40,7 @@ pub struct ResourceAccess<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     next: ArcSwapOption<Self>,
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: VmInterface> ResourceAccess<S, V> {
+impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> ResourceAccess<S, V> {
     /// Returns the access metadata describing which resource is accessed and how.
     #[inline(always)]
     pub fn metadata(&self) -> &V::AccessMetadata {

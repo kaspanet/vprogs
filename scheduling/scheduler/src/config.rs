@@ -1,19 +1,19 @@
-use crate::VmInterface;
+use crate::TransactionProcessor;
 
 /// Configuration for the scheduler's execution environment.
 #[derive(Clone, Debug)]
-pub struct ExecutionConfig<V: VmInterface> {
+pub struct ExecutionConfig<V: TransactionProcessor> {
     pub worker_count: usize,
     pub vm: Option<V>,
 }
 
-impl<V: VmInterface> Default for ExecutionConfig<V> {
+impl<V: TransactionProcessor> Default for ExecutionConfig<V> {
     fn default() -> Self {
         Self { worker_count: num_cpus::get_physical(), vm: None }
     }
 }
 
-impl<V: VmInterface> ExecutionConfig<V> {
+impl<V: TransactionProcessor> ExecutionConfig<V> {
     pub fn with_worker_count(mut self, workers: usize) -> Self {
         self.worker_count = workers;
         self

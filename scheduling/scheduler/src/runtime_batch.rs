@@ -14,7 +14,7 @@ use vprogs_storage_types::{Store, WriteBatch};
 
 use crate::{
     CancellationContext, RuntimeTx, Scheduler, StateDiff, Write, cpu_task::ManagerTask,
-    state::SchedulerState, vm_interface::VmInterface,
+    state::SchedulerState, transaction_processor::TransactionProcessor,
 };
 
 /// A batch of transactions progressing through the scheduler's lifecycle.
@@ -24,7 +24,7 @@ use crate::{
 /// progress via the `was_*` / `wait_*` methods. A batch may be canceled by a rollback, in which
 /// case the wait methods return immediately.
 #[smart_pointer]
-pub struct RuntimeBatch<S: Store<StateSpace = StateSpace>, V: VmInterface> {
+pub struct RuntimeBatch<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> {
     /// Cancellation context captured at creation time for rollback detection.
     cancellation: CancellationContext,
     /// Shared scheduler state for storage access and eviction.
@@ -49,7 +49,7 @@ pub struct RuntimeBatch<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     was_committed: AtomicAsyncLatch,
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
+impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> RuntimeBatch<S, V> {
     /// Returns the checkpoint (index + metadata) identifying this batch.
     pub fn checkpoint(&self) -> &Checkpoint<V::BatchMetadata> {
         &self.checkpoint
@@ -270,7 +270,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeBatch<S, V> {
     }
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: VmInterface>
+impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor>
     vprogs_scheduling_execution_workers::Batch<ManagerTask<S, V>> for RuntimeBatch<S, V>
 {
     fn steal_available_tasks(

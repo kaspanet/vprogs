@@ -12,6 +12,6 @@ pub use backend::{Backend, BackendError};
 pub use batch_metadata::BatchMetadata;
 pub use error::Error;
 pub use resource_id::ResourceId;
-pub use transaction_context_ext::TransactionContextExt;
 pub use transaction::Transaction;
+pub use transaction_context_ext::TransactionContextExt;
 pub use vm::Vm;

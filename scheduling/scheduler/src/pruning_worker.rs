@@ -17,14 +17,14 @@ use vprogs_state_space::StateSpace;
 use vprogs_state_version::StateVersion;
 use vprogs_storage_types::Store;
 
-use crate::{VmInterface, state::SchedulerState};
+use crate::{TransactionProcessor, state::SchedulerState};
 
 /// Background worker that deletes old state data (rollback pointers and versions) for batches that
 /// will never be rolled back, advancing the **root** (oldest surviving batch) forward.
 ///
 /// Runs on a dedicated thread with direct store access to avoid contention with the main write
 /// path.
-pub struct PruningWorker<S: Store<StateSpace = StateSpace>, V: VmInterface> {
+pub struct PruningWorker<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> {
     /// The batch index up to which pruning is allowed (exclusive). Batches with index < threshold
     /// can be pruned.
     pruning_threshold: Arc<AtomicU64>,
@@ -45,7 +45,7 @@ pub struct PruningWorker<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     _marker: PhantomData<(S, V)>,
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
+impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> PruningWorker<S, V> {
     /// Sets the pruning threshold.
     ///
     /// Batches with index < threshold become eligible for pruning. The actual pruning happens

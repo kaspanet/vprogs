@@ -9,11 +9,11 @@ use vprogs_state_space::StateSpace;
 use vprogs_storage_manager::{StorageConfig, StorageManager};
 use vprogs_storage_types::Store;
 
-use crate::{Read, Write, vm_interface::VmInterface};
+use crate::{Read, Write, transaction_processor::TransactionProcessor};
 
 /// Shared scheduler state accessible by all components.
 #[smart_pointer]
-pub struct SchedulerState<S: Store<StateSpace = StateSpace>, V: VmInterface> {
+pub struct SchedulerState<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> {
     /// Storage manager for read/write coordination with background workers.
     storage: StorageManager<S, Read<S, V>, Write<S, V>>,
     /// Queue of resource IDs to potentially evict after their batches committed.
@@ -27,7 +27,7 @@ pub struct SchedulerState<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     last_processed: ArcSwap<Checkpoint<V::BatchMetadata>>,
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: VmInterface> SchedulerState<S, V> {
+impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> SchedulerState<S, V> {
     /// Creates a new state from a storage configuration.
     ///
     /// `root` and `last_committed` are loaded from `StateMetadata`. `last_processed` is initialized

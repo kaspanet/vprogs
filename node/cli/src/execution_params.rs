@@ -1,6 +1,6 @@
 use clap::Args;
 use serde::{Deserialize, Serialize};
-use vprogs_scheduling_scheduler::{ExecutionConfig, VmInterface};
+use vprogs_scheduling_scheduler::{ExecutionConfig, TransactionProcessor};
 
 use crate::backend::Vm;
 
@@ -15,7 +15,7 @@ pub struct ExecutionParams {
 
 impl ExecutionParams {
     /// Converts CLI params into an [`ExecutionConfig`], injecting the given VM implementation.
-    pub fn into_config<V: VmInterface>(self, vm: V) -> ExecutionConfig<V> {
+    pub fn into_config<V: TransactionProcessor>(self, vm: V) -> ExecutionConfig<V> {
         ExecutionConfig { worker_count: self.worker_count, vm: Some(vm) }
     }
 }

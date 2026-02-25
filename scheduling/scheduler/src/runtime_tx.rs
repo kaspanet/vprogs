@@ -10,7 +10,7 @@ use vprogs_storage_types::Store;
 
 use crate::{
     AccessHandle, ResourceAccess, RuntimeBatchRef, Scheduler, StateDiff, TransactionContext,
-    vm_interface::VmInterface,
+    transaction_processor::TransactionProcessor,
 };
 
 /// A transaction progressing through the scheduler's execution pipeline.
@@ -18,7 +18,7 @@ use crate::{
 /// Wraps a user-submitted transaction with its resource access handles, execution state, and a
 /// back-reference to the owning batch. Derefs to the inner `V::Transaction`.
 #[smart_pointer(deref(tx))]
-pub struct RuntimeTx<S: Store<StateSpace = StateSpace>, V: VmInterface> {
+pub struct RuntimeTx<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> {
     /// VM implementation used to execute this transaction.
     vm: V,
     /// Weak reference to the owning batch.
@@ -35,7 +35,7 @@ pub struct RuntimeTx<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     tx: V::Transaction,
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeTx<S, V> {
+impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> RuntimeTx<S, V> {
     /// Returns the resources accessed by this transaction.
     pub fn accessed_resources(&self) -> &[ResourceAccess<S, V>] {
         &self.resources
@@ -115,7 +115,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeTx<S, V> {
     }
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: VmInterface> RuntimeTxRef<S, V> {
+impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> RuntimeTxRef<S, V> {
     pub(crate) fn belongs_to_batch(&self, batch: &RuntimeBatchRef<S, V>) -> bool {
         self.upgrade().is_some_and(|tx| tx.batch() == batch)
     }

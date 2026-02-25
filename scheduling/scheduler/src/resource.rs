@@ -3,19 +3,22 @@ use vprogs_core_types::AccessMetadata;
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
-use crate::{ResourceAccess, RuntimeBatchRef, RuntimeTxRef, StateDiff, vm_interface::VmInterface};
+use crate::{
+    ResourceAccess, RuntimeBatchRef, RuntimeTxRef, StateDiff,
+    transaction_processor::TransactionProcessor,
+};
 
-pub(crate) struct Resource<S: Store<StateSpace = StateSpace>, V: VmInterface> {
+pub(crate) struct Resource<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> {
     last_access: Option<ResourceAccess<S, V>>,
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Default for Resource<S, V> {
+impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> Default for Resource<S, V> {
     fn default() -> Self {
         Self { last_access: None }
     }
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Resource<S, V> {
+impl<S: Store<StateSpace = StateSpace>, V: TransactionProcessor> Resource<S, V> {
     pub(crate) fn access(
         &mut self,
         meta: &V::AccessMetadata,
