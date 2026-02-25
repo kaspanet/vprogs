@@ -6,7 +6,7 @@ use crate::{StateOp, Witness};
 
 /// A request to prove a single transaction's execution.
 ///
-/// Sent from [`ZkVm`](crate) to the proving pipeline after executor-mode verification succeeds.
+/// Sent from the ZK VM to the proving pipeline after executor-mode verification succeeds.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct ProofRequest {
     pub batch_index: u64,

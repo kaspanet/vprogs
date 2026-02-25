@@ -1,0 +1,89 @@
+use tokio::sync::mpsc;
+use vprogs_scheduling_scheduler::{RuntimeBatch, TransactionContext, VmInterface};
+use vprogs_state_space::StateSpace;
+use vprogs_storage_types::Store;
+use vprogs_zk_types::{ProofRequest, StateOp};
+
+use crate::{
+    AccessMetadata, Backend, BatchMetadata, Error, IntoWitness, ResourceId, Transaction,
+    TransactionEffects,
+};
+
+/// ZK VM that executes programs via a [`Backend`] and optionally sends proof requests
+/// to a proving pipeline.
+#[derive(Clone)]
+pub struct Vm<B: Backend> {
+    backend: B,
+    proof_tx: Option<mpsc::UnboundedSender<ProofRequest>>,
+}
+
+impl<B: Backend> Vm<B> {
+    /// Creates a new ZK VM with the given backend.
+    pub fn new(backend: B) -> Self {
+        Self { backend, proof_tx: None }
+    }
+
+    /// Creates a new ZK VM that sends proof requests to the given channel after execution.
+    pub fn with_proof_channel(backend: B, proof_tx: mpsc::UnboundedSender<ProofRequest>) -> Self {
+        Self { backend, proof_tx: Some(proof_tx) }
+    }
+}
+
+impl<B: Backend> VmInterface for Vm<B> {
+    fn process_transaction<S: Store<StateSpace = StateSpace>>(
+        &self,
+        ctx: &mut TransactionContext<S, Self>,
+    ) -> Result<TransactionEffects, Error> {
+        // 1. Snapshot context into an owned witness.
+        let witness = ctx.witness();
+
+        // 2. Execute via backend — returns one optional op per account.
+        let ops =
+            self.backend.execute(&witness).map_err(|e| Error::ExecutorFailed(e.to_string()))?;
+
+        // 3. Apply ops to resource handles.
+        for (i, op) in ops.iter().enumerate() {
+            if let Some(op) = op {
+                apply_op(ctx.resources_mut()[i].data_mut(), op);
+            }
+        }
+
+        // 4. Collect non-None ops for effects and proof request.
+        let flat_ops: Vec<StateOp> = ops.into_iter().flatten().collect();
+
+        // 5. Optionally send a proof request to the proving pipeline.
+        if let Some(ref proof_tx) = self.proof_tx {
+            let _ = proof_tx.send(ProofRequest {
+                batch_index: ctx.batch_metadata().batch_index,
+                tx_index: ctx.tx_index(),
+                witness,
+                ops: flat_ops.clone(),
+            });
+        }
+
+        Ok(TransactionEffects { ops: flat_ops })
+    }
+
+    fn post_process_batch<S: Store<StateSpace = StateSpace>>(
+        &self,
+        _batch: &RuntimeBatch<S, Self>,
+    ) {
+    }
+
+    type Transaction = Transaction;
+    type TransactionEffects = TransactionEffects;
+    type ResourceId = ResourceId;
+    type AccessMetadata = AccessMetadata;
+    type BatchMetadata = BatchMetadata;
+    type Error = Error;
+}
+
+fn apply_op(data: &mut Vec<u8>, op: &StateOp) {
+    match op {
+        StateOp::Create { data: new_data, .. } | StateOp::Update { data: new_data, .. } => {
+            data.clear();
+            data.extend_from_slice(new_data);
+        }
+        StateOp::Delete { .. } => data.clear(),
+    }
+}

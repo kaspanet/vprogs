@@ -3,8 +3,8 @@ use vprogs_core_types::AccessType;
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
-use vprogs_zk_risc0_backend::Risc0Backend;
-use vprogs_zk_vm::{ZkAccessMetadata, ZkBatchMetadata, ZkResourceId, ZkTransaction, ZkVm};
+use vprogs_zk_risc0_backend::Backend;
+use vprogs_zk_vm::{AccessMetadata, BatchMetadata, ResourceId, Transaction, Vm};
 
 /// Loads the pre-built transaction processor ELF from the repository.
 fn transaction_processor_elf() -> Vec<u8> {
@@ -39,27 +39,27 @@ fn test_zk_scheduler_e2e() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
 
-    let backend = Risc0Backend::new(transaction_elf, batch_elf);
-    let vm = ZkVm::new(backend);
+    let backend = Backend::new(transaction_elf, batch_elf);
+    let vm = Vm::new(backend);
     let mut scheduler = Scheduler::new(
         ExecutionConfig::default().with_vm(vm),
         StorageConfig::default().with_store(storage),
     );
 
     let batch = scheduler.schedule(
-        ZkBatchMetadata { batch_index: 1 },
+        BatchMetadata { batch_index: 1 },
         vec![
-            ZkTransaction {
+            Transaction {
                 tx_bytes: vec![1, 2, 3],
-                accesses: vec![ZkAccessMetadata {
-                    id: ZkResourceId(vec![0, 1]),
+                accesses: vec![AccessMetadata {
+                    id: ResourceId(vec![0, 1]),
                     access_type: AccessType::Write,
                 }],
             },
-            ZkTransaction {
+            Transaction {
                 tx_bytes: vec![4, 5, 6],
-                accesses: vec![ZkAccessMetadata {
-                    id: ZkResourceId(vec![0, 2]),
+                accesses: vec![AccessMetadata {
+                    id: ResourceId(vec![0, 2]),
                     access_type: AccessType::Write,
                 }],
             },

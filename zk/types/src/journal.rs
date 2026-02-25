@@ -1,16 +1,6 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 
-/// Commitment to the pre-execution state of a transaction's inputs.
-#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
-pub struct InputCommitment {
-    pub state_root: [u8; 32],
-}
-
-/// Commitment to the post-execution state operations.
-#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
-pub struct OutputCommitment {
-    pub ops_hash: [u8; 32],
-}
+use crate::{InputCommitment, OutputCommitment};
 
 /// The public journal committed by a guest program after execution.
 ///
