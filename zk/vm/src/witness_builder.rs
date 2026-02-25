@@ -1,9 +1,8 @@
 use vprogs_scheduling_scheduler::{AccessHandle, TransactionContext};
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
-use vprogs_zk_proof_provider::ZkBackend;
 
-use crate::ZkVm;
+use crate::{ZkBackend, ZkVm};
 
 /// Builds the flat wire-format witness buffer from transaction data and resource state.
 ///
@@ -19,7 +18,7 @@ use crate::ZkVm;
 ///     [data_len: u32] [data: u8*] [pad to align(4)]
 ///     [version: u64]
 /// ```
-pub(crate) fn build_witness<S: Store<StateSpace = StateSpace>, B: ZkBackend>(
+pub fn build_witness<S: Store<StateSpace = StateSpace>, B: ZkBackend>(
     resources: &[AccessHandle<S, ZkVm<B>>],
     ctx: &TransactionContext<ZkVm<B>>,
 ) -> Vec<u8> {

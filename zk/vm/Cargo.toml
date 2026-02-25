@@ -11,5 +11,4 @@ vprogs-core-types.workspace           = true
 vprogs-scheduling-scheduler.workspace = true
 vprogs-state-space.workspace          = true
 vprogs-storage-types.workspace        = true
-vprogs-zk-proof-provider.workspace    = true
 vprogs-zk-types.workspace             = true

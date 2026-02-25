@@ -4,5 +4,8 @@ name              = "vprogs-zk-risc0-backend"
 version.workspace = true
 
 [dependencies]
-risc0-zkvm                         = { workspace = true, features = ["prove"] }
-vprogs-zk-proof-provider.workspace = true
+risc0-zkvm                            = { workspace = true, features = ["prove"] }
+vprogs-scheduling-scheduler.workspace = true
+vprogs-state-space.workspace          = true
+vprogs-storage-types.workspace        = true
+vprogs-zk-vm.workspace                = true

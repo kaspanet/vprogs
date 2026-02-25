@@ -7686,20 +7686,13 @@ name = "vprogs-transaction-runtime-transaction-effects"
 version = "0.1.0"
 
 [[package]]
-name = "vprogs-zk-proof-provider"
-version = "0.1.0"
-dependencies = [
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "vprogs-zk-prover"
 version = "0.1.0"
 dependencies = [
  "log",
  "tokio",
- "vprogs-zk-proof-provider",
  "vprogs-zk-types",
+ "vprogs-zk-vm",
 ]
 
 [[package]]
@@ -7707,7 +7700,10 @@ name = "vprogs-zk-risc0-backend"
 version = "0.1.0"
 dependencies = [
  "risc0-zkvm",
- "vprogs-zk-proof-provider",
+ "vprogs-scheduling-scheduler",
+ "vprogs-state-space",
+ "vprogs-storage-types",
+ "vprogs-zk-vm",
 ]
 
 [[package]]
@@ -7754,7 +7750,6 @@ dependencies = [
  "vprogs-scheduling-scheduler",
  "vprogs-state-space",
  "vprogs-storage-types",
- "vprogs-zk-proof-provider",
  "vprogs-zk-types",
 ]
 

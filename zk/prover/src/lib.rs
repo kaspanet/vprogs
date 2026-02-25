@@ -1,8 +1,8 @@
 use std::{collections::HashMap, sync::Arc};
 
 use tokio::sync::mpsc;
-use vprogs_zk_proof_provider::ZkBackend;
 use vprogs_zk_types::ProofRequest;
+use vprogs_zk_vm::ZkBackend;
 
 /// Result of proving an entire batch.
 pub struct BatchProof {
@@ -17,19 +17,13 @@ pub struct BatchProof {
 /// ordered journal bytes. Aggregation via the batch processor is deferred to a future milestone.
 pub struct BatchProver<B: ZkBackend> {
     backend: Arc<B>,
-    inner_elf: Arc<Vec<u8>>,
     rx: mpsc::UnboundedReceiver<ProofRequest>,
     batch_tx_counts: HashMap<u64, u32>,
 }
 
 impl<B: ZkBackend + 'static> BatchProver<B> {
-    pub fn new(backend: B, inner_elf: Vec<u8>, rx: mpsc::UnboundedReceiver<ProofRequest>) -> Self {
-        Self {
-            backend: Arc::new(backend),
-            inner_elf: Arc::new(inner_elf),
-            rx,
-            batch_tx_counts: HashMap::new(),
-        }
+    pub fn new(backend: B, rx: mpsc::UnboundedReceiver<ProofRequest>) -> Self {
+        Self { backend: Arc::new(backend), rx, batch_tx_counts: HashMap::new() }
     }
 
     /// Sets the expected transaction count for a batch so the prover knows when all proofs have
@@ -48,26 +42,26 @@ impl<B: ZkBackend + 'static> BatchProver<B> {
 
             while let Some(request) = self.rx.recv().await {
                 let backend = self.backend.clone();
-                let elf = self.inner_elf.clone();
                 let witness_bytes = request.witness_bytes.clone();
                 let batch_index = request.batch_index;
                 let tx_index = request.tx_index;
 
                 // Prove on a blocking thread.
-                let receipt =
-                    match tokio::task::spawn_blocking(move || backend.prove(&elf, &witness_bytes))
-                        .await
-                    {
-                        Ok(Ok(receipt)) => receipt,
-                        Ok(Err(e)) => {
-                            log::error!("proof failed for batch {batch_index} tx {tx_index}: {e}");
-                            continue;
-                        }
-                        Err(e) => {
-                            log::error!("proof task panicked: {e}");
-                            continue;
-                        }
-                    };
+                let receipt = match tokio::task::spawn_blocking(move || {
+                    backend.prove_transaction(&witness_bytes)
+                })
+                .await
+                {
+                    Ok(Ok(receipt)) => receipt,
+                    Ok(Err(e)) => {
+                        log::error!("proof failed for batch {batch_index} tx {tx_index}: {e}");
+                        continue;
+                    }
+                    Err(e) => {
+                        log::error!("proof task panicked: {e}");
+                        continue;
+                    }
+                };
 
                 let entry = pending.entry(batch_index).or_default();
                 entry.push((tx_index, receipt));

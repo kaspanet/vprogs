@@ -1,7 +1,0 @@
-[package]
-edition.workspace = true
-name              = "vprogs-zk-proof-provider"
-version.workspace = true
-
-[dependencies]
-thiserror.workspace = true
