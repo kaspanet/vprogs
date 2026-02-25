@@ -2,10 +2,11 @@ use tokio::sync::mpsc;
 use vprogs_scheduling_scheduler::{Processor, TransactionContext};
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
-use vprogs_zk_types::{ProofRequest, StateOp};
+use vprogs_zk_types::StateOp;
 
 use crate::{
-    AccessMetadata, Backend, BatchMetadata, Error, ResourceId, Transaction, TransactionContextExt,
+    AccessMetadata, Backend, BatchMetadata, Error, ProofRequest, ResourceId, Transaction,
+    TransactionContextExt,
 };
 
 /// ZK processor that executes programs via a [`Backend`] and optionally sends proof requests
@@ -48,12 +49,11 @@ impl<B: Backend> Processor for Vm<B> {
             if let Some(op) = op {
                 let data = ctx.resources_mut()[i].data_mut();
                 match op {
-                    StateOp::Create { data: new_data, .. }
-                    | StateOp::Update { data: new_data, .. } => {
+                    StateOp::Create(new_data) | StateOp::Update(new_data) => {
                         data.clear();
                         data.extend_from_slice(new_data);
                     }
-                    StateOp::Delete { .. } => data.clear(),
+                    StateOp::Delete => data.clear(),
                 }
             }
         }

@@ -1,8 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use tokio::sync::mpsc;
-use vprogs_zk_types::ProofRequest;
-use vprogs_zk_vm::Backend;
+use vprogs_zk_vm::{Backend, ProofRequest};
 
 use crate::BatchProof;
 

@@ -1,6 +1,4 @@
-use alloc::vec::Vec;
-
-use crate::StateOp;
+use vprogs_zk_types::StateOp;
 
 /// A request to prove a single transaction's execution.
 ///

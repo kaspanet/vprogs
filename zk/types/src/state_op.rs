@@ -2,10 +2,10 @@ use alloc::vec::Vec;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
-/// A state mutation produced by executing a transaction.
+/// A state mutation produced by executing a transaction, addressed by account index.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub enum StateOp {
-    Create { account_id: Vec<u8>, data: Vec<u8> },
-    Update { account_id: Vec<u8>, data: Vec<u8> },
-    Delete { account_id: Vec<u8> },
+    Create(Vec<u8>),
+    Update(Vec<u8>),
+    Delete,
 }
