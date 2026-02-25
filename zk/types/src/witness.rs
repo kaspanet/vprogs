@@ -6,7 +6,7 @@ use crate::AccountInput;
 
 /// Owned witness data for passing to ZK backends.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
-pub struct Witness {
+pub struct TransactionContextWitness {
     pub tx_bytes: Vec<u8>,
     pub tx_index: u32,
     pub batch_metadata: Vec<u8>,

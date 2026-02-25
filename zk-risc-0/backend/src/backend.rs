@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use risc0_zkvm::{ProverOpts, Receipt, default_executor, default_prover};
-use vprogs_zk_types::{StateOp, Witness};
+use vprogs_zk_types::{StateOp, TransactionContextWitness};
 use vprogs_zk_vm::BackendError;
 
 use crate::wire_format::{build_env, serialize_witness};
@@ -25,7 +25,7 @@ impl Backend {
 impl vprogs_zk_vm::Backend for Backend {
     type Receipt = Receipt;
 
-    fn execute(&self, witness: &Witness) -> Result<Vec<Option<StateOp>>, BackendError> {
+    fn execute(&self, witness: &TransactionContextWitness) -> Result<Vec<Option<StateOp>>, BackendError> {
         let wire_bytes = serialize_witness(witness);
         let env = build_env(&wire_bytes)?;
         let _session = default_executor()
@@ -35,7 +35,7 @@ impl vprogs_zk_vm::Backend for Backend {
         Ok(vec![None; witness.accounts.len()])
     }
 
-    fn prove_transaction(&self, witness: &Witness) -> Result<Receipt, BackendError> {
+    fn prove_transaction(&self, witness: &TransactionContextWitness) -> Result<Receipt, BackendError> {
         let wire_bytes = serialize_witness(witness);
         let env = build_env(&wire_bytes)?;
         default_prover()

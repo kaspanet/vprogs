@@ -68,10 +68,5 @@ fn test_zk_scheduler_e2e() {
 
     batch.wait_committed_blocking();
 
-    for (i, tx) in batch.txs().iter().enumerate() {
-        let effects = tx.effects();
-        assert!(effects.ops.is_empty(), "expected no ops for tx {i}");
-    }
-
     scheduler.shutdown();
 }

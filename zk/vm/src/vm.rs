@@ -5,8 +5,7 @@ use vprogs_storage_types::Store;
 use vprogs_zk_types::{ProofRequest, StateOp};
 
 use crate::{
-    AccessMetadata, Backend, BatchMetadata, Error, IntoWitness, ResourceId, Transaction,
-    TransactionEffects,
+    AccessMetadata, Backend, BatchMetadata, Error, ResourceId, Transaction, TransactionContextExt,
 };
 
 /// ZK VM that executes programs via a [`Backend`] and optionally sends proof requests
@@ -33,13 +32,13 @@ impl<B: Backend> VmInterface for Vm<B> {
     fn process_transaction<S: Store<StateSpace = StateSpace>>(
         &self,
         ctx: &mut TransactionContext<S, Self>,
-    ) -> Result<TransactionEffects, Error> {
+    ) -> Result<(), Error> {
         // 1. Snapshot context into an owned witness.
-        let witness = ctx.witness();
+        let transaction_context = ctx.witness();
 
         // 2. Execute via backend — returns one optional op per account.
         let ops =
-            self.backend.execute(&witness).map_err(|e| Error::ExecutorFailed(e.to_string()))?;
+            self.backend.execute(&transaction_context).map_err(|e| Error::ExecutorFailed(e.to_string()))?;
 
         // 3. Apply ops to resource handles.
         for (i, op) in ops.iter().enumerate() {
@@ -48,20 +47,16 @@ impl<B: Backend> VmInterface for Vm<B> {
             }
         }
 
-        // 4. Collect non-None ops for effects and proof request.
-        let flat_ops: Vec<StateOp> = ops.into_iter().flatten().collect();
-
-        // 5. Optionally send a proof request to the proving pipeline.
+        // 4. Optionally send a proof request to the proving pipeline.
         if let Some(ref proof_tx) = self.proof_tx {
             let _ = proof_tx.send(ProofRequest {
                 batch_index: ctx.batch_metadata().batch_index,
-                tx_index: ctx.tx_index(),
-                witness,
-                ops: flat_ops.clone(),
+                witness: transaction_context,
+                ops,
             });
         }
 
-        Ok(TransactionEffects { ops: flat_ops })
+        Ok(())
     }
 
     fn post_process_batch<S: Store<StateSpace = StateSpace>>(
@@ -71,7 +66,7 @@ impl<B: Backend> VmInterface for Vm<B> {
     }
 
     type Transaction = Transaction;
-    type TransactionEffects = TransactionEffects;
+    type TransactionEffects = ();
     type ResourceId = ResourceId;
     type AccessMetadata = AccessMetadata;
     type BatchMetadata = BatchMetadata;

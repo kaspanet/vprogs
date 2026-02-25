@@ -37,9 +37,9 @@ impl<B: Backend + 'static> BatchProver<B> {
 
             while let Some(request) = self.rx.recv().await {
                 let backend = self.backend.clone();
-                let witness = request.witness.clone();
                 let batch_index = request.batch_index;
-                let tx_index = request.tx_index;
+                let tx_index = request.witness.tx_index;
+                let witness = request.witness.clone();
 
                 // Prove on a blocking thread.
                 let receipt =

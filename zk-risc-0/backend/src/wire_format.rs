@@ -1,8 +1,8 @@
 use risc0_zkvm::ExecutorEnv;
-use vprogs_zk_types::Witness;
+use vprogs_zk_types::TransactionContextWitness;
 use vprogs_zk_vm::BackendError;
 
-/// Serializes a [`Witness`] into the flat wire format consumed by the guest program.
+/// Serializes a [`TransactionContextWitness`] into the flat wire format consumed by the guest program.
 ///
 /// Wire format (all integers little-endian, fields padded to 4-byte alignment):
 /// ```text
@@ -16,7 +16,7 @@ use vprogs_zk_vm::BackendError;
 ///     [data_len: u32] [data: u8*] [pad to align(4)]
 ///     [version: u64]
 /// ```
-pub fn serialize_witness(witness: &Witness) -> Vec<u8> {
+pub fn serialize_witness(witness: &TransactionContextWitness) -> Vec<u8> {
     let mut buf = Vec::new();
     // Reserve space for total_len (will be filled at the end).
     buf.extend_from_slice(&0u32.to_le_bytes());
