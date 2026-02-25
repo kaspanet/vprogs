@@ -1569,6 +1569,8 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "vprogs-zk-risc0-transaction-processor"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "borsh",
  "risc0-zkvm",
  "vprogs-zk-risc0-transaction-processor-abi",
  "vprogs-zk-types",
@@ -1578,7 +1580,6 @@ dependencies = [
 name = "vprogs-zk-risc0-transaction-processor-abi"
 version = "0.1.0"
 dependencies = [
- "blake3",
  "borsh",
  "risc0-zkvm",
  "rkyv",

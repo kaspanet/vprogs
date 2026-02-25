@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use risc0_zkvm::{ProverOpts, Receipt, default_executor, default_prover};
+use vprogs_zk_risc0_transaction_processor_abi::parse_journal;
 use vprogs_zk_types::StateOp;
 use vprogs_zk_vm::BackendError;
 
@@ -25,17 +26,13 @@ impl Backend {
 impl vprogs_zk_vm::Backend for Backend {
     type Receipt = Receipt;
 
-    fn execute(
-        &self,
-        witness_bytes: &[u8],
-        num_accounts: usize,
-    ) -> Result<Vec<Option<StateOp>>, BackendError> {
+    fn execute(&self, witness_bytes: &[u8]) -> Result<Vec<Option<StateOp>>, BackendError> {
         let env = build_env(witness_bytes)?;
-        let _session = default_executor()
+        let session = default_executor()
             .execute(env, &self.transaction_elf)
             .map_err(|e| BackendError::Failed(e.to_string()))?;
-        // Guest currently produces empty ops.
-        Ok(vec![None; num_accounts])
+        let (_, ops) = parse_journal(&session.journal.bytes);
+        Ok(ops)
     }
 
     fn prove_transaction(&self, witness_bytes: &[u8]) -> Result<Receipt, BackendError> {

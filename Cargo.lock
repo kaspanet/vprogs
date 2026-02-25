@@ -7817,6 +7817,7 @@ name = "vprogs-zk-risc0-backend"
 version = "0.1.0"
 dependencies = [
  "risc0-zkvm",
+ "vprogs-zk-risc0-transaction-processor-abi",
  "vprogs-zk-types",
  "vprogs-zk-vm",
 ]
@@ -7825,7 +7826,6 @@ dependencies = [
 name = "vprogs-zk-risc0-transaction-processor-abi"
 version = "0.1.0"
 dependencies = [
- "blake3",
  "borsh",
  "risc0-zkvm",
  "rkyv",

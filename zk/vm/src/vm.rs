@@ -36,12 +36,11 @@ impl<B: Backend> Processor for Vm<B> {
     ) -> Result<(), Error> {
         // 1. Serialize witness to rkyv bytes.
         let witness_bytes = ctx.witness();
-        let num_accounts = ctx.resources().len();
 
         // 2. Execute via backend — returns one optional op per account.
         let ops = self
             .backend
-            .execute(&witness_bytes, num_accounts)
+            .execute(&witness_bytes)
             .map_err(|e| Error::ExecutorFailed(e.to_string()))?;
 
         // 3. Apply ops to resource handles.

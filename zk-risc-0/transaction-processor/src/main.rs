@@ -1,11 +1,12 @@
 #![no_std]
 #![no_main]
 
-use vprogs_zk_risc0_transaction_processor_abi::{
-    access_witness, commit_journal, compute_input_commitment, compute_output_commitment,
-    read_witness,
-};
-use vprogs_zk_types::Journal;
+extern crate alloc;
+
+use alloc::vec;
+
+use risc0_zkvm::guest::env;
+use vprogs_zk_risc0_transaction_processor_abi::{StateOp, access_witness, read_witness};
 
 risc0_zkvm::guest::entry!(main);
 
@@ -13,8 +14,12 @@ fn main() {
     let witness_bytes = read_witness();
     let witness = access_witness(&witness_bytes);
 
-    let input = compute_input_commitment(&witness.accounts);
-    let output = compute_output_commitment(&witness.accounts, &[]);
+    // 1. Commit witness hash.
+    env::commit_slice(blake3::hash(&witness_bytes).as_bytes());
 
-    commit_journal(&Journal { tx_index: witness.tx_index.to_native(), input, output });
+    // 2. (future: intermediate commitments during execution)
+
+    // 3. Commit state ops.
+    let ops: alloc::vec::Vec<Option<StateOp>> = vec![None; witness.accounts.len()];
+    env::commit_slice(&borsh::to_vec(&ops).unwrap());
 }

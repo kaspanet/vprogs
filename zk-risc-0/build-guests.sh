@@ -1,6 +1,10 @@
 #!/bin/bash
 # Build RISC-0 zkVM programs using Docker only (no local rzup/toolchain needed).
 #
+# Uses BuildKit cache mounts to persist the cargo registry and compiled artifacts
+# across builds. First build takes ~4 minutes; subsequent builds with only source
+# changes recompile in ~30 seconds.
+#
 # Usage:
 #   ./zk-risc-0/build-guests.sh                        # build all programs
 #   ./zk-risc-0/build-guests.sh transaction-processor   # build only the transaction processor
@@ -31,6 +35,8 @@ IGNORE
   trap 'rm -f "$DOCKERIGNORE"' EXIT
 fi
 
+GUEST_RUSTFLAGS='-Cpasses=lower-atomic -Clink-arg=-Ttext=0x00200800 -Clink-arg=--fatal-warnings -Cpanic=abort --cfg getrandom_backend="custom"'
+
 for program in "${PROGRAMS[@]}"; do
   manifest="zk-risc-0/${program}/Cargo.toml"
   # Cargo binary name: hyphens in package name become hyphens in binary name.
@@ -39,9 +45,12 @@ for program in "${PROGRAMS[@]}"; do
 
   echo "Building ${program} → ${out_dir}"
 
-  docker build \
-    --output="$out_dir" \
-    -f - "$REPO_ROOT" <<DOCKERFILE
+  # Generate the Dockerfile into a temp file to avoid heredoc escaping issues
+  # with backslash line continuations (needed for --mount flags).
+  dockerfile=$(mktemp)
+  trap 'rm -f "$dockerfile"' EXIT
+
+  cat > "$dockerfile" <<EOF
 FROM risczero/risc0-guest-builder:${DOCKER_TAG} AS build
 WORKDIR /src
 COPY . .
@@ -50,18 +59,33 @@ ENV CARGO_TARGET_DIR=target
 ENV RISC0_FEATURE_bigint2=
 ENV CC_riscv32im_risc0_zkvm_elf=/root/.risc0/cpp/bin/riscv32-unknown-elf-gcc
 ENV CFLAGS_riscv32im_risc0_zkvm_elf="-march=rv32im -nostdlib"
-RUN RUSTFLAGS='-Cpasses=lower-atomic -Clink-arg=-Ttext=0x00200800 -Clink-arg=--fatal-warnings -Cpanic=abort --cfg getrandom_backend="custom"' \
-    cargo +risc0 fetch --locked --target riscv32im-risc0-zkvm-elf --manifest-path \$CARGO_MANIFEST_PATH
-RUN RUSTFLAGS='-Cpasses=lower-atomic -Clink-arg=-Ttext=0x00200800 -Clink-arg=--fatal-warnings -Cpanic=abort --cfg getrandom_backend="custom"' \
-    cargo +risc0 build --release --target riscv32im-risc0-zkvm-elf --manifest-path \$CARGO_MANIFEST_PATH
-
-# Build the elf-wrapper tool (host binary) and wrap the raw ELF into ProgramBinary format.
-RUN cargo build --release --manifest-path zk-risc-0/elf-wrapper/Cargo.toml
-RUN ./target/release/elf-wrapper target/riscv32im-risc0-zkvm-elf/release/${bin_name}
+# Single RUN with cache mounts for cargo registry and build artifacts.
+# Registry + git caches avoid re-downloading crates on every build.
+# Target cache preserves compiled dependencies across builds so only
+# changed crates are recompiled.
+RUN --mount=type=cache,target=/root/.cargo/registry \\
+    --mount=type=cache,target=/root/.cargo/git \\
+    --mount=type=cache,id=vprogs-risc0-target,target=/src/target \\
+    RUSTFLAGS='${GUEST_RUSTFLAGS}' \\
+    cargo +risc0 fetch --locked --target riscv32im-risc0-zkvm-elf \\
+      --manifest-path \$CARGO_MANIFEST_PATH && \\
+    RUSTFLAGS='${GUEST_RUSTFLAGS}' \\
+    cargo +risc0 build --release --target riscv32im-risc0-zkvm-elf \\
+      --manifest-path \$CARGO_MANIFEST_PATH && \\
+    cargo build --release --manifest-path zk-risc-0/elf-wrapper/Cargo.toml && \\
+    mkdir -p /output && \\
+    cp target/riscv32im-risc0-zkvm-elf/release/${bin_name} /output/ && \\
+    ./target/release/elf-wrapper /output/${bin_name}
 
 FROM scratch AS export
-COPY --from=build /src/target/riscv32im-risc0-zkvm-elf/release/ /
-DOCKERFILE
+COPY --from=build /output/ /
+EOF
+
+  docker build \
+    --output="$out_dir" \
+    -f "$dockerfile" "$REPO_ROOT"
+
+  rm -f "$dockerfile"
 
   # Copy the wrapped ELF into the program crate's compiled/ directory.
   elf_dest="$SCRIPT_DIR/${program}/compiled/program.elf"

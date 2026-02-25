@@ -17,11 +17,7 @@ pub trait Backend: Clone + Send + Sync + 'static {
 
     /// Execute a transaction from serialized witness bytes. Returns one optional state op per
     /// account.
-    fn execute(
-        &self,
-        witness_bytes: &[u8],
-        num_accounts: usize,
-    ) -> Result<Vec<Option<StateOp>>, BackendError>;
+    fn execute(&self, witness_bytes: &[u8]) -> Result<Vec<Option<StateOp>>, BackendError>;
 
     /// Prove a previously executed transaction from its serialized witness bytes.
     fn prove_transaction(&self, witness_bytes: &[u8]) -> Result<Self::Receipt, BackendError>;
