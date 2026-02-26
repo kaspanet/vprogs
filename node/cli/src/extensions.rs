@@ -1,4 +1,4 @@
-use vprogs_node_l1_bridge::ConnectStrategy;
+use vprogs_l1_bridge::ConnectStrategy;
 
 /// Extends [`ConnectStrategy`] with string conversion (the upstream type lacks `Display`).
 pub trait ConnectStrategyExt {

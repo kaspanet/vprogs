@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use crate::{AccessMetadata, ResourceId};
 
 /// A transaction in the ZK VM — opaque bytes plus declared resource accesses.

@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use borsh::{BorshDeserialize, BorshSerialize};
 
 /// Resource identifier for the ZK VM — an opaque byte vector.

@@ -1,7 +1,7 @@
 use vprogs_core_types::Checkpoint;
+use vprogs_l1_types::{BlockHash, ChainBlockMetadata};
 
 use crate::{
-    BlockHash, ChainBlockMetadata,
     chain_block::ChainBlock,
     error::{Error, Result},
 };

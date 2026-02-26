@@ -1,4 +1,5 @@
-use vprogs_node_l1_bridge::{ChainBlockMetadata, RpcOptionalHeader, RpcOptionalTransaction};
+use vprogs_l1_bridge::{RpcOptionalHeader, RpcOptionalTransaction};
+use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::Processor;
 
 /// Extension of [`Processor`] with L1 block pre-processing.

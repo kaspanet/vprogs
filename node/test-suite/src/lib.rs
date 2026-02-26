@@ -9,7 +9,7 @@
 //! ```no_run
 //! use std::time::Duration;
 //!
-//! use vprogs_node_l1_bridge::{L1Bridge, L1BridgeConfig, L1Event, NetworkType};
+//! use vprogs_l1_bridge::{L1Bridge, L1BridgeConfig, L1Event, NetworkType};
 //! use vprogs_node_test_suite::{L1BridgeExt, L1Node};
 //!
 //! # async fn example() {

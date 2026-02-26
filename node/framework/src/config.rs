@@ -1,4 +1,4 @@
-use vprogs_node_l1_bridge::L1BridgeConfig;
+use vprogs_l1_bridge::L1BridgeConfig;
 use vprogs_scheduling_scheduler::ExecutionConfig;
 use vprogs_state_space::StateSpace;
 use vprogs_storage_manager::StorageConfig;

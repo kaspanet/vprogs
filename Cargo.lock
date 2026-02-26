@@ -7376,6 +7376,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-l1-bridge"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "borsh",
+ "crossbeam-queue",
+ "futures",
+ "kaspa-consensus-core",
+ "kaspa-hashes",
+ "kaspa-notify",
+ "kaspa-rpc-core",
+ "kaspa-wrpc-client",
+ "log",
+ "tap",
+ "thiserror 2.0.18",
+ "tokio",
+ "vprogs-core-macros",
+ "vprogs-core-types",
+ "vprogs-l1-types",
+ "vprogs-node-test-suite",
+ "workflow-core",
+]
+
+[[package]]
+name = "vprogs-l1-types"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "kaspa-hashes",
+]
+
+[[package]]
 name = "vprogs-node-cli"
 version = "0.1.0"
 dependencies = [
@@ -7386,8 +7418,8 @@ dependencies = [
  "log",
  "serde",
  "tap",
+ "vprogs-l1-bridge",
  "vprogs-node-framework",
- "vprogs-node-l1-bridge",
  "vprogs-node-vm",
  "vprogs-scheduling-scheduler",
  "vprogs-state-space",
@@ -7408,7 +7440,8 @@ dependencies = [
  "vprogs-core-atomics",
  "vprogs-core-macros",
  "vprogs-core-types",
- "vprogs-node-l1-bridge",
+ "vprogs-l1-bridge",
+ "vprogs-l1-types",
  "vprogs-node-test-suite",
  "vprogs-scheduling-scheduler",
  "vprogs-state-metadata",
@@ -7416,29 +7449,6 @@ dependencies = [
  "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
-]
-
-[[package]]
-name = "vprogs-node-l1-bridge"
-version = "0.1.0"
-dependencies = [
- "arc-swap",
- "borsh",
- "crossbeam-queue",
- "futures",
- "kaspa-consensus-core",
- "kaspa-hashes",
- "kaspa-notify",
- "kaspa-rpc-core",
- "kaspa-wrpc-client",
- "log",
- "tap",
- "thiserror 2.0.18",
- "tokio",
- "vprogs-core-macros",
- "vprogs-core-types",
- "vprogs-node-test-suite",
- "workflow-core",
 ]
 
 [[package]]
@@ -7461,8 +7471,9 @@ dependencies = [
  "tempfile",
  "tokio",
  "vprogs-core-types",
+ "vprogs-l1-bridge",
+ "vprogs-l1-types",
  "vprogs-node-framework",
- "vprogs-node-l1-bridge",
  "vprogs-scheduling-scheduler",
  "vprogs-scheduling-test-suite",
  "vprogs-state-metadata",
@@ -7476,8 +7487,9 @@ dependencies = [
 name = "vprogs-node-vm"
 version = "0.1.0"
 dependencies = [
+ "vprogs-l1-bridge",
+ "vprogs-l1-types",
  "vprogs-node-framework",
- "vprogs-node-l1-bridge",
  "vprogs-scheduling-scheduler",
  "vprogs-state-space",
  "vprogs-storage-types",
@@ -7808,6 +7820,11 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "rkyv",
+ "vprogs-core-types",
+ "vprogs-l1-types",
+ "vprogs-scheduling-scheduler",
+ "vprogs-state-space",
+ "vprogs-storage-types",
 ]
 
 [[package]]
@@ -7855,6 +7872,7 @@ dependencies = [
  "borsh",
  "tempfile",
  "vprogs-core-types",
+ "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
  "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
@@ -7872,7 +7890,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "vprogs-core-types",
- "vprogs-node-l1-bridge",
+ "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
  "vprogs-state-space",
  "vprogs-storage-types",

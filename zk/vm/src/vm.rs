@@ -1,13 +1,11 @@
 use tokio::sync::mpsc;
+use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, TransactionContext};
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
-use vprogs_zk_abi::StateOp;
+use vprogs_zk_abi::{AccessMetadata, ResourceId, StateOp, Transaction, Witness};
 
-use crate::{
-    AccessMetadata, Backend, ChainBlockMetadata, Error, ProofRequest, ResourceId, Transaction,
-    TransactionContextExt,
-};
+use crate::{Backend, Error, ProofRequest};
 
 /// ZK processor that executes programs via a [`Backend`] and optionally sends proof requests
 /// to a proving pipeline.
@@ -35,7 +33,8 @@ impl<B: Backend> Processor for Vm<B> {
         ctx: &mut TransactionContext<S, Self>,
     ) -> Result<(), Error> {
         // 1. Serialize witness to rkyv bytes.
-        let witness_bytes = ctx.witness();
+        let witness = Witness::from(&*ctx);
+        let witness_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&witness).unwrap().to_vec();
 
         // 2. Execute via backend — returns one optional op per account.
         let ops = self

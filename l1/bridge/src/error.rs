@@ -1,6 +1,5 @@
 use kaspa_rpc_core::RpcError;
-
-use crate::BlockHash;
+use vprogs_l1_types::BlockHash;
 
 /// Bridge error types, split into recoverable (RPC) and fatal.
 #[derive(Debug, thiserror::Error)]

@@ -1,10 +1,12 @@
 use tempfile::TempDir;
 use vprogs_core_types::AccessType;
+use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
+use vprogs_zk_abi::{AccessMetadata, ResourceId, Transaction};
 use vprogs_zk_risc0_backend::Backend;
-use vprogs_zk_vm::{AccessMetadata, ChainBlockMetadata, ResourceId, Transaction, Vm};
+use vprogs_zk_vm::Vm;
 
 /// Loads the pre-built transaction processor ELF from the repository.
 fn transaction_processor_elf() -> Vec<u8> {

@@ -5,7 +5,7 @@ use std::{
 
 use tokio::{runtime::Builder, sync::mpsc};
 use vprogs_core_atomics::AtomicAsyncLatch;
-use vprogs_node_l1_bridge::L1Bridge;
+use vprogs_l1_bridge::L1Bridge;
 use vprogs_scheduling_scheduler::Scheduler;
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;

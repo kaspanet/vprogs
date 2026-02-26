@@ -8,7 +8,7 @@
 //! # Usage
 //!
 //! ```no_run
-//! use vprogs_node_l1_bridge::{L1Bridge, L1BridgeConfig, L1Event, NetworkType};
+//! use vprogs_l1_bridge::{L1Bridge, L1BridgeConfig, L1Event, NetworkType};
 //!
 //! let bridge = L1Bridge::new(
 //!     L1BridgeConfig::default()
@@ -52,7 +52,6 @@
 
 mod bridge;
 mod chain_block;
-mod chain_block_metadata;
 mod config;
 mod error;
 mod event;
@@ -61,8 +60,7 @@ mod virtual_chain;
 mod worker;
 
 pub use bridge::L1Bridge;
-pub use chain_block_metadata::ChainBlockMetadata;
 pub use config::L1BridgeConfig;
-pub use event::{Hash as BlockHash, L1Event, RpcOptionalHeader, RpcOptionalTransaction};
+pub use event::{L1Event, RpcOptionalHeader, RpcOptionalTransaction};
 pub use kaspa_consensus_core::network::{NetworkId, NetworkType};
 pub use kaspa_wrpc_client::prelude::ConnectStrategy;

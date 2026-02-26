@@ -1,6 +1,6 @@
 use rkyv::{Archive, Serialize};
 
-/// Batch-level metadata mirroring [`ChainBlockMetadata`](vprogs_node_l1_bridge::ChainBlockMetadata)
+/// Batch-level metadata mirroring [`ChainBlockMetadata`](vprogs_l1_types::ChainBlockMetadata)
 /// in a `no_std`-compatible, rkyv-serializable form.
 #[derive(Archive, Serialize)]
 pub struct BatchMetadata {

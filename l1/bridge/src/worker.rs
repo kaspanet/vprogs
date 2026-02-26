@@ -11,10 +11,11 @@ use kaspa_rpc_core::{
 use kaspa_wrpc_client::prelude::*;
 use tokio::sync::Notify;
 use vprogs_core_types::Checkpoint;
+use vprogs_l1_types::ChainBlockMetadata;
 use workflow_core::channel::{Channel, MultiplexerChannel};
 
 use crate::{
-    ChainBlockMetadata, L1BridgeConfig, L1Event,
+    L1BridgeConfig, L1Event,
     error::{Error, Result},
     reorg_filter::ReorgFilter,
     virtual_chain::VirtualChain,

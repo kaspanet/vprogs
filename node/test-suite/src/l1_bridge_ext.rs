@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use tokio::time::timeout;
-use vprogs_node_l1_bridge::{L1Bridge, L1Event};
+use vprogs_l1_bridge::{L1Bridge, L1Event};
 
 /// Convenience methods for [`L1Bridge`] in test scenarios.
 pub trait L1BridgeExt {

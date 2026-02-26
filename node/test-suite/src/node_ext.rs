@@ -3,8 +3,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_node_framework::NodeApi;
-use vprogs_node_l1_bridge::ChainBlockMetadata;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_space::StateSpace;
 use vprogs_state_version::StateVersion;

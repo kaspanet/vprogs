@@ -1,6 +1,7 @@
 [workspace]
 default-members = [
   "core/*",
+  "l1/*",
   "node/*",
   "scheduling/*",
   "state/*",
@@ -22,6 +23,7 @@ exclude = [
 ]
 members = [
   "core/*",
+  "l1/*",
   "node/*",
   "scheduling/*",
   "state/*",
@@ -106,10 +108,11 @@ resolver = "3"
   # Internal dependencies
   vprogs-core-atomics                             = { path = "core/atomics" }
   vprogs-core-macros                              = { path = "core/macros" }
-  vprogs-core-types                               = { path = "core/types" }
+  vprogs-core-types                               = { path = "core/types", default-features = false }
+  vprogs-l1-bridge                                = { path = "l1/bridge" }
+  vprogs-l1-types                                 = { path = "l1/types" }
   vprogs-node-cli                                 = { path = "node/cli" }
   vprogs-node-framework                           = { path = "node/framework" }
-  vprogs-node-l1-bridge                           = { path = "node/l1-bridge" }
   vprogs-node-test-suite                          = { path = "node/test-suite" }
   vprogs-node-vm                                  = { path = "node/vm" }
   vprogs-scheduling-execution-workers             = { path = "scheduling/execution-workers" }

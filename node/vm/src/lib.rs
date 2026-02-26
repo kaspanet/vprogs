@@ -1,5 +1,6 @@
+use vprogs_l1_bridge::{RpcOptionalHeader, RpcOptionalTransaction};
+use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_node_framework::NodeVm;
-use vprogs_node_l1_bridge::{ChainBlockMetadata, RpcOptionalHeader, RpcOptionalTransaction};
 use vprogs_scheduling_scheduler::{Processor, TransactionContext};
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;

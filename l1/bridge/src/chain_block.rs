@@ -8,8 +8,7 @@ use arc_swap::ArcSwapOption;
 use tap::{Tap, TapOptional};
 use vprogs_core_macros::smart_pointer;
 use vprogs_core_types::Checkpoint;
-
-use crate::ChainBlockMetadata;
+use vprogs_l1_types::ChainBlockMetadata;
 
 /// A block in the virtual chain - a [`Checkpoint`] with doubly-linked list pointers.
 #[smart_pointer(deref = checkpoint)]

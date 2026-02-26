@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use tempfile::TempDir;
+use vprogs_l1_bridge::{L1BridgeConfig, NetworkType};
 use vprogs_node_framework::{Node, NodeConfig};
-use vprogs_node_l1_bridge::{L1BridgeConfig, NetworkType};
 use vprogs_node_test_suite::{Access, L1Node, NodeExt, TestNodeVm, Tx};
 use vprogs_scheduling_scheduler::ExecutionConfig;
 use vprogs_state_metadata::StateMetadata;
@@ -160,7 +160,7 @@ async fn test_resume_from_checkpoint() {
     // Verify checkpoint was persisted.
     {
         let store: RocksDbStore = RocksDbStore::open(temp_dir.path());
-        let committed: vprogs_core_types::Checkpoint<vprogs_node_l1_bridge::ChainBlockMetadata> =
+        let committed: vprogs_core_types::Checkpoint<vprogs_l1_types::ChainBlockMetadata> =
             StateMetadata::last_committed(&store);
         assert_eq!(
             committed.index(),

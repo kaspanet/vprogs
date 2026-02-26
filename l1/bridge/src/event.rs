@@ -1,8 +1,6 @@
-pub use kaspa_hashes::Hash;
 pub use kaspa_rpc_core::{RpcOptionalHeader, RpcOptionalTransaction};
 use vprogs_core_types::Checkpoint;
-
-use crate::ChainBlockMetadata;
+use vprogs_l1_types::ChainBlockMetadata;
 
 /// Events emitted by the L1 bridge.
 #[derive(Clone, Debug)]

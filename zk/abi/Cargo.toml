@@ -5,8 +5,20 @@ version.workspace = true
 
 [features]
 default = ["std"]
-std     = ["borsh/std", "rkyv/std"]
+host = [
+  "std",
+  "dep:vprogs-l1-types",
+  "dep:vprogs-scheduling-scheduler",
+  "dep:vprogs-storage-types",
+  "dep:vprogs-state-space",
+]
+std = ["borsh/std", "rkyv/std", "vprogs-core-types/std"]
 
 [dependencies]
-borsh = { workspace = true, default-features = false }
-rkyv  = { workspace = true, default-features = false }
+borsh                       = { workspace = true, default-features = false }
+rkyv                        = { workspace = true, default-features = false }
+vprogs-core-types           = { workspace = true, default-features = false }
+vprogs-l1-types             = { workspace = true, optional = true }
+vprogs-scheduling-scheduler = { workspace = true, optional = true }
+vprogs-state-space          = { workspace = true, optional = true }
+vprogs-storage-types        = { workspace = true, optional = true }

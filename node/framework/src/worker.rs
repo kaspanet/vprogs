@@ -2,7 +2,7 @@ use std::{collections::VecDeque, future::pending, sync::Arc};
 
 use tokio::sync::mpsc;
 use vprogs_core_atomics::AtomicAsyncLatch;
-use vprogs_node_l1_bridge::{L1Bridge, L1Event};
+use vprogs_l1_bridge::{L1Bridge, L1Event};
 use vprogs_scheduling_scheduler::Scheduler;
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
