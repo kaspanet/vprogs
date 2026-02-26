@@ -6,9 +6,9 @@
 # changes recompile in ~30 seconds.
 #
 # Usage:
-#   ./zk-risc-0/build-guests.sh                        # build all programs
-#   ./zk-risc-0/build-guests.sh transaction-processor   # build only the transaction processor
-#   ./zk-risc-0/build-guests.sh batch-processor         # build only the batch processor
+#   ./zk-risc0/build-guests.sh                        # build all programs
+#   ./zk-risc0/build-guests.sh transaction-processor   # build only the transaction processor
+#   ./zk-risc0/build-guests.sh batch-processor         # build only the batch processor
 set -euo pipefail
 
 DOCKER_TAG="r0.1.88.0"
@@ -38,12 +38,15 @@ fi
 GUEST_RUSTFLAGS='-Cpasses=lower-atomic -Clink-arg=-Ttext=0x00200800 -Clink-arg=--fatal-warnings -Cpanic=abort --cfg getrandom_backend="custom"'
 
 for program in "${PROGRAMS[@]}"; do
-  manifest="zk-risc-0/${program}/Cargo.toml"
+  manifest="zk-risc0/${program}/Cargo.toml"
   # Cargo binary name: hyphens in package name become hyphens in binary name.
   bin_name="vprogs-zk-risc0-${program}"
   out_dir="$REPO_ROOT/target/riscv-guest/riscv32im-risc0-zkvm-elf/docker/${bin_name}"
 
   echo "Building ${program} → ${out_dir}"
+
+  # Ensure the lockfile is up-to-date before entering Docker (which uses --locked).
+  cargo fetch --manifest-path "$REPO_ROOT/$manifest"
 
   # Generate the Dockerfile into a temp file to avoid heredoc escaping issues
   # with backslash line continuations (needed for --mount flags).
@@ -72,7 +75,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry \\
     RUSTFLAGS='${GUEST_RUSTFLAGS}' \\
     cargo +risc0 build --release --target riscv32im-risc0-zkvm-elf \\
       --manifest-path \$CARGO_MANIFEST_PATH && \\
-    cargo build --release --manifest-path zk-risc-0/elf-wrapper/Cargo.toml && \\
+    cargo build --release --manifest-path zk-risc0/elf-wrapper/Cargo.toml && \\
     mkdir -p /output && \\
     cp target/riscv32im-risc0-zkvm-elf/release/${bin_name} /output/ && \\
     ./target/release/elf-wrapper /output/${bin_name}

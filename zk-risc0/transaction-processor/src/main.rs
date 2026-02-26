@@ -6,7 +6,7 @@ extern crate alloc;
 use alloc::vec;
 
 use risc0_zkvm::guest::env;
-use vprogs_zk_risc0_guest_abi::{StateOp, access_witness, read_witness};
+use vprogs_zk_risc0_guest_api::{StateOp, access_witness, read_witness};
 
 risc0_zkvm::guest::entry!(main);
 

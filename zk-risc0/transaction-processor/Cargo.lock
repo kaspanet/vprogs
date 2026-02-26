@@ -1582,7 +1582,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "vprogs-zk-risc0-guest-abi"
+name = "vprogs-zk-risc0-guest-api"
 version = "0.1.0"
 dependencies = [
  "risc0-zkvm",
@@ -1598,7 +1598,7 @@ dependencies = [
  "risc0-zkvm",
  "rkyv",
  "vprogs-zk-abi",
- "vprogs-zk-risc0-guest-abi",
+ "vprogs-zk-risc0-guest-api",
 ]
 
 [[package]]

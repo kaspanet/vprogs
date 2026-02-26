@@ -5,18 +5,18 @@ use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_abi::{AccessMetadata, ResourceId, Transaction};
-use vprogs_zk_risc0_backend::Backend;
+use vprogs_zk_risc0_host_api::Backend;
 use vprogs_zk_vm::Vm;
 
 /// Loads the pre-built transaction processor ELF from the repository.
 fn transaction_processor_elf() -> Vec<u8> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let elf_path =
-        format!("{manifest_dir}/../../zk-risc-0/transaction-processor/compiled/program.elf");
+        format!("{manifest_dir}/../../zk-risc0/transaction-processor/compiled/program.elf");
     std::fs::read(&elf_path).unwrap_or_else(|e| {
         panic!(
             "transaction processor ELF not found at {elf_path}: {e}\n\
-             Run `./zk-risc-0/build-guests.sh transaction-processor` to rebuild it."
+             Run `./zk-risc0/build-guests.sh transaction-processor` to rebuild it."
         )
     })
 }
@@ -24,11 +24,11 @@ fn transaction_processor_elf() -> Vec<u8> {
 /// Loads the pre-built batch processor ELF from the repository.
 fn batch_processor_elf() -> Vec<u8> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let elf_path = format!("{manifest_dir}/../../zk-risc-0/batch-processor/compiled/program.elf");
+    let elf_path = format!("{manifest_dir}/../../zk-risc0/batch-processor/compiled/program.elf");
     std::fs::read(&elf_path).unwrap_or_else(|e| {
         panic!(
             "batch processor ELF not found at {elf_path}: {e}\n\
-             Run `./zk-risc-0/build-guests.sh batch-processor` to rebuild it."
+             Run `./zk-risc0/build-guests.sh batch-processor` to rebuild it."
         )
     })
 }

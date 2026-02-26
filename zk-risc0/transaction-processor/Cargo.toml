@@ -8,4 +8,4 @@ blake3                    = { version = "1", default-features = false }
 risc0-zkvm                = { version = "3.0", default-features = false, features = ["std"] }
 rkyv                      = { version = "0.8", default-features = false, features = ["alloc"] }
 vprogs-zk-abi             = { path = "../../zk/abi", default-features = false }
-vprogs-zk-risc0-guest-abi = { path = "../guest-abi", default-features = false }
+vprogs-zk-risc0-guest-api = { path = "../guest-api", default-features = false }

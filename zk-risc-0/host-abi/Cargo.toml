@@ -1,8 +1,0 @@
-[package]
-edition.workspace = true
-name              = "vprogs-zk-risc0-host-abi"
-version.workspace = true
-
-[dependencies]
-rkyv.workspace          = true
-vprogs-zk-abi.workspace = true

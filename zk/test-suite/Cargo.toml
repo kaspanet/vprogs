@@ -13,5 +13,5 @@ vprogs-scheduling-scheduler.workspace  = true
 vprogs-storage-manager.workspace       = true
 vprogs-storage-rocksdb-store.workspace = true
 vprogs-zk-abi.workspace                = true
-vprogs-zk-risc0-backend.workspace      = true
+vprogs-zk-risc0-host-api.workspace     = true
 vprogs-zk-vm.workspace                 = true

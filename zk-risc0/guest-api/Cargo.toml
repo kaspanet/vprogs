@@ -1,6 +1,6 @@
 [package]
 edition.workspace = true
-name              = "vprogs-zk-risc0-guest-abi"
+name              = "vprogs-zk-risc0-guest-api"
 version.workspace = true
 
 [features]
