@@ -4,7 +4,7 @@ use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_risc0_backend::Backend;
-use vprogs_zk_vm::{AccessMetadata, BatchMetadata, ResourceId, Transaction, Vm};
+use vprogs_zk_vm::{AccessMetadata, ChainBlockMetadata, ResourceId, Transaction, Vm};
 
 /// Loads the pre-built transaction processor ELF from the repository.
 fn transaction_processor_elf() -> Vec<u8> {
@@ -47,7 +47,7 @@ fn test_zk_scheduler_e2e() {
     );
 
     let batch = scheduler.schedule(
-        BatchMetadata { batch_index: 1 },
+        ChainBlockMetadata::default(),
         vec![
             Transaction {
                 tx_bytes: vec![1, 2, 3],

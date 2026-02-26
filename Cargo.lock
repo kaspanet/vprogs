@@ -7864,6 +7864,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "vprogs-core-types",
+ "vprogs-node-l1-bridge",
  "vprogs-scheduling-scheduler",
  "vprogs-state-space",
  "vprogs-storage-types",

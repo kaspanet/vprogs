@@ -25,7 +25,7 @@ pub trait Backend: Clone + Send + Sync + 'static {
     /// Prove a batch of transactions.
     fn prove_batch(
         &self,
-        batch_index: u64,
+        block_hash: [u8; 32],
         journals: &[Vec<u8>],
     ) -> Result<Self::Receipt, BackendError>;
 

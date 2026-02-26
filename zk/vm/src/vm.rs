@@ -5,7 +5,7 @@ use vprogs_storage_types::Store;
 use vprogs_zk_types::StateOp;
 
 use crate::{
-    AccessMetadata, Backend, BatchMetadata, Error, ProofRequest, ResourceId, Transaction,
+    AccessMetadata, Backend, ChainBlockMetadata, Error, ProofRequest, ResourceId, Transaction,
     TransactionContextExt,
 };
 
@@ -60,7 +60,7 @@ impl<B: Backend> Processor for Vm<B> {
         // 4. Optionally send a proof request to the proving pipeline.
         if let Some(ref proof_tx) = self.proof_tx {
             let _ = proof_tx.send(ProofRequest {
-                batch_index: ctx.batch_metadata().batch_index,
+                block_hash: ctx.batch_metadata().hash().as_bytes(),
                 tx_index: ctx.tx_index(),
                 witness_bytes,
                 ops,
@@ -74,6 +74,6 @@ impl<B: Backend> Processor for Vm<B> {
     type TransactionEffects = ();
     type ResourceId = ResourceId;
     type AccessMetadata = AccessMetadata;
-    type BatchMetadata = BatchMetadata;
+    type BatchMetadata = ChainBlockMetadata;
     type Error = Error;
 }

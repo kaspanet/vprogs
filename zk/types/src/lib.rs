@@ -6,4 +6,6 @@ mod state_op;
 mod witness;
 
 pub use state_op::{ArchivedStateOp, StateOp};
-pub use witness::{Account, ArchivedAccount, ArchivedWitness, Witness};
+pub use witness::{
+    Account, ArchivedAccount, ArchivedBatchMetadata, ArchivedWitness, BatchMetadata, Witness,
+};

@@ -55,7 +55,7 @@ impl vprogs_zk_vm::Backend for Backend {
 
     fn prove_batch(
         &self,
-        _batch_index: u64,
+        _block_hash: [u8; 32],
         _journals: &[Vec<u8>],
     ) -> Result<Receipt, BackendError> {
         let _elf = &self.batch_elf;
