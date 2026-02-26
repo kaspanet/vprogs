@@ -28,11 +28,10 @@ pub fn read_witness() -> AlignedVec {
 
         let mut len = 0u32;
         env::read_slice(core::slice::from_mut(&mut len));
-        let mut bytes = alloc::vec![0u8; len as usize];
-        env::read_slice(&mut bytes);
 
-        let mut aligned = AlignedVec::with_capacity(bytes.len());
-        aligned.extend_from_slice(&bytes);
+        let mut aligned = AlignedVec::with_capacity(len as usize);
+        aligned.resize(len as usize, 0);
+        env::read_slice(&mut aligned);
         aligned
     }
 

@@ -18,5 +18,4 @@ pub struct Witness {
 pub struct Account {
     pub account_id: Vec<u8>,
     pub data: Vec<u8>,
-    pub version: u64,
 }

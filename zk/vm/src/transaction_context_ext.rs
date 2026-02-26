@@ -24,7 +24,6 @@ impl<S: Store<StateSpace = StateSpace>, B: Backend> TransactionContextExt
                 .map(|r| Account {
                     account_id: borsh::to_vec(&r.access_metadata().id).unwrap(),
                     data: r.data().clone(),
-                    version: r.version(),
                 })
                 .collect(),
         };
