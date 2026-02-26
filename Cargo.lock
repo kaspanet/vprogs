@@ -7826,7 +7826,6 @@ dependencies = [
 name = "vprogs-zk-risc0-transaction-processor-abi"
 version = "0.1.0"
 dependencies = [
- "borsh",
  "risc0-zkvm",
  "rkyv",
  "vprogs-zk-types",

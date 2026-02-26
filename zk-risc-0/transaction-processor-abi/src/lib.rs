@@ -2,15 +2,10 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
-
 use rkyv::util::AlignedVec;
 pub use vprogs_zk_types::{ArchivedAccount, ArchivedWitness, StateOp};
 
 /// Zero-copy access to the rkyv-archived witness from raw bytes.
-///
-/// The buffer must be 16-byte aligned (e.g. from [`read_witness`]) because
-/// `ArchivedAccount` contains `u64_le` fields with 8-byte alignment.
 pub fn access_witness(buf: &[u8]) -> &ArchivedWitness {
     rkyv::access::<ArchivedWitness, rkyv::rancor::Error>(buf).expect("invalid witness archive")
 }
@@ -39,11 +34,15 @@ pub fn read_witness() -> AlignedVec {
     panic!("read_witness() is only available inside the RISC-0 zkVM (target_os = \"zkvm\")")
 }
 
-/// Parses the step-by-step journal committed by the transaction processor guest.
+/// Reads the length-prefixed rkyv-serialized ops from the guest's stdout buffer.
 ///
-/// Layout: `[32B witness commitment][borsh Vec<Option<StateOp>>]`
-pub fn parse_journal(journal: &[u8]) -> ([u8; 32], Vec<Option<StateOp>>) {
-    let witness_commitment: [u8; 32] = journal[..32].try_into().unwrap();
-    let ops = borsh::from_slice(&journal[32..]).unwrap();
-    (witness_commitment, ops)
+/// Copies into an [`AlignedVec`] first — the stdout buffer is an unaligned `&[u8]`,
+/// but rkyv zero-copy access requires alignment matching the archived types.
+#[cfg(feature = "std")]
+pub fn read_ops(stdout_buf: &[u8]) -> alloc::vec::Vec<Option<StateOp>> {
+    let len = u32::from_le_bytes(stdout_buf[..4].try_into().unwrap()) as usize;
+    let mut aligned: AlignedVec = AlignedVec::with_capacity(len);
+    aligned.extend_from_slice(&stdout_buf[4..4 + len]);
+    rkyv::from_bytes::<alloc::vec::Vec<Option<StateOp>>, rkyv::rancor::Error>(&aligned)
+        .expect("invalid ops archive")
 }

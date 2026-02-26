@@ -5,5 +5,5 @@ extern crate alloc;
 mod state_op;
 mod witness;
 
-pub use state_op::StateOp;
+pub use state_op::{ArchivedStateOp, StateOp};
 pub use witness::{Account, ArchivedAccount, ArchivedWitness, Witness};

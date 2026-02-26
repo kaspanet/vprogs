@@ -5,10 +5,9 @@ version.workspace = true
 
 [features]
 default = ["std"]
-std     = ["borsh/std", "vprogs-zk-types/std"]
+std     = ["vprogs-zk-types/std"]
 
 [dependencies]
-borsh                = { workspace = true, default-features = false }
 risc0-zkvm.workspace = true
 rkyv                 = { workspace = true, default-features = false }
 vprogs-zk-types      = { workspace = true, default-features = false }
