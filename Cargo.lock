@@ -7828,30 +7828,30 @@ dependencies = [
 ]
 
 [[package]]
-name = "vprogs-zk-prover"
+name = "vprogs-zk-backend-risc0-guest-api"
 version = "0.1.0"
 dependencies = [
- "log",
- "tokio",
+ "risc0-zkvm",
+ "rkyv",
+ "vprogs-zk-abi",
+]
+
+[[package]]
+name = "vprogs-zk-backend-risc0-host-api"
+version = "0.1.0"
+dependencies = [
+ "risc0-zkvm",
+ "rkyv",
  "vprogs-zk-abi",
  "vprogs-zk-vm",
 ]
 
 [[package]]
-name = "vprogs-zk-risc0-guest-api"
+name = "vprogs-zk-prover"
 version = "0.1.0"
 dependencies = [
- "risc0-zkvm",
- "rkyv",
- "vprogs-zk-abi",
-]
-
-[[package]]
-name = "vprogs-zk-risc0-host-api"
-version = "0.1.0"
-dependencies = [
- "risc0-zkvm",
- "rkyv",
+ "log",
+ "tokio",
  "vprogs-zk-abi",
  "vprogs-zk-vm",
 ]
@@ -7869,7 +7869,7 @@ dependencies = [
  "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
  "vprogs-zk-abi",
- "vprogs-zk-risc0-host-api",
+ "vprogs-zk-backend-risc0-host-api",
  "vprogs-zk-vm",
 ]
 

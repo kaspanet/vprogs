@@ -1,6 +1,6 @@
 [package]
 edition.workspace = true
-name              = "vprogs-zk-risc0-host-api"
+name              = "vprogs-zk-backend-risc0-host-api"
 version.workspace = true
 
 [dependencies]
