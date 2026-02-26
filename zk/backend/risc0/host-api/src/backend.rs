@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use risc0_zkvm::{ExecutorEnv, ProverOpts, Receipt, default_executor, default_prover};
-use vprogs_zk_abi::StateOp;
-use vprogs_zk_vm::BackendError;
+use vprogs_zk_abi::{StateOp, TransactionContext};
+use vprogs_zk_vm::{Error, Result};
 
 use crate::read_ops::read_ops;
 
@@ -25,42 +25,40 @@ impl Backend {
 impl vprogs_zk_vm::Backend for Backend {
     type Receipt = Receipt;
 
-    fn execute(&self, witness_bytes: &[u8]) -> Result<Vec<Option<StateOp>>, BackendError> {
+    fn execute(&self, ctx: &TransactionContext) -> Result<Vec<Option<StateOp>>> {
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(ctx)?.to_vec();
         let mut ops_stdout = Vec::new();
         let env = ExecutorEnv::builder()
-            .write_slice(&[witness_bytes.len() as u32])
-            .write_slice(witness_bytes)
+            .write_slice(&[bytes.len() as u32])
+            .write_slice(&bytes)
             .stdout(&mut ops_stdout)
             .build()
-            .map_err(|e| BackendError::Failed(e.to_string()))?;
+            .map_err(|e| Error::Backend(e.to_string()))?;
 
         default_executor()
             .execute(env, &self.transaction_elf)
-            .map_err(|e| BackendError::Failed(e.to_string()))?;
+            .map_err(|e| Error::Backend(e.to_string()))?;
 
-        Ok(read_ops(&ops_stdout))
+        read_ops(&ops_stdout)
     }
 
-    fn prove_transaction(&self, witness_bytes: &[u8]) -> Result<Receipt, BackendError> {
+    fn prove_transaction(&self, ctx: &TransactionContext) -> Result<Receipt> {
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(ctx)?.to_vec();
         let env = ExecutorEnv::builder()
-            .write_slice(&[witness_bytes.len() as u32])
-            .write_slice(witness_bytes)
+            .write_slice(&[bytes.len() as u32])
+            .write_slice(&bytes)
             .build()
-            .map_err(|e| BackendError::Failed(e.to_string()))?;
+            .map_err(|e| Error::Backend(e.to_string()))?;
 
         default_prover()
             .prove_with_opts(env, &self.transaction_elf, &ProverOpts::succinct())
             .map(|info| info.receipt)
-            .map_err(|e| BackendError::Failed(e.to_string()))
+            .map_err(|e| Error::Backend(e.to_string()))
     }
 
-    fn prove_batch(
-        &self,
-        _block_hash: [u8; 32],
-        _journals: &[Vec<u8>],
-    ) -> Result<Receipt, BackendError> {
+    fn prove_batch(&self, _block_hash: [u8; 32], _journals: &[Vec<u8>]) -> Result<Receipt> {
         let _elf = &self.batch_elf;
-        Err(BackendError::Failed("batch proving not yet implemented".into()))
+        Err(Error::Backend("batch proving not yet implemented".into()))
     }
 
     fn journal_bytes(receipt: &Receipt) -> Vec<u8> {

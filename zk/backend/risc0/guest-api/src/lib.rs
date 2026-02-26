@@ -3,11 +3,12 @@
 extern crate alloc;
 
 use rkyv::util::AlignedVec;
-pub use vprogs_zk_abi::{ArchivedAccount, ArchivedWitness, StateOp};
+pub use vprogs_zk_abi::{ArchivedAccount, ArchivedTransactionContext, StateOp};
 
-/// Zero-copy access to the rkyv-archived witness from raw bytes.
-pub fn access_witness(buf: &[u8]) -> &ArchivedWitness {
-    rkyv::access::<ArchivedWitness, rkyv::rancor::Error>(buf).expect("invalid witness archive")
+/// Zero-copy access to the rkyv-archived transaction context from raw bytes.
+pub fn access_transaction_context(buf: &[u8]) -> &ArchivedTransactionContext {
+    rkyv::access::<ArchivedTransactionContext, rkyv::rancor::Error>(buf)
+        .expect("invalid transaction context archive")
 }
 
 /// Reads the raw witness bytes from the RISC-0 zkVM environment into an aligned buffer.

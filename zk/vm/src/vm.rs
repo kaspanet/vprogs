@@ -3,9 +3,9 @@ use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, TransactionContext};
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
-use vprogs_zk_abi::{AccessMetadata, ResourceId, StateOp, Transaction, Witness};
+use vprogs_zk_abi::{self as abi, AccessMetadata, ResourceId, StateOp, Transaction};
 
-use crate::{Backend, Error, ProofRequest};
+use crate::{Backend, Error, ProofRequest, Result};
 
 /// ZK processor that executes programs via a [`Backend`] and optionally sends proof requests
 /// to a proving pipeline.
@@ -31,16 +31,12 @@ impl<B: Backend> Processor for Vm<B> {
     fn process_transaction<S: Store<StateSpace = StateSpace>>(
         &self,
         ctx: &mut TransactionContext<S, Self>,
-    ) -> Result<(), Error> {
-        // 1. Serialize witness to rkyv bytes.
-        let witness = Witness::from(&*ctx);
-        let witness_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&witness).unwrap().to_vec();
+    ) -> Result<()> {
+        // 1. Build ABI transaction context.
+        let abi_ctx = abi::TransactionContext::from(&*ctx);
 
         // 2. Execute via backend — returns one optional op per account.
-        let ops = self
-            .backend
-            .execute(&witness_bytes)
-            .map_err(|e| Error::ExecutorFailed(e.to_string()))?;
+        let ops = self.backend.execute(&abi_ctx)?;
 
         // 3. Apply ops to resource handles.
         for (i, op) in ops.iter().enumerate() {
@@ -58,12 +54,7 @@ impl<B: Backend> Processor for Vm<B> {
 
         // 4. Optionally send a proof request to the proving pipeline.
         if let Some(ref proof_tx) = self.proof_tx {
-            let _ = proof_tx.send(ProofRequest {
-                block_hash: ctx.batch_metadata().hash().as_bytes(),
-                tx_index: ctx.tx_index(),
-                witness_bytes,
-                ops,
-            });
+            let _ = proof_tx.send(ProofRequest { abi_ctx, ops });
         }
 
         Ok(())

@@ -4,11 +4,11 @@ use rkyv::{Archive, Serialize};
 
 use crate::{Account, BatchMetadata};
 
-/// Owned witness data for passing to ZK backends.
+/// ABI-level transaction context for passing to ZK backends.
 ///
 /// Serialized once via rkyv; the guest accesses the archived form zero-copy.
-#[derive(Archive, Serialize)]
-pub struct Witness {
+#[derive(Clone, Debug, Archive, Serialize)]
+pub struct TransactionContext {
     pub tx_bytes: Vec<u8>,
     pub tx_index: u32,
     pub batch_metadata: BatchMetadata,
@@ -25,7 +25,7 @@ mod from_ctx {
     use super::*;
     use crate::{AccessMetadata, Transaction};
 
-    impl<S, P> From<&TransactionContext<'_, S, P>> for Witness
+    impl<S, P> From<&TransactionContext<'_, S, P>> for super::TransactionContext
     where
         S: Store<StateSpace = StateSpace>,
         P: Processor<
@@ -36,7 +36,7 @@ mod from_ctx {
     {
         fn from(ctx: &TransactionContext<'_, S, P>) -> Self {
             let chain_metadata = ctx.batch_metadata();
-            Witness {
+            super::TransactionContext {
                 tx_bytes: ctx.transaction().tx_bytes.clone(),
                 tx_index: ctx.tx_index(),
                 batch_metadata: BatchMetadata {
