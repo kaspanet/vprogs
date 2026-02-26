@@ -1,4 +1,4 @@
-use vprogs_zk_types::StateOp;
+use vprogs_zk_abi::StateOp;
 
 /// Errors returned by ZK backend operations.
 #[derive(Debug, thiserror::Error)]

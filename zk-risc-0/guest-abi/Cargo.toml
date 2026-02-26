@@ -1,13 +1,13 @@
 [package]
 edition.workspace = true
-name              = "vprogs-zk-risc0-transaction-processor-abi"
+name              = "vprogs-zk-risc0-guest-abi"
 version.workspace = true
 
 [features]
 default = ["std"]
-std     = ["vprogs-zk-types/std"]
+std     = ["vprogs-zk-abi/std"]
 
 [dependencies]
 risc0-zkvm.workspace = true
 rkyv                 = { workspace = true, default-features = false }
-vprogs-zk-types      = { workspace = true, default-features = false }
+vprogs-zk-abi        = { workspace = true, default-features = false }

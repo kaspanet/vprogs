@@ -2,7 +2,7 @@ use tokio::sync::mpsc;
 use vprogs_scheduling_scheduler::{Processor, TransactionContext};
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
-use vprogs_zk_types::StateOp;
+use vprogs_zk_abi::StateOp;
 
 use crate::{
     AccessMetadata, Backend, ChainBlockMetadata, Error, ProofRequest, ResourceId, Transaction,

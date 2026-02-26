@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use risc0_zkvm::{ExecutorEnv, ProverOpts, Receipt, default_executor, default_prover};
-use vprogs_zk_risc0_transaction_processor_abi::read_ops;
-use vprogs_zk_types::StateOp;
+use vprogs_zk_abi::StateOp;
+use vprogs_zk_risc0_host_abi::read_ops;
 use vprogs_zk_vm::BackendError;
 
 /// RISC-0 backend for execution and proving.

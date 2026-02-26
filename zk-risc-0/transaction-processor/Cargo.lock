@@ -1566,31 +1566,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "vprogs-zk-abi"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "rkyv",
+]
+
+[[package]]
+name = "vprogs-zk-risc0-guest-abi"
+version = "0.1.0"
+dependencies = [
+ "risc0-zkvm",
+ "rkyv",
+ "vprogs-zk-abi",
+]
+
+[[package]]
 name = "vprogs-zk-risc0-transaction-processor"
 version = "0.1.0"
 dependencies = [
  "blake3",
  "risc0-zkvm",
  "rkyv",
- "vprogs-zk-risc0-transaction-processor-abi",
- "vprogs-zk-types",
-]
-
-[[package]]
-name = "vprogs-zk-risc0-transaction-processor-abi"
-version = "0.1.0"
-dependencies = [
- "risc0-zkvm",
- "rkyv",
- "vprogs-zk-types",
-]
-
-[[package]]
-name = "vprogs-zk-types"
-version = "0.1.0"
-dependencies = [
- "borsh",
- "rkyv",
+ "vprogs-zk-abi",
+ "vprogs-zk-risc0-guest-abi",
 ]
 
 [[package]]

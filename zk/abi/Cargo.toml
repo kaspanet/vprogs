@@ -1,6 +1,6 @@
 [package]
 edition.workspace = true
-name              = "vprogs-zk-types"
+name              = "vprogs-zk-abi"
 version.workspace = true
 
 [features]

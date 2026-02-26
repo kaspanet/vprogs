@@ -1,7 +1,7 @@
 use vprogs_scheduling_scheduler::TransactionContext;
 use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
-use vprogs_zk_types::{Account, BatchMetadata, Witness};
+use vprogs_zk_abi::{Account, BatchMetadata, Witness};
 
 use crate::{Backend, Vm};
 

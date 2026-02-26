@@ -1,4 +1,4 @@
-use vprogs_zk_types::StateOp;
+use vprogs_zk_abi::StateOp;
 
 /// A request to prove a single transaction's execution.
 ///
