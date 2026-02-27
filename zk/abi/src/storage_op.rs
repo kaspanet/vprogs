@@ -3,9 +3,9 @@ use alloc::vec::Vec;
 use borsh::{BorshDeserialize, BorshSerialize};
 use rkyv::{Archive, Deserialize, Serialize};
 
-/// A state mutation produced by executing a transaction, addressed by account index.
+/// A storage mutation produced by executing a transaction, addressed by account index.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize, Archive, Serialize, Deserialize)]
-pub enum StateOp {
+pub enum StorageOp {
     Create(Vec<u8>),
     Update(Vec<u8>),
     Delete,

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use risc0_zkvm::{ExecutorEnv, ProverOpts, Receipt, default_executor, default_prover};
-use vprogs_zk_abi::{StateOp, TransactionContext};
+use vprogs_zk_abi::{StorageOp, TransactionContext};
 use vprogs_zk_vm::{Error, Result};
 
 use crate::read_ops::read_ops;
@@ -25,7 +25,7 @@ impl Backend {
 impl vprogs_zk_vm::Backend for Backend {
     type Receipt = Receipt;
 
-    fn execute(&self, ctx: &TransactionContext) -> Result<Vec<Option<StateOp>>> {
+    fn execute_transaction(&self, ctx: &TransactionContext) -> Result<Vec<Option<StorageOp>>> {
         let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(ctx)?.to_vec();
         let mut ops_stdout = Vec::new();
         let env = ExecutorEnv::builder()

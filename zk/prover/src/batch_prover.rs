@@ -36,9 +36,9 @@ impl<B: Backend + 'static> BatchProver<B> {
 
             while let Some(request) = self.rx.recv().await {
                 let backend = self.backend.clone();
-                let block_hash = request.abi_ctx.batch_metadata.block_hash;
-                let tx_index = request.abi_ctx.tx_index;
-                let ctx = request.abi_ctx;
+                let block_hash = request.tx_ctx.batch_metadata.block_hash;
+                let tx_index = request.tx_ctx.tx_index;
+                let ctx = request.tx_ctx;
 
                 // Prove on a blocking thread.
                 let receipt = match tokio::task::spawn_blocking(move || {

@@ -4,7 +4,7 @@ extern crate alloc;
 
 use risc0_zkvm::guest::env;
 use rkyv::util::AlignedVec;
-pub use vprogs_zk_abi::{ArchivedAccount, ArchivedTransactionContext, StateOp};
+pub use vprogs_zk_abi::{ArchivedAccount, ArchivedTransactionContext, StorageOp};
 
 /// Zero-copy access to the rkyv-archived transaction context from raw bytes.
 pub fn access_transaction_context(buf: &[u8]) -> &ArchivedTransactionContext {

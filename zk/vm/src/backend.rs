@@ -1,4 +1,4 @@
-use vprogs_zk_abi::{StateOp, TransactionContext};
+use vprogs_zk_abi::{StorageOp, TransactionContext};
 
 use crate::Result;
 
@@ -11,7 +11,7 @@ pub trait Backend: Clone + Send + Sync + 'static {
     type Receipt: Send + Sync + 'static;
 
     /// Execute a transaction. Returns one optional state op per account.
-    fn execute(&self, ctx: &TransactionContext) -> Result<Vec<Option<StateOp>>>;
+    fn execute_transaction(&self, ctx: &TransactionContext) -> Result<Vec<Option<StorageOp>>>;
 
     /// Prove a previously executed transaction.
     fn prove_transaction(&self, ctx: &TransactionContext) -> Result<Self::Receipt>;

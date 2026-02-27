@@ -2,7 +2,7 @@ use tokio::sync::mpsc;
 use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, TransactionContext};
 use vprogs_storage_types::Store;
-use vprogs_zk_abi::{self as abi, AccessMetadata, ResourceId, StateOp, Transaction};
+use vprogs_zk_abi::{self as abi, AccessMetadata, ResourceId, StorageOp, Transaction};
 
 use crate::{Backend, Error, ProofRequest, Result};
 
@@ -29,28 +29,28 @@ impl<B: Backend> Vm<B> {
 impl<B: Backend> Processor for Vm<B> {
     fn process_transaction<S: Store>(&self, ctx: &mut TransactionContext<S, Self>) -> Result<()> {
         // 1. Build ABI transaction context.
-        let abi_ctx = abi::TransactionContext::from(&*ctx);
+        let tx_ctx = abi::TransactionContext::from(&*ctx);
 
-        // 2. Execute via backend — returns one optional op per account.
-        let ops = self.backend.execute(&abi_ctx)?;
+        // 2. Execute via backend — returns one optional storage operation per account.
+        let storage_ops = self.backend.execute_transaction(&tx_ctx)?;
 
-        // 3. Apply ops to resource handles.
-        for (i, op) in ops.iter().enumerate() {
-            if let Some(op) = op {
+        // 3. Apply storage operations to resource handles.
+        for (i, storage_op) in storage_ops.iter().enumerate() {
+            if let Some(op) = storage_op {
                 let data = ctx.resources_mut()[i].data_mut();
                 match op {
-                    StateOp::Create(new_data) | StateOp::Update(new_data) => {
+                    StorageOp::Create(new_data) | StorageOp::Update(new_data) => {
                         data.clear();
                         data.extend_from_slice(new_data);
                     }
-                    StateOp::Delete => data.clear(),
+                    StorageOp::Delete => data.clear(),
                 }
             }
         }
 
         // 4. Optionally send a proof request to the proving pipeline.
         if let Some(ref proof_tx) = self.proof_tx {
-            let _ = proof_tx.send(ProofRequest { abi_ctx, ops });
+            let _ = proof_tx.send(ProofRequest { tx_ctx, storage_ops });
         }
 
         Ok(())
