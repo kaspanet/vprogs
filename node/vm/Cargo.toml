@@ -8,7 +8,6 @@ vprogs-l1-bridge.workspace                               = true
 vprogs-l1-types.workspace                                = true
 vprogs-node-framework.workspace                          = true
 vprogs-scheduling-scheduler.workspace                    = true
-vprogs-state-space.workspace                             = true
 vprogs-storage-types.workspace                           = true
 vprogs-transaction-runtime.workspace                     = true
 vprogs-transaction-runtime-error.workspace               = true

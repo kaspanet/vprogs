@@ -1,10 +1,9 @@
 use std::time::{Duration, Instant};
 
 use vprogs_scheduling_scheduler::Scheduler;
-use vprogs_state_space::StateSpace;
 use vprogs_state_version::StateVersion;
 use vprogs_storage_rocksdb_store::RocksDbStore;
-use vprogs_storage_types::ReadStore;
+use vprogs_storage_types::{ReadStore, StateSpace};
 
 use crate::Processor;
 

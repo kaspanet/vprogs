@@ -1,4 +1,4 @@
-use vprogs_state_space::StateSpace;
+use crate::StateSpace;
 
 pub trait WriteBatch {
     fn put(&mut self, ns: StateSpace, key: &[u8], value: &[u8]);

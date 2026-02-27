@@ -1,6 +1,5 @@
 use vprogs_core_types::{BatchMetadata, Checkpoint};
-use vprogs_state_space::StateSpace;
-use vprogs_storage_types::{ReadStore, WriteBatch};
+use vprogs_storage_types::{ReadStore, StateSpace, WriteBatch};
 
 /// Well-known metadata keys.
 mod keys {

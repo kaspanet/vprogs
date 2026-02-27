@@ -1,8 +1,7 @@
 use std::{marker::PhantomData, path::Path, sync::Arc};
 
 use rocksdb::{DB, DBIteratorWithThreadMode, Direction, IteratorMode};
-use vprogs_state_space::StateSpace;
-use vprogs_storage_types::{PrefixIterator, Store};
+use vprogs_storage_types::{PrefixIterator, StateSpace, Store};
 
 use crate::{
     config::{Config, DefaultConfig},

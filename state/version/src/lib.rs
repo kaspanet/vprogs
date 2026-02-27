@@ -4,9 +4,8 @@ use tap::Tap;
 use vprogs_core_types::ResourceId;
 use vprogs_state_ptr_latest::StatePtrLatest;
 use vprogs_state_ptr_rollback::StatePtrRollback;
-use vprogs_state_space::StateSpace;
 use vprogs_storage_manager::concat_bytes;
-use vprogs_storage_types::{ReadStore, WriteBatch};
+use vprogs_storage_types::{ReadStore, StateSpace, WriteBatch};
 
 #[derive(Debug, Eq, Hash, PartialEq)]
 pub struct StateVersion<R: ResourceId> {

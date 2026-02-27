@@ -7423,7 +7423,6 @@ dependencies = [
  "vprogs-node-framework",
  "vprogs-node-vm",
  "vprogs-scheduling-scheduler",
- "vprogs-state-space",
  "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
@@ -7446,7 +7445,6 @@ dependencies = [
  "vprogs-node-test-suite",
  "vprogs-scheduling-scheduler",
  "vprogs-state-metadata",
- "vprogs-state-space",
  "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
@@ -7478,7 +7476,6 @@ dependencies = [
  "vprogs-scheduling-scheduler",
  "vprogs-scheduling-test-suite",
  "vprogs-state-metadata",
- "vprogs-state-space",
  "vprogs-state-version",
  "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
@@ -7492,7 +7489,6 @@ dependencies = [
  "vprogs-l1-types",
  "vprogs-node-framework",
  "vprogs-scheduling-scheduler",
- "vprogs-state-space",
  "vprogs-storage-types",
  "vprogs-transaction-runtime",
  "vprogs-transaction-runtime-error",
@@ -7536,7 +7532,6 @@ dependencies = [
  "vprogs-state-metadata",
  "vprogs-state-ptr-latest",
  "vprogs-state-ptr-rollback",
- "vprogs-state-space",
  "vprogs-state-version",
  "vprogs-storage-manager",
  "vprogs-storage-types",
@@ -7552,7 +7547,6 @@ dependencies = [
  "vprogs-scheduling-scheduler",
  "vprogs-state-metadata",
  "vprogs-state-ptr-rollback",
- "vprogs-state-space",
  "vprogs-state-version",
  "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
@@ -7565,7 +7559,6 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "vprogs-core-types",
- "vprogs-state-space",
  "vprogs-storage-types",
 ]
 
@@ -7575,7 +7568,6 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "vprogs-core-types",
- "vprogs-state-space",
  "vprogs-storage-types",
 ]
 
@@ -7585,7 +7577,6 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "vprogs-core-types",
- "vprogs-state-space",
  "vprogs-storage-types",
 ]
 
@@ -7595,14 +7586,9 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "vprogs-core-types",
- "vprogs-state-space",
  "vprogs-storage-manager",
  "vprogs-storage-types",
 ]
-
-[[package]]
-name = "vprogs-state-space"
-version = "0.1.0"
 
 [[package]]
 name = "vprogs-state-version"
@@ -7613,7 +7599,6 @@ dependencies = [
  "vprogs-core-types",
  "vprogs-state-ptr-latest",
  "vprogs-state-ptr-rollback",
- "vprogs-state-space",
  "vprogs-storage-manager",
  "vprogs-storage-types",
 ]
@@ -7635,16 +7620,12 @@ dependencies = [
  "num_cpus",
  "rocksdb",
  "tap",
- "vprogs-state-space",
  "vprogs-storage-types",
 ]
 
 [[package]]
 name = "vprogs-storage-types"
 version = "0.1.0"
-dependencies = [
- "vprogs-state-space",
-]
 
 [[package]]
 name = "vprogs-transaction-runtime"
@@ -7653,7 +7634,6 @@ dependencies = [
  "borsh",
  "vprogs-core-types",
  "vprogs-scheduling-scheduler",
- "vprogs-state-space",
  "vprogs-storage-types",
  "vprogs-transaction-runtime-address",
  "vprogs-transaction-runtime-auth-context",
@@ -7827,7 +7807,6 @@ dependencies = [
  "vprogs-core-types",
  "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
- "vprogs-state-space",
  "vprogs-storage-types",
 ]
 
@@ -7879,7 +7858,6 @@ dependencies = [
  "vprogs-core-types",
  "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
- "vprogs-state-space",
  "vprogs-storage-types",
  "vprogs-zk-abi",
 ]

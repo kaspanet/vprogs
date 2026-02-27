@@ -20,7 +20,6 @@ vprogs-state-batch-metadata.workspace         = true
 vprogs-state-metadata.workspace               = true
 vprogs-state-ptr-latest.workspace             = true
 vprogs-state-ptr-rollback.workspace           = true
-vprogs-state-space.workspace                  = true
 vprogs-state-version.workspace                = true
 vprogs-storage-manager.workspace              = true
 vprogs-storage-types.workspace                = true

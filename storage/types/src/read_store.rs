@@ -1,6 +1,4 @@
-use vprogs_state_space::StateSpace;
-
-use crate::Store;
+use crate::{StateSpace, Store};
 
 pub trait ReadStore {
     fn get(&self, ns: StateSpace, key: &[u8]) -> Option<Vec<u8>>;

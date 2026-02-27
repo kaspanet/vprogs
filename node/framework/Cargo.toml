@@ -14,7 +14,6 @@ vprogs-core-types.workspace           = true
 vprogs-l1-bridge.workspace            = true
 vprogs-l1-types.workspace             = true
 vprogs-scheduling-scheduler.workspace = true
-vprogs-state-space.workspace          = true
 vprogs-storage-manager.workspace      = true
 vprogs-storage-types.workspace        = true
 

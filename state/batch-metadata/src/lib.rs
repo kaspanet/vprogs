@@ -1,6 +1,5 @@
 use vprogs_core_types::BatchMetadata as BatchMetadataTrait;
-use vprogs_state_space::StateSpace;
-use vprogs_storage_types::{Store, WriteBatch};
+use vprogs_storage_types::{StateSpace, Store, WriteBatch};
 
 /// Provides type-safe operations for the BatchMetadata column family.
 ///

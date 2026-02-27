@@ -2,6 +2,3 @@
 edition.workspace = true
 name              = "vprogs-storage-types"
 version.workspace = true
-
-[dependencies]
-vprogs-state-space.workspace = true

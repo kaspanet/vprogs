@@ -118,7 +118,6 @@ resolver = "3"
   vprogs-state-metadata                           = { path = "state/metadata" }
   vprogs-state-ptr-latest                         = { path = "state/ptr-latest" }
   vprogs-state-ptr-rollback                       = { path = "state/ptr-rollback" }
-  vprogs-state-space                              = { path = "state/space" }
   vprogs-state-version                            = { path = "state/version" }
   vprogs-storage-manager                          = { path = "storage/manager" }
   vprogs-storage-rocksdb-store                    = { path = "storage/rocksdb-store" }

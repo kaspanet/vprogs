@@ -1,7 +1,6 @@
 use vprogs_core_types::ResourceId;
-use vprogs_state_space::StateSpace;
 use vprogs_storage_manager::concat_bytes;
-use vprogs_storage_types::{Store, WriteBatch};
+use vprogs_storage_types::{StateSpace, Store, WriteBatch};
 
 /// Provides type-safe operations for the RollbackPtr column family.
 ///

@@ -19,7 +19,6 @@ vprogs-l1-bridge.workspace             = true
 vprogs-node-framework.workspace        = true
 vprogs-node-vm.workspace               = true
 vprogs-scheduling-scheduler.workspace  = true
-vprogs-state-space.workspace           = true
 vprogs-storage-manager.workspace       = true
 vprogs-storage-rocksdb-store.workspace = true
 vprogs-storage-types.workspace         = true

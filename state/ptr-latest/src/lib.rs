@@ -1,6 +1,5 @@
 use vprogs_core_types::ResourceId;
-use vprogs_state_space::StateSpace;
-use vprogs_storage_types::{ReadStore, WriteBatch};
+use vprogs_storage_types::{ReadStore, StateSpace, WriteBatch};
 
 /// Provides type-safe operations for the LatestPtr column family.
 ///

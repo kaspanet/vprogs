@@ -1,6 +1,4 @@
-use vprogs_state_space::StateSpace;
-
-use crate::WriteBatch;
+use crate::{StateSpace, WriteBatch};
 
 /// A boxed iterator over key-value pairs returned by prefix iteration.
 pub type PrefixIterator<'a> = Box<dyn Iterator<Item = (Vec<u8>, Vec<u8>)> + 'a>;

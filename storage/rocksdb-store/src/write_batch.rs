@@ -1,7 +1,7 @@
 use std::{marker::PhantomData, sync::Arc};
 
 use rocksdb::DB;
-use vprogs_state_space::StateSpace;
+use vprogs_storage_types::StateSpace;
 
 use crate::{
     config::{Config, DefaultConfig},
