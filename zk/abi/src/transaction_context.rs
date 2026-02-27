@@ -19,7 +19,6 @@ pub struct TransactionContext {
 mod from_ctx {
     use vprogs_l1_types::ChainBlockMetadata;
     use vprogs_scheduling_scheduler::{Processor, TransactionContext};
-    use vprogs_state_space::StateSpace;
     use vprogs_storage_types::Store;
 
     use super::*;
@@ -27,7 +26,7 @@ mod from_ctx {
 
     impl<S, P> From<&TransactionContext<'_, S, P>> for super::TransactionContext
     where
-        S: Store<StateSpace = StateSpace>,
+        S: Store,
         P: Processor<
                 Transaction = Transaction,
                 AccessMetadata = AccessMetadata,

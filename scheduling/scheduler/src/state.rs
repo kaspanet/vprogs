@@ -5,7 +5,6 @@ use crossbeam_queue::SegQueue;
 use vprogs_core_macros::smart_pointer;
 use vprogs_core_types::Checkpoint;
 use vprogs_state_metadata::StateMetadata;
-use vprogs_state_space::StateSpace;
 use vprogs_storage_manager::{StorageConfig, StorageManager};
 use vprogs_storage_types::Store;
 
@@ -13,7 +12,7 @@ use crate::{Read, Write, processor::Processor};
 
 /// Shared scheduler state accessible by all components.
 #[smart_pointer]
-pub struct SchedulerState<S: Store<StateSpace = StateSpace>, P: Processor> {
+pub struct SchedulerState<S: Store, P: Processor> {
     /// Storage manager for read/write coordination with background workers.
     storage: StorageManager<S, Read<S, P>, Write<S, P>>,
     /// Queue of resource IDs to potentially evict after their batches committed.
@@ -27,7 +26,7 @@ pub struct SchedulerState<S: Store<StateSpace = StateSpace>, P: Processor> {
     last_processed: ArcSwap<Checkpoint<P::BatchMetadata>>,
 }
 
-impl<S: Store<StateSpace = StateSpace>, P: Processor> SchedulerState<S, P> {
+impl<S: Store, P: Processor> SchedulerState<S, P> {
     /// Creates a new state from a storage configuration.
     ///
     /// `root` and `last_committed` are loaded from `StateMetadata`. `last_processed` is initialized

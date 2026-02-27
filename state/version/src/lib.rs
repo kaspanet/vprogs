@@ -22,7 +22,7 @@ impl<R: ResourceId> StateVersion<R> {
 
     pub fn from_latest_data<S>(store: &S, id: R) -> Self
     where
-        S: ReadStore<StateSpace = StateSpace>,
+        S: ReadStore,
     {
         match StatePtrLatest::get(store, &id) {
             None => Self::empty(id),
@@ -47,21 +47,21 @@ impl<R: ResourceId> StateVersion<R> {
 
     pub fn write_data<W>(&self, wb: &mut W)
     where
-        W: WriteBatch<StateSpace = StateSpace>,
+        W: WriteBatch,
     {
         Self::put(wb, self.version, &self.resource_id, &self.data);
     }
 
     pub fn write_latest_ptr<W>(&self, wb: &mut W)
     where
-        W: WriteBatch<StateSpace = StateSpace>,
+        W: WriteBatch,
     {
         StatePtrLatest::put(wb, &self.resource_id, self.version);
     }
 
     pub fn write_rollback_ptr<W>(&self, wb: &mut W, batch_index: u64)
     where
-        W: WriteBatch<StateSpace = StateSpace>,
+        W: WriteBatch,
     {
         StatePtrRollback::put(wb, batch_index, &self.resource_id, self.version);
     }
@@ -71,7 +71,7 @@ impl<R: ResourceId> StateVersion<R> {
     /// Key layout: `version (u64 BE) || resource_id (borsh)`
     pub fn get<S>(store: &S, version: u64, resource_id: &R) -> Option<Vec<u8>>
     where
-        S: ReadStore<StateSpace = StateSpace>,
+        S: ReadStore,
     {
         let rid = borsh::to_vec(resource_id).expect("failed to serialize ResourceId");
         let key = concat_bytes!(&version.to_be_bytes(), &rid);
@@ -83,7 +83,7 @@ impl<R: ResourceId> StateVersion<R> {
     /// Key layout: `version (u64 BE) || resource_id (borsh)`
     pub fn put<W>(wb: &mut W, version: u64, resource_id: &R, data: &[u8])
     where
-        W: WriteBatch<StateSpace = StateSpace>,
+        W: WriteBatch,
     {
         let rid = borsh::to_vec(resource_id).expect("failed to serialize ResourceId");
         let key = concat_bytes!(&version.to_be_bytes(), &rid);
@@ -95,7 +95,7 @@ impl<R: ResourceId> StateVersion<R> {
     /// Key layout: `version (u64 BE) || resource_id (borsh)`
     pub fn delete<W>(wb: &mut W, version: u64, resource_id: &R)
     where
-        W: WriteBatch<StateSpace = StateSpace>,
+        W: WriteBatch,
     {
         let rid = borsh::to_vec(resource_id).expect("failed to serialize ResourceId");
         let key = concat_bytes!(&version.to_be_bytes(), &rid);

@@ -3,7 +3,6 @@ use std::collections::{HashMap, HashSet};
 use borsh::BorshDeserialize;
 use vprogs_core_types::AccessMetadata;
 use vprogs_scheduling_scheduler::{AccessHandle, Processor};
-use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 use vprogs_transaction_runtime_address::Address;
 use vprogs_transaction_runtime_authenticated_data::AuthenticatedData;
@@ -19,7 +18,7 @@ use vprogs_transaction_runtime_transaction_effects::TransactionEffects;
 
 pub struct TransactionRuntime<'a, 'b, S, P>
 where
-    S: Store<StateSpace = StateSpace>,
+    S: Store,
     P: Processor<ResourceId = ObjectId>,
 {
     handles: &'a mut [AccessHandle<'b, S, P>],
@@ -30,7 +29,7 @@ where
 
 impl<'a, 'b, S, P> TransactionRuntime<'a, 'b, S, P>
 where
-    S: Store<StateSpace = StateSpace>,
+    S: Store,
     P: Processor<ResourceId = ObjectId>,
 {
     pub fn execute(

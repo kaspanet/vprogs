@@ -1,5 +1,4 @@
 use vprogs_core_types::{AccessMetadata, BatchMetadata, ResourceId, Transaction};
-use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
 use crate::TransactionContext;
@@ -7,7 +6,7 @@ use crate::TransactionContext;
 /// Abstract transaction processor that the scheduler invokes for each transaction.
 pub trait Processor: Clone + Sized + Send + Sync + 'static {
     /// Executes a single transaction against its local [`TransactionContext`].
-    fn process_transaction<S: Store<StateSpace = StateSpace>>(
+    fn process_transaction<S: Store>(
         &self,
         ctx: &mut TransactionContext<S, Self>,
     ) -> Result<Self::TransactionEffects, Self::Error>;

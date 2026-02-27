@@ -5,7 +5,6 @@ use std::sync::{
 
 use arc_swap::ArcSwapOption;
 use vprogs_core_macros::smart_pointer;
-use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
 use crate::{
@@ -18,7 +17,7 @@ use crate::{
 /// Wraps a user-submitted transaction with its resource access handles, execution state, and a
 /// back-reference to the owning batch. Derefs to the inner `P::Transaction`.
 #[smart_pointer(deref(tx))]
-pub struct RuntimeTx<S: Store<StateSpace = StateSpace>, P: Processor> {
+pub struct RuntimeTx<S: Store, P: Processor> {
     /// Processor used to execute this transaction.
     processor: P,
     /// Weak reference to the owning batch.
@@ -35,7 +34,7 @@ pub struct RuntimeTx<S: Store<StateSpace = StateSpace>, P: Processor> {
     tx: P::Transaction,
 }
 
-impl<S: Store<StateSpace = StateSpace>, P: Processor> RuntimeTx<S, P> {
+impl<S: Store, P: Processor> RuntimeTx<S, P> {
     /// Returns the resources accessed by this transaction.
     pub fn accessed_resources(&self) -> &[ResourceAccess<S, P>] {
         &self.resources
@@ -115,7 +114,7 @@ impl<S: Store<StateSpace = StateSpace>, P: Processor> RuntimeTx<S, P> {
     }
 }
 
-impl<S: Store<StateSpace = StateSpace>, P: Processor> RuntimeTxRef<S, P> {
+impl<S: Store, P: Processor> RuntimeTxRef<S, P> {
     pub(crate) fn belongs_to_batch(&self, batch: &RuntimeBatchRef<S, P>) -> bool {
         self.upgrade().is_some_and(|tx| tx.batch() == batch)
     }

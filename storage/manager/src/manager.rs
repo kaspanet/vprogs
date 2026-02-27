@@ -9,14 +9,14 @@ use vprogs_storage_types::Store;
 use crate::{ReadCmd, StorageConfig, WriteCmd, read::ReadManager, write::WriteManager};
 
 #[smart_pointer]
-pub struct StorageManager<S: Store, R: ReadCmd<S::StateSpace>, W: WriteCmd<S::StateSpace>> {
+pub struct StorageManager<S: Store, R: ReadCmd, W: WriteCmd> {
     store: Arc<S>,
     reader: ReadManager<S, R>,
     writer: WriteManager<S, W>,
     is_shutdown: Arc<AtomicBool>,
 }
 
-impl<S: Store, R: ReadCmd<S::StateSpace>, W: WriteCmd<S::StateSpace>> StorageManager<S, R, W> {
+impl<S: Store, R: ReadCmd, W: WriteCmd> StorageManager<S, R, W> {
     pub fn new(config: StorageConfig<S>) -> Self {
         let store = Arc::new(config.store.expect("StorageConfig requires a store"));
         let is_shutdown = Arc::new(AtomicBool::new(false));

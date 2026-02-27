@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwapOption;
 use vprogs_core_macros::smart_pointer;
-use vprogs_state_space::StateSpace;
 use vprogs_state_version::StateVersion;
 use vprogs_storage_types::{Store, WriteBatch};
 
@@ -14,7 +13,7 @@ use crate::{RuntimeBatchRef, Write, processor::Processor};
 /// execution) and the written state (after execution), which are used to persist versioned data and
 /// rollback pointers.
 #[smart_pointer]
-pub struct StateDiff<S: Store<StateSpace = StateSpace>, P: Processor> {
+pub struct StateDiff<S: Store, P: Processor> {
     /// Weak reference to the owning batch (used for commit checks and write submission).
     batch: RuntimeBatchRef<S, P>,
     /// The resource this diff tracks.
@@ -25,7 +24,7 @@ pub struct StateDiff<S: Store<StateSpace = StateSpace>, P: Processor> {
     written_state: ArcSwapOption<StateVersion<P::ResourceId>>,
 }
 
-impl<S: Store<StateSpace = StateSpace>, P: Processor> StateDiff<S, P> {
+impl<S: Store, P: Processor> StateDiff<S, P> {
     /// Returns the resource ID this state diff tracks.
     pub fn resource_id(&self) -> &P::ResourceId {
         &self.resource_id
@@ -75,7 +74,7 @@ impl<S: Store<StateSpace = StateSpace>, P: Processor> StateDiff<S, P> {
         }
     }
 
-    pub(crate) fn write<W: WriteBatch<StateSpace = StateSpace>>(&self, wb: &mut W) {
+    pub(crate) fn write<W: WriteBatch>(&self, wb: &mut W) {
         let Some(batch) = self.batch.upgrade() else {
             panic!("batch must be known at write time");
         };

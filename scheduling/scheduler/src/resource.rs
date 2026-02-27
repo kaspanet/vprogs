@@ -1,21 +1,20 @@
 use tap::Tap;
 use vprogs_core_types::AccessMetadata;
-use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
 use crate::{ResourceAccess, RuntimeBatchRef, RuntimeTxRef, StateDiff, processor::Processor};
 
-pub(crate) struct Resource<S: Store<StateSpace = StateSpace>, P: Processor> {
+pub(crate) struct Resource<S: Store, P: Processor> {
     last_access: Option<ResourceAccess<S, P>>,
 }
 
-impl<S: Store<StateSpace = StateSpace>, P: Processor> Default for Resource<S, P> {
+impl<S: Store, P: Processor> Default for Resource<S, P> {
     fn default() -> Self {
         Self { last_access: None }
     }
 }
 
-impl<S: Store<StateSpace = StateSpace>, P: Processor> Resource<S, P> {
+impl<S: Store, P: Processor> Resource<S, P> {
     pub(crate) fn access(
         &mut self,
         meta: &P::AccessMetadata,

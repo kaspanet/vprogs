@@ -9,7 +9,6 @@ use vprogs_core_macros::smart_pointer;
 use vprogs_core_types::Checkpoint;
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
-use vprogs_state_space::StateSpace;
 use vprogs_storage_types::{Store, WriteBatch};
 
 use crate::{
@@ -24,7 +23,7 @@ use crate::{
 /// progress via the `was_*` / `wait_*` methods. A batch may be canceled by a rollback, in which
 /// case the wait methods return immediately.
 #[smart_pointer]
-pub struct RuntimeBatch<S: Store<StateSpace = StateSpace>, P: Processor> {
+pub struct RuntimeBatch<S: Store, P: Processor> {
     /// Cancellation context captured at creation time for rollback detection.
     cancellation: CancellationContext,
     /// Shared scheduler state for storage access and eviction.
@@ -49,7 +48,7 @@ pub struct RuntimeBatch<S: Store<StateSpace = StateSpace>, P: Processor> {
     was_committed: AtomicAsyncLatch,
 }
 
-impl<S: Store<StateSpace = StateSpace>, P: Processor> RuntimeBatch<S, P> {
+impl<S: Store, P: Processor> RuntimeBatch<S, P> {
     /// Returns the checkpoint (index + metadata) identifying this batch.
     pub fn checkpoint(&self) -> &Checkpoint<P::BatchMetadata> {
         &self.checkpoint
@@ -235,7 +234,7 @@ impl<S: Store<StateSpace = StateSpace>, P: Processor> RuntimeBatch<S, P> {
 
     pub(crate) fn commit<W>(&self, wb: &mut W)
     where
-        W: WriteBatch<StateSpace = StateSpace>,
+        W: WriteBatch,
     {
         if !self.was_canceled() {
             for state_diff in self.state_diffs() {
@@ -270,8 +269,8 @@ impl<S: Store<StateSpace = StateSpace>, P: Processor> RuntimeBatch<S, P> {
     }
 }
 
-impl<S: Store<StateSpace = StateSpace>, P: Processor>
-    vprogs_scheduling_execution_workers::Batch<ManagerTask<S, P>> for RuntimeBatch<S, P>
+impl<S: Store, P: Processor> vprogs_scheduling_execution_workers::Batch<ManagerTask<S, P>>
+    for RuntimeBatch<S, P>
 {
     fn steal_available_tasks(
         &self,

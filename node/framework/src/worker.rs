@@ -4,7 +4,6 @@ use tokio::sync::mpsc;
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_l1_bridge::{L1Bridge, L1Event};
 use vprogs_scheduling_scheduler::Scheduler;
-use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
 use crate::{NodeVm, api::ApiRequest, batch::Batch};
@@ -13,7 +12,7 @@ use crate::{NodeVm, api::ApiRequest, batch::Batch};
 ///
 /// Consumes [`L1Event`]s from the bridge, dispatches pre-processing to execution workers, and feeds
 /// completed batches to the scheduler in order.
-pub(crate) struct NodeWorker<S: Store<StateSpace = StateSpace>, V: NodeVm> {
+pub(crate) struct NodeWorker<S: Store, V: NodeVm> {
     /// L1 chain event source - the primary data entry point into the node.
     bridge: L1Bridge,
     /// L2 transaction scheduler and execution engine.
@@ -26,7 +25,7 @@ pub(crate) struct NodeWorker<S: Store<StateSpace = StateSpace>, V: NodeVm> {
     shutdown: Arc<AtomicAsyncLatch>,
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: NodeVm> NodeWorker<S, V> {
+impl<S: Store, V: NodeVm> NodeWorker<S, V> {
     /// Creates the worker and runs the event loop until shutdown is signaled or a fatal error
     /// occurs. Shuts down the bridge and scheduler before returning.
     pub(crate) async fn spawn(

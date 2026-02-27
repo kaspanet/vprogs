@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use vprogs_core_types::{AccessMetadata, AccessType};
-use vprogs_state_space::StateSpace;
 use vprogs_state_version::StateVersion;
 use vprogs_storage_types::Store;
 
@@ -11,12 +10,12 @@ use crate::{ResourceAccess, processor::Processor};
 ///
 /// Passed to [`Processor::process_transaction`] so the processor can read and mutate resource
 /// data. On success the changes are committed; on failure they are rolled back.
-pub struct AccessHandle<'a, S: Store<StateSpace = StateSpace>, P: Processor> {
+pub struct AccessHandle<'a, S: Store, P: Processor> {
     state_version: Arc<StateVersion<P::ResourceId>>,
     access: &'a ResourceAccess<S, P>,
 }
 
-impl<'a, S: Store<StateSpace = StateSpace>, P: Processor> AccessHandle<'a, S, P> {
+impl<'a, S: Store, P: Processor> AccessHandle<'a, S, P> {
     /// Returns the access metadata for this resource.
     #[inline]
     pub fn access_metadata(&self) -> &P::AccessMetadata {

@@ -7,7 +7,6 @@ use tokio::{runtime::Builder, sync::mpsc};
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_l1_bridge::L1Bridge;
 use vprogs_scheduling_scheduler::Scheduler;
-use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
 use crate::{NodeVm, api::NodeApi, config::NodeConfig, worker::NodeWorker};
@@ -16,7 +15,7 @@ use crate::{NodeVm, api::NodeApi, config::NodeConfig, worker::NodeWorker};
 ///
 /// Created via [`Node::new`], which starts all background components (bridge, scheduler, event
 /// loop). The node runs autonomously until [`shutdown`](Self::shutdown) is called.
-pub struct Node<S: Store<StateSpace = StateSpace>, V: NodeVm> {
+pub struct Node<S: Store, V: NodeVm> {
     /// Cloneable handle for interacting with the node.
     api: NodeApi<S, V>,
     /// Worker thread running the event loop.
@@ -25,7 +24,7 @@ pub struct Node<S: Store<StateSpace = StateSpace>, V: NodeVm> {
     shutdown: Arc<AtomicAsyncLatch>,
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: NodeVm> Node<S, V> {
+impl<S: Store, V: NodeVm> Node<S, V> {
     /// Creates and starts a new node.
     pub fn new(config: NodeConfig<S, V>) -> Self {
         // Create the scheduler - internally reads last checkpoint from store.
@@ -78,7 +77,7 @@ impl<S: Store<StateSpace = StateSpace>, V: NodeVm> Node<S, V> {
 
 /// Ensures the worker thread receives a shutdown signal even if the node is dropped without an
 /// explicit [`shutdown`] call.
-impl<S: Store<StateSpace = StateSpace>, V: NodeVm> Drop for Node<S, V> {
+impl<S: Store, V: NodeVm> Drop for Node<S, V> {
     fn drop(&mut self) {
         self.shutdown.open();
     }

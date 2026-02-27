@@ -16,7 +16,7 @@ impl StatePtrRollback {
     /// Stores the version a resource had before a batch was applied.
     pub fn put<W, R>(wb: &mut W, batch_index: u64, resource_id: &R, old_version: u64)
     where
-        W: WriteBatch<StateSpace = StateSpace>,
+        W: WriteBatch,
         R: ResourceId,
     {
         let rid = borsh::to_vec(resource_id).expect("failed to serialize ResourceId");
@@ -27,7 +27,7 @@ impl StatePtrRollback {
     /// Deletes a rollback pointer entry.
     pub fn delete<W, R>(wb: &mut W, batch_index: u64, resource_id: &R)
     where
-        W: WriteBatch<StateSpace = StateSpace>,
+        W: WriteBatch,
         R: ResourceId,
     {
         let rid = borsh::to_vec(resource_id).expect("failed to serialize ResourceId");
@@ -41,7 +41,7 @@ impl StatePtrRollback {
     /// decode the resource ID bytes using `borsh::from_slice`.
     pub fn iter_batch<S>(store: &S, batch_index: u64) -> impl Iterator<Item = (Vec<u8>, u64)> + '_
     where
-        S: Store<StateSpace = StateSpace>,
+        S: Store,
     {
         store.prefix_iter(StateSpace::StatePtrRollback, &batch_index.to_be_bytes()).map(
             |(key, value)| {

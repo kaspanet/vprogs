@@ -7,7 +7,6 @@ use tap::Tap;
 use vprogs_core_types::{AccessMetadata, Checkpoint, Transaction};
 use vprogs_scheduling_execution_workers::ExecutionWorkers;
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
-use vprogs_state_space::StateSpace;
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_types::Store;
 
@@ -23,7 +22,7 @@ use crate::{
 /// The scheduler is the main entry point for batch processing. It schedules transactions, manages
 /// resource dependency chains, coordinates parallel execution via worker threads, and handles
 /// rollbacks when chain reorganization occurs.
-pub struct Scheduler<S: Store<StateSpace = StateSpace>, P: Processor> {
+pub struct Scheduler<S: Store, P: Processor> {
     /// The processor used to execute transactions.
     processor: P,
     /// Shared scheduler state (storage, eviction_queue, root, last_committed, last_processed).
@@ -42,7 +41,7 @@ pub struct Scheduler<S: Store<StateSpace = StateSpace>, P: Processor> {
     pruning_worker: PruningWorker<S, P>,
 }
 
-impl<S: Store<StateSpace = StateSpace>, P: Processor> Scheduler<S, P> {
+impl<S: Store, P: Processor> Scheduler<S, P> {
     /// Creates a new scheduler with the given execution and storage configurations.
     pub fn new(execution_config: ExecutionConfig<P>, storage_config: StorageConfig<S>) -> Self {
         let (worker_count, processor) = execution_config.unpack();

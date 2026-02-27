@@ -11,7 +11,7 @@ impl BatchMetadata {
     /// Returns the deserialized metadata for a batch, or `M::default()` if not found.
     pub fn get<M: BatchMetadataTrait, S>(store: &S, batch_index: u64) -> M
     where
-        S: Store<StateSpace = StateSpace>,
+        S: Store,
     {
         store
             .get(StateSpace::BatchMetadata, &batch_index.to_be_bytes())
@@ -22,7 +22,7 @@ impl BatchMetadata {
     /// Stores serialized metadata for a batch.
     pub fn set<M: BatchMetadataTrait, W>(wb: &mut W, batch_index: u64, metadata: &M)
     where
-        W: WriteBatch<StateSpace = StateSpace>,
+        W: WriteBatch,
     {
         wb.put(
             StateSpace::BatchMetadata,
@@ -34,7 +34,7 @@ impl BatchMetadata {
     /// Deletes the metadata entry for a single batch index.
     pub fn delete<W>(wb: &mut W, batch_index: u64)
     where
-        W: WriteBatch<StateSpace = StateSpace>,
+        W: WriteBatch,
     {
         wb.delete(StateSpace::BatchMetadata, &batch_index.to_be_bytes());
     }

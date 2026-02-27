@@ -1,13 +1,14 @@
+use vprogs_state_space::StateSpace;
+
 use crate::WriteBatch;
 
 /// A boxed iterator over key-value pairs returned by prefix iteration.
 pub type PrefixIterator<'a> = Box<dyn Iterator<Item = (Vec<u8>, Vec<u8>)> + 'a>;
 
 pub trait Store: Send + Sync + 'static {
-    type StateSpace;
-    type WriteBatch: WriteBatch<StateSpace = Self::StateSpace>;
+    type WriteBatch: WriteBatch;
 
-    fn get(&self, state_space: Self::StateSpace, key: &[u8]) -> Option<Vec<u8>>;
+    fn get(&self, state_space: StateSpace, key: &[u8]) -> Option<Vec<u8>>;
     fn write_batch(&self) -> Self::WriteBatch;
     fn commit(&self, write_batch: Self::WriteBatch);
 
@@ -19,5 +20,5 @@ pub trait Store: Send + Sync + 'static {
     ///
     /// # Panics
     /// Panics if the underlying storage operation fails.
-    fn prefix_iter(&self, state_space: Self::StateSpace, prefix: &[u8]) -> PrefixIterator<'_>;
+    fn prefix_iter(&self, state_space: StateSpace, prefix: &[u8]) -> PrefixIterator<'_>;
 }

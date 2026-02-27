@@ -1,6 +1,5 @@
 use vprogs_l1_bridge::L1BridgeConfig;
 use vprogs_scheduling_scheduler::ExecutionConfig;
-use vprogs_state_space::StateSpace;
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_types::Store;
 
@@ -11,7 +10,7 @@ use crate::NodeVm;
 /// Wraps the sub-system configs and adds node-level settings. Use the `with_*` builder methods
 /// to override defaults.
 #[derive(Clone, Debug)]
-pub struct NodeConfig<S: Store<StateSpace = StateSpace>, V: NodeVm> {
+pub struct NodeConfig<S: Store, V: NodeVm> {
     /// Bounded capacity of the [`NodeApi`](crate::NodeApi) request channel.
     pub api_channel_capacity: usize,
     /// Execution worker pool and VM configuration.
@@ -22,7 +21,7 @@ pub struct NodeConfig<S: Store<StateSpace = StateSpace>, V: NodeVm> {
     pub l1_bridge_config: L1BridgeConfig,
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: NodeVm> Default for NodeConfig<S, V> {
+impl<S: Store, V: NodeVm> Default for NodeConfig<S, V> {
     fn default() -> Self {
         Self {
             api_channel_capacity: 64,
@@ -33,7 +32,7 @@ impl<S: Store<StateSpace = StateSpace>, V: NodeVm> Default for NodeConfig<S, V> 
     }
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: NodeVm> NodeConfig<S, V> {
+impl<S: Store, V: NodeVm> NodeConfig<S, V> {
     pub fn with_api_channel_capacity(mut self, capacity: usize) -> Self {
         self.api_channel_capacity = capacity;
         self

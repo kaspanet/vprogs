@@ -3,7 +3,6 @@ use std::sync::Arc;
 use tokio::sync::{mpsc::Sender, oneshot};
 use vprogs_core_macros::smart_pointer;
 use vprogs_scheduling_scheduler::{Scheduler, SchedulerState};
-use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
 use crate::{
@@ -17,14 +16,14 @@ use crate::{
 /// `last_processed`, and `storage`. For operations that need `&mut Scheduler` (e.g. pruning),
 /// use [`with_scheduler`](Self::with_scheduler).
 #[smart_pointer(deref(state))]
-pub struct NodeApi<S: Store<StateSpace = StateSpace>, V: NodeVm> {
+pub struct NodeApi<S: Store, V: NodeVm> {
     /// Shared scheduler state for lock-free reads (deref target).
     state: SchedulerState<S, V>,
     /// Channel for sending closures to the worker thread for `&mut Scheduler` access.
     api_requests: Sender<ApiRequest<S, V>>,
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: NodeVm> NodeApi<S, V> {
+impl<S: Store, V: NodeVm> NodeApi<S, V> {
     /// Creates a new API handle with shared state and a channel to the worker thread.
     pub(crate) fn new(state: SchedulerState<S, V>, sender: Sender<ApiRequest<S, V>>) -> Self {
         Self(Arc::new(NodeApiData { state, api_requests: sender }))

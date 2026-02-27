@@ -1,7 +1,6 @@
 use tokio::sync::mpsc;
 use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, TransactionContext};
-use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 use vprogs_zk_abi::{self as abi, AccessMetadata, ResourceId, StateOp, Transaction};
 
@@ -28,10 +27,7 @@ impl<B: Backend> Vm<B> {
 }
 
 impl<B: Backend> Processor for Vm<B> {
-    fn process_transaction<S: Store<StateSpace = StateSpace>>(
-        &self,
-        ctx: &mut TransactionContext<S, Self>,
-    ) -> Result<()> {
+    fn process_transaction<S: Store>(&self, ctx: &mut TransactionContext<S, Self>) -> Result<()> {
         // 1. Build ABI transaction context.
         let abi_ctx = abi::TransactionContext::from(&*ctx);
 

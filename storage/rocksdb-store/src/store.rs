@@ -48,7 +48,6 @@ impl<C: Config> RocksDbStore<C> {
 }
 
 impl<C: Config> Store for RocksDbStore<C> {
-    type StateSpace = StateSpace;
     type WriteBatch = WriteBatch<C>;
 
     fn get(&self, state_space: StateSpace, key: &[u8]) -> Option<Vec<u8>> {

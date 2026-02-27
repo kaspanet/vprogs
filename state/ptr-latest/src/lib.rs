@@ -14,7 +14,7 @@ impl StatePtrLatest {
     /// Gets the current version for a resource, or `None` if the resource doesn't exist.
     pub fn get<S, R>(store: &S, resource_id: &R) -> Option<u64>
     where
-        S: ReadStore<StateSpace = StateSpace>,
+        S: ReadStore,
         R: ResourceId,
     {
         let key = borsh::to_vec(resource_id).expect("failed to serialize ResourceId");
@@ -26,7 +26,7 @@ impl StatePtrLatest {
     /// Sets the current version for a resource.
     pub fn put<W, R>(wb: &mut W, resource_id: &R, version: u64)
     where
-        W: WriteBatch<StateSpace = StateSpace>,
+        W: WriteBatch,
         R: ResourceId,
     {
         let key = borsh::to_vec(resource_id).expect("failed to serialize ResourceId");
@@ -36,7 +36,7 @@ impl StatePtrLatest {
     /// Deletes the latest pointer for a resource.
     pub fn delete<W, R>(wb: &mut W, resource_id: &R)
     where
-        W: WriteBatch<StateSpace = StateSpace>,
+        W: WriteBatch,
         R: ResourceId,
     {
         let key = borsh::to_vec(resource_id).expect("failed to serialize ResourceId");

@@ -1,6 +1,5 @@
 use vprogs_core_types::{AccessMetadata, AccessType};
 use vprogs_scheduling_scheduler::TransactionContext;
-use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
 use crate::{Access, Tx};
@@ -10,7 +9,7 @@ use crate::{Access, Tx};
 pub struct Processor;
 
 impl vprogs_scheduling_scheduler::Processor for Processor {
-    fn process_transaction<S: Store<StateSpace = StateSpace>>(
+    fn process_transaction<S: Store>(
         &self,
         ctx: &mut TransactionContext<S, Self>,
     ) -> Result<(), Self::Error> {

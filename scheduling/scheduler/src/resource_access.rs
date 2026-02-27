@@ -6,7 +6,6 @@ use std::sync::{
 use arc_swap::ArcSwapOption;
 use vprogs_core_macros::smart_pointer;
 use vprogs_core_types::{AccessMetadata, AccessType};
-use vprogs_state_space::StateSpace;
 use vprogs_state_version::StateVersion;
 use vprogs_storage_manager::StorageManager;
 use vprogs_storage_types::{ReadStore, Store};
@@ -19,7 +18,7 @@ use crate::{Read, RuntimeTxRef, StateDiff, Write, processor::Processor};
 /// to the same resource are linked via `prev`/`next` pointers so that write results flow forward to
 /// dependent reads. Derefs to the inner `P::AccessMetadata`.
 #[smart_pointer(deref(metadata))]
-pub struct ResourceAccess<S: Store<StateSpace = StateSpace>, P: Processor> {
+pub struct ResourceAccess<S: Store, P: Processor> {
     /// Per-access metadata (deref target).
     metadata: P::AccessMetadata,
     /// True if this is the first access to the resource in this batch.
@@ -40,7 +39,7 @@ pub struct ResourceAccess<S: Store<StateSpace = StateSpace>, P: Processor> {
     next: ArcSwapOption<Self>,
 }
 
-impl<S: Store<StateSpace = StateSpace>, P: Processor> ResourceAccess<S, P> {
+impl<S: Store, P: Processor> ResourceAccess<S, P> {
     /// Returns the access metadata describing which resource is accessed and how.
     #[inline(always)]
     pub fn metadata(&self) -> &P::AccessMetadata {
@@ -108,7 +107,7 @@ impl<S: Store<StateSpace = StateSpace>, P: Processor> ResourceAccess<S, P> {
         }
     }
 
-    pub(crate) fn read_latest_data<R: ReadStore<StateSpace = StateSpace>>(&self, store: &R) {
+    pub(crate) fn read_latest_data<R: ReadStore>(&self, store: &R) {
         self.set_read_state(Arc::new(StateVersion::from_latest_data(store, self.metadata.id())));
     }
 

@@ -7641,6 +7641,9 @@ dependencies = [
 [[package]]
 name = "vprogs-storage-types"
 version = "0.1.0"
+dependencies = [
+ "vprogs-state-space",
+]
 
 [[package]]
 name = "vprogs-transaction-runtime"
