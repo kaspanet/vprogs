@@ -1,7 +1,8 @@
-#![cfg_attr(not(feature = "std"), no_std)]
+#![no_std]
 
 extern crate alloc;
 
+use risc0_zkvm::guest::env;
 use rkyv::util::AlignedVec;
 pub use vprogs_zk_abi::{ArchivedAccount, ArchivedTransactionContext, StateOp};
 
@@ -18,19 +19,11 @@ pub fn access_transaction_context(buf: &[u8]) -> &ArchivedTransactionContext {
 /// succeeds — the guest allocator only guarantees 4-byte alignment for `Vec<u8>`,
 /// but archived types with `u64` fields require 8-byte alignment.
 pub fn read_witness() -> AlignedVec {
-    #[cfg(target_os = "zkvm")]
-    {
-        use risc0_zkvm::guest::env;
+    let mut len = 0u32;
+    env::read_slice(core::slice::from_mut(&mut len));
 
-        let mut len = 0u32;
-        env::read_slice(core::slice::from_mut(&mut len));
-
-        let mut aligned = AlignedVec::with_capacity(len as usize);
-        aligned.resize(len as usize, 0);
-        env::read_slice(&mut aligned);
-        aligned
-    }
-
-    #[cfg(not(target_os = "zkvm"))]
-    panic!("read_witness() is only available inside the RISC-0 zkVM (target_os = \"zkvm\")")
+    let mut aligned = AlignedVec::with_capacity(len as usize);
+    aligned.resize(len as usize, 0);
+    env::read_slice(&mut aligned);
+    aligned
 }
