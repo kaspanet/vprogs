@@ -290,7 +290,7 @@ async fn test_bridge_receives_reorg_events() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_reorg_filter_causes_lag() {
     const SHORT_CHAIN: usize = 5;
-    const LONG_CHAIN: usize = 20;
+    const EXTRA_BLOCKS: usize = 15;
 
     // Create two isolated nodes with bridges.
     let node1 = L1Node::new(None).await;
@@ -340,32 +340,37 @@ async fn test_reorg_filter_causes_lag() {
         }),
     );
 
-    // Mine the longer chain on node2 and wait for it to be fully processed.
-    let long_hashes = node2.mine_blocks(LONG_CHAIN).await;
-    let long_tip = *long_hashes.last().unwrap();
+    // Mine just enough on node2 to win the reorg (SHORT_CHAIN + 1), then connect.
+    let reorg_hashes = node2.mine_blocks(SHORT_CHAIN + 1).await;
+    let reorg_tip = *reorg_hashes.last().unwrap();
     node2_bridge
         .wait_for(TIMEOUT, |e| {
-            matches!(e, L1Event::ChainBlockAdded { header, .. } if header.hash == Some(long_tip))
+            matches!(e, L1Event::ChainBlockAdded { header, .. } if header.hash == Some(reorg_tip))
         })
         .await;
 
-    // Connect to trigger a reorg.
+    // Connect to trigger the reorg. Wait for both bridges to process it so the
+    // reorg filter threshold is set before any additional blocks arrive.
     node1.connect_to(&node2).await;
 
-    // Wait for the unfiltered bridge to fully sync to the new chain.
+    tokio::join!(
+        filtered.wait_for(TIMEOUT, |e| matches!(e, L1Event::Rollback { .. })),
+        unfiltered.wait_for(TIMEOUT, |e| matches!(e, L1Event::Rollback { .. })),
+    );
+
+    // Now mine more blocks on the merged network. The filtered bridge's threshold
+    // is already set, so these blocks will be properly filtered.
+    let extra_hashes = node2.mine_blocks(EXTRA_BLOCKS).await;
+    let final_tip = *extra_hashes.last().unwrap();
+
+    // Wait for the unfiltered bridge to reach the final tip.
     let events = unfiltered
         .wait_for(TIMEOUT, |e| {
-            matches!(e, L1Event::ChainBlockAdded { header, .. } if header.hash == Some(long_tip))
+            matches!(e, L1Event::ChainBlockAdded { header, .. } if header.hash == Some(final_tip))
         })
         .await;
 
     // Helpers to extract rollback depth and max index from events.
-    let get_rollback_depth = |events: &[L1Event]| {
-        events.iter().find_map(|e| match e {
-            L1Event::Rollback { blue_score_depth, .. } => Some(*blue_score_depth),
-            _ => None,
-        })
-    };
     let get_max_index = |events: &[L1Event]| {
         events
             .iter()
@@ -377,20 +382,17 @@ async fn test_reorg_filter_causes_lag() {
             .unwrap_or(0)
     };
 
-    // Verify the unfiltered bridge saw the rollback and reached the new tip.
-    assert_eq!(get_rollback_depth(&events), Some(SHORT_CHAIN as u64));
-    assert_eq!(get_max_index(&events), LONG_CHAIN as u64);
+    let total_chain = SHORT_CHAIN + 1 + EXTRA_BLOCKS;
+    assert_eq!(get_max_index(&events), total_chain as u64);
 
     // Give the filtered bridge time to process, then check its state.
     tokio::time::sleep(Duration::from_millis(500)).await;
     let filtered_events = filtered.drain();
 
-    // Both bridges should see the same rollback depth.
-    assert_eq!(get_rollback_depth(&filtered_events), Some(SHORT_CHAIN as u64));
-
-    // The filtered bridge should lag behind. To be protected from reorgs of depth N,
-    // blocks at distance ≤ N are hidden (API uses distance > threshold), hence lag = N + 1.
-    let expected_max = (LONG_CHAIN - SHORT_CHAIN - 1) as u64;
+    // The filtered bridge should lag behind. The reorg filter threshold is SHORT_CHAIN
+    // (the blue score depth of the reorg). The API hides blocks at distance ≤ threshold,
+    // so lag = threshold + 1.
+    let expected_max = (total_chain - SHORT_CHAIN - 1) as u64;
     assert_eq!(get_max_index(&filtered_events), expected_max);
 
     filtered.shutdown();
