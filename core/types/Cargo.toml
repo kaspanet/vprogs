@@ -3,9 +3,5 @@ edition.workspace = true
 name              = "vprogs-core-types"
 version.workspace = true
 
-[features]
-default = ["std"]
-std     = ["borsh/std"]
-
 [dependencies]
 borsh = { workspace = true, default-features = false }

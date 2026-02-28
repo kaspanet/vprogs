@@ -55,14 +55,8 @@ fn test_zk_scheduler_e2e() {
     let batch = scheduler.schedule(
         ChainBlockMetadata::default(),
         vec![
-            L2Transaction {
-                l1_tx: kaspa_tx1,
-                resources: vec![Access::write(1_usize)],
-            },
-            L2Transaction {
-                l1_tx: kaspa_tx2,
-                resources: vec![Access::write(2_usize)],
-            },
+            L2Transaction { l1_tx: kaspa_tx1, resources: vec![Access::write(1_usize)] },
+            L2Transaction { l1_tx: kaspa_tx2, resources: vec![Access::write(2_usize)] },
         ],
     );
 
