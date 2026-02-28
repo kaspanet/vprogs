@@ -23,7 +23,7 @@ pub trait NodeExt {
     fn wait_pruned(&self, expected: u64, timeout: Duration);
 
     /// Asserts that a resource was written by the given L1 transactions (in order).
-    fn assert_written_state(&self, resource_id: usize, tx_hashes: &[BlockHash]);
+    fn assert_written_state(&self, resource_id: usize, writers: &[BlockHash]);
 
     /// Asserts that a resource has been deleted (no latest pointer exists).
     fn assert_resource_deleted(&self, resource_id: usize);
@@ -79,14 +79,13 @@ impl NodeExt for NodeApi<RocksDbStore, TestNodeVm> {
         assert_eq!(
             *versioned_state.data(),
             writer_log,
-            "resource {resource_id}: unexpected tx hash log"
+            "resource {resource_id}: unexpected writer log"
         );
     }
 
     fn assert_resource_deleted(&self, resource_id: usize) {
         let store = self.storage().store();
-        let id_bytes =
-            borsh::to_vec(&ResourceId::from(resource_id)).expect("failed to serialize ResourceId");
+        let id_bytes = ResourceId::from(resource_id).as_bytes().clone();
         assert!(
             store.get(StateSpace::StatePtrLatest, &id_bytes).is_none(),
             "Resource {resource_id} should have been deleted but still exists",
