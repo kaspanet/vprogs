@@ -1,10 +1,11 @@
 use std::time::Duration;
 
 use tempfile::TempDir;
+use vprogs_core_types::Access;
 use vprogs_l1_bridge::L1BridgeConfig;
-use vprogs_l1_types::NetworkType;
+use vprogs_l1_types::{BlockHash, NetworkType};
 use vprogs_node_framework::{Node, NodeConfig};
-use vprogs_node_test_suite::{Access, Hash, L1Node, NodeExt, TestNodeVm};
+use vprogs_node_test_suite::{L1Node, NodeExt, TestNodeVm};
 use vprogs_scheduling_scheduler::ExecutionConfig;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_storage_manager::StorageConfig;
@@ -31,7 +32,7 @@ fn create_node(l1: &L1Node, temp_dir: &TempDir) -> Node<RocksDbStore, TestNodeVm
 ///
 /// Returns the L1 tx hash for each payload block, where `hashes[i]` wrote to resource `i+1`.
 /// Total blocks mined is `count + 1` (the extra block accepts the last payload).
-async fn mine_l2_blocks(l1: &L1Node, count: usize) -> Vec<Hash> {
+async fn mine_l2_blocks(l1: &L1Node, count: usize) -> Vec<BlockHash> {
     let mut tx_hashes = Vec::with_capacity(count);
     for i in 1..=count {
         let payload = borsh::to_vec(&vec![Access::write(i)]).unwrap();
@@ -46,7 +47,7 @@ async fn mine_l2_blocks(l1: &L1Node, count: usize) -> Vec<Hash> {
 }
 
 /// Asserts that L2 state was written for resources 1..=count with the expected tx hashes.
-fn assert_l2_state(node: &Node<RocksDbStore, TestNodeVm>, tx_hashes: &[Hash]) {
+fn assert_l2_state(node: &Node<RocksDbStore, TestNodeVm>, tx_hashes: &[BlockHash]) {
     for (i, hash) in tx_hashes.iter().enumerate() {
         node.api().assert_written_state(i + 1, &[*hash]);
     }

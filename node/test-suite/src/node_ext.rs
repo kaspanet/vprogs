@@ -4,7 +4,7 @@ use std::{
 };
 
 use vprogs_core_types::ResourceId;
-use vprogs_l1_types::ChainBlockMetadata;
+use vprogs_l1_types::{BlockHash, ChainBlockMetadata};
 use vprogs_node_framework::NodeApi;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_version::StateVersion;
@@ -23,7 +23,7 @@ pub trait NodeExt {
     fn wait_pruned(&self, expected: u64, timeout: Duration);
 
     /// Asserts that a resource was written by the given L1 transactions (in order).
-    fn assert_written_state(&self, resource_id: usize, tx_hashes: &[crate::Hash]);
+    fn assert_written_state(&self, resource_id: usize, tx_hashes: &[BlockHash]);
 
     /// Asserts that a resource has been deleted (no latest pointer exists).
     fn assert_resource_deleted(&self, resource_id: usize);
@@ -64,7 +64,7 @@ impl NodeExt for NodeApi<RocksDbStore, TestNodeVm> {
         }
     }
 
-    fn assert_written_state(&self, resource_id: usize, tx_hashes: &[crate::Hash]) {
+    fn assert_written_state(&self, resource_id: usize, tx_hashes: &[BlockHash]) {
         let store = self.storage().store();
         let expected_log: Vec<u8> = tx_hashes.iter().flat_map(|h| h.as_bytes()).collect();
 
