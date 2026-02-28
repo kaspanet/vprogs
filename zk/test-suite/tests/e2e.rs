@@ -1,5 +1,5 @@
 use tempfile::TempDir;
-use vprogs_core_types::{Access, AccessType, L2Transaction, ResourceId};
+use vprogs_core_types::{Access, L2Transaction};
 use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_storage_manager::StorageConfig;
@@ -32,13 +32,6 @@ fn batch_processor_elf() -> Vec<u8> {
     })
 }
 
-fn resource_id_from_bytes(bytes: &[u8]) -> ResourceId {
-    let mut buf = [0u8; 32];
-    let start = 32 - bytes.len();
-    buf[start..].copy_from_slice(bytes);
-    ResourceId::from(buf)
-}
-
 #[test]
 fn test_zk_scheduler_e2e() {
     let transaction_elf = transaction_processor_elf();
@@ -64,17 +57,11 @@ fn test_zk_scheduler_e2e() {
         vec![
             L2Transaction {
                 l1_tx: kaspa_tx1,
-                resources: vec![Access {
-                    id: resource_id_from_bytes(&[0, 1]),
-                    access_type: AccessType::Write,
-                }],
+                resources: vec![Access::write(1_usize)],
             },
             L2Transaction {
                 l1_tx: kaspa_tx2,
-                resources: vec![Access {
-                    id: resource_id_from_bytes(&[0, 2]),
-                    access_type: AccessType::Write,
-                }],
+                resources: vec![Access::write(2_usize)],
             },
         ],
     );
