@@ -2,14 +2,14 @@
 
 extern crate alloc;
 
-mod access;
+mod access_metadata;
 mod access_type;
 mod batch_metadata;
 mod checkpoint;
 mod l2_transaction;
 mod resource_id;
 
-pub use access::Access;
+pub use access_metadata::AccessMetadata;
 pub use access_type::AccessType;
 pub use batch_metadata::BatchMetadata;
 pub use checkpoint::Checkpoint;

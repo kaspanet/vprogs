@@ -5,3 +5,4 @@ version.workspace = true
 
 [dependencies]
 borsh = { workspace = true, default-features = false }
+rkyv  = { workspace = true, default-features = false }

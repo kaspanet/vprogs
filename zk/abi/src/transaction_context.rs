@@ -42,7 +42,7 @@ mod from_ctx {
                     .resources()
                     .iter()
                     .map(|r| Account {
-                        account_id: borsh::to_vec(&r.access_metadata().id).unwrap(),
+                        resource_id: r.access_metadata().id,
                         data: r.data().clone(),
                     })
                     .collect(),

@@ -1,14 +1,15 @@
 use borsh::{BorshDeserialize, BorshSerialize};
+use rkyv::{Archive, Deserialize, Serialize};
 
 use crate::{AccessType, ResourceId};
 
-#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
-pub struct Access {
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize, Archive, Serialize, Deserialize)]
+pub struct AccessMetadata {
     pub id: ResourceId,
     pub access_type: AccessType,
 }
 
-impl Access {
+impl AccessMetadata {
     pub fn read(id: impl Into<ResourceId>) -> Self {
         Self { id: id.into(), access_type: AccessType::Read }
     }

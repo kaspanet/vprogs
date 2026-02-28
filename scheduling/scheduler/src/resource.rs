@@ -1,5 +1,5 @@
 use tap::Tap;
-use vprogs_core_types::Access;
+use vprogs_core_types::AccessMetadata;
 use vprogs_storage_types::Store;
 
 use crate::{ResourceAccess, RuntimeBatchRef, RuntimeTxRef, StateDiff, processor::Processor};
@@ -17,7 +17,7 @@ impl<S: Store, P: Processor> Default for Resource<S, P> {
 impl<S: Store, P: Processor> Resource<S, P> {
     pub(crate) fn access(
         &mut self,
-        meta: &Access,
+        meta: &AccessMetadata,
         tx: &RuntimeTxRef<S, P>,
         batch: &RuntimeBatchRef<S, P>,
     ) -> ResourceAccess<S, P> {

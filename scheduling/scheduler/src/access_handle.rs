@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use vprogs_core_types::{Access, AccessType};
+use vprogs_core_types::{AccessMetadata, AccessType};
 use vprogs_state_version::StateVersion;
 use vprogs_storage_types::Store;
 
@@ -18,8 +18,8 @@ pub struct AccessHandle<'a, S: Store, P: Processor> {
 impl<'a, S: Store, P: Processor> AccessHandle<'a, S, P> {
     /// Returns the access metadata for this resource.
     #[inline]
-    pub fn access_metadata(&self) -> &Access {
-        self.access.metadata()
+    pub fn access_metadata(&self) -> &AccessMetadata {
+        &*self.access
     }
 
     /// Returns the current version number of this resource (0 if new).

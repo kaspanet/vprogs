@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use tempfile::TempDir;
-use vprogs_core_types::Access;
+use vprogs_core_types::AccessMetadata;
 use vprogs_l1_bridge::L1BridgeConfig;
 use vprogs_l1_types::{BlockHash, NetworkType};
 use vprogs_node_framework::{Node, NodeConfig};
@@ -35,7 +35,7 @@ fn create_node(l1: &L1Node, temp_dir: &TempDir) -> Node<RocksDbStore, TestNodeVm
 async fn mine_l2_blocks(l1: &L1Node, count: usize) -> Vec<BlockHash> {
     let mut tx_hashes = Vec::with_capacity(count);
     for i in 1..=count {
-        let payload = borsh::to_vec(&vec![Access::write(i)]).unwrap();
+        let payload = borsh::to_vec(&vec![AccessMetadata::write(i)]).unwrap();
         let txs = l1.build_payload_transactions(vec![payload]).await;
         tx_hashes.push(txs[0].id());
         l1.mine_block(Some(&txs)).await;
@@ -210,7 +210,7 @@ async fn test_l2_transactions_via_l1_payload() {
     node.api().wait_committed(maturity_blocks, Duration::from_secs(120));
 
     // Submit an L2 transaction via L1 payload (only the accesses are serialized).
-    let payload = borsh::to_vec(&vec![Access::write(42_usize)]).unwrap();
+    let payload = borsh::to_vec(&vec![AccessMetadata::write(42_usize)]).unwrap();
     let txs = l1.build_payload_transactions(vec![payload]).await;
     let tx_hash = txs[0].id();
     l1.mine_block(Some(&txs)).await;

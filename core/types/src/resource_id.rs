@@ -1,7 +1,21 @@
 use borsh::{BorshDeserialize, BorshSerialize};
+use rkyv::{Archive, Deserialize, Serialize};
 
 #[repr(transparent)]
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, BorshSerialize, BorshDeserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Eq,
+    PartialEq,
+    Hash,
+    BorshSerialize,
+    BorshDeserialize,
+    Archive,
+    Serialize,
+    Deserialize,
+)]
 pub struct ResourceId([u8; 32]);
 
 impl ResourceId {
