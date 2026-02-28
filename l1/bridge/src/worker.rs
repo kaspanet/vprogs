@@ -333,9 +333,7 @@ impl BridgeWorker {
             let accepted_transactions: Vec<L1Transaction> = chain_block
                 .accepted_transactions
                 .iter()
-                .map(|tx| {
-                    L1Transaction::try_from(tx.clone()).expect("missing transaction fields")
-                })
+                .map(|tx| L1Transaction::try_from(tx.clone()).expect("missing transaction fields"))
                 .collect();
             self.push_event(L1Event::ChainBlockAdded {
                 checkpoint,

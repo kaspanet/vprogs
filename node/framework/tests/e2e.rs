@@ -27,11 +27,11 @@ fn create_node(l1: &L1Node, temp_dir: &TempDir) -> Node<RocksDbStore, TestNodeVm
     )
 }
 
-/// Mines L2 payload blocks and one acceptance block.
+/// Mines `count` L2 payload blocks plus one acceptance block.
 ///
-/// Returns `(total_blocks_mined, tx_hashes)` where `tx_hashes[i]` is the L1 tx hash that wrote
-/// to resource `i+1`.
-async fn mine_l2_blocks(l1: &L1Node, count: usize) -> (u64, Vec<Hash>) {
+/// Returns the L1 tx hash for each payload block, where `hashes[i]` wrote to resource `i+1`.
+/// Total blocks mined is `count + 1` (the extra block accepts the last payload).
+async fn mine_l2_blocks(l1: &L1Node, count: usize) -> Vec<Hash> {
     let mut tx_hashes = Vec::with_capacity(count);
     for i in 1..=count {
         let payload = borsh::to_vec(&vec![Access::write(i)]).unwrap();
@@ -42,7 +42,7 @@ async fn mine_l2_blocks(l1: &L1Node, count: usize) -> (u64, Vec<Hash>) {
     // In Kaspa DAG consensus, a block's transactions are accepted by the next chain
     // block. Mine one more so the last payload gets accepted.
     l1.mine_blocks(1).await;
-    (count as u64 + 1, tx_hashes)
+    tx_hashes
 }
 
 /// Asserts that L2 state was written for resources 1..=count with the expected tx hashes.
@@ -58,12 +58,12 @@ async fn test_basic_block_processing() {
     let l1 = L1Node::new(Some(|p| p.blockrate.coinbase_maturity = 1)).await;
 
     let maturity = l1.mine_utxos(3).await.len() as u64;
-    let (payload_blocks, tx_hashes) = mine_l2_blocks(&l1, 3).await;
+    let tx_hashes = mine_l2_blocks(&l1, 3).await;
 
     let temp_dir = TempDir::new().unwrap();
     let node = create_node(&l1, &temp_dir);
 
-    node.api().wait_committed(maturity + payload_blocks, TIMEOUT);
+    node.api().wait_committed(maturity + tx_hashes.len() as u64 + 1, TIMEOUT);
     assert_l2_state(&node, &tx_hashes);
 
     node.shutdown();
@@ -82,9 +82,9 @@ async fn test_processes_blocks_mined_after_connect() {
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let maturity = l1.mine_utxos(3).await.len() as u64;
-    let (payload_blocks, tx_hashes) = mine_l2_blocks(&l1, 3).await;
+    let tx_hashes = mine_l2_blocks(&l1, 3).await;
 
-    node.api().wait_committed(maturity + payload_blocks, TIMEOUT);
+    node.api().wait_committed(maturity + tx_hashes.len() as u64 + 1, TIMEOUT);
     assert_l2_state(&node, &tx_hashes);
 
     node.shutdown();
@@ -103,8 +103,8 @@ async fn test_pruning_via_threshold() {
     let node = create_node(&l1, &temp_dir);
 
     let maturity = l1.mine_utxos(3).await.len() as u64;
-    let (payload_blocks, tx_hashes) = mine_l2_blocks(&l1, 3).await;
-    let total = maturity + payload_blocks;
+    let tx_hashes = mine_l2_blocks(&l1, 3).await;
+    let total = maturity + tx_hashes.len() as u64 + 1;
     node.api().wait_committed(total, TIMEOUT);
 
     // Set pruning threshold so early batches become eligible for pruning.
@@ -134,9 +134,9 @@ async fn test_clean_shutdown() {
     let node = create_node(&l1, &temp_dir);
 
     let maturity = l1.mine_utxos(2).await.len() as u64;
-    let (payload_blocks, tx_hashes) = mine_l2_blocks(&l1, 2).await;
+    let tx_hashes = mine_l2_blocks(&l1, 2).await;
 
-    node.api().wait_committed(maturity + payload_blocks, TIMEOUT);
+    node.api().wait_committed(maturity + tx_hashes.len() as u64 + 1, TIMEOUT);
     assert_l2_state(&node, &tx_hashes);
 
     // Shutdown should not panic.
@@ -157,9 +157,8 @@ async fn test_resume_from_checkpoint() {
         let node = create_node(&l1, &temp_dir);
 
         let maturity = l1.mine_utxos(3).await.len() as u64;
-        let (payload_blocks, hashes) = mine_l2_blocks(&l1, 3).await;
-        tx_hashes = hashes;
-        phase1_total = maturity + payload_blocks;
+        tx_hashes = mine_l2_blocks(&l1, 3).await;
+        phase1_total = maturity + tx_hashes.len() as u64 + 1;
         node.api().wait_committed(phase1_total, TIMEOUT);
 
         assert_l2_state(&node, &tx_hashes);
