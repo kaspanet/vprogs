@@ -16,7 +16,7 @@ use crate::NodeVm;
 /// through the [`AtomicAsyncLatch`].
 pub(crate) struct Batch<V: NodeVm> {
     index: u64,
-    result: ArcSwapOption<(Vec<L2Transaction<V::Transaction>>, V::BatchMetadata)>,
+    result: ArcSwapOption<(Vec<L2Transaction<V::L1Transaction>>, V::BatchMetadata)>,
     prepared: AtomicAsyncLatch,
 }
 
@@ -44,7 +44,11 @@ impl<V: NodeVm> Batch<V> {
     /// Stores the pre-processed transactions and metadata, marking the batch as prepared.
     ///
     /// Called by the execution worker after [`NodeVm::pre_process_block`] returns.
-    pub(crate) fn set(&self, txs: Vec<L2Transaction<V::Transaction>>, metadata: V::BatchMetadata) {
+    pub(crate) fn set(
+        &self,
+        txs: Vec<L2Transaction<V::L1Transaction>>,
+        metadata: V::BatchMetadata,
+    ) {
         self.result.store(Some(Arc::new((txs, metadata))));
         self.prepared.open();
     }
@@ -54,7 +58,7 @@ impl<V: NodeVm> Batch<V> {
     /// Must only be called after [`wait_until_prepared`](Self::wait_until_prepared) or
     /// [`is_prepared`](Self::is_prepared) returns `true`. Panics if the results have already been
     /// taken.
-    pub(crate) fn take(&self) -> (Vec<L2Transaction<V::Transaction>>, V::BatchMetadata) {
+    pub(crate) fn take(&self) -> (Vec<L2Transaction<V::L1Transaction>>, V::BatchMetadata) {
         let arc = self.result.swap(None).expect("results already taken");
         Arc::into_inner(arc).expect("outstanding references to results")
     }

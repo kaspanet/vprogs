@@ -32,12 +32,12 @@ pub struct RuntimeTx<S: Store, P: Processor> {
     /// Zero-based position of this transaction within its batch.
     tx_index: u32,
     /// The user-submitted transaction (deref target).
-    tx: L2Transaction<P::Transaction>,
+    tx: L2Transaction<P::L1Transaction>,
 }
 
 impl<S: Store, P: Processor> RuntimeTx<S, P> {
     /// Returns the resources accessed by this transaction.
-    pub fn accessed_resources(&self) -> &[ResourceAccess<S, P>] {
+    pub fn resources(&self) -> &[ResourceAccess<S, P>] {
         &self.resources
     }
 
@@ -54,7 +54,7 @@ impl<S: Store, P: Processor> RuntimeTx<S, P> {
         state_diffs: &mut Vec<StateDiff<S, P>>,
         batch: RuntimeBatchRef<S, P>,
         tx_index: u32,
-        tx: L2Transaction<P::Transaction>,
+        tx: L2Transaction<P::L1Transaction>,
     ) -> Self {
         Self(Arc::new_cyclic(|this: &Weak<RuntimeTxData<S, P>>| {
             let resources =

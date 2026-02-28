@@ -11,7 +11,7 @@ impl vprogs_scheduling_scheduler::Processor for Processor {
         &self,
         ctx: &mut TransactionContext<S, Self>,
     ) -> Result<(), Self::Error> {
-        let tx_id = ctx.transaction().inner;
+        let tx_id = ctx.transaction().l1_tx;
         for resource in ctx.resources_mut() {
             if resource.access_metadata().access_type == AccessType::Write {
                 resource.data_mut().extend_from_slice(&tx_id.to_be_bytes());
@@ -20,7 +20,7 @@ impl vprogs_scheduling_scheduler::Processor for Processor {
         Ok(())
     }
 
-    type Transaction = usize;
+    type L1Transaction = usize;
     type TransactionEffects = ();
     type BatchMetadata = u64;
     type Error = ();

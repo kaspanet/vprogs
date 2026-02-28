@@ -22,7 +22,7 @@ impl Processor for VM {
         todo!("transaction execution from L2Transaction<L1Transaction>")
     }
 
-    type Transaction = L1Transaction;
+    type L1Transaction = L1Transaction;
     type TransactionEffects = TransactionEffects;
     type BatchMetadata = ChainBlockMetadata;
     type Error = VmError;
@@ -35,7 +35,7 @@ impl NodeVm for VM {
         _index: u64,
         _header: &RpcOptionalHeader,
         _accepted_transactions: &[L1Transaction],
-    ) -> Vec<L2Transaction<Self::Transaction>> {
+    ) -> Vec<L2Transaction<Self::L1Transaction>> {
         vec![]
     }
 }

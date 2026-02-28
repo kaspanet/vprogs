@@ -18,5 +18,5 @@ pub trait NodeVm: Processor<BatchMetadata = ChainBlockMetadata> {
         index: u64,
         header: &RpcOptionalHeader,
         accepted_transactions: &[L1Transaction],
-    ) -> Vec<L2Transaction<Self::Transaction>>;
+    ) -> Vec<L2Transaction<Self::L1Transaction>>;
 }

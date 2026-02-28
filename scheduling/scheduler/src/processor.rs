@@ -11,9 +11,9 @@ pub trait Processor: Clone + Sized + Send + Sync + 'static {
         ctx: &mut TransactionContext<S, Self>,
     ) -> Result<Self::TransactionEffects, Self::Error>;
 
-    /// The inner transaction payload type (e.g. kaspa `Transaction`, `usize`).
-    /// The scheduler wraps it in `L2Transaction<Self::Transaction>`.
-    type Transaction: Send + Sync + 'static;
+    /// The L1 transaction payload type (e.g. kaspa `L1Transaction`, `usize` in tests).
+    /// The scheduler wraps it in `L2Transaction<Self::L1Transaction>`.
+    type L1Transaction: Send + Sync + 'static;
     /// The effects produced by a successfully processed transaction.
     type TransactionEffects: Send + Sync + 'static;
     /// Opaque metadata attached to each batch for persistence.

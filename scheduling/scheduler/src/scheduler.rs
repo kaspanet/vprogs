@@ -67,7 +67,7 @@ impl<S: Store, P: Processor> Scheduler<S, P> {
     pub fn schedule(
         &mut self,
         metadata: P::BatchMetadata,
-        txs: Vec<L2Transaction<P::Transaction>>,
+        txs: Vec<L2Transaction<P::L1Transaction>>,
     ) -> RuntimeBatch<S, P> {
         let checkpoint = self.next_checkpoint(metadata);
 
@@ -200,12 +200,12 @@ impl<S: Store, P: Processor> Scheduler<S, P> {
     /// access a resource, a new state diff is created and added to `state_diffs`.
     pub(crate) fn resources(
         &mut self,
-        tx: &L2Transaction<P::Transaction>,
+        tx: &L2Transaction<P::L1Transaction>,
         runtime_tx: RuntimeTxRef<S, P>,
         batch: &RuntimeBatchRef<S, P>,
         state_diffs: &mut Vec<StateDiff<S, P>>,
     ) -> Vec<ResourceAccess<S, P>> {
-        tx.accessed_resources()
+        tx.resources
             .iter()
             .map(|access| {
                 // Get or create the resource entry and link this transaction into its chain.

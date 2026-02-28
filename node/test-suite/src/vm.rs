@@ -15,13 +15,13 @@ impl NodeVm for TestNodeVm {
         _index: u64,
         _header: &RpcOptionalHeader,
         accepted_transactions: &[L1Transaction],
-    ) -> Vec<L2Transaction<Self::Transaction>> {
+    ) -> Vec<L2Transaction<Self::L1Transaction>> {
         accepted_transactions
             .iter()
             .filter_map(|l1_tx| {
                 Some(L2Transaction {
-                    inner: l1_tx.clone(),
-                    accesses: borsh::from_slice(&l1_tx.payload).ok()?,
+                    l1_tx: l1_tx.clone(),
+                    resources: borsh::from_slice(&l1_tx.payload).ok()?,
                 })
             })
             .collect()
@@ -34,7 +34,7 @@ impl Processor for TestNodeVm {
         ctx: &mut TransactionContext<S, Self>,
     ) -> Result<(), Self::Error> {
         let (tx, resources) = ctx.parts_mut();
-        let tx_id_bytes = tx.inner.id().as_bytes();
+        let tx_id_bytes = tx.l1_tx.id().as_bytes();
         for resource in resources {
             if resource.access_metadata().access_type == AccessType::Write {
                 resource.data_mut().extend_from_slice(&tx_id_bytes);
@@ -43,7 +43,7 @@ impl Processor for TestNodeVm {
         Ok(())
     }
 
-    type Transaction = L1Transaction;
+    type L1Transaction = L1Transaction;
     type TransactionEffects = ();
     type BatchMetadata = ChainBlockMetadata;
     type Error = ();

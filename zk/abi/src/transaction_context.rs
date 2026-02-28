@@ -27,12 +27,12 @@ mod from_ctx {
     where
         S: Store,
         P: Processor<BatchMetadata = ChainBlockMetadata>,
-        P::Transaction: borsh::BorshSerialize,
+        P::L1Transaction: borsh::BorshSerialize,
     {
         fn from(ctx: &TransactionContext<'_, S, P>) -> Self {
             let chain_metadata = ctx.batch_metadata();
             super::TransactionContext {
-                tx_bytes: borsh::to_vec(&ctx.transaction().inner).unwrap(),
+                tx_bytes: borsh::to_vec(&ctx.transaction().l1_tx).unwrap(),
                 tx_index: ctx.tx_index(),
                 batch_metadata: BatchMetadata {
                     block_hash: chain_metadata.hash().as_bytes(),

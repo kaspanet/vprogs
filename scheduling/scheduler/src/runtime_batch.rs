@@ -148,7 +148,7 @@ impl<S: Store, P: Processor> RuntimeBatch<S, P> {
 
     pub(crate) fn new(
         scheduler: &mut Scheduler<S, P>,
-        txs: Vec<L2Transaction<P::Transaction>>,
+        txs: Vec<L2Transaction<P::L1Transaction>>,
         checkpoint: Checkpoint<P::BatchMetadata>,
     ) -> Self {
         Self(Arc::new_cyclic(|this| {
@@ -194,7 +194,7 @@ impl<S: Store, P: Processor> RuntimeBatch<S, P> {
 
     pub(crate) fn connect(&self) {
         for tx in self.txs() {
-            for resource in tx.accessed_resources() {
+            for resource in tx.resources() {
                 resource.connect(self.state.storage());
             }
         }

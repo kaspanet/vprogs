@@ -56,7 +56,7 @@ impl<B: Backend> Processor for Vm<B> {
         Ok(())
     }
 
-    type Transaction = L1Transaction;
+    type L1Transaction = L1Transaction;
     type TransactionEffects = ();
     type BatchMetadata = ChainBlockMetadata;
     type Error = Error;

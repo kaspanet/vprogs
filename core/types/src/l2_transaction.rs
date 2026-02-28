@@ -9,12 +9,6 @@ use crate::Access;
 /// pre-parsed resource accesses for scheduling.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct L2Transaction<T> {
-    pub inner: T,
-    pub accesses: Vec<Access>,
-}
-
-impl<T> L2Transaction<T> {
-    pub fn accessed_resources(&self) -> &[Access] {
-        &self.accesses
-    }
+    pub l1_tx: T,
+    pub resources: Vec<Access>,
 }

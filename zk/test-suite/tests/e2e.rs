@@ -63,15 +63,15 @@ fn test_zk_scheduler_e2e() {
         ChainBlockMetadata::default(),
         vec![
             L2Transaction {
-                inner: kaspa_tx1,
-                accesses: vec![Access {
+                l1_tx: kaspa_tx1,
+                resources: vec![Access {
                     id: resource_id_from_bytes(&[0, 1]),
                     access_type: AccessType::Write,
                 }],
             },
             L2Transaction {
-                inner: kaspa_tx2,
-                accesses: vec![Access {
+                l1_tx: kaspa_tx2,
+                resources: vec![Access {
                     id: resource_id_from_bytes(&[0, 2]),
                     access_type: AccessType::Write,
                 }],
