@@ -16,6 +16,7 @@ log.workspace                          = true
 serde.workspace                        = true
 tap.workspace                          = true
 vprogs-l1-bridge.workspace             = true
+vprogs-l1-types.workspace              = true
 vprogs-node-framework.workspace        = true
 vprogs-node-vm.workspace               = true
 vprogs-scheduling-scheduler.workspace  = true

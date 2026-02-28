@@ -1,11 +1,8 @@
 use std::time::Duration;
 
 use vprogs_core_types::Checkpoint;
-use vprogs_l1_bridge::{
-    ConnectStrategy, L1Bridge, L1BridgeConfig, L1Event, NetworkType, RpcOptionalHeader,
-    RpcOptionalTransaction,
-};
-use vprogs_l1_types::ChainBlockMetadata;
+use vprogs_l1_bridge::{L1Bridge, L1BridgeConfig, L1Event, RpcOptionalHeader};
+use vprogs_l1_types::{ChainBlockMetadata, ConnectStrategy, L1Transaction, NetworkType};
 use vprogs_node_test_suite::{L1BridgeExt, L1Node};
 
 // Timeout for waiting for events.
@@ -428,7 +425,7 @@ async fn setup_node_with_bridge(
 /// `ChainBlockAdded`.
 fn unwrap_chain_blocks(
     events: Vec<L1Event>,
-) -> Vec<(u64, Box<RpcOptionalHeader>, Vec<RpcOptionalTransaction>)> {
+) -> Vec<(u64, Box<RpcOptionalHeader>, Vec<L1Transaction>)> {
     events
         .into_iter()
         .map(|e| match e {

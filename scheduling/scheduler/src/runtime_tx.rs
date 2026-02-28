@@ -5,6 +5,7 @@ use std::sync::{
 
 use arc_swap::ArcSwapOption;
 use vprogs_core_macros::smart_pointer;
+use vprogs_core_types::L2Transaction;
 use vprogs_storage_types::Store;
 
 use crate::{
@@ -15,7 +16,7 @@ use crate::{
 /// A transaction progressing through the scheduler's execution pipeline.
 ///
 /// Wraps a user-submitted transaction with its resource access handles, execution state, and a
-/// back-reference to the owning batch. Derefs to the inner `P::Transaction`.
+/// back-reference to the owning batch. Derefs to the inner `L2Transaction`.
 #[smart_pointer(deref(tx))]
 pub struct RuntimeTx<S: Store, P: Processor> {
     /// Processor used to execute this transaction.
@@ -31,7 +32,7 @@ pub struct RuntimeTx<S: Store, P: Processor> {
     /// Zero-based position of this transaction within its batch.
     tx_index: u32,
     /// The user-submitted transaction (deref target).
-    tx: P::Transaction,
+    tx: L2Transaction<P::Transaction>,
 }
 
 impl<S: Store, P: Processor> RuntimeTx<S, P> {
@@ -53,7 +54,7 @@ impl<S: Store, P: Processor> RuntimeTx<S, P> {
         state_diffs: &mut Vec<StateDiff<S, P>>,
         batch: RuntimeBatchRef<S, P>,
         tx_index: u32,
-        tx: P::Transaction,
+        tx: L2Transaction<P::Transaction>,
     ) -> Self {
         Self(Arc::new_cyclic(|this: &Weak<RuntimeTxData<S, P>>| {
             let resources =

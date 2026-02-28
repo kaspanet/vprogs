@@ -7405,7 +7405,9 @@ name = "vprogs-l1-types"
 version = "0.1.0"
 dependencies = [
  "borsh",
+ "kaspa-consensus-core",
  "kaspa-hashes",
+ "kaspa-wrpc-client",
 ]
 
 [[package]]
@@ -7420,6 +7422,7 @@ dependencies = [
  "serde",
  "tap",
  "vprogs-l1-bridge",
+ "vprogs-l1-types",
  "vprogs-node-framework",
  "vprogs-node-vm",
  "vprogs-scheduling-scheduler",
@@ -7433,6 +7436,7 @@ name = "vprogs-node-framework"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
+ "borsh",
  "log",
  "tempfile",
  "thiserror 2.0.18",
@@ -7485,16 +7489,13 @@ dependencies = [
 name = "vprogs-node-vm"
 version = "0.1.0"
 dependencies = [
+ "vprogs-core-types",
  "vprogs-l1-bridge",
  "vprogs-l1-types",
  "vprogs-node-framework",
  "vprogs-scheduling-scheduler",
  "vprogs-storage-types",
- "vprogs-transaction-runtime",
  "vprogs-transaction-runtime-error",
- "vprogs-transaction-runtime-object-access",
- "vprogs-transaction-runtime-object-id",
- "vprogs-transaction-runtime-transaction",
  "vprogs-transaction-runtime-transaction-effects",
 ]
 
@@ -7723,14 +7724,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "vprogs-transaction-runtime-object-access"
-version = "0.1.0"
-dependencies = [
- "vprogs-core-types",
- "vprogs-transaction-runtime-object-id",
-]
-
-[[package]]
 name = "vprogs-transaction-runtime-object-id"
 version = "0.1.0"
 dependencies = [
@@ -7790,8 +7783,6 @@ version = "0.1.0"
 dependencies = [
  "vprogs-core-types",
  "vprogs-transaction-runtime-instruction",
- "vprogs-transaction-runtime-object-access",
- "vprogs-transaction-runtime-object-id",
 ]
 
 [[package]]
@@ -7855,7 +7846,6 @@ dependencies = [
  "rkyv",
  "thiserror 2.0.18",
  "tokio",
- "vprogs-core-types",
  "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
  "vprogs-storage-types",

@@ -4,5 +4,7 @@ name              = "vprogs-l1-types"
 version.workspace = true
 
 [dependencies]
-borsh.workspace        = true
-kaspa-hashes.workspace = true
+borsh.workspace                = true
+kaspa-consensus-core.workspace = true
+kaspa-hashes.workspace         = true
+kaspa-wrpc-client.workspace    = true

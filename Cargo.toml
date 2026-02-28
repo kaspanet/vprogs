@@ -132,7 +132,6 @@ resolver = "3"
   vprogs-transaction-runtime-error                = { path = "transaction-runtime/error" }
   vprogs-transaction-runtime-instruction          = { path = "transaction-runtime/instruction" }
   vprogs-transaction-runtime-lock                 = { path = "transaction-runtime/lock" }
-  vprogs-transaction-runtime-object-access        = { path = "transaction-runtime/object-access" }
   vprogs-transaction-runtime-object-id            = { path = "transaction-runtime/object-id" }
   vprogs-transaction-runtime-program              = { path = "transaction-runtime/program" }
   vprogs-transaction-runtime-program-arg          = { path = "transaction-runtime/program-arg" }

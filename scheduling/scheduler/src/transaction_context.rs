@@ -1,3 +1,4 @@
+use vprogs_core_types::L2Transaction;
 use vprogs_storage_types::Store;
 
 use crate::{AccessHandle, processor::Processor};
@@ -5,7 +6,7 @@ use crate::{AccessHandle, processor::Processor};
 /// Context passed to [`Processor::process_transaction`] providing the transaction, its
 /// position within the batch, the batch's opaque metadata, and the resource access handles.
 pub struct TransactionContext<'a, S: Store, P: Processor> {
-    tx: &'a P::Transaction,
+    tx: &'a L2Transaction<P::Transaction>,
     tx_index: u32,
     batch_metadata: &'a P::BatchMetadata,
     resources: Vec<AccessHandle<'a, S, P>>,
@@ -13,7 +14,7 @@ pub struct TransactionContext<'a, S: Store, P: Processor> {
 
 impl<'a, S: Store, P: Processor> TransactionContext<'a, S, P> {
     pub(crate) fn new(
-        tx: &'a P::Transaction,
+        tx: &'a L2Transaction<P::Transaction>,
         tx_index: u32,
         batch_metadata: &'a P::BatchMetadata,
         resources: Vec<AccessHandle<'a, S, P>>,
@@ -22,7 +23,7 @@ impl<'a, S: Store, P: Processor> TransactionContext<'a, S, P> {
     }
 
     /// Returns the transaction being processed.
-    pub fn transaction(&self) -> &P::Transaction {
+    pub fn transaction(&self) -> &L2Transaction<P::Transaction> {
         self.tx
     }
 
@@ -46,8 +47,8 @@ impl<'a, S: Store, P: Processor> TransactionContext<'a, S, P> {
         &mut self.resources
     }
 
-    /// Split borrow: returns (&Transaction, &mut [AccessHandle]) simultaneously.
-    pub fn parts_mut(&mut self) -> (&P::Transaction, &mut [AccessHandle<'a, S, P>]) {
+    /// Split borrow: returns (&L2Transaction, &mut [AccessHandle]) simultaneously.
+    pub fn parts_mut(&mut self) -> (&L2Transaction<P::Transaction>, &mut [AccessHandle<'a, S, P>]) {
         (self.tx, &mut self.resources)
     }
 

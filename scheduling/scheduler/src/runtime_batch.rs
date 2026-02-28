@@ -6,7 +6,7 @@ use std::sync::{
 use crossbeam_deque::{Injector, Steal, Worker};
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_macros::smart_pointer;
-use vprogs_core_types::Checkpoint;
+use vprogs_core_types::{Checkpoint, L2Transaction};
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_storage_types::{Store, WriteBatch};
@@ -148,7 +148,7 @@ impl<S: Store, P: Processor> RuntimeBatch<S, P> {
 
     pub(crate) fn new(
         scheduler: &mut Scheduler<S, P>,
-        txs: Vec<P::Transaction>,
+        txs: Vec<L2Transaction<P::Transaction>>,
         checkpoint: Checkpoint<P::BatchMetadata>,
     ) -> Self {
         Self(Arc::new_cyclic(|this| {
@@ -264,7 +264,7 @@ impl<S: Store, P: Processor> RuntimeBatch<S, P> {
         // check if each resource's last access still belongs to a committed batch before actually
         // evicting it.
         for state_diff in self.state_diffs() {
-            self.state.eviction_queue().push(state_diff.resource_id().clone());
+            self.state.eviction_queue().push(*state_diff.resource_id());
         }
     }
 }

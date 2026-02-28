@@ -1,15 +1,18 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
-mod access_metadata;
+#[cfg(not(feature = "std"))]
+extern crate alloc;
+
+mod access;
 mod access_type;
 mod batch_metadata;
 mod checkpoint;
+mod l2_transaction;
 mod resource_id;
-mod transaction;
 
-pub use access_metadata::AccessMetadata;
+pub use access::Access;
 pub use access_type::AccessType;
 pub use batch_metadata::BatchMetadata;
 pub use checkpoint::Checkpoint;
+pub use l2_transaction::L2Transaction;
 pub use resource_id::ResourceId;
-pub use transaction::Transaction;

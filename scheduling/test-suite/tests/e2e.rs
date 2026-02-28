@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use tempfile::TempDir;
-use vprogs_core_types::Checkpoint;
+use vprogs_core_types::{Access, Checkpoint, L2Transaction};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
-use vprogs_scheduling_test_suite::{Access, Processor, SchedulerExt, Tx};
+use vprogs_scheduling_test_suite::{Processor, SchedulerExt};
 use vprogs_state_metadata::StateMetadata;
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
@@ -21,17 +21,17 @@ pub fn test_scheduler() {
         let batch1 = scheduler.schedule(
             1,
             vec![
-                Tx(0, vec![Access::Write(1), Access::Read(3)]),
-                Tx(1, vec![Access::Write(1), Access::Write(2)]),
-                Tx(2, vec![Access::Read(3)]),
+                L2Transaction { inner: 0, accesses: vec![Access::write(1), Access::read(3)] },
+                L2Transaction { inner: 1, accesses: vec![Access::write(1), Access::write(2)] },
+                L2Transaction { inner: 2, accesses: vec![Access::read(3)] },
             ],
         );
 
         let batch2 = scheduler.schedule(
             2,
             vec![
-                Tx(3, vec![Access::Write(1), Access::Read(3)]),
-                Tx(4, vec![Access::Write(10), Access::Write(20)]),
+                L2Transaction { inner: 3, accesses: vec![Access::write(1), Access::read(3)] },
+                L2Transaction { inner: 4, accesses: vec![Access::write(10), Access::write(20)] },
             ],
         );
 
@@ -60,10 +60,27 @@ pub fn test_rollback_committed() {
             StorageConfig::default().with_store(storage),
         );
 
-        scheduler.schedule(1, vec![Tx(0, vec![Access::Write(1)]), Tx(1, vec![Access::Write(2)])]);
-        scheduler.schedule(2, vec![Tx(2, vec![Access::Write(1)]), Tx(3, vec![Access::Write(3)])]);
-        let last_batch = scheduler
-            .schedule(3, vec![Tx(4, vec![Access::Write(1)]), Tx(5, vec![Access::Write(4)])]);
+        scheduler.schedule(
+            1,
+            vec![
+                L2Transaction { inner: 0, accesses: vec![Access::write(1)] },
+                L2Transaction { inner: 1, accesses: vec![Access::write(2)] },
+            ],
+        );
+        scheduler.schedule(
+            2,
+            vec![
+                L2Transaction { inner: 2, accesses: vec![Access::write(1)] },
+                L2Transaction { inner: 3, accesses: vec![Access::write(3)] },
+            ],
+        );
+        let last_batch = scheduler.schedule(
+            3,
+            vec![
+                L2Transaction { inner: 4, accesses: vec![Access::write(1)] },
+                L2Transaction { inner: 5, accesses: vec![Access::write(4)] },
+            ],
+        );
         last_batch.wait_committed_blocking();
 
         // Verify state before rollback
@@ -114,9 +131,12 @@ pub fn test_add_batches_after_rollback() {
         );
 
         // Schedule initial batches (indices 1, 2, 3)
-        let batch1 = scheduler.schedule(1, vec![Tx(0, vec![Access::Write(1)])]);
-        let batch2 = scheduler.schedule(2, vec![Tx(1, vec![Access::Write(2)])]);
-        let batch3 = scheduler.schedule(3, vec![Tx(2, vec![Access::Write(3)])]);
+        let batch1 = scheduler
+            .schedule(1, vec![L2Transaction { inner: 0, accesses: vec![Access::write(1)] }]);
+        let batch2 = scheduler
+            .schedule(2, vec![L2Transaction { inner: 1, accesses: vec![Access::write(2)] }]);
+        let batch3 = scheduler
+            .schedule(3, vec![L2Transaction { inner: 2, accesses: vec![Access::write(3)] }]);
         batch3.wait_committed_blocking();
 
         assert_eq!(batch1.checkpoint().index(), 1);
@@ -139,8 +159,10 @@ pub fn test_add_batches_after_rollback() {
             .assert_written_state(1, vec![0]);
 
         // Schedule new batches after rollback - should continue from index 2
-        let batch4 = scheduler.schedule(4, vec![Tx(10, vec![Access::Write(10)])]);
-        let batch5 = scheduler.schedule(5, vec![Tx(11, vec![Access::Write(11)])]);
+        let batch4 = scheduler
+            .schedule(4, vec![L2Transaction { inner: 10, accesses: vec![Access::write(10)] }]);
+        let batch5 = scheduler
+            .schedule(5, vec![L2Transaction { inner: 11, accesses: vec![Access::write(11)] }]);
         batch5.wait_committed_blocking();
 
         assert_eq!(batch4.checkpoint().index(), 2);
@@ -170,13 +192,17 @@ pub fn test_inflight_cancellation_without_waiting() {
         );
 
         // Schedule a batch and wait for it to commit
-        let batch1 = scheduler.schedule(1, vec![Tx(0, vec![Access::Write(1)])]);
+        let batch1 = scheduler
+            .schedule(1, vec![L2Transaction { inner: 0, accesses: vec![Access::write(1)] }]);
         batch1.wait_committed_blocking();
 
         // Schedule multiple batches but don't wait for commitment
-        let batch2 = scheduler.schedule(2, vec![Tx(1, vec![Access::Write(2)])]);
-        let batch3 = scheduler.schedule(3, vec![Tx(2, vec![Access::Write(3)])]);
-        let batch4 = scheduler.schedule(4, vec![Tx(3, vec![Access::Write(4)])]);
+        let batch2 = scheduler
+            .schedule(2, vec![L2Transaction { inner: 1, accesses: vec![Access::write(2)] }]);
+        let batch3 = scheduler
+            .schedule(3, vec![L2Transaction { inner: 2, accesses: vec![Access::write(3)] }]);
+        let batch4 = scheduler
+            .schedule(4, vec![L2Transaction { inner: 3, accesses: vec![Access::write(4)] }]);
 
         // Immediately rollback without waiting for batches 2-4 to commit
         // This tests in-flight cancellation
@@ -196,7 +222,8 @@ pub fn test_inflight_cancellation_without_waiting() {
             .assert_resource_deleted(4);
 
         // New batches scheduled after rollback should work normally
-        let batch5 = scheduler.schedule(5, vec![Tx(100, vec![Access::Write(100)])]);
+        let batch5 = scheduler
+            .schedule(5, vec![L2Transaction { inner: 100, accesses: vec![Access::write(100)] }]);
         batch5.wait_committed_blocking();
         assert!(!batch5.was_canceled(), "batch5 should not be canceled");
         scheduler.assert_written_state(100, vec![100]);
@@ -219,12 +246,14 @@ pub fn test_rollback_multiple_contexts() {
 
         // Phase 1: Apply batches 1-6
         // Using resource IDs that match batch indices for clarity
-        let batch1 = scheduler.schedule(1, vec![Tx(1, vec![Access::Write(1)])]);
-        scheduler.schedule(2, vec![Tx(2, vec![Access::Write(2)])]);
-        scheduler.schedule(3, vec![Tx(3, vec![Access::Write(3)])]);
-        scheduler.schedule(4, vec![Tx(4, vec![Access::Write(4)])]);
-        scheduler.schedule(5, vec![Tx(5, vec![Access::Write(5)])]);
-        let batch6 = scheduler.schedule(6, vec![Tx(6, vec![Access::Write(6)])]);
+        let batch1 = scheduler
+            .schedule(1, vec![L2Transaction { inner: 1, accesses: vec![Access::write(1)] }]);
+        scheduler.schedule(2, vec![L2Transaction { inner: 2, accesses: vec![Access::write(2)] }]);
+        scheduler.schedule(3, vec![L2Transaction { inner: 3, accesses: vec![Access::write(3)] }]);
+        scheduler.schedule(4, vec![L2Transaction { inner: 4, accesses: vec![Access::write(4)] }]);
+        scheduler.schedule(5, vec![L2Transaction { inner: 5, accesses: vec![Access::write(5)] }]);
+        let batch6 = scheduler
+            .schedule(6, vec![L2Transaction { inner: 6, accesses: vec![Access::write(6)] }]);
         batch6.wait_committed_blocking();
 
         assert_eq!(batch1.checkpoint().index(), 1);
@@ -252,8 +281,10 @@ pub fn test_rollback_multiple_contexts() {
             .assert_written_state(5, vec![5]);
 
         // Phase 3: Apply new batches 6-7 (after rollback)
-        let new_batch6 = scheduler.schedule(60, vec![Tx(60, vec![Access::Write(60)])]);
-        let batch7 = scheduler.schedule(70, vec![Tx(70, vec![Access::Write(70)])]);
+        let new_batch6 = scheduler
+            .schedule(60, vec![L2Transaction { inner: 60, accesses: vec![Access::write(60)] }]);
+        let batch7 = scheduler
+            .schedule(70, vec![L2Transaction { inner: 70, accesses: vec![Access::write(70)] }]);
         batch7.wait_committed_blocking();
 
         assert_eq!(new_batch6.checkpoint().index(), 6);
@@ -275,8 +306,10 @@ pub fn test_rollback_multiple_contexts() {
             .assert_resource_deleted(70);
 
         // Phase 5: Apply batches 4-5 (after second rollback)
-        let final_batch4 = scheduler.schedule(40, vec![Tx(40, vec![Access::Write(40)])]);
-        let final_batch5 = scheduler.schedule(50, vec![Tx(50, vec![Access::Write(50)])]);
+        let final_batch4 = scheduler
+            .schedule(40, vec![L2Transaction { inner: 40, accesses: vec![Access::write(40)] }]);
+        let final_batch5 = scheduler
+            .schedule(50, vec![L2Transaction { inner: 50, accesses: vec![Access::write(50)] }]);
         final_batch5.wait_committed_blocking();
 
         assert_eq!(final_batch4.checkpoint().index(), 4);
@@ -306,9 +339,10 @@ pub fn test_rollback_to_zero() {
         );
 
         // Schedule several batches
-        scheduler.schedule(1, vec![Tx(1, vec![Access::Write(1)])]);
-        scheduler.schedule(2, vec![Tx(2, vec![Access::Write(2)])]);
-        let batch3 = scheduler.schedule(3, vec![Tx(3, vec![Access::Write(3)])]);
+        scheduler.schedule(1, vec![L2Transaction { inner: 1, accesses: vec![Access::write(1)] }]);
+        scheduler.schedule(2, vec![L2Transaction { inner: 2, accesses: vec![Access::write(2)] }]);
+        let batch3 = scheduler
+            .schedule(3, vec![L2Transaction { inner: 3, accesses: vec![Access::write(3)] }]);
         batch3.wait_committed_blocking();
 
         // Verify state exists
@@ -324,7 +358,8 @@ pub fn test_rollback_to_zero() {
         scheduler.assert_resource_deleted(1).assert_resource_deleted(2).assert_resource_deleted(3);
 
         // New batches should start from index 1 again
-        let new_batch1 = scheduler.schedule(100, vec![Tx(100, vec![Access::Write(100)])]);
+        let new_batch1 = scheduler
+            .schedule(100, vec![L2Transaction { inner: 100, accesses: vec![Access::write(100)] }]);
         new_batch1.wait_committed_blocking();
 
         assert_eq!(new_batch1.checkpoint().index(), 1);
@@ -347,11 +382,12 @@ pub fn test_consecutive_rollbacks() {
         );
 
         // Create 5 batches
-        scheduler.schedule(1, vec![Tx(1, vec![Access::Write(1)])]);
-        scheduler.schedule(2, vec![Tx(2, vec![Access::Write(2)])]);
-        scheduler.schedule(3, vec![Tx(3, vec![Access::Write(3)])]);
-        scheduler.schedule(4, vec![Tx(4, vec![Access::Write(4)])]);
-        let batch5 = scheduler.schedule(5, vec![Tx(5, vec![Access::Write(5)])]);
+        scheduler.schedule(1, vec![L2Transaction { inner: 1, accesses: vec![Access::write(1)] }]);
+        scheduler.schedule(2, vec![L2Transaction { inner: 2, accesses: vec![Access::write(2)] }]);
+        scheduler.schedule(3, vec![L2Transaction { inner: 3, accesses: vec![Access::write(3)] }]);
+        scheduler.schedule(4, vec![L2Transaction { inner: 4, accesses: vec![Access::write(4)] }]);
+        let batch5 = scheduler
+            .schedule(5, vec![L2Transaction { inner: 5, accesses: vec![Access::write(5)] }]);
         batch5.wait_committed_blocking();
 
         // Verify all exist
@@ -388,7 +424,8 @@ pub fn test_consecutive_rollbacks() {
             .assert_written_state(1, vec![1]);
 
         // Verify batch execution indices are correct
-        let new_batch = scheduler.schedule(100, vec![Tx(100, vec![Access::Write(100)])]);
+        let new_batch = scheduler
+            .schedule(100, vec![L2Transaction { inner: 100, accesses: vec![Access::write(100)] }]);
         new_batch.wait_committed_blocking();
         assert_eq!(new_batch.checkpoint().index(), 2);
 
@@ -409,10 +446,11 @@ pub fn test_rollback_same_resource_multiple_writes() {
         );
 
         // Multiple batches all writing to resource 1
-        scheduler.schedule(1, vec![Tx(10, vec![Access::Write(1)])]);
-        scheduler.schedule(2, vec![Tx(20, vec![Access::Write(1)])]);
-        scheduler.schedule(3, vec![Tx(30, vec![Access::Write(1)])]);
-        let batch4 = scheduler.schedule(4, vec![Tx(40, vec![Access::Write(1)])]);
+        scheduler.schedule(1, vec![L2Transaction { inner: 10, accesses: vec![Access::write(1)] }]);
+        scheduler.schedule(2, vec![L2Transaction { inner: 20, accesses: vec![Access::write(1)] }]);
+        scheduler.schedule(3, vec![L2Transaction { inner: 30, accesses: vec![Access::write(1)] }]);
+        let batch4 = scheduler
+            .schedule(4, vec![L2Transaction { inner: 40, accesses: vec![Access::write(1)] }]);
         batch4.wait_committed_blocking();
 
         // Resource 1 should have been written by all 4 transactions
@@ -423,7 +461,8 @@ pub fn test_rollback_same_resource_multiple_writes() {
         scheduler.assert_written_state(1, vec![10, 20]);
 
         // Add more writes
-        let batch5 = scheduler.schedule(5, vec![Tx(50, vec![Access::Write(1)])]);
+        let batch5 = scheduler
+            .schedule(5, vec![L2Transaction { inner: 50, accesses: vec![Access::write(1)] }]);
         batch5.wait_committed_blocking();
 
         // Now should have 10, 20, 50
@@ -450,12 +489,15 @@ pub fn test_cancellation_skips_writes() {
         );
 
         // Create and commit a batch to resource 1
-        let batch1 = scheduler.schedule(1, vec![Tx(1, vec![Access::Write(1)])]);
+        let batch1 = scheduler
+            .schedule(1, vec![L2Transaction { inner: 1, accesses: vec![Access::write(1)] }]);
         batch1.wait_committed_blocking();
 
         // Schedule batches that access different resources
-        let batch2 = scheduler.schedule(2, vec![Tx(2, vec![Access::Write(100)])]);
-        let batch3 = scheduler.schedule(3, vec![Tx(3, vec![Access::Write(200)])]);
+        let batch2 = scheduler
+            .schedule(2, vec![L2Transaction { inner: 2, accesses: vec![Access::write(100)] }]);
+        let batch3 = scheduler
+            .schedule(3, vec![L2Transaction { inner: 3, accesses: vec![Access::write(200)] }]);
 
         // Rollback immediately - batch2 and batch3 should be canceled
         scheduler.rollback_to(1).expect("rollback should succeed");
@@ -492,21 +534,39 @@ pub fn test_rollback_interleaved_multi_resource() {
         );
 
         // Batch 1: Write to resources 1 and 2
-        scheduler.schedule(1, vec![Tx(10, vec![Access::Write(1)]), Tx(11, vec![Access::Write(2)])]);
+        scheduler.schedule(
+            1,
+            vec![
+                L2Transaction { inner: 10, accesses: vec![Access::write(1)] },
+                L2Transaction { inner: 11, accesses: vec![Access::write(2)] },
+            ],
+        );
 
         // Batch 2: Write to resources 2 and 3
-        scheduler.schedule(2, vec![Tx(20, vec![Access::Write(2)]), Tx(21, vec![Access::Write(3)])]);
+        scheduler.schedule(
+            2,
+            vec![
+                L2Transaction { inner: 20, accesses: vec![Access::write(2)] },
+                L2Transaction { inner: 21, accesses: vec![Access::write(3)] },
+            ],
+        );
 
         // Batch 3: Write to resources 1 and 3
-        scheduler.schedule(3, vec![Tx(30, vec![Access::Write(1)]), Tx(31, vec![Access::Write(3)])]);
+        scheduler.schedule(
+            3,
+            vec![
+                L2Transaction { inner: 30, accesses: vec![Access::write(1)] },
+                L2Transaction { inner: 31, accesses: vec![Access::write(3)] },
+            ],
+        );
 
         // Batch 4: Write to all resources
         let batch4 = scheduler.schedule(
             4,
             vec![
-                Tx(40, vec![Access::Write(1)]),
-                Tx(41, vec![Access::Write(2)]),
-                Tx(42, vec![Access::Write(3)]),
+                L2Transaction { inner: 40, accesses: vec![Access::write(1)] },
+                L2Transaction { inner: 41, accesses: vec![Access::write(2)] },
+                L2Transaction { inner: 42, accesses: vec![Access::write(3)] },
             ],
         );
         batch4.wait_committed_blocking();
@@ -529,8 +589,8 @@ pub fn test_rollback_interleaved_multi_resource() {
         let batch5 = scheduler.schedule(
             5,
             vec![
-                Tx(50, vec![Access::Write(1)]),
-                Tx(51, vec![Access::Write(4)]), // New resource 4
+                L2Transaction { inner: 50, accesses: vec![Access::write(1)] },
+                L2Transaction { inner: 51, accesses: vec![Access::write(4)] }, // New resource 4
             ],
         );
         batch5.wait_committed_blocking();
@@ -564,7 +624,10 @@ pub fn test_resource_eviction() {
         for batch_idx in 0..NUM_BATCHES {
             let base_resource = batch_idx * RESOURCES_PER_BATCH;
             let txs: Vec<_> = (0..RESOURCES_PER_BATCH)
-                .map(|i| Tx(base_resource + i, vec![Access::Write(base_resource + i)]))
+                .map(|i| L2Transaction {
+                    inner: base_resource + i,
+                    accesses: vec![Access::write(base_resource + i)],
+                })
                 .collect();
             batches.push(scheduler.schedule((batch_idx + 1) as u64, txs));
         }
@@ -610,7 +673,10 @@ pub fn test_eviction_under_load() {
                     let resource_id = base + i;
                     scheduler.schedule(
                         (base + i + 1) as u64,
-                        vec![Tx(resource_id, vec![Access::Write(resource_id)])],
+                        vec![L2Transaction {
+                            inner: resource_id,
+                            accesses: vec![Access::write(resource_id)],
+                        }],
                     )
                 })
                 .collect();
@@ -640,9 +706,12 @@ pub fn test_basic_pruning() {
         );
 
         // Create batches that write to resources (generates rollback pointers)
-        let batch1 = scheduler.schedule(1, vec![Tx(1, vec![Access::Write(1)])]);
-        let batch2 = scheduler.schedule(2, vec![Tx(2, vec![Access::Write(1)])]);
-        let batch3 = scheduler.schedule(3, vec![Tx(3, vec![Access::Write(1)])]);
+        let batch1 = scheduler
+            .schedule(1, vec![L2Transaction { inner: 1, accesses: vec![Access::write(1)] }]);
+        let batch2 = scheduler
+            .schedule(2, vec![L2Transaction { inner: 2, accesses: vec![Access::write(1)] }]);
+        let batch3 = scheduler
+            .schedule(3, vec![L2Transaction { inner: 3, accesses: vec![Access::write(1)] }]);
         batch3.wait_committed_blocking();
 
         // Verify rollback pointers exist for batches 2 and 3
@@ -703,7 +772,10 @@ pub fn test_pruning_preserves_recent_batches() {
 
         // Create 5 batches, each overwriting the same resource
         for i in 1..=5 {
-            let batch = scheduler.schedule(i as u64, vec![Tx(i, vec![Access::Write(1)])]);
+            let batch = scheduler.schedule(
+                i as u64,
+                vec![L2Transaction { inner: i, accesses: vec![Access::write(1)] }],
+            );
             batch.wait_committed_blocking();
         }
 
@@ -764,7 +836,10 @@ pub fn test_pruning_crash_recovery() {
         );
 
         for i in 1..=5 {
-            let batch = scheduler.schedule(i as u64, vec![Tx(i, vec![Access::Write(1)])]);
+            let batch = scheduler.schedule(
+                i as u64,
+                vec![L2Transaction { inner: i, accesses: vec![Access::write(1)] }],
+            );
             batch.wait_committed_blocking();
         }
 
@@ -857,9 +932,9 @@ pub fn test_pruning_multiple_resources() {
         let batch1 = scheduler.schedule(
             1,
             vec![
-                Tx(1, vec![Access::Write(1)]),
-                Tx(2, vec![Access::Write(2)]),
-                Tx(3, vec![Access::Write(3)]),
+                L2Transaction { inner: 1, accesses: vec![Access::write(1)] },
+                L2Transaction { inner: 2, accesses: vec![Access::write(2)] },
+                L2Transaction { inner: 3, accesses: vec![Access::write(3)] },
             ],
         );
         batch1.wait_committed_blocking();
@@ -868,9 +943,9 @@ pub fn test_pruning_multiple_resources() {
         let batch2 = scheduler.schedule(
             2,
             vec![
-                Tx(10, vec![Access::Write(1)]),
-                Tx(20, vec![Access::Write(2)]),
-                Tx(30, vec![Access::Write(3)]),
+                L2Transaction { inner: 10, accesses: vec![Access::write(1)] },
+                L2Transaction { inner: 20, accesses: vec![Access::write(2)] },
+                L2Transaction { inner: 30, accesses: vec![Access::write(3)] },
             ],
         );
         batch2.wait_committed_blocking();
@@ -879,9 +954,9 @@ pub fn test_pruning_multiple_resources() {
         let batch3 = scheduler.schedule(
             3,
             vec![
-                Tx(100, vec![Access::Write(1)]),
-                Tx(200, vec![Access::Write(2)]),
-                Tx(300, vec![Access::Write(3)]),
+                L2Transaction { inner: 100, accesses: vec![Access::write(1)] },
+                L2Transaction { inner: 200, accesses: vec![Access::write(2)] },
+                L2Transaction { inner: 300, accesses: vec![Access::write(3)] },
             ],
         );
         batch3.wait_committed_blocking();
@@ -952,7 +1027,10 @@ pub fn test_pruning_pause_and_unpause() {
 
         // Create 6 committed batches, each overwriting the same resource.
         for i in 1..=6 {
-            let batch = scheduler.schedule(i as u64, vec![Tx(i, vec![Access::Write(1)])]);
+            let batch = scheduler.schedule(
+                i as u64,
+                vec![L2Transaction { inner: i, accesses: vec![Access::write(1)] }],
+            );
             batch.wait_committed_blocking();
         }
 
@@ -1015,7 +1093,10 @@ pub fn test_rollback_pruning_conflict() {
 
         // Create 5 committed batches.
         for i in 1..=5 {
-            let batch = scheduler.schedule(i as u64, vec![Tx(i, vec![Access::Write(1)])]);
+            let batch = scheduler.schedule(
+                i as u64,
+                vec![L2Transaction { inner: i, accesses: vec![Access::write(1)] }],
+            );
             batch.wait_committed_blocking();
         }
 

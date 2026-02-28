@@ -4,7 +4,7 @@ use std::{
 };
 
 use tap::Tap;
-use vprogs_core_types::{AccessMetadata, Checkpoint, Transaction};
+use vprogs_core_types::{Checkpoint, L2Transaction, ResourceId};
 use vprogs_scheduling_execution_workers::ExecutionWorkers;
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_storage_manager::StorageConfig;
@@ -32,7 +32,7 @@ pub struct Scheduler<S: Store, P: Processor> {
     /// Checkpoints for batches that have not yet committed, in index order.
     pending_batches: VecDeque<Checkpoint<P::BatchMetadata>>,
     /// Maps resource IDs to their in-memory dependency chain heads.
-    resources: HashMap<P::ResourceId, Resource<S, P>>,
+    resources: HashMap<ResourceId, Resource<S, P>>,
     /// Background worker that processes batches through their lifecycle stages.
     batch_lifecycle_worker: BatchLifecycleWorker<S, P>,
     /// Thread pool for parallel transaction execution.
@@ -67,7 +67,7 @@ impl<S: Store, P: Processor> Scheduler<S, P> {
     pub fn schedule(
         &mut self,
         metadata: P::BatchMetadata,
-        txs: Vec<P::Transaction>,
+        txs: Vec<L2Transaction<P::Transaction>>,
     ) -> RuntimeBatch<S, P> {
         let checkpoint = self.next_checkpoint(metadata);
 
@@ -200,7 +200,7 @@ impl<S: Store, P: Processor> Scheduler<S, P> {
     /// access a resource, a new state diff is created and added to `state_diffs`.
     pub(crate) fn resources(
         &mut self,
-        tx: &P::Transaction,
+        tx: &L2Transaction<P::Transaction>,
         runtime_tx: RuntimeTxRef<S, P>,
         batch: &RuntimeBatchRef<S, P>,
         state_diffs: &mut Vec<StateDiff<S, P>>,
@@ -209,16 +209,14 @@ impl<S: Store, P: Processor> Scheduler<S, P> {
             .iter()
             .map(|access| {
                 // Get or create the resource entry and link this transaction into its chain.
-                self.resources
-                    .entry(access.id())
-                    .or_default()
-                    .access(access, &runtime_tx, batch)
-                    .tap(|access| {
+                self.resources.entry(access.id).or_default().access(access, &runtime_tx, batch).tap(
+                    |access| {
                         // If this is the first access in the batch, create a state diff.
                         if access.is_batch_head() {
                             state_diffs.push(access.state_diff());
                         }
-                    })
+                    },
+                )
             })
             .collect()
     }

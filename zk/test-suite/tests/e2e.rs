@@ -1,10 +1,9 @@
 use tempfile::TempDir;
-use vprogs_core_types::AccessType;
-use vprogs_l1_types::ChainBlockMetadata;
+use vprogs_core_types::{Access, AccessType, L2Transaction, ResourceId};
+use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
-use vprogs_zk_abi::{AccessMetadata, ResourceId, Transaction};
 use vprogs_zk_backend_risc0_host_api::Backend;
 use vprogs_zk_vm::Vm;
 
@@ -33,6 +32,13 @@ fn batch_processor_elf() -> Vec<u8> {
     })
 }
 
+fn resource_id_from_bytes(bytes: &[u8]) -> ResourceId {
+    let mut buf = [0u8; 32];
+    let start = 32 - bytes.len();
+    buf[start..].copy_from_slice(bytes);
+    ResourceId::from(buf)
+}
+
 #[test]
 fn test_zk_scheduler_e2e() {
     let transaction_elf = transaction_processor_elf();
@@ -48,20 +54,25 @@ fn test_zk_scheduler_e2e() {
         StorageConfig::default().with_store(storage),
     );
 
+    let mut kaspa_tx1 = L1Transaction::default();
+    kaspa_tx1.payload = vec![1, 2, 3];
+    let mut kaspa_tx2 = L1Transaction::default();
+    kaspa_tx2.payload = vec![4, 5, 6];
+
     let batch = scheduler.schedule(
         ChainBlockMetadata::default(),
         vec![
-            Transaction {
-                tx_bytes: vec![1, 2, 3],
-                accesses: vec![AccessMetadata {
-                    id: ResourceId(vec![0, 1]),
+            L2Transaction {
+                inner: kaspa_tx1,
+                accesses: vec![Access {
+                    id: resource_id_from_bytes(&[0, 1]),
                     access_type: AccessType::Write,
                 }],
             },
-            Transaction {
-                tx_bytes: vec![4, 5, 6],
-                accesses: vec![AccessMetadata {
-                    id: ResourceId(vec![0, 2]),
+            L2Transaction {
+                inner: kaspa_tx2,
+                accesses: vec![Access {
+                    id: resource_id_from_bytes(&[0, 2]),
                     access_type: AccessType::Write,
                 }],
             },

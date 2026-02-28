@@ -8,7 +8,6 @@ borsh.workspace                       = true
 rkyv.workspace                        = true
 thiserror.workspace                   = true
 tokio.workspace                       = true
-vprogs-core-types.workspace           = true
 vprogs-l1-types.workspace             = true
 vprogs-scheduling-scheduler.workspace = true
 vprogs-storage-types.workspace        = true

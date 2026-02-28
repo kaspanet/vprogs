@@ -3,6 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use vprogs_core_types::ResourceId;
 use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_node_framework::NodeApi;
 use vprogs_state_metadata::StateMetadata;
@@ -21,8 +22,8 @@ pub trait NodeExt {
     /// timeout.
     fn wait_pruned(&self, expected: u64, timeout: Duration);
 
-    /// Asserts that a resource was written by the given writer IDs (in order).
-    fn assert_written_state(&self, resource_id: usize, writers: Vec<usize>);
+    /// Asserts that a resource was written by the given L1 transactions (in order).
+    fn assert_written_state(&self, resource_id: usize, tx_hashes: &[crate::Hash]);
 
     /// Asserts that a resource has been deleted (no latest pointer exists).
     fn assert_resource_deleted(&self, resource_id: usize);
@@ -63,28 +64,30 @@ impl NodeExt for NodeApi<RocksDbStore, TestNodeVm> {
         }
     }
 
-    fn assert_written_state(&self, resource_id: usize, writers: Vec<usize>) {
+    fn assert_written_state(&self, resource_id: usize, tx_hashes: &[crate::Hash]) {
         let store = self.storage().store();
-        let writer_count = writers.len();
-        let writer_log: Vec<u8> = writers.iter().flat_map(|id| id.to_be_bytes()).collect();
+        let expected_log: Vec<u8> = tx_hashes.iter().flat_map(|h| h.as_bytes()).collect();
 
-        let versioned_state = StateVersion::<usize>::from_latest_data(store.as_ref(), resource_id);
+        let versioned_state =
+            StateVersion::from_latest_data(store.as_ref(), ResourceId::from(resource_id));
         assert_eq!(
             versioned_state.version(),
-            writer_count as u64,
-            "resource {resource_id}: expected version {writer_count}, got {}",
+            tx_hashes.len() as u64,
+            "resource {resource_id}: expected version {}, got {}",
+            tx_hashes.len(),
             versioned_state.version()
         );
         assert_eq!(
             *versioned_state.data(),
-            writer_log,
-            "resource {resource_id}: unexpected writer log"
+            expected_log,
+            "resource {resource_id}: unexpected tx hash log"
         );
     }
 
     fn assert_resource_deleted(&self, resource_id: usize) {
         let store = self.storage().store();
-        let id_bytes = resource_id.to_be_bytes();
+        let id_bytes =
+            borsh::to_vec(&ResourceId::from(resource_id)).expect("failed to serialize ResourceId");
         assert!(
             store.get(StateSpace::StatePtrLatest, &id_bytes).is_none(),
             "Resource {resource_id} should have been deleted but still exists",

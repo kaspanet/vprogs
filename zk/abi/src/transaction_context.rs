@@ -22,21 +22,17 @@ mod from_ctx {
     use vprogs_storage_types::Store;
 
     use super::*;
-    use crate::{AccessMetadata, Transaction};
 
     impl<S, P> From<&TransactionContext<'_, S, P>> for super::TransactionContext
     where
         S: Store,
-        P: Processor<
-                Transaction = Transaction,
-                AccessMetadata = AccessMetadata,
-                BatchMetadata = ChainBlockMetadata,
-            >,
+        P: Processor<BatchMetadata = ChainBlockMetadata>,
+        P::Transaction: borsh::BorshSerialize,
     {
         fn from(ctx: &TransactionContext<'_, S, P>) -> Self {
             let chain_metadata = ctx.batch_metadata();
             super::TransactionContext {
-                tx_bytes: ctx.transaction().tx_bytes.clone(),
+                tx_bytes: borsh::to_vec(&ctx.transaction().inner).unwrap(),
                 tx_index: ctx.tx_index(),
                 batch_metadata: BatchMetadata {
                     block_hash: chain_metadata.hash().as_bytes(),

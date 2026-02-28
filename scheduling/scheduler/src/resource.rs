@@ -1,5 +1,5 @@
 use tap::Tap;
-use vprogs_core_types::AccessMetadata;
+use vprogs_core_types::Access;
 use vprogs_storage_types::Store;
 
 use crate::{ResourceAccess, RuntimeBatchRef, RuntimeTxRef, StateDiff, processor::Processor};
@@ -17,7 +17,7 @@ impl<S: Store, P: Processor> Default for Resource<S, P> {
 impl<S: Store, P: Processor> Resource<S, P> {
     pub(crate) fn access(
         &mut self,
-        meta: &P::AccessMetadata,
+        meta: &Access,
         tx: &RuntimeTxRef<S, P>,
         batch: &RuntimeBatchRef<S, P>,
     ) -> ResourceAccess<S, P> {
@@ -26,7 +26,7 @@ impl<S: Store, P: Processor> Resource<S, P> {
                 assert!(prev_access.tx() != tx, "duplicate access to resource");
                 (prev_access.state_diff(), Some(prev_access))
             }
-            prev_access => (StateDiff::new(batch.clone(), meta.id()), prev_access),
+            prev_access => (StateDiff::new(batch.clone(), meta.id), prev_access),
         };
 
         ResourceAccess::new(meta.clone(), tx.clone(), state_diff_ref, prev_access)

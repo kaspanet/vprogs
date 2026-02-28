@@ -1,16 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
-use borsh::BorshDeserialize;
-use vprogs_core_types::AccessMetadata;
 use vprogs_scheduling_scheduler::{AccessHandle, Processor};
 use vprogs_storage_types::Store;
 use vprogs_transaction_runtime_address::Address;
 use vprogs_transaction_runtime_authenticated_data::AuthenticatedData;
-use vprogs_transaction_runtime_data::Data;
-use vprogs_transaction_runtime_error::{VmError, VmResult};
+use vprogs_transaction_runtime_error::VmResult;
 use vprogs_transaction_runtime_instruction::Instruction;
-use vprogs_transaction_runtime_lock::Lock;
-use vprogs_transaction_runtime_object_id::ObjectId;
 use vprogs_transaction_runtime_program::Program;
 use vprogs_transaction_runtime_pubkey::PubKey;
 use vprogs_transaction_runtime_transaction::Transaction;
@@ -19,7 +14,7 @@ use vprogs_transaction_runtime_transaction_effects::TransactionEffects;
 pub struct TransactionRuntime<'a, 'b, S, P>
 where
     S: Store,
-    P: Processor<ResourceId = ObjectId>,
+    P: Processor,
 {
     handles: &'a mut [AccessHandle<'b, S, P>],
     signers: HashSet<PubKey>,
@@ -30,7 +25,7 @@ where
 impl<'a, 'b, S, P> TransactionRuntime<'a, 'b, S, P>
 where
     S: Store,
-    P: Processor<ResourceId = ObjectId>,
+    P: Processor,
 {
     pub fn execute(
         tx: &'a Transaction,
@@ -52,25 +47,11 @@ where
 
     fn ingest_state(&mut self) -> VmResult<()> {
         for handle in self.handles.iter() {
-            match handle.access_metadata().id() {
-                // TODO: VALIDATE PROGRAM WITH VM?
-                ObjectId::Program(address) => {
-                    let program = Program::deserialize(&mut handle.data().as_slice())?;
-
-                    self.loaded_programs.insert(address, program);
-                }
-                // TODO: VERIFY CHECKSUMS, ETC.
-                ObjectId::Data(address) => {
-                    // Storage format: Lock | Data (serialized sequentially with Borsh)
-                    let mut reader = handle.data().as_slice();
-                    let lock = Lock::deserialize(&mut reader)?;
-                    let data = Data::deserialize(&mut reader)?;
-                    let mut_cap = lock.unlock(self);
-
-                    self.loaded_data.insert(address, AuthenticatedData::new(data, mut_cap));
-                }
-                // TODO: RETURN CORRECT ERROR
-                ObjectId::Empty => return Err(VmError::Generic),
+            // TODO: recover ObjectId from ResourceId when VM is implemented
+            todo!("recover ObjectId from ResourceId when VM is implemented");
+            #[allow(unreachable_code)]
+            {
+                let _ = handle;
             }
         }
         Ok(())

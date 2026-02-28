@@ -1,5 +1,6 @@
-use vprogs_l1_bridge::{RpcOptionalHeader, RpcOptionalTransaction};
-use vprogs_l1_types::ChainBlockMetadata;
+use vprogs_core_types::L2Transaction;
+use vprogs_l1_bridge::RpcOptionalHeader;
+use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
 use vprogs_scheduling_scheduler::Processor;
 
 /// Extension of [`Processor`] with L1 block pre-processing.
@@ -16,6 +17,6 @@ pub trait NodeVm: Processor<BatchMetadata = ChainBlockMetadata> {
         &self,
         index: u64,
         header: &RpcOptionalHeader,
-        accepted_transactions: &[RpcOptionalTransaction],
-    ) -> Vec<Self::Transaction>;
+        accepted_transactions: &[L1Transaction],
+    ) -> Vec<L2Transaction<Self::Transaction>>;
 }

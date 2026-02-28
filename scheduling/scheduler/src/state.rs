@@ -3,7 +3,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use crossbeam_queue::SegQueue;
 use vprogs_core_macros::smart_pointer;
-use vprogs_core_types::Checkpoint;
+use vprogs_core_types::{Checkpoint, ResourceId};
 use vprogs_state_metadata::StateMetadata;
 use vprogs_storage_manager::{StorageConfig, StorageManager};
 use vprogs_storage_types::Store;
@@ -16,7 +16,7 @@ pub struct SchedulerState<S: Store, P: Processor> {
     /// Storage manager for read/write coordination with background workers.
     storage: StorageManager<S, Read<S, P>, Write<S, P>>,
     /// Queue of resource IDs to potentially evict after their batches committed.
-    eviction_queue: SegQueue<P::ResourceId>,
+    eviction_queue: SegQueue<ResourceId>,
     /// Oldest surviving batch. Advanced by pruning.
     root: ArcSwap<Checkpoint<P::BatchMetadata>>,
     /// Most recently committed batch. Advanced by `commit_done`, reset on rollback.
@@ -52,7 +52,7 @@ impl<S: Store, P: Processor> SchedulerState<S, P> {
     }
 
     /// Returns a reference to the eviction queue.
-    pub fn eviction_queue(&self) -> &SegQueue<P::ResourceId> {
+    pub fn eviction_queue(&self) -> &SegQueue<ResourceId> {
         &self.eviction_queue
     }
 

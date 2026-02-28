@@ -9,7 +9,8 @@
 //! ```no_run
 //! use std::time::Duration;
 //!
-//! use vprogs_l1_bridge::{L1Bridge, L1BridgeConfig, L1Event, NetworkType};
+//! use vprogs_l1_bridge::{L1Bridge, L1BridgeConfig, L1Event};
+//! use vprogs_l1_types::NetworkType;
 //! use vprogs_node_test_suite::{L1BridgeExt, L1Node};
 //!
 //! # async fn example() {
@@ -44,12 +45,10 @@ mod l1_node;
 mod node_ext;
 mod vm;
 
-pub use kaspa_consensus_core::{
-    Hash,
-    network::{NetworkId, NetworkType},
-};
+pub use kaspa_consensus_core::Hash;
 pub use l1_bridge_ext::L1BridgeExt;
 pub use l1_node::L1Node;
 pub use node_ext::NodeExt;
 pub use vm::TestNodeVm;
-pub use vprogs_scheduling_test_suite::{Access, Tx};
+pub use vprogs_core_types::Access;
+pub use vprogs_l1_types::{NetworkId, NetworkType};

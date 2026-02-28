@@ -1,5 +1,8 @@
+use borsh::{BorshDeserialize, BorshSerialize};
+
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+#[borsh(use_discriminant = true)]
 pub enum AccessType {
     Read = 0,
     Write = 1,
