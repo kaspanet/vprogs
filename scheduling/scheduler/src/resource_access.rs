@@ -132,7 +132,7 @@ impl<S: Store, P: Processor> ResourceAccess<S, P> {
                 self.state_diff.set_read_state(state.clone());
             }
 
-            if self.metadata.access_type == AccessType::Read {
+            if self.access_type == AccessType::Read {
                 self.set_written_state(state);
             }
 
