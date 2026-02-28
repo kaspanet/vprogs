@@ -66,20 +66,20 @@ impl NodeExt for NodeApi<RocksDbStore, TestNodeVm> {
 
     fn assert_written_state(&self, resource_id: usize, tx_hashes: &[BlockHash]) {
         let store = self.storage().store();
-        let expected_log: Vec<u8> = tx_hashes.iter().flat_map(|h| h.as_bytes()).collect();
+        let writer_count = tx_hashes.len();
+        let writer_log: Vec<u8> = tx_hashes.iter().flat_map(|h| h.as_bytes()).collect();
 
         let versioned_state =
             StateVersion::from_latest_data(store.as_ref(), ResourceId::from(resource_id));
         assert_eq!(
             versioned_state.version(),
-            tx_hashes.len() as u64,
-            "resource {resource_id}: expected version {}, got {}",
-            tx_hashes.len(),
+            writer_count as u64,
+            "resource {resource_id}: expected version {writer_count}, got {}",
             versioned_state.version()
         );
         assert_eq!(
             *versioned_state.data(),
-            expected_log,
+            writer_log,
             "resource {resource_id}: unexpected tx hash log"
         );
     }
