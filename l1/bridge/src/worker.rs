@@ -327,20 +327,15 @@ impl BridgeWorker {
 
         // Extend the virtual chain and emit an event for each new block.
         for chain_block in response.chain_block_accepted_transactions.iter() {
-            let hash =
-                chain_block.chain_block_header.hash.expect("hash missing despite Full verbosity");
-            let blue_score = chain_block
-                .chain_block_header
-                .blue_score
-                .expect("blue_score missing despite Full verbosity");
+            let hash = chain_block.chain_block_header.hash.expect("missing hash");
+            let blue_score = chain_block.chain_block_header.blue_score.expect("missing blue_score");
             let metadata = ChainBlockMetadata::new(hash, blue_score);
             let checkpoint = self.virtual_chain.advance_tip(metadata);
             let accepted_transactions: Vec<L1Transaction> = chain_block
                 .accepted_transactions
                 .iter()
-                .map(|rpc_tx| {
-                    L1Transaction::try_from(rpc_tx.clone())
-                        .expect("Full verbosity guarantees all transaction fields")
+                .map(|tx| {
+                    L1Transaction::try_from(tx.clone()).expect("missing transaction fields")
                 })
                 .collect();
             self.push_event(L1Event::ChainBlockAdded {
