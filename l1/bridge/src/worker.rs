@@ -308,8 +308,7 @@ impl BridgeWorker {
             tip.metadata().hash()
         };
 
-        // Fetch with Full verbosity to get complete headers and accepted transactions
-        // (including version, lock_time, subnetwork_id, gas needed for consensus conversion).
+        // Fetch with Full verbosity to get complete headers and accepted transactions.
         let response = self
             .client
             .get_virtual_chain_from_block_v2(start_hash, Some(Full), self.reorg_filter.threshold())
