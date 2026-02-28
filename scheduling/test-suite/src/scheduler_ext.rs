@@ -59,8 +59,7 @@ impl SchedulerExt for Scheduler<RocksDbStore, Processor> {
         let writer_count = writers.len();
         let writer_log: Vec<u8> = writers.iter().flat_map(|id| id.to_be_bytes()).collect();
 
-        let versioned_state =
-            StateVersion::from_latest_data(store.as_ref(), ResourceId::from(resource_id));
+        let versioned_state = StateVersion::from_latest_data(store.as_ref(), resource_id.into());
         assert_eq!(versioned_state.version(), writer_count as u64);
         assert_eq!(*versioned_state.data(), writer_log);
         self
@@ -68,8 +67,7 @@ impl SchedulerExt for Scheduler<RocksDbStore, Processor> {
 
     fn assert_resource_deleted(&self, resource_id: usize) -> &Self {
         let store = self.state().storage().store();
-        let id_bytes =
-            borsh::to_vec(&ResourceId::from(resource_id)).expect("failed to serialize ResourceId");
+        let id_bytes = ResourceId::from(resource_id).as_bytes().clone();
         assert!(
             store.get(StateSpace::StatePtrLatest, &id_bytes).is_none(),
             "Resource {} should have been deleted but still exists",
