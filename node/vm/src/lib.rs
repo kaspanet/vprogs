@@ -19,6 +19,8 @@ impl Processor for VM {
         &self,
         _ctx: &mut TransactionContext<S, Self>,
     ) -> VmResult<TransactionEffects> {
+        // let (tx, resources) = ctx.parts_mut();
+        // TransactionRuntime::execute(tx, resources)
         todo!("transaction execution from SchedulerTransaction<L1Transaction>")
     }
 
@@ -35,7 +37,7 @@ impl NodeVm for VM {
         _index: u64,
         _header: &RpcOptionalHeader,
         _accepted_transactions: &[L1Transaction],
-    ) -> Vec<SchedulerTransaction<Self::Transaction>> {
+    ) -> Vec<SchedulerTransaction<L1Transaction>> {
         vec![]
     }
 }
