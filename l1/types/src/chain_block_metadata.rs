@@ -1,6 +1,6 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 
-use crate::BlockHash;
+use crate::Hash;
 
 /// Relevant metadata extracted from an L1 chain block.
 ///
@@ -9,20 +9,20 @@ use crate::BlockHash;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct ChainBlockMetadata {
     /// L1 block hash.
-    hash: BlockHash,
+    block_hash: Hash,
     /// DAG blue score at this block's position.
     blue_score: u64,
 }
 
 impl ChainBlockMetadata {
     /// Creates metadata from a block hash and blue score.
-    pub fn new(hash: BlockHash, blue_score: u64) -> Self {
-        Self { hash, blue_score }
+    pub fn new(block_hash: Hash, blue_score: u64) -> Self {
+        Self { block_hash, blue_score }
     }
 
     /// Returns the L1 block hash.
-    pub fn hash(&self) -> BlockHash {
-        self.hash
+    pub fn block_hash(&self) -> Hash {
+        self.block_hash
     }
 
     /// Returns the DAG blue score.

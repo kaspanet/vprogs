@@ -7,7 +7,7 @@ use crossbeam_queue::SegQueue;
 use tokio::{runtime::Builder, sync::Notify};
 use vprogs_storage_types::Store;
 
-use crate::{Processor, RuntimeBatch};
+use crate::{Processor, ScheduledBatch};
 
 /// Background worker that drives each batch through its lifecycle stages.
 ///
@@ -15,7 +15,7 @@ use crate::{Processor, RuntimeBatch};
 /// execute, wait for all state diffs to persist, then submit the batch for commit and wait for
 /// finalization.
 pub(crate) struct BatchLifecycleWorker<S: Store, P: Processor> {
-    queue: Arc<SegQueue<RuntimeBatch<S, P>>>,
+    queue: Arc<SegQueue<ScheduledBatch<S, P>>>,
     notify: Arc<Notify>,
     handle: JoinHandle<()>,
 }
@@ -29,7 +29,7 @@ impl<S: Store, P: Processor> BatchLifecycleWorker<S, P> {
         Self { queue, notify, handle }
     }
 
-    pub(crate) fn push(&self, batch: RuntimeBatch<S, P>) {
+    pub(crate) fn push(&self, batch: ScheduledBatch<S, P>) {
         self.queue.push(batch);
         self.notify.notify_one();
     }
@@ -40,7 +40,7 @@ impl<S: Store, P: Processor> BatchLifecycleWorker<S, P> {
         self.handle.join().expect("batch lifecycle worker panicked");
     }
 
-    fn start(queue: Arc<SegQueue<RuntimeBatch<S, P>>>, notify: Arc<Notify>) -> JoinHandle<()> {
+    fn start(queue: Arc<SegQueue<ScheduledBatch<S, P>>>, notify: Arc<Notify>) -> JoinHandle<()> {
         thread::spawn(move || {
             Builder::new_current_thread().build().expect("failed to build tokio runtime").block_on(
                 async move {

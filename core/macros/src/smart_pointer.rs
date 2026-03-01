@@ -78,7 +78,7 @@ pub fn expand_smart_pointer(orig: ItemStruct, args: Args) -> Result<proc_macro2:
     let vis_wrapper = &orig.vis;
     let ident = &orig.ident;
     let data_ident = format_ident!("{ident}Data");
-    let weak_ident = format_ident!("{ident}Ref"); // e.g. RuntimeTx -> RuntimeTxRef
+    let weak_ident = format_ident!("{ident}Ref");
 
     // Preserve generics
     let generics_for_header = orig.generics.clone();

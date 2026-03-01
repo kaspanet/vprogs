@@ -1,5 +1,5 @@
 use vprogs_core_types::Checkpoint;
-use vprogs_l1_types::{BlockHash, ChainBlockMetadata};
+use vprogs_l1_types::{ChainBlockMetadata, Hash};
 
 use crate::{
     chain_block::ChainBlock,
@@ -69,17 +69,17 @@ impl VirtualChain {
     /// found (which destroys the chain - fatal).
     pub(crate) fn advance_root(
         &mut self,
-        hash: &BlockHash,
+        hash: &Hash,
     ) -> Result<Option<Checkpoint<ChainBlockMetadata>>> {
         // Already at this pruning point — nothing to do.
-        if self.root.metadata().hash() == *hash {
+        if self.root.metadata().block_hash() == *hash {
             return Ok(None);
         }
 
         // Walk forward from root, unlinking each node until we find the target.
         let mut current = self.root.advance_root();
         while let Some(block) = current {
-            if block.metadata().hash() == *hash {
+            if block.metadata().block_hash() == *hash {
                 self.root = block;
                 return Ok(Some(self.root.checkpoint().clone()));
             }

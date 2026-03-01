@@ -1,6 +1,6 @@
-pub use kaspa_rpc_core::{RpcOptionalHeader, RpcOptionalTransaction};
+pub use kaspa_rpc_core::RpcOptionalHeader;
 use vprogs_core_types::Checkpoint;
-use vprogs_l1_types::ChainBlockMetadata;
+use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
 
 /// Events emitted by the L1 bridge.
 #[derive(Clone, Debug)]
@@ -15,8 +15,8 @@ pub enum L1Event {
         checkpoint: Checkpoint<ChainBlockMetadata>,
         /// Block header.
         header: Box<RpcOptionalHeader>,
-        /// Transactions from this block's mergeset that became confirmed.
-        accepted_transactions: Vec<RpcOptionalTransaction>,
+        /// Native kaspa transactions from this block's mergeset that became confirmed.
+        accepted_transactions: Vec<L1Transaction>,
     },
     /// Blocks after this checkpoint have been removed due to a reorg.
     Rollback {

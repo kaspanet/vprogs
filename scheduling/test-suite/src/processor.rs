@@ -1,8 +1,6 @@
-use vprogs_core_types::{AccessMetadata, AccessType};
+use vprogs_core_types::AccessType;
 use vprogs_scheduling_scheduler::TransactionContext;
 use vprogs_storage_types::Store;
-
-use crate::{Access, Tx};
 
 /// A minimal processor implementation for testing the scheduler.
 #[derive(Clone)]
@@ -13,19 +11,17 @@ impl vprogs_scheduling_scheduler::Processor for Processor {
         &self,
         ctx: &mut TransactionContext<S, Self>,
     ) -> Result<(), Self::Error> {
-        let tx_id = ctx.transaction().0;
+        let tx_id = *ctx.tx();
         for resource in ctx.resources_mut() {
-            if resource.access_metadata().access_type() == AccessType::Write {
+            if resource.access_metadata().access_type == AccessType::Write {
                 resource.data_mut().extend_from_slice(&tx_id.to_be_bytes());
             }
         }
         Ok(())
     }
 
-    type Transaction = Tx;
+    type Transaction = usize;
     type TransactionEffects = ();
-    type ResourceId = usize;
-    type AccessMetadata = Access;
     type BatchMetadata = u64;
     type Error = ();
 }

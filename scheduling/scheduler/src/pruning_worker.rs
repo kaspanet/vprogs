@@ -9,7 +9,7 @@ use std::{
 
 use tap::Tap;
 use tokio::{runtime::Builder, sync::Notify};
-use vprogs_core_types::Checkpoint;
+use vprogs_core_types::{Checkpoint, ResourceId};
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_ptr_rollback::StatePtrRollback;
@@ -209,7 +209,7 @@ impl<S: Store, P: Processor> PruningWorker<S, P> {
                 for (resource_id, old_version) in
                     StatePtrRollback::iter_batch(store.as_ref(), index)
                 {
-                    let resource_id: P::ResourceId =
+                    let resource_id: ResourceId =
                         borsh::from_slice(&resource_id).expect("corrupted store: unrecoverable");
 
                     // Delete the old version data if it exists (version 0 means resource

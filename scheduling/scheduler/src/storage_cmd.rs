@@ -1,7 +1,7 @@
 use vprogs_storage_manager::{ReadCmd, WriteCmd};
 use vprogs_storage_types::{ReadStore, Store};
 
-use crate::{ResourceAccess, RuntimeBatch, StateDiff, processor::Processor, rollback::Rollback};
+use crate::{ResourceAccess, ScheduledBatch, StateDiff, processor::Processor, rollback::Rollback};
 
 /// Commands dispatched to the storage manager's read worker.
 pub enum Read<S: Store, P: Processor> {
@@ -22,7 +22,7 @@ pub enum Write<S: Store, P: Processor> {
     /// Persist a resource's versioned data and rollback pointer.
     StateDiff(StateDiff<S, P>),
     /// Finalize a batch by writing latest pointers and batch metadata.
-    CommitBatch(RuntimeBatch<S, P>),
+    CommitBatch(ScheduledBatch<S, P>),
     /// Revert all batches after a target checkpoint.
     Rollback(Rollback<S, P>),
 }

@@ -7,19 +7,19 @@ use vprogs_state_ptr_rollback::StatePtrRollback;
 use vprogs_storage_manager::concat_bytes;
 use vprogs_storage_types::{ReadStore, StateSpace, WriteBatch};
 
-#[derive(Debug, Eq, Hash, PartialEq)]
-pub struct StateVersion<R: ResourceId> {
-    resource_id: R,
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct StateVersion {
+    resource_id: ResourceId,
     version: u64,
     data: Vec<u8>,
 }
 
-impl<R: ResourceId> StateVersion<R> {
-    pub fn empty(id: R) -> Self {
+impl StateVersion {
+    pub fn empty(id: ResourceId) -> Self {
         Self { resource_id: id, version: 0, data: Vec::new() }
     }
 
-    pub fn from_latest_data<S>(store: &S, id: R) -> Self
+    pub fn from_latest_data<S>(store: &S, id: ResourceId) -> Self
     where
         S: ReadStore,
     {
@@ -68,7 +68,7 @@ impl<R: ResourceId> StateVersion<R> {
     /// Gets the data for a specific version of a resource.
     ///
     /// Key layout: `version (u64 BE) || resource_id (borsh)`
-    pub fn get<S>(store: &S, version: u64, resource_id: &R) -> Option<Vec<u8>>
+    pub fn get<S>(store: &S, version: u64, resource_id: &ResourceId) -> Option<Vec<u8>>
     where
         S: ReadStore,
     {
@@ -80,7 +80,7 @@ impl<R: ResourceId> StateVersion<R> {
     /// Stores data for a specific version of a resource.
     ///
     /// Key layout: `version (u64 BE) || resource_id (borsh)`
-    pub fn put<W>(wb: &mut W, version: u64, resource_id: &R, data: &[u8])
+    pub fn put<W>(wb: &mut W, version: u64, resource_id: &ResourceId, data: &[u8])
     where
         W: WriteBatch,
     {
@@ -92,22 +92,12 @@ impl<R: ResourceId> StateVersion<R> {
     /// Deletes data for a specific version of a resource.
     ///
     /// Key layout: `version (u64 BE) || resource_id (borsh)`
-    pub fn delete<W>(wb: &mut W, version: u64, resource_id: &R)
+    pub fn delete<W>(wb: &mut W, version: u64, resource_id: &ResourceId)
     where
         W: WriteBatch,
     {
         let rid = borsh::to_vec(resource_id).expect("failed to serialize ResourceId");
         let key = concat_bytes!(&version.to_be_bytes(), &rid);
         wb.delete(StateSpace::StateVersion, &key);
-    }
-}
-
-impl<R: ResourceId> Clone for StateVersion<R> {
-    fn clone(&self) -> Self {
-        Self {
-            resource_id: self.resource_id.clone(),
-            version: self.version,
-            data: self.data.clone(),
-        }
     }
 }

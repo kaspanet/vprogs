@@ -11,10 +11,9 @@ pub struct StatePtrLatest;
 
 impl StatePtrLatest {
     /// Gets the current version for a resource, or `None` if the resource doesn't exist.
-    pub fn get<S, R>(store: &S, resource_id: &R) -> Option<u64>
+    pub fn get<S>(store: &S, resource_id: &ResourceId) -> Option<u64>
     where
         S: ReadStore,
-        R: ResourceId,
     {
         let key = borsh::to_vec(resource_id).expect("failed to serialize ResourceId");
         store
@@ -23,20 +22,18 @@ impl StatePtrLatest {
     }
 
     /// Sets the current version for a resource.
-    pub fn put<W, R>(wb: &mut W, resource_id: &R, version: u64)
+    pub fn put<W>(wb: &mut W, resource_id: &ResourceId, version: u64)
     where
         W: WriteBatch,
-        R: ResourceId,
     {
         let key = borsh::to_vec(resource_id).expect("failed to serialize ResourceId");
         wb.put(StateSpace::StatePtrLatest, &key, &version.to_be_bytes());
     }
 
     /// Deletes the latest pointer for a resource.
-    pub fn delete<W, R>(wb: &mut W, resource_id: &R)
+    pub fn delete<W>(wb: &mut W, resource_id: &ResourceId)
     where
         W: WriteBatch,
-        R: ResourceId,
     {
         let key = borsh::to_vec(resource_id).expect("failed to serialize ResourceId");
         wb.delete(StateSpace::StatePtrLatest, &key);

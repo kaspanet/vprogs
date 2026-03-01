@@ -2,7 +2,6 @@
 
 use std::{io::Write, time::Duration};
 
-use borsh::BorshSerialize;
 use kaspa_addresses::Address;
 use kaspa_consensus_core::{
     Hash,
@@ -147,22 +146,17 @@ impl L1Node {
         }
     }
 
-    /// Mines a single block, optionally injecting L2 transactions into the block template.
-    ///
-    /// Each L2 transaction is borsh-serialized into the `payload` field of a separate L1
-    /// transaction. Requires mature UTXOs when payloads are provided (call
-    /// [`mine_utxos`](Self::mine_utxos) first).
+    /// Mines a single block, optionally injecting pre-built L1 transactions into the block
+    /// template.
     ///
     /// Note: in Kaspa DAG consensus, a block's transactions are accepted by the next chain block.
     /// The caller must mine an additional block for the transactions to be accepted.
-    pub async fn mine_block<T: BorshSerialize>(&self, txs: Option<&[T]>) -> Hash {
+    pub async fn mine_block(&self, txs: Option<&[Transaction]>) -> Hash {
         let mut template =
             self.grpc_client.get_block_template(self.address.clone(), vec![]).await.unwrap();
 
         if let Some(txs) = txs {
-            let payloads: Vec<Vec<u8>> = txs.iter().map(|tx| borsh::to_vec(tx).unwrap()).collect();
-            let signed_txs = self.build_payload_transactions(payloads).await;
-            for tx in &signed_txs {
+            for tx in txs {
                 template.block.transactions.push(RpcTransaction::from(tx));
             }
 
@@ -186,7 +180,7 @@ impl L1Node {
     pub async fn mine_blocks(&self, count: usize) -> Vec<Hash> {
         let mut hashes = Vec::with_capacity(count);
         for _ in 0..count {
-            hashes.push(self.mine_block::<u8>(None).await);
+            hashes.push(self.mine_block(None).await);
         }
         hashes
     }
@@ -203,13 +197,13 @@ impl L1Node {
 
     /// Disconnects the gRPC client. The daemon shuts down on drop.
     pub async fn shutdown(self) {
-        self.grpc_client.disconnect().await.unwrap();
+        self.grpc_client.disconnect().await.unwrap()
     }
 
     /// Builds signed L1 transactions, each carrying the given payload.
     ///
     /// Requires enough spendable UTXOs (call [`mine_utxos`](Self::mine_utxos) first).
-    async fn build_payload_transactions(&self, payloads: Vec<Vec<u8>>) -> Vec<Transaction> {
+    pub async fn build_payload_transactions(&self, payloads: Vec<Vec<u8>>) -> Vec<Transaction> {
         let utxos = self.fetch_spendable_utxos().await;
         assert!(
             utxos.len() >= payloads.len(),

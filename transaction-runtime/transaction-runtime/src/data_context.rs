@@ -4,15 +4,10 @@ use vprogs_transaction_runtime_address::Address;
 use vprogs_transaction_runtime_authenticated_data::AuthenticatedData;
 use vprogs_transaction_runtime_data_context::DataContext;
 use vprogs_transaction_runtime_error::{VmError, VmResult};
-use vprogs_transaction_runtime_object_id::ObjectId;
 
 use crate::TransactionRuntime;
 
-impl<'a, 'b, S, P> DataContext for TransactionRuntime<'a, 'b, S, P>
-where
-    S: Store,
-    P: Processor<ResourceId = ObjectId>,
-{
+impl<'a, 'b, S: Store, P: Processor> DataContext for TransactionRuntime<'a, 'b, S, P> {
     fn borrow(&mut self, address: Address) -> VmResult<&AuthenticatedData> {
         self.loaded_data.get(&address).ok_or(VmError::DataNotFound(address))
     }

@@ -10,29 +10,29 @@ use vprogs_state_version::StateVersion;
 use vprogs_storage_manager::StorageManager;
 use vprogs_storage_types::{ReadStore, Store};
 
-use crate::{Read, RuntimeTxRef, StateDiff, Write, processor::Processor};
+use crate::{Read, ScheduledTransactionRef, StateDiff, Write, processor::Processor};
 
 /// A single resource access within a transaction, forming a linked chain across the batch.
 ///
 /// Each `ResourceAccess` represents one transaction's claim on a resource. Within a batch, accesses
 /// to the same resource are linked via `prev`/`next` pointers so that write results flow forward to
-/// dependent reads. Derefs to the inner `P::AccessMetadata`.
-#[smart_pointer(deref(metadata))]
+/// dependent reads. Derefs to the inner `AccessMetadata`.
+#[smart_pointer(deref(access_metadata))]
 pub struct ResourceAccess<S: Store, P: Processor> {
-    /// Per-access metadata (deref target).
-    metadata: P::AccessMetadata,
+    /// The access metadata (deref target).
+    access_metadata: AccessMetadata,
     /// True if this is the first access to the resource in this batch.
     is_batch_head: AtomicBool,
     /// True if this is the last access to the resource in this batch.
     is_batch_tail: AtomicBool,
     /// Weak reference to the owning transaction.
-    tx: RuntimeTxRef<S, P>,
+    tx: ScheduledTransactionRef<S, P>,
     /// Shared state diff for this resource within the batch.
     state_diff: StateDiff<S, P>,
     /// Resource state before this access (resolved from disk or the previous access).
-    read_state: ArcSwapOption<StateVersion<P::ResourceId>>,
+    read_state: ArcSwapOption<StateVersion>,
     /// Resource state after this access (set on commit or forwarded from read for reads).
-    written_state: ArcSwapOption<StateVersion<P::ResourceId>>,
+    written_state: ArcSwapOption<StateVersion>,
     /// Previous access to the same resource in this batch (cleared once read state resolves).
     prev: ArcSwapOption<Self>,
     /// Next access to the same resource in this batch (cleared once written state propagates).
@@ -40,21 +40,15 @@ pub struct ResourceAccess<S: Store, P: Processor> {
 }
 
 impl<S: Store, P: Processor> ResourceAccess<S, P> {
-    /// Returns the access metadata describing which resource is accessed and how.
-    #[inline(always)]
-    pub fn metadata(&self) -> &P::AccessMetadata {
-        &self.metadata
-    }
-
     /// Returns the resource state as it was before this access.
     #[inline(always)]
-    pub fn read_state(&self) -> Arc<StateVersion<P::ResourceId>> {
+    pub fn read_state(&self) -> Arc<StateVersion> {
         self.read_state.load_full().expect("read state unknown")
     }
 
     /// Returns the resource state after this access completed.
     #[inline(always)]
-    pub fn written_state(&self) -> Arc<StateVersion<P::ResourceId>> {
+    pub fn written_state(&self) -> Arc<StateVersion> {
         self.written_state.load_full().expect("written state unknown")
     }
 
@@ -71,13 +65,13 @@ impl<S: Store, P: Processor> ResourceAccess<S, P> {
     }
 
     pub(crate) fn new(
-        metadata: P::AccessMetadata,
-        tx: RuntimeTxRef<S, P>,
+        access_metadata: AccessMetadata,
+        tx: ScheduledTransactionRef<S, P>,
         state_diff: StateDiff<S, P>,
         prev: Option<Self>,
     ) -> Self {
         Self(Arc::new(ResourceAccessData {
-            metadata,
+            access_metadata,
             is_batch_head: AtomicBool::new(match &prev {
                 Some(prev) if prev.state_diff == state_diff => {
                     prev.is_batch_tail.store(false, Ordering::Relaxed);
@@ -108,10 +102,13 @@ impl<S: Store, P: Processor> ResourceAccess<S, P> {
     }
 
     pub(crate) fn read_latest_data<R: ReadStore>(&self, store: &R) {
-        self.set_read_state(Arc::new(StateVersion::from_latest_data(store, self.metadata.id())));
+        self.set_read_state(Arc::new(StateVersion::from_latest_data(
+            store,
+            self.access_metadata.id,
+        )));
     }
 
-    pub(crate) fn tx(&self) -> &RuntimeTxRef<S, P> {
+    pub(crate) fn tx(&self) -> &ScheduledTransactionRef<S, P> {
         &self.tx
     }
 
@@ -124,7 +121,7 @@ impl<S: Store, P: Processor> ResourceAccess<S, P> {
         self.state_diff.was_committed()
     }
 
-    pub(crate) fn set_read_state(&self, state: Arc<StateVersion<P::ResourceId>>) {
+    pub(crate) fn set_read_state(&self, state: Arc<StateVersion>) {
         if self.read_state.compare_and_swap(&None::<Arc<_>>, Some(state.clone())).is_none() {
             drop(self.prev.swap(None)); // drop the previous reference to allow cleanup
 
@@ -132,7 +129,7 @@ impl<S: Store, P: Processor> ResourceAccess<S, P> {
                 self.state_diff.set_read_state(state.clone());
             }
 
-            if self.access_type() == AccessType::Read {
+            if self.access_type == AccessType::Read {
                 self.set_written_state(state);
             }
 
@@ -142,7 +139,7 @@ impl<S: Store, P: Processor> ResourceAccess<S, P> {
         }
     }
 
-    pub(crate) fn set_written_state(&self, state: Arc<StateVersion<P::ResourceId>>) {
+    pub(crate) fn set_written_state(&self, state: Arc<StateVersion>) {
         if self.written_state.compare_and_swap(&None::<Arc<_>>, Some(state.clone())).is_none() {
             if self.is_batch_tail() {
                 self.state_diff.set_written_state(state.clone());

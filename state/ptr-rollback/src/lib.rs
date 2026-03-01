@@ -13,10 +13,9 @@ pub struct StatePtrRollback;
 
 impl StatePtrRollback {
     /// Stores the version a resource had before a batch was applied.
-    pub fn put<W, R>(wb: &mut W, batch_index: u64, resource_id: &R, old_version: u64)
+    pub fn put<W>(wb: &mut W, batch_index: u64, resource_id: &ResourceId, old_version: u64)
     where
         W: WriteBatch,
-        R: ResourceId,
     {
         let rid = borsh::to_vec(resource_id).expect("failed to serialize ResourceId");
         let key = concat_bytes!(&batch_index.to_be_bytes(), &rid);
@@ -24,10 +23,9 @@ impl StatePtrRollback {
     }
 
     /// Deletes a rollback pointer entry.
-    pub fn delete<W, R>(wb: &mut W, batch_index: u64, resource_id: &R)
+    pub fn delete<W>(wb: &mut W, batch_index: u64, resource_id: &ResourceId)
     where
         W: WriteBatch,
-        R: ResourceId,
     {
         let rid = borsh::to_vec(resource_id).expect("failed to serialize ResourceId");
         let key = concat_bytes!(&batch_index.to_be_bytes(), &rid);

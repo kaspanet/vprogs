@@ -8,7 +8,8 @@
 //! # Usage
 //!
 //! ```no_run
-//! use vprogs_l1_bridge::{L1Bridge, L1BridgeConfig, L1Event, NetworkType};
+//! use vprogs_l1_bridge::{L1Bridge, L1BridgeConfig, L1Event};
+//! use vprogs_l1_types::NetworkType;
 //!
 //! let bridge = L1Bridge::new(
 //!     L1BridgeConfig::default()
@@ -61,6 +62,4 @@ mod worker;
 
 pub use bridge::L1Bridge;
 pub use config::L1BridgeConfig;
-pub use event::{L1Event, RpcOptionalHeader, RpcOptionalTransaction};
-pub use kaspa_consensus_core::network::{NetworkId, NetworkType};
-pub use kaspa_wrpc_client::prelude::ConnectStrategy;
+pub use event::{L1Event, RpcOptionalHeader};

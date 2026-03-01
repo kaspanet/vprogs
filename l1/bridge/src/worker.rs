@@ -5,13 +5,13 @@ use futures::{FutureExt, select_biased};
 use kaspa_notify::scope::{PruningPointUtxoSetOverrideScope, Scope, VirtualChainChangedScope};
 use kaspa_rpc_core::{
     GetVirtualChainFromBlockV2Response, Notification,
-    RpcDataVerbosityLevel::{High, Low},
+    RpcDataVerbosityLevel::{Full, Low},
     api::{ctl::RpcState, rpc::RpcApi},
 };
 use kaspa_wrpc_client::prelude::*;
 use tokio::sync::Notify;
 use vprogs_core_types::Checkpoint;
-use vprogs_l1_types::ChainBlockMetadata;
+use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
 use workflow_core::channel::{Channel, MultiplexerChannel};
 
 use crate::{
@@ -64,7 +64,9 @@ impl BridgeWorker {
         // If both root and tip are provided and differ, we need to backfill the chain between them
         // on first connect (lightweight, non-verbose sync).
         let backfill_target = match (&config.root, &config.tip) {
-            (Some(root), Some(tip)) if root.metadata().hash() != tip.metadata().hash() => {
+            (Some(root), Some(tip))
+                if root.metadata().block_hash() != tip.metadata().block_hash() =>
+            {
                 Some(tip.clone())
             }
             _ => None,
@@ -271,11 +273,11 @@ impl BridgeWorker {
         // Fetch with Low verbosity — sufficient for hash and blue_score needed for chain blocks.
         let response = self
             .client
-            .get_virtual_chain_from_block_v2(start.metadata().hash(), Some(Low), None)
+            .get_virtual_chain_from_block_v2(start.metadata().block_hash(), Some(Low), None)
             .await?;
 
         // Walk the chain block accepted transactions to get both hash and blue_score.
-        let target_hash = target.metadata().hash();
+        let target_hash = target.metadata().block_hash();
         let mut found = false;
 
         for chain_block in response.chain_block_accepted_transactions.iter() {
@@ -305,13 +307,13 @@ impl BridgeWorker {
         let start_hash = if tip.index() == 0 {
             self.client.get_block_dag_info().await?.pruning_point_hash
         } else {
-            tip.metadata().hash()
+            tip.metadata().block_hash()
         };
 
-        // Fetch with High verbosity to get full headers and accepted transactions.
+        // Fetch with Full verbosity to get complete headers and accepted transactions.
         let response = self
             .client
-            .get_virtual_chain_from_block_v2(start_hash, Some(High), self.reorg_filter.threshold())
+            .get_virtual_chain_from_block_v2(start_hash, Some(Full), self.reorg_filter.threshold())
             .await?;
 
         // Removed hashes indicate a reorg — roll back before processing additions.
@@ -326,18 +328,19 @@ impl BridgeWorker {
 
         // Extend the virtual chain and emit an event for each new block.
         for chain_block in response.chain_block_accepted_transactions.iter() {
-            let hash =
-                chain_block.chain_block_header.hash.expect("hash missing despite High verbosity");
-            let blue_score = chain_block
-                .chain_block_header
-                .blue_score
-                .expect("blue_score missing despite High verbosity");
+            let hash = chain_block.chain_block_header.hash.expect("missing hash");
+            let blue_score = chain_block.chain_block_header.blue_score.expect("missing blue_score");
             let metadata = ChainBlockMetadata::new(hash, blue_score);
             let checkpoint = self.virtual_chain.advance_tip(metadata);
+            let accepted_transactions: Vec<L1Transaction> = chain_block
+                .accepted_transactions
+                .iter()
+                .map(|tx| L1Transaction::try_from(tx.clone()).expect("missing transaction fields"))
+                .collect();
             self.push_event(L1Event::ChainBlockAdded {
                 checkpoint,
                 header: Box::new(chain_block.chain_block_header.clone()),
-                accepted_transactions: chain_block.accepted_transactions.clone(),
+                accepted_transactions,
             });
         }
 

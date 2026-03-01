@@ -1,9 +1,7 @@
 use std::time::Duration;
 
 use vprogs_core_types::Checkpoint;
-use vprogs_l1_types::ChainBlockMetadata;
-
-use crate::{ConnectStrategy, NetworkId, NetworkType};
+use vprogs_l1_types::{ChainBlockMetadata, ConnectStrategy, NetworkId, NetworkType};
 
 /// Configuration for the L1 bridge.
 #[derive(Clone, Debug)]

@@ -1,8 +1,8 @@
 use tokio::sync::mpsc;
-use vprogs_l1_types::ChainBlockMetadata;
+use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
 use vprogs_scheduling_scheduler::{Processor, TransactionContext};
 use vprogs_storage_types::Store;
-use vprogs_zk_abi::{self as abi, AccessMetadata, ResourceId, StorageOp, Transaction};
+use vprogs_zk_abi::{self as abi, StorageOp};
 
 use crate::{Backend, Error, ProofRequest, Result};
 
@@ -56,10 +56,8 @@ impl<B: Backend> Processor for Vm<B> {
         Ok(())
     }
 
-    type Transaction = Transaction;
+    type Transaction = L1Transaction;
     type TransactionEffects = ();
-    type ResourceId = ResourceId;
-    type AccessMetadata = AccessMetadata;
     type BatchMetadata = ChainBlockMetadata;
     type Error = Error;
 }

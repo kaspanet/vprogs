@@ -11,7 +11,7 @@ host = [
   "dep:vprogs-scheduling-scheduler",
   "dep:vprogs-storage-types",
 ]
-std = ["borsh/std", "rkyv/std", "vprogs-core-types/std"]
+std = ["borsh/std", "rkyv/std"]
 
 [dependencies]
 borsh                       = { workspace = true, default-features = false }

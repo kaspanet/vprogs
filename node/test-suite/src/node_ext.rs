@@ -3,7 +3,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use vprogs_l1_types::ChainBlockMetadata;
+use vprogs_core_types::ResourceId;
+use vprogs_l1_types::{ChainBlockMetadata, Hash};
 use vprogs_node_framework::NodeApi;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_version::StateVersion;
@@ -21,8 +22,8 @@ pub trait NodeExt {
     /// timeout.
     fn wait_pruned(&self, expected: u64, timeout: Duration);
 
-    /// Asserts that a resource was written by the given writer IDs (in order).
-    fn assert_written_state(&self, resource_id: usize, writers: Vec<usize>);
+    /// Asserts that a resource was written by the given L1 transactions (in order).
+    fn assert_written_state(&self, resource_id: usize, writers: &[Hash]);
 
     /// Asserts that a resource has been deleted (no latest pointer exists).
     fn assert_resource_deleted(&self, resource_id: usize);
@@ -63,12 +64,12 @@ impl NodeExt for NodeApi<RocksDbStore, TestNodeVm> {
         }
     }
 
-    fn assert_written_state(&self, resource_id: usize, writers: Vec<usize>) {
+    fn assert_written_state(&self, resource_id: usize, writers: &[Hash]) {
         let store = self.storage().store();
         let writer_count = writers.len();
-        let writer_log: Vec<u8> = writers.iter().flat_map(|id| id.to_be_bytes()).collect();
+        let writer_log: Vec<u8> = writers.iter().flat_map(|h| h.as_bytes()).collect();
 
-        let versioned_state = StateVersion::<usize>::from_latest_data(store.as_ref(), resource_id);
+        let versioned_state = StateVersion::from_latest_data(store.as_ref(), resource_id.into());
         assert_eq!(
             versioned_state.version(),
             writer_count as u64,
@@ -84,7 +85,7 @@ impl NodeExt for NodeApi<RocksDbStore, TestNodeVm> {
 
     fn assert_resource_deleted(&self, resource_id: usize) {
         let store = self.storage().store();
-        let id_bytes = resource_id.to_be_bytes();
+        let id_bytes = *ResourceId::from(resource_id).as_bytes();
         assert!(
             store.get(StateSpace::StatePtrLatest, &id_bytes).is_none(),
             "Resource {resource_id} should have been deleted but still exists",

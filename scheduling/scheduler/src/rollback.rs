@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tap::Tap;
 use vprogs_core_atomics::AtomicAsyncLatch;
-use vprogs_core_types::Checkpoint;
+use vprogs_core_types::{Checkpoint, ResourceId};
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_ptr_latest::StatePtrLatest;
@@ -69,7 +69,7 @@ impl<S: Store, P: Processor> Rollback<S, P> {
             for index in (self.target.index() + 1..=self.upper_bound).rev() {
                 // Apply all rollback pointers associated with this batch.
                 for (resource_id, old_version) in StatePtrRollback::iter_batch(store, index) {
-                    let resource_id =
+                    let resource_id: ResourceId =
                         borsh::from_slice(&resource_id).expect("corrupted store: unrecoverable");
                     self.apply_rollback_ptr(store, wb, index, resource_id, old_version);
                 }
@@ -108,7 +108,7 @@ impl<S: Store, P: Processor> Rollback<S, P> {
         store: &ST,
         write_batch: &mut ST::WriteBatch,
         batch_index: u64,
-        resource_id: P::ResourceId,
+        resource_id: ResourceId,
         old_version: u64,
     ) {
         // Remove the currently live version, if present.

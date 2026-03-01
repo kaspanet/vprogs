@@ -11,15 +11,15 @@ use crate::{ResourceAccess, processor::Processor};
 /// Passed to [`Processor::process_transaction`] so the processor can read and mutate resource
 /// data. On success the changes are committed; on failure they are rolled back.
 pub struct AccessHandle<'a, S: Store, P: Processor> {
-    state_version: Arc<StateVersion<P::ResourceId>>,
+    state_version: Arc<StateVersion>,
     access: &'a ResourceAccess<S, P>,
 }
 
 impl<'a, S: Store, P: Processor> AccessHandle<'a, S, P> {
     /// Returns the access metadata for this resource.
     #[inline]
-    pub fn access_metadata(&self) -> &P::AccessMetadata {
-        self.access.metadata()
+    pub fn access_metadata(&self) -> &AccessMetadata {
+        self.access
     }
 
     /// Returns the current version number of this resource (0 if new).
@@ -50,13 +50,13 @@ impl<'a, S: Store, P: Processor> AccessHandle<'a, S, P> {
     }
 
     pub(crate) fn commit_changes(self) {
-        if self.access.access_type() == AccessType::Write {
+        if self.access.access_type == AccessType::Write {
             self.access.set_written_state(self.state_version.clone());
         }
     }
 
     pub(crate) fn rollback_changes(self) {
-        if self.access.access_type() == AccessType::Write {
+        if self.access.access_type == AccessType::Write {
             self.access.set_written_state(self.access.read_state());
         }
     }

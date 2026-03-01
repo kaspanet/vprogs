@@ -4,7 +4,5 @@ name              = "vprogs-transaction-runtime-transaction"
 version.workspace = true
 
 [dependencies]
-vprogs-core-types.workspace                        = true
-vprogs-transaction-runtime-instruction.workspace   = true
-vprogs-transaction-runtime-object-access.workspace = true
-vprogs-transaction-runtime-object-id.workspace     = true
+vprogs-core-types.workspace                      = true
+vprogs-transaction-runtime-instruction.workspace = true

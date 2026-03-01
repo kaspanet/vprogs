@@ -1,10 +1,8 @@
-use borsh::BorshDeserialize;
-use vprogs_core_types::{AccessMetadata, AccessType};
-use vprogs_l1_bridge::{RpcOptionalHeader, RpcOptionalTransaction};
-use vprogs_l1_types::ChainBlockMetadata;
+use vprogs_core_types::{AccessType, SchedulerTransaction};
+use vprogs_l1_bridge::RpcOptionalHeader;
+use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
 use vprogs_node_framework::NodeVm;
 use vprogs_scheduling_scheduler::{Processor, TransactionContext};
-use vprogs_scheduling_test_suite::{Access, Tx};
 use vprogs_storage_types::Store;
 
 /// A minimal processor implementing [`NodeVm`] for testing the node framework.
@@ -16,11 +14,13 @@ impl NodeVm for TestNodeVm {
         &self,
         _index: u64,
         _header: &RpcOptionalHeader,
-        accepted_transactions: &[RpcOptionalTransaction],
-    ) -> Vec<Tx> {
+        accepted_transactions: &[L1Transaction],
+    ) -> Vec<SchedulerTransaction<Self::Transaction>> {
         accepted_transactions
             .iter()
-            .filter_map(|l1_tx| Tx::try_from_slice(l1_tx.payload.as_ref()?).ok())
+            .filter_map(|tx| {
+                Some(SchedulerTransaction::new(tx.clone(), borsh::from_slice(&tx.payload).ok()?))
+            })
             .collect()
     }
 }
@@ -30,19 +30,18 @@ impl Processor for TestNodeVm {
         &self,
         ctx: &mut TransactionContext<S, Self>,
     ) -> Result<(), Self::Error> {
-        let tx_id = ctx.transaction().0;
-        for resource in ctx.resources_mut() {
-            if resource.access_metadata().access_type() == AccessType::Write {
-                resource.data_mut().extend_from_slice(&tx_id.to_be_bytes());
+        let (tx, resources) = ctx.parts_mut();
+        let tx_id_bytes = tx.id().as_bytes();
+        for resource in resources {
+            if resource.access_metadata().access_type == AccessType::Write {
+                resource.data_mut().extend_from_slice(&tx_id_bytes);
             }
         }
         Ok(())
     }
 
-    type Transaction = Tx;
+    type Transaction = L1Transaction;
     type TransactionEffects = ();
-    type ResourceId = usize;
-    type AccessMetadata = Access;
     type BatchMetadata = ChainBlockMetadata;
     type Error = ();
 }
