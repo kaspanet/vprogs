@@ -1,0 +1,10 @@
+[package]
+edition.workspace = true
+name              = "vprogs-zk-backend-risc0-host-api"
+version.workspace = true
+
+[dependencies]
+risc0-zkvm              = { workspace = true, features = ["prove"] }
+rkyv.workspace          = true
+vprogs-zk-abi.workspace = true
+vprogs-zk-vm.workspace  = true

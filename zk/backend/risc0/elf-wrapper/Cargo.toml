@@ -1,0 +1,12 @@
+[package]
+edition = "2024"
+name    = "elf-wrapper"
+version = "0.1.0"
+
+[workspace]
+
+[dependencies]
+risc0-binfmt = { version = "3.0.4", default-features = false, features = [
+  "std",
+] }
+risc0-zkos-v1compat = "2.2.2"
