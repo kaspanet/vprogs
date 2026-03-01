@@ -11,7 +11,7 @@
 //!
 //! use vprogs_l1_bridge::{L1Bridge, L1BridgeConfig, L1Event};
 //! use vprogs_l1_types::NetworkType;
-//! use vprogs_node_test_suite::{L1BridgeExt, L1Node};
+//! use vprogs_node_test_utils::{L1BridgeExt, L1Node};
 //!
 //! # async fn example() {
 //! // Start an isolated simnet node.

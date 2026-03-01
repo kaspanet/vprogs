@@ -49,7 +49,7 @@ impl L1Node {
     /// default simnet [`Params`] to mutate. Pass `None` for vanilla simnet defaults.
     ///
     /// ```no_run
-    /// # use vprogs_node_test_suite::L1Node;
+    /// # use vprogs_node_test_utils::L1Node;
     /// # async fn example() {
     /// // Vanilla simnet defaults:
     /// let node = L1Node::new(None).await;

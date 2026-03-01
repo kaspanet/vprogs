@@ -57,12 +57,8 @@ impl<S: Store, P: Processor> ScheduledTransaction<S, P> {
         tx: SchedulerTransaction<P::Transaction>,
     ) -> Self {
         Self(Arc::new_cyclic(|this: &Weak<ScheduledTransactionData<S, P>>| {
-            let resources = scheduler.resources(
-                &tx,
-                ScheduledTransactionRef(this.clone()),
-                &batch,
-                state_diffs,
-            );
+            let this = ScheduledTransactionRef(this.clone());
+            let resources = scheduler.resources(&tx, this, &batch, state_diffs);
             ScheduledTransactionData {
                 processor: scheduler.processor().clone(),
                 pending_resources: AtomicU64::new(resources.len() as u64),

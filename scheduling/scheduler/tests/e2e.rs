@@ -1,10 +1,10 @@
 use std::time::Duration;
 
 use tempfile::TempDir;
-use vprogs_core_test_suite::ResourceIdExt;
+use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, Checkpoint, ResourceId, SchedulerTransaction};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
-use vprogs_scheduling_test_suite::{Processor, SchedulerExt};
+use vprogs_scheduling_test_utils::{Processor, SchedulerExt};
 use vprogs_state_metadata::StateMetadata;
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;

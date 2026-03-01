@@ -3,7 +3,7 @@ use std::time::Duration;
 use vprogs_core_types::Checkpoint;
 use vprogs_l1_bridge::{L1Bridge, L1BridgeConfig, L1Event, RpcOptionalHeader};
 use vprogs_l1_types::{ChainBlockMetadata, ConnectStrategy, L1Transaction, NetworkType};
-use vprogs_node_test_suite::{L1BridgeExt, L1Node};
+use vprogs_node_test_utils::{L1BridgeExt, L1Node};
 
 // Timeout for waiting for events.
 const TIMEOUT: Duration = Duration::from_secs(30);

@@ -1,5 +1,5 @@
 use tempfile::TempDir;
-use vprogs_core_test_suite::ResourceIdExt;
+use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId, SchedulerTransaction};
 use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};

@@ -7,6 +7,7 @@ use crossbeam_deque::{Injector, Steal, Worker};
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_macros::smart_pointer;
 use vprogs_core_types::{Checkpoint, SchedulerTransaction};
+use vprogs_scheduling_execution_workers::Batch;
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_storage_types::{Store, WriteBatch};
@@ -269,9 +270,7 @@ impl<S: Store, P: Processor> ScheduledBatch<S, P> {
     }
 }
 
-impl<S: Store, P: Processor> vprogs_scheduling_execution_workers::Batch<ManagerTask<S, P>>
-    for ScheduledBatch<S, P>
-{
+impl<S: Store, P: Processor> Batch<ManagerTask<S, P>> for ScheduledBatch<S, P> {
     fn steal_available_tasks(
         &self,
         worker: &Worker<ManagerTask<S, P>>,

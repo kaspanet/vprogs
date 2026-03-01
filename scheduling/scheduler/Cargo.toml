@@ -23,3 +23,12 @@ vprogs-state-ptr-rollback.workspace           = true
 vprogs-state-version.workspace                = true
 vprogs-storage-manager.workspace              = true
 vprogs-storage-types.workspace                = true
+
+[dev-dependencies]
+tempfile.workspace                     = true
+vprogs-core-test-utils.workspace       = true
+vprogs-core-types.workspace            = true
+vprogs-scheduling-test-utils.workspace = true
+vprogs-state-metadata.workspace        = true
+vprogs-storage-manager.workspace       = true
+vprogs-storage-rocksdb-store.workspace = true

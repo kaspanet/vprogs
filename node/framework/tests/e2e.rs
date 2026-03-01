@@ -1,12 +1,12 @@
 use std::time::Duration;
 
 use tempfile::TempDir;
-use vprogs_core_test_suite::ResourceIdExt;
+use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId};
 use vprogs_l1_bridge::L1BridgeConfig;
 use vprogs_l1_types::{Hash, NetworkType};
 use vprogs_node_framework::{Node, NodeConfig};
-use vprogs_node_test_suite::{L1Node, NodeExt, TestNodeVm};
+use vprogs_node_test_utils::{L1Node, NodeExt, TestNodeVm};
 use vprogs_scheduling_scheduler::ExecutionConfig;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_storage_manager::StorageConfig;

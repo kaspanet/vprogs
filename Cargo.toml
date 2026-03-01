@@ -9,7 +9,6 @@ default-members = [
   "transaction-runtime/*",
   "zk/prover",
   "zk/backend/risc0/host-api",
-  "zk/test-suite",
   "zk/abi",
   "zk/vm",
 ]
@@ -29,7 +28,6 @@ members = [
   "transaction-runtime/*",
   "zk/prover",
   "zk/backend/risc0/host-api",
-  "zk/test-suite",
   "zk/abi",
   "zk/vm",
 ]
@@ -104,17 +102,17 @@ resolver = "3"
   # Internal dependencies
   vprogs-core-atomics                             = { path = "core/atomics" }
   vprogs-core-macros                              = { path = "core/macros" }
-  vprogs-core-test-suite                          = { path = "core/test-suite" }
+  vprogs-core-test-utils                          = { path = "core/test-utils" }
   vprogs-core-types                               = { path = "core/types", default-features = false }
   vprogs-l1-bridge                                = { path = "l1/bridge" }
   vprogs-l1-types                                 = { path = "l1/types" }
   vprogs-node-cli                                 = { path = "node/cli" }
   vprogs-node-framework                           = { path = "node/framework" }
-  vprogs-node-test-suite                          = { path = "node/test-suite" }
+  vprogs-node-test-utils                          = { path = "node/test-utils" }
   vprogs-node-vm                                  = { path = "node/vm" }
   vprogs-scheduling-execution-workers             = { path = "scheduling/execution-workers" }
   vprogs-scheduling-scheduler                     = { path = "scheduling/scheduler" }
-  vprogs-scheduling-test-suite                    = { path = "scheduling/test-suite" }
+  vprogs-scheduling-test-utils                    = { path = "scheduling/test-utils" }
   vprogs-state-batch-metadata                     = { path = "state/batch-metadata" }
   vprogs-state-metadata                           = { path = "state/metadata" }
   vprogs-state-ptr-latest                         = { path = "state/ptr-latest" }
@@ -145,7 +143,6 @@ resolver = "3"
   vprogs-zk-abi                                   = { path = "zk/abi", default-features = false }
   vprogs-zk-backend-risc0-host-api                = { path = "zk/backend/risc0/host-api" }
   vprogs-zk-prover                                = { path = "zk/prover" }
-  vprogs-zk-test-suite                            = { path = "zk/test-suite" }
   vprogs-zk-vm                                    = { path = "zk/vm" }
 
 [patch.'https://github.com/kaspanet/rusty-kaspa']

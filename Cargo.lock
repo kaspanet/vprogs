@@ -756,20 +756,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "blake3"
-version = "1.8.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2468ef7d57b3fb7e16b576e8377cdbde2320c60e1491e961d11da40fc4f02a2d"
-dependencies = [
- "arrayref",
- "arrayvec",
- "cc",
- "cfg-if",
- "constant_time_eq",
- "cpufeatures",
-]
-
-[[package]]
 name = "block"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7370,7 +7356,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "vprogs-core-test-suite"
+name = "vprogs-core-test-utils"
 version = "0.1.0"
 dependencies = [
  "vprogs-core-types",
@@ -7404,7 +7390,7 @@ dependencies = [
  "vprogs-core-macros",
  "vprogs-core-types",
  "vprogs-l1-types",
- "vprogs-node-test-suite",
+ "vprogs-node-test-utils",
  "workflow-core",
 ]
 
@@ -7451,11 +7437,11 @@ dependencies = [
  "tokio",
  "vprogs-core-atomics",
  "vprogs-core-macros",
- "vprogs-core-test-suite",
+ "vprogs-core-test-utils",
  "vprogs-core-types",
  "vprogs-l1-bridge",
  "vprogs-l1-types",
- "vprogs-node-test-suite",
+ "vprogs-node-test-utils",
  "vprogs-scheduling-scheduler",
  "vprogs-state-metadata",
  "vprogs-storage-manager",
@@ -7464,7 +7450,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "vprogs-node-test-suite"
+name = "vprogs-node-test-utils"
 version = "0.1.0"
 dependencies = [
  "borsh",
@@ -7482,13 +7468,13 @@ dependencies = [
  "tap",
  "tempfile",
  "tokio",
- "vprogs-core-test-suite",
+ "vprogs-core-test-utils",
  "vprogs-core-types",
  "vprogs-l1-bridge",
  "vprogs-l1-types",
  "vprogs-node-framework",
  "vprogs-scheduling-scheduler",
- "vprogs-scheduling-test-suite",
+ "vprogs-scheduling-test-utils",
  "vprogs-state-metadata",
  "vprogs-state-version",
  "vprogs-storage-rocksdb-store",
@@ -7533,28 +7519,32 @@ dependencies = [
  "crossbeam-queue",
  "num_cpus",
  "tap",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "vprogs-core-atomics",
  "vprogs-core-macros",
+ "vprogs-core-test-utils",
  "vprogs-core-types",
  "vprogs-scheduling-execution-workers",
+ "vprogs-scheduling-test-utils",
  "vprogs-state-batch-metadata",
  "vprogs-state-metadata",
  "vprogs-state-ptr-latest",
  "vprogs-state-ptr-rollback",
  "vprogs-state-version",
  "vprogs-storage-manager",
+ "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
 ]
 
 [[package]]
-name = "vprogs-scheduling-test-suite"
+name = "vprogs-scheduling-test-utils"
 version = "0.1.0"
 dependencies = [
  "borsh",
  "tempfile",
- "vprogs-core-test-suite",
+ "vprogs-core-test-utils",
  "vprogs-core-types",
  "vprogs-scheduling-scheduler",
  "vprogs-state-metadata",
@@ -7833,35 +7823,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "vprogs-zk-test-suite"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "borsh",
- "tempfile",
- "vprogs-core-test-suite",
- "vprogs-core-types",
- "vprogs-l1-types",
- "vprogs-scheduling-scheduler",
- "vprogs-storage-manager",
- "vprogs-storage-rocksdb-store",
- "vprogs-zk-abi",
- "vprogs-zk-backend-risc0-host-api",
- "vprogs-zk-vm",
-]
-
-[[package]]
 name = "vprogs-zk-vm"
 version = "0.1.0"
 dependencies = [
  "borsh",
  "rkyv",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "vprogs-core-test-utils",
+ "vprogs-core-types",
  "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
+ "vprogs-storage-manager",
+ "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
  "vprogs-zk-abi",
+ "vprogs-zk-backend-risc0-host-api",
 ]
 
 [[package]]

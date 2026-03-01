@@ -1,6 +1,6 @@
 [package]
 edition.workspace = true
-name              = "vprogs-core-test-suite"
+name              = "vprogs-core-test-utils"
 version.workspace = true
 
 [dependencies]

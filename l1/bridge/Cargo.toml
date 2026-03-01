@@ -24,4 +24,4 @@ workflow-core.workspace        = true
 
 [dev-dependencies]
 tokio                            = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
-vprogs-node-test-suite.workspace = true
+vprogs-node-test-utils.workspace = true
