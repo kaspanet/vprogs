@@ -75,7 +75,7 @@ impl ChainBlock {
 }
 
 impl Default for ChainBlock {
-    /// Returns a sentinel root (zero hash, index 0).
+    /// Returns a sentinel root with default checkpoint (index 0, default metadata).
     fn default() -> Self {
         Self::new(Checkpoint::default())
     }

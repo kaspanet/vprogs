@@ -4,12 +4,14 @@ use vprogs_scheduling_scheduler::Scheduler;
 use vprogs_state_space::StateSpace;
 use vprogs_state_version::StateVersion;
 use vprogs_storage_rocksdb_store::RocksDbStore;
+use vprogs_storage_types::ReadStore;
 
 use crate::VM;
 
 /// Extension trait for scheduler test helpers.
 pub trait SchedulerExt {
-    /// Waits until the last pruned index reaches the expected value or timeout is reached.
+    /// Waits until batch `expected` has been fully pruned (metadata deleted from disk), or panics
+    /// on timeout.
     fn wait_pruned(&self, expected: u64, timeout: Duration) -> &Self;
 
     /// Repeatedly processes the eviction queue until the cache is empty or timeout is reached.
@@ -25,17 +27,16 @@ pub trait SchedulerExt {
 impl SchedulerExt for Scheduler<RocksDbStore, VM> {
     fn wait_pruned(&self, expected: u64, timeout: Duration) -> &Self {
         let start = Instant::now();
-        while self.pruning().last_pruned().index() < expected {
+        let key = expected.to_be_bytes();
+        loop {
+            if self.state().storage().store().get(StateSpace::BatchMetadata, &key).is_none() {
+                return self;
+            }
             if start.elapsed() > timeout {
-                panic!(
-                    "Timeout waiting for pruning. Expected last pruned index >= {}, got {}.",
-                    expected,
-                    self.pruning().last_pruned().index()
-                );
+                panic!("Timeout waiting for batch {} to be pruned from disk.", expected);
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        self
     }
 
     fn wait_cache_empty(&mut self, timeout: Duration) -> &mut Self {
@@ -54,7 +55,7 @@ impl SchedulerExt for Scheduler<RocksDbStore, VM> {
     }
 
     fn assert_written_state(&self, resource_id: usize, writers: Vec<usize>) -> &Self {
-        let store = self.storage().store();
+        let store = self.state().storage().store();
         let writer_count = writers.len();
         let writer_log: Vec<u8> = writers.iter().flat_map(|id| id.to_be_bytes()).collect();
 
@@ -65,9 +66,7 @@ impl SchedulerExt for Scheduler<RocksDbStore, VM> {
     }
 
     fn assert_resource_deleted(&self, resource_id: usize) -> &Self {
-        use vprogs_storage_types::ReadStore;
-
-        let store = self.storage().store();
+        let store = self.state().storage().store();
         let id_bytes = resource_id.to_be_bytes();
         assert!(
             store.get(StateSpace::StatePtrLatest, &id_bytes).is_none(),

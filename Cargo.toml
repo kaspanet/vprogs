@@ -45,6 +45,7 @@ resolver = "3"
     "jemalloc",
     "mt_static",
   ] }
+  serde_json = "1"
   syn = { version = "2.0.111", features = ["full"] }
   tap = "1.0.1"
   tempfile = "3.23.0"
@@ -52,6 +53,8 @@ resolver = "3"
   tokio = { version = "1", features = ["rt", "sync"] }
   tokio-util = "0.7.17"
   workflow-core = "0.18.0"
+
+  secp256k1 = { version = "0.29.1", features = ["rand-std"] }
 
   # Kaspa dependencies
   kaspa-addresses           = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
@@ -62,6 +65,7 @@ resolver = "3"
   kaspa-notify              = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
   kaspa-rpc-core            = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
   kaspa-testing-integration = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+  kaspa-txscript            = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
   kaspa-wrpc-client         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
   kaspa-wrpc-server         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
   kaspad                    = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }

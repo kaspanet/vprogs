@@ -1,7 +1,8 @@
+use borsh::{BorshDeserialize, BorshSerialize};
 use vprogs_core_types::{AccessMetadata, AccessType};
 
 /// A test access metadata specifying read or write access to a resource.
-#[derive(Clone)]
+#[derive(Clone, BorshSerialize, BorshDeserialize)]
 pub enum Access {
     Read(usize),
     Write(usize),

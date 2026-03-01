@@ -9,16 +9,16 @@ use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 
 #[test]
-pub fn test_runtime() {
+pub fn test_scheduler() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-        let mut runtime = Scheduler::new(
+        let mut scheduler = Scheduler::new(
             ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
-        let batch1 = runtime.schedule(
+        let batch1 = scheduler.schedule(
             1,
             vec![
                 Tx(0, vec![Access::Write(1), Access::Read(3)]),
@@ -27,7 +27,7 @@ pub fn test_runtime() {
             ],
         );
 
-        let batch2 = runtime.schedule(
+        let batch2 = scheduler.schedule(
             2,
             vec![
                 Tx(3, vec![Access::Write(1), Access::Read(3)]),
@@ -38,14 +38,14 @@ pub fn test_runtime() {
         batch1.wait_committed_blocking();
         batch2.wait_committed_blocking();
 
-        runtime
+        scheduler
             .assert_written_state(1, vec![0, 1, 3])
             .assert_written_state(2, vec![1])
             .assert_written_state(3, vec![])
             .assert_written_state(10, vec![4])
             .assert_written_state(20, vec![4]);
 
-        runtime.shutdown();
+        scheduler.shutdown();
     }
 }
 
@@ -55,19 +55,19 @@ pub fn test_rollback_committed() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-        let mut runtime = Scheduler::new(
+        let mut scheduler = Scheduler::new(
             ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
-        runtime.schedule(1, vec![Tx(0, vec![Access::Write(1)]), Tx(1, vec![Access::Write(2)])]);
-        runtime.schedule(2, vec![Tx(2, vec![Access::Write(1)]), Tx(3, vec![Access::Write(3)])]);
-        let last_batch =
-            runtime.schedule(3, vec![Tx(4, vec![Access::Write(1)]), Tx(5, vec![Access::Write(4)])]);
+        scheduler.schedule(1, vec![Tx(0, vec![Access::Write(1)]), Tx(1, vec![Access::Write(2)])]);
+        scheduler.schedule(2, vec![Tx(2, vec![Access::Write(1)]), Tx(3, vec![Access::Write(3)])]);
+        let last_batch = scheduler
+            .schedule(3, vec![Tx(4, vec![Access::Write(1)]), Tx(5, vec![Access::Write(4)])]);
         last_batch.wait_committed_blocking();
 
         // Verify state before rollback
-        runtime
+        scheduler
             .assert_written_state(1, vec![0, 2, 4]) // Written by tx 0, 2, 4
             .assert_written_state(2, vec![1]) // Written by tx 1
             .assert_written_state(3, vec![3]) // Written by tx 3
@@ -75,17 +75,17 @@ pub fn test_rollback_committed() {
 
         // Verify last committed checkpoint on disk
         let checkpoint: Checkpoint<u64> =
-            StateMetadata::last_committed(&**runtime.storage().store());
+            StateMetadata::last_committed(&**scheduler.state().storage().store());
         assert_eq!(checkpoint.index(), 3);
         assert_eq!(*checkpoint.metadata(), 3);
 
         // Rollback to index 1 (revert batches with index 2 and 3, keep batch with index 1)
-        let target = runtime.rollback_to(1).expect("rollback should succeed");
+        let target = scheduler.rollback_to(1).expect("rollback should succeed");
         assert_eq!(target.index(), 1);
         assert_eq!(*target.metadata(), 1);
 
         // Verify state after rollback - only batch1 effects should remain
-        runtime
+        scheduler
             .assert_written_state(1, vec![0]) // Only tx 0's write remains
             .assert_written_state(2, vec![1]) // tx 1's write remains (in batch1)
             .assert_resource_deleted(3)
@@ -93,31 +93,30 @@ pub fn test_rollback_committed() {
 
         // Verify last committed checkpoint on disk after rollback
         let checkpoint: Checkpoint<u64> =
-            StateMetadata::last_committed(&**runtime.storage().store());
+            StateMetadata::last_committed(&**scheduler.state().storage().store());
         assert_eq!(checkpoint.index(), 1);
         assert_eq!(*checkpoint.metadata(), 1);
 
-        runtime.shutdown();
+        scheduler.shutdown();
     }
 }
 
-/// Tests that new batches can be scheduled after a rollback and receive correct indices.
-/// After rollback, the batch execution context resets to the target index and new batches continue
-/// from there.
+/// Tests that new batches can be scheduled after a rollback and receive correct indices. After
+/// rollback, the scheduler state resets to the target index and new batches continue from there.
 #[test]
 pub fn test_add_batches_after_rollback() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-        let mut runtime = Scheduler::new(
+        let mut scheduler = Scheduler::new(
             ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
         // Schedule initial batches (indices 1, 2, 3)
-        let batch1 = runtime.schedule(1, vec![Tx(0, vec![Access::Write(1)])]);
-        let batch2 = runtime.schedule(2, vec![Tx(1, vec![Access::Write(2)])]);
-        let batch3 = runtime.schedule(3, vec![Tx(2, vec![Access::Write(3)])]);
+        let batch1 = scheduler.schedule(1, vec![Tx(0, vec![Access::Write(1)])]);
+        let batch2 = scheduler.schedule(2, vec![Tx(1, vec![Access::Write(2)])]);
+        let batch3 = scheduler.schedule(3, vec![Tx(2, vec![Access::Write(3)])]);
         batch3.wait_committed_blocking();
 
         assert_eq!(batch1.checkpoint().index(), 1);
@@ -125,63 +124,63 @@ pub fn test_add_batches_after_rollback() {
         assert_eq!(batch3.checkpoint().index(), 3);
 
         // Verify initial state
-        runtime
+        scheduler
             .assert_written_state(1, vec![0])
             .assert_written_state(2, vec![1])
             .assert_written_state(3, vec![2]);
 
         // Rollback to batch 1 (keep batch 1, remove batches 2 and 3)
-        runtime.rollback_to(1).expect("rollback should succeed");
+        scheduler.rollback_to(1).expect("rollback should succeed");
 
         // Resources 2 and 3 should be deleted, resource 1 should still exist
-        runtime
+        scheduler
             .assert_resource_deleted(2)
             .assert_resource_deleted(3)
             .assert_written_state(1, vec![0]);
 
         // Schedule new batches after rollback - should continue from index 2
-        let batch4 = runtime.schedule(4, vec![Tx(10, vec![Access::Write(10)])]);
-        let batch5 = runtime.schedule(5, vec![Tx(11, vec![Access::Write(11)])]);
+        let batch4 = scheduler.schedule(4, vec![Tx(10, vec![Access::Write(10)])]);
+        let batch5 = scheduler.schedule(5, vec![Tx(11, vec![Access::Write(11)])]);
         batch5.wait_committed_blocking();
 
         assert_eq!(batch4.checkpoint().index(), 2);
         assert_eq!(batch5.checkpoint().index(), 3);
 
         // Verify new state
-        runtime
+        scheduler
             .assert_written_state(1, vec![0])
             .assert_written_state(10, vec![10])
             .assert_written_state(11, vec![11]);
 
-        runtime.shutdown();
+        scheduler.shutdown();
     }
 }
 
-/// Tests in-flight batch cancellation without waiting for commitment.
-/// When a rollback occurs, batches that haven't been committed yet should detect
-/// cancellation via was_canceled() and skip their writes.
+/// Tests in-flight batch cancellation without waiting for commitment. When a rollback occurs,
+/// batches that haven't been committed yet should detect cancellation via was_canceled() and skip
+/// their writes.
 #[test]
 pub fn test_inflight_cancellation_without_waiting() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-        let mut runtime = Scheduler::new(
+        let mut scheduler = Scheduler::new(
             ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
         // Schedule a batch and wait for it to commit
-        let batch1 = runtime.schedule(1, vec![Tx(0, vec![Access::Write(1)])]);
+        let batch1 = scheduler.schedule(1, vec![Tx(0, vec![Access::Write(1)])]);
         batch1.wait_committed_blocking();
 
         // Schedule multiple batches but don't wait for commitment
-        let batch2 = runtime.schedule(2, vec![Tx(1, vec![Access::Write(2)])]);
-        let batch3 = runtime.schedule(3, vec![Tx(2, vec![Access::Write(3)])]);
-        let batch4 = runtime.schedule(4, vec![Tx(3, vec![Access::Write(4)])]);
+        let batch2 = scheduler.schedule(2, vec![Tx(1, vec![Access::Write(2)])]);
+        let batch3 = scheduler.schedule(3, vec![Tx(2, vec![Access::Write(3)])]);
+        let batch4 = scheduler.schedule(4, vec![Tx(3, vec![Access::Write(4)])]);
 
         // Immediately rollback without waiting for batches 2-4 to commit
         // This tests in-flight cancellation
-        runtime.rollback_to(1).expect("rollback should succeed");
+        scheduler.rollback_to(1).expect("rollback should succeed");
 
         // After rollback, the canceled batches should have was_canceled() == true
         assert!(batch2.was_canceled(), "batch2 should be canceled");
@@ -190,49 +189,49 @@ pub fn test_inflight_cancellation_without_waiting() {
 
         // Resource 1 should still exist (from batch1 which was committed)
         // Resources 2, 3, 4 should be cleaned up by rollback
-        runtime
+        scheduler
             .assert_written_state(1, vec![0])
             .assert_resource_deleted(2)
             .assert_resource_deleted(3)
             .assert_resource_deleted(4);
 
         // New batches scheduled after rollback should work normally
-        let batch5 = runtime.schedule(5, vec![Tx(100, vec![Access::Write(100)])]);
+        let batch5 = scheduler.schedule(5, vec![Tx(100, vec![Access::Write(100)])]);
         batch5.wait_committed_blocking();
         assert!(!batch5.was_canceled(), "batch5 should not be canceled");
-        runtime.assert_written_state(100, vec![100]);
+        scheduler.assert_written_state(100, vec![100]);
 
-        runtime.shutdown();
+        scheduler.shutdown();
     }
 }
 
-/// Tests rollback across multiple cancellation contexts with parent chain traversal.
-/// This complex scenario tests: apply 1-6; rollback to 5; apply 6-7; rollback to 3; apply 4-5.
+/// Tests rollback across multiple cancellation contexts with parent chain traversal. This complex
+/// scenario tests: apply 1-6; rollback to 5; apply 6-7; rollback to 3; apply 4-5.
 #[test]
 pub fn test_rollback_multiple_contexts() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-        let mut runtime = Scheduler::new(
+        let mut scheduler = Scheduler::new(
             ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
         // Phase 1: Apply batches 1-6
         // Using resource IDs that match batch indices for clarity
-        let batch1 = runtime.schedule(1, vec![Tx(1, vec![Access::Write(1)])]);
-        runtime.schedule(2, vec![Tx(2, vec![Access::Write(2)])]);
-        runtime.schedule(3, vec![Tx(3, vec![Access::Write(3)])]);
-        runtime.schedule(4, vec![Tx(4, vec![Access::Write(4)])]);
-        runtime.schedule(5, vec![Tx(5, vec![Access::Write(5)])]);
-        let batch6 = runtime.schedule(6, vec![Tx(6, vec![Access::Write(6)])]);
+        let batch1 = scheduler.schedule(1, vec![Tx(1, vec![Access::Write(1)])]);
+        scheduler.schedule(2, vec![Tx(2, vec![Access::Write(2)])]);
+        scheduler.schedule(3, vec![Tx(3, vec![Access::Write(3)])]);
+        scheduler.schedule(4, vec![Tx(4, vec![Access::Write(4)])]);
+        scheduler.schedule(5, vec![Tx(5, vec![Access::Write(5)])]);
+        let batch6 = scheduler.schedule(6, vec![Tx(6, vec![Access::Write(6)])]);
         batch6.wait_committed_blocking();
 
         assert_eq!(batch1.checkpoint().index(), 1);
         assert_eq!(batch6.checkpoint().index(), 6);
 
         // Verify all resources exist
-        runtime
+        scheduler
             .assert_written_state(1, vec![1])
             .assert_written_state(2, vec![2])
             .assert_written_state(3, vec![3])
@@ -241,10 +240,10 @@ pub fn test_rollback_multiple_contexts() {
             .assert_written_state(6, vec![6]);
 
         // Phase 2: Rollback to 5 (keeps batches 1-5, removes batch 6)
-        runtime.rollback_to(5).expect("rollback should succeed");
+        scheduler.rollback_to(5).expect("rollback should succeed");
 
         // Batch 6's resource should be deleted, batches 1-5 should still exist
-        runtime
+        scheduler
             .assert_resource_deleted(6)
             .assert_written_state(1, vec![1])
             .assert_written_state(2, vec![2])
@@ -253,20 +252,20 @@ pub fn test_rollback_multiple_contexts() {
             .assert_written_state(5, vec![5]);
 
         // Phase 3: Apply new batches 6-7 (after rollback)
-        let new_batch6 = runtime.schedule(60, vec![Tx(60, vec![Access::Write(60)])]);
-        let batch7 = runtime.schedule(70, vec![Tx(70, vec![Access::Write(70)])]);
+        let new_batch6 = scheduler.schedule(60, vec![Tx(60, vec![Access::Write(60)])]);
+        let batch7 = scheduler.schedule(70, vec![Tx(70, vec![Access::Write(70)])]);
         batch7.wait_committed_blocking();
 
         assert_eq!(new_batch6.checkpoint().index(), 6);
         assert_eq!(batch7.checkpoint().index(), 7);
 
-        runtime.assert_written_state(60, vec![60]).assert_written_state(70, vec![70]);
+        scheduler.assert_written_state(60, vec![60]).assert_written_state(70, vec![70]);
 
         // Phase 4: Rollback to 3 (must walk parent cancellation chain)
-        runtime.rollback_to(3).expect("rollback should succeed");
+        scheduler.rollback_to(3).expect("rollback should succeed");
 
         // Batches 1-3 should remain, 4-5 and new 6-7 should be deleted
-        runtime
+        scheduler
             .assert_written_state(1, vec![1])
             .assert_written_state(2, vec![2])
             .assert_written_state(3, vec![3])
@@ -276,88 +275,87 @@ pub fn test_rollback_multiple_contexts() {
             .assert_resource_deleted(70);
 
         // Phase 5: Apply batches 4-5 (after second rollback)
-        let final_batch4 = runtime.schedule(40, vec![Tx(40, vec![Access::Write(40)])]);
-        let final_batch5 = runtime.schedule(50, vec![Tx(50, vec![Access::Write(50)])]);
+        let final_batch4 = scheduler.schedule(40, vec![Tx(40, vec![Access::Write(40)])]);
+        let final_batch5 = scheduler.schedule(50, vec![Tx(50, vec![Access::Write(50)])]);
         final_batch5.wait_committed_blocking();
 
         assert_eq!(final_batch4.checkpoint().index(), 4);
         assert_eq!(final_batch5.checkpoint().index(), 5);
 
         // Verify final state
-        runtime
+        scheduler
             .assert_written_state(1, vec![1])
             .assert_written_state(2, vec![2])
             .assert_written_state(3, vec![3])
             .assert_written_state(40, vec![40])
             .assert_written_state(50, vec![50]);
 
-        runtime.shutdown();
+        scheduler.shutdown();
     }
 }
 
-/// Tests rollback to batch 0 (complete revert to initial state).
-/// All state should be cleared.
+/// Tests rollback to batch 0 (complete revert to initial state). All state should be cleared.
 #[test]
 pub fn test_rollback_to_zero() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-        let mut runtime = Scheduler::new(
+        let mut scheduler = Scheduler::new(
             ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
         // Schedule several batches
-        runtime.schedule(1, vec![Tx(1, vec![Access::Write(1)])]);
-        runtime.schedule(2, vec![Tx(2, vec![Access::Write(2)])]);
-        let batch3 = runtime.schedule(3, vec![Tx(3, vec![Access::Write(3)])]);
+        scheduler.schedule(1, vec![Tx(1, vec![Access::Write(1)])]);
+        scheduler.schedule(2, vec![Tx(2, vec![Access::Write(2)])]);
+        let batch3 = scheduler.schedule(3, vec![Tx(3, vec![Access::Write(3)])]);
         batch3.wait_committed_blocking();
 
         // Verify state exists
-        runtime
+        scheduler
             .assert_written_state(1, vec![1])
             .assert_written_state(2, vec![2])
             .assert_written_state(3, vec![3]);
 
         // Rollback to 0 (before any batches)
-        runtime.rollback_to(0).expect("rollback should succeed");
+        scheduler.rollback_to(0).expect("rollback should succeed");
 
         // All resources should be deleted
-        runtime.assert_resource_deleted(1).assert_resource_deleted(2).assert_resource_deleted(3);
+        scheduler.assert_resource_deleted(1).assert_resource_deleted(2).assert_resource_deleted(3);
 
         // New batches should start from index 1 again
-        let new_batch1 = runtime.schedule(100, vec![Tx(100, vec![Access::Write(100)])]);
+        let new_batch1 = scheduler.schedule(100, vec![Tx(100, vec![Access::Write(100)])]);
         new_batch1.wait_committed_blocking();
 
         assert_eq!(new_batch1.checkpoint().index(), 1);
-        runtime.assert_written_state(100, vec![100]);
+        scheduler.assert_written_state(100, vec![100]);
 
-        runtime.shutdown();
+        scheduler.shutdown();
     }
 }
 
-/// Tests multiple consecutive rollbacks without adding new batches in between.
-/// Verifies that consecutive rollbacks properly reduce state.
+/// Tests multiple consecutive rollbacks without adding new batches in between. Verifies that
+/// consecutive rollbacks properly reduce state.
 #[test]
 pub fn test_consecutive_rollbacks() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-        let mut runtime = Scheduler::new(
+        let mut scheduler = Scheduler::new(
             ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
         // Create 5 batches
-        runtime.schedule(1, vec![Tx(1, vec![Access::Write(1)])]);
-        runtime.schedule(2, vec![Tx(2, vec![Access::Write(2)])]);
-        runtime.schedule(3, vec![Tx(3, vec![Access::Write(3)])]);
-        runtime.schedule(4, vec![Tx(4, vec![Access::Write(4)])]);
-        let batch5 = runtime.schedule(5, vec![Tx(5, vec![Access::Write(5)])]);
+        scheduler.schedule(1, vec![Tx(1, vec![Access::Write(1)])]);
+        scheduler.schedule(2, vec![Tx(2, vec![Access::Write(2)])]);
+        scheduler.schedule(3, vec![Tx(3, vec![Access::Write(3)])]);
+        scheduler.schedule(4, vec![Tx(4, vec![Access::Write(4)])]);
+        let batch5 = scheduler.schedule(5, vec![Tx(5, vec![Access::Write(5)])]);
         batch5.wait_committed_blocking();
 
         // Verify all exist
-        runtime
+        scheduler
             .assert_written_state(1, vec![1])
             .assert_written_state(2, vec![2])
             .assert_written_state(3, vec![3])
@@ -365,8 +363,8 @@ pub fn test_consecutive_rollbacks() {
             .assert_written_state(5, vec![5]);
 
         // First rollback: to 4
-        runtime.rollback_to(4).expect("rollback should succeed");
-        runtime
+        scheduler.rollback_to(4).expect("rollback should succeed");
+        scheduler
             .assert_resource_deleted(5)
             .assert_written_state(1, vec![1])
             .assert_written_state(2, vec![2])
@@ -374,8 +372,8 @@ pub fn test_consecutive_rollbacks() {
             .assert_written_state(4, vec![4]);
 
         // Second rollback: to 3
-        runtime.rollback_to(3).expect("rollback should succeed");
-        runtime
+        scheduler.rollback_to(3).expect("rollback should succeed");
+        scheduler
             .assert_resource_deleted(4)
             .assert_resource_deleted(5)
             .assert_written_state(1, vec![1])
@@ -383,84 +381,84 @@ pub fn test_consecutive_rollbacks() {
             .assert_written_state(3, vec![3]);
 
         // Third rollback: to 1
-        runtime.rollback_to(1).expect("rollback should succeed");
-        runtime
+        scheduler.rollback_to(1).expect("rollback should succeed");
+        scheduler
             .assert_resource_deleted(2)
             .assert_resource_deleted(3)
             .assert_written_state(1, vec![1]);
 
         // Verify batch execution indices are correct
-        let new_batch = runtime.schedule(100, vec![Tx(100, vec![Access::Write(100)])]);
+        let new_batch = scheduler.schedule(100, vec![Tx(100, vec![Access::Write(100)])]);
         new_batch.wait_committed_blocking();
         assert_eq!(new_batch.checkpoint().index(), 2);
 
-        runtime.shutdown();
+        scheduler.shutdown();
     }
 }
 
-/// Tests rollback of batches that modify the same resource multiple times.
-/// This exercises the resource dependency chain and version restoration.
+/// Tests rollback of batches that modify the same resource multiple times. This exercises the
+/// resource dependency chain and version restoration.
 #[test]
 pub fn test_rollback_same_resource_multiple_writes() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-        let mut runtime = Scheduler::new(
+        let mut scheduler = Scheduler::new(
             ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
         // Multiple batches all writing to resource 1
-        runtime.schedule(1, vec![Tx(10, vec![Access::Write(1)])]);
-        runtime.schedule(2, vec![Tx(20, vec![Access::Write(1)])]);
-        runtime.schedule(3, vec![Tx(30, vec![Access::Write(1)])]);
-        let batch4 = runtime.schedule(4, vec![Tx(40, vec![Access::Write(1)])]);
+        scheduler.schedule(1, vec![Tx(10, vec![Access::Write(1)])]);
+        scheduler.schedule(2, vec![Tx(20, vec![Access::Write(1)])]);
+        scheduler.schedule(3, vec![Tx(30, vec![Access::Write(1)])]);
+        let batch4 = scheduler.schedule(4, vec![Tx(40, vec![Access::Write(1)])]);
         batch4.wait_committed_blocking();
 
         // Resource 1 should have been written by all 4 transactions
-        runtime.assert_written_state(1, vec![10, 20, 30, 40]);
+        scheduler.assert_written_state(1, vec![10, 20, 30, 40]);
 
         // Rollback to batch 2 (keep writes from batch 1 and 2)
-        runtime.rollback_to(2).expect("rollback should succeed");
-        runtime.assert_written_state(1, vec![10, 20]);
+        scheduler.rollback_to(2).expect("rollback should succeed");
+        scheduler.assert_written_state(1, vec![10, 20]);
 
         // Add more writes
-        let batch5 = runtime.schedule(5, vec![Tx(50, vec![Access::Write(1)])]);
+        let batch5 = scheduler.schedule(5, vec![Tx(50, vec![Access::Write(1)])]);
         batch5.wait_committed_blocking();
 
         // Now should have 10, 20, 50
-        runtime.assert_written_state(1, vec![10, 20, 50]);
+        scheduler.assert_written_state(1, vec![10, 20, 50]);
 
         // Rollback to batch 1
-        runtime.rollback_to(1).expect("rollback should succeed");
-        runtime.assert_written_state(1, vec![10]);
+        scheduler.rollback_to(1).expect("rollback should succeed");
+        scheduler.assert_written_state(1, vec![10]);
 
-        runtime.shutdown();
+        scheduler.shutdown();
     }
 }
 
-/// Tests that canceled batches are marked as canceled and wait functions
-/// return immediately without blocking.
+/// Tests that canceled batches are marked as canceled and wait functions return immediately without
+/// blocking.
 #[test]
 pub fn test_cancellation_skips_writes() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-        let mut runtime = Scheduler::new(
+        let mut scheduler = Scheduler::new(
             ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
         // Create and commit a batch to resource 1
-        let batch1 = runtime.schedule(1, vec![Tx(1, vec![Access::Write(1)])]);
+        let batch1 = scheduler.schedule(1, vec![Tx(1, vec![Access::Write(1)])]);
         batch1.wait_committed_blocking();
 
         // Schedule batches that access different resources
-        let batch2 = runtime.schedule(2, vec![Tx(2, vec![Access::Write(100)])]);
-        let batch3 = runtime.schedule(3, vec![Tx(3, vec![Access::Write(200)])]);
+        let batch2 = scheduler.schedule(2, vec![Tx(2, vec![Access::Write(100)])]);
+        let batch3 = scheduler.schedule(3, vec![Tx(3, vec![Access::Write(200)])]);
 
         // Rollback immediately - batch2 and batch3 should be canceled
-        runtime.rollback_to(1).expect("rollback should succeed");
+        scheduler.rollback_to(1).expect("rollback should succeed");
 
         // Verify both batches were canceled
         assert!(batch2.was_canceled(), "batch2 should be canceled");
@@ -472,38 +470,38 @@ pub fn test_cancellation_skips_writes() {
 
         // Resource 1 should only have the write from batch1
         // Resources 100 and 200 should be cleaned up by rollback
-        runtime
+        scheduler
             .assert_written_state(1, vec![1])
             .assert_resource_deleted(100)
             .assert_resource_deleted(200);
 
-        runtime.shutdown();
+        scheduler.shutdown();
     }
 }
 
-/// Tests complex scenario with interleaved writes to multiple resources
-/// followed by rollback and new writes.
+/// Tests complex scenario with interleaved writes to multiple resources followed by rollback and
+/// new writes.
 #[test]
 pub fn test_rollback_interleaved_multi_resource() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-        let mut runtime = Scheduler::new(
+        let mut scheduler = Scheduler::new(
             ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
         // Batch 1: Write to resources 1 and 2
-        runtime.schedule(1, vec![Tx(10, vec![Access::Write(1)]), Tx(11, vec![Access::Write(2)])]);
+        scheduler.schedule(1, vec![Tx(10, vec![Access::Write(1)]), Tx(11, vec![Access::Write(2)])]);
 
         // Batch 2: Write to resources 2 and 3
-        runtime.schedule(2, vec![Tx(20, vec![Access::Write(2)]), Tx(21, vec![Access::Write(3)])]);
+        scheduler.schedule(2, vec![Tx(20, vec![Access::Write(2)]), Tx(21, vec![Access::Write(3)])]);
 
         // Batch 3: Write to resources 1 and 3
-        runtime.schedule(3, vec![Tx(30, vec![Access::Write(1)]), Tx(31, vec![Access::Write(3)])]);
+        scheduler.schedule(3, vec![Tx(30, vec![Access::Write(1)]), Tx(31, vec![Access::Write(3)])]);
 
         // Batch 4: Write to all resources
-        let batch4 = runtime.schedule(
+        let batch4 = scheduler.schedule(
             4,
             vec![
                 Tx(40, vec![Access::Write(1)]),
@@ -514,21 +512,21 @@ pub fn test_rollback_interleaved_multi_resource() {
         batch4.wait_committed_blocking();
 
         // Verify state before rollback
-        runtime
+        scheduler
             .assert_written_state(1, vec![10, 30, 40])
             .assert_written_state(2, vec![11, 20, 41])
             .assert_written_state(3, vec![21, 31, 42]);
 
         // Rollback to batch 2
-        runtime.rollback_to(2).expect("rollback should succeed");
+        scheduler.rollback_to(2).expect("rollback should succeed");
 
-        runtime
+        scheduler
             .assert_written_state(1, vec![10]) // Only from batch 1
             .assert_written_state(2, vec![11, 20]) // From batch 1 and 2
             .assert_written_state(3, vec![21]); // Only from batch 2
 
         // Add new batches after rollback
-        let batch5 = runtime.schedule(
+        let batch5 = scheduler.schedule(
             5,
             vec![
                 Tx(50, vec![Access::Write(1)]),
@@ -538,13 +536,13 @@ pub fn test_rollback_interleaved_multi_resource() {
         batch5.wait_committed_blocking();
 
         // Verify mixed state
-        runtime
+        scheduler
             .assert_written_state(1, vec![10, 50])
             .assert_written_state(2, vec![11, 20])
             .assert_written_state(3, vec![21])
             .assert_written_state(4, vec![51]);
 
-        runtime.shutdown();
+        scheduler.shutdown();
     }
 }
 
@@ -554,7 +552,7 @@ pub fn test_resource_eviction() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-        let mut runtime = Scheduler::new(
+        let mut scheduler = Scheduler::new(
             ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
@@ -568,25 +566,25 @@ pub fn test_resource_eviction() {
             let txs: Vec<_> = (0..RESOURCES_PER_BATCH)
                 .map(|i| Tx(base_resource + i, vec![Access::Write(base_resource + i)]))
                 .collect();
-            batches.push(runtime.schedule((batch_idx + 1) as u64, txs));
+            batches.push(scheduler.schedule((batch_idx + 1) as u64, txs));
         }
 
         for batch in &batches {
             batch.wait_committed_blocking();
         }
 
-        runtime.wait_cache_empty(Duration::from_secs(10));
+        scheduler.wait_cache_empty(Duration::from_secs(10));
 
         // Verify data was written correctly for a sample of resources
         for batch_idx in [0, 50, 99] {
             let base_resource = batch_idx * RESOURCES_PER_BATCH;
             for i in 0..RESOURCES_PER_BATCH {
                 let resource_id = base_resource + i;
-                runtime.assert_written_state(resource_id, vec![resource_id]);
+                scheduler.assert_written_state(resource_id, vec![resource_id]);
             }
         }
 
-        runtime.shutdown();
+        scheduler.shutdown();
     }
 }
 
@@ -596,7 +594,7 @@ pub fn test_eviction_under_load() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-        let mut runtime = Scheduler::new(
+        let mut scheduler = Scheduler::new(
             ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
@@ -610,7 +608,7 @@ pub fn test_eviction_under_load() {
             let batches: Vec<_> = (0..BATCHES_PER_WAVE)
                 .map(|i| {
                     let resource_id = base + i;
-                    runtime.schedule(
+                    scheduler.schedule(
                         (base + i + 1) as u64,
                         vec![Tx(resource_id, vec![Access::Write(resource_id)])],
                     )
@@ -621,10 +619,10 @@ pub fn test_eviction_under_load() {
                 batch.wait_committed_blocking();
             }
 
-            runtime.wait_cache_empty(Duration::from_secs(10));
+            scheduler.wait_cache_empty(Duration::from_secs(10));
         }
 
-        runtime.shutdown();
+        scheduler.shutdown();
     }
 }
 
@@ -636,19 +634,19 @@ pub fn test_basic_pruning() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-        let mut runtime = Scheduler::new(
+        let mut scheduler = Scheduler::new(
             ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
         // Create batches that write to resources (generates rollback pointers)
-        let batch1 = runtime.schedule(1, vec![Tx(1, vec![Access::Write(1)])]);
-        let batch2 = runtime.schedule(2, vec![Tx(2, vec![Access::Write(1)])]);
-        let batch3 = runtime.schedule(3, vec![Tx(3, vec![Access::Write(1)])]);
+        let batch1 = scheduler.schedule(1, vec![Tx(1, vec![Access::Write(1)])]);
+        let batch2 = scheduler.schedule(2, vec![Tx(2, vec![Access::Write(1)])]);
+        let batch3 = scheduler.schedule(3, vec![Tx(3, vec![Access::Write(1)])]);
         batch3.wait_committed_blocking();
 
         // Verify rollback pointers exist for batches 2 and 3
-        let store = runtime.storage().store();
+        let store = scheduler.state().storage().store();
         assert_eq!(
             StatePtrRollback::iter_batch(store.as_ref(), batch2.checkpoint().index()).count(),
             1,
@@ -661,8 +659,8 @@ pub fn test_basic_pruning() {
         );
 
         // Set pruning threshold to batch 3 (prune batches 1 and 2)
-        runtime.pruning().set_threshold(batch3.checkpoint().index());
-        runtime.wait_pruned(batch2.checkpoint().index(), Duration::from_secs(10));
+        scheduler.pruning().set_threshold(batch3.checkpoint().index());
+        scheduler.wait_pruned(batch2.checkpoint().index(), Duration::from_secs(10));
 
         // Verify rollback pointers for batches 1 and 2 are deleted
         assert_eq!(
@@ -684,9 +682,9 @@ pub fn test_basic_pruning() {
         );
 
         // Data should still be readable
-        runtime.assert_written_state(1, vec![1, 2, 3]);
+        scheduler.assert_written_state(1, vec![1, 2, 3]);
 
-        runtime.shutdown();
+        scheduler.shutdown();
     }
 }
 
@@ -698,18 +696,18 @@ pub fn test_pruning_preserves_recent_batches() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-        let mut runtime = Scheduler::new(
+        let mut scheduler = Scheduler::new(
             ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
         // Create 5 batches, each overwriting the same resource
         for i in 1..=5 {
-            let batch = runtime.schedule(i as u64, vec![Tx(i, vec![Access::Write(1)])]);
+            let batch = scheduler.schedule(i as u64, vec![Tx(i, vec![Access::Write(1)])]);
             batch.wait_committed_blocking();
         }
 
-        let store = runtime.storage().store();
+        let store = scheduler.state().storage().store();
 
         // Verify all batches 2-5 have rollback pointers
         for batch_idx in 2..=5 {
@@ -722,8 +720,8 @@ pub fn test_pruning_preserves_recent_batches() {
         }
 
         // Prune batches 1-3 (threshold = 4 means batches < 4 are eligible)
-        runtime.pruning().set_threshold(4);
-        runtime.wait_pruned(3, Duration::from_secs(10));
+        scheduler.pruning().set_threshold(4);
+        scheduler.wait_pruned(3, Duration::from_secs(10));
 
         // Batches 1-3 should be pruned
         for batch_idx in 1..=3 {
@@ -745,7 +743,7 @@ pub fn test_pruning_preserves_recent_batches() {
             );
         }
 
-        runtime.shutdown();
+        scheduler.shutdown();
     }
 }
 
@@ -760,41 +758,42 @@ pub fn test_pruning_crash_recovery() {
     // Phase 1: Create batches, prune some, then shutdown
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-        let mut runtime = Scheduler::new(
+        let mut scheduler = Scheduler::new(
             ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
         for i in 1..=5 {
-            let batch = runtime.schedule(i as u64, vec![Tx(i, vec![Access::Write(1)])]);
+            let batch = scheduler.schedule(i as u64, vec![Tx(i, vec![Access::Write(1)])]);
             batch.wait_committed_blocking();
         }
 
         // Prune batches 1-2
-        runtime.pruning().set_threshold(3);
-        runtime.wait_pruned(2, Duration::from_secs(10));
+        scheduler.pruning().set_threshold(3);
+        scheduler.wait_pruned(2, Duration::from_secs(10));
 
-        // Verify last_pruned is persisted with correct metadata
-        let pruned = StateMetadata::last_pruned::<u64, _>(&**runtime.storage().store());
-        assert_eq!(pruned.index(), 2, "Last pruned index should be persisted");
-        assert_eq!(*pruned.metadata(), 2, "Last pruned metadata should be persisted");
+        // Verify root has advanced past the pruned batches.
+        // Root = oldest surviving batch = 3 (since batches 1-2 were pruned).
+        let root = StateMetadata::root::<u64, _>(&**scheduler.state().storage().store());
+        assert_eq!(root.index(), 3, "Root should point to first surviving batch");
+        assert_eq!(*root.metadata(), 3, "Root metadata should match batch 3");
 
-        runtime.shutdown();
+        scheduler.shutdown();
     }
 
     // Phase 2: Reopen and verify pruning state is preserved
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-        let runtime = Scheduler::new(
+        let scheduler = Scheduler::new(
             ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
-        let pruned = runtime.pruning().last_pruned();
-        assert_eq!(pruned.index(), 2, "Pruning should resume from persisted index");
-        assert_eq!(*pruned.metadata(), 2, "Pruning metadata should survive restart");
+        let root = scheduler.state().root();
+        assert_eq!(root.index(), 3, "Root should resume from persisted index");
+        assert_eq!(*root.metadata(), 3, "Root metadata should survive restart");
 
-        let store = runtime.storage().store();
+        let store = scheduler.state().storage().store();
 
         // Batches 1-2 should still be pruned
         for batch_idx in 1..=2 {
@@ -817,8 +816,8 @@ pub fn test_pruning_crash_recovery() {
         }
 
         // Continue pruning from where we left off
-        runtime.pruning().set_threshold(5);
-        runtime.wait_pruned(4, Duration::from_secs(10));
+        scheduler.pruning().set_threshold(5);
+        scheduler.wait_pruned(4, Duration::from_secs(10));
 
         // Batches 3-4 should now be pruned
         for batch_idx in 3..=4 {
@@ -837,7 +836,7 @@ pub fn test_pruning_crash_recovery() {
             "Batch 5 should NOT be pruned"
         );
 
-        runtime.shutdown();
+        scheduler.shutdown();
     }
 }
 
@@ -849,13 +848,13 @@ pub fn test_pruning_multiple_resources() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-        let mut runtime = Scheduler::new(
+        let mut scheduler = Scheduler::new(
             ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
         // Batch 1: Create resources 1, 2, 3
-        let batch1 = runtime.schedule(
+        let batch1 = scheduler.schedule(
             1,
             vec![
                 Tx(1, vec![Access::Write(1)]),
@@ -866,7 +865,7 @@ pub fn test_pruning_multiple_resources() {
         batch1.wait_committed_blocking();
 
         // Batch 2: Overwrite all three resources
-        let batch2 = runtime.schedule(
+        let batch2 = scheduler.schedule(
             2,
             vec![
                 Tx(10, vec![Access::Write(1)]),
@@ -877,7 +876,7 @@ pub fn test_pruning_multiple_resources() {
         batch2.wait_committed_blocking();
 
         // Batch 3: Overwrite all three resources again
-        let batch3 = runtime.schedule(
+        let batch3 = scheduler.schedule(
             3,
             vec![
                 Tx(100, vec![Access::Write(1)]),
@@ -887,7 +886,7 @@ pub fn test_pruning_multiple_resources() {
         );
         batch3.wait_committed_blocking();
 
-        let store = runtime.storage().store();
+        let store = scheduler.state().storage().store();
 
         // Batch 2 and 3 should have 3 rollback pointers each
         assert_eq!(
@@ -902,8 +901,8 @@ pub fn test_pruning_multiple_resources() {
         );
 
         // Prune batch 1 and 2
-        runtime.pruning().set_threshold(batch3.checkpoint().index());
-        runtime.wait_pruned(batch2.checkpoint().index(), Duration::from_secs(10));
+        scheduler.pruning().set_threshold(batch3.checkpoint().index());
+        scheduler.wait_pruned(batch2.checkpoint().index(), Duration::from_secs(10));
 
         // All rollback pointers for batches 1 and 2 should be deleted
         assert_eq!(
@@ -925,20 +924,20 @@ pub fn test_pruning_multiple_resources() {
         );
 
         // Data should still be readable
-        runtime
+        scheduler
             .assert_written_state(1, vec![1, 10, 100])
             .assert_written_state(2, vec![2, 20, 200])
             .assert_written_state(3, vec![3, 30, 300]);
 
-        runtime.shutdown();
+        scheduler.shutdown();
     }
 }
 
 /// Tests that `pause()` constrains the pruning worker and `unpause()` releases it.
 ///
-/// Calls `pause(ceiling)` directly, then advances the pruning threshold well past the
-/// ceiling. The worker must not prune at or above the ceiling. After `unpause()`, the
-/// worker must catch up to the full threshold.
+/// Calls `pause(ceiling)` directly, then advances the pruning threshold well past the ceiling. The
+/// worker must not prune at or above the ceiling. After `unpause()`, the worker must catch up to
+/// the full threshold.
 #[test]
 pub fn test_pruning_pause_and_unpause() {
     use vprogs_state_ptr_rollback::StatePtrRollback;
@@ -946,27 +945,27 @@ pub fn test_pruning_pause_and_unpause() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-        let mut runtime = Scheduler::new(
+        let mut scheduler = Scheduler::new(
             ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
         // Create 6 committed batches, each overwriting the same resource.
         for i in 1..=6 {
-            let batch = runtime.schedule(i as u64, vec![Tx(i, vec![Access::Write(1)])]);
+            let batch = scheduler.schedule(i as u64, vec![Tx(i, vec![Access::Write(1)])]);
             batch.wait_committed_blocking();
         }
 
         // Pause pruning at batch 3: the worker may only prune batches 1-2.
-        assert!(runtime.pruning().pause(3));
+        assert!(scheduler.pruning().pause(3));
 
         // Advance threshold so batches 1-5 become eligible.
-        runtime.pruning().set_threshold(6);
+        scheduler.pruning().set_threshold(6);
 
         // Wait for the worker to prune what it can (batches 1-2, below the ceiling).
-        runtime.wait_pruned(2, Duration::from_secs(10));
+        scheduler.wait_pruned(2, Duration::from_secs(10));
 
-        let store = runtime.storage().store();
+        let store = scheduler.state().storage().store();
 
         // Batches at or above the ceiling must still have their rollback pointers.
         for batch_idx in 3..=6 {
@@ -978,8 +977,8 @@ pub fn test_pruning_pause_and_unpause() {
         }
 
         // Unpause — the worker should now catch up to the full threshold.
-        runtime.pruning().unpause();
-        runtime.wait_pruned(5, Duration::from_secs(10));
+        scheduler.pruning().unpause();
+        scheduler.wait_pruned(5, Duration::from_secs(10));
 
         for batch_idx in 1..=5 {
             assert_eq!(
@@ -996,12 +995,12 @@ pub fn test_pruning_pause_and_unpause() {
             "Batch 6 should NOT be pruned (at threshold)"
         );
 
-        runtime.shutdown();
+        scheduler.shutdown();
     }
 }
 
-/// Tests that `rollback_to` returns `PruningConflict` when the rollback target
-/// has already been pruned past.
+/// Tests that `rollback_to` returns `PruningConflict` when the rollback target has already been
+/// pruned past.
 #[test]
 pub fn test_rollback_pruning_conflict() {
     use vprogs_scheduling_scheduler::SchedulerError;
@@ -1009,29 +1008,29 @@ pub fn test_rollback_pruning_conflict() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-        let mut runtime = Scheduler::new(
+        let mut scheduler = Scheduler::new(
             ExecutionConfig::default().with_vm(VM),
             StorageConfig::default().with_store(storage),
         );
 
         // Create 5 committed batches.
         for i in 1..=5 {
-            let batch = runtime.schedule(i as u64, vec![Tx(i, vec![Access::Write(1)])]);
+            let batch = scheduler.schedule(i as u64, vec![Tx(i, vec![Access::Write(1)])]);
             batch.wait_committed_blocking();
         }
 
         // Prune batches 1-3 (threshold = 4, batches < 4 eligible).
-        runtime.pruning().set_threshold(4);
-        runtime.wait_pruned(3, Duration::from_secs(10));
+        scheduler.pruning().set_threshold(4);
+        scheduler.wait_pruned(3, Duration::from_secs(10));
 
         // Rollback to batch 2 should fail — its rollback pointers are gone.
-        let err = runtime.rollback_to(2).unwrap_err();
+        let err = scheduler.rollback_to(2).unwrap_err();
         assert!(matches!(err, SchedulerError::PruningConflict));
 
         // Rollback to batch 4 should still succeed — above the pruned range.
-        let target = runtime.rollback_to(4).expect("rollback should succeed");
+        let target = scheduler.rollback_to(4).expect("rollback should succeed");
         assert_eq!(target.index(), 4);
 
-        runtime.shutdown();
+        scheduler.shutdown();
     }
 }

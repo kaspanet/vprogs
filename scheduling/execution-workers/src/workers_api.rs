@@ -9,6 +9,7 @@ use vprogs_core_macros::smart_pointer;
 
 use crate::{Batch, Worker, task::Task};
 
+/// Shared state for the worker pool: batch inboxes, task stealers, and shutdown coordination.
 #[smart_pointer]
 pub struct WorkersApi<T: Task, B: Batch<T>> {
     worker_count: usize,
@@ -20,6 +21,7 @@ pub struct WorkersApi<T: Task, B: Batch<T>> {
 }
 
 impl<T: Task, B: Batch<T>> WorkersApi<T, B> {
+    /// Creates workers and returns the shared API handle alongside the worker thread handles.
     pub fn new_with_workers(worker_count: usize) -> (Self, Vec<JoinHandle<()>>) {
         let mut data = WorkersApiData {
             worker_count,
@@ -46,6 +48,7 @@ impl<T: Task, B: Batch<T>> WorkersApi<T, B> {
         (this, handles)
     }
 
+    /// Distributes a batch to every worker's inbox, waking each one.
     pub fn push_batch(&self, batch: B) {
         for (inbox, unparker) in self.inboxes.iter().zip(&self.unparkers) {
             let mut item = batch.clone();
@@ -62,11 +65,13 @@ impl<T: Task, B: Batch<T>> WorkersApi<T, B> {
         }
     }
 
+    /// Pushes a standalone task to the global queue and wakes a random worker.
     pub fn push_task(&self, task: T) {
         self.global_tasks.push(task);
         self.unparkers[fastrand::usize(..self.worker_count)].unpark();
     }
 
+    /// Tries to steal a task from the global queue.
     pub fn steal_global_task(&self) -> Option<T> {
         loop {
             match self.global_tasks.steal() {
@@ -77,6 +82,7 @@ impl<T: Task, B: Batch<T>> WorkersApi<T, B> {
         }
     }
 
+    /// Tries to steal a task from another worker's local queue, starting at a random offset.
     pub fn steal_from_other_workers(&self, worker_id: usize) -> Option<T> {
         if self.worker_count > 1 {
             let start = fastrand::usize(..self.worker_count);
@@ -96,14 +102,16 @@ impl<T: Task, B: Batch<T>> WorkersApi<T, B> {
         None
     }
 
+    /// Signals all workers to shut down and wakes them so they exit promptly.
     pub fn shutdown(&self) {
-        self.shutdown.open(); // trigger shutdown signal
+        self.shutdown.open();
 
         for unparker in &self.unparkers {
             unparker.unpark();
         }
     }
 
+    /// Returns true if shutdown has been signaled.
     pub fn is_shutdown(&self) -> bool {
         self.shutdown.is_open()
     }

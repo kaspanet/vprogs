@@ -10,6 +10,11 @@ use vprogs_storage_types::Store;
 
 use crate::{RuntimeBatch, VmInterface};
 
+/// Background worker that drives each batch through its lifecycle stages.
+///
+/// Batches are pushed into a queue and processed sequentially: wait for all transactions to
+/// execute, call the VM's post-process hook, wait for all state diffs to persist, then submit the
+/// batch for commit and wait for finalization.
 pub(crate) struct BatchLifecycleWorker<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     queue: Arc<SegQueue<RuntimeBatch<S, V>>>,
     notify: Arc<Notify>,
