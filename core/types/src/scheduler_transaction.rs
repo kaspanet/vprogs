@@ -5,7 +5,8 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use crate::AccessMetadata;
 
 /// A transaction payload `T` paired with pre-parsed access metadata, ready for scheduling.
-#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)] // borsh serialization
+#[derive(Clone, Debug)]
+#[derive(BorshSerialize, BorshDeserialize)] // borsh serialization
 pub struct SchedulerTransaction<T> {
     pub tx: T,
     pub resources: Vec<AccessMetadata>,

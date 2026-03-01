@@ -3,7 +3,8 @@ use rkyv::{Archive, Deserialize, Serialize};
 
 use crate::{AccessType, ResourceId};
 
-#[derive(Clone, Copy, Debug, Archive, Serialize, Deserialize)] // rkyv serialization
+#[derive(Clone, Copy, Debug)]
+#[derive(Archive, Serialize, Deserialize)] // rkyv serialization
 #[derive(BorshSerialize, BorshDeserialize)] // borsh serialization
 pub struct AccessMetadata {
     pub id: ResourceId,
