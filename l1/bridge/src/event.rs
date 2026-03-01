@@ -15,7 +15,7 @@ pub enum L1Event {
         checkpoint: Checkpoint<ChainBlockMetadata>,
         /// Block header.
         header: Box<RpcOptionalHeader>,
-        /// Native kaspa transactions from this block's mergeset that became confirmed.
+        /// Native transactions from this block's mergeset that became confirmed.
         accepted_transactions: Vec<L1Transaction>,
     },
     /// Blocks after this checkpoint have been removed due to a reorg.

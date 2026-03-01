@@ -7370,6 +7370,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-core-test-suite"
+version = "0.1.0"
+dependencies = [
+ "vprogs-core-types",
+]
+
+[[package]]
 name = "vprogs-core-types"
 version = "0.1.0"
 dependencies = [
@@ -7444,6 +7451,7 @@ dependencies = [
  "tokio",
  "vprogs-core-atomics",
  "vprogs-core-macros",
+ "vprogs-core-test-suite",
  "vprogs-core-types",
  "vprogs-l1-bridge",
  "vprogs-l1-types",
@@ -7474,6 +7482,7 @@ dependencies = [
  "tap",
  "tempfile",
  "tokio",
+ "vprogs-core-test-suite",
  "vprogs-core-types",
  "vprogs-l1-bridge",
  "vprogs-l1-types",
@@ -7545,6 +7554,7 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "tempfile",
+ "vprogs-core-test-suite",
  "vprogs-core-types",
  "vprogs-scheduling-scheduler",
  "vprogs-state-metadata",
@@ -7829,6 +7839,7 @@ dependencies = [
  "blake3",
  "borsh",
  "tempfile",
+ "vprogs-core-test-suite",
  "vprogs-core-types",
  "vprogs-l1-types",
  "vprogs-scheduling-scheduler",

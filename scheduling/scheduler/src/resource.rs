@@ -28,7 +28,9 @@ impl<S: Store, P: Processor> Resource<S, P> {
                 assert!(prev_access.tx() != tx, "duplicate access to resource");
                 (prev_access.state_diff(), Some(prev_access))
             }
-            prev_access => (StateDiff::new(batch.clone(), access_metadata.id), prev_access),
+            prev_access => {
+                (StateDiff::new(batch.clone(), access_metadata.resource_id), prev_access)
+            }
         };
 
         ResourceAccess::new(*access_metadata, tx.clone(), state_diff_ref, prev_access)

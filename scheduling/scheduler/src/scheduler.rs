@@ -210,7 +210,7 @@ impl<S: Store, P: Processor> Scheduler<S, P> {
             .map(|access| {
                 // Get or create the resource entry and link this transaction into its chain.
                 self.resources
-                    .entry(access.id)
+                    .entry(access.resource_id)
                     .or_default()
                     .access(access, &scheduled_tx, batch)
                     .tap(|access| {

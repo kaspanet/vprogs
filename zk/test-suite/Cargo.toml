@@ -7,6 +7,7 @@ version.workspace = true
 blake3.workspace                           = true
 borsh.workspace                            = true
 tempfile.workspace                         = true
+vprogs-core-test-suite.workspace           = true
 vprogs-core-types.workspace                = true
 vprogs-l1-types.workspace                  = true
 vprogs-scheduling-scheduler.workspace      = true

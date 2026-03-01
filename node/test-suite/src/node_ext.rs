@@ -23,10 +23,10 @@ pub trait NodeExt {
     fn wait_pruned(&self, expected: u64, timeout: Duration);
 
     /// Asserts that a resource was written by the given L1 transactions (in order).
-    fn assert_written_state(&self, resource_id: usize, writers: &[Hash]);
+    fn assert_written_state(&self, resource_id: ResourceId, writers: &[Hash]);
 
     /// Asserts that a resource has been deleted (no latest pointer exists).
-    fn assert_resource_deleted(&self, resource_id: usize);
+    fn assert_resource_deleted(&self, resource_id: ResourceId);
 }
 
 impl NodeExt for NodeApi<RocksDbStore, TestNodeVm> {
@@ -64,31 +64,31 @@ impl NodeExt for NodeApi<RocksDbStore, TestNodeVm> {
         }
     }
 
-    fn assert_written_state(&self, resource_id: usize, writers: &[Hash]) {
+    fn assert_written_state(&self, resource_id: ResourceId, writers: &[Hash]) {
         let store = self.storage().store();
         let writer_count = writers.len();
         let writer_log: Vec<u8> = writers.iter().flat_map(|h| h.as_bytes()).collect();
 
-        let versioned_state = StateVersion::from_latest_data(store.as_ref(), resource_id.into());
+        let versioned_state = StateVersion::from_latest_data(store.as_ref(), resource_id);
         assert_eq!(
             versioned_state.version(),
             writer_count as u64,
-            "resource {resource_id}: expected version {writer_count}, got {}",
+            "resource {resource_id:?}: expected version {writer_count}, got {}",
             versioned_state.version()
         );
         assert_eq!(
             *versioned_state.data(),
             writer_log,
-            "resource {resource_id}: unexpected writer log"
+            "resource {resource_id:?}: unexpected writer log"
         );
     }
 
-    fn assert_resource_deleted(&self, resource_id: usize) {
+    fn assert_resource_deleted(&self, resource_id: ResourceId) {
         let store = self.storage().store();
-        let id_bytes = *ResourceId::from(resource_id).as_bytes();
+        let id_bytes = *resource_id.as_bytes();
         assert!(
             store.get(StateSpace::StatePtrLatest, &id_bytes).is_none(),
-            "Resource {resource_id} should have been deleted but still exists",
+            "Resource {resource_id:?} should have been deleted but still exists",
         );
     }
 }

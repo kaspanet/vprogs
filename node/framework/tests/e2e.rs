@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use tempfile::TempDir;
-use vprogs_core_types::AccessMetadata;
+use vprogs_core_test_suite::ResourceIdExt;
+use vprogs_core_types::{AccessMetadata, ResourceId};
 use vprogs_l1_bridge::L1BridgeConfig;
 use vprogs_l1_types::{Hash, NetworkType};
 use vprogs_node_framework::{Node, NodeConfig};
@@ -35,7 +36,7 @@ fn create_node(l1: &L1Node, temp_dir: &TempDir) -> Node<RocksDbStore, TestNodeVm
 async fn mine_payload_blocks(l1: &L1Node, count: usize) -> Vec<Hash> {
     let mut tx_hashes = Vec::with_capacity(count);
     for i in 1..=count {
-        let payload = borsh::to_vec(&vec![AccessMetadata::write(i)]).unwrap();
+        let payload = borsh::to_vec(&vec![AccessMetadata::write(ResourceId::for_test(i))]).unwrap();
         let txs = l1.build_payload_transactions(vec![payload]).await;
         tx_hashes.push(txs[0].id());
         l1.mine_block(Some(&txs)).await;
@@ -49,7 +50,7 @@ async fn mine_payload_blocks(l1: &L1Node, count: usize) -> Vec<Hash> {
 /// Asserts that state was written for resources 1..=count with the expected tx hashes.
 fn assert_state(node: &Node<RocksDbStore, TestNodeVm>, tx_hashes: &[Hash]) {
     for (i, hash) in tx_hashes.iter().enumerate() {
-        node.api().assert_written_state(i + 1, &[*hash]);
+        node.api().assert_written_state(ResourceId::for_test(i + 1), &[*hash]);
     }
 }
 
@@ -210,7 +211,7 @@ async fn test_transactions_via_l1_payload() {
     node.api().wait_committed(maturity_blocks, Duration::from_secs(120));
 
     // Submit a transaction via L1 payload (only the access metadata is serialized).
-    let payload = borsh::to_vec(&vec![AccessMetadata::write(42_usize)]).unwrap();
+    let payload = borsh::to_vec(&vec![AccessMetadata::write(ResourceId::for_test(42))]).unwrap();
     let txs = l1.build_payload_transactions(vec![payload]).await;
     let tx_hash = txs[0].id();
     l1.mine_block(Some(&txs)).await;
@@ -221,7 +222,7 @@ async fn test_transactions_via_l1_payload() {
     node.api().wait_committed(maturity_blocks + 2, Duration::from_secs(30));
 
     // Verify L2 state: resource 42 was written with the expected tx hash.
-    node.api().assert_written_state(42, &[tx_hash]);
+    node.api().assert_written_state(ResourceId::for_test(42), &[tx_hash]);
 
     node.shutdown();
     l1.shutdown().await;

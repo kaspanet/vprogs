@@ -104,7 +104,7 @@ impl<S: Store, P: Processor> ResourceAccess<S, P> {
     pub(crate) fn read_latest_data<R: ReadStore>(&self, store: &R) {
         self.set_read_state(Arc::new(StateVersion::from_latest_data(
             store,
-            self.access_metadata.id,
+            self.access_metadata.resource_id,
         )));
     }
 

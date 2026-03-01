@@ -19,6 +19,7 @@ serde_json.workspace                   = true
 tap.workspace                          = true
 tempfile.workspace                     = true
 tokio                                  = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+vprogs-core-test-suite.workspace       = true
 vprogs-core-types.workspace            = true
 vprogs-l1-bridge.workspace             = true
 vprogs-l1-types.workspace              = true

@@ -18,10 +18,10 @@ pub trait SchedulerExt {
     fn wait_cache_empty(&mut self, timeout: Duration) -> &mut Self;
 
     /// Asserts that a resource has the expected version and writer log.
-    fn assert_written_state(&self, resource_id: usize, writers: Vec<usize>) -> &Self;
+    fn assert_written_state(&self, resource_id: ResourceId, writers: Vec<usize>) -> &Self;
 
     /// Asserts that a resource has been deleted (no latest pointer exists).
-    fn assert_resource_deleted(&self, resource_id: usize) -> &Self;
+    fn assert_resource_deleted(&self, resource_id: ResourceId) -> &Self;
 }
 
 impl SchedulerExt for Scheduler<RocksDbStore, Processor> {
@@ -54,23 +54,23 @@ impl SchedulerExt for Scheduler<RocksDbStore, Processor> {
         self
     }
 
-    fn assert_written_state(&self, resource_id: usize, writers: Vec<usize>) -> &Self {
+    fn assert_written_state(&self, resource_id: ResourceId, writers: Vec<usize>) -> &Self {
         let store = self.state().storage().store();
         let writer_count = writers.len();
         let writer_log: Vec<u8> = writers.iter().flat_map(|id| id.to_be_bytes()).collect();
 
-        let versioned_state = StateVersion::from_latest_data(store.as_ref(), resource_id.into());
+        let versioned_state = StateVersion::from_latest_data(store.as_ref(), resource_id);
         assert_eq!(versioned_state.version(), writer_count as u64);
         assert_eq!(*versioned_state.data(), writer_log);
         self
     }
 
-    fn assert_resource_deleted(&self, resource_id: usize) -> &Self {
+    fn assert_resource_deleted(&self, resource_id: ResourceId) -> &Self {
         let store = self.state().storage().store();
-        let id_bytes = *ResourceId::from(resource_id).as_bytes();
+        let id_bytes = *resource_id.as_bytes();
         assert!(
             store.get(StateSpace::StatePtrLatest, &id_bytes).is_none(),
-            "Resource {} should have been deleted but still exists",
+            "Resource {:?} should have been deleted but still exists",
             resource_id
         );
         self

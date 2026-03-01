@@ -21,6 +21,7 @@ vprogs-storage-types.workspace        = true
 borsh.workspace                        = true
 tempfile.workspace                     = true
 tokio                                  = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+vprogs-core-test-suite.workspace       = true
 vprogs-node-test-suite.workspace       = true
 vprogs-state-metadata.workspace        = true
 vprogs-storage-rocksdb-store.workspace = true

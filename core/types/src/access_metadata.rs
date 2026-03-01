@@ -7,16 +7,16 @@ use crate::{AccessType, ResourceId};
 #[derive(Archive, Serialize, Deserialize)] // rkyv serialization
 #[derive(BorshSerialize, BorshDeserialize)] // borsh serialization
 pub struct AccessMetadata {
-    pub id: ResourceId,
+    pub resource_id: ResourceId,
     pub access_type: AccessType,
 }
 
 impl AccessMetadata {
-    pub fn read(id: impl Into<ResourceId>) -> Self {
-        Self { id: id.into(), access_type: AccessType::Read }
+    pub fn read(resource_id: ResourceId) -> Self {
+        Self { resource_id, access_type: AccessType::Read }
     }
 
-    pub fn write(id: impl Into<ResourceId>) -> Self {
-        Self { id: id.into(), access_type: AccessType::Write }
+    pub fn write(resource_id: ResourceId) -> Self {
+        Self { resource_id, access_type: AccessType::Write }
     }
 }

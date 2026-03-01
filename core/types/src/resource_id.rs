@@ -18,11 +18,3 @@ impl From<[u8; 32]> for ResourceId {
         ResourceId(bytes)
     }
 }
-
-impl From<usize> for ResourceId {
-    fn from(value: usize) -> Self {
-        let mut bytes = [0u8; 32];
-        bytes[24..32].copy_from_slice(&value.to_be_bytes());
-        ResourceId(bytes)
-    }
-}

@@ -42,7 +42,7 @@ mod from_ctx {
                     .resources()
                     .iter()
                     .map(|r| Account {
-                        resource_id: r.access_metadata().id,
+                        resource_id: r.access_metadata().resource_id,
                         data: r.data().clone(),
                     })
                     .collect(),

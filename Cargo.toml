@@ -104,6 +104,7 @@ resolver = "3"
   # Internal dependencies
   vprogs-core-atomics                             = { path = "core/atomics" }
   vprogs-core-macros                              = { path = "core/macros" }
+  vprogs-core-test-suite                          = { path = "core/test-suite" }
   vprogs-core-types                               = { path = "core/types", default-features = false }
   vprogs-l1-bridge                                = { path = "l1/bridge" }
   vprogs-l1-types                                 = { path = "l1/types" }
