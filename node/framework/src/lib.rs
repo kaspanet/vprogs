@@ -1,9 +1,7 @@
 //! Generic node framework connecting the L1 bridge to the scheduler.
 //!
-//! The framework orchestrates the flow of L1 chain blocks through pre-processing (translating
-//! blocks into scheduled transactions) and scheduling (executing those transactions in parallel).
-//! Blocks are pre-processed out of order on execution workers but fed to the scheduler in sequence
-//! using async latches to preserve block ordering.
+//! The framework orchestrates the flow of L1 chain blocks through the scheduler, extracting
+//! access metadata from L1 transaction payloads and scheduling them for parallel execution.
 //!
 //! # Usage
 //!
@@ -28,15 +26,14 @@
 //! ```
 
 mod api;
-mod batch;
 mod config;
 mod error;
 mod node;
-mod vm;
+mod processor;
 mod worker;
 
 pub use api::NodeApi;
 pub use config::NodeConfig;
 pub use error::{NodeError, NodeResult};
 pub use node::Node;
-pub use vm::NodeVm;
+pub use processor::Processor;

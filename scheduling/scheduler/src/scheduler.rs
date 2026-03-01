@@ -159,14 +159,6 @@ impl<S: Store, P: Processor> Scheduler<S, P> {
         &self.processor
     }
 
-    /// Submits a standalone function for execution on a worker thread.
-    ///
-    /// The function is injected into the global task queue and picked up by the next available
-    /// execution worker as a last-resort fallback in the steal chain.
-    pub fn submit_function(&self, func: impl FnOnce() + Send + Sync + 'static) {
-        self.execution_workers.submit_task(ManagerTask::ExecuteFunction(Box::new(func)));
-    }
-
     /// Returns the number of resources currently cached in memory.
     pub fn cached_resource_count(&self) -> usize {
         self.resources.len()

@@ -1,7 +1,4 @@
-use vprogs_core_types::SchedulerTransaction;
-use vprogs_l1_bridge::RpcOptionalHeader;
 use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
-use vprogs_node_framework::NodeVm;
 use vprogs_scheduling_scheduler::{Processor, TransactionContext};
 use vprogs_storage_types::Store;
 use vprogs_transaction_runtime_error::{VmError, VmResult};
@@ -28,16 +25,4 @@ impl Processor for VM {
     type TransactionEffects = TransactionEffects;
     type BatchMetadata = ChainBlockMetadata;
     type Error = VmError;
-}
-
-/// Stub implementation — returns an empty transaction vec for now.
-impl NodeVm for VM {
-    fn pre_process_block(
-        &self,
-        _index: u64,
-        _header: &RpcOptionalHeader,
-        _accepted_transactions: &[L1Transaction],
-    ) -> Vec<SchedulerTransaction<L1Transaction>> {
-        vec![]
-    }
 }
