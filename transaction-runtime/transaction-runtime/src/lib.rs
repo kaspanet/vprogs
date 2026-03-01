@@ -46,15 +46,25 @@ where
     }
 
     fn ingest_state(&mut self) -> VmResult<()> {
-        for handle in self.handles.iter() {
-            // TODO: recover ObjectId from ResourceId when VM is implemented
-            todo!("recover ObjectId from ResourceId when VM is implemented");
-            #[allow(unreachable_code)]
-            {
-                let _ = handle;
-            }
-        }
-        Ok(())
+        // for handle in self.handles.iter() {
+        //     match handle.access_metadata().id() {
+        //         ObjectId::Program(address) => {
+        //             let program = Program::deserialize(&mut handle.data().as_slice())?;
+        //             self.loaded_programs.insert(address, program);
+        //         }
+        //         ObjectId::Data(address) => {
+        //             let mut reader = handle.data().as_slice();
+        //             let lock = Lock::deserialize(&mut reader)?;
+        //             let data = Data::deserialize(&mut reader)?;
+        //             let mut_cap = lock.unlock(self);
+        //             self.loaded_data.insert(address, AuthenticatedData::new(data, mut_cap));
+        //         }
+        //         ObjectId::Empty => return Err(VmError::Generic),
+        //     }
+        // }
+        let _ = &self.handles;
+        let _ = &self.loaded_programs;
+        todo!("recover resource data from AccessHandle when VM is implemented")
     }
 
     fn execute_instruction(&mut self, instruction: &Instruction) -> VmResult<()> {

@@ -64,7 +64,9 @@ impl BridgeWorker {
         // If both root and tip are provided and differ, we need to backfill the chain between them
         // on first connect (lightweight, non-verbose sync).
         let backfill_target = match (&config.root, &config.tip) {
-            (Some(root), Some(tip)) if root.metadata().hash() != tip.metadata().hash() => {
+            (Some(root), Some(tip))
+                if root.metadata().block_hash() != tip.metadata().block_hash() =>
+            {
                 Some(tip.clone())
             }
             _ => None,
@@ -271,11 +273,11 @@ impl BridgeWorker {
         // Fetch with Low verbosity — sufficient for hash and blue_score needed for chain blocks.
         let response = self
             .client
-            .get_virtual_chain_from_block_v2(start.metadata().hash(), Some(Low), None)
+            .get_virtual_chain_from_block_v2(start.metadata().block_hash(), Some(Low), None)
             .await?;
 
         // Walk the chain block accepted transactions to get both hash and blue_score.
-        let target_hash = target.metadata().hash();
+        let target_hash = target.metadata().block_hash();
         let mut found = false;
 
         for chain_block in response.chain_block_accepted_transactions.iter() {
@@ -305,7 +307,7 @@ impl BridgeWorker {
         let start_hash = if tip.index() == 0 {
             self.client.get_block_dag_info().await?.pruning_point_hash
         } else {
-            tip.metadata().hash()
+            tip.metadata().block_hash()
         };
 
         // Fetch with Full verbosity to get complete headers and accepted transactions.

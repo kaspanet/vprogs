@@ -1,5 +1,5 @@
 use kaspa_rpc_core::RpcError;
-use vprogs_l1_types::BlockHash;
+use vprogs_l1_types::Hash;
 
 /// Bridge error types, split into recoverable (RPC) and fatal.
 #[derive(Debug, thiserror::Error)]
@@ -20,11 +20,11 @@ pub(crate) enum Error {
 
     /// A pruning point hash was not found in the virtual chain.
     #[error("pruning point hash {0} not found in chain")]
-    HashNotFound(BlockHash),
+    HashNotFound(Hash),
 
     /// The backfill target hash was not found in the chain.
     #[error("backfill target hash {0} not found in chain")]
-    BackfillTargetNotFound(BlockHash),
+    BackfillTargetNotFound(Hash),
 
     /// An internal channel closed unexpectedly.
     #[error("notification channel closed: {0}")]

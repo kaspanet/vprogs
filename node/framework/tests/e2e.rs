@@ -3,7 +3,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 use vprogs_core_types::AccessMetadata;
 use vprogs_l1_bridge::L1BridgeConfig;
-use vprogs_l1_types::{BlockHash, NetworkType};
+use vprogs_l1_types::{Hash, NetworkType};
 use vprogs_node_framework::{Node, NodeConfig};
 use vprogs_node_test_suite::{L1Node, NodeExt, TestNodeVm};
 use vprogs_scheduling_scheduler::ExecutionConfig;
@@ -32,7 +32,7 @@ fn create_node(l1: &L1Node, temp_dir: &TempDir) -> Node<RocksDbStore, TestNodeVm
 ///
 /// Returns the L1 tx hash for each payload block, where `hashes[i]` wrote to resource `i+1`.
 /// Total blocks mined is `count + 1` (the extra block accepts the last payload).
-async fn mine_l2_blocks(l1: &L1Node, count: usize) -> Vec<BlockHash> {
+async fn mine_payload_blocks(l1: &L1Node, count: usize) -> Vec<Hash> {
     let mut tx_hashes = Vec::with_capacity(count);
     for i in 1..=count {
         let payload = borsh::to_vec(&vec![AccessMetadata::write(i)]).unwrap();
@@ -46,8 +46,8 @@ async fn mine_l2_blocks(l1: &L1Node, count: usize) -> Vec<BlockHash> {
     tx_hashes
 }
 
-/// Asserts that L2 state was written for resources 1..=count with the expected tx hashes.
-fn assert_l2_state(node: &Node<RocksDbStore, TestNodeVm>, tx_hashes: &[BlockHash]) {
+/// Asserts that state was written for resources 1..=count with the expected tx hashes.
+fn assert_state(node: &Node<RocksDbStore, TestNodeVm>, tx_hashes: &[Hash]) {
     for (i, hash) in tx_hashes.iter().enumerate() {
         node.api().assert_written_state(i + 1, &[*hash]);
     }
@@ -59,13 +59,13 @@ async fn test_basic_block_processing() {
     let l1 = L1Node::new(Some(|p| p.blockrate.coinbase_maturity = 1)).await;
 
     let maturity = l1.mine_utxos(3).await.len() as u64;
-    let tx_hashes = mine_l2_blocks(&l1, 3).await;
+    let tx_hashes = mine_payload_blocks(&l1, 3).await;
 
     let temp_dir = TempDir::new().unwrap();
     let node = create_node(&l1, &temp_dir);
 
     node.api().wait_committed(maturity + tx_hashes.len() as u64 + 1, TIMEOUT);
-    assert_l2_state(&node, &tx_hashes);
+    assert_state(&node, &tx_hashes);
 
     node.shutdown();
     l1.shutdown().await;
@@ -83,10 +83,10 @@ async fn test_processes_blocks_mined_after_connect() {
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let maturity = l1.mine_utxos(3).await.len() as u64;
-    let tx_hashes = mine_l2_blocks(&l1, 3).await;
+    let tx_hashes = mine_payload_blocks(&l1, 3).await;
 
     node.api().wait_committed(maturity + tx_hashes.len() as u64 + 1, TIMEOUT);
-    assert_l2_state(&node, &tx_hashes);
+    assert_state(&node, &tx_hashes);
 
     node.shutdown();
     l1.shutdown().await;
@@ -104,7 +104,7 @@ async fn test_pruning_via_threshold() {
     let node = create_node(&l1, &temp_dir);
 
     let maturity = l1.mine_utxos(3).await.len() as u64;
-    let tx_hashes = mine_l2_blocks(&l1, 3).await;
+    let tx_hashes = mine_payload_blocks(&l1, 3).await;
     let total = maturity + tx_hashes.len() as u64 + 1;
     node.api().wait_committed(total, TIMEOUT);
 
@@ -121,7 +121,7 @@ async fn test_pruning_via_threshold() {
     assert!(root.index() > 4, "Expected root > 4, got {}", root.index());
 
     // L2 state written after the prune point must still be readable.
-    assert_l2_state(&node, &tx_hashes);
+    assert_state(&node, &tx_hashes);
 
     node.shutdown();
     l1.shutdown().await;
@@ -135,10 +135,10 @@ async fn test_clean_shutdown() {
     let node = create_node(&l1, &temp_dir);
 
     let maturity = l1.mine_utxos(2).await.len() as u64;
-    let tx_hashes = mine_l2_blocks(&l1, 2).await;
+    let tx_hashes = mine_payload_blocks(&l1, 2).await;
 
     node.api().wait_committed(maturity + tx_hashes.len() as u64 + 1, TIMEOUT);
-    assert_l2_state(&node, &tx_hashes);
+    assert_state(&node, &tx_hashes);
 
     // Shutdown should not panic.
     node.shutdown();
@@ -158,11 +158,11 @@ async fn test_resume_from_checkpoint() {
         let node = create_node(&l1, &temp_dir);
 
         let maturity = l1.mine_utxos(3).await.len() as u64;
-        tx_hashes = mine_l2_blocks(&l1, 3).await;
+        tx_hashes = mine_payload_blocks(&l1, 3).await;
         phase1_total = maturity + tx_hashes.len() as u64 + 1;
         node.api().wait_committed(phase1_total, TIMEOUT);
 
-        assert_l2_state(&node, &tx_hashes);
+        assert_state(&node, &tx_hashes);
 
         node.shutdown();
     }
@@ -188,7 +188,7 @@ async fn test_resume_from_checkpoint() {
         node.api().wait_committed(phase1_total + 5, TIMEOUT);
 
         // L2 state from phase 1 must survive the restart.
-        assert_l2_state(&node, &tx_hashes);
+        assert_state(&node, &tx_hashes);
 
         node.shutdown();
     }

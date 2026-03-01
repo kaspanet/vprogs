@@ -35,7 +35,7 @@ mod from_ctx {
                 tx_bytes: borsh::to_vec(ctx.tx()).expect("failed to serialize transaction"),
                 tx_index: ctx.tx_index(),
                 batch_metadata: BatchMetadata {
-                    block_hash: chain_metadata.hash().as_bytes(),
+                    block_hash: chain_metadata.block_hash().as_bytes(),
                     blue_score: chain_metadata.blue_score(),
                 },
                 accounts: ctx

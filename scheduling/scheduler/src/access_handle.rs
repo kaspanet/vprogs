@@ -19,7 +19,7 @@ impl<'a, S: Store, P: Processor> AccessHandle<'a, S, P> {
     /// Returns the access metadata for this resource.
     #[inline]
     pub fn access_metadata(&self) -> &AccessMetadata {
-        &*self.access
+        self.access
     }
 
     /// Returns the current version number of this resource (0 if new).

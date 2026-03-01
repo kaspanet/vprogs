@@ -67,7 +67,7 @@ impl SchedulerExt for Scheduler<RocksDbStore, Processor> {
 
     fn assert_resource_deleted(&self, resource_id: usize) -> &Self {
         let store = self.state().storage().store();
-        let id_bytes = ResourceId::from(resource_id).as_bytes().clone();
+        let id_bytes = *ResourceId::from(resource_id).as_bytes();
         assert!(
             store.get(StateSpace::StatePtrLatest, &id_bytes).is_none(),
             "Resource {} should have been deleted but still exists",

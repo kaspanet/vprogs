@@ -3,6 +3,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwapOption;
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_types::SchedulerTransaction;
+use vprogs_scheduling_scheduler::Processor;
 
 use crate::NodeVm;
 
@@ -16,7 +17,7 @@ use crate::NodeVm;
 /// through the [`AtomicAsyncLatch`].
 pub(crate) struct Batch<V: NodeVm> {
     index: u64,
-    result: ArcSwapOption<(Vec<SchedulerTransaction<V::Transaction>>, V::BatchMetadata)>,
+    result: ArcSwapOption<BatchResult<V>>,
     prepared: AtomicAsyncLatch,
 }
 
@@ -58,8 +59,12 @@ impl<V: NodeVm> Batch<V> {
     /// Must only be called after [`wait_until_prepared`](Self::wait_until_prepared) or
     /// [`is_prepared`](Self::is_prepared) returns `true`. Panics if the results have already been
     /// taken.
-    pub(crate) fn take(&self) -> (Vec<SchedulerTransaction<V::Transaction>>, V::BatchMetadata) {
+    pub(crate) fn take(&self) -> BatchResult<V> {
         let arc = self.result.swap(None).expect("results already taken");
         Arc::into_inner(arc).expect("outstanding references to results")
     }
 }
+
+// Type alias for the pre-processing results stored in a batch.
+type BatchResult<P> =
+    (Vec<SchedulerTransaction<<P as Processor>::Transaction>>, <P as Processor>::BatchMetadata);
