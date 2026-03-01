@@ -19,7 +19,7 @@ impl<S: Store, P: Processor> Default for Resource<S, P> {
 impl<S: Store, P: Processor> Resource<S, P> {
     pub(crate) fn access(
         &mut self,
-        meta: &AccessMetadata,
+        access_metadata: &AccessMetadata,
         tx: &ScheduledTransactionRef<S, P>,
         batch: &ScheduledBatchRef<S, P>,
     ) -> ResourceAccess<S, P> {
@@ -28,10 +28,10 @@ impl<S: Store, P: Processor> Resource<S, P> {
                 assert!(prev_access.tx() != tx, "duplicate access to resource");
                 (prev_access.state_diff(), Some(prev_access))
             }
-            prev_access => (StateDiff::new(batch.clone(), meta.id), prev_access),
+            prev_access => (StateDiff::new(batch.clone(), access_metadata.id), prev_access),
         };
 
-        ResourceAccess::new(meta.clone(), tx.clone(), state_diff_ref, prev_access)
+        ResourceAccess::new(*access_metadata, tx.clone(), state_diff_ref, prev_access)
             .tap(|this| self.last_access = Some(this.clone()))
     }
 
