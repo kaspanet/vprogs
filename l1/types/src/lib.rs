@@ -1,10 +1,13 @@
 mod chain_block_metadata;
+mod connect_strategy;
 mod hash;
+mod l1_transaction;
+mod network_id;
+mod network_type;
 
 pub use chain_block_metadata::ChainBlockMetadata;
+pub use connect_strategy::ConnectStrategy;
 pub use hash::Hash;
-pub use kaspa_consensus_core::{
-    network::{NetworkId, NetworkType},
-    tx::Transaction as L1Transaction,
-};
-pub use kaspa_wrpc_client::prelude::ConnectStrategy;
+pub use l1_transaction::L1Transaction;
+pub use network_id::NetworkId;
+pub use network_type::NetworkType;
