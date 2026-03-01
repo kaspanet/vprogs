@@ -9,22 +9,21 @@ use std::{
 
 use tap::Tap;
 use tokio::{runtime::Builder, sync::Notify};
-use vprogs_core_types::Checkpoint;
+use vprogs_core_types::{Checkpoint, ResourceId};
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_ptr_rollback::StatePtrRollback;
-use vprogs_state_space::StateSpace;
 use vprogs_state_version::StateVersion;
 use vprogs_storage_types::Store;
 
-use crate::{VmInterface, state::SchedulerState};
+use crate::{Processor, state::SchedulerState};
 
 /// Background worker that deletes old state data (rollback pointers and versions) for batches that
 /// will never be rolled back, advancing the **root** (oldest surviving batch) forward.
 ///
 /// Runs on a dedicated thread with direct store access to avoid contention with the main write
 /// path.
-pub struct PruningWorker<S: Store<StateSpace = StateSpace>, V: VmInterface> {
+pub struct PruningWorker<S: Store, P: Processor> {
     /// The batch index up to which pruning is allowed (exclusive). Batches with index < threshold
     /// can be pruned.
     pruning_threshold: Arc<AtomicU64>,
@@ -41,11 +40,11 @@ pub struct PruningWorker<S: Store<StateSpace = StateSpace>, V: VmInterface> {
     notify: Arc<Notify>,
     /// Handle to the background worker thread.
     handle: JoinHandle<()>,
-    /// Marker for the store and VM interface types.
-    _marker: PhantomData<(S, V)>,
+    /// Marker for the store and processor types.
+    _marker: PhantomData<(S, P)>,
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
+impl<S: Store, P: Processor> PruningWorker<S, P> {
     /// Sets the pruning threshold.
     ///
     /// Batches with index < threshold become eligible for pruning. The actual pruning happens
@@ -97,7 +96,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
     /// The `root` checkpoint (oldest surviving batch) is managed through the shared state for
     /// atomic updates. The worker resumes from the persisted root. On a fresh database (root index
     /// 0), no pruning occurs until the first batch commits and initializes root.
-    pub(crate) fn new(state: SchedulerState<S, V>) -> Self {
+    pub(crate) fn new(state: SchedulerState<S, P>) -> Self {
         let root_index = state.root().index();
         let pruning_threshold = Arc::new(AtomicU64::new(root_index));
         let pause_ceiling = Arc::new(AtomicU64::new(u64::MAX));
@@ -135,7 +134,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
     /// direct store access to avoid contention with the main write path. The worker loop exits when
     /// the outer struct is dropped (detected via strong_count).
     fn start(
-        state: SchedulerState<S, V>,
+        state: SchedulerState<S, P>,
         pruning_threshold: Arc<AtomicU64>,
         pause_ceiling: Arc<AtomicU64>,
         pruning_cursor: Arc<AtomicU64>,
@@ -189,7 +188,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
     /// Runs on the dedicated pruning thread. Root is advanced in memory first so observers never
     /// see root pointing to already-pruned data. The disk write is committed atomically with the
     /// deletions for crash-fault tolerance.
-    fn prune(state: &SchedulerState<S, V>, lower_bound: u64, upper_bound: u64) {
+    fn prune(state: &SchedulerState<S, P>, lower_bound: u64, upper_bound: u64) {
         // Get a direct reference to the store for this operation.
         let store = state.storage().store();
 
@@ -210,7 +209,7 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> PruningWorker<S, V> {
                 for (resource_id, old_version) in
                     StatePtrRollback::iter_batch(store.as_ref(), index)
                 {
-                    let resource_id: V::ResourceId =
+                    let resource_id: ResourceId =
                         borsh::from_slice(&resource_id).expect("corrupted store: unrecoverable");
 
                     // Delete the old version data if it exists (version 0 means resource

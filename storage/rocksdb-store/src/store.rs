@@ -1,8 +1,7 @@
 use std::{marker::PhantomData, path::Path, sync::Arc};
 
 use rocksdb::{DB, DBIteratorWithThreadMode, Direction, IteratorMode};
-use vprogs_state_space::StateSpace;
-use vprogs_storage_types::{PrefixIterator, Store};
+use vprogs_storage_types::{PrefixIterator, StateSpace, Store};
 
 use crate::{
     config::{Config, DefaultConfig},
@@ -48,7 +47,6 @@ impl<C: Config> RocksDbStore<C> {
 }
 
 impl<C: Config> Store for RocksDbStore<C> {
-    type StateSpace = StateSpace;
     type WriteBatch = WriteBatch<C>;
 
     fn get(&self, state_space: StateSpace, key: &[u8]) -> Option<Vec<u8>> {

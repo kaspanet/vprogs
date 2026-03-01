@@ -1,0 +1,4 @@
+[env]
+# Use RISC-0 dev mode by default — the prover generates fake receipts instead of real proofs.
+# Unset for production builds that require valid, verifiable proofs.
+RISC0_DEV_MODE = "1"

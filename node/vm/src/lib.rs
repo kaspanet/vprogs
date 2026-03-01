@@ -1,47 +1,28 @@
-use vprogs_node_framework::NodeVm;
-use vprogs_node_l1_bridge::{ChainBlockMetadata, RpcOptionalHeader, RpcOptionalTransaction};
-use vprogs_scheduling_scheduler::{AccessHandle, VmInterface};
-use vprogs_state_space::StateSpace;
+use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
+use vprogs_scheduling_scheduler::{Processor, TransactionContext};
 use vprogs_storage_types::Store;
-use vprogs_transaction_runtime::TransactionRuntime;
 use vprogs_transaction_runtime_error::{VmError, VmResult};
-use vprogs_transaction_runtime_object_access::ObjectAccess;
-use vprogs_transaction_runtime_object_id::ObjectId;
-use vprogs_transaction_runtime_transaction::Transaction;
 use vprogs_transaction_runtime_transaction_effects::TransactionEffects;
 
-/// Concrete VM implementation backed by the transaction runtime.
+/// Concrete processor backed by the transaction runtime.
 ///
 /// Delegates transaction execution to [`TransactionRuntime`] and serves as the production
-/// [`VmInterface`] used by the node.
+/// [`Processor`] used by the node.
 #[derive(Clone)]
 pub struct VM;
 
-impl VmInterface for VM {
-    fn process_transaction<S: Store<StateSpace = StateSpace>>(
+impl Processor for VM {
+    fn process_transaction<S: Store>(
         &self,
-        tx: &Transaction,
-        resources: &mut [AccessHandle<S, Self>],
+        _ctx: &mut TransactionContext<S, Self>,
     ) -> VmResult<TransactionEffects> {
-        TransactionRuntime::execute(tx, resources)
+        // let (tx, resources) = ctx.parts_mut();
+        // TransactionRuntime::execute(tx, resources)
+        todo!("transaction execution from SchedulerTransaction<L1Transaction>")
     }
 
-    type Transaction = Transaction;
+    type Transaction = L1Transaction;
     type TransactionEffects = TransactionEffects;
-    type ResourceId = ObjectId;
-    type AccessMetadata = ObjectAccess;
     type BatchMetadata = ChainBlockMetadata;
     type Error = VmError;
-}
-
-/// Stub implementation — returns an empty transaction vec for now.
-impl NodeVm for VM {
-    fn pre_process_block(
-        &self,
-        _index: u64,
-        _header: &RpcOptionalHeader,
-        _accepted_transactions: &[RpcOptionalTransaction],
-    ) -> Vec<Transaction> {
-        vec![]
-    }
 }

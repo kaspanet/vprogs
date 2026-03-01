@@ -2,8 +2,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use serde::{Deserialize, Serialize};
-use vprogs_node_framework::{NodeConfig, NodeVm};
-use vprogs_state_space::StateSpace;
+use vprogs_node_framework::{NodeConfig, Processor};
 use vprogs_storage_types::Store;
 
 use crate::{
@@ -56,11 +55,7 @@ pub struct NodeParams {
 impl NodeParams {
     /// Converts the top-level CLI params into a [`NodeConfig`], recursively converting each
     /// subsection and injecting the VM and store implementations.
-    pub fn into_config<S: Store<StateSpace = StateSpace>, V: NodeVm>(
-        self,
-        vm: V,
-        store: S,
-    ) -> NodeConfig<S, V> {
+    pub fn into_config<S: Store, P: Processor>(self, vm: P, store: S) -> NodeConfig<S, P> {
         NodeConfig {
             api_channel_capacity: self.api_channel_capacity,
             execution_config: self.execution.into_config(vm),

@@ -1,15 +1,16 @@
 [workspace]
 default-members = [
   "core/*",
+  "l1/*",
   "node/*",
   "scheduling/*",
   "state/*",
   "storage/*",
   "transaction-runtime/*",
 ]
-exclude = []
 members = [
   "core/*",
+  "l1/*",
   "node/*",
   "scheduling/*",
   "state/*",
@@ -25,7 +26,7 @@ resolver = "3"
   [workspace.dependencies]
   # External dependencies
   arc-swap = "1.7"
-  borsh = { version = "1.6.0", features = ["derive"] }
+  borsh = { version = "1.6.0", default-features = false, features = ["derive"] }
   clap = { version = "4", features = ["derive"] }
   crossbeam-deque = "0.8.6"
   crossbeam-queue = "0.3.12"
@@ -60,6 +61,10 @@ resolver = "3"
   toml = "0.8"
   workflow-core = "0.18.0"
 
+  rkyv = { version = "0.8", default-features = false, features = [
+    "alloc",
+    "bytecheck",
+  ] }
   secp256k1 = { version = "0.29.1", features = ["rand-std"] }
 
   # Kaspa dependencies
@@ -79,20 +84,21 @@ resolver = "3"
   # Internal dependencies
   vprogs-core-atomics                             = { path = "core/atomics" }
   vprogs-core-macros                              = { path = "core/macros" }
-  vprogs-core-types                               = { path = "core/types" }
+  vprogs-core-test-utils                          = { path = "core/test-utils" }
+  vprogs-core-types                               = { path = "core/types", default-features = false }
+  vprogs-l1-bridge                                = { path = "l1/bridge" }
+  vprogs-l1-types                                 = { path = "l1/types" }
   vprogs-node-cli                                 = { path = "node/cli" }
   vprogs-node-framework                           = { path = "node/framework" }
-  vprogs-node-l1-bridge                           = { path = "node/l1-bridge" }
-  vprogs-node-test-suite                          = { path = "node/test-suite" }
+  vprogs-node-test-utils                          = { path = "node/test-utils" }
   vprogs-node-vm                                  = { path = "node/vm" }
   vprogs-scheduling-execution-workers             = { path = "scheduling/execution-workers" }
   vprogs-scheduling-scheduler                     = { path = "scheduling/scheduler" }
-  vprogs-scheduling-test-suite                    = { path = "scheduling/test-suite" }
+  vprogs-scheduling-test-utils                    = { path = "scheduling/test-utils" }
   vprogs-state-batch-metadata                     = { path = "state/batch-metadata" }
   vprogs-state-metadata                           = { path = "state/metadata" }
   vprogs-state-ptr-latest                         = { path = "state/ptr-latest" }
   vprogs-state-ptr-rollback                       = { path = "state/ptr-rollback" }
-  vprogs-state-space                              = { path = "state/space" }
   vprogs-state-version                            = { path = "state/version" }
   vprogs-storage-manager                          = { path = "storage/manager" }
   vprogs-storage-rocksdb-store                    = { path = "storage/rocksdb-store" }
@@ -107,7 +113,6 @@ resolver = "3"
   vprogs-transaction-runtime-error                = { path = "transaction-runtime/error" }
   vprogs-transaction-runtime-instruction          = { path = "transaction-runtime/instruction" }
   vprogs-transaction-runtime-lock                 = { path = "transaction-runtime/lock" }
-  vprogs-transaction-runtime-object-access        = { path = "transaction-runtime/object-access" }
   vprogs-transaction-runtime-object-id            = { path = "transaction-runtime/object-id" }
   vprogs-transaction-runtime-program              = { path = "transaction-runtime/program" }
   vprogs-transaction-runtime-program-arg          = { path = "transaction-runtime/program-arg" }

@@ -6,5 +6,4 @@ version.workspace = true
 [dependencies]
 borsh.workspace                = true
 vprogs-core-types.workspace    = true
-vprogs-state-space.workspace   = true
 vprogs-storage-types.workspace = true

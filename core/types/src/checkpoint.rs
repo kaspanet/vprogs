@@ -5,7 +5,8 @@ use crate::BatchMetadata;
 /// A saved batch position identified by its sequential index and associated metadata.
 ///
 /// Used as the return type for queries like `last_committed` and `root`.
-#[derive(Clone, Debug, Default, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, Debug, Default)]
+#[derive(BorshSerialize, BorshDeserialize)] // borsh serialization
 pub struct Checkpoint<M: BatchMetadata> {
     /// Sequential batch index.
     index: u64,

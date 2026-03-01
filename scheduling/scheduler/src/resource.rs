@@ -1,36 +1,39 @@
 use tap::Tap;
 use vprogs_core_types::AccessMetadata;
-use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
-use crate::{ResourceAccess, RuntimeBatchRef, RuntimeTxRef, StateDiff, vm_interface::VmInterface};
+use crate::{
+    ResourceAccess, ScheduledBatchRef, ScheduledTransactionRef, StateDiff, processor::Processor,
+};
 
-pub(crate) struct Resource<S: Store<StateSpace = StateSpace>, V: VmInterface> {
-    last_access: Option<ResourceAccess<S, V>>,
+pub(crate) struct Resource<S: Store, P: Processor> {
+    last_access: Option<ResourceAccess<S, P>>,
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Default for Resource<S, V> {
+impl<S: Store, P: Processor> Default for Resource<S, P> {
     fn default() -> Self {
         Self { last_access: None }
     }
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: VmInterface> Resource<S, V> {
+impl<S: Store, P: Processor> Resource<S, P> {
     pub(crate) fn access(
         &mut self,
-        meta: &V::AccessMetadata,
-        tx: &RuntimeTxRef<S, V>,
-        batch: &RuntimeBatchRef<S, V>,
-    ) -> ResourceAccess<S, V> {
+        access_metadata: &AccessMetadata,
+        tx: &ScheduledTransactionRef<S, P>,
+        batch: &ScheduledBatchRef<S, P>,
+    ) -> ResourceAccess<S, P> {
         let (state_diff_ref, prev_access) = match self.last_access.take() {
             Some(prev_access) if prev_access.tx().belongs_to_batch(batch) => {
                 assert!(prev_access.tx() != tx, "duplicate access to resource");
                 (prev_access.state_diff(), Some(prev_access))
             }
-            prev_access => (StateDiff::new(batch.clone(), meta.id()), prev_access),
+            prev_access => {
+                (StateDiff::new(batch.clone(), access_metadata.resource_id), prev_access)
+            }
         };
 
-        ResourceAccess::new(meta.clone(), tx.clone(), state_diff_ref, prev_access)
+        ResourceAccess::new(*access_metadata, tx.clone(), state_diff_ref, prev_access)
             .tap(|this| self.last_access = Some(this.clone()))
     }
 

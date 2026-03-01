@@ -1,0 +1,7 @@
+[package]
+edition.workspace = true
+name              = "vprogs-core-test-utils"
+version.workspace = true
+
+[dependencies]
+vprogs-core-types = { workspace = true }
