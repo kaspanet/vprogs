@@ -6,7 +6,7 @@ use crate::Hash;
 ///
 /// Satisfies the [`BatchMetadata`](vprogs_core_types::BatchMetadata) blanket impl via its derived
 /// traits.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)] // borsh serialization
 pub struct ChainBlockMetadata {
     /// L1 block hash.
     block_hash: Hash,
