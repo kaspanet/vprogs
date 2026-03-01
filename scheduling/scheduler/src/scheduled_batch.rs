@@ -6,13 +6,13 @@ use std::sync::{
 use crossbeam_deque::{Injector, Steal, Worker};
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_macros::smart_pointer;
-use vprogs_core_types::{Checkpoint, L2Transaction};
+use vprogs_core_types::{Checkpoint, SchedulerTransaction};
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_storage_types::{Store, WriteBatch};
 
 use crate::{
-    CancellationContext, RuntimeTx, Scheduler, StateDiff, Write, cpu_task::ManagerTask,
+    CancellationContext, ScheduledTransaction, Scheduler, StateDiff, Write, cpu_task::ManagerTask,
     processor::Processor, state::SchedulerState,
 };
 
@@ -23,7 +23,7 @@ use crate::{
 /// progress via the `was_*` / `wait_*` methods. A batch may be canceled by a rollback, in which
 /// case the wait methods return immediately.
 #[smart_pointer]
-pub struct RuntimeBatch<S: Store, P: Processor> {
+pub struct ScheduledBatch<S: Store, P: Processor> {
     /// Cancellation context captured at creation time for rollback detection.
     cancellation: CancellationContext,
     /// Shared scheduler state for storage access and eviction.
@@ -31,7 +31,7 @@ pub struct RuntimeBatch<S: Store, P: Processor> {
     /// This batch's sequential index and metadata.
     checkpoint: Checkpoint<P::BatchMetadata>,
     /// All transactions in this batch.
-    txs: Vec<RuntimeTx<S, P>>,
+    txs: Vec<ScheduledTransaction<S, P>>,
     /// One state diff per unique resource accessed by this batch.
     state_diffs: Vec<StateDiff<S, P>>,
     /// Work-stealing queue of transactions ready for execution.
@@ -48,14 +48,14 @@ pub struct RuntimeBatch<S: Store, P: Processor> {
     was_committed: AtomicAsyncLatch,
 }
 
-impl<S: Store, P: Processor> RuntimeBatch<S, P> {
+impl<S: Store, P: Processor> ScheduledBatch<S, P> {
     /// Returns the checkpoint (index + metadata) identifying this batch.
     pub fn checkpoint(&self) -> &Checkpoint<P::BatchMetadata> {
         &self.checkpoint
     }
 
     /// Returns the transactions in this batch.
-    pub fn txs(&self) -> &[RuntimeTx<S, P>] {
+    pub fn txs(&self) -> &[ScheduledTransaction<S, P>] {
         &self.txs
     }
 
@@ -148,7 +148,7 @@ impl<S: Store, P: Processor> RuntimeBatch<S, P> {
 
     pub(crate) fn new(
         scheduler: &mut Scheduler<S, P>,
-        txs: Vec<L2Transaction<P::L1Transaction>>,
+        txs: Vec<SchedulerTransaction<P::Transaction>>,
         checkpoint: Checkpoint<P::BatchMetadata>,
     ) -> Self {
         Self(Arc::new_cyclic(|this| {
@@ -164,7 +164,7 @@ impl<S: Store, P: Processor> RuntimeBatch<S, P> {
 
             let mut state_diffs = Vec::new();
 
-            RuntimeBatchData {
+            ScheduledBatchData {
                 checkpoint,
                 cancellation: scheduler.cancellation().clone(),
                 state: scheduler.state().clone(),
@@ -174,10 +174,10 @@ impl<S: Store, P: Processor> RuntimeBatch<S, P> {
                     .into_iter()
                     .enumerate()
                     .map(|(i, tx)| {
-                        RuntimeTx::new(
+                        ScheduledTransaction::new(
                             scheduler,
                             &mut state_diffs,
-                            RuntimeBatchRef(this.clone()),
+                            ScheduledBatchRef(this.clone()),
                             i as u32,
                             tx,
                         )
@@ -200,7 +200,7 @@ impl<S: Store, P: Processor> RuntimeBatch<S, P> {
         }
     }
 
-    pub(crate) fn push_available_tx(&self, tx: &RuntimeTx<S, P>) {
+    pub(crate) fn push_available_tx(&self, tx: &ScheduledTransaction<S, P>) {
         self.available_txs.push(ManagerTask::ExecuteTransaction(tx.clone()));
     }
 
@@ -270,7 +270,7 @@ impl<S: Store, P: Processor> RuntimeBatch<S, P> {
 }
 
 impl<S: Store, P: Processor> vprogs_scheduling_execution_workers::Batch<ManagerTask<S, P>>
-    for RuntimeBatch<S, P>
+    for ScheduledBatch<S, P>
 {
     fn steal_available_tasks(
         &self,

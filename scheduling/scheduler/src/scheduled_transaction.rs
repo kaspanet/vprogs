@@ -5,24 +5,24 @@ use std::sync::{
 
 use arc_swap::ArcSwapOption;
 use vprogs_core_macros::smart_pointer;
-use vprogs_core_types::L2Transaction;
+use vprogs_core_types::SchedulerTransaction;
 use vprogs_storage_types::Store;
 
 use crate::{
-    AccessHandle, ResourceAccess, RuntimeBatchRef, Scheduler, StateDiff, TransactionContext,
+    AccessHandle, ResourceAccess, ScheduledBatchRef, Scheduler, StateDiff, TransactionContext,
     processor::Processor,
 };
 
 /// A transaction progressing through the scheduler's execution pipeline.
 ///
 /// Wraps a user-submitted transaction with its resource access handles, execution state, and a
-/// back-reference to the owning batch. Derefs to the inner `L2Transaction`.
+/// back-reference to the owning batch. Derefs to the inner `SchedulerTransaction`.
 #[smart_pointer(deref(tx))]
-pub struct RuntimeTx<S: Store, P: Processor> {
+pub struct ScheduledTransaction<S: Store, P: Processor> {
     /// Processor used to execute this transaction.
     processor: P,
     /// Weak reference to the owning batch.
-    batch: RuntimeBatchRef<S, P>,
+    batch: ScheduledBatchRef<S, P>,
     /// Resources accessed by this transaction, one per declared access.
     resources: Vec<ResourceAccess<S, P>>,
     /// Number of resources whose data hasn't been resolved yet.
@@ -32,10 +32,10 @@ pub struct RuntimeTx<S: Store, P: Processor> {
     /// Zero-based position of this transaction within its batch.
     tx_index: u32,
     /// The user-submitted transaction (deref target).
-    tx: L2Transaction<P::L1Transaction>,
+    tx: SchedulerTransaction<P::Transaction>,
 }
 
-impl<S: Store, P: Processor> RuntimeTx<S, P> {
+impl<S: Store, P: Processor> ScheduledTransaction<S, P> {
     /// Returns the resources accessed by this transaction.
     pub fn resources(&self) -> &[ResourceAccess<S, P>] {
         &self.resources
@@ -52,14 +52,18 @@ impl<S: Store, P: Processor> RuntimeTx<S, P> {
     pub(crate) fn new(
         scheduler: &mut Scheduler<S, P>,
         state_diffs: &mut Vec<StateDiff<S, P>>,
-        batch: RuntimeBatchRef<S, P>,
+        batch: ScheduledBatchRef<S, P>,
         tx_index: u32,
-        tx: L2Transaction<P::L1Transaction>,
+        tx: SchedulerTransaction<P::Transaction>,
     ) -> Self {
-        Self(Arc::new_cyclic(|this: &Weak<RuntimeTxData<S, P>>| {
-            let resources =
-                scheduler.resources(&tx, RuntimeTxRef(this.clone()), &batch, state_diffs);
-            RuntimeTxData {
+        Self(Arc::new_cyclic(|this: &Weak<ScheduledTransactionData<S, P>>| {
+            let resources = scheduler.resources(
+                &tx,
+                ScheduledTransactionRef(this.clone()),
+                &batch,
+                state_diffs,
+            );
+            ScheduledTransactionData {
                 processor: scheduler.processor().clone(),
                 pending_resources: AtomicU64::new(resources.len() as u64),
                 effects: ArcSwapOption::empty(),
@@ -110,13 +114,13 @@ impl<S: Store, P: Processor> RuntimeTx<S, P> {
         }
     }
 
-    pub(crate) fn batch(&self) -> &RuntimeBatchRef<S, P> {
+    pub(crate) fn batch(&self) -> &ScheduledBatchRef<S, P> {
         &self.batch
     }
 }
 
-impl<S: Store, P: Processor> RuntimeTxRef<S, P> {
-    pub(crate) fn belongs_to_batch(&self, batch: &RuntimeBatchRef<S, P>) -> bool {
+impl<S: Store, P: Processor> ScheduledTransactionRef<S, P> {
+    pub(crate) fn belongs_to_batch(&self, batch: &ScheduledBatchRef<S, P>) -> bool {
         self.upgrade().is_some_and(|tx| tx.batch() == batch)
     }
 }

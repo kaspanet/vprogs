@@ -10,7 +10,7 @@ use vprogs_state_version::StateVersion;
 use vprogs_storage_manager::StorageManager;
 use vprogs_storage_types::{ReadStore, Store};
 
-use crate::{Read, RuntimeTxRef, StateDiff, Write, processor::Processor};
+use crate::{Read, ScheduledTransactionRef, StateDiff, Write, processor::Processor};
 
 /// A single resource access within a transaction, forming a linked chain across the batch.
 ///
@@ -26,7 +26,7 @@ pub struct ResourceAccess<S: Store, P: Processor> {
     /// True if this is the last access to the resource in this batch.
     is_batch_tail: AtomicBool,
     /// Weak reference to the owning transaction.
-    tx: RuntimeTxRef<S, P>,
+    tx: ScheduledTransactionRef<S, P>,
     /// Shared state diff for this resource within the batch.
     state_diff: StateDiff<S, P>,
     /// Resource state before this access (resolved from disk or the previous access).
@@ -66,7 +66,7 @@ impl<S: Store, P: Processor> ResourceAccess<S, P> {
 
     pub(crate) fn new(
         access_metadata: AccessMetadata,
-        tx: RuntimeTxRef<S, P>,
+        tx: ScheduledTransactionRef<S, P>,
         state_diff: StateDiff<S, P>,
         prev: Option<Self>,
     ) -> Self {
@@ -108,7 +108,7 @@ impl<S: Store, P: Processor> ResourceAccess<S, P> {
         )));
     }
 
-    pub(crate) fn tx(&self) -> &RuntimeTxRef<S, P> {
+    pub(crate) fn tx(&self) -> &ScheduledTransactionRef<S, P> {
         &self.tx
     }
 

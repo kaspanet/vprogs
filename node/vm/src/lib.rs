@@ -1,4 +1,4 @@
-use vprogs_core_types::L2Transaction;
+use vprogs_core_types::SchedulerTransaction;
 use vprogs_l1_bridge::RpcOptionalHeader;
 use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
 use vprogs_node_framework::NodeVm;
@@ -19,10 +19,10 @@ impl Processor for VM {
         &self,
         _ctx: &mut TransactionContext<S, Self>,
     ) -> VmResult<TransactionEffects> {
-        todo!("transaction execution from L2Transaction<L1Transaction>")
+        todo!("transaction execution from SchedulerTransaction<L1Transaction>")
     }
 
-    type L1Transaction = L1Transaction;
+    type Transaction = L1Transaction;
     type TransactionEffects = TransactionEffects;
     type BatchMetadata = ChainBlockMetadata;
     type Error = VmError;
@@ -35,7 +35,7 @@ impl NodeVm for VM {
         _index: u64,
         _header: &RpcOptionalHeader,
         _accepted_transactions: &[L1Transaction],
-    ) -> Vec<L2Transaction<Self::L1Transaction>> {
+    ) -> Vec<SchedulerTransaction<Self::Transaction>> {
         vec![]
     }
 }

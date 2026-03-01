@@ -151,7 +151,7 @@ async fn test_resume_from_checkpoint() {
     let l1 = L1Node::new(Some(|p| p.blockrate.coinbase_maturity = 1)).await;
     let temp_dir = TempDir::new().unwrap();
 
-    // Phase 1: Process L2 transactions, then shutdown.
+    // Phase 1: Process transactions, then shutdown.
     let phase1_total;
     let tx_hashes;
     {
@@ -196,9 +196,9 @@ async fn test_resume_from_checkpoint() {
     l1.shutdown().await;
 }
 
-/// Submit L2 transactions via L1 payload and verify L2 state is written.
+/// Submit transactions via L1 payload and verify state is written.
 #[tokio::test]
-async fn test_l2_transactions_via_l1_payload() {
+async fn test_transactions_via_l1_payload() {
     // Reduce coinbase maturity so mine_utxos doesn't need to mine 1000+ blocks.
     let l1 = L1Node::new(Some(|p| p.blockrate.coinbase_maturity = 1)).await;
     let temp_dir = TempDir::new().unwrap();
@@ -209,7 +209,7 @@ async fn test_l2_transactions_via_l1_payload() {
     let maturity_blocks = maturity_hashes.len() as u64;
     node.api().wait_committed(maturity_blocks, Duration::from_secs(120));
 
-    // Submit an L2 transaction via L1 payload (only the accesses are serialized).
+    // Submit a transaction via L1 payload (only the access metadata is serialized).
     let payload = borsh::to_vec(&vec![AccessMetadata::write(42_usize)]).unwrap();
     let txs = l1.build_payload_transactions(vec![payload]).await;
     let tx_hash = txs[0].id();

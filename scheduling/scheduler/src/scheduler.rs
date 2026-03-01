@@ -4,7 +4,7 @@ use std::{
 };
 
 use tap::Tap;
-use vprogs_core_types::{Checkpoint, L2Transaction, ResourceId};
+use vprogs_core_types::{Checkpoint, ResourceId, SchedulerTransaction};
 use vprogs_scheduling_execution_workers::ExecutionWorkers;
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_storage_manager::StorageConfig;
@@ -12,9 +12,9 @@ use vprogs_storage_types::Store;
 
 use crate::{
     BatchLifecycleWorker, CancellationContext, ExecutionConfig, PruningWorker, Resource,
-    ResourceAccess, RuntimeBatch, RuntimeBatchRef, RuntimeTxRef, SchedulerError, SchedulerResult,
-    StateDiff, Write, cpu_task::ManagerTask, processor::Processor, rollback::Rollback,
-    state::SchedulerState,
+    ResourceAccess, ScheduledBatch, ScheduledBatchRef, ScheduledTransactionRef, SchedulerError,
+    SchedulerResult, StateDiff, Write, cpu_task::ManagerTask, processor::Processor,
+    rollback::Rollback, state::SchedulerState,
 };
 
 /// Orchestrates transaction execution, state management, and storage coordination.
@@ -36,7 +36,7 @@ pub struct Scheduler<S: Store, P: Processor> {
     /// Background worker that processes batches through their lifecycle stages.
     batch_lifecycle_worker: BatchLifecycleWorker<S, P>,
     /// Thread pool for parallel transaction execution.
-    execution_workers: ExecutionWorkers<ManagerTask<S, P>, RuntimeBatch<S, P>>,
+    execution_workers: ExecutionWorkers<ManagerTask<S, P>, ScheduledBatch<S, P>>,
     /// Background worker that prunes old state data when the pruning threshold advances.
     pruning_worker: PruningWorker<S, P>,
 }
@@ -60,20 +60,20 @@ impl<S: Store, P: Processor> Scheduler<S, P> {
 
     /// Schedules a batch of transactions for execution.
     ///
-    /// Creates a new `RuntimeBatch`, connects its transactions to resource dependency chains,
+    /// Creates a new `ScheduledBatch`, connects its transactions to resource dependency chains,
     /// pushes it to the worker loop for lifecycle management, and submits it to execution workers
     /// for parallel processing. After building resource accesses, processes pending eviction
     /// requests to clean up resources from committed batches.
     pub fn schedule(
         &mut self,
         metadata: P::BatchMetadata,
-        txs: Vec<L2Transaction<P::L1Transaction>>,
-    ) -> RuntimeBatch<S, P> {
+        txs: Vec<SchedulerTransaction<P::Transaction>>,
+    ) -> ScheduledBatch<S, P> {
         let checkpoint = self.next_checkpoint(metadata);
 
-        RuntimeBatch::new(self, txs, checkpoint)
+        ScheduledBatch::new(self, txs, checkpoint)
             // Connect transactions to resource dependency chains.
-            .tap(RuntimeBatch::connect)
+            .tap(ScheduledBatch::connect)
             .tap(|batch| {
                 // Push to the batch lifecycle worker for lifecycle progression.
                 self.batch_lifecycle_worker.push(batch.clone());
@@ -200,23 +200,25 @@ impl<S: Store, P: Processor> Scheduler<S, P> {
     /// access a resource, a new state diff is created and added to `state_diffs`.
     pub(crate) fn resources(
         &mut self,
-        tx: &L2Transaction<P::L1Transaction>,
-        runtime_tx: RuntimeTxRef<S, P>,
-        batch: &RuntimeBatchRef<S, P>,
+        tx: &SchedulerTransaction<P::Transaction>,
+        scheduled_tx: ScheduledTransactionRef<S, P>,
+        batch: &ScheduledBatchRef<S, P>,
         state_diffs: &mut Vec<StateDiff<S, P>>,
     ) -> Vec<ResourceAccess<S, P>> {
         tx.resources
             .iter()
             .map(|access| {
                 // Get or create the resource entry and link this transaction into its chain.
-                self.resources.entry(access.id).or_default().access(access, &runtime_tx, batch).tap(
-                    |access| {
+                self.resources
+                    .entry(access.id)
+                    .or_default()
+                    .access(access, &scheduled_tx, batch)
+                    .tap(|access| {
                         // If this is the first access in the batch, create a state diff.
                         if access.is_batch_head() {
                             state_diffs.push(access.state_diff());
                         }
-                    },
-                )
+                    })
             })
             .collect()
     }

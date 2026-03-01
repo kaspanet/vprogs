@@ -6,7 +6,7 @@ use vprogs_core_types::ResourceId;
 use vprogs_state_version::StateVersion;
 use vprogs_storage_types::{Store, WriteBatch};
 
-use crate::{RuntimeBatchRef, Write, processor::Processor};
+use crate::{ScheduledBatchRef, Write, processor::Processor};
 
 /// Tracks the state change for a single resource within a batch.
 ///
@@ -16,7 +16,7 @@ use crate::{RuntimeBatchRef, Write, processor::Processor};
 #[smart_pointer]
 pub struct StateDiff<S: Store, P: Processor> {
     /// Weak reference to the owning batch (used for commit checks and write submission).
-    batch: RuntimeBatchRef<S, P>,
+    batch: ScheduledBatchRef<S, P>,
     /// The resource this diff tracks.
     resource_id: ResourceId,
     /// Resource state before the batch executed (set when the first access resolves).
@@ -47,7 +47,7 @@ impl<S: Store, P: Processor> StateDiff<S, P> {
         self.written_state.load_full().expect("written state unknown")
     }
 
-    pub(crate) fn new(batch: RuntimeBatchRef<S, P>, resource_id: ResourceId) -> Self {
+    pub(crate) fn new(batch: ScheduledBatchRef<S, P>, resource_id: ResourceId) -> Self {
         Self(Arc::new(StateDiffData {
             batch,
             resource_id,

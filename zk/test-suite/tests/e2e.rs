@@ -1,5 +1,5 @@
 use tempfile::TempDir;
-use vprogs_core_types::{AccessMetadata, L2Transaction};
+use vprogs_core_types::{AccessMetadata, SchedulerTransaction};
 use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_storage_manager::StorageConfig;
@@ -55,8 +55,8 @@ fn test_zk_scheduler_e2e() {
     let batch = scheduler.schedule(
         ChainBlockMetadata::default(),
         vec![
-            L2Transaction { l1_tx: kaspa_tx1, resources: vec![AccessMetadata::write(1_usize)] },
-            L2Transaction { l1_tx: kaspa_tx2, resources: vec![AccessMetadata::write(2_usize)] },
+            SchedulerTransaction::new(kaspa_tx1, vec![AccessMetadata::write(1_usize)]),
+            SchedulerTransaction::new(kaspa_tx2, vec![AccessMetadata::write(2_usize)]),
         ],
     );
 

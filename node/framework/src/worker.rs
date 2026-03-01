@@ -15,7 +15,7 @@ use crate::{NodeVm, api::ApiRequest, batch::Batch};
 pub(crate) struct NodeWorker<S: Store, V: NodeVm> {
     /// L1 chain event source - the primary data entry point into the node.
     bridge: L1Bridge,
-    /// L2 transaction scheduler and execution engine.
+    /// Transaction scheduler and execution engine.
     scheduler: Scheduler<S, V>,
     /// Incoming [`NodeApi`](crate::NodeApi) requests.
     api_requests: mpsc::Receiver<ApiRequest<S, V>>,

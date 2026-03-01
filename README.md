@@ -80,7 +80,7 @@ Core abstractions are defined as traits, enabling modularity and different imple
 
 Transactions are grouped into batches for atomic processing:
 
-- `RuntimeBatch` - Groups transactions for execution
+- `ScheduledBatch` - Groups transactions for execution
 - `StateDiff` - Captures state changes per resource per batch
 - `Rollback` - Reverts state changes when needed
 
