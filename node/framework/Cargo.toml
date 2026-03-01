@@ -1,0 +1,25 @@
+[package]
+edition.workspace = true
+name              = "vprogs-node-framework"
+version.workspace = true
+
+[dependencies]
+arc-swap.workspace                    = true
+log.workspace                         = true
+thiserror.workspace                   = true
+tokio.workspace                       = true
+vprogs-core-atomics.workspace         = true
+vprogs-core-macros.workspace          = true
+vprogs-core-types.workspace           = true
+vprogs-node-l1-bridge.workspace       = true
+vprogs-scheduling-scheduler.workspace = true
+vprogs-state-space.workspace          = true
+vprogs-storage-manager.workspace      = true
+vprogs-storage-types.workspace        = true
+
+[dev-dependencies]
+tempfile.workspace                     = true
+tokio                                  = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+vprogs-node-test-suite.workspace       = true
+vprogs-state-metadata.workspace        = true
+vprogs-storage-rocksdb-store.workspace = true
