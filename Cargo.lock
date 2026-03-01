@@ -5785,7 +5785,6 @@ dependencies = [
 name = "vprogs-node-framework"
 version = "0.1.0"
 dependencies = [
- "arc-swap",
  "borsh",
  "log",
  "tempfile",
@@ -5841,10 +5840,7 @@ dependencies = [
 name = "vprogs-node-vm"
 version = "0.1.0"
 dependencies = [
- "vprogs-core-types",
- "vprogs-l1-bridge",
  "vprogs-l1-types",
- "vprogs-node-framework",
  "vprogs-scheduling-scheduler",
  "vprogs-storage-types",
  "vprogs-transaction-runtime-error",

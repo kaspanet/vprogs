@@ -4,7 +4,6 @@ name              = "vprogs-node-framework"
 version.workspace = true
 
 [dependencies]
-arc-swap.workspace                    = true
 log.workspace                         = true
 thiserror.workspace                   = true
 tokio.workspace                       = true

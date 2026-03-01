@@ -195,8 +195,14 @@ impl<S: Store, P: Processor> ScheduledBatch<S, P> {
 
     pub(crate) fn connect(&self) {
         for tx in self.txs() {
-            for resource in tx.resources() {
-                resource.connect(self.state.storage());
+            if tx.resources().is_empty() {
+                // Transactions with no resource dependencies are immediately available
+                // for execution — no data to load, no chains to join.
+                self.push_available_tx(tx);
+            } else {
+                for resource in tx.resources() {
+                    resource.connect(self.state.storage());
+                }
             }
         }
     }
