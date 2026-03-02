@@ -6,12 +6,12 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     #[error("backend failed: {0}")]
     Backend(String),
-    #[error("rkyv failed: {0}")]
-    Rkyv(String),
+    #[error("deserialization failed: {0}")]
+    Deserialization(String),
 }
 
 impl From<rkyv::rancor::Error> for Error {
     fn from(e: rkyv::rancor::Error) -> Self {
-        Self::Rkyv(e.to_string())
+        Self::Deserialization(e.to_string())
     }
 }

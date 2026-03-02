@@ -8,6 +8,9 @@ default = ["std"]
 std     = ["vprogs-zk-abi/std"]
 
 [dependencies]
+blake3        = { version = "1", default-features = false }
+borsh         = { version = "1", default-features = false }
+bytemuck      = { version = "1" }
 risc0-zkvm    = { version = "3.0", default-features = false }
 rkyv          = { version = "0.8", default-features = false }
 vprogs-zk-abi = { path = "../../../abi", default-features = false }

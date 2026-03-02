@@ -4,6 +4,7 @@ name              = "vprogs-zk-backend-risc0-host-api"
 version.workspace = true
 
 [dependencies]
+borsh.workspace         = true
 risc0-zkvm              = { workspace = true, features = ["prove"] }
 rkyv.workspace          = true
 vprogs-zk-abi.workspace = true

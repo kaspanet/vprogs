@@ -5,25 +5,22 @@ extern crate alloc;
 
 use alloc::vec;
 
-use risc0_zkvm::guest::env;
-use vprogs_zk_backend_risc0_guest_api::{StorageOp, access_transaction_context, read_witness};
+use vprogs_zk_backend_risc0_guest_api::{Host, Journal, StorageOp};
 
 risc0_zkvm::guest::entry!(main);
 
 fn main() {
     // 1. Read witness bytes and commit witness hash.
-    let witness_bytes = read_witness();
-    env::commit_slice(blake3::hash(&witness_bytes).as_bytes());
+    let witness = Host::read_witness();
+    Journal::write(blake3::hash(&witness).as_bytes());
 
     // 2. Deserialize transaction context.
-    let ctx = access_transaction_context(&witness_bytes);
+    let ctx = Host::access_transaction_context(&witness);
 
     // 3. (future: intermediate commitments during execution)
 
-    // 4. Serialize ops, commit hash, write ops to stdout.
+    // 4. Stream borsh-serialized ops to host while hashing; commit hash to journal.
     let ops: vec::Vec<Option<StorageOp>> = vec![None; ctx.accounts.len()];
-    let ops_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&ops).unwrap();
-    env::commit_slice(blake3::hash(&ops_bytes).as_bytes());
-    env::write_slice(&[ops_bytes.len() as u32]);
-    env::write_slice::<u8>(&ops_bytes);
+    let ops_hash = Host::write_borsh_and_hash(&ops);
+    Journal::write(ops_hash.as_bytes());
 }

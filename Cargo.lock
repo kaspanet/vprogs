@@ -7801,6 +7801,7 @@ dependencies = [
 name = "vprogs-zk-backend-risc0-host-api"
 version = "0.1.0"
 dependencies = [
+ "borsh",
  "risc0-zkvm",
  "rkyv",
  "vprogs-zk-abi",

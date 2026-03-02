@@ -1586,6 +1586,9 @@ dependencies = [
 name = "vprogs-zk-backend-risc0-guest-api"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "borsh",
+ "bytemuck",
  "risc0-zkvm",
  "rkyv",
  "vprogs-zk-abi",
@@ -1597,7 +1600,6 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "risc0-zkvm",
- "rkyv",
  "vprogs-zk-abi",
  "vprogs-zk-backend-risc0-guest-api",
 ]
