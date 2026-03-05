@@ -45,9 +45,13 @@ impl Host {
 /// 6. Commits the ops hash to the journal.
 pub fn process_transaction(f: impl for<'a> FnOnce(&mut TransactionContext<'a>)) {
     let mut blob = Host::read_blob();
-    Journal::write(blake3::hash(&blob).as_bytes());
 
-    let mut ctx = TransactionContext::decode(&mut blob);
+    let mut hasher = blake3::Hasher::new();
+    let mut ctx = TransactionContext::decode_and_observe(&mut blob, |bytes| {
+        hasher.update(bytes);
+    });
+    Journal::write(hasher.finalize().as_bytes());
+
     f(&mut ctx);
 
     let mut hasher = blake3::Hasher::new();

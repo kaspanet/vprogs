@@ -73,20 +73,33 @@ impl TransactionContext<'_> {
     /// The buffer is split into an immutable header and a mutable payload region. Each account
     /// receives a disjoint `&mut [u8]` slice into the payload.
     pub fn decode(buf: &mut [u8]) -> TransactionContext<'_> {
+        Self::decode_and_observe(buf, |_| {})
+    }
+
+    /// Decodes while feeding each buffer section to `observe` exactly once.
+    ///
+    /// This lets the caller hash (or otherwise process) the wire bytes in the same pass as
+    /// decoding, avoiding a separate traversal of the buffer.
+    pub fn decode_and_observe(
+        buf: &mut [u8],
+        mut observe: impl FnMut(&[u8]),
+    ) -> TransactionContext<'_> {
+        // --- Fixed header (52 bytes) ---
+        observe(&buf[..52]);
         let tx_index = u32::from_le_bytes(buf[0..4].try_into().unwrap());
         let n_accounts = u32::from_le_bytes(buf[4..8].try_into().unwrap()) as usize;
         let block_hash_bytes: [u8; 32] = buf[8..40].try_into().unwrap();
         let blue_score = u64::from_le_bytes(buf[40..48].try_into().unwrap());
         let tx_bytes_len = u32::from_le_bytes(buf[48..52].try_into().unwrap()) as usize;
 
-        let tx_bytes_start = 52;
-        let tx_bytes_end = tx_bytes_start + tx_bytes_len;
-
+        let tx_bytes_end = 52 + tx_bytes_len;
         let accounts_header_start = tx_bytes_end;
         let accounts_header_end = accounts_header_start + n_accounts * ACCOUNT_HEADER_SIZE;
         let payload_start = accounts_header_end;
 
-        // Parse per-account headers (resource_id, flags, data_len)
+        // --- Variable header (tx_bytes + per-account headers) ---
+        observe(&buf[52..payload_start]);
+
         let mut account_descs = Vec::with_capacity(n_accounts);
         for i in 0..n_accounts {
             let base = accounts_header_start + i * ACCOUNT_HEADER_SIZE;
@@ -97,10 +110,13 @@ impl TransactionContext<'_> {
             account_descs.push((ResourceId::from(rid_bytes), flags & 1 != 0, data_len));
         }
 
+        // --- Payload (account data) — observed only, never parsed ---
+        observe(&buf[payload_start..]);
+
         // Split buffer: header part becomes immutable, payload part stays mutable.
         let (header, payload) = buf.split_at_mut(payload_start);
         let header: &[u8] = header;
-        let tx_bytes = &header[tx_bytes_start..tx_bytes_end];
+        let tx_bytes = &header[52..tx_bytes_end];
 
         // Carve disjoint mutable slices out of the payload.
         let mut accounts = Vec::with_capacity(n_accounts);
