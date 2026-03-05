@@ -25,7 +25,7 @@ use alloc::vec::Vec;
 use borsh::BorshSerialize;
 use vprogs_core_types::ResourceId;
 
-use crate::{account::Account, storage_op::StorageOpRef};
+use crate::{account::Account, metadata::Metadata, storage_op::StorageOpRef};
 
 /// Size of the per-account header entry: 32 (resource_id) + 1 (flags) + 4 (data_len) = 37.
 const ACCOUNT_HEADER_SIZE: usize = 32 + 1 + 4;
@@ -39,14 +39,6 @@ const ACCOUNT_HEADER_SIZE: usize = 32 + 1 + 4;
 pub struct TransactionContext<'a> {
     pub metadata: Metadata<'a>,
     pub accounts: Vec<Account<'a>>,
-}
-
-/// Immutable transaction metadata from the wire header.
-pub struct Metadata<'a> {
-    pub tx_index: u32,
-    pub tx_bytes: &'a [u8],
-    pub block_hash: [u8; 32],
-    pub blue_score: u64,
 }
 
 impl TransactionContext<'_> {
@@ -130,14 +122,12 @@ impl TransactionContext<'_> {
 impl TransactionContext<'_> {
     /// Encodes a scheduler [`TransactionContext`](vprogs_scheduling_scheduler::TransactionContext)
     /// into the ABI wire format.
-    pub fn encode<S, P>(
-        ctx: &vprogs_scheduling_scheduler::TransactionContext<'_, S, P>,
-    ) -> Vec<u8>
+    pub fn encode<S, P>(ctx: &vprogs_scheduling_scheduler::TransactionContext<'_, S, P>) -> Vec<u8>
     where
         S: vprogs_storage_types::Store,
         P: vprogs_scheduling_scheduler::Processor<
-            BatchMetadata = vprogs_l1_types::ChainBlockMetadata,
-        >,
+                BatchMetadata = vprogs_l1_types::ChainBlockMetadata,
+            >,
         P::Transaction: borsh::BorshSerialize,
     {
         let chain_metadata = ctx.batch_metadata();

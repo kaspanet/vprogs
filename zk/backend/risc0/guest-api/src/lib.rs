@@ -5,5 +5,5 @@ extern crate alloc;
 mod host;
 mod journal;
 
-pub use host::{process_transaction, Host};
+pub use host::{Host, process_transaction};
 pub use journal::Journal;
