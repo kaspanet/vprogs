@@ -1,36 +1,14 @@
 use borsh::BorshSerialize;
 use bytemuck::Pod;
 use risc0_zkvm::guest::env;
-use rkyv::util::AlignedVec;
+use vprogs_zk_abi::TransactionContext;
 
-pub use vprogs_zk_abi::{ArchivedAccount, ArchivedTransactionContext};
+use crate::Journal;
 
-/// All host communication (stdin reads + stdout writes).
+/// Low-level guest ↔ host I/O primitives.
 pub struct Host;
 
 impl Host {
-    /// Reads the raw witness bytes from the RISC-0 zkVM environment into an aligned buffer.
-    ///
-    /// Uses `read_slice` for zero-overhead I/O (length-prefixed raw bytes, no serde).
-    /// Returns an [`AlignedVec`] (16-byte aligned) so that rkyv zero-copy access
-    /// succeeds — the guest allocator only guarantees 4-byte alignment for `Vec<u8>`,
-    /// but archived types with `u64` fields require 8-byte alignment.
-    pub fn read_witness() -> AlignedVec {
-        let mut len = 0u32;
-        env::read_slice(core::slice::from_mut(&mut len));
-
-        let mut aligned = AlignedVec::with_capacity(len as usize);
-        aligned.resize(len as usize, 0);
-        env::read_slice(&mut aligned);
-        aligned
-    }
-
-    /// Zero-copy access to the rkyv-archived transaction context from raw bytes.
-    pub fn access_transaction_context(buf: &[u8]) -> &ArchivedTransactionContext {
-        rkyv::access::<ArchivedTransactionContext, rkyv::rancor::Error>(buf)
-            .expect("invalid transaction context archive")
-    }
-
     /// Read raw Pod data from the host.
     pub fn read<T: Pod>(buf: &mut [T]) {
         env::read_slice(buf);
@@ -43,17 +21,39 @@ impl Host {
 
     /// Borsh-serialize `value` and stream directly to the host. No intermediate buffer.
     pub fn write_borsh<T: BorshSerialize>(value: &T) {
-        borsh::to_writer(&mut Host, value).expect("borsh serialize to host failed");
+        borsh::to_writer(&mut Self, value).expect("borsh serialize to host failed");
     }
 
-    /// Borsh-serialize `value` to the host while incrementally hashing. Returns the blake3
-    /// hash of the serialized bytes. No intermediate buffer.
-    pub fn write_borsh_and_hash<T: BorshSerialize>(value: &T) -> blake3::Hash {
-        let mut hasher = blake3::Hasher::new();
-        borsh::to_writer(&mut HashingWriter { hasher: &mut hasher, inner: &mut Host }, value)
-            .expect("borsh serialize to host failed");
-        hasher.finalize()
+    /// Read a length-prefixed byte blob from the host.
+    fn read_blob() -> alloc::vec::Vec<u8> {
+        let mut len = 0u32;
+        env::read_slice(core::slice::from_mut(&mut len));
+
+        let mut buf = alloc::vec![0u8; len as usize];
+        env::read_slice(&mut buf);
+        buf
     }
+}
+
+/// Reads, hashes, decodes, executes, and writes results in one call.
+///
+/// 1. Reads raw wire bytes from the host.
+/// 2. Commits a blake3 hash of the wire bytes to the journal.
+/// 3. Decodes the buffer into a zero-copy [`TransactionContext`].
+/// 4. Calls `f` to let the guest mutate accounts in-place.
+/// 5. Streams borsh-serialized storage ops to the host while hashing.
+/// 6. Commits the ops hash to the journal.
+pub fn process_transaction(f: impl for<'a> FnOnce(&mut TransactionContext<'a>)) {
+    let mut blob = Host::read_blob();
+    Journal::write(blake3::hash(&blob).as_bytes());
+
+    let mut ctx = TransactionContext::decode(&mut blob);
+    f(&mut ctx);
+
+    let mut hasher = blake3::Hasher::new();
+    let mut w = HashingWriter { hasher: &mut hasher, inner: &mut Host };
+    ctx.write_storage_ops(&mut w).expect("write ops failed");
+    Journal::write(hasher.finalize().as_bytes());
 }
 
 impl borsh::io::Write for Host {

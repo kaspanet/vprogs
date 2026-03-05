@@ -5866,16 +5866,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1a30e631b7f4a03dee9056b8ef6982e8ba371dd5bedb74d3ec86df4499132c70"
 dependencies = [
  "bytecheck",
- "bytes",
  "hashbrown 0.16.1",
- "indexmap 2.13.0",
  "munge",
  "ptr_meta",
  "rancor",
  "rend",
  "rkyv_derive",
  "tinyvec",
- "uuid 1.21.0",
 ]
 
 [[package]]
@@ -7790,7 +7787,6 @@ name = "vprogs-zk-abi"
 version = "0.1.0"
 dependencies = [
  "borsh",
- "rkyv",
  "vprogs-core-types",
  "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
@@ -7803,7 +7799,6 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "risc0-zkvm",
- "rkyv",
  "vprogs-zk-abi",
  "vprogs-zk-vm",
 ]
@@ -7823,7 +7818,6 @@ name = "vprogs-zk-vm"
 version = "0.1.0"
 dependencies = [
  "borsh",
- "rkyv",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",

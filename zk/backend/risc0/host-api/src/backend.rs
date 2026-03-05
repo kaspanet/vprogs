@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use risc0_zkvm::{ExecutorEnv, ProverOpts, Receipt, default_executor, default_prover};
-use vprogs_zk_abi::{StorageOp, TransactionContext};
+use vprogs_zk_abi::StorageOp;
 use vprogs_zk_vm::{Error, Result};
 
 use crate::read_ops::read_ops;
@@ -25,12 +25,11 @@ impl Backend {
 impl vprogs_zk_vm::Backend for Backend {
     type Receipt = Receipt;
 
-    fn execute_transaction(&self, ctx: &TransactionContext) -> Result<Vec<Option<StorageOp>>> {
-        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(ctx)?.to_vec();
+    fn execute_transaction(&self, wire_bytes: &[u8]) -> Result<Vec<Option<StorageOp>>> {
         let mut ops_stdout = Vec::new();
         let env = ExecutorEnv::builder()
-            .write_slice(&[bytes.len() as u32])
-            .write_slice(&bytes)
+            .write_slice(&[wire_bytes.len() as u32])
+            .write_slice(wire_bytes)
             .stdout(&mut ops_stdout)
             .build()
             .map_err(|e| Error::Backend(e.to_string()))?;
@@ -42,11 +41,10 @@ impl vprogs_zk_vm::Backend for Backend {
         read_ops(&ops_stdout)
     }
 
-    fn prove_transaction(&self, ctx: &TransactionContext) -> Result<Receipt> {
-        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(ctx)?.to_vec();
+    fn prove_transaction(&self, wire_bytes: &[u8]) -> Result<Receipt> {
         let env = ExecutorEnv::builder()
-            .write_slice(&[bytes.len() as u32])
-            .write_slice(&bytes)
+            .write_slice(&[wire_bytes.len() as u32])
+            .write_slice(wire_bytes)
             .build()
             .map_err(|e| Error::Backend(e.to_string()))?;
 

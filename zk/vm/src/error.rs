@@ -9,9 +9,3 @@ pub enum Error {
     #[error("deserialization failed: {0}")]
     Deserialization(String),
 }
-
-impl From<rkyv::rancor::Error> for Error {
-    fn from(e: rkyv::rancor::Error) -> Self {
-        Self::Deserialization(e.to_string())
-    }
-}

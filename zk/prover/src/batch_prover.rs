@@ -36,13 +36,13 @@ impl<B: Backend + 'static> BatchProver<B> {
 
             while let Some(request) = self.rx.recv().await {
                 let backend = self.backend.clone();
-                let block_hash = request.tx_ctx.batch_metadata.block_hash;
-                let tx_index = request.tx_ctx.tx_index;
-                let ctx = request.tx_ctx;
+                let block_hash = request.block_hash;
+                let tx_index = request.tx_index;
+                let wire_bytes = request.wire_bytes;
 
                 // Prove on a blocking thread.
                 let receipt = match tokio::task::spawn_blocking(move || {
-                    backend.prove_transaction(&ctx)
+                    backend.prove_transaction(&wire_bytes)
                 })
                 .await
                 {
