@@ -2,9 +2,9 @@ use vprogs_zk_abi::{Account, BlockMetadata, guest};
 
 use crate::{Journal, host::Host};
 
-/// Reads, hashes, decodes, executes, and writes results in one call.
+/// Reads, decodes, executes, and writes a single transaction inside the guest.
 ///
-/// 1. Reads raw wire bytes from the host.
+/// 1. Reads the wire bytes from the host.
 /// 2. Commits a blake3 hash of the wire bytes to the journal.
 /// 3. Decodes the buffer into zero-copy metadata and account views.
 /// 4. Calls `f` to let the guest mutate accounts in-place.

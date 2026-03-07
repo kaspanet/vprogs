@@ -7,9 +7,8 @@ use vprogs_storage_types::Store;
 
 use crate::{ACCOUNT_HEADER_SIZE, FIXED_HEADER_SIZE, HostError, HostResult, storage_op::StorageOp};
 
-/// Encodes a scheduler
-/// [`TransactionContext`](vprogs_scheduling_scheduler::TransactionContext) into the ABI wire
-/// format.
+/// Encodes a scheduler [`TransactionContext`](vprogs_scheduling_scheduler::TransactionContext) into
+/// the ABI wire format.
 pub fn encode_transaction_context<S, P>(ctx: &TransactionContext<'_, S, P>) -> Vec<u8>
 where
     S: Store,

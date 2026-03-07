@@ -1,18 +1,27 @@
 use alloc::vec::Vec;
 
+use borsh::BorshSerialize;
 use vprogs_core_types::ResourceId;
 
-/// A mutable view of a single account's data within a decoded witness buffer.
+use crate::storage_op::StorageOp;
+
+/// A mutable view of a single account's data within a decoded wire buffer.
 ///
-/// Data starts as a borrowed slice into the wire buffer (`backing`). If the caller needs more
-/// space than the original slice provides, [`resize`](Account::resize) promotes to a
-/// heap-allocated `Vec` (`promoted`). Reads and writes always go through the active buffer.
+/// Data starts as a borrowed slice into the wire buffer (`backing`). If the caller needs more space
+/// than the original slice provides, [`resize`](Account::resize) promotes to a heap-allocated `Vec`
+/// (`promoted`). Reads and writes always go through the active buffer.
 pub struct Account<'a> {
+    /// Zero-copy reference into the wire buffer's account header.
     resource_id: &'a ResourceId,
+    /// Zero-copy mutable slice into the wire buffer's payload region.
     backing: &'a mut [u8],
+    /// Heap-allocated buffer, used only when the account data outgrows `backing`.
     promoted: Option<Vec<u8>>,
+    /// Whether this account was created by the current transaction.
     is_new: bool,
+    /// Whether the account data has been modified.
     dirty: bool,
+    /// Whether the account has been marked for deletion.
     deleted: bool,
 }
 
@@ -22,10 +31,12 @@ impl<'a> Account<'a> {
         Self { resource_id, is_new, backing, promoted: None, dirty: false, deleted: false }
     }
 
+    /// Returns the account's resource identifier.
     pub fn resource_id(&self) -> &ResourceId {
         self.resource_id
     }
 
+    /// Returns `true` if this account was created by the current transaction.
     pub fn is_new(&self) -> bool {
         self.is_new
     }
@@ -35,7 +46,7 @@ impl<'a> Account<'a> {
         self.promoted.as_deref().unwrap_or(self.backing)
     }
 
-    /// Returns a mutable reference to the current data (backing or promoted) and marks dirty.
+    /// Returns a mutable reference to the current data and marks the account as dirty.
     pub fn data_mut(&mut self) -> &mut [u8] {
         self.dirty = true;
         match self.promoted {
@@ -74,16 +85,44 @@ impl<'a> Account<'a> {
         self.dirty = true;
     }
 
+    /// Marks this account for deletion.
     pub fn mark_deleted(&mut self) {
         self.deleted = true;
         self.dirty = true;
     }
 
+    /// Returns `true` if the account data has been modified.
     pub fn is_dirty(&self) -> bool {
         self.dirty
     }
 
+    /// Returns `true` if the account has been marked for deletion.
     pub fn is_deleted(&self) -> bool {
         self.deleted
+    }
+}
+
+/// Serializes as `Option<StorageOp>`, translating the account's dirty/deleted/new flags into the
+/// corresponding storage operation variant. Batches the variant byte and length prefix into a
+/// single 5-byte write to minimize I/O calls.
+impl BorshSerialize for Account<'_> {
+    fn serialize<W: borsh::io::Write>(&self, writer: &mut W) -> borsh::io::Result<()> {
+        if self.deleted {
+            // Some(StorageOp::Delete): Option tag + variant.
+            writer.write_all(&[1, StorageOp::DELETE])?;
+        } else if self.dirty {
+            let data = self.data();
+            // Some(Create/Update): Option tag + variant + length prefix in one write.
+            let variant = if self.is_new { StorageOp::CREATE } else { StorageOp::UPDATE };
+            let mut header = [1u8, 0, 0, 0, 0, 0];
+            header[1] = variant;
+            header[2..6].copy_from_slice(&(data.len() as u32).to_le_bytes());
+            writer.write_all(&header)?;
+            writer.write_all(data)?;
+        } else {
+            // None: account unchanged.
+            writer.write_all(&[0])?;
+        }
+        Ok(())
     }
 }

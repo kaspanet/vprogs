@@ -10,11 +10,14 @@ use vprogs_zk_vm::{Error, Result};
 /// `prove_transaction()` generates fake receipts suitable for testing.
 #[derive(Clone)]
 pub struct Backend {
+    /// ELF binary for single-transaction execution and proving.
     transaction_elf: Arc<Vec<u8>>,
+    /// ELF binary for batch aggregation proving.
     batch_elf: Arc<Vec<u8>>,
 }
 
 impl Backend {
+    /// Creates a new backend from the given guest ELF binaries.
     pub fn new(transaction_elf: Vec<u8>, batch_elf: Vec<u8>) -> Self {
         Self { transaction_elf: Arc::new(transaction_elf), batch_elf: Arc::new(batch_elf) }
     }

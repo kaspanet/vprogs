@@ -5,4 +5,5 @@ pub enum HostError {
     Deserialization(String),
 }
 
+/// Convenience alias for host-side ABI results.
 pub type HostResult<T> = Result<T, HostError>;

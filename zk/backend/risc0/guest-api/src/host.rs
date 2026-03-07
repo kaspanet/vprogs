@@ -36,6 +36,7 @@ impl Host {
     }
 }
 
+/// Bridges borsh streaming serialization to the host via [`env::write_slice`].
 impl borsh::io::Write for Host {
     fn write(&mut self, buf: &[u8]) -> borsh::io::Result<usize> {
         env::write_slice::<u8>(buf);

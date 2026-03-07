@@ -10,7 +10,9 @@ use crate::{Backend, Error, ProofRequest, Result};
 /// to a proving pipeline.
 #[derive(Clone)]
 pub struct Vm<B> {
+    /// The ZK backend used for execution and proving.
     backend: B,
+    /// Optional channel for sending proof requests to the proving pipeline.
     proof_tx: Option<mpsc::UnboundedSender<ProofRequest>>,
 }
 
@@ -31,7 +33,7 @@ impl<B: Backend> Processor for Vm<B> {
         // 1. Encode into ABI wire format.
         let wire_bytes = host::encode_transaction_context(&*ctx);
 
-        // 2. Execute via backend — returns one optional storage operation per account.
+        // 2. Execute via backend. Returns one optional storage operation per account.
         let storage_ops = self.backend.execute_transaction(&wire_bytes)?;
 
         // 3. Apply storage operations to resource handles.
