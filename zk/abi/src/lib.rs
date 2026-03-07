@@ -3,11 +3,19 @@
 extern crate alloc;
 
 mod account;
-mod metadata;
+mod block_metadata;
+pub mod guest;
+#[cfg(feature = "host")]
+pub mod host;
+#[cfg(feature = "host")]
+mod host_error;
 mod storage_op;
-mod transaction_context;
 
 pub use account::Account;
-pub use metadata::Metadata;
+pub use block_metadata::BlockMetadata;
+#[cfg(feature = "host")]
+pub use host_error::{HostError, HostResult};
 pub use storage_op::{StorageOp, StorageOpRef};
-pub use transaction_context::TransactionContext;
+
+pub(crate) const FIXED_HEADER_SIZE: usize = 4 + 4 + 32 + 8 + 4;
+pub(crate) const ACCOUNT_HEADER_SIZE: usize = 32 + 1 + 4;

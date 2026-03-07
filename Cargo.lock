@@ -7787,6 +7787,7 @@ name = "vprogs-zk-abi"
 version = "0.1.0"
 dependencies = [
  "borsh",
+ "thiserror 2.0.18",
  "vprogs-core-types",
  "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
@@ -7797,7 +7798,6 @@ dependencies = [
 name = "vprogs-zk-backend-risc0-host-api"
 version = "0.1.0"
 dependencies = [
- "borsh",
  "risc0-zkvm",
  "vprogs-zk-abi",
  "vprogs-zk-vm",

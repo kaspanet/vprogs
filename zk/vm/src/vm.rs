@@ -2,7 +2,7 @@ use tokio::sync::mpsc;
 use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
 use vprogs_scheduling_scheduler::{Processor, TransactionContext};
 use vprogs_storage_types::Store;
-use vprogs_zk_abi::StorageOp;
+use vprogs_zk_abi::{StorageOp, host};
 
 use crate::{Backend, Error, ProofRequest, Result};
 
@@ -29,7 +29,7 @@ impl<B> Vm<B> {
 impl<B: Backend> Processor for Vm<B> {
     fn process_transaction<S: Store>(&self, ctx: &mut TransactionContext<S, Self>) -> Result<()> {
         // 1. Encode into ABI wire format.
-        let wire_bytes = vprogs_zk_abi::TransactionContext::encode(&*ctx);
+        let wire_bytes = host::encode_transaction_context(&*ctx);
 
         // 2. Execute via backend — returns one optional storage operation per account.
         let storage_ops = self.backend.execute_transaction(&wire_bytes)?;

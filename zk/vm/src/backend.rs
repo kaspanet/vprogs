@@ -5,7 +5,7 @@ use crate::Result;
 /// Abstraction over a zero-knowledge VM backend (e.g. RISC-0, SP1).
 ///
 /// Implementations own their ELF binaries and receive pre-encoded wire bytes
-/// (produced by [`TransactionContext::encode`](vprogs_zk_abi::TransactionContext::encode)).
+/// (produced by [`encode_transaction_context`](vprogs_zk_abi::host::encode_transaction_context)).
 pub trait Backend: Clone + Send + Sync + 'static {
     /// The proof receipt type produced by this backend.
     type Receipt: Send + Sync + 'static;

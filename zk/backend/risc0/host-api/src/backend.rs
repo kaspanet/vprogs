@@ -1,10 +1,8 @@
 use std::sync::Arc;
 
 use risc0_zkvm::{ExecutorEnv, ProverOpts, Receipt, default_executor, default_prover};
-use vprogs_zk_abi::StorageOp;
+use vprogs_zk_abi::{StorageOp, host};
 use vprogs_zk_vm::{Error, Result};
-
-use crate::read_ops::read_ops;
 
 /// RISC-0 backend for execution and proving.
 ///
@@ -38,7 +36,7 @@ impl vprogs_zk_vm::Backend for Backend {
             .execute(env, &self.transaction_elf)
             .map_err(|e| Error::Backend(e.to_string()))?;
 
-        read_ops(&ops_stdout)
+        Ok(host::decode_execution_result(&ops_stdout)?)
     }
 
     fn prove_transaction(&self, wire_bytes: &[u8]) -> Result<Receipt> {

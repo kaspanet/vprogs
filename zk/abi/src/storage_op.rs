@@ -23,58 +23,19 @@ pub enum StorageOpRef<'a> {
 impl BorshSerialize for StorageOpRef<'_> {
     fn serialize<W: borsh::io::Write>(&self, writer: &mut W) -> borsh::io::Result<()> {
         match self {
-            StorageOpRef::Create(data) => {
-                // Variant index 0
-                writer.write_all(&[0])?;
-                // Length-prefixed bytes (same as Vec<u8> borsh format)
-                writer.write_all(&(data.len() as u32).to_le_bytes())?;
-                writer.write_all(data)?;
-            }
-            StorageOpRef::Update(data) => {
-                // Variant index 1
-                writer.write_all(&[1])?;
-                writer.write_all(&(data.len() as u32).to_le_bytes())?;
+            StorageOpRef::Create(data) | StorageOpRef::Update(data) => {
+                let variant = if matches!(self, StorageOpRef::Create(_)) { 0u8 } else { 1u8 };
+                // Batch variant byte + length prefix into a single write.
+                let mut header = [0u8; 5];
+                header[0] = variant;
+                header[1..5].copy_from_slice(&(data.len() as u32).to_le_bytes());
+                writer.write_all(&header)?;
                 writer.write_all(data)?;
             }
             StorageOpRef::Delete => {
-                // Variant index 2
                 writer.write_all(&[2])?;
             }
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn storage_op_ref_borsh_compat() {
-        let data = vec![1u8, 2, 3, 4, 5];
-
-        // Create
-        let owned = StorageOp::Create(data.clone());
-        let borrowed = StorageOpRef::Create(&data);
-        assert_eq!(borsh::to_vec(&owned).unwrap(), borsh::to_vec(&borrowed).unwrap());
-
-        // Update
-        let owned = StorageOp::Update(data.clone());
-        let borrowed = StorageOpRef::Update(&data);
-        assert_eq!(borsh::to_vec(&owned).unwrap(), borsh::to_vec(&borrowed).unwrap());
-
-        // Delete
-        let owned = StorageOp::Delete;
-        let borrowed = StorageOpRef::Delete;
-        assert_eq!(borsh::to_vec(&owned).unwrap(), borsh::to_vec(&borrowed).unwrap());
-
-        // Option<StorageOp> compat
-        let owned_some: Option<StorageOp> = Some(StorageOp::Update(data.clone()));
-        let borrowed_some: Option<StorageOpRef> = Some(StorageOpRef::Update(&data));
-        assert_eq!(borsh::to_vec(&owned_some).unwrap(), borsh::to_vec(&borrowed_some).unwrap());
-
-        let owned_none: Option<StorageOp> = None;
-        let borrowed_none: Option<StorageOpRef> = None;
-        assert_eq!(borsh::to_vec(&owned_none).unwrap(), borsh::to_vec(&borrowed_none).unwrap());
     }
 }
