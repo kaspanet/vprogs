@@ -19,10 +19,9 @@ where
     let resources = ctx.resources();
     let tx_bytes = borsh::to_vec(ctx.tx()).expect("failed to serialize transaction");
 
-    let fixed_header = FIXED_HEADER_SIZE;
     let accounts_header = resources.len() * ACCOUNT_HEADER_SIZE;
     let payload_len: usize = resources.iter().map(|r| r.data().len()).sum();
-    let total = fixed_header + tx_bytes.len() + accounts_header + payload_len;
+    let total = FIXED_HEADER_SIZE + tx_bytes.len() + accounts_header + payload_len;
 
     let mut buf = Vec::with_capacity(total);
 
