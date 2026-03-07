@@ -3,11 +3,23 @@
 extern crate alloc;
 
 mod account;
-mod batch_metadata;
+mod block_metadata;
+pub mod guest;
+#[cfg(feature = "host")]
+pub mod host;
+#[cfg(feature = "host")]
+mod host_error;
 mod storage_op;
-mod transaction_context;
 
-pub use account::{Account, ArchivedAccount};
-pub use batch_metadata::{ArchivedBatchMetadata, BatchMetadata};
-pub use storage_op::{ArchivedStorageOp, StorageOp};
-pub use transaction_context::{ArchivedTransactionContext, TransactionContext};
+pub use account::Account;
+pub use block_metadata::BlockMetadata;
+#[cfg(feature = "host")]
+pub use host_error::{HostError, HostResult};
+pub use storage_op::StorageOp;
+
+/// Fixed header size: tx_index(4) + n_accounts(4) + block_hash(32) + blue_score(8) +
+/// tx_bytes_len(4).
+pub(crate) const FIXED_HEADER_SIZE: usize = 4 + 4 + 32 + 8 + 4;
+
+/// Per-account header size: resource_id(32) + flags(1) + data_len(4).
+pub(crate) const ACCOUNT_HEADER_SIZE: usize = 32 + 1 + 4;

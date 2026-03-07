@@ -2,19 +2,21 @@ use tokio::sync::mpsc;
 use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
 use vprogs_scheduling_scheduler::{Processor, TransactionContext};
 use vprogs_storage_types::Store;
-use vprogs_zk_abi::{self as abi, StorageOp};
+use vprogs_zk_abi::{StorageOp, host};
 
 use crate::{Backend, Error, ProofRequest, Result};
 
 /// ZK processor that executes programs via a [`Backend`] and optionally sends proof requests
 /// to a proving pipeline.
 #[derive(Clone)]
-pub struct Vm<B: Backend> {
+pub struct Vm<B> {
+    /// The ZK backend used for execution and proving.
     backend: B,
+    /// Optional channel for sending proof requests to the proving pipeline.
     proof_tx: Option<mpsc::UnboundedSender<ProofRequest>>,
 }
 
-impl<B: Backend> Vm<B> {
+impl<B> Vm<B> {
     /// Creates a new ZK VM with the given backend.
     pub fn new(backend: B) -> Self {
         Self { backend, proof_tx: None }
@@ -28,11 +30,11 @@ impl<B: Backend> Vm<B> {
 
 impl<B: Backend> Processor for Vm<B> {
     fn process_transaction<S: Store>(&self, ctx: &mut TransactionContext<S, Self>) -> Result<()> {
-        // 1. Build ABI transaction context.
-        let tx_ctx = abi::TransactionContext::from(&*ctx);
+        // 1. Encode into ABI wire format.
+        let wire_bytes = host::encode_transaction_context(&*ctx);
 
-        // 2. Execute via backend — returns one optional storage operation per account.
-        let storage_ops = self.backend.execute_transaction(&tx_ctx)?;
+        // 2. Execute via backend. Returns one optional storage operation per account.
+        let storage_ops = self.backend.execute_transaction(&wire_bytes)?;
 
         // 3. Apply storage operations to resource handles.
         for (i, storage_op) in storage_ops.iter().enumerate() {
@@ -50,7 +52,12 @@ impl<B: Backend> Processor for Vm<B> {
 
         // 4. Optionally send a proof request to the proving pipeline.
         if let Some(ref proof_tx) = self.proof_tx {
-            let _ = proof_tx.send(ProofRequest { tx_ctx, storage_ops });
+            let _ = proof_tx.send(ProofRequest {
+                wire_bytes,
+                block_hash: ctx.batch_metadata().block_hash().as_bytes(),
+                tx_index: ctx.tx_index(),
+                storage_ops,
+            });
         }
 
         Ok(())
