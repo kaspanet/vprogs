@@ -13,6 +13,6 @@ pub struct ProofRequest {
     pub tx_index: u32,
     /// Raw execution result bytes from the guest.
     pub execution_result_bytes: Vec<u8>,
-    /// Per-account indices within the batch (one per resource accessed by this tx).
-    pub account_indices: Vec<u32>,
+    /// Per-resource indices within the batch (one per resource accessed by this tx).
+    pub resource_indices: Vec<u32>,
 }

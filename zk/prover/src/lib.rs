@@ -1,7 +1,7 @@
-mod account_data;
 mod batch_proof;
 mod batch_prover;
 mod batch_state;
+mod resource_data;
 pub mod state_tree;
 
 pub use batch_proof::BatchProof;

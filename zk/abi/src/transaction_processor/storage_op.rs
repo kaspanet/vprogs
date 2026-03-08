@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
-/// A storage mutation produced by executing a transaction, addressed by account index.
+/// A storage mutation produced by executing a transaction, addressed by resource index.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub enum StorageOp {
     Create(Vec<u8>),
@@ -10,7 +10,7 @@ pub enum StorageOp {
     Delete,
 }
 
-/// Borsh variant indices for [`StorageOp`], used by [`Account`](crate::Account)'s manual
+/// Borsh variant indices for [`StorageOp`], used by [`Resource`](super::Resource)'s manual
 /// serializer.
 impl StorageOp {
     pub(crate) const CREATE: u8 = 0;

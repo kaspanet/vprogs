@@ -164,7 +164,7 @@ impl<S: Store, P: Processor> ScheduledBatch<S, P> {
             }
 
             let mut state_diffs = Vec::new();
-            let mut account_index = 0u32;
+            let mut resource_index = 0u32;
 
             ScheduledBatchData {
                 checkpoint,
@@ -182,7 +182,7 @@ impl<S: Store, P: Processor> ScheduledBatch<S, P> {
                             ScheduledBatchRef(this.clone()),
                             i as u32,
                             tx,
-                            &mut account_index,
+                            &mut resource_index,
                         )
                     })
                     .collect(),

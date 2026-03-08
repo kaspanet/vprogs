@@ -1,23 +1,23 @@
-mod account_entry;
 mod decoder;
 #[cfg(feature = "host")]
 mod encoder;
 mod header;
+mod resource_commitment;
 mod tx_entry;
 
-pub use account_entry::AccountEntry;
 pub use decoder::BatchWitnessDecoder;
 #[cfg(feature = "host")]
 pub use encoder::encode_batch_witness;
 pub use header::BatchWitnessHeader;
+pub use resource_commitment::ResourceCommitment;
 pub use tx_entry::{TxEntry, TxEntryIter};
 
 /// Fixed header size for the batch witness:
-/// image_id(32) + batch_index(8) + prev_root(32) + n_accounts(4) + n_txs(4).
+/// image_id(32) + batch_index(8) + prev_root(32) + n_resources(4) + n_txs(4).
 pub const HEADER_SIZE: usize = 32 + 8 + 32 + 4 + 4;
 
-/// Per-account entry size: resource_id(32) + leaf_hash(32).
-pub const ACCOUNT_ENTRY_SIZE: usize = 32 + 32;
+/// Per-resource commitment size: resource_id(32) + leaf_hash(32).
+pub const RESOURCE_COMMITMENT_SIZE: usize = 32 + 32;
 
 #[cfg(test)]
 mod tests {
@@ -32,7 +32,7 @@ mod tests {
         let batch_index = 42u64;
         let prev_root = [0xCDu8; 32];
 
-        let accounts = vec![([1u8; 32], [0x11u8; 32]), ([2u8; 32], [0u8; 32])];
+        let commitments = vec![([1u8; 32], [0x11u8; 32]), ([2u8; 32], [0u8; 32])];
 
         let multi_proof_bytes = encode_multi_proof(&[], &[], &[]);
 
@@ -45,7 +45,7 @@ mod tests {
             &image_id,
             batch_index,
             &prev_root,
-            &accounts,
+            &commitments,
             &multi_proof_bytes,
             &txs,
         );
@@ -56,16 +56,16 @@ mod tests {
         assert_eq!(header.image_id, &image_id);
         assert_eq!(header.batch_index, batch_index);
         assert_eq!(header.prev_root, &prev_root);
-        assert_eq!(header.n_accounts, 2);
+        assert_eq!(header.n_resources, 2);
         assert_eq!(header.n_txs, 1);
 
-        let acc0 = decoder.account_entry(0);
-        assert_eq!(acc0.resource_id, &[1u8; 32]);
-        assert_eq!(acc0.leaf_hash, &[0x11u8; 32]);
+        let c0 = decoder.resource_commitment(0);
+        assert_eq!(c0.resource_id, &[1u8; 32]);
+        assert_eq!(c0.leaf_hash, &[0x11u8; 32]);
 
-        let acc1 = decoder.account_entry(1);
-        assert_eq!(acc1.resource_id, &[2u8; 32]);
-        assert_eq!(acc1.leaf_hash, &[0u8; 32]);
+        let c1 = decoder.resource_commitment(1);
+        assert_eq!(c1.resource_id, &[2u8; 32]);
+        assert_eq!(c1.leaf_hash, &[0u8; 32]);
 
         let multi_proof = decoder.multi_proof();
         assert_eq!(multi_proof.n_leaves(), 0);

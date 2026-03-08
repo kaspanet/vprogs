@@ -25,7 +25,7 @@ impl StateTree {
         self.inner.multi_proof(keys)
     }
 
-    /// Applies account mutations after a batch commits.
+    /// Applies resource mutations after a batch commits.
     ///
     /// Each entry is `(resource_id, new_data)` where `None` means deletion.
     pub fn apply_mutations(&mut self, mutations: &[([u8; 32], Option<&[u8]>)]) {

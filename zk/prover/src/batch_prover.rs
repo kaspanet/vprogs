@@ -3,20 +3,20 @@ use std::{collections::HashMap, sync::Arc};
 use tokio::sync::mpsc;
 use vprogs_zk_abi::{
     batch_processor::encode_batch_witness,
-    transaction_processor::{ACCOUNT_HEADER_SIZE, FIXED_HEADER_SIZE, StorageOp},
+    transaction_processor::{FIXED_HEADER_SIZE, RESOURCE_HEADER_SIZE, StorageOp},
 };
 use vprogs_zk_smt::EMPTY_LEAF_HASH;
 use vprogs_zk_vm::{Backend, ProofRequest};
 
 use crate::{
-    BatchProof, account_data::AccountData, batch_state::BatchState, state_tree::StateTree,
+    BatchProof, batch_state::BatchState, resource_data::ResourceData, state_tree::StateTree,
 };
 
 /// Receives proof requests from the ZK VM, proves individual transactions, and assembles
 /// batch witnesses for the batch processor guest.
 ///
 /// When all transactions for a batch have been proven, constructs the batch witness from
-/// pre-batch account data, generates a multi-proof from the state tree, and calls the
+/// pre-batch resource data, generates a multi-proof from the state tree, and calls the
 /// backend's `prove_batch` to produce the batch proof.
 pub struct BatchProver<B: Backend> {
     backend: Arc<B>,
@@ -67,8 +67,8 @@ impl<B: Backend + 'static> BatchProver<B> {
                 let tx_index = request.tx_index;
                 let wire_bytes_for_prove = request.wire_bytes.clone();
 
-                // Extract pre-batch account data from wire_bytes before proving.
-                let pre_batch = extract_pre_batch_accounts(&request);
+                // Extract pre-batch resource data from wire_bytes before proving.
+                let pre_batch = extract_pre_batch_resources(&request);
 
                 // Prove on a blocking thread.
                 let receipt = match tokio::task::spawn_blocking(move || {
@@ -86,12 +86,12 @@ impl<B: Backend + 'static> BatchProver<B> {
                 let batch_state = pending.entry(block_hash).or_insert_with(|| BatchState {
                     expected_tx_count: self.batch_tx_counts.get(&block_hash).copied().unwrap_or(0),
                     receipts: Vec::new(),
-                    pre_batch_accounts: HashMap::new(),
+                    pre_batch_resources: HashMap::new(),
                 });
 
-                // Record pre-batch data for first-seen accounts only.
-                for (account_index, account_data) in pre_batch {
-                    batch_state.pre_batch_accounts.entry(account_index).or_insert(account_data);
+                // Record pre-batch data for first-seen resources only.
+                for (resource_index, resource_data) in pre_batch {
+                    batch_state.pre_batch_resources.entry(resource_index).or_insert(resource_data);
                 }
 
                 batch_state.receipts.push((tx_index, receipt, request));
@@ -128,28 +128,28 @@ impl<B: Backend + 'static> BatchProver<B> {
 
         let prev_root = self.state_tree.root();
 
-        // Build dense account array ordered by account_index.
-        let n_accounts = batch_state.pre_batch_accounts.len();
-        let mut ordered_accounts: Vec<Option<&AccountData>> = vec![None; n_accounts];
-        for (idx, data) in &batch_state.pre_batch_accounts {
-            if (*idx as usize) < n_accounts {
-                ordered_accounts[*idx as usize] = Some(data);
+        // Build dense resource array ordered by resource_index.
+        let n_resources = batch_state.pre_batch_resources.len();
+        let mut ordered_resources: Vec<Option<&ResourceData>> = vec![None; n_resources];
+        for (idx, data) in &batch_state.pre_batch_resources {
+            if (*idx as usize) < n_resources {
+                ordered_resources[*idx as usize] = Some(data);
             }
         }
 
-        // Build account entries for the batch witness.
-        let mut account_entries: Vec<([u8; 32], [u8; 32])> = Vec::with_capacity(n_accounts);
-        let mut resource_ids: Vec<[u8; 32]> = Vec::with_capacity(n_accounts);
+        // Build resource commitments for the batch witness.
+        let mut commitments: Vec<([u8; 32], [u8; 32])> = Vec::with_capacity(n_resources);
+        let mut resource_ids: Vec<[u8; 32]> = Vec::with_capacity(n_resources);
 
-        for slot in &ordered_accounts {
-            let account = slot.expect("gap in account_index sequence");
-            let leaf_hash = if account.data.is_empty() {
+        for slot in &ordered_resources {
+            let resource = slot.expect("gap in resource_index sequence");
+            let leaf_hash = if resource.data.is_empty() {
                 EMPTY_LEAF_HASH
             } else {
-                *blake3::hash(&account.data).as_bytes()
+                *blake3::hash(&resource.data).as_bytes()
             };
-            account_entries.push((account.resource_id, leaf_hash));
-            resource_ids.push(account.resource_id);
+            commitments.push((resource.resource_id, leaf_hash));
+            resource_ids.push(resource.resource_id);
         }
 
         // Generate multi-proof from the state tree.
@@ -170,7 +170,7 @@ impl<B: Backend + 'static> BatchProver<B> {
             &self.image_id,
             batch_index,
             &prev_root,
-            &account_entries,
+            &commitments,
             &multi_proof_bytes,
             &txs,
         );
@@ -198,10 +198,10 @@ impl<B: Backend + 'static> BatchProver<B> {
                 continue;
             }
 
-            let n_accounts = u32::from_le_bytes(wire[4..8].try_into().unwrap()) as usize;
+            let n_resources = u32::from_le_bytes(wire[4..8].try_into().unwrap()) as usize;
             let tx_bytes_len =
                 u32::from_le_bytes(wire[48..FIXED_HEADER_SIZE].try_into().unwrap()) as usize;
-            let accounts_header_start = FIXED_HEADER_SIZE + tx_bytes_len;
+            let resources_header_start = FIXED_HEADER_SIZE + tx_bytes_len;
 
             // Decode execution result to get mutations.
             let exec = &request.execution_result_bytes;
@@ -216,8 +216,8 @@ impl<B: Backend + 'static> BatchProver<B> {
 
             // Apply mutations directly to the state tree (receipts are sorted by tx_index,
             // so later mutations correctly override earlier ones for the same key).
-            for (j, op) in ops.iter().enumerate().take(n_accounts) {
-                let base = accounts_header_start + j * ACCOUNT_HEADER_SIZE;
+            for (j, op) in ops.iter().enumerate().take(n_resources) {
+                let base = resources_header_start + j * RESOURCE_HEADER_SIZE;
                 if base + 32 > wire.len() {
                     break;
                 }
@@ -238,26 +238,26 @@ impl<B: Backend + 'static> BatchProver<B> {
     }
 }
 
-/// Extracts pre-batch account data from a proof request's wire_bytes.
+/// Extracts pre-batch resource data from a proof request's wire_bytes.
 ///
-/// Returns `(account_index, AccountData)` pairs for each account in the transaction.
-fn extract_pre_batch_accounts(request: &ProofRequest) -> Vec<(u32, AccountData)> {
+/// Returns `(resource_index, ResourceData)` pairs for each resource in the transaction.
+fn extract_pre_batch_resources(request: &ProofRequest) -> Vec<(u32, ResourceData)> {
     let wire = &request.wire_bytes;
     if wire.len() < FIXED_HEADER_SIZE {
         return Vec::new();
     }
 
-    let n_accounts = u32::from_le_bytes(wire[4..8].try_into().unwrap()) as usize;
+    let n_resources = u32::from_le_bytes(wire[4..8].try_into().unwrap()) as usize;
     let tx_bytes_len = u32::from_le_bytes(wire[48..FIXED_HEADER_SIZE].try_into().unwrap()) as usize;
-    let accounts_header_start = FIXED_HEADER_SIZE + tx_bytes_len;
-    let payload_start = accounts_header_start + n_accounts * ACCOUNT_HEADER_SIZE;
+    let resources_header_start = FIXED_HEADER_SIZE + tx_bytes_len;
+    let payload_start = resources_header_start + n_resources * RESOURCE_HEADER_SIZE;
 
-    let mut result = Vec::with_capacity(n_accounts);
+    let mut result = Vec::with_capacity(n_resources);
     let mut payload_offset = payload_start;
 
-    for (j, &account_index) in request.account_indices.iter().enumerate().take(n_accounts) {
-        let base = accounts_header_start + j * ACCOUNT_HEADER_SIZE;
-        if base + ACCOUNT_HEADER_SIZE > wire.len() {
+    for (j, &resource_index) in request.resource_indices.iter().enumerate().take(n_resources) {
+        let base = resources_header_start + j * RESOURCE_HEADER_SIZE;
+        if base + RESOURCE_HEADER_SIZE > wire.len() {
             break;
         }
 
@@ -271,7 +271,7 @@ fn extract_pre_batch_accounts(request: &ProofRequest) -> Vec<(u32, AccountData)>
         };
         payload_offset += data_len;
 
-        result.push((account_index, AccountData { resource_id, data }));
+        result.push((resource_index, ResourceData { resource_id, data }));
     }
 
     result

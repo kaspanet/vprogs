@@ -1,24 +1,24 @@
 use alloc::vec::Vec;
 
-use super::{ACCOUNT_ENTRY_SIZE, HEADER_SIZE};
+use super::{HEADER_SIZE, RESOURCE_COMMITMENT_SIZE};
 
 /// Encodes a batch witness into bytes (host-side).
 pub fn encode_batch_witness(
     image_id: &[u8; 32],
     batch_index: u64,
     prev_root: &[u8; 32],
-    accounts: &[([u8; 32], [u8; 32])], // (resource_id, leaf_hash)
+    commitments: &[([u8; 32], [u8; 32])], // (resource_id, leaf_hash)
     multi_proof_bytes: &[u8],
     txs: &[(Vec<u8>, Vec<u8>, Vec<u8>)], // (journal, wire_bytes, exec_result)
 ) -> Vec<u8> {
-    let n_accounts = accounts.len() as u32;
+    let n_resources = commitments.len() as u32;
     let n_txs = txs.len() as u32;
 
     let tx_payload_size: usize =
         txs.iter().map(|(j, w, e)| 4 + j.len() + 4 + w.len() + 4 + e.len()).sum();
 
     let total = HEADER_SIZE
-        + (n_accounts as usize) * ACCOUNT_ENTRY_SIZE
+        + (n_resources as usize) * RESOURCE_COMMITMENT_SIZE
         + 4 + multi_proof_bytes.len() // length prefix + raw bytes
         + tx_payload_size;
 
@@ -28,11 +28,11 @@ pub fn encode_batch_witness(
     buf.extend_from_slice(image_id);
     buf.extend_from_slice(&batch_index.to_le_bytes());
     buf.extend_from_slice(prev_root);
-    buf.extend_from_slice(&n_accounts.to_le_bytes());
+    buf.extend_from_slice(&n_resources.to_le_bytes());
     buf.extend_from_slice(&n_txs.to_le_bytes());
 
-    // Account entries
-    for (resource_id, leaf_hash) in accounts {
+    // Resource commitments
+    for (resource_id, leaf_hash) in commitments {
         buf.extend_from_slice(resource_id);
         buf.extend_from_slice(leaf_hash);
     }

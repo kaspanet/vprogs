@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use vprogs_zk_vm::ProofRequest;
 
-use crate::account_data::AccountData;
+use crate::resource_data::ResourceData;
 
 /// Per-batch proving state.
 pub(crate) struct BatchState<R> {
@@ -10,7 +10,7 @@ pub(crate) struct BatchState<R> {
     pub(crate) expected_tx_count: u32,
     /// Collected receipts, keyed by tx_index.
     pub(crate) receipts: Vec<(u32, R, ProofRequest)>,
-    /// Pre-batch account data, keyed by account_index. Only the first occurrence
+    /// Pre-batch resource data, keyed by resource_index. Only the first occurrence
     /// (in causal order) is recorded — that's the pre-batch state.
-    pub(crate) pre_batch_accounts: HashMap<u32, AccountData>,
+    pub(crate) pre_batch_resources: HashMap<u32, ResourceData>,
 }

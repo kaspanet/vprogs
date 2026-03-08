@@ -57,13 +57,13 @@ impl<B: Backend> Processor for Vm<B> {
 
         // 4. Optionally send a proof request to the proving pipeline.
         if let Some(ref proof_tx) = self.proof_tx {
-            let account_indices = ctx.resources().iter().map(|r| r.account_index()).collect();
+            let resource_indices = ctx.resources().iter().map(|r| r.resource_index()).collect();
             let _ = proof_tx.send(ProofRequest {
                 wire_bytes,
                 block_hash: ctx.batch_metadata().block_hash().as_bytes(),
                 tx_index: ctx.tx_index(),
                 execution_result_bytes,
-                account_indices,
+                resource_indices,
             });
         }
 
