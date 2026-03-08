@@ -5,12 +5,11 @@ use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, TransactionContext};
 use vprogs_storage_types::Store;
 
-use super::{FIXED_HEADER_SIZE, RESOURCE_HEADER_SIZE, StorageOp};
-use crate::Result;
+use super::{FIXED_HEADER_SIZE, RESOURCE_HEADER_SIZE};
 
 /// Encodes a scheduler [`TransactionContext`](vprogs_scheduling_scheduler::TransactionContext) into
 /// the ABI wire format.
-pub fn encode_transaction_context<S, P>(ctx: &TransactionContext<'_, S, P>) -> Vec<u8>
+pub fn encode<S, P>(ctx: &TransactionContext<'_, S, P>) -> Vec<u8>
 where
     S: Store,
     P: Processor<BatchMetadata = ChainBlockMetadata>,
@@ -50,16 +49,4 @@ where
 
     debug_assert_eq!(buf.len(), total);
     buf
-}
-
-/// Deserializes the borsh-encoded execution result from guest stdout.
-///
-/// The wire format is a borsh `Result<Vec<Option<StorageOp>>, Error>`: discriminant `0` for
-/// success followed by the storage ops, or `1` for failure followed by the error code.
-///
-/// # Panics
-///
-/// Panics if deserialization fails, which indicates a malicious or corrupted guest ELF.
-pub fn decode_execution_result(bytes: &[u8]) -> Result<Vec<Option<StorageOp>>> {
-    borsh::from_slice(bytes).expect("failed to decode guest output")
 }

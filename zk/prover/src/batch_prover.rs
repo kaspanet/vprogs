@@ -2,8 +2,11 @@ use std::{collections::HashMap, sync::Arc};
 
 use tokio::sync::mpsc;
 use vprogs_zk_abi::{
-    batch_processor::encode_batch_witness,
-    transaction_processor::{FIXED_HEADER_SIZE, RESOURCE_HEADER_SIZE, StorageOp},
+    batch_processor::input::encode,
+    transaction_processor::{
+        input::{FIXED_HEADER_SIZE, RESOURCE_HEADER_SIZE},
+        output::StorageOp,
+    },
 };
 use vprogs_zk_smt::EMPTY_LEAF_HASH;
 use vprogs_zk_vm::{Backend, ProofRequest};
@@ -166,17 +169,11 @@ impl<B: Backend + 'static> BatchProver<B> {
             .collect();
 
         // Encode the batch witness.
-        let batch_witness = encode_batch_witness(
-            &self.image_id,
-            batch_index,
-            &prev_root,
-            &commitments,
-            &multi_proof_bytes,
-            &txs,
-        );
+        let input =
+            encode(&self.image_id, batch_index, &prev_root, &commitments, &multi_proof_bytes, &txs);
 
         // Prove the batch.
-        let receipt = self.backend.prove_batch(&batch_witness);
+        let receipt = self.backend.prove_batch(&input);
 
         // Apply mutations to the state tree based on execution results.
         self.apply_batch_mutations(&batch_state.receipts);

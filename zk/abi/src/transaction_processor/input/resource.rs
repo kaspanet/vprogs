@@ -6,7 +6,7 @@ use borsh::{
 };
 use vprogs_core_types::ResourceId;
 
-use super::StorageOp;
+use crate::transaction_processor::output::StorageOp;
 
 /// A mutable view of a single resource's data within a decoded wire buffer.
 ///

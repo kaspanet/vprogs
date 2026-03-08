@@ -2,8 +2,8 @@ use alloc::vec::Vec;
 
 use super::{HEADER_SIZE, RESOURCE_COMMITMENT_SIZE};
 
-/// Encodes a batch witness into bytes (host-side).
-pub fn encode_batch_witness(
+/// Encodes the batch processor input into bytes (host-side).
+pub fn encode(
     image_id: &[u8; 32],
     batch_index: u64,
     prev_root: &[u8; 32],

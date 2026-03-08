@@ -7,8 +7,11 @@ use alloc::{vec, vec::Vec};
 
 use risc0_zkvm::guest::env;
 use vprogs_zk_abi::{
-    batch_processor::{BatchWitnessDecoder, HEADER_SIZE, RESOURCE_COMMITMENT_SIZE},
-    transaction_processor::{FIXED_HEADER_SIZE, RESOURCE_HEADER_SIZE, StorageOp},
+    batch_processor::input::{Decoder, HEADER_SIZE, RESOURCE_COMMITMENT_SIZE},
+    transaction_processor::{
+        input::{FIXED_HEADER_SIZE, RESOURCE_HEADER_SIZE},
+        output::StorageOp,
+    },
 };
 use vprogs_zk_smt::EMPTY_LEAF_HASH;
 
@@ -19,7 +22,7 @@ fn main() {
     let witness_bytes = read_blob();
 
     // 2. Decode the batch witness.
-    let decoder = BatchWitnessDecoder::new(&witness_bytes);
+    let decoder = Decoder::new(&witness_bytes);
     let header = decoder.header();
     let image_id = *header.image_id;
     let batch_index = header.batch_index;
@@ -145,7 +148,7 @@ fn main() {
 /// The multi-proof leaves are sorted by key, while our cache is indexed by resource_index.
 /// We need to produce updated leaf hashes in the same order as the multi-proof leaves.
 fn cache_to_leaf_hashes(
-    decoder: &BatchWitnessDecoder<'_>,
+    decoder: &Decoder<'_>,
     n_resources: u32,
     cache: &[[u8; 32]],
 ) -> Vec<[u8; 32]> {

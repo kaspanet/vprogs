@@ -4,7 +4,7 @@ use vprogs_scheduling_scheduler::{Processor, TransactionContext};
 use vprogs_storage_types::Store;
 use vprogs_zk_abi::{
     Error, Result,
-    transaction_processor::{StorageOp, host},
+    transaction_processor::{input, output, output::StorageOp},
 };
 
 use crate::{Backend, ProofRequest};
@@ -34,13 +34,13 @@ impl<B> Vm<B> {
 impl<B: Backend> Processor for Vm<B> {
     fn process_transaction<S: Store>(&self, ctx: &mut TransactionContext<S, Self>) -> Result<()> {
         // 1. Encode into ABI wire format.
-        let wire_bytes = host::encode_transaction_context(&*ctx);
+        let wire_bytes = input::encode(&*ctx);
 
         // 2. Execute via backend (returns raw bytes).
         let execution_result_bytes = self.backend.execute_transaction(&wire_bytes);
 
         // 3. Decode and apply storage operations on success.
-        let return_value = host::decode_execution_result(&execution_result_bytes).map(|ops| {
+        let return_value = output::decode(&execution_result_bytes).map(|ops| {
             for (i, op) in ops.iter().enumerate() {
                 if let Some(op) = op {
                     let data = ctx.resources_mut()[i].data_mut();

@@ -1,7 +1,11 @@
 use borsh::io::{self, Write};
 use vprogs_zk_abi::{
     Result,
-    transaction_processor::{BatchMetadata, Resource, guest},
+    transaction_processor::{
+        input,
+        input::{BatchMetadata, Resource},
+        output,
+    },
 };
 
 use crate::{Journal, host::Host};
@@ -20,14 +24,13 @@ pub fn process_transaction(
     // Read the transaction context from the host and commit a hash of the raw bytes to the journal.
     let mut transaction_context = Host::read_blob();
     Journal::write(blake3::hash(&transaction_context).as_bytes());
-    let (tx, tx_index, batch_metadata, mut resources) =
-        guest::decode_transaction_context(&mut transaction_context);
+    let (tx, tx_index, batch_metadata, mut resources) = input::decode(&mut transaction_context);
 
     let result = f(tx, tx_index, &batch_metadata, &mut resources).map(|_| resources.as_slice());
 
     // Pass the result to the host and commit a hash of the serialized output to the journal.
     let mut hasher = blake3::Hasher::new();
-    guest::write_execution_result(result, &mut HashingWriter(&mut hasher));
+    output::encode(result, &mut HashingWriter(&mut hasher));
     Journal::write(hasher.finalize().as_bytes());
 }
 

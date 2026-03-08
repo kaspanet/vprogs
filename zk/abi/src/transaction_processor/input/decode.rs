@@ -1,37 +1,14 @@
 use alloc::vec::Vec;
 
-use borsh::{BorshSerialize, io::Write};
 use vprogs_core_types::ResourceId;
 
 use super::{BatchMetadata, FIXED_HEADER_SIZE, RESOURCE_HEADER_SIZE, Resource};
-use crate::Result;
-
-/// Streams the execution result as a borsh-serialized `Result<Vec<Option<StorageOp>>, Error>`
-/// to the writer. On success, each resource serializes as the corresponding storage operation based
-/// on its dirty/deleted/new flags. On error, writes the error.
-pub fn write_execution_result<W: Write>(result: Result<&[Resource<'_>]>, w: &mut W) {
-    match result {
-        Ok(resources) => {
-            1u8.serialize(w).expect("write failed"); // Borsh Result::Ok discriminant
-            (resources.len() as u32).serialize(w).expect("write failed");
-            for resource in resources {
-                resource.serialize(w).expect("write failed");
-            }
-        }
-        Err(err) => {
-            0u8.serialize(w).expect("write failed"); // Borsh Result::Err discriminant
-            err.serialize(w).expect("write failed");
-        }
-    }
-}
 
 /// Decodes a wire buffer into zero-copy batch metadata and mutable resource views.
 ///
 /// The buffer is split into an immutable header region and a mutable payload region; each resource
 /// receives a disjoint `&mut [u8]` slice into the payload.
-pub fn decode_transaction_context(
-    buf: &mut [u8],
-) -> (&[u8], u32, BatchMetadata<'_>, Vec<Resource<'_>>) {
+pub fn decode(buf: &mut [u8]) -> (&[u8], u32, BatchMetadata<'_>, Vec<Resource<'_>>) {
     let tx_index = u32::from_le_bytes(buf[0..4].try_into().expect("truncated header"));
     let n_resources = u32::from_le_bytes(buf[4..8].try_into().expect("truncated header")) as usize;
     let blue_score = u64::from_le_bytes(buf[40..48].try_into().expect("truncated header"));
