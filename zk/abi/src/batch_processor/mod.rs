@@ -16,8 +16,8 @@ pub use tx_entry::{TxEntry, TxEntryIter};
 /// image_id(32) + batch_index(8) + prev_root(32) + n_accounts(4) + n_txs(4).
 pub const HEADER_SIZE: usize = 32 + 8 + 32 + 4 + 4;
 
-/// Per-account entry size: resource_id(32) + is_new(1) + leaf_hash(32).
-pub const ACCOUNT_ENTRY_SIZE: usize = 32 + 1 + 32;
+/// Per-account entry size: resource_id(32) + leaf_hash(32).
+pub const ACCOUNT_ENTRY_SIZE: usize = 32 + 32;
 
 #[cfg(test)]
 mod tests {
@@ -32,7 +32,7 @@ mod tests {
         let batch_index = 42u64;
         let prev_root = [0xCDu8; 32];
 
-        let accounts = vec![([1u8; 32], false, [0x11u8; 32]), ([2u8; 32], true, [0u8; 32])];
+        let accounts = vec![([1u8; 32], [0x11u8; 32]), ([2u8; 32], [0u8; 32])];
 
         let multi_proof_bytes = encode_multi_proof(&[], &[], &[]);
 
@@ -61,12 +61,10 @@ mod tests {
 
         let acc0 = decoder.account_entry(0);
         assert_eq!(acc0.resource_id, &[1u8; 32]);
-        assert!(!acc0.is_new);
         assert_eq!(acc0.leaf_hash, &[0x11u8; 32]);
 
         let acc1 = decoder.account_entry(1);
         assert_eq!(acc1.resource_id, &[2u8; 32]);
-        assert!(acc1.is_new);
         assert_eq!(acc1.leaf_hash, &[0u8; 32]);
 
         let multi_proof = decoder.multi_proof();

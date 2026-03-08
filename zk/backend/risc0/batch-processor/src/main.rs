@@ -32,11 +32,6 @@ fn main() {
     for i in 0..n_accounts {
         let entry = decoder.account_entry(i);
         cache[i as usize] = *entry.leaf_hash;
-
-        // New accounts must have empty leaf hash (they don't exist in the tree yet).
-        if entry.is_new {
-            assert!(cache[i as usize] == EMPTY_LEAF_HASH, "new account must have empty leaf hash");
-        }
     }
 
     // 4. Verify the multi-proof against prev_root.

@@ -7,7 +7,7 @@ pub fn encode_batch_witness(
     image_id: &[u8; 32],
     batch_index: u64,
     prev_root: &[u8; 32],
-    accounts: &[([u8; 32], bool, [u8; 32])], // (resource_id, is_new, leaf_hash)
+    accounts: &[([u8; 32], [u8; 32])], // (resource_id, leaf_hash)
     multi_proof_bytes: &[u8],
     txs: &[(Vec<u8>, Vec<u8>, Vec<u8>)], // (journal, wire_bytes, exec_result)
 ) -> Vec<u8> {
@@ -32,9 +32,8 @@ pub fn encode_batch_witness(
     buf.extend_from_slice(&n_txs.to_le_bytes());
 
     // Account entries
-    for (resource_id, is_new, leaf_hash) in accounts {
+    for (resource_id, leaf_hash) in accounts {
         buf.extend_from_slice(resource_id);
-        buf.push(if *is_new { 1 } else { 0 });
         buf.extend_from_slice(leaf_hash);
     }
 

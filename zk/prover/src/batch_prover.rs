@@ -138,17 +138,17 @@ impl<B: Backend + 'static> BatchProver<B> {
         }
 
         // Build account entries for the batch witness.
-        let mut account_entries: Vec<([u8; 32], bool, [u8; 32])> = Vec::with_capacity(n_accounts);
+        let mut account_entries: Vec<([u8; 32], [u8; 32])> = Vec::with_capacity(n_accounts);
         let mut resource_ids: Vec<[u8; 32]> = Vec::with_capacity(n_accounts);
 
         for slot in &ordered_accounts {
             let account = slot.expect("gap in account_index sequence");
-            let leaf_hash = if account.is_new || account.data.is_empty() {
+            let leaf_hash = if account.data.is_empty() {
                 EMPTY_LEAF_HASH
             } else {
                 *blake3::hash(&account.data).as_bytes()
             };
-            account_entries.push((account.resource_id, account.is_new, leaf_hash));
+            account_entries.push((account.resource_id, leaf_hash));
             resource_ids.push(account.resource_id);
         }
 
@@ -262,7 +262,6 @@ fn extract_pre_batch_accounts(request: &ProofRequest) -> Vec<(u32, AccountData)>
         }
 
         let resource_id: [u8; 32] = wire[base..base + 32].try_into().unwrap();
-        let is_new = wire[base + 32] & 1 != 0;
         let data_len = u32::from_le_bytes(wire[base + 37..base + 41].try_into().unwrap()) as usize;
 
         let data = if payload_offset + data_len <= wire.len() {
@@ -272,7 +271,7 @@ fn extract_pre_batch_accounts(request: &ProofRequest) -> Vec<(u32, AccountData)>
         };
         payload_offset += data_len;
 
-        result.push((account_index, AccountData { resource_id, is_new, data }));
+        result.push((account_index, AccountData { resource_id, data }));
     }
 
     result
