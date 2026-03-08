@@ -2,7 +2,10 @@ use tokio::sync::mpsc;
 use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
 use vprogs_scheduling_scheduler::{Processor, TransactionContext};
 use vprogs_storage_types::Store;
-use vprogs_zk_abi::{Error, Result, StorageOp, host};
+use vprogs_zk_abi::{
+    Error, Result,
+    transaction_processor::{StorageOp, host},
+};
 
 use crate::{Backend, ProofRequest};
 
@@ -37,26 +40,20 @@ impl<B: Backend> Processor for Vm<B> {
         let execution_result_bytes = self.backend.execute_transaction(&wire_bytes);
 
         // 3. Decode and apply storage operations on success.
-        let execution_result: Result<Vec<Option<StorageOp>>> =
-            host::decode_execution_result(&execution_result_bytes);
-        let return_value = match &execution_result {
-            Ok(storage_ops) => {
-                for (i, storage_op) in storage_ops.iter().enumerate() {
-                    if let Some(op) = storage_op {
-                        let data = ctx.resources_mut()[i].data_mut();
-                        match op {
-                            StorageOp::Create(new_data) | StorageOp::Update(new_data) => {
-                                data.clear();
-                                data.extend_from_slice(new_data);
-                            }
-                            StorageOp::Delete => data.clear(),
+        let return_value = host::decode_execution_result(&execution_result_bytes).map(|ops| {
+            for (i, op) in ops.iter().enumerate() {
+                if let Some(op) = op {
+                    let data = ctx.resources_mut()[i].data_mut();
+                    match op {
+                        StorageOp::Create(new_data) | StorageOp::Update(new_data) => {
+                            data.clear();
+                            data.extend_from_slice(new_data);
                         }
+                        StorageOp::Delete => data.clear(),
                     }
                 }
-                Ok(())
             }
-            Err(e) => Err(*e),
-        };
+        });
 
         // 4. Optionally send a proof request to the proving pipeline.
         if let Some(ref proof_tx) = self.proof_tx {

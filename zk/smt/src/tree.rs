@@ -1,10 +1,14 @@
 use alloc::{collections::BTreeMap, vec::Vec};
 
 use crate::{
-    EMPTY_LEAF_HASH, TREE_DEPTH,
-    defaults::default_hashes,
-    multi_proof::{LeafEntry, MultiProof},
+    EMPTY_LEAF_HASH, TREE_DEPTH, defaults::default_hashes, multi_proof::encode_multi_proof,
 };
+
+/// A leaf entry used during proof construction.
+struct LeafEntry {
+    key: [u8; 32],
+    leaf_hash: [u8; 32],
+}
 
 /// Host-side sparse Merkle tree for maintaining state roots and generating multi-proofs.
 pub struct SparseMerkleTree {
@@ -63,7 +67,8 @@ impl SparseMerkleTree {
     /// Generates a multi-proof for the given set of resource IDs.
     ///
     /// Keys that are not in the tree will be included with `EMPTY_LEAF_HASH`.
-    pub fn multi_proof(&self, keys: &[[u8; 32]]) -> MultiProof {
+    /// Returns the encoded multi-proof bytes.
+    pub fn multi_proof(&self, keys: &[[u8; 32]]) -> Vec<u8> {
         let defaults = default_hashes();
         let mut sorted_keys: Vec<[u8; 32]> = keys.to_vec();
         sorted_keys.sort();
@@ -96,7 +101,10 @@ impl SparseMerkleTree {
         // Pack topology bits into bytes.
         let topology = pack_bits(&topology_bits);
 
-        MultiProof { leaves, siblings, topology }
+        // Encode into flat wire format.
+        let leaf_pairs: Vec<([u8; 32], [u8; 32])> =
+            leaves.iter().map(|e| (e.key, e.leaf_hash)).collect();
+        encode_multi_proof(&leaf_pairs, &siblings, &topology)
     }
 
     /// Recursively build proof, collecting sibling hashes and topology bits.
@@ -281,6 +289,7 @@ fn pack_bits(bits: &[bool]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MultiProof;
 
     #[test]
     fn empty_tree_root() {
@@ -308,12 +317,13 @@ mod tests {
         tree.insert(key, b"test data");
 
         let root = tree.root();
-        let proof = tree.multi_proof(&[key]);
+        let proof_bytes = tree.multi_proof(&[key]);
+        let proof = MultiProof::decode(&proof_bytes);
 
         assert!(proof.verify(root));
-        assert_eq!(proof.leaves.len(), 1);
-        assert_eq!(proof.leaves[0].key, key);
-        assert_eq!(proof.leaves[0].leaf_hash, *blake3::hash(b"test data").as_bytes());
+        assert_eq!(proof.n_leaves(), 1);
+        assert_eq!(proof.leaf_key(0), &key);
+        assert_eq!(proof.leaf_hash(0), blake3::hash(b"test data").as_bytes());
     }
 
     #[test]
@@ -322,7 +332,8 @@ mod tests {
         let key = [0u8; 32];
         tree.insert(key, b"old data");
 
-        let proof = tree.multi_proof(&[key]);
+        let proof_bytes = tree.multi_proof(&[key]);
+        let proof = MultiProof::decode(&proof_bytes);
 
         // Update the tree and get new root.
         tree.insert(key, b"new data");
@@ -346,7 +357,8 @@ mod tests {
         tree.insert(key2, b"data2");
 
         let root = tree.root();
-        let proof = tree.multi_proof(&[key1, key2]);
+        let proof_bytes = tree.multi_proof(&[key1, key2]);
+        let proof = MultiProof::decode(&proof_bytes);
         assert!(proof.verify(root));
 
         // Update both and verify.
@@ -367,10 +379,11 @@ mod tests {
 
         let nonexistent = [0xFFu8; 32];
         let root = tree.root();
-        let proof = tree.multi_proof(&[key1, nonexistent]);
+        let proof_bytes = tree.multi_proof(&[key1, nonexistent]);
+        let proof = MultiProof::decode(&proof_bytes);
 
         assert!(proof.verify(root));
-        assert_eq!(proof.leaves[1].leaf_hash, EMPTY_LEAF_HASH);
+        assert_eq!(proof.leaf_hash(1), &EMPTY_LEAF_HASH);
     }
 
     #[test]
@@ -387,8 +400,9 @@ mod tests {
         assert_ne!(root1, root2);
 
         // Verify k1 is deleted.
-        let proof = tree.multi_proof(&[k1]);
-        assert_eq!(proof.leaves[0].leaf_hash, EMPTY_LEAF_HASH);
+        let proof_bytes = tree.multi_proof(&[k1]);
+        let proof = MultiProof::decode(&proof_bytes);
+        assert_eq!(proof.leaf_hash(0), &EMPTY_LEAF_HASH);
     }
 
     #[test]
@@ -404,7 +418,8 @@ mod tests {
         tree.insert(k2, b"right");
 
         let root = tree.root();
-        let proof = tree.multi_proof(&[k1, k2]);
+        let proof_bytes = tree.multi_proof(&[k1, k2]);
+        let proof = MultiProof::decode(&proof_bytes);
         assert!(proof.verify(root));
     }
 }

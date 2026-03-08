@@ -7,7 +7,7 @@ mod multi_proof;
 #[cfg(feature = "host")]
 mod tree;
 
-pub use multi_proof::{LeafEntry, MultiProof};
+pub use multi_proof::{MultiProof, encode_multi_proof};
 #[cfg(feature = "host")]
 pub use tree::SparseMerkleTree;
 

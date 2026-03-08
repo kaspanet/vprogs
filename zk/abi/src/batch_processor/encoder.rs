@@ -1,7 +1,5 @@
 use alloc::vec::Vec;
 
-use vprogs_zk_smt::MultiProof;
-
 use super::{ACCOUNT_ENTRY_SIZE, HEADER_SIZE};
 
 /// Encodes a batch witness into bytes (host-side).
@@ -10,11 +8,9 @@ pub fn encode_batch_witness(
     batch_index: u64,
     prev_root: &[u8; 32],
     accounts: &[([u8; 32], bool, [u8; 32])], // (resource_id, is_new, leaf_hash)
-    multi_proof: &MultiProof,
+    multi_proof_bytes: &[u8],
     txs: &[(Vec<u8>, Vec<u8>, Vec<u8>)], // (journal, wire_bytes, exec_result)
 ) -> Vec<u8> {
-    let multi_proof_bytes = borsh::to_vec(multi_proof).expect("failed to serialize multi-proof");
-
     let n_accounts = accounts.len() as u32;
     let n_txs = txs.len() as u32;
 
@@ -23,7 +19,7 @@ pub fn encode_batch_witness(
 
     let total = HEADER_SIZE
         + (n_accounts as usize) * ACCOUNT_ENTRY_SIZE
-        + 4 + multi_proof_bytes.len() // length prefix + borsh data
+        + 4 + multi_proof_bytes.len() // length prefix + raw bytes
         + tx_payload_size;
 
     let mut buf = Vec::with_capacity(total);
@@ -42,9 +38,9 @@ pub fn encode_batch_witness(
         buf.extend_from_slice(leaf_hash);
     }
 
-    // Multi-proof (length-prefixed borsh)
+    // Multi-proof (length-prefixed raw bytes)
     buf.extend_from_slice(&(multi_proof_bytes.len() as u32).to_le_bytes());
-    buf.extend_from_slice(&multi_proof_bytes);
+    buf.extend_from_slice(multi_proof_bytes);
 
     // Transaction entries
     for (journal, wire_bytes, exec_result) in txs {

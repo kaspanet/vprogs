@@ -7,8 +7,8 @@ use alloc::{vec, vec::Vec};
 
 use risc0_zkvm::guest::env;
 use vprogs_zk_abi::{
-    ACCOUNT_HEADER_SIZE, FIXED_HEADER_SIZE, StorageOp,
-    batch_witness::{ACCOUNT_ENTRY_SIZE, BatchWitnessDecoder, HEADER_SIZE},
+    batch_processor::{ACCOUNT_ENTRY_SIZE, BatchWitnessDecoder, HEADER_SIZE},
+    transaction_processor::{ACCOUNT_HEADER_SIZE, FIXED_HEADER_SIZE, StorageOp},
 };
 use vprogs_zk_smt::EMPTY_LEAF_HASH;
 
@@ -152,19 +152,18 @@ fn cache_to_leaf_hashes(
     cache: &[[u8; 32]],
 ) -> Vec<[u8; 32]> {
     let multi_proof = decoder.multi_proof();
-    multi_proof
-        .leaves
-        .iter()
-        .map(|leaf| {
+    (0..multi_proof.n_leaves())
+        .map(|leaf_idx| {
+            let leaf_key = multi_proof.leaf_key(leaf_idx);
             // Find which account_index corresponds to this leaf's key.
             for i in 0..n_accounts {
                 let entry = decoder.account_entry(i);
-                if entry.resource_id == &leaf.key {
+                if entry.resource_id == leaf_key {
                     return cache[i as usize];
                 }
             }
             // If not found in accounts, this leaf wasn't touched — keep original hash.
-            leaf.leaf_hash
+            *multi_proof.leaf_hash(leaf_idx)
         })
         .collect()
 }

@@ -19,7 +19,9 @@ impl StateTree {
     }
 
     /// Generates a multi-proof for the given set of resource IDs.
-    pub fn multi_proof(&self, keys: &[[u8; 32]]) -> MultiProof {
+    ///
+    /// Returns the encoded multi-proof bytes.
+    pub fn multi_proof(&self, keys: &[[u8; 32]]) -> Vec<u8> {
         self.inner.multi_proof(keys)
     }
 
@@ -37,9 +39,9 @@ impl StateTree {
 
     /// Returns the leaf hash for a given key, or `EMPTY_LEAF_HASH` if not present.
     pub fn leaf_hash(&self, key: &[u8; 32]) -> [u8; 32] {
-        // Use multi_proof to get the leaf hash (it handles missing keys).
-        let proof = self.inner.multi_proof(&[*key]);
-        if proof.leaves.is_empty() { EMPTY_LEAF_HASH } else { proof.leaves[0].leaf_hash }
+        let proof_bytes = self.inner.multi_proof(&[*key]);
+        let proof = MultiProof::decode(&proof_bytes);
+        if proof.n_leaves() == 0 { EMPTY_LEAF_HASH } else { *proof.leaf_hash(0) }
     }
 }
 

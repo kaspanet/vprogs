@@ -1,5 +1,8 @@
 use borsh::io::{self, Write};
-use vprogs_zk_abi::{Account, BlockMetadata, Result, guest};
+use vprogs_zk_abi::{
+    Result,
+    transaction_processor::{Account, BlockMetadata, guest},
+};
 
 use crate::{Journal, host::Host};
 

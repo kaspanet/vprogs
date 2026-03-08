@@ -5,7 +5,8 @@ use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, TransactionContext};
 use vprogs_storage_types::Store;
 
-use crate::{ACCOUNT_HEADER_SIZE, FIXED_HEADER_SIZE, Result, storage_op::StorageOp};
+use super::{ACCOUNT_HEADER_SIZE, FIXED_HEADER_SIZE, StorageOp};
+use crate::Result;
 
 /// Encodes a scheduler [`TransactionContext`](vprogs_scheduling_scheduler::TransactionContext) into
 /// the ABI wire format.

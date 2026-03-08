@@ -1,46 +1,83 @@
 use alloc::vec::Vec;
 
-use borsh::{BorshDeserialize, BorshSerialize};
-
 use crate::{TREE_DEPTH, defaults::default_hashes};
 
-/// A single leaf in a multi-proof.
-#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
-pub struct LeafEntry {
-    /// The 256-bit key (resource_id).
-    pub key: [u8; 32],
-    /// The leaf hash (blake3 of data, or EMPTY_LEAF_HASH for empty/deleted).
-    pub leaf_hash: [u8; 32],
-}
+/// Size of a single leaf entry in the wire format: key(32) + leaf_hash(32).
+pub const LEAF_ENTRY_SIZE: usize = 64;
 
-/// A compact multi-proof for a set of leaves in a sparse Merkle tree.
+/// Zero-copy view of a multi-proof, borrowing from a flat byte buffer.
 ///
-/// Contains the leaf entries, the sibling hashes needed for verification, and a topology
-/// bitfield encoding how siblings are shared among the included leaves.
-#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
-pub struct MultiProof {
-    /// Leaf entries included in this proof, sorted by key.
-    pub leaves: Vec<LeafEntry>,
-    /// Sibling hashes needed for verification, consumed in order during traversal.
-    pub siblings: Vec<[u8; 32]>,
-    /// Topology bitfield: one bit per internal node visited during traversal.
-    /// Bit = 1 means "descend into both children" (shared subtree);
-    /// Bit = 0 means "consume next sibling hash".
-    pub topology: Vec<u8>,
+/// Wire format:
+/// - `n_leaves: u32` + `[key(32) + leaf_hash(32)] × n_leaves`
+/// - `n_siblings: u32` + `[u8; 32] × n_siblings`
+/// - `topology_len: u32` + `topology_bytes`
+pub struct MultiProof<'a> {
+    buf: &'a [u8],
+    n_leaves: u32,
+    siblings_offset: usize,
+    topology_offset: usize,
+    topology_len: usize,
 }
 
-impl MultiProof {
-    /// Verifies that the given leaves produce the expected root hash.
+impl<'a> MultiProof<'a> {
+    /// Decodes a multi-proof from a flat byte buffer.
+    pub fn decode(buf: &'a [u8]) -> Self {
+        let n_leaves = u32::from_le_bytes(buf[0..4].try_into().expect("truncated n_leaves"));
+        let leaves_end = 4 + (n_leaves as usize) * LEAF_ENTRY_SIZE;
+
+        let n_siblings = u32::from_le_bytes(
+            buf[leaves_end..leaves_end + 4].try_into().expect("truncated n_siblings"),
+        );
+        let siblings_offset = leaves_end + 4;
+        let siblings_end = siblings_offset + (n_siblings as usize) * 32;
+
+        let topology_len = u32::from_le_bytes(
+            buf[siblings_end..siblings_end + 4].try_into().expect("truncated topology_len"),
+        ) as usize;
+        let topology_offset = siblings_end + 4;
+
+        Self { buf, n_leaves, siblings_offset, topology_offset, topology_len }
+    }
+
+    /// Returns the number of leaves.
+    pub fn n_leaves(&self) -> usize {
+        self.n_leaves as usize
+    }
+
+    /// Returns the key of the leaf at index `i`.
+    pub fn leaf_key(&self, i: usize) -> &[u8; 32] {
+        let offset = 4 + i * LEAF_ENTRY_SIZE;
+        self.buf[offset..offset + 32].try_into().expect("truncated leaf key")
+    }
+
+    /// Returns the leaf hash at index `i`.
+    pub fn leaf_hash(&self, i: usize) -> &[u8; 32] {
+        let offset = 4 + i * LEAF_ENTRY_SIZE + 32;
+        self.buf[offset..offset + 32].try_into().expect("truncated leaf hash")
+    }
+
+    /// Returns the sibling hash at index `i`.
+    fn sibling(&self, i: usize) -> &[u8; 32] {
+        let offset = self.siblings_offset + i * 32;
+        self.buf[offset..offset + 32].try_into().expect("truncated sibling")
+    }
+
+    /// Returns the topology bytes.
+    fn topology(&self) -> &[u8] {
+        &self.buf[self.topology_offset..self.topology_offset + self.topology_len]
+    }
+
+    /// Verifies that the leaves produce the expected root hash.
     pub fn verify(&self, expected_root: [u8; 32]) -> bool {
-        self.compute_root_with(|i| self.leaves[i].leaf_hash) == expected_root
+        self.compute_root_with(|i| *self.leaf_hash(i)) == expected_root
     }
 
     /// Recomputes the root using updated leaf hashes.
     ///
-    /// `updated_hashes` must have the same length as `self.leaves` and provides the
+    /// `updated_hashes` must have the same length as `n_leaves()` and provides the
     /// new leaf hash for each leaf (in the same order).
     pub fn compute_root(&self, updated_hashes: &[[u8; 32]]) -> [u8; 32] {
-        assert_eq!(updated_hashes.len(), self.leaves.len());
+        assert_eq!(updated_hashes.len(), self.n_leaves());
         self.compute_root_with(|i| updated_hashes[i])
     }
 
@@ -48,13 +85,13 @@ impl MultiProof {
     fn compute_root_with(&self, leaf_hash_fn: impl Fn(usize) -> [u8; 32]) -> [u8; 32] {
         let defaults = default_hashes();
 
-        if self.leaves.is_empty() {
+        if self.n_leaves() == 0 {
             return defaults[TREE_DEPTH];
         }
 
         let mut sibling_idx = 0;
         let mut topo_bit = 0usize;
-        let indices: Vec<usize> = (0..self.leaves.len()).collect();
+        let indices: Vec<usize> = (0..self.n_leaves()).collect();
         self.traverse(
             &indices,
             0,
@@ -83,7 +120,6 @@ impl MultiProof {
         topo_bit: &mut usize,
     ) -> [u8; 32] {
         if depth == 0 {
-            // At leaf level — should have exactly one leaf.
             debug_assert_eq!(indices.len(), 1);
             return leaf_hash_fn(indices[0]);
         }
@@ -92,13 +128,12 @@ impl MultiProof {
             return defaults[depth];
         }
 
-        // Check topology bit to determine if we descend into both children.
         let bit_val = self.get_topo_bit(*topo_bit);
         *topo_bit += 1;
 
         if bit_val {
             // Both children have leaves — split and recurse.
-            let (left_indices, right_indices) = split_by_bit(indices, &self.leaves, bit_pos);
+            let (left_indices, right_indices) = self.split_by_bit(indices, bit_pos);
             let left = self.traverse(
                 &left_indices,
                 bit_pos + 1,
@@ -120,44 +155,74 @@ impl MultiProof {
             hash_pair(&left, &right)
         } else {
             // Only one child has leaves — use sibling hash for the other.
-            let goes_left = !get_key_bit(&self.leaves[indices[0]].key, bit_pos);
-            let sibling = self.siblings[*sibling_idx];
+            let goes_left = !get_key_bit(self.leaf_key(indices[0]), bit_pos);
+            let sibling = *self.sibling(*sibling_idx);
             *sibling_idx += 1;
 
-            if goes_left {
-                let child = self.traverse(
-                    indices,
-                    bit_pos + 1,
-                    depth - 1,
-                    leaf_hash_fn,
-                    defaults,
-                    sibling_idx,
-                    topo_bit,
-                );
-                hash_pair(&child, &sibling)
+            let child = self.traverse(
+                indices,
+                bit_pos + 1,
+                depth - 1,
+                leaf_hash_fn,
+                defaults,
+                sibling_idx,
+                topo_bit,
+            );
+            if goes_left { hash_pair(&child, &sibling) } else { hash_pair(&sibling, &child) }
+        }
+    }
+
+    fn split_by_bit(&self, indices: &[usize], bit_pos: usize) -> (Vec<usize>, Vec<usize>) {
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        for &i in indices {
+            if get_key_bit(self.leaf_key(i), bit_pos) {
+                right.push(i);
             } else {
-                let child = self.traverse(
-                    indices,
-                    bit_pos + 1,
-                    depth - 1,
-                    leaf_hash_fn,
-                    defaults,
-                    sibling_idx,
-                    topo_bit,
-                );
-                hash_pair(&sibling, &child)
+                left.push(i);
             }
         }
+        (left, right)
     }
 
     fn get_topo_bit(&self, bit_index: usize) -> bool {
         let byte_idx = bit_index / 8;
         let bit_offset = bit_index % 8;
-        if byte_idx >= self.topology.len() {
+        let topology = self.topology();
+        if byte_idx >= topology.len() {
             return false;
         }
-        (self.topology[byte_idx] >> bit_offset) & 1 == 1
+        (topology[byte_idx] >> bit_offset) & 1 == 1
     }
+}
+
+/// Encodes a multi-proof into a flat byte buffer.
+///
+/// `leaves` is a slice of `(key, leaf_hash)` pairs, sorted by key.
+pub fn encode_multi_proof(
+    leaves: &[([u8; 32], [u8; 32])],
+    siblings: &[[u8; 32]],
+    topology: &[u8],
+) -> Vec<u8> {
+    let total = 4 + leaves.len() * LEAF_ENTRY_SIZE + 4 + siblings.len() * 32 + 4 + topology.len();
+    let mut buf = Vec::with_capacity(total);
+
+    buf.extend_from_slice(&(leaves.len() as u32).to_le_bytes());
+    for (key, leaf_hash) in leaves {
+        buf.extend_from_slice(key);
+        buf.extend_from_slice(leaf_hash);
+    }
+
+    buf.extend_from_slice(&(siblings.len() as u32).to_le_bytes());
+    for sibling in siblings {
+        buf.extend_from_slice(sibling);
+    }
+
+    buf.extend_from_slice(&(topology.len() as u32).to_le_bytes());
+    buf.extend_from_slice(topology);
+
+    debug_assert_eq!(buf.len(), total);
+    buf
 }
 
 /// Get the `bit_pos`-th bit of a 256-bit key (0 = MSB).
@@ -165,24 +230,6 @@ fn get_key_bit(key: &[u8; 32], bit_pos: usize) -> bool {
     let byte_idx = bit_pos / 8;
     let bit_offset = 7 - (bit_pos % 8);
     (key[byte_idx] >> bit_offset) & 1 == 1
-}
-
-/// Split indices into left (bit=0) and right (bit=1) children.
-fn split_by_bit(
-    indices: &[usize],
-    leaves: &[LeafEntry],
-    bit_pos: usize,
-) -> (Vec<usize>, Vec<usize>) {
-    let mut left = Vec::new();
-    let mut right = Vec::new();
-    for &i in indices {
-        if get_key_bit(&leaves[i].key, bit_pos) {
-            right.push(i);
-        } else {
-            left.push(i);
-        }
-    }
-    (left, right)
 }
 
 /// Compute blake3(left || right).
@@ -201,7 +248,8 @@ mod tests {
     #[test]
     fn empty_proof_returns_default_root() {
         let defaults = default_hashes();
-        let proof = MultiProof { leaves: Vec::new(), siblings: Vec::new(), topology: Vec::new() };
+        let encoded = encode_multi_proof(&[], &[], &[]);
+        let proof = MultiProof::decode(&encoded);
         assert_eq!(proof.compute_root_with(|_| unreachable!()), defaults[TREE_DEPTH]);
     }
 
@@ -221,11 +269,8 @@ mod tests {
         // Topology: 256 bits, all 0 (never split, always use sibling).
         let topology = vec![0u8; TREE_DEPTH.div_ceil(8)];
 
-        let proof = MultiProof {
-            leaves: vec![LeafEntry { key, leaf_hash: data_hash }],
-            siblings,
-            topology,
-        };
+        let encoded = encode_multi_proof(&[(key, data_hash)], &siblings, &topology);
+        let proof = MultiProof::decode(&encoded);
 
         // Compute root manually bottom-up: hash with defaults[0], then [1], etc.
         let mut current = data_hash;
@@ -258,11 +303,8 @@ mod tests {
         }
         let topology = vec![0u8; TREE_DEPTH.div_ceil(8)];
 
-        let proof = MultiProof {
-            leaves: vec![LeafEntry { key, leaf_hash: data_hash }],
-            siblings,
-            topology,
-        };
+        let encoded = encode_multi_proof(&[(key, data_hash)], &siblings, &topology);
+        let proof = MultiProof::decode(&encoded);
 
         // Deleting the only leaf should produce the empty tree root.
         let new_root = proof.compute_root(&[EMPTY_LEAF_HASH]);

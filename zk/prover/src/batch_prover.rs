@@ -2,7 +2,8 @@ use std::{collections::HashMap, sync::Arc};
 
 use tokio::sync::mpsc;
 use vprogs_zk_abi::{
-    ACCOUNT_HEADER_SIZE, FIXED_HEADER_SIZE, StorageOp, batch_witness::encode_batch_witness,
+    batch_processor::encode_batch_witness,
+    transaction_processor::{ACCOUNT_HEADER_SIZE, FIXED_HEADER_SIZE, StorageOp},
 };
 use vprogs_zk_smt::EMPTY_LEAF_HASH;
 use vprogs_zk_vm::{Backend, ProofRequest};
@@ -152,7 +153,7 @@ impl<B: Backend + 'static> BatchProver<B> {
         }
 
         // Generate multi-proof from the state tree.
-        let multi_proof = self.state_tree.multi_proof(&resource_ids);
+        let multi_proof_bytes = self.state_tree.multi_proof(&resource_ids);
 
         // Build transaction entries.
         let txs: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> = batch_state
@@ -170,7 +171,7 @@ impl<B: Backend + 'static> BatchProver<B> {
             batch_index,
             &prev_root,
             &account_entries,
-            &multi_proof,
+            &multi_proof_bytes,
             &txs,
         );
 

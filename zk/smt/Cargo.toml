@@ -10,4 +10,3 @@ std     = []
 
 [dependencies]
 blake3 = { version = "1", default-features = false }
-borsh  = { version = "1", default-features = false, features = ["derive"] }

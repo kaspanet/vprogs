@@ -3,9 +3,8 @@ use alloc::vec::Vec;
 use borsh::{BorshSerialize, io::Write};
 use vprogs_core_types::ResourceId;
 
-use crate::{
-    ACCOUNT_HEADER_SIZE, FIXED_HEADER_SIZE, Result, account::Account, block_metadata::BlockMetadata,
-};
+use super::{ACCOUNT_HEADER_SIZE, Account, BlockMetadata, FIXED_HEADER_SIZE};
+use crate::Result;
 
 /// Streams the execution result as a borsh-serialized `Result<Vec<Option<StorageOp>>, Error>`
 /// to the writer. On success, each account serializes as the corresponding storage operation based

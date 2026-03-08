@@ -7,5 +7,5 @@ version = "0.1.0"
 blake3        = { version = "1", default-features = false }
 borsh         = { version = "1", default-features = false }
 risc0-zkvm    = { version = "3.0", default-features = false, features = ["std"] }
-vprogs-zk-abi = { path = "../../../../abi", default-features = false }
-vprogs-zk-smt = { path = "../../../../smt", default-features = false }
+vprogs-zk-abi = { path = "../../../abi", default-features = false }
+vprogs-zk-smt = { path = "../../../smt", default-features = false }

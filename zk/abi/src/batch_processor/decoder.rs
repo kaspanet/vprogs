@@ -14,8 +14,10 @@ pub struct BatchWitnessDecoder<'a> {
     n_accounts: u32,
     /// Number of transactions.
     n_txs: u32,
-    /// Deserialized multi-proof.
-    multi_proof: MultiProof,
+    /// Start offset of the multi-proof bytes (after the length prefix).
+    mp_start: usize,
+    /// Length of the multi-proof bytes.
+    mp_len: usize,
 }
 
 impl<'a> BatchWitnessDecoder<'a> {
@@ -32,16 +34,14 @@ impl<'a> BatchWitnessDecoder<'a> {
         let accounts_end = HEADER_SIZE + (n_accounts as usize) * ACCOUNT_ENTRY_SIZE;
         assert!(buf.len() >= accounts_end, "batch witness too short for account entries");
 
-        // Read multi-proof length prefix, then deserialize borsh.
+        // Read multi-proof length prefix.
         let mp_len = u32::from_le_bytes(
             buf[accounts_end..accounts_end + 4].try_into().expect("truncated multi-proof length"),
         ) as usize;
         let mp_start = accounts_end + 4;
-        let multi_proof: MultiProof = borsh::from_slice(&buf[mp_start..mp_start + mp_len])
-            .expect("failed to decode multi-proof");
         let tx_offset = mp_start + mp_len;
 
-        Self { buf, tx_offset, n_accounts, n_txs, multi_proof }
+        Self { buf, tx_offset, n_accounts, n_txs, mp_start, mp_len }
     }
 
     /// Returns the decoded header.
@@ -67,9 +67,9 @@ impl<'a> BatchWitnessDecoder<'a> {
         }
     }
 
-    /// Returns a reference to the deserialized multi-proof.
-    pub fn multi_proof(&self) -> &MultiProof {
-        &self.multi_proof
+    /// Returns a zero-copy multi-proof view borrowing from the witness buffer.
+    pub fn multi_proof(&self) -> MultiProof<'a> {
+        MultiProof::decode(&self.buf[self.mp_start..self.mp_start + self.mp_len])
     }
 
     /// Returns an iterator over the transaction entries.

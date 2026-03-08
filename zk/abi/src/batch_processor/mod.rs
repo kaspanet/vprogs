@@ -26,7 +26,7 @@ mod tests {
     #[cfg(feature = "host")]
     #[test]
     fn roundtrip_encode_decode() {
-        use vprogs_zk_smt::MultiProof;
+        use vprogs_zk_smt::encode_multi_proof;
 
         let image_id = [0xABu8; 32];
         let batch_index = 42u64;
@@ -34,15 +34,21 @@ mod tests {
 
         let accounts = vec![([1u8; 32], false, [0x11u8; 32]), ([2u8; 32], true, [0u8; 32])];
 
-        let multi_proof = MultiProof { leaves: vec![], siblings: vec![], topology: vec![] };
+        let multi_proof_bytes = encode_multi_proof(&[], &[], &[]);
 
         let journal = vec![0xAAu8; 64];
         let wire_bytes = vec![0xBBu8; 128];
         let exec_result = vec![0xCCu8; 32];
         let txs = vec![(journal.clone(), wire_bytes.clone(), exec_result.clone())];
 
-        let encoded =
-            encode_batch_witness(&image_id, batch_index, &prev_root, &accounts, &multi_proof, &txs);
+        let encoded = encode_batch_witness(
+            &image_id,
+            batch_index,
+            &prev_root,
+            &accounts,
+            &multi_proof_bytes,
+            &txs,
+        );
 
         let decoder = BatchWitnessDecoder::new(&encoded);
         let header = decoder.header();
@@ -62,6 +68,9 @@ mod tests {
         assert_eq!(acc1.resource_id, &[2u8; 32]);
         assert!(acc1.is_new);
         assert_eq!(acc1.leaf_hash, &[0u8; 32]);
+
+        let multi_proof = decoder.multi_proof();
+        assert_eq!(multi_proof.n_leaves(), 0);
 
         let tx_entries: Vec<_> = decoder.tx_entries().collect();
         assert_eq!(tx_entries.len(), 1);

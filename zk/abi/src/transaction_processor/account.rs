@@ -6,7 +6,7 @@ use borsh::{
 };
 use vprogs_core_types::ResourceId;
 
-use crate::storage_op::StorageOp;
+use super::StorageOp;
 
 /// A mutable view of a single account's data within a decoded wire buffer.
 ///
