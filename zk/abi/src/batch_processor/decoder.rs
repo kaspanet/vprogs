@@ -65,7 +65,7 @@ impl<'a> BatchWitnessDecoder<'a> {
         let base = HEADER_SIZE + (index as usize) * RESOURCE_COMMITMENT_SIZE;
         ResourceCommitment {
             resource_id: self.buf[base..base + 32].try_into().expect("truncated resource_id"),
-            leaf_hash: self.buf[base + 32..base + 64].try_into().expect("truncated leaf_hash"),
+            hash: self.buf[base + 32..base + 64].try_into().expect("truncated hash"),
         }
     }
 

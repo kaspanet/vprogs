@@ -1,3 +1,5 @@
+use std::mem;
+
 use tap::Tap;
 use vprogs_core_types::AccessMetadata;
 use vprogs_storage_types::Store;
@@ -33,7 +35,7 @@ impl<S: Store, P: Processor> Resource<S, P> {
                 StateDiff::new(
                     batch.clone(),
                     access_metadata.resource_id,
-                    std::mem::replace(resource_index, *resource_index + 1),
+                    mem::replace(resource_index, *resource_index + 1),
                 ),
                 prev_access,
             ),

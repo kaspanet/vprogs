@@ -61,11 +61,11 @@ mod tests {
 
         let c0 = decoder.resource_commitment(0);
         assert_eq!(c0.resource_id, &[1u8; 32]);
-        assert_eq!(c0.leaf_hash, &[0x11u8; 32]);
+        assert_eq!(c0.hash, &[0x11u8; 32]);
 
         let c1 = decoder.resource_commitment(1);
         assert_eq!(c1.resource_id, &[2u8; 32]);
-        assert_eq!(c1.leaf_hash, &[0u8; 32]);
+        assert_eq!(c1.hash, &[0u8; 32]);
 
         let multi_proof = decoder.multi_proof();
         assert_eq!(multi_proof.n_leaves(), 0);

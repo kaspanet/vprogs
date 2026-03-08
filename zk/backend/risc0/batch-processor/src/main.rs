@@ -31,7 +31,7 @@ fn main() {
     let mut cache: Vec<[u8; 32]> = vec![[0u8; 32]; n_resources as usize];
     for i in 0..n_resources {
         let commitment = decoder.resource_commitment(i);
-        cache[i as usize] = *commitment.leaf_hash;
+        cache[i as usize] = *commitment.hash;
     }
 
     // 4. Verify the multi-proof against prev_root.
