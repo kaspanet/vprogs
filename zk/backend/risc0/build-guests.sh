@@ -75,10 +75,10 @@ RUN --mount=type=cache,target=/root/.cargo/registry \\
     RUSTFLAGS='${GUEST_RUSTFLAGS}' \\
     cargo +risc0 build --release --target riscv32im-risc0-zkvm-elf \\
       --manifest-path \$CARGO_MANIFEST_PATH && \\
-    cargo build --release --manifest-path zk/backend/risc0/elf-wrapper/Cargo.toml && \\
+    cargo build --release --manifest-path zk/backend/risc0/build-tools/Cargo.toml && \\
     mkdir -p /output && \\
     cp target/riscv32im-risc0-zkvm-elf/release/${bin_name} /output/ && \\
-    ./target/release/elf-wrapper /output/${bin_name}
+    ./target/release/build-tools /output/${bin_name}
 
 FROM scratch AS export
 COPY --from=build /output/ /

@@ -8,13 +8,13 @@ default-members = [
   "storage/*",
   "transaction-runtime/*",
   "zk/prover",
-  "zk/backend/risc0/host-api",
+  "zk/backend/risc0/api/host",
   "zk/abi",
   "zk/vm",
 ]
 exclude = [
-  "zk/backend/risc0/elf-wrapper",
-  "zk/backend/risc0/guest-api",
+  "zk/backend/risc0/build-tools",
+  "zk/backend/risc0/api/guest",
   "zk/backend/risc0/transaction-processor",
   "zk/backend/risc0/batch-processor",
 ]
@@ -27,7 +27,7 @@ members = [
   "storage/*",
   "transaction-runtime/*",
   "zk/prover",
-  "zk/backend/risc0/host-api",
+  "zk/backend/risc0/api/host",
   "zk/abi",
   "zk/vm",
 ]
@@ -141,7 +141,7 @@ resolver = "3"
   vprogs-transaction-runtime-transaction          = { path = "transaction-runtime/transaction" }
   vprogs-transaction-runtime-transaction-effects  = { path = "transaction-runtime/transaction-effects" }
   vprogs-zk-abi                                   = { path = "zk/abi", default-features = false }
-  vprogs-zk-backend-risc0-host-api                = { path = "zk/backend/risc0/host-api" }
+  vprogs-zk-backend-risc0-api-host                = { path = "zk/backend/risc0/api/host" }
   vprogs-zk-prover                                = { path = "zk/prover" }
   vprogs-zk-vm                                    = { path = "zk/vm" }
 

@@ -7795,7 +7795,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "vprogs-zk-backend-risc0-host-api"
+name = "vprogs-zk-backend-risc0-api-host"
 version = "0.1.0"
 dependencies = [
  "risc0-zkvm",
@@ -7827,7 +7827,7 @@ dependencies = [
  "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
  "vprogs-zk-abi",
- "vprogs-zk-backend-risc0-host-api",
+ "vprogs-zk-backend-risc0-api-host",
 ]
 
 [[package]]

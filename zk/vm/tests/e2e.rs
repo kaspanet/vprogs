@@ -5,7 +5,7 @@ use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
-use vprogs_zk_backend_risc0_host_api::Backend;
+use vprogs_zk_backend_risc0_api_host::Backend;
 use vprogs_zk_vm::Vm;
 
 /// Loads the pre-built transaction processor ELF from the repository.

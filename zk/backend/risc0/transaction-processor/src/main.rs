@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use vprogs_zk_backend_risc0_guest_api::process_transaction;
+use vprogs_zk_backend_risc0_api_guest::process_transaction;
 
 risc0_zkvm::guest::entry!(main);
 

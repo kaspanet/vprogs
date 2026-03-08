@@ -7,4 +7,4 @@ version = "0.1.0"
 blake3                            = { version = "1", default-features = false }
 risc0-zkvm                        = { version = "3.0", default-features = false, features = ["std"] }
 vprogs-zk-abi                     = { path = "../../../abi", default-features = false }
-vprogs-zk-backend-risc0-guest-api = { path = "../guest-api", default-features = false }
+vprogs-zk-backend-risc0-api-guest = { path = "../api/guest", default-features = false }

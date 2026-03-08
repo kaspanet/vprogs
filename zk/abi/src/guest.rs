@@ -13,14 +13,14 @@ use crate::{
 pub fn write_execution_result<W: Write>(result: Result<&[Account<'_>]>, w: &mut W) {
     match result {
         Ok(accounts) => {
-            0u8.serialize(w).expect("write failed"); // Borsh Result::Ok discriminant
+            1u8.serialize(w).expect("write failed"); // Borsh Result::Ok discriminant
             (accounts.len() as u32).serialize(w).expect("write failed");
             for account in accounts {
                 account.serialize(w).expect("write failed");
             }
         }
         Err(err) => {
-            1u8.serialize(w).expect("write failed"); // Borsh Result::Err discriminant
+            0u8.serialize(w).expect("write failed"); // Borsh Result::Err discriminant
             err.serialize(w).expect("write failed");
         }
     }
