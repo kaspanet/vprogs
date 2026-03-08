@@ -1,3 +1,4 @@
+use borsh::io::{self, Write};
 use vprogs_zk_abi::{Account, BlockMetadata, Result, guest};
 
 use crate::{Journal, host::Host};
@@ -23,26 +24,20 @@ pub fn process_transaction(
 
     // Pass the result to the host and commit a hash of the serialized output to the journal.
     let mut hasher = blake3::Hasher::new();
-    guest::write_execution_result(
-        result,
-        &mut HashingWriter { hasher: &mut hasher, inner: &mut Host },
-    );
+    guest::write_execution_result(result, &mut HashingWriter(&mut hasher));
     Journal::write(hasher.finalize().as_bytes());
 }
 
-/// Tee writer: forwards bytes to an inner writer while feeding them to a blake3 hasher.
-struct HashingWriter<'a, W> {
-    hasher: &'a mut blake3::Hasher,
-    inner: &'a mut W,
-}
+/// Writes to the host while feeding bytes to a blake3 hasher.
+struct HashingWriter<'a>(&'a mut blake3::Hasher);
 
-impl<W: borsh::io::Write> borsh::io::Write for HashingWriter<'_, W> {
-    fn write(&mut self, buf: &[u8]) -> borsh::io::Result<usize> {
-        self.hasher.update(buf);
-        self.inner.write(buf)
+impl Write for HashingWriter<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.update(buf);
+        Host.write(buf)
     }
 
-    fn flush(&mut self) -> borsh::io::Result<()> {
-        self.inner.flush()
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }

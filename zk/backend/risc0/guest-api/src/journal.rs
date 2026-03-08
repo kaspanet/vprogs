@@ -1,4 +1,7 @@
-use borsh::BorshSerialize;
+use borsh::{
+    BorshSerialize,
+    io::{self, Write},
+};
 use bytemuck::Pod;
 use risc0_zkvm::guest::env;
 
@@ -17,13 +20,13 @@ impl Journal {
     }
 }
 
-impl borsh::io::Write for Journal {
-    fn write(&mut self, buf: &[u8]) -> borsh::io::Result<usize> {
+impl Write for Journal {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         env::commit_slice::<u8>(buf);
         Ok(buf.len())
     }
 
-    fn flush(&mut self) -> borsh::io::Result<()> {
+    fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
 }

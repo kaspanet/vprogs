@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use borsh::BorshSerialize;
+use borsh::{BorshSerialize, io::Write};
 use vprogs_core_types::ResourceId;
 
 use crate::{
@@ -10,7 +10,7 @@ use crate::{
 /// Streams the execution result as a borsh-serialized `Result<Vec<Option<StorageOp>>, Error>`
 /// to the writer. On success, each account serializes as the corresponding storage operation based
 /// on its dirty/deleted/new flags. On error, writes the error.
-pub fn write_execution_result<W: borsh::io::Write>(result: Result<&[Account<'_>]>, w: &mut W) {
+pub fn write_execution_result<W: Write>(result: Result<&[Account<'_>]>, w: &mut W) {
     match result {
         Ok(accounts) => {
             0u8.serialize(w).expect("write failed"); // Borsh Result::Ok discriminant

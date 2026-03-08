@@ -7,5 +7,4 @@ mod host;
 mod journal;
 
 pub use api::process_transaction;
-pub use host::Host;
 pub use journal::Journal;

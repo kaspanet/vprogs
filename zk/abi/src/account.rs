@@ -1,6 +1,9 @@
 use alloc::vec::Vec;
 
-use borsh::BorshSerialize;
+use borsh::{
+    BorshSerialize,
+    io::{self, Write},
+};
 use vprogs_core_types::ResourceId;
 
 use crate::storage_op::StorageOp;
@@ -106,7 +109,7 @@ impl<'a> Account<'a> {
 /// corresponding storage operation variant. Batches the variant byte and length prefix into a
 /// single 5-byte write to minimize I/O calls.
 impl BorshSerialize for Account<'_> {
-    fn serialize<W: borsh::io::Write>(&self, writer: &mut W) -> borsh::io::Result<()> {
+    fn serialize<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         if self.deleted {
             // Some(StorageOp::Delete): Option tag + variant.
             writer.write_all(&[1, StorageOp::DELETE])?;
