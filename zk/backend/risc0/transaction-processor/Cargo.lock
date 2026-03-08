@@ -1578,7 +1578,6 @@ name = "vprogs-zk-abi"
 version = "0.1.0"
 dependencies = [
  "borsh",
- "rkyv",
  "vprogs-core-types",
 ]
 
@@ -1590,7 +1589,6 @@ dependencies = [
  "borsh",
  "bytemuck",
  "risc0-zkvm",
- "rkyv",
  "vprogs-zk-abi",
 ]
 

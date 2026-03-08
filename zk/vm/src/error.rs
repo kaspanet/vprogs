@@ -6,12 +6,6 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     #[error("backend failed: {0}")]
     Backend(String),
-    #[error("deserialization failed: {0}")]
-    Deserialization(String),
-}
-
-impl From<rkyv::rancor::Error> for Error {
-    fn from(e: rkyv::rancor::Error) -> Self {
-        Self::Deserialization(e.to_string())
-    }
+    #[error(transparent)]
+    Abi(#[from] vprogs_zk_abi::HostError),
 }
