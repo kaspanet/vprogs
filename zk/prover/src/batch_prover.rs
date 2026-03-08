@@ -8,10 +8,7 @@ use vprogs_zk_smt::EMPTY_LEAF_HASH;
 use vprogs_zk_vm::{Backend, ProofRequest};
 
 use crate::{
-    BatchProof,
-    account_data::AccountData,
-    batch_state::BatchState,
-    state_tree::StateTree,
+    BatchProof, account_data::AccountData, batch_state::BatchState, state_tree::StateTree,
 };
 
 /// Receives proof requests from the ZK VM, proves individual transactions, and assembles

@@ -1,9 +1,7 @@
 use vprogs_zk_smt::MultiProof;
 
 use super::{
-    ACCOUNT_ENTRY_SIZE, HEADER_SIZE,
-    account_entry::AccountEntry,
-    header::BatchWitnessHeader,
+    ACCOUNT_ENTRY_SIZE, HEADER_SIZE, account_entry::AccountEntry, header::BatchWitnessHeader,
     tx_entry::TxEntryIter,
 };
 
@@ -36,9 +34,7 @@ impl<'a> BatchWitnessDecoder<'a> {
 
         // Read multi-proof length prefix, then deserialize borsh.
         let mp_len = u32::from_le_bytes(
-            buf[accounts_end..accounts_end + 4]
-                .try_into()
-                .expect("truncated multi-proof length"),
+            buf[accounts_end..accounts_end + 4].try_into().expect("truncated multi-proof length"),
         ) as usize;
         let mp_start = accounts_end + 4;
         let multi_proof: MultiProof = borsh::from_slice(&buf[mp_start..mp_start + mp_len])
