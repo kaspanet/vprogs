@@ -1,5 +1,3 @@
-use std::cell::Cell;
-
 use tap::Tap;
 use vprogs_core_types::AccessMetadata;
 use vprogs_storage_types::Store;
@@ -24,7 +22,7 @@ impl<S: Store, P: Processor> Resource<S, P> {
         access_metadata: &AccessMetadata,
         tx: &ScheduledTransactionRef<S, P>,
         batch: &ScheduledBatchRef<S, P>,
-        account_counter: &Cell<u32>,
+        account_index: &mut u32,
     ) -> ResourceAccess<S, P> {
         let (state_diff_ref, prev_access) = match self.last_access.take() {
             Some(prev_access) if prev_access.tx().belongs_to_batch(batch) => {
@@ -35,7 +33,7 @@ impl<S: Store, P: Processor> Resource<S, P> {
                 StateDiff::new(
                     batch.clone(),
                     access_metadata.resource_id,
-                    account_counter.replace(account_counter.get() + 1),
+                    std::mem::replace(account_index, *account_index + 1),
                 ),
                 prev_access,
             ),
