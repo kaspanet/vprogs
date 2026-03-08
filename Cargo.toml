@@ -69,7 +69,7 @@ resolver = "3"
   syn = { version = "2.0.111", features = ["full"] }
   tap = "1.0.1"
   tempfile = "3.23.0"
-  thiserror = "2"
+  thiserror = { version = "2", default-features = false }
   tokio = { version = "1", features = ["rt", "sync"] }
   tokio-util = "0.7.17"
   toml = "0.8"

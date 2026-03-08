@@ -4,17 +4,15 @@ extern crate alloc;
 
 mod account;
 mod block_metadata;
+mod error;
 pub mod guest;
 #[cfg(feature = "host")]
 pub mod host;
-#[cfg(feature = "host")]
-mod host_error;
 mod storage_op;
 
 pub use account::Account;
 pub use block_metadata::BlockMetadata;
-#[cfg(feature = "host")]
-pub use host_error::{HostError, HostResult};
+pub use error::{Error, Result};
 pub use storage_op::StorageOp;
 
 /// Fixed header size: tx_index(4) + n_accounts(4) + block_hash(32) + blue_score(8) +

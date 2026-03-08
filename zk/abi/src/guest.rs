@@ -4,20 +4,26 @@ use borsh::BorshSerialize;
 use vprogs_core_types::ResourceId;
 
 use crate::{
-    ACCOUNT_HEADER_SIZE, FIXED_HEADER_SIZE, account::Account, block_metadata::BlockMetadata,
+    ACCOUNT_HEADER_SIZE, FIXED_HEADER_SIZE, Result, account::Account, block_metadata::BlockMetadata,
 };
 
-/// Streams the execution result as borsh-serialized `Vec<Option<StorageOp>>` to the writer. Each
-/// account serializes as the corresponding storage operation based on its dirty/deleted/new flags.
-pub fn write_execution_result<W: borsh::io::Write>(
-    accounts: &[Account<'_>],
-    w: &mut W,
-) -> borsh::io::Result<()> {
-    (accounts.len() as u32).serialize(w)?;
-    for account in accounts {
-        account.serialize(w)?;
+/// Streams the execution result as a borsh-serialized `Result<Vec<Option<StorageOp>>, Error>`
+/// to the writer. On success, each account serializes as the corresponding storage operation based
+/// on its dirty/deleted/new flags. On error, writes the error.
+pub fn write_execution_result<W: borsh::io::Write>(result: Result<&[Account<'_>]>, w: &mut W) {
+    match result {
+        Ok(accounts) => {
+            0u8.serialize(w).expect("write failed"); // Borsh Result::Ok discriminant
+            (accounts.len() as u32).serialize(w).expect("write failed");
+            for account in accounts {
+                account.serialize(w).expect("write failed");
+            }
+        }
+        Err(err) => {
+            1u8.serialize(w).expect("write failed"); // Borsh Result::Err discriminant
+            err.serialize(w).expect("write failed");
+        }
     }
-    Ok(())
 }
 
 /// Decodes a wire buffer into zero-copy block metadata and mutable account views.

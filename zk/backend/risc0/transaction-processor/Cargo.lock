@@ -1578,6 +1578,7 @@ name = "vprogs-zk-abi"
 version = "0.1.0"
 dependencies = [
  "borsh",
+ "thiserror",
  "vprogs-core-types",
 ]
 

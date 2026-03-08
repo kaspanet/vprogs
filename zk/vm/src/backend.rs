@@ -1,6 +1,4 @@
-use vprogs_zk_abi::StorageOp;
-
-use crate::Result;
+use vprogs_zk_abi::{Result, StorageOp};
 
 /// Abstraction over a zero-knowledge VM backend (e.g. RISC-0, SP1).
 ///
@@ -11,7 +9,7 @@ pub trait Backend: Clone + Send + Sync + 'static {
     type Receipt: Send + Sync + 'static;
 
     /// Execute a transaction from pre-encoded wire bytes.
-    /// Returns one optional state op per account.
+    /// Returns one optional state op per account, or an error.
     fn execute_transaction(&self, wire_bytes: &[u8]) -> Result<Vec<Option<StorageOp>>>;
 
     /// Prove a previously executed transaction from pre-encoded wire bytes.

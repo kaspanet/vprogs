@@ -7,7 +7,6 @@ version.workspace = true
 default = ["std"]
 host = [
   "std",
-  "dep:thiserror",
   "dep:vprogs-l1-types",
   "dep:vprogs-scheduling-scheduler",
   "dep:vprogs-storage-types",
@@ -16,7 +15,7 @@ std = ["borsh/std"]
 
 [dependencies]
 borsh                       = { workspace = true, default-features = false }
-thiserror                   = { workspace = true, optional = true }
+thiserror                   = { workspace = true, default-features = false }
 vprogs-core-types           = { workspace = true, default-features = false }
 vprogs-l1-types             = { workspace = true, optional = true }
 vprogs-scheduling-scheduler = { workspace = true, optional = true }

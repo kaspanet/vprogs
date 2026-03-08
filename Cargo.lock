@@ -7817,9 +7817,7 @@ dependencies = [
 name = "vprogs-zk-vm"
 version = "0.1.0"
 dependencies = [
- "borsh",
  "tempfile",
- "thiserror 2.0.18",
  "tokio",
  "vprogs-core-test-utils",
  "vprogs-core-types",

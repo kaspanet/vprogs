@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
 use risc0_zkvm::{ExecutorEnv, ProverOpts, Receipt, default_executor, default_prover};
-use vprogs_zk_abi::{StorageOp, host};
-use vprogs_zk_vm::{Error, Result};
+use vprogs_zk_abi::{Result, StorageOp, host};
 
 /// RISC-0 backend for execution and proving.
 ///
@@ -33,13 +32,11 @@ impl vprogs_zk_vm::Backend for Backend {
             .write_slice(wire_bytes)
             .stdout(&mut ops_stdout)
             .build()
-            .map_err(|e| Error::Backend(e.to_string()))?;
+            .expect("failed to build executor environment");
 
-        default_executor()
-            .execute(env, &self.transaction_elf)
-            .map_err(|e| Error::Backend(e.to_string()))?;
+        default_executor().execute(env, &self.transaction_elf).expect("executor failed");
 
-        Ok(host::decode_execution_result(&ops_stdout)?)
+        host::decode_execution_result(&ops_stdout)
     }
 
     fn prove_transaction(&self, wire_bytes: &[u8]) -> Result<Receipt> {
@@ -47,17 +44,19 @@ impl vprogs_zk_vm::Backend for Backend {
             .write_slice(&[wire_bytes.len() as u32])
             .write_slice(wire_bytes)
             .build()
-            .map_err(|e| Error::Backend(e.to_string()))?;
+            .expect("failed to build prover environment");
 
-        default_prover()
+        let receipt = default_prover()
             .prove_with_opts(env, &self.transaction_elf, &ProverOpts::succinct())
-            .map(|info| info.receipt)
-            .map_err(|e| Error::Backend(e.to_string()))
+            .expect("proving failed")
+            .receipt;
+
+        Ok(receipt)
     }
 
     fn prove_batch(&self, _block_hash: [u8; 32], _journals: &[Vec<u8>]) -> Result<Receipt> {
         let _elf = &self.batch_elf;
-        Err(Error::Backend("batch proving not yet implemented".into()))
+        unimplemented!("batch proving not yet implemented")
     }
 
     fn journal_bytes(receipt: &Receipt) -> Vec<u8> {
