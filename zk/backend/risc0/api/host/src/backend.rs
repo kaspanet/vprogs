@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use risc0_zkvm::{ExecutorEnv, ProverOpts, Receipt, default_executor, default_prover};
-use vprogs_zk_abi::{Result, StorageOp, host};
 
 /// RISC-0 backend for execution and proving.
 ///
@@ -25,38 +24,48 @@ impl Backend {
 impl vprogs_zk_vm::Backend for Backend {
     type Receipt = Receipt;
 
-    fn execute_transaction(&self, wire_bytes: &[u8]) -> Result<Vec<Option<StorageOp>>> {
-        let mut ops_stdout = Vec::new();
-        let env = ExecutorEnv::builder()
-            .write_slice(&[wire_bytes.len() as u32])
-            .write_slice(wire_bytes)
-            .stdout(&mut ops_stdout)
-            .build()
-            .expect("failed to build executor environment");
+    fn execute_transaction(&self, wire_bytes: &[u8]) -> Vec<u8> {
+        let mut execution_result = Vec::new();
 
-        default_executor().execute(env, &self.transaction_elf).expect("executor failed");
+        default_executor()
+            .execute(
+                ExecutorEnv::builder()
+                    .write_slice(&[wire_bytes.len() as u32])
+                    .write_slice(wire_bytes)
+                    .stdout(&mut execution_result)
+                    .build()
+                    .expect("failed to build executor environment"),
+                &self.transaction_elf,
+            )
+            .expect("executor failed");
 
-        host::decode_execution_result(&ops_stdout)
+        execution_result
     }
 
-    fn prove_transaction(&self, wire_bytes: &[u8]) -> Result<Receipt> {
+    fn prove_transaction(&self, wire_bytes: &[u8]) -> Receipt {
         let env = ExecutorEnv::builder()
             .write_slice(&[wire_bytes.len() as u32])
             .write_slice(wire_bytes)
             .build()
             .expect("failed to build prover environment");
 
-        let receipt = default_prover()
+        default_prover()
             .prove_with_opts(env, &self.transaction_elf, &ProverOpts::succinct())
             .expect("proving failed")
-            .receipt;
-
-        Ok(receipt)
+            .receipt
     }
 
-    fn prove_batch(&self, _block_hash: [u8; 32], _journals: &[Vec<u8>]) -> Result<Receipt> {
-        let _elf = &self.batch_elf;
-        unimplemented!("batch proving not yet implemented")
+    fn prove_batch(&self, batch_witness: &[u8]) -> Receipt {
+        let env = ExecutorEnv::builder()
+            .write_slice(&[batch_witness.len() as u32])
+            .write_slice(batch_witness)
+            .build()
+            .expect("failed to build batch prover environment");
+
+        default_prover()
+            .prove_with_opts(env, &self.batch_elf, &ProverOpts::succinct())
+            .expect("batch proving failed")
+            .receipt
     }
 
     fn journal_bytes(receipt: &Receipt) -> Vec<u8> {

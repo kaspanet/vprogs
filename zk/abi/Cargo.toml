@@ -20,3 +20,4 @@ vprogs-core-types           = { workspace = true, default-features = false }
 vprogs-l1-types             = { workspace = true, optional = true }
 vprogs-scheduling-scheduler = { workspace = true, optional = true }
 vprogs-storage-types        = { workspace = true, optional = true }
+vprogs-zk-smt               = { workspace = true }

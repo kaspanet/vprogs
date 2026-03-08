@@ -5,5 +5,4 @@ version.workspace = true
 
 [dependencies]
 risc0-zkvm             = { workspace = true, features = ["prove"] }
-vprogs-zk-abi          = { workspace = true, features = ["host"] }
 vprogs-zk-vm.workspace = true

@@ -4,7 +4,10 @@ name              = "vprogs-zk-prover"
 version.workspace = true
 
 [dependencies]
-log.workspace           = true
-tokio                   = { workspace = true, features = ["rt", "sync", "macros"] }
-vprogs-zk-abi.workspace = true
-vprogs-zk-vm.workspace  = true
+blake3.workspace       = true
+borsh.workspace        = true
+log.workspace          = true
+tokio                  = { workspace = true, features = ["rt", "sync", "macros"] }
+vprogs-zk-abi          = { workspace = true, features = ["host"] }
+vprogs-zk-smt          = { workspace = true, features = ["host"] }
+vprogs-zk-vm.workspace = true

@@ -56,12 +56,14 @@ pub fn decode_transaction_context(
         let rid_bytes: &[u8; 32] = header[base..base + 32].try_into().expect("truncated account");
         let resource_id = ResourceId::from_bytes_ref(rid_bytes);
         let is_new = header[base + 32] & 1 != 0;
+        let account_index =
+            u32::from_le_bytes(header[base + 33..base + 37].try_into().expect("truncated account"));
         let data_len =
-            u32::from_le_bytes(header[base + 33..base + 37].try_into().expect("truncated account"))
+            u32::from_le_bytes(header[base + 37..base + 41].try_into().expect("truncated account"))
                 as usize;
         let (slice, rest) = remaining.split_at_mut(data_len);
         remaining = rest;
-        accounts.push(Account::new(resource_id, is_new, slice));
+        accounts.push(Account::new(resource_id, account_index, is_new, slice));
     }
 
     let block_hash: &[u8; 32] = header[8..40].try_into().expect("truncated header");

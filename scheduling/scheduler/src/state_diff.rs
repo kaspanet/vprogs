@@ -19,6 +19,8 @@ pub struct StateDiff<S: Store, P: Processor> {
     batch: ScheduledBatchRef<S, P>,
     /// The resource this diff tracks.
     resource_id: ResourceId,
+    /// Monotonically increasing index assigned when the resource is first accessed in a batch.
+    account_index: u32,
     /// Resource state before the batch executed (set when the first access resolves).
     read_state: ArcSwapOption<StateVersion>,
     /// Resource state after the batch executed (set when the last access commits).
@@ -47,10 +49,20 @@ impl<S: Store, P: Processor> StateDiff<S, P> {
         self.written_state.load_full().expect("written state unknown")
     }
 
-    pub(crate) fn new(batch: ScheduledBatchRef<S, P>, resource_id: ResourceId) -> Self {
+    /// Returns the per-batch account index for this resource.
+    pub fn account_index(&self) -> u32 {
+        self.account_index
+    }
+
+    pub(crate) fn new(
+        batch: ScheduledBatchRef<S, P>,
+        resource_id: ResourceId,
+        account_index: u32,
+    ) -> Self {
         Self(Arc::new(StateDiffData {
             batch,
             resource_id,
+            account_index,
             read_state: ArcSwapOption::empty(),
             written_state: ArcSwapOption::empty(),
         }))

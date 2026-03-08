@@ -756,6 +756,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "blake3"
+version = "1.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2468ef7d57b3fb7e16b576e8377cdbde2320c60e1491e961d11da40fc4f02a2d"
+dependencies = [
+ "arrayref",
+ "arrayvec",
+ "cc",
+ "cfg-if",
+ "constant_time_eq",
+ "cpufeatures",
+]
+
+[[package]]
 name = "block"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7792,6 +7806,7 @@ dependencies = [
  "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
  "vprogs-storage-types",
+ "vprogs-zk-smt",
 ]
 
 [[package]]
@@ -7799,7 +7814,6 @@ name = "vprogs-zk-backend-risc0-api-host"
 version = "0.1.0"
 dependencies = [
  "risc0-zkvm",
- "vprogs-zk-abi",
  "vprogs-zk-vm",
 ]
 
@@ -7807,10 +7821,21 @@ dependencies = [
 name = "vprogs-zk-prover"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "borsh",
  "log",
  "tokio",
  "vprogs-zk-abi",
+ "vprogs-zk-smt",
  "vprogs-zk-vm",
+]
+
+[[package]]
+name = "vprogs-zk-smt"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "borsh",
 ]
 
 [[package]]

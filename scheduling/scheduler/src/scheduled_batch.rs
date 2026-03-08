@@ -1,6 +1,9 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicI64, AtomicU64, Ordering},
+use std::{
+    cell::Cell,
+    sync::{
+        Arc,
+        atomic::{AtomicI64, AtomicU64, Ordering},
+    },
 };
 
 use crossbeam_deque::{Injector, Steal, Worker};
@@ -164,6 +167,7 @@ impl<S: Store, P: Processor> ScheduledBatch<S, P> {
             }
 
             let mut state_diffs = Vec::new();
+            let account_counter = Cell::new(0u32);
 
             ScheduledBatchData {
                 checkpoint,
@@ -181,6 +185,7 @@ impl<S: Store, P: Processor> ScheduledBatch<S, P> {
                             ScheduledBatchRef(this.clone()),
                             i as u32,
                             tx,
+                            &account_counter,
                         )
                     })
                     .collect(),

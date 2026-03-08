@@ -33,10 +33,12 @@ impl<B: Backend> Processor for Vm<B> {
         // 1. Encode into ABI wire format.
         let wire_bytes = host::encode_transaction_context(&*ctx);
 
-        // 2. Execute via backend.
-        let execution_result = self.backend.execute_transaction(&wire_bytes);
+        // 2. Execute via backend (returns raw bytes).
+        let execution_result_bytes = self.backend.execute_transaction(&wire_bytes);
 
-        // 3. Apply storage operations on success, capture error on failure.
+        // 3. Decode and apply storage operations on success.
+        let execution_result: Result<Vec<Option<StorageOp>>> =
+            host::decode_execution_result(&execution_result_bytes);
         let return_value = match &execution_result {
             Ok(storage_ops) => {
                 for (i, storage_op) in storage_ops.iter().enumerate() {
@@ -58,11 +60,13 @@ impl<B: Backend> Processor for Vm<B> {
 
         // 4. Optionally send a proof request to the proving pipeline.
         if let Some(ref proof_tx) = self.proof_tx {
+            let account_indices = ctx.resources().iter().map(|r| r.account_index()).collect();
             let _ = proof_tx.send(ProofRequest {
                 wire_bytes,
                 block_hash: ctx.batch_metadata().block_hash().as_bytes(),
                 tx_index: ctx.tx_index(),
-                execution_result,
+                execution_result_bytes,
+                account_indices,
             });
         }
 

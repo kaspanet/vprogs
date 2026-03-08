@@ -1,6 +1,9 @@
-use std::sync::{
-    Arc, Weak,
-    atomic::{AtomicU64, Ordering},
+use std::{
+    cell::Cell,
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use arc_swap::ArcSwapOption;
@@ -55,10 +58,11 @@ impl<S: Store, P: Processor> ScheduledTransaction<S, P> {
         batch: ScheduledBatchRef<S, P>,
         tx_index: u32,
         tx: SchedulerTransaction<P::Transaction>,
+        account_counter: &Cell<u32>,
     ) -> Self {
         Self(Arc::new_cyclic(|this: &Weak<ScheduledTransactionData<S, P>>| {
             let this = ScheduledTransactionRef(this.clone());
-            let resources = scheduler.resources(&tx, this, &batch, state_diffs);
+            let resources = scheduler.resources(&tx, this, &batch, state_diffs, account_counter);
             ScheduledTransactionData {
                 processor: scheduler.processor().clone(),
                 pending_resources: AtomicU64::new(resources.len() as u64),

@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     collections::{HashMap, VecDeque},
     sync::Arc,
 };
@@ -196,6 +197,7 @@ impl<S: Store, P: Processor> Scheduler<S, P> {
         scheduled_tx: ScheduledTransactionRef<S, P>,
         batch: &ScheduledBatchRef<S, P>,
         state_diffs: &mut Vec<StateDiff<S, P>>,
+        account_counter: &Cell<u32>,
     ) -> Vec<ResourceAccess<S, P>> {
         tx.resources
             .iter()
@@ -204,7 +206,7 @@ impl<S: Store, P: Processor> Scheduler<S, P> {
                 self.resources
                     .entry(access.resource_id)
                     .or_default()
-                    .access(access, &scheduled_tx, batch)
+                    .access(access, &scheduled_tx, batch, account_counter)
                     .tap(|access| {
                         // If this is the first access in the batch, create a state diff.
                         if access.is_batch_head() {

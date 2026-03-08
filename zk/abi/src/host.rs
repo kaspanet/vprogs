@@ -38,6 +38,7 @@ where
         buf.extend_from_slice(r.access_metadata().resource_id.as_bytes());
         let flags = if r.is_new() { 1u8 } else { 0u8 };
         buf.push(flags);
+        buf.extend_from_slice(&r.account_index().to_le_bytes());
         buf.extend_from_slice(&(r.data().len() as u32).to_le_bytes());
     }
 

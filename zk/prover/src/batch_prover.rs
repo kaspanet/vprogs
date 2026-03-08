@@ -1,23 +1,47 @@
 use std::{collections::HashMap, sync::Arc};
 
 use tokio::sync::mpsc;
+use vprogs_zk_abi::{
+    ACCOUNT_HEADER_SIZE, FIXED_HEADER_SIZE, StorageOp, batch_witness::encode_batch_witness,
+};
+use vprogs_zk_smt::EMPTY_LEAF_HASH;
 use vprogs_zk_vm::{Backend, ProofRequest};
 
-use crate::BatchProof;
+use crate::{
+    BatchProof,
+    account_data::AccountData,
+    batch_state::BatchState,
+    state_tree::StateTree,
+};
 
-/// Receives proof requests from the ZK VM, groups them by batch, and proves each transaction.
+/// Receives proof requests from the ZK VM, proves individual transactions, and assembles
+/// batch witnesses for the batch processor guest.
 ///
-/// When all transactions for a batch have been proven, emits a [`BatchProof`] containing the
-/// ordered journal bytes. Aggregation via the batch processor is deferred to a future milestone.
+/// When all transactions for a batch have been proven, constructs the batch witness from
+/// pre-batch account data, generates a multi-proof from the state tree, and calls the
+/// backend's `prove_batch` to produce the batch proof.
 pub struct BatchProver<B: Backend> {
     backend: Arc<B>,
     rx: mpsc::UnboundedReceiver<ProofRequest>,
     batch_tx_counts: HashMap<[u8; 32], u32>,
+    /// The transaction processor's image ID, committed to in the batch witness.
+    image_id: [u8; 32],
+    /// Host-side state tree for Merkle root maintenance and multi-proof generation.
+    state_tree: StateTree,
+    /// Batch index counter.
+    next_batch_index: u64,
 }
 
 impl<B: Backend + 'static> BatchProver<B> {
-    pub fn new(backend: B, rx: mpsc::UnboundedReceiver<ProofRequest>) -> Self {
-        Self { backend: Arc::new(backend), rx, batch_tx_counts: HashMap::new() }
+    pub fn new(backend: B, rx: mpsc::UnboundedReceiver<ProofRequest>, image_id: [u8; 32]) -> Self {
+        Self {
+            backend: Arc::new(backend),
+            rx,
+            batch_tx_counts: HashMap::new(),
+            image_id,
+            state_tree: StateTree::new(),
+            next_batch_index: 0,
+        }
     }
 
     /// Sets the expected transaction count for a batch so the prover knows when all proofs have
@@ -26,50 +50,63 @@ impl<B: Backend + 'static> BatchProver<B> {
         self.batch_tx_counts.insert(block_hash, tx_count);
     }
 
-    /// Runs the proving loop. Receives proof requests, proves each, and emits batch proofs when
-    /// all transactions for a batch have been proven.
+    /// Returns a mutable reference to the state tree for external initialization or updates.
+    pub fn state_tree_mut(&mut self) -> &mut StateTree {
+        &mut self.state_tree
+    }
+
+    /// Runs the proving loop. Receives proof requests, proves each transaction, and assembles
+    /// batch proofs when all transactions for a batch have been proven.
     pub async fn run(mut self) -> mpsc::UnboundedReceiver<BatchProof> {
         let (batch_proof_tx, batch_proof_rx) = mpsc::unbounded_channel();
 
         tokio::spawn(async move {
-            let mut pending: HashMap<[u8; 32], Vec<(u32, B::Receipt)>> = HashMap::new();
+            let mut pending: HashMap<[u8; 32], BatchState<B::Receipt>> = HashMap::new();
 
             while let Some(request) = self.rx.recv().await {
                 let backend = self.backend.clone();
                 let block_hash = request.block_hash;
                 let tx_index = request.tx_index;
-                let wire_bytes = request.wire_bytes;
+                let wire_bytes_for_prove = request.wire_bytes.clone();
+
+                // Extract pre-batch account data from wire_bytes before proving.
+                let pre_batch = extract_pre_batch_accounts(&request);
 
                 // Prove on a blocking thread.
                 let receipt = match tokio::task::spawn_blocking(move || {
-                    backend.prove_transaction(&wire_bytes)
+                    backend.prove_transaction(&wire_bytes_for_prove)
                 })
                 .await
                 {
-                    Ok(Ok(receipt)) => receipt,
-                    Ok(Err(e)) => {
-                        log::error!("proof failed for block {block_hash:?} tx {tx_index}: {e}");
-                        continue;
-                    }
+                    Ok(receipt) => receipt,
                     Err(e) => {
                         log::error!("proof task panicked: {e}");
                         continue;
                     }
                 };
 
-                let entry = pending.entry(block_hash).or_default();
-                entry.push((tx_index, receipt));
+                let batch_state = pending.entry(block_hash).or_insert_with(|| BatchState {
+                    expected_tx_count: self.batch_tx_counts.get(&block_hash).copied().unwrap_or(0),
+                    receipts: Vec::new(),
+                    pre_batch_accounts: HashMap::new(),
+                });
+
+                // Record pre-batch data for first-seen accounts only.
+                for (account_index, account_data) in pre_batch {
+                    batch_state.pre_batch_accounts.entry(account_index).or_insert(account_data);
+                }
+
+                batch_state.receipts.push((tx_index, receipt, request));
 
                 // Check if all transactions for this batch have been proven.
-                let expected = self.batch_tx_counts.get(&block_hash).copied();
-                if expected.is_some_and(|n| entry.len() as u32 >= n) {
-                    let mut receipts = pending.remove(&block_hash).unwrap();
-                    receipts.sort_by_key(|(idx, _)| *idx);
-
-                    let inner_receipts =
-                        receipts.into_iter().map(|(_, r)| B::journal_bytes(&r)).collect();
-
-                    let _ = batch_proof_tx.send(BatchProof { block_hash, inner_receipts });
+                let expected = batch_state.expected_tx_count;
+                if expected > 0 && batch_state.receipts.len() as u32 >= expected {
+                    let batch_state = pending.remove(&block_hash).unwrap();
+                    let batch_proof =
+                        self.assemble_batch_proof(block_hash, batch_state, &batch_proof_tx);
+                    if let Some(proof) = batch_proof {
+                        let _ = batch_proof_tx.send(proof);
+                    }
                     self.batch_tx_counts.remove(&block_hash);
                 }
             }
@@ -77,4 +114,168 @@ impl<B: Backend + 'static> BatchProver<B> {
 
         batch_proof_rx
     }
+
+    /// Assembles a batch witness, proves it, and returns a BatchProof.
+    fn assemble_batch_proof(
+        &mut self,
+        block_hash: [u8; 32],
+        mut batch_state: BatchState<B::Receipt>,
+        _tx: &mpsc::UnboundedSender<BatchProof>,
+    ) -> Option<BatchProof> {
+        // Sort receipts by tx_index.
+        batch_state.receipts.sort_by_key(|(idx, _, _)| *idx);
+
+        let batch_index = self.next_batch_index;
+        self.next_batch_index += 1;
+
+        let prev_root = self.state_tree.root();
+
+        // Build dense account array ordered by account_index.
+        let n_accounts = batch_state.pre_batch_accounts.len();
+        let mut ordered_accounts: Vec<Option<&AccountData>> = vec![None; n_accounts];
+        for (idx, data) in &batch_state.pre_batch_accounts {
+            if (*idx as usize) < n_accounts {
+                ordered_accounts[*idx as usize] = Some(data);
+            }
+        }
+
+        // Build account entries for the batch witness.
+        let mut account_entries: Vec<([u8; 32], bool, [u8; 32])> = Vec::with_capacity(n_accounts);
+        let mut resource_ids: Vec<[u8; 32]> = Vec::with_capacity(n_accounts);
+
+        for slot in &ordered_accounts {
+            let account = slot.expect("gap in account_index sequence");
+            let leaf_hash = if account.is_new || account.data.is_empty() {
+                EMPTY_LEAF_HASH
+            } else {
+                *blake3::hash(&account.data).as_bytes()
+            };
+            account_entries.push((account.resource_id, account.is_new, leaf_hash));
+            resource_ids.push(account.resource_id);
+        }
+
+        // Generate multi-proof from the state tree.
+        let multi_proof = self.state_tree.multi_proof(&resource_ids);
+
+        // Build transaction entries.
+        let txs: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> = batch_state
+            .receipts
+            .iter()
+            .map(|(_, receipt, request)| {
+                let journal = B::journal_bytes(receipt);
+                (journal, request.wire_bytes.clone(), request.execution_result_bytes.clone())
+            })
+            .collect();
+
+        // Encode the batch witness.
+        let batch_witness = encode_batch_witness(
+            &self.image_id,
+            batch_index,
+            &prev_root,
+            &account_entries,
+            &multi_proof,
+            &txs,
+        );
+
+        // Prove the batch.
+        let receipt = self.backend.prove_batch(&batch_witness);
+
+        // Apply mutations to the state tree based on execution results.
+        self.apply_batch_mutations(&batch_state.receipts);
+
+        Some(BatchProof {
+            block_hash,
+            batch_index,
+            prev_root,
+            new_root: self.state_tree.root(),
+            receipt_journal: B::journal_bytes(&receipt),
+        })
+    }
+
+    /// Applies state mutations from a batch's execution results to the state tree.
+    fn apply_batch_mutations(&mut self, receipts: &[(u32, B::Receipt, ProofRequest)]) {
+        for (_, _, request) in receipts {
+            let wire = &request.wire_bytes;
+            if wire.len() < FIXED_HEADER_SIZE {
+                continue;
+            }
+
+            let n_accounts = u32::from_le_bytes(wire[4..8].try_into().unwrap()) as usize;
+            let tx_bytes_len =
+                u32::from_le_bytes(wire[48..FIXED_HEADER_SIZE].try_into().unwrap()) as usize;
+            let accounts_header_start = FIXED_HEADER_SIZE + tx_bytes_len;
+
+            // Decode execution result to get mutations.
+            let exec = &request.execution_result_bytes;
+            if exec.is_empty() || exec[0] != 1 {
+                continue; // Error or empty — no mutations.
+            }
+
+            let ops: Vec<Option<StorageOp>> = match borsh::from_slice(&exec[1..]) {
+                Ok(ops) => ops,
+                Err(_) => continue,
+            };
+
+            // Apply mutations directly to the state tree (receipts are sorted by tx_index,
+            // so later mutations correctly override earlier ones for the same key).
+            for (j, op) in ops.iter().enumerate().take(n_accounts) {
+                let base = accounts_header_start + j * ACCOUNT_HEADER_SIZE;
+                if base + 32 > wire.len() {
+                    break;
+                }
+                let resource_id: [u8; 32] = wire[base..base + 32].try_into().unwrap();
+
+                if let Some(ref op) = op {
+                    match op {
+                        StorageOp::Create(data) | StorageOp::Update(data) => {
+                            self.state_tree.inner_mut().insert(resource_id, data);
+                        }
+                        StorageOp::Delete => {
+                            self.state_tree.inner_mut().delete(resource_id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Extracts pre-batch account data from a proof request's wire_bytes.
+///
+/// Returns `(account_index, AccountData)` pairs for each account in the transaction.
+fn extract_pre_batch_accounts(request: &ProofRequest) -> Vec<(u32, AccountData)> {
+    let wire = &request.wire_bytes;
+    if wire.len() < FIXED_HEADER_SIZE {
+        return Vec::new();
+    }
+
+    let n_accounts = u32::from_le_bytes(wire[4..8].try_into().unwrap()) as usize;
+    let tx_bytes_len = u32::from_le_bytes(wire[48..FIXED_HEADER_SIZE].try_into().unwrap()) as usize;
+    let accounts_header_start = FIXED_HEADER_SIZE + tx_bytes_len;
+    let payload_start = accounts_header_start + n_accounts * ACCOUNT_HEADER_SIZE;
+
+    let mut result = Vec::with_capacity(n_accounts);
+    let mut payload_offset = payload_start;
+
+    for (j, &account_index) in request.account_indices.iter().enumerate().take(n_accounts) {
+        let base = accounts_header_start + j * ACCOUNT_HEADER_SIZE;
+        if base + ACCOUNT_HEADER_SIZE > wire.len() {
+            break;
+        }
+
+        let resource_id: [u8; 32] = wire[base..base + 32].try_into().unwrap();
+        let is_new = wire[base + 32] & 1 != 0;
+        let data_len = u32::from_le_bytes(wire[base + 37..base + 41].try_into().unwrap()) as usize;
+
+        let data = if payload_offset + data_len <= wire.len() {
+            wire[payload_offset..payload_offset + data_len].to_vec()
+        } else {
+            Vec::new()
+        };
+        payload_offset += data_len;
+
+        result.push((account_index, AccountData { resource_id, is_new, data }));
+    }
+
+    result
 }

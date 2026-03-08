@@ -20,6 +20,8 @@ pub struct Account<'a> {
     backing: &'a mut [u8],
     /// Heap-allocated buffer, used only when the account data outgrows `backing`.
     promoted: Option<Vec<u8>>,
+    /// Per-batch account index assigned when the resource is first accessed.
+    account_index: u32,
     /// Whether this account was created by the current transaction.
     is_new: bool,
     /// Whether the account data has been modified.
@@ -30,8 +32,21 @@ pub struct Account<'a> {
 
 impl<'a> Account<'a> {
     /// Creates a new `Account` borrowing into the given slice.
-    pub fn new(resource_id: &'a ResourceId, is_new: bool, backing: &'a mut [u8]) -> Self {
-        Self { resource_id, is_new, backing, promoted: None, dirty: false, deleted: false }
+    pub fn new(
+        resource_id: &'a ResourceId,
+        account_index: u32,
+        is_new: bool,
+        backing: &'a mut [u8],
+    ) -> Self {
+        Self {
+            resource_id,
+            backing,
+            promoted: None,
+            account_index,
+            is_new,
+            dirty: false,
+            deleted: false,
+        }
     }
 
     /// Returns the account's resource identifier.
@@ -42,6 +57,11 @@ impl<'a> Account<'a> {
     /// Returns `true` if this account was created by the current transaction.
     pub fn is_new(&self) -> bool {
         self.is_new
+    }
+
+    /// Returns the per-batch account index for this account.
+    pub fn account_index(&self) -> u32 {
+        self.account_index
     }
 
     /// Returns a shared reference to the current data (backing or promoted).

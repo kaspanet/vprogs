@@ -64,6 +64,12 @@ impl<S: Store, P: Processor> ResourceAccess<S, P> {
         self.is_batch_tail.load(Ordering::Relaxed)
     }
 
+    /// Returns the per-batch account index for this resource.
+    #[inline(always)]
+    pub fn account_index(&self) -> u32 {
+        self.state_diff.account_index()
+    }
+
     pub(crate) fn new(
         access_metadata: AccessMetadata,
         tx: ScheduledTransactionRef<S, P>,

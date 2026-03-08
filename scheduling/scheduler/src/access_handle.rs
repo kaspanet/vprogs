@@ -45,6 +45,12 @@ impl<'a, S: Store, P: Processor> AccessHandle<'a, S, P> {
         self.state_version.version() == 0
     }
 
+    /// Returns the per-batch account index for this resource.
+    #[inline]
+    pub fn account_index(&self) -> u32 {
+        self.access.account_index()
+    }
+
     pub(crate) fn new(access: &'a ResourceAccess<S, P>) -> Self {
         Self { state_version: access.read_state(), access }
     }
