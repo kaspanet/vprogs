@@ -7,7 +7,7 @@ use alloc::{vec, vec::Vec};
 
 use risc0_zkvm::guest::env;
 use vprogs_zk_abi::{
-    batch_processor::input::{Decoder, HEADER_SIZE, RESOURCE_COMMITMENT_SIZE},
+    batch_processor::input,
     transaction_processor::{
         input::{FIXED_HEADER_SIZE, RESOURCE_HEADER_SIZE},
         output::StorageOp,
@@ -22,27 +22,23 @@ fn main() {
     let witness_bytes = read_blob();
 
     // 2. Decode the batch witness.
-    let decoder = Decoder::new(&witness_bytes);
-    let header = decoder.header();
+    let (header, commitments, multi_proof, tx_entries) = input::decode(&witness_bytes);
     let image_id = *header.image_id;
     let batch_index = header.batch_index;
     let prev_root = *header.prev_root;
     let n_resources = header.n_resources;
-    let n_txs = header.n_txs;
 
     // 3. Populate the leaf hash cache from resource commitments.
     let mut cache: Vec<[u8; 32]> = vec![[0u8; 32]; n_resources as usize];
-    for i in 0..n_resources {
-        let commitment = decoder.resource_commitment(i);
-        cache[i as usize] = *commitment.hash;
+    for (i, commitment) in commitments.iter().enumerate() {
+        cache[i] = *commitment.hash;
     }
 
     // 4. Verify the multi-proof against prev_root.
-    let multi_proof = decoder.multi_proof();
     assert!(multi_proof.verify(prev_root), "multi-proof verification failed");
 
     // 5. Process each transaction.
-    for (tx_idx, tx_entry) in decoder.tx_entries().enumerate() {
+    for (tx_idx, tx_entry) in tx_entries.enumerate() {
         // 5a. Verify the inner proof.
         env::verify(image_id, tx_entry.journal).expect("inner proof verification failed");
 
@@ -97,8 +93,10 @@ fn main() {
             assert!(data_hash == cache[resource_index as usize], "resource data hash mismatch");
 
             // Verify resource_id matches the batch resource commitment.
-            let commitment = decoder.resource_commitment(resource_index);
-            assert!(resource_id == commitment.resource_id, "resource_id mismatch");
+            assert!(
+                resource_id == commitments[resource_index as usize].resource_id,
+                "resource_id mismatch"
+            );
 
             payload_offset += data_len;
         }
@@ -135,7 +133,8 @@ fn main() {
     }
 
     // 6. Compute new root using updated cache.
-    let new_root = multi_proof.compute_root(&cache_to_leaf_hashes(&decoder, n_resources, &cache));
+    let new_root =
+        multi_proof.compute_root(&cache_to_leaf_hashes(&commitments, &multi_proof, &cache));
 
     // 7. Commit to journal: prev_root, new_root, batch_index.
     env::commit_slice(&prev_root);
@@ -148,19 +147,17 @@ fn main() {
 /// The multi-proof leaves are sorted by key, while our cache is indexed by resource_index.
 /// We need to produce updated leaf hashes in the same order as the multi-proof leaves.
 fn cache_to_leaf_hashes(
-    decoder: &Decoder<'_>,
-    n_resources: u32,
+    commitments: &[input::ResourceCommitment<'_>],
+    multi_proof: &vprogs_zk_smt::MultiProof<'_>,
     cache: &[[u8; 32]],
 ) -> Vec<[u8; 32]> {
-    let multi_proof = decoder.multi_proof();
     (0..multi_proof.n_leaves())
         .map(|leaf_idx| {
             let leaf_key = multi_proof.leaf_key(leaf_idx);
             // Find which resource_index corresponds to this leaf's key.
-            for i in 0..n_resources {
-                let commitment = decoder.resource_commitment(i);
+            for (i, commitment) in commitments.iter().enumerate() {
                 if commitment.resource_id == leaf_key {
-                    return cache[i as usize];
+                    return cache[i];
                 }
             }
             // If not found in commitments, this leaf wasn't touched — keep original hash.
