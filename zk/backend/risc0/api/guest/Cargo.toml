@@ -13,3 +13,4 @@ borsh         = { version = "1", default-features = false }
 bytemuck      = { version = "1" }
 risc0-zkvm    = { version = "3.0", default-features = false }
 vprogs-zk-abi = { path = "../../../../abi", default-features = false }
+vprogs-zk-smt = { path = "../../../../smt", default-features = false }

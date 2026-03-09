@@ -1584,6 +1584,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-zk-backend-risc0-api-guest"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "borsh",
+ "bytemuck",
+ "risc0-zkvm",
+ "vprogs-zk-abi",
+ "vprogs-zk-smt",
+]
+
+[[package]]
 name = "vprogs-zk-backend-risc0-batch-processor"
 version = "0.1.0"
 dependencies = [
@@ -1591,6 +1603,7 @@ dependencies = [
  "borsh",
  "risc0-zkvm",
  "vprogs-zk-abi",
+ "vprogs-zk-backend-risc0-api-guest",
  "vprogs-zk-smt",
 ]
 

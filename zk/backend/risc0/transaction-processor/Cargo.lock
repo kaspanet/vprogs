@@ -1592,6 +1592,7 @@ dependencies = [
  "bytemuck",
  "risc0-zkvm",
  "vprogs-zk-abi",
+ "vprogs-zk-smt",
 ]
 
 [[package]]

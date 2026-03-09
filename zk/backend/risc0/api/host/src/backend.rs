@@ -55,12 +55,15 @@ impl vprogs_zk_vm::Backend for Backend {
             .receipt
     }
 
-    fn prove_batch(&self, batch_witness: &[u8]) -> Receipt {
-        let env = ExecutorEnv::builder()
-            .write_slice(&[batch_witness.len() as u32])
-            .write_slice(batch_witness)
-            .build()
-            .expect("failed to build batch prover environment");
+    fn prove_batch(&self, batch_witness: &[u8], assumptions: &[&Receipt]) -> Receipt {
+        let mut builder = ExecutorEnv::builder();
+        builder.write_slice(&[batch_witness.len() as u32]).write_slice(batch_witness);
+
+        for receipt in assumptions {
+            builder.add_assumption((*receipt).clone());
+        }
+
+        let env = builder.build().expect("failed to build batch prover environment");
 
         default_prover()
             .prove_with_opts(env, &self.batch_elf, &ProverOpts::succinct())

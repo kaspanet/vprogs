@@ -1,12 +1,14 @@
 use borsh::io::{self, Write};
 use vprogs_zk_abi::{
     Result,
+    batch_processor::input as batch_input,
     transaction_processor::{
         input,
         input::{BatchMetadata, Resource},
         output,
     },
 };
+use vprogs_zk_smt::MultiProof;
 
 use crate::{Journal, host::Host};
 
@@ -32,6 +34,35 @@ pub fn process_transaction(
     let mut hasher = blake3::Hasher::new();
     output::encode(result, &mut HashingWriter(&mut hasher));
     Journal::write(hasher.finalize().as_bytes());
+}
+
+/// Reads, decodes, and verifies a batch of transaction proofs inside the guest.
+///
+/// 1. Reads the batch witness from the host.
+/// 2. Decodes it into header, resource commitments, multi-proof, and transaction entries.
+/// 3. Calls `f` with the decoded parts to perform verification and compute the new state root.
+/// 4. Commits `(prev_root, new_root, batch_index)` to the journal.
+pub fn process_batch(
+    f: impl for<'a> FnOnce(
+        batch_input::Header<'a>,
+        &[batch_input::ResourceCommitment<'a>],
+        MultiProof<'a>,
+        batch_input::TxEntryIter<'a>,
+    ) -> Result<[u8; 32]>,
+) {
+    let witness_bytes = Host::read_blob();
+    let (header, commitments, multi_proof, tx_entries) = batch_input::decode(&witness_bytes);
+
+    let prev_root = *header.prev_root;
+    let batch_index = header.batch_index;
+
+    // TODO: propagate error gracefully instead of panicking.
+    let new_root =
+        f(header, &commitments, multi_proof, tx_entries).expect("batch verification failed");
+
+    Journal::write(&prev_root);
+    Journal::write(&new_root);
+    Journal::write(&batch_index.to_le_bytes());
 }
 
 /// Writes to the host while feeding bytes to a blake3 hasher.

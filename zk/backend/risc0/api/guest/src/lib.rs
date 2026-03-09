@@ -6,5 +6,5 @@ mod api;
 mod host;
 mod journal;
 
-pub use api::process_transaction;
+pub use api::{process_batch, process_transaction};
 pub use journal::Journal;

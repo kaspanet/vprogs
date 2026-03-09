@@ -14,7 +14,10 @@ pub trait Backend: Clone + Send + Sync + 'static {
     fn prove_transaction(&self, wire_bytes: &[u8]) -> Self::Receipt;
 
     /// Prove a batch of transactions from the encoded batch witness.
-    fn prove_batch(&self, batch_witness: &[u8]) -> Self::Receipt;
+    ///
+    /// `assumptions` contains the inner transaction receipts that the batch guest will verify
+    /// via composition.
+    fn prove_batch(&self, batch_witness: &[u8], assumptions: &[&Self::Receipt]) -> Self::Receipt;
 
     /// Extract journal bytes from a receipt.
     fn journal_bytes(receipt: &Self::Receipt) -> Vec<u8>;

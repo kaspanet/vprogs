@@ -172,8 +172,12 @@ impl<B: Backend + 'static> BatchProver<B> {
         let input =
             encode(&self.image_id, batch_index, &prev_root, &commitments, &multi_proof_bytes, &txs);
 
+        // Collect inner receipts for composition.
+        let assumptions: Vec<&B::Receipt> =
+            batch_state.receipts.iter().map(|(_, receipt, _)| receipt).collect();
+
         // Prove the batch.
-        let receipt = self.backend.prove_batch(&input);
+        let receipt = self.backend.prove_batch(&input, &assumptions);
 
         // Apply mutations to the state tree based on execution results.
         self.apply_batch_mutations(&batch_state.receipts);
