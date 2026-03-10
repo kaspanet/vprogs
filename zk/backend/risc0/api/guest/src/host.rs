@@ -1,14 +1,13 @@
 use alloc::vec::Vec;
 
-use borsh::io::{self, Write};
 use risc0_zkvm::guest::env;
+use vprogs_zk_abi::{Read, Write};
 
-/// Internal host I/O bridge used by the framework.
-pub(crate) struct Host;
+/// RISC-0 host I/O bridge.
+pub struct Host;
 
-impl Host {
-    /// Read a length-prefixed byte blob from the host.
-    pub(crate) fn read_blob() -> Vec<u8> {
+impl Read for Host {
+    fn read_blob(&mut self) -> Vec<u8> {
         let mut len = 0u32;
         env::read_slice(core::slice::from_mut(&mut len));
 
@@ -22,14 +21,8 @@ impl Host {
     }
 }
 
-/// Bridges borsh streaming serialization to the host via [`env::write_slice`].
 impl Write for Host {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+    fn write(&mut self, buf: &[u8]) {
         env::write_slice::<u8>(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
     }
 }

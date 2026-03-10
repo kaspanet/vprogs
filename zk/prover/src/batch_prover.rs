@@ -3,10 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use tokio::sync::mpsc;
 use vprogs_zk_abi::{
     batch_processor::input::encode,
-    transaction_processor::{
-        input::{FIXED_HEADER_SIZE, RESOURCE_HEADER_SIZE},
-        output::StorageOp,
-    },
+    transaction_processor::{FIXED_HEADER_SIZE, Output, RESOURCE_HEADER_SIZE, StorageOp},
 };
 use vprogs_zk_smt::EMPTY_LEAF_HASH;
 use vprogs_zk_vm::{Backend, ProofRequest};
@@ -158,19 +155,19 @@ impl<B: Backend + 'static> BatchProver<B> {
         // Generate multi-proof from the state tree.
         let multi_proof_bytes = self.state_tree.multi_proof(&resource_ids);
 
-        // Build transaction entries.
-        let txs: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> = batch_state
-            .receipts
-            .iter()
-            .map(|(_, receipt, request)| {
-                let journal = B::journal_bytes(receipt);
-                (journal, request.wire_bytes.clone(), request.execution_result_bytes.clone())
-            })
-            .collect();
+        // Build transaction entries (journals only).
+        let journals: Vec<Vec<u8>> =
+            batch_state.receipts.iter().map(|(_, receipt, _)| B::journal_bytes(receipt)).collect();
 
         // Encode the batch witness.
-        let input =
-            encode(&self.image_id, batch_index, &prev_root, &commitments, &multi_proof_bytes, &txs);
+        let input = encode(
+            &self.image_id,
+            batch_index,
+            &prev_root,
+            &commitments,
+            &multi_proof_bytes,
+            &journals,
+        );
 
         // Collect inner receipts for composition.
         let assumptions: Vec<&B::Receipt> =
@@ -205,15 +202,11 @@ impl<B: Backend + 'static> BatchProver<B> {
             let resources_header_start = FIXED_HEADER_SIZE + tx_bytes_len;
 
             // Decode execution result to get mutations.
-            let exec = &request.execution_result_bytes;
-            if exec.is_empty() || exec[0] != 1 {
-                continue; // Error or empty — no mutations.
-            }
-
-            let ops: Vec<Option<StorageOp>> = match borsh::from_slice(&exec[1..]) {
-                Ok(ops) => ops,
+            let output = match Output::decode(&request.execution_result_bytes) {
+                Ok(output) => output,
                 Err(_) => continue,
             };
+            let ops = output.ops();
 
             // Apply mutations directly to the state tree (receipts are sorted by tx_index,
             // so later mutations correctly override earlier ones for the same key).

@@ -1,9 +1,7 @@
-use borsh::{BorshDeserialize, BorshSerialize};
-
 /// An error produced by guest program execution.
 ///
 /// Uses a numeric code rather than a string to minimize proven cycles in the zkVM.
-#[derive(Clone, Copy, Debug, BorshSerialize, BorshDeserialize, thiserror::Error)]
+#[derive(Clone, Copy, Debug, thiserror::Error)]
 #[error("execution error: code {0}")]
 pub struct Error(pub u32);
 

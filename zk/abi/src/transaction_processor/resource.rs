@@ -1,12 +1,6 @@
 use alloc::vec::Vec;
 
-use borsh::{
-    BorshSerialize,
-    io::{self, Write},
-};
 use vprogs_core_types::ResourceId;
-
-use crate::transaction_processor::output::StorageOp;
 
 /// A mutable view of a single resource's data within a decoded wire buffer.
 ///
@@ -122,30 +116,5 @@ impl<'a> Resource<'a> {
     /// Returns `true` if the resource has been marked for deletion.
     pub fn is_deleted(&self) -> bool {
         self.deleted
-    }
-}
-
-/// Serializes as `Option<StorageOp>`, translating the resource's dirty/deleted/new flags into the
-/// corresponding storage operation variant. Batches the variant byte and length prefix into a
-/// single 5-byte write to minimize I/O calls.
-impl BorshSerialize for Resource<'_> {
-    fn serialize<W: Write>(&self, writer: &mut W) -> io::Result<()> {
-        if self.deleted {
-            // Some(StorageOp::Delete): Option tag + variant.
-            writer.write_all(&[1, StorageOp::DELETE])?;
-        } else if self.dirty {
-            let data = self.data();
-            // Some(Create/Update): Option tag + variant + length prefix in one write.
-            let variant = if self.is_new { StorageOp::CREATE } else { StorageOp::UPDATE };
-            let mut header = [1u8, 0, 0, 0, 0, 0];
-            header[1] = variant;
-            header[2..6].copy_from_slice(&(data.len() as u32).to_le_bytes());
-            writer.write_all(&header)?;
-            writer.write_all(data)?;
-        } else {
-            // None: resource unchanged.
-            writer.write_all(&[0])?;
-        }
-        Ok(())
     }
 }

@@ -7800,6 +7800,7 @@ version = "0.1.0"
 name = "vprogs-zk-abi"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "borsh",
  "thiserror 2.0.18",
  "vprogs-core-types",

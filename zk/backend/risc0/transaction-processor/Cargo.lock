@@ -1577,7 +1577,7 @@ dependencies = [
 name = "vprogs-zk-abi"
 version = "0.1.0"
 dependencies = [
- "borsh",
+ "blake3",
  "thiserror",
  "vprogs-core-types",
  "vprogs-zk-smt",
@@ -1587,12 +1587,8 @@ dependencies = [
 name = "vprogs-zk-backend-risc0-api-guest"
 version = "0.1.0"
 dependencies = [
- "blake3",
- "borsh",
- "bytemuck",
  "risc0-zkvm",
  "vprogs-zk-abi",
- "vprogs-zk-smt",
 ]
 
 [[package]]

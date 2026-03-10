@@ -2,9 +2,8 @@
 
 extern crate alloc;
 
-mod api;
 mod host;
 mod journal;
 
-pub use api::{process_batch, process_transaction};
+pub use host::Host;
 pub use journal::Journal;

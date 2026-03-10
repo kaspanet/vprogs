@@ -3,8 +3,8 @@ use alloc::vec::Vec;
 use vprogs_zk_smt::MultiProof;
 
 use super::{
-    HEADER_SIZE, RESOURCE_COMMITMENT_SIZE, header::Header, resource_commitment::ResourceCommitment,
-    tx_entry::TxEntryIter,
+    HEADER_SIZE, RESOURCE_COMMITMENT_SIZE, header::Header, journal_iter::JournalIter,
+    resource_commitment::ResourceCommitment,
 };
 
 /// Decodes the batch processor input from a raw byte buffer into zero-copy views.
@@ -16,7 +16,7 @@ use super::{
 /// Panics if the buffer is truncated or malformed.
 pub fn decode(
     buf: &[u8],
-) -> (Header<'_>, Vec<ResourceCommitment<'_>>, MultiProof<'_>, TxEntryIter<'_>) {
+) -> (Header<'_>, Vec<ResourceCommitment<'_>>, MultiProof<'_>, JournalIter<'_>) {
     assert!(buf.len() >= HEADER_SIZE, "input too short for header");
 
     let n_resources = u32::from_le_bytes(buf[72..76].try_into().expect("truncated n_resources"));
@@ -51,7 +51,7 @@ pub fn decode(
     let multi_proof = MultiProof::decode(&buf[mp_start..mp_start + mp_len]);
 
     let tx_offset = mp_start + mp_len;
-    let tx_entries = TxEntryIter { buf, offset: tx_offset, remaining: n_txs };
+    let tx_entries = JournalIter { buf, offset: tx_offset, remaining: n_txs };
 
     (header, commitments, multi_proof, tx_entries)
 }
