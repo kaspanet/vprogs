@@ -11,6 +11,9 @@ pub struct BatchMetadata<'a> {
 }
 
 impl<'a> BatchMetadata<'a> {
+    /// Wire size: block_hash(32) + blue_score(8).
+    pub const SIZE: usize = 32 + 8;
+
     /// Decodes batch metadata from the wire header at the given offset.
     pub(crate) fn decode(buf: &'a [u8]) -> Self {
         let block_hash: &[u8; 32] = buf[0..32].try_into().expect("truncated header");

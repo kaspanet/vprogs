@@ -2,8 +2,8 @@ use std::{collections::HashMap, sync::Arc};
 
 use tokio::sync::mpsc;
 use vprogs_zk_abi::{
-    batch_processor::input::encode,
-    transaction_processor::{FIXED_HEADER_SIZE, Output, RESOURCE_HEADER_SIZE, StorageOp},
+    batch_processor::input::{Header, encode},
+    transaction_processor::{Input, Output, ResourceInputCommitment, StorageOp},
 };
 use vprogs_zk_smt::EMPTY_LEAF_HASH;
 use vprogs_zk_vm::{Backend, ProofRequest};
@@ -138,19 +138,31 @@ impl<B: Backend + 'static> BatchProver<B> {
         }
 
         // Build resource commitments for the batch witness.
-        let mut commitments: Vec<([u8; 32], [u8; 32])> = Vec::with_capacity(n_resources);
-        let mut resource_ids: Vec<[u8; 32]> = Vec::with_capacity(n_resources);
+        // Store owned data so ResourceInputCommitment can borrow from it.
+        let commitment_data: Vec<([u8; 32], [u8; 32])> = ordered_resources
+            .iter()
+            .map(|slot| {
+                let resource = slot.expect("gap in resource_index sequence");
+                let leaf_hash = if resource.data.is_empty() {
+                    EMPTY_LEAF_HASH
+                } else {
+                    *blake3::hash(&resource.data).as_bytes()
+                };
+                (resource.resource_id, leaf_hash)
+            })
+            .collect();
 
-        for slot in &ordered_resources {
-            let resource = slot.expect("gap in resource_index sequence");
-            let leaf_hash = if resource.data.is_empty() {
-                EMPTY_LEAF_HASH
-            } else {
-                *blake3::hash(&resource.data).as_bytes()
-            };
-            commitments.push((resource.resource_id, leaf_hash));
-            resource_ids.push(resource.resource_id);
-        }
+        let commitments: Vec<ResourceInputCommitment<'_>> = commitment_data
+            .iter()
+            .enumerate()
+            .map(|(i, (id, hash))| ResourceInputCommitment {
+                resource_index: i as u32,
+                resource_id: id,
+                hash,
+            })
+            .collect();
+
+        let resource_ids: Vec<[u8; 32]> = commitment_data.iter().map(|(id, _)| *id).collect();
 
         // Generate multi-proof from the state tree.
         let multi_proof_bytes = self.state_tree.multi_proof(&resource_ids);
@@ -160,14 +172,14 @@ impl<B: Backend + 'static> BatchProver<B> {
             batch_state.receipts.iter().map(|(_, receipt, _)| B::journal_bytes(receipt)).collect();
 
         // Encode the batch witness.
-        let input = encode(
-            &self.image_id,
+        let header = Header {
+            image_id: &self.image_id,
             batch_index,
-            &prev_root,
-            &commitments,
-            &multi_proof_bytes,
-            &journals,
-        );
+            prev_root: &prev_root,
+            n_resources: commitments.len() as u32,
+            n_txs: journals.len() as u32,
+        };
+        let input = encode(&header, &commitments, &multi_proof_bytes, &journals);
 
         // Collect inner receipts for composition.
         let assumptions: Vec<&B::Receipt> =
@@ -192,14 +204,14 @@ impl<B: Backend + 'static> BatchProver<B> {
     fn apply_batch_mutations(&mut self, receipts: &[(u32, B::Receipt, ProofRequest)]) {
         for (_, _, request) in receipts {
             let wire = &request.wire_bytes;
-            if wire.len() < FIXED_HEADER_SIZE {
+            if wire.len() < Input::FIXED_HEADER_SIZE {
                 continue;
             }
 
             let n_resources = u32::from_le_bytes(wire[4..8].try_into().unwrap()) as usize;
             let tx_bytes_len =
-                u32::from_le_bytes(wire[48..FIXED_HEADER_SIZE].try_into().unwrap()) as usize;
-            let resources_header_start = FIXED_HEADER_SIZE + tx_bytes_len;
+                u32::from_le_bytes(wire[48..Input::FIXED_HEADER_SIZE].try_into().unwrap()) as usize;
+            let resources_header_start = Input::FIXED_HEADER_SIZE + tx_bytes_len;
 
             // Decode execution result to get mutations.
             let output = match Output::decode(&request.execution_result_bytes) {
@@ -211,7 +223,7 @@ impl<B: Backend + 'static> BatchProver<B> {
             // Apply mutations directly to the state tree (receipts are sorted by tx_index,
             // so later mutations correctly override earlier ones for the same key).
             for (j, op) in ops.iter().enumerate().take(n_resources) {
-                let base = resources_header_start + j * RESOURCE_HEADER_SIZE;
+                let base = resources_header_start + j * Input::RESOURCE_HEADER_SIZE;
                 if base + 32 > wire.len() {
                     break;
                 }
@@ -237,21 +249,22 @@ impl<B: Backend + 'static> BatchProver<B> {
 /// Returns `(resource_index, ResourceData)` pairs for each resource in the transaction.
 fn extract_pre_batch_resources(request: &ProofRequest) -> Vec<(u32, ResourceData)> {
     let wire = &request.wire_bytes;
-    if wire.len() < FIXED_HEADER_SIZE {
+    if wire.len() < Input::FIXED_HEADER_SIZE {
         return Vec::new();
     }
 
     let n_resources = u32::from_le_bytes(wire[4..8].try_into().unwrap()) as usize;
-    let tx_bytes_len = u32::from_le_bytes(wire[48..FIXED_HEADER_SIZE].try_into().unwrap()) as usize;
-    let resources_header_start = FIXED_HEADER_SIZE + tx_bytes_len;
-    let payload_start = resources_header_start + n_resources * RESOURCE_HEADER_SIZE;
+    let tx_bytes_len =
+        u32::from_le_bytes(wire[48..Input::FIXED_HEADER_SIZE].try_into().unwrap()) as usize;
+    let resources_header_start = Input::FIXED_HEADER_SIZE + tx_bytes_len;
+    let payload_start = resources_header_start + n_resources * Input::RESOURCE_HEADER_SIZE;
 
     let mut result = Vec::with_capacity(n_resources);
     let mut payload_offset = payload_start;
 
     for (j, &resource_index) in request.resource_indices.iter().enumerate().take(n_resources) {
-        let base = resources_header_start + j * RESOURCE_HEADER_SIZE;
-        if base + RESOURCE_HEADER_SIZE > wire.len() {
+        let base = resources_header_start + j * Input::RESOURCE_HEADER_SIZE;
+        if base + Input::RESOURCE_HEADER_SIZE > wire.len() {
             break;
         }
 

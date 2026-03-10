@@ -4,27 +4,21 @@ pub mod input {
     mod encode;
     mod header;
     mod journal_iter;
-    mod resource_commitment;
 
     pub use decode::decode;
     #[cfg(feature = "host")]
     pub use encode::encode;
     pub use header::Header;
     pub use journal_iter::JournalIter;
-    pub use resource_commitment::ResourceCommitment;
-
-    /// Fixed header size for the batch processor input:
-    /// image_id(32) + batch_index(8) + prev_root(32) + n_resources(4) + n_txs(4).
-    pub const HEADER_SIZE: usize = 32 + 8 + 32 + 4 + 4;
 
     /// Per-resource commitment size: resource_id(32) + hash(32).
     pub const RESOURCE_COMMITMENT_SIZE: usize = 32 + 32;
 }
 
-use input::{Header, JournalIter, ResourceCommitment};
+use input::{Header, JournalIter};
 use vprogs_zk_smt::MultiProof;
 
-use crate::{Read, Write};
+use crate::{Read, Write, transaction_processor::ResourceInputCommitment};
 
 /// Reads, decodes, and verifies a batch of transaction proofs inside the guest.
 ///
@@ -37,7 +31,7 @@ pub fn process_batch(
     journal: &mut impl Write,
     f: impl for<'a> FnOnce(
         Header<'a>,
-        &[ResourceCommitment<'a>],
+        &[ResourceInputCommitment<'a>],
         MultiProof<'a>,
         JournalIter<'a>,
     ) -> crate::Result<[u8; 32]>,

@@ -2,10 +2,8 @@ use alloc::vec::Vec;
 
 use vprogs_zk_smt::MultiProof;
 
-use super::{
-    HEADER_SIZE, RESOURCE_COMMITMENT_SIZE, header::Header, journal_iter::JournalIter,
-    resource_commitment::ResourceCommitment,
-};
+use super::{RESOURCE_COMMITMENT_SIZE, header::Header, journal_iter::JournalIter};
+use crate::transaction_processor::ResourceInputCommitment;
 
 /// Decodes the batch processor input from a raw byte buffer into zero-copy views.
 ///
@@ -16,30 +14,16 @@ use super::{
 /// Panics if the buffer is truncated or malformed.
 pub fn decode(
     buf: &[u8],
-) -> (Header<'_>, Vec<ResourceCommitment<'_>>, MultiProof<'_>, JournalIter<'_>) {
-    assert!(buf.len() >= HEADER_SIZE, "input too short for header");
+) -> (Header<'_>, Vec<ResourceInputCommitment<'_>>, MultiProof<'_>, JournalIter<'_>) {
+    let header = Header::decode(buf);
 
-    let n_resources = u32::from_le_bytes(buf[72..76].try_into().expect("truncated n_resources"));
-    let n_txs = u32::from_le_bytes(buf[76..80].try_into().expect("truncated n_txs"));
-
-    let commitments_end = HEADER_SIZE + (n_resources as usize) * RESOURCE_COMMITMENT_SIZE;
+    let commitments_end = Header::SIZE + (header.n_resources as usize) * RESOURCE_COMMITMENT_SIZE;
     assert!(buf.len() >= commitments_end, "input too short for resource commitments");
 
-    let header = Header {
-        image_id: buf[0..32].try_into().expect("truncated image_id"),
-        batch_index: u64::from_le_bytes(buf[32..40].try_into().expect("truncated batch_index")),
-        prev_root: buf[40..72].try_into().expect("truncated prev_root"),
-        n_resources,
-        n_txs,
-    };
-
-    let commitments = (0..n_resources)
+    let commitments = (0..header.n_resources)
         .map(|i| {
-            let base = HEADER_SIZE + (i as usize) * RESOURCE_COMMITMENT_SIZE;
-            ResourceCommitment {
-                resource_id: buf[base..base + 32].try_into().expect("truncated resource_id"),
-                hash: buf[base + 32..base + 64].try_into().expect("truncated hash"),
-            }
+            let base = Header::SIZE + (i as usize) * RESOURCE_COMMITMENT_SIZE;
+            ResourceInputCommitment::decode_pre_indexed(&buf[base..], i)
         })
         .collect();
 
@@ -51,7 +35,7 @@ pub fn decode(
     let multi_proof = MultiProof::decode(&buf[mp_start..mp_start + mp_len]);
 
     let tx_offset = mp_start + mp_len;
-    let tx_entries = JournalIter { buf, offset: tx_offset, remaining: n_txs };
+    let tx_entries = JournalIter { buf, offset: tx_offset, remaining: header.n_txs };
 
     (header, commitments, multi_proof, tx_entries)
 }

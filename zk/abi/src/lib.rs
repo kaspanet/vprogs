@@ -18,7 +18,7 @@ pub mod transaction_processor {
 
     pub use abi::Abi;
     pub use batch_metadata::BatchMetadata;
-    pub use input::{FIXED_HEADER_SIZE, Input, RESOURCE_HEADER_SIZE};
+    pub use input::Input;
     pub use journal::{
         InputCommitment, Journal, OutputCommitment, ResourceInputCommitment,
         ResourceInputCommitments, ResourceOutputCommitment, ResourceOutputCommitments,

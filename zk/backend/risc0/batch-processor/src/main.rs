@@ -67,7 +67,7 @@ fn main() {
                 let idx = r.resource_index as usize;
                 assert!(idx < n_resources, "resource_index out of range");
                 assert_eq!(r.resource_id, commitments[idx].resource_id, "resource_id mismatch");
-                assert_eq!(r.input_hash, cache[idx].as_ref(), "resource data hash mismatch");
+                assert_eq!(r.hash, cache[idx].as_ref(), "resource data hash mismatch");
                 resource_indices.push(idx);
             }
 

@@ -17,12 +17,10 @@ impl<'a> Iterator for ResourceInputCommitments<'a> {
         self.remaining -= 1;
 
         let o = self.offset;
-        let resource_index = u32::from_le_bytes(self.buf[o..o + 4].try_into().unwrap());
-        let resource_id: &[u8; 32] = self.buf[o + 4..o + 36].try_into().unwrap();
-        let input_hash: &[u8; 32] = self.buf[o + 36..o + 68].try_into().unwrap();
-        self.offset = o + 68;
+        let commitment = ResourceInputCommitment::decode(&self.buf[o..]);
+        self.offset = o + super::resource_input_commitment::SIZE;
 
-        Some(ResourceInputCommitment { resource_index, resource_id, input_hash })
+        Some(commitment)
     }
 }
 

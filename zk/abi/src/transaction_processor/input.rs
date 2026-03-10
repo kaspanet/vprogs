@@ -4,13 +4,6 @@ use vprogs_core_types::ResourceId;
 
 use super::{batch_metadata::BatchMetadata, resource::Resource};
 
-/// Fixed header size: tx_index(4) + n_resources(4) + block_hash(32) + blue_score(8) +
-/// tx_bytes_len(4).
-pub const FIXED_HEADER_SIZE: usize = 4 + 4 + 32 + 8 + 4;
-
-/// Per-resource header size: resource_id(32) + flags(1) + resource_index(4) + data_len(4).
-pub const RESOURCE_HEADER_SIZE: usize = 32 + 1 + 4 + 4;
-
 /// Decoded transaction input holding zero-copy views into the wire buffer.
 pub struct Input<'a> {
     pub(crate) tx: &'a [u8],
@@ -20,18 +13,24 @@ pub struct Input<'a> {
 }
 
 impl<'a> Input<'a> {
+    /// Fixed header size: tx_index(4) + n_resources(4) + BatchMetadata + tx_bytes_len(4).
+    pub const FIXED_HEADER_SIZE: usize = 4 + 4 + BatchMetadata::SIZE + 4;
+
+    /// Per-resource header size: resource_id(32) + flags(1) + resource_index(4) + data_len(4).
+    pub const RESOURCE_HEADER_SIZE: usize = 32 + 1 + 4 + 4;
+
     /// Decodes a transaction input from the wire buffer.
     pub(crate) fn decode(buf: &'a mut [u8]) -> Self {
         let tx_index = u32::from_le_bytes(buf[0..4].try_into().expect("truncated header"));
         let n_resources =
             u32::from_le_bytes(buf[4..8].try_into().expect("truncated header")) as usize;
-        let tx_bytes_len =
-            u32::from_le_bytes(buf[48..FIXED_HEADER_SIZE].try_into().expect("truncated header"))
-                as usize;
+        let tx_bytes_len = u32::from_le_bytes(
+            buf[48..Self::FIXED_HEADER_SIZE].try_into().expect("truncated header"),
+        ) as usize;
 
-        let tx_bytes_end = FIXED_HEADER_SIZE + tx_bytes_len;
+        let tx_bytes_end = Self::FIXED_HEADER_SIZE + tx_bytes_len;
         let resources_header_start = tx_bytes_end;
-        let payload_start = resources_header_start + n_resources * RESOURCE_HEADER_SIZE;
+        let payload_start = resources_header_start + n_resources * Self::RESOURCE_HEADER_SIZE;
 
         let (header, payload) = buf.split_at_mut(payload_start);
         let header: &[u8] = header;
@@ -39,7 +38,7 @@ impl<'a> Input<'a> {
         let mut resources = Vec::with_capacity(n_resources);
         let mut remaining = &mut payload[..];
         for i in 0..n_resources {
-            let base = resources_header_start + i * RESOURCE_HEADER_SIZE;
+            let base = resources_header_start + i * Self::RESOURCE_HEADER_SIZE;
             let rid_bytes: &[u8; 32] =
                 header[base..base + 32].try_into().expect("truncated resource");
             let resource_id = ResourceId::from_bytes_ref(rid_bytes);
@@ -55,7 +54,7 @@ impl<'a> Input<'a> {
             resources.push(Resource::new(resource_id, resource_index, is_new, slice));
         }
 
-        let tx = &header[FIXED_HEADER_SIZE..tx_bytes_end];
+        let tx = &header[Self::FIXED_HEADER_SIZE..tx_bytes_end];
         let batch_metadata = BatchMetadata::decode(&header[8..48]);
 
         Self { tx, tx_index, batch_metadata, resources }
@@ -75,9 +74,9 @@ impl<'a> Input<'a> {
         let resources = ctx.resources();
         let tx_bytes = borsh::to_vec(ctx.tx()).expect("failed to serialize transaction");
 
-        let resources_header = resources.len() * RESOURCE_HEADER_SIZE;
+        let resources_header = resources.len() * Self::RESOURCE_HEADER_SIZE;
         let payload_len: usize = resources.iter().map(|r| r.data().len()).sum();
-        let total = FIXED_HEADER_SIZE + tx_bytes.len() + resources_header + payload_len;
+        let total = Self::FIXED_HEADER_SIZE + tx_bytes.len() + resources_header + payload_len;
 
         let mut buf = Vec::with_capacity(total);
 
