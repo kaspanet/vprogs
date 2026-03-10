@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use core::mem;
 
 use vprogs_core_types::ResourceId;
 
@@ -25,19 +26,27 @@ pub struct Resource<'a> {
 }
 
 impl<'a> Resource<'a> {
-    /// Creates a new `Resource` borrowing into the given slice.
-    pub fn new(
-        resource_id: &'a ResourceId,
-        resource_index: u32,
-        is_new: bool,
-        backing: &'a mut [u8],
-    ) -> Self {
+    /// Wire size of a resource header: resource_id(32) + flags(1) + resource_index(4) +
+    /// data_len(4).
+    pub const HEADER_SIZE: usize = 32 + 1 + 4 + 4;
+
+    /// Decodes a resource from its header bytes and splits off its data from `payload`,
+    /// advancing `payload` past the consumed bytes.
+    pub(crate) fn decode(header: &'a [u8], data: &mut &'a mut [u8]) -> Self {
+        let resource_id = header[0..32].try_into().expect("truncated resource");
+        let is_new = header[32] & 1;
+        let resource_index = header[33..37].try_into().expect("truncated resource");
+        let data_len = header[37..41].try_into().expect("truncated resource");
+
+        let (backing, rest) = mem::take(data).split_at_mut(u32::from_le_bytes(data_len) as usize);
+        *data = rest;
+
         Self {
-            resource_id,
+            resource_id: ResourceId::from_bytes_ref(resource_id),
             backing,
             promoted: None,
-            resource_index,
-            is_new,
+            resource_index: u32::from_le_bytes(resource_index),
+            is_new: is_new != 0,
             dirty: false,
             deleted: false,
         }

@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use tokio::sync::mpsc;
 use vprogs_zk_abi::{
     batch_processor::input::{Header, encode},
-    transaction_processor::{Input, Output, ResourceInputCommitment, StorageOp},
+    transaction_processor::{Input, Output, Resource, ResourceInputCommitment, StorageOp},
 };
 use vprogs_zk_smt::EMPTY_LEAF_HASH;
 use vprogs_zk_vm::{Backend, ProofRequest};
@@ -223,7 +223,7 @@ impl<B: Backend + 'static> BatchProver<B> {
             // Apply mutations directly to the state tree (receipts are sorted by tx_index,
             // so later mutations correctly override earlier ones for the same key).
             for (j, op) in ops.iter().enumerate().take(n_resources) {
-                let base = resources_header_start + j * Input::RESOURCE_HEADER_SIZE;
+                let base = resources_header_start + j * Resource::HEADER_SIZE;
                 if base + 32 > wire.len() {
                     break;
                 }
@@ -257,14 +257,14 @@ fn extract_pre_batch_resources(request: &ProofRequest) -> Vec<(u32, ResourceData
     let tx_bytes_len =
         u32::from_le_bytes(wire[48..Input::FIXED_HEADER_SIZE].try_into().unwrap()) as usize;
     let resources_header_start = Input::FIXED_HEADER_SIZE + tx_bytes_len;
-    let payload_start = resources_header_start + n_resources * Input::RESOURCE_HEADER_SIZE;
+    let payload_start = resources_header_start + n_resources * Resource::HEADER_SIZE;
 
     let mut result = Vec::with_capacity(n_resources);
     let mut payload_offset = payload_start;
 
     for (j, &resource_index) in request.resource_indices.iter().enumerate().take(n_resources) {
-        let base = resources_header_start + j * Input::RESOURCE_HEADER_SIZE;
-        if base + Input::RESOURCE_HEADER_SIZE > wire.len() {
+        let base = resources_header_start + j * Resource::HEADER_SIZE;
+        if base + Resource::HEADER_SIZE > wire.len() {
             break;
         }
 
