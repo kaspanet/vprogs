@@ -15,31 +15,31 @@ impl<'a> Input<'a> {
     pub const FIXED_HEADER_SIZE: usize = 4 + 4 + BatchMetadata::SIZE + 4;
 
     /// Decodes a transaction input from the wire buffer.
+    ///
+    /// Wire layout: `fixed_header | tx_bytes | resource_headers | resource_data`
     pub(crate) fn decode(buf: &'a mut [u8]) -> Self {
-        let tx_index = u32::from_le_bytes(buf[0..4].try_into().expect("truncated header"));
-        let n_resources =
-            u32::from_le_bytes(buf[4..8].try_into().expect("truncated header")) as usize;
-        let tx_bytes_len = u32::from_le_bytes(
-            buf[48..Self::FIXED_HEADER_SIZE].try_into().expect("truncated header"),
-        ) as usize;
+        // Fixed header.
+        let (header, data) = buf.split_at_mut(Self::FIXED_HEADER_SIZE);
+        let tx_index = u32::from_le_bytes(header[0..4].try_into().unwrap());
+        let n_resources = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
+        let batch_metadata = BatchMetadata::decode(&header[8..]);
 
-        let tx_bytes_end = Self::FIXED_HEADER_SIZE + tx_bytes_len;
-        let resources_header_start = tx_bytes_end;
-        let payload_start = resources_header_start + n_resources * Resource::HEADER_SIZE;
+        // Transaction bytes.
+        let tx_len = u32::from_le_bytes(header[8 + BatchMetadata::SIZE..].try_into().unwrap());
+        let (tx, resources) = data.split_at_mut(tx_len as usize);
 
-        let (header, mut payload) = buf.split_at_mut(payload_start);
-        let header: &[u8] = header;
+        // Resource headers + data.
+        let (resource_headers, mut resource_data) =
+            resources.split_at_mut(n_resources * Resource::HEADER_SIZE);
+        let resource_headers: &[u8] = resource_headers;
 
         let mut resources = Vec::with_capacity(n_resources);
         for i in 0..n_resources {
             resources.push(Resource::decode(
-                &header[resources_header_start + i * Resource::HEADER_SIZE..],
-                &mut payload,
+                &resource_headers[i * Resource::HEADER_SIZE..],
+                &mut resource_data,
             ));
         }
-
-        let tx = &header[Self::FIXED_HEADER_SIZE..tx_bytes_end];
-        let batch_metadata = BatchMetadata::decode(&header[8..48]);
 
         Self { tx, tx_index, batch_metadata, resources }
     }
