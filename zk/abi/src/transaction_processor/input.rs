@@ -21,24 +21,19 @@ impl<'a> Input<'a> {
         // Fixed header.
         let (header, data) = buf.split_at_mut(Self::FIXED_HEADER_SIZE);
         let tx_index = u32::from_le_bytes(header[0..4].try_into().unwrap());
-        let n_resources = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
+        let res_count = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
         let batch_metadata = BatchMetadata::decode(&header[8..]);
 
         // Transaction bytes.
         let tx_len = u32::from_le_bytes(header[8 + BatchMetadata::SIZE..].try_into().unwrap());
         let (tx, resources) = data.split_at_mut(tx_len as usize);
 
-        // Resource headers + data.
-        let (resource_headers, mut resource_data) =
-            resources.split_at_mut(n_resources * Resource::HEADER_SIZE);
-        let resource_headers: &[u8] = resource_headers;
-
-        let mut resources = Vec::with_capacity(n_resources);
-        for i in 0..n_resources {
-            resources.push(Resource::decode(
-                &resource_headers[i * Resource::HEADER_SIZE..],
-                &mut resource_data,
-            ));
+        // Resources.
+        let (res_headers, mut res_data) = resources.split_at_mut(res_count * Resource::HEADER_SIZE);
+        let mut resources = Vec::with_capacity(res_count);
+        for i in 0..res_count {
+            resources
+                .push(Resource::decode(&res_headers[i * Resource::HEADER_SIZE..], &mut res_data));
         }
 
         Self { tx, tx_index, batch_metadata, resources }
