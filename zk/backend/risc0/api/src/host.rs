@@ -12,10 +12,14 @@ impl Read for Host {
         env::read_slice(core::slice::from_mut(&mut len));
 
         let len = len as usize;
-        let mut buf = Vec::with_capacity(len);
         // SAFETY: `env::read_slice` will fully overwrite the buffer; skipping zero-fill saves
         // cycles in the zkVM where every instruction is a proven cycle.
-        unsafe { buf.set_len(len) };
+        #[allow(clippy::uninit_vec)]
+        let mut buf = unsafe {
+            let mut buf = Vec::with_capacity(len);
+            buf.set_len(len);
+            buf
+        };
         env::read_slice(&mut buf);
         buf
     }

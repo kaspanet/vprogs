@@ -7811,10 +7811,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "vprogs-zk-backend-risc0-api-host"
+name = "vprogs-zk-backend-risc0-api"
 version = "0.1.0"
 dependencies = [
+ "risc0-binfmt",
+ "risc0-zkos-v1compat",
  "risc0-zkvm",
+ "vprogs-zk-abi",
  "vprogs-zk-vm",
 ]
 
@@ -7825,8 +7828,18 @@ dependencies = [
  "blake3",
  "borsh",
  "log",
+ "risc0-binfmt",
+ "risc0-zkos-v1compat",
+ "tempfile",
  "tokio",
+ "vprogs-core-test-utils",
+ "vprogs-core-types",
+ "vprogs-l1-types",
+ "vprogs-scheduling-scheduler",
+ "vprogs-storage-manager",
+ "vprogs-storage-rocksdb-store",
  "vprogs-zk-abi",
+ "vprogs-zk-backend-risc0-api",
  "vprogs-zk-smt",
  "vprogs-zk-vm",
 ]
@@ -7852,7 +7865,7 @@ dependencies = [
  "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
  "vprogs-zk-abi",
- "vprogs-zk-backend-risc0-api-host",
+ "vprogs-zk-backend-risc0-api",
 ]
 
 [[package]]

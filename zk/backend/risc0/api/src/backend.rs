@@ -1,23 +1,35 @@
 use std::sync::Arc;
 
+use risc0_binfmt::ProgramBinary;
 use risc0_zkvm::{ExecutorEnv, ProverOpts, Receipt, default_executor, default_prover};
 
 /// RISC-0 backend for execution and proving.
 ///
-/// Owns the transaction and batch ELF binaries. In dev mode (`RISC0_DEV_MODE=1`),
-/// `prove_transaction()` generates fake receipts suitable for testing.
+/// Accepts raw RISC-V ELFs and wraps them with the trusted v1compat kernel.
+///
+/// In dev mode (`RISC0_DEV_MODE=1`), proving generates fake receipts suitable for testing.
 #[derive(Clone)]
 pub struct Backend {
-    /// ELF binary for single-transaction execution and proving.
+    /// Wrapped ELF binary for single-transaction execution and proving.
     transaction_elf: Arc<Vec<u8>>,
-    /// ELF binary for batch aggregation proving.
+    /// Wrapped ELF binary for batch aggregation proving.
     batch_elf: Arc<Vec<u8>>,
 }
 
 impl Backend {
-    /// Creates a new backend from the given guest ELF binaries.
-    pub fn new(transaction_elf: Vec<u8>, batch_elf: Vec<u8>) -> Self {
-        Self { transaction_elf: Arc::new(transaction_elf), batch_elf: Arc::new(batch_elf) }
+    /// Creates a new backend from raw guest ELF binaries.
+    ///
+    /// Always wraps the provided ELFs with the trusted v1compat kernel to ensure
+    /// only sanctioned syscalls are available to guest programs.
+    pub fn new(transaction_elf: &[u8], batch_elf: &[u8]) -> Self {
+        Self {
+            transaction_elf: Arc::new(
+                ProgramBinary::new(transaction_elf, risc0_zkos_v1compat::V1COMPAT_ELF).encode(),
+            ),
+            batch_elf: Arc::new(
+                ProgramBinary::new(batch_elf, risc0_zkos_v1compat::V1COMPAT_ELF).encode(),
+            ),
+        }
     }
 }
 

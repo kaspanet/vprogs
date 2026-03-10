@@ -2,7 +2,7 @@
 #![no_main]
 
 use vprogs_zk_abi::transaction_processor::Abi;
-use vprogs_zk_backend_risc0_api_guest::{Host, Journal};
+use vprogs_zk_backend_risc0_api::{Host, Journal};
 
 risc0_zkvm::guest::entry!(main);
 

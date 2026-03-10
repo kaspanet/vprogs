@@ -10,7 +10,7 @@ use vprogs_zk_abi::{
     batch_processor::process_batch,
     transaction_processor::{Journal as TxJournal, OutputCommitment},
 };
-use vprogs_zk_backend_risc0_api_guest::{Host, Journal};
+use vprogs_zk_backend_risc0_api::{Host, Journal};
 
 risc0_zkvm::guest::entry!(main);
 
@@ -26,12 +26,11 @@ fn main() {
         // Verify the multi-proof against prev_root.
         assert!(multi_proof.verify(*header.prev_root), "multi-proof verification failed");
 
-        let mut expected_tx_index: u32 = 0;
         let mut expected_block_hash: Option<&[u8; 32]> = None;
         let mut expected_blue_score: Option<u64> = None;
 
         // Process each transaction.
-        for journal in tx_entries {
+        for (expected_tx_index, journal) in (0_u32..).zip(tx_entries) {
             // Verify the inner proof.
             env::verify(*header.image_id, journal).expect("inner proof verification failed");
 
@@ -39,7 +38,6 @@ fn main() {
 
             // Verify sequential tx_index.
             assert_eq!(tx_journal.input.tx_index, expected_tx_index, "tx_index mismatch");
-            expected_tx_index += 1;
 
             // Verify consistent block_hash across all txs.
             match expected_block_hash {

@@ -1,8 +1,0 @@
-[package]
-edition.workspace = true
-name              = "vprogs-zk-backend-risc0-api-host"
-version.workspace = true
-
-[dependencies]
-risc0-zkvm             = { workspace = true, features = ["prove"] }
-vprogs-zk-vm.workspace = true

@@ -11,11 +11,11 @@ vprogs-storage-types.workspace        = true
 vprogs-zk-abi                         = { workspace = true, features = ["host"] }
 
 [dev-dependencies]
-tempfile.workspace                         = true
-vprogs-core-test-utils.workspace           = true
-vprogs-core-types.workspace                = true
-vprogs-l1-types.workspace                  = true
-vprogs-scheduling-scheduler.workspace      = true
-vprogs-storage-manager.workspace           = true
-vprogs-storage-rocksdb-store.workspace     = true
-vprogs-zk-backend-risc0-api-host.workspace = true
+tempfile.workspace                     = true
+vprogs-core-test-utils.workspace       = true
+vprogs-core-types.workspace            = true
+vprogs-l1-types.workspace              = true
+vprogs-scheduling-scheduler.workspace  = true
+vprogs-storage-manager.workspace       = true
+vprogs-storage-rocksdb-store.workspace = true
+vprogs-zk-backend-risc0-api.workspace  = true

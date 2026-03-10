@@ -4,7 +4,9 @@ name    = "vprogs-zk-backend-risc0-batch-processor"
 version = "0.1.0"
 
 [dependencies]
-risc0-zkvm                        = { version = "3.0", default-features = false, features = ["std"] }
-vprogs-zk-abi                     = { path = "../../../abi", default-features = false }
-vprogs-zk-backend-risc0-api-guest = { path = "../api/guest", default-features = false }
-vprogs-zk-smt                     = { path = "../../../smt", default-features = false }
+risc0-zkvm = { version = "3.0", default-features = false, features = ["std"] }
+vprogs-zk-abi = { path = "../../../abi", default-features = false }
+vprogs-zk-backend-risc0-api = { path = "../api", default-features = false, features = [
+  "guest",
+] }
+vprogs-zk-smt = { path = "../../../smt", default-features = false }

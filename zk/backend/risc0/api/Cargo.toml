@@ -1,0 +1,28 @@
+[package]
+edition = "2021"
+name    = "vprogs-zk-backend-risc0-api"
+version = "0.1.0"
+
+[features]
+default = ["std"]
+guest = ["dep:risc0-zkvm"]
+host = [
+  "std",
+  "guest",
+  "risc0-zkvm/prove",
+  "dep:risc0-binfmt",
+  "dep:risc0-zkos-v1compat",
+  "dep:vprogs-zk-vm",
+]
+std = ["vprogs-zk-abi/std"]
+
+[dependencies]
+vprogs-zk-abi = { path = "../../../abi", default-features = false }
+
+# guest-only
+risc0-zkvm = { version = "3.0", default-features = false, optional = true }
+
+# host-only
+risc0-binfmt        = { version = "3.0.4", default-features = false, optional = true }
+risc0-zkos-v1compat = { version = "2.2.2", optional = true }
+vprogs-zk-vm        = { path = "../../../vm", optional = true }

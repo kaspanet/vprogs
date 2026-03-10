@@ -5,7 +5,7 @@ use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
-use vprogs_zk_backend_risc0_api_host::Backend;
+use vprogs_zk_backend_risc0_api::Backend;
 use vprogs_zk_vm::Vm;
 
 /// Loads the pre-built transaction processor ELF from the repository.
@@ -41,7 +41,7 @@ fn test_zk_scheduler_e2e() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
 
-    let backend = Backend::new(transaction_elf, batch_elf);
+    let backend = Backend::new(&transaction_elf, &batch_elf);
     let vm = Vm::new(backend);
     let mut scheduler = Scheduler::new(
         ExecutionConfig::default().with_processor(vm),
