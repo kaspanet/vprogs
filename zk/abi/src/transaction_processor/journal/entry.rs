@@ -2,8 +2,11 @@ use crate::transaction_processor::{InputCommitment, OutputCommitment};
 
 /// A single decoded segment from a transaction processor journal.
 pub enum JournalEntry<'a> {
+    /// Input commitment segment.
     Input(InputCommitment<'a>),
+    /// Output commitment segment.
     Output(OutputCommitment<'a>),
+    /// Unrecognized segment with its opcode and raw payload.
     Unknown(u8, &'a [u8]),
 }
 

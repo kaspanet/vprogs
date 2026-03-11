@@ -5,9 +5,12 @@ use crate::transaction_processor::{InputCommitment, JournalEntry, OutputCommitme
 /// Decoded transaction processor journal containing input/output commitments
 /// and any additional entries.
 pub struct JournalEntries<'a> {
-    pub input: InputCommitment<'a>,
+    /// The input commitment (always the first segment).
+    pub input_commitment: InputCommitment<'a>,
+    /// Any additional entries between input and output commitments.
     pub entries: Vec<JournalEntry<'a>>,
-    pub output: OutputCommitment<'a>,
+    /// The output commitment (always the last segment).
+    pub output_commitment: OutputCommitment<'a>,
 }
 
 impl<'a> JournalEntries<'a> {
@@ -19,9 +22,9 @@ impl<'a> JournalEntries<'a> {
         }
 
         // The first entry must be the input commitment.
-        let input;
+        let input_commitment;
         if let JournalEntry::Input(i) = JournalEntry::decode(&mut journal) {
-            input = i;
+            input_commitment = i;
         } else {
             panic!("invalid journal: first entry must be input commitment");
         }
@@ -30,12 +33,12 @@ impl<'a> JournalEntries<'a> {
         let mut entries = Vec::new();
         while !journal.is_empty() {
             match JournalEntry::decode(&mut journal) {
-                JournalEntry::Output(output) => {
+                JournalEntry::Output(output_commitment) => {
                     if !journal.is_empty() {
                         panic!("unexpected entries after output commitment");
                     }
 
-                    return Self { input, entries, output };
+                    return Self { input_commitment, entries, output_commitment };
                 }
                 other => entries.push(other),
             }

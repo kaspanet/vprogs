@@ -2,10 +2,15 @@ use alloc::vec::Vec;
 
 /// Decoded batch processor input header.
 pub struct Header<'a> {
+    /// Transaction processor guest image ID.
     pub image_id: &'a [u8; 32],
+    /// Monotonic batch sequence number.
     pub batch_index: u64,
+    /// State root before this batch is applied.
     pub prev_root: &'a [u8; 32],
+    /// Total number of unique resources across all transactions.
     pub n_resources: u32,
+    /// Number of transactions in this batch.
     pub n_txs: u32,
 }
 

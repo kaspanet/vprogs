@@ -2,8 +2,11 @@ use crate::Write;
 
 /// A single resource's input commitment: its index, identity, and data hash.
 pub struct InputResourceCommitment<'a> {
+    /// Per-batch resource index.
     pub resource_index: u32,
+    /// Unique identifier of this resource.
     pub resource_id: &'a [u8; 32],
+    /// BLAKE3 hash of the resource data (or empty leaf hash if no data).
     pub hash: &'a [u8; 32],
 }
 

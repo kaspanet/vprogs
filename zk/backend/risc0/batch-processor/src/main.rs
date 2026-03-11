@@ -39,14 +39,20 @@ fn main() {
             let tx_journal = TxJournal::decode(journal);
 
             // Verify sequential tx_index.
-            assert_eq!(tx_journal.input.tx_index, expected_tx_index, "tx_index mismatch");
+            assert_eq!(
+                tx_journal.input_commitment.tx_index, expected_tx_index,
+                "tx_index mismatch"
+            );
 
             // Verify consistent block_hash across all txs.
             match expected_block_hash {
-                None => expected_block_hash = Some(tx_journal.input.batch_metadata.block_hash),
+                None => {
+                    expected_block_hash =
+                        Some(tx_journal.input_commitment.batch_metadata.block_hash)
+                }
                 Some(exp) => {
                     assert_eq!(
-                        tx_journal.input.batch_metadata.block_hash, exp,
+                        tx_journal.input_commitment.batch_metadata.block_hash, exp,
                         "block_hash mismatch"
                     )
                 }
@@ -54,10 +60,13 @@ fn main() {
 
             // Verify consistent blue_score across all txs.
             match expected_blue_score {
-                None => expected_blue_score = Some(tx_journal.input.batch_metadata.blue_score),
+                None => {
+                    expected_blue_score =
+                        Some(tx_journal.input_commitment.batch_metadata.blue_score)
+                }
                 Some(exp) => {
                     assert_eq!(
-                        tx_journal.input.batch_metadata.blue_score, exp,
+                        tx_journal.input_commitment.batch_metadata.blue_score, exp,
                         "blue_score mismatch"
                     )
                 }
@@ -65,7 +74,7 @@ fn main() {
 
             // Verify inputs against cache and collect resource indices for output matching.
             let mut resource_indices: Vec<usize> = Vec::new();
-            for r in tx_journal.input.resources {
+            for r in tx_journal.input_commitment.resources {
                 let idx = r.resource_index as usize;
                 assert!(idx < n_resources, "resource_index out of range");
                 assert_eq!(r.resource_id, commitments[idx].resource_id, "resource_id mismatch");
@@ -74,8 +83,8 @@ fn main() {
             }
 
             // Apply outputs (positional 1:1 matching with inputs).
-            match tx_journal.output {
-                OutputCommitment::Success { outputs } => {
+            match tx_journal.output_commitment {
+                OutputCommitment::Success(outputs) => {
                     for (i, commitment) in outputs.enumerate() {
                         if let OutputResourceCommitment::Changed(hash) = commitment {
                             let idx = resource_indices[i];
@@ -83,7 +92,7 @@ fn main() {
                         }
                     }
                 }
-                OutputCommitment::Error { .. } => {
+                OutputCommitment::Error(_) => {
                     // No mutations.
                 }
             }

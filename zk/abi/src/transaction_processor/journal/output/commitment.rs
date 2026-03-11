@@ -9,24 +9,24 @@ use crate::{
 
 /// Decoded output commitment from a transaction processor journal.
 pub enum OutputCommitment<'a> {
-    Success { outputs: OutputResourceCommitments<'a> },
-    Error { error_code: u32 },
+    /// Transaction executed successfully; contains per-resource output commitments.
+    Success(OutputResourceCommitments<'a>),
+
+    /// Transaction execution failed; contains the numeric error code.
+    Error(u32),
 }
 
 impl<'a> OutputCommitment<'a> {
+    /// Wire discriminant for a successful execution.
     pub const SUCCESS: u8 = 0x00;
+    /// Wire discriminant for a failed execution.
     pub const ERROR: u8 = 0x01;
 
     /// Decodes an output commitment from a journal segment payload.
     pub fn decode(payload: &'a [u8]) -> Self {
         match payload[0] {
-            Self::SUCCESS => {
-                Self::Success { outputs: OutputResourceCommitments { buf: payload, offset: 1 } }
-            }
-            Self::ERROR => {
-                let error_code = u32::from_le_bytes(payload[1..5].try_into().unwrap());
-                Self::Error { error_code }
-            }
+            Self::SUCCESS => Self::Success(OutputResourceCommitments::new(&payload[1..])),
+            Self::ERROR => Self::Error(u32::from_le_bytes(payload[1..5].try_into().unwrap())),
             other => panic!("invalid output commitment discriminant: {other}"),
         }
     }

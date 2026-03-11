@@ -34,8 +34,7 @@ pub fn decode(
     let mp_start = commitments_end + 4;
     let multi_proof = MultiProof::decode(&buf[mp_start..mp_start + mp_len]);
 
-    let tx_offset = mp_start + mp_len;
-    let tx_entries = JournalIter { buf, offset: tx_offset, remaining: header.n_txs };
+    let tx_entries = JournalIter::new(&buf[mp_start + mp_len..], header.n_txs);
 
     (header, commitments, multi_proof, tx_entries)
 }

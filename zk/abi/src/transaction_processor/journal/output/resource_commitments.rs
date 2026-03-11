@@ -2,25 +2,31 @@ use crate::transaction_processor::OutputResourceCommitment;
 
 /// Zero-copy iterator over per-resource output hash commitments.
 pub struct OutputResourceCommitments<'a> {
-    pub buf: &'a [u8],
-    pub offset: usize,
+    buf: &'a [u8],
+}
+
+impl<'a> OutputResourceCommitments<'a> {
+    /// Creates a new iterator over variable-size output commitment entries in `buf`.
+    pub fn new(buf: &'a [u8]) -> Self {
+        Self { buf }
+    }
 }
 
 impl<'a> Iterator for OutputResourceCommitments<'a> {
     type Item = OutputResourceCommitment<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.offset >= self.buf.len() {
+        if self.buf.is_empty() {
             return None;
         }
 
-        let flag = self.buf[self.offset];
-        self.offset += 1;
+        let flag = self.buf[0];
+        self.buf = &self.buf[1..];
 
         match flag {
             OutputResourceCommitment::CHANGED => {
-                let hash: &[u8; 32] = self.buf[self.offset..self.offset + 32].try_into().unwrap();
-                self.offset += 32;
+                let hash: &[u8; 32] = self.buf[..32].try_into().unwrap();
+                self.buf = &self.buf[32..];
                 Some(OutputResourceCommitment::Changed(hash))
             }
             OutputResourceCommitment::UNCHANGED => Some(OutputResourceCommitment::Unchanged),

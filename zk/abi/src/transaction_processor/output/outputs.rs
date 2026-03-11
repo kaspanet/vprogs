@@ -7,6 +7,7 @@ use crate::{
 
 /// Decoded execution result from the transaction processor guest.
 pub struct Outputs {
+    /// Per-resource storage mutations; `None` for unchanged resources.
     pub storage_ops: Vec<Option<StorageOp>>,
 }
 

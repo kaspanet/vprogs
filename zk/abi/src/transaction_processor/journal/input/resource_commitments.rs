@@ -2,9 +2,15 @@ use crate::transaction_processor::InputResourceCommitment;
 
 /// Zero-copy iterator over resource input commitment entries.
 pub struct InputResourceCommitments<'a> {
-    pub buf: &'a [u8],
-    pub offset: usize,
-    pub remaining: u32,
+    buf: &'a [u8],
+    remaining: u32,
+}
+
+impl<'a> InputResourceCommitments<'a> {
+    /// Creates a new iterator over `remaining` fixed-size entries in `buf`.
+    pub fn new(buf: &'a [u8], remaining: u32) -> Self {
+        Self { buf, remaining }
+    }
 }
 
 impl<'a> Iterator for InputResourceCommitments<'a> {
@@ -16,9 +22,8 @@ impl<'a> Iterator for InputResourceCommitments<'a> {
         }
         self.remaining -= 1;
 
-        let o = self.offset;
-        let commitment = InputResourceCommitment::decode(&self.buf[o..]);
-        self.offset = o + InputResourceCommitment::SIZE;
+        let commitment = InputResourceCommitment::decode(self.buf);
+        self.buf = &self.buf[InputResourceCommitment::SIZE..];
 
         Some(commitment)
     }

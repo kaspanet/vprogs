@@ -4,9 +4,13 @@ use crate::transaction_processor::{BatchMetadata, Resource};
 
 /// Decoded transaction inputs holding zero-copy views into the wire buffer.
 pub struct Inputs<'a> {
+    /// Borsh-serialized transaction bytes.
     pub tx: &'a [u8],
+    /// Position of this transaction within the batch.
     pub tx_index: u32,
+    /// Block-level metadata for the current batch.
     pub batch_metadata: BatchMetadata<'a>,
+    /// Mutable resource views decoded from the wire buffer.
     pub resources: Vec<Resource<'a>>,
 }
 

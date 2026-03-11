@@ -5,14 +5,20 @@ use crate::transaction_processor::Resource;
 /// A storage mutation produced by executing a transaction, addressed by resource index.
 #[derive(Clone, Debug)]
 pub enum StorageOp {
+    /// A new resource was created with the given data.
     Create(Vec<u8>),
+    /// An existing resource was updated with new data.
     Update(Vec<u8>),
+    /// An existing resource was deleted.
     Delete,
 }
 
 impl StorageOp {
+    /// Wire variant byte for [`Create`](Self::Create).
     pub const CREATE: u8 = 0;
+    /// Wire variant byte for [`Update`](Self::Update).
     pub const UPDATE: u8 = 1;
+    /// Wire variant byte for [`Delete`](Self::Delete).
     pub const DELETE: u8 = 2;
 
     /// Decodes an `Option<StorageOp>`, advancing `buf` past the consumed bytes.

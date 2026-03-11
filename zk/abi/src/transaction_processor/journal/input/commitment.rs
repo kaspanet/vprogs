@@ -9,9 +9,13 @@ use crate::{
 
 /// Decoded input commitment from a transaction processor journal.
 pub struct InputCommitment<'a> {
+    /// BLAKE3 hash of the serialized transaction bytes.
     pub tx_id: &'a [u8; 32],
+    /// Position of this transaction within the batch.
     pub tx_index: u32,
+    /// Block-level metadata for the current batch.
     pub batch_metadata: BatchMetadata<'a>,
+    /// Zero-copy iterator over per-resource input commitments.
     pub resources: InputResourceCommitments<'a>,
 }
 
@@ -28,11 +32,7 @@ impl<'a> InputCommitment<'a> {
         let res_count = u32::from_le_bytes(payload[76..80].try_into().unwrap());
 
         // Create zero-copy iterator over resource entries.
-        let resources = InputResourceCommitments {
-            buf: payload,
-            offset: Self::HEADER_SIZE,
-            remaining: res_count,
-        };
+        let resources = InputResourceCommitments::new(&payload[Self::HEADER_SIZE..], res_count);
 
         Self { tx_id, tx_index, batch_metadata, resources }
     }
