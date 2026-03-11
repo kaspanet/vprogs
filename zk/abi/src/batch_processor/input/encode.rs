@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use super::{RESOURCE_COMMITMENT_SIZE, header::Header};
+use super::header::Header;
 use crate::transaction_processor::InputResourceCommitment;
 
 /// Encodes the batch processor input into bytes (host-side).
@@ -13,7 +13,7 @@ pub fn encode(
     let tx_payload_size: usize = journals.iter().map(|j| 4 + j.len()).sum();
 
     let total = Header::SIZE
-        + header.n_resources as usize * RESOURCE_COMMITMENT_SIZE
+        + header.n_resources as usize * InputResourceCommitment::PRE_INDEXED_SIZE
         + 4 + multi_proof_bytes.len() // length prefix + raw bytes
         + tx_payload_size;
 

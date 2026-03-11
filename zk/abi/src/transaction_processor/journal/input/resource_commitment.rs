@@ -13,23 +13,34 @@ pub struct InputResourceCommitment<'a> {
 impl<'a> InputResourceCommitment<'a> {
     /// Wire size of the full encoding: resource_index(4) + resource_id(32) + hash(32).
     pub const SIZE: usize = 4 + 32 + 32;
+    /// Wire size without the index prefix: resource_id(32) + hash(32).
+    pub const PRE_INDEXED_SIZE: usize = Self::SIZE - 4;
 
-    /// Decodes the full wire format: `resource_index(4) + resource_id(32) + hash(32)`.
-    pub fn decode(buf: &'a [u8]) -> Self {
-        Self {
-            resource_index: u32::from_le_bytes(buf[0..4].try_into().unwrap()),
-            resource_id: buf[4..36].try_into().unwrap(),
-            hash: buf[36..68].try_into().unwrap(),
-        }
+    /// Decodes the full wire format: `resource_index(4) + resource_id(32) + hash(32)`, advancing
+    /// `buf` past the consumed bytes.
+    pub fn decode(buf: &mut &'a [u8]) -> Self {
+        // Decode fields from the start of the buffer.
+        let resource_index = u32::from_le_bytes(buf[0..4].try_into().unwrap());
+        let resource_id = buf[4..36].try_into().unwrap();
+        let hash = buf[36..68].try_into().unwrap();
+
+        // Advance buffer past the consumed bytes.
+        *buf = &buf[Self::SIZE..];
+
+        Self { resource_index, resource_id, hash }
     }
 
-    /// Decodes with a pre-determined index: `resource_id(32) + hash(32)`.
-    pub fn decode_pre_indexed(buf: &'a [u8], resource_index: u32) -> Self {
-        Self {
-            resource_index,
-            resource_id: buf[0..32].try_into().unwrap(),
-            hash: buf[32..64].try_into().unwrap(),
-        }
+    /// Decodes with a pre-determined index: `resource_id(32) + hash(32)`, advancing `buf` past the
+    /// consumed bytes.
+    pub fn decode_pre_indexed(buf: &mut &'a [u8], resource_index: u32) -> Self {
+        // Decode fields from the start of the buffer, using the provided index.
+        let resource_id = buf[0..32].try_into().unwrap();
+        let hash = buf[32..64].try_into().unwrap();
+
+        // Advance buffer past the consumed bytes.
+        *buf = &buf[Self::PRE_INDEXED_SIZE..];
+
+        Self { resource_index, resource_id, hash }
     }
 
     /// Encodes the full wire format: `resource_index(4) + resource_id(32) + hash(32)`.

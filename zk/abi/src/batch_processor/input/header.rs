@@ -15,7 +15,8 @@ pub struct Header<'a> {
 }
 
 impl<'a> Header<'a> {
-    /// image_id(32) + batch_index(8) + prev_root(32) + n_resources(4) + n_txs(4).
+    /// Wire size of the header: image_id(32) + batch_index(8) + prev_root(32) + n_resources(4) +
+    /// n_txs(4).
     pub const SIZE: usize = 32 + 8 + 32 + 4 + 4;
 
     /// Decodes the header from the start of a buffer.

@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 
 use vprogs_zk_smt::MultiProof;
 
-use super::{RESOURCE_COMMITMENT_SIZE, header::Header, journal_iter::JournalIter};
+use super::{header::Header, journal_iter::JournalIter};
 use crate::transaction_processor::InputResourceCommitment;
 
 /// Decodes the batch processor input from a raw byte buffer into zero-copy views.
@@ -17,14 +17,13 @@ pub fn decode(
 ) -> (Header<'_>, Vec<InputResourceCommitment<'_>>, MultiProof<'_>, JournalIter<'_>) {
     let header = Header::decode(buf);
 
-    let commitments_end = Header::SIZE + (header.n_resources as usize) * RESOURCE_COMMITMENT_SIZE;
+    let commitments_end =
+        Header::SIZE + (header.n_resources as usize) * InputResourceCommitment::PRE_INDEXED_SIZE;
     assert!(buf.len() >= commitments_end, "input too short for resource commitments");
 
+    let mut commitments_buf = &buf[Header::SIZE..commitments_end];
     let commitments = (0..header.n_resources)
-        .map(|i| {
-            let base = Header::SIZE + (i as usize) * RESOURCE_COMMITMENT_SIZE;
-            InputResourceCommitment::decode_pre_indexed(&buf[base..], i)
-        })
+        .map(|i| InputResourceCommitment::decode_pre_indexed(&mut commitments_buf, i))
         .collect();
 
     // Read multi-proof length prefix.

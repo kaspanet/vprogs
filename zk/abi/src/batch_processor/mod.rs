@@ -10,9 +10,6 @@ pub mod input {
     pub use encode::encode;
     pub use header::Header;
     pub use journal_iter::JournalIter;
-
-    /// Per-resource commitment size: resource_id(32) + hash(32).
-    pub const RESOURCE_COMMITMENT_SIZE: usize = 32 + 32;
 }
 
 use input::{Header, JournalIter};

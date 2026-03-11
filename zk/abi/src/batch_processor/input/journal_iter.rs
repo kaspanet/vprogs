@@ -1,6 +1,8 @@
 /// Iterator over per-transaction journal slices in a batch witness.
 pub struct JournalIter<'a> {
+    /// Remaining unconsumed bytes of the journal entries.
     buf: &'a [u8],
+    /// Number of entries not yet yielded.
     remaining: u32,
 }
 

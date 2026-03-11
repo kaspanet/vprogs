@@ -2,7 +2,9 @@ use crate::transaction_processor::InputResourceCommitment;
 
 /// Zero-copy iterator over resource input commitment entries.
 pub struct InputResourceCommitments<'a> {
+    /// Remaining unconsumed bytes of the commitment entries.
     buf: &'a [u8],
+    /// Number of entries not yet yielded.
     remaining: u32,
 }
 
@@ -22,10 +24,7 @@ impl<'a> Iterator for InputResourceCommitments<'a> {
         }
         self.remaining -= 1;
 
-        let commitment = InputResourceCommitment::decode(self.buf);
-        self.buf = &self.buf[InputResourceCommitment::SIZE..];
-
-        Some(commitment)
+        Some(InputResourceCommitment::decode(&mut self.buf))
     }
 }
 
