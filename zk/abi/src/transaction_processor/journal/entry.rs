@@ -9,9 +9,9 @@ pub enum JournalEntry<'a> {
 
 impl<'a> JournalEntry<'a> {
     /// Opcode identifying the input commitment segment.
-    pub(crate) const OPCODE_INPUT: u8 = 0x01;
+    pub const OPCODE_INPUT: u8 = 0x01;
     /// Opcode identifying the output commitment segment (sentinel, always last).
-    pub(crate) const OPCODE_OUTPUT: u8 = 0xFF;
+    pub const OPCODE_OUTPUT: u8 = 0xFF;
 
     /// Decodes a single journal entry, advancing `cursor` past the consumed bytes.
     ///

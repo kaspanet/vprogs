@@ -8,7 +8,7 @@ pub enum OutputResourceCommitment<'a> {
 
 impl OutputResourceCommitment<'_> {
     /// Wire flag: resource data was modified (32-byte hash follows).
-    pub(crate) const CHANGED: u8 = 0x01;
+    pub const CHANGED: u8 = 0x01;
     /// Wire flag: resource data was not modified (no hash follows).
-    pub(crate) const UNCHANGED: u8 = 0x00;
+    pub const UNCHANGED: u8 = 0x00;
 }

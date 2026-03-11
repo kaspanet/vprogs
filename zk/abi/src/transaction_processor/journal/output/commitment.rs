@@ -14,11 +14,11 @@ pub enum OutputCommitment<'a> {
 }
 
 impl<'a> OutputCommitment<'a> {
-    pub(crate) const SUCCESS: u8 = 0x00;
-    pub(crate) const ERROR: u8 = 0x01;
+    pub const SUCCESS: u8 = 0x00;
+    pub const ERROR: u8 = 0x01;
 
     /// Decodes an output commitment from a journal segment payload.
-    pub(crate) fn decode(payload: &'a [u8]) -> Self {
+    pub fn decode(payload: &'a [u8]) -> Self {
         match payload[0] {
             Self::SUCCESS => {
                 Self::Success { outputs: OutputResourceCommitments { buf: payload, offset: 1 } }
@@ -32,7 +32,7 @@ impl<'a> OutputCommitment<'a> {
     }
 
     /// Guest-side: encode an output commitment segment to the journal.
-    pub(crate) fn encode(w: &mut impl Write, result: crate::Result<&[Resource<'_>]>) {
+    pub fn encode(w: &mut impl Write, result: crate::Result<&[Resource<'_>]>) {
         match result {
             Ok(resources) => {
                 // Calculate payload: discriminant(1) + per-resource flags and optional hashes.

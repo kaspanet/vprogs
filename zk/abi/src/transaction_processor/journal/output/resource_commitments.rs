@@ -2,8 +2,8 @@ use crate::transaction_processor::OutputResourceCommitment;
 
 /// Zero-copy iterator over per-resource output hash commitments.
 pub struct OutputResourceCommitments<'a> {
-    pub(crate) buf: &'a [u8],
-    pub(crate) offset: usize,
+    pub buf: &'a [u8],
+    pub offset: usize,
 }
 
 impl<'a> Iterator for OutputResourceCommitments<'a> {

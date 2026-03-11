@@ -17,10 +17,10 @@ pub struct InputCommitment<'a> {
 
 impl<'a> InputCommitment<'a> {
     /// Wire size of the fixed header: tx_id(32) + tx_index(4) + BatchMetadata(40) + n_resources(4).
-    pub(crate) const HEADER_SIZE: usize = 32 + 4 + BatchMetadata::SIZE + 4;
+    pub const HEADER_SIZE: usize = 32 + 4 + BatchMetadata::SIZE + 4;
 
     /// Decodes an input commitment from a journal segment payload.
-    pub(crate) fn decode(payload: &'a [u8]) -> Self {
+    pub fn decode(payload: &'a [u8]) -> Self {
         // Parse fixed header fields.
         let tx_id: &[u8; 32] = payload[0..32].try_into().unwrap();
         let tx_index = u32::from_le_bytes(payload[32..36].try_into().unwrap());
@@ -38,7 +38,7 @@ impl<'a> InputCommitment<'a> {
     }
 
     /// Guest-side: encode an input commitment segment to the journal.
-    pub(crate) fn encode(w: &mut impl Write, input: &Inputs<'_>) {
+    pub fn encode(w: &mut impl Write, input: &Inputs<'_>) {
         // Segment header: opcode + payload length.
         let payload_len = Self::HEADER_SIZE + InputResourceCommitment::SIZE * input.resources.len();
         w.write(&[JournalEntry::OPCODE_INPUT]);

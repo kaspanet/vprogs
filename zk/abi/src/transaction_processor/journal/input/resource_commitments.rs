@@ -2,9 +2,9 @@ use crate::transaction_processor::InputResourceCommitment;
 
 /// Zero-copy iterator over resource input commitment entries.
 pub struct InputResourceCommitments<'a> {
-    pub(crate) buf: &'a [u8],
-    pub(crate) offset: usize,
-    pub(crate) remaining: u32,
+    pub buf: &'a [u8],
+    pub offset: usize,
+    pub remaining: u32,
 }
 
 impl<'a> Iterator for InputResourceCommitments<'a> {

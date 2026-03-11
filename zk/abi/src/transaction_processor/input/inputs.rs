@@ -4,10 +4,10 @@ use crate::transaction_processor::{BatchMetadata, Resource};
 
 /// Decoded transaction inputs holding zero-copy views into the wire buffer.
 pub struct Inputs<'a> {
-    pub(crate) tx: &'a [u8],
-    pub(crate) tx_index: u32,
-    pub(crate) batch_metadata: BatchMetadata<'a>,
-    pub(crate) resources: Vec<Resource<'a>>,
+    pub tx: &'a [u8],
+    pub tx_index: u32,
+    pub batch_metadata: BatchMetadata<'a>,
+    pub resources: Vec<Resource<'a>>,
 }
 
 impl<'a> Inputs<'a> {
@@ -17,7 +17,7 @@ impl<'a> Inputs<'a> {
     /// Decodes a transaction input from the wire buffer.
     ///
     /// Wire layout: `fixed_header | tx_bytes | resource_headers | resource_data`
-    pub(crate) fn decode(buf: &'a mut [u8]) -> Self {
+    pub fn decode(buf: &'a mut [u8]) -> Self {
         // Decode fixed header.
         let (header, data) = buf.split_at_mut(Self::FIXED_HEADER_SIZE);
         let tx_index = u32::from_le_bytes(header[0..4].try_into().unwrap());
