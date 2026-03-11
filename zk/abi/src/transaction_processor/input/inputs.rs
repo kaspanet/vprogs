@@ -1,16 +1,16 @@
 use alloc::vec::Vec;
 
-use super::{batch_metadata::BatchMetadata, resource::Resource};
+use crate::transaction_processor::{BatchMetadata, Resource};
 
-/// Decoded transaction input holding zero-copy views into the wire buffer.
-pub struct Input<'a> {
+/// Decoded transaction inputs holding zero-copy views into the wire buffer.
+pub struct Inputs<'a> {
     pub(crate) tx: &'a [u8],
     pub(crate) tx_index: u32,
     pub(crate) batch_metadata: BatchMetadata<'a>,
     pub(crate) resources: Vec<Resource<'a>>,
 }
 
-impl<'a> Input<'a> {
+impl<'a> Inputs<'a> {
     /// Fixed header size: tx_index(4) + n_resources(4) + BatchMetadata + tx_bytes_len(4).
     pub const FIXED_HEADER_SIZE: usize = 4 + 4 + BatchMetadata::SIZE + 4;
 

@@ -1,12 +1,12 @@
 use alloc::vec::Vec;
 
 use super::{RESOURCE_COMMITMENT_SIZE, header::Header};
-use crate::transaction_processor::ResourceInputCommitment;
+use crate::transaction_processor::InputResourceCommitment;
 
 /// Encodes the batch processor input into bytes (host-side).
 pub fn encode(
     header: &Header<'_>,
-    commitments: &[ResourceInputCommitment<'_>],
+    commitments: &[InputResourceCommitment<'_>],
     multi_proof_bytes: &[u8],
     journals: &[Vec<u8>],
 ) -> Vec<u8> {

@@ -1,5 +1,7 @@
 use alloc::vec::Vec;
 
+use crate::transaction_processor::Resource;
+
 /// A storage mutation produced by executing a transaction, addressed by resource index.
 #[derive(Clone, Debug)]
 pub enum StorageOp {
@@ -16,7 +18,7 @@ impl StorageOp {
     /// Encodes a resource as `Option<StorageOp>`, translating dirty/deleted/new flags into the
     /// corresponding variant. Batches the dirty flag, the variant byte and length prefix into a
     /// single 6-byte write to minimize I/O calls.
-    pub(crate) fn encode(w: &mut impl crate::Write, resource: &super::Resource<'_>) {
+    pub(crate) fn encode(w: &mut impl crate::Write, resource: &Resource<'_>) {
         // Write unchanged (non-dirty) resources as a single 0 byte.
         if !resource.is_dirty() {
             w.write(&[0]);

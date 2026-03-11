@@ -1,11 +1,10 @@
 use vprogs_zk_smt::EMPTY_LEAF_HASH;
 
-use super::{
-    JournalEntry, ResourceInputCommitment, resource_input_commitments::ResourceInputCommitments,
-};
 use crate::{
     Write,
-    transaction_processor::{batch_metadata::BatchMetadata, input::Input},
+    transaction_processor::{
+        BatchMetadata, InputResourceCommitment, InputResourceCommitments, Inputs, JournalEntry,
+    },
 };
 
 /// Decoded input commitment from a transaction processor journal.
@@ -13,7 +12,7 @@ pub struct InputCommitment<'a> {
     pub tx_id: &'a [u8; 32],
     pub tx_index: u32,
     pub batch_metadata: BatchMetadata<'a>,
-    pub resources: ResourceInputCommitments<'a>,
+    pub resources: InputResourceCommitments<'a>,
 }
 
 impl<'a> InputCommitment<'a> {
@@ -29,7 +28,7 @@ impl<'a> InputCommitment<'a> {
         let res_count = u32::from_le_bytes(payload[76..80].try_into().unwrap());
 
         // Create zero-copy iterator over resource entries.
-        let resources = ResourceInputCommitments {
+        let resources = InputResourceCommitments {
             buf: payload,
             offset: Self::HEADER_SIZE,
             remaining: res_count,
@@ -39,9 +38,9 @@ impl<'a> InputCommitment<'a> {
     }
 
     /// Guest-side: encode an input commitment segment to the journal.
-    pub(crate) fn encode(w: &mut impl Write, input: &Input<'_>) {
+    pub(crate) fn encode(w: &mut impl Write, input: &Inputs<'_>) {
         // Segment header: opcode + payload length.
-        let payload_len = Self::HEADER_SIZE + ResourceInputCommitment::SIZE * input.resources.len();
+        let payload_len = Self::HEADER_SIZE + InputResourceCommitment::SIZE * input.resources.len();
         w.write(&[JournalEntry::OPCODE_INPUT]);
         w.write(&(payload_len as u32).to_le_bytes());
 

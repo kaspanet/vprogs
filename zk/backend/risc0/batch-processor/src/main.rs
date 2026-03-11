@@ -8,7 +8,9 @@ use alloc::{borrow::Cow, vec::Vec};
 use risc0_zkvm::guest::env;
 use vprogs_zk_abi::{
     batch_processor::process_batch,
-    transaction_processor::{Journal as TxJournal, OutputCommitment},
+    transaction_processor::{
+        JournalEntries as TxJournal, OutputCommitment, OutputResourceCommitment,
+    },
 };
 use vprogs_zk_backend_risc0_api::{Host, Journal};
 
@@ -74,8 +76,8 @@ fn main() {
             // Apply outputs (positional 1:1 matching with inputs).
             match tx_journal.output {
                 OutputCommitment::Success { outputs } => {
-                    for (i, output_hash) in outputs.enumerate() {
-                        if let Some(hash) = output_hash {
+                    for (i, commitment) in outputs.enumerate() {
+                        if let OutputResourceCommitment::Changed(hash) = commitment {
                             let idx = resource_indices[i];
                             cache[idx] = Cow::Owned(*hash);
                         }

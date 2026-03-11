@@ -1,11 +1,9 @@
-use super::{
-    batch_metadata::BatchMetadata,
-    input::Input,
-    journal::{InputCommitment, OutputCommitment},
-    output::Output,
-    resource::Resource,
+use crate::{
+    Read, Write,
+    transaction_processor::{
+        BatchMetadata, InputCommitment, Inputs, OutputCommitment, Outputs, Resource,
+    },
 };
-use crate::{Read, Write};
 
 /// Transaction processor API for use inside zkVM guests.
 pub struct Abi;
@@ -30,19 +28,19 @@ impl Abi {
     ) {
         // Read and decode input segment from host.
         let mut input_buf = host.read_blob();
-        let input = Input::decode(input_buf.as_mut_slice());
+        let input = Inputs::decode(input_buf.as_mut_slice());
 
         // Commit input segment (framework-controlled, BEFORE closure).
         InputCommitment::encode(journal, &input);
 
         // Execute transaction logic in guest closure, mutating resources in-place.
-        let Input { tx, tx_index, batch_metadata, mut resources } = input;
+        let Inputs { tx, tx_index, batch_metadata, mut resources } = input;
         let result = f(tx, tx_index, &batch_metadata, &mut resources).map(|_| resources.as_slice());
 
         // Commit output segment (framework-controlled, AFTER closure).
         OutputCommitment::encode(journal, result);
 
         // Stream execution result to host.
-        Output::encode(result, host);
+        Outputs::encode(result, host);
     }
 }

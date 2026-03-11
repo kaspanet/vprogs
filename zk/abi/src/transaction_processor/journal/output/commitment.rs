@@ -1,14 +1,15 @@
 use vprogs_zk_smt::EMPTY_LEAF_HASH;
 
-use super::{
-    JournalEntry,
-    resource_output_commitments::{self, ResourceOutputCommitments},
+use crate::{
+    Write,
+    transaction_processor::{
+        JournalEntry, OutputResourceCommitment, OutputResourceCommitments, Resource,
+    },
 };
-use crate::{Write, transaction_processor::resource::Resource};
 
 /// Decoded output commitment from a transaction processor journal.
 pub enum OutputCommitment<'a> {
-    Success { outputs: ResourceOutputCommitments<'a> },
+    Success { outputs: OutputResourceCommitments<'a> },
     Error { error_code: u32 },
 }
 
@@ -20,7 +21,7 @@ impl<'a> OutputCommitment<'a> {
     pub(crate) fn decode(payload: &'a [u8]) -> Self {
         match payload[0] {
             Self::SUCCESS => {
-                Self::Success { outputs: ResourceOutputCommitments { buf: payload, offset: 1 } }
+                Self::Success { outputs: OutputResourceCommitments { buf: payload, offset: 1 } }
             }
             Self::ERROR => {
                 let error_code = u32::from_le_bytes(payload[1..5].try_into().unwrap());
@@ -50,13 +51,13 @@ impl<'a> OutputCommitment<'a> {
                 // Per-resource output commitments.
                 for r in resources {
                     if r.is_deleted() {
-                        w.write(&[resource_output_commitments::CHANGED]);
+                        w.write(&[OutputResourceCommitment::CHANGED]);
                         w.write(&EMPTY_LEAF_HASH);
                     } else if r.is_dirty() {
-                        w.write(&[resource_output_commitments::CHANGED]);
+                        w.write(&[OutputResourceCommitment::CHANGED]);
                         w.write(blake3::hash(r.data()).as_bytes());
                     } else {
-                        w.write(&[resource_output_commitments::UNCHANGED]);
+                        w.write(&[OutputResourceCommitment::UNCHANGED]);
                     }
                 }
             }

@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use vprogs_zk_smt::MultiProof;
 
 use super::{RESOURCE_COMMITMENT_SIZE, header::Header, journal_iter::JournalIter};
-use crate::transaction_processor::ResourceInputCommitment;
+use crate::transaction_processor::InputResourceCommitment;
 
 /// Decodes the batch processor input from a raw byte buffer into zero-copy views.
 ///
@@ -14,7 +14,7 @@ use crate::transaction_processor::ResourceInputCommitment;
 /// Panics if the buffer is truncated or malformed.
 pub fn decode(
     buf: &[u8],
-) -> (Header<'_>, Vec<ResourceInputCommitment<'_>>, MultiProof<'_>, JournalIter<'_>) {
+) -> (Header<'_>, Vec<InputResourceCommitment<'_>>, MultiProof<'_>, JournalIter<'_>) {
     let header = Header::decode(buf);
 
     let commitments_end = Header::SIZE + (header.n_resources as usize) * RESOURCE_COMMITMENT_SIZE;
@@ -23,7 +23,7 @@ pub fn decode(
     let commitments = (0..header.n_resources)
         .map(|i| {
             let base = Header::SIZE + (i as usize) * RESOURCE_COMMITMENT_SIZE;
-            ResourceInputCommitment::decode_pre_indexed(&buf[base..], i)
+            InputResourceCommitment::decode_pre_indexed(&buf[base..], i)
         })
         .collect();
 

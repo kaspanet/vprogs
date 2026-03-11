@@ -1,30 +1,16 @@
-pub(crate) mod input_commitment;
-pub(crate) mod journal_entry;
-pub(crate) mod output_commitment;
-pub(crate) mod resource_input_commitment;
-pub(crate) mod resource_input_commitments;
-pub(crate) mod resource_output_commitment;
-pub(crate) mod resource_output_commitments;
-
 use alloc::vec::Vec;
 
-pub use input_commitment::InputCommitment;
-pub use journal_entry::JournalEntry;
-pub use output_commitment::OutputCommitment;
-pub use resource_input_commitment::ResourceInputCommitment;
-pub use resource_input_commitments::ResourceInputCommitments;
-pub use resource_output_commitment::ResourceOutputCommitment;
-pub use resource_output_commitments::ResourceOutputCommitments;
+use crate::transaction_processor::{InputCommitment, JournalEntry, OutputCommitment};
 
 /// Decoded transaction processor journal containing input/output commitments
 /// and any additional entries.
-pub struct Journal<'a> {
+pub struct JournalEntries<'a> {
     pub input: InputCommitment<'a>,
     pub entries: Vec<JournalEntry<'a>>,
     pub output: OutputCommitment<'a>,
 }
 
-impl<'a> Journal<'a> {
+impl<'a> JournalEntries<'a> {
     /// Host-side: decode a transaction processor journal.
     pub fn decode(mut journal: &'a [u8]) -> Self {
         // Basic validation: the journal must contain at least an input and output commitment.

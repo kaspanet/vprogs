@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use tokio::sync::mpsc;
 use vprogs_zk_abi::{
     batch_processor::input::{Header, encode},
-    transaction_processor::{Input, Output, Resource, ResourceInputCommitment, StorageOp},
+    transaction_processor::{InputResourceCommitment, Inputs, Outputs, Resource, StorageOp},
 };
 use vprogs_zk_smt::EMPTY_LEAF_HASH;
 use vprogs_zk_vm::{Backend, ProofRequest};
@@ -138,7 +138,7 @@ impl<B: Backend + 'static> BatchProver<B> {
         }
 
         // Build resource commitments for the batch witness.
-        // Store owned data so ResourceInputCommitment can borrow from it.
+        // Store owned data so InputResourceCommitment can borrow from it.
         let commitment_data: Vec<([u8; 32], [u8; 32])> = ordered_resources
             .iter()
             .map(|slot| {
@@ -152,10 +152,10 @@ impl<B: Backend + 'static> BatchProver<B> {
             })
             .collect();
 
-        let commitments: Vec<ResourceInputCommitment<'_>> = commitment_data
+        let commitments: Vec<InputResourceCommitment<'_>> = commitment_data
             .iter()
             .enumerate()
-            .map(|(i, (id, hash))| ResourceInputCommitment {
+            .map(|(i, (id, hash))| InputResourceCommitment {
                 resource_index: i as u32,
                 resource_id: id,
                 hash,
@@ -204,17 +204,18 @@ impl<B: Backend + 'static> BatchProver<B> {
     fn apply_batch_mutations(&mut self, receipts: &[(u32, B::Receipt, ProofRequest)]) {
         for (_, _, request) in receipts {
             let wire = &request.wire_bytes;
-            if wire.len() < Input::FIXED_HEADER_SIZE {
+            if wire.len() < Inputs::FIXED_HEADER_SIZE {
                 continue;
             }
 
             let n_resources = u32::from_le_bytes(wire[4..8].try_into().unwrap()) as usize;
             let tx_bytes_len =
-                u32::from_le_bytes(wire[48..Input::FIXED_HEADER_SIZE].try_into().unwrap()) as usize;
-            let resources_header_start = Input::FIXED_HEADER_SIZE + tx_bytes_len;
+                u32::from_le_bytes(wire[48..Inputs::FIXED_HEADER_SIZE].try_into().unwrap())
+                    as usize;
+            let resources_header_start = Inputs::FIXED_HEADER_SIZE + tx_bytes_len;
 
             // Decode execution result to get mutations.
-            let output = match Output::decode(&request.execution_result_bytes) {
+            let output = match Outputs::decode(&request.execution_result_bytes) {
                 Ok(output) => output,
                 Err(_) => continue,
             };
@@ -247,14 +248,14 @@ impl<B: Backend + 'static> BatchProver<B> {
 /// Returns `(resource_index, ResourceData)` pairs for each resource in the transaction.
 fn extract_pre_batch_resources(request: &ProofRequest) -> Vec<(u32, ResourceData)> {
     let wire = &request.wire_bytes;
-    if wire.len() < Input::FIXED_HEADER_SIZE {
+    if wire.len() < Inputs::FIXED_HEADER_SIZE {
         return Vec::new();
     }
 
     let n_resources = u32::from_le_bytes(wire[4..8].try_into().unwrap()) as usize;
     let tx_bytes_len =
-        u32::from_le_bytes(wire[48..Input::FIXED_HEADER_SIZE].try_into().unwrap()) as usize;
-    let resources_header_start = Input::FIXED_HEADER_SIZE + tx_bytes_len;
+        u32::from_le_bytes(wire[48..Inputs::FIXED_HEADER_SIZE].try_into().unwrap()) as usize;
+    let resources_header_start = Inputs::FIXED_HEADER_SIZE + tx_bytes_len;
     let payload_start = resources_header_start + n_resources * Resource::HEADER_SIZE;
 
     let mut result = Vec::with_capacity(n_resources);

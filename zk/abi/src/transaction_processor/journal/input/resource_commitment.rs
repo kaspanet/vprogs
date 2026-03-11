@@ -1,13 +1,13 @@
 use crate::Write;
 
 /// A single resource's input commitment: its index, identity, and data hash.
-pub struct ResourceInputCommitment<'a> {
+pub struct InputResourceCommitment<'a> {
     pub resource_index: u32,
     pub resource_id: &'a [u8; 32],
     pub hash: &'a [u8; 32],
 }
 
-impl<'a> ResourceInputCommitment<'a> {
+impl<'a> InputResourceCommitment<'a> {
     /// Wire size of the full encoding: resource_index(4) + resource_id(32) + hash(32).
     pub const SIZE: usize = 4 + 32 + 32;
 

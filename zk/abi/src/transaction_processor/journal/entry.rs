@@ -1,4 +1,4 @@
-use super::{InputCommitment, OutputCommitment};
+use crate::transaction_processor::{InputCommitment, OutputCommitment};
 
 /// A single decoded segment from a transaction processor journal.
 pub enum JournalEntry<'a> {

@@ -18,7 +18,7 @@ pub mod input {
 use input::{Header, JournalIter};
 use vprogs_zk_smt::MultiProof;
 
-use crate::{Read, Write, transaction_processor::ResourceInputCommitment};
+use crate::{Read, Write, transaction_processor::InputResourceCommitment};
 
 /// Reads, decodes, and verifies a batch of transaction proofs inside the guest.
 ///
@@ -31,7 +31,7 @@ pub fn process_batch(
     journal: &mut impl Write,
     f: impl for<'a> FnOnce(
         Header<'a>,
-        &[ResourceInputCommitment<'a>],
+        &[InputResourceCommitment<'a>],
         MultiProof<'a>,
         JournalIter<'a>,
     ) -> crate::Result<[u8; 32]>,
