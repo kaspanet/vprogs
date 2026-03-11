@@ -41,7 +41,7 @@ impl<B: Backend> Processor for Vm<B> {
 
         // 3. Decode and apply storage operations on success.
         let return_value = Output::decode(&execution_result_bytes).map(|output| {
-            for (i, op) in output.ops().iter().enumerate() {
+            for (i, op) in output.storage_ops().iter().enumerate() {
                 if let Some(op) = op {
                     let data = ctx.resources_mut()[i].data_mut();
                     match op {

@@ -218,11 +218,9 @@ impl<B: Backend + 'static> BatchProver<B> {
                 Ok(output) => output,
                 Err(_) => continue,
             };
-            let ops = output.ops();
-
             // Apply mutations directly to the state tree (receipts are sorted by tx_index,
             // so later mutations correctly override earlier ones for the same key).
-            for (j, op) in ops.iter().enumerate().take(n_resources) {
+            for (j, op) in output.storage_ops().iter().enumerate().take(n_resources) {
                 let base = resources_header_start + j * Resource::HEADER_SIZE;
                 if base + 32 > wire.len() {
                     break;

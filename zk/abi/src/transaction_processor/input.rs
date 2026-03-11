@@ -18,17 +18,17 @@ impl<'a> Input<'a> {
     ///
     /// Wire layout: `fixed_header | tx_bytes | resource_headers | resource_data`
     pub(crate) fn decode(buf: &'a mut [u8]) -> Self {
-        // Fixed header.
+        // Parse fixed header.
         let (header, data) = buf.split_at_mut(Self::FIXED_HEADER_SIZE);
         let tx_index = u32::from_le_bytes(header[0..4].try_into().unwrap());
         let res_count = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
         let batch_metadata = BatchMetadata::decode(&header[8..]);
 
-        // Transaction bytes.
+        // Parse transaction bytes.
         let tx_len = u32::from_le_bytes(header[8 + BatchMetadata::SIZE..].try_into().unwrap());
         let (tx, resources) = data.split_at_mut(tx_len as usize);
 
-        // Resources.
+        // Parse resources.
         let (res_headers, mut res_data) = resources.split_at_mut(res_count * Resource::HEADER_SIZE);
         let mut resources = Vec::with_capacity(res_count);
         for i in 0..res_count {
@@ -49,39 +49,44 @@ impl<'a> Input<'a> {
             >,
         P::Transaction: borsh::BorshSerialize,
     {
-        let chain_metadata = ctx.batch_metadata();
-        let resources = ctx.resources();
+        // Serialize transaction to bytes.
         let tx_bytes = borsh::to_vec(ctx.tx()).expect("failed to serialize transaction");
 
-        let resources_header = resources.len() * Resource::HEADER_SIZE;
-        let payload_len: usize = resources.iter().map(|r| r.data().len()).sum();
-        let total = Self::FIXED_HEADER_SIZE + tx_bytes.len() + resources_header + payload_len;
+        // Calculate total size and allocate buffer.
+        let res_header_size = ctx.resources().len() * Resource::HEADER_SIZE;
+        let res_data_size: usize = ctx.resources().iter().map(|r| r.data().len()).sum();
+        let total_size = Self::FIXED_HEADER_SIZE + tx_bytes.len() + res_header_size + res_data_size;
+        let mut buf = Vec::with_capacity(total_size);
 
-        let mut buf = Vec::with_capacity(total);
-
-        // Fixed header
+        // Write fixed header: tx_index, n_resources, batch metadata.
         buf.extend_from_slice(&ctx.tx_index().to_le_bytes());
-        buf.extend_from_slice(&(resources.len() as u32).to_le_bytes());
-        buf.extend_from_slice(&chain_metadata.block_hash().as_bytes());
-        buf.extend_from_slice(&chain_metadata.blue_score().to_le_bytes());
+        buf.extend_from_slice(&(ctx.resources().len() as u32).to_le_bytes());
+        buf.extend_from_slice(&ctx.batch_metadata().block_hash().as_bytes());
+        buf.extend_from_slice(&ctx.batch_metadata().blue_score().to_le_bytes());
+
+        // Write transaction bytes (length-prefixed).
         buf.extend_from_slice(&(tx_bytes.len() as u32).to_le_bytes());
         buf.extend_from_slice(&tx_bytes);
 
-        // Per-resource headers
-        for r in resources {
-            buf.extend_from_slice(r.access_metadata().resource_id.as_bytes());
-            let flags = if r.is_new() { 1u8 } else { 0u8 };
-            buf.push(flags);
-            buf.extend_from_slice(&r.resource_index().to_le_bytes());
-            buf.extend_from_slice(&(r.data().len() as u32).to_le_bytes());
+        // Write resources headers.
+        for r in ctx.resources() {
+            Resource::encode_header(
+                &mut buf,
+                &r.access_metadata().resource_id,
+                r.is_new(),
+                r.resource_index(),
+                r.data().len() as u32,
+            );
         }
 
-        // Payload
-        for r in resources {
+        // Write resource data.
+        for r in ctx.resources() {
             buf.extend_from_slice(r.data());
         }
 
-        debug_assert_eq!(buf.len(), total);
+        // Sanity check total size.
+        debug_assert_eq!(buf.len(), total_size);
+
         buf
     }
 }
