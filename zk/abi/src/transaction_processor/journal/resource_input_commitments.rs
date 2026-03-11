@@ -18,7 +18,7 @@ impl<'a> Iterator for ResourceInputCommitments<'a> {
 
         let o = self.offset;
         let commitment = ResourceInputCommitment::decode(&self.buf[o..]);
-        self.offset = o + super::resource_input_commitment::SIZE;
+        self.offset = o + ResourceInputCommitment::SIZE;
 
         Some(commitment)
     }

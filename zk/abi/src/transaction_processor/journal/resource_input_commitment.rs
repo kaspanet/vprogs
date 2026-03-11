@@ -1,8 +1,5 @@
 use crate::Write;
 
-/// Wire size of the full encoding: resource_index(4) + resource_id(32) + hash(32).
-pub const SIZE: usize = 4 + 32 + 32;
-
 /// A single resource's input commitment: its index, identity, and data hash.
 pub struct ResourceInputCommitment<'a> {
     pub resource_index: u32,
@@ -11,6 +8,9 @@ pub struct ResourceInputCommitment<'a> {
 }
 
 impl<'a> ResourceInputCommitment<'a> {
+    /// Wire size of the full encoding: resource_index(4) + resource_id(32) + hash(32).
+    pub const SIZE: usize = 4 + 32 + 32;
+
     /// Decodes the full wire format: `resource_index(4) + resource_id(32) + hash(32)`.
     pub fn decode(buf: &'a [u8]) -> Self {
         Self {

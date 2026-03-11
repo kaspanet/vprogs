@@ -20,7 +20,7 @@ pub mod transaction_processor {
     pub use batch_metadata::BatchMetadata;
     pub use input::Input;
     pub use journal::{
-        InputCommitment, Journal, OutputCommitment, ResourceInputCommitment,
+        InputCommitment, Journal, JournalEntry, OutputCommitment, ResourceInputCommitment,
         ResourceInputCommitments, ResourceOutputCommitment, ResourceOutputCommitments,
     };
     pub use output::Output;

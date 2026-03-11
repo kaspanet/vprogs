@@ -1,5 +1,8 @@
 use super::{
-    batch_metadata::BatchMetadata, input::Input, journal::Journal, output::Output,
+    batch_metadata::BatchMetadata,
+    input::Input,
+    journal::{InputCommitment, OutputCommitment},
+    output::Output,
     resource::Resource,
 };
 use crate::{Read, Write};
@@ -25,20 +28,21 @@ impl Abi {
             &mut [Resource<'a>],
         ) -> crate::Result<()>,
     ) {
-        let mut buf = host.read_blob();
-        let input = Input::decode(buf.as_mut_slice());
+        // Read and decode input segment from host.
+        let mut input_buf = host.read_blob();
+        let input = Input::decode(input_buf.as_mut_slice());
 
-        // Input segment (framework-controlled, BEFORE closure).
-        Journal::encode_input(journal, &input);
+        // Commit input segment (framework-controlled, BEFORE closure).
+        InputCommitment::encode(journal, &input);
 
+        // Execute transaction logic in guest closure, mutating resources in-place.
         let Input { tx, tx_index, batch_metadata, mut resources } = input;
-
         let result = f(tx, tx_index, &batch_metadata, &mut resources).map(|_| resources.as_slice());
+
+        // Commit output segment (framework-controlled, AFTER closure).
+        OutputCommitment::encode(journal, result);
 
         // Stream execution result to host.
         Output::encode(result, host);
-
-        // Output segment (framework-controlled, AFTER closure).
-        Journal::encode_output(journal, result);
     }
 }
