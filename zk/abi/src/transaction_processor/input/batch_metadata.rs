@@ -1,8 +1,6 @@
 use crate::Write;
 
 /// Batch-level metadata decoded from the wire header.
-///
-/// Scalars are parsed once; `block_hash` is a zero-copy reference into the buffer.
 pub struct BatchMetadata<'a> {
     /// The hash of the block this batch belongs to.
     pub block_hash: &'a [u8; 32],
@@ -14,7 +12,7 @@ impl<'a> BatchMetadata<'a> {
     /// Wire size: block_hash(32) + blue_score(8).
     pub const SIZE: usize = 32 + 8;
 
-    /// Decodes batch metadata from the wire header at the given offset.
+    /// Decodes batch metadata from a wire buffer.
     pub fn decode(buf: &'a [u8]) -> Self {
         Self {
             block_hash: buf[0..32].try_into().expect("block hash truncated"),

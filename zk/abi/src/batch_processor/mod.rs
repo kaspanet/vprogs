@@ -17,12 +17,8 @@ use vprogs_zk_smt::MultiProof;
 
 use crate::{Read, Write, transaction_processor::InputResourceCommitment};
 
-/// Reads, decodes, and verifies a batch of transaction proofs inside the guest.
-///
-/// 1. Reads the batch witness from `host`.
-/// 2. Decodes it into header, resource commitments, multi-proof, and journal iterator.
-/// 3. Calls `f` to perform verification and compute the new state root.
-/// 4. Commits `(prev_root, new_root, batch_index)` to `journal`.
+/// Processes a batch of transaction proofs inside the guest, verifying each via `f` and committing
+/// `(prev_root, new_root, batch_index)` to `journal`.
 pub fn process_batch(
     host: &mut impl Read,
     journal: &mut impl Write,

@@ -107,8 +107,8 @@ impl<'a> Resource<'a> {
     /// data_len(4).
     pub const HEADER_SIZE: usize = 32 + 1 + 4 + 4;
 
-    /// Decodes a resource from its header bytes and splits off its backing from `data`, advancing
-    /// `data` past the consumed bytes.
+    /// Decodes a resource from its header bytes, splitting off its backing from `data` and
+    /// advancing past the consumed bytes.
     pub(crate) fn decode(header: &'a [u8], data: &mut &'a mut [u8]) -> Self {
         // Parse header fields.
         let resource_id = header[0..32].try_into().expect("truncated resource");

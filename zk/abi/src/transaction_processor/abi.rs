@@ -21,18 +21,18 @@ impl Abi {
             &mut [Resource<'a>],
         ) -> crate::Result<()>,
     ) {
-        // Read and decode inputs segment from host.
+        // Read and decode inputs from host.
         let mut inputs_buf = host.read_blob();
         let inputs = Inputs::decode(inputs_buf.as_mut_slice());
 
-        // Commit inputs segment (framework-controlled, BEFORE closure).
+        // Commit input commitment to journal.
         InputCommitment::encode(journal, &inputs);
 
-        // Execute transaction logic in guest closure, mutating resources in-place.
+        // Execute guest closure.
         let Inputs { tx, tx_index, batch_metadata, mut resources } = inputs;
         let output = f(tx, tx_index, &batch_metadata, &mut resources).map(|_| resources.as_slice());
 
-        // Commit output segment (framework-controlled, AFTER closure).
+        // Commit output commitment to journal.
         OutputCommitment::encode(journal, output);
 
         // Stream execution result to host.

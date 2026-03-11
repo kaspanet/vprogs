@@ -18,7 +18,7 @@ impl<'a> Inputs<'a> {
     /// Fixed header size: tx_index(4) + n_resources(4) + BatchMetadata + tx_bytes_len(4).
     pub const FIXED_HEADER_SIZE: usize = 4 + 4 + BatchMetadata::SIZE + 4;
 
-    /// Decodes a transaction input from the wire buffer.
+    /// Decodes transaction inputs from the wire buffer.
     ///
     /// Wire layout: `fixed_header | tx_bytes | resource_headers | resource_data`
     pub fn decode(buf: &'a mut [u8]) -> Self {

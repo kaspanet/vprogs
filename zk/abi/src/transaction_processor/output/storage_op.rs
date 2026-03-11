@@ -48,8 +48,7 @@ impl StorageOp {
     }
 
     /// Encodes a resource as `Option<StorageOp>`, translating dirty/deleted/new flags into the
-    /// corresponding variant. Batches the dirty flag, the variant byte and length prefix into a
-    /// single 6-byte write to minimize I/O calls.
+    /// corresponding variant.
     pub fn encode(w: &mut impl crate::Write, resource: &Resource<'_>) {
         // Write unchanged (non-dirty) resources as a single 0 byte.
         if !resource.is_dirty() {

@@ -16,30 +16,20 @@ impl<'a> InputResourceCommitment<'a> {
     /// Wire size without the index prefix: resource_id(32) + hash(32).
     pub const PRE_INDEXED_SIZE: usize = Self::SIZE - 4;
 
-    /// Decodes the full wire format: `resource_index(4) + resource_id(32) + hash(32)`, advancing
-    /// `buf` past the consumed bytes.
+    /// Decodes the full wire format, advancing `buf` past the consumed bytes.
     pub fn decode(buf: &mut &'a [u8]) -> Self {
-        // Decode fields from the start of the buffer.
         let resource_index = u32::from_le_bytes(buf[0..4].try_into().unwrap());
         let resource_id = buf[4..36].try_into().unwrap();
         let hash = buf[36..68].try_into().unwrap();
-
-        // Advance buffer past the consumed bytes.
         *buf = &buf[Self::SIZE..];
-
         Self { resource_index, resource_id, hash }
     }
 
-    /// Decodes with a pre-determined index: `resource_id(32) + hash(32)`, advancing `buf` past the
-    /// consumed bytes.
+    /// Decodes without the index prefix, advancing `buf` past the consumed bytes.
     pub fn decode_pre_indexed(buf: &mut &'a [u8], resource_index: u32) -> Self {
-        // Decode fields from the start of the buffer, using the provided index.
         let resource_id = buf[0..32].try_into().unwrap();
         let hash = buf[32..64].try_into().unwrap();
-
-        // Advance buffer past the consumed bytes.
         *buf = &buf[Self::PRE_INDEXED_SIZE..];
-
         Self { resource_index, resource_id, hash }
     }
 

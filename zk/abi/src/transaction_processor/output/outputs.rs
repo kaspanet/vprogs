@@ -19,12 +19,12 @@ impl Outputs {
 
     /// Host-side: decode execution result from guest.
     #[cfg(feature = "host")]
-    pub fn decode(bytes: &[u8]) -> Result<Self> {
-        match bytes[0] {
+    pub fn decode(buf: &[u8]) -> Result<Self> {
+        match buf[0] {
             0 => {
-                // Decode length-prefixed list of storage operations.
-                let count = u32::from_le_bytes(bytes[1..5].try_into().expect("count truncated"));
-                let mut buf = &bytes[5..];
+                // Decode length-prefixed storage operations.
+                let count = u32::from_le_bytes(buf[1..5].try_into().expect("count truncated"));
+                let mut buf = &buf[5..];
                 let mut storage_ops = Vec::with_capacity(count as usize);
                 for _ in 0..storage_ops.capacity() {
                     storage_ops.push(StorageOp::decode(&mut buf));
@@ -32,7 +32,7 @@ impl Outputs {
                 Ok(Self { storage_ops })
             }
             _ => Err(crate::Error(u32::from_le_bytes(
-                bytes[1..5].try_into().expect("error code truncated"),
+                buf[1..5].try_into().expect("error code truncated"),
             ))),
         }
     }

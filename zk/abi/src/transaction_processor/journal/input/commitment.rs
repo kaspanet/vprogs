@@ -50,12 +50,9 @@ impl<'a> InputCommitment<'a> {
         input.batch_metadata.encode(w);
         w.write(&(input.resources.len() as u32).to_le_bytes());
 
-        // Per-resource input commitments: index, resource_id, data hash.
+        // Per-resource input commitments.
         for r in &input.resources {
-            // Retrieve data for hashing.
             let data = r.data();
-
-            // Write resource index, ID and hash of data (or empty leaf if no data).
             w.write(&r.index().to_le_bytes());
             w.write(r.resource_id().as_bytes());
             w.write(&if data.is_empty() {
