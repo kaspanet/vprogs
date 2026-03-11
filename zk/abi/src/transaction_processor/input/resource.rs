@@ -100,25 +100,12 @@ impl<'a> Resource<'a> {
     pub fn is_deleted(&self) -> bool {
         self.deleted
     }
+}
 
+impl<'a> Resource<'a> {
     /// Wire size of a resource header: resource_id(32) + flags(1) + resource_index(4) +
     /// data_len(4).
     pub const HEADER_SIZE: usize = 32 + 1 + 4 + 4;
-
-    /// Encodes a resource header into `buf`.
-    #[cfg(feature = "host")]
-    pub(crate) fn encode_header(
-        buf: &mut Vec<u8>,
-        resource_id: &ResourceId,
-        is_new: bool,
-        resource_index: u32,
-        data_len: u32,
-    ) {
-        buf.extend_from_slice(resource_id.as_bytes());
-        buf.push(if is_new { 1 } else { 0 });
-        buf.extend_from_slice(&resource_index.to_le_bytes());
-        buf.extend_from_slice(&data_len.to_le_bytes());
-    }
 
     /// Decodes a resource from its header bytes and splits off its backing from `data`, advancing
     /// `data` past the consumed bytes.
@@ -142,5 +129,20 @@ impl<'a> Resource<'a> {
             dirty: false,
             deleted: false,
         }
+    }
+
+    /// Encodes a resource header into `buf`.
+    #[cfg(feature = "host")]
+    pub(crate) fn encode_header(
+        buf: &mut Vec<u8>,
+        resource_id: &ResourceId,
+        is_new: bool,
+        resource_index: u32,
+        data_len: u32,
+    ) {
+        buf.extend_from_slice(resource_id.as_bytes());
+        buf.push(if is_new { 1 } else { 0 });
+        buf.extend_from_slice(&resource_index.to_le_bytes());
+        buf.extend_from_slice(&data_len.to_le_bytes());
     }
 }

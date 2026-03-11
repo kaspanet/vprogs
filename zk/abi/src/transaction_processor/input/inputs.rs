@@ -18,17 +18,17 @@ impl<'a> Inputs<'a> {
     ///
     /// Wire layout: `fixed_header | tx_bytes | resource_headers | resource_data`
     pub(crate) fn decode(buf: &'a mut [u8]) -> Self {
-        // Parse fixed header.
+        // Decode fixed header.
         let (header, data) = buf.split_at_mut(Self::FIXED_HEADER_SIZE);
         let tx_index = u32::from_le_bytes(header[0..4].try_into().unwrap());
         let res_count = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
         let batch_metadata = BatchMetadata::decode(&header[8..]);
 
-        // Parse transaction bytes.
+        // Decode transaction bytes.
         let tx_len = u32::from_le_bytes(header[8 + BatchMetadata::SIZE..].try_into().unwrap());
         let (tx, resources) = data.split_at_mut(tx_len as usize);
 
-        // Parse resources.
+        // Decode resources.
         let (res_headers, mut res_data) = resources.split_at_mut(res_count * Resource::HEADER_SIZE);
         let mut resources = Vec::with_capacity(res_count);
         for i in 0..res_count {

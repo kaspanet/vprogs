@@ -4,7 +4,7 @@ use crate::transaction_processor::{InputCommitment, OutputCommitment};
 pub enum JournalEntry<'a> {
     Input(InputCommitment<'a>),
     Output(OutputCommitment<'a>),
-    Unknown(&'a [u8]),
+    Unknown(u8, &'a [u8]),
 }
 
 impl<'a> JournalEntry<'a> {
@@ -27,7 +27,7 @@ impl<'a> JournalEntry<'a> {
         match opcode {
             Self::OPCODE_INPUT => Self::Input(InputCommitment::decode(payload)),
             Self::OPCODE_OUTPUT => Self::Output(OutputCommitment::decode(payload)),
-            _ => Self::Unknown(payload),
+            _ => Self::Unknown(opcode, payload),
         }
     }
 }

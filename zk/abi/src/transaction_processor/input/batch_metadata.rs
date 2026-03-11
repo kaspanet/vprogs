@@ -16,9 +16,10 @@ impl<'a> BatchMetadata<'a> {
 
     /// Decodes batch metadata from the wire header at the given offset.
     pub(crate) fn decode(buf: &'a [u8]) -> Self {
-        let block_hash: &[u8; 32] = buf[0..32].try_into().expect("block hash truncated");
-        let blue_score = u64::from_le_bytes(buf[32..40].try_into().expect("blue score truncated"));
-        Self { block_hash, blue_score }
+        Self {
+            block_hash: buf[0..32].try_into().expect("block hash truncated"),
+            blue_score: u64::from_le_bytes(buf[32..40].try_into().expect("blue score truncated")),
+        }
     }
 
     /// Encodes batch metadata to the given writer.
