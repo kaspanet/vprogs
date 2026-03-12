@@ -2,8 +2,10 @@ use std::{collections::HashMap, sync::Arc};
 
 use tokio::sync::mpsc;
 use vprogs_zk_abi::{
-    batch_processor::input::{Header, encode},
-    transaction_processor::{InputResourceCommitment, Inputs, Outputs, Resource, StorageOp},
+    batch_processor::{Header, Inputs as BatchInputs},
+    transaction_processor::{
+        InputResourceCommitment, Inputs, Outputs as TxOutputs, Resource, StorageOp,
+    },
 };
 use vprogs_zk_smt::EMPTY_LEAF_HASH;
 use vprogs_zk_vm::{Backend, ProofRequest};
@@ -179,7 +181,7 @@ impl<B: Backend + 'static> BatchProver<B> {
             n_resources: commitments.len() as u32,
             n_txs: journals.len() as u32,
         };
-        let input = encode(&header, &commitments, &multi_proof_bytes, &journals);
+        let input = BatchInputs::encode(&header, &commitments, &multi_proof_bytes, &journals);
 
         // Collect inner receipts for composition.
         let assumptions: Vec<&B::Receipt> =
@@ -215,7 +217,7 @@ impl<B: Backend + 'static> BatchProver<B> {
             let resources_header_start = Inputs::FIXED_HEADER_SIZE + tx_bytes_len;
 
             // Decode execution result to get mutations.
-            let output = match Outputs::decode(&request.execution_result_bytes) {
+            let output = match TxOutputs::decode(&request.execution_result_bytes) {
                 Ok(output) => output,
                 Err(_) => continue,
             };

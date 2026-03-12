@@ -2,7 +2,28 @@
 
 extern crate alloc;
 
-pub mod batch_processor;
+pub mod batch_processor {
+    pub(crate) mod abi;
+
+    pub(crate) mod input {
+        pub(crate) mod header;
+        pub(crate) mod inputs;
+        pub(crate) mod journal_iter;
+    }
+
+    pub(crate) mod output {
+        pub(crate) mod outputs;
+    }
+
+    pub(crate) mod journal {
+        pub(crate) mod commitment;
+    }
+
+    pub use abi::Abi;
+    pub use input::{header::Header, inputs::Inputs, journal_iter::JournalIter};
+    pub use journal::commitment::JournalCommitment;
+    pub use output::outputs::Outputs;
+}
 mod error;
 mod parser;
 mod read;

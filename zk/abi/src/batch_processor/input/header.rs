@@ -1,6 +1,4 @@
-use alloc::vec::Vec;
-
-use crate::{Parser, Result};
+use crate::{Parser, Result, Write};
 
 /// Decoded batch processor input header.
 pub struct Header<'a> {
@@ -32,12 +30,12 @@ impl<'a> Header<'a> {
         })
     }
 
-    /// Encodes the header into a buffer.
-    pub fn encode(&self, buf: &mut Vec<u8>) {
-        buf.extend_from_slice(self.image_id);
-        buf.extend_from_slice(&self.batch_index.to_le_bytes());
-        buf.extend_from_slice(self.prev_root);
-        buf.extend_from_slice(&self.n_resources.to_le_bytes());
-        buf.extend_from_slice(&self.n_txs.to_le_bytes());
+    /// Encodes the header into a writer.
+    pub fn encode(&self, w: &mut impl Write) {
+        w.write(self.image_id);
+        w.write(&self.batch_index.to_le_bytes());
+        w.write(self.prev_root);
+        w.write(&self.n_resources.to_le_bytes());
+        w.write(&self.n_txs.to_le_bytes());
     }
 }

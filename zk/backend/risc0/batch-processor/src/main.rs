@@ -7,7 +7,7 @@ use alloc::{borrow::Cow, vec::Vec};
 
 use risc0_zkvm::guest::env;
 use vprogs_zk_abi::{
-    batch_processor::process_batch,
+    batch_processor::Abi,
     transaction_processor::{
         JournalEntries as TxJournal, OutputCommitment, OutputResourceCommitment,
     },
@@ -17,13 +17,16 @@ use vprogs_zk_backend_risc0_api::{Host, Journal};
 risc0_zkvm::guest::entry!(main);
 
 fn main() {
-    process_batch(&mut Host, &mut Journal, |header, commitments, multi_proof, tx_entries| {
+    Abi::process_batch(&mut Host, &mut Journal, |header, commitments, multi_proof, tx_entries| {
         let n_resources = header.n_resources as usize;
 
         // Build the leaf hash cache as references into the commitment data.
         // Only mutations promote to owned copies.
         let mut cache: Vec<Cow<'_, [u8; 32]>> =
             commitments.iter().map(|c| Cow::Borrowed(c.hash)).collect();
+
+        // Track which resources were modified for the output stream.
+        let mut changed: Vec<bool> = alloc::vec![false; n_resources];
 
         // Verify the multi-proof against prev_root.
         assert!(multi_proof.verify(*header.prev_root), "multi-proof verification failed");
@@ -96,6 +99,7 @@ fn main() {
                         if let OutputResourceCommitment::Changed(hash) = commitment {
                             let idx = resource_indices[i];
                             cache[idx] = Cow::Owned(*hash);
+                            changed[idx] = true;
                         }
                     }
                 }
@@ -118,6 +122,15 @@ fn main() {
             })
             .collect();
 
-        Ok(multi_proof.compute_root(&leaf_hashes))
+        let new_root = multi_proof.compute_root(&leaf_hashes);
+
+        // Build leaf updates: Some(hash) for changed resources, None for unchanged.
+        let leaf_updates: Vec<Option<[u8; 32]>> = cache
+            .iter()
+            .enumerate()
+            .map(|(i, hash)| if changed[i] { Some(**hash) } else { None })
+            .collect();
+
+        Ok((new_root, leaf_updates))
     });
 }
