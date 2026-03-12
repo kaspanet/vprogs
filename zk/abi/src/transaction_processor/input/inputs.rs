@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
 use crate::{
-    Parser, Result,
+    Error, Parser, Result,
     transaction_processor::{BatchMetadata, Resource},
 };
 
@@ -38,8 +38,12 @@ impl<'a> Inputs<'a> {
         // Decode transaction bytes.
         let (tx, resources) = data.split_at_mut(tx_length);
 
+        // Sanity check that header offsets do not overflow.
+        let resources_len = resource_count
+            .checked_mul(Resource::HEADER_SIZE)
+            .ok_or_else(|| Error::Decode("resource_count overflow".into()))?;
+
         // Decode resources.
-        let resources_len = resource_count * Resource::HEADER_SIZE;
         let (res_headers, mut res_data) = resources.split_at_mut(resources_len);
         let mut resources = Vec::with_capacity(resource_count);
         for i in 0..resource_count {
@@ -60,6 +64,8 @@ impl<'a> Inputs<'a> {
             >,
         P::Transaction: borsh::BorshSerialize,
     {
+        use crate::Write;
+
         // Serialize transaction to bytes.
         let tx_bytes = borsh::to_vec(ctx.tx()).expect("failed to serialize transaction");
 
@@ -69,17 +75,17 @@ impl<'a> Inputs<'a> {
         let total_size = Self::FIXED_HEADER_SIZE + tx_bytes.len() + res_header_size + res_data_size;
         let mut buf = Vec::with_capacity(total_size);
 
-        // Write fixed header: tx_index, n_resources, batch metadata.
-        buf.extend_from_slice(&ctx.tx_index().to_le_bytes());
-        buf.extend_from_slice(&(ctx.resources().len() as u32).to_le_bytes());
-        buf.extend_from_slice(&ctx.batch_metadata().block_hash().as_bytes());
-        buf.extend_from_slice(&ctx.batch_metadata().blue_score().to_le_bytes());
+        // Write fixed header: tx_index, n_resources, batch metadata, tx_bytes_len.
+        buf.write(&ctx.tx_index().to_le_bytes());
+        buf.write(&(ctx.resources().len() as u32).to_le_bytes());
+        buf.write(&ctx.batch_metadata().block_hash().as_bytes());
+        buf.write(&ctx.batch_metadata().blue_score().to_le_bytes());
+        buf.write(&(tx_bytes.len() as u32).to_le_bytes());
 
-        // Write transaction bytes (length-prefixed).
-        buf.extend_from_slice(&(tx_bytes.len() as u32).to_le_bytes());
-        buf.extend_from_slice(&tx_bytes);
+        // Write transaction bytes.
+        buf.write(&tx_bytes);
 
-        // Write resources headers.
+        // Write resource headers.
         for r in ctx.resources() {
             Resource::encode_header(
                 &mut buf,
@@ -92,7 +98,7 @@ impl<'a> Inputs<'a> {
 
         // Write resource data.
         for r in ctx.resources() {
-            buf.extend_from_slice(r.data());
+            buf.write(r.data());
         }
 
         // Sanity check total size.

@@ -131,19 +131,19 @@ impl<'a> Resource<'a> {
         })
     }
 
-    /// Encodes a resource header into `buf`.
+    /// Encodes a resource header to the given writer.
     #[cfg(feature = "host")]
     pub(crate) fn encode_header(
-        buf: &mut Vec<u8>,
+        w: &mut impl crate::Write,
         resource_id: &ResourceId,
         is_new: bool,
         resource_index: u32,
         data_len: u32,
     ) {
         // Write header fields.
-        buf.extend_from_slice(resource_id.as_bytes());
-        buf.push(if is_new { 1 } else { 0 });
-        buf.extend_from_slice(&resource_index.to_le_bytes());
-        buf.extend_from_slice(&data_len.to_le_bytes());
+        w.write(resource_id.as_bytes());
+        w.write(&[if is_new { 1 } else { 0 }]);
+        w.write(&resource_index.to_le_bytes());
+        w.write(&data_len.to_le_bytes());
     }
 }

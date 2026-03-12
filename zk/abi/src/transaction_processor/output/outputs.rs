@@ -39,7 +39,8 @@ impl Outputs {
 
                 Ok(Self { storage_ops })
             }
-            _ => Err(Error::decode(&mut buf)?),
+            Self::ERR => Err(Error::decode(&mut buf)?),
+            _ => Err(Error::Decode("invalid output discriminant".into())),
         }
     }
 
