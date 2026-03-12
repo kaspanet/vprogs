@@ -101,6 +101,7 @@ impl<'a> Resource<'a> {
     }
 }
 
+// Wire format internals — resources are managed by the framework, not serialized by guests.
 impl<'a> Resource<'a> {
     /// Wire size of a resource header: resource_id(32) + flags(1) + resource_index(4) +
     /// data_len(4).
