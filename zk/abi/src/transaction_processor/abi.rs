@@ -33,9 +33,9 @@ impl Abi {
         let output = f(tx, tx_index, &batch_metadata, &mut resources).map(|_| resources.as_slice());
 
         // Commit output commitment to journal.
-        OutputCommitment::encode(journal, output);
+        OutputCommitment::encode(journal, &output);
 
         // Stream execution result to host.
-        Outputs::encode(output, host);
+        Outputs::encode(&output, host);
     }
 }

@@ -29,7 +29,7 @@ impl<'a> OutputResourceCommitment<'a> {
                 Ok(Self::Changed(hash))
             }
             Self::UNCHANGED => Ok(Self::Unchanged),
-            _ => Err(Error::Decode("invalid resource output flag")),
+            _ => Err(Error::Decode("invalid resource output flag".into())),
         }
     }
 }

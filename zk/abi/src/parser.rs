@@ -19,7 +19,7 @@ impl Parser for &[u8] {
     where
         Self: TryInto<T>,
     {
-        self.try_into().map_err(|_| Error::Decode(field))
+        self.try_into().map_err(|_| Error::Decode(field.into()))
     }
 
     fn parse_u32(self, field: &'static str) -> Result<u32> {

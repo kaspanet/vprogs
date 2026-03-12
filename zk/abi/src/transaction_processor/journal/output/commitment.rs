@@ -1,7 +1,7 @@
 use vprogs_zk_smt::EMPTY_LEAF_HASH;
 
 use crate::{
-    Error, Parser, Result, Write,
+    Error, Result, Write,
     transaction_processor::{
         JournalEntry, OutputResourceCommitment, OutputResourceCommitments, Resource,
     },
@@ -11,8 +11,8 @@ use crate::{
 pub enum OutputCommitment<'a> {
     /// Transaction executed successfully; contains per-resource output commitments.
     Success(OutputResourceCommitments<'a>),
-    /// Transaction execution failed; contains the numeric error code.
-    Error(u32),
+    /// Transaction execution failed; contains the error.
+    Error(Error),
 }
 
 impl<'a> OutputCommitment<'a> {
@@ -26,14 +26,14 @@ impl<'a> OutputCommitment<'a> {
         // Dispatch based on discriminant.
         match payload[0] {
             Self::SUCCESS => Ok(Self::Success(OutputResourceCommitments::new(&payload[1..]))),
-            Self::ERROR => Ok(Self::Error(payload[1..5].parse_u32("error_code")?)),
-            _ => Err(Error::Decode("invalid output commitment discriminant")),
+            Self::ERROR => Ok(Self::Error(Error::decode(&mut &payload[1..])?)),
+            _ => Err(Error::Decode("invalid output commitment discriminant".into())),
         }
     }
 
     /// Encodes an output commitment segment to the journal (guest-side).
-    pub fn encode(w: &mut impl Write, result: Result<&[Resource<'_>]>) {
-        match result {
+    pub fn encode(w: &mut impl Write, result: &Result<&[Resource<'_>]>) {
+        match *result {
             Ok(resources) => {
                 // Calculate payload: discriminant(1) + per-resource flags and optional hashes.
                 let payload_len: usize = 1 + resources
@@ -61,14 +61,14 @@ impl<'a> OutputCommitment<'a> {
                     }
                 }
             }
-            Err(err) => {
+            Err(ref err) => {
                 // Segment header: opcode + payload length.
                 w.write(&[JournalEntry::OPCODE_OUTPUT]);
-                w.write(&5u32.to_le_bytes());
+                w.write(&(1 + err.wire_size() as u32).to_le_bytes());
 
-                // Error discriminant + error code.
+                // Error discriminant + encoded error.
                 w.write(&[Self::ERROR]);
-                w.write(&err.code().to_le_bytes());
+                err.encode(w);
             }
         }
     }

@@ -20,7 +20,7 @@ impl Outputs {
     /// Decodes the execution result from the guest (host-side).
     #[cfg(feature = "host")]
     pub fn decode(buf: &[u8]) -> Result<Self> {
-        use crate::Parser;
+        use crate::{Error, Parser};
 
         match buf[0] {
             0 => {
@@ -34,18 +34,15 @@ impl Outputs {
 
                 Ok(Self { storage_ops })
             }
-            _ => Err(crate::Error::Guest({
-                // Decode error code.
-                buf[1..5].parse_u32("error_code")?
-            })),
+            _ => Err(Error::decode(&mut &buf[1..])?),
         }
     }
 
     /// Encodes the execution result to the host stream (guest-side).
-    pub fn encode(result: Result<&[Resource<'_>]>, w: &mut impl Write) {
-        match result {
+    pub fn encode(result: &Result<&[Resource<'_>]>, w: &mut impl Write) {
+        match *result {
             Ok(resources) => {
-                // Write Ok discriminant
+                // Write Ok discriminant.
                 w.write(&[0]);
 
                 // Write length-prefixed list of storage operations.
@@ -54,12 +51,10 @@ impl Outputs {
                     StorageOp::encode(w, resource);
                 }
             }
-            Err(err) => {
-                // Write Err discriminant.
+            Err(ref err) => {
+                // Write Err discriminant and encode error.
                 w.write(&[1]);
-
-                // Write error code as u32.
-                w.write(&err.code().to_le_bytes());
+                err.encode(w);
             }
         }
     }

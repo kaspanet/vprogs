@@ -20,7 +20,7 @@ impl<'a> JournalEntries<'a> {
     /// Decodes a transaction processor journal (host-side).
     pub fn decode(mut journal: &'a [u8]) -> Result<Self> {
         if journal.is_empty() {
-            return Err(Error::Decode("empty journal"));
+            return Err(Error::Decode("empty journal".into()));
         }
 
         // Decode input commitment (must be first).
@@ -28,7 +28,7 @@ impl<'a> JournalEntries<'a> {
         if let JournalEntry::Input(i) = JournalEntry::decode(&mut journal)? {
             input_commitment = i;
         } else {
-            return Err(Error::Decode("first entry must be input commitment"));
+            return Err(Error::Decode("first entry must be input commitment".into()));
         }
 
         // Decode remaining entries until we find the output commitment.
@@ -37,7 +37,7 @@ impl<'a> JournalEntries<'a> {
             match JournalEntry::decode(&mut journal)? {
                 JournalEntry::Output(output_commitment) => {
                     if !journal.is_empty() {
-                        return Err(Error::Decode("unexpected entries after output commitment"));
+                        return Err(Error::Decode("premature output commitment".into()));
                     }
 
                     return Ok(Self { input_commitment, entries, output_commitment });
@@ -46,6 +46,6 @@ impl<'a> JournalEntries<'a> {
             }
         }
 
-        Err(Error::Decode("missing output commitment"))
+        Err(Error::Decode("missing output commitment".into()))
     }
 }
