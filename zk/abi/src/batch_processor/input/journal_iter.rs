@@ -13,28 +13,23 @@ impl<'a> JournalIter<'a> {
     pub fn new(buf: &'a [u8], remaining: u32) -> Self {
         Self { buf, remaining }
     }
+
+    /// Decodes a single length-prefixed journal entry from the buffer.
+    fn decode_entry(&mut self) -> Result<&'a [u8]> {
+        let length = self.buf.consume_u32("journal_length")? as usize;
+        self.buf.consume_bytes(length, "journal")
+    }
 }
 
 impl<'a> Iterator for JournalIter<'a> {
     type Item = Result<&'a [u8]>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // Check if all entries have been consumed.
         if self.remaining == 0 {
             return None;
         }
         self.remaining -= 1;
 
-        // Read length prefix.
-        let length = match self.buf[..4].parse_u32("journal_length") {
-            Ok(len) => len as usize,
-            Err(e) => return Some(Err(e)),
-        };
-
-        // Advance past consumed bytes.
-        let journal = &self.buf[4..4 + length];
-        self.buf = &self.buf[4 + length..];
-
-        Some(Ok(journal))
+        Some(self.decode_entry())
     }
 }

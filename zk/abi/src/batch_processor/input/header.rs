@@ -21,14 +21,14 @@ impl<'a> Header<'a> {
     /// n_txs(4).
     pub const SIZE: usize = 32 + 8 + 32 + 4 + 4;
 
-    /// Decodes the header from the start of a buffer.
-    pub fn decode(buf: &'a [u8]) -> Result<Self> {
+    /// Decodes the header, advancing `buf` past the consumed bytes.
+    pub fn decode(buf: &mut &'a [u8]) -> Result<Self> {
         Ok(Self {
-            image_id: buf[0..32].parse_into("image_id")?,
-            batch_index: buf[32..40].parse_u64("batch_index")?,
-            prev_root: buf[40..72].parse_into("prev_root")?,
-            n_resources: buf[72..76].parse_u32("n_resources")?,
-            n_txs: buf[76..80].parse_u32("n_txs")?,
+            image_id: buf.consume_array::<32>("image_id")?,
+            batch_index: buf.consume_u64("batch_index")?,
+            prev_root: buf.consume_array::<32>("prev_root")?,
+            n_resources: buf.consume_u32("n_resources")?,
+            n_txs: buf.consume_u32("n_txs")?,
         })
     }
 

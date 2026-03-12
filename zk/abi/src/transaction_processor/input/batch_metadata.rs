@@ -12,11 +12,11 @@ impl<'a> BatchMetadata<'a> {
     /// Wire size: block_hash(32) + blue_score(8).
     pub const SIZE: usize = 32 + 8;
 
-    /// Decodes batch metadata from a wire buffer.
-    pub fn decode(buf: &'a [u8]) -> Result<Self> {
+    /// Decodes batch metadata, advancing `buf` past the consumed bytes.
+    pub fn decode(buf: &mut &'a [u8]) -> Result<Self> {
         Ok(Self {
-            block_hash: buf[0..32].parse_into("block_hash")?,
-            blue_score: buf[32..40].parse_u64("blue_score")?,
+            block_hash: buf.consume_array::<32>("block_hash")?,
+            blue_score: buf.consume_u64("blue_score")?,
         })
     }
 

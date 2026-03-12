@@ -12,6 +12,11 @@ pub struct Outputs {
 }
 
 impl Outputs {
+    /// Wire discriminant for a successful execution.
+    pub const OK: u8 = 0x00;
+    /// Wire discriminant for a failed execution.
+    pub const ERR: u8 = 0x01;
+
     /// Returns the storage operations.
     pub fn storage_ops(&self) -> &[Option<StorageOp>] {
         &self.storage_ops
@@ -19,22 +24,22 @@ impl Outputs {
 
     /// Decodes the execution result from the guest (host-side).
     #[cfg(feature = "host")]
-    pub fn decode(buf: &[u8]) -> Result<Self> {
+    pub fn decode(mut buf: &[u8]) -> Result<Self> {
         use crate::{Error, Parser};
 
-        match buf[0] {
-            0 => {
+        // Dispatch based on discriminant.
+        match buf.consume_u8("discriminant")? {
+            Self::OK => {
                 // Decode length-prefixed storage operations.
-                let count = buf[1..5].parse_u32("count")?;
-                let mut buf = &buf[5..];
-                let mut storage_ops = Vec::with_capacity(count as usize);
+                let count = buf.consume_u32("count")? as usize;
+                let mut storage_ops = Vec::with_capacity(count);
                 for _ in 0..count {
                     storage_ops.push(StorageOp::decode(&mut buf)?);
                 }
 
                 Ok(Self { storage_ops })
             }
-            _ => Err(Error::decode(&mut &buf[1..])?),
+            _ => Err(Error::decode(&mut buf)?),
         }
     }
 
@@ -43,7 +48,7 @@ impl Outputs {
         match *result {
             Ok(resources) => {
                 // Write Ok discriminant.
-                w.write(&[0]);
+                w.write(&[Self::OK]);
 
                 // Write length-prefixed list of storage operations.
                 w.write(&(resources.len() as u32).to_le_bytes());
@@ -53,7 +58,7 @@ impl Outputs {
             }
             Err(ref err) => {
                 // Write Err discriminant and encode error.
-                w.write(&[1]);
+                w.write(&[Self::ERR]);
                 err.encode(w);
             }
         }

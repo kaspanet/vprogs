@@ -109,12 +109,12 @@ impl<'a> Resource<'a> {
 
     /// Decodes a resource from its header bytes, splitting off its backing from `data` and
     /// advancing past the consumed bytes.
-    pub(crate) fn decode(header: &'a [u8], buf: &mut &'a mut [u8]) -> Result<Self> {
+    pub(crate) fn decode(mut header: &'a [u8], buf: &mut &'a mut [u8]) -> Result<Self> {
         // Parse header fields.
-        let resource_id: &[u8; 32] = header[0..32].parse_into("resource_id")?;
-        let is_new = header[32] & 1;
-        let resource_index = header[33..37].parse_u32("resource_index")?;
-        let data_length = header[37..41].parse_u32("data_length")? as usize;
+        let resource_id = header.consume_array::<32>("resource_id")?;
+        let is_new = header.consume_bool("is_new")?;
+        let resource_index = header.consume_u32("resource_index")?;
+        let data_length = header.consume_u32("data_length")? as usize;
 
         // Split off the backing slice from the start of `data` and advance `data` past it.
         let (backing, rest) = mem::take(buf).split_at_mut(data_length);
@@ -125,7 +125,7 @@ impl<'a> Resource<'a> {
             backing,
             promoted: None,
             resource_index,
-            is_new: is_new != 0,
+            is_new,
             dirty: false,
             deleted: false,
         })

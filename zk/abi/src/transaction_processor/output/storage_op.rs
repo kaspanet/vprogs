@@ -27,26 +27,25 @@ impl StorageOp {
         use crate::Parser;
 
         // Read dirty flag. Unchanged (non-dirty) resources are encoded as a single 0 byte.
-        let is_dirty = buf[0] != 0;
-        if !is_dirty {
-            *buf = &buf[1..];
+        if !buf.consume_bool("dirty_flag")? {
             return Ok(None);
         }
 
-        // Read variant and return if deleted.
-        let variant = buf[1];
-        if variant == Self::DELETE {
-            *buf = &buf[2..];
-            return Ok(Some(Self::Delete));
+        // Decode variant.
+        match buf.consume_u8("variant")? {
+            Self::DELETE => Ok(Some(Self::Delete)),
+            variant => {
+                // Decode length prefix.
+                let data_length = buf.consume_u32("data_length")? as usize;
+
+                // Read the data and construct the corresponding variant.
+                Ok(Some(if variant == Self::CREATE {
+                    Self::Create(buf.consume_bytes(data_length, "data")?.to_vec())
+                } else {
+                    Self::Update(buf.consume_bytes(data_length, "data")?.to_vec())
+                }))
+            }
         }
-
-        // Read length prefix and data for new/updated resources.
-        let data_length = buf[2..6].parse_u32("data_length")? as usize;
-        let data = buf[6..6 + data_length].to_vec();
-        *buf = &buf[6 + data_length..];
-
-        // Return create vs update variant based on the variant byte.
-        Ok(Some(if variant == Self::CREATE { Self::Create(data) } else { Self::Update(data) }))
     }
 
     /// Encodes a resource as `Option<StorageOp>`, translating dirty/deleted/new flags into the

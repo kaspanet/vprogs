@@ -24,17 +24,20 @@ impl<'a> InputCommitment<'a> {
     pub const HEADER_SIZE: usize = 32 + 4 + BatchMetadata::SIZE + 4;
 
     /// Decodes an input commitment from a journal segment payload.
-    pub fn decode(buf: &'a [u8]) -> Result<Self> {
-        // Parse fixed header fields.
-        let tx_id: &[u8; 32] = buf[0..32].parse_into("tx_id")?;
-        let tx_index = buf[32..36].parse_u32("tx_index")?;
-        let batch_metadata = BatchMetadata::decode(&buf[36..76])?;
-        let resource_count = buf[76..80].parse_u32("resource_count")?;
+    pub fn decode(mut buf: &'a [u8]) -> Result<Self> {
+        // Decode fixed header fields.
+        let tx_id = buf.consume_array::<32>("tx_id")?;
+        let tx_index = buf.consume_u32("tx_index")?;
+        let batch_metadata = BatchMetadata::decode(&mut buf)?;
+        let resource_count = buf.consume_u32("resource_count")?;
 
-        // Create zero-copy iterator over resource entries.
-        let resources = InputResourceCommitments::new(&buf[Self::HEADER_SIZE..], resource_count);
-
-        Ok(Self { tx_id, tx_index, batch_metadata, resources })
+        Ok(Self {
+            tx_id,
+            tx_index,
+            batch_metadata,
+            // Remaining bytes are per-resource input commitments.
+            resources: InputResourceCommitments::new(buf, resource_count),
+        })
     }
 
     /// Encodes an input commitment segment to the journal (guest-side).

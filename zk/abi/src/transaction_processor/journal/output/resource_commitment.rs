@@ -16,18 +16,8 @@ impl<'a> OutputResourceCommitment<'a> {
 
     /// Decodes a single output commitment, advancing `buf` past the consumed bytes.
     pub fn decode(buf: &mut &'a [u8]) -> Result<Self> {
-        // Parse flag byte.
-        let flag = buf[0];
-        *buf = &buf[1..];
-
-        // Decode variant based on flag.
-        match flag {
-            Self::CHANGED => {
-                let hash: &[u8; 32] = buf[..32].parse_into("hash")?;
-                *buf = &buf[32..];
-
-                Ok(Self::Changed(hash))
-            }
+        match buf.consume_u8("flag")? {
+            Self::CHANGED => Ok(Self::Changed(buf.consume_array::<32>("hash")?)),
             Self::UNCHANGED => Ok(Self::Unchanged),
             _ => Err(Error::Decode("invalid resource output flag".into())),
         }

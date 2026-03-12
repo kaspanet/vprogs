@@ -24,12 +24,9 @@ impl<'a> JournalEntry<'a> {
     /// Wire layout per entry: `opcode(1) + payload_len(4) + payload(N)`.
     pub fn decode(buf: &mut &'a [u8]) -> Result<Self> {
         // Parse TLV header.
-        let opcode = buf[0];
-        let payload_length = buf[1..5].parse_u32("payload_length")? as usize;
-        let payload = &buf[5..5 + payload_length];
-
-        // Advance past consumed bytes.
-        *buf = &buf[5 + payload_length..];
+        let opcode = buf.consume_u8("opcode")?;
+        let payload_length = buf.consume_u32("payload_length")? as usize;
+        let payload = buf.consume_bytes(payload_length, "payload")?;
 
         // Dispatch to segment decoder.
         match opcode {

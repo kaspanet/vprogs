@@ -31,30 +31,14 @@ impl Error {
 
     /// Decodes an error, advancing `buf` past the consumed bytes.
     pub fn decode(buf: &mut &[u8]) -> Result<Self> {
-        // Parse discriminant.
-        let variant = buf[0];
-        *buf = &buf[1..];
-
-        // Decode variant.
-        match variant {
-            Self::GUEST => {
-                // Decode error code.
-                let code = buf[..4].parse_u32("error_code")?;
-                *buf = &buf[4..];
-
-                Ok(Self::Guest(code))
-            }
+        // Dispatch based on discriminant.
+        match buf.consume_u8("error_variant")? {
+            Self::GUEST => Ok(Self::Guest(buf.consume_u32("error_code")?)),
             Self::DECODE => {
-                // Decode length-prefixed error message.
-                let len = buf[..4].parse_u32("error_msg_length")? as usize;
-                *buf = &buf[4..];
-
-                // Decode UTF-8 error message.
-                let msg = core::str::from_utf8(&buf[..len])
+                let len = buf.consume_u32("error_msg_length")? as usize;
+                let msg = core::str::from_utf8(buf.consume_bytes(len, "error_msg")?)
                     .map_err(|_| Error::Decode("invalid error message utf8".into()))?
                     .into();
-                *buf = &buf[len..];
-
                 Ok(Self::Decode(msg))
             }
             _ => Err(Error::Decode("invalid error discriminant".into())),

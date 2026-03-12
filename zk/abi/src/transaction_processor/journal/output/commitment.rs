@@ -1,7 +1,7 @@
 use vprogs_zk_smt::EMPTY_LEAF_HASH;
 
 use crate::{
-    Error, Result, Write,
+    Error, Parser, Result, Write,
     transaction_processor::{
         JournalEntry, OutputResourceCommitment, OutputResourceCommitments, Resource,
     },
@@ -22,11 +22,10 @@ impl<'a> OutputCommitment<'a> {
     pub const ERROR: u8 = 0x01;
 
     /// Decodes an output commitment from a journal segment payload.
-    pub fn decode(payload: &'a [u8]) -> Result<Self> {
-        // Dispatch based on discriminant.
-        match payload[0] {
-            Self::SUCCESS => Ok(Self::Success(OutputResourceCommitments::new(&payload[1..]))),
-            Self::ERROR => Ok(Self::Error(Error::decode(&mut &payload[1..])?)),
+    pub fn decode(mut buf: &'a [u8]) -> Result<Self> {
+        match buf.consume_u8("discriminant")? {
+            Self::SUCCESS => Ok(Self::Success(OutputResourceCommitments::new(buf))),
+            Self::ERROR => Ok(Self::Error(Error::decode(&mut buf)?)),
             _ => Err(Error::Decode("invalid output commitment discriminant".into())),
         }
     }
@@ -64,7 +63,7 @@ impl<'a> OutputCommitment<'a> {
             Err(ref err) => {
                 // Segment header: opcode + payload length.
                 w.write(&[JournalEntry::OPCODE_OUTPUT]);
-                w.write(&(1 + err.wire_size() as u32).to_le_bytes());
+                w.write(&((1 + err.wire_size()) as u32).to_le_bytes());
 
                 // Error discriminant + encoded error.
                 w.write(&[Self::ERROR]);

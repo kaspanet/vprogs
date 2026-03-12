@@ -18,25 +18,22 @@ pub struct JournalEntries<'a> {
 
 impl<'a> JournalEntries<'a> {
     /// Decodes a transaction processor journal (host-side).
-    pub fn decode(mut journal: &'a [u8]) -> Result<Self> {
-        if journal.is_empty() {
+    pub fn decode(mut buf: &'a [u8]) -> Result<Self> {
+        if buf.is_empty() {
             return Err(Error::Decode("empty journal".into()));
         }
 
         // Decode input commitment (must be first).
-        let input_commitment;
-        if let JournalEntry::Input(i) = JournalEntry::decode(&mut journal)? {
-            input_commitment = i;
-        } else {
+        let JournalEntry::Input(input_commitment) = JournalEntry::decode(&mut buf)? else {
             return Err(Error::Decode("first entry must be input commitment".into()));
-        }
+        };
 
         // Decode remaining entries until we find the output commitment.
         let mut entries = Vec::new();
-        while !journal.is_empty() {
-            match JournalEntry::decode(&mut journal)? {
+        while !buf.is_empty() {
+            match JournalEntry::decode(&mut buf)? {
                 JournalEntry::Output(output_commitment) => {
-                    if !journal.is_empty() {
+                    if !buf.is_empty() {
                         return Err(Error::Decode("premature output commitment".into()));
                     }
 

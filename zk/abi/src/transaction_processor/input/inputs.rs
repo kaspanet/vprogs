@@ -25,14 +25,17 @@ impl<'a> Inputs<'a> {
     ///
     /// Wire layout: `fixed_header | tx_bytes | resource_headers | resource_data`
     pub fn decode(buf: &'a mut [u8]) -> Result<Self> {
-        // Decode fixed header.
+        // Split fixed header from the rest of the buffer, creating mutable view for resource data.
         let (header, data) = buf.split_at_mut(Self::FIXED_HEADER_SIZE);
-        let tx_index = header[0..4].parse_u32("tx_index")?;
-        let resource_count = header[4..8].parse_u32("resource_count")? as usize;
-        let batch_metadata = BatchMetadata::decode(&header[8..])?;
+        let mut header: &[u8] = header;
+
+        // Decode fixed header.
+        let tx_index = header.consume_u32("tx_index")?;
+        let resource_count = header.consume_u32("resource_count")? as usize;
+        let batch_metadata = BatchMetadata::decode(&mut header)?;
+        let tx_length = header.consume_u32("tx_length")? as usize;
 
         // Decode transaction bytes.
-        let tx_length = header[8 + BatchMetadata::SIZE..].parse_u32("tx_length")? as usize;
         let (tx, resources) = data.split_at_mut(tx_length);
 
         // Decode resources.
