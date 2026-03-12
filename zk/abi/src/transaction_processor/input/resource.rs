@@ -27,7 +27,7 @@ pub struct Resource<'a> {
 
 impl<'a> Resource<'a> {
     /// Returns the resource identifier.
-    pub fn resource_id(&self) -> &ResourceId {
+    pub fn id(&self) -> &ResourceId {
         self.resource_id
     }
 
@@ -55,23 +55,20 @@ impl<'a> Resource<'a> {
         }
     }
 
-    /// Resizes the resource data to `new_len` bytes.
-    ///
-    /// When shrinking, truncates in-place without allocating. When growing, promotes to a
-    /// heap-allocated buffer (copies existing data, pads with zeros).
+    /// Resizes the resource data to `new_len` bytes, promoting to a heap-allocated buffer if
+    /// necessary.
     pub fn resize(&mut self, new_len: usize) {
-        let current_len = self.data().len();
-        if new_len <= current_len {
-            // Shrink: truncate without allocating.
+        if new_len <= self.data().len() {
+            // Shrink: truncate in-place without allocating.
             match self.promoted {
                 Some(ref mut v) => v.truncate(new_len),
                 None => {
-                    let backing = core::mem::take(&mut self.backing);
+                    let backing = mem::take(&mut self.backing);
                     self.backing = &mut backing[..new_len];
                 }
             }
         } else {
-            // Grow.
+            // Grow: resize in-place or promote to heap if still on the backing slice.
             match self.promoted {
                 Some(ref mut v) => v.resize(new_len, 0),
                 None => {
@@ -82,6 +79,7 @@ impl<'a> Resource<'a> {
                 }
             }
         }
+
         self.dirty = true;
     }
 
@@ -140,6 +138,7 @@ impl<'a> Resource<'a> {
         resource_index: u32,
         data_len: u32,
     ) {
+        // Write header fields.
         buf.extend_from_slice(resource_id.as_bytes());
         buf.push(if is_new { 1 } else { 0 });
         buf.extend_from_slice(&resource_index.to_le_bytes());

@@ -37,7 +37,7 @@ impl<'a> InputCommitment<'a> {
         Self { tx_id, tx_index, batch_metadata, resources }
     }
 
-    /// Guest-side: encode an input commitment segment to the journal.
+    /// Encodes an input commitment segment to the journal (guest-side).
     pub fn encode(w: &mut impl Write, input: &Inputs<'_>) {
         // Segment header: opcode + payload length.
         let payload_len = Self::HEADER_SIZE + InputResourceCommitment::SIZE * input.resources.len();
@@ -54,7 +54,7 @@ impl<'a> InputCommitment<'a> {
         for r in &input.resources {
             let data = r.data();
             w.write(&r.index().to_le_bytes());
-            w.write(r.resource_id().as_bytes());
+            w.write(r.id().as_bytes());
             w.write(&if data.is_empty() {
                 EMPTY_LEAF_HASH
             } else {

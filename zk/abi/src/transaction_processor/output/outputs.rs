@@ -17,7 +17,7 @@ impl Outputs {
         &self.storage_ops
     }
 
-    /// Host-side: decode execution result from guest.
+    /// Decodes the execution result from the guest (host-side).
     #[cfg(feature = "host")]
     pub fn decode(buf: &[u8]) -> Result<Self> {
         match buf[0] {
@@ -32,13 +32,14 @@ impl Outputs {
 
                 Ok(Self { storage_ops })
             }
-            _ => Err(crate::Error(u32::from_le_bytes(
-                buf[1..5].try_into().expect("error code truncated"),
-            ))),
+            _ => Err(crate::Error({
+                // Decode error code.
+                u32::from_le_bytes(buf[1..5].try_into().expect("error code truncated"))
+            })),
         }
     }
 
-    /// Guest-side: encode execution result to host stream.
+    /// Encodes the execution result to the host stream (guest-side).
     pub fn encode(result: Result<&[Resource<'_>]>, w: &mut impl Write) {
         match result {
             Ok(resources) => {

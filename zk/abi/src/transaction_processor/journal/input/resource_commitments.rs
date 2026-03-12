@@ -19,11 +19,13 @@ impl<'a> Iterator for InputResourceCommitments<'a> {
     type Item = InputResourceCommitment<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // Check if all entries have been consumed.
         if self.remaining == 0 {
             return None;
         }
         self.remaining -= 1;
 
+        // Decode next entry, advancing the buffer.
         Some(InputResourceCommitment::decode(&mut self.buf))
     }
 }

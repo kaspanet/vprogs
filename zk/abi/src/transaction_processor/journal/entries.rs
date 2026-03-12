@@ -14,7 +14,7 @@ pub struct JournalEntries<'a> {
 }
 
 impl<'a> JournalEntries<'a> {
-    /// Host-side: decode a transaction processor journal.
+    /// Decodes a transaction processor journal (host-side).
     pub fn decode(mut journal: &'a [u8]) -> Self {
         if journal.is_empty() {
             panic!("empty journal: missing input commitment");

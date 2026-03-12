@@ -17,10 +17,12 @@ impl<'a> Iterator for OutputResourceCommitments<'a> {
     type Item = OutputResourceCommitment<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // Check if all entries have been consumed.
         if self.buf.is_empty() {
             return None;
         }
 
+        // Decode next entry, advancing the buffer.
         Some(OutputResourceCommitment::decode(&mut self.buf))
     }
 }

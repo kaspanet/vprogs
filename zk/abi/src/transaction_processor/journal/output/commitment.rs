@@ -11,7 +11,6 @@ use crate::{
 pub enum OutputCommitment<'a> {
     /// Transaction executed successfully; contains per-resource output commitments.
     Success(OutputResourceCommitments<'a>),
-
     /// Transaction execution failed; contains the numeric error code.
     Error(u32),
 }
@@ -24,6 +23,7 @@ impl<'a> OutputCommitment<'a> {
 
     /// Decodes an output commitment from a journal segment payload.
     pub fn decode(payload: &'a [u8]) -> Self {
+        // Dispatch based on discriminant.
         match payload[0] {
             Self::SUCCESS => Self::Success(OutputResourceCommitments::new(&payload[1..])),
             Self::ERROR => Self::Error(u32::from_le_bytes(payload[1..5].try_into().unwrap())),
@@ -31,7 +31,7 @@ impl<'a> OutputCommitment<'a> {
         }
     }
 
-    /// Guest-side: encode an output commitment segment to the journal.
+    /// Encodes an output commitment segment to the journal (guest-side).
     pub fn encode(w: &mut impl Write, result: crate::Result<&[Resource<'_>]>) {
         match result {
             Ok(resources) => {
