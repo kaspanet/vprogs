@@ -75,10 +75,8 @@ RUN --mount=type=cache,target=/root/.cargo/registry \\
     RUSTFLAGS='${GUEST_RUSTFLAGS}' \\
     cargo +risc0 build --release --target riscv32im-risc0-zkvm-elf \\
       --manifest-path \$CARGO_MANIFEST_PATH && \\
-    cargo build --release --manifest-path zk/backend/risc0/build-tools/Cargo.toml && \\
     mkdir -p /output && \\
-    cp target/riscv32im-risc0-zkvm-elf/release/${bin_name} /output/ && \\
-    ./target/release/build-tools /output/${bin_name}
+    cp target/riscv32im-risc0-zkvm-elf/release/${bin_name} /output/
 
 FROM scratch AS export
 COPY --from=build /output/ /
@@ -90,7 +88,7 @@ EOF
 
   rm -f "$dockerfile"
 
-  # Copy the wrapped ELF into the program crate's compiled/ directory.
+  # Copy the raw ELF into the program crate's compiled/ directory.
   elf_dest="$SCRIPT_DIR/${program}/compiled/program.elf"
   mkdir -p "$(dirname "$elf_dest")"
   cp "$out_dir/${bin_name}" "$elf_dest"

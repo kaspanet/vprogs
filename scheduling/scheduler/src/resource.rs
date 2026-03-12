@@ -1,3 +1,5 @@
+use std::mem;
+
 use tap::Tap;
 use vprogs_core_types::AccessMetadata;
 use vprogs_storage_types::Store;
@@ -22,15 +24,21 @@ impl<S: Store, P: Processor> Resource<S, P> {
         access_metadata: &AccessMetadata,
         tx: &ScheduledTransactionRef<S, P>,
         batch: &ScheduledBatchRef<S, P>,
+        resource_index: &mut u32,
     ) -> ResourceAccess<S, P> {
         let (state_diff_ref, prev_access) = match self.last_access.take() {
             Some(prev_access) if prev_access.tx().belongs_to_batch(batch) => {
                 assert!(prev_access.tx() != tx, "duplicate access to resource");
                 (prev_access.state_diff(), Some(prev_access))
             }
-            prev_access => {
-                (StateDiff::new(batch.clone(), access_metadata.resource_id), prev_access)
-            }
+            prev_access => (
+                StateDiff::new(
+                    batch.clone(),
+                    access_metadata.resource_id,
+                    mem::replace(resource_index, *resource_index + 1),
+                ),
+                prev_access,
+            ),
         };
 
         ResourceAccess::new(*access_metadata, tx.clone(), state_diff_ref, prev_access)

@@ -2,7 +2,10 @@ use tokio::sync::mpsc;
 use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
 use vprogs_scheduling_scheduler::{Processor, TransactionContext};
 use vprogs_storage_types::Store;
-use vprogs_zk_abi::{Error, Result, StorageOp, host};
+use vprogs_zk_abi::{
+    Error, Result,
+    transaction_processor::{Inputs, Outputs, StorageOp},
+};
 
 use crate::{Backend, ProofRequest};
 
@@ -31,38 +34,36 @@ impl<B> Vm<B> {
 impl<B: Backend> Processor for Vm<B> {
     fn process_transaction<S: Store>(&self, ctx: &mut TransactionContext<S, Self>) -> Result<()> {
         // 1. Encode into ABI wire format.
-        let wire_bytes = host::encode_transaction_context(&*ctx);
+        let wire_bytes = Inputs::encode(&*ctx);
 
-        // 2. Execute via backend.
-        let execution_result = self.backend.execute_transaction(&wire_bytes);
+        // 2. Execute via backend (returns raw bytes).
+        let execution_result_bytes = self.backend.execute_transaction(&wire_bytes);
 
-        // 3. Apply storage operations on success, capture error on failure.
-        let return_value = match &execution_result {
-            Ok(storage_ops) => {
-                for (i, storage_op) in storage_ops.iter().enumerate() {
-                    if let Some(op) = storage_op {
-                        let data = ctx.resources_mut()[i].data_mut();
-                        match op {
-                            StorageOp::Create(new_data) | StorageOp::Update(new_data) => {
-                                data.clear();
-                                data.extend_from_slice(new_data);
-                            }
-                            StorageOp::Delete => data.clear(),
+        // 3. Decode and apply storage operations on success.
+        let return_value = Outputs::decode(&execution_result_bytes).map(|output| {
+            for (i, op) in output.storage_ops().iter().enumerate() {
+                if let Some(op) = op {
+                    let data = ctx.resources_mut()[i].data_mut();
+                    match op {
+                        StorageOp::Create(new_data) | StorageOp::Update(new_data) => {
+                            data.clear();
+                            data.extend_from_slice(new_data);
                         }
+                        StorageOp::Delete => data.clear(),
                     }
                 }
-                Ok(())
             }
-            Err(e) => Err(*e),
-        };
+        });
 
         // 4. Optionally send a proof request to the proving pipeline.
         if let Some(ref proof_tx) = self.proof_tx {
+            let resource_indices = ctx.resources().iter().map(|r| r.resource_index()).collect();
             let _ = proof_tx.send(ProofRequest {
                 wire_bytes,
                 block_hash: ctx.batch_metadata().block_hash().as_bytes(),
                 tx_index: ctx.tx_index(),
-                execution_result,
+                execution_result_bytes,
+                resource_indices,
             });
         }
 

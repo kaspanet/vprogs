@@ -64,6 +64,12 @@ impl<S: Store, P: Processor> ResourceAccess<S, P> {
         self.is_batch_tail.load(Ordering::Relaxed)
     }
 
+    /// Returns the per-batch resource index.
+    #[inline(always)]
+    pub fn resource_index(&self) -> u32 {
+        self.state_diff.index()
+    }
+
     pub(crate) fn new(
         access_metadata: AccessMetadata,
         tx: ScheduledTransactionRef<S, P>,

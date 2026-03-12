@@ -16,6 +16,12 @@ pub struct AccessHandle<'a, S: Store, P: Processor> {
 }
 
 impl<'a, S: Store, P: Processor> AccessHandle<'a, S, P> {
+    /// Returns the per-batch resource index.
+    #[inline]
+    pub fn resource_index(&self) -> u32 {
+        self.access.resource_index()
+    }
+
     /// Returns the access metadata for this resource.
     #[inline]
     pub fn access_metadata(&self) -> &AccessMetadata {

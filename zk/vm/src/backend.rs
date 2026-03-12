@@ -1,5 +1,3 @@
-use vprogs_zk_abi::{Result, StorageOp};
-
 /// Abstraction over a zero-knowledge VM backend (e.g. RISC-0, SP1).
 ///
 /// Implementations own their ELF binaries and receive pre-encoded wire bytes
@@ -9,14 +7,17 @@ pub trait Backend: Clone + Send + Sync + 'static {
     type Receipt: Send + Sync + 'static;
 
     /// Execute a transaction from pre-encoded wire bytes.
-    /// Returns one optional state op per account, or an error.
-    fn execute_transaction(&self, wire_bytes: &[u8]) -> Result<Vec<Option<StorageOp>>>;
+    /// Returns the raw execution result bytes.
+    fn execute_transaction(&self, wire_bytes: &[u8]) -> Vec<u8>;
 
     /// Prove a previously executed transaction from pre-encoded wire bytes.
-    fn prove_transaction(&self, wire_bytes: &[u8]) -> Result<Self::Receipt>;
+    fn prove_transaction(&self, wire_bytes: &[u8]) -> Self::Receipt;
 
-    /// Prove a batch of transactions.
-    fn prove_batch(&self, block_hash: [u8; 32], journals: &[Vec<u8>]) -> Result<Self::Receipt>;
+    /// Prove a batch of transactions from the encoded batch witness.
+    ///
+    /// `assumptions` contains the inner transaction receipts that the batch guest will verify
+    /// via composition.
+    fn prove_batch(&self, batch_witness: &[u8], assumptions: &[&Self::Receipt]) -> Self::Receipt;
 
     /// Extract journal bytes from a receipt.
     fn journal_bytes(receipt: &Self::Receipt) -> Vec<u8>;

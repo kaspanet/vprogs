@@ -756,6 +756,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "blake3"
+version = "1.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2468ef7d57b3fb7e16b576e8377cdbde2320c60e1491e961d11da40fc4f02a2d"
+dependencies = [
+ "arrayref",
+ "arrayvec",
+ "cc",
+ "cfg-if",
+ "constant_time_eq",
+ "cpufeatures",
+]
+
+[[package]]
 name = "block"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7786,19 +7800,24 @@ version = "0.1.0"
 name = "vprogs-zk-abi"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "borsh",
  "thiserror 2.0.18",
  "vprogs-core-types",
  "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
  "vprogs-storage-types",
+ "vprogs-zk-smt",
 ]
 
 [[package]]
-name = "vprogs-zk-backend-risc0-api-host"
+name = "vprogs-zk-backend-risc0-api"
 version = "0.1.0"
 dependencies = [
+ "risc0-binfmt",
+ "risc0-zkos-v1compat",
  "risc0-zkvm",
+ "vprogs-core-macros",
  "vprogs-zk-abi",
  "vprogs-zk-vm",
 ]
@@ -7807,10 +7826,30 @@ dependencies = [
 name = "vprogs-zk-prover"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "borsh",
  "log",
+ "risc0-binfmt",
+ "risc0-zkos-v1compat",
+ "tempfile",
  "tokio",
+ "vprogs-core-test-utils",
+ "vprogs-core-types",
+ "vprogs-l1-types",
+ "vprogs-scheduling-scheduler",
+ "vprogs-storage-manager",
+ "vprogs-storage-rocksdb-store",
  "vprogs-zk-abi",
+ "vprogs-zk-backend-risc0-api",
+ "vprogs-zk-smt",
  "vprogs-zk-vm",
+]
+
+[[package]]
+name = "vprogs-zk-smt"
+version = "0.1.0"
+dependencies = [
+ "blake3",
 ]
 
 [[package]]
@@ -7827,7 +7866,7 @@ dependencies = [
  "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
  "vprogs-zk-abi",
- "vprogs-zk-backend-risc0-api-host",
+ "vprogs-zk-backend-risc0-api",
 ]
 
 [[package]]
