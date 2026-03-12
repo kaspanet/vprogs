@@ -21,6 +21,9 @@ pub trait Parser<'a> {
 
     /// Reads a fixed-size array reference and advances the cursor past it.
     fn consume_array<const N: usize>(&mut self, field: &'static str) -> Result<&'a [u8; N]>;
+
+    /// Reads a length-prefixed UTF-8 string: `len(4) + bytes(len)`.
+    fn consume_string(&mut self, field: &'static str) -> Result<&'a str>;
 }
 
 impl<'a> Parser<'a> for &'a [u8] {
@@ -57,5 +60,11 @@ impl<'a> Parser<'a> for &'a [u8] {
     fn consume_array<const N: usize>(&mut self, field: &'static str) -> Result<&'a [u8; N]> {
         let bytes = self.consume_bytes(N, field)?;
         bytes.try_into().map_err(|_| Error::Decode(field.into()))
+    }
+
+    fn consume_string(&mut self, field: &'static str) -> Result<&'a str> {
+        let len = self.consume_u32(field)? as usize;
+        let bytes = self.consume_bytes(len, field)?;
+        core::str::from_utf8(bytes).map_err(|_| Error::Decode(field.into()))
     }
 }

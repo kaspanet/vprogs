@@ -31,13 +31,10 @@ impl<'a> InputCommitment<'a> {
         let batch_metadata = BatchMetadata::decode(&mut buf)?;
         let resource_count = buf.consume_u32("resource_count")?;
 
-        Ok(Self {
-            tx_id,
-            tx_index,
-            batch_metadata,
-            // Remaining bytes are per-resource input commitments.
-            resources: InputResourceCommitments::new(buf, resource_count),
-        })
+        // Create zero-copy iterator over resource entries.
+        let resources = InputResourceCommitments::new(buf, resource_count);
+
+        Ok(Self { tx_id, tx_index, batch_metadata, resources })
     }
 
     /// Encodes an input commitment segment to the journal (guest-side).

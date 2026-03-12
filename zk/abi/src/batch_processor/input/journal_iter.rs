@@ -25,6 +25,7 @@ impl<'a> Iterator for JournalIter<'a> {
     type Item = Result<&'a [u8]>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // Check if all entries have been consumed.
         if self.remaining == 0 {
             return None;
         }

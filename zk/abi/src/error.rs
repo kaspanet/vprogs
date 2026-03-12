@@ -34,13 +34,7 @@ impl Error {
         // Dispatch based on discriminant.
         match buf.consume_u8("error_variant")? {
             Self::GUEST => Ok(Self::Guest(buf.consume_u32("error_code")?)),
-            Self::DECODE => {
-                let len = buf.consume_u32("error_msg_length")? as usize;
-                let msg = core::str::from_utf8(buf.consume_bytes(len, "error_msg")?)
-                    .map_err(|_| Error::Decode("invalid error message utf8".into()))?
-                    .into();
-                Ok(Self::Decode(msg))
-            }
+            Self::DECODE => Ok(Self::Decode(buf.consume_string("error_msg")?.into())),
             _ => Err(Error::Decode("invalid error discriminant".into())),
         }
     }
