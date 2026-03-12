@@ -20,12 +20,15 @@ impl<'a> JournalEntry<'a> {
     ///
     /// Wire layout per entry: `opcode(1) + payload_len(4) + payload(N)`.
     pub fn decode(buf: &mut &'a [u8]) -> Self {
+        // Parse TLV header.
         let opcode = buf[0];
         let payload_len = u32::from_le_bytes(buf[1..5].try_into().unwrap()) as usize;
         let payload = &buf[5..5 + payload_len];
+
+        // Advance past consumed bytes.
         *buf = &buf[5 + payload_len..];
 
-        // Dispatch to the appropriate segment decoder.
+        // Dispatch to segment decoder.
         match opcode {
             Self::OPCODE_INPUT => Self::Input(InputCommitment::decode(payload)),
             Self::OPCODE_OUTPUT => Self::Output(OutputCommitment::decode(payload)),

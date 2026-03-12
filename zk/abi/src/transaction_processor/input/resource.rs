@@ -109,7 +109,7 @@ impl<'a> Resource<'a> {
 
     /// Decodes a resource from its header bytes, splitting off its backing from `data` and
     /// advancing past the consumed bytes.
-    pub(crate) fn decode(header: &'a [u8], data: &mut &'a mut [u8]) -> Self {
+    pub(crate) fn decode(header: &'a [u8], buf: &mut &'a mut [u8]) -> Self {
         // Parse header fields.
         let resource_id = header[0..32].try_into().expect("truncated resource");
         let is_new = header[32] & 1;
@@ -117,8 +117,8 @@ impl<'a> Resource<'a> {
         let data_len = header[37..41].try_into().expect("truncated resource");
 
         // Split off the backing slice from the start of `data` and advance `data` past it.
-        let (backing, rest) = mem::take(data).split_at_mut(u32::from_le_bytes(data_len) as usize);
-        *data = rest;
+        let (backing, rest) = mem::take(buf).split_at_mut(u32::from_le_bytes(data_len) as usize);
+        *buf = rest;
 
         Self {
             resource_id: ResourceId::from_bytes_ref(resource_id),

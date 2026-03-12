@@ -21,17 +21,6 @@ impl<'a> Iterator for OutputResourceCommitments<'a> {
             return None;
         }
 
-        let flag = self.buf[0];
-        self.buf = &self.buf[1..];
-
-        match flag {
-            OutputResourceCommitment::CHANGED => {
-                let hash: &[u8; 32] = self.buf[..32].try_into().unwrap();
-                self.buf = &self.buf[32..];
-                Some(OutputResourceCommitment::Changed(hash))
-            }
-            OutputResourceCommitment::UNCHANGED => Some(OutputResourceCommitment::Unchanged),
-            _ => panic!("invalid resource output flag: {flag}"),
-        }
+        Some(OutputResourceCommitment::decode(&mut self.buf))
     }
 }

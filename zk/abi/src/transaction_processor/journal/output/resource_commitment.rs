@@ -6,9 +6,28 @@ pub enum OutputResourceCommitment<'a> {
     Unchanged,
 }
 
-impl OutputResourceCommitment<'_> {
+impl<'a> OutputResourceCommitment<'a> {
     /// Wire flag: resource data was modified (32-byte hash follows).
     pub const CHANGED: u8 = 0x01;
     /// Wire flag: resource data was not modified (no hash follows).
     pub const UNCHANGED: u8 = 0x00;
+
+    /// Decodes a single output commitment, advancing `buf` past the consumed bytes.
+    pub fn decode(buf: &mut &'a [u8]) -> Self {
+        // Parse flag byte.
+        let flag = buf[0];
+        *buf = &buf[1..];
+
+        // Decode variant based on flag.
+        match flag {
+            Self::CHANGED => {
+                let hash: &[u8; 32] = buf[..32].try_into().unwrap();
+                *buf = &buf[32..];
+
+                Self::Changed(hash)
+            }
+            Self::UNCHANGED => Self::Unchanged,
+            _ => panic!("invalid resource output flag: {flag}"),
+        }
+    }
 }

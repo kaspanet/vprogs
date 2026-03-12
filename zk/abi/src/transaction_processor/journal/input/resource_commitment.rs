@@ -18,18 +18,26 @@ impl<'a> InputResourceCommitment<'a> {
 
     /// Decodes the full wire format, advancing `buf` past the consumed bytes.
     pub fn decode(buf: &mut &'a [u8]) -> Self {
+        // Parse fields.
         let resource_index = u32::from_le_bytes(buf[0..4].try_into().unwrap());
         let resource_id = buf[4..36].try_into().unwrap();
         let hash = buf[36..68].try_into().unwrap();
+
+        // Advance past consumed bytes.
         *buf = &buf[Self::SIZE..];
+
         Self { resource_index, resource_id, hash }
     }
 
     /// Decodes without the index prefix, advancing `buf` past the consumed bytes.
     pub fn decode_pre_indexed(buf: &mut &'a [u8], resource_index: u32) -> Self {
+        // Parse fields (index provided by caller).
         let resource_id = buf[0..32].try_into().unwrap();
         let hash = buf[32..64].try_into().unwrap();
+
+        // Advance past consumed bytes.
         *buf = &buf[Self::PRE_INDEXED_SIZE..];
+
         Self { resource_index, resource_id, hash }
     }
 

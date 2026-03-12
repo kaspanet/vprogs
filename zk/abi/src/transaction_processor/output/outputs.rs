@@ -29,6 +29,7 @@ impl Outputs {
                 for _ in 0..storage_ops.capacity() {
                     storage_ops.push(StorageOp::decode(&mut buf));
                 }
+
                 Ok(Self { storage_ops })
             }
             _ => Err(crate::Error(u32::from_le_bytes(
