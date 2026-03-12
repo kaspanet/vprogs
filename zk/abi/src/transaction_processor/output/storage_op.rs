@@ -23,28 +23,30 @@ impl StorageOp {
 
     /// Decodes an `Option<StorageOp>`, advancing `buf` past the consumed bytes.
     #[cfg(feature = "host")]
-    pub fn decode(buf: &mut &[u8]) -> Option<Self> {
+    pub fn decode(buf: &mut &[u8]) -> crate::Result<Option<Self>> {
+        use crate::Parser;
+
         // Read dirty flag. Unchanged (non-dirty) resources are encoded as a single 0 byte.
         let is_dirty = buf[0] != 0;
         if !is_dirty {
             *buf = &buf[1..];
-            return None;
+            return Ok(None);
         }
 
         // Read variant and return if deleted.
         let variant = buf[1];
         if variant == Self::DELETE {
             *buf = &buf[2..];
-            return Some(Self::Delete);
+            return Ok(Some(Self::Delete));
         }
 
         // Read length prefix and data for new/updated resources.
-        let len = u32::from_le_bytes(buf[2..6].try_into().expect("truncated len")) as usize;
-        let data = buf[6..6 + len].to_vec();
-        *buf = &buf[6 + len..];
+        let data_length = buf[2..6].parse_u32("data_length")? as usize;
+        let data = buf[6..6 + data_length].to_vec();
+        *buf = &buf[6 + data_length..];
 
         // Return create vs update variant based on the variant byte.
-        Some(if variant == Self::CREATE { Self::Create(data) } else { Self::Update(data) })
+        Ok(Some(if variant == Self::CREATE { Self::Create(data) } else { Self::Update(data) }))
     }
 
     /// Encodes a resource as `Option<StorageOp>`, translating dirty/deleted/new flags into the

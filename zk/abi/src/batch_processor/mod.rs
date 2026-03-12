@@ -30,7 +30,8 @@ pub fn process_batch(
     ) -> crate::Result<[u8; 32]>,
 ) {
     let witness_bytes = host.read_blob();
-    let (header, commitments, multi_proof, tx_entries) = input::decode(&witness_bytes);
+    let (header, commitments, multi_proof, tx_entries) =
+        input::decode(&witness_bytes).expect("malformed batch input");
 
     let prev_root = *header.prev_root;
     let batch_index = header.batch_index;

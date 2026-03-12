@@ -1,6 +1,9 @@
 use alloc::vec::Vec;
 
-use crate::transaction_processor::{InputCommitment, JournalEntry, OutputCommitment};
+use crate::{
+    Error, Result,
+    transaction_processor::{InputCommitment, JournalEntry, OutputCommitment},
+};
 
 /// Decoded transaction processor journal containing input/output commitments and any additional
 /// entries.
@@ -15,34 +18,34 @@ pub struct JournalEntries<'a> {
 
 impl<'a> JournalEntries<'a> {
     /// Decodes a transaction processor journal (host-side).
-    pub fn decode(mut journal: &'a [u8]) -> Self {
+    pub fn decode(mut journal: &'a [u8]) -> Result<Self> {
         if journal.is_empty() {
-            panic!("empty journal: missing input commitment");
+            return Err(Error::Decode("empty journal"));
         }
 
         // Decode input commitment (must be first).
         let input_commitment;
-        if let JournalEntry::Input(i) = JournalEntry::decode(&mut journal) {
+        if let JournalEntry::Input(i) = JournalEntry::decode(&mut journal)? {
             input_commitment = i;
         } else {
-            panic!("invalid journal: first entry must be input commitment");
+            return Err(Error::Decode("first entry must be input commitment"));
         }
 
         // Decode remaining entries until we find the output commitment.
         let mut entries = Vec::new();
         while !journal.is_empty() {
-            match JournalEntry::decode(&mut journal) {
+            match JournalEntry::decode(&mut journal)? {
                 JournalEntry::Output(output_commitment) => {
                     if !journal.is_empty() {
-                        panic!("unexpected entries after output commitment");
+                        return Err(Error::Decode("unexpected entries after output commitment"));
                     }
 
-                    return Self { input_commitment, entries, output_commitment };
+                    return Ok(Self { input_commitment, entries, output_commitment });
                 }
                 other => entries.push(other),
             }
         }
 
-        panic!("missing output commitment");
+        Err(Error::Decode("missing output commitment"))
     }
 }

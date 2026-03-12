@@ -1,5 +1,7 @@
 use alloc::vec::Vec;
 
+use crate::{Parser, Result};
+
 /// Decoded batch processor input header.
 pub struct Header<'a> {
     /// Transaction processor guest image ID.
@@ -20,16 +22,14 @@ impl<'a> Header<'a> {
     pub const SIZE: usize = 32 + 8 + 32 + 4 + 4;
 
     /// Decodes the header from the start of a buffer.
-    pub fn decode(buf: &'a [u8]) -> Self {
-        assert!(buf.len() >= Self::SIZE, "input too short for header");
-
-        Self {
-            image_id: buf[0..32].try_into().unwrap(),
-            batch_index: u64::from_le_bytes(buf[32..40].try_into().unwrap()),
-            prev_root: buf[40..72].try_into().unwrap(),
-            n_resources: u32::from_le_bytes(buf[72..76].try_into().unwrap()),
-            n_txs: u32::from_le_bytes(buf[76..80].try_into().unwrap()),
-        }
+    pub fn decode(buf: &'a [u8]) -> Result<Self> {
+        Ok(Self {
+            image_id: buf[0..32].parse_into("image_id")?,
+            batch_index: buf[32..40].parse_u64("batch_index")?,
+            prev_root: buf[40..72].parse_into("prev_root")?,
+            n_resources: buf[72..76].parse_u32("n_resources")?,
+            n_txs: buf[76..80].parse_u32("n_txs")?,
+        })
     }
 
     /// Encodes the header into a buffer.

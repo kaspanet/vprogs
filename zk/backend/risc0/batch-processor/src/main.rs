@@ -36,7 +36,7 @@ fn main() {
             // Verify the inner proof.
             env::verify(*header.image_id, journal).expect("inner proof verification failed");
 
-            let tx_journal = TxJournal::decode(journal);
+            let tx_journal = TxJournal::decode(journal).expect("malformed journal");
 
             // Verify sequential tx_index.
             assert_eq!(

@@ -23,7 +23,7 @@ impl Abi {
     ) {
         // Read and decode inputs from host.
         let mut inputs_buf = host.read_blob();
-        let inputs = Inputs::decode(inputs_buf.as_mut_slice());
+        let inputs = Inputs::decode(inputs_buf.as_mut_slice()).expect("malformed host input");
 
         // Commit input commitment to journal.
         InputCommitment::encode(journal, &inputs);

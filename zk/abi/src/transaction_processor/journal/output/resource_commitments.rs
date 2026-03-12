@@ -23,6 +23,6 @@ impl<'a> Iterator for OutputResourceCommitments<'a> {
         }
 
         // Decode next entry, advancing the buffer.
-        Some(OutputResourceCommitment::decode(&mut self.buf))
+        Some(OutputResourceCommitment::decode(&mut self.buf).expect("pre-validated payload"))
     }
 }

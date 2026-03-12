@@ -1,7 +1,7 @@
 use vprogs_zk_smt::EMPTY_LEAF_HASH;
 
 use crate::{
-    Write,
+    Parser, Result, Write,
     transaction_processor::{
         BatchMetadata, InputResourceCommitment, InputResourceCommitments, Inputs, JournalEntry,
     },
@@ -24,17 +24,17 @@ impl<'a> InputCommitment<'a> {
     pub const HEADER_SIZE: usize = 32 + 4 + BatchMetadata::SIZE + 4;
 
     /// Decodes an input commitment from a journal segment payload.
-    pub fn decode(payload: &'a [u8]) -> Self {
+    pub fn decode(buf: &'a [u8]) -> Result<Self> {
         // Parse fixed header fields.
-        let tx_id: &[u8; 32] = payload[0..32].try_into().unwrap();
-        let tx_index = u32::from_le_bytes(payload[32..36].try_into().unwrap());
-        let batch_metadata = BatchMetadata::decode(&payload[36..76]);
-        let res_count = u32::from_le_bytes(payload[76..80].try_into().unwrap());
+        let tx_id: &[u8; 32] = buf[0..32].parse_into("tx_id")?;
+        let tx_index = buf[32..36].parse_u32("tx_index")?;
+        let batch_metadata = BatchMetadata::decode(&buf[36..76])?;
+        let resource_count = buf[76..80].parse_u32("resource_count")?;
 
         // Create zero-copy iterator over resource entries.
-        let resources = InputResourceCommitments::new(&payload[Self::HEADER_SIZE..], res_count);
+        let resources = InputResourceCommitments::new(&buf[Self::HEADER_SIZE..], resource_count);
 
-        Self { tx_id, tx_index, batch_metadata, resources }
+        Ok(Self { tx_id, tx_index, batch_metadata, resources })
     }
 
     /// Encodes an input commitment segment to the journal (guest-side).

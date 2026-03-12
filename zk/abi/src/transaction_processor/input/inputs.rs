@@ -1,6 +1,9 @@
 use alloc::vec::Vec;
 
-use crate::transaction_processor::{BatchMetadata, Resource};
+use crate::{
+    Parser, Result,
+    transaction_processor::{BatchMetadata, Resource},
+};
 
 /// Decoded transaction inputs holding zero-copy views into the wire buffer.
 pub struct Inputs<'a> {
@@ -21,26 +24,27 @@ impl<'a> Inputs<'a> {
     /// Decodes transaction inputs from the wire buffer.
     ///
     /// Wire layout: `fixed_header | tx_bytes | resource_headers | resource_data`
-    pub fn decode(buf: &'a mut [u8]) -> Self {
+    pub fn decode(buf: &'a mut [u8]) -> Result<Self> {
         // Decode fixed header.
         let (header, data) = buf.split_at_mut(Self::FIXED_HEADER_SIZE);
-        let tx_index = u32::from_le_bytes(header[0..4].try_into().unwrap());
-        let res_count = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
-        let batch_metadata = BatchMetadata::decode(&header[8..]);
+        let tx_index = header[0..4].parse_u32("tx_index")?;
+        let resource_count = header[4..8].parse_u32("resource_count")? as usize;
+        let batch_metadata = BatchMetadata::decode(&header[8..])?;
 
         // Decode transaction bytes.
-        let tx_len = u32::from_le_bytes(header[8 + BatchMetadata::SIZE..].try_into().unwrap());
-        let (tx, resources) = data.split_at_mut(tx_len as usize);
+        let tx_length = header[8 + BatchMetadata::SIZE..].parse_u32("tx_length")? as usize;
+        let (tx, resources) = data.split_at_mut(tx_length);
 
         // Decode resources.
-        let (res_headers, mut res_data) = resources.split_at_mut(res_count * Resource::HEADER_SIZE);
-        let mut resources = Vec::with_capacity(res_count);
-        for i in 0..res_count {
+        let resources_len = resource_count * Resource::HEADER_SIZE;
+        let (res_headers, mut res_data) = resources.split_at_mut(resources_len);
+        let mut resources = Vec::with_capacity(resource_count);
+        for i in 0..resource_count {
             resources
-                .push(Resource::decode(&res_headers[i * Resource::HEADER_SIZE..], &mut res_data));
+                .push(Resource::decode(&res_headers[i * Resource::HEADER_SIZE..], &mut res_data)?);
         }
 
-        Self { tx, tx_index, batch_metadata, resources }
+        Ok(Self { tx, tx_index, batch_metadata, resources })
     }
 
     /// Encodes a scheduler [`TransactionContext`] into the ABI wire format (host-side only).

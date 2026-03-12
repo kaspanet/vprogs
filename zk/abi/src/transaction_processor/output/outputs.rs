@@ -20,21 +20,23 @@ impl Outputs {
     /// Decodes the execution result from the guest (host-side).
     #[cfg(feature = "host")]
     pub fn decode(buf: &[u8]) -> Result<Self> {
+        use crate::Parser;
+
         match buf[0] {
             0 => {
                 // Decode length-prefixed storage operations.
-                let count = u32::from_le_bytes(buf[1..5].try_into().expect("count truncated"));
+                let count = buf[1..5].parse_u32("count")?;
                 let mut buf = &buf[5..];
                 let mut storage_ops = Vec::with_capacity(count as usize);
-                for _ in 0..storage_ops.capacity() {
-                    storage_ops.push(StorageOp::decode(&mut buf));
+                for _ in 0..count {
+                    storage_ops.push(StorageOp::decode(&mut buf)?);
                 }
 
                 Ok(Self { storage_ops })
             }
-            _ => Err(crate::Error({
+            _ => Err(crate::Error::Guest({
                 // Decode error code.
-                u32::from_le_bytes(buf[1..5].try_into().expect("error code truncated"))
+                buf[1..5].parse_u32("error_code")?
             })),
         }
     }
@@ -57,7 +59,7 @@ impl Outputs {
                 w.write(&[1]);
 
                 // Write error code as u32.
-                w.write(&err.0.to_le_bytes());
+                w.write(&err.code().to_le_bytes());
             }
         }
     }

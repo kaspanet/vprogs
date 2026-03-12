@@ -1,4 +1,4 @@
-use crate::Write;
+use crate::{Parser, Result, Write};
 
 /// Batch-level metadata decoded from the wire header.
 pub struct BatchMetadata<'a> {
@@ -13,11 +13,11 @@ impl<'a> BatchMetadata<'a> {
     pub const SIZE: usize = 32 + 8;
 
     /// Decodes batch metadata from a wire buffer.
-    pub fn decode(buf: &'a [u8]) -> Self {
-        Self {
-            block_hash: buf[0..32].try_into().expect("block hash truncated"),
-            blue_score: u64::from_le_bytes(buf[32..40].try_into().expect("blue score truncated")),
-        }
+    pub fn decode(buf: &'a [u8]) -> Result<Self> {
+        Ok(Self {
+            block_hash: buf[0..32].parse_into("block_hash")?,
+            blue_score: buf[32..40].parse_u64("blue_score")?,
+        })
     }
 
     /// Encodes batch metadata to the given writer.

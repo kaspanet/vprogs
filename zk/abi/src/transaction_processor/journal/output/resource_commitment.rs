@@ -1,3 +1,5 @@
+use crate::{Error, Parser, Result};
+
 /// A single resource's output commitment.
 pub enum OutputResourceCommitment<'a> {
     /// Resource data was modified; contains the new data hash.
@@ -13,7 +15,7 @@ impl<'a> OutputResourceCommitment<'a> {
     pub const UNCHANGED: u8 = 0x00;
 
     /// Decodes a single output commitment, advancing `buf` past the consumed bytes.
-    pub fn decode(buf: &mut &'a [u8]) -> Self {
+    pub fn decode(buf: &mut &'a [u8]) -> Result<Self> {
         // Parse flag byte.
         let flag = buf[0];
         *buf = &buf[1..];
@@ -21,13 +23,13 @@ impl<'a> OutputResourceCommitment<'a> {
         // Decode variant based on flag.
         match flag {
             Self::CHANGED => {
-                let hash: &[u8; 32] = buf[..32].try_into().unwrap();
+                let hash: &[u8; 32] = buf[..32].parse_into("hash")?;
                 *buf = &buf[32..];
 
-                Self::Changed(hash)
+                Ok(Self::Changed(hash))
             }
-            Self::UNCHANGED => Self::Unchanged,
-            _ => panic!("invalid resource output flag: {flag}"),
+            Self::UNCHANGED => Ok(Self::Unchanged),
+            _ => Err(Error::Decode("invalid resource output flag")),
         }
     }
 }

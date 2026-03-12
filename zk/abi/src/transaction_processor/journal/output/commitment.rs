@@ -1,7 +1,7 @@
 use vprogs_zk_smt::EMPTY_LEAF_HASH;
 
 use crate::{
-    Write,
+    Error, Parser, Result, Write,
     transaction_processor::{
         JournalEntry, OutputResourceCommitment, OutputResourceCommitments, Resource,
     },
@@ -22,17 +22,17 @@ impl<'a> OutputCommitment<'a> {
     pub const ERROR: u8 = 0x01;
 
     /// Decodes an output commitment from a journal segment payload.
-    pub fn decode(payload: &'a [u8]) -> Self {
+    pub fn decode(payload: &'a [u8]) -> Result<Self> {
         // Dispatch based on discriminant.
         match payload[0] {
-            Self::SUCCESS => Self::Success(OutputResourceCommitments::new(&payload[1..])),
-            Self::ERROR => Self::Error(u32::from_le_bytes(payload[1..5].try_into().unwrap())),
-            other => panic!("invalid output commitment discriminant: {other}"),
+            Self::SUCCESS => Ok(Self::Success(OutputResourceCommitments::new(&payload[1..]))),
+            Self::ERROR => Ok(Self::Error(payload[1..5].parse_u32("error_code")?)),
+            _ => Err(Error::Decode("invalid output commitment discriminant")),
         }
     }
 
     /// Encodes an output commitment segment to the journal (guest-side).
-    pub fn encode(w: &mut impl Write, result: crate::Result<&[Resource<'_>]>) {
+    pub fn encode(w: &mut impl Write, result: Result<&[Resource<'_>]>) {
         match result {
             Ok(resources) => {
                 // Calculate payload: discriminant(1) + per-resource flags and optional hashes.
@@ -68,7 +68,7 @@ impl<'a> OutputCommitment<'a> {
 
                 // Error discriminant + error code.
                 w.write(&[Self::ERROR]);
-                w.write(&err.0.to_le_bytes());
+                w.write(&err.code().to_le_bytes());
             }
         }
     }

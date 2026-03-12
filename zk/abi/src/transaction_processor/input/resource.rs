@@ -3,6 +3,8 @@ use core::mem;
 
 use vprogs_core_types::ResourceId;
 
+use crate::{Parser, Result};
+
 /// A mutable view of a single resource's data within a decoded wire buffer.
 ///
 /// Data starts as a borrowed slice into the wire buffer (`backing`). If the caller needs more space
@@ -55,8 +57,7 @@ impl<'a> Resource<'a> {
         }
     }
 
-    /// Resizes the resource data to `new_len` bytes, promoting to a heap-allocated buffer if
-    /// necessary.
+    /// Resizes data to `new_len` bytes, promoting to a heap-allocated buffer if necessary.
     pub fn resize(&mut self, new_len: usize) {
         if new_len <= self.data().len() {
             // Shrink: truncate in-place without allocating.
@@ -107,26 +108,26 @@ impl<'a> Resource<'a> {
 
     /// Decodes a resource from its header bytes, splitting off its backing from `data` and
     /// advancing past the consumed bytes.
-    pub(crate) fn decode(header: &'a [u8], buf: &mut &'a mut [u8]) -> Self {
+    pub(crate) fn decode(header: &'a [u8], buf: &mut &'a mut [u8]) -> Result<Self> {
         // Parse header fields.
-        let resource_id = header[0..32].try_into().expect("truncated resource");
+        let resource_id: &[u8; 32] = header[0..32].parse_into("resource_id")?;
         let is_new = header[32] & 1;
-        let resource_index = header[33..37].try_into().expect("truncated resource");
-        let data_len = header[37..41].try_into().expect("truncated resource");
+        let resource_index = header[33..37].parse_u32("resource_index")?;
+        let data_length = header[37..41].parse_u32("data_length")? as usize;
 
         // Split off the backing slice from the start of `data` and advance `data` past it.
-        let (backing, rest) = mem::take(buf).split_at_mut(u32::from_le_bytes(data_len) as usize);
+        let (backing, rest) = mem::take(buf).split_at_mut(data_length);
         *buf = rest;
 
-        Self {
+        Ok(Self {
             resource_id: ResourceId::from_bytes_ref(resource_id),
             backing,
             promoted: None,
-            resource_index: u32::from_le_bytes(resource_index),
+            resource_index,
             is_new: is_new != 0,
             dirty: false,
             deleted: false,
-        }
+        })
     }
 
     /// Encodes a resource header into `buf`.

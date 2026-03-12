@@ -1,4 +1,7 @@
-use crate::transaction_processor::{InputCommitment, OutputCommitment};
+use crate::{
+    Parser, Result,
+    transaction_processor::{InputCommitment, OutputCommitment},
+};
 
 /// A single decoded segment from a transaction processor journal.
 pub enum JournalEntry<'a> {
@@ -19,20 +22,20 @@ impl<'a> JournalEntry<'a> {
     /// Decodes a single journal entry, advancing `buf` past the consumed bytes.
     ///
     /// Wire layout per entry: `opcode(1) + payload_len(4) + payload(N)`.
-    pub fn decode(buf: &mut &'a [u8]) -> Self {
+    pub fn decode(buf: &mut &'a [u8]) -> Result<Self> {
         // Parse TLV header.
         let opcode = buf[0];
-        let payload_len = u32::from_le_bytes(buf[1..5].try_into().unwrap()) as usize;
-        let payload = &buf[5..5 + payload_len];
+        let payload_length = buf[1..5].parse_u32("payload_length")? as usize;
+        let payload = &buf[5..5 + payload_length];
 
         // Advance past consumed bytes.
-        *buf = &buf[5 + payload_len..];
+        *buf = &buf[5 + payload_length..];
 
         // Dispatch to segment decoder.
         match opcode {
-            Self::OPCODE_INPUT => Self::Input(InputCommitment::decode(payload)),
-            Self::OPCODE_OUTPUT => Self::Output(OutputCommitment::decode(payload)),
-            _ => Self::Unknown(opcode, payload),
+            Self::OPCODE_INPUT => Ok(Self::Input(InputCommitment::decode(payload)?)),
+            Self::OPCODE_OUTPUT => Ok(Self::Output(OutputCommitment::decode(payload)?)),
+            _ => Ok(Self::Unknown(opcode, payload)),
         }
     }
 }

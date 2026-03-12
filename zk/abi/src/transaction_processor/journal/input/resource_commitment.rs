@@ -1,4 +1,4 @@
-use crate::Write;
+use crate::{Parser, Result, Write};
 
 /// A single resource's input commitment: its index, identity, and data hash.
 pub struct InputResourceCommitment<'a> {
@@ -17,28 +17,28 @@ impl<'a> InputResourceCommitment<'a> {
     pub const PRE_INDEXED_SIZE: usize = Self::SIZE - 4;
 
     /// Decodes the full wire format, advancing `buf` past the consumed bytes.
-    pub fn decode(buf: &mut &'a [u8]) -> Self {
+    pub fn decode(buf: &mut &'a [u8]) -> Result<Self> {
         // Parse fields.
-        let resource_index = u32::from_le_bytes(buf[0..4].try_into().unwrap());
-        let resource_id = buf[4..36].try_into().unwrap();
-        let hash = buf[36..68].try_into().unwrap();
+        let resource_index = buf[0..4].parse_u32("resource_index")?;
+        let resource_id = buf[4..36].parse_into("resource_id")?;
+        let hash = buf[36..68].parse_into("hash")?;
 
         // Advance past consumed bytes.
         *buf = &buf[Self::SIZE..];
 
-        Self { resource_index, resource_id, hash }
+        Ok(Self { resource_index, resource_id, hash })
     }
 
     /// Decodes without the index prefix, advancing `buf` past the consumed bytes.
-    pub fn decode_pre_indexed(buf: &mut &'a [u8], resource_index: u32) -> Self {
+    pub fn decode_pre_indexed(buf: &mut &'a [u8], resource_index: u32) -> Result<Self> {
         // Parse fields (index provided by caller).
-        let resource_id = buf[0..32].try_into().unwrap();
-        let hash = buf[32..64].try_into().unwrap();
+        let resource_id = buf[0..32].parse_into("resource_id")?;
+        let hash = buf[32..64].parse_into("hash")?;
 
         // Advance past consumed bytes.
         *buf = &buf[Self::PRE_INDEXED_SIZE..];
 
-        Self { resource_index, resource_id, hash }
+        Ok(Self { resource_index, resource_id, hash })
     }
 
     /// Encodes the full wire format: `resource_index(4) + resource_id(32) + hash(32)`.

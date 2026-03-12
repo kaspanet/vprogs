@@ -26,7 +26,7 @@ impl<'a> Iterator for InputResourceCommitments<'a> {
         self.remaining -= 1;
 
         // Decode next entry, advancing the buffer.
-        Some(InputResourceCommitment::decode(&mut self.buf))
+        Some(InputResourceCommitment::decode(&mut self.buf).expect("pre-validated payload"))
     }
 }
 
