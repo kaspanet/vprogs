@@ -1,3 +1,5 @@
+use crate::{Parser, Result};
+
 /// Iterator over per-transaction journal slices in a batch witness.
 pub struct JournalIter<'a> {
     /// Remaining unconsumed bytes of the journal entries.
@@ -14,20 +16,25 @@ impl<'a> JournalIter<'a> {
 }
 
 impl<'a> Iterator for JournalIter<'a> {
-    type Item = &'a [u8];
+    type Item = Result<&'a [u8]>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // Check if all entries have been consumed.
         if self.remaining == 0 {
             return None;
         }
         self.remaining -= 1;
 
-        // Read length prefix and advance past it.
-        let len =
-            u32::from_le_bytes(self.buf[..4].try_into().expect("truncated journal_len")) as usize;
-        let journal = &self.buf[4..4 + len];
-        self.buf = &self.buf[4 + len..];
+        // Read length prefix.
+        let length = match self.buf[..4].parse_u32("journal_length") {
+            Ok(len) => len as usize,
+            Err(e) => return Some(Err(e)),
+        };
 
-        Some(journal)
+        // Advance past consumed bytes.
+        let journal = &self.buf[4..4 + length];
+        self.buf = &self.buf[4 + length..];
+
+        Some(Ok(journal))
     }
 }

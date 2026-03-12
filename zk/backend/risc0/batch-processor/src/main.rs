@@ -33,6 +33,9 @@ fn main() {
 
         // Process each transaction.
         for (expected_tx_index, journal) in (0_u32..).zip(tx_entries) {
+            // Propagate decode error from iterator.
+            let journal = journal?;
+
             // Verify the inner proof.
             env::verify(*header.image_id, journal).expect("inner proof verification failed");
 
@@ -75,6 +78,8 @@ fn main() {
             // Verify inputs against cache and collect resource indices for output matching.
             let mut resource_indices: Vec<usize> = Vec::new();
             for r in tx_journal.input_commitment.resources {
+                // Propagate decode error from iterator.
+                let r = r?;
                 let idx = r.resource_index as usize;
                 assert!(idx < n_resources, "resource_index out of range");
                 assert_eq!(r.resource_id, commitments[idx].resource_id, "resource_id mismatch");
@@ -86,6 +91,8 @@ fn main() {
             match tx_journal.output_commitment {
                 OutputCommitment::Success(outputs) => {
                     for (i, commitment) in outputs.enumerate() {
+                        // Propagate decode error from iterator.
+                        let commitment = commitment?;
                         if let OutputResourceCommitment::Changed(hash) = commitment {
                             let idx = resource_indices[i];
                             cache[idx] = Cow::Owned(*hash);

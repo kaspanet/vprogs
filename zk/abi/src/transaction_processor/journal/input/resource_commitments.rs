@@ -1,4 +1,4 @@
-use crate::transaction_processor::InputResourceCommitment;
+use crate::{Result, transaction_processor::InputResourceCommitment};
 
 /// Zero-copy iterator over resource input commitment entries.
 pub struct InputResourceCommitments<'a> {
@@ -16,7 +16,7 @@ impl<'a> InputResourceCommitments<'a> {
 }
 
 impl<'a> Iterator for InputResourceCommitments<'a> {
-    type Item = InputResourceCommitment<'a>;
+    type Item = Result<InputResourceCommitment<'a>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         // Check if all entries have been consumed.
@@ -26,7 +26,7 @@ impl<'a> Iterator for InputResourceCommitments<'a> {
         self.remaining -= 1;
 
         // Decode next entry, advancing the buffer.
-        Some(InputResourceCommitment::decode(&mut self.buf).expect("pre-validated payload"))
+        Some(InputResourceCommitment::decode(&mut self.buf))
     }
 }
 

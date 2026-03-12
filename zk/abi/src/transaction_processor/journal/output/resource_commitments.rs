@@ -1,4 +1,4 @@
-use crate::transaction_processor::OutputResourceCommitment;
+use crate::{Result, transaction_processor::OutputResourceCommitment};
 
 /// Zero-copy iterator over per-resource output hash commitments.
 pub struct OutputResourceCommitments<'a> {
@@ -14,7 +14,7 @@ impl<'a> OutputResourceCommitments<'a> {
 }
 
 impl<'a> Iterator for OutputResourceCommitments<'a> {
-    type Item = OutputResourceCommitment<'a>;
+    type Item = Result<OutputResourceCommitment<'a>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         // Check if all entries have been consumed.
@@ -23,6 +23,6 @@ impl<'a> Iterator for OutputResourceCommitments<'a> {
         }
 
         // Decode next entry, advancing the buffer.
-        Some(OutputResourceCommitment::decode(&mut self.buf).expect("pre-validated payload"))
+        Some(OutputResourceCommitment::decode(&mut self.buf))
     }
 }
