@@ -1,6 +1,7 @@
 use alloc::vec::Vec;
 
-use crate::{EMPTY_HASH, Hasher, leaf_entry::LeafEntry, node_key::get_key_bit};
+use super::{leaf_entry::LeafEntry, node_key::get_key_bit};
+use crate::{EMPTY_HASH, Hasher};
 
 /// Size of a single leaf entry in the v2 wire format: depth(2) + key(32) + value_hash(32).
 const LEAF_ENTRY_SIZE: usize = 66;

@@ -1,6 +1,6 @@
 use core::marker::PhantomData;
 
-use vprogs_state_smt::{EMPTY_HASH, Hasher};
+use vprogs_core_crypto::{EMPTY_HASH, Hasher};
 
 /// Size of a single leaf entry in the v2 wire format: depth(2) + key(32) + value_hash(32).
 pub const LEAF_ENTRY_SIZE: usize = 66;

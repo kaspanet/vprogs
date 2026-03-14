@@ -1,5 +1,6 @@
 //! Stores and retrieves the SMT root hash in the Metadata column family.
 
+use vprogs_core_crypto::EMPTY_HASH;
 use vprogs_storage_types::{ReadStore, StateSpace, WriteBatch};
 
 /// Key under which the 32-byte SMT root is stored in the Metadata CF.
@@ -17,7 +18,7 @@ impl SmtMetadata {
                 let arr: [u8; 32] = bytes.try_into().expect("corrupted smt_root: wrong length");
                 arr
             })
-            .unwrap_or(crate::EMPTY_HASH)
+            .unwrap_or(EMPTY_HASH)
     }
 
     /// Sets the SMT root hash in the Metadata CF.

@@ -14,6 +14,7 @@ tap.workspace                                 = true
 thiserror.workspace                           = true
 tokio.workspace                               = true
 vprogs-core-atomics.workspace                 = true
+vprogs-core-crypto                            = { workspace = true, features = ["host"] }
 vprogs-core-macros.workspace                  = true
 vprogs-core-types.workspace                   = true
 vprogs-scheduling-execution-workers.workspace = true
@@ -21,7 +22,7 @@ vprogs-state-batch-metadata.workspace         = true
 vprogs-state-metadata.workspace               = true
 vprogs-state-ptr-latest.workspace             = true
 vprogs-state-ptr-rollback.workspace           = true
-vprogs-state-smt                              = { workspace = true, features = ["host"] }
+vprogs-state-smt.workspace                    = true
 vprogs-state-version.workspace                = true
 vprogs-storage-manager.workspace              = true
 vprogs-storage-types.workspace                = true

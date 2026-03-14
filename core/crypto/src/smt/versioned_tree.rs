@@ -1,14 +1,15 @@
 use alloc::{vec, vec::Vec};
 use core::marker::PhantomData;
 
-use crate::{
-    EMPTY_HASH, Hasher, MultiProof, NodeData, TREE_DEPTH,
+use super::{
+    MultiProof,
     leaf_entry::LeafEntry,
     node_key::{NodeKey, get_key_bit, set_key_bit},
     stale_node::StaleNode,
     tree_store::TreeStore,
     tree_update_batch::TreeUpdateBatch,
 };
+use crate::{EMPTY_HASH, Hasher, NodeData, TREE_DEPTH};
 
 /// A persistent, versioned binary Sparse Merkle Tree with leaf shortcutting.
 ///
@@ -16,24 +17,24 @@ use crate::{
 /// are written; unmodified subtrees reference nodes from earlier versions. Subtrees with a single
 /// occupant are represented as a shortcut leaf at the highest ancestor, reducing effective depth
 /// from 256 to O(log n) for n entries.
-pub struct VersionedTree<H: Hasher, S: TreeStore> {
-    store: S,
+pub struct VersionedTree<'a, H: Hasher, S: TreeStore> {
+    store: &'a S,
     current_version: u64,
     current_root: [u8; 32],
     _hasher: PhantomData<H>,
 }
 
-impl<H: Hasher, S: TreeStore> VersionedTree<H, S> {
-    /// Creates a new empty tree.
-    pub fn new(store: S) -> Self {
+impl<'a, H: Hasher, S: TreeStore> VersionedTree<'a, H, S> {
+    /// Creates a new empty tree backed by the given store.
+    pub fn new(store: &'a S) -> Self {
         Self { store, current_version: 0, current_root: EMPTY_HASH, _hasher: PhantomData }
     }
 
     /// Creates a tree from a known version and root hash.
     ///
     /// Used when reconstructing a tree from disk — the root and version are loaded from
-    /// `SmtMetadata` and the store is a `RocksDbTreeStore`.
-    pub fn new_with(store: S, version: u64, root: [u8; 32]) -> Self {
+    /// `SmtMetadata` and the store provides the SMT node lookups.
+    pub fn new_with(store: &'a S, version: u64, root: [u8; 32]) -> Self {
         Self { store, current_version: version, current_root: root, _hasher: PhantomData }
     }
 
@@ -47,37 +48,12 @@ impl<H: Hasher, S: TreeStore> VersionedTree<H, S> {
         self.current_version
     }
 
-    /// Returns a reference to the underlying store.
-    pub fn store(&self) -> &S {
-        &self.store
-    }
-
-    /// Returns a mutable reference to the underlying store.
-    pub fn store_mut(&mut self) -> &mut S {
-        &mut self.store
-    }
-
-    /// Applies leaf mutations at a new version.
+    /// Computes the `TreeUpdateBatch` for the given leaf mutations.
     ///
     /// `leaf_updates` is `(key, new_value_hash)` pairs. Use `EMPTY_HASH` as the value hash for
-    /// deletion. Returns the update batch containing new and stale nodes.
+    /// deletion. Returns the update batch containing new and stale nodes. The batch is not applied
+    /// to the store — callers are responsible for persisting it via `SmtCommit::write_all`.
     pub fn update(
-        &mut self,
-        version: u64,
-        leaf_updates: &[([u8; 32], [u8; 32])],
-    ) -> TreeUpdateBatch {
-        let batch = self.update_dry(version, leaf_updates);
-        self.store.apply_batch(&batch);
-        batch
-    }
-
-    /// Computes the `TreeUpdateBatch` for the given leaf mutations without applying it to the
-    /// store.
-    ///
-    /// Used in the RocksDB integration path where the batch is written via `SmtCommit::write_all`
-    /// into an existing `WriteBatch` instead of through `TreeStore::apply_batch`. Updates the
-    /// tree's internal version and root so subsequent reads see the new state.
-    pub fn update_dry(
         &mut self,
         version: u64,
         leaf_updates: &[([u8; 32], [u8; 32])],
@@ -607,7 +583,7 @@ impl<H: Hasher, S: TreeStore> VersionedTree<H, S> {
 
     /// Rolls back to the given version.
     ///
-    /// Nodes from later versions become garbage and can be cleaned up with `prune()`. This is an
+    /// Nodes from later versions become garbage and can be cleaned up via pruning. This is an
     /// O(1) operation — it just switches the root pointer.
     pub fn rollback_to(&mut self, version: u64) {
         let node_key = NodeKey::root();
@@ -617,11 +593,6 @@ impl<H: Hasher, S: TreeStore> VersionedTree<H, S> {
             .map(|(_, data)| *data.hash())
             .unwrap_or(EMPTY_HASH);
         self.current_version = version;
-    }
-
-    /// Prunes all node versions that became stale at or before `oldest_readable_version`.
-    pub fn prune(&mut self, oldest_readable_version: u64) {
-        self.store.prune_stale(oldest_readable_version);
     }
 }
 

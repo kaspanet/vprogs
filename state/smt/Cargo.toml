@@ -3,14 +3,6 @@ edition.workspace = true
 name              = "vprogs-state-smt"
 version.workspace = true
 
-[features]
-default = ["std"]
-host    = ["std", "dep:vprogs-storage-types"]
-std     = []
-
 [dependencies]
-blake3               = { workspace = true }
-vprogs-storage-types = { workspace = true, optional = true }
-
-[dev-dependencies]
-blake3 = "1"
+vprogs-core-crypto   = { workspace = true, features = ["host"] }
+vprogs-storage-types = { workspace = true }

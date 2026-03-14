@@ -5,16 +5,13 @@ use std::sync::{
 
 use crossbeam_deque::{Injector, Steal, Worker};
 use vprogs_core_atomics::AtomicAsyncLatch;
+use vprogs_core_crypto::{Blake3Hasher, EMPTY_HASH, smt::VersionedTree};
 use vprogs_core_macros::smart_pointer;
 use vprogs_core_types::{Checkpoint, SchedulerTransaction};
 use vprogs_scheduling_execution_workers::Batch;
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
-use vprogs_state_smt::{
-    Blake3Hasher, EMPTY_HASH,
-    persistence::{RocksDbTreeStore, SmtCommit, SmtMetadata},
-    versioned::VersionedTree,
-};
+use vprogs_state_smt::{SmtCommit, SmtMetadata};
 use vprogs_storage_types::Store;
 
 use crate::{
@@ -276,12 +273,11 @@ impl<S: Store, P: Processor> ScheduledBatch<S, P> {
                 .collect();
 
             if !leaf_updates.is_empty() {
-                let smt_store = RocksDbTreeStore::new(store);
                 let prev_root = SmtMetadata::root(store);
                 let prev_version = version.saturating_sub(1);
                 let mut tree =
-                    VersionedTree::<Blake3Hasher, _>::new_with(smt_store, prev_version, prev_root);
-                let tree_batch = tree.update_dry(version, &leaf_updates);
+                    VersionedTree::<Blake3Hasher, _>::new_with(store, prev_version, prev_root);
+                let tree_batch = tree.update(version, &leaf_updates);
                 SmtCommit::write_all(wb, &tree_batch);
                 SmtMetadata::set_root(wb, &tree_batch.root);
             }

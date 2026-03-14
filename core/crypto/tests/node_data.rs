@@ -1,4 +1,4 @@
-use vprogs_state_smt::NodeData;
+use vprogs_core_crypto::NodeData;
 
 #[test]
 fn internal_hash_accessor() {

@@ -1,4 +1,7 @@
-use vprogs_state_smt::{Blake3Hasher, EMPTY_HASH, Hasher, MultiProof, leaf_entry::LeafEntry};
+use vprogs_core_crypto::{
+    Blake3Hasher, EMPTY_HASH, Hasher,
+    smt::{LeafEntry, MultiProof},
+};
 use vprogs_zk_abi::DecodedMultiProof;
 
 #[test]

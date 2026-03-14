@@ -18,13 +18,13 @@ std = []
 blake3                      = { workspace = true }
 borsh                       = { workspace = true, default-features = false, optional = true }
 thiserror                   = { workspace = true, default-features = false }
+vprogs-core-crypto          = { workspace = true }
 vprogs-core-types           = { workspace = true, default-features = false }
 vprogs-l1-types             = { workspace = true, optional = true }
 vprogs-scheduling-scheduler = { workspace = true, optional = true }
-vprogs-state-smt            = { workspace = true }
 vprogs-storage-types        = { workspace = true, optional = true }
 vprogs-zk-smt               = { workspace = true }
 
 [dev-dependencies]
-blake3           = "1"
-vprogs-state-smt = { workspace = true, features = ["host"] }
+blake3             = "1"
+vprogs-core-crypto = { workspace = true, features = ["host"] }

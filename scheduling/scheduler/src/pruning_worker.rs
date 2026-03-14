@@ -9,11 +9,11 @@ use std::{
 
 use tap::Tap;
 use tokio::{runtime::Builder, sync::Notify};
+use vprogs_core_crypto::smt::{NodeKey, StaleNode};
 use vprogs_core_types::{Checkpoint, ResourceId};
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_ptr_rollback::StatePtrRollback;
-use vprogs_state_smt::versioned::{NodeKey, StaleNode};
 use vprogs_state_version::StateVersion;
 use vprogs_storage_types::{StateSpace, Store, WriteBatch};
 

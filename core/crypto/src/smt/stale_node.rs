@@ -1,9 +1,9 @@
-use crate::node_key::NodeKey;
+use super::node_key::NodeKey;
 
 /// A node that was superseded by a newer version.
 ///
-/// Recorded during updates and used by `TreeStore::prune_stale()` to garbage-collect old node
-/// versions that are no longer reachable.
+/// Recorded during updates and used by the pruning worker to garbage-collect old node versions
+/// that are no longer reachable.
 pub struct StaleNode {
     /// The version when this node became stale.
     pub stale_since_version: u64,

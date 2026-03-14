@@ -7357,6 +7357,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-core-crypto"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "tempfile",
+ "vprogs-state-smt",
+ "vprogs-storage-rocksdb-store",
+ "vprogs-storage-types",
+]
+
+[[package]]
 name = "vprogs-core-macros"
 version = "0.1.0"
 dependencies = [
@@ -7530,6 +7541,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "vprogs-core-atomics",
+ "vprogs-core-crypto",
  "vprogs-core-macros",
  "vprogs-core-test-utils",
  "vprogs-core-types",
@@ -7604,7 +7616,7 @@ dependencies = [
 name = "vprogs-state-smt"
 version = "0.1.0"
 dependencies = [
- "blake3",
+ "vprogs-core-crypto",
  "vprogs-storage-types",
 ]
 
@@ -7813,10 +7825,10 @@ dependencies = [
  "blake3",
  "borsh",
  "thiserror 2.0.18",
+ "vprogs-core-crypto",
  "vprogs-core-types",
  "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
- "vprogs-state-smt",
  "vprogs-storage-types",
  "vprogs-zk-smt",
 ]

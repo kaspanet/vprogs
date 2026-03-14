@@ -1,8 +1,7 @@
 //! Writes a `TreeUpdateBatch` into a `WriteBatch` for atomic commit with other state operations.
 
+use vprogs_core_crypto::smt::TreeUpdateBatch;
 use vprogs_storage_types::{StateSpace, WriteBatch};
-
-use crate::tree_update_batch::TreeUpdateBatch;
 
 /// Writes SMT node updates into an existing `WriteBatch`.
 ///

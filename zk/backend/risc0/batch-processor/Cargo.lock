@@ -1566,6 +1566,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "vprogs-core-crypto"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+]
+
+[[package]]
 name = "vprogs-core-types"
 version = "0.1.0"
 dependencies = [
@@ -1574,20 +1581,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "vprogs-state-smt"
-version = "0.1.0"
-dependencies = [
- "blake3",
-]
-
-[[package]]
 name = "vprogs-zk-abi"
 version = "0.1.0"
 dependencies = [
  "blake3",
  "thiserror",
+ "vprogs-core-crypto",
  "vprogs-core-types",
- "vprogs-state-smt",
  "vprogs-zk-smt",
 ]
 
