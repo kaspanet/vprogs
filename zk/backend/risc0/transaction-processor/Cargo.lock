@@ -1574,12 +1574,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-state-smt"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+]
+
+[[package]]
 name = "vprogs-zk-abi"
 version = "0.1.0"
 dependencies = [
  "blake3",
  "thiserror",
  "vprogs-core-types",
+ "vprogs-state-smt",
  "vprogs-zk-smt",
 ]
 

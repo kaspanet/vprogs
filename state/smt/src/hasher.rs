@@ -40,4 +40,3 @@ pub trait Hasher {
         Self::hash(&buf)
     }
 }
-

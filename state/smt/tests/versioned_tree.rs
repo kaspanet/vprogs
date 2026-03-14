@@ -1,4 +1,4 @@
-use vprogs_zk_smt_v2::{
+use vprogs_state_smt::{
     Blake3Hasher, EMPTY_HASH, Hasher,
     versioned::{InMemoryStore, VersionedTree},
 };

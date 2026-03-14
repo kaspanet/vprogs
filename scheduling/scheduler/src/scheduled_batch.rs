@@ -10,7 +10,12 @@ use vprogs_core_types::{Checkpoint, SchedulerTransaction};
 use vprogs_scheduling_execution_workers::Batch;
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
-use vprogs_storage_types::{Store, WriteBatch};
+use vprogs_state_smt::{
+    Blake3Hasher, EMPTY_HASH,
+    persistence::{RocksDbTreeStore, SmtCommit, SmtMetadata},
+    versioned::VersionedTree,
+};
+use vprogs_storage_types::Store;
 
 use crate::{
     CancellationContext, ScheduledTransaction, Scheduler, StateDiff, Write, cpu_task::ManagerTask,
@@ -241,10 +246,7 @@ impl<S: Store, P: Processor> ScheduledBatch<S, P> {
         }
     }
 
-    pub(crate) fn commit<W>(&self, wb: &mut W)
-    where
-        W: WriteBatch,
-    {
+    pub(crate) fn commit<ST: Store>(&self, store: &ST, wb: &mut ST::WriteBatch) {
         if !self.was_canceled() {
             for state_diff in self.state_diffs() {
                 state_diff.written_state().write_latest_ptr(wb);
@@ -256,6 +258,32 @@ impl<S: Store, P: Processor> ScheduledBatch<S, P> {
             // in-memory when this batch was scheduled (see next_checkpoint).
             if self.checkpoint.index() == self.state.root().index() {
                 StateMetadata::set_root(wb, &self.checkpoint);
+            }
+
+            // Update the SMT with all resource state diffs from this batch.
+            let version = self.checkpoint.index();
+            let leaf_updates: Vec<([u8; 32], [u8; 32])> = self
+                .state_diffs()
+                .iter()
+                .map(|sd| {
+                    let key = *sd.resource_id().as_bytes();
+                    let written_state = sd.written_state();
+                    let data = written_state.data();
+                    let value_hash =
+                        if data.is_empty() { EMPTY_HASH } else { *blake3::hash(data).as_bytes() };
+                    (key, value_hash)
+                })
+                .collect();
+
+            if !leaf_updates.is_empty() {
+                let smt_store = RocksDbTreeStore::new(store);
+                let prev_root = SmtMetadata::root(store);
+                let prev_version = version.saturating_sub(1);
+                let mut tree =
+                    VersionedTree::<Blake3Hasher, _>::new_with(smt_store, prev_version, prev_root);
+                let tree_batch = tree.update_dry(version, &leaf_updates);
+                SmtCommit::write_all(wb, &tree_batch);
+                SmtMetadata::set_root(wb, &tree_batch.root);
             }
         }
     }

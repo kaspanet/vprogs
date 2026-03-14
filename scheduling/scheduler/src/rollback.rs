@@ -7,6 +7,11 @@ use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_ptr_latest::StatePtrLatest;
 use vprogs_state_ptr_rollback::StatePtrRollback;
+use vprogs_state_smt::{
+    EMPTY_HASH,
+    persistence::{RocksDbTreeStore, SmtMetadata},
+    versioned::{NodeKey, TreeStore},
+};
 use vprogs_state_version::StateVersion;
 use vprogs_storage_types::Store;
 
@@ -88,6 +93,20 @@ impl<S: Store, P: Processor> Rollback<S, P> {
             if rollback_to_genesis {
                 StateMetadata::set_root(wb, &self.target);
             }
+
+            // Reset SMT root to the version at the target checkpoint. Descending version
+            // encoding means rolled-back entries are invisible to reads with
+            // max_version = target — no SMT node deletion needed.
+            let smt_root = if self.target.index() == 0 {
+                EMPTY_HASH
+            } else {
+                let smt_store = RocksDbTreeStore::new(store);
+                smt_store
+                    .get_node(&NodeKey::root(), self.target.index())
+                    .map(|(_, data)| *data.hash())
+                    .unwrap_or(EMPTY_HASH)
+            };
+            SmtMetadata::set_root(wb, &smt_root);
         }));
 
         // Return a new empty write batch for further operations.

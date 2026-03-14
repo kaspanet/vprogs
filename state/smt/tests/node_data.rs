@@ -1,4 +1,4 @@
-use vprogs_zk_smt_v2::NodeData;
+use vprogs_state_smt::NodeData;
 
 #[test]
 fn internal_hash_accessor() {

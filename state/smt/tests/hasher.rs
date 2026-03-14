@@ -1,4 +1,4 @@
-use vprogs_zk_smt_v2::{Blake3Hasher, EMPTY_HASH, Hasher};
+use vprogs_state_smt::{Blake3Hasher, EMPTY_HASH, Hasher};
 
 #[test]
 fn domain_separation_produces_different_hashes() {

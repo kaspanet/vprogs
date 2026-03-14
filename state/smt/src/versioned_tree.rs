@@ -29,6 +29,14 @@ impl<H: Hasher, S: TreeStore> VersionedTree<H, S> {
         Self { store, current_version: 0, current_root: EMPTY_HASH, _hasher: PhantomData }
     }
 
+    /// Creates a tree from a known version and root hash.
+    ///
+    /// Used when reconstructing a tree from disk — the root and version are loaded from
+    /// `SmtMetadata` and the store is a `RocksDbTreeStore`.
+    pub fn new_with(store: S, version: u64, root: [u8; 32]) -> Self {
+        Self { store, current_version: version, current_root: root, _hasher: PhantomData }
+    }
+
     /// Returns the current root hash.
     pub fn root(&self) -> [u8; 32] {
         self.current_root
@@ -54,6 +62,22 @@ impl<H: Hasher, S: TreeStore> VersionedTree<H, S> {
     /// `leaf_updates` is `(key, new_value_hash)` pairs. Use `EMPTY_HASH` as the value hash for
     /// deletion. Returns the update batch containing new and stale nodes.
     pub fn update(
+        &mut self,
+        version: u64,
+        leaf_updates: &[([u8; 32], [u8; 32])],
+    ) -> TreeUpdateBatch {
+        let batch = self.update_dry(version, leaf_updates);
+        self.store.apply_batch(&batch);
+        batch
+    }
+
+    /// Computes the `TreeUpdateBatch` for the given leaf mutations without applying it to the
+    /// store.
+    ///
+    /// Used in the RocksDB integration path where the batch is written via `SmtCommit::write_all`
+    /// into an existing `WriteBatch` instead of through `TreeStore::apply_batch`. Updates the
+    /// tree's internal version and root so subsequent reads see the new state.
+    pub fn update_dry(
         &mut self,
         version: u64,
         leaf_updates: &[([u8; 32], [u8; 32])],
@@ -92,7 +116,6 @@ impl<H: Hasher, S: TreeStore> VersionedTree<H, S> {
         };
 
         batch.root = new_root;
-        self.store.apply_batch(&batch);
         self.current_version = version;
         self.current_root = new_root;
 
@@ -168,6 +191,7 @@ impl<H: Hasher, S: TreeStore> VersionedTree<H, S> {
     }
 
     /// Handles updates at a position that currently holds a shortcut leaf.
+    #[allow(clippy::too_many_arguments)]
     fn update_at_leaf(
         &self,
         updates: &[(&[u8; 32], [u8; 32])],
@@ -185,14 +209,15 @@ impl<H: Hasher, S: TreeStore> VersionedTree<H, S> {
         // Check if any update targets the same key as the existing leaf.
         let same_key_update = updates.iter().find(|(k, _)| **k == existing_key);
 
-        if updates.len() == 1 && same_key_update.is_some() {
-            // Simple case: single update replaces the existing leaf in-place.
-            let new_vh = same_key_update.unwrap().1;
-            if new_vh == EMPTY_HASH {
-                return None; // Deletion — subtree becomes empty.
+        if let Some(&(_, new_vh)) = same_key_update {
+            if updates.len() == 1 {
+                // Simple case: single update replaces the existing leaf in-place.
+                if new_vh == EMPTY_HASH {
+                    return None; // Deletion — subtree becomes empty.
+                }
+                let hash = H::hash_leaf(&existing_key, &new_vh);
+                return Some(NodeData::Leaf { key: existing_key, value_hash: new_vh, hash });
             }
-            let hash = H::hash_leaf(&existing_key, &new_vh);
-            return Some(NodeData::Leaf { key: existing_key, value_hash: new_vh, hash });
         }
 
         // Complex case: merge the existing leaf into the update set (unless it's already being
@@ -474,8 +499,8 @@ impl<H: Hasher, S: TreeStore> VersionedTree<H, S> {
     #[allow(clippy::too_many_arguments)]
     fn build_proof_leaf(
         &self,
-        keys: &[[u8; 32]],
-        indices: &[usize],
+        _keys: &[[u8; 32]],
+        _indices: &[usize],
         bit_pos: usize,
         _path: [u8; 32],
         _version: u64,

@@ -7520,6 +7520,7 @@ name = "vprogs-scheduling-scheduler"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
+ "blake3",
  "borsh",
  "crossbeam-deque",
  "crossbeam-queue",
@@ -7538,6 +7539,7 @@ dependencies = [
  "vprogs-state-metadata",
  "vprogs-state-ptr-latest",
  "vprogs-state-ptr-rollback",
+ "vprogs-state-smt",
  "vprogs-state-version",
  "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
@@ -7595,6 +7597,14 @@ dependencies = [
  "borsh",
  "vprogs-core-types",
  "vprogs-storage-manager",
+ "vprogs-storage-types",
+]
+
+[[package]]
+name = "vprogs-state-smt"
+version = "0.1.0"
+dependencies = [
+ "blake3",
  "vprogs-storage-types",
 ]
 
@@ -7806,6 +7816,7 @@ dependencies = [
  "vprogs-core-types",
  "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
+ "vprogs-state-smt",
  "vprogs-storage-types",
  "vprogs-zk-smt",
 ]
@@ -7847,13 +7858,6 @@ dependencies = [
 
 [[package]]
 name = "vprogs-zk-smt"
-version = "0.1.0"
-dependencies = [
- "blake3",
-]
-
-[[package]]
-name = "vprogs-zk-smt-v2"
 version = "0.1.0"
 dependencies = [
  "blake3",

@@ -1,7 +1,5 @@
-use vprogs_zk_smt_v2::{
-    Blake3Hasher, DecodedMultiProof, EMPTY_HASH, Hasher, MultiProof,
-    leaf_entry::LeafEntry,
-};
+use vprogs_state_smt::{Blake3Hasher, EMPTY_HASH, Hasher, MultiProof, leaf_entry::LeafEntry};
+use vprogs_zk_abi::DecodedMultiProof;
 
 #[test]
 fn single_leaf_at_root_depth() {

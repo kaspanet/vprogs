@@ -9,7 +9,7 @@ default-members = [
   "transaction-runtime/*",
   "zk/prover",
   "zk/smt",
-  "zk/smt-v2",
+  "state/smt",
   "zk/backend/risc0/api",
   "zk/abi",
   "zk/vm",
@@ -28,7 +28,7 @@ members = [
   "transaction-runtime/*",
   "zk/prover",
   "zk/smt",
-  "zk/smt-v2",
+  "state/smt",
   "zk/backend/risc0/api",
   "zk/abi",
   "zk/vm",
@@ -119,6 +119,7 @@ resolver = "3"
   vprogs-state-metadata = { path = "state/metadata" }
   vprogs-state-ptr-latest = { path = "state/ptr-latest" }
   vprogs-state-ptr-rollback = { path = "state/ptr-rollback" }
+  vprogs-state-smt = { path = "state/smt", default-features = false }
   vprogs-state-version = { path = "state/version" }
   vprogs-storage-manager = { path = "storage/manager" }
   vprogs-storage-rocksdb-store = { path = "storage/rocksdb-store" }
@@ -148,7 +149,6 @@ resolver = "3"
   ] }
   vprogs-zk-prover = { path = "zk/prover" }
   vprogs-zk-smt = { path = "zk/smt", default-features = false }
-  vprogs-zk-smt-v2 = { path = "zk/smt-v2", default-features = false }
   vprogs-zk-vm = { path = "zk/vm" }
 
 [patch.'https://github.com/kaspanet/rusty-kaspa']

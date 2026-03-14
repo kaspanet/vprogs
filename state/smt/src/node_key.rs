@@ -48,6 +48,32 @@ impl NodeKey {
         set_key_bit(&mut path, self.bit_pos as usize);
         Self { bit_pos: self.bit_pos + 1, path }
     }
+
+    /// Encodes this node key for the SmtNode column family.
+    ///
+    /// Key layout: `path(32) || bit_pos(2 BE) || !version(8 BE)` = 42 bytes. The `!version`
+    /// suffix sorts higher versions first within the same (path, bit_pos) prefix, so a forward
+    /// seek from `!max_version` hits the latest version first.
+    pub fn encode_cf_key(&self, version: u64) -> [u8; 42] {
+        let mut key = [0u8; 42];
+        key[..32].copy_from_slice(&self.path);
+        key[32..34].copy_from_slice(&self.bit_pos.to_be_bytes());
+        key[34..42].copy_from_slice(&(!version).to_be_bytes());
+        key
+    }
+
+    /// Builds a 42-byte seek key for `prefix_iter` to find the latest version <= `max_version`.
+    ///
+    /// The 34-byte prefix extractor groups all versions of the same node.
+    pub fn encode_seek_key(&self, max_version: u64) -> [u8; 42] {
+        self.encode_cf_key(max_version)
+    }
+
+    /// Decodes the version from a raw 42-byte SmtNode key.
+    pub fn decode_version(raw_key: &[u8]) -> u64 {
+        let inv = u64::from_be_bytes(raw_key[34..42].try_into().unwrap());
+        !inv
+    }
 }
 
 /// Returns the `bit_pos`-th bit of a 256-bit key (0 = MSB).
