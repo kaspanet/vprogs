@@ -1,6 +1,7 @@
 use std::{marker::PhantomData, path::Path, sync::Arc};
 
 use rocksdb::{DB, DBIteratorWithThreadMode, Direction, IteratorMode};
+use vprogs_core_crypto::smt::{NodeData, NodeKey, TreeStore};
 use vprogs_storage_types::{PrefixIterator, StateSpace, Store};
 
 use crate::{
@@ -76,6 +77,17 @@ impl<C: Config> Store for RocksDbStore<C> {
         let mode = IteratorMode::From(prefix, Direction::Forward);
         let iter = self.db.iterator_cf_opt(cf, read_opts, mode);
         Box::new(RocksDbPrefixIter { inner: iter })
+    }
+}
+
+impl<C: Config> TreeStore for RocksDbStore<C> {
+    fn get_node(&self, key: &NodeKey, max_version: u64) -> Option<(u64, NodeData)> {
+        let seek = key.encode_seek_key(max_version);
+        let mut iter = self.prefix_iter(StateSpace::SmtNode, &seek);
+        let (raw_key, raw_value) = iter.next()?;
+        let version = NodeKey::decode_version(&raw_key);
+        let data = NodeData::from_bytes(&raw_value);
+        Some((version, data))
     }
 }
 

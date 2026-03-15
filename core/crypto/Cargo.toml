@@ -5,16 +5,16 @@ version.workspace = true
 
 [features]
 default = ["std"]
-host    = ["std", "dep:vprogs-storage-types"]
+host    = ["std"]
 std     = []
 
 [dependencies]
-blake3               = { workspace = true }
-vprogs-storage-types = { workspace = true, optional = true }
+blake3 = { workspace = true }
 
 [dev-dependencies]
 blake3                       = "1"
 tempfile.workspace           = true
+vprogs-state-metadata        = { workspace = true }
 vprogs-state-smt             = { workspace = true }
 vprogs-storage-rocksdb-store = { workspace = true }
 vprogs-storage-types         = { workspace = true }

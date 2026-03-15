@@ -7362,6 +7362,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "tempfile",
+ "vprogs-state-metadata",
  "vprogs-state-smt",
  "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
@@ -7589,6 +7590,7 @@ name = "vprogs-state-metadata"
 version = "0.1.0"
 dependencies = [
  "borsh",
+ "vprogs-core-crypto",
  "vprogs-core-types",
  "vprogs-storage-types",
 ]
@@ -7650,12 +7652,16 @@ dependencies = [
  "num_cpus",
  "rocksdb",
  "tap",
+ "vprogs-core-crypto",
  "vprogs-storage-types",
 ]
 
 [[package]]
 name = "vprogs-storage-types"
 version = "0.1.0"
+dependencies = [
+ "vprogs-core-crypto",
+]
 
 [[package]]
 name = "vprogs-transaction-runtime"

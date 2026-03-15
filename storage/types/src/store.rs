@@ -1,9 +1,11 @@
+use vprogs_core_crypto::smt::TreeStore;
+
 use crate::{StateSpace, WriteBatch};
 
 /// A boxed iterator over key-value pairs returned by prefix iteration.
 pub type PrefixIterator<'a> = Box<dyn Iterator<Item = (Vec<u8>, Vec<u8>)> + 'a>;
 
-pub trait Store: Send + Sync + 'static {
+pub trait Store: TreeStore + Send + Sync + 'static {
     type WriteBatch: WriteBatch;
 
     fn get(&self, state_space: StateSpace, key: &[u8]) -> Option<Vec<u8>>;

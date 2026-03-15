@@ -3,7 +3,8 @@ use vprogs_core_crypto::{
     Blake3Hasher, EMPTY_HASH, Hasher,
     smt::{NodeKey, StaleNode, TreeStore, VersionedTree},
 };
-use vprogs_state_smt::{SmtCommit, SmtMetadata};
+use vprogs_state_metadata::StateMetadata;
+use vprogs_state_smt::SmtCommit;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_storage_types::{StateSpace, Store, WriteBatch};
 
@@ -17,14 +18,14 @@ fn setup() -> (RocksDbStore, TempDir) {
 /// Computes the SMT update for the given leaf mutations, persists the resulting nodes and root
 /// atomically, and returns the new root hash.
 fn update(store: &RocksDbStore, version: u64, leaf_updates: &[([u8; 32], [u8; 32])]) -> [u8; 32] {
-    let prev_root = SmtMetadata::root(store);
+    let prev_root = StateMetadata::state_root(store);
     let prev_version = version.saturating_sub(1);
     let mut tree = VersionedTree::<Blake3Hasher, _>::new_with(store, prev_version, prev_root);
     let batch = tree.update(version, leaf_updates);
 
     let mut wb = store.write_batch();
     SmtCommit::write_all(&mut wb, &batch);
-    SmtMetadata::set_root(&mut wb, &batch.root);
+    StateMetadata::set_state_root(&mut wb, &batch.root);
     store.commit(wb);
 
     batch.root
@@ -32,21 +33,13 @@ fn update(store: &RocksDbStore, version: u64, leaf_updates: &[([u8; 32], [u8; 32
 
 /// Returns the current SMT root hash from the Metadata CF.
 fn root(store: &RocksDbStore) -> [u8; 32] {
-    SmtMetadata::root(store)
+    StateMetadata::state_root(store)
 }
 
 /// Resets the SMT root to the root at the given version (O(1) pointer swap).
 fn rollback(store: &RocksDbStore, version: u64) {
-    let rollback_root = if version == 0 {
-        EMPTY_HASH
-    } else {
-        store
-            .get_node(&NodeKey::root(), version)
-            .map(|(_, data)| *data.hash())
-            .unwrap_or(EMPTY_HASH)
-    };
     let mut wb = store.write_batch();
-    SmtMetadata::set_root(&mut wb, &rollback_root);
+    StateMetadata::set_state_root(&mut wb, &store.get_root(version));
     store.commit(wb);
 }
 
@@ -69,7 +62,7 @@ fn prune_up_to(store: &RocksDbStore, oldest_readable: u64) {
 
 /// Reconstructs a tree from the store at the current root for proof generation.
 fn tree_at(store: &RocksDbStore, version: u64) -> VersionedTree<'_, Blake3Hasher, RocksDbStore> {
-    let current_root = SmtMetadata::root(store);
+    let current_root = StateMetadata::state_root(store);
     VersionedTree::new_with(store, version, current_root)
 }
 

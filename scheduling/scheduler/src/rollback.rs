@@ -2,16 +2,11 @@ use std::sync::Arc;
 
 use tap::Tap;
 use vprogs_core_atomics::AtomicAsyncLatch;
-use vprogs_core_crypto::{
-    EMPTY_HASH,
-    smt::{NodeKey, TreeStore},
-};
 use vprogs_core_types::{Checkpoint, ResourceId};
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_ptr_latest::StatePtrLatest;
 use vprogs_state_ptr_rollback::StatePtrRollback;
-use vprogs_state_smt::SmtMetadata;
 use vprogs_state_version::StateVersion;
 use vprogs_storage_types::Store;
 
@@ -97,15 +92,7 @@ impl<S: Store, P: Processor> Rollback<S, P> {
             // Reset SMT root to the version at the target checkpoint. Descending version
             // encoding means rolled-back entries are invisible to reads with
             // max_version = target — no SMT node deletion needed.
-            let smt_root = if self.target.index() == 0 {
-                EMPTY_HASH
-            } else {
-                store
-                    .get_node(&NodeKey::root(), self.target.index())
-                    .map(|(_, data)| *data.hash())
-                    .unwrap_or(EMPTY_HASH)
-            };
-            SmtMetadata::set_root(wb, &smt_root);
+            StateMetadata::set_state_root(wb, &store.get_root(self.target.index()));
         }));
 
         // Return a new empty write batch for further operations.
