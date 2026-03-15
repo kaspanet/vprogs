@@ -10,7 +10,7 @@ use vprogs_core_types::{Checkpoint, SchedulerTransaction};
 use vprogs_scheduling_execution_workers::Batch;
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
-use vprogs_storage_types::{Store, WriteBatch};
+use vprogs_storage_types::Store;
 
 use crate::{
     CancellationContext, ScheduledTransaction, Scheduler, StateDiff, Write, cpu_task::ManagerTask,
@@ -241,14 +241,18 @@ impl<S: Store, P: Processor> ScheduledBatch<S, P> {
         }
     }
 
-    pub(crate) fn commit<W>(&self, wb: &mut W)
-    where
-        W: WriteBatch,
-    {
+    pub(crate) fn commit<ST: Store>(&self, store: &ST, wb: &mut ST::WriteBatch) {
         if !self.was_canceled() {
             for state_diff in self.state_diffs() {
                 state_diff.written_state().write_latest_ptr(wb);
             }
+
+            // Update the authenticated state tree with all resource state diffs from this batch.
+            if !self.state_diffs().is_empty() {
+                let new = store.commit_state_diffs(wb, self.checkpoint.index(), self.state_diffs());
+                StateMetadata::set_state_root(wb, &new);
+            }
+
             StoredBatchMetadata::set(wb, self.checkpoint.index(), self.checkpoint.metadata());
             StateMetadata::set_last_committed(wb, &self.checkpoint);
 

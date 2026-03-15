@@ -1,0 +1,19 @@
+[package]
+edition.workspace = true
+name              = "vprogs-core-crypto"
+version.workspace = true
+
+[features]
+default = ["std"]
+host    = ["std"]
+std     = []
+
+[dependencies]
+blake3 = { workspace = true }
+
+[dev-dependencies]
+blake3                       = "1"
+tempfile.workspace           = true
+vprogs-state-metadata        = { workspace = true }
+vprogs-storage-rocksdb-store = { workspace = true }
+vprogs-storage-types         = { workspace = true }

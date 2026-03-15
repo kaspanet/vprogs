@@ -88,6 +88,11 @@ impl<S: Store, P: Processor> Rollback<S, P> {
             if rollback_to_genesis {
                 StateMetadata::set_root(wb, &self.target);
             }
+
+            // Reset SMT root to the version at the target checkpoint. Descending version
+            // encoding means rolled-back entries are invisible to reads with
+            // max_version = target — no SMT node deletion needed.
+            StateMetadata::set_state_root(wb, &store.get_root(self.target.index()));
         }));
 
         // Return a new empty write batch for further operations.

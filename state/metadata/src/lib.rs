@@ -1,3 +1,4 @@
+use vprogs_core_crypto::EMPTY_HASH;
 use vprogs_core_types::{BatchMetadata, Checkpoint};
 use vprogs_storage_types::{ReadStore, StateSpace, WriteBatch};
 
@@ -7,6 +8,8 @@ mod keys {
     pub const ROOT: &[u8] = b"root";
     /// Key for the last committed batch (index + metadata stored together).
     pub const LAST_COMMITTED: &[u8] = b"last_committed";
+    /// Key for the 32-byte global state root hash.
+    pub const STATE_ROOT: &[u8] = b"smt_root";
 }
 
 /// Provides type-safe operations for the Metadata column family.
@@ -64,5 +67,18 @@ impl StateMetadata {
             keys::LAST_COMMITTED,
             &borsh::to_vec(checkpoint).expect("failed to serialize Checkpoint"),
         );
+    }
+
+    /// Returns the current global state root hash, or `EMPTY_HASH` if none has been set.
+    pub fn state_root<S: ReadStore>(store: &S) -> [u8; 32] {
+        store
+            .get(StateSpace::Metadata, keys::STATE_ROOT)
+            .map(|bytes| bytes.try_into().expect("corrupted state_root: unrecoverable"))
+            .unwrap_or(EMPTY_HASH)
+    }
+
+    /// Sets the global state root hash.
+    pub fn set_state_root<W: WriteBatch>(wb: &mut W, root: &[u8; 32]) {
+        wb.put(StateSpace::Metadata, keys::STATE_ROOT, root);
     }
 }

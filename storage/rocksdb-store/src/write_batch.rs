@@ -1,6 +1,7 @@
 use std::{marker::PhantomData, sync::Arc};
 
 use rocksdb::DB;
+use vprogs_core_crypto::smt::{Node, StaleNode, TreeWriteBatch};
 use vprogs_storage_types::StateSpace;
 
 use crate::{
@@ -35,6 +36,28 @@ impl<C: Config> vprogs_storage_types::WriteBatch for WriteBatch<C> {
             panic!("missing column family '{}'", cf_handle)
         };
         self.inner.delete_cf(cf, key)
+    }
+}
+
+impl<C: Config> TreeWriteBatch for WriteBatch<C> {
+    fn put_node(&mut self, node: &Node) {
+        let key = node.key.encode_cf_key(node.version);
+        <Self as vprogs_storage_types::WriteBatch>::put(
+            self,
+            StateSpace::SmtNode,
+            &key,
+            &node.data.to_bytes(),
+        );
+    }
+
+    fn put_stale_node(&mut self, stale: &StaleNode) {
+        let key = stale.encode_cf_key();
+        <Self as vprogs_storage_types::WriteBatch>::put(
+            self,
+            StateSpace::SmtStale,
+            &key,
+            &stale.node_version.to_be_bytes(),
+        );
     }
 }
 
