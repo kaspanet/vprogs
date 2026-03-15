@@ -1,7 +1,7 @@
 use std::{marker::PhantomData, sync::Arc};
 
 use rocksdb::DB;
-use vprogs_core_crypto::smt::{Node, StaleNode, TreeWriteBatch};
+use vprogs_core_crypto::smt::{Key, Node, StaleNode, WriteBatch as SmtWriteBatch};
 use vprogs_storage_types::StateSpace;
 
 use crate::{
@@ -39,14 +39,14 @@ impl<C: Config> vprogs_storage_types::WriteBatch for WriteBatch<C> {
     }
 }
 
-impl<C: Config> TreeWriteBatch for WriteBatch<C> {
-    fn put_node(&mut self, node: &Node) {
-        let key = node.key.encode_cf_key(node.version);
+impl<C: Config> SmtWriteBatch for WriteBatch<C> {
+    fn put_node(&mut self, node_key: &Key, version: u64, data: &Node) {
+        let key = node_key.encode_cf_key(version);
         <Self as vprogs_storage_types::WriteBatch>::put(
             self,
             StateSpace::SmtNode,
             &key,
-            &node.data.to_bytes(),
+            &data.to_bytes(),
         );
     }
 

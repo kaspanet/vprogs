@@ -1,11 +1,12 @@
 use core::marker::PhantomData;
 
-use vprogs_core_crypto::{EMPTY_HASH, Hasher};
+use super::key::get_key_bit;
+use crate::{EMPTY_HASH, Hasher};
 
-/// Size of a single leaf entry in the v2 wire format: depth(2) + key(32) + value_hash(32).
-pub const LEAF_ENTRY_SIZE: usize = 66;
+/// Size of a single leaf entry in the wire format: depth(2) + key(32) + value_hash(32).
+pub(crate) const LEAF_ENTRY_SIZE: usize = 66;
 
-/// Zero-copy view of a v2 multi-proof, borrowing from a flat byte buffer.
+/// Zero-copy view of a multi-proof, borrowing from a flat byte buffer.
 ///
 /// Wire format:
 /// - `n_leaves: u32` + `[depth(u16) + key(32) + value_hash(32)] x n_leaves`
@@ -13,9 +14,9 @@ pub const LEAF_ENTRY_SIZE: usize = 66;
 /// - `topology_len: u32` + `topology_bytes`
 ///
 /// During verification, traversal stops at each leaf's declared depth and computes `hash_leaf(key,
-/// value_hash)` instead of recursing all the way to depth 256. This is the key difference from v1:
-/// shortcut leaves at shallow depths mean far fewer hashes.
-pub struct DecodedMultiProof<'a, H: Hasher> {
+/// value_hash)` instead of recursing all the way to depth 256. Shortcut leaves at shallow depths
+/// mean far fewer hashes.
+pub struct Proof<'a, H: Hasher> {
     buf: &'a [u8],
     n_leaves: u32,
     siblings_offset: usize,
@@ -24,7 +25,7 @@ pub struct DecodedMultiProof<'a, H: Hasher> {
     _hasher: PhantomData<H>,
 }
 
-impl<'a, H: Hasher> DecodedMultiProof<'a, H> {
+impl<'a, H: Hasher> Proof<'a, H> {
     /// Decodes a multi-proof from a flat byte buffer.
     pub fn decode(buf: &'a [u8]) -> Self {
         // Section 1: leaf entries.
@@ -115,7 +116,7 @@ impl<'a, H: Hasher> DecodedMultiProof<'a, H> {
     /// `start..end` is the range of leaf indices that fall within this subtree. Because proof
     /// leaves are sorted by key and MSB-first bit ordering matches lexicographic order, splitting
     /// by any bit always produces two contiguous sub-ranges — so ranges suffice (no Vec allocations
-    /// needed). `bit_pos` is the current bit position in the key (0 = MSB).
+    /// needed).
     fn traverse(
         &self,
         start: usize,
@@ -130,8 +131,7 @@ impl<'a, H: Hasher> DecodedMultiProof<'a, H> {
         }
 
         // Shortcut leaf check: if there's exactly one leaf and we've reached its declared depth,
-        // compute the leaf hash directly instead of recursing further. This is the core
-        // optimization — shortcuts stop traversal at O(log n) instead of depth 256.
+        // compute the leaf hash directly instead of recursing further.
         if end - start == 1 {
             let depth = self.leaf_depth(start) as usize;
             if bit_pos == depth {
@@ -169,11 +169,7 @@ impl<'a, H: Hasher> DecodedMultiProof<'a, H> {
     }
 
     /// Finds the partition point where keys switch from bit=0 (left) to bit=1 (right).
-    ///
-    /// Because leaves are sorted by key and MSB-first ordering matches lexicographic order, the
-    /// split point is the first index in `start..end` whose key has bit=1 at `bit_pos`.
     fn split_point(&self, start: usize, end: usize, bit_pos: usize) -> usize {
-        // Linear scan is fine — subtrees are small after a few levels of splitting.
         let mut mid = start;
         while mid < end && !get_key_bit(self.leaf_key(mid), bit_pos) {
             mid += 1;
@@ -191,13 +187,4 @@ impl<'a, H: Hasher> DecodedMultiProof<'a, H> {
         }
         (topology[byte_idx] >> bit_offset) & 1 == 1
     }
-}
-
-/// Gets the `bit_pos`-th bit of a 256-bit key (0 = MSB).
-///
-/// MSB-first ordering matches the tree's left/right convention: bit=0 goes left, bit=1 goes right.
-fn get_key_bit(key: &[u8; 32], bit_pos: usize) -> bool {
-    let byte_idx = bit_pos / 8;
-    let bit_offset = 7 - (bit_pos % 8); // MSB-first within each byte.
-    (key[byte_idx] >> bit_offset) & 1 == 1
 }

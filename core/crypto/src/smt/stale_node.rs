@@ -1,4 +1,4 @@
-use super::node_key::NodeKey;
+use super::key::Key;
 
 /// A node that was superseded by a newer version.
 ///
@@ -8,7 +8,7 @@ pub struct StaleNode {
     /// The version when this node became stale.
     pub stale_since_version: u64,
     /// The node's position in the tree.
-    pub node_key: NodeKey,
+    pub node_key: Key,
     /// The version of the now-stale node.
     pub node_version: u64,
 }

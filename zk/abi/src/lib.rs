@@ -24,7 +24,6 @@ pub mod batch_processor {
     pub use journal::commitment::JournalCommitment;
     pub use output::outputs::Outputs;
 }
-mod decoded_multi_proof;
 mod error;
 mod parser;
 mod read;
@@ -78,7 +77,6 @@ pub mod transaction_processor {
     pub use output::{outputs::Outputs, storage_op::StorageOp};
 }
 
-pub use decoded_multi_proof::DecodedMultiProof;
 pub use error::{Error, Result};
 pub use parser::Parser;
 pub use read::Read;

@@ -6,14 +6,14 @@ use crate::TREE_DEPTH;
 /// left/right decisions from root to this node (0 = left, 1 = right), with only the first `bit_pos`
 /// bits being significant; the rest are zero (canonical form).
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct NodeKey {
+pub struct Key {
     /// Depth from root (0 = root, 256 = leaf level).
     pub bit_pos: u16,
     /// Canonical path — only bits `[0, bit_pos)` are meaningful.
     pub path: [u8; 32],
 }
 
-impl NodeKey {
+impl Key {
     /// The root node position.
     pub fn root() -> Self {
         Self { bit_pos: 0, path: [0u8; 32] }

@@ -15,32 +15,27 @@ pub mod hashing {
 }
 
 pub mod smt {
+    mod key;
     mod leaf_entry;
-    mod multi_proof;
     mod node;
-    mod node_data;
-    mod node_key;
+    mod proof;
     mod stale_node;
     mod state_commitment;
-    mod tree_store;
-    mod tree_write_batch;
-    mod versioned_tree;
+    mod store;
+    mod write_batch;
 
-    pub use leaf_entry::LeafEntry;
-    pub use multi_proof::MultiProof;
+    pub use key::Key;
     pub use node::Node;
-    pub use node_data::NodeData;
-    pub use node_key::NodeKey;
+    pub use proof::Proof;
     pub use stale_node::StaleNode;
     pub use state_commitment::StateCommitment;
-    pub use tree_store::TreeStore;
-    pub use tree_write_batch::TreeWriteBatch;
-    pub use versioned_tree::VersionedTree;
+    pub use store::Store;
+    pub use write_batch::WriteBatch;
 }
 
 // Convenience re-exports at crate root.
 pub use hashing::{Blake3Hasher, Hasher};
-pub use smt::NodeData;
+pub use smt::Node;
 
 /// Hash representing an empty/deleted leaf or empty subtree at any depth.
 ///

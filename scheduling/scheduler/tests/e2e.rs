@@ -1,7 +1,10 @@
 use std::time::Duration;
 
 use tempfile::TempDir;
-use vprogs_core_crypto::{EMPTY_HASH, smt::TreeStore};
+use vprogs_core_crypto::{
+    Blake3Hasher, EMPTY_HASH,
+    smt::{Proof, Store as SmtStore},
+};
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, Checkpoint, ResourceId, SchedulerTransaction};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
@@ -1461,7 +1464,7 @@ pub fn test_smt_state_root_after_commits() {
         assert_eq!(
             store.get_root(3),
             root3,
-            "TreeStore::get_root should match the persisted metadata root"
+            "smt::Store::get_root should match the persisted metadata root"
         );
 
         scheduler.shutdown();
@@ -1624,6 +1627,119 @@ pub fn test_smt_multi_resource_single_batch() {
 
         // Tree version root should agree with metadata.
         assert_eq!(store.get_root(1), root);
+
+        scheduler.shutdown();
+    }
+}
+
+/// Tests that a multi-proof verifies against the correct root and rejects an incorrect one.
+#[test]
+pub fn test_smt_multi_proof_verify() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(Processor),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // Commit a batch with two resources to create tree state.
+        let batch = scheduler.schedule(
+            1,
+            vec![
+                SchedulerTransaction::new(1, vec![AccessMetadata::write(ResourceId::for_test(1))]),
+                SchedulerTransaction::new(2, vec![AccessMetadata::write(ResourceId::for_test(2))]),
+            ],
+        );
+        batch.wait_committed_blocking();
+
+        let store = scheduler.state().storage().store();
+        let root = store.get_root(1);
+
+        // Generate a proof for resource 1's key and verify it.
+        let key = *ResourceId::for_test(1).as_bytes();
+        let proof_bytes = store.generate_proof(1, &[key]);
+        let proof = Proof::<Blake3Hasher>::decode(&proof_bytes);
+
+        assert!(proof.verify(root), "proof should verify against the correct root");
+        assert!(!proof.verify([0xFFu8; 32]), "proof should reject an incorrect root");
+
+        scheduler.shutdown();
+    }
+}
+
+/// Tests that a multi-proof for a non-existent key verifies (proving absence).
+#[test]
+pub fn test_smt_multi_proof_absent_key() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(Processor),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // Commit a batch with resource 1 only.
+        let batch = scheduler.schedule(
+            1,
+            vec![SchedulerTransaction::new(
+                1,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+            )],
+        );
+        batch.wait_committed_blocking();
+
+        let store = scheduler.state().storage().store();
+        let root = store.get_root(1);
+
+        // Generate a proof for resource 99 (absent) — should still verify against the root.
+        let absent_key = *ResourceId::for_test(99).as_bytes();
+        let proof_bytes = store.generate_proof(1, &[absent_key]);
+        let proof = Proof::<Blake3Hasher>::decode(&proof_bytes);
+
+        assert!(proof.verify(root), "proof for an absent key should verify against the root");
+        assert!(!proof.verify([0xFFu8; 32]), "proof should reject an incorrect root");
+
+        scheduler.shutdown();
+    }
+}
+
+/// Tests that a multi-proof covers multiple keys (both present and absent).
+#[test]
+pub fn test_smt_multi_proof_mixed_keys() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(Processor),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // Commit resources 1, 2, 3.
+        let batch = scheduler.schedule(
+            1,
+            vec![
+                SchedulerTransaction::new(1, vec![AccessMetadata::write(ResourceId::for_test(1))]),
+                SchedulerTransaction::new(2, vec![AccessMetadata::write(ResourceId::for_test(2))]),
+                SchedulerTransaction::new(3, vec![AccessMetadata::write(ResourceId::for_test(3))]),
+            ],
+        );
+        batch.wait_committed_blocking();
+
+        let store = scheduler.state().storage().store();
+        let root = store.get_root(1);
+
+        // Proof for existing key 1, existing key 3, and absent key 99.
+        let keys = [
+            *ResourceId::for_test(1).as_bytes(),
+            *ResourceId::for_test(3).as_bytes(),
+            *ResourceId::for_test(99).as_bytes(),
+        ];
+        let proof_bytes = store.generate_proof(1, &keys);
+        let proof = Proof::<Blake3Hasher>::decode(&proof_bytes);
+
+        assert!(proof.verify(root), "mixed proof should verify against the correct root");
+        assert!(proof.n_leaves() >= 3, "proof should have at least 3 leaves");
 
         scheduler.shutdown();
     }

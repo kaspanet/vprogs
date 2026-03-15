@@ -9,7 +9,7 @@ use std::{
 
 use tap::Tap;
 use tokio::{runtime::Builder, sync::Notify};
-use vprogs_core_crypto::smt::{NodeKey, StaleNode};
+use vprogs_core_crypto::smt::{Key, StaleNode};
 use vprogs_core_types::{Checkpoint, ResourceId};
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
@@ -233,7 +233,7 @@ impl<S: Store, P: Processor> PruningWorker<S, P> {
                 {
                     let (path, bit_pos) = StaleNode::decode_cf_key(&stale_key);
                     let node_version = StaleNode::decode_cf_value(&stale_value);
-                    let node_key = NodeKey { bit_pos, path };
+                    let node_key = Key { bit_pos, path };
                     wb.delete(StateSpace::SmtNode, &node_key.encode_cf_key(node_version));
                     wb.delete(StateSpace::SmtStale, &stale_key);
                 }
