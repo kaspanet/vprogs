@@ -4,6 +4,7 @@ use core::marker::PhantomData;
 use super::{
     MultiProof,
     leaf_entry::LeafEntry,
+    node::Node,
     node_key::{NodeKey, get_key_bit, set_key_bit},
     stale_node::StaleNode,
     tree_store::TreeStore,
@@ -86,7 +87,7 @@ impl<'a, H: Hasher, S: TreeStore> VersionedTree<'a, H, S> {
         let new_root = match &result {
             None => EMPTY_HASH,
             Some(node) => {
-                batch.new_nodes.push((root_key, version, node.clone()));
+                batch.new_nodes.push(Node { key: root_key, version, data: node.clone() });
                 *node.hash()
             }
         };
@@ -304,7 +305,7 @@ impl<'a, H: Hasher, S: TreeStore> VersionedTree<'a, H, S> {
             Some(node) => {
                 let key = NodeKey { bit_pos: bit_pos as u16, path };
                 let hash = *node.hash();
-                batch.new_nodes.push((key, version, node.clone()));
+                batch.new_nodes.push(Node { key, version, data: node.clone() });
                 hash
             }
         }

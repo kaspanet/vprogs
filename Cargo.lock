@@ -7363,7 +7363,6 @@ dependencies = [
  "blake3",
  "tempfile",
  "vprogs-state-metadata",
- "vprogs-state-smt",
  "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
 ]
@@ -7552,7 +7551,6 @@ dependencies = [
  "vprogs-state-metadata",
  "vprogs-state-ptr-latest",
  "vprogs-state-ptr-rollback",
- "vprogs-state-smt",
  "vprogs-state-version",
  "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
@@ -7611,14 +7609,6 @@ dependencies = [
  "borsh",
  "vprogs-core-types",
  "vprogs-storage-manager",
- "vprogs-storage-types",
-]
-
-[[package]]
-name = "vprogs-state-smt"
-version = "0.1.0"
-dependencies = [
- "vprogs-core-crypto",
  "vprogs-storage-types",
 ]
 

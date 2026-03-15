@@ -23,6 +23,8 @@ pub mod smt {
     #[cfg(feature = "host")]
     mod multi_proof;
     #[cfg(feature = "host")]
+    mod node;
+    #[cfg(feature = "host")]
     mod node_key;
     #[cfg(feature = "host")]
     mod stale_node;
@@ -31,12 +33,16 @@ pub mod smt {
     #[cfg(feature = "host")]
     mod tree_update_batch;
     #[cfg(feature = "host")]
+    mod tree_write_batch;
+    #[cfg(feature = "host")]
     mod versioned_tree;
 
     #[cfg(feature = "host")]
     pub use leaf_entry::LeafEntry;
     #[cfg(feature = "host")]
     pub use multi_proof::MultiProof;
+    #[cfg(feature = "host")]
+    pub use node::Node;
     pub use node_data::NodeData;
     #[cfg(feature = "host")]
     pub use node_key::NodeKey;
@@ -46,6 +52,8 @@ pub mod smt {
     pub use tree_store::TreeStore;
     #[cfg(feature = "host")]
     pub use tree_update_batch::TreeUpdateBatch;
+    #[cfg(feature = "host")]
+    pub use tree_write_batch::TreeWriteBatch;
     #[cfg(feature = "host")]
     pub use versioned_tree::VersionedTree;
 }

@@ -15,6 +15,5 @@ blake3 = { workspace = true }
 blake3                       = "1"
 tempfile.workspace           = true
 vprogs-state-metadata        = { workspace = true }
-vprogs-state-smt             = { workspace = true }
 vprogs-storage-rocksdb-store = { workspace = true }
 vprogs-storage-types         = { workspace = true }

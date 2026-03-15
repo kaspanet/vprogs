@@ -4,7 +4,6 @@ use vprogs_core_crypto::{
     smt::{NodeKey, StaleNode, TreeStore, VersionedTree},
 };
 use vprogs_state_metadata::StateMetadata;
-use vprogs_state_smt::SmtCommit;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_storage_types::{StateSpace, Store, WriteBatch};
 
@@ -24,7 +23,7 @@ fn update(store: &RocksDbStore, version: u64, leaf_updates: &[([u8; 32], [u8; 32
     let batch = tree.update(version, leaf_updates);
 
     let mut wb = store.write_batch();
-    SmtCommit::write_all(&mut wb, &batch);
+    batch.write(&mut wb);
     StateMetadata::set_state_root(&mut wb, &batch.root);
     store.commit(wb);
 

@@ -1,8 +1,0 @@
-[package]
-edition.workspace = true
-name              = "vprogs-state-smt"
-version.workspace = true
-
-[dependencies]
-vprogs-core-crypto   = { workspace = true, features = ["host"] }
-vprogs-storage-types = { workspace = true }

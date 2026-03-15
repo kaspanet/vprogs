@@ -11,7 +11,6 @@ use vprogs_core_types::{Checkpoint, SchedulerTransaction};
 use vprogs_scheduling_execution_workers::Batch;
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
-use vprogs_state_smt::SmtCommit;
 use vprogs_storage_types::Store;
 
 use crate::{
@@ -278,7 +277,7 @@ impl<S: Store, P: Processor> ScheduledBatch<S, P> {
                 let mut tree =
                     VersionedTree::<Blake3Hasher, _>::new_with(store, prev_version, prev_root);
                 let tree_batch = tree.update(version, &leaf_updates);
-                SmtCommit::write_all(wb, &tree_batch);
+                tree_batch.write(wb);
                 StateMetadata::set_state_root(wb, &tree_batch.root);
             }
         }
