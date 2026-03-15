@@ -5,7 +5,6 @@ use std::sync::{
 
 use crossbeam_deque::{Injector, Steal, Worker};
 use vprogs_core_atomics::AtomicAsyncLatch;
-use vprogs_core_crypto::{Blake3Hasher, EMPTY_HASH, smt::VersionedTree};
 use vprogs_core_macros::smart_pointer;
 use vprogs_core_types::{Checkpoint, SchedulerTransaction};
 use vprogs_scheduling_execution_workers::Batch;
@@ -247,6 +246,13 @@ impl<S: Store, P: Processor> ScheduledBatch<S, P> {
             for state_diff in self.state_diffs() {
                 state_diff.written_state().write_latest_ptr(wb);
             }
+
+            // Update the authenticated state tree with all resource state diffs from this batch.
+            if !self.state_diffs().is_empty() {
+                let new = store.commit_state_diffs(wb, self.checkpoint.index(), self.state_diffs());
+                StateMetadata::set_state_root(wb, &new);
+            }
+
             StoredBatchMetadata::set(wb, self.checkpoint.index(), self.checkpoint.metadata());
             StateMetadata::set_last_committed(wb, &self.checkpoint);
 
@@ -254,31 +260,6 @@ impl<S: Store, P: Processor> ScheduledBatch<S, P> {
             // in-memory when this batch was scheduled (see next_checkpoint).
             if self.checkpoint.index() == self.state.root().index() {
                 StateMetadata::set_root(wb, &self.checkpoint);
-            }
-
-            // Update the SMT with all resource state diffs from this batch.
-            let version = self.checkpoint.index();
-            let leaf_updates: Vec<([u8; 32], [u8; 32])> = self
-                .state_diffs()
-                .iter()
-                .map(|sd| {
-                    let key = *sd.resource_id().as_bytes();
-                    let written_state = sd.written_state();
-                    let data = written_state.data();
-                    let value_hash =
-                        if data.is_empty() { EMPTY_HASH } else { *blake3::hash(data).as_bytes() };
-                    (key, value_hash)
-                })
-                .collect();
-
-            if !leaf_updates.is_empty() {
-                let prev_root = StateMetadata::state_root(store);
-                let prev_version = version.saturating_sub(1);
-                let mut tree =
-                    VersionedTree::<Blake3Hasher, _>::new_with(store, prev_version, prev_root);
-                let tree_batch = tree.update(version, &leaf_updates);
-                tree_batch.write(wb);
-                StateMetadata::set_state_root(wb, &tree_batch.root);
             }
         }
     }

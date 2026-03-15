@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwapOption;
+use vprogs_core_crypto::{EMPTY_HASH, smt::StateCommitment};
 use vprogs_core_macros::smart_pointer;
 use vprogs_core_types::ResourceId;
 use vprogs_state_version::StateVersion;
@@ -104,5 +105,17 @@ impl<S: Store, P: Processor> StateDiff<S, P> {
         if let Some(batch) = self.batch.upgrade() {
             batch.decrease_pending_writes();
         }
+    }
+}
+
+impl<S: Store, P: Processor> StateCommitment for StateDiff<S, P> {
+    fn key(&self) -> [u8; 32] {
+        *self.resource_id.as_bytes()
+    }
+
+    fn value_hash(&self) -> [u8; 32] {
+        let written_state = self.written_state();
+        let data = written_state.data();
+        if data.is_empty() { EMPTY_HASH } else { *blake3::hash(data).as_bytes() }
     }
 }

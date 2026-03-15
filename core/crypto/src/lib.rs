@@ -29,9 +29,9 @@ pub mod smt {
     #[cfg(feature = "host")]
     mod stale_node;
     #[cfg(feature = "host")]
-    mod tree_store;
+    mod state_commitment;
     #[cfg(feature = "host")]
-    mod tree_update_batch;
+    mod tree_store;
     #[cfg(feature = "host")]
     mod tree_write_batch;
     #[cfg(feature = "host")]
@@ -49,9 +49,9 @@ pub mod smt {
     #[cfg(feature = "host")]
     pub use stale_node::StaleNode;
     #[cfg(feature = "host")]
-    pub use tree_store::TreeStore;
+    pub use state_commitment::StateCommitment;
     #[cfg(feature = "host")]
-    pub use tree_update_batch::TreeUpdateBatch;
+    pub use tree_store::TreeStore;
     #[cfg(feature = "host")]
     pub use tree_write_batch::TreeWriteBatch;
     #[cfg(feature = "host")]
