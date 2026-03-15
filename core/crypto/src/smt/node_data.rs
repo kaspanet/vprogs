@@ -31,7 +31,6 @@ impl NodeData {
     ///
     /// Tag `0x00` + hash (33B) for Internal, tag `0x01` + key + value_hash + hash (97B) for Leaf.
     /// The tag byte matches the domain separation prefix used in hashing.
-    #[cfg(feature = "host")]
     pub fn to_bytes(&self) -> alloc::vec::Vec<u8> {
         match self {
             NodeData::Internal { hash } => {
@@ -52,7 +51,6 @@ impl NodeData {
     }
 
     /// Deserializes from bytes produced by `to_bytes`.
-    #[cfg(feature = "host")]
     pub fn from_bytes(data: &[u8]) -> Self {
         match data[0] {
             0x00 => {

@@ -14,7 +14,7 @@ tap.workspace                                 = true
 thiserror.workspace                           = true
 tokio.workspace                               = true
 vprogs-core-atomics.workspace                 = true
-vprogs-core-crypto                            = { workspace = true, features = ["host"] }
+vprogs-core-crypto.workspace                  = true
 vprogs-core-macros.workspace                  = true
 vprogs-core-types.workspace                   = true
 vprogs-scheduling-execution-workers.workspace = true

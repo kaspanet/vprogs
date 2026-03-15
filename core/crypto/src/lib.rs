@@ -1,9 +1,8 @@
 //! Cryptographic primitives and data structures.
 //!
-//! Guest-side types (hashing, node data) are available in `no_std`. Host-side types (tree
-//! mutations, proof generation, store integration) require the `host` feature.
+//! Pure `no_std` crate — all types are available without feature gates.
 
-#![cfg_attr(not(feature = "std"), no_std)]
+#![no_std]
 
 extern crate alloc;
 
@@ -16,45 +15,26 @@ pub mod hashing {
 }
 
 pub mod smt {
-    mod node_data;
-
-    #[cfg(feature = "host")]
     mod leaf_entry;
-    #[cfg(feature = "host")]
     mod multi_proof;
-    #[cfg(feature = "host")]
     mod node;
-    #[cfg(feature = "host")]
+    mod node_data;
     mod node_key;
-    #[cfg(feature = "host")]
     mod stale_node;
-    #[cfg(feature = "host")]
     mod state_commitment;
-    #[cfg(feature = "host")]
     mod tree_store;
-    #[cfg(feature = "host")]
     mod tree_write_batch;
-    #[cfg(feature = "host")]
     mod versioned_tree;
 
-    #[cfg(feature = "host")]
     pub use leaf_entry::LeafEntry;
-    #[cfg(feature = "host")]
     pub use multi_proof::MultiProof;
-    #[cfg(feature = "host")]
     pub use node::Node;
     pub use node_data::NodeData;
-    #[cfg(feature = "host")]
     pub use node_key::NodeKey;
-    #[cfg(feature = "host")]
     pub use stale_node::StaleNode;
-    #[cfg(feature = "host")]
     pub use state_commitment::StateCommitment;
-    #[cfg(feature = "host")]
     pub use tree_store::TreeStore;
-    #[cfg(feature = "host")]
     pub use tree_write_batch::TreeWriteBatch;
-    #[cfg(feature = "host")]
     pub use versioned_tree::VersionedTree;
 }
 

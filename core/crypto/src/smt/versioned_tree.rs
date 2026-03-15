@@ -13,6 +13,9 @@ use super::{
 };
 use crate::{EMPTY_HASH, Hasher, NodeData, TREE_DEPTH};
 
+/// Key-value pair representing a single leaf mutation: `(key, value_hash)`.
+type LeafUpdate = ([u8; 32], [u8; 32]);
+
 /// A persistent, versioned binary Sparse Merkle Tree with leaf shortcutting.
 ///
 /// Each mutation creates a new version with structural sharing — only nodes on the modified path
@@ -64,15 +67,18 @@ impl<'a, H: Hasher, S: TreeStore> VersionedTree<'a, H, S> {
             return self.current_root;
         }
 
-        // Map to (key, value_hash) pairs, then sort and deduplicate by key for consistent
-        // left/right splitting.
-        let mut sorted: Vec<([u8; 32], [u8; 32])> =
+        // Materialize (key, value_hash) pairs once, then sort and deduplicate by key. All
+        // recursive methods below work with indices into this vec — no further copies of the
+        // 64-byte tuples are made on the common path.
+        let mut updates: Vec<LeafUpdate> =
             leaf_updates.iter().map(|d| (d.key(), d.value_hash())).collect();
-        sorted.sort_by(|a, b| a.0.cmp(&b.0));
-        sorted.dedup_by(|a, b| a.0 == b.0);
+        updates.sort_by(|a, b| a.0.cmp(&b.0));
+        updates.dedup_by(|a, b| a.0 == b.0);
+
+        let indices: Vec<usize> = (0..updates.len()).collect();
 
         // Recursively apply updates starting from the root.
-        let result = self.update_subtree(&sorted, 0, [0u8; 32], version, wb);
+        let result = self.update_subtree(&updates, &indices, 0, [0u8; 32], version, wb);
 
         // Write the result at the root position and update the tree state.
         let root_key = NodeKey::root();
@@ -94,13 +100,18 @@ impl<'a, H: Hasher, S: TreeStore> VersionedTree<'a, H, S> {
     /// Core recursive update returning `None` for empty subtrees or the node that occupies this
     /// position.
     ///
+    /// `updates` is the full sorted array of leaf mutations; `indices` selects which elements
+    /// apply to this subtree. Only indices are copied during splits — the underlying data is
+    /// shared.
+    ///
     /// **Important:** returned `Leaf` nodes are *not* written to the store by this function — they
     /// bubble up to the caller, which decides whether to write them as a child of an Internal node
     /// or as the root. This enables leaf shortcutting where a single occupant floats to the highest
     /// ancestor.
     fn update_subtree(
         &self,
-        updates: &[([u8; 32], [u8; 32])],
+        updates: &[LeafUpdate],
+        indices: &[usize],
         bit_pos: usize,
         path: [u8; 32],
         version: u64,
@@ -109,7 +120,7 @@ impl<'a, H: Hasher, S: TreeStore> VersionedTree<'a, H, S> {
         let node_key = NodeKey { bit_pos: bit_pos as u16, path };
 
         // No updates for this subtree — return existing node unchanged.
-        if updates.is_empty() {
+        if indices.is_empty() {
             return self.store.get_node(&node_key, version).map(|(_, data)| data);
         }
 
@@ -118,16 +129,24 @@ impl<'a, H: Hasher, S: TreeStore> VersionedTree<'a, H, S> {
 
         match existing {
             // Empty subtree: any updates create new leaves.
-            None => self.insert_into_empty(updates, bit_pos, path, version, wb),
+            None => self.insert_into_empty(updates, indices, bit_pos, path, version, wb),
 
             // Existing shortcut leaf: may need to split if keys differ.
-            Some(NodeData::Leaf { key: existing_key, value_hash: existing_vh, .. }) => {
-                self.update_at_leaf(updates, bit_pos, path, version, wb, existing_key, existing_vh)
-            }
+            Some(NodeData::Leaf { key: existing_key, value_hash: existing_vh, .. }) => self
+                .update_at_leaf(
+                    updates,
+                    indices,
+                    bit_pos,
+                    path,
+                    version,
+                    wb,
+                    existing_key,
+                    existing_vh,
+                ),
 
             // Existing internal node: recurse into children.
             Some(NodeData::Internal { .. }) => {
-                self.update_at_internal(updates, bit_pos, path, version, wb)
+                self.update_at_internal(updates, indices, bit_pos, path, version, wb)
             }
         }
     }
@@ -135,15 +154,16 @@ impl<'a, H: Hasher, S: TreeStore> VersionedTree<'a, H, S> {
     /// Inserts updates into a currently empty subtree.
     fn insert_into_empty(
         &self,
-        updates: &[([u8; 32], [u8; 32])],
+        updates: &[LeafUpdate],
+        indices: &[usize],
         bit_pos: usize,
         path: [u8; 32],
         version: u64,
         wb: &mut impl TreeWriteBatch,
     ) -> Option<NodeData> {
         // Filter out deletions — setting EMPTY_HASH in an empty subtree is a no-op.
-        let live: Vec<([u8; 32], [u8; 32])> =
-            updates.iter().filter(|(_, vh)| *vh != EMPTY_HASH).copied().collect();
+        let live: Vec<usize> =
+            indices.iter().filter(|&&i| updates[i].1 != EMPTY_HASH).copied().collect();
 
         if live.is_empty() {
             return None;
@@ -151,20 +171,21 @@ impl<'a, H: Hasher, S: TreeStore> VersionedTree<'a, H, S> {
 
         if live.len() == 1 {
             // Single insert — create a shortcut leaf at this depth (no internal nodes needed).
-            let (key, value_hash) = live[0];
+            let (key, value_hash) = updates[live[0]];
             let hash = H::hash_leaf(&key, &value_hash);
             return Some(NodeData::Leaf { key, value_hash, hash });
         }
 
         // Multiple inserts — must split by the current bit and recurse.
-        self.split_and_recurse(&live, bit_pos, path, version, wb)
+        self.split_and_recurse(updates, &live, bit_pos, path, version, wb)
     }
 
     /// Handles updates at a position that currently holds a shortcut leaf.
     #[allow(clippy::too_many_arguments)]
     fn update_at_leaf(
         &self,
-        updates: &[([u8; 32], [u8; 32])],
+        updates: &[LeafUpdate],
+        indices: &[usize],
         bit_pos: usize,
         path: [u8; 32],
         version: u64,
@@ -177,11 +198,12 @@ impl<'a, H: Hasher, S: TreeStore> VersionedTree<'a, H, S> {
         self.mark_stale(&node_key, version, wb);
 
         // Check if any update targets the same key as the existing leaf.
-        let same_key_update = updates.iter().find(|(k, _)| *k == existing_key);
+        let same_key_idx = indices.iter().copied().find(|&i| updates[i].0 == existing_key);
 
-        if let Some(&(_, new_vh)) = same_key_update {
-            if updates.len() == 1 {
+        if let Some(idx) = same_key_idx {
+            if indices.len() == 1 {
                 // Simple case: single update replaces the existing leaf in-place.
+                let new_vh = updates[idx].1;
                 if new_vh == EMPTY_HASH {
                     return None; // Deletion — subtree becomes empty.
                 }
@@ -191,16 +213,15 @@ impl<'a, H: Hasher, S: TreeStore> VersionedTree<'a, H, S> {
         }
 
         // Complex case: merge the existing leaf into the update set (unless it's already being
-        // updated) and split. This handles the case where a new key is being inserted into a
-        // subtree that was previously occupied by a single shortcut leaf.
-        let mut merged: Vec<([u8; 32], [u8; 32])> = updates.to_vec();
-        if same_key_update.is_none() {
+        // updated) and split. This is the one place where we materialize a new vec — unavoidable
+        // because we need to add the existing key to the set.
+        let mut merged: Vec<LeafUpdate> = indices.iter().map(|&i| updates[i]).collect();
+        if same_key_idx.is_none() {
             merged.push((existing_key, existing_vh));
         }
 
         // Filter out deletions after merging.
-        let live: Vec<([u8; 32], [u8; 32])> =
-            merged.iter().filter(|(_, vh)| *vh != EMPTY_HASH).copied().collect();
+        let live: Vec<usize> = (0..merged.len()).filter(|&i| merged[i].1 != EMPTY_HASH).collect();
 
         if live.is_empty() {
             return None;
@@ -209,18 +230,19 @@ impl<'a, H: Hasher, S: TreeStore> VersionedTree<'a, H, S> {
         if live.len() == 1 {
             // Only one key survives — create a new shortcut leaf (may be the existing key
             // or the new key, depending on which ones were deleted).
-            let (key, value_hash) = live[0];
+            let (key, value_hash) = merged[live[0]];
             let hash = H::hash_leaf(&key, &value_hash);
             return Some(NodeData::Leaf { key, value_hash, hash });
         }
 
-        self.split_and_recurse(&live, bit_pos, path, version, wb)
+        self.split_and_recurse(&merged, &live, bit_pos, path, version, wb)
     }
 
     /// Handles updates at a position that holds an internal node.
     fn update_at_internal(
         &self,
-        updates: &[([u8; 32], [u8; 32])],
+        updates: &[LeafUpdate],
+        indices: &[usize],
         bit_pos: usize,
         path: [u8; 32],
         version: u64,
@@ -230,7 +252,7 @@ impl<'a, H: Hasher, S: TreeStore> VersionedTree<'a, H, S> {
         let node_key = NodeKey { bit_pos: bit_pos as u16, path };
         self.mark_stale(&node_key, version, wb);
 
-        self.split_and_recurse(updates, bit_pos, path, version, wb)
+        self.split_and_recurse(updates, indices, bit_pos, path, version, wb)
     }
 
     /// Splits updates by the current bit and recurses into both children.
@@ -239,7 +261,8 @@ impl<'a, H: Hasher, S: TreeStore> VersionedTree<'a, H, S> {
     /// leaf + one empty → bubble the leaf up (shortcutting), otherwise → create Internal node.
     fn split_and_recurse(
         &self,
-        updates: &[([u8; 32], [u8; 32])],
+        updates: &[LeafUpdate],
+        indices: &[usize],
         bit_pos: usize,
         path: [u8; 32],
         version: u64,
@@ -247,17 +270,17 @@ impl<'a, H: Hasher, S: TreeStore> VersionedTree<'a, H, S> {
     ) -> Option<NodeData> {
         debug_assert!(bit_pos < TREE_DEPTH, "exceeded tree depth");
 
-        // Partition updates by the bit at the current depth: 0 → left, 1 → right.
-        let (left_updates, right_updates) = split_updates_by_bit(updates, bit_pos);
+        // Partition indices by the bit at the current depth: 0 → left, 1 → right.
+        let (left, right) = split_by_bit(indices, |i| &updates[i].0, bit_pos);
 
         let left_path = path;
         let mut right_path = path;
         set_key_bit(&mut right_path, bit_pos);
 
         // Recurse into both children independently.
-        let left_result = self.update_subtree(&left_updates, bit_pos + 1, left_path, version, wb);
+        let left_result = self.update_subtree(updates, &left, bit_pos + 1, left_path, version, wb);
         let right_result =
-            self.update_subtree(&right_updates, bit_pos + 1, right_path, version, wb);
+            self.update_subtree(updates, &right, bit_pos + 1, right_path, version, wb);
 
         match (&left_result, &right_result) {
             // Both children empty — this subtree is empty.
@@ -443,7 +466,7 @@ impl<'a, H: Hasher, S: TreeStore> VersionedTree<'a, H, S> {
         }
 
         // Multiple absent keys — split by bit to produce the topology the verifier needs.
-        let (left, right) = split_indices_by_bit(indices, keys, bit_pos);
+        let (left, right) = split_by_bit(indices, |i| &keys[i], bit_pos);
 
         if !left.is_empty() && !right.is_empty() {
             // Both sides have absent keys — emit a split topology bit.
@@ -499,7 +522,7 @@ impl<'a, H: Hasher, S: TreeStore> VersionedTree<'a, H, S> {
         siblings: &mut Vec<[u8; 32]>,
         topology_bits: &mut Vec<bool>,
     ) {
-        let (left_indices, right_indices) = split_indices_by_bit(indices, keys, bit_pos);
+        let (left_indices, right_indices) = split_by_bit(indices, |i| &keys[i], bit_pos);
 
         let left_path = path;
         let mut right_path = path;
@@ -590,35 +613,19 @@ impl<'a, H: Hasher, S: TreeStore> VersionedTree<'a, H, S> {
 
 // --- Free functions ---
 
-type LeafUpdate = ([u8; 32], [u8; 32]);
-
-/// Splits updates into left (bit=0) and right (bit=1) by the current bit position.
-fn split_updates_by_bit(
-    updates: &[LeafUpdate],
-    bit_pos: usize,
-) -> (Vec<LeafUpdate>, Vec<LeafUpdate>) {
-    let mut left = Vec::new();
-    let mut right = Vec::new();
-    for &(key, hash) in updates {
-        if get_key_bit(&key, bit_pos) {
-            right.push((key, hash));
-        } else {
-            left.push((key, hash));
-        }
-    }
-    (left, right)
-}
-
-/// Splits proof leaf indices into left (bit=0) and right (bit=1) by the current bit position.
-fn split_indices_by_bit(
+/// Splits indices into left (bit=0) and right (bit=1) by the current bit position.
+///
+/// The `key_fn` closure returns a reference to the 32-byte key for a given index, avoiding
+/// copies. Works with both leaf updates (`&updates[i].0`) and proof keys (`&keys[i]`).
+fn split_by_bit<'a>(
     indices: &[usize],
-    keys: &[[u8; 32]],
+    key_fn: impl Fn(usize) -> &'a [u8; 32],
     bit_pos: usize,
 ) -> (Vec<usize>, Vec<usize>) {
     let mut left = Vec::new();
     let mut right = Vec::new();
     for &i in indices {
-        if get_key_bit(&keys[i], bit_pos) {
+        if get_key_bit(key_fn(i), bit_pos) {
             right.push(i);
         } else {
             left.push(i);

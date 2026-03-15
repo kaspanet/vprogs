@@ -82,7 +82,7 @@ impl<C: Config> Store for RocksDbStore<C> {
 
 impl<C: Config> TreeStore for RocksDbStore<C> {
     fn get_node(&self, key: &NodeKey, max_version: u64) -> Option<(u64, NodeData)> {
-        let seek = key.encode_seek_key(max_version);
+        let seek = key.encode_cf_key(max_version);
         let mut iter = self.prefix_iter(StateSpace::SmtNode, &seek);
         let (raw_key, raw_value) = iter.next()?;
         let version = NodeKey::decode_version(&raw_key);

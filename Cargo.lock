@@ -7361,10 +7361,6 @@ name = "vprogs-core-crypto"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "tempfile",
- "vprogs-state-metadata",
- "vprogs-storage-rocksdb-store",
- "vprogs-storage-types",
 ]
 
 [[package]]

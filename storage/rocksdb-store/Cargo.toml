@@ -7,5 +7,5 @@ version.workspace = true
 num_cpus.workspace             = true
 rocksdb.workspace              = true
 tap.workspace                  = true
-vprogs-core-crypto             = { workspace = true, features = ["host"] }
+vprogs-core-crypto.workspace   = true
 vprogs-storage-types.workspace = true
