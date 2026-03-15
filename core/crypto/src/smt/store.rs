@@ -2,16 +2,12 @@ use alloc::{vec, vec::Vec};
 
 use super::{
     key::{Key, get_key_bit, set_key_bit},
-    leaf_entry::LeafEntry,
     proof::LEAF_ENTRY_SIZE,
     stale_node::StaleNode,
     state_commitment::StateCommitment,
     write_batch::WriteBatch,
 };
 use crate::{Blake3Hasher, EMPTY_HASH, Hasher, Node, TREE_DEPTH};
-
-/// Key-value pair representing a single leaf mutation: `(key, value_hash)`.
-type LeafUpdate = ([u8; 32], [u8; 32]);
 
 /// Authenticated state store backed by a versioned Sparse Merkle Tree.
 ///
@@ -36,14 +32,10 @@ pub trait Store {
     ///
     /// Reads the previous root from the store, applies the state commitments as leaf mutations,
     /// writes the resulting nodes into `wb`, and returns the new root hash. No-op for empty diffs.
-    fn commit_state_diffs<D: StateCommitment>(
-        &self,
-        wb: &mut impl WriteBatch,
-        version: u64,
-        diffs: &[D],
-    ) -> [u8; 32]
+    fn commit_state_diffs<D>(&self, wb: &mut impl WriteBatch, version: u64, diffs: &[D]) -> [u8; 32]
     where
         Self: Sized,
+        for<'a> StateCommitment: From<&'a D>,
     {
         if diffs.is_empty() {
             return self.get_root(version.saturating_sub(1));
@@ -65,7 +57,7 @@ pub trait Store {
         sorted_keys.sort();
         sorted_keys.dedup();
 
-        let mut leaves: Vec<LeafEntry> = Vec::new();
+        let mut leaves: Vec<(u16, StateCommitment)> = Vec::new();
         let mut siblings: Vec<[u8; 32]> = Vec::new();
         let mut topology_bits: Vec<bool> = Vec::new();
 
@@ -93,20 +85,22 @@ pub trait Store {
 /// Applies leaf mutations to the tree and writes all resulting nodes directly into `wb`.
 ///
 /// Returns the new root hash.
-fn update<S: Store, D: StateCommitment>(
+fn update<S: Store, D>(
     store: &S,
     wb: &mut impl WriteBatch,
     prev_version: u64,
     version: u64,
     leaf_updates: &[D],
-) -> [u8; 32] {
-    // Materialize (key, value_hash) pairs once, then sort and deduplicate by key. All recursive
-    // methods below work with indices into this vec — no further copies of the 64-byte tuples
-    // are made on the common path.
-    let mut updates: Vec<LeafUpdate> =
-        leaf_updates.iter().map(|d| (d.key(), d.value_hash())).collect();
-    updates.sort_by(|a, b| a.0.cmp(&b.0));
-    updates.dedup_by(|a, b| a.0 == b.0);
+) -> [u8; 32]
+where
+    for<'a> StateCommitment: From<&'a D>,
+{
+    // Convert, sort, and deduplicate by key. All recursive methods below work with indices into
+    // this vec — no further copies of the 64-byte entries are made on the common path.
+    let mut updates: Vec<StateCommitment> =
+        leaf_updates.iter().map(StateCommitment::from).collect();
+    updates.sort_by(|a, b| a.key.cmp(&b.key));
+    updates.dedup_by(|a, b| a.key == b.key);
 
     let indices: Vec<usize> = (0..updates.len()).collect();
 
@@ -139,7 +133,7 @@ fn update<S: Store, D: StateCommitment>(
 #[allow(clippy::too_many_arguments)]
 fn update_subtree<S: Store>(
     store: &S,
-    updates: &[LeafUpdate],
+    updates: &[StateCommitment],
     indices: &[usize],
     bit_pos: usize,
     path: [u8; 32],
@@ -188,7 +182,7 @@ fn update_subtree<S: Store>(
 #[allow(clippy::too_many_arguments)]
 fn insert_into_empty<S: Store>(
     store: &S,
-    updates: &[LeafUpdate],
+    updates: &[StateCommitment],
     indices: &[usize],
     bit_pos: usize,
     path: [u8; 32],
@@ -198,7 +192,7 @@ fn insert_into_empty<S: Store>(
 ) -> Option<Node> {
     // Filter out deletions — setting EMPTY_HASH in an empty subtree is a no-op.
     let live: Vec<usize> =
-        indices.iter().filter(|&&i| updates[i].1 != EMPTY_HASH).copied().collect();
+        indices.iter().filter(|&&i| updates[i].value_hash != EMPTY_HASH).copied().collect();
 
     if live.is_empty() {
         return None;
@@ -206,7 +200,7 @@ fn insert_into_empty<S: Store>(
 
     if live.len() == 1 {
         // Single insert — create a shortcut leaf at this depth (no internal nodes needed).
-        let (key, value_hash) = updates[live[0]];
+        let StateCommitment { key, value_hash } = updates[live[0]];
         let hash = Blake3Hasher::hash_leaf(&key, &value_hash);
         return Some(Node::Leaf { key, value_hash, hash });
     }
@@ -219,7 +213,7 @@ fn insert_into_empty<S: Store>(
 #[allow(clippy::too_many_arguments)]
 fn update_at_leaf<S: Store>(
     store: &S,
-    updates: &[LeafUpdate],
+    updates: &[StateCommitment],
     indices: &[usize],
     bit_pos: usize,
     path: [u8; 32],
@@ -234,12 +228,12 @@ fn update_at_leaf<S: Store>(
     mark_stale(store, &node_key, prev_version, version, wb);
 
     // Check if any update targets the same key as the existing leaf.
-    let same_key_idx = indices.iter().copied().find(|&i| updates[i].0 == existing_key);
+    let same_key_idx = indices.iter().copied().find(|&i| updates[i].key == existing_key);
 
     if let Some(idx) = same_key_idx {
         if indices.len() == 1 {
             // Simple case: single update replaces the existing leaf in-place.
-            let new_vh = updates[idx].1;
+            let new_vh = updates[idx].value_hash;
             if new_vh == EMPTY_HASH {
                 return None; // Deletion — subtree becomes empty.
             }
@@ -251,13 +245,14 @@ fn update_at_leaf<S: Store>(
     // Complex case: merge the existing leaf into the update set (unless it's already being
     // updated) and split. This is the one place where we materialize a new vec — unavoidable
     // because we need to add the existing key to the set.
-    let mut merged: Vec<LeafUpdate> = indices.iter().map(|&i| updates[i]).collect();
+    let mut merged: Vec<StateCommitment> = indices.iter().map(|&i| updates[i]).collect();
     if same_key_idx.is_none() {
-        merged.push((existing_key, existing_vh));
+        merged.push(StateCommitment { key: existing_key, value_hash: existing_vh });
     }
 
     // Filter out deletions after merging.
-    let live: Vec<usize> = (0..merged.len()).filter(|&i| merged[i].1 != EMPTY_HASH).collect();
+    let live: Vec<usize> =
+        (0..merged.len()).filter(|&i| merged[i].value_hash != EMPTY_HASH).collect();
 
     if live.is_empty() {
         return None;
@@ -266,7 +261,7 @@ fn update_at_leaf<S: Store>(
     if live.len() == 1 {
         // Only one key survives — create a new shortcut leaf (may be the existing key or the new
         // key, depending on which ones were deleted).
-        let (key, value_hash) = merged[live[0]];
+        let StateCommitment { key, value_hash } = merged[live[0]];
         let hash = Blake3Hasher::hash_leaf(&key, &value_hash);
         return Some(Node::Leaf { key, value_hash, hash });
     }
@@ -278,7 +273,7 @@ fn update_at_leaf<S: Store>(
 #[allow(clippy::too_many_arguments)]
 fn update_at_internal<S: Store>(
     store: &S,
-    updates: &[LeafUpdate],
+    updates: &[StateCommitment],
     indices: &[usize],
     bit_pos: usize,
     path: [u8; 32],
@@ -300,7 +295,7 @@ fn update_at_internal<S: Store>(
 #[allow(clippy::too_many_arguments)]
 fn split_and_recurse<S: Store>(
     store: &S,
-    updates: &[LeafUpdate],
+    updates: &[StateCommitment],
     indices: &[usize],
     bit_pos: usize,
     path: [u8; 32],
@@ -311,7 +306,7 @@ fn split_and_recurse<S: Store>(
     debug_assert!(bit_pos < TREE_DEPTH, "exceeded tree depth");
 
     // Partition indices by the bit at the current depth: 0 -> left, 1 -> right.
-    let (left, right) = split_by_bit(indices, |i| &updates[i].0, bit_pos);
+    let (left, right) = split_by_bit(indices, |i| &updates[i].key, bit_pos);
 
     let left_path = path;
     let mut right_path = path;
@@ -396,7 +391,7 @@ fn build_proof<S: Store>(
     bit_pos: usize,
     path: [u8; 32],
     version: u64,
-    leaves: &mut Vec<LeafEntry>,
+    leaves: &mut Vec<(u16, StateCommitment)>,
     siblings: &mut Vec<[u8; 32]>,
     topology_bits: &mut Vec<bool>,
 ) {
@@ -415,7 +410,7 @@ fn build_proof<S: Store>(
 
         // Shortcut leaf — emit it as the proof entry for this subtree.
         Some((_, Node::Leaf { key: leaf_key, value_hash, .. })) => {
-            leaves.push(LeafEntry { depth: bit_pos as u16, key: leaf_key, value_hash });
+            leaves.push((bit_pos as u16, StateCommitment { key: leaf_key, value_hash }));
         }
 
         // Internal node — split proof keys and recurse into children.
@@ -443,17 +438,16 @@ fn build_proof_empty(
     keys: &[[u8; 32]],
     indices: &[usize],
     bit_pos: usize,
-    leaves: &mut Vec<LeafEntry>,
+    leaves: &mut Vec<(u16, StateCommitment)>,
     siblings: &mut Vec<[u8; 32]>,
     topology_bits: &mut Vec<bool>,
 ) {
     if indices.len() == 1 {
         // Single absent key — emit as an empty leaf at this depth.
-        leaves.push(LeafEntry {
-            depth: bit_pos as u16,
-            key: keys[indices[0]],
-            value_hash: EMPTY_HASH,
-        });
+        leaves.push((
+            bit_pos as u16,
+            StateCommitment { key: keys[indices[0]], value_hash: EMPTY_HASH },
+        ));
         return;
     }
 
@@ -486,7 +480,7 @@ fn build_proof_internal<S: Store>(
     bit_pos: usize,
     path: [u8; 32],
     version: u64,
-    leaves: &mut Vec<LeafEntry>,
+    leaves: &mut Vec<(u16, StateCommitment)>,
     siblings: &mut Vec<[u8; 32]>,
     topology_bits: &mut Vec<bool>,
 ) {
@@ -571,7 +565,7 @@ fn node_hash<S: Store>(store: &S, node_key: &Key, version: u64) -> [u8; 32] {
 /// Splits indices into left (bit=0) and right (bit=1) by the current bit position.
 ///
 /// The `key_fn` closure returns a reference to the 32-byte key for a given index, avoiding copies.
-/// Works with both leaf updates (`&updates[i].0`) and proof keys (`&keys[i]`).
+/// Works with both leaf updates (`&updates[i].key`) and proof keys (`&keys[i]`).
 fn split_by_bit<'a>(
     indices: &[usize],
     key_fn: impl Fn(usize) -> &'a [u8; 32],
@@ -590,16 +584,20 @@ fn split_by_bit<'a>(
 }
 
 /// Encodes proof components into the v2 wire format.
-fn encode_proof(leaves: &[LeafEntry], siblings: &[[u8; 32]], topology: &[u8]) -> Vec<u8> {
+fn encode_proof(
+    leaves: &[(u16, StateCommitment)],
+    siblings: &[[u8; 32]],
+    topology: &[u8],
+) -> Vec<u8> {
     let total = 4 + leaves.len() * LEAF_ENTRY_SIZE + 4 + siblings.len() * 32 + 4 + topology.len();
     let mut buf = Vec::with_capacity(total);
 
     // Section 1: leaf entries — each is depth(2) + key(32) + value_hash(32) = 66 bytes.
     buf.extend_from_slice(&(leaves.len() as u32).to_le_bytes());
-    for leaf in leaves {
-        buf.extend_from_slice(&leaf.depth.to_le_bytes());
-        buf.extend_from_slice(&leaf.key);
-        buf.extend_from_slice(&leaf.value_hash);
+    for &(depth, StateCommitment { key, value_hash }) in leaves {
+        buf.extend_from_slice(&depth.to_le_bytes());
+        buf.extend_from_slice(&key);
+        buf.extend_from_slice(&value_hash);
     }
 
     // Section 2: sibling hashes — each is 32 bytes.

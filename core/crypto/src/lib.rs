@@ -16,7 +16,6 @@ pub mod hashing {
 
 pub mod smt {
     mod key;
-    mod leaf_entry;
     mod node;
     mod proof;
     mod stale_node;
