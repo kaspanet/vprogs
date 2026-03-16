@@ -1,7 +1,10 @@
 use alloc::vec::Vec;
 
-use super::{bits::Bits, state_commitment::StateCommitment};
-use crate::{EMPTY_HASH, Hasher};
+use super::state_commitment::StateCommitment;
+use crate::{
+    EMPTY_HASH, Hasher,
+    utils::{bools::Bools, bytes::Bits},
+};
 
 /// Size of a single leaf entry in the wire format: depth(2) + key(32) + value_hash(32).
 pub(crate) const LEAF_ENTRY_SIZE: usize = 66;
@@ -53,7 +56,7 @@ impl<'a> Proof<'a> {
         siblings: &[[u8; 32]],
         topology_bits: &[bool],
     ) -> Vec<u8> {
-        let topology = Self::pack_topology(topology_bits);
+        let topology = topology_bits.pack_lsb();
         let total =
             4 + leaves.len() * LEAF_ENTRY_SIZE + 4 + siblings.len() * 32 + 4 + topology.len();
         let mut buf = Vec::with_capacity(total);
@@ -87,22 +90,19 @@ impl<'a> Proof<'a> {
 
     /// Returns the depth of the leaf at index `i`.
     pub fn leaf_depth(&self, i: usize) -> u16 {
-        let offset = 4 + i * LEAF_ENTRY_SIZE;
-        u16::from_le_bytes(self.buf[offset..offset + 2].try_into().expect("truncated leaf depth"))
+        u16::from_le_bytes(
+            self.buf[4 + i * LEAF_ENTRY_SIZE..][..2].try_into().expect("truncated depth"),
+        )
     }
 
     /// Returns the key of the leaf at index `i`.
     pub fn leaf_key(&self, i: usize) -> &[u8; 32] {
-        // Key starts after the 2-byte depth field.
-        let offset = 4 + i * LEAF_ENTRY_SIZE + 2;
-        self.buf[offset..offset + 32].try_into().expect("truncated leaf key")
+        self.buf[4 + i * LEAF_ENTRY_SIZE + 2..][..32].try_into().expect("truncated key")
     }
 
     /// Returns the value hash of the leaf at index `i`.
     pub fn leaf_value_hash(&self, i: usize) -> &[u8; 32] {
-        // Value hash starts after depth(2) + key(32).
-        let offset = 4 + i * LEAF_ENTRY_SIZE + 2 + 32;
-        self.buf[offset..offset + 32].try_into().expect("truncated leaf value_hash")
+        self.buf[4 + i * LEAF_ENTRY_SIZE + 34..][..32].try_into().expect("truncated value_hash")
     }
 
     /// Verifies that the proof leaves produce the expected root hash.
@@ -120,28 +120,14 @@ impl<'a> Proof<'a> {
         self.compute_root_with::<H>(|i| &updated_hashes[i])
     }
 
-    /// Packs a slice of bools into a byte vector (LSB-first within each byte).
-    ///
-    /// This matches the topology bitfield format read during proof traversal.
-    fn pack_topology(bits: &[bool]) -> Vec<u8> {
-        let mut bytes = alloc::vec![0u8; bits.len().div_ceil(8)];
-        for (i, &bit) in bits.iter().enumerate() {
-            if bit {
-                bytes.set_lsb(i);
-            }
-        }
-        bytes
-    }
-
     /// Returns the sibling hash at index `i`.
     fn sibling(&self, i: usize) -> &[u8; 32] {
-        let offset = self.siblings_offset + i * 32;
-        self.buf[offset..offset + 32].try_into().expect("truncated sibling")
+        self.buf[self.siblings_offset + i * 32..][..32].try_into().expect("truncated sibling")
     }
 
     /// Returns the topology bytes.
     fn topology(&self) -> &[u8] {
-        &self.buf[self.topology_offset..self.topology_offset + self.topology_len]
+        &self.buf[self.topology_offset..][..self.topology_len]
     }
 
     /// Shared traversal logic parameterized on which value hash to use for each leaf.

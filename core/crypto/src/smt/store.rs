@@ -1,14 +1,13 @@
 use alloc::vec::Vec;
 
 use super::{
-    bits::{Bits, BitsArray},
-    key::Key,
-    proof::Proof,
-    stale_node::StaleNode,
-    state_commitment::StateCommitment,
+    key::Key, proof::Proof, stale_node::StaleNode, state_commitment::StateCommitment,
     write_batch::WriteBatch,
 };
-use crate::{Blake3Hasher, EMPTY_HASH, Hasher, Node, TREE_DEPTH};
+use crate::{
+    Blake3Hasher, EMPTY_HASH, Hasher, Node, TREE_DEPTH,
+    utils::bytes::{Bits, BitsArray},
+};
 
 /// Authenticated state store backed by a versioned Sparse Merkle Tree.
 ///

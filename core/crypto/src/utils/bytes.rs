@@ -36,10 +36,10 @@ impl Bits for [u8] {
     }
 }
 
-/// Copy-on-write bit operations for 32-byte key arrays.
+/// Copy-on-write bit operations for 32-byte arrays.
 ///
 /// Returns a new array with the modification applied, matching the common pattern of copying a
-/// path before setting or clearing bits.
+/// value before setting bits.
 pub(crate) trait BitsArray {
     /// Returns a copy with bit `index` set (MSB-first ordering).
     fn with_bit_set(self, index: usize) -> Self;
