@@ -106,13 +106,13 @@ impl<'a> MultiProof<'a> {
     /// Recursive traversal of the tree.
     ///
     /// `indices` — subset of leaf indices that fall within this subtree.
-    /// `bit_pos` — current bit position in the key (0 = MSB, 255 = LSB).
+    /// `level` — current bit position in the key (0 = MSB, 255 = LSB).
     /// `depth` — remaining depth (256 = root, 0 = leaf level).
     #[allow(clippy::too_many_arguments)]
     fn traverse(
         &self,
         indices: &[usize],
-        bit_pos: usize,
+        level: usize,
         depth: usize,
         leaf_hash_fn: &impl Fn(usize) -> [u8; 32],
         defaults: &[[u8; 32]; TREE_DEPTH + 1],
@@ -133,10 +133,10 @@ impl<'a> MultiProof<'a> {
 
         if bit_val {
             // Both children have leaves — split and recurse.
-            let (left_indices, right_indices) = self.split_by_bit(indices, bit_pos);
+            let (left_indices, right_indices) = self.split_by_bit(indices, level);
             let left = self.traverse(
                 &left_indices,
-                bit_pos + 1,
+                level + 1,
                 depth - 1,
                 leaf_hash_fn,
                 defaults,
@@ -145,7 +145,7 @@ impl<'a> MultiProof<'a> {
             );
             let right = self.traverse(
                 &right_indices,
-                bit_pos + 1,
+                level + 1,
                 depth - 1,
                 leaf_hash_fn,
                 defaults,
@@ -155,13 +155,13 @@ impl<'a> MultiProof<'a> {
             hash_pair(&left, &right)
         } else {
             // Only one child has leaves — use sibling hash for the other.
-            let goes_left = !get_key_bit(self.leaf_key(indices[0]), bit_pos);
+            let goes_left = !get_key_bit(self.leaf_key(indices[0]), level);
             let sibling = *self.sibling(*sibling_idx);
             *sibling_idx += 1;
 
             let child = self.traverse(
                 indices,
-                bit_pos + 1,
+                level + 1,
                 depth - 1,
                 leaf_hash_fn,
                 defaults,
@@ -172,11 +172,11 @@ impl<'a> MultiProof<'a> {
         }
     }
 
-    fn split_by_bit(&self, indices: &[usize], bit_pos: usize) -> (Vec<usize>, Vec<usize>) {
+    fn split_by_bit(&self, indices: &[usize], level: usize) -> (Vec<usize>, Vec<usize>) {
         let mut left = Vec::new();
         let mut right = Vec::new();
         for &i in indices {
-            if get_key_bit(self.leaf_key(i), bit_pos) {
+            if get_key_bit(self.leaf_key(i), level) {
                 right.push(i);
             } else {
                 left.push(i);
@@ -225,10 +225,10 @@ pub fn encode_multi_proof(
     buf
 }
 
-/// Get the `bit_pos`-th bit of a 256-bit key (0 = MSB).
-fn get_key_bit(key: &[u8; 32], bit_pos: usize) -> bool {
-    let byte_idx = bit_pos / 8;
-    let bit_offset = 7 - (bit_pos % 8);
+/// Get the `level`-th bit of a 256-bit key (0 = MSB).
+fn get_key_bit(key: &[u8; 32], level: usize) -> bool {
+    let byte_idx = level / 8;
+    let bit_offset = 7 - (level % 8);
     (key[byte_idx] >> bit_offset) & 1 == 1
 }
 

@@ -89,7 +89,14 @@ impl<'a> Proof<'a> {
 
         let mut sibling_idx = 0;
         let mut topo_bit = 0usize;
-        self.traverse::<H>(0, self.leaves.len(), 0, &value_hash_fn, &mut sibling_idx, &mut topo_bit)
+        self.traverse::<H>(
+            0,
+            self.leaves.len(),
+            0_u16,
+            &value_hash_fn,
+            &mut sibling_idx,
+            &mut topo_bit,
+        )
     }
 
     /// Recursive traversal of the shortcut-aware proof tree.
@@ -102,7 +109,7 @@ impl<'a> Proof<'a> {
         &self,
         start: usize,
         end: usize,
-        bit_pos: usize,
+        level: u16,
         value_hash_fn: &impl Fn(usize) -> &'b [u8; 32],
         sibling_idx: &mut usize,
         topo_bit: &mut usize,
@@ -115,7 +122,7 @@ impl<'a> Proof<'a> {
         // compute the leaf hash directly instead of recursing further.
         if end - start == 1 {
             let leaf = &self.leaves[start];
-            if bit_pos == leaf.depth as usize {
+            if level == leaf.depth {
                 return H::hash_leaf(leaf.key, value_hash_fn(start));
             }
         }
@@ -127,20 +134,20 @@ impl<'a> Proof<'a> {
         if bit_val {
             // Topology bit = 1: both children have proof leaves — find the split point and
             // recurse both sides.
-            let mid = self.split_point(start, end, bit_pos);
+            let mid = self.split_point(start, end, level);
             let left =
-                self.traverse::<H>(start, mid, bit_pos + 1, value_hash_fn, sibling_idx, topo_bit);
+                self.traverse::<H>(start, mid, level + 1, value_hash_fn, sibling_idx, topo_bit);
             let right =
-                self.traverse::<H>(mid, end, bit_pos + 1, value_hash_fn, sibling_idx, topo_bit);
+                self.traverse::<H>(mid, end, level + 1, value_hash_fn, sibling_idx, topo_bit);
             H::hash_internal(&left, &right)
         } else {
             // Topology bit = 0: only one side has proof leaves — use a sibling hash for the other.
-            let goes_left = !self.leaves[start].key.get_msb(bit_pos);
+            let goes_left = !self.leaves[start].key.get_msb(level as usize);
             let sibling = *self.siblings[*sibling_idx];
             *sibling_idx += 1;
 
             let child =
-                self.traverse::<H>(start, end, bit_pos + 1, value_hash_fn, sibling_idx, topo_bit);
+                self.traverse::<H>(start, end, level + 1, value_hash_fn, sibling_idx, topo_bit);
             if goes_left {
                 H::hash_internal(&child, &sibling)
             } else {
@@ -150,9 +157,9 @@ impl<'a> Proof<'a> {
     }
 
     /// Finds the partition point where keys switch from bit=0 (left) to bit=1 (right).
-    fn split_point(&self, start: usize, end: usize, bit_pos: usize) -> usize {
+    fn split_point(&self, start: usize, end: usize, level: u16) -> usize {
         let mut mid = start;
-        while mid < end && !self.leaves[mid].key.get_msb(bit_pos) {
+        while mid < end && !self.leaves[mid].key.get_msb(level as usize) {
             mid += 1;
         }
         mid

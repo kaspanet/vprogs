@@ -19,9 +19,11 @@ pub mod smt {
     mod leaf;
     mod node;
     mod proof;
+    mod proof_builder;
     mod stale_node;
     mod state_commitment;
     mod store;
+    mod tree_update;
     mod write_batch;
 
     pub use key::Key;

@@ -117,7 +117,7 @@ impl SparseMerkleTree {
         leaves: &[LeafEntry],
         proof_indices: &[usize],
         tree_keys: &[[u8; 32]],
-        bit_pos: usize,
+        level: usize,
         depth: usize,
         defaults: &[[u8; 32]; TREE_DEPTH + 1],
         siblings: &mut Vec<[u8; 32]>,
@@ -128,9 +128,9 @@ impl SparseMerkleTree {
         }
 
         // Split proof indices by the current bit.
-        let (left_proof, right_proof) = split_by_bit(proof_indices, leaves, bit_pos);
+        let (left_proof, right_proof) = split_by_bit(proof_indices, leaves, level);
         // Split tree keys by the current bit.
-        let (left_tree, right_tree) = split_keys_by_bit(tree_keys, bit_pos);
+        let (left_tree, right_tree) = split_keys_by_bit(tree_keys, level);
 
         if !left_proof.is_empty() && !right_proof.is_empty() {
             // Both sides have proof leaves — mark as split (topology bit = 1).
@@ -139,7 +139,7 @@ impl SparseMerkleTree {
                 leaves,
                 &left_proof,
                 &left_tree,
-                bit_pos + 1,
+                level + 1,
                 depth - 1,
                 defaults,
                 siblings,
@@ -149,7 +149,7 @@ impl SparseMerkleTree {
                 leaves,
                 &right_proof,
                 &right_tree,
-                bit_pos + 1,
+                level + 1,
                 depth - 1,
                 defaults,
                 siblings,
@@ -160,13 +160,13 @@ impl SparseMerkleTree {
             topology_bits.push(false);
             if left_proof.is_empty() {
                 // Proof leaves go right, provide left subtree hash as sibling.
-                let left_hash = self.compute_subtree(&left_tree, bit_pos + 1, depth - 1, defaults);
+                let left_hash = self.compute_subtree(&left_tree, level + 1, depth - 1, defaults);
                 siblings.push(left_hash);
                 self.build_proof(
                     leaves,
                     &right_proof,
                     &right_tree,
-                    bit_pos + 1,
+                    level + 1,
                     depth - 1,
                     defaults,
                     siblings,
@@ -174,14 +174,13 @@ impl SparseMerkleTree {
                 );
             } else {
                 // Proof leaves go left, provide right subtree hash as sibling.
-                let right_hash =
-                    self.compute_subtree(&right_tree, bit_pos + 1, depth - 1, defaults);
+                let right_hash = self.compute_subtree(&right_tree, level + 1, depth - 1, defaults);
                 siblings.push(right_hash);
                 self.build_proof(
                     leaves,
                     &left_proof,
                     &left_tree,
-                    bit_pos + 1,
+                    level + 1,
                     depth - 1,
                     defaults,
                     siblings,
@@ -195,7 +194,7 @@ impl SparseMerkleTree {
     fn compute_subtree(
         &self,
         keys: &[[u8; 32]],
-        bit_pos: usize,
+        level: usize,
         depth: usize,
         defaults: &[[u8; 32]; TREE_DEPTH + 1],
     ) -> [u8; 32] {
@@ -213,10 +212,10 @@ impl SparseMerkleTree {
             return defaults[depth];
         }
 
-        let (left_keys, right_keys) = split_keys_by_bit(keys, bit_pos);
+        let (left_keys, right_keys) = split_keys_by_bit(keys, level);
 
-        let left = self.compute_subtree(&left_keys, bit_pos + 1, depth - 1, defaults);
-        let right = self.compute_subtree(&right_keys, bit_pos + 1, depth - 1, defaults);
+        let left = self.compute_subtree(&left_keys, level + 1, depth - 1, defaults);
+        let right = self.compute_subtree(&right_keys, level + 1, depth - 1, defaults);
         hash_pair(&left, &right)
     }
 }
@@ -227,23 +226,19 @@ impl Default for SparseMerkleTree {
     }
 }
 
-/// Get the `bit_pos`-th bit of a 256-bit key (0 = MSB).
-fn get_key_bit(key: &[u8; 32], bit_pos: usize) -> bool {
-    let byte_idx = bit_pos / 8;
-    let bit_offset = 7 - (bit_pos % 8);
+/// Get the `level`-th bit of a 256-bit key (0 = MSB).
+fn get_key_bit(key: &[u8; 32], level: usize) -> bool {
+    let byte_idx = level / 8;
+    let bit_offset = 7 - (level % 8);
     (key[byte_idx] >> bit_offset) & 1 == 1
 }
 
 /// Split proof leaf indices into left (bit=0) and right (bit=1).
-fn split_by_bit(
-    indices: &[usize],
-    leaves: &[LeafEntry],
-    bit_pos: usize,
-) -> (Vec<usize>, Vec<usize>) {
+fn split_by_bit(indices: &[usize], leaves: &[LeafEntry], level: usize) -> (Vec<usize>, Vec<usize>) {
     let mut left = Vec::new();
     let mut right = Vec::new();
     for &i in indices {
-        if get_key_bit(&leaves[i].key, bit_pos) {
+        if get_key_bit(&leaves[i].key, level) {
             right.push(i);
         } else {
             left.push(i);
@@ -253,11 +248,11 @@ fn split_by_bit(
 }
 
 /// Split raw keys into left (bit=0) and right (bit=1).
-fn split_keys_by_bit(keys: &[[u8; 32]], bit_pos: usize) -> (Vec<[u8; 32]>, Vec<[u8; 32]>) {
+fn split_keys_by_bit(keys: &[[u8; 32]], level: usize) -> (Vec<[u8; 32]>, Vec<[u8; 32]>) {
     let mut left = Vec::new();
     let mut right = Vec::new();
     for key in keys {
-        if get_key_bit(key, bit_pos) {
+        if get_key_bit(key, level) {
             right.push(*key);
         } else {
             left.push(*key);

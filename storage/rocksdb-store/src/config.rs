@@ -80,7 +80,7 @@ pub trait Config: Send + Sync + 'static {
 
     fn cf_smt_node_opts() -> Options {
         Options::default().tap_mut(|o| {
-            // SmtNode keys are: path(32) || bit_pos(2 BE) || !version(8 BE)
+            // SmtNode keys are: path(32) || level(2 BE) || !version(8 BE)
             // 34-byte prefix groups all versions of the same node for prefix iteration.
             o.set_prefix_extractor(SliceTransform::create_fixed_prefix(34));
         })
@@ -88,7 +88,7 @@ pub trait Config: Send + Sync + 'static {
 
     fn cf_smt_stale_opts() -> Options {
         Options::default().tap_mut(|o| {
-            // SmtStale keys are: stale_since_version(8 BE) || path(32) || bit_pos(2 BE)
+            // SmtStale keys are: stale_since_version(8 BE) || path(32) || level(2 BE)
             // 8-byte prefix groups all stale markers for the same version.
             o.set_prefix_extractor(SliceTransform::create_fixed_prefix(8));
         })

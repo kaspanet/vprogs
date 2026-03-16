@@ -231,9 +231,9 @@ impl<S: Store, P: Processor> PruningWorker<S, P> {
                 for (stale_key, stale_value) in
                     store.prefix_iter(StateSpace::SmtStale, &index.to_be_bytes())
                 {
-                    let (path, bit_pos) = StaleNode::decode_cf_key(&stale_key);
+                    let (path, level) = StaleNode::decode_cf_key(&stale_key);
                     let node_version = StaleNode::decode_cf_value(&stale_value);
-                    let node_key = Key { bit_pos, path };
+                    let node_key = Key { level, path };
                     wb.delete(StateSpace::SmtNode, &node_key.encode_cf_key(node_version));
                     wb.delete(StateSpace::SmtStale, &stale_key);
                 }

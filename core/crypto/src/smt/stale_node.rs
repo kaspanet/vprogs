@@ -16,21 +16,21 @@ pub struct StaleNode {
 impl StaleNode {
     /// Encodes this stale node marker for the SmtStale column family.
     ///
-    /// Key layout: `stale_since_version(8 BE) || path(32) || bit_pos(2 BE)` = 42 bytes. The
+    /// Key layout: `stale_since_version(8 BE) || path(32) || level(2 BE)` = 42 bytes. The
     /// 8-byte prefix extractor groups all stale markers for the same version.
     pub fn encode_cf_key(&self) -> [u8; 42] {
         let mut key = [0u8; 42];
         key[..8].copy_from_slice(&self.stale_since_version.to_be_bytes());
         key[8..40].copy_from_slice(&self.node_key.path);
-        key[40..42].copy_from_slice(&self.node_key.bit_pos.to_be_bytes());
+        key[40..42].copy_from_slice(&self.node_key.level.to_be_bytes());
         key
     }
 
-    /// Decodes the path and bit_pos from a raw 42-byte SmtStale key.
+    /// Decodes the path and level from a raw 42-byte SmtStale key.
     pub fn decode_cf_key(raw_key: &[u8]) -> ([u8; 32], u16) {
         let path: [u8; 32] = raw_key[8..40].try_into().unwrap();
-        let bit_pos = u16::from_be_bytes(raw_key[40..42].try_into().unwrap());
-        (path, bit_pos)
+        let level = u16::from_be_bytes(raw_key[40..42].try_into().unwrap());
+        (path, level)
     }
 
     /// Decodes the node version from a raw SmtStale value.
