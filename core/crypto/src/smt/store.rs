@@ -1,9 +1,9 @@
-use alloc::{vec, vec::Vec};
+use alloc::vec::Vec;
 
 use super::{
     bits::{Bits, BitsArray},
     key::Key,
-    proof::LEAF_ENTRY_SIZE,
+    proof::Proof,
     stale_node::StaleNode,
     state_commitment::StateCommitment,
     write_batch::WriteBatch,
@@ -73,8 +73,7 @@ pub trait Store {
             &mut topology_bits,
         );
 
-        let topology = pack_bits(&topology_bits);
-        encode_proof(&leaves, &siblings, &topology)
+        Proof::encode(&leaves, &siblings, &topology_bits)
     }
 }
 
@@ -499,50 +498,4 @@ fn build_proof_internal<S: Store>(
 /// Returns the hash of the node at the given key, or `EMPTY_HASH` if absent.
 fn node_hash<S: Store>(store: &S, node_key: &Key, version: u64) -> [u8; 32] {
     store.get_node(node_key, version).map(|(_, data)| *data.hash()).unwrap_or(EMPTY_HASH)
-}
-
-// --- Encoding helpers ---
-
-/// Encodes proof components into the v2 wire format.
-fn encode_proof(
-    leaves: &[(u16, StateCommitment)],
-    siblings: &[[u8; 32]],
-    topology: &[u8],
-) -> Vec<u8> {
-    let total = 4 + leaves.len() * LEAF_ENTRY_SIZE + 4 + siblings.len() * 32 + 4 + topology.len();
-    let mut buf = Vec::with_capacity(total);
-
-    // Section 1: leaf entries — each is depth(2) + key(32) + value_hash(32) = 66 bytes.
-    buf.extend_from_slice(&(leaves.len() as u32).to_le_bytes());
-    for &(depth, StateCommitment { key, value_hash }) in leaves {
-        buf.extend_from_slice(&depth.to_le_bytes());
-        buf.extend_from_slice(&key);
-        buf.extend_from_slice(&value_hash);
-    }
-
-    // Section 2: sibling hashes — each is 32 bytes.
-    buf.extend_from_slice(&(siblings.len() as u32).to_le_bytes());
-    for sibling in siblings {
-        buf.extend_from_slice(sibling);
-    }
-
-    // Section 3: topology bitfield — variable length.
-    buf.extend_from_slice(&(topology.len() as u32).to_le_bytes());
-    buf.extend_from_slice(topology);
-
-    debug_assert_eq!(buf.len(), total);
-    buf
-}
-
-/// Packs a slice of bools into a byte vector (LSB-first within each byte).
-///
-/// This matches the topology bitfield format read by `Proof::get_topo_bit`.
-fn pack_bits(bits: &[bool]) -> Vec<u8> {
-    let mut bytes = vec![0u8; bits.len().div_ceil(8)];
-    for (i, &bit) in bits.iter().enumerate() {
-        if bit {
-            bytes.set_lsb(i);
-        }
-    }
-    bytes
 }

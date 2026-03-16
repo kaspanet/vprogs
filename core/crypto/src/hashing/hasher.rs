@@ -1,7 +1,7 @@
 /// Abstraction over hash functions.
 ///
-/// Generic parameter on `smt::Store` and `smt::Proof` so consumers can swap between Blake3 (fast,
-/// host-side) and SHA-256 (risc0 precompile, guest-side).
+/// Passed as a type parameter to `smt::Proof::verify()` and used by `smt::Store` so consumers can
+/// swap between Blake3 (fast, host-side) and SHA-256 (risc0 precompile, guest-side).
 pub trait Hasher {
     /// Hashes arbitrary-length input to a 32-byte digest.
     fn hash(data: &[u8]) -> [u8; 32];

@@ -1659,10 +1659,13 @@ pub fn test_smt_multi_proof_verify() {
         // Generate a proof for resource 1's key and verify it.
         let key = *ResourceId::for_test(1).as_bytes();
         let proof_bytes = store.generate_proof(1, &[key]);
-        let proof = Proof::<Blake3Hasher>::decode(&proof_bytes);
+        let proof = Proof::decode(&proof_bytes);
 
-        assert!(proof.verify(root), "proof should verify against the correct root");
-        assert!(!proof.verify([0xFFu8; 32]), "proof should reject an incorrect root");
+        assert!(proof.verify::<Blake3Hasher>(root), "proof should verify against the correct root");
+        assert!(
+            !proof.verify::<Blake3Hasher>([0xFFu8; 32]),
+            "proof should reject an incorrect root"
+        );
 
         scheduler.shutdown();
     }
@@ -1695,10 +1698,16 @@ pub fn test_smt_multi_proof_absent_key() {
         // Generate a proof for resource 99 (absent) — should still verify against the root.
         let absent_key = *ResourceId::for_test(99).as_bytes();
         let proof_bytes = store.generate_proof(1, &[absent_key]);
-        let proof = Proof::<Blake3Hasher>::decode(&proof_bytes);
+        let proof = Proof::decode(&proof_bytes);
 
-        assert!(proof.verify(root), "proof for an absent key should verify against the root");
-        assert!(!proof.verify([0xFFu8; 32]), "proof should reject an incorrect root");
+        assert!(
+            proof.verify::<Blake3Hasher>(root),
+            "proof for an absent key should verify against the root"
+        );
+        assert!(
+            !proof.verify::<Blake3Hasher>([0xFFu8; 32]),
+            "proof should reject an incorrect root"
+        );
 
         scheduler.shutdown();
     }
@@ -1736,9 +1745,12 @@ pub fn test_smt_multi_proof_mixed_keys() {
             *ResourceId::for_test(99).as_bytes(),
         ];
         let proof_bytes = store.generate_proof(1, &keys);
-        let proof = Proof::<Blake3Hasher>::decode(&proof_bytes);
+        let proof = Proof::decode(&proof_bytes);
 
-        assert!(proof.verify(root), "mixed proof should verify against the correct root");
+        assert!(
+            proof.verify::<Blake3Hasher>(root),
+            "mixed proof should verify against the correct root"
+        );
         assert!(proof.n_leaves() >= 3, "proof should have at least 3 leaves");
 
         scheduler.shutdown();

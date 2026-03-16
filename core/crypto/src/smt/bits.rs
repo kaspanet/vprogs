@@ -27,7 +27,8 @@ impl Bits for [u8] {
 
     fn get_lsb(&self, index: usize) -> bool {
         let byte_idx = index / 8;
-        byte_idx < self.len() && (self[byte_idx] >> (index % 8)) & 1 == 1
+        let bit_offset = index % 8; // LSB-first within each byte.
+        byte_idx < self.len() && (self[byte_idx] >> bit_offset) & 1 == 1
     }
 
     fn set_lsb(&mut self, index: usize) {
