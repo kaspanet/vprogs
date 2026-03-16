@@ -21,6 +21,7 @@ pub(crate) mod utils {
 
 pub mod smt {
     mod key;
+    mod leaf;
     mod node;
     mod proof;
     mod stale_node;
@@ -29,6 +30,7 @@ pub mod smt {
     mod write_batch;
 
     pub use key::Key;
+    pub use leaf::Leaf;
     pub use node::Node;
     pub use proof::Proof;
     pub use stale_node::StaleNode;

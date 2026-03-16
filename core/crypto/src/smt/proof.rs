@@ -1,13 +1,10 @@
 use alloc::vec::Vec;
 
-use super::state_commitment::StateCommitment;
+use super::{leaf::Leaf, state_commitment::StateCommitment};
 use crate::{
     EMPTY_HASH, Hasher,
     utils::{bools::Bools, bytes::Bits},
 };
-
-/// Size of a single leaf entry in the wire format: depth(2) + key(32) + value_hash(32).
-pub(crate) const LEAF_ENTRY_SIZE: usize = 66;
 
 /// Zero-copy view of a multi-proof, borrowing from a flat byte buffer.
 ///
@@ -20,34 +17,36 @@ pub(crate) const LEAF_ENTRY_SIZE: usize = 66;
 /// value_hash)` instead of recursing all the way to depth 256. Shortcut leaves at shallow depths
 /// mean far fewer hashes.
 pub struct Proof<'a> {
-    buf: &'a [u8],
-    n_leaves: u32,
-    siblings_offset: usize,
-    topology_offset: usize,
-    topology_len: usize,
+    pub leaves: Vec<Leaf<'a>>,
+    pub siblings: Vec<&'a [u8; 32]>,
+    pub topology: &'a [u8],
 }
 
 impl<'a> Proof<'a> {
     /// Decodes a multi-proof from a flat byte buffer.
     pub fn decode(buf: &'a [u8]) -> Self {
         // Section 1: leaf entries.
-        let n_leaves = u32::from_le_bytes(buf[0..4].try_into().expect("truncated n_leaves"));
-        let leaves_end = 4 + (n_leaves as usize) * LEAF_ENTRY_SIZE;
+        let n_leaves =
+            u32::from_le_bytes(buf[..4].try_into().expect("truncated n_leaves")) as usize;
+        let leaves_end = 4 + n_leaves * Leaf::SIZE;
+        let leaves = (0..n_leaves).map(|i| Leaf::decode(&buf[4 + i * Leaf::SIZE..][..Leaf::SIZE]));
 
         // Section 2: sibling hashes.
         let n_siblings = u32::from_le_bytes(
             buf[leaves_end..leaves_end + 4].try_into().expect("truncated n_siblings"),
-        );
-        let siblings_offset = leaves_end + 4;
-        let siblings_end = siblings_offset + (n_siblings as usize) * 32;
+        ) as usize;
+        let siblings_start = leaves_end + 4;
+        let siblings = (0..n_siblings)
+            .map(|i| buf[siblings_start + i * 32..][..32].try_into().expect("truncated sibling"));
 
         // Section 3: topology bitfield.
+        let topo_header = siblings_start + n_siblings * 32;
         let topology_len = u32::from_le_bytes(
-            buf[siblings_end..siblings_end + 4].try_into().expect("truncated topology_len"),
+            buf[topo_header..topo_header + 4].try_into().expect("truncated topology_len"),
         ) as usize;
-        let topology_offset = siblings_end + 4;
+        let topology = &buf[topo_header + 4..topo_header + 4 + topology_len];
 
-        Self { buf, n_leaves, siblings_offset, topology_offset, topology_len }
+        Self { leaves: leaves.collect(), siblings: siblings.collect(), topology }
     }
 
     /// Encodes proof components into the wire format.
@@ -57,8 +56,7 @@ impl<'a> Proof<'a> {
         topology_bits: &[bool],
     ) -> Vec<u8> {
         let topology = topology_bits.pack_lsb();
-        let total =
-            4 + leaves.len() * LEAF_ENTRY_SIZE + 4 + siblings.len() * 32 + 4 + topology.len();
+        let total = 4 + leaves.len() * Leaf::SIZE + 4 + siblings.len() * 32 + 4 + topology.len();
         let mut buf = Vec::with_capacity(total);
 
         // Section 1: leaf entries — each is depth(2) + key(32) + value_hash(32) = 66 bytes.
@@ -83,31 +81,9 @@ impl<'a> Proof<'a> {
         buf
     }
 
-    /// Returns the number of leaves in the proof.
-    pub fn n_leaves(&self) -> usize {
-        self.n_leaves as usize
-    }
-
-    /// Returns the depth of the leaf at index `i`.
-    pub fn leaf_depth(&self, i: usize) -> u16 {
-        u16::from_le_bytes(
-            self.buf[4 + i * LEAF_ENTRY_SIZE..][..2].try_into().expect("truncated depth"),
-        )
-    }
-
-    /// Returns the key of the leaf at index `i`.
-    pub fn leaf_key(&self, i: usize) -> &[u8; 32] {
-        self.buf[4 + i * LEAF_ENTRY_SIZE + 2..][..32].try_into().expect("truncated key")
-    }
-
-    /// Returns the value hash of the leaf at index `i`.
-    pub fn leaf_value_hash(&self, i: usize) -> &[u8; 32] {
-        self.buf[4 + i * LEAF_ENTRY_SIZE + 34..][..32].try_into().expect("truncated value_hash")
-    }
-
     /// Verifies that the proof leaves produce the expected root hash.
     pub fn verify<H: Hasher>(&self, expected_root: [u8; 32]) -> bool {
-        self.compute_root_with::<H>(|i| self.leaf_value_hash(i)) == expected_root
+        self.compute_root_with::<H>(|i| self.leaves[i].value_hash) == expected_root
     }
 
     /// Recomputes the root using updated value hashes.
@@ -116,18 +92,8 @@ impl<'a> Proof<'a> {
     /// for each leaf (in the same order as in the proof). This enables computing the post-update
     /// root without re-reading the tree.
     pub fn compute_root<H: Hasher>(&self, updated_hashes: &[[u8; 32]]) -> [u8; 32] {
-        assert_eq!(updated_hashes.len(), self.n_leaves());
+        assert_eq!(updated_hashes.len(), self.leaves.len());
         self.compute_root_with::<H>(|i| &updated_hashes[i])
-    }
-
-    /// Returns the sibling hash at index `i`.
-    fn sibling(&self, i: usize) -> &[u8; 32] {
-        self.buf[self.siblings_offset + i * 32..][..32].try_into().expect("truncated sibling")
-    }
-
-    /// Returns the topology bytes.
-    fn topology(&self) -> &[u8] {
-        &self.buf[self.topology_offset..][..self.topology_len]
     }
 
     /// Shared traversal logic parameterized on which value hash to use for each leaf.
@@ -135,14 +101,13 @@ impl<'a> Proof<'a> {
         &self,
         value_hash_fn: impl Fn(usize) -> &'b [u8; 32],
     ) -> [u8; 32] {
-        if self.n_leaves() == 0 {
+        if self.leaves.is_empty() {
             return EMPTY_HASH;
         }
 
-        // Start traversal from the root (bit_pos 0) with all leaf indices.
         let mut sibling_idx = 0;
         let mut topo_bit = 0usize;
-        self.traverse::<H>(0, self.n_leaves(), 0, &value_hash_fn, &mut sibling_idx, &mut topo_bit)
+        self.traverse::<H>(0, self.leaves.len(), 0, &value_hash_fn, &mut sibling_idx, &mut topo_bit)
     }
 
     /// Recursive traversal of the shortcut-aware proof tree.
@@ -167,15 +132,14 @@ impl<'a> Proof<'a> {
         // Shortcut leaf check: if there's exactly one leaf and we've reached its declared depth,
         // compute the leaf hash directly instead of recursing further.
         if end - start == 1 {
-            let depth = self.leaf_depth(start) as usize;
-            if bit_pos == depth {
-                let key = self.leaf_key(start);
-                return H::hash_leaf(key, value_hash_fn(start));
+            let leaf = &self.leaves[start];
+            if bit_pos == leaf.depth as usize {
+                return H::hash_leaf(leaf.key, value_hash_fn(start));
             }
         }
 
         // Read the next topology bit to determine the structure at this level.
-        let bit_val = self.topology().get_lsb(*topo_bit);
+        let bit_val = self.topology.get_lsb(*topo_bit);
         *topo_bit += 1;
 
         if bit_val {
@@ -189,8 +153,8 @@ impl<'a> Proof<'a> {
             H::hash_internal(&left, &right)
         } else {
             // Topology bit = 0: only one side has proof leaves — use a sibling hash for the other.
-            let goes_left = !self.leaf_key(start).get_msb(bit_pos);
-            let sibling = *self.sibling(*sibling_idx);
+            let goes_left = !self.leaves[start].key.get_msb(bit_pos);
+            let sibling = *self.siblings[*sibling_idx];
             *sibling_idx += 1;
 
             let child =
@@ -206,7 +170,7 @@ impl<'a> Proof<'a> {
     /// Finds the partition point where keys switch from bit=0 (left) to bit=1 (right).
     fn split_point(&self, start: usize, end: usize, bit_pos: usize) -> usize {
         let mut mid = start;
-        while mid < end && !self.leaf_key(mid).get_msb(bit_pos) {
+        while mid < end && !self.leaves[mid].key.get_msb(bit_pos) {
             mid += 1;
         }
         mid

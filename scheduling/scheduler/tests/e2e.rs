@@ -1751,7 +1751,7 @@ pub fn test_smt_multi_proof_mixed_keys() {
             proof.verify::<Blake3Hasher>(root),
             "mixed proof should verify against the correct root"
         );
-        assert!(proof.n_leaves() >= 3, "proof should have at least 3 leaves");
+        assert!(proof.leaves.len() >= 3, "proof should have at least 3 leaves");
 
         scheduler.shutdown();
     }
