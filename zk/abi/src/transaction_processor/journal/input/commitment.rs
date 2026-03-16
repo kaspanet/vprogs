@@ -1,7 +1,8 @@
+use vprogs_core_utils::Parser;
 use vprogs_zk_smt::EMPTY_LEAF_HASH;
 
 use crate::{
-    Parser, Result, Write,
+    Result, Write,
     transaction_processor::{
         BatchMetadata, InputResourceCommitment, InputResourceCommitments, Inputs, JournalEntry,
     },

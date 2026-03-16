@@ -1,4 +1,6 @@
-use crate::{Parser, Result};
+use vprogs_core_utils::Parser;
+
+use crate::Result;
 
 /// Iterator over per-transaction journal slices in a batch witness.
 pub struct JournalIter<'a> {
@@ -17,7 +19,7 @@ impl<'a> JournalIter<'a> {
     /// Decodes a single length-prefixed journal entry from the buffer.
     fn decode_entry(&mut self) -> Result<&'a [u8]> {
         let length = self.buf.consume_u32("journal_length")? as usize;
-        self.buf.consume_bytes(length, "journal")
+        Ok(self.buf.consume_bytes(length, "journal")?)
     }
 }
 

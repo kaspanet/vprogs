@@ -1,5 +1,7 @@
+use vprogs_core_utils::Parser;
+
 use crate::{
-    Parser, Result,
+    Result,
     transaction_processor::{InputCommitment, OutputCommitment},
 };
 

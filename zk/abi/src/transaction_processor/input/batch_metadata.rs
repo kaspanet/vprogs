@@ -1,4 +1,6 @@
-use crate::{Parser, Result, Write};
+use vprogs_core_utils::Parser;
+
+use crate::{Result, Write};
 
 /// Batch-level metadata decoded from the wire header.
 pub struct BatchMetadata<'a> {

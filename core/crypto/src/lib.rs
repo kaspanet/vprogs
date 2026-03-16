@@ -14,11 +14,6 @@ pub mod hashing {
     pub use hasher::Hasher;
 }
 
-pub(crate) mod utils {
-    pub(crate) mod bools;
-    pub(crate) mod bytes;
-}
-
 pub mod smt {
     mod key;
     mod leaf;

@@ -1,13 +1,12 @@
 use alloc::vec::Vec;
 
+use vprogs_core_utils::{Bits, BitsArray};
+
 use super::{
     key::Key, proof::Proof, stale_node::StaleNode, state_commitment::StateCommitment,
     write_batch::WriteBatch,
 };
-use crate::{
-    Blake3Hasher, EMPTY_HASH, Hasher, Node, TREE_DEPTH,
-    utils::bytes::{Bits, BitsArray},
-};
+use crate::{Blake3Hasher, EMPTY_HASH, Hasher, Node, TREE_DEPTH};
 
 /// Authenticated state store backed by a versioned Sparse Merkle Tree.
 ///

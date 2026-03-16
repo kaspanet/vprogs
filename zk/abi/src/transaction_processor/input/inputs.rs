@@ -1,7 +1,9 @@
 use alloc::vec::Vec;
 
+use vprogs_core_utils::Parser;
+
 use crate::{
-    Error, Parser, Result,
+    Error, Result,
     transaction_processor::{BatchMetadata, Resource},
 };
 

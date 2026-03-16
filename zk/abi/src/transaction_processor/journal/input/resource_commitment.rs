@@ -1,4 +1,6 @@
-use crate::{Parser, Result, Write};
+use vprogs_core_utils::Parser;
+
+use crate::{Result, Write};
 
 /// A single resource's input commitment: its index, identity, and data hash.
 pub struct InputResourceCommitment<'a> {

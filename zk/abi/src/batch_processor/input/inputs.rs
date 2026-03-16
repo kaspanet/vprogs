@@ -1,9 +1,10 @@
 use alloc::vec::Vec;
 
+use vprogs_core_utils::Parser;
 use vprogs_zk_smt::MultiProof;
 
 use super::{header::Header, journal_iter::JournalIter};
-use crate::{Parser, Result, transaction_processor::InputResourceCommitment};
+use crate::{Result, transaction_processor::InputResourceCommitment};
 
 /// Decoded batch processor input (zero-copy).
 pub struct Inputs<'a> {

@@ -3,7 +3,7 @@ use alloc::vec;
 use super::bytes::Bits;
 
 /// Extension trait for packing boolean slices into byte vectors.
-pub(crate) trait Bools {
+pub trait Bools {
     /// Packs bools into a byte vector using LSB-first ordering within each byte.
     fn pack_lsb(&self) -> alloc::vec::Vec<u8>;
 }

@@ -1,4 +1,6 @@
-use crate::{Error, Parser, Result};
+use vprogs_core_utils::Parser;
+
+use crate::{Error, Result};
 
 /// A single resource's output commitment.
 pub enum OutputResourceCommitment<'a> {

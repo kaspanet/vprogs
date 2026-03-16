@@ -1,7 +1,8 @@
+use vprogs_core_utils::Parser;
 use vprogs_zk_smt::EMPTY_LEAF_HASH;
 
 use crate::{
-    Error, Parser, Result, Write,
+    Error, Result, Write,
     transaction_processor::{
         JournalEntry, OutputResourceCommitment, OutputResourceCommitments, Resource,
     },

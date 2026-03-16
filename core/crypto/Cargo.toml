@@ -4,4 +4,5 @@ name              = "vprogs-core-crypto"
 version.workspace = true
 
 [dependencies]
-blake3 = { workspace = true }
+blake3            = { workspace = true }
+vprogs-core-utils = { workspace = true }

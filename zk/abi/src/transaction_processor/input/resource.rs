@@ -2,8 +2,9 @@ use alloc::vec::Vec;
 use core::mem;
 
 use vprogs_core_types::ResourceId;
+use vprogs_core_utils::Parser;
 
-use crate::{Parser, Result};
+use crate::Result;
 
 /// A mutable view of a single resource's data within a decoded wire buffer.
 ///

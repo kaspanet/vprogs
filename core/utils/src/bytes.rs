@@ -3,7 +3,7 @@
 /// Provides MSB-first and LSB-first bit indexing. MSB-first matches the tree's left/right
 /// convention (bit 0 is the most significant bit of byte 0). LSB-first matches the topology
 /// bitfield wire format.
-pub(crate) trait Bits {
+pub trait Bits {
     /// Returns the bit at `index` using MSB-first ordering (bit 0 = MSB of byte 0).
     ///
     /// Returns `false` for out-of-bounds indices.
@@ -40,7 +40,7 @@ impl Bits for [u8] {
 ///
 /// Returns a new array with the modification applied, matching the common pattern of copying a
 /// value before setting bits.
-pub(crate) trait BitsArray {
+pub trait BitsArray {
     /// Returns a copy with bit `index` set (MSB-first ordering).
     fn with_bit_set(self, index: usize) -> Self;
 }

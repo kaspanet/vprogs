@@ -35,7 +35,9 @@ impl Outputs {
     /// Returns `Some(hash)` for modified resources, `None` for unchanged ones.
     #[cfg(feature = "host")]
     pub fn decode(mut buf: &[u8]) -> crate::Result<alloc::vec::Vec<Option<[u8; 32]>>> {
-        use crate::{Error, Parser};
+        use vprogs_core_utils::Parser;
+
+        use crate::Error;
 
         let count = buf.consume_u32("n_resources")? as usize;
         let mut updates = alloc::vec::Vec::with_capacity(count);

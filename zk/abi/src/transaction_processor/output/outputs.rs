@@ -25,7 +25,9 @@ impl Outputs {
     /// Decodes the execution result from the guest (host-side).
     #[cfg(feature = "host")]
     pub fn decode(mut buf: &[u8]) -> Result<Self> {
-        use crate::{Error, Parser};
+        use vprogs_core_utils::Parser;
+
+        use crate::Error;
 
         // Dispatch based on discriminant.
         match buf.consume_u8("discriminant")? {

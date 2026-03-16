@@ -17,7 +17,9 @@ impl JournalCommitment {
     /// Decodes the journal commitment from a batch proof journal (host-side).
     #[cfg(feature = "host")]
     pub fn decode(buf: &[u8]) -> crate::Result<([u8; 32], [u8; 32], u64)> {
-        use crate::{Error, Parser};
+        use vprogs_core_utils::Parser;
+
+        use crate::Error;
 
         if buf.len() < Self::SIZE {
             return Err(Error::Decode("journal commitment too short".into()));

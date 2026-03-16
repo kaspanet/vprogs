@@ -7361,6 +7361,7 @@ name = "vprogs-core-crypto"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "vprogs-core-utils",
 ]
 
 [[package]]
@@ -7386,6 +7387,10 @@ dependencies = [
  "borsh",
  "rkyv",
 ]
+
+[[package]]
+name = "vprogs-core-utils"
+version = "0.1.0"
 
 [[package]]
 name = "vprogs-l1-bridge"
@@ -7819,6 +7824,7 @@ dependencies = [
  "thiserror 2.0.18",
  "vprogs-core-crypto",
  "vprogs-core-types",
+ "vprogs-core-utils",
  "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
  "vprogs-storage-types",

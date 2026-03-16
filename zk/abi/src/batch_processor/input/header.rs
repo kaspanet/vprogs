@@ -1,4 +1,6 @@
-use crate::{Parser, Result, Write};
+use vprogs_core_utils::Parser;
+
+use crate::{Result, Write};
 
 /// Decoded batch processor input header.
 pub struct Header<'a> {

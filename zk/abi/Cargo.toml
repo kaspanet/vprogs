@@ -20,6 +20,7 @@ borsh                       = { workspace = true, default-features = false, opti
 thiserror                   = { workspace = true, default-features = false }
 vprogs-core-crypto          = { workspace = true }
 vprogs-core-types           = { workspace = true, default-features = false }
+vprogs-core-utils           = { workspace = true }
 vprogs-l1-types             = { workspace = true, optional = true }
 vprogs-scheduling-scheduler = { workspace = true, optional = true }
 vprogs-storage-types        = { workspace = true, optional = true }

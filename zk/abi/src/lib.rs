@@ -25,7 +25,6 @@ pub mod batch_processor {
     pub use output::outputs::Outputs;
 }
 mod error;
-mod parser;
 mod read;
 mod write;
 
@@ -78,6 +77,5 @@ pub mod transaction_processor {
 }
 
 pub use error::{Error, Result};
-pub use parser::Parser;
 pub use read::Read;
 pub use write::Write;

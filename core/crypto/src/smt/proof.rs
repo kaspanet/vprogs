@@ -1,10 +1,9 @@
 use alloc::vec::Vec;
 
+use vprogs_core_utils::{Bits, Bools, DecodeError, Parser};
+
 use super::{leaf::Leaf, state_commitment::StateCommitment};
-use crate::{
-    EMPTY_HASH, Hasher,
-    utils::{bools::Bools, bytes::Bits},
-};
+use crate::{EMPTY_HASH, Hasher};
 
 /// Zero-copy view of a multi-proof, borrowing from a flat byte buffer.
 ///
@@ -24,29 +23,12 @@ pub struct Proof<'a> {
 
 impl<'a> Proof<'a> {
     /// Decodes a multi-proof from a flat byte buffer.
-    pub fn decode(buf: &'a [u8]) -> Self {
-        // Section 1: leaf entries.
-        let n_leaves =
-            u32::from_le_bytes(buf[..4].try_into().expect("truncated n_leaves")) as usize;
-        let leaves_end = 4 + n_leaves * Leaf::SIZE;
-        let leaves = (0..n_leaves).map(|i| Leaf::decode(&buf[4 + i * Leaf::SIZE..][..Leaf::SIZE]));
-
-        // Section 2: sibling hashes.
-        let n_siblings = u32::from_le_bytes(
-            buf[leaves_end..leaves_end + 4].try_into().expect("truncated n_siblings"),
-        ) as usize;
-        let siblings_start = leaves_end + 4;
-        let siblings = (0..n_siblings)
-            .map(|i| buf[siblings_start + i * 32..][..32].try_into().expect("truncated sibling"));
-
-        // Section 3: topology bitfield.
-        let topo_header = siblings_start + n_siblings * 32;
-        let topology_len = u32::from_le_bytes(
-            buf[topo_header..topo_header + 4].try_into().expect("truncated topology_len"),
-        ) as usize;
-        let topology = &buf[topo_header + 4..topo_header + 4 + topology_len];
-
-        Self { leaves: leaves.collect(), siblings: siblings.collect(), topology }
+    pub fn decode(mut buf: &'a [u8]) -> Result<Self, DecodeError> {
+        Ok(Self {
+            leaves: buf.consume_n("leaves", Leaf::decode)?,
+            siblings: buf.consume_n("siblings", |buf| buf.consume_array::<32>("sibling"))?,
+            topology: buf.consume_blob("topology")?,
+        })
     }
 
     /// Encodes proof components into the wire format.

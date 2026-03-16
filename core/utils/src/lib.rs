@@ -1,0 +1,18 @@
+//! General-purpose byte utilities.
+//!
+//! Bitwise access (`Bits`, `BitsArray`), boolean packing (`Bools`), and self-consuming wire format
+//! parsing (`Parser`). Pure `no_std` crate — no external dependencies.
+
+#![no_std]
+
+extern crate alloc;
+
+mod bools;
+mod bytes;
+mod error;
+mod parser;
+
+pub use bools::Bools;
+pub use bytes::{Bits, BitsArray};
+pub use error::DecodeError;
+pub use parser::Parser;

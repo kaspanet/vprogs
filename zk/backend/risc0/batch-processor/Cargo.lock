@@ -1570,6 +1570,7 @@ name = "vprogs-core-crypto"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "vprogs-core-utils",
 ]
 
 [[package]]
@@ -1581,6 +1582,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-core-utils"
+version = "0.1.0"
+
+[[package]]
 name = "vprogs-zk-abi"
 version = "0.1.0"
 dependencies = [
@@ -1588,6 +1593,7 @@ dependencies = [
  "thiserror",
  "vprogs-core-crypto",
  "vprogs-core-types",
+ "vprogs-core-utils",
  "vprogs-zk-smt",
 ]
 

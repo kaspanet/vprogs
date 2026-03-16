@@ -1,0 +1,4 @@
+[package]
+edition.workspace = true
+name              = "vprogs-core-utils"
+version.workspace = true

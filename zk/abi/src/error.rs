@@ -1,6 +1,8 @@
 use alloc::string::String;
 
-use crate::{Parser, Write};
+use vprogs_core_utils::{DecodeError, Parser};
+
+use crate::Write;
 
 /// Errors from ZK ABI operations.
 #[derive(Clone, Debug, thiserror::Error)]
@@ -54,6 +56,12 @@ impl Error {
                 w.write(msg.as_bytes());
             }
         }
+    }
+}
+
+impl From<DecodeError> for Error {
+    fn from(e: DecodeError) -> Self {
+        Self::Decode(e.0.into())
     }
 }
 
