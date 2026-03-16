@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 /// Data stored at a tree position.
 ///
 /// `Internal` nodes have two children looked up via `Key::left_child()` / `right_child()`.
@@ -31,16 +33,16 @@ impl Node {
     ///
     /// Tag `0x00` + hash (33B) for Internal, tag `0x01` + key + value_hash + hash (97B) for Leaf.
     /// The tag byte matches the domain separation prefix used in hashing.
-    pub fn to_bytes(&self) -> alloc::vec::Vec<u8> {
+    pub fn to_bytes(&self) -> Vec<u8> {
         match self {
             Node::Internal { hash } => {
-                let mut buf = alloc::vec::Vec::with_capacity(33);
+                let mut buf = Vec::with_capacity(33);
                 buf.push(0x00); // Internal node tag.
                 buf.extend_from_slice(hash);
                 buf
             }
             Node::Leaf { key, value_hash, hash } => {
-                let mut buf = alloc::vec::Vec::with_capacity(97);
+                let mut buf = Vec::with_capacity(97);
                 buf.push(0x01); // Leaf node tag.
                 buf.extend_from_slice(key);
                 buf.extend_from_slice(value_hash);

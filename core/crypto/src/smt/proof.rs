@@ -1,6 +1,6 @@
 use core::marker::PhantomData;
 
-use super::key::get_key_bit;
+use super::bits::Bits;
 use crate::{EMPTY_HASH, Hasher};
 
 /// Size of a single leaf entry in the wire format: depth(2) + key(32) + value_hash(32).
@@ -73,17 +73,6 @@ impl<'a, H: Hasher> Proof<'a, H> {
         self.buf[offset..offset + 32].try_into().expect("truncated leaf value_hash")
     }
 
-    /// Returns the sibling hash at index `i`.
-    fn sibling(&self, i: usize) -> &[u8; 32] {
-        let offset = self.siblings_offset + i * 32;
-        self.buf[offset..offset + 32].try_into().expect("truncated sibling")
-    }
-
-    /// Returns the topology bytes.
-    fn topology(&self) -> &[u8] {
-        &self.buf[self.topology_offset..self.topology_offset + self.topology_len]
-    }
-
     /// Verifies that the proof leaves produce the expected root hash.
     pub fn verify(&self, expected_root: [u8; 32]) -> bool {
         self.compute_root_with(|i| *self.leaf_value_hash(i)) == expected_root
@@ -97,6 +86,17 @@ impl<'a, H: Hasher> Proof<'a, H> {
     pub fn compute_root(&self, updated_hashes: &[[u8; 32]]) -> [u8; 32] {
         assert_eq!(updated_hashes.len(), self.n_leaves());
         self.compute_root_with(|i| updated_hashes[i])
+    }
+
+    /// Returns the sibling hash at index `i`.
+    fn sibling(&self, i: usize) -> &[u8; 32] {
+        let offset = self.siblings_offset + i * 32;
+        self.buf[offset..offset + 32].try_into().expect("truncated sibling")
+    }
+
+    /// Returns the topology bytes.
+    fn topology(&self) -> &[u8] {
+        &self.buf[self.topology_offset..self.topology_offset + self.topology_len]
     }
 
     /// Shared traversal logic parameterized on which value hash to use for each leaf.
@@ -154,7 +154,7 @@ impl<'a, H: Hasher> Proof<'a, H> {
             H::hash_internal(&left, &right)
         } else {
             // Topology bit = 0: only one side has proof leaves — use a sibling hash for the other.
-            let goes_left = !get_key_bit(self.leaf_key(start), bit_pos);
+            let goes_left = !self.leaf_key(start).get_msb(bit_pos);
             let sibling = *self.sibling(*sibling_idx);
             *sibling_idx += 1;
 
@@ -171,7 +171,7 @@ impl<'a, H: Hasher> Proof<'a, H> {
     /// Finds the partition point where keys switch from bit=0 (left) to bit=1 (right).
     fn split_point(&self, start: usize, end: usize, bit_pos: usize) -> usize {
         let mut mid = start;
-        while mid < end && !get_key_bit(self.leaf_key(mid), bit_pos) {
+        while mid < end && !self.leaf_key(mid).get_msb(bit_pos) {
             mid += 1;
         }
         mid
@@ -179,12 +179,6 @@ impl<'a, H: Hasher> Proof<'a, H> {
 
     /// Reads a single bit from the topology bitfield (LSB-first packing within each byte).
     fn get_topo_bit(&self, bit_index: usize) -> bool {
-        let byte_idx = bit_index / 8;
-        let bit_offset = bit_index % 8;
-        let topology = self.topology();
-        if byte_idx >= topology.len() {
-            return false;
-        }
-        (topology[byte_idx] >> bit_offset) & 1 == 1
+        self.topology().get_lsb(bit_index)
     }
 }

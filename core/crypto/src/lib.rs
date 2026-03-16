@@ -15,6 +15,7 @@ pub mod hashing {
 }
 
 pub mod smt {
+    mod bits;
     mod key;
     mod node;
     mod proof;

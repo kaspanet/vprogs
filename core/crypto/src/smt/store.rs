@@ -1,7 +1,8 @@
 use alloc::{vec, vec::Vec};
 
 use super::{
-    key::{Key, get_key_bit, set_key_bit},
+    bits::{Bits, BitsArray},
+    key::Key,
     proof::LEAF_ENTRY_SIZE,
     stale_node::StaleNode,
     state_commitment::StateCommitment,
@@ -61,12 +62,9 @@ pub trait Store {
         let mut siblings: Vec<[u8; 32]> = Vec::new();
         let mut topology_bits: Vec<bool> = Vec::new();
 
-        let indices: Vec<usize> = (0..sorted_keys.len()).collect();
-
         build_proof(
             self,
             &sorted_keys,
-            &indices,
             0,
             [0u8; 32],
             version,
@@ -95,19 +93,17 @@ fn update<S: Store, D>(
 where
     for<'a> StateCommitment: From<&'a D>,
 {
-    // Convert, sort, and deduplicate by key. All recursive methods below work with indices into
-    // this vec — no further copies of the 64-byte entries are made on the common path.
+    // Convert, sort, and deduplicate by key. All recursive methods below operate on sub-slices
+    // of this vec — no further allocations on the common (internal-node) path.
     let mut updates: Vec<StateCommitment> =
         leaf_updates.iter().map(StateCommitment::from).collect();
     updates.sort_by(|a, b| a.key.cmp(&b.key));
     updates.dedup_by(|a, b| a.key == b.key);
 
-    let indices: Vec<usize> = (0..updates.len()).collect();
-
     // Recursively apply updates starting from the root.
-    let result = update_subtree(store, &updates, &indices, 0, [0u8; 32], prev_version, version, wb);
+    let result = update_subtree(store, &updates, 0, [0u8; 32], prev_version, version, wb);
 
-    // Write the result at the root position and update the tree state.
+    // Write the result at the root position.
     let root_key = Key::root();
     mark_stale(store, &root_key, prev_version, version, wb);
 
@@ -123,8 +119,8 @@ where
 /// Core recursive update returning `None` for empty subtrees or the node that occupies this
 /// position.
 ///
-/// `updates` is the full sorted array of leaf mutations; `indices` selects which elements apply to
-/// this subtree. Only indices are copied during splits — the underlying data is shared.
+/// `updates` is a sorted sub-slice of leaf mutations that apply to this subtree. Splitting uses
+/// `partition_point` + `split_at` for zero-allocation descent.
 ///
 /// **Important:** returned `Leaf` nodes are *not* written to the store by this function — they
 /// bubble up to the caller, which decides whether to write them as a child of an Internal node or
@@ -134,7 +130,6 @@ where
 fn update_subtree<S: Store>(
     store: &S,
     updates: &[StateCommitment],
-    indices: &[usize],
     bit_pos: usize,
     path: [u8; 32],
     prev_version: u64,
@@ -144,7 +139,7 @@ fn update_subtree<S: Store>(
     let node_key = Key { bit_pos: bit_pos as u16, path };
 
     // No updates for this subtree — return existing node unchanged.
-    if indices.is_empty() {
+    if updates.is_empty() {
         return store.get_node(&node_key, prev_version).map(|(_, data)| data);
     }
 
@@ -152,16 +147,13 @@ fn update_subtree<S: Store>(
     let existing = store.get_node(&node_key, prev_version).map(|(_, data)| data);
 
     match existing {
-        // Empty subtree: any updates create new leaves.
-        None => {
-            insert_into_empty(store, updates, indices, bit_pos, path, prev_version, version, wb)
-        }
+        // Empty subtree: resolve updates into leaves directly.
+        None => resolve_leaves(store, updates, bit_pos, path, prev_version, version, wb),
 
         // Existing shortcut leaf: may need to split if keys differ.
         Some(Node::Leaf { key: existing_key, value_hash: existing_vh, .. }) => update_at_leaf(
             store,
             updates,
-            indices,
             bit_pos,
             path,
             prev_version,
@@ -171,42 +163,41 @@ fn update_subtree<S: Store>(
             existing_vh,
         ),
 
-        // Existing internal node: recurse into children.
+        // Existing internal node: mark stale and recurse into children.
         Some(Node::Internal { .. }) => {
-            update_at_internal(store, updates, indices, bit_pos, path, prev_version, version, wb)
+            mark_stale(store, &node_key, prev_version, version, wb);
+            split_and_recurse(store, updates, bit_pos, path, prev_version, version, wb)
         }
     }
 }
 
-/// Inserts updates into a currently empty subtree.
+/// Resolves a sorted set of leaf updates into the appropriate tree structure.
+///
+/// Filters out deletions (`EMPTY_HASH`), then creates a shortcut leaf for a single live entry or
+/// splits and recurses for multiple. Deletions in empty subtrees are harmless no-ops and propagate
+/// down to be filtered at leaf boundaries.
 #[allow(clippy::too_many_arguments)]
-fn insert_into_empty<S: Store>(
+fn resolve_leaves<S: Store>(
     store: &S,
     updates: &[StateCommitment],
-    indices: &[usize],
     bit_pos: usize,
     path: [u8; 32],
     prev_version: u64,
     version: u64,
     wb: &mut impl WriteBatch,
 ) -> Option<Node> {
-    // Filter out deletions — setting EMPTY_HASH in an empty subtree is a no-op.
-    let live: Vec<usize> =
-        indices.iter().filter(|&&i| updates[i].value_hash != EMPTY_HASH).copied().collect();
+    let mut live = updates.iter().filter(|u| u.value_hash != EMPTY_HASH);
 
-    if live.is_empty() {
-        return None;
+    let first = live.next()?;
+
+    if live.next().is_none() {
+        // Exactly one live entry — create a shortcut leaf at this depth.
+        let hash = Blake3Hasher::hash_leaf(&first.key, &first.value_hash);
+        return Some(Node::Leaf { key: first.key, value_hash: first.value_hash, hash });
     }
 
-    if live.len() == 1 {
-        // Single insert — create a shortcut leaf at this depth (no internal nodes needed).
-        let StateCommitment { key, value_hash } = updates[live[0]];
-        let hash = Blake3Hasher::hash_leaf(&key, &value_hash);
-        return Some(Node::Leaf { key, value_hash, hash });
-    }
-
-    // Multiple inserts — must split by the current bit and recurse.
-    split_and_recurse(store, updates, &live, bit_pos, path, prev_version, version, wb)
+    // Multiple live entries — must split by the current bit and recurse.
+    split_and_recurse(store, updates, bit_pos, path, prev_version, version, wb)
 }
 
 /// Handles updates at a position that currently holds a shortcut leaf.
@@ -214,7 +205,6 @@ fn insert_into_empty<S: Store>(
 fn update_at_leaf<S: Store>(
     store: &S,
     updates: &[StateCommitment],
-    indices: &[usize],
     bit_pos: usize,
     path: [u8; 32],
     prev_version: u64,
@@ -227,76 +217,40 @@ fn update_at_leaf<S: Store>(
     let node_key = Key { bit_pos: bit_pos as u16, path };
     mark_stale(store, &node_key, prev_version, version, wb);
 
-    // Check if any update targets the same key as the existing leaf.
-    let same_key_idx = indices.iter().copied().find(|&i| updates[i].key == existing_key);
-
-    if let Some(idx) = same_key_idx {
-        if indices.len() == 1 {
-            // Simple case: single update replaces the existing leaf in-place.
-            let new_vh = updates[idx].value_hash;
-            if new_vh == EMPTY_HASH {
-                return None; // Deletion — subtree becomes empty.
-            }
-            let hash = Blake3Hasher::hash_leaf(&existing_key, &new_vh);
-            return Some(Node::Leaf { key: existing_key, value_hash: new_vh, hash });
+    // Fast path: single update replaces the existing leaf in-place.
+    if updates.len() == 1 && updates[0].key == existing_key {
+        let new_vh = updates[0].value_hash;
+        if new_vh == EMPTY_HASH {
+            return None; // Deletion — subtree becomes empty.
         }
+        let hash = Blake3Hasher::hash_leaf(&existing_key, &new_vh);
+        return Some(Node::Leaf { key: existing_key, value_hash: new_vh, hash });
     }
 
-    // Complex case: merge the existing leaf into the update set (unless it's already being
-    // updated) and split. This is the one place where we materialize a new vec — unavoidable
-    // because we need to add the existing key to the set.
-    let mut merged: Vec<StateCommitment> = indices.iter().map(|&i| updates[i]).collect();
-    if same_key_idx.is_none() {
-        merged.push(StateCommitment { key: existing_key, value_hash: existing_vh });
+    // General case: merge the existing leaf into the update set (unless it's already being
+    // updated) and resolve. Only allocates a new vec when the existing key is not in updates.
+    if updates.iter().any(|u| u.key == existing_key) {
+        resolve_leaves(store, updates, bit_pos, path, prev_version, version, wb)
+    } else {
+        let existing = StateCommitment { key: existing_key, value_hash: existing_vh };
+        let pos = updates.partition_point(|u| u.key < existing_key);
+        let mut merged = Vec::with_capacity(updates.len() + 1);
+        merged.extend_from_slice(&updates[..pos]);
+        merged.push(existing);
+        merged.extend_from_slice(&updates[pos..]);
+        resolve_leaves(store, &merged, bit_pos, path, prev_version, version, wb)
     }
-
-    // Filter out deletions after merging.
-    let live: Vec<usize> =
-        (0..merged.len()).filter(|&i| merged[i].value_hash != EMPTY_HASH).collect();
-
-    if live.is_empty() {
-        return None;
-    }
-
-    if live.len() == 1 {
-        // Only one key survives — create a new shortcut leaf (may be the existing key or the new
-        // key, depending on which ones were deleted).
-        let StateCommitment { key, value_hash } = merged[live[0]];
-        let hash = Blake3Hasher::hash_leaf(&key, &value_hash);
-        return Some(Node::Leaf { key, value_hash, hash });
-    }
-
-    split_and_recurse(store, &merged, &live, bit_pos, path, prev_version, version, wb)
-}
-
-/// Handles updates at a position that holds an internal node.
-#[allow(clippy::too_many_arguments)]
-fn update_at_internal<S: Store>(
-    store: &S,
-    updates: &[StateCommitment],
-    indices: &[usize],
-    bit_pos: usize,
-    path: [u8; 32],
-    prev_version: u64,
-    version: u64,
-    wb: &mut impl WriteBatch,
-) -> Option<Node> {
-    // The existing internal node is superseded — a new one will be created after recursion.
-    let node_key = Key { bit_pos: bit_pos as u16, path };
-    mark_stale(store, &node_key, prev_version, version, wb);
-
-    split_and_recurse(store, updates, indices, bit_pos, path, prev_version, version, wb)
 }
 
 /// Splits updates by the current bit and recurses into both children.
 ///
-/// After recursion, decides the return value based on child results: both empty -> None, one
-/// leaf + one empty -> bubble the leaf up (shortcutting), otherwise -> create Internal node.
+/// Uses `partition_point` to find the split in O(log n) with zero allocation. After recursion,
+/// decides the return value: both empty → None, one leaf + one empty → bubble the leaf up
+/// (shortcutting), otherwise → create Internal node.
 #[allow(clippy::too_many_arguments)]
 fn split_and_recurse<S: Store>(
     store: &S,
     updates: &[StateCommitment],
-    indices: &[usize],
     bit_pos: usize,
     path: [u8; 32],
     prev_version: u64,
@@ -305,18 +259,19 @@ fn split_and_recurse<S: Store>(
 ) -> Option<Node> {
     debug_assert!(bit_pos < TREE_DEPTH, "exceeded tree depth");
 
-    // Partition indices by the bit at the current depth: 0 -> left, 1 -> right.
-    let (left, right) = split_by_bit(indices, |i| &updates[i].key, bit_pos);
+    // Partition by the bit at the current depth. Since updates are sorted MSB-first, all bit=0
+    // keys precede bit=1 keys — so `partition_point` finds the exact boundary.
+    let mid = updates.partition_point(|u| !u.key.get_msb(bit_pos));
+    let (left, right) = updates.split_at(mid);
 
     let left_path = path;
-    let mut right_path = path;
-    set_key_bit(&mut right_path, bit_pos);
+    let right_path = path.with_bit_set(bit_pos);
 
     // Recurse into both children independently.
     let left_result =
-        update_subtree(store, updates, &left, bit_pos + 1, left_path, prev_version, version, wb);
+        update_subtree(store, left, bit_pos + 1, left_path, prev_version, version, wb);
     let right_result =
-        update_subtree(store, updates, &right, bit_pos + 1, right_path, prev_version, version, wb);
+        update_subtree(store, right, bit_pos + 1, right_path, prev_version, version, wb);
 
     match (&left_result, &right_result) {
         // Both children empty — this subtree is empty.
@@ -380,14 +335,14 @@ fn mark_stale<S: Store>(
 
 /// Recursive multi-proof builder.
 ///
-/// Walks the persistent store top-down. At each position it looks up the stored node: **None**
-/// (empty subtree) means all proof keys are absent; **Leaf** emits the shortcut leaf as a proof
-/// entry; **Internal** splits proof keys by current bit and recurses.
+/// Walks the persistent store top-down. `keys` is a sorted sub-slice narrowed at each level. At
+/// each position it looks up the stored node: **None** (empty subtree) means all proof keys are
+/// absent; **Leaf** emits the shortcut leaf as a proof entry; **Internal** splits proof keys by
+/// current bit and recurses.
 #[allow(clippy::too_many_arguments)]
 fn build_proof<S: Store>(
     store: &S,
     keys: &[[u8; 32]],
-    indices: &[usize],
     bit_pos: usize,
     path: [u8; 32],
     version: u64,
@@ -395,7 +350,7 @@ fn build_proof<S: Store>(
     siblings: &mut Vec<[u8; 32]>,
     topology_bits: &mut Vec<bool>,
 ) {
-    if indices.is_empty() {
+    if keys.is_empty() {
         return;
     }
 
@@ -404,9 +359,7 @@ fn build_proof<S: Store>(
 
     match existing {
         // Empty subtree — all requested keys are absent.
-        None => {
-            build_proof_empty(keys, indices, bit_pos, leaves, siblings, topology_bits);
-        }
+        None => build_proof_empty(keys, bit_pos, leaves, siblings, topology_bits),
 
         // Shortcut leaf — emit it as the proof entry for this subtree.
         Some((_, Node::Leaf { key: leaf_key, value_hash, .. })) => {
@@ -418,7 +371,6 @@ fn build_proof<S: Store>(
             build_proof_internal(
                 store,
                 keys,
-                indices,
                 bit_pos,
                 path,
                 version,
@@ -436,47 +388,42 @@ fn build_proof<S: Store>(
 /// to separate them by bit position so the verifier can reconstruct the correct subtree structure.
 fn build_proof_empty(
     keys: &[[u8; 32]],
-    indices: &[usize],
     bit_pos: usize,
     leaves: &mut Vec<(u16, StateCommitment)>,
     siblings: &mut Vec<[u8; 32]>,
     topology_bits: &mut Vec<bool>,
 ) {
-    if indices.len() == 1 {
+    if keys.len() == 1 {
         // Single absent key — emit as an empty leaf at this depth.
-        leaves.push((
-            bit_pos as u16,
-            StateCommitment { key: keys[indices[0]], value_hash: EMPTY_HASH },
-        ));
+        leaves.push((bit_pos as u16, StateCommitment { key: keys[0], value_hash: EMPTY_HASH }));
         return;
     }
 
     // Multiple absent keys — split by bit to produce the topology the verifier needs.
-    let (left, right) = split_by_bit(indices, |i| &keys[i], bit_pos);
+    let mid = keys.partition_point(|k| !k.get_msb(bit_pos));
 
-    if !left.is_empty() && !right.is_empty() {
+    if mid > 0 && mid < keys.len() {
         // Both sides have absent keys — emit a split topology bit.
         topology_bits.push(true);
-        build_proof_empty(keys, &left, bit_pos + 1, leaves, siblings, topology_bits);
-        build_proof_empty(keys, &right, bit_pos + 1, leaves, siblings, topology_bits);
+        build_proof_empty(&keys[..mid], bit_pos + 1, leaves, siblings, topology_bits);
+        build_proof_empty(&keys[mid..], bit_pos + 1, leaves, siblings, topology_bits);
     } else {
         // All absent keys on one side — emit sibling (EMPTY_HASH) for the empty side.
         topology_bits.push(false);
         siblings.push(EMPTY_HASH);
-        let nonempty = if left.is_empty() { &right } else { &left };
-        build_proof_empty(keys, nonempty, bit_pos + 1, leaves, siblings, topology_bits);
+        let nonempty = if mid == 0 { &keys[mid..] } else { &keys[..mid] };
+        build_proof_empty(nonempty, bit_pos + 1, leaves, siblings, topology_bits);
     }
 }
 
 /// Builds proof entries when the current position is an internal node.
 ///
-/// Splits proof key indices by the current bit and recurses. If only one side has proof keys, the
+/// Splits proof keys by the current bit and recurses. If only one side has proof keys, the
 /// other side's subtree hash is emitted as a sibling.
 #[allow(clippy::too_many_arguments)]
 fn build_proof_internal<S: Store>(
     store: &S,
     keys: &[[u8; 32]],
-    indices: &[usize],
     bit_pos: usize,
     path: [u8; 32],
     version: u64,
@@ -484,19 +431,18 @@ fn build_proof_internal<S: Store>(
     siblings: &mut Vec<[u8; 32]>,
     topology_bits: &mut Vec<bool>,
 ) {
-    let (left_indices, right_indices) = split_by_bit(indices, |i| &keys[i], bit_pos);
+    let mid = keys.partition_point(|k| !k.get_msb(bit_pos));
+    let (left_keys, right_keys) = keys.split_at(mid);
 
     let left_path = path;
-    let mut right_path = path;
-    set_key_bit(&mut right_path, bit_pos);
+    let right_path = path.with_bit_set(bit_pos);
 
-    if !left_indices.is_empty() && !right_indices.is_empty() {
+    if !left_keys.is_empty() && !right_keys.is_empty() {
         // Both children have proof keys — emit a split topology bit and recurse both sides.
         topology_bits.push(true);
         build_proof(
             store,
-            keys,
-            &left_indices,
+            left_keys,
             bit_pos + 1,
             left_path,
             version,
@@ -506,8 +452,7 @@ fn build_proof_internal<S: Store>(
         );
         build_proof(
             store,
-            keys,
-            &right_indices,
+            right_keys,
             bit_pos + 1,
             right_path,
             version,
@@ -519,15 +464,13 @@ fn build_proof_internal<S: Store>(
         // Only one side has proof keys — emit the other side's hash as a sibling.
         topology_bits.push(false);
 
-        if left_indices.is_empty() {
+        if left_keys.is_empty() {
             // Proof keys are on the right — left subtree hash becomes a sibling.
             let left_key = Key { bit_pos: (bit_pos + 1) as u16, path: left_path };
-            let sibling_hash = node_hash(store, &left_key, version);
-            siblings.push(sibling_hash);
+            siblings.push(node_hash(store, &left_key, version));
             build_proof(
                 store,
-                keys,
-                &right_indices,
+                right_keys,
                 bit_pos + 1,
                 right_path,
                 version,
@@ -538,12 +481,10 @@ fn build_proof_internal<S: Store>(
         } else {
             // Proof keys are on the left — right subtree hash becomes a sibling.
             let right_key = Key { bit_pos: (bit_pos + 1) as u16, path: right_path };
-            let sibling_hash = node_hash(store, &right_key, version);
-            siblings.push(sibling_hash);
+            siblings.push(node_hash(store, &right_key, version));
             build_proof(
                 store,
-                keys,
-                &left_indices,
+                left_keys,
                 bit_pos + 1,
                 left_path,
                 version,
@@ -560,28 +501,7 @@ fn node_hash<S: Store>(store: &S, node_key: &Key, version: u64) -> [u8; 32] {
     store.get_node(node_key, version).map(|(_, data)| *data.hash()).unwrap_or(EMPTY_HASH)
 }
 
-// --- Shared helpers ---
-
-/// Splits indices into left (bit=0) and right (bit=1) by the current bit position.
-///
-/// The `key_fn` closure returns a reference to the 32-byte key for a given index, avoiding copies.
-/// Works with both leaf updates (`&updates[i].key`) and proof keys (`&keys[i]`).
-fn split_by_bit<'a>(
-    indices: &[usize],
-    key_fn: impl Fn(usize) -> &'a [u8; 32],
-    bit_pos: usize,
-) -> (Vec<usize>, Vec<usize>) {
-    let mut left = Vec::new();
-    let mut right = Vec::new();
-    for &i in indices {
-        if get_key_bit(key_fn(i), bit_pos) {
-            right.push(i);
-        } else {
-            left.push(i);
-        }
-    }
-    (left, right)
-}
+// --- Encoding helpers ---
 
 /// Encodes proof components into the v2 wire format.
 fn encode_proof(
@@ -618,11 +538,10 @@ fn encode_proof(
 ///
 /// This matches the topology bitfield format read by `Proof::get_topo_bit`.
 fn pack_bits(bits: &[bool]) -> Vec<u8> {
-    let n_bytes = bits.len().div_ceil(8);
-    let mut bytes = vec![0u8; n_bytes];
+    let mut bytes = vec![0u8; bits.len().div_ceil(8)];
     for (i, &bit) in bits.iter().enumerate() {
         if bit {
-            bytes[i / 8] |= 1 << (i % 8);
+            bytes.set_lsb(i);
         }
     }
     bytes
