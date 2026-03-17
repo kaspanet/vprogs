@@ -15,25 +15,35 @@ pub mod hashing {
 }
 
 pub mod smt {
-    mod key;
-    mod leaf;
-    mod node;
-    mod proof;
-    mod proof_builder;
-    mod stale_node;
-    mod state_commitment;
-    mod store;
-    mod tree_update;
-    mod write_batch;
+    pub(crate) mod proof {
+        pub(crate) mod builder;
+        mod leaf;
+        mod multi_proof;
+        mod traversal;
 
-    pub use key::Key;
-    pub use leaf::Leaf;
-    pub use node::Node;
-    pub use proof::Proof;
-    pub use stale_node::StaleNode;
-    pub use state_commitment::StateCommitment;
-    pub use store::Store;
-    pub use write_batch::WriteBatch;
+        pub use leaf::Leaf;
+        pub use multi_proof::Proof;
+    }
+
+    pub(crate) mod tree {
+        pub(crate) mod key;
+        mod node;
+        pub(crate) mod stale_node;
+        pub(crate) mod state_commitment;
+        pub(crate) mod store;
+        mod update;
+        pub(crate) mod write_batch;
+
+        pub use key::Key;
+        pub use node::Node;
+        pub use stale_node::StaleNode;
+        pub use state_commitment::StateCommitment;
+        pub use store::Store;
+        pub use write_batch::WriteBatch;
+    }
+
+    pub use proof::{Leaf, Proof};
+    pub use tree::{Key, Node, StaleNode, StateCommitment, Store, WriteBatch};
 }
 
 // Convenience re-exports at crate root.

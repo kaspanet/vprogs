@@ -2,15 +2,18 @@ use alloc::vec::Vec;
 
 use vprogs_core_utils::{Bits, BitsArray};
 
-use super::{key::Key, proof::Proof, state_commitment::StateCommitment, store::Store};
-use crate::{EMPTY_HASH, Node};
+use super::multi_proof::Proof;
+use crate::{
+    EMPTY_HASH, Node,
+    smt::tree::{key::Key, state_commitment::StateCommitment, store::Store},
+};
 
 /// Collects sibling hashes and leaf depths to produce an encoded multi-proof.
 ///
 /// Walks the persistent store top-down, accumulating proof components. At each position it looks
 /// up the stored node: **None** (empty subtree) means all proof keys are absent; **Leaf** emits
 /// the shortcut leaf as a proof entry; **Internal** splits proof keys by current bit and recurses.
-pub(super) struct ProofBuilder<'a, S> {
+pub(crate) struct ProofBuilder<'a, S> {
     store: &'a S,
     version: u64,
     leaves: Vec<(u16, StateCommitment)>,
@@ -20,7 +23,7 @@ pub(super) struct ProofBuilder<'a, S> {
 
 impl<'a, S: Store> ProofBuilder<'a, S> {
     /// Generates a multi-proof for the given keys at `version` and returns it in wire format.
-    pub(super) fn build(store: &'a S, version: u64, leaf_keys: &[[u8; 32]]) -> Vec<u8> {
+    pub(crate) fn build(store: &'a S, version: u64, leaf_keys: &[[u8; 32]]) -> Vec<u8> {
         let mut sorted_keys: Vec<[u8; 32]> = leaf_keys.to_vec();
         sorted_keys.sort();
         sorted_keys.dedup();

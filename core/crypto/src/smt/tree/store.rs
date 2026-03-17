@@ -1,10 +1,9 @@
 use alloc::vec::Vec;
 
 use super::{
-    key::Key, proof_builder::ProofBuilder, state_commitment::StateCommitment,
-    tree_update::TreeUpdate, write_batch::WriteBatch,
+    key::Key, state_commitment::StateCommitment, update::TreeUpdate, write_batch::WriteBatch,
 };
-use crate::{EMPTY_HASH, Node};
+use crate::{EMPTY_HASH, Node, smt::proof::builder::ProofBuilder};
 
 /// Authenticated state store backed by a versioned Sparse Merkle Tree.
 ///
