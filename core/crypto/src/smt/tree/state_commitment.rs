@@ -9,3 +9,9 @@ pub struct StateCommitment {
     /// The 32-byte hash of the state value, or `EMPTY_HASH` for deletions.
     pub value_hash: [u8; 32],
 }
+
+impl From<&StateCommitment> for StateCommitment {
+    fn from(s: &StateCommitment) -> Self {
+        *s
+    }
+}

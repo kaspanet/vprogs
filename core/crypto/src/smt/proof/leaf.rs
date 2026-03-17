@@ -17,7 +17,7 @@ impl<'a> Leaf<'a> {
     /// Decodes a leaf entry, advancing `buf` past the consumed bytes.
     pub(crate) fn decode(buf: &mut &'a [u8]) -> Result<Self, DecodeError> {
         Ok(Self {
-            depth: buf.consume_u16("depth")?,
+            depth: buf.consume_u16_le("depth")?,
             key: buf.consume_array::<32>("key")?,
             value_hash: buf.consume_array::<32>("value_hash")?,
         })

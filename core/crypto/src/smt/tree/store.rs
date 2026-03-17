@@ -39,6 +39,13 @@ pub trait Store {
         TreeUpdate::apply(self, wb, version, diffs)
     }
 
+    /// Prunes stale nodes for the given version.
+    ///
+    /// Iterates all stale markers recorded at `version`, deletes the corresponding superseded nodes
+    /// and the stale markers themselves. Implementors use their storage-specific encoding to locate
+    /// and remove entries.
+    fn prune_version(&self, wb: &mut impl WriteBatch, version: u64);
+
     /// Generates a multi-proof for the given keys at a specific version.
     ///
     /// Walks the persistent node store to collect sibling hashes and leaf depths. Returns the

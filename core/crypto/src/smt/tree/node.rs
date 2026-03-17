@@ -35,26 +35,16 @@ impl Node {
     ///
     /// Tag `0x00` + hash (33B) for Internal, tag `0x01` + key + value_hash + hash (97B) for Leaf.
     /// The tag byte matches the domain separation prefix used in hashing.
-    pub fn to_bytes(&self) -> Vec<u8> {
+    pub fn encode(&self) -> Vec<u8> {
         match self {
-            Node::Internal { hash } => {
-                let mut buf = Vec::with_capacity(33);
-                buf.push(0x00); // Internal node tag.
-                buf.extend_from_slice(hash);
-                buf
-            }
+            Node::Internal { hash } => [&[0x00], hash.as_slice()].concat(),
             Node::Leaf { key, value_hash, hash } => {
-                let mut buf = Vec::with_capacity(97);
-                buf.push(0x01); // Leaf node tag.
-                buf.extend_from_slice(key);
-                buf.extend_from_slice(value_hash);
-                buf.extend_from_slice(hash);
-                buf
+                [&[0x01], key.as_slice(), value_hash.as_slice(), hash.as_slice()].concat()
             }
         }
     }
 
-    /// Deserializes from bytes produced by `to_bytes`, advancing `buf` past the consumed bytes.
+    /// Deserializes from bytes produced by `encode`, advancing `buf` past the consumed bytes.
     pub fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
         match buf.consume_u8("tag")? {
             0x00 => Ok(Node::Internal { hash: *buf.consume_array::<32>("hash")? }),

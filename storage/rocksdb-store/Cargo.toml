@@ -8,4 +8,5 @@ num_cpus.workspace             = true
 rocksdb.workspace              = true
 tap.workspace                  = true
 vprogs-core-crypto.workspace   = true
+vprogs-core-utils.workspace    = true
 vprogs-storage-types.workspace = true

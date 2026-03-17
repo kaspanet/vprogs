@@ -114,8 +114,8 @@ impl<'a> Resource<'a> {
         // Parse header fields.
         let resource_id = header.consume_array::<32>("resource_id")?;
         let is_new = header.consume_bool("is_new")?;
-        let resource_index = header.consume_u32("resource_index")?;
-        let data_length = header.consume_u32("data_length")? as usize;
+        let resource_index = header.consume_u32_le("resource_index")?;
+        let data_length = header.consume_u32_le("data_length")? as usize;
 
         // Split off the backing slice from the start of `data` and advance `data` past it.
         let (backing, rest) = mem::take(buf).split_at_mut(data_length);

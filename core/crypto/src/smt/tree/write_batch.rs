@@ -11,4 +11,10 @@ pub trait WriteBatch {
 
     /// Records a stale node marker for later garbage collection.
     fn put_stale_node(&mut self, stale: &StaleNode);
+
+    /// Deletes a node at the given position and version.
+    fn delete_node(&mut self, key: &Key, version: u64);
+
+    /// Deletes a stale node marker.
+    fn delete_stale_node(&mut self, stale: &StaleNode);
 }

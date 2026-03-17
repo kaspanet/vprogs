@@ -1,3 +1,6 @@
+use tap::Tap;
+use vprogs_core_utils::{DecodeError, Parser};
+
 /// Identifies a position in the binary Sparse Merkle Tree.
 ///
 /// At `level` 0 this is the root. At `level` 256 this is a leaf. The `path` field encodes the
@@ -17,23 +20,16 @@ impl Key {
         Self { level: 0, path: [0u8; 32] }
     }
 
-    /// Encodes this node key for the SmtNode column family.
-    ///
-    /// Key layout: `path(32) || level(2 BE) || !version(8 BE)` = 42 bytes. The 34-byte prefix
-    /// extractor groups all versions of the same node. The `!version` suffix sorts higher versions
-    /// first within that prefix, so a forward seek from `!max_version` hits the latest version <=
-    /// `max_version` first.
-    pub fn encode_cf_key(&self, version: u64) -> [u8; 42] {
-        let mut key = [0u8; 42];
-        key[..32].copy_from_slice(&self.path);
-        key[32..34].copy_from_slice(&self.level.to_be_bytes());
-        key[34..42].copy_from_slice(&(!version).to_be_bytes());
-        key
+    /// Encodes as `path(32) || level(2 BE)` = 34 bytes.
+    pub fn encode(&self) -> [u8; 34] {
+        [0u8; 34].tap_mut(|buf| {
+            buf[..32].copy_from_slice(&self.path);
+            buf[32..34].copy_from_slice(&self.level.to_be_bytes());
+        })
     }
 
-    /// Decodes the version from a raw 42-byte SmtNode key.
-    pub fn decode_version(raw_key: &[u8]) -> u64 {
-        let inv = u64::from_be_bytes(raw_key[34..42].try_into().unwrap());
-        !inv
+    /// Decodes from bytes produced by `encode`, advancing `buf` past the consumed bytes.
+    pub fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
+        Ok(Self { path: *buf.consume_array::<32>("path")?, level: buf.consume_u16_be("level")? })
     }
 }

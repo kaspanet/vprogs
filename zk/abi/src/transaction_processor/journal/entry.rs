@@ -27,7 +27,7 @@ impl<'a> JournalEntry<'a> {
     pub fn decode(buf: &mut &'a [u8]) -> Result<Self> {
         // Parse TLV header.
         let opcode = buf.consume_u8("opcode")?;
-        let payload_length = buf.consume_u32("payload_length")? as usize;
+        let payload_length = buf.consume_u32_le("payload_length")? as usize;
         let payload = buf.consume_bytes(payload_length, "payload")?;
 
         // Dispatch to segment decoder.

@@ -7,7 +7,7 @@ type Result<T> = core::result::Result<T, DecodeError>;
 /// Extension trait for parsing wire format fields from byte slices.
 ///
 /// All methods advance the cursor past the consumed bytes. Implemented for `&'a [u8]` so that
-/// `let mut buf = input; buf.consume_u32("field")?;` progressively consumes the buffer.
+/// `let mut buf = input; buf.consume_u32_le("field")?;` progressively consumes the buffer.
 pub trait Parser<'a> {
     /// Reads a single byte as a boolean (`!= 0`) and advances the cursor past it.
     fn consume_bool(&mut self, field: &'static str) -> Result<bool>;
@@ -16,13 +16,22 @@ pub trait Parser<'a> {
     fn consume_u8(&mut self, field: &'static str) -> Result<u8>;
 
     /// Reads a little-endian `u16` and advances the cursor past it.
-    fn consume_u16(&mut self, field: &'static str) -> Result<u16>;
+    fn consume_u16_le(&mut self, field: &'static str) -> Result<u16>;
+
+    /// Reads a big-endian `u16` and advances the cursor past it.
+    fn consume_u16_be(&mut self, field: &'static str) -> Result<u16>;
 
     /// Reads a little-endian `u32` and advances the cursor past it.
-    fn consume_u32(&mut self, field: &'static str) -> Result<u32>;
+    fn consume_u32_le(&mut self, field: &'static str) -> Result<u32>;
+
+    /// Reads a big-endian `u32` and advances the cursor past it.
+    fn consume_u32_be(&mut self, field: &'static str) -> Result<u32>;
 
     /// Reads a little-endian `u64` and advances the cursor past it.
-    fn consume_u64(&mut self, field: &'static str) -> Result<u64>;
+    fn consume_u64_le(&mut self, field: &'static str) -> Result<u64>;
+
+    /// Reads a big-endian `u64` and advances the cursor past it.
+    fn consume_u64_be(&mut self, field: &'static str) -> Result<u64>;
 
     /// Reads `len` bytes and advances the cursor past them.
     fn consume_bytes(&mut self, len: usize, field: &'static str) -> Result<&'a [u8]>;
@@ -30,19 +39,22 @@ pub trait Parser<'a> {
     /// Reads a fixed-size array reference and advances the cursor past it.
     fn consume_array<const N: usize>(&mut self, field: &'static str) -> Result<&'a [u8; N]>;
 
-    /// Reads a length-prefixed byte blob: `len(4) + bytes(len)`.
+    /// Reads a length-prefixed byte blob: `len(4 LE) + bytes(len)`.
     fn consume_blob(&mut self, field: &'static str) -> Result<&'a [u8]>;
 
-    /// Reads a length-prefixed UTF-8 string: `len(4) + bytes(len)`.
+    /// Reads a length-prefixed UTF-8 string: `len(4 LE) + bytes(len)`.
     fn consume_string(&mut self, field: &'static str) -> Result<&'a str>;
 
-    /// Reads a `u32` count, then calls `decode_fn` that many times, collecting into a `Vec`.
+    /// Advances the cursor past `n` bytes without reading them. Returns `&mut Self` for chaining.
+    fn skip(&mut self, n: usize, field: &'static str) -> Result<&mut Self>;
+
+    /// Reads a LE `u32` count, then calls `decode_fn` that many times, collecting into a `Vec`.
     fn consume_n<T>(
         &mut self,
         field: &'static str,
         mut decode_fn: impl FnMut(&mut Self) -> Result<T>,
     ) -> Result<Vec<T>> {
-        let n = self.consume_u32(field)? as usize;
+        let n = self.consume_u32_le(field)? as usize;
         let mut items = Vec::with_capacity(n);
         for _ in 0..n {
             items.push(decode_fn(self)?);
@@ -62,19 +74,34 @@ impl<'a> Parser<'a> for &'a [u8] {
         Ok(val)
     }
 
-    fn consume_u16(&mut self, field: &'static str) -> Result<u16> {
+    fn consume_u16_le(&mut self, field: &'static str) -> Result<u16> {
         let bytes = self.consume_bytes(2, field)?;
         Ok(u16::from_le_bytes(bytes.try_into().unwrap()))
     }
 
-    fn consume_u32(&mut self, field: &'static str) -> Result<u32> {
+    fn consume_u16_be(&mut self, field: &'static str) -> Result<u16> {
+        let bytes = self.consume_bytes(2, field)?;
+        Ok(u16::from_be_bytes(bytes.try_into().unwrap()))
+    }
+
+    fn consume_u32_le(&mut self, field: &'static str) -> Result<u32> {
         let bytes = self.consume_bytes(4, field)?;
         Ok(u32::from_le_bytes(bytes.try_into().unwrap()))
     }
 
-    fn consume_u64(&mut self, field: &'static str) -> Result<u64> {
+    fn consume_u32_be(&mut self, field: &'static str) -> Result<u32> {
+        let bytes = self.consume_bytes(4, field)?;
+        Ok(u32::from_be_bytes(bytes.try_into().unwrap()))
+    }
+
+    fn consume_u64_le(&mut self, field: &'static str) -> Result<u64> {
         let bytes = self.consume_bytes(8, field)?;
         Ok(u64::from_le_bytes(bytes.try_into().unwrap()))
+    }
+
+    fn consume_u64_be(&mut self, field: &'static str) -> Result<u64> {
+        let bytes = self.consume_bytes(8, field)?;
+        Ok(u64::from_be_bytes(bytes.try_into().unwrap()))
     }
 
     fn consume_bytes(&mut self, len: usize, field: &'static str) -> Result<&'a [u8]> {
@@ -92,8 +119,13 @@ impl<'a> Parser<'a> for &'a [u8] {
         bytes.try_into().map_err(|_| DecodeError(field))
     }
 
+    fn skip(&mut self, n: usize, field: &'static str) -> Result<&mut Self> {
+        self.consume_bytes(n, field)?;
+        Ok(self)
+    }
+
     fn consume_blob(&mut self, field: &'static str) -> Result<&'a [u8]> {
-        let len = self.consume_u32(field)? as usize;
+        let len = self.consume_u32_le(field)? as usize;
         self.consume_bytes(len, field)
     }
 

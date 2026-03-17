@@ -33,7 +33,7 @@ impl Outputs {
         match buf.consume_u8("discriminant")? {
             Self::OK => {
                 // Decode length-prefixed storage operations.
-                let count = buf.consume_u32("count")? as usize;
+                let count = buf.consume_u32_le("count")? as usize;
                 let mut storage_ops = Vec::with_capacity(count);
                 for _ in 0..count {
                     storage_ops.push(StorageOp::decode(&mut buf)?);

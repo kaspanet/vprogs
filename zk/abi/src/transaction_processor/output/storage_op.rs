@@ -36,7 +36,7 @@ impl StorageOp {
             Self::DELETE => Ok(Some(Self::Delete)),
             variant => {
                 // Decode length prefix.
-                let data_length = buf.consume_u32("data_length")? as usize;
+                let data_length = buf.consume_u32_le("data_length")? as usize;
 
                 // Read the data and construct the corresponding variant.
                 Ok(Some(if variant == Self::CREATE {

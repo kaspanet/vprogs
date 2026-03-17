@@ -27,7 +27,7 @@ impl JournalCommitment {
         let mut buf = &buf[..Self::SIZE];
         let prev_root = *buf.consume_array::<32>("prev_root")?;
         let new_root = *buf.consume_array::<32>("new_root")?;
-        let batch_index = buf.consume_u64("batch_index")?;
+        let batch_index = buf.consume_u64_le("batch_index")?;
         Ok((prev_root, new_root, batch_index))
     }
 }

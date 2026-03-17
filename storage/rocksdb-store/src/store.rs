@@ -1,11 +1,15 @@
 use std::{marker::PhantomData, path::Path, sync::Arc};
 
 use rocksdb::{DB, DBIteratorWithThreadMode, Direction, IteratorMode};
-use vprogs_core_crypto::smt::{Key, Node, Store as SmtStore};
+use vprogs_core_crypto::smt::{
+    Key, Node, StaleNode, Store as SmtStore, WriteBatch as SmtWriteBatch,
+};
 use vprogs_storage_types::{PrefixIterator, StateSpace, Store};
 
 use crate::{
     config::{Config, DefaultConfig},
+    key_ext::KeyExt,
+    stale_node_ext::StaleNodeExt,
     state_space_ext::StateSpaceExt,
     write_batch::WriteBatch,
 };
@@ -82,12 +86,25 @@ impl<C: Config> Store for RocksDbStore<C> {
 
 impl<C: Config> SmtStore for RocksDbStore<C> {
     fn get_node(&self, key: &Key, max_version: u64) -> Option<(u64, Node)> {
-        let seek = key.encode_cf_key(max_version);
-        let mut iter = self.prefix_iter(StateSpace::SmtNode, &seek);
+        let mut iter = self.prefix_iter(StateSpace::SmtNode, &key.encode_with_version(max_version));
         let (raw_key, raw_value) = iter.next()?;
-        let version = Key::decode_version(&raw_key);
-        let data = Node::decode(&mut raw_value.as_ref()).expect("corrupted smt node");
-        Some((version, data))
+        let version = Key::decode_version(&raw_key).expect("corrupted smt node key");
+        let node = Node::decode(&mut raw_value.as_ref()).expect("corrupted smt node");
+        Some((version, node))
+    }
+
+    fn prune_version(&self, wb: &mut impl SmtWriteBatch, version: u64) {
+        for (raw_key, raw_value) in self.prefix_iter(StateSpace::SmtStale, &version.to_be_bytes()) {
+            let node_key = StaleNode::decode_key(&raw_key).expect("corrupted stale key");
+            let node_version = StaleNode::decode_value(&raw_value).expect("corrupted stale value");
+
+            wb.delete_node(&node_key, node_version);
+            wb.delete_stale_node(&StaleNode {
+                stale_since_version: version,
+                node_key,
+                node_version,
+            });
+        }
     }
 }
 

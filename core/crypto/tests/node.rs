@@ -17,7 +17,7 @@ fn leaf_hash_accessor() {
 #[test]
 fn roundtrip_internal() {
     let node = Node::Internal { hash: [7u8; 32] };
-    let bytes = node.to_bytes();
+    let bytes = node.encode();
     assert_eq!(bytes.len(), 33);
     assert_eq!(Node::decode(&mut bytes.as_slice()).unwrap(), node);
 }
@@ -25,7 +25,7 @@ fn roundtrip_internal() {
 #[test]
 fn roundtrip_leaf() {
     let node = Node::Leaf { key: [1u8; 32], value_hash: [2u8; 32], hash: [3u8; 32] };
-    let bytes = node.to_bytes();
+    let bytes = node.encode();
     assert_eq!(bytes.len(), 97);
     assert_eq!(Node::decode(&mut bytes.as_slice()).unwrap(), node);
 }

@@ -28,9 +28,9 @@ impl<'a> InputCommitment<'a> {
     pub fn decode(mut buf: &'a [u8]) -> Result<Self> {
         // Decode fixed header fields.
         let tx_id = buf.consume_array::<32>("tx_id")?;
-        let tx_index = buf.consume_u32("tx_index")?;
+        let tx_index = buf.consume_u32_le("tx_index")?;
         let batch_metadata = BatchMetadata::decode(&mut buf)?;
-        let resource_count = buf.consume_u32("resource_count")?;
+        let resource_count = buf.consume_u32_le("resource_count")?;
 
         // Create zero-copy iterator over resource entries.
         let resources = InputResourceCommitments::new(buf, resource_count);

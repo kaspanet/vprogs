@@ -9,13 +9,12 @@ use std::{
 
 use tap::Tap;
 use tokio::{runtime::Builder, sync::Notify};
-use vprogs_core_crypto::smt::{Key, StaleNode};
 use vprogs_core_types::{Checkpoint, ResourceId};
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_ptr_rollback::StatePtrRollback;
 use vprogs_state_version::StateVersion;
-use vprogs_storage_types::{StateSpace, Store, WriteBatch};
+use vprogs_storage_types::Store;
 
 use crate::{Processor, state::SchedulerState};
 
@@ -226,17 +225,8 @@ impl<S: Store, P: Processor> PruningWorker<S, P> {
                 // Delete batch metadata entries for this batch.
                 StoredBatchMetadata::delete(wb, index);
 
-                // Prune stale SMT nodes for this version. Each stale marker identifies a node
-                // that was superseded during this batch and can now be deleted.
-                for (stale_key, stale_value) in
-                    store.prefix_iter(StateSpace::SmtStale, &index.to_be_bytes())
-                {
-                    let (path, level) = StaleNode::decode_cf_key(&stale_key);
-                    let node_version = StaleNode::decode_cf_value(&stale_value);
-                    let node_key = Key { level, path };
-                    wb.delete(StateSpace::SmtNode, &node_key.encode_cf_key(node_version));
-                    wb.delete(StateSpace::SmtStale, &stale_key);
-                }
+                // Prune stale SMT nodes for this version.
+                store.prune_version(wb, index);
             }
 
             // Advance root on disk.

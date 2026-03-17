@@ -39,7 +39,7 @@ impl Outputs {
 
         use crate::Error;
 
-        let count = buf.consume_u32("n_resources")? as usize;
+        let count = buf.consume_u32_le("n_resources")? as usize;
         let mut updates = alloc::vec::Vec::with_capacity(count);
         for _ in 0..count {
             match buf.consume_u8("flag")? {

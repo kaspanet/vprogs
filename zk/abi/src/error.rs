@@ -35,7 +35,7 @@ impl Error {
     pub fn decode(buf: &mut &[u8]) -> Result<Self> {
         // Dispatch based on discriminant.
         match buf.consume_u8("error_variant")? {
-            Self::GUEST => Ok(Self::Guest(buf.consume_u32("error_code")?)),
+            Self::GUEST => Ok(Self::Guest(buf.consume_u32_le("error_code")?)),
             Self::DECODE => Ok(Self::Decode(buf.consume_string("error_msg")?.into())),
             _ => Err(Error::Decode("invalid error discriminant".into())),
         }

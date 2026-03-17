@@ -25,10 +25,10 @@ impl<'a> Header<'a> {
     pub fn decode(buf: &mut &'a [u8]) -> Result<Self> {
         Ok(Self {
             image_id: buf.consume_array::<32>("image_id")?,
-            batch_index: buf.consume_u64("batch_index")?,
+            batch_index: buf.consume_u64_le("batch_index")?,
             prev_root: buf.consume_array::<32>("prev_root")?,
-            n_resources: buf.consume_u32("n_resources")?,
-            n_txs: buf.consume_u32("n_txs")?,
+            n_resources: buf.consume_u32_le("n_resources")?,
+            n_txs: buf.consume_u32_le("n_txs")?,
         })
     }
 
