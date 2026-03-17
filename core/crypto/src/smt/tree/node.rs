@@ -1,5 +1,7 @@
 use alloc::vec::Vec;
 
+use vprogs_core_utils::{DecodeError, Parser};
+
 /// Data stored at a tree position.
 ///
 /// `Internal` nodes have two children looked up via `Key::left_child()` / `right_child()`.
@@ -52,23 +54,16 @@ impl Node {
         }
     }
 
-    /// Deserializes from bytes produced by `to_bytes`.
-    pub fn from_bytes(data: &[u8]) -> Self {
-        match data[0] {
-            0x00 => {
-                // Internal: tag(1) + hash(32) = 33 bytes.
-                let hash: [u8; 32] = data[1..33].try_into().expect("truncated internal node");
-                Node::Internal { hash }
-            }
-            0x01 => {
-                // Leaf: tag(1) + key(32) + value_hash(32) + hash(32) = 97 bytes.
-                let key: [u8; 32] = data[1..33].try_into().expect("truncated leaf key");
-                let value_hash: [u8; 32] =
-                    data[33..65].try_into().expect("truncated leaf value_hash");
-                let hash: [u8; 32] = data[65..97].try_into().expect("truncated leaf hash");
-                Node::Leaf { key, value_hash, hash }
-            }
-            tag => panic!("unknown node tag: {tag:#x}"),
+    /// Deserializes from bytes produced by `to_bytes`, advancing `buf` past the consumed bytes.
+    pub fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
+        match buf.consume_u8("tag")? {
+            0x00 => Ok(Node::Internal { hash: *buf.consume_array::<32>("hash")? }),
+            0x01 => Ok(Node::Leaf {
+                key: *buf.consume_array::<32>("key")?,
+                value_hash: *buf.consume_array::<32>("value_hash")?,
+                hash: *buf.consume_array::<32>("hash")?,
+            }),
+            _ => Err(DecodeError("unknown node tag")),
         }
     }
 }

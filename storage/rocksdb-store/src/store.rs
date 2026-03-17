@@ -86,7 +86,7 @@ impl<C: Config> SmtStore for RocksDbStore<C> {
         let mut iter = self.prefix_iter(StateSpace::SmtNode, &seek);
         let (raw_key, raw_value) = iter.next()?;
         let version = Key::decode_version(&raw_key);
-        let data = Node::from_bytes(&raw_value);
+        let data = Node::decode(&mut raw_value.as_ref()).expect("corrupted smt node");
         Some((version, data))
     }
 }
