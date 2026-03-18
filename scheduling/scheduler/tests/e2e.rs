@@ -1661,10 +1661,13 @@ pub fn test_smt_multi_proof_verify() {
         let proof_bytes = store.generate_proof(1, &[key]);
         let proof = Proof::decode(&proof_bytes).expect("valid proof");
 
-        assert!(proof.verify::<Blake3Hasher>(root), "proof should verify against the correct root");
         assert!(
-            !proof.verify::<Blake3Hasher>([0xFFu8; 32]),
-            "proof should reject an incorrect root"
+            proof.verify::<Blake3Hasher>(root).unwrap(),
+            "proof should verify against the correct root",
+        );
+        assert!(
+            !proof.verify::<Blake3Hasher>([0xFFu8; 32]).unwrap(),
+            "proof should reject an incorrect root",
         );
 
         scheduler.shutdown();
@@ -1701,12 +1704,12 @@ pub fn test_smt_multi_proof_absent_key() {
         let proof = Proof::decode(&proof_bytes).expect("valid proof");
 
         assert!(
-            proof.verify::<Blake3Hasher>(root),
-            "proof for an absent key should verify against the root"
+            proof.verify::<Blake3Hasher>(root).unwrap(),
+            "proof for an absent key should verify against the root",
         );
         assert!(
-            !proof.verify::<Blake3Hasher>([0xFFu8; 32]),
-            "proof should reject an incorrect root"
+            !proof.verify::<Blake3Hasher>([0xFFu8; 32]).unwrap(),
+            "proof should reject an incorrect root",
         );
 
         scheduler.shutdown();
@@ -1748,8 +1751,8 @@ pub fn test_smt_multi_proof_mixed_keys() {
         let proof = Proof::decode(&proof_bytes).expect("valid proof");
 
         assert!(
-            proof.verify::<Blake3Hasher>(root),
-            "mixed proof should verify against the correct root"
+            proof.verify::<Blake3Hasher>(root).unwrap(),
+            "mixed proof should verify against the correct root",
         );
         assert!(proof.leaves.len() >= 3, "proof should have at least 3 leaves");
 

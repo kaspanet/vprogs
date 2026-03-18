@@ -24,7 +24,7 @@ impl<'a> OutputCommitment<'a> {
 
     /// Decodes an output commitment from a journal segment payload.
     pub fn decode(mut buf: &'a [u8]) -> Result<Self> {
-        match buf.consume_u8("discriminant")? {
+        match buf.byte("discriminant")? {
             Self::SUCCESS => Ok(Self::Success(OutputResourceCommitments::new(buf))),
             Self::ERROR => Ok(Self::Error(Error::decode(&mut buf)?)),
             _ => Err(Error::Decode("invalid output commitment discriminant".into())),

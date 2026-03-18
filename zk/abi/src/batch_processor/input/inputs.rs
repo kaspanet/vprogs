@@ -38,8 +38,8 @@ impl<'a> Inputs<'a> {
         }
 
         // Decode length-prefixed multi-proof.
-        let multi_proof_length = buf.consume_u32_le("multi_proof_length")? as usize;
-        let multi_proof = MultiProof::decode(buf.consume_bytes(multi_proof_length, "multi_proof")?);
+        let multi_proof_length = buf.le_u32("multi_proof_length")? as usize;
+        let multi_proof = MultiProof::decode(buf.bytes(multi_proof_length, "multi_proof")?);
 
         // Remaining bytes are per-transaction journal entries.
         let tx_entries = JournalIter::new(buf, header.n_txs);

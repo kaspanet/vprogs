@@ -1,6 +1,6 @@
 use tap::Tap;
 use vprogs_core_crypto::smt::Key;
-use vprogs_core_utils::{DecodeError, Parser};
+use vprogs_core_utils::{Parser, Result};
 
 /// Storage-specific versioned encoding for `Key` in the SmtNode column family.
 ///
@@ -12,7 +12,7 @@ pub trait KeyExt {
     fn encode_with_version(&self, version: u64) -> [u8; 42];
 
     /// Decodes the inverted version from a raw SmtNode CF key, skipping the 34-byte key prefix.
-    fn decode_version(raw_key: &[u8]) -> Result<u64, DecodeError>;
+    fn decode_version(raw_key: &[u8]) -> Result<u64>;
 }
 
 impl KeyExt for Key {
@@ -23,7 +23,7 @@ impl KeyExt for Key {
         })
     }
 
-    fn decode_version(raw_key: &[u8]) -> Result<u64, DecodeError> {
-        Ok(!(&mut &*raw_key).skip(34, "key")?.consume_u64_be("version")?)
+    fn decode_version(raw_key: &[u8]) -> Result<u64> {
+        Ok(!(&mut &*raw_key).skip(34, "key")?.be_u64("version")?)
     }
 }

@@ -79,11 +79,11 @@ fn multi_version_commit_and_prove() {
         let proof_bytes = store.generate_proof(version, &keys);
         let proof = Proof::decode(&proof_bytes).expect("proof should decode");
         assert!(
-            proof.verify::<Blake3Hasher>(expected_root),
+            proof.verify::<Blake3Hasher>(expected_root).unwrap(),
             "proof at version {version} should verify against its root"
         );
         assert!(
-            !proof.verify::<Blake3Hasher>([0xFFu8; 32]),
+            !proof.verify::<Blake3Hasher>([0xFFu8; 32]).unwrap(),
             "proof at version {version} should reject a wrong root"
         );
     }
@@ -114,11 +114,11 @@ fn historical_version_read_after_overwrite() {
     let proof_bytes = store.generate_proof(1, &[key]);
     let proof = Proof::decode(&proof_bytes).unwrap();
     assert!(
-        proof.verify::<Blake3Hasher>(root1),
+        proof.verify::<Blake3Hasher>(root1).unwrap(),
         "proof at version 1 should verify after version 2 overwrites the same key"
     );
     assert!(
-        !proof.verify::<Blake3Hasher>(root2),
+        !proof.verify::<Blake3Hasher>(root2).unwrap(),
         "proof at version 1 should NOT verify against version 2's root"
     );
 }
@@ -188,7 +188,7 @@ fn prune_version_preserves_tree_integrity() {
     let proof_bytes = store.generate_proof(2, &keys);
     let proof = Proof::decode(&proof_bytes).expect("proof should decode");
     assert!(
-        proof.verify::<Blake3Hasher>(root2),
+        proof.verify::<Blake3Hasher>(root2).unwrap(),
         "proof at v2 should verify after pruning v2's stale nodes"
     );
 }

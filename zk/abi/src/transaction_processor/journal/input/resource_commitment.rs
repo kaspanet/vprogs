@@ -21,9 +21,9 @@ impl<'a> InputResourceCommitment<'a> {
     /// Decodes the full wire format, advancing `buf` past the consumed bytes.
     pub fn decode(buf: &mut &'a [u8]) -> Result<Self> {
         Ok(Self {
-            resource_index: buf.consume_u32_le("resource_index")?,
-            resource_id: buf.consume_array::<32>("resource_id")?,
-            hash: buf.consume_array::<32>("hash")?,
+            resource_index: buf.le_u32("resource_index")?,
+            resource_id: buf.array::<32>("resource_id")?,
+            hash: buf.array::<32>("hash")?,
         })
     }
 
@@ -31,8 +31,8 @@ impl<'a> InputResourceCommitment<'a> {
     pub fn decode_pre_indexed(buf: &mut &'a [u8], resource_index: u32) -> Result<Self> {
         Ok(Self {
             resource_index,
-            resource_id: buf.consume_array::<32>("resource_id")?,
-            hash: buf.consume_array::<32>("hash")?,
+            resource_id: buf.array::<32>("resource_id")?,
+            hash: buf.array::<32>("hash")?,
         })
     }
 

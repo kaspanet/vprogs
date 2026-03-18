@@ -1,13 +1,19 @@
 use core::fmt;
 
-/// Error returned when decoding a wire format field fails.
-///
-/// Wraps the `&'static str` field name that could not be decoded.
+/// Errors from wire format parsing and proof traversal.
 #[derive(Clone, Debug)]
-pub struct DecodeError(pub &'static str);
+pub enum Error {
+    /// A wire format field could not be decoded. Wraps the field name.
+    Decode(&'static str),
+}
 
-impl fmt::Display for DecodeError {
+impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "decode error: {}", self.0)
+        match self {
+            Self::Decode(field) => write!(f, "decode error: {field}"),
+        }
     }
 }
+
+/// Result type with [`Error`] as the default error.
+pub type Result<T> = core::result::Result<T, Error>;

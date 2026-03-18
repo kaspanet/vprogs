@@ -18,8 +18,8 @@ impl<'a> JournalIter<'a> {
 
     /// Decodes a single length-prefixed journal entry from the buffer.
     fn decode_entry(&mut self) -> Result<&'a [u8]> {
-        let length = self.buf.consume_u32_le("journal_length")? as usize;
-        Ok(self.buf.consume_bytes(length, "journal")?)
+        let length = self.buf.le_u32("journal_length")? as usize;
+        Ok(self.buf.bytes(length, "journal")?)
     }
 }
 

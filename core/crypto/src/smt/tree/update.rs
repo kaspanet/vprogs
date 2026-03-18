@@ -28,23 +28,28 @@ impl<'a, S: Store, W: WriteBatch> TreeUpdate<'a, S, W> {
         let prev_version = version.saturating_sub(1);
         let mut ctx = Self { store, wb, prev_version, version };
 
-        // Convert, sort, and deduplicate by key. All recursive methods below operate on sub-slices
-        // of this vec — no further allocations on the common (internal-node) path.
+        // Convert, sort, and deduplicate by key. On duplicate keys, last-write-wins: `dedup_by`
+        // removes `a` (later element) and keeps `b`, so we copy `a`'s value_hash into `b` first.
         let mut updates: Vec<StateCommitment> = diffs.iter().map(StateCommitment::from).collect();
         updates.sort_by(|a, b| a.key.cmp(&b.key));
-        updates.dedup_by(|a, b| a.key == b.key);
+        updates.dedup_by(|a, b| {
+            if a.key == b.key {
+                b.value_hash = a.value_hash;
+                true
+            } else {
+                false
+            }
+        });
 
-        // Recursively apply updates starting from the root.
+        // Recursively apply updates starting from the root. `update_subtree` marks the existing
+        // root stale internally, so no separate `mark_stale` call is needed here.
         let result = ctx.update_subtree(Key::root(), &updates);
 
         // Write the result at the root position.
-        let root_key = Key::root();
-        ctx.mark_stale(&root_key);
-
         match &result {
             None => EMPTY_HASH,
             Some(node) => {
-                ctx.wb.put_node(&root_key, ctx.version, node);
+                ctx.wb.put_node(&Key::root(), ctx.version, node);
                 *node.hash()
             }
         }

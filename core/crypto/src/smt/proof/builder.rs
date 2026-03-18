@@ -47,9 +47,7 @@ impl<'a, S: Store> ProofBuilder<'a, S> {
             return;
         }
 
-        let existing = self.store.get_node(&key, self.version);
-
-        match existing {
+        match self.store.get_node(&key, self.version) {
             // Empty subtree — all requested keys are absent.
             None => self.collect_empty(leaf_keys, key.level),
 

@@ -1,6 +1,6 @@
 use tap::Tap;
 use vprogs_core_crypto::smt::{Key, StaleNode};
-use vprogs_core_utils::{DecodeError, Parser};
+use vprogs_core_utils::{Parser, Result};
 
 /// Storage-specific encoding for `StaleNode` in the SmtStale column family.
 ///
@@ -15,10 +15,10 @@ pub trait StaleNodeExt {
     fn encode_value(&self) -> [u8; 8];
 
     /// Decodes the node key from a raw 42-byte SmtStale CF key.
-    fn decode_key(raw_key: &[u8]) -> Result<Key, DecodeError>;
+    fn decode_key(raw_key: &[u8]) -> Result<Key>;
 
     /// Decodes the node version from a raw SmtStale CF value.
-    fn decode_value(raw_value: &[u8]) -> Result<u64, DecodeError>;
+    fn decode_value(raw_value: &[u8]) -> Result<u64>;
 }
 
 impl StaleNodeExt for StaleNode {
@@ -33,11 +33,11 @@ impl StaleNodeExt for StaleNode {
         self.node_version.to_be_bytes()
     }
 
-    fn decode_key(raw_key: &[u8]) -> Result<Key, DecodeError> {
+    fn decode_key(raw_key: &[u8]) -> Result<Key> {
         Key::decode((&mut &*raw_key).skip(8, "stale_since_version")?)
     }
 
-    fn decode_value(raw_value: &[u8]) -> Result<u64, DecodeError> {
-        (&mut &*raw_value).consume_u64_be("node_version")
+    fn decode_value(raw_value: &[u8]) -> Result<u64> {
+        (&mut &*raw_value).be_u64("node_version")
     }
 }

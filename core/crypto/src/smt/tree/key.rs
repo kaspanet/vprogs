@@ -1,5 +1,5 @@
 use tap::Tap;
-use vprogs_core_utils::{DecodeError, Parser};
+use vprogs_core_utils::{Parser, Result};
 
 /// Identifies a position in the binary Sparse Merkle Tree.
 ///
@@ -29,7 +29,7 @@ impl Key {
     }
 
     /// Decodes from bytes produced by `encode`, advancing `buf` past the consumed bytes.
-    pub fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
-        Ok(Self { path: *buf.consume_array::<32>("path")?, level: buf.consume_u16_be("level")? })
+    pub fn decode(buf: &mut &[u8]) -> Result<Self> {
+        Ok(Self { path: *buf.array::<32>("path")?, level: buf.be_u16("level")? })
     }
 }

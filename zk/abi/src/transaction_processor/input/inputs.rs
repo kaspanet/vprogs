@@ -32,10 +32,10 @@ impl<'a> Inputs<'a> {
         let mut header: &[u8] = header;
 
         // Decode fixed header.
-        let tx_index = header.consume_u32_le("tx_index")?;
-        let resource_count = header.consume_u32_le("resource_count")? as usize;
+        let tx_index = header.le_u32("tx_index")?;
+        let resource_count = header.le_u32("resource_count")? as usize;
         let batch_metadata = BatchMetadata::decode(&mut header)?;
-        let tx_length = header.consume_u32_le("tx_length")? as usize;
+        let tx_length = header.le_u32("tx_length")? as usize;
 
         // Decode transaction bytes.
         let (tx, resources) = data.split_at_mut(tx_length);

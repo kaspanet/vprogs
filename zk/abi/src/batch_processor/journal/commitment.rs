@@ -25,9 +25,9 @@ impl JournalCommitment {
             return Err(Error::Decode("journal commitment too short".into()));
         }
         let mut buf = &buf[..Self::SIZE];
-        let prev_root = *buf.consume_array::<32>("prev_root")?;
-        let new_root = *buf.consume_array::<32>("new_root")?;
-        let batch_index = buf.consume_u64_le("batch_index")?;
+        let prev_root = *buf.array::<32>("prev_root")?;
+        let new_root = *buf.array::<32>("new_root")?;
+        let batch_index = buf.le_u64("batch_index")?;
         Ok((prev_root, new_root, batch_index))
     }
 }

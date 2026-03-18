@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use vprogs_core_utils::{DecodeError, Parser};
+use vprogs_core_utils::{Error, Parser, Result};
 
 /// Data stored at a tree position.
 ///
@@ -45,15 +45,15 @@ impl Node {
     }
 
     /// Deserializes from bytes produced by `encode`, advancing `buf` past the consumed bytes.
-    pub fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
-        match buf.consume_u8("tag")? {
-            0x00 => Ok(Node::Internal { hash: *buf.consume_array::<32>("hash")? }),
+    pub fn decode(buf: &mut &[u8]) -> Result<Self> {
+        match buf.byte("tag")? {
+            0x00 => Ok(Node::Internal { hash: *buf.array::<32>("hash")? }),
             0x01 => Ok(Node::Leaf {
-                key: *buf.consume_array::<32>("key")?,
-                value_hash: *buf.consume_array::<32>("value_hash")?,
-                hash: *buf.consume_array::<32>("hash")?,
+                key: *buf.array::<32>("key")?,
+                value_hash: *buf.array::<32>("value_hash")?,
+                hash: *buf.array::<32>("hash")?,
             }),
-            _ => Err(DecodeError("unknown node tag")),
+            _ => Err(Error::Decode("unknown node tag")),
         }
     }
 }

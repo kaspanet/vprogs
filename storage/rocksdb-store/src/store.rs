@@ -106,6 +106,34 @@ impl<C: Config> SmtStore for RocksDbStore<C> {
             });
         }
     }
+
+    fn rollback_version(&self, wb: &mut impl SmtWriteBatch, version: u64) {
+        // Delete all stale markers recorded at this version. These markers reference nodes that
+        // were superseded when this version was committed — removing them "un-supersedes" those
+        // nodes so they become current again.
+        for (raw_key, raw_value) in self.prefix_iter(StateSpace::SmtStale, &version.to_be_bytes()) {
+            let node_key = StaleNode::decode_key(&raw_key).expect("corrupted stale key");
+            let node_version = StaleNode::decode_value(&raw_value).expect("corrupted stale value");
+            wb.delete_stale_node(&StaleNode {
+                stale_since_version: version,
+                node_key,
+                node_version,
+            });
+        }
+
+        // Delete all nodes written at this version. Requires a full CF scan since version is a
+        // key suffix, not a prefix. Rollback is rare, so the scan cost is acceptable.
+        let cf = self.cf(&StateSpace::SmtNode);
+        let iter = self.db.iterator_cf(cf, IteratorMode::Start);
+        for entry in iter {
+            let (raw_key, _) = entry.expect("rocksdb iteration failed");
+            let node_version = Key::decode_version(&raw_key).expect("corrupted smt node key");
+            if node_version == version {
+                let node_key = Key::decode(&mut &raw_key[..34]).expect("corrupted smt node key");
+                wb.delete_node(&node_key, version);
+            }
+        }
+    }
 }
 
 impl<C: Config> Clone for RocksDbStore<C> {

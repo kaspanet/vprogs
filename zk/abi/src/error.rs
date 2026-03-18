@@ -1,6 +1,6 @@
 use alloc::string::String;
 
-use vprogs_core_utils::{DecodeError, Parser};
+use vprogs_core_utils::Parser;
 
 use crate::Write;
 
@@ -34,9 +34,9 @@ impl Error {
     /// Decodes an error, advancing `buf` past the consumed bytes.
     pub fn decode(buf: &mut &[u8]) -> Result<Self> {
         // Dispatch based on discriminant.
-        match buf.consume_u8("error_variant")? {
-            Self::GUEST => Ok(Self::Guest(buf.consume_u32_le("error_code")?)),
-            Self::DECODE => Ok(Self::Decode(buf.consume_string("error_msg")?.into())),
+        match buf.byte("error_variant")? {
+            Self::GUEST => Ok(Self::Guest(buf.le_u32("error_code")?)),
+            Self::DECODE => Ok(Self::Decode(buf.string("error_msg")?.into())),
             _ => Err(Error::Decode("invalid error discriminant".into())),
         }
     }
@@ -59,9 +59,11 @@ impl Error {
     }
 }
 
-impl From<DecodeError> for Error {
-    fn from(e: DecodeError) -> Self {
-        Self::Decode(e.0.into())
+impl From<vprogs_core_utils::Error> for Error {
+    fn from(e: vprogs_core_utils::Error) -> Self {
+        match e {
+            vprogs_core_utils::Error::Decode(field) => Self::Decode(field.into()),
+        }
     }
 }
 

@@ -89,9 +89,14 @@ impl<S: Store, P: Processor> Rollback<S, P> {
                 StateMetadata::set_root(wb, &self.target);
             }
 
-            // Reset SMT root to the version at the target checkpoint. Descending version
-            // encoding means rolled-back entries are invisible to reads with
-            // max_version = target — no SMT node deletion needed.
+            // Delete SMT nodes and stale markers for each rolled-back version. Without this,
+            // orphaned nodes from the old versions would be found by `get_node` after re-commit,
+            // corrupting the tree.
+            for index in (self.target.index() + 1..=self.upper_bound).rev() {
+                store.rollback_version(wb, index);
+            }
+
+            // Reset the persisted state root to the target version's root.
             StateMetadata::set_state_root(wb, &store.get_root(self.target.index()));
         }));
 

@@ -46,6 +46,13 @@ pub trait Store {
     /// and remove entries.
     fn prune_version(&self, wb: &mut impl WriteBatch, version: u64);
 
+    /// Rolls back a committed tree update at the given version.
+    ///
+    /// Deletes all nodes written at `version` and removes the stale markers so the
+    /// previously-superseded nodes become current again. Unlike `prune_version` (which deletes
+    /// *superseded* nodes), this undoes the version itself.
+    fn rollback_version(&self, wb: &mut impl WriteBatch, version: u64);
+
     /// Generates a multi-proof for the given keys at a specific version.
     ///
     /// Walks the persistent node store to collect sibling hashes and leaf depths. Returns the

@@ -14,5 +14,5 @@ mod parser;
 
 pub use bools::Bools;
 pub use bytes::{Bits, BitsArray};
-pub use error::DecodeError;
+pub use error::{Error, Result};
 pub use parser::Parser;

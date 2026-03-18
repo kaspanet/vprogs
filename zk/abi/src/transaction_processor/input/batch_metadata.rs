@@ -17,8 +17,8 @@ impl<'a> BatchMetadata<'a> {
     /// Decodes batch metadata, advancing `buf` past the consumed bytes.
     pub fn decode(buf: &mut &'a [u8]) -> Result<Self> {
         Ok(Self {
-            block_hash: buf.consume_array::<32>("block_hash")?,
-            blue_score: buf.consume_u64_le("blue_score")?,
+            block_hash: buf.array::<32>("block_hash")?,
+            blue_score: buf.le_u64("blue_score")?,
         })
     }
 
