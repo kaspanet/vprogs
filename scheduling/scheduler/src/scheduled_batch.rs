@@ -249,7 +249,7 @@ impl<S: Store, P: Processor> ScheduledBatch<S, P> {
 
             // Update the authenticated state tree with all resource state diffs from this batch.
             if !self.state_diffs().is_empty() {
-                let new = store.commit_state_diffs(wb, self.checkpoint.index(), self.state_diffs());
+                let new = store.commit_diffs(wb, self.checkpoint.index(), self.state_diffs());
                 StateMetadata::set_state_root(wb, &new);
             }
 

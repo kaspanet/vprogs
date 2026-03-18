@@ -93,7 +93,7 @@ impl<S: Store, P: Processor> Rollback<S, P> {
             // orphaned nodes from the old versions would be found by `get_node` after re-commit,
             // corrupting the tree.
             for index in (self.target.index() + 1..=self.upper_bound).rev() {
-                store.rollback_version(wb, index);
+                store.rollback(wb, index);
             }
 
             // Reset the persisted state root to the target version's root.

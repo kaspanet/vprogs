@@ -24,11 +24,11 @@ pub trait Store {
         self.get_node(&Key::root(), version).map(|(_, data)| *data.hash()).unwrap_or(EMPTY_HASH)
     }
 
-    /// Commits state changes to the tree at the given version.
+    /// Commits state diffs to the tree at the given version.
     ///
     /// Reads the previous root from the store, applies the state commitments as leaf mutations,
     /// writes the resulting nodes into `wb`, and returns the new root hash. No-op for empty diffs.
-    fn commit_state_diffs<D>(&self, wb: &mut impl WriteBatch, version: u64, diffs: &[D]) -> [u8; 32]
+    fn commit_diffs<D>(&self, wb: &mut impl WriteBatch, version: u64, diffs: &[D]) -> [u8; 32]
     where
         Self: Sized,
         for<'a> StateCommitment: From<&'a D>,
@@ -44,21 +44,21 @@ pub trait Store {
     /// Iterates all stale markers recorded at `version`, deletes the corresponding superseded nodes
     /// and the stale markers themselves. Implementors use their storage-specific encoding to locate
     /// and remove entries.
-    fn prune_version(&self, wb: &mut impl WriteBatch, version: u64);
+    fn prune(&self, wb: &mut impl WriteBatch, version: u64);
 
     /// Rolls back a committed tree update at the given version.
     ///
     /// Deletes all nodes written at `version` and removes the stale markers so the
-    /// previously-superseded nodes become current again. Unlike `prune_version` (which deletes
+    /// previously-superseded nodes become current again. Unlike `prune` (which deletes
     /// *superseded* nodes), this undoes the version itself.
-    fn rollback_version(&self, wb: &mut impl WriteBatch, version: u64);
+    fn rollback(&self, wb: &mut impl WriteBatch, version: u64);
 
-    /// Generates a multi-proof for the given keys at a specific version.
+    /// Proves the state of the given keys at a specific version.
     ///
     /// Walks the persistent node store to collect sibling hashes and leaf depths. Returns the
     /// proof encoded in the wire format, ready for transmission. Decode with `Proof::decode()`
     /// for verification. The version must not have been pruned.
-    fn generate_proof(&self, version: u64, keys: &[[u8; 32]]) -> Vec<u8>
+    fn prove(&self, keys: &[[u8; 32]], version: u64) -> Vec<u8>
     where
         Self: Sized,
     {

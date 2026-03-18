@@ -17,7 +17,7 @@ fn commit(store: &RocksDbStore, version: u64, entries: &[([u8; 32], [u8; 32])]) 
         .collect();
 
     let mut wb = store.write_batch();
-    let root = store.commit_state_diffs(&mut wb, version, &diffs);
+    let root = store.commit_diffs(&mut wb, version, &diffs);
     store.commit(wb);
     root
 }
@@ -76,7 +76,7 @@ fn multi_version_commit_and_prove() {
     let keys = [test_key(1), test_key(2), test_key(3), test_key(4), test_key(5)];
 
     for (version, expected_root) in [(1, root1), (2, root2), (3, root3)] {
-        let proof_bytes = store.generate_proof(version, &keys);
+        let proof_bytes = store.prove(&keys, version);
         let proof = Proof::decode(&proof_bytes).expect("proof should decode");
         assert!(
             proof.verify::<Blake3Hasher>(expected_root).unwrap(),
@@ -111,7 +111,7 @@ fn historical_version_read_after_overwrite() {
     assert_eq!(store.get_root(1), root1, "historical root should be preserved");
 
     // Proof at version 1 should verify against version 1's root.
-    let proof_bytes = store.generate_proof(1, &[key]);
+    let proof_bytes = store.prove(&[key], 1);
     let proof = Proof::decode(&proof_bytes).unwrap();
     assert!(
         proof.verify::<Blake3Hasher>(root1).unwrap(),
@@ -127,7 +127,7 @@ fn historical_version_read_after_overwrite() {
 ///
 /// The version is used by `mark_stale` to record which node version was superseded. If
 /// `decode_version` has an endianness mismatch, the returned version will be wrong, causing
-/// `prune_version` to target the wrong node.
+/// `prune` to target the wrong node.
 #[test]
 fn get_node_returns_correct_version() {
     let dir = TempDir::new().unwrap();
@@ -157,10 +157,10 @@ fn get_node_returns_correct_version() {
 /// Verifies that pruning correctly removes stale nodes without corrupting the tree.
 ///
 /// Exercises the full stale node lifecycle: `mark_stale` (encodes version from `get_node`),
-/// `put_stale_node` (writes stale marker), `prune_version` (reads stale markers and deletes
+/// `put_stale_node` (writes stale marker), `prune` (reads stale markers and deletes
 /// nodes). An endianness mismatch in any step would cause pruning to target wrong nodes.
 #[test]
-fn prune_version_preserves_tree_integrity() {
+fn prune_preserves_tree_integrity() {
     let dir = TempDir::new().unwrap();
     let store = RocksDbStore::open(dir.path());
 
@@ -177,7 +177,7 @@ fn prune_version_preserves_tree_integrity() {
 
     // Prune version 2's stale markers (nodes that were superseded when v2 was committed).
     let mut wb = store.write_batch();
-    store.prune_version(&mut wb, 2);
+    store.prune(&mut wb, 2);
     store.commit(wb);
 
     // The current tree (version 2) should still be intact after pruning.
@@ -185,7 +185,7 @@ fn prune_version_preserves_tree_integrity() {
 
     // Proof at version 2 should still verify.
     let keys = [test_key(1), test_key(2), test_key(3)];
-    let proof_bytes = store.generate_proof(2, &keys);
+    let proof_bytes = store.prove(&keys, 2);
     let proof = Proof::decode(&proof_bytes).expect("proof should decode");
     assert!(
         proof.verify::<Blake3Hasher>(root2).unwrap(),

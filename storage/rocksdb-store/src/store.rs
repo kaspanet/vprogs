@@ -93,7 +93,7 @@ impl<C: Config> SmtStore for RocksDbStore<C> {
         Some((version, node))
     }
 
-    fn prune_version(&self, wb: &mut impl SmtWriteBatch, version: u64) {
+    fn prune(&self, wb: &mut impl SmtWriteBatch, version: u64) {
         for (raw_key, raw_value) in self.prefix_iter(StateSpace::SmtStale, &version.to_be_bytes()) {
             let node_key = StaleNode::decode_key(&raw_key).expect("corrupted stale key");
             let node_version = StaleNode::decode_value(&raw_value).expect("corrupted stale value");
@@ -107,7 +107,7 @@ impl<C: Config> SmtStore for RocksDbStore<C> {
         }
     }
 
-    fn rollback_version(&self, wb: &mut impl SmtWriteBatch, version: u64) {
+    fn rollback(&self, wb: &mut impl SmtWriteBatch, version: u64) {
         // Delete all stale markers recorded at this version. These markers reference nodes that
         // were superseded when this version was committed — removing them "un-supersedes" those
         // nodes so they become current again.

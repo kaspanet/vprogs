@@ -226,7 +226,7 @@ impl<S: Store, P: Processor> PruningWorker<S, P> {
                 StoredBatchMetadata::delete(wb, index);
 
                 // Prune stale SMT nodes for this version.
-                store.prune_version(wb, index);
+                store.prune(wb, index);
             }
 
             // Advance root on disk.
