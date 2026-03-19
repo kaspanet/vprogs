@@ -1,14 +1,12 @@
 use tempfile::TempDir;
-use vprogs_core_smt::{Blake3Hasher, Commitment, EMPTY_HASH, Hasher, Key, Tree, proving::Proof};
+use vprogs_core_smt::{Blake3, Commitment, EMPTY_HASH, Hasher, Key, Tree, proving::Proof};
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_storage_types::Store;
 
 /// Helper: commits a set of (key, value) pairs at the given version and returns the new root.
 fn commit(store: &RocksDbStore, version: u64, entries: &[([u8; 32], [u8; 32])]) -> [u8; 32] {
-    let diffs: Vec<Commitment> = entries
-        .iter()
-        .map(|&(key, value)| Commitment { key, value_hash: Blake3Hasher::hash_leaf(&key, &value) })
-        .collect();
+    let diffs: Vec<Commitment> =
+        entries.iter().map(|&(key, value)| Commitment::new(key, Blake3::hash(&value))).collect();
 
     let mut wb = store.write_batch();
     let root = store.commit_diffs(&mut wb, version, &diffs);
@@ -73,11 +71,11 @@ fn multi_version_commit_and_prove() {
         let proof_bytes = store.prove(&keys, version);
         let proof = Proof::decode(&proof_bytes).expect("proof should decode");
         assert!(
-            proof.verify::<Blake3Hasher>(expected_root).unwrap(),
+            proof.verify::<Blake3>(expected_root).unwrap(),
             "proof at version {version} should verify against its root"
         );
         assert!(
-            !proof.verify::<Blake3Hasher>([0xFFu8; 32]).unwrap(),
+            !proof.verify::<Blake3>([0xFFu8; 32]).unwrap(),
             "proof at version {version} should reject a wrong root"
         );
     }
@@ -108,11 +106,11 @@ fn historical_version_read_after_overwrite() {
     let proof_bytes = store.prove(&[key], 1);
     let proof = Proof::decode(&proof_bytes).unwrap();
     assert!(
-        proof.verify::<Blake3Hasher>(root1).unwrap(),
+        proof.verify::<Blake3>(root1).unwrap(),
         "proof at version 1 should verify after version 2 overwrites the same key"
     );
     assert!(
-        !proof.verify::<Blake3Hasher>(root2).unwrap(),
+        !proof.verify::<Blake3>(root2).unwrap(),
         "proof at version 1 should NOT verify against version 2's root"
     );
 }
@@ -182,7 +180,7 @@ fn prune_preserves_tree_integrity() {
     let proof_bytes = store.prove(&keys, 2);
     let proof = Proof::decode(&proof_bytes).expect("proof should decode");
     assert!(
-        proof.verify::<Blake3Hasher>(root2).unwrap(),
+        proof.verify::<Blake3>(root2).unwrap(),
         "proof at v2 should verify after pruning v2's stale nodes"
     );
 }

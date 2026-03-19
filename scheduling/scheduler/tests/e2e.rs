@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use tempfile::TempDir;
-use vprogs_core_smt::{Blake3Hasher, EMPTY_HASH, Tree, proving::Proof};
+use vprogs_core_smt::{Blake3, EMPTY_HASH, Tree, proving::Proof};
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, Checkpoint, ResourceId, SchedulerTransaction};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
@@ -1659,11 +1659,11 @@ pub fn test_smt_multi_proof_verify() {
         let proof = Proof::decode(&proof_bytes).expect("valid proof");
 
         assert!(
-            proof.verify::<Blake3Hasher>(root).unwrap(),
+            proof.verify::<Blake3>(root).unwrap(),
             "proof should verify against the correct root",
         );
         assert!(
-            !proof.verify::<Blake3Hasher>([0xFFu8; 32]).unwrap(),
+            !proof.verify::<Blake3>([0xFFu8; 32]).unwrap(),
             "proof should reject an incorrect root",
         );
 
@@ -1701,11 +1701,11 @@ pub fn test_smt_multi_proof_absent_key() {
         let proof = Proof::decode(&proof_bytes).expect("valid proof");
 
         assert!(
-            proof.verify::<Blake3Hasher>(root).unwrap(),
+            proof.verify::<Blake3>(root).unwrap(),
             "proof for an absent key should verify against the root",
         );
         assert!(
-            !proof.verify::<Blake3Hasher>([0xFFu8; 32]).unwrap(),
+            !proof.verify::<Blake3>([0xFFu8; 32]).unwrap(),
             "proof should reject an incorrect root",
         );
 
@@ -1748,7 +1748,7 @@ pub fn test_smt_multi_proof_mixed_keys() {
         let proof = Proof::decode(&proof_bytes).expect("valid proof");
 
         assert!(
-            proof.verify::<Blake3Hasher>(root).unwrap(),
+            proof.verify::<Blake3>(root).unwrap(),
             "mixed proof should verify against the correct root",
         );
         assert!(proof.leaves.len() >= 3, "proof should have at least 3 leaves");

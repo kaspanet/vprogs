@@ -7,6 +7,12 @@ pub struct Commitment {
     pub value_hash: [u8; 32],
 }
 
+impl Commitment {
+    pub fn new(key: [u8; 32], value_hash: [u8; 32]) -> Self {
+        Self { key, value_hash }
+    }
+}
+
 /// Identity conversion - allows `commit_diffs` to accept `&[Commitment]` directly.
 impl From<&Commitment> for Commitment {
     fn from(s: &Commitment) -> Self {

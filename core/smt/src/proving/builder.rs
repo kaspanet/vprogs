@@ -57,7 +57,7 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
 
             // Shortcut leaf - emit it as the proof entry for this subtree.
             Some((_, Node::Leaf { key: leaf_key, value_hash, .. })) => {
-                self.leaves.push((key.level, Commitment { key: leaf_key, value_hash }));
+                self.leaves.push((key.level, Commitment::new(leaf_key, value_hash)));
             }
 
             // Internal node - split proof keys and recurse into children.
@@ -71,7 +71,7 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
     fn collect_empty(&mut self, leaf_keys: &[[u8; 32]], level: u16) {
         if leaf_keys.len() == 1 {
             // Single absent key - emit as an empty leaf at this depth.
-            self.leaves.push((level, Commitment { key: leaf_keys[0], value_hash: EMPTY_HASH }));
+            self.leaves.push((level, Commitment::new(leaf_keys[0], EMPTY_HASH)));
             return;
         }
 

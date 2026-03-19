@@ -3,8 +3,8 @@ use alloc::vec::Vec;
 use vprogs_core_utils::Bits;
 
 use crate::{
-    Blake3Hasher, DEPTH, EMPTY_HASH, Hasher, Node, commitment::Commitment, key::Key,
-    stale_node::StaleNode, tree::Tree, write_batch::WriteBatch,
+    DEPTH, EMPTY_HASH, Node, commitment::Commitment, key::Key, stale_node::StaleNode, tree::Tree,
+    write_batch::WriteBatch,
 };
 
 /// Applies leaf mutations to the tree and writes resulting nodes into a `WriteBatch`.
@@ -97,8 +97,7 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
 
         if live.next().is_none() {
             // Exactly one live entry - create a shortcut leaf at this depth.
-            let hash = Blake3Hasher::hash_leaf(&first.key, &first.value_hash);
-            return Some(Node::Leaf { key: first.key, value_hash: first.value_hash, hash });
+            return Some(Node::leaf::<S::Hasher>(first.key, first.value_hash));
         }
 
         // Multiple live entries - must split by the current bit and recurse.
@@ -122,8 +121,7 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
             if new_vh == EMPTY_HASH {
                 return None; // Deletion - subtree becomes empty.
             }
-            let hash = Blake3Hasher::hash_leaf(&existing_key, &new_vh);
-            return Some(Node::Leaf { key: existing_key, value_hash: new_vh, hash });
+            return Some(Node::leaf::<S::Hasher>(existing_key, new_vh));
         }
 
         // General case: merge the existing leaf into the update set and resolve.
@@ -132,7 +130,7 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
             self.resolve_leaves(key, updates)
         } else {
             // Existing key not in updates - insert at the correct sorted position and resolve.
-            let existing = Commitment { key: existing_key, value_hash: existing_vh };
+            let existing = Commitment::new(existing_key, existing_vh);
             let pos = updates.partition_point(|u| u.key < existing_key);
             let mut merged = Vec::with_capacity(updates.len() + 1);
             merged.extend_from_slice(&updates[..pos]);
@@ -174,8 +172,7 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
             _ => {
                 let left_hash = self.write_child(&left_result, &left_child);
                 let right_hash = self.write_child(&right_result, &right_child);
-                let hash = Blake3Hasher::hash_internal(&left_hash, &right_hash);
-                Some(Node::Internal { hash })
+                Some(Node::internal::<S::Hasher>(&left_hash, &right_hash))
             }
         }
     }
@@ -195,11 +192,7 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
     /// Marks an existing node at the given position as stale (if it exists).
     fn mark_stale(&mut self, node_key: &Key) {
         if let Some((old_version, _)) = self.store.get_node(node_key, self.prev_version) {
-            self.wb.put_stale_node(&StaleNode {
-                stale_since_version: self.version,
-                node_key: node_key.clone(),
-                node_version: old_version,
-            });
+            self.wb.put_stale_node(&StaleNode::new(self.version, node_key.clone(), old_version));
         }
     }
 }

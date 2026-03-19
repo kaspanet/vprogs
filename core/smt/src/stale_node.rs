@@ -9,3 +9,9 @@ pub struct StaleNode {
     /// The version of the now-stale node.
     pub node_version: u64,
 }
+
+impl StaleNode {
+    pub fn new(stale_since_version: u64, node_key: Key, node_version: u64) -> Self {
+        Self { stale_since_version, node_key, node_version }
+    }
+}

@@ -83,6 +83,8 @@ impl<C: Config> Store for RocksDbStore<C> {
 }
 
 impl<C: Config> Tree for RocksDbStore<C> {
+    type Hasher = vprogs_core_smt::Blake3;
+
     fn get_node(&self, key: &Key, max_version: u64) -> Option<(u64, Node)> {
         let mut iter = self.prefix_iter(StateSpace::SmtNode, &key.encode_with_version(max_version));
         let (raw_key, raw_value) = iter.next()?;
@@ -97,11 +99,7 @@ impl<C: Config> Tree for RocksDbStore<C> {
             let node_version = StaleNode::decode_value(&raw_value).expect("corrupted stale value");
 
             wb.delete_node(&node_key, node_version);
-            wb.delete_stale_node(&StaleNode {
-                stale_since_version: version,
-                node_key,
-                node_version,
-            });
+            wb.delete_stale_node(&StaleNode::new(version, node_key, node_version));
         }
     }
 
@@ -112,11 +110,7 @@ impl<C: Config> Tree for RocksDbStore<C> {
         for (raw_key, raw_value) in self.prefix_iter(StateSpace::SmtStale, &version.to_be_bytes()) {
             let node_key = StaleNode::decode_key(&raw_key).expect("corrupted stale key");
             let node_version = StaleNode::decode_value(&raw_value).expect("corrupted stale value");
-            wb.delete_stale_node(&StaleNode {
-                stale_since_version: version,
-                node_key,
-                node_version,
-            });
+            wb.delete_stale_node(&StaleNode::new(version, node_key, node_version));
         }
 
         // Delete all nodes written at this version. Requires a full CF scan since version is a

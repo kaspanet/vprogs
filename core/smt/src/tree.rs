@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
 use crate::{
-    EMPTY_HASH, Node, commitment::Commitment, key::Key, proving::builder::ProofBuilder,
+    EMPTY_HASH, Hasher, Node, commitment::Commitment, key::Key, proving::builder::ProofBuilder,
     updater::Updater, write_batch::WriteBatch,
 };
 
@@ -13,6 +13,9 @@ use crate::{
 pub const DEPTH: usize = 256;
 
 pub trait Tree {
+    /// The hash function used for node and leaf hashing.
+    type Hasher: Hasher;
+
     /// Returns the node data and version of the latest SMT node at `key` where
     /// version <= `max_version`, or `None` if no such node exists.
     fn get_node(&self, key: &Key, max_version: u64) -> Option<(u64, Node)>;

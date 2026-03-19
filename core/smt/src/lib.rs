@@ -10,7 +10,7 @@ pub mod hashing {
     pub(crate) mod blake3;
     pub(crate) mod hasher;
 
-    pub use blake3::Blake3Hasher;
+    pub use blake3::Blake3;
     pub use hasher::{EMPTY_HASH, Hasher};
 }
 
@@ -33,7 +33,7 @@ pub(crate) mod updater;
 pub(crate) mod write_batch;
 
 pub use commitment::Commitment;
-pub use hashing::{Blake3Hasher, EMPTY_HASH, Hasher};
+pub use hashing::{Blake3, EMPTY_HASH, Hasher};
 pub use key::Key;
 pub use node::Node;
 pub use stale_node::StaleNode;

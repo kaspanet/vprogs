@@ -1,30 +1,16 @@
-use vprogs_core_smt::Node;
+use vprogs_core_smt::{Blake3, Node};
 
 #[test]
-fn internal_hash_accessor() {
-    let h = [42u8; 32];
-    let node = Node::Internal { hash: h };
-    assert_eq!(node.hash(), &h);
-}
-
-#[test]
-fn leaf_hash_accessor() {
-    let h = [99u8; 32];
-    let node = Node::Leaf { key: [1u8; 32], value_hash: [2u8; 32], hash: h };
-    assert_eq!(node.hash(), &h);
-}
-
-#[test]
-fn roundtrip_internal() {
-    let node = Node::Internal { hash: [7u8; 32] };
+fn internal_roundtrip() {
+    let node = Node::internal::<Blake3>(&[1u8; 32], &[2u8; 32]);
     let bytes = node.encode();
     assert_eq!(bytes.len(), 33);
     assert_eq!(Node::decode(&mut bytes.as_slice()).unwrap(), node);
 }
 
 #[test]
-fn roundtrip_leaf() {
-    let node = Node::Leaf { key: [1u8; 32], value_hash: [2u8; 32], hash: [3u8; 32] };
+fn leaf_roundtrip() {
+    let node = Node::leaf::<Blake3>([1u8; 32], [2u8; 32]);
     let bytes = node.encode();
     assert_eq!(bytes.len(), 97);
     assert_eq!(Node::decode(&mut bytes.as_slice()).unwrap(), node);

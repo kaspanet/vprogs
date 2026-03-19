@@ -1,7 +1,7 @@
 use vprogs_core_utils::{Bits, Error, Result};
 
 use super::proof::Proof;
-use crate::{EMPTY_HASH, Hasher};
+use crate::{EMPTY_HASH, Hasher, Node};
 
 /// Mutable cursor state for recursive proof tree traversal.
 pub(super) struct Traversal<'a, F> {
@@ -44,7 +44,7 @@ impl<'a, 'v, F: Fn(usize) -> &'v [u8; 32]> Traversal<'a, F> {
             if level > leaf.depth {
                 return Err(Error::Decode("malformed proof"));
             } else if level == leaf.depth {
-                return Ok(H::hash_leaf(leaf.key, (self.value_hash_fn)(start)));
+                return Ok(*Node::leaf::<H>(*leaf.key, *(self.value_hash_fn)(start)).hash());
             }
         }
 
@@ -64,7 +64,7 @@ impl<'a, 'v, F: Fn(usize) -> &'v [u8; 32]> Traversal<'a, F> {
             let mid = self.proof.split_point(start, end, level);
             let left = self.traverse::<H>(start, mid, level + 1)?;
             let right = self.traverse::<H>(mid, end, level + 1)?;
-            Ok(H::hash_internal(&left, &right))
+            Ok(*Node::internal::<H>(&left, &right).hash())
         } else {
             // Topology bit = 0: only one side has proof leaves - use a sibling hash for the other.
             let goes_left = !self.proof.leaves[start].key.get_msb(level as usize);
@@ -77,9 +77,9 @@ impl<'a, 'v, F: Fn(usize) -> &'v [u8; 32]> Traversal<'a, F> {
 
             let child = self.traverse::<H>(start, end, level + 1)?;
             if goes_left {
-                Ok(H::hash_internal(&child, sibling))
+                Ok(*Node::internal::<H>(&child, sibling).hash())
             } else {
-                Ok(H::hash_internal(sibling, &child))
+                Ok(*Node::internal::<H>(sibling, &child).hash())
             }
         }
     }

@@ -2,6 +2,8 @@ use alloc::vec::Vec;
 
 use vprogs_core_utils::{Error, Parser, Result};
 
+use crate::{EMPTY_HASH, Hasher};
+
 /// Data stored at a tree position.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Node {
@@ -22,6 +24,38 @@ pub enum Node {
 }
 
 impl Node {
+    /// Creates an internal node from its two child hashes.
+    ///
+    /// Domain tag `0x00` distinguishes internal nodes from leaves (`0x01`). Both children empty
+    /// triggers empty subtree compression - returns `EMPTY_HASH` without hashing.
+    pub fn internal<H: Hasher>(left: &[u8; 32], right: &[u8; 32]) -> Self {
+        if *left == EMPTY_HASH && *right == EMPTY_HASH {
+            return Node::Internal { hash: EMPTY_HASH };
+        }
+
+        let mut buf = [0u8; 65];
+        buf[0] = 0x00;
+        buf[1..33].copy_from_slice(left);
+        buf[33..65].copy_from_slice(right);
+        Node::Internal { hash: H::hash(&buf) }
+    }
+
+    /// Creates a shortcut leaf node from a key and value hash.
+    ///
+    /// Domain tag `0x01` distinguishes leaves from internal nodes (`0x00`). An empty value hash
+    /// represents a deletion - returns `EMPTY_HASH` without hashing.
+    pub fn leaf<H: Hasher>(key: [u8; 32], value_hash: [u8; 32]) -> Self {
+        if value_hash == EMPTY_HASH {
+            return Node::Leaf { key, value_hash, hash: EMPTY_HASH };
+        }
+
+        let mut buf = [0u8; 65];
+        buf[0] = 0x01;
+        buf[1..33].copy_from_slice(&key);
+        buf[33..65].copy_from_slice(&value_hash);
+        Node::Leaf { key, value_hash, hash: H::hash(&buf) }
+    }
+
     /// Returns the hash of this node (internal hash or leaf hash).
     pub fn hash(&self) -> &[u8; 32] {
         match self {
