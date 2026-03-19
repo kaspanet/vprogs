@@ -14,7 +14,7 @@ pub struct Leaf<'a> {
 
 impl<'a> Leaf<'a> {
     /// Size of a single leaf entry in the wire format: depth(2) + key(32) + value_hash(32).
-    pub const SIZE: usize = 66;
+    pub(crate) const SIZE: usize = 66;
 
     /// Decodes a leaf entry, advancing `buf` past the consumed bytes.
     pub(crate) fn decode(buf: &mut &'a [u8]) -> Result<Self> {

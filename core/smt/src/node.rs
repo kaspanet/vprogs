@@ -1,5 +1,6 @@
 use alloc::vec::Vec;
 
+use tap::Tap;
 use vprogs_core_utils::{Error, Parser, Result};
 
 use crate::{EMPTY_HASH, Hasher};
@@ -29,15 +30,16 @@ impl Node {
     /// Domain tag `0x00` distinguishes internal nodes from leaves (`0x01`). Both children empty
     /// triggers empty subtree compression - returns `EMPTY_HASH` without hashing.
     pub fn internal<H: Hasher>(left: &[u8; 32], right: &[u8; 32]) -> Self {
-        if *left == EMPTY_HASH && *right == EMPTY_HASH {
-            return Node::Internal { hash: EMPTY_HASH };
+        Node::Internal {
+            hash: match (left, right) {
+                (&EMPTY_HASH, &EMPTY_HASH) => EMPTY_HASH,
+                (left, right) => H::hash(&[0u8; 65].tap_mut(|buf| {
+                    buf[0] = 0x00;
+                    buf[1..33].copy_from_slice(left);
+                    buf[33..65].copy_from_slice(right);
+                })),
+            },
         }
-
-        let mut buf = [0u8; 65];
-        buf[0] = 0x00;
-        buf[1..33].copy_from_slice(left);
-        buf[33..65].copy_from_slice(right);
-        Node::Internal { hash: H::hash(&buf) }
     }
 
     /// Creates a shortcut leaf node from a key and value hash.
@@ -45,15 +47,32 @@ impl Node {
     /// Domain tag `0x01` distinguishes leaves from internal nodes (`0x00`). An empty value hash
     /// represents a deletion - returns `EMPTY_HASH` without hashing.
     pub fn leaf<H: Hasher>(key: [u8; 32], value_hash: [u8; 32]) -> Self {
-        if value_hash == EMPTY_HASH {
-            return Node::Leaf { key, value_hash, hash: EMPTY_HASH };
+        Node::Leaf {
+            key,
+            value_hash,
+            hash: match &value_hash {
+                &EMPTY_HASH => EMPTY_HASH,
+                value_hash => H::hash(&[0u8; 65].tap_mut(|buf| {
+                    buf[0] = 0x01;
+                    buf[1..33].copy_from_slice(&key);
+                    buf[33..65].copy_from_slice(value_hash);
+                })),
+            },
         }
+    }
 
-        let mut buf = [0u8; 65];
-        buf[0] = 0x01;
-        buf[1..33].copy_from_slice(&key);
-        buf[33..65].copy_from_slice(&value_hash);
-        Node::Leaf { key, value_hash, hash: H::hash(&buf) }
+    /// Deserializes from bytes produced by `encode`, advancing `buf` past the consumed bytes.
+    pub fn decode(buf: &mut &[u8]) -> Result<Self> {
+        // Dispatch on tag byte.
+        match buf.byte("tag")? {
+            0x00 => Ok(Node::Internal { hash: *buf.array::<32>("hash")? }),
+            0x01 => Ok(Node::Leaf {
+                key: *buf.array::<32>("key")?,
+                value_hash: *buf.array::<32>("value_hash")?,
+                hash: *buf.array::<32>("hash")?,
+            }),
+            _ => Err(Error::Decode("unknown node tag")),
+        }
     }
 
     /// Returns the hash of this node (internal hash or leaf hash).
@@ -76,20 +95,6 @@ impl Node {
             Node::Leaf { key, value_hash, hash } => {
                 [&[0x01], key.as_slice(), value_hash.as_slice(), hash.as_slice()].concat()
             }
-        }
-    }
-
-    /// Deserializes from bytes produced by `encode`, advancing `buf` past the consumed bytes.
-    pub fn decode(buf: &mut &[u8]) -> Result<Self> {
-        // Dispatch on tag byte.
-        match buf.byte("tag")? {
-            0x00 => Ok(Node::Internal { hash: *buf.array::<32>("hash")? }),
-            0x01 => Ok(Node::Leaf {
-                key: *buf.array::<32>("key")?,
-                value_hash: *buf.array::<32>("value_hash")?,
-                hash: *buf.array::<32>("hash")?,
-            }),
-            _ => Err(Error::Decode("unknown node tag")),
         }
     }
 }

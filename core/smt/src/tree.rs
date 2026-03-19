@@ -16,9 +16,22 @@ pub trait Tree: Sized {
     /// The hash function used for node and leaf hashing.
     type Hasher: Hasher;
 
+    // -- Required methods (implementors must provide these) --
+
     /// Returns the node data and version of the latest SMT node at `key` where
     /// version <= `max_version`, or `None` if no such node exists.
     fn node(&self, key: &Key, max_version: u64) -> Option<(u64, Node)>;
+
+    /// Prunes stale nodes for the given version, deleting superseded nodes and their stale markers.
+    fn prune(&self, wb: &mut impl WriteBatch, version: u64);
+
+    /// Rolls back a committed tree update at the given version.
+    ///
+    /// Unlike `prune` (which deletes superseded nodes), this undoes the version itself: deletes
+    /// nodes written at `version` and removes stale markers so old nodes become current again.
+    fn rollback(&self, wb: &mut impl WriteBatch, version: u64);
+
+    // -- Default methods --
 
     /// Returns the state root hash at the given version, or `EMPTY_HASH` if no root exists.
     fn root(&self, version: u64) -> [u8; 32] {
@@ -51,15 +64,6 @@ pub trait Tree: Sized {
         // Apply leaf mutations and return the new root hash.
         Updater::apply(self, wb, version, commitments)
     }
-
-    /// Prunes stale nodes for the given version, deleting superseded nodes and their stale markers.
-    fn prune(&self, wb: &mut impl WriteBatch, version: u64);
-
-    /// Rolls back a committed tree update at the given version.
-    ///
-    /// Unlike `prune` (which deletes superseded nodes), this undoes the version itself: deletes
-    /// nodes written at `version` and removes stale markers so old nodes become current again.
-    fn rollback(&self, wb: &mut impl WriteBatch, version: u64);
 
     /// Proves the state of the given keys at a specific version, returning a wire-encoded proof.
     ///

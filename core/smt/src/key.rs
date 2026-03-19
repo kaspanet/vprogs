@@ -17,6 +17,11 @@ impl Key {
     /// The root node position (level 0, all-zero path).
     pub const ROOT: Self = Self { level: 0, path: [0u8; 32] };
 
+    /// Decodes from 34 bytes produced by `encode`, advancing `buf` past the consumed bytes.
+    pub fn decode(buf: &mut &[u8]) -> Result<Self> {
+        Ok(Self { path: *buf.array::<32>("path")?, level: buf.be_u16("level")? })
+    }
+
     /// Encodes as `path(32) + level(2 BE)` = 34 bytes.
     pub fn encode(&self) -> [u8; 34] {
         [0u8; 34].tap_mut(|buf| {
@@ -26,17 +31,12 @@ impl Key {
     }
 
     /// Returns the left child key (bit 0 at the current level).
-    pub fn left_child(&self) -> Self {
+    pub(crate) fn left_child(&self) -> Self {
         Self { level: self.level + 1, path: self.path }
     }
 
     /// Returns the right child key (bit 1 at the current level).
-    pub fn right_child(&self) -> Self {
+    pub(crate) fn right_child(&self) -> Self {
         Self { level: self.level + 1, path: self.path.with_bit_set(self.level as usize) }
-    }
-
-    /// Decodes from 34 bytes produced by `encode`, advancing `buf` past the consumed bytes.
-    pub fn decode(buf: &mut &[u8]) -> Result<Self> {
-        Ok(Self { path: *buf.array::<32>("path")?, level: buf.be_u16("level")? })
     }
 }

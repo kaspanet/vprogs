@@ -28,6 +28,23 @@ impl<'a> Proof<'a> {
         })
     }
 
+    /// Verifies that the proof leaves produce the expected root hash.
+    pub fn verify<H: Hasher>(&self, expected_root: [u8; 32]) -> Result<bool> {
+        Traversal::compute_root::<H>(self, |i| self.leaves[i].value_hash)
+            .map(|root| root == expected_root)
+    }
+
+    /// Recomputes the root using updated value hashes (one per leaf, same order as in the proof).
+    ///
+    /// Enables computing the post-update root without re-reading the tree.
+    pub fn compute_root<H: Hasher>(&self, updated_hashes: &[[u8; 32]]) -> Result<[u8; 32]> {
+        if updated_hashes.len() != self.leaves.len() {
+            return Err(vprogs_core_utils::Error::Decode("updated_hashes length mismatch"));
+        }
+
+        Traversal::compute_root::<H>(self, |i| &updated_hashes[i])
+    }
+
     /// Encodes proof components into the wire format.
     pub(crate) fn encode(
         leaves: &[(u16, Commitment)],
@@ -57,23 +74,6 @@ impl<'a> Proof<'a> {
         buf.extend_from_slice(&topology);
 
         buf
-    }
-
-    /// Verifies that the proof leaves produce the expected root hash.
-    pub fn verify<H: Hasher>(&self, expected_root: [u8; 32]) -> Result<bool> {
-        Traversal::compute_root::<H>(self, |i| self.leaves[i].value_hash)
-            .map(|root| root == expected_root)
-    }
-
-    /// Recomputes the root using updated value hashes (one per leaf, same order as in the proof).
-    ///
-    /// Enables computing the post-update root without re-reading the tree.
-    pub fn compute_root<H: Hasher>(&self, updated_hashes: &[[u8; 32]]) -> Result<[u8; 32]> {
-        if updated_hashes.len() != self.leaves.len() {
-            return Err(vprogs_core_utils::Error::Decode("updated_hashes length mismatch"));
-        }
-
-        Traversal::compute_root::<H>(self, |i| &updated_hashes[i])
     }
 
     /// Finds the partition point where keys switch from bit=0 (left) to bit=1 (right).
