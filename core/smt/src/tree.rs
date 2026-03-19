@@ -5,9 +5,9 @@ use crate::{
     updater::Updater, write_batch::WriteBatch,
 };
 
-/// Versioned Sparse Merkle Tree backed by an authenticated state store.
+/// Versioned Sparse Merkle Tree with shortcut leaves, pruning, and multi-proofs.
 ///
-/// Implementors only need to provide `get_node`, `prune`, and `rollback`; all tree operations
+/// Implementors only need to provide `node`, `prune`, and `rollback`; all tree operations
 /// (commits, proofs, root lookups) are default methods.
 /// Number of levels in the tree (256-bit keys).
 pub const DEPTH: usize = 256;
@@ -18,34 +18,38 @@ pub trait Tree {
 
     /// Returns the node data and version of the latest SMT node at `key` where
     /// version <= `max_version`, or `None` if no such node exists.
-    fn get_node(&self, key: &Key, max_version: u64) -> Option<(u64, Node)>;
+    fn node(&self, key: &Key, max_version: u64) -> Option<(u64, Node)>;
 
     /// Returns the state root hash at the given version, or `EMPTY_HASH` if no root exists.
-    fn get_root(&self, version: u64) -> [u8; 32] {
+    fn root(&self, version: u64) -> [u8; 32] {
         // Version 0 is pre-genesis - no tree exists yet.
         if version == 0 {
             return EMPTY_HASH;
         }
 
         // Look up the root node and extract its hash.
-        self.get_node(&Key::root(), version).map(|(_, data)| *data.hash()).unwrap_or(EMPTY_HASH)
+        self.node(&Key::root(), version).map(|(_, data)| *data.hash()).unwrap_or(EMPTY_HASH)
     }
 
     /// Commits state diffs to the tree at the given version, returning the new root hash.
     ///
     /// No-op for empty diffs - returns the previous version's root.
-    fn commit_diffs<D>(&self, wb: &mut impl WriteBatch, version: u64, diffs: &[D]) -> [u8; 32]
+    fn update(
+        &self,
+        wb: &mut impl WriteBatch,
+        version: u64,
+        commitments: Vec<Commitment>,
+    ) -> [u8; 32]
     where
         Self: Sized,
-        for<'a> Commitment: From<&'a D>,
     {
-        // Empty diffs produce no tree changes - carry forward the previous root.
-        if diffs.is_empty() {
-            return self.get_root(version.saturating_sub(1));
+        // Empty commitments produce no tree changes - carry forward the previous root.
+        if commitments.is_empty() {
+            return self.root(version.saturating_sub(1));
         }
 
         // Apply leaf mutations and return the new root hash.
-        Updater::apply(self, wb, version, diffs)
+        Updater::apply(self, wb, version, commitments)
     }
 
     /// Prunes stale nodes for the given version, deleting superseded nodes and their stale markers.

@@ -8,7 +8,7 @@ use crate::{EMPTY_HASH, Node, commitment::Commitment, key::Key, tree::Tree};
 /// Walks the tree top-down to collect sibling hashes and leaf depths for a multi-proof.
 pub(crate) struct ProofBuilder<'a, S> {
     /// Read-only access to existing tree nodes.
-    store: &'a S,
+    tree: &'a S,
     /// Tree version to generate the proof for.
     version: u64,
     /// Collected proof leaves: (depth, state commitment) pairs.
@@ -21,7 +21,7 @@ pub(crate) struct ProofBuilder<'a, S> {
 
 impl<'a, S: Tree> ProofBuilder<'a, S> {
     /// Generates a multi-proof for the given keys at `version` and returns it in wire format.
-    pub(crate) fn build(store: &'a S, version: u64, leaf_keys: &[[u8; 32]]) -> Vec<u8> {
+    pub(crate) fn build(tree: &'a S, version: u64, leaf_keys: &[[u8; 32]]) -> Vec<u8> {
         // Sort and deduplicate keys so the proof leaves are in canonical order.
         let mut sorted_keys: Vec<[u8; 32]> = leaf_keys.to_vec();
         sorted_keys.sort();
@@ -29,7 +29,7 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
 
         // Initialize the proof builder.
         let mut ctx = Self {
-            store,
+            tree,
             version,
             leaves: Vec::new(),
             siblings: Vec::new(),
@@ -51,7 +51,7 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
         }
 
         // Dispatch based on the node type at this position.
-        match self.store.get_node(&key, self.version) {
+        match self.tree.node(&key, self.version) {
             // Empty subtree - all requested keys are absent.
             None => self.collect_empty(leaf_keys, key.level),
 
@@ -125,9 +125,6 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
 
     /// Returns the hash of the node at the given key, or `EMPTY_HASH` if absent.
     fn node_hash(&self, node_key: &Key) -> [u8; 32] {
-        self.store
-            .get_node(node_key, self.version)
-            .map(|(_, data)| *data.hash())
-            .unwrap_or(EMPTY_HASH)
+        self.tree.node(node_key, self.version).map(|(_, data)| *data.hash()).unwrap_or(EMPTY_HASH)
     }
 }

@@ -12,10 +12,3 @@ impl Commitment {
         Self { key, value_hash }
     }
 }
-
-/// Identity conversion - allows `commit_diffs` to accept `&[Commitment]` directly.
-impl From<&Commitment> for Commitment {
-    fn from(s: &Commitment) -> Self {
-        *s
-    }
-}

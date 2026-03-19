@@ -6,6 +6,7 @@ use std::sync::{
 use crossbeam_deque::{Injector, Steal, Worker};
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_macros::smart_pointer;
+use vprogs_core_smt::Commitment;
 use vprogs_core_types::{Checkpoint, SchedulerTransaction};
 use vprogs_scheduling_execution_workers::Batch;
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
@@ -249,8 +250,13 @@ impl<S: Store, P: Processor> ScheduledBatch<S, P> {
 
             // Update the authenticated state tree with all resource state diffs from this batch.
             if !self.state_diffs().is_empty() {
-                let new = store.commit_diffs(wb, self.checkpoint.index(), self.state_diffs());
-                StateMetadata::set_state_root(wb, &new);
+                let new_root = store.update(
+                    wb,
+                    self.checkpoint.index(),
+                    self.state_diffs().iter().map(Commitment::from).collect(),
+                );
+
+                StateMetadata::set_state_root(wb, &new_root);
             }
 
             StoredBatchMetadata::set(wb, self.checkpoint.index(), self.checkpoint.metadata());

@@ -9,7 +9,7 @@ use crate::{EMPTY_HASH, Hasher};
 pub enum Node {
     /// Two-child node storing only the combined hash.
     Internal {
-        /// `hash_internal(left, right)`.
+        /// Domain-separated hash of the two child hashes.
         hash: [u8; 32],
     },
     /// Shortcut leaf - can sit at any depth, avoiding 256-deep paths for isolated keys.
@@ -18,7 +18,7 @@ pub enum Node {
         key: [u8; 32],
         /// Hash of the leaf's value.
         value_hash: [u8; 32],
-        /// Precomputed `hash_leaf(key, value_hash)`.
+        /// Domain-separated hash of key and value hash.
         hash: [u8; 32],
     },
 }

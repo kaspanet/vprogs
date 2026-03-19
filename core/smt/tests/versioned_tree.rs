@@ -5,11 +5,11 @@ use vprogs_storage_types::Store;
 
 /// Helper: commits a set of (key, value) pairs at the given version and returns the new root.
 fn commit(store: &RocksDbStore, version: u64, entries: &[([u8; 32], [u8; 32])]) -> [u8; 32] {
-    let diffs: Vec<Commitment> =
+    let diffs =
         entries.iter().map(|&(key, value)| Commitment::new(key, Blake3::hash(&value))).collect();
 
     let mut wb = store.write_batch();
-    let root = store.commit_diffs(&mut wb, version, &diffs);
+    let root = store.update(&mut wb, version, diffs);
     store.commit(wb);
     root
 }
@@ -35,7 +35,7 @@ fn test_value(id: u64) -> [u8; 32] {
 ///
 /// This exercises the full encode/decode pipeline including `Key::decode` (level field) and
 /// `KeyExt::decode_version` (inverted version suffix). An endianness mismatch in either would
-/// cause `get_node` to return wrong data, producing incorrect roots or failing proof verification.
+/// cause `node` to return wrong data, producing incorrect roots or failing proof verification.
 #[test]
 fn multi_version_commit_and_prove() {
     let dir = TempDir::new().unwrap();
@@ -60,9 +60,9 @@ fn multi_version_commit_and_prove() {
     assert_ne!(root3, root2, "root should change after third commit");
 
     // Per-version roots must be independently retrievable (exercises decode_version).
-    assert_eq!(store.get_root(1), root1, "get_root(1) should return version 1 root");
-    assert_eq!(store.get_root(2), root2, "get_root(2) should return version 2 root");
-    assert_eq!(store.get_root(3), root3, "get_root(3) should return version 3 root");
+    assert_eq!(store.root(1), root1, "root(1) should return version 1 root");
+    assert_eq!(store.root(2), root2, "root(2) should return version 2 root");
+    assert_eq!(store.root(3), root3, "root(3) should return version 3 root");
 
     // Generate and verify proofs at each version.
     let keys = [test_key(1), test_key(2), test_key(3), test_key(4), test_key(5)];
@@ -100,7 +100,7 @@ fn historical_version_read_after_overwrite() {
     assert_ne!(root1, root2);
 
     // Reading root at version 1 should still return the original root, not version 2's.
-    assert_eq!(store.get_root(1), root1, "historical root should be preserved");
+    assert_eq!(store.root(1), root1, "historical root should be preserved");
 
     // Proof at version 1 should verify against version 1's root.
     let proof_bytes = store.prove(&[key], 1);
@@ -115,13 +115,13 @@ fn historical_version_read_after_overwrite() {
     );
 }
 
-/// Verifies that `get_node` returns the correct version number, not just the correct data.
+/// Verifies that `node` returns the correct version number, not just the correct data.
 ///
 /// The version is used by `mark_stale` to record which node version was superseded. If
 /// `decode_version` has an endianness mismatch, the returned version will be wrong, causing
 /// `prune` to target the wrong node.
 #[test]
-fn get_node_returns_correct_version() {
+fn node_returns_correct_version() {
     let dir = TempDir::new().unwrap();
     let store = RocksDbStore::open(dir.path());
 
@@ -131,24 +131,24 @@ fn get_node_returns_correct_version() {
     commit(&store, 1, &[(key, test_value(1))]);
 
     // The root node written at version 1 should report version = 1.
-    let (version, _node) = store.get_node(&Key::root(), 1).expect("root should exist at v1");
-    assert_eq!(version, 1, "get_node should return version 1, not a byte-swapped value");
+    let (version, _node) = store.node(&Key::root(), 1).expect("root should exist at v1");
+    assert_eq!(version, 1, "node should return version 1, not a byte-swapped value");
 
     // Version 2: update same key.
     commit(&store, 2, &[(key, test_value(2))]);
 
     // Root at max_version=2 should report version 2.
-    let (version, _node) = store.get_node(&Key::root(), 2).expect("root should exist at v2");
-    assert_eq!(version, 2, "get_node should return version 2");
+    let (version, _node) = store.node(&Key::root(), 2).expect("root should exist at v2");
+    assert_eq!(version, 2, "node should return version 2");
 
     // Root at max_version=1 should still report version 1 (historical read).
-    let (version, _node) = store.get_node(&Key::root(), 1).expect("root should exist at v1");
-    assert_eq!(version, 1, "historical get_node should return version 1");
+    let (version, _node) = store.node(&Key::root(), 1).expect("root should exist at v1");
+    assert_eq!(version, 1, "historical node should return version 1");
 }
 
 /// Verifies that pruning correctly removes stale nodes without corrupting the tree.
 ///
-/// Exercises the full stale node lifecycle: `mark_stale` (encodes version from `get_node`),
+/// Exercises the full stale node lifecycle: `mark_stale` (encodes version from `node`),
 /// `put_stale_node` (writes stale marker), `prune` (reads stale markers and deletes
 /// nodes). An endianness mismatch in any step would cause pruning to target wrong nodes.
 #[test]
@@ -173,7 +173,7 @@ fn prune_preserves_tree_integrity() {
     store.commit(wb);
 
     // The current tree (version 2) should still be intact after pruning.
-    assert_eq!(store.get_root(2), root2, "root at v2 should survive pruning");
+    assert_eq!(store.root(2), root2, "root at v2 should survive pruning");
 
     // Proof at version 2 should still verify.
     let keys = [test_key(1), test_key(2), test_key(3)];

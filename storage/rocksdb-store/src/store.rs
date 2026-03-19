@@ -85,7 +85,7 @@ impl<C: Config> Store for RocksDbStore<C> {
 impl<C: Config> Tree for RocksDbStore<C> {
     type Hasher = vprogs_core_smt::Blake3;
 
-    fn get_node(&self, key: &Key, max_version: u64) -> Option<(u64, Node)> {
+    fn node(&self, key: &Key, max_version: u64) -> Option<(u64, Node)> {
         let mut iter = self.prefix_iter(StateSpace::SmtNode, &key.encode_with_version(max_version));
         let (raw_key, raw_value) = iter.next()?;
         let version = Key::decode_version(&raw_key).expect("corrupted smt node key");

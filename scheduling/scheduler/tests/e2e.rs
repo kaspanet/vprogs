@@ -1459,9 +1459,9 @@ pub fn test_smt_state_root_after_commits() {
         // The tree's per-version root should match the metadata root for the latest version.
         let store = scheduler.state().storage().store();
         assert_eq!(
-            store.get_root(3),
+            store.root(3),
             root3,
-            "smt::Store::get_root should match the persisted metadata root"
+            "smt::Tree::root should match the persisted metadata root"
         );
 
         scheduler.shutdown();
@@ -1623,7 +1623,7 @@ pub fn test_smt_multi_resource_single_batch() {
         assert_ne!(root, EMPTY_HASH, "multi-resource batch should produce non-empty root");
 
         // Tree version root should agree with metadata.
-        assert_eq!(store.get_root(1), root);
+        assert_eq!(store.root(1), root);
 
         scheduler.shutdown();
     }
@@ -1651,7 +1651,7 @@ pub fn test_smt_multi_proof_verify() {
         batch.wait_committed_blocking();
 
         let store = scheduler.state().storage().store();
-        let root = store.get_root(1);
+        let root = store.root(1);
 
         // Generate a proof for resource 1's key and verify it.
         let key = *ResourceId::for_test(1).as_bytes();
@@ -1693,7 +1693,7 @@ pub fn test_smt_multi_proof_absent_key() {
         batch.wait_committed_blocking();
 
         let store = scheduler.state().storage().store();
-        let root = store.get_root(1);
+        let root = store.root(1);
 
         // Generate a proof for resource 99 (absent) — should still verify against the root.
         let absent_key = *ResourceId::for_test(99).as_bytes();
@@ -1736,7 +1736,7 @@ pub fn test_smt_multi_proof_mixed_keys() {
         batch.wait_committed_blocking();
 
         let store = scheduler.state().storage().store();
-        let root = store.get_root(1);
+        let root = store.root(1);
 
         // Proof for existing key 1, existing key 3, and absent key 99.
         let keys = [
