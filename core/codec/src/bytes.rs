@@ -14,42 +14,35 @@ pub trait Bits {
     /// Returns `false` for out-of-bounds indices.
     fn get_lsb(&self, index: usize) -> bool;
 
-    /// Sets the bit at `index` using LSB-first ordering (in place).
-    fn set_lsb(&mut self, index: usize);
+    /// Sets the bit at `index` using MSB-first ordering (in place). Returns `&mut Self` for
+    /// chaining.
+    fn set_msb(&mut self, index: usize) -> &mut Self;
+
+    /// Sets the bit at `index` using LSB-first ordering (in place). Returns `&mut Self` for
+    /// chaining.
+    fn set_lsb(&mut self, index: usize) -> &mut Self;
 }
 
 impl Bits for [u8] {
     fn get_msb(&self, index: usize) -> bool {
-        let byte_idx = index / 8;
-        let bit_offset = 7 - (index % 8); // MSB-first within each byte.
-        byte_idx < self.len() && (self[byte_idx] >> bit_offset) & 1 == 1
+        index / 8 < self.len() && (self[index / 8] >> (7 - index % 8)) & 1 == 1
     }
 
     fn get_lsb(&self, index: usize) -> bool {
-        let byte_idx = index / 8;
-        let bit_offset = index % 8; // LSB-first within each byte.
-        byte_idx < self.len() && (self[byte_idx] >> bit_offset) & 1 == 1
+        index / 8 < self.len() && (self[index / 8] >> (index % 8)) & 1 == 1
     }
 
-    fn set_lsb(&mut self, index: usize) {
-        self[index / 8] |= 1 << (index % 8);
+    fn set_msb(&mut self, index: usize) -> &mut Self {
+        if index / 8 < self.len() {
+            self[index / 8] |= 1 << (7 - index % 8);
+        }
+        self
     }
-}
 
-/// Copy-on-write bit operations for 32-byte arrays.
-///
-/// Returns a new array with the modification applied, matching the common pattern of copying a
-/// value before setting bits.
-pub trait BitsArray {
-    /// Returns a copy with bit `index` set (MSB-first ordering).
-    fn with_bit_set(self, index: usize) -> Self;
-}
-
-impl BitsArray for [u8; 32] {
-    fn with_bit_set(mut self, index: usize) -> Self {
-        let byte_idx = index / 8;
-        let bit_offset = 7 - (index % 8);
-        self[byte_idx] |= 1 << bit_offset;
+    fn set_lsb(&mut self, index: usize) -> &mut Self {
+        if index / 8 < self.len() {
+            self[index / 8] |= 1 << (index % 8);
+        }
         self
     }
 }

@@ -1,5 +1,5 @@
 use tap::Tap;
-use vprogs_core_codec::{BitsArray, Reader, Result};
+use vprogs_core_codec::{Bits, Reader, Result};
 
 /// Identifies a position in the tree.
 ///
@@ -37,6 +37,11 @@ impl Key {
 
     /// Returns the right child key (bit 1 at the current level).
     pub(crate) fn right_child(&self) -> Self {
-        Self { level: self.level + 1, path: self.path.with_bit_set(self.level as usize) }
+        Self {
+            level: self.level + 1,
+            path: self.path.tap_mut(|p| {
+                p.set_msb(self.level as usize);
+            }),
+        }
     }
 }
