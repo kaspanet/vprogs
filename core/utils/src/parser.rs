@@ -110,11 +110,6 @@ impl<'a> Parser<'a> for &'a [u8] {
         bytes.try_into().map_err(|_| Error::Decode(field))
     }
 
-    fn skip(&mut self, n: usize, field: &'static str) -> Result<&mut Self> {
-        self.bytes(n, field)?;
-        Ok(self)
-    }
-
     fn blob(&mut self, field: &'static str) -> Result<&'a [u8]> {
         let len = self.le_u32(field)? as usize;
         self.bytes(len, field)
@@ -123,6 +118,11 @@ impl<'a> Parser<'a> for &'a [u8] {
     fn string(&mut self, field: &'static str) -> Result<&'a str> {
         let bytes = self.blob(field)?;
         core::str::from_utf8(bytes).map_err(|_| Error::Decode(field))
+    }
+
+    fn skip(&mut self, n: usize, field: &'static str) -> Result<&mut Self> {
+        self.bytes(n, field)?;
+        Ok(self)
     }
 
     /// Pre-allocation is capped by remaining buffer length to prevent OOM from untrusted counts.
