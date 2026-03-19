@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use vprogs_core_utils::{Bits, Bools, Parser, Result};
+use vprogs_core_codec::{Bits, Bools, Reader, Result};
 
 use super::{leaf::Leaf, traversal::Traversal};
 use crate::{Hasher, commitment::Commitment};
@@ -39,7 +39,7 @@ impl<'a> Proof<'a> {
     /// Enables computing the post-update root without re-reading the tree.
     pub fn compute_root<H: Hasher>(&self, updated_hashes: &[[u8; 32]]) -> Result<[u8; 32]> {
         if updated_hashes.len() != self.leaves.len() {
-            return Err(vprogs_core_utils::Error::Decode("updated_hashes length mismatch"));
+            return Err(vprogs_core_codec::Error::Decode("updated_hashes length mismatch"));
         }
 
         Traversal::compute_root::<H>(self, |i| &updated_hashes[i])

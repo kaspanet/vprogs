@@ -1,6 +1,6 @@
 use alloc::string::String;
 
-use vprogs_core_utils::Parser;
+use vprogs_core_codec::Reader;
 
 use crate::Write;
 
@@ -59,10 +59,10 @@ impl Error {
     }
 }
 
-impl From<vprogs_core_utils::Error> for Error {
-    fn from(e: vprogs_core_utils::Error) -> Self {
+impl From<vprogs_core_codec::Error> for Error {
+    fn from(e: vprogs_core_codec::Error) -> Self {
         match e {
-            vprogs_core_utils::Error::Decode(field) => Self::Decode(field.into()),
+            vprogs_core_codec::Error::Decode(field) => Self::Decode(field.into()),
         }
     }
 }

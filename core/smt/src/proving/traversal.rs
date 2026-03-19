@@ -1,4 +1,4 @@
-use vprogs_core_utils::{Bits, Error, Result};
+use vprogs_core_codec::{Bits, Error, Result};
 
 use super::proof::Proof;
 use crate::{EMPTY_HASH, Hasher, Node};

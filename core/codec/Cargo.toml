@@ -1,4 +1,4 @@
 [package]
 edition.workspace = true
-name              = "vprogs-core-utils"
+name              = "vprogs-core-codec"
 version.workspace = true

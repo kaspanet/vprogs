@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use vprogs_core_utils::Bits;
+use vprogs_core_codec::Bits;
 
 use super::proof::Proof;
 use crate::{EMPTY_HASH, Node, commitment::Commitment, key::Key, tree::Tree};

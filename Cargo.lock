@@ -7357,6 +7357,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-core-codec"
+version = "0.1.0"
+
+[[package]]
 name = "vprogs-core-macros"
 version = "0.1.0"
 dependencies = [
@@ -7372,7 +7376,7 @@ dependencies = [
  "blake3",
  "tap",
  "tempfile",
- "vprogs-core-utils",
+ "vprogs-core-codec",
  "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
 ]
@@ -7391,10 +7395,6 @@ dependencies = [
  "borsh",
  "rkyv",
 ]
-
-[[package]]
-name = "vprogs-core-utils"
-version = "0.1.0"
 
 [[package]]
 name = "vprogs-l1-bridge"
@@ -7647,8 +7647,8 @@ dependencies = [
  "num_cpus",
  "rocksdb",
  "tap",
+ "vprogs-core-codec",
  "vprogs-core-smt",
- "vprogs-core-utils",
  "vprogs-storage-types",
 ]
 
@@ -7827,9 +7827,9 @@ dependencies = [
  "blake3",
  "borsh",
  "thiserror 2.0.18",
+ "vprogs-core-codec",
  "vprogs-core-smt",
  "vprogs-core-types",
- "vprogs-core-utils",
  "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
  "vprogs-storage-types",

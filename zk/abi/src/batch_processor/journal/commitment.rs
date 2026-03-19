@@ -17,7 +17,7 @@ impl JournalCommitment {
     /// Decodes the journal commitment from a batch proof journal (host-side).
     #[cfg(feature = "host")]
     pub fn decode(buf: &[u8]) -> crate::Result<([u8; 32], [u8; 32], u64)> {
-        use vprogs_core_utils::Parser;
+        use vprogs_core_codec::Reader;
 
         use crate::Error;
 

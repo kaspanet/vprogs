@@ -35,7 +35,7 @@ impl Outputs {
     /// Returns `Some(hash)` for modified resources, `None` for unchanged ones.
     #[cfg(feature = "host")]
     pub fn decode(mut buf: &[u8]) -> crate::Result<alloc::vec::Vec<Option<[u8; 32]>>> {
-        use vprogs_core_utils::Parser;
+        use vprogs_core_codec::Reader;
 
         use crate::Error;
 

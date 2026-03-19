@@ -10,9 +10,9 @@ extern crate alloc;
 mod bools;
 mod bytes;
 mod error;
-mod parser;
+mod reader;
 
 pub use bools::Bools;
 pub use bytes::{Bits, BitsArray};
 pub use error::{Error, Result};
-pub use parser::Parser;
+pub use reader::Reader;

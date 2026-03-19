@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
 use tap::Tap;
-use vprogs_core_utils::{Error, Parser, Result};
+use vprogs_core_codec::{Error, Reader, Result};
 
 use crate::{EMPTY_HASH, Hasher};
 

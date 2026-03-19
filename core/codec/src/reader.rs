@@ -6,7 +6,7 @@ use crate::{Error, Result};
 ///
 /// All methods advance the cursor past the consumed bytes. Implemented for `&'a [u8]` so that
 /// `let mut buf = input; buf.le_u32("field")?;` progressively consumes the buffer.
-pub trait Parser<'a> {
+pub trait Reader<'a> {
     /// Reads a single byte as a boolean (`!= 0`).
     fn bool(&mut self, field: &'static str) -> Result<bool>;
 
@@ -54,7 +54,7 @@ pub trait Parser<'a> {
     ) -> Result<Vec<T>>;
 }
 
-impl<'a> Parser<'a> for &'a [u8] {
+impl<'a> Reader<'a> for &'a [u8] {
     fn bool(&mut self, field: &'static str) -> Result<bool> {
         self.byte(field).map(|b| b != 0)
     }

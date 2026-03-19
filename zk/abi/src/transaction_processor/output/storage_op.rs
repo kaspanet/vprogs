@@ -24,7 +24,7 @@ impl StorageOp {
     /// Decodes an `Option<StorageOp>`, advancing `buf` past the consumed bytes.
     #[cfg(feature = "host")]
     pub fn decode(buf: &mut &[u8]) -> crate::Result<Option<Self>> {
-        use vprogs_core_utils::Parser;
+        use vprogs_core_codec::Reader;
 
         // Read dirty flag. Unchanged (non-dirty) resources are encoded as a single 0 byte.
         if !buf.bool("dirty_flag")? {

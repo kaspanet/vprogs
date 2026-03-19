@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use vprogs_core_utils::{Parser, Result};
+use vprogs_core_codec::{Reader, Result};
 
 /// Zero-copy view of a single leaf entry in the proof wire format.
 pub struct Leaf<'a> {

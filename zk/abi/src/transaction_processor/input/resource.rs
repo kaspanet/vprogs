@@ -1,8 +1,8 @@
 use alloc::vec::Vec;
 use core::mem;
 
+use vprogs_core_codec::Reader;
 use vprogs_core_types::ResourceId;
-use vprogs_core_utils::Parser;
 
 use crate::Result;
 

@@ -1,4 +1,4 @@
-use vprogs_core_utils::Parser;
+use vprogs_core_codec::Reader;
 
 use crate::{Error, Result};
 

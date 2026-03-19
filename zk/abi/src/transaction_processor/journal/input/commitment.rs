@@ -1,4 +1,4 @@
-use vprogs_core_utils::Parser;
+use vprogs_core_codec::Reader;
 use vprogs_zk_smt::EMPTY_LEAF_HASH;
 
 use crate::{

@@ -25,7 +25,7 @@ impl Outputs {
     /// Decodes the execution result from the guest (host-side).
     #[cfg(feature = "host")]
     pub fn decode(mut buf: &[u8]) -> Result<Self> {
-        use vprogs_core_utils::Parser;
+        use vprogs_core_codec::Reader;
 
         use crate::Error;
 

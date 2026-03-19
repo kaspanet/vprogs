@@ -1,5 +1,5 @@
 use tap::Tap;
-use vprogs_core_utils::{BitsArray, Parser, Result};
+use vprogs_core_codec::{BitsArray, Reader, Result};
 
 /// Identifies a position in the tree.
 ///
