@@ -28,13 +28,8 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
         sorted_keys.dedup();
 
         // Initialize the proof builder.
-        let mut ctx = Self {
-            tree,
-            version,
-            leaves: Vec::new(),
-            siblings: Vec::new(),
-            topology: Vec::new(),
-        };
+        let (leaves, siblings, topology) = (Vec::new(), Vec::new(), Vec::new());
+        let mut ctx = Self { tree, version, leaves, siblings, topology };
 
         // Walk the tree top-down, collecting proof components.
         ctx.collect(&Key::ROOT, &sorted_keys);

@@ -80,8 +80,6 @@ impl<'a> Proof<'a> {
     ///
     /// Proof leaves are sorted by key, so binary search via `partition_point` is valid.
     pub(super) fn split_point(&self, start: usize, end: usize, level: u16) -> usize {
-        start
-            + self.leaves[start..end]
-                .partition_point(|leaf| !leaf.key.get_msb(level as usize))
+        start + self.leaves[start..end].partition_point(|leaf| !leaf.key.get_msb(level as usize))
     }
 }
