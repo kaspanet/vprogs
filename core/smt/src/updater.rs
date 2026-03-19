@@ -61,23 +61,23 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
     fn update_subtree(&mut self, key: &Key, commitments: &[Commitment]) -> Option<Node> {
         // No commitments for this subtree - return existing node unchanged.
         if commitments.is_empty() {
-            return self.tree.node(&key, self.prev_version).map(|(_, data)| data);
+            return self.tree.node(key, self.prev_version).map(|(_, data)| data);
         }
 
         // Look up existing node at this position to determine the update strategy.
-        match self.tree.node(&key, self.prev_version).map(|(_, data)| data) {
+        match self.tree.node(key, self.prev_version).map(|(_, data)| data) {
             // Empty subtree: resolve commitments into leaves directly.
-            None => self.resolve_leaves(&key, commitments),
+            None => self.resolve_leaves(key, commitments),
 
             // Existing shortcut leaf: may need to split if keys differ.
             Some(Node::Leaf { key: existing_key, value_hash: existing_vh, .. }) => {
-                self.update_at_leaf(&key, commitments, existing_key, existing_vh)
+                self.update_at_leaf(key, commitments, existing_key, existing_vh)
             }
 
             // Existing internal node: mark stale and recurse into children.
             Some(Node::Internal { .. }) => {
-                self.mark_stale(&key);
-                self.split_and_recurse(&key, commitments)
+                self.mark_stale(key);
+                self.split_and_recurse(key, commitments)
             }
         }
     }
@@ -120,13 +120,13 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
         }
 
         // General case: merge the existing leaf into the update set and resolve.
-        if commitments.iter().any(|u| u.key == existing_key) {
+        let pos = commitments.partition_point(|u| u.key < existing_key);
+        if commitments.get(pos).is_some_and(|u| u.key == existing_key) {
             // Existing key is already in the update set - resolve directly.
             self.resolve_leaves(key, commitments)
         } else {
             // Existing key not in commitments - insert at the correct sorted position and resolve.
             let existing = Commitment::new(existing_key, existing_vh);
-            let pos = commitments.partition_point(|u| u.key < existing_key);
             let mut merged = Vec::with_capacity(commitments.len() + 1);
             merged.extend_from_slice(&commitments[..pos]);
             merged.push(existing);

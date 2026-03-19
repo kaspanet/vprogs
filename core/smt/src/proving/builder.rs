@@ -23,8 +23,8 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
     /// Generates a multi-proof for the given keys at `version` and returns it in wire format.
     pub(crate) fn build(tree: &'a S, version: u64, leaf_keys: &[[u8; 32]]) -> Vec<u8> {
         // Sort and deduplicate keys so the proof leaves are in canonical order.
-        let mut sorted_keys: Vec<[u8; 32]> = leaf_keys.to_vec();
-        sorted_keys.sort();
+        let mut sorted_keys = leaf_keys.to_vec();
+        sorted_keys.sort_unstable();
         sorted_keys.dedup();
 
         // Initialize the proof builder.
@@ -51,7 +51,7 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
         }
 
         // Dispatch based on the node type at this position.
-        match self.tree.node(&key, self.version) {
+        match self.tree.node(key, self.version) {
             // Empty subtree - all requested keys are absent.
             None => self.collect_empty(leaf_keys, key.level),
 
@@ -62,7 +62,7 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
 
             // Internal node - split proof keys and recurse into children.
             Some((_, Node::Internal { .. })) => {
-                self.collect_internal(&key, leaf_keys);
+                self.collect_internal(key, leaf_keys);
             }
         }
     }
@@ -87,8 +87,7 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
             // All absent keys on one side - emit sibling (EMPTY_HASH) for the empty side.
             self.topology.push(false);
             self.siblings.push(EMPTY_HASH);
-            let nonempty = if mid == 0 { &leaf_keys[mid..] } else { &leaf_keys[..mid] };
-            self.collect_empty(nonempty, level + 1);
+            self.collect_empty(leaf_keys, level + 1);
         }
     }
 
