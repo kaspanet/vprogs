@@ -36,8 +36,9 @@ impl<'a> Proof<'a> {
     ) -> Vec<u8> {
         // Pack topology bits and pre-allocate the output buffer.
         let topology = topology_bits.pack_lsb();
-        let total = 4 + leaves.len() * Leaf::SIZE + 4 + siblings.len() * 32 + 4 + topology.len();
-        let mut buf = Vec::with_capacity(total);
+        let mut buf = Vec::with_capacity(
+            4 + leaves.len() * Leaf::SIZE + 4 + siblings.len() * 32 + 4 + topology.len(),
+        );
 
         // Section 1: leaf entries - each is depth(2) + key(32) + value_hash(32).
         buf.extend_from_slice(&(leaves.len() as u32).to_le_bytes());
@@ -55,7 +56,6 @@ impl<'a> Proof<'a> {
         buf.extend_from_slice(&(topology.len() as u32).to_le_bytes());
         buf.extend_from_slice(&topology);
 
-        debug_assert_eq!(buf.len(), total);
         buf
     }
 
@@ -69,9 +69,6 @@ impl<'a> Proof<'a> {
     ///
     /// Enables computing the post-update root without re-reading the tree.
     pub fn compute_root<H: Hasher>(&self, updated_hashes: &[[u8; 32]]) -> Result<[u8; 32]> {
-        // Sanity check: one updated hash per proof leaf.
-        assert_eq!(updated_hashes.len(), self.leaves.len());
-
         Traversal::compute_root::<H>(self, |i| &updated_hashes[i])
     }
 

@@ -5,7 +5,7 @@ use vprogs_core_utils::{BitsArray, Parser, Result};
 ///
 /// Level 0 is the root, level 256 is a full-depth leaf. The path encodes left/right decisions
 /// (0 = left, 1 = right); only the first `level` bits are significant.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Key {
     /// Depth from root (0 = root, 256 = full-depth leaf).
     pub level: u16,

@@ -1,5 +1,5 @@
 /// A single state change: a key and its value hash. `EMPTY_HASH` means deletion.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Commitment {
     /// The 32-byte key identifying this state entry in the tree.
     pub key: [u8; 32],
@@ -8,6 +8,7 @@ pub struct Commitment {
 }
 
 impl Commitment {
+    /// Creates a new commitment from a key and its value hash.
     pub fn new(key: [u8; 32], value_hash: [u8; 32]) -> Self {
         Self { key, value_hash }
     }
