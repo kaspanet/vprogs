@@ -5,14 +5,14 @@ use crate::{
     updater::Updater, write_batch::WriteBatch,
 };
 
+/// Number of levels in the tree (256-bit keys).
+pub const DEPTH: usize = 256;
+
 /// Versioned Sparse Merkle Tree with shortcut leaves, pruning, and multi-proofs.
 ///
 /// Implementors only need to provide `node`, `prune`, and `rollback`; all tree operations
 /// (commits, proofs, root lookups) are default methods.
-/// Number of levels in the tree (256-bit keys).
-pub const DEPTH: usize = 256;
-
-pub trait Tree {
+pub trait Tree: Sized {
     /// The hash function used for node and leaf hashing.
     type Hasher: Hasher;
 
@@ -28,24 +28,24 @@ pub trait Tree {
         }
 
         // Look up the root node and extract its hash.
-        self.node(&Key::root(), version).map(|(_, data)| *data.hash()).unwrap_or(EMPTY_HASH)
+        self.node(&Key::ROOT, version).map(|(_, data)| *data.hash()).unwrap_or(EMPTY_HASH)
     }
 
     /// Commits state diffs to the tree at the given version, returning the new root hash.
     ///
-    /// No-op for empty diffs - returns the previous version's root.
+    /// No-op for empty diffs - returns the previous version's root. Panics if `version` is 0
+    /// (version 0 is reserved as pre-genesis).
     fn update(
         &self,
         wb: &mut impl WriteBatch,
-        version: u64,
         commitments: Vec<Commitment>,
-    ) -> [u8; 32]
-    where
-        Self: Sized,
-    {
+        version: u64,
+    ) -> [u8; 32] {
+        assert!(version > 0, "version 0 is reserved as pre-genesis");
+
         // Empty commitments produce no tree changes - carry forward the previous root.
         if commitments.is_empty() {
-            return self.root(version.saturating_sub(1));
+            return self.root(version - 1);
         }
 
         // Apply leaf mutations and return the new root hash.
@@ -64,10 +64,7 @@ pub trait Tree {
     /// Proves the state of the given keys at a specific version, returning a wire-encoded proof.
     ///
     /// Decode with `Proof::decode()` for verification. The version must not have been pruned.
-    fn prove(&self, keys: &[[u8; 32]], version: u64) -> Vec<u8>
-    where
-        Self: Sized,
-    {
+    fn prove(&self, keys: &[[u8; 32]], version: u64) -> Vec<u8> {
         ProofBuilder::build(self, version, keys)
     }
 }

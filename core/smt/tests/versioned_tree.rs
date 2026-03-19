@@ -9,7 +9,7 @@ fn commit(store: &RocksDbStore, version: u64, entries: &[([u8; 32], [u8; 32])]) 
         entries.iter().map(|&(key, value)| Commitment::new(key, Blake3::hash(&value))).collect();
 
     let mut wb = store.write_batch();
-    let root = store.update(&mut wb, version, diffs);
+    let root = store.update(&mut wb, diffs, version);
     store.commit(wb);
     root
 }
@@ -131,18 +131,18 @@ fn node_returns_correct_version() {
     commit(&store, 1, &[(key, test_value(1))]);
 
     // The root node written at version 1 should report version = 1.
-    let (version, _node) = store.node(&Key::root(), 1).expect("root should exist at v1");
+    let (version, _node) = store.node(&Key::ROOT, 1).expect("root should exist at v1");
     assert_eq!(version, 1, "node should return version 1, not a byte-swapped value");
 
     // Version 2: update same key.
     commit(&store, 2, &[(key, test_value(2))]);
 
     // Root at max_version=2 should report version 2.
-    let (version, _node) = store.node(&Key::root(), 2).expect("root should exist at v2");
+    let (version, _node) = store.node(&Key::ROOT, 2).expect("root should exist at v2");
     assert_eq!(version, 2, "node should return version 2");
 
     // Root at max_version=1 should still report version 1 (historical read).
-    let (version, _node) = store.node(&Key::root(), 1).expect("root should exist at v1");
+    let (version, _node) = store.node(&Key::ROOT, 1).expect("root should exist at v1");
     assert_eq!(version, 1, "historical node should return version 1");
 }
 

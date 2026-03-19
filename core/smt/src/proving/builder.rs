@@ -16,7 +16,7 @@ pub(crate) struct ProofBuilder<'a, S> {
     /// Collected sibling hashes for one-sided subtrees.
     siblings: Vec<[u8; 32]>,
     /// Topology bits encoding the proof tree structure (1 = split, 0 = sibling).
-    topology_bits: Vec<bool>,
+    topology: Vec<bool>,
 }
 
 impl<'a, S: Tree> ProofBuilder<'a, S> {
@@ -33,18 +33,18 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
             version,
             leaves: Vec::new(),
             siblings: Vec::new(),
-            topology_bits: Vec::new(),
+            topology: Vec::new(),
         };
 
         // Walk the tree top-down, collecting proof components.
-        ctx.collect(Key::root(), &sorted_keys);
+        ctx.collect(&Key::ROOT, &sorted_keys);
 
         // Encode collected components into wire format.
-        Proof::encode(&ctx.leaves, &ctx.siblings, &ctx.topology_bits)
+        Proof::encode(&ctx.leaves, &ctx.siblings, &ctx.topology)
     }
 
     /// Recursive proof collection for a sorted sub-slice of leaf keys.
-    fn collect(&mut self, key: Key, leaf_keys: &[[u8; 32]]) {
+    fn collect(&mut self, key: &Key, leaf_keys: &[[u8; 32]]) {
         // No keys to collect in this subtree.
         if leaf_keys.is_empty() {
             return;
@@ -80,12 +80,12 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
 
         if mid > 0 && mid < leaf_keys.len() {
             // Both sides have absent keys - emit a split topology bit.
-            self.topology_bits.push(true);
+            self.topology.push(true);
             self.collect_empty(&leaf_keys[..mid], level + 1);
             self.collect_empty(&leaf_keys[mid..], level + 1);
         } else {
             // All absent keys on one side - emit sibling (EMPTY_HASH) for the empty side.
-            self.topology_bits.push(false);
+            self.topology.push(false);
             self.siblings.push(EMPTY_HASH);
             let nonempty = if mid == 0 { &leaf_keys[mid..] } else { &leaf_keys[..mid] };
             self.collect_empty(nonempty, level + 1);
@@ -104,21 +104,21 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
 
         if !left_keys.is_empty() && !right_keys.is_empty() {
             // Both children have proof keys - emit a split topology bit and recurse both sides.
-            self.topology_bits.push(true);
-            self.collect(left_child, left_keys);
-            self.collect(right_child, right_keys);
+            self.topology.push(true);
+            self.collect(&left_child, left_keys);
+            self.collect(&right_child, right_keys);
         } else {
             // Only one side has proof keys - emit the other side's hash as a sibling.
-            self.topology_bits.push(false);
+            self.topology.push(false);
 
             if left_keys.is_empty() {
                 // Proof keys are on the right - left subtree hash becomes a sibling.
                 self.siblings.push(self.node_hash(&left_child));
-                self.collect(right_child, right_keys);
+                self.collect(&right_child, right_keys);
             } else {
                 // Proof keys are on the left - right subtree hash becomes a sibling.
                 self.siblings.push(self.node_hash(&right_child));
-                self.collect(left_child, left_keys);
+                self.collect(&left_child, left_keys);
             }
         }
     }

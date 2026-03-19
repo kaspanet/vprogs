@@ -5,15 +5,15 @@ use crate::key::Key;
 pub struct StaleNode {
     /// The version when this node became stale.
     pub stale_since_version: u64,
-    /// The node's position in the tree.
-    pub node_key: Key,
-    /// The version of the now-stale node.
-    pub node_version: u64,
+    /// The stale node's position in the tree.
+    pub key: Key,
+    /// The stale node's version.
+    pub version: u64,
 }
 
 impl StaleNode {
     /// Creates a new stale node marker.
-    pub fn new(stale_since_version: u64, node_key: Key, node_version: u64) -> Self {
-        Self { stale_since_version, node_key, node_version }
+    pub fn new(stale_since_version: u64, key: Key, version: u64) -> Self {
+        Self { stale_since_version, key, version }
     }
 }

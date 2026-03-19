@@ -25,12 +25,12 @@ impl StaleNodeExt for StaleNode {
     fn encode_key(&self) -> [u8; 42] {
         [0u8; 42].tap_mut(|buf| {
             buf[..8].copy_from_slice(&self.stale_since_version.to_be_bytes());
-            buf[8..42].copy_from_slice(&self.node_key.encode());
+            buf[8..42].copy_from_slice(&self.key.encode());
         })
     }
 
     fn encode_value(&self) -> [u8; 8] {
-        self.node_version.to_be_bytes()
+        self.version.to_be_bytes()
     }
 
     fn decode_key(raw_key: &[u8]) -> Result<Key> {

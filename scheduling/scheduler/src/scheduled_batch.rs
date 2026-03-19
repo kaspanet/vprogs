@@ -252,8 +252,8 @@ impl<S: Store, P: Processor> ScheduledBatch<S, P> {
             if !self.state_diffs().is_empty() {
                 let new_root = store.update(
                     wb,
-                    self.checkpoint.index(),
                     self.state_diffs().iter().map(Commitment::from).collect(),
+                    self.checkpoint.index(),
                 );
 
                 StateMetadata::set_state_root(wb, &new_root);

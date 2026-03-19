@@ -14,10 +14,8 @@ pub struct Key {
 }
 
 impl Key {
-    /// The root node position.
-    pub fn root() -> Self {
-        Self { level: 0, path: [0u8; 32] }
-    }
+    /// The root node position (level 0, all-zero path).
+    pub const ROOT: Self = Self { level: 0, path: [0u8; 32] };
 
     /// Encodes as `path(32) + level(2 BE)` = 34 bytes.
     pub fn encode(&self) -> [u8; 34] {

@@ -32,10 +32,10 @@ impl<'a> Proof<'a> {
     pub(crate) fn encode(
         leaves: &[(u16, Commitment)],
         siblings: &[[u8; 32]],
-        topology_bits: &[bool],
+        topology: &[bool],
     ) -> Vec<u8> {
-        // Pack topology bits and pre-allocate the output buffer.
-        let topology = topology_bits.pack_lsb();
+        // Pack topology bools into a bitfield and pre-allocate the output buffer.
+        let topology = topology.pack_lsb();
         let mut buf = Vec::with_capacity(
             4 + leaves.len() * Leaf::SIZE + 4 + siblings.len() * 32 + 4 + topology.len(),
         );
@@ -69,15 +69,19 @@ impl<'a> Proof<'a> {
     ///
     /// Enables computing the post-update root without re-reading the tree.
     pub fn compute_root<H: Hasher>(&self, updated_hashes: &[[u8; 32]]) -> Result<[u8; 32]> {
+        if updated_hashes.len() != self.leaves.len() {
+            return Err(vprogs_core_utils::Error::Decode("updated_hashes length mismatch"));
+        }
+
         Traversal::compute_root::<H>(self, |i| &updated_hashes[i])
     }
 
     /// Finds the partition point where keys switch from bit=0 (left) to bit=1 (right).
+    ///
+    /// Proof leaves are sorted by key, so binary search via `partition_point` is valid.
     pub(super) fn split_point(&self, start: usize, end: usize, level: u16) -> usize {
-        let mut mid = start;
-        while mid < end && !self.leaves[mid].key.get_msb(level as usize) {
-            mid += 1;
-        }
-        mid
+        start
+            + self.leaves[start..end]
+                .partition_point(|leaf| !leaf.key.get_msb(level as usize))
     }
 }

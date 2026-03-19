@@ -27,9 +27,8 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
         version: u64,
         mut commitments: Vec<Commitment>,
     ) -> [u8; 32] {
-        // Initialize the update context.
-        let prev_version = version.saturating_sub(1);
-        let mut ctx = Self { tree, wb, prev_version, version };
+        // Initialize the update context. Version > 0 is guaranteed by `Tree::update`.
+        let mut ctx = Self { tree, wb, prev_version: version - 1, version };
 
         // Sort and deduplicate by key. On duplicate keys, last-write-wins: `dedup_by` removes `a`
         // (later element) and keeps `b`, so we copy `a`'s value_hash into `b` first.
@@ -45,13 +44,10 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
 
         // Recursively apply commitments starting from the root. `update_subtree` marks the existing
         // root stale internally, so no separate `mark_stale` call is needed here.
-        let result = ctx.update_subtree(Key::root(), &commitments);
-
-        // Write the result at the root position.
-        match &result {
+        match &ctx.update_subtree(&Key::ROOT, &commitments) {
             None => EMPTY_HASH,
             Some(node) => {
-                ctx.wb.put_node(&Key::root(), ctx.version, node);
+                ctx.wb.put_node(&Key::ROOT, ctx.version, node);
                 *node.hash()
             }
         }
@@ -62,16 +58,14 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
     /// Returns `None` for empty subtrees or the node at this position. Returned `Leaf` nodes are
     /// not written here - they bubble up so the caller can decide where to place them (enables
     /// shortcutting).
-    fn update_subtree(&mut self, key: Key, commitments: &[Commitment]) -> Option<Node> {
+    fn update_subtree(&mut self, key: &Key, commitments: &[Commitment]) -> Option<Node> {
         // No commitments for this subtree - return existing node unchanged.
         if commitments.is_empty() {
             return self.tree.node(&key, self.prev_version).map(|(_, data)| data);
         }
 
         // Look up existing node at this position to determine the update strategy.
-        let existing = self.tree.node(&key, self.prev_version).map(|(_, data)| data);
-
-        match existing {
+        match self.tree.node(&key, self.prev_version).map(|(_, data)| data) {
             // Empty subtree: resolve commitments into leaves directly.
             None => self.resolve_leaves(&key, commitments),
 
@@ -143,7 +137,7 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
 
     /// Splits commitments by the current bit and recurses into both children.
     fn split_and_recurse(&mut self, key: &Key, commitments: &[Commitment]) -> Option<Node> {
-        debug_assert!((key.level as usize) < DEPTH, "exceeded tree depth");
+        assert!((key.level as usize) < DEPTH, "exceeded tree depth");
 
         // Partition by the bit at the current depth. Since commitments are sorted MSB-first, all
         // bit=0 keys precede bit=1 keys - so `partition_point` finds the exact boundary.
@@ -155,8 +149,8 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
         let right_child = key.right_child();
 
         // Recurse into both children independently.
-        let left_result = self.update_subtree(left_child.clone(), left);
-        let right_result = self.update_subtree(right_child.clone(), right);
+        let left_result = self.update_subtree(&left_child, left);
+        let right_result = self.update_subtree(&right_child, right);
 
         // Determine the result based on child subtree outcomes.
         match (&left_result, &right_result) {
