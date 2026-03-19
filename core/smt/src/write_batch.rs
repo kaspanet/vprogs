@@ -1,10 +1,6 @@
-use super::{key::Key, stale_node::StaleNode};
-use crate::Node;
+use crate::{Node, key::Key, stale_node::StaleNode};
 
-/// Write interface for persisting SMT node mutations.
-///
-/// Pairs with `Store` (the read side). This trait is a supertrait of `WriteBatch`, so all
-/// write batch implementations must provide SMT node persistence.
+/// Write interface for persisting SMT node mutations. Pairs with `Tree` (the read side).
 pub trait WriteBatch {
     /// Persists a new or updated node at the given position and version.
     fn put_node(&mut self, key: &Key, version: u64, data: &Node);

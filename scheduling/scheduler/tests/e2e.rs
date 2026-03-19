@@ -1,10 +1,7 @@
 use std::time::Duration;
 
 use tempfile::TempDir;
-use vprogs_core_crypto::{
-    Blake3Hasher, EMPTY_HASH,
-    smt::{Proof, Store as SmtStore},
-};
+use vprogs_core_smt::{Blake3Hasher, EMPTY_HASH, Tree, proving::Proof};
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, Checkpoint, ResourceId, SchedulerTransaction};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};

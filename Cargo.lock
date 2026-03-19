@@ -7357,7 +7357,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "vprogs-core-crypto"
+name = "vprogs-core-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "vprogs-core-smt"
 version = "0.1.0"
 dependencies = [
  "blake3",
@@ -7366,15 +7375,6 @@ dependencies = [
  "vprogs-core-utils",
  "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
-]
-
-[[package]]
-name = "vprogs-core-macros"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
 ]
 
 [[package]]
@@ -7546,8 +7546,8 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "vprogs-core-atomics",
- "vprogs-core-crypto",
  "vprogs-core-macros",
+ "vprogs-core-smt",
  "vprogs-core-test-utils",
  "vprogs-core-types",
  "vprogs-scheduling-execution-workers",
@@ -7593,7 +7593,7 @@ name = "vprogs-state-metadata"
 version = "0.1.0"
 dependencies = [
  "borsh",
- "vprogs-core-crypto",
+ "vprogs-core-smt",
  "vprogs-core-types",
  "vprogs-storage-types",
 ]
@@ -7647,7 +7647,7 @@ dependencies = [
  "num_cpus",
  "rocksdb",
  "tap",
- "vprogs-core-crypto",
+ "vprogs-core-smt",
  "vprogs-core-utils",
  "vprogs-storage-types",
 ]
@@ -7656,7 +7656,7 @@ dependencies = [
 name = "vprogs-storage-types"
 version = "0.1.0"
 dependencies = [
- "vprogs-core-crypto",
+ "vprogs-core-smt",
 ]
 
 [[package]]
@@ -7827,7 +7827,7 @@ dependencies = [
  "blake3",
  "borsh",
  "thiserror 2.0.18",
- "vprogs-core-crypto",
+ "vprogs-core-smt",
  "vprogs-core-types",
  "vprogs-core-utils",
  "vprogs-l1-types",

@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwapOption;
-use vprogs_core_crypto::{EMPTY_HASH, smt::StateCommitment};
 use vprogs_core_macros::smart_pointer;
+use vprogs_core_smt::{Commitment, EMPTY_HASH};
 use vprogs_core_types::ResourceId;
 use vprogs_state_version::StateVersion;
 use vprogs_storage_types::{Store, WriteBatch};
@@ -108,7 +108,7 @@ impl<S: Store, P: Processor> StateDiff<S, P> {
     }
 }
 
-impl<S: Store, P: Processor> From<&StateDiff<S, P>> for StateCommitment {
+impl<S: Store, P: Processor> From<&StateDiff<S, P>> for Commitment {
     fn from(diff: &StateDiff<S, P>) -> Self {
         let key = *diff.resource_id.as_bytes();
         let written_state = diff.written_state();

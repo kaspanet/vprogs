@@ -1,5 +1,5 @@
 use tap::Tap;
-use vprogs_core_crypto::smt::Key;
+use vprogs_core_smt::Key;
 use vprogs_core_utils::{Parser, Result};
 
 /// Storage-specific versioned encoding for `Key` in the SmtNode column family.

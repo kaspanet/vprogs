@@ -1,4 +1,4 @@
-use vprogs_core_crypto::{Blake3Hasher, EMPTY_HASH, Hasher};
+use vprogs_core_smt::{Blake3Hasher, EMPTY_HASH, Hasher};
 
 #[test]
 fn domain_separation_produces_different_hashes() {

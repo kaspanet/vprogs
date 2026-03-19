@@ -1,19 +1,13 @@
 use tempfile::TempDir;
-use vprogs_core_crypto::{
-    Blake3Hasher, EMPTY_HASH, Hasher,
-    smt::{Key, Proof, StateCommitment, Store as SmtStore},
-};
+use vprogs_core_smt::{Blake3Hasher, Commitment, EMPTY_HASH, Hasher, Key, Tree, proving::Proof};
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_storage_types::Store;
 
 /// Helper: commits a set of (key, value) pairs at the given version and returns the new root.
 fn commit(store: &RocksDbStore, version: u64, entries: &[([u8; 32], [u8; 32])]) -> [u8; 32] {
-    let diffs: Vec<StateCommitment> = entries
+    let diffs: Vec<Commitment> = entries
         .iter()
-        .map(|&(key, value)| StateCommitment {
-            key,
-            value_hash: Blake3Hasher::hash_leaf(&key, &value),
-        })
+        .map(|&(key, value)| Commitment { key, value_hash: Blake3Hasher::hash_leaf(&key, &value) })
         .collect();
 
     let mut wb = store.write_batch();
@@ -49,7 +43,7 @@ fn multi_version_commit_and_prove() {
     let dir = TempDir::new().unwrap();
     let store = RocksDbStore::open(dir.path());
 
-    // Version 1: insert keys 1, 2, 3 — creates internal nodes at non-zero levels.
+    // Version 1: insert keys 1, 2, 3 - creates internal nodes at non-zero levels.
     let root1 = commit(
         &store,
         1,
@@ -57,12 +51,12 @@ fn multi_version_commit_and_prove() {
     );
     assert_ne!(root1, EMPTY_HASH, "root should be non-empty after first commit");
 
-    // Version 2: insert key 4, update key 1 — supersedes internal nodes, creates stale markers.
+    // Version 2: insert key 4, update key 1 - supersedes internal nodes, creates stale markers.
     let root2 = commit(&store, 2, &[(test_key(1), test_value(10)), (test_key(4), test_value(4))]);
     assert_ne!(root2, EMPTY_HASH);
     assert_ne!(root2, root1, "root should change after second commit");
 
-    // Version 3: insert key 5, update key 3 — another round of internal node changes.
+    // Version 3: insert key 5, update key 3 - another round of internal node changes.
     let root3 = commit(&store, 3, &[(test_key(3), test_value(30)), (test_key(5), test_value(5))]);
     assert_ne!(root3, EMPTY_HASH);
     assert_ne!(root3, root2, "root should change after third commit");
@@ -171,7 +165,7 @@ fn prune_preserves_tree_integrity() {
         &[(test_key(1), test_value(1)), (test_key(2), test_value(2)), (test_key(3), test_value(3))],
     );
 
-    // Version 2: update key 1 — supersedes some nodes from version 1.
+    // Version 2: update key 1 - supersedes some nodes from version 1.
     let root2 = commit(&store, 2, &[(test_key(1), test_value(10))]);
     assert_ne!(root1, root2);
 

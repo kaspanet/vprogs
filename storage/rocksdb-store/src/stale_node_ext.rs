@@ -1,5 +1,5 @@
 use tap::Tap;
-use vprogs_core_crypto::smt::{Key, StaleNode};
+use vprogs_core_smt::{Key, StaleNode};
 use vprogs_core_utils::{Parser, Result};
 
 /// Storage-specific encoding for `StaleNode` in the SmtStale column family.

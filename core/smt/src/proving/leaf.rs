@@ -3,12 +3,12 @@ use alloc::vec::Vec;
 use vprogs_core_utils::{Parser, Result};
 
 /// Zero-copy view of a single leaf entry in the proof wire format.
-///
-/// Fields are materialized at decode time from a 66-byte slice
-/// (`depth(2) + key(32) + value_hash(32)`), so field access is free.
 pub struct Leaf<'a> {
+    /// Tree depth at which this leaf sits (shortcut depth).
     pub depth: u16,
+    /// The full 256-bit key this leaf represents.
     pub key: &'a [u8; 32],
+    /// Hash of the leaf's value, or `EMPTY_HASH` for absent keys.
     pub value_hash: &'a [u8; 32],
 }
 

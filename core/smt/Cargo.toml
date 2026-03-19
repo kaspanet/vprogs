@@ -1,6 +1,6 @@
 [package]
 edition.workspace = true
-name              = "vprogs-core-crypto"
+name              = "vprogs-core-smt"
 version.workspace = true
 
 [dependencies]

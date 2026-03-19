@@ -1,4 +1,4 @@
-use vprogs_core_crypto::EMPTY_HASH;
+use vprogs_core_smt::EMPTY_HASH;
 use vprogs_core_types::{BatchMetadata, Checkpoint};
 use vprogs_storage_types::{ReadStore, StateSpace, WriteBatch};
 

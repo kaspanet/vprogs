@@ -1,9 +1,6 @@
-use super::key::Key;
+use crate::key::Key;
 
-/// A node that was superseded by a newer version.
-///
-/// Recorded during updates and used by the pruning worker to garbage-collect old node versions
-/// that are no longer reachable.
+/// A node that was superseded by a newer version. Used by pruning to garbage-collect old nodes.
 pub struct StaleNode {
     /// The version when this node became stale.
     pub stale_since_version: u64,

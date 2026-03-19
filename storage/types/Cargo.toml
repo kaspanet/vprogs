@@ -4,4 +4,4 @@ name              = "vprogs-storage-types"
 version.workspace = true
 
 [dependencies]
-vprogs-core-crypto.workspace = true
+vprogs-core-smt.workspace = true

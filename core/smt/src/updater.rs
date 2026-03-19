@@ -1,36 +1,37 @@
 use alloc::vec::Vec;
 
-use vprogs_core_utils::{Bits, BitsArray};
+use vprogs_core_utils::Bits;
 
-use super::{
-    key::Key, stale_node::StaleNode, state_commitment::StateCommitment, store::Store,
-    write_batch::WriteBatch,
+use crate::{
+    Blake3Hasher, DEPTH, EMPTY_HASH, Hasher, Node, commitment::Commitment, key::Key,
+    stale_node::StaleNode, tree::Tree, write_batch::WriteBatch,
 };
-use crate::{Blake3Hasher, EMPTY_HASH, Hasher, Node, TREE_DEPTH};
 
 /// Applies leaf mutations to the tree and writes resulting nodes into a `WriteBatch`.
-///
-/// Holds the shared state that threads through all recursive update calls: the store to read
-/// existing nodes, the write batch to accumulate new nodes, and the version pair.
-pub(super) struct TreeUpdate<'a, S, W> {
+pub(crate) struct Updater<'a, S, W> {
+    /// Read-only access to existing tree nodes.
     store: &'a S,
+    /// Accumulates new/deleted nodes for atomic commit.
     wb: &'a mut W,
+    /// Version to read existing nodes from (version - 1).
     prev_version: u64,
+    /// Version being written.
     version: u64,
 }
 
-impl<'a, S: Store, W: WriteBatch> TreeUpdate<'a, S, W> {
+impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
     /// Applies `diffs` as leaf mutations at `version` and returns the new root hash.
-    pub(super) fn apply<D>(store: &'a S, wb: &'a mut W, version: u64, diffs: &[D]) -> [u8; 32]
+    pub(crate) fn apply<D>(store: &'a S, wb: &'a mut W, version: u64, diffs: &[D]) -> [u8; 32]
     where
-        for<'b> StateCommitment: From<&'b D>,
+        for<'b> Commitment: From<&'b D>,
     {
+        // Initialize the update context.
         let prev_version = version.saturating_sub(1);
         let mut ctx = Self { store, wb, prev_version, version };
 
         // Convert, sort, and deduplicate by key. On duplicate keys, last-write-wins: `dedup_by`
         // removes `a` (later element) and keeps `b`, so we copy `a`'s value_hash into `b` first.
-        let mut updates: Vec<StateCommitment> = diffs.iter().map(StateCommitment::from).collect();
+        let mut updates: Vec<Commitment> = diffs.iter().map(Commitment::from).collect();
         updates.sort_by(|a, b| a.key.cmp(&b.key));
         updates.dedup_by(|a, b| {
             if a.key == b.key {
@@ -55,18 +56,13 @@ impl<'a, S: Store, W: WriteBatch> TreeUpdate<'a, S, W> {
         }
     }
 
-    /// Core recursive update returning `None` for empty subtrees or the node that occupies this
-    /// position.
+    /// Recursive update for a sorted sub-slice of leaf mutations at `key`.
     ///
-    /// `updates` is a sorted sub-slice of leaf mutations that apply to this subtree. Splitting
-    /// uses `partition_point` + `split_at` for zero-allocation descent.
-    ///
-    /// **Important:** returned `Leaf` nodes are *not* written to the store by this method — they
-    /// bubble up to the caller, which decides whether to write them as a child of an Internal node
-    /// or as the root. This enables leaf shortcutting where a single occupant floats to the highest
-    /// ancestor.
-    fn update_subtree(&mut self, key: Key, updates: &[StateCommitment]) -> Option<Node> {
-        // No updates for this subtree — return existing node unchanged.
+    /// Returns `None` for empty subtrees or the node at this position. Returned `Leaf` nodes are
+    /// not written here - they bubble up so the caller can decide where to store them (enables
+    /// shortcutting).
+    fn update_subtree(&mut self, key: Key, updates: &[Commitment]) -> Option<Node> {
+        // No updates for this subtree - return existing node unchanged.
         if updates.is_empty() {
             return self.store.get_node(&key, self.prev_version).map(|(_, data)| data);
         }
@@ -91,22 +87,21 @@ impl<'a, S: Store, W: WriteBatch> TreeUpdate<'a, S, W> {
         }
     }
 
-    /// Resolves a sorted set of leaf updates into the appropriate tree structure.
-    ///
-    /// Filters out deletions (`EMPTY_HASH`), then creates a shortcut leaf for a single live entry
-    /// or splits and recurses for multiple.
-    fn resolve_leaves(&mut self, key: &Key, updates: &[StateCommitment]) -> Option<Node> {
+    /// Resolves leaf updates into a shortcut leaf (single live entry) or splits and recurses.
+    fn resolve_leaves(&mut self, key: &Key, updates: &[Commitment]) -> Option<Node> {
+        // Filter to live (non-deletion) updates.
         let mut live = updates.iter().filter(|u| u.value_hash != EMPTY_HASH);
 
+        // Get the first live entry, or return None if the subtree is empty.
         let first = live.next()?;
 
         if live.next().is_none() {
-            // Exactly one live entry — create a shortcut leaf at this depth.
+            // Exactly one live entry - create a shortcut leaf at this depth.
             let hash = Blake3Hasher::hash_leaf(&first.key, &first.value_hash);
             return Some(Node::Leaf { key: first.key, value_hash: first.value_hash, hash });
         }
 
-        // Multiple live entries — must split by the current bit and recurse.
+        // Multiple live entries - must split by the current bit and recurse.
         self.split_and_recurse(key, updates)
     }
 
@@ -114,7 +109,7 @@ impl<'a, S: Store, W: WriteBatch> TreeUpdate<'a, S, W> {
     fn update_at_leaf(
         &mut self,
         key: &Key,
-        updates: &[StateCommitment],
+        updates: &[Commitment],
         existing_key: [u8; 32],
         existing_vh: [u8; 32],
     ) -> Option<Node> {
@@ -125,18 +120,19 @@ impl<'a, S: Store, W: WriteBatch> TreeUpdate<'a, S, W> {
         if updates.len() == 1 && updates[0].key == existing_key {
             let new_vh = updates[0].value_hash;
             if new_vh == EMPTY_HASH {
-                return None; // Deletion — subtree becomes empty.
+                return None; // Deletion - subtree becomes empty.
             }
             let hash = Blake3Hasher::hash_leaf(&existing_key, &new_vh);
             return Some(Node::Leaf { key: existing_key, value_hash: new_vh, hash });
         }
 
-        // General case: merge the existing leaf into the update set (unless it's already being
-        // updated) and resolve. Only allocates a new vec when the existing key is not in updates.
+        // General case: merge the existing leaf into the update set and resolve.
         if updates.iter().any(|u| u.key == existing_key) {
+            // Existing key is already in the update set - resolve directly.
             self.resolve_leaves(key, updates)
         } else {
-            let existing = StateCommitment { key: existing_key, value_hash: existing_vh };
+            // Existing key not in updates - insert at the correct sorted position and resolve.
+            let existing = Commitment { key: existing_key, value_hash: existing_vh };
             let pos = updates.partition_point(|u| u.key < existing_key);
             let mut merged = Vec::with_capacity(updates.len() + 1);
             merged.extend_from_slice(&updates[..pos]);
@@ -147,36 +143,33 @@ impl<'a, S: Store, W: WriteBatch> TreeUpdate<'a, S, W> {
     }
 
     /// Splits updates by the current bit and recurses into both children.
-    ///
-    /// Uses `partition_point` to find the split in O(log n) with zero allocation. After recursion,
-    /// decides the return value: both empty -> None, one leaf + one empty -> bubble the leaf up
-    /// (shortcutting), otherwise -> create Internal node.
-    fn split_and_recurse(&mut self, key: &Key, updates: &[StateCommitment]) -> Option<Node> {
-        debug_assert!((key.level as usize) < TREE_DEPTH, "exceeded tree depth");
+    fn split_and_recurse(&mut self, key: &Key, updates: &[Commitment]) -> Option<Node> {
+        debug_assert!((key.level as usize) < DEPTH, "exceeded tree depth");
 
         // Partition by the bit at the current depth. Since updates are sorted MSB-first, all bit=0
-        // keys precede bit=1 keys — so `partition_point` finds the exact boundary.
+        // keys precede bit=1 keys - so `partition_point` finds the exact boundary.
         let mid = updates.partition_point(|u| !u.key.get_msb(key.level as usize));
         let (left, right) = updates.split_at(mid);
 
-        let left_child = Key { level: key.level + 1, path: key.path };
-        let right_child =
-            Key { level: key.level + 1, path: key.path.with_bit_set(key.level as usize) };
+        // Construct child keys.
+        let left_child = key.left_child();
+        let right_child = key.right_child();
 
         // Recurse into both children independently.
         let left_result = self.update_subtree(left_child.clone(), left);
         let right_result = self.update_subtree(right_child.clone(), right);
 
+        // Determine the result based on child subtree outcomes.
         match (&left_result, &right_result) {
-            // Both children empty — this subtree is empty.
+            // Both children empty - this subtree is empty.
             (None, None) => None,
 
-            // One child is a leaf, the other is empty — bubble the leaf up. This is the core
+            // One child is a leaf, the other is empty - bubble the leaf up. This is the core
             // shortcutting mechanism: the single occupant doesn't need an internal node above it.
             (Some(Node::Leaf { .. }), None) => left_result,
             (None, Some(Node::Leaf { .. })) => right_result,
 
-            // Otherwise (both non-empty, or at least one Internal) — write children to the store
+            // Otherwise (both non-empty, or at least one Internal) - write children to the store
             // and create an Internal node.
             _ => {
                 let left_hash = self.write_child(&left_result, &left_child);
@@ -187,9 +180,7 @@ impl<'a, S: Store, W: WriteBatch> TreeUpdate<'a, S, W> {
         }
     }
 
-    /// Writes a child node to the store and returns its hash.
-    ///
-    /// If the child is `None`, returns `EMPTY_HASH` without writing.
+    /// Writes a child node to the store and returns its hash, or `EMPTY_HASH` for `None`.
     fn write_child(&mut self, child: &Option<Node>, key: &Key) -> [u8; 32] {
         match child {
             None => EMPTY_HASH,

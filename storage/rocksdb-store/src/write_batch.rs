@@ -1,7 +1,7 @@
 use std::{marker::PhantomData, sync::Arc};
 
 use rocksdb::DB;
-use vprogs_core_crypto::smt::{Key, Node, StaleNode, WriteBatch as SmtWriteBatch};
+use vprogs_core_smt::{Key, Node, StaleNode, WriteBatch as SmtWriteBatch};
 use vprogs_storage_types::{StateSpace, WriteBatch as _};
 
 use crate::{
