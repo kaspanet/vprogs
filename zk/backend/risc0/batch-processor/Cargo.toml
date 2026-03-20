@@ -5,8 +5,8 @@ version = "0.1.0"
 
 [dependencies]
 risc0-zkvm = { version = "3.0", default-features = false, features = ["std"] }
+vprogs-core-smt = { path = "../../../../core/smt", default-features = false }
 vprogs-zk-abi = { path = "../../../abi", default-features = false }
 vprogs-zk-backend-risc0-api = { path = "../api", default-features = false, features = [
   "guest",
 ] }
-vprogs-zk-smt = { path = "../../../smt", default-features = false }

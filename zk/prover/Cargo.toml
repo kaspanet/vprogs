@@ -4,13 +4,11 @@ name              = "vprogs-zk-prover"
 version.workspace = true
 
 [dependencies]
-blake3.workspace       = true
-borsh.workspace        = true
-log.workspace          = true
-tokio                  = { workspace = true, features = ["rt", "sync", "macros"] }
-vprogs-zk-abi          = { workspace = true, features = ["host"] }
-vprogs-zk-smt          = { workspace = true, features = ["host"] }
-vprogs-zk-vm.workspace = true
+log.workspace                  = true
+tokio                          = { workspace = true, features = ["rt", "sync", "macros"] }
+vprogs-storage-types.workspace = true
+vprogs-zk-abi                  = { workspace = true, features = ["host"] }
+vprogs-zk-vm.workspace         = true
 
 [dev-dependencies]
 risc0-binfmt                           = { version = "3.0.4", default-features = false }

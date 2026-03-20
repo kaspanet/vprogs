@@ -47,6 +47,7 @@ async fn batch_proof_two_transactions() {
 
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+    let store_for_prover = storage.clone();
 
     let backend = Backend::new(&transaction_elf, &batch_elf);
     let image_id: [u8; 32] =
@@ -75,9 +76,9 @@ async fn batch_proof_two_transactions() {
     let block_metadata = ChainBlockMetadata::default();
     let block_hash = block_metadata.block_hash().as_bytes();
 
-    // Set up the batch prover.
-    let mut batch_prover = BatchProver::new(backend, proof_rx, image_id);
-    batch_prover.register_batch(block_hash, 2);
+    // Set up the batch prover. Version 1 = first scheduled batch in the store.
+    let mut batch_prover = BatchProver::new(backend, proof_rx, image_id, store_for_prover);
+    batch_prover.register_batch(block_hash, 2, 1);
 
     // Start the proving loop.
     let mut batch_proof_rx = batch_prover.run().await;

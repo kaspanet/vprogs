@@ -11,10 +11,6 @@ pub mod batch_processor {
         pub(crate) mod journal_iter;
     }
 
-    pub(crate) mod output {
-        pub(crate) mod outputs;
-    }
-
     pub(crate) mod journal {
         pub(crate) mod commitment;
     }
@@ -22,7 +18,6 @@ pub mod batch_processor {
     pub use abi::Abi;
     pub use input::{header::Header, inputs::Inputs, journal_iter::JournalIter};
     pub use journal::commitment::JournalCommitment;
-    pub use output::outputs::Outputs;
 }
 mod error;
 mod read;

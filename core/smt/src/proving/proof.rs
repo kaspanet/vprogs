@@ -28,21 +28,20 @@ impl<'a> Proof<'a> {
         })
     }
 
-    /// Verifies that the proof leaves produce the expected root hash.
-    pub fn verify<H: Hasher>(&self, expected_root: [u8; 32]) -> Result<bool> {
+    /// Computes the root hash from the proof's own leaf value hashes.
+    pub fn root<H: Hasher>(&self) -> Result<[u8; 32]> {
         Traversal::compute_root::<H>(self, |i| self.leaves[i].value_hash)
-            .map(|root| root == expected_root)
     }
 
-    /// Recomputes the root using updated value hashes (one per leaf, same order as in the proof).
+    /// Computes the root hash using caller-provided value hashes (e.g. after mutations).
     ///
-    /// Enables computing the post-update root without re-reading the tree.
-    pub fn compute_root<H: Hasher>(&self, updated_hashes: &[[u8; 32]]) -> Result<[u8; 32]> {
-        if updated_hashes.len() != self.leaves.len() {
-            return Err(vprogs_core_codec::Error::Decode("updated_hashes length mismatch"));
-        }
-
-        Traversal::compute_root::<H>(self, |i| &updated_hashes[i])
+    /// The closure is called with leaf indices in `0..self.leaves.len()` during the tree
+    /// traversal. Zero-allocation — no intermediate vec needed.
+    pub fn compute_root<'v, H: Hasher>(
+        &self,
+        value_hash: impl Fn(usize) -> &'v [u8; 32],
+    ) -> Result<[u8; 32]> {
+        Traversal::compute_root::<H>(self, value_hash)
     }
 
     /// Encodes proof components into the wire format.

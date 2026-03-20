@@ -1,5 +1,5 @@
 use vprogs_core_codec::Reader;
-use vprogs_zk_smt::EMPTY_LEAF_HASH;
+use vprogs_core_smt::EMPTY_HASH;
 
 use crate::{
     Result, Write,
@@ -56,11 +56,7 @@ impl<'a> InputCommitment<'a> {
             let data = r.data();
             w.write(&r.index().to_le_bytes());
             w.write(r.id().as_bytes());
-            w.write(&if data.is_empty() {
-                EMPTY_LEAF_HASH
-            } else {
-                *blake3::hash(data).as_bytes()
-            });
+            w.write(&if data.is_empty() { EMPTY_HASH } else { *blake3::hash(data).as_bytes() });
         }
     }
 }

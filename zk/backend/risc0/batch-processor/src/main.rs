@@ -3,13 +3,14 @@
 
 extern crate alloc;
 
-use alloc::{borrow::Cow, vec::Vec};
+use alloc::vec::Vec;
 
 use risc0_zkvm::guest::env;
+use vprogs_core_smt::Blake3;
 use vprogs_zk_abi::{
     batch_processor::Abi,
     transaction_processor::{
-        JournalEntries as TxJournal, OutputCommitment, OutputResourceCommitment,
+        BatchMetadata, JournalEntries as TxJournal, OutputCommitment, OutputResourceCommitment,
     },
 };
 use vprogs_zk_backend_risc0_api::{Host, Journal};
@@ -17,120 +18,107 @@ use vprogs_zk_backend_risc0_api::{Host, Journal};
 risc0_zkvm::guest::entry!(main);
 
 fn main() {
-    Abi::process_batch(&mut Host, &mut Journal, |header, commitments, multi_proof, tx_entries| {
-        let n_resources = header.n_resources as usize;
+    Abi::process_batch(&mut Host, &mut Journal, |header, proof, leaf_order, tx_entries| {
+        // Compute prev_root from the proof's own leaf value hashes.
+        let prev_root = proof.root::<Blake3>()?;
 
-        // Build the leaf hash cache as references into the commitment data.
-        // Only mutations promote to owned copies.
-        let mut cache: Vec<Cow<'_, [u8; 32]>> =
-            commitments.iter().map(|c| Cow::Borrowed(c.hash)).collect();
-
-        // Track which resources were modified for the output stream.
-        let mut changed: Vec<bool> = alloc::vec![false; n_resources];
-
-        // Verify the multi-proof against prev_root.
-        assert!(multi_proof.verify(*header.prev_root), "multi-proof verification failed");
+        // Initialize the value-hash cache in resource_index order by scattering proof leaves
+        // via leaf_order (leaf_order[leaf_pos] = resource_index). All references — no copies.
+        let mut cache: Vec<&[u8; 32]> = alloc::vec![&[0; 32]; header.n_resources as usize];
+        for (leaf_pos, &resource_idx) in leaf_order.iter().enumerate() {
+            cache[resource_idx as usize] = proof.leaves[leaf_pos].value_hash;
+        }
 
         let mut expected_block_hash: Option<&[u8; 32]> = None;
         let mut expected_blue_score: Option<u64> = None;
 
         // Process each transaction.
         for (expected_tx_index, journal) in (0_u32..).zip(tx_entries) {
-            // Propagate decode error from iterator.
-            let journal = journal?;
+            let (resource_indices, output) = verify_transaction_journal(
+                journal?,
+                header.image_id,
+                expected_tx_index,
+                &mut expected_block_hash,
+                &mut expected_blue_score,
+                &cache,
+                header.n_resources,
+            )?;
 
-            // Verify the inner proof.
-            env::verify(*header.image_id, journal).expect("inner proof verification failed");
-
-            let tx_journal = TxJournal::decode(journal).expect("malformed journal");
-
-            // Verify sequential tx_index.
-            assert_eq!(
-                tx_journal.input_commitment.tx_index, expected_tx_index,
-                "tx_index mismatch"
-            );
-
-            // Verify consistent block_hash across all txs.
-            match expected_block_hash {
-                None => {
-                    expected_block_hash =
-                        Some(tx_journal.input_commitment.batch_metadata.block_hash)
-                }
-                Some(exp) => {
-                    assert_eq!(
-                        tx_journal.input_commitment.batch_metadata.block_hash, exp,
-                        "block_hash mismatch"
-                    )
-                }
-            }
-
-            // Verify consistent blue_score across all txs.
-            match expected_blue_score {
-                None => {
-                    expected_blue_score =
-                        Some(tx_journal.input_commitment.batch_metadata.blue_score)
-                }
-                Some(exp) => {
-                    assert_eq!(
-                        tx_journal.input_commitment.batch_metadata.blue_score, exp,
-                        "blue_score mismatch"
-                    )
-                }
-            }
-
-            // Verify inputs against cache and collect resource indices for output matching.
-            let mut resource_indices: Vec<usize> = Vec::new();
-            for r in tx_journal.input_commitment.resources {
-                // Propagate decode error from iterator.
-                let r = r?;
-                let idx = r.resource_index as usize;
-                assert!(idx < n_resources, "resource_index out of range");
-                assert_eq!(r.resource_id, commitments[idx].resource_id, "resource_id mismatch");
-                assert_eq!(r.hash, cache[idx].as_ref(), "resource data hash mismatch");
-                resource_indices.push(idx);
-            }
-
-            // Apply outputs (positional 1:1 matching with inputs).
-            match tx_journal.output_commitment {
-                OutputCommitment::Success(outputs) => {
-                    for (i, commitment) in outputs.enumerate() {
-                        // Propagate decode error from iterator.
-                        let commitment = commitment?;
-                        if let OutputResourceCommitment::Changed(hash) = commitment {
-                            let idx = resource_indices[i];
-                            cache[idx] = Cow::Owned(*hash);
-                            changed[idx] = true;
-                        }
+            // Apply outputs — update cache for modified resources.
+            if let OutputCommitment::Success(outputs) = output {
+                for (i, commitment) in outputs.enumerate() {
+                    if let OutputResourceCommitment::Changed(hash) = commitment? {
+                        cache[resource_indices[i]] = hash;
                     }
-                }
-                OutputCommitment::Error(_) => {
-                    // No mutations.
                 }
             }
         }
 
-        // Compute new root using updated cache.
-        let leaf_hashes: Vec<[u8; 32]> = (0..multi_proof.n_leaves())
-            .map(|leaf_idx| {
-                let leaf_key = multi_proof.leaf_key(leaf_idx);
-                for (i, commitment) in commitments.iter().enumerate() {
-                    if commitment.resource_id == leaf_key {
-                        return *cache[i];
-                    }
-                }
-                *multi_proof.leaf_hash(leaf_idx)
-            })
-            .collect();
+        // Compute new_root from the updated cache in leaf order (no allocation).
+        let new_root = proof.compute_root::<Blake3>(|i| cache[leaf_order[i] as usize])?;
 
-        let new_root = multi_proof.compute_root(&leaf_hashes);
-
-        // Build leaf updates: Some(hash) for changed resources, None for unchanged.
-        let leaf_updates: Vec<Option<[u8; 32]>> = cache
-            .iter()
-            .enumerate()
-            .map(|(i, hash)| if changed[i] { Some(**hash) } else { None })
-            .collect();
-
-        Ok((new_root, leaf_updates))
+        Ok((prev_root, new_root))
     });
+}
+
+/// Verifies a single transaction journal: inner proof, sequential index, batch metadata
+/// consistency, and input resource hashes against the cache.
+///
+/// Returns the resource indices touched by this tx and its output commitment for the caller
+/// to apply mutations.
+fn verify_transaction_journal<'a>(
+    journal: &'a [u8],
+    image_id: &[u8; 32],
+    expected_tx_index: u32,
+    expected_block_hash: &mut Option<&'a [u8; 32]>,
+    expected_blue_score: &mut Option<u64>,
+    cache: &[&[u8; 32]],
+    n_resources: u32,
+) -> vprogs_zk_abi::Result<(Vec<usize>, OutputCommitment<'a>)> {
+    // Verify the inner ZK proof.
+    env::verify(*image_id, journal).expect("inner proof verification failed");
+    let tx_journal = TxJournal::decode(journal).expect("malformed journal");
+
+    // Verify sequential tx_index.
+    assert_eq!(tx_journal.input_commitment.tx_index, expected_tx_index, "tx_index mismatch");
+
+    // Verify consistent batch metadata across all txs.
+    validate_batch_metadata(
+        expected_block_hash,
+        expected_blue_score,
+        &tx_journal.input_commitment.batch_metadata,
+    );
+
+    // Verify input resource hashes against the current cache state.
+    let mut resource_indices = Vec::new();
+    for r in tx_journal.input_commitment.resources {
+        let r = r?;
+        let idx = r.resource_index as usize;
+        assert!(idx < n_resources as usize, "resource_index out of range");
+        assert_eq!(r.hash, cache[idx], "resource data hash mismatch");
+        resource_indices.push(idx);
+    }
+
+    Ok((resource_indices, tx_journal.output_commitment))
+}
+
+/// Verifies that all transactions in the batch report identical block metadata.
+///
+/// Sets the expected values on the first call, asserts equality on subsequent calls.
+fn validate_batch_metadata<'a>(
+    expected_block_hash: &mut Option<&'a [u8; 32]>,
+    expected_blue_score: &mut Option<u64>,
+    metadata: &BatchMetadata<'a>,
+) {
+    if let Some(exp) = *expected_block_hash {
+        assert_eq!(metadata.block_hash, exp, "block_hash mismatch");
+    } else {
+        *expected_block_hash = Some(metadata.block_hash);
+    }
+
+    if let Some(exp) = *expected_blue_score {
+        assert_eq!(metadata.blue_score, exp, "blue_score mismatch");
+    } else {
+        *expected_blue_score = Some(metadata.blue_score);
+    }
 }
