@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 
 use vprogs_core_codec::Bits;
 
-use super::proof::Proof;
+use super::{proof::Proof, topology::Topology};
 use crate::{EMPTY_HASH, Node, commitment::Commitment, key::Key, tree::Tree};
 
 /// Walks the tree top-down to collect sibling hashes and leaf depths for a multi-proof.
@@ -15,8 +15,8 @@ pub(crate) struct ProofBuilder<'a, S> {
     leaves: Vec<(u16, Commitment)>,
     /// Collected sibling hashes for one-sided subtrees.
     siblings: Vec<[u8; 32]>,
-    /// Topology bits encoding the proof tree structure (1 = split, 0 = sibling).
-    topology: Vec<bool>,
+    /// Packed topology bitfield (LSB-first).
+    topology: Topology,
 }
 
 impl<'a, S: Tree> ProofBuilder<'a, S> {
@@ -28,14 +28,14 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
         sorted_keys.dedup();
 
         // Initialize the proof builder.
-        let (leaves, siblings, topology) = (Vec::new(), Vec::new(), Vec::new());
+        let (leaves, siblings, topology) = (Vec::new(), Vec::new(), Topology::default());
         let mut ctx = Self { tree, version, leaves, siblings, topology };
 
         // Walk the tree top-down, collecting proof components.
         ctx.collect(&Key::ROOT, &sorted_keys);
 
         // Encode collected components into wire format.
-        Proof::encode(&ctx.leaves, &ctx.siblings, &ctx.topology)
+        Proof::encode(&ctx.leaves, &ctx.siblings, &ctx.topology.bytes)
     }
 
     /// Recursive proof collection for a sorted sub-slice of leaf keys.

@@ -1,18 +1,9 @@
-use core::fmt;
-
-/// Errors from wire format parsing and proof traversal.
-#[derive(Clone, Debug)]
+/// Wire format decode error.
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {
-    /// A wire format field could not be decoded. Wraps the field name.
+    /// A field could not be decoded. Contains the field name for diagnostics.
+    #[error("decode error: {0}")]
     Decode(&'static str),
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Decode(field) => write!(f, "decode error: {field}"),
-        }
-    }
 }
 
 /// Result type with [`Error`] as the default error.

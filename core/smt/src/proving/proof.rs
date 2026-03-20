@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use vprogs_core_codec::{Bits, Bools, Reader, Result};
+use vprogs_core_codec::{Bits, Reader, Result};
 
 use super::{leaf::Leaf, traversal::Traversal};
 use crate::{Hasher, commitment::Commitment};
@@ -49,10 +49,8 @@ impl<'a> Proof<'a> {
     pub(crate) fn encode(
         leaves: &[(u16, Commitment)],
         siblings: &[[u8; 32]],
-        topology: &[bool],
+        topology: &[u8],
     ) -> Vec<u8> {
-        // Pack topology bools into a bitfield and pre-allocate the output buffer.
-        let topology = topology.pack_lsb();
         let mut buf = Vec::with_capacity(
             4 + leaves.len() * Leaf::SIZE + 4 + siblings.len() * 32 + 4 + topology.len(),
         );
@@ -71,7 +69,7 @@ impl<'a> Proof<'a> {
 
         // Section 3: topology bitfield - variable length.
         buf.extend_from_slice(&(topology.len() as u32).to_le_bytes());
-        buf.extend_from_slice(&topology);
+        buf.extend_from_slice(topology);
 
         buf
     }

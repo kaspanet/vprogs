@@ -18,6 +18,7 @@ pub mod proving {
     pub(crate) mod builder;
     pub(crate) mod leaf;
     pub(crate) mod proof;
+    pub(crate) mod topology;
     pub(crate) mod traversal;
 
     pub use leaf::Leaf;

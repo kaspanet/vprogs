@@ -2,10 +2,13 @@ use alloc::vec::Vec;
 
 use crate::{Error, Result};
 
-/// Extension trait for parsing wire format fields from byte slices.
+/// Self-advancing decoder for wire format fields.
 ///
-/// All methods advance the cursor past the consumed bytes. Implemented for `&'a [u8]` so that
-/// `let mut buf = input; buf.le_u32("field")?;` progressively consumes the buffer.
+/// All methods consume bytes from the front of the slice and advance the cursor past them.
+/// Implemented for `&'a [u8]` so callers write `let mut buf = input; buf.le_u32("field")?;` to
+/// progressively decode a buffer.
+///
+/// Every method takes a `field` name for error diagnostics.
 pub trait Reader<'a> {
     /// Reads a single byte as a boolean (`!= 0`).
     fn bool(&mut self, field: &'static str) -> Result<bool>;
@@ -31,7 +34,7 @@ pub trait Reader<'a> {
     /// Reads a big-endian `u64`.
     fn be_u64(&mut self, field: &'static str) -> Result<u64>;
 
-    /// Reads `len` bytes.
+    /// Reads `len` raw bytes.
     fn bytes(&mut self, len: usize, field: &'static str) -> Result<&'a [u8]>;
 
     /// Reads a fixed-size array reference.
@@ -43,10 +46,12 @@ pub trait Reader<'a> {
     /// Reads a length-prefixed UTF-8 string: `len(4 LE) + bytes(len)`.
     fn string(&mut self, field: &'static str) -> Result<&'a str>;
 
-    /// Advances the cursor past `n` bytes without reading them. Returns `&mut Self` for chaining.
+    /// Advances the cursor past `n` bytes without returning them. Returns `&mut Self` for chaining.
     fn skip(&mut self, n: usize, field: &'static str) -> Result<&mut Self>;
 
     /// Reads a LE `u32` count, then calls `decode_fn` that many times, collecting into a `Vec`.
+    ///
+    /// Pre-allocation is capped by remaining buffer length to prevent OOM from untrusted counts.
     fn many<T>(
         &mut self,
         field: &'static str,
@@ -99,8 +104,7 @@ impl<'a> Reader<'a> for &'a [u8] {
         if self.len() < len {
             return Err(Error::Decode(field));
         }
-        let slice = *self;
-        let (consumed, rest) = slice.split_at(len);
+        let (consumed, rest) = (*self).split_at(len);
         *self = rest;
         Ok(consumed)
     }
@@ -125,7 +129,6 @@ impl<'a> Reader<'a> for &'a [u8] {
         Ok(self)
     }
 
-    /// Pre-allocation is capped by remaining buffer length to prevent OOM from untrusted counts.
     fn many<T>(
         &mut self,
         field: &'static str,

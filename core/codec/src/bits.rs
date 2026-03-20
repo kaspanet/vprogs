@@ -1,25 +1,21 @@
-/// Extension trait for bitwise access on byte slices.
+/// Bitwise access on byte slices using two indexing conventions.
 ///
-/// Provides MSB-first and LSB-first bit indexing. MSB-first matches the tree's left/right
-/// convention (bit 0 is the most significant bit of byte 0). LSB-first matches the topology
-/// bitfield wire format.
+/// MSB-first: bit 0 is the most significant bit of byte 0. LSB-first: bit 0 is the least
+/// significant bit of byte 0. Both conventions index the same bytes — the difference is which bit
+/// within each byte a given index addresses.
+///
+/// Out-of-bounds access is a no-op for setters and returns `false` for getters.
 pub trait Bits {
-    /// Returns the bit at `index` using MSB-first ordering (bit 0 = MSB of byte 0).
-    ///
-    /// Returns `false` for out-of-bounds indices.
+    /// Returns the bit at `index` (MSB-first).
     fn get_msb(&self, index: usize) -> bool;
 
-    /// Returns the bit at `index` using LSB-first ordering (bit 0 = LSB of byte 0).
-    ///
-    /// Returns `false` for out-of-bounds indices.
+    /// Returns the bit at `index` (LSB-first).
     fn get_lsb(&self, index: usize) -> bool;
 
-    /// Sets the bit at `index` using MSB-first ordering (in place). Returns `&mut Self` for
-    /// chaining.
+    /// Sets the bit at `index` (MSB-first). Returns `&mut Self` for chaining.
     fn set_msb(&mut self, index: usize) -> &mut Self;
 
-    /// Sets the bit at `index` using LSB-first ordering (in place). Returns `&mut Self` for
-    /// chaining.
+    /// Sets the bit at `index` (LSB-first). Returns `&mut Self` for chaining.
     fn set_lsb(&mut self, index: usize) -> &mut Self;
 }
 
