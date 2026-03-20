@@ -110,10 +110,12 @@ impl<S: Store, P: Processor> StateDiff<S, P> {
 
 impl<S: Store, P: Processor> From<&StateDiff<S, P>> for Commitment {
     fn from(diff: &StateDiff<S, P>) -> Self {
-        let key = *diff.resource_id.as_bytes();
         let written_state = diff.written_state();
         let data = written_state.data();
-        let value_hash = if data.is_empty() { EMPTY_HASH } else { *blake3::hash(data).as_bytes() };
-        Self::new(key, value_hash)
+
+        Self::new(
+            *diff.resource_id.as_bytes(),
+            if data.is_empty() { EMPTY_HASH } else { *blake3::hash(data).as_bytes() },
+        )
     }
 }
