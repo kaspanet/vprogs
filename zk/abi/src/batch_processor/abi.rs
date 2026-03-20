@@ -1,39 +1,32 @@
-use super::{
-    input::{header::Header, inputs::Inputs, journal_iter::JournalIter},
-    journal::commitment::JournalCommitment,
-};
+use super::{context::BatchContext, input::inputs::Inputs, journal::commitment::JournalCommitment};
 use crate::{Read, Write};
 
 /// Batch processor API for use inside zkVM guests.
 pub struct Abi;
 
 impl Abi {
-    /// Processes a batch of transaction proofs inside the guest, verifying each via `f` and
-    /// committing `(prev_root, new_root, batch_index)` to `journal`.
+    /// Processes a batch of transaction proofs inside the guest.
     ///
-    /// `prev_root` is derived from the proof itself — the guest is the authority on what root
-    /// the proof attests to. The closure returns `(prev_root, new_root)`.
+    /// Verifies all transaction journals against the SMT proof, computes the state root transition,
+    /// and commits the result to the journal. On success, commits `(prev_root, new_root,
+    /// batch_index)`. On failure, commits the error. The `verify_proof` callback handles
+    /// backend-specific inner proof verification (e.g. `env::verify` in risc0).
     pub fn process_batch(
         host: &mut (impl Read + Write),
         journal: &mut impl Write,
-        f: impl for<'a> FnOnce(
-            Header<'a>,
-            vprogs_core_smt::proving::Proof<'a>,
-            &[u32],
-            JournalIter<'a>,
-        ) -> crate::Result<([u8; 32], [u8; 32])>,
+        verify_proof: impl Fn(&[u8; 32], &[u8]),
     ) {
-        let witness_bytes = host.read_blob();
-        let Inputs { header, leaf_order, proof, tx_entries } =
-            Inputs::decode(&witness_bytes).expect("malformed batch input");
+        let wire_bytes = host.read_blob();
+        let inputs = Inputs::decode(&wire_bytes).expect("malformed input");
+        let mut ctx = BatchContext::new(inputs);
 
-        let batch_index = header.batch_index;
-
-        // TODO: propagate error gracefully instead of panicking.
-        let (prev_root, new_root) =
-            f(header, proof, &leaf_order, tx_entries).expect("batch verification failed");
-
-        // Commit (prev_root, new_root, batch_index) to journal.
-        JournalCommitment::encode(journal, &prev_root, &new_root, batch_index);
+        match ctx.verify(&verify_proof) {
+            Ok((prev_root, new_root, batch_index)) => {
+                JournalCommitment::encode_success(journal, &prev_root, &new_root, batch_index);
+            }
+            Err(error) => {
+                JournalCommitment::encode_error(journal, &error);
+            }
+        }
     }
 }

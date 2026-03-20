@@ -16,7 +16,7 @@ pub struct Inputs<'a> {
     /// Sparse Merkle tree proof (leaves carry pre-batch key + value_hash per resource).
     pub proof: Proof<'a>,
     /// Iterator over per-transaction journal entries.
-    pub tx_entries: JournalIter<'a>,
+    pub tx_journals: JournalIter<'a>,
 }
 
 impl<'a> Inputs<'a> {
@@ -36,9 +36,9 @@ impl<'a> Inputs<'a> {
         let proof = Proof::decode(buf.bytes(proof_length, "proof")?)?;
 
         // Remaining bytes are per-transaction journal entries.
-        let tx_entries = JournalIter::new(buf, header.n_txs);
+        let tx_journals = JournalIter::new(buf, header.n_txs);
 
-        Ok(Self { header, leaf_order, proof, tx_entries })
+        Ok(Self { header, leaf_order, proof, tx_journals })
     }
 
     /// Encodes the batch processor input into bytes (host-side).
@@ -47,11 +47,11 @@ impl<'a> Inputs<'a> {
         header: &Header<'_>,
         leaf_order: &[u32],
         proof_bytes: &[u8],
-        journals: &[Vec<u8>],
+        tx_journals: &[Vec<u8>],
     ) -> Vec<u8> {
-        let tx_payload_size: usize = journals.iter().map(|j| 4 + j.len()).sum();
+        let journals_size: usize = tx_journals.iter().map(|j| 4 + j.len()).sum();
 
-        let total = Header::SIZE + leaf_order.len() * 4 + 4 + proof_bytes.len() + tx_payload_size;
+        let total = Header::SIZE + leaf_order.len() * 4 + 4 + proof_bytes.len() + journals_size;
 
         let mut buf = Vec::with_capacity(total);
 
@@ -67,7 +67,7 @@ impl<'a> Inputs<'a> {
         buf.extend_from_slice(proof_bytes);
 
         // Transaction entries (journal only).
-        for journal in journals {
+        for journal in tx_journals {
             buf.extend_from_slice(&(journal.len() as u32).to_le_bytes());
             buf.extend_from_slice(journal);
         }

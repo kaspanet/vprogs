@@ -1619,7 +1619,6 @@ name = "vprogs-zk-backend-risc0-batch-processor"
 version = "0.1.0"
 dependencies = [
  "risc0-zkvm",
- "vprogs-core-smt",
  "vprogs-zk-abi",
  "vprogs-zk-backend-risc0-api",
 ]

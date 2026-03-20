@@ -4,6 +4,7 @@ extern crate alloc;
 
 pub mod batch_processor {
     pub(crate) mod abi;
+    pub(crate) mod context;
 
     pub(crate) mod input {
         pub(crate) mod header;
