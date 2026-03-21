@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use vprogs_core_codec::{Bits, SortUnique};
+use vprogs_core_codec::{Bits, Result, SortUnique};
 
 use super::{proof::Proof, topology::Topology};
 use crate::{EMPTY_HASH, Node, commitment::Commitment, key::Key, tree::Tree};
@@ -25,9 +25,13 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
     /// Returns the wire-encoded proof and a leaf order mapping where `leaf_order[leaf_pos]` is
     /// the original input index of that leaf. The guest uses this to scatter proof leaves back
     /// into resource_index positions. Keys must be unique.
-    pub(crate) fn build(tree: &'a S, version: u64, keys: &[[u8; 32]]) -> (Vec<u8>, Vec<u32>) {
+    pub(crate) fn build(
+        tree: &'a S,
+        version: u64,
+        keys: &[[u8; 32]],
+    ) -> Result<(Vec<u8>, Vec<u32>)> {
         // Sort keys into canonical leaf order and get the input → leaf permutation.
-        let (sorted_keys, leaf_order) = keys.sort_unique();
+        let (sorted_keys, leaf_order) = keys.sort_unique()?;
 
         // Walk the tree top-down, collecting proof components (leaves, siblings, topology).
         let mut ctx = Self {
@@ -42,7 +46,7 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
         // Encode collected components into wire format.
         let proof = Proof::encode(&ctx.leaves, &ctx.siblings, &ctx.topology.bytes);
 
-        (proof, leaf_order)
+        Ok((proof, leaf_order))
     }
 
     /// Recursive proof collection for a sorted sub-slice of leaf keys.

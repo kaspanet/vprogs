@@ -1,5 +1,7 @@
 use alloc::vec::Vec;
 
+use vprogs_core_codec::Result;
+
 use crate::{
     EMPTY_HASH, Hasher, Node, commitment::Commitment, key::Key, proving::builder::ProofBuilder,
     updater::Updater, write_batch::WriteBatch,
@@ -69,8 +71,8 @@ pub trait Tree: Sized {
     ///
     /// Returns the wire-encoded proof (decode with `Proof::decode()`) and a leaf order mapping
     /// where `leaf_order[leaf_pos]` is the original input index of that leaf. The version must
-    /// not have been pruned.
-    fn prove(&self, keys: &[[u8; 32]], version: u64) -> (Vec<u8>, Vec<u32>) {
+    /// not have been pruned. Returns an error if keys contain duplicates.
+    fn prove(&self, keys: &[[u8; 32]], version: u64) -> Result<(Vec<u8>, Vec<u32>)> {
         ProofBuilder::build(self, version, keys)
     }
 }
