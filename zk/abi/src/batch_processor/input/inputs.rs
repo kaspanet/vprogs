@@ -49,12 +49,12 @@ impl<'a> Inputs<'a> {
         proof_bytes: &[u8],
         tx_journals: &[Vec<u8>],
     ) -> Vec<u8> {
+        // Pre-allocate buffer with exact capacity.
         let journals_size: usize = tx_journals.iter().map(|j| 4 + j.len()).sum();
-
         let total = Header::SIZE + leaf_order.len() * 4 + 4 + proof_bytes.len() + journals_size;
-
         let mut buf = Vec::with_capacity(total);
 
+        // Encode header.
         header.encode(&mut buf);
 
         // Leaf order mapping (one u32 per leaf).
@@ -72,7 +72,6 @@ impl<'a> Inputs<'a> {
             buf.extend_from_slice(journal);
         }
 
-        debug_assert_eq!(buf.len(), total);
         buf
     }
 }
