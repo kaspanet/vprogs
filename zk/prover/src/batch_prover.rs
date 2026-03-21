@@ -7,21 +7,21 @@ use vprogs_zk_vm::{Backend, ProofRequest};
 
 use crate::{BatchProof, batch_state::BatchState};
 
-/// Receives proof requests from the ZK VM, proves individual transactions, and assembles
-/// batch witnesses for the batch processor guest.
+/// Proves individual transactions and assembles batch witnesses for the batch processor guest.
 ///
-/// Reads pre-batch state roots and multi-proofs directly from the scheduler's store
-/// (which the scheduler has already committed via `Tree::update`).
+/// Receives proof requests from the ZK VM and reads pre-batch state directly from the
+/// scheduler's store (which has already committed via `Tree::update`).
 pub struct BatchProver<B: Backend, S: Store> {
     backend: Arc<B>,
     store: S,
     rx: mpsc::UnboundedReceiver<ProofRequest>,
+    /// Expected tx count per batch, keyed by block_hash.
     batch_tx_counts: HashMap<[u8; 32], u32>,
-    /// Maps block_hash → store version so the prover reads the correct SMT state.
+    /// Store version per batch — the prover reads the pre-batch SMT state at `version - 1`.
     batch_versions: HashMap<[u8; 32], u64>,
-    /// The transaction processor's image ID, committed to in the batch witness.
+    /// Transaction processor guest image ID.
     image_id: [u8; 32],
-    /// Batch index counter.
+    /// Monotonic batch counter.
     next_batch_index: u64,
 }
 
@@ -43,14 +43,16 @@ impl<B: Backend + 'static, S: Store> BatchProver<B, S> {
         }
     }
 
-    /// Sets the expected transaction count and store version for a batch so the prover knows when
-    /// all proofs have been collected and which SMT version to read.
+    /// Registers a batch so the prover knows when all proofs have been collected and which SMT
+    /// version to read.
     pub fn register_batch(&mut self, block_hash: [u8; 32], tx_count: u32, version: u64) {
         self.batch_tx_counts.insert(block_hash, tx_count);
         self.batch_versions.insert(block_hash, version);
     }
 
-    /// Runs the proving loop. Receives proof requests, proves each transaction, and assembles
+    /// Runs the proving loop.
+    ///
+    /// Receives proof requests, proves each transaction on a blocking thread, and assembles
     /// batch proofs when all transactions for a batch have been proven.
     pub async fn run(mut self) -> mpsc::UnboundedReceiver<BatchProof> {
         let (batch_proof_tx, batch_proof_rx) = mpsc::unbounded_channel();
@@ -64,8 +66,8 @@ impl<B: Backend + 'static, S: Store> BatchProver<B, S> {
                 let tx_index = request.tx_index;
                 let wire_bytes_for_prove = request.wire_bytes.clone();
 
-                // Extract pre-batch resource data from wire_bytes before proving.
-                let pre_batch = extract_pre_batch_resources(&request);
+                // Extract resource IDs from wire_bytes before proving.
+                let pre_batch = extract_resource_ids(&request);
 
                 // Prove on a blocking thread.
                 let receipt = match tokio::task::spawn_blocking(move || {
@@ -80,6 +82,7 @@ impl<B: Backend + 'static, S: Store> BatchProver<B, S> {
                     }
                 };
 
+                // Initialize batch state on first request for this block.
                 let expected_tx_count = self.batch_tx_counts.get(&block_hash).copied().unwrap_or(0);
                 let batch_state = pending.entry(block_hash).or_insert_with(|| BatchState {
                     receipts: (0..expected_tx_count).map(|_| None).collect(),
@@ -87,7 +90,7 @@ impl<B: Backend + 'static, S: Store> BatchProver<B, S> {
                     resource_ids: Vec::new(),
                 });
 
-                // Record resource IDs, growing the vec as needed.
+                // Record resource IDs — grow the vec as needed.
                 for (resource_index, resource_id) in pre_batch {
                     let idx = resource_index as usize;
                     if idx >= batch_state.resource_ids.len() {
@@ -102,12 +105,12 @@ impl<B: Backend + 'static, S: Store> BatchProver<B, S> {
                 batch_state.receipts[tx_index as usize] = Some((receipt, request));
                 batch_state.received += 1;
 
-                // Check if all transactions for this batch have been proven.
+                // All transactions proven — assemble the batch proof.
                 if expected_tx_count > 0 && batch_state.received >= expected_tx_count {
                     let batch_state = pending.remove(&block_hash).unwrap();
-                    let batch_proof =
-                        self.assemble_batch_proof(block_hash, batch_state, &batch_proof_tx);
-                    if let Some(proof) = batch_proof {
+                    if let Some(proof) =
+                        self.assemble_batch_proof(block_hash, batch_state, &batch_proof_tx)
+                    {
                         let _ = batch_proof_tx.send(proof);
                     }
                     self.batch_tx_counts.remove(&block_hash);
@@ -119,7 +122,7 @@ impl<B: Backend + 'static, S: Store> BatchProver<B, S> {
         batch_proof_rx
     }
 
-    /// Assembles a batch witness, proves it, and returns a BatchProof.
+    /// Assembles a batch witness from collected receipts, proves it, and returns a `BatchProof`.
     fn assemble_batch_proof(
         &mut self,
         block_hash: [u8; 32],
@@ -129,21 +132,21 @@ impl<B: Backend + 'static, S: Store> BatchProver<B, S> {
         let batch_index = self.next_batch_index;
         self.next_batch_index += 1;
 
-        // Look up the store version for this batch to generate the proof at the pre-batch state.
+        // Resolve the store version for this batch.
         let version = self.batch_versions.get(&block_hash).copied().unwrap_or(batch_index + 1);
         let prev_version = version.saturating_sub(1);
 
         let resource_ids = &batch_state.resource_ids;
         let n_resources = resource_ids.len();
 
-        // Generate proof and leaf order mapping (leaf_pos → resource_index).
+        // Generate proof and leaf order mapping from the store at the pre-batch version.
         let (proof_bytes, leaf_order) = self.store.prove(resource_ids, prev_version);
 
-        // Unwrap receipts — all slots are filled since we checked `received == expected`.
+        // Unwrap receipts — all slots filled since `received == expected`.
         let receipts: Vec<(B::Receipt, ProofRequest)> =
             batch_state.receipts.into_iter().map(|slot| slot.expect("missing receipt")).collect();
 
-        // Build transaction entries (journals only, already in tx_index order).
+        // Extract journals from receipts (already in tx_index order).
         let journals: Vec<Vec<u8>> =
             receipts.iter().map(|(receipt, _)| B::journal_bytes(receipt)).collect();
 
@@ -156,15 +159,13 @@ impl<B: Backend + 'static, S: Store> BatchProver<B, S> {
         };
         let input = BatchInputs::encode(&header, &leaf_order, &proof_bytes, &journals);
 
-        // Collect inner receipts for composition.
+        // Prove the batch with inner receipts as assumptions for composition.
         let assumptions: Vec<&B::Receipt> = receipts.iter().map(|(receipt, _)| receipt).collect();
-
-        // Prove the batch.
         let receipt = self.backend.prove_batch(&input, &assumptions);
         let receipt_journal = B::journal_bytes(&receipt);
 
-        // Read prev_root and new_root from the guest's journal — the guest is the authority
-        // on what roots the proof attests to.
+        // Read roots from the guest's journal — the guest is the authority on what the proof
+        // attests to.
         let (prev_root, new_root, _) =
             JournalCommitment::decode(&receipt_journal).expect("malformed batch journal");
 
@@ -173,7 +174,7 @@ impl<B: Backend + 'static, S: Store> BatchProver<B, S> {
 }
 
 /// Extracts `(resource_index, resource_id)` pairs from a proof request's wire_bytes.
-fn extract_pre_batch_resources(request: &ProofRequest) -> Vec<(u32, [u8; 32])> {
+fn extract_resource_ids(request: &ProofRequest) -> Vec<(u32, [u8; 32])> {
     use vprogs_zk_abi::transaction_processor::{Inputs, Resource};
 
     let wire = &request.wire_bytes;
@@ -187,13 +188,11 @@ fn extract_pre_batch_resources(request: &ProofRequest) -> Vec<(u32, [u8; 32])> {
     let resources_header_start = Inputs::FIXED_HEADER_SIZE + tx_bytes_len;
 
     let mut result = Vec::with_capacity(n_resources);
-
     for (j, &resource_index) in request.resource_indices.iter().enumerate().take(n_resources) {
         let base = resources_header_start + j * Resource::HEADER_SIZE;
         if base + 32 > wire.len() {
             break;
         }
-
         let resource_id: [u8; 32] = wire[base..base + 32].try_into().unwrap();
         result.push((resource_index, resource_id));
     }

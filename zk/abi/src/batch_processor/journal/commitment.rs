@@ -1,9 +1,9 @@
 use crate::{Error, Write};
 
-/// Journal commitment for a batch proof.
+/// Journal commitment for a batch proof — success or error.
 ///
-/// Wire format: `discriminant(1) + payload`. Success carries `prev_root(32) + new_root(32) +
-/// batch_index(8)`. Error carries the encoded `Error`.
+/// Wire format: `discriminant(1) + payload`. Success payload is `prev_root(32) + new_root(32) +
+/// batch_index(8)`. Error payload is the encoded `Error`.
 pub struct JournalCommitment;
 
 impl JournalCommitment {
@@ -12,26 +12,23 @@ impl JournalCommitment {
     /// Wire discriminant for a failed batch.
     const ERROR: u8 = 0x01;
 
-    /// Encodes a successful batch commitment (guest-side).
-    pub fn encode_success(
-        w: &mut impl Write,
-        prev_root: &[u8; 32],
-        new_root: &[u8; 32],
-        batch_index: u64,
-    ) {
-        w.write(&[Self::SUCCESS]);
-        w.write(prev_root);
-        w.write(new_root);
-        w.write(&batch_index.to_le_bytes());
+    /// Encodes the batch result to the journal (guest-side).
+    pub fn encode(w: &mut impl Write, result: &Result<([u8; 32], [u8; 32], u64), Error>) {
+        match result {
+            Ok((prev_root, new_root, batch_index)) => {
+                w.write(&[Self::SUCCESS]);
+                w.write(prev_root);
+                w.write(new_root);
+                w.write(&batch_index.to_le_bytes());
+            }
+            Err(error) => {
+                w.write(&[Self::ERROR]);
+                error.encode(w);
+            }
+        }
     }
 
-    /// Encodes a failed batch commitment (guest-side).
-    pub fn encode_error(w: &mut impl Write, error: &Error) {
-        w.write(&[Self::ERROR]);
-        error.encode(w);
-    }
-
-    /// Decodes the journal commitment from a batch proof journal (host-side).
+    /// Decodes the journal commitment from a batch proof receipt (host-side).
     ///
     /// Returns `Ok((prev_root, new_root, batch_index))` on success, or the guest error.
     #[cfg(feature = "host")]

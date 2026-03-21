@@ -4,7 +4,7 @@ extern crate alloc;
 
 pub mod batch_processor {
     pub(crate) mod abi;
-    pub(crate) mod context;
+    pub(crate) mod error;
 
     pub(crate) mod input {
         pub(crate) mod header;
@@ -17,6 +17,7 @@ pub mod batch_processor {
     }
 
     pub use abi::Abi;
+    pub use error::ErrorCode;
     pub use input::{header::Header, inputs::Inputs, journal_iter::JournalIter};
     pub use journal::commitment::JournalCommitment;
 }
