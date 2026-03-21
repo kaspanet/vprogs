@@ -9,17 +9,17 @@ pub mod batch_processor {
     pub(crate) mod input {
         pub(crate) mod header;
         pub(crate) mod inputs;
-        pub(crate) mod journal_iter;
+        pub(crate) mod transaction_journals;
     }
 
     pub(crate) mod journal {
-        pub(crate) mod commitment;
+        pub(crate) mod state_transition;
     }
 
     pub use abi::Abi;
     pub use error_code::ErrorCode;
-    pub use input::{header::Header, inputs::Inputs, journal_iter::JournalIter};
-    pub use journal::commitment::JournalCommitment;
+    pub use input::{header::Header, inputs::Inputs, transaction_journals::TransactionJournals};
+    pub use journal::state_transition::StateTransition;
 }
 mod error;
 mod read;

@@ -2,9 +2,9 @@ use alloc::{vec, vec::Vec};
 
 use vprogs_core_smt::Blake3;
 
-use super::{ErrorCode, input::inputs::Inputs};
+use super::{ErrorCode, StateTransition, input::inputs::Inputs};
 use crate::{
-    Error, Result,
+    Error, Read, Result, Write,
     transaction_processor::{
         BatchMetadata, InputResourceCommitment, JournalEntries, OutputCommitment,
         OutputResourceCommitment,
@@ -30,8 +30,16 @@ pub struct Abi<'a, V: Fn(&[u8; 32], &[u8])> {
 }
 
 impl<'a, V: Fn(&[u8; 32], &[u8])> Abi<'a, V> {
+    /// Reads inputs from the host, verifies all transactions, computes the state root transition,
+    /// and writes the result (success or error) to the journal.
+    pub fn process_batch(host: &mut impl Read, journal: &mut impl Write, verify_journal: V) {
+        let input_bytes = host.read_blob();
+
+        StateTransition::encode(journal, &Abi::<'_, V>::verify(&input_bytes, verify_journal));
+    }
+
     /// Decodes inputs, verifies all transactions, and computes the state root transition.
-    pub fn verify_batch(inputs: &'a [u8], verify_journal: V) -> Result<([u8; 32], [u8; 32], u64)> {
+    fn verify(inputs: &'a [u8], verify_journal: V) -> Result<(&'a [u8; 32], [u8; 32], [u8; 32])> {
         // Decode inputs and initialize context.
         let inputs = Inputs::decode(inputs)?;
         let mut this = Self {
@@ -48,7 +56,7 @@ impl<'a, V: Fn(&[u8; 32], &[u8])> Abi<'a, V> {
         }
 
         // Process all transactions — cheap checks first, then cache mutations.
-        let mut mapping_buf = Vec::new(); // Reusable buffer to avoids per-tx allocation.
+        let mut mapping_buf = Vec::new(); // Reusable buffer to avoid per-tx allocation.
         let mut tx_index = 0u32;
         while let Some(tx_journal) = this.inputs.tx_journals.next() {
             this.check_transaction_journal(tx_index, tx_journal?, &mut mapping_buf)?;
@@ -59,7 +67,7 @@ impl<'a, V: Fn(&[u8; 32], &[u8])> Abi<'a, V> {
         let prev_root = this.inputs.proof.root::<Blake3>()?;
         let new_root = this.inputs.proof.compute_root::<Blake3>(|i| this.latest_hash(i))?;
 
-        Ok((prev_root, new_root, this.inputs.header.batch_index))
+        Ok((this.inputs.header.image_id, prev_root, new_root))
     }
 
     /// Verifies a single transaction journal and applies its output mutations.

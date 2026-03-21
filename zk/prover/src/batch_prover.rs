@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use tokio::sync::mpsc;
 use vprogs_storage_types::Store;
-use vprogs_zk_abi::batch_processor::{Header, Inputs as BatchInputs, JournalCommitment};
+use vprogs_zk_abi::batch_processor::{Header, Inputs as BatchInputs, StateTransition};
 use vprogs_zk_vm::{Backend, ProofRequest};
 
 use crate::{BatchProof, batch_state::BatchState};
@@ -165,9 +165,16 @@ impl<B: Backend + 'static, S: Store> BatchProver<B, S> {
 
         // Read roots from the guest's journal — the guest is the authority on what the proof
         // attests to.
-        let (prev_root, new_root, _) = JournalCommitment::decode(&receipt_journal)?;
-
-        Ok(BatchProof { block_hash, batch_index, prev_root, new_root, receipt_journal })
+        match StateTransition::decode(&receipt_journal)? {
+            StateTransition::Success { prev_root, new_root, .. } => Ok(BatchProof {
+                block_hash,
+                batch_index,
+                prev_root: *prev_root,
+                new_root: *new_root,
+                receipt_journal,
+            }),
+            StateTransition::Error(e) => Err(e.into()),
+        }
     }
 }
 

@@ -7,6 +7,7 @@ use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
+use vprogs_zk_abi::batch_processor::StateTransition;
 use vprogs_zk_backend_risc0_api::Backend;
 use vprogs_zk_prover::BatchProver;
 use vprogs_zk_vm::Vm;
@@ -102,21 +103,20 @@ async fn batch_proof_two_transactions() {
     assert_eq!(proof.batch_index, 0);
     assert!(!proof.receipt_journal.is_empty(), "receipt journal should not be empty");
 
-    // The journal encodes (prev_root, new_root, batch_index).
+    // The journal encodes (image_id, prev_root, new_root).
     // The guest is a no-op (doesn't modify resources), so prev_root == new_root.
     // Once the guest implements actual execution, this should change.
     assert_eq!(proof.prev_root, proof.new_root);
 
-    // Verify journal contents match proof fields.
-    let journal = &proof.receipt_journal;
-    assert!(journal.len() >= 72, "journal too short: {} bytes", journal.len());
-    let journal_prev_root: [u8; 32] = journal[0..32].try_into().unwrap();
-    let journal_new_root: [u8; 32] = journal[32..64].try_into().unwrap();
-    let journal_batch_index = u64::from_le_bytes(journal[64..72].try_into().unwrap());
-
-    assert_eq!(journal_prev_root, proof.prev_root);
-    assert_eq!(journal_new_root, proof.new_root);
-    assert_eq!(journal_batch_index, 0);
+    // Verify journal contents match proof fields via the decoder.
+    match StateTransition::decode(&proof.receipt_journal).expect("journal should decode") {
+        StateTransition::Success { image_id: journal_image_id, prev_root, new_root } => {
+            assert_eq!(*journal_image_id, image_id);
+            assert_eq!(*prev_root, proof.prev_root);
+            assert_eq!(*new_root, proof.new_root);
+        }
+        StateTransition::Error(e) => panic!("expected success, got error: {e}"),
+    }
 
     scheduler.shutdown();
 }

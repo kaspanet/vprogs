@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use vprogs_core_codec::Reader;
 use vprogs_core_smt::proving::Proof;
 
-use super::{header::Header, journal_iter::JournalIter};
+use super::{header::Header, transaction_journals::TransactionJournals};
 use crate::Result;
 
 /// Decoded batch processor input (zero-copy).
@@ -15,7 +15,7 @@ pub struct Inputs<'a> {
     /// Sparse Merkle tree proof (leaves carry pre-batch key + value_hash per resource).
     pub proof: Proof<'a>,
     /// Iterator over per-transaction journal entries.
-    pub tx_journals: JournalIter<'a>,
+    pub tx_journals: TransactionJournals<'a>,
 }
 
 impl<'a> Inputs<'a> {
@@ -35,7 +35,7 @@ impl<'a> Inputs<'a> {
         let proof = Proof::decode(buf.bytes(proof_length, "proof")?)?;
 
         // Remaining bytes are per-transaction journal entries.
-        let tx_journals = JournalIter::new(buf, header.n_txs);
+        let tx_journals = TransactionJournals::new(buf, header.n_txs);
 
         Ok(Self { header, leaf_order, proof, tx_journals })
     }
