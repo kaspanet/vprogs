@@ -20,8 +20,6 @@ pub struct Abi<'a, V: Fn(&[u8; 32], &[u8])> {
     /// Decoded batch inputs (header, leaf_order, proof, tx_journals).
     pub inputs: Inputs<'a>,
     /// Latest value hashes indexed by resource_index.
-    ///
-    /// Points into proof leaves initially, then into journal entries as mutations are applied.
     pub value_hashes: Vec<&'a [u8; 32]>,
     /// Block hash from the first transaction — subsequent txs must match.
     pub block_hash: Option<&'a [u8; 32]>,
@@ -33,9 +31,6 @@ pub struct Abi<'a, V: Fn(&[u8; 32], &[u8])> {
 
 impl<'a, V: Fn(&[u8; 32], &[u8])> Abi<'a, V> {
     /// Decodes inputs, verifies all transactions, and computes the state root transition.
-    ///
-    /// Single entry point that captures all errors (decode, verification, root computation).
-    /// Returns `(prev_root, new_root, batch_index)` on success.
     pub fn verify_batch(inputs: &'a [u8], verify_journal: V) -> Result<([u8; 32], [u8; 32], u64)> {
         // Decode inputs and initialize context.
         let inputs = Inputs::decode(inputs)?;
@@ -67,9 +62,6 @@ impl<'a, V: Fn(&[u8; 32], &[u8])> Abi<'a, V> {
     }
 
     /// Verifies a single transaction journal and applies its output mutations.
-    ///
-    /// Checks sequential tx_index, batch metadata consistency, and input resource hashes against
-    /// the current value hashes. On success, applies output mutations to the value hash cache.
     fn check_transaction_journal(&mut self, index: u32, journal_bytes: &'a [u8]) -> Result<()> {
         // Verify the inner ZK proof, then decode the journal.
         (self.verify_journal)(self.inputs.header.image_id, journal_bytes);
@@ -102,9 +94,8 @@ impl<'a, V: Fn(&[u8; 32], &[u8])> Abi<'a, V> {
     }
 
     /// Asserts that batch metadata is consistent across all transactions.
-    ///
-    /// First call sets the expected values; subsequent calls verify equality.
     fn check_batch_metadata(&mut self, metadata: &BatchMetadata<'a>) -> Result<()> {
+        // First call sets expected values; subsequent calls verify equality.
         if self.block_hash.get_or_insert(metadata.block_hash) != &metadata.block_hash {
             return Err(Error::from(ErrorCode::BlockHashMismatch));
         }
@@ -116,12 +107,13 @@ impl<'a, V: Fn(&[u8; 32], &[u8])> Abi<'a, V> {
     }
 
     /// Validates a single input resource commitment against the current value hashes.
-    ///
-    /// Returns the resource index on success.
     fn check_input_resource(&mut self, r: InputResourceCommitment) -> Result<usize> {
+        // Bounds check.
         if r.resource_index >= self.inputs.header.n_resources {
             return Err(Error::from(ErrorCode::ResourceIndexOutOfRange));
         }
+
+        // Value hash must match the current state.
         if r.hash != self.value_hashes[r.resource_index as usize] {
             return Err(Error::from(ErrorCode::ResourceHashMismatch));
         }

@@ -22,9 +22,8 @@ pub(crate) struct ProofBuilder<'a, S> {
 impl<'a, S: Tree> ProofBuilder<'a, S> {
     /// Generates a multi-proof for the given keys at `version`.
     ///
-    /// Returns the wire-encoded proof and a leaf order mapping where `leaf_order[leaf_pos]` is
-    /// the original input index of that leaf. The guest uses this to scatter proof leaves back
-    /// into resource_index positions. Keys must be unique.
+    /// Returns `(proof_bytes, leaf_order)` where `leaf_order[leaf_pos]` is the original input
+    /// index of that leaf. Keys must be unique.
     pub(crate) fn build(
         tree: &'a S,
         version: u64,

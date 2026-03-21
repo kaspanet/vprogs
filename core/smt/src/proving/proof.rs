@@ -34,9 +34,6 @@ impl<'a> Proof<'a> {
     }
 
     /// Computes the root hash using caller-provided value hashes (e.g. after mutations).
-    ///
-    /// The closure is called with leaf indices in `0..self.leaves.len()` during the tree
-    /// traversal. Zero-allocation — no intermediate vec needed.
     pub fn compute_root<'v, H: Hasher>(
         &self,
         value_hash: impl Fn(usize) -> &'v [u8; 32],

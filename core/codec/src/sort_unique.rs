@@ -2,15 +2,9 @@ use alloc::vec::Vec;
 
 use crate::{Error, Result};
 
-/// Sorts a slice by value while tracking the original indices.
-///
-/// Returns references in sorted order and a permutation mapping sorted position back to the
-/// original input index. Returns an error on duplicates.
+/// Sorts a slice by value while tracking the original indices. Returns an error on duplicates.
 pub trait SortUnique<T> {
-    /// Returns `(sorted_refs, order)` where `order[sorted_pos]` is the original input index of
-    /// that element.
-    ///
-    /// Returns `Err` if the slice contains duplicate elements.
+    /// Returns `(sorted_refs, order)` where `order[sorted_pos]` is the original input index.
     fn sort_unique(&self) -> Result<(Vec<&T>, Vec<u32>)>;
 }
 

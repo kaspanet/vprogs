@@ -11,9 +11,6 @@ use crate::{BatchProof, batch_state::BatchState};
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
 /// Proves individual transactions and assembles batch witnesses for the batch processor guest.
-///
-/// Receives proof requests from the ZK VM and reads pre-batch state directly from the
-/// scheduler's store (which has already committed via `Tree::update`).
 pub struct BatchProver<B: Backend, S: Store> {
     backend: Arc<B>,
     store: S,
@@ -54,9 +51,6 @@ impl<B: Backend + 'static, S: Store> BatchProver<B, S> {
     }
 
     /// Runs the proving loop.
-    ///
-    /// Receives proof requests, proves each transaction on a blocking thread, and assembles
-    /// batch proofs when all transactions for a batch have been proven.
     pub async fn run(mut self) -> mpsc::UnboundedReceiver<BatchProof> {
         let (batch_proof_tx, batch_proof_rx) = mpsc::unbounded_channel();
 
