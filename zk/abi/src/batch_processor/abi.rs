@@ -2,7 +2,7 @@ use alloc::{vec, vec::Vec};
 
 use vprogs_core_smt::Blake3;
 
-use super::{error::ErrorCode, input::inputs::Inputs};
+use super::{ErrorCode, input::inputs::Inputs};
 use crate::{
     Error, Result,
     transaction_processor::{

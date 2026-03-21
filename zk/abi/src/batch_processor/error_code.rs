@@ -1,9 +1,6 @@
 use crate::Error;
 
 /// Batch processor verification error codes.
-///
-/// Committed to the journal on failure. Each variant maps to a `u32` wire code via
-/// `Error::Guest(code)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum ErrorCode {
