@@ -44,7 +44,7 @@ impl<'a, 'v, F: Fn(usize) -> &'v [u8; 32]> Traversal<'a, F> {
             if level > leaf.depth {
                 return Err(Error::Decode("malformed proof"));
             } else if level == leaf.depth {
-                return Ok(*Node::leaf::<H>(*leaf.key, *(self.value_hash_fn)(start)).hash());
+                return Ok(Node::hash_leaf::<H>(leaf.key, (self.value_hash_fn)(start)));
             }
         }
 
@@ -64,7 +64,7 @@ impl<'a, 'v, F: Fn(usize) -> &'v [u8; 32]> Traversal<'a, F> {
             let mid = self.proof.split_point(start, end, level);
             let left = self.traverse::<H>(start, mid, level + 1)?;
             let right = self.traverse::<H>(mid, end, level + 1)?;
-            Ok(*Node::internal::<H>(&left, &right).hash())
+            Ok(Node::hash_internal::<H>(&left, &right))
         } else {
             // Topology bit = 0: only one side has proof leaves - use a sibling hash for the other.
             let goes_left = !self.proof.leaves[start].key.get_msb(level as usize);
@@ -77,9 +77,9 @@ impl<'a, 'v, F: Fn(usize) -> &'v [u8; 32]> Traversal<'a, F> {
 
             let child = self.traverse::<H>(start, end, level + 1)?;
             if goes_left {
-                Ok(*Node::internal::<H>(&child, sibling).hash())
+                Ok(Node::hash_internal::<H>(&child, sibling))
             } else {
-                Ok(*Node::internal::<H>(sibling, &child).hash())
+                Ok(Node::hash_internal::<H>(sibling, &child))
             }
         }
     }

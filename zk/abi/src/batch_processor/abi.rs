@@ -48,9 +48,10 @@ impl<'a, V: Fn(&[u8; 32], &[u8])> Abi<'a, V> {
         }
 
         // Process all transactions — cheap checks first, then cache mutations.
+        let mut mapping_buf = Vec::new(); // Reusable buffer to avoids per-tx allocation.
         let mut tx_index = 0u32;
         while let Some(tx_journal) = this.inputs.tx_journals.next() {
-            this.check_transaction_journal(tx_index, tx_journal?)?;
+            this.check_transaction_journal(tx_index, tx_journal?, &mut mapping_buf)?;
             tx_index += 1;
         }
 
@@ -62,7 +63,12 @@ impl<'a, V: Fn(&[u8; 32], &[u8])> Abi<'a, V> {
     }
 
     /// Verifies a single transaction journal and applies its output mutations.
-    fn check_transaction_journal(&mut self, index: u32, journal_bytes: &'a [u8]) -> Result<()> {
+    fn check_transaction_journal(
+        &mut self,
+        index: u32,
+        journal_bytes: &'a [u8],
+        mapping_buf: &mut Vec<usize>,
+    ) -> Result<()> {
         // Verify the inner ZK proof, then decode the journal.
         (self.verify_journal)(self.inputs.header.image_id, journal_bytes);
         let journal = JournalEntries::decode(journal_bytes)?;
@@ -76,16 +82,16 @@ impl<'a, V: Fn(&[u8; 32], &[u8])> Abi<'a, V> {
         self.check_batch_metadata(&journal.input_commitment.batch_metadata)?;
 
         // Verify input resource hashes and collect the resource_index mapping.
-        let mut input_mapping = Vec::new();
+        mapping_buf.clear();
         for input in journal.input_commitment.resources {
-            input_mapping.push(self.check_input_resource(input?)?);
+            mapping_buf.push(self.check_input_resource(input?)?);
         }
 
         // Apply output mutations — update value hashes for modified resources.
         if let OutputCommitment::Success(outputs) = journal.output_commitment {
             for (i, output) in outputs.enumerate() {
                 if let OutputResourceCommitment::Changed(hash) = output? {
-                    self.value_hashes[input_mapping[i]] = hash;
+                    self.value_hashes[mapping_buf[i]] = hash;
                 }
             }
         }

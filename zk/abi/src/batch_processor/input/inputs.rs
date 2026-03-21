@@ -10,8 +10,7 @@ use crate::Result;
 pub struct Inputs<'a> {
     /// Batch header.
     pub header: Header<'a>,
-    /// Leaf order mapping: `leaf_order[leaf_pos] = resource_index`. Maps each proof leaf back
-    /// to its position in the scheduler's resource ordering.
+    /// Leaf order mapping: `leaf_order[leaf_pos] = resource_index` (materialized for O(1) access).
     pub leaf_order: Vec<u32>,
     /// Sparse Merkle tree proof (leaves carry pre-batch key + value_hash per resource).
     pub proof: Proof<'a>,

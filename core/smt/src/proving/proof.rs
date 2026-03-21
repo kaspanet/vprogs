@@ -10,9 +10,9 @@ use crate::{Hasher, commitment::Commitment};
 /// Wire format: `n_leaves(4) + leaves(66 each) + n_siblings(4) + siblings(32 each) +
 /// topology_len(4) + topology_bytes`. All counts are LE u32.
 pub struct Proof<'a> {
-    /// Shortcut leaves with their declared depths and key/value hashes.
+    /// Shortcut leaves with depths and key/value hashes (materialized in Vec for O(1) access).
     pub leaves: Vec<Leaf<'a>>,
-    /// Sibling hashes consumed sequentially during traversal.
+    /// Sibling hashes consumed during traversal (materialized in Vec for O(1) access).
     pub siblings: Vec<&'a [u8; 32]>,
     /// Packed topology bitfield encoding the proof tree structure.
     pub topology: &'a [u8],
