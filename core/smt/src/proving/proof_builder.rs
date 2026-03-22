@@ -1,9 +1,11 @@
 use alloc::vec::Vec;
 
-use vprogs_core_codec::Bits;
+use vprogs_core_codec::{Bits, Result, SortUnique};
 
-use super::{proof::Proof, topology::Topology};
-use crate::{EMPTY_HASH, Node, commitment::Commitment, key::Key, tree::Tree};
+use crate::{
+    Commitment, EMPTY_HASH, Key, Node, Tree,
+    proving::{Proof, Topology},
+};
 
 /// Walks the tree top-down to collect sibling hashes and leaf depths for a multi-proof.
 pub(crate) struct ProofBuilder<'a, S> {
@@ -20,26 +22,31 @@ pub(crate) struct ProofBuilder<'a, S> {
 }
 
 impl<'a, S: Tree> ProofBuilder<'a, S> {
-    /// Generates a multi-proof for the given keys at `version` and returns it in wire format.
-    pub(crate) fn build(tree: &'a S, version: u64, leaf_keys: &[[u8; 32]]) -> Vec<u8> {
-        // Sort and deduplicate keys so the proof leaves are in canonical order.
-        let mut sorted_keys = leaf_keys.to_vec();
-        sorted_keys.sort_unstable();
-        sorted_keys.dedup();
+    /// Generates a multi-proof for the given keys at `version`.
+    ///
+    /// Returns `(proof_bytes, leaf_order)` where `leaf_order[leaf_pos]` is the original input index
+    /// of that leaf. Keys must be unique.
+    pub(crate) fn build(
+        tree: &'a S,
+        version: u64,
+        keys: &[[u8; 32]],
+    ) -> Result<(Vec<u8>, Vec<u32>)> {
+        // Sort keys into canonical leaf order and get the input → leaf permutation.
+        let (sorted_keys, leaf_order) = keys.sort_unique()?;
 
-        // Initialize the proof builder.
+        // Walk the tree top-down, collecting proof components (leaves, siblings, topology).
         let (leaves, siblings, topology) = (Vec::new(), Vec::new(), Topology::default());
         let mut ctx = Self { tree, version, leaves, siblings, topology };
-
-        // Walk the tree top-down, collecting proof components.
         ctx.collect(&Key::ROOT, &sorted_keys);
 
         // Encode collected components into wire format.
-        Proof::encode(&ctx.leaves, &ctx.siblings, &ctx.topology.bytes)
+        let proof = Proof::encode(&ctx.leaves, &ctx.siblings, &ctx.topology.bytes);
+
+        Ok((proof, leaf_order))
     }
 
     /// Recursive proof collection for a sorted sub-slice of leaf keys.
-    fn collect(&mut self, key: &Key, leaf_keys: &[[u8; 32]]) {
+    fn collect(&mut self, key: &Key, leaf_keys: &[&[u8; 32]]) {
         // No keys to collect in this subtree.
         if leaf_keys.is_empty() {
             return;
@@ -63,10 +70,10 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
     }
 
     /// Collects proof entries for an empty subtree - all proof keys are absent.
-    fn collect_empty(&mut self, leaf_keys: &[[u8; 32]], level: u16) {
+    fn collect_empty(&mut self, leaf_keys: &[&[u8; 32]], level: u16) {
         if leaf_keys.len() == 1 {
             // Single absent key - emit as an empty leaf at this depth.
-            self.leaves.push((level, Commitment::new(leaf_keys[0], EMPTY_HASH)));
+            self.leaves.push((level, Commitment::new(*leaf_keys[0], EMPTY_HASH)));
             return;
         }
 
@@ -87,7 +94,7 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
     }
 
     /// Collects proof entries at an internal node - splits proof keys by the current bit.
-    fn collect_internal(&mut self, key: &Key, leaf_keys: &[[u8; 32]]) {
+    fn collect_internal(&mut self, key: &Key, leaf_keys: &[&[u8; 32]]) {
         // Split proof keys by the current bit.
         let mid = leaf_keys.partition_point(|k| !k.get_msb(key.level as usize));
         let (left_keys, right_keys) = leaf_keys.split_at(mid);

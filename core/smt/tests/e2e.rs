@@ -138,14 +138,16 @@ fn multi_version_commit_and_prove() {
     let keys = [test_key(1), test_key(2), test_key(3), test_key(4), test_key(5)];
 
     for (version, expected_root) in [(1, root1), (2, root2), (3, root3)] {
-        let proof_bytes = store.prove(&keys, version);
+        let (proof_bytes, _) = store.prove(&keys, version).unwrap();
         let proof = Proof::decode(&proof_bytes).expect("proof should decode");
-        assert!(
-            proof.verify::<Blake3>(expected_root).unwrap(),
+        assert_eq!(
+            proof.root::<Blake3>().unwrap(),
+            expected_root,
             "proof at version {version} should verify against its root"
         );
-        assert!(
-            !proof.verify::<Blake3>([0xFFu8; 32]).unwrap(),
+        assert_ne!(
+            proof.root::<Blake3>().unwrap(),
+            [0xFFu8; 32],
             "proof at version {version} should reject a wrong root"
         );
     }
@@ -173,14 +175,16 @@ fn historical_version_read_after_overwrite() {
     assert_eq!(store.root(1), root1, "historical root should be preserved");
 
     // Proof at version 1 should verify against version 1's root.
-    let proof_bytes = store.prove(&[key], 1);
+    let (proof_bytes, _) = store.prove(&[key], 1).unwrap();
     let proof = Proof::decode(&proof_bytes).unwrap();
-    assert!(
-        proof.verify::<Blake3>(root1).unwrap(),
+    assert_eq!(
+        proof.root::<Blake3>().unwrap(),
+        root1,
         "proof at version 1 should verify after version 2 overwrites the same key"
     );
-    assert!(
-        !proof.verify::<Blake3>(root2).unwrap(),
+    assert_ne!(
+        proof.root::<Blake3>().unwrap(),
+        root2,
         "proof at version 1 should NOT verify against version 2's root"
     );
 }
@@ -249,10 +253,11 @@ fn prune_preserves_tree_integrity() {
 
     // Proof at version 2 should still verify.
     let keys = [test_key(1), test_key(2), test_key(3)];
-    let proof_bytes = store.prove(&keys, 2);
+    let (proof_bytes, _) = store.prove(&keys, 2).unwrap();
     let proof = Proof::decode(&proof_bytes).expect("proof should decode");
-    assert!(
-        proof.verify::<Blake3>(root2).unwrap(),
+    assert_eq!(
+        proof.root::<Blake3>().unwrap(),
+        root2,
         "proof at v2 should verify after pruning v2's stale nodes"
     );
 }
@@ -279,9 +284,9 @@ fn rollback_restores_previous_state() {
     assert_eq!(store.root(1), root1);
 
     // Proof at version 1 should verify.
-    let proof_bytes = store.prove(&[test_key(1)], 1);
+    let (proof_bytes, _) = store.prove(&[test_key(1)], 1).unwrap();
     let proof = Proof::decode(&proof_bytes).unwrap();
-    assert!(proof.verify::<Blake3>(root1).unwrap());
+    assert_eq!(proof.root::<Blake3>().unwrap(), root1);
 }
 
 // -- Edge cases --
@@ -299,9 +304,9 @@ fn single_key_lifecycle() {
     assert_ne!(root1, EMPTY_HASH);
 
     // Proof for the single key should verify.
-    let proof_bytes = store.prove(&[key], 1);
+    let (proof_bytes, _) = store.prove(&[key], 1).unwrap();
     let proof = Proof::decode(&proof_bytes).unwrap();
-    assert!(proof.verify::<Blake3>(root1).unwrap());
+    assert_eq!(proof.root::<Blake3>().unwrap(), root1);
     assert_eq!(proof.leaves.len(), 1);
 
     // Version 2: delete the key.
@@ -349,7 +354,7 @@ fn duplicate_commitments_last_write_wins() {
     let value_a = test_value(100);
     let value_b = test_value(200);
 
-    // Submit two commitments for the same key — the second (value_b) should win.
+    // Submit two commitments for the same key - the second (value_b) should win.
     let root_dup = commit_raw(
         &store,
         1,
@@ -375,15 +380,14 @@ fn proof_verify_wrong_root_returns_false() {
 
     commit(&store, 1, &[(test_key(1), test_value(1))]);
 
-    let proof_bytes = store.prove(&[test_key(1)], 1);
+    let (proof_bytes, _) = store.prove(&[test_key(1)], 1).unwrap();
     let proof = Proof::decode(&proof_bytes).unwrap();
 
-    // Wrong root should return Ok(false), not an error.
-    let result = proof.verify::<Blake3>([0xAB; 32]);
-    assert!(!result.unwrap());
+    // Wrong root should not match.
+    assert_ne!(proof.root::<Blake3>().unwrap(), [0xAB; 32]);
 }
 
-/// Empty commitments are a no-op — root carries forward from the previous version.
+/// Empty commitments are a no-op - root carries forward from the previous version.
 #[test]
 fn empty_commitments_preserve_root() {
     let dir = TempDir::new().unwrap();

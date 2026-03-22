@@ -3,14 +3,14 @@ use vprogs_core_codec::Reader;
 use crate::Result;
 
 /// Iterator over per-transaction journal slices in a batch witness.
-pub struct JournalIter<'a> {
+pub struct TransactionJournals<'a> {
     /// Remaining unconsumed bytes of the journal entries.
     buf: &'a [u8],
     /// Number of entries not yet yielded.
     remaining: u32,
 }
 
-impl<'a> JournalIter<'a> {
+impl<'a> TransactionJournals<'a> {
     /// Creates a new iterator over `remaining` length-prefixed journal entries in `buf`.
     pub fn new(buf: &'a [u8], remaining: u32) -> Self {
         Self { buf, remaining }
@@ -23,7 +23,7 @@ impl<'a> JournalIter<'a> {
     }
 }
 
-impl<'a> Iterator for JournalIter<'a> {
+impl<'a> Iterator for TransactionJournals<'a> {
     type Item = Result<&'a [u8]>;
 
     fn next(&mut self) -> Option<Self::Item> {

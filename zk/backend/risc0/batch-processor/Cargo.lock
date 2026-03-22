@@ -1604,7 +1604,6 @@ dependencies = [
  "vprogs-core-codec",
  "vprogs-core-smt",
  "vprogs-core-types",
- "vprogs-zk-smt",
 ]
 
 [[package]]
@@ -1622,14 +1621,6 @@ dependencies = [
  "risc0-zkvm",
  "vprogs-zk-abi",
  "vprogs-zk-backend-risc0-api",
- "vprogs-zk-smt",
-]
-
-[[package]]
-name = "vprogs-zk-smt"
-version = "0.1.0"
-dependencies = [
- "blake3",
 ]
 
 [[package]]

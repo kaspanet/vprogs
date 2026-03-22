@@ -15,14 +15,17 @@ pub mod hashing {
 }
 
 pub mod proving {
-    pub(crate) mod builder;
     pub(crate) mod leaf;
     pub(crate) mod proof;
+    pub(crate) mod proof_builder;
     pub(crate) mod topology;
     pub(crate) mod traversal;
 
     pub use leaf::Leaf;
     pub use proof::Proof;
+    pub(crate) use proof_builder::ProofBuilder;
+    pub(crate) use topology::Topology;
+    pub(crate) use traversal::Traversal;
 }
 
 pub(crate) mod commitment;

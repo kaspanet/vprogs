@@ -26,44 +26,45 @@ pub enum Node {
 
 impl Node {
     /// Creates an internal node from its two child hashes.
-    ///
-    /// Domain tag `0x00` distinguishes internal nodes from leaves (`0x01`). Both children empty
-    /// triggers empty subtree compression - returns `EMPTY_HASH` without hashing.
     pub fn internal<H: Hasher>(left: &[u8; 32], right: &[u8; 32]) -> Self {
-        Node::Internal {
-            hash: match (left, right) {
-                (&EMPTY_HASH, &EMPTY_HASH) => EMPTY_HASH,
-                (left, right) => H::hash(&[0u8; 65].tap_mut(|buf| {
-                    buf[0] = 0x00;
-                    buf[1..33].copy_from_slice(left);
-                    buf[33..65].copy_from_slice(right);
-                })),
-            },
-        }
+        Node::Internal { hash: Self::hash_internal::<H>(left, right) }
     }
 
     /// Creates a shortcut leaf node from a key and value hash.
-    ///
-    /// Domain tag `0x01` distinguishes leaves from internal nodes (`0x00`). An empty value hash
-    /// represents a deletion - returns `EMPTY_HASH` without hashing.
     pub fn leaf<H: Hasher>(key: [u8; 32], value_hash: [u8; 32]) -> Self {
-        Node::Leaf {
-            key,
-            value_hash,
-            hash: match &value_hash {
-                &EMPTY_HASH => EMPTY_HASH,
-                value_hash => H::hash(&[0u8; 65].tap_mut(|buf| {
-                    buf[0] = 0x01;
-                    buf[1..33].copy_from_slice(&key);
-                    buf[33..65].copy_from_slice(value_hash);
-                })),
-            },
+        Node::Leaf { key, value_hash, hash: Self::hash_leaf::<H>(&key, &value_hash) }
+    }
+
+    /// Domain-separated hash of two child hashes (tag `0x00`).
+    ///
+    /// Returns `EMPTY_HASH` if both children are empty (subtree compression).
+    pub fn hash_internal<H: Hasher>(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+        match (left, right) {
+            (&EMPTY_HASH, &EMPTY_HASH) => EMPTY_HASH,
+            (left, right) => H::hash(&[0u8; 65].tap_mut(|buf| {
+                buf[0] = 0x00;
+                buf[1..33].copy_from_slice(left);
+                buf[33..65].copy_from_slice(right);
+            })),
+        }
+    }
+
+    /// Domain-separated hash of a key and value hash (tag `0x01`).
+    ///
+    /// Returns `EMPTY_HASH` for deletions (empty value hash).
+    pub fn hash_leaf<H: Hasher>(key: &[u8; 32], value_hash: &[u8; 32]) -> [u8; 32] {
+        match value_hash {
+            &EMPTY_HASH => EMPTY_HASH,
+            value_hash => H::hash(&[0u8; 65].tap_mut(|buf| {
+                buf[0] = 0x01;
+                buf[1..33].copy_from_slice(key);
+                buf[33..65].copy_from_slice(value_hash);
+            })),
         }
     }
 
     /// Deserializes from bytes produced by `encode`, advancing `buf` past the consumed bytes.
     pub fn decode(buf: &mut &[u8]) -> Result<Self> {
-        // Dispatch on tag byte.
         match buf.byte("tag")? {
             0x00 => Ok(Node::Internal { hash: *buf.array::<32>("hash")? }),
             0x01 => Ok(Node::Leaf {

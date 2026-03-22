@@ -1,4 +1,4 @@
-use crate::key::Key;
+use crate::Key;
 
 /// A node that was superseded by a newer version. Used by pruning to garbage-collect old nodes.
 #[derive(Debug)]

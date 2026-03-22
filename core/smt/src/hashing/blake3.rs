@@ -1,4 +1,4 @@
-use super::hasher::Hasher;
+use crate::Hasher;
 
 /// Blake3 implementation of the `Hasher` trait.
 pub struct Blake3;

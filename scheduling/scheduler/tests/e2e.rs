@@ -1331,7 +1331,7 @@ pub fn test_pruning_pause_and_unpause() {
             );
         }
 
-        // Unpause — the worker should now catch up to the full threshold.
+        // Unpause - the worker should now catch up to the full threshold.
         scheduler.pruning().unpause();
         scheduler.wait_pruned(5, Duration::from_secs(10));
 
@@ -1384,11 +1384,11 @@ pub fn test_rollback_pruning_conflict() {
         scheduler.pruning().set_threshold(4);
         scheduler.wait_pruned(3, Duration::from_secs(10));
 
-        // Rollback to batch 2 should fail — its rollback pointers are gone.
+        // Rollback to batch 2 should fail - its rollback pointers are gone.
         let err = scheduler.rollback_to(2).unwrap_err();
         assert!(matches!(err, SchedulerError::PruningConflict));
 
-        // Rollback to batch 4 should still succeed — above the pruned range.
+        // Rollback to batch 4 should still succeed - above the pruned range.
         let target = scheduler.rollback_to(4).expect("rollback should succeed");
         assert_eq!(target.index(), 4);
 
@@ -1518,7 +1518,7 @@ pub fn test_smt_state_root_after_rollback() {
         assert_ne!(root_after_1, root_after_2);
         assert_ne!(root_after_2, root_after_3);
 
-        // Rollback to batch 1 — state root should match the root after batch 1.
+        // Rollback to batch 1 - state root should match the root after batch 1.
         scheduler.rollback_to(1).expect("rollback should succeed");
         assert_eq!(
             state_root(&scheduler),
@@ -1526,7 +1526,7 @@ pub fn test_smt_state_root_after_rollback() {
             "state root should be restored to the target version's root after rollback"
         );
 
-        // Schedule a new batch after rollback — root should diverge from the original batch 2.
+        // Schedule a new batch after rollback - root should diverge from the original batch 2.
         let batch4 = scheduler.schedule(
             10,
             vec![SchedulerTransaction::new(
@@ -1569,7 +1569,7 @@ pub fn test_smt_state_root_rollback_to_zero() {
         batch1.wait_committed_blocking();
         assert_ne!(state_root(&scheduler), EMPTY_HASH);
 
-        // Rollback to 0 — should reset to empty.
+        // Rollback to 0 - should reset to empty.
         scheduler.rollback_to(0).expect("rollback should succeed");
         assert_eq!(
             state_root(&scheduler),
@@ -1655,15 +1655,17 @@ pub fn test_smt_multi_proof_verify() {
 
         // Generate a proof for resource 1's key and verify it.
         let key = *ResourceId::for_test(1).as_bytes();
-        let proof_bytes = store.prove(&[key], 1);
+        let (proof_bytes, _) = store.prove(&[key], 1).unwrap();
         let proof = Proof::decode(&proof_bytes).expect("valid proof");
 
-        assert!(
-            proof.verify::<Blake3>(root).unwrap(),
+        assert_eq!(
+            proof.root::<Blake3>().unwrap(),
+            root,
             "proof should verify against the correct root",
         );
-        assert!(
-            !proof.verify::<Blake3>([0xFFu8; 32]).unwrap(),
+        assert_ne!(
+            proof.root::<Blake3>().unwrap(),
+            [0xFFu8; 32],
             "proof should reject an incorrect root",
         );
 
@@ -1695,17 +1697,19 @@ pub fn test_smt_multi_proof_absent_key() {
         let store = scheduler.state().storage().store();
         let root = store.root(1);
 
-        // Generate a proof for resource 99 (absent) — should still verify against the root.
+        // Generate a proof for resource 99 (absent) - should still verify against the root.
         let absent_key = *ResourceId::for_test(99).as_bytes();
-        let proof_bytes = store.prove(&[absent_key], 1);
+        let (proof_bytes, _) = store.prove(&[absent_key], 1).unwrap();
         let proof = Proof::decode(&proof_bytes).expect("valid proof");
 
-        assert!(
-            proof.verify::<Blake3>(root).unwrap(),
+        assert_eq!(
+            proof.root::<Blake3>().unwrap(),
+            root,
             "proof for an absent key should verify against the root",
         );
-        assert!(
-            !proof.verify::<Blake3>([0xFFu8; 32]).unwrap(),
+        assert_ne!(
+            proof.root::<Blake3>().unwrap(),
+            [0xFFu8; 32],
             "proof should reject an incorrect root",
         );
 
@@ -1744,11 +1748,12 @@ pub fn test_smt_multi_proof_mixed_keys() {
             *ResourceId::for_test(3).as_bytes(),
             *ResourceId::for_test(99).as_bytes(),
         ];
-        let proof_bytes = store.prove(&keys, 1);
+        let (proof_bytes, _) = store.prove(&keys, 1).unwrap();
         let proof = Proof::decode(&proof_bytes).expect("valid proof");
 
-        assert!(
-            proof.verify::<Blake3>(root).unwrap(),
+        assert_eq!(
+            proof.root::<Blake3>().unwrap(),
+            root,
             "mixed proof should verify against the correct root",
         );
         assert!(proof.leaves.len() >= 3, "proof should have at least 3 leaves");

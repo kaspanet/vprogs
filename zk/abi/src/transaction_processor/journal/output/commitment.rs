@@ -1,5 +1,5 @@
 use vprogs_core_codec::Reader;
-use vprogs_zk_smt::EMPTY_LEAF_HASH;
+use vprogs_core_smt::EMPTY_HASH;
 
 use crate::{
     Error, Result, Write,
@@ -52,7 +52,7 @@ impl<'a> OutputCommitment<'a> {
                 for r in resources {
                     if r.is_deleted() {
                         w.write(&[OutputResourceCommitment::CHANGED]);
-                        w.write(&EMPTY_LEAF_HASH);
+                        w.write(&EMPTY_HASH);
                     } else if r.is_dirty() {
                         w.write(&[OutputResourceCommitment::CHANGED]);
                         w.write(blake3::hash(r.data()).as_bytes());

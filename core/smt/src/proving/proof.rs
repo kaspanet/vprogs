@@ -2,17 +2,19 @@ use alloc::vec::Vec;
 
 use vprogs_core_codec::{Bits, Reader, Result};
 
-use super::{leaf::Leaf, traversal::Traversal};
-use crate::{Hasher, commitment::Commitment};
+use crate::{
+    Commitment, Hasher,
+    proving::{Leaf, Traversal},
+};
 
 /// Zero-copy view of a multi-proof, borrowing from a flat byte buffer.
 ///
 /// Wire format: `n_leaves(4) + leaves(66 each) + n_siblings(4) + siblings(32 each) +
 /// topology_len(4) + topology_bytes`. All counts are LE u32.
 pub struct Proof<'a> {
-    /// Shortcut leaves with their declared depths and key/value hashes.
+    /// Shortcut leaves with depths and key/value hashes (materialized in Vec for O(1) access).
     pub leaves: Vec<Leaf<'a>>,
-    /// Sibling hashes consumed sequentially during traversal.
+    /// Sibling hashes consumed during traversal (materialized in Vec for O(1) access).
     pub siblings: Vec<&'a [u8; 32]>,
     /// Packed topology bitfield encoding the proof tree structure.
     pub topology: &'a [u8],
@@ -28,21 +30,17 @@ impl<'a> Proof<'a> {
         })
     }
 
-    /// Verifies that the proof leaves produce the expected root hash.
-    pub fn verify<H: Hasher>(&self, expected_root: [u8; 32]) -> Result<bool> {
+    /// Computes the root hash from the proof's own leaf value hashes.
+    pub fn root<H: Hasher>(&self) -> Result<[u8; 32]> {
         Traversal::compute_root::<H>(self, |i| self.leaves[i].value_hash)
-            .map(|root| root == expected_root)
     }
 
-    /// Recomputes the root using updated value hashes (one per leaf, same order as in the proof).
-    ///
-    /// Enables computing the post-update root without re-reading the tree.
-    pub fn compute_root<H: Hasher>(&self, updated_hashes: &[[u8; 32]]) -> Result<[u8; 32]> {
-        if updated_hashes.len() != self.leaves.len() {
-            return Err(vprogs_core_codec::Error::Decode("updated_hashes length mismatch"));
-        }
-
-        Traversal::compute_root::<H>(self, |i| &updated_hashes[i])
+    /// Computes the root hash using caller-provided value hashes (e.g. after mutations).
+    pub fn compute_root<'v, H: Hasher>(
+        &self,
+        value_hash: impl Fn(usize) -> &'v [u8; 32],
+    ) -> Result<[u8; 32]> {
+        Traversal::compute_root::<H>(self, value_hash)
     }
 
     /// Encodes proof components into the wire format.
@@ -77,7 +75,7 @@ impl<'a> Proof<'a> {
     /// Finds the partition point where keys switch from bit=0 (left) to bit=1 (right).
     ///
     /// Proof leaves are sorted by key, so binary search via `partition_point` is valid.
-    pub(super) fn split_point(&self, start: usize, end: usize, level: u16) -> usize {
+    pub(crate) fn split_point(&self, start: usize, end: usize, level: u16) -> usize {
         start + self.leaves[start..end].partition_point(|leaf| !leaf.key.get_msb(level as usize))
     }
 }

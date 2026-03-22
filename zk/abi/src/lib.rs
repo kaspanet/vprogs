@@ -4,25 +4,22 @@ extern crate alloc;
 
 pub mod batch_processor {
     pub(crate) mod abi;
+    pub(crate) mod error_code;
 
     pub(crate) mod input {
         pub(crate) mod header;
         pub(crate) mod inputs;
-        pub(crate) mod journal_iter;
-    }
-
-    pub(crate) mod output {
-        pub(crate) mod outputs;
+        pub(crate) mod transaction_journals;
     }
 
     pub(crate) mod journal {
-        pub(crate) mod commitment;
+        pub(crate) mod state_transition;
     }
 
     pub use abi::Abi;
-    pub use input::{header::Header, inputs::Inputs, journal_iter::JournalIter};
-    pub use journal::commitment::JournalCommitment;
-    pub use output::outputs::Outputs;
+    pub use error_code::ErrorCode;
+    pub use input::{header::Header, inputs::Inputs, transaction_journals::TransactionJournals};
+    pub use journal::state_transition::StateTransition;
 }
 mod error;
 mod read;
@@ -30,6 +27,7 @@ mod write;
 
 pub mod transaction_processor {
     pub(crate) mod abi;
+    pub(crate) mod transaction_handler;
 
     pub(crate) mod input {
         pub(crate) mod batch_metadata;
@@ -74,6 +72,7 @@ pub mod transaction_processor {
         },
     };
     pub use output::{outputs::Outputs, storage_op::StorageOp};
+    pub use transaction_handler::TransactionHandler;
 }
 
 pub use error::{Error, Result};

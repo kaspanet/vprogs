@@ -1,8 +1,9 @@
 use alloc::vec::Vec;
 
+use vprogs_core_codec::Result;
+
 use crate::{
-    EMPTY_HASH, Hasher, Node, commitment::Commitment, key::Key, proving::builder::ProofBuilder,
-    updater::Updater, write_batch::WriteBatch,
+    Commitment, EMPTY_HASH, Hasher, Key, Node, WriteBatch, proving::ProofBuilder, updater::Updater,
 };
 
 /// Number of levels in the tree (256-bit keys).
@@ -65,10 +66,12 @@ pub trait Tree: Sized {
         Updater::apply(self, wb, version, commitments)
     }
 
-    /// Proves the state of the given keys at a specific version, returning a wire-encoded proof.
+    /// Proves the state of the given keys at a specific version.
     ///
-    /// Decode with `Proof::decode()` for verification. The version must not have been pruned.
-    fn prove(&self, keys: &[[u8; 32]], version: u64) -> Vec<u8> {
+    /// Returns the wire-encoded proof (decode with `Proof::decode()`) and a leaf order mapping
+    /// where `leaf_order[leaf_pos]` is the original input index of that leaf. The version must
+    /// not have been pruned. Returns an error if keys contain duplicates.
+    fn prove(&self, keys: &[[u8; 32]], version: u64) -> Result<(Vec<u8>, Vec<u32>)> {
         ProofBuilder::build(self, version, keys)
     }
 }

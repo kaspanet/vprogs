@@ -157,7 +157,7 @@ impl<S: Store, P: Processor> ScheduledBatch<S, P> {
             let was_processed = AtomicAsyncLatch::default();
             let was_persisted = AtomicAsyncLatch::default();
 
-            // An empty batch has nothing to process or persist — open the latches
+            // An empty batch has nothing to process or persist - open the latches
             // immediately so the lifecycle worker can commit it right away.
             if txs.is_empty() {
                 was_processed.open();
@@ -200,7 +200,7 @@ impl<S: Store, P: Processor> ScheduledBatch<S, P> {
         for tx in self.txs() {
             if tx.resources().is_empty() {
                 // Transactions with no resource dependencies are immediately available
-                // for execution — no data to load, no chains to join.
+                // for execution - no data to load, no chains to join.
                 self.push_available_tx(tx);
             } else {
                 for resource in tx.resources() {
