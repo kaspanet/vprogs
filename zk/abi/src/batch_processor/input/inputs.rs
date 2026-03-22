@@ -1,20 +1,23 @@
 use alloc::vec::Vec;
 
-use vprogs_zk_smt::MultiProof;
+use vprogs_core_codec::Reader;
+use vprogs_core_smt::proving::Proof;
 
-use super::{header::Header, journal_iter::JournalIter};
-use crate::{Parser, Result, transaction_processor::InputResourceCommitment};
+use crate::{
+    Result,
+    batch_processor::{Header, TransactionJournals},
+};
 
 /// Decoded batch processor input (zero-copy).
 pub struct Inputs<'a> {
     /// Batch header.
     pub header: Header<'a>,
-    /// Per-resource input commitments.
-    pub commitments: Vec<InputResourceCommitment<'a>>,
-    /// Sparse Merkle tree multi-proof.
-    pub multi_proof: MultiProof<'a>,
+    /// Leaf order mapping: `leaf_order[leaf_pos] = resource_index` (materialized for O(1) access).
+    pub leaf_order: Vec<u32>,
+    /// Sparse Merkle tree proof (leaves carry pre-batch key + value_hash per resource).
+    pub proof: Proof<'a>,
     /// Iterator over per-transaction journal entries.
-    pub tx_entries: JournalIter<'a>,
+    pub tx_journals: TransactionJournals<'a>,
 }
 
 impl<'a> Inputs<'a> {
@@ -23,65 +26,53 @@ impl<'a> Inputs<'a> {
         // Decode header.
         let header = Header::decode(&mut buf)?;
 
-        // Decode per-resource input commitments.
-        let n = header
-            .n_resources
-            .checked_mul(InputResourceCommitment::PRE_INDEXED_SIZE as u32)
-            .filter(|&total| (total as usize) <= buf.len())
-            .ok_or_else(|| crate::Error::Decode("n_resources overflow".into()))?;
-        let _ = n; // validation only; we still decode one-by-one for the index assignment
-
-        let mut commitments = Vec::with_capacity(header.n_resources as usize);
-        for i in 0..header.n_resources {
-            commitments.push(InputResourceCommitment::decode_pre_indexed(&mut buf, i)?);
+        // Decode leaf_order (one u32 per leaf).
+        let mut leaf_order = Vec::with_capacity(header.n_resources as usize);
+        for _ in 0..header.n_resources {
+            leaf_order.push(buf.le_u32("leaf_order")?);
         }
 
-        // Decode length-prefixed multi-proof.
-        let multi_proof_length = buf.consume_u32("multi_proof_length")? as usize;
-        let multi_proof = MultiProof::decode(buf.consume_bytes(multi_proof_length, "multi_proof")?);
+        // Decode length-prefixed proof.
+        let proof_length = buf.le_u32("proof_length")? as usize;
+        let proof = Proof::decode(buf.bytes(proof_length, "proof")?)?;
 
         // Remaining bytes are per-transaction journal entries.
-        let tx_entries = JournalIter::new(buf, header.n_txs);
+        let tx_journals = TransactionJournals::new(buf, header.n_txs);
 
-        Ok(Self { header, commitments, multi_proof, tx_entries })
+        Ok(Self { header, leaf_order, proof, tx_journals })
     }
 
     /// Encodes the batch processor input into bytes (host-side).
     #[cfg(feature = "host")]
     pub fn encode(
         header: &Header<'_>,
-        commitments: &[InputResourceCommitment<'_>],
-        multi_proof_bytes: &[u8],
-        journals: &[Vec<u8>],
+        leaf_order: &[u32],
+        proof_bytes: &[u8],
+        tx_journals: &[Vec<u8>],
     ) -> Vec<u8> {
-        let tx_payload_size: usize = journals.iter().map(|j| 4 + j.len()).sum();
-
-        let total = Header::SIZE
-            + header.n_resources as usize * InputResourceCommitment::PRE_INDEXED_SIZE
-            + 4
-            + multi_proof_bytes.len()
-            + tx_payload_size;
-
+        // Pre-allocate buffer with exact capacity.
+        let journals_size: usize = tx_journals.iter().map(|j| 4 + j.len()).sum();
+        let total = Header::SIZE + leaf_order.len() * 4 + 4 + proof_bytes.len() + journals_size;
         let mut buf = Vec::with_capacity(total);
 
+        // Encode header.
         header.encode(&mut buf);
 
-        // Resource commitments (pre-indexed: resource_id + hash, no index).
-        for c in commitments {
-            c.encode_pre_indexed(&mut buf);
+        // Leaf order mapping (one u32 per leaf).
+        for &idx in leaf_order {
+            buf.extend_from_slice(&idx.to_le_bytes());
         }
 
-        // Multi-proof (length-prefixed raw bytes).
-        buf.extend_from_slice(&(multi_proof_bytes.len() as u32).to_le_bytes());
-        buf.extend_from_slice(multi_proof_bytes);
+        // Proof (length-prefixed raw bytes).
+        buf.extend_from_slice(&(proof_bytes.len() as u32).to_le_bytes());
+        buf.extend_from_slice(proof_bytes);
 
         // Transaction entries (journal only).
-        for journal in journals {
+        for journal in tx_journals {
             buf.extend_from_slice(&(journal.len() as u32).to_le_bytes());
             buf.extend_from_slice(journal);
         }
 
-        debug_assert_eq!(buf.len(), total);
         buf
     }
 }

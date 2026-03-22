@@ -24,25 +24,25 @@ impl StorageOp {
     /// Decodes an `Option<StorageOp>`, advancing `buf` past the consumed bytes.
     #[cfg(feature = "host")]
     pub fn decode(buf: &mut &[u8]) -> crate::Result<Option<Self>> {
-        use crate::Parser;
+        use vprogs_core_codec::Reader;
 
         // Read dirty flag. Unchanged (non-dirty) resources are encoded as a single 0 byte.
-        if !buf.consume_bool("dirty_flag")? {
+        if !buf.bool("dirty_flag")? {
             return Ok(None);
         }
 
         // Decode variant.
-        match buf.consume_u8("variant")? {
+        match buf.byte("variant")? {
             Self::DELETE => Ok(Some(Self::Delete)),
             variant => {
                 // Decode length prefix.
-                let data_length = buf.consume_u32("data_length")? as usize;
+                let data_length = buf.le_u32("data_length")? as usize;
 
                 // Read the data and construct the corresponding variant.
                 Ok(Some(if variant == Self::CREATE {
-                    Self::Create(buf.consume_bytes(data_length, "data")?.to_vec())
+                    Self::Create(buf.bytes(data_length, "data")?.to_vec())
                 } else {
-                    Self::Update(buf.consume_bytes(data_length, "data")?.to_vec())
+                    Self::Update(buf.bytes(data_length, "data")?.to_vec())
                 }))
             }
         }

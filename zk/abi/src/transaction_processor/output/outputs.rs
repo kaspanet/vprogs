@@ -25,13 +25,15 @@ impl Outputs {
     /// Decodes the execution result from the guest (host-side).
     #[cfg(feature = "host")]
     pub fn decode(mut buf: &[u8]) -> Result<Self> {
-        use crate::{Error, Parser};
+        use vprogs_core_codec::Reader;
+
+        use crate::Error;
 
         // Dispatch based on discriminant.
-        match buf.consume_u8("discriminant")? {
+        match buf.byte("discriminant")? {
             Self::OK => {
                 // Decode length-prefixed storage operations.
-                let count = buf.consume_u32("count")? as usize;
+                let count = buf.le_u32("count")? as usize;
                 let mut storage_ops = Vec::with_capacity(count);
                 for _ in 0..count {
                     storage_ops.push(StorageOp::decode(&mut buf)?);

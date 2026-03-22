@@ -1,0 +1,131 @@
+use alloc::vec::Vec;
+
+use vprogs_core_codec::{Bits, Result, SortUnique};
+
+use crate::{
+    Commitment, EMPTY_HASH, Key, Node, Tree,
+    proving::{Proof, Topology},
+};
+
+/// Walks the tree top-down to collect sibling hashes and leaf depths for a multi-proof.
+pub(crate) struct ProofBuilder<'a, S> {
+    /// Read-only access to existing tree nodes.
+    tree: &'a S,
+    /// Tree version to generate the proof for.
+    version: u64,
+    /// Collected proof leaves: (depth, state commitment) pairs.
+    leaves: Vec<(u16, Commitment)>,
+    /// Collected sibling hashes for one-sided subtrees.
+    siblings: Vec<[u8; 32]>,
+    /// Packed topology bitfield (LSB-first).
+    topology: Topology,
+}
+
+impl<'a, S: Tree> ProofBuilder<'a, S> {
+    /// Generates a multi-proof for the given keys at `version`.
+    ///
+    /// Returns `(proof_bytes, leaf_order)` where `leaf_order[leaf_pos]` is the original input index
+    /// of that leaf. Keys must be unique.
+    pub(crate) fn build(
+        tree: &'a S,
+        version: u64,
+        keys: &[[u8; 32]],
+    ) -> Result<(Vec<u8>, Vec<u32>)> {
+        // Sort keys into canonical leaf order and get the input → leaf permutation.
+        let (sorted_keys, leaf_order) = keys.sort_unique()?;
+
+        // Walk the tree top-down, collecting proof components (leaves, siblings, topology).
+        let (leaves, siblings, topology) = (Vec::new(), Vec::new(), Topology::default());
+        let mut ctx = Self { tree, version, leaves, siblings, topology };
+        ctx.collect(&Key::ROOT, &sorted_keys);
+
+        // Encode collected components into wire format.
+        let proof = Proof::encode(&ctx.leaves, &ctx.siblings, &ctx.topology.bytes);
+
+        Ok((proof, leaf_order))
+    }
+
+    /// Recursive proof collection for a sorted sub-slice of leaf keys.
+    fn collect(&mut self, key: &Key, leaf_keys: &[&[u8; 32]]) {
+        // No keys to collect in this subtree.
+        if leaf_keys.is_empty() {
+            return;
+        }
+
+        // Dispatch based on the node type at this position.
+        match self.tree.node(key, self.version) {
+            // Empty subtree - all requested keys are absent.
+            None => self.collect_empty(leaf_keys, key.level),
+
+            // Shortcut leaf - emit it as the proof entry for this subtree.
+            Some((_, Node::Leaf { key: leaf_key, value_hash, .. })) => {
+                self.leaves.push((key.level, Commitment::new(leaf_key, value_hash)));
+            }
+
+            // Internal node - split proof keys and recurse into children.
+            Some((_, Node::Internal { .. })) => {
+                self.collect_internal(key, leaf_keys);
+            }
+        }
+    }
+
+    /// Collects proof entries for an empty subtree - all proof keys are absent.
+    fn collect_empty(&mut self, leaf_keys: &[&[u8; 32]], level: u16) {
+        if leaf_keys.len() == 1 {
+            // Single absent key - emit as an empty leaf at this depth.
+            self.leaves.push((level, Commitment::new(*leaf_keys[0], EMPTY_HASH)));
+            return;
+        }
+
+        // Multiple absent keys - split by bit to produce the topology the verifier needs.
+        let mid = leaf_keys.partition_point(|k| !k.get_msb(level as usize));
+
+        if mid > 0 && mid < leaf_keys.len() {
+            // Both sides have absent keys - emit a split topology bit.
+            self.topology.push(true);
+            self.collect_empty(&leaf_keys[..mid], level + 1);
+            self.collect_empty(&leaf_keys[mid..], level + 1);
+        } else {
+            // All absent keys on one side - emit sibling (EMPTY_HASH) for the empty side.
+            self.topology.push(false);
+            self.siblings.push(EMPTY_HASH);
+            self.collect_empty(leaf_keys, level + 1);
+        }
+    }
+
+    /// Collects proof entries at an internal node - splits proof keys by the current bit.
+    fn collect_internal(&mut self, key: &Key, leaf_keys: &[&[u8; 32]]) {
+        // Split proof keys by the current bit.
+        let mid = leaf_keys.partition_point(|k| !k.get_msb(key.level as usize));
+        let (left_keys, right_keys) = leaf_keys.split_at(mid);
+
+        // Construct child keys.
+        let left_child = key.left_child();
+        let right_child = key.right_child();
+
+        if !left_keys.is_empty() && !right_keys.is_empty() {
+            // Both children have proof keys - emit a split topology bit and recurse both sides.
+            self.topology.push(true);
+            self.collect(&left_child, left_keys);
+            self.collect(&right_child, right_keys);
+        } else {
+            // Only one side has proof keys - emit the other side's hash as a sibling.
+            self.topology.push(false);
+
+            if left_keys.is_empty() {
+                // Proof keys are on the right - left subtree hash becomes a sibling.
+                self.siblings.push(self.node_hash(&left_child));
+                self.collect(&right_child, right_keys);
+            } else {
+                // Proof keys are on the left - right subtree hash becomes a sibling.
+                self.siblings.push(self.node_hash(&right_child));
+                self.collect(&left_child, left_keys);
+            }
+        }
+    }
+
+    /// Returns the hash of the node at the given key, or `EMPTY_HASH` if absent.
+    fn node_hash(&self, node_key: &Key) -> [u8; 32] {
+        self.tree.node(node_key, self.version).map(|(_, data)| *data.hash()).unwrap_or(EMPTY_HASH)
+    }
+}

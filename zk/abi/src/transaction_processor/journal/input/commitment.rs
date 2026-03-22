@@ -1,7 +1,8 @@
-use vprogs_zk_smt::EMPTY_LEAF_HASH;
+use vprogs_core_codec::Reader;
+use vprogs_core_smt::EMPTY_HASH;
 
 use crate::{
-    Parser, Result, Write,
+    Result, Write,
     transaction_processor::{
         BatchMetadata, InputResourceCommitment, InputResourceCommitments, Inputs, JournalEntry,
     },
@@ -26,10 +27,10 @@ impl<'a> InputCommitment<'a> {
     /// Decodes an input commitment from a journal segment payload.
     pub fn decode(mut buf: &'a [u8]) -> Result<Self> {
         // Decode fixed header fields.
-        let tx_id = buf.consume_array::<32>("tx_id")?;
-        let tx_index = buf.consume_u32("tx_index")?;
+        let tx_id = buf.array::<32>("tx_id")?;
+        let tx_index = buf.le_u32("tx_index")?;
         let batch_metadata = BatchMetadata::decode(&mut buf)?;
-        let resource_count = buf.consume_u32("resource_count")?;
+        let resource_count = buf.le_u32("resource_count")?;
 
         // Create zero-copy iterator over resource entries.
         let resources = InputResourceCommitments::new(buf, resource_count);
@@ -55,11 +56,7 @@ impl<'a> InputCommitment<'a> {
             let data = r.data();
             w.write(&r.index().to_le_bytes());
             w.write(r.id().as_bytes());
-            w.write(&if data.is_empty() {
-                EMPTY_LEAF_HASH
-            } else {
-                *blake3::hash(data).as_bytes()
-            });
+            w.write(&if data.is_empty() { EMPTY_HASH } else { *blake3::hash(data).as_bytes() });
         }
     }
 }

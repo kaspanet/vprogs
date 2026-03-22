@@ -1,6 +1,8 @@
 use alloc::string::String;
 
-use crate::{Parser, Write};
+use vprogs_core_codec::Reader;
+
+use crate::Write;
 
 /// Errors from ZK ABI operations.
 #[derive(Clone, Debug, thiserror::Error)]
@@ -32,9 +34,9 @@ impl Error {
     /// Decodes an error, advancing `buf` past the consumed bytes.
     pub fn decode(buf: &mut &[u8]) -> Result<Self> {
         // Dispatch based on discriminant.
-        match buf.consume_u8("error_variant")? {
-            Self::GUEST => Ok(Self::Guest(buf.consume_u32("error_code")?)),
-            Self::DECODE => Ok(Self::Decode(buf.consume_string("error_msg")?.into())),
+        match buf.byte("error_variant")? {
+            Self::GUEST => Ok(Self::Guest(buf.le_u32("error_code")?)),
+            Self::DECODE => Ok(Self::Decode(buf.string("error_msg")?.into())),
             _ => Err(Error::Decode("invalid error discriminant".into())),
         }
     }
@@ -53,6 +55,14 @@ impl Error {
                 w.write(&(msg.len() as u32).to_le_bytes());
                 w.write(msg.as_bytes());
             }
+        }
+    }
+}
+
+impl From<vprogs_core_codec::Error> for Error {
+    fn from(e: vprogs_core_codec::Error) -> Self {
+        match e {
+            vprogs_core_codec::Error::Decode(field) => Self::Decode(field.into()),
         }
     }
 }

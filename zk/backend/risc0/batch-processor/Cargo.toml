@@ -9,4 +9,3 @@ vprogs-zk-abi = { path = "../../../abi", default-features = false }
 vprogs-zk-backend-risc0-api = { path = "../api", default-features = false, features = [
   "guest",
 ] }
-vprogs-zk-smt = { path = "../../../smt", default-features = false }

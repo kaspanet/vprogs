@@ -8,7 +8,6 @@ default-members = [
   "storage/*",
   "transaction-runtime/*",
   "zk/prover",
-  "zk/smt",
   "zk/backend/risc0/api",
   "zk/abi",
   "zk/vm",
@@ -26,7 +25,6 @@ members = [
   "storage/*",
   "transaction-runtime/*",
   "zk/prover",
-  "zk/smt",
   "zk/backend/risc0/api",
   "zk/abi",
   "zk/vm",
@@ -101,7 +99,9 @@ resolver = "3"
 
   # Internal dependencies
   vprogs-core-atomics = { path = "core/atomics" }
+  vprogs-core-codec = { path = "core/codec" }
   vprogs-core-macros = { path = "core/macros" }
+  vprogs-core-smt = { path = "core/smt" }
   vprogs-core-test-utils = { path = "core/test-utils" }
   vprogs-core-types = { path = "core/types", default-features = false }
   vprogs-l1-bridge = { path = "l1/bridge" }
@@ -145,7 +145,6 @@ resolver = "3"
     "host",
   ] }
   vprogs-zk-prover = { path = "zk/prover" }
-  vprogs-zk-smt = { path = "zk/smt", default-features = false }
   vprogs-zk-vm = { path = "zk/vm" }
 
 [patch.'https://github.com/kaspanet/rusty-kaspa']

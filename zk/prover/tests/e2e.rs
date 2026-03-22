@@ -1,12 +1,15 @@
 use risc0_binfmt::ProgramBinary;
 use tempfile::TempDir;
 use tokio::sync::mpsc;
+use vprogs_core_smt::{EMPTY_HASH, Tree};
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId, SchedulerTransaction};
 use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
+use vprogs_state_version::StateVersion;
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
+use vprogs_zk_abi::batch_processor::StateTransition;
 use vprogs_zk_backend_risc0_api::Backend;
 use vprogs_zk_prover::BatchProver;
 use vprogs_zk_vm::Vm;
@@ -36,10 +39,11 @@ fn batch_processor_elf() -> Vec<u8> {
     })
 }
 
-/// Proves two transactions individually, then stitches them into a single batch proof.
+/// Proves two transactions that each increment a u32 counter on distinct resources.
 ///
-/// Verifies the full pipeline: execution → transaction proving → batch proving → state root
-/// transition.
+/// Verifies the full pipeline: execution -> transaction proving -> batch proving -> state root
+/// transition. The guest increments each resource's counter from 0 to 1, so prev_root should
+/// differ from new_root (state changed).
 #[tokio::test(flavor = "multi_thread")]
 async fn batch_proof_two_transactions() {
     let transaction_elf = transaction_processor_elf();
@@ -47,6 +51,7 @@ async fn batch_proof_two_transactions() {
 
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+    let store_for_prover = storage.clone();
 
     let backend = Backend::new(&transaction_elf, &batch_elf);
     let image_id: [u8; 32] =
@@ -75,14 +80,14 @@ async fn batch_proof_two_transactions() {
     let block_metadata = ChainBlockMetadata::default();
     let block_hash = block_metadata.block_hash().as_bytes();
 
-    // Set up the batch prover.
-    let mut batch_prover = BatchProver::new(backend, proof_rx, image_id);
-    batch_prover.register_batch(block_hash, 2);
+    // Set up the batch prover. Version 1 = first scheduled batch in the store.
+    let mut batch_prover = BatchProver::new(backend, proof_rx, image_id, store_for_prover.clone());
+    batch_prover.register_batch(block_hash, 2, 1);
 
     // Start the proving loop.
     let mut batch_proof_rx = batch_prover.run().await;
 
-    // Schedule the batch (this executes both transactions and sends proof requests).
+    // Schedule the batch (executes both transactions and sends proof requests).
     let batch = scheduler.schedule(
         block_metadata,
         vec![
@@ -101,21 +106,123 @@ async fn batch_proof_two_transactions() {
     assert_eq!(proof.batch_index, 0);
     assert!(!proof.receipt_journal.is_empty(), "receipt journal should not be empty");
 
-    // The journal encodes (prev_root, new_root, batch_index).
-    // The guest is a no-op (doesn't modify resources), so prev_root == new_root.
-    // Once the guest implements actual execution, this should change.
-    assert_eq!(proof.prev_root, proof.new_root);
+    // The guest increments each resource's counter from 0 to 1, so the state should change.
+    assert_ne!(proof.prev_root, proof.new_root, "state should change after counter increment");
+    assert_eq!(proof.prev_root, EMPTY_HASH, "prev_root should be empty (no prior state)");
 
-    // Verify journal contents match proof fields.
-    let journal = &proof.receipt_journal;
-    assert!(journal.len() >= 72, "journal too short: {} bytes", journal.len());
-    let journal_prev_root: [u8; 32] = journal[0..32].try_into().unwrap();
-    let journal_new_root: [u8; 32] = journal[32..64].try_into().unwrap();
-    let journal_batch_index = u64::from_le_bytes(journal[64..72].try_into().unwrap());
+    // The new_root should match what the store committed at version 1.
+    assert_eq!(proof.new_root, store_for_prover.root(1), "new_root should match store's version 1");
 
-    assert_eq!(journal_prev_root, proof.prev_root);
-    assert_eq!(journal_new_root, proof.new_root);
-    assert_eq!(journal_batch_index, 0);
+    // Verify committed counter values - both resources should be 1 (incremented from 0).
+    let r1_data = StateVersion::get(&store_for_prover, 1, &ResourceId::for_test(1))
+        .expect("resource 1 should have committed data");
+    let r2_data = StateVersion::get(&store_for_prover, 1, &ResourceId::for_test(2))
+        .expect("resource 2 should have committed data");
+    assert_eq!(
+        u32::from_le_bytes(r1_data.as_slice().try_into().unwrap()),
+        1,
+        "resource 1 counter should be 1"
+    );
+    assert_eq!(
+        u32::from_le_bytes(r2_data.as_slice().try_into().unwrap()),
+        1,
+        "resource 2 counter should be 1"
+    );
+
+    // Verify that the SMT proof leaves contain the correct value hashes for the counter data.
+    let expected_hash = *blake3::hash(&1u32.to_le_bytes()).as_bytes();
+    for resource_id in [ResourceId::for_test(1), ResourceId::for_test(2)] {
+        let (proof_bytes, _) = store_for_prover.prove(&[*resource_id.as_bytes()], 1).unwrap();
+        let smt_proof = vprogs_core_smt::proving::Proof::decode(&proof_bytes).unwrap();
+        assert_eq!(
+            *smt_proof.leaves[0].value_hash, expected_hash,
+            "SMT leaf value hash should match blake3(counter=1)"
+        );
+    }
+
+    // Verify journal contents via the decoder.
+    match StateTransition::decode(&proof.receipt_journal).expect("journal should decode") {
+        StateTransition::Success { image_id: journal_image_id, prev_root, new_root } => {
+            assert_eq!(*journal_image_id, image_id);
+            assert_eq!(*prev_root, proof.prev_root);
+            assert_eq!(*new_root, proof.new_root);
+        }
+        StateTransition::Error(e) => panic!("expected success, got error: {e}"),
+    }
+
+    let batch1_new_root = proof.new_root;
+
+    // --- Second batch: increment counters from 1 to 2 ---
+
+    // Recreate the pipeline - prover consumed its receiver, need a fresh channel.
+    scheduler.shutdown();
+    let backend = Backend::new(&transaction_elf, &batch_elf);
+    let (proof_tx_2, proof_rx_2) = mpsc::unbounded_channel();
+    let vm_2 = Vm::with_proof_channel(backend.clone(), proof_tx_2);
+    let mut scheduler = Scheduler::new(
+        ExecutionConfig::default().with_processor(vm_2),
+        StorageConfig::default().with_store(store_for_prover.clone()),
+    );
+
+    let block_metadata_2 = ChainBlockMetadata::default();
+    let block_hash_2 = block_metadata_2.block_hash().as_bytes();
+
+    let mut batch_prover_2 =
+        BatchProver::new(backend, proof_rx_2, image_id, store_for_prover.clone());
+    batch_prover_2.register_batch(block_hash_2, 2, 2);
+    let mut batch_proof_rx_2 = batch_prover_2.run().await;
+
+    // Schedule a second batch touching the same resources.
+    let mut tx3 = L1Transaction::default();
+    tx3.payload = vec![7, 8, 9];
+    let mut tx4 = L1Transaction::default();
+    tx4.payload = vec![10, 11, 12];
+
+    let batch_2 = scheduler.schedule(
+        block_metadata_2,
+        vec![
+            SchedulerTransaction::new(tx3, vec![AccessMetadata::write(ResourceId::for_test(1))]),
+            SchedulerTransaction::new(tx4, vec![AccessMetadata::write(ResourceId::for_test(2))]),
+        ],
+    );
+
+    batch_2.wait_committed_blocking();
+
+    let proof_2 = batch_proof_rx_2.recv().await.expect("expected a batch proof for batch 2");
+
+    // Chain continuity: batch 2's prev_root should equal batch 1's new_root.
+    assert_eq!(
+        proof_2.prev_root, batch1_new_root,
+        "batch 2 prev_root should chain from batch 1 new_root"
+    );
+    assert_ne!(proof_2.prev_root, proof_2.new_root, "state should change again");
+
+    // Verify counter values are now 2.
+    let r1_data_v2 = StateVersion::get(&store_for_prover, 2, &ResourceId::for_test(1))
+        .expect("resource 1 should have v2 data");
+    let r2_data_v2 = StateVersion::get(&store_for_prover, 2, &ResourceId::for_test(2))
+        .expect("resource 2 should have v2 data");
+    assert_eq!(
+        u32::from_le_bytes(r1_data_v2.as_slice().try_into().unwrap()),
+        2,
+        "resource 1 counter should be 2 after second batch"
+    );
+    assert_eq!(
+        u32::from_le_bytes(r2_data_v2.as_slice().try_into().unwrap()),
+        2,
+        "resource 2 counter should be 2 after second batch"
+    );
+
+    // Verify SMT leaves at version 2 match blake3(counter=2).
+    let expected_hash_v2 = *blake3::hash(&2u32.to_le_bytes()).as_bytes();
+    for resource_id in [ResourceId::for_test(1), ResourceId::for_test(2)] {
+        let (proof_bytes, _) = store_for_prover.prove(&[*resource_id.as_bytes()], 2).unwrap();
+        let smt_proof = vprogs_core_smt::proving::Proof::decode(&proof_bytes).unwrap();
+        assert_eq!(
+            *smt_proof.leaves[0].value_hash, expected_hash_v2,
+            "SMT leaf value hash should match blake3(counter=2)"
+        );
+    }
 
     scheduler.shutdown();
 }

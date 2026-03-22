@@ -220,7 +220,7 @@ async fn test_bridge_receives_reorg_events() {
         }),
     );
 
-    // Connect the nodes — node1 should reorg to node0's longer chain.
+    // Connect the nodes - node1 should reorg to node0's longer chain.
     node1.connect_to(&node0).await;
 
     // Wait for the main chain tip to appear on bridge1.
@@ -235,7 +235,7 @@ async fn test_bridge_receives_reorg_events() {
     let rollback_pos = events.iter().position(|e| matches!(e, L1Event::Rollback { .. }));
 
     if let Some(pos) = rollback_pos {
-        // Reorg detected — verify blocks after rollback are from the main chain.
+        // Reorg detected - verify blocks after rollback are from the main chain.
         let blocks_after_rollback: Vec<_> = events[pos + 1..]
             .iter()
             .filter_map(|e| match e {
@@ -270,7 +270,7 @@ async fn test_bridge_receives_reorg_events() {
             );
         }
     } else {
-        // No discrete reorg — blocks propagated incrementally.
+        // No discrete reorg - blocks propagated incrementally.
         let has_main_tip = events.iter().any(|e| {
             matches!(e, L1Event::ChainBlockAdded { header, .. } if header.hash == Some(last_main_hash))
         });

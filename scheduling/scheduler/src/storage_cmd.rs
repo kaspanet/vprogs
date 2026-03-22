@@ -31,7 +31,7 @@ impl<S: Store, P: Processor> WriteCmd for Write<S, P> {
     fn exec<ST: Store>(&self, store: &ST, mut wb: ST::WriteBatch) -> ST::WriteBatch {
         match self {
             Write::StateDiff(state_diff) => state_diff.write(&mut wb),
-            Write::CommitBatch(batch) => batch.commit(&mut wb),
+            Write::CommitBatch(batch) => batch.commit(store, &mut wb),
             Write::Rollback(rollback) => return rollback.execute(store, wb),
         }
         wb

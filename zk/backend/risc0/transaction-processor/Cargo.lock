@@ -1423,6 +1423,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "tap"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
+
+[[package]]
 name = "thiserror"
 version = "2.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1566,6 +1572,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "vprogs-core-codec"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
+name = "vprogs-core-smt"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "tap",
+ "vprogs-core-codec",
+]
+
+[[package]]
 name = "vprogs-core-types"
 version = "0.1.0"
 dependencies = [
@@ -1579,8 +1601,9 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "thiserror",
+ "vprogs-core-codec",
+ "vprogs-core-smt",
  "vprogs-core-types",
- "vprogs-zk-smt",
 ]
 
 [[package]]
@@ -1599,13 +1622,6 @@ dependencies = [
  "risc0-zkvm",
  "vprogs-zk-abi",
  "vprogs-zk-backend-risc0-api",
-]
-
-[[package]]
-name = "vprogs-zk-smt"
-version = "0.1.0"
-dependencies = [
- "blake3",
 ]
 
 [[package]]

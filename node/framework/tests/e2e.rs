@@ -72,7 +72,7 @@ async fn test_basic_block_processing() {
     l1.shutdown().await;
 }
 
-/// Create the node first, then mine blocks with L2 payloads — verify real-time processing.
+/// Create the node first, then mine blocks with L2 payloads - verify real-time processing.
 #[tokio::test]
 async fn test_processes_blocks_mined_after_connect() {
     let l1 = L1Node::new(Some(|p| p.blockrate.coinbase_maturity = 1)).await;
@@ -181,7 +181,7 @@ async fn test_resume_from_checkpoint() {
         );
     }
 
-    // Phase 2: Mine more blocks and reopen — the node should resume from where it left off.
+    // Phase 2: Mine more blocks and reopen - the node should resume from where it left off.
     l1.mine_blocks(5).await;
 
     {

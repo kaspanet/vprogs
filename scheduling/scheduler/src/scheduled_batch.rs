@@ -6,11 +6,12 @@ use std::sync::{
 use crossbeam_deque::{Injector, Steal, Worker};
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_macros::smart_pointer;
+use vprogs_core_smt::Commitment;
 use vprogs_core_types::{Checkpoint, SchedulerTransaction};
 use vprogs_scheduling_execution_workers::Batch;
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
-use vprogs_storage_types::{Store, WriteBatch};
+use vprogs_storage_types::Store;
 
 use crate::{
     CancellationContext, ScheduledTransaction, Scheduler, StateDiff, Write, cpu_task::ManagerTask,
@@ -156,7 +157,7 @@ impl<S: Store, P: Processor> ScheduledBatch<S, P> {
             let was_processed = AtomicAsyncLatch::default();
             let was_persisted = AtomicAsyncLatch::default();
 
-            // An empty batch has nothing to process or persist — open the latches
+            // An empty batch has nothing to process or persist - open the latches
             // immediately so the lifecycle worker can commit it right away.
             if txs.is_empty() {
                 was_processed.open();
@@ -199,7 +200,7 @@ impl<S: Store, P: Processor> ScheduledBatch<S, P> {
         for tx in self.txs() {
             if tx.resources().is_empty() {
                 // Transactions with no resource dependencies are immediately available
-                // for execution — no data to load, no chains to join.
+                // for execution - no data to load, no chains to join.
                 self.push_available_tx(tx);
             } else {
                 for resource in tx.resources() {
@@ -241,14 +242,23 @@ impl<S: Store, P: Processor> ScheduledBatch<S, P> {
         }
     }
 
-    pub(crate) fn commit<W>(&self, wb: &mut W)
-    where
-        W: WriteBatch,
-    {
+    pub(crate) fn commit<ST: Store>(&self, store: &ST, wb: &mut ST::WriteBatch) {
         if !self.was_canceled() {
             for state_diff in self.state_diffs() {
                 state_diff.written_state().write_latest_ptr(wb);
             }
+
+            // Update the authenticated state tree with all resource state diffs from this batch.
+            if !self.state_diffs().is_empty() {
+                let new_root = store.update(
+                    wb,
+                    self.state_diffs().iter().map(Commitment::from).collect(),
+                    self.checkpoint.index(),
+                );
+
+                StateMetadata::set_state_root(wb, &new_root);
+            }
+
             StoredBatchMetadata::set(wb, self.checkpoint.index(), self.checkpoint.metadata());
             StateMetadata::set_last_committed(wb, &self.checkpoint);
 

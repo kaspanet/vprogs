@@ -1,7 +1,8 @@
-use vprogs_zk_smt::EMPTY_LEAF_HASH;
+use vprogs_core_codec::Reader;
+use vprogs_core_smt::EMPTY_HASH;
 
 use crate::{
-    Error, Parser, Result, Write,
+    Error, Result, Write,
     transaction_processor::{
         JournalEntry, OutputResourceCommitment, OutputResourceCommitments, Resource,
     },
@@ -23,7 +24,7 @@ impl<'a> OutputCommitment<'a> {
 
     /// Decodes an output commitment from a journal segment payload.
     pub fn decode(mut buf: &'a [u8]) -> Result<Self> {
-        match buf.consume_u8("discriminant")? {
+        match buf.byte("discriminant")? {
             Self::SUCCESS => Ok(Self::Success(OutputResourceCommitments::new(buf))),
             Self::ERROR => Ok(Self::Error(Error::decode(&mut buf)?)),
             _ => Err(Error::Decode("invalid output commitment discriminant".into())),
@@ -51,7 +52,7 @@ impl<'a> OutputCommitment<'a> {
                 for r in resources {
                     if r.is_deleted() {
                         w.write(&[OutputResourceCommitment::CHANGED]);
-                        w.write(&EMPTY_LEAF_HASH);
+                        w.write(&EMPTY_HASH);
                     } else if r.is_dirty() {
                         w.write(&[OutputResourceCommitment::CHANGED]);
                         w.write(blake3::hash(r.data()).as_bytes());

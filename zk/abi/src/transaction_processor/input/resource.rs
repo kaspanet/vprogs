@@ -1,9 +1,10 @@
 use alloc::vec::Vec;
 use core::mem;
 
+use vprogs_core_codec::Reader;
 use vprogs_core_types::ResourceId;
 
-use crate::{Parser, Result};
+use crate::Result;
 
 /// A mutable view of a single resource's data within a decoded wire buffer.
 ///
@@ -101,7 +102,7 @@ impl<'a> Resource<'a> {
     }
 }
 
-// Wire format internals — resources are managed by the framework, not serialized by guests.
+// Wire format internals - resources are managed by the framework, not serialized by guests.
 impl<'a> Resource<'a> {
     /// Wire size of a resource header: resource_id(32) + flags(1) + resource_index(4) +
     /// data_len(4).
@@ -111,10 +112,10 @@ impl<'a> Resource<'a> {
     /// advancing past the consumed bytes.
     pub(crate) fn decode(mut header: &'a [u8], buf: &mut &'a mut [u8]) -> Result<Self> {
         // Parse header fields.
-        let resource_id = header.consume_array::<32>("resource_id")?;
-        let is_new = header.consume_bool("is_new")?;
-        let resource_index = header.consume_u32("resource_index")?;
-        let data_length = header.consume_u32("data_length")? as usize;
+        let resource_id = header.array::<32>("resource_id")?;
+        let is_new = header.bool("is_new")?;
+        let resource_index = header.le_u32("resource_index")?;
+        let data_length = header.le_u32("data_length")? as usize;
 
         // Split off the backing slice from the start of `data` and advance `data` past it.
         let (backing, rest) = mem::take(buf).split_at_mut(data_length);
