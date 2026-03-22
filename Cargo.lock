@@ -7854,15 +7854,18 @@ dependencies = [
 name = "vprogs-zk-prover"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "log",
  "risc0-binfmt",
  "risc0-zkos-v1compat",
  "tempfile",
  "tokio",
+ "vprogs-core-smt",
  "vprogs-core-test-utils",
  "vprogs-core-types",
  "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
+ "vprogs-state-version",
  "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
