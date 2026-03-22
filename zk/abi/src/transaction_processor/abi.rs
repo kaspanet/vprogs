@@ -1,7 +1,7 @@
 use crate::{
     Read, Write,
     transaction_processor::{
-        BatchMetadata, InputCommitment, Inputs, OutputCommitment, Outputs, Resource,
+        InputCommitment, Inputs, OutputCommitment, Outputs, TransactionHandler,
     },
 };
 
@@ -14,12 +14,7 @@ impl Abi {
     pub fn process_transaction(
         host: &mut (impl Read + Write),
         journal: &mut impl Write,
-        f: impl for<'a> FnOnce(
-            &'a [u8],
-            u32,
-            &BatchMetadata<'a>,
-            &mut [Resource<'a>],
-        ) -> crate::Result<()>,
+        f: impl TransactionHandler,
     ) {
         // Read and decode inputs from host.
         let mut inputs_buf = host.read_blob();

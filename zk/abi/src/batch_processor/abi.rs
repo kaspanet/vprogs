@@ -13,10 +13,10 @@ use crate::{
 
 /// Batch processor context — holds all state needed for batch verification.
 ///
-/// Call `verify_batch` for the full pipeline (decode → verify → compute roots). The
+/// Call `process_batch` for the full pipeline (read → verify → encode journal). The
 /// `verify_journal` callback handles backend-specific inner proof verification (e.g.
 /// `env::verify` in risc0).
-pub struct Abi<'a, V: Fn(&[u8; 32], &[u8])> {
+pub struct Abi<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> {
     /// Decoded batch inputs (header, leaf_order, proof, tx_journals).
     pub inputs: Inputs<'a>,
     /// Latest value hashes indexed by resource_index.
@@ -29,7 +29,7 @@ pub struct Abi<'a, V: Fn(&[u8; 32], &[u8])> {
     pub verify_journal: V,
 }
 
-impl<'a, V: Fn(&[u8; 32], &[u8])> Abi<'a, V> {
+impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
     /// Reads inputs from the host, verifies all transactions, computes the state root transition,
     /// and writes the result (success or error) to the journal.
     pub fn process_batch(host: &mut impl Read, journal: &mut impl Write, verify_journal: V) {
@@ -78,7 +78,7 @@ impl<'a, V: Fn(&[u8; 32], &[u8])> Abi<'a, V> {
         mapping_buf: &mut Vec<usize>,
     ) -> Result<()> {
         // Verify the inner ZK proof, then decode the journal.
-        (self.verify_journal)(self.inputs.header.image_id, journal_bytes);
+        (self.verify_journal)(self.inputs.header.image_id, journal_bytes)?;
         let journal = JournalEntries::decode(journal_bytes)?;
 
         // Sequential tx_index check.

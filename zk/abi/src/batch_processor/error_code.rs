@@ -14,6 +14,8 @@ pub enum ErrorCode {
     BlockHashMismatch = 4,
     /// Blue score differs from the first transaction in the batch.
     BlueScoreMismatch = 5,
+    /// Inner transaction journal verification failed.
+    JournalVerificationFailed = 6,
 }
 
 impl From<ErrorCode> for Error {

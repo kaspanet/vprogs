@@ -27,6 +27,7 @@ mod write;
 
 pub mod transaction_processor {
     pub(crate) mod abi;
+    pub(crate) mod transaction_handler;
 
     pub(crate) mod input {
         pub(crate) mod batch_metadata;
@@ -71,6 +72,7 @@ pub mod transaction_processor {
         },
     };
     pub use output::{outputs::Outputs, storage_op::StorageOp};
+    pub use transaction_handler::TransactionHandler;
 }
 
 pub use error::{Error, Result};
