@@ -3,8 +3,10 @@ use alloc::vec::Vec;
 use vprogs_core_codec::Reader;
 use vprogs_core_smt::proving::Proof;
 
-use super::{header::Header, transaction_journals::TransactionJournals};
-use crate::Result;
+use crate::{
+    Result,
+    batch_processor::{Header, TransactionJournals},
+};
 
 /// Decoded batch processor input (zero-copy).
 pub struct Inputs<'a> {

@@ -2,8 +2,10 @@ use alloc::vec::Vec;
 
 use vprogs_core_codec::{Bits, Result, SortUnique};
 
-use super::{proof::Proof, topology::Topology};
-use crate::{EMPTY_HASH, Node, commitment::Commitment, key::Key, tree::Tree};
+use crate::{
+    Commitment, EMPTY_HASH, Key, Node, Tree,
+    proving::{Proof, Topology},
+};
 
 /// Walks the tree top-down to collect sibling hashes and leaf depths for a multi-proof.
 pub(crate) struct ProofBuilder<'a, S> {

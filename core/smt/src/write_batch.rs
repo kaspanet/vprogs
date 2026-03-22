@@ -1,4 +1,4 @@
-use crate::{Node, key::Key, stale_node::StaleNode};
+use crate::{Key, Node, StaleNode};
 
 /// Write interface for persisting SMT node mutations. Pairs with `Tree` (the read side).
 pub trait WriteBatch {

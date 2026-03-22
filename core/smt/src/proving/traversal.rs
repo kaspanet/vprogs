@@ -1,10 +1,9 @@
 use vprogs_core_codec::{Bits, Error, Result};
 
-use super::proof::Proof;
-use crate::{EMPTY_HASH, Hasher, Node};
+use crate::{EMPTY_HASH, Hasher, Node, proving::Proof};
 
 /// Mutable cursor state for recursive proof tree traversal.
-pub(super) struct Traversal<'a, F> {
+pub(crate) struct Traversal<'a, F> {
     /// The decoded proof being traversed.
     proof: &'a Proof<'a>,
     /// Returns the value hash for the leaf at the given index.
@@ -17,7 +16,7 @@ pub(super) struct Traversal<'a, F> {
 
 impl<'a, 'v, F: Fn(usize) -> &'v [u8; 32]> Traversal<'a, F> {
     /// Computes the root hash by traversing the proof tree.
-    pub(super) fn compute_root<H: Hasher>(
+    pub(crate) fn compute_root<H: Hasher>(
         proof: &'a Proof<'a>,
         value_hash_fn: F,
     ) -> Result<[u8; 32]> {

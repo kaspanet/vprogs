@@ -2,10 +2,7 @@ use alloc::vec::Vec;
 
 use vprogs_core_codec::Bits;
 
-use crate::{
-    DEPTH, EMPTY_HASH, Node, commitment::Commitment, key::Key, stale_node::StaleNode, tree::Tree,
-    write_batch::WriteBatch,
-};
+use crate::{Commitment, DEPTH, EMPTY_HASH, Key, Node, StaleNode, Tree, WriteBatch};
 
 /// Applies leaf mutations to the tree and writes resulting nodes into a `WriteBatch`.
 pub(crate) struct Updater<'a, S, W> {

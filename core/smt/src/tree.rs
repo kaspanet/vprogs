@@ -3,8 +3,7 @@ use alloc::vec::Vec;
 use vprogs_core_codec::Result;
 
 use crate::{
-    EMPTY_HASH, Hasher, Node, commitment::Commitment, key::Key, proving::builder::ProofBuilder,
-    updater::Updater, write_batch::WriteBatch,
+    Commitment, EMPTY_HASH, Hasher, Key, Node, WriteBatch, proving::ProofBuilder, updater::Updater,
 };
 
 /// Number of levels in the tree (256-bit keys).

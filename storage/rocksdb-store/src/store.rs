@@ -5,11 +5,8 @@ use vprogs_core_smt::{Key, Node, StaleNode, Tree, WriteBatch as SmtWriteBatch};
 use vprogs_storage_types::{PrefixIterator, StateSpace, Store};
 
 use crate::{
-    config::{Config, DefaultConfig},
-    key_ext::KeyExt,
-    stale_node_ext::StaleNodeExt,
+    Config, DefaultConfig, WriteBatch, key_ext::KeyExt, stale_node_ext::StaleNodeExt,
     state_space_ext::StateSpaceExt,
-    write_batch::WriteBatch,
 };
 
 pub struct RocksDbStore<C: Config = DefaultConfig> {

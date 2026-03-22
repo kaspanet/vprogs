@@ -2,9 +2,9 @@ use alloc::{vec, vec::Vec};
 
 use vprogs_core_smt::Blake3;
 
-use super::{ErrorCode, StateTransition, input::inputs::Inputs};
 use crate::{
     Error, Read, Result, Write,
+    batch_processor::{ErrorCode, Inputs, StateTransition},
     transaction_processor::{
         BatchMetadata, InputResourceCommitment, JournalEntries, OutputCommitment,
         OutputResourceCommitment,
