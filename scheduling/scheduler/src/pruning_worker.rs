@@ -145,7 +145,7 @@ impl<S: Store, P: Processor> PruningWorker<S, P> {
                 async move {
                     // Use strong_count to detect shutdown (when the outer struct is dropped).
                     while Arc::strong_count(&pruning_threshold) != 1 {
-                        // Root is the oldest surviving batch — the first candidate for pruning.
+                        // Root is the oldest surviving batch - the first candidate for pruning.
                         let lower_bound = state.root().index();
 
                         // Last batch eligible for pruning: (min of requested threshold and pause
@@ -171,7 +171,7 @@ impl<S: Store, P: Processor> PruningWorker<S, P> {
                             }
 
                             // Execute pruning directly on the store.
-                            // The cursor stays at upper_bound — it now reflects completed progress.
+                            // The cursor stays at upper_bound - it now reflects completed progress.
                             Self::prune(&state, lower_bound, upper_bound);
                         } else if Arc::strong_count(&pruning_threshold) != 1 {
                             // No work to do, wait for notification.

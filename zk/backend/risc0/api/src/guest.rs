@@ -2,7 +2,7 @@ use vprogs_zk_abi::transaction_processor::{Abi, TransactionHandler};
 
 use crate::{Host, Journal};
 
-/// RISC-0 guest entry point — wraps host/journal wiring for transaction processing.
+/// RISC-0 guest entry point - wraps host/journal wiring for transaction processing.
 pub struct Guest;
 
 impl Guest {

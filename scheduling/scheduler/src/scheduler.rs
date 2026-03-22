@@ -137,7 +137,7 @@ impl<S: Store, P: Processor> Scheduler<S, P> {
             )));
             done_signal.wait_blocking();
 
-            // Rollback complete — allow pruning to resume.
+            // Rollback complete - allow pruning to resume.
             self.pruning_worker.unpause();
 
             // Clear in-memory resource pointers, as their state may no longer be valid.
@@ -265,7 +265,7 @@ impl<S: Store, P: Processor> Scheduler<S, P> {
 
     /// Looks up a checkpoint by index, searching the pending batch queue first, then disk.
     fn lookup_checkpoint(&self, index: u64) -> Checkpoint<P::BatchMetadata> {
-        // Index 0 is the genesis state — no batch exists on disk for it.
+        // Index 0 is the genesis state - no batch exists on disk for it.
         if index == 0 {
             return Checkpoint::default();
         }

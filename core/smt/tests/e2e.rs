@@ -354,7 +354,7 @@ fn duplicate_commitments_last_write_wins() {
     let value_a = test_value(100);
     let value_b = test_value(200);
 
-    // Submit two commitments for the same key — the second (value_b) should win.
+    // Submit two commitments for the same key - the second (value_b) should win.
     let root_dup = commit_raw(
         &store,
         1,
@@ -387,7 +387,7 @@ fn proof_verify_wrong_root_returns_false() {
     assert_ne!(proof.root::<Blake3>().unwrap(), [0xAB; 32]);
 }
 
-/// Empty commitments are a no-op — root carries forward from the previous version.
+/// Empty commitments are a no-op - root carries forward from the previous version.
 #[test]
 fn empty_commitments_preserve_root() {
     let dir = TempDir::new().unwrap();

@@ -7,7 +7,7 @@ use vprogs_zk_vm::{Backend, ProofRequest};
 
 use crate::{BatchProof, batch_state::BatchState};
 
-/// Prover error type — wraps any error from proof generation or journal decoding.
+/// Prover error type - wraps any error from proof generation or journal decoding.
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
 /// Proves individual transactions and assembles batch witnesses for the batch processor guest.
@@ -17,7 +17,7 @@ pub struct BatchProver<B: Backend, S: Store> {
     rx: mpsc::UnboundedReceiver<ProofRequest>,
     /// Expected tx count per batch, keyed by block_hash.
     batch_tx_counts: HashMap<[u8; 32], u32>,
-    /// Store version per batch — the prover reads the pre-batch SMT state at `version - 1`.
+    /// Store version per batch - the prover reads the pre-batch SMT state at `version - 1`.
     batch_versions: HashMap<[u8; 32], u64>,
     /// Transaction processor guest image ID.
     image_id: [u8; 32],
@@ -87,7 +87,7 @@ impl<B: Backend + 'static, S: Store> BatchProver<B, S> {
                     resource_ids: Vec::new(),
                 });
 
-                // Record resource IDs — grow the vec as needed.
+                // Record resource IDs - grow the vec as needed.
                 for (resource_index, resource_id) in pre_batch {
                     let idx = resource_index as usize;
                     if idx >= batch_state.resource_ids.len() {
@@ -102,7 +102,7 @@ impl<B: Backend + 'static, S: Store> BatchProver<B, S> {
                 batch_state.receipts[tx_index as usize] = Some((receipt, request));
                 batch_state.received += 1;
 
-                // All transactions proven — assemble the batch proof.
+                // All transactions proven - assemble the batch proof.
                 if expected_tx_count > 0 && batch_state.received >= expected_tx_count {
                     let batch_state = pending.remove(&block_hash).unwrap();
                     match self.assemble_batch_proof(block_hash, batch_state) {
@@ -141,7 +141,7 @@ impl<B: Backend + 'static, S: Store> BatchProver<B, S> {
         // Generate proof and leaf order mapping from the store at the pre-batch version.
         let (proof_bytes, leaf_order) = self.store.prove(resource_ids, prev_version)?;
 
-        // Unwrap receipts — all slots filled since `received == expected`.
+        // Unwrap receipts - all slots filled since `received == expected`.
         let receipts: Vec<(B::Receipt, ProofRequest)> =
             batch_state.receipts.into_iter().map(|slot| slot.expect("missing receipt")).collect();
 
@@ -163,7 +163,7 @@ impl<B: Backend + 'static, S: Store> BatchProver<B, S> {
         let receipt = self.backend.prove_batch(&input, &assumptions);
         let receipt_journal = B::journal_bytes(&receipt);
 
-        // Read roots from the guest's journal — the guest is the authority on what the proof
+        // Read roots from the guest's journal - the guest is the authority on what the proof
         // attests to.
         match StateTransition::decode(&receipt_journal)? {
             StateTransition::Success { prev_root, new_root, .. } => Ok(BatchProof {

@@ -16,12 +16,12 @@ pub trait Config: Send + Sync + 'static {
             // --- Write path semantics --------------------------------------------
             // We have exactly ONE writer worker that issues large WriteBatches.
             // Pipelined writes help when multiple writers contend (WAL vs memtable).
-            // With a single writer they add overhead but no benefit—turn them off.
+            // With a single writer they add overhead but no benefit-turn them off.
             o.set_enable_pipelined_write(false);
 
             // Unordered writes relax memtable insert order (WAL order still serialized).
             // That’s great for many concurrent writers, but unnecessary here and can
-            // complicate iterator/snapshot semantics across CFs—so keep it off.
+            // complicate iterator/snapshot semantics across CFs-so keep it off.
             o.set_unordered_write(false);
 
             // Allow concurrent memtable writes is a no-op with one writer, but harmless.

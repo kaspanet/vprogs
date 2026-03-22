@@ -23,7 +23,7 @@ impl Topology {
             self.bytes.push(0);
         }
 
-        // Only set the bit if true — false is already 0 from initialization.
+        // Only set the bit if true - false is already 0 from initialization.
         if bit {
             self.bytes.set_lsb(self.len);
         }

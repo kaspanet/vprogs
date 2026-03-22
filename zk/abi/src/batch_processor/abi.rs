@@ -11,7 +11,7 @@ use crate::{
     },
 };
 
-/// Batch processor context — holds all state needed for batch verification.
+/// Batch processor context - holds all state needed for batch verification.
 ///
 /// Call `process_batch` for the full pipeline (read → verify → encode journal). The
 /// `verify_journal` callback handles backend-specific inner proof verification (e.g.
@@ -21,9 +21,9 @@ pub struct Abi<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> {
     pub inputs: Inputs<'a>,
     /// Latest value hashes indexed by resource_index.
     pub value_hashes: Vec<&'a [u8; 32]>,
-    /// Block hash from the first transaction — subsequent txs must match.
+    /// Block hash from the first transaction - subsequent txs must match.
     pub block_hash: Option<&'a [u8; 32]>,
-    /// Blue score from the first transaction — subsequent txs must match.
+    /// Blue score from the first transaction - subsequent txs must match.
     pub blue_score: Option<u64>,
     /// Backend-specific inner proof verification callback.
     pub verify_journal: V,
@@ -55,7 +55,7 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
             this.value_hashes[res_idx as usize] = this.inputs.proof.leaves[leaf_pos].value_hash;
         }
 
-        // Process all transactions — cheap checks first, then cache mutations.
+        // Process all transactions - cheap checks first, then cache mutations.
         let mut mapping_buf = Vec::new(); // Reusable buffer to avoid per-tx allocation.
         let mut tx_index = 0u32;
         while let Some(tx_journal) = this.inputs.tx_journals.next() {
@@ -63,7 +63,7 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
             tx_index += 1;
         }
 
-        // All checks passed — compute roots (expensive).
+        // All checks passed - compute roots (expensive).
         let prev_root = this.inputs.proof.root::<Blake3>()?;
         let new_root = this.inputs.proof.compute_root::<Blake3>(|i| this.latest_hash(i))?;
 
@@ -95,7 +95,7 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
             mapping_buf.push(self.check_input_resource(input?)?);
         }
 
-        // Apply output mutations — update value hashes for modified resources.
+        // Apply output mutations - update value hashes for modified resources.
         if let OutputCommitment::Success(outputs) = journal.output_commitment {
             for (i, output) in outputs.enumerate() {
                 if let OutputResourceCommitment::Changed(hash) = output? {

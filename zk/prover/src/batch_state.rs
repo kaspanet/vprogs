@@ -1,6 +1,6 @@
 use vprogs_zk_vm::ProofRequest;
 
-/// Per-batch proving state — accumulates receipts and resource IDs until the batch is complete.
+/// Per-batch proving state - accumulates receipts and resource IDs until the batch is complete.
 pub(crate) struct BatchState<R> {
     /// Receipts indexed by tx_index, pre-allocated to `expected_tx_count` slots.
     pub(crate) receipts: Vec<Option<(R, ProofRequest)>>,

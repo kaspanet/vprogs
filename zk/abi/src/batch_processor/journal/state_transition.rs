@@ -1,6 +1,6 @@
 use crate::{Error, Result, Write};
 
-/// Proven state transition for a batch — success or error (zero-copy on decode).
+/// Proven state transition for a batch - success or error (zero-copy on decode).
 ///
 /// Wire format: `discriminant(1) + payload`. Success payload is `image_id(32) + prev_root(32) +
 /// new_root(32)`. Error payload is the encoded `Error`.

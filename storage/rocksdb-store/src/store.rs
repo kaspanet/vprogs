@@ -102,7 +102,7 @@ impl<C: Config> Tree for RocksDbStore<C> {
 
     fn rollback(&self, wb: &mut impl SmtWriteBatch, version: u64) {
         // Delete all stale markers recorded at this version. These markers reference nodes that
-        // were superseded when this version was committed — removing them "un-supersedes" those
+        // were superseded when this version was committed - removing them "un-supersedes" those
         // nodes so they become current again.
         for (raw_key, raw_value) in self.prefix_iter(StateSpace::SmtStale, &version.to_be_bytes()) {
             let node_key = StaleNode::decode_key(&raw_key).expect("corrupted stale key");
