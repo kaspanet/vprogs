@@ -35,13 +35,8 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
         let (sorted_keys, leaf_order) = keys.sort_unique()?;
 
         // Walk the tree top-down, collecting proof components (leaves, siblings, topology).
-        let mut ctx = Self {
-            tree,
-            version,
-            leaves: Vec::new(),
-            siblings: Vec::new(),
-            topology: Topology::default(),
-        };
+        let (leaves, siblings, topology) = (Vec::new(), Vec::new(), Topology::default());
+        let mut ctx = Self { tree, version, leaves, siblings, topology };
         ctx.collect(&Key::ROOT, &sorted_keys);
 
         // Encode collected components into wire format.
