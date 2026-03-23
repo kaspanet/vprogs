@@ -1,11 +1,11 @@
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
 
-use crate::ProofProvider;
+use crate::Backend;
 
 /// Result of a completed transaction proof, returned by the FuturesUnordered collection.
-pub(crate) struct CompletedTxProof<P: Processor<S>, Provider: ProofProvider, S: Store> {
+pub(crate) struct CompletedTransaction<P: Processor<S>, B: Backend, S: Store> {
+    pub(crate) index: u32,
     pub(crate) batch: ScheduledBatch<S, P>,
-    pub(crate) tx_index: u32,
-    pub(crate) receipt: Provider::Receipt,
+    pub(crate) receipt: B::Receipt,
 }
