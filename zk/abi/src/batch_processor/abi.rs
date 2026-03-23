@@ -43,7 +43,7 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
         // Decode inputs and initialize context.
         let inputs = Inputs::decode(inputs)?;
         let mut this = Self {
-            value_hashes: vec![&[0; 32]; inputs.header.n_resources as usize],
+            value_hashes: vec![&[0; 32]; inputs.proof.leaves.len()],
             block_hash: None,
             blue_score: None,
             inputs,
@@ -67,7 +67,7 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
         let prev_root = this.inputs.proof.root::<Blake3>()?;
         let new_root = this.inputs.proof.compute_root::<Blake3>(|i| this.latest_hash(i))?;
 
-        Ok((this.inputs.header.image_id, prev_root, new_root))
+        Ok((this.inputs.image_id, prev_root, new_root))
     }
 
     /// Verifies a single transaction journal and applies its output mutations.
@@ -78,7 +78,7 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
         mapping_buf: &mut Vec<usize>,
     ) -> Result<()> {
         // Verify the inner ZK proof, then decode the journal.
-        (self.verify_journal)(self.inputs.header.image_id, journal_bytes)?;
+        (self.verify_journal)(self.inputs.image_id, journal_bytes)?;
         let journal = JournalEntries::decode(journal_bytes)?;
 
         // Sequential tx_index check.
@@ -123,7 +123,7 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
     /// Validates a single input resource commitment against the current value hashes.
     fn check_input_resource(&mut self, r: InputResourceCommitment) -> Result<usize> {
         // Bounds check.
-        if r.resource_index >= self.inputs.header.n_resources {
+        if r.resource_index as usize >= self.inputs.proof.leaves.len() {
             return Err(Error::from(ErrorCode::ResourceIndexOutOfRange));
         }
 

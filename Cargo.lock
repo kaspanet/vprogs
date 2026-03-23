@@ -7856,6 +7856,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "crossbeam-queue",
+ "futures",
  "log",
  "risc0-binfmt",
  "risc0-zkos-v1compat",

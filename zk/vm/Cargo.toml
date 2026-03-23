@@ -5,6 +5,7 @@ version.workspace = true
 
 [dependencies]
 crossbeam-queue.workspace             = true
+futures.workspace                     = true
 log.workspace                         = true
 tokio                                 = { workspace = true, features = ["rt", "sync"] }
 vprogs-core-macros.workspace          = true

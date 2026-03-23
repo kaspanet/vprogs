@@ -42,7 +42,7 @@ fn test_zk_scheduler_e2e() {
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
 
     let backend = Backend::new(&transaction_elf, &batch_elf);
-    let vm = Vm::new(backend, None::<vprogs_zk_vm::ProvingOrchestrator<_, _>>);
+    let vm = Vm::new(backend, None::<vprogs_zk_vm::ProvingOrchestrator<_, _, _>>);
     let mut scheduler = Scheduler::new(
         ExecutionConfig::default().with_processor(vm),
         StorageConfig::default().with_store(storage),

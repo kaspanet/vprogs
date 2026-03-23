@@ -14,15 +14,15 @@ use crate::{Backend, ProvingOrchestrator};
 /// When proving is disabled, the orchestrator is `None` and no background threads are spawned.
 #[derive(Clone)]
 pub struct Vm<B: Backend, S: Store> {
-    /// The ZK backend used for execution and proving.
+    /// The ZK backend used for execution.
     backend: B,
     /// Proving orchestrator (present when proving is enabled).
-    proving: Option<ProvingOrchestrator<B, S>>,
+    proving: Option<ProvingOrchestrator<Self, B::Receipt, S>>,
 }
 
 impl<B: Backend, S: Store> Vm<B, S> {
     /// Creates a new ZK VM with the given backend and optional proving orchestrator.
-    pub fn new(backend: B, proving: Option<ProvingOrchestrator<B, S>>) -> Self {
+    pub fn new(backend: B, proving: Option<ProvingOrchestrator<Self, B::Receipt, S>>) -> Self {
         Self { backend, proving }
     }
 }

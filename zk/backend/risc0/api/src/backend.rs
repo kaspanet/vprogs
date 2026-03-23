@@ -76,11 +76,11 @@ impl vprogs_zk_vm::Backend for Backend {
         })
     }
 
-    fn prove_batch(&self, batch_witness: &[u8], assumptions: &[&Receipt]) -> Receipt {
+    fn prove_batch(&self, batch_witness: &[u8], receipts: &[&Receipt]) -> Receipt {
         let mut builder = ExecutorEnv::builder();
         builder.write_slice(&[batch_witness.len() as u32]).write_slice(batch_witness);
 
-        for receipt in assumptions {
+        for receipt in receipts {
             builder.add_assumption((*receipt).clone());
         }
 

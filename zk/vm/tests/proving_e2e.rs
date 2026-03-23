@@ -10,7 +10,7 @@ use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_abi::batch_processor::StateTransition;
 use vprogs_zk_backend_risc0_api::Backend;
-use vprogs_zk_vm::{ProvingOrchestrator, Vm};
+use vprogs_zk_vm::{Backend as BackendTrait, ProvingOrchestrator, Vm};
 
 /// Loads the pre-built transaction processor ELF from the repository.
 fn transaction_processor_elf() -> Vec<u8> {
@@ -76,7 +76,6 @@ async fn batch_proof_two_transactions() {
     tx2.payload = vec![4, 5, 6];
 
     let block_metadata = ChainBlockMetadata::default();
-    let block_hash = block_metadata.block_hash().as_bytes();
 
     // Schedule the batch (executes both transactions and starts proving).
     let batch = scheduler.schedule(
@@ -89,67 +88,41 @@ async fn batch_proof_two_transactions() {
 
     batch.wait_committed_blocking();
 
-    // Wait for the batch proof.
-    let proof = batch_proof_rx.wait_and_pop().await;
+    // Wait for the batch proof receipt.
+    let receipt = batch_proof_rx.wait_and_pop().await;
+    let journal = <Backend as BackendTrait>::journal_bytes(&receipt);
 
-    // Verify basic proof structure.
-    assert_eq!(proof.block_hash, block_hash);
-    assert_eq!(proof.batch_index, 1);
-    assert!(!proof.receipt_journal.is_empty(), "receipt journal should not be empty");
-
-    // The guest increments each resource's counter from 0 to 1, so the state should change.
-    assert_ne!(proof.prev_root, proof.new_root, "state should change after counter increment");
-    assert_eq!(proof.prev_root, EMPTY_HASH, "prev_root should be empty (no prior state)");
-
-    // The new_root should match what the store committed at version 1.
-    assert_eq!(proof.new_root, storage.root(1), "new_root should match store's version 1");
+    // Decode the state transition from the receipt journal.
+    match StateTransition::decode(&journal).expect("journal should decode") {
+        StateTransition::Success { image_id: journal_image_id, prev_root, new_root } => {
+            assert_eq!(*journal_image_id, image_id);
+            assert_ne!(prev_root, new_root, "state should change after counter increment");
+            assert_eq!(*prev_root, EMPTY_HASH, "prev_root should be empty (no prior state)");
+            assert_eq!(*new_root, storage.root(1), "new_root should match store's version 1");
+        }
+        StateTransition::Error(e) => panic!("expected success, got error: {e}"),
+    }
 
     // Verify committed counter values - both resources should be 1 (incremented from 0).
     let r1_data = StateVersion::get(&storage, 1, &ResourceId::for_test(1))
         .expect("resource 1 should have committed data");
     let r2_data = StateVersion::get(&storage, 1, &ResourceId::for_test(2))
         .expect("resource 2 should have committed data");
-    assert_eq!(
-        u32::from_le_bytes(r1_data.as_slice().try_into().unwrap()),
-        1,
-        "resource 1 counter should be 1"
-    );
-    assert_eq!(
-        u32::from_le_bytes(r2_data.as_slice().try_into().unwrap()),
-        1,
-        "resource 2 counter should be 1"
-    );
+    assert_eq!(u32::from_le_bytes(r1_data.as_slice().try_into().unwrap()), 1);
+    assert_eq!(u32::from_le_bytes(r2_data.as_slice().try_into().unwrap()), 1);
 
-    // Verify that the SMT proof leaves contain the correct value hashes for the counter data.
+    // Verify SMT proof leaves contain correct value hashes.
     let expected_hash = *blake3::hash(&1u32.to_le_bytes()).as_bytes();
     for resource_id in [ResourceId::for_test(1), ResourceId::for_test(2)] {
         let (proof_bytes, _) = storage.prove(&[*resource_id.as_bytes()], 1).unwrap();
         let smt_proof = vprogs_core_smt::proving::Proof::decode(&proof_bytes).unwrap();
-        assert_eq!(
-            *smt_proof.leaves[0].value_hash, expected_hash,
-            "SMT leaf value hash should match blake3(counter=1)"
-        );
+        assert_eq!(*smt_proof.leaves[0].value_hash, expected_hash);
     }
-
-    // Verify journal contents via the decoder.
-    match StateTransition::decode(&proof.receipt_journal).expect("journal should decode") {
-        StateTransition::Success { image_id: journal_image_id, prev_root, new_root } => {
-            assert_eq!(*journal_image_id, image_id);
-            assert_eq!(*prev_root, proof.prev_root);
-            assert_eq!(*new_root, proof.new_root);
-        }
-        StateTransition::Error(e) => panic!("expected success, got error: {e}"),
-    }
-
-    let batch1_new_root = proof.new_root;
 
     // --- Second batch: increment counters from 1 to 2 ---
-    // No need to recreate the pipeline - the VM handles it internally.
 
     let block_metadata_2 = ChainBlockMetadata::default();
-    let _block_hash_2 = block_metadata_2.block_hash().as_bytes();
 
-    // Schedule a second batch touching the same resources.
     let mut tx3 = L1Transaction::default();
     tx3.payload = vec![7, 8, 9];
     let mut tx4 = L1Transaction::default();
@@ -165,40 +138,32 @@ async fn batch_proof_two_transactions() {
 
     batch_2.wait_committed_blocking();
 
-    let proof_2 = batch_proof_rx.wait_and_pop().await;
+    let receipt_2 = batch_proof_rx.wait_and_pop().await;
+    let journal_2 = <Backend as BackendTrait>::journal_bytes(&receipt_2);
 
     // Chain continuity: batch 2's prev_root should equal batch 1's new_root.
-    assert_eq!(
-        proof_2.prev_root, batch1_new_root,
-        "batch 2 prev_root should chain from batch 1 new_root"
-    );
-    assert_ne!(proof_2.prev_root, proof_2.new_root, "state should change again");
+    match StateTransition::decode(&journal_2).expect("journal should decode") {
+        StateTransition::Success { prev_root, new_root, .. } => {
+            assert_eq!(*prev_root, storage.root(1), "batch 2 prev_root should chain from batch 1");
+            assert_ne!(prev_root, new_root, "state should change again");
+        }
+        StateTransition::Error(e) => panic!("expected success, got error: {e}"),
+    }
 
     // Verify counter values are now 2.
-    let r1_data_v2 = StateVersion::get(&storage, 2, &ResourceId::for_test(1))
+    let r1_v2 = StateVersion::get(&storage, 2, &ResourceId::for_test(1))
         .expect("resource 1 should have v2 data");
-    let r2_data_v2 = StateVersion::get(&storage, 2, &ResourceId::for_test(2))
+    let r2_v2 = StateVersion::get(&storage, 2, &ResourceId::for_test(2))
         .expect("resource 2 should have v2 data");
-    assert_eq!(
-        u32::from_le_bytes(r1_data_v2.as_slice().try_into().unwrap()),
-        2,
-        "resource 1 counter should be 2 after second batch"
-    );
-    assert_eq!(
-        u32::from_le_bytes(r2_data_v2.as_slice().try_into().unwrap()),
-        2,
-        "resource 2 counter should be 2 after second batch"
-    );
+    assert_eq!(u32::from_le_bytes(r1_v2.as_slice().try_into().unwrap()), 2);
+    assert_eq!(u32::from_le_bytes(r2_v2.as_slice().try_into().unwrap()), 2);
 
-    // Verify SMT leaves at version 2 match blake3(counter=2).
+    // Verify SMT leaves at version 2.
     let expected_hash_v2 = *blake3::hash(&2u32.to_le_bytes()).as_bytes();
     for resource_id in [ResourceId::for_test(1), ResourceId::for_test(2)] {
         let (proof_bytes, _) = storage.prove(&[*resource_id.as_bytes()], 2).unwrap();
         let smt_proof = vprogs_core_smt::proving::Proof::decode(&proof_bytes).unwrap();
-        assert_eq!(
-            *smt_proof.leaves[0].value_hash, expected_hash_v2,
-            "SMT leaf value hash should match blake3(counter=2)"
-        );
+        assert_eq!(*smt_proof.leaves[0].value_hash, expected_hash_v2);
     }
 
     scheduler.shutdown();

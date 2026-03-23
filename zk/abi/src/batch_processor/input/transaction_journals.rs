@@ -3,17 +3,18 @@ use vprogs_core_codec::Reader;
 use crate::Result;
 
 /// Iterator over per-transaction journal slices in a batch witness.
+///
+/// Journals are the last segment in the wire format, so the iterator reads length-prefixed
+/// entries until the buffer is exhausted.
 pub struct TransactionJournals<'a> {
     /// Remaining unconsumed bytes of the journal entries.
     buf: &'a [u8],
-    /// Number of entries not yet yielded.
-    remaining: u32,
 }
 
 impl<'a> TransactionJournals<'a> {
-    /// Creates a new iterator over `remaining` length-prefixed journal entries in `buf`.
-    pub fn new(buf: &'a [u8], remaining: u32) -> Self {
-        Self { buf, remaining }
+    /// Creates a new iterator over length-prefixed journal entries in `buf`.
+    pub fn new(buf: &'a [u8]) -> Self {
+        Self { buf }
     }
 
     /// Decodes a single length-prefixed journal entry from the buffer.
@@ -27,12 +28,9 @@ impl<'a> Iterator for TransactionJournals<'a> {
     type Item = Result<&'a [u8]>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // Check if all entries have been consumed.
-        if self.remaining == 0 {
+        if self.buf.is_empty() {
             return None;
         }
-        self.remaining -= 1;
-
         Some(self.decode_entry())
     }
 }
