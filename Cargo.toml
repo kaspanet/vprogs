@@ -7,7 +7,6 @@ default-members = [
   "state/*",
   "storage/*",
   "transaction-runtime/*",
-  "zk/prover",
   "zk/backend/risc0/api",
   "zk/abi",
   "zk/vm",
@@ -24,7 +23,6 @@ members = [
   "state/*",
   "storage/*",
   "transaction-runtime/*",
-  "zk/prover",
   "zk/backend/risc0/api",
   "zk/abi",
   "zk/vm",
@@ -144,7 +142,7 @@ resolver = "3"
   vprogs-zk-backend-risc0-api = { path = "zk/backend/risc0/api", default-features = false, features = [
     "host",
   ] }
-  vprogs-zk-prover = { path = "zk/prover" }
+
   vprogs-zk-vm = { path = "zk/vm" }
 
 [patch.'https://github.com/kaspanet/rusty-kaspa']

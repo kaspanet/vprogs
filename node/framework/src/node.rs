@@ -15,7 +15,7 @@ use crate::{Processor, api::NodeApi, config::NodeConfig, worker::NodeWorker};
 ///
 /// Created via [`Node::new`], which starts all background components (bridge, scheduler, event
 /// loop). The node runs autonomously until [`shutdown`](Self::shutdown) is called.
-pub struct Node<S: Store, P: Processor> {
+pub struct Node<S: Store, P: Processor<S>> {
     /// Cloneable handle for interacting with the node.
     api: NodeApi<S, P>,
     /// Worker thread running the event loop.
@@ -24,7 +24,7 @@ pub struct Node<S: Store, P: Processor> {
     shutdown: Arc<AtomicAsyncLatch>,
 }
 
-impl<S: Store, P: Processor> Node<S, P> {
+impl<S: Store, P: Processor<S>> Node<S, P> {
     /// Creates and starts a new node.
     pub fn new(config: NodeConfig<S, P>) -> Self {
         // Create the scheduler - internally reads last checkpoint from store.
@@ -77,7 +77,7 @@ impl<S: Store, P: Processor> Node<S, P> {
 
 /// Ensures the worker thread receives a shutdown signal even if the node is dropped without an
 /// explicit [`shutdown`] call.
-impl<S: Store, P: Processor> Drop for Node<S, P> {
+impl<S: Store, P: Processor<S>> Drop for Node<S, P> {
     fn drop(&mut self) {
         self.shutdown.open();
     }

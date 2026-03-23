@@ -25,7 +25,7 @@ use crate::{
 /// progress via the `was_*` / `wait_*` methods. A batch may be canceled by a rollback, in which
 /// case the wait methods return immediately.
 #[smart_pointer]
-pub struct ScheduledBatch<S: Store, P: Processor> {
+pub struct ScheduledBatch<S: Store, P: Processor<S>> {
     /// Cancellation context captured at creation time for rollback detection.
     cancellation: CancellationContext,
     /// Shared scheduler state for storage access and eviction.
@@ -50,7 +50,7 @@ pub struct ScheduledBatch<S: Store, P: Processor> {
     was_committed: AtomicAsyncLatch,
 }
 
-impl<S: Store, P: Processor> ScheduledBatch<S, P> {
+impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
     /// Returns the checkpoint (index + metadata) identifying this batch.
     pub fn checkpoint(&self) -> &Checkpoint<P::BatchMetadata> {
         &self.checkpoint
@@ -288,7 +288,7 @@ impl<S: Store, P: Processor> ScheduledBatch<S, P> {
     }
 }
 
-impl<S: Store, P: Processor> Batch<ManagerTask<S, P>> for ScheduledBatch<S, P> {
+impl<S: Store, P: Processor<S>> Batch<ManagerTask<S, P>> for ScheduledBatch<S, P> {
     fn steal_available_tasks(
         &self,
         worker: &Worker<ManagerTask<S, P>>,

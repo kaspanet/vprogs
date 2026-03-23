@@ -16,14 +16,14 @@ use crate::{
 /// `last_processed`, and `storage`. For operations that need `&mut Scheduler` (e.g. pruning),
 /// use [`with_scheduler`](Self::with_scheduler).
 #[smart_pointer(deref(state))]
-pub struct NodeApi<S: Store, P: Processor> {
+pub struct NodeApi<S: Store, P: Processor<S>> {
     /// Shared scheduler state for lock-free reads (deref target).
     state: SchedulerState<S, P>,
     /// Channel for sending closures to the worker thread for `&mut Scheduler` access.
     api_requests: Sender<ApiRequest<S, P>>,
 }
 
-impl<S: Store, P: Processor> NodeApi<S, P> {
+impl<S: Store, P: Processor<S>> NodeApi<S, P> {
     /// Creates a new API handle with shared state and a channel to the worker thread.
     pub(crate) fn new(state: SchedulerState<S, P>, sender: Sender<ApiRequest<S, P>>) -> Self {
         Self(Arc::new(NodeApiData { state, api_requests: sender }))

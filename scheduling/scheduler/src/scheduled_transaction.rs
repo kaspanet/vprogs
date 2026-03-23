@@ -18,7 +18,7 @@ use crate::{
 /// Wraps a user-submitted transaction with its resource access handles, execution state, and a
 /// back-reference to the owning batch. Derefs to the inner `SchedulerTransaction`.
 #[smart_pointer(deref(tx))]
-pub struct ScheduledTransaction<S: Store, P: Processor> {
+pub struct ScheduledTransaction<S: Store, P: Processor<S>> {
     /// Processor used to execute this transaction.
     processor: P,
     /// Weak reference to the owning batch.
@@ -35,7 +35,7 @@ pub struct ScheduledTransaction<S: Store, P: Processor> {
     tx: SchedulerTransaction<P::Transaction>,
 }
 
-impl<S: Store, P: Processor> ScheduledTransaction<S, P> {
+impl<S: Store, P: Processor<S>> ScheduledTransaction<S, P> {
     /// Returns the resources accessed by this transaction.
     pub fn resources(&self) -> &[ResourceAccess<S, P>] {
         &self.resources
@@ -85,7 +85,7 @@ impl<S: Store, P: Processor> ScheduledTransaction<S, P> {
             let mut ctx = TransactionContext::new(
                 &self.tx,
                 self.tx_index,
-                batch.checkpoint().metadata(),
+                &batch,
                 self.resources.iter().map(AccessHandle::new).collect(),
             );
 
@@ -116,7 +116,7 @@ impl<S: Store, P: Processor> ScheduledTransaction<S, P> {
     }
 }
 
-impl<S: Store, P: Processor> ScheduledTransactionRef<S, P> {
+impl<S: Store, P: Processor<S>> ScheduledTransactionRef<S, P> {
     pub(crate) fn belongs_to_batch(&self, batch: &ScheduledBatchRef<S, P>) -> bool {
         self.upgrade().is_some_and(|tx| tx.batch() == batch)
     }

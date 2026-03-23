@@ -4,12 +4,12 @@ use vprogs_storage_types::{ReadStore, Store};
 use crate::{ResourceAccess, ScheduledBatch, StateDiff, processor::Processor, rollback::Rollback};
 
 /// Commands dispatched to the storage manager's read worker.
-pub enum Read<S: Store, P: Processor> {
+pub enum Read<S: Store, P: Processor<S>> {
     /// Fetch the latest version data for a resource from disk.
     LatestData(ResourceAccess<S, P>),
 }
 
-impl<S: Store, P: Processor> ReadCmd for Read<S, P> {
+impl<S: Store, P: Processor<S>> ReadCmd for Read<S, P> {
     fn exec<RS: ReadStore>(&self, store: &RS) {
         match self {
             Read::LatestData(resource_access) => resource_access.read_latest_data(store),
@@ -18,7 +18,7 @@ impl<S: Store, P: Processor> ReadCmd for Read<S, P> {
 }
 
 /// Commands dispatched to the storage manager's write worker.
-pub enum Write<S: Store, P: Processor> {
+pub enum Write<S: Store, P: Processor<S>> {
     /// Persist a resource's versioned data and rollback pointer.
     StateDiff(StateDiff<S, P>),
     /// Finalize a batch by writing latest pointers and batch metadata.
@@ -27,7 +27,7 @@ pub enum Write<S: Store, P: Processor> {
     Rollback(Rollback<S, P>),
 }
 
-impl<S: Store, P: Processor> WriteCmd for Write<S, P> {
+impl<S: Store, P: Processor<S>> WriteCmd for Write<S, P> {
     fn exec<ST: Store>(&self, store: &ST, mut wb: ST::WriteBatch) -> ST::WriteBatch {
         match self {
             Write::StateDiff(state_diff) => state_diff.write(&mut wb),

@@ -4,9 +4,9 @@ use vprogs_storage_types::Store;
 use crate::TransactionContext;
 
 /// Abstract transaction processor that the scheduler invokes for each transaction.
-pub trait Processor: Clone + Sized + Send + Sync + 'static {
+pub trait Processor<S: Store>: Clone + Sized + Send + Sync + 'static {
     /// Executes a single transaction against its local [`TransactionContext`].
-    fn process_transaction<S: Store>(
+    fn process_transaction(
         &self,
         ctx: &mut TransactionContext<S, Self>,
     ) -> Result<Self::TransactionEffects, Self::Error>;

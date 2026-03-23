@@ -22,7 +22,7 @@ use crate::{
 /// The scheduler is the main entry point for batch processing. It schedules transactions, manages
 /// resource dependency chains, coordinates parallel execution via worker threads, and handles
 /// rollbacks when chain reorganization occurs.
-pub struct Scheduler<S: Store, P: Processor> {
+pub struct Scheduler<S: Store, P: Processor<S>> {
     /// The processor used to execute transactions.
     processor: P,
     /// Shared scheduler state (storage, eviction_queue, root, last_committed, last_processed).
@@ -41,7 +41,7 @@ pub struct Scheduler<S: Store, P: Processor> {
     pruning_worker: PruningWorker<S, P>,
 }
 
-impl<S: Store, P: Processor> Scheduler<S, P> {
+impl<S: Store, P: Processor<S>> Scheduler<S, P> {
     /// Creates a new scheduler with the given execution and storage configurations.
     pub fn new(execution_config: ExecutionConfig<P>, storage_config: StorageConfig<S>) -> Self {
         let (worker_count, processor) = execution_config.unpack();

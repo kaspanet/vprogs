@@ -11,8 +11,8 @@ use vprogs_transaction_runtime_transaction_effects::TransactionEffects;
 #[derive(Clone)]
 pub struct VM;
 
-impl Processor for VM {
-    fn process_transaction<S: Store>(
+impl<S: Store> Processor<S> for VM {
+    fn process_transaction(
         &self,
         _ctx: &mut TransactionContext<S, Self>,
     ) -> VmResult<TransactionEffects> {

@@ -1,6 +1,5 @@
 use risc0_binfmt::ProgramBinary;
 use tempfile::TempDir;
-use tokio::sync::mpsc;
 use vprogs_core_smt::{EMPTY_HASH, Tree};
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId, SchedulerTransaction};
@@ -11,8 +10,7 @@ use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_abi::batch_processor::StateTransition;
 use vprogs_zk_backend_risc0_api::Backend;
-use vprogs_zk_prover::BatchProver;
-use vprogs_zk_vm::Vm;
+use vprogs_zk_vm::{ProvingOrchestrator, Vm};
 
 /// Loads the pre-built transaction processor ELF from the repository.
 fn transaction_processor_elf() -> Vec<u8> {
@@ -51,7 +49,6 @@ async fn batch_proof_two_transactions() {
 
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-    let store_for_prover = storage.clone();
 
     let backend = Backend::new(&transaction_elf, &batch_elf);
     let image_id: [u8; 32] =
@@ -62,13 +59,14 @@ async fn batch_proof_two_transactions() {
             .try_into()
             .unwrap();
 
-    // Set up the proof channel between VM and prover.
-    let (proof_tx, proof_rx) = mpsc::unbounded_channel();
-    let vm = Vm::with_proof_channel(backend.clone(), proof_tx);
+    // Create the VM with proving enabled.
+    let proving = ProvingOrchestrator::new(backend.clone(), storage.clone(), image_id);
+    let batch_proof_rx = proving.proof_queue().clone();
+    let vm = Vm::new(backend.clone(), Some(proving));
 
     let mut scheduler = Scheduler::new(
         ExecutionConfig::default().with_processor(vm),
-        StorageConfig::default().with_store(storage),
+        StorageConfig::default().with_store(storage.clone()),
     );
 
     // Create two transactions touching distinct resources.
@@ -80,14 +78,7 @@ async fn batch_proof_two_transactions() {
     let block_metadata = ChainBlockMetadata::default();
     let block_hash = block_metadata.block_hash().as_bytes();
 
-    // Set up the batch prover. Version 1 = first scheduled batch in the store.
-    let mut batch_prover = BatchProver::new(backend, proof_rx, image_id, store_for_prover.clone());
-    batch_prover.register_batch(block_hash, 2, 1);
-
-    // Start the proving loop.
-    let mut batch_proof_rx = batch_prover.run().await;
-
-    // Schedule the batch (executes both transactions and sends proof requests).
+    // Schedule the batch (executes both transactions and starts proving).
     let batch = scheduler.schedule(
         block_metadata,
         vec![
@@ -99,11 +90,11 @@ async fn batch_proof_two_transactions() {
     batch.wait_committed_blocking();
 
     // Wait for the batch proof.
-    let proof = batch_proof_rx.recv().await.expect("expected a batch proof");
+    let proof = batch_proof_rx.wait_and_pop().await;
 
     // Verify basic proof structure.
     assert_eq!(proof.block_hash, block_hash);
-    assert_eq!(proof.batch_index, 0);
+    assert_eq!(proof.batch_index, 1);
     assert!(!proof.receipt_journal.is_empty(), "receipt journal should not be empty");
 
     // The guest increments each resource's counter from 0 to 1, so the state should change.
@@ -111,12 +102,12 @@ async fn batch_proof_two_transactions() {
     assert_eq!(proof.prev_root, EMPTY_HASH, "prev_root should be empty (no prior state)");
 
     // The new_root should match what the store committed at version 1.
-    assert_eq!(proof.new_root, store_for_prover.root(1), "new_root should match store's version 1");
+    assert_eq!(proof.new_root, storage.root(1), "new_root should match store's version 1");
 
     // Verify committed counter values - both resources should be 1 (incremented from 0).
-    let r1_data = StateVersion::get(&store_for_prover, 1, &ResourceId::for_test(1))
+    let r1_data = StateVersion::get(&storage, 1, &ResourceId::for_test(1))
         .expect("resource 1 should have committed data");
-    let r2_data = StateVersion::get(&store_for_prover, 1, &ResourceId::for_test(2))
+    let r2_data = StateVersion::get(&storage, 1, &ResourceId::for_test(2))
         .expect("resource 2 should have committed data");
     assert_eq!(
         u32::from_le_bytes(r1_data.as_slice().try_into().unwrap()),
@@ -132,7 +123,7 @@ async fn batch_proof_two_transactions() {
     // Verify that the SMT proof leaves contain the correct value hashes for the counter data.
     let expected_hash = *blake3::hash(&1u32.to_le_bytes()).as_bytes();
     for resource_id in [ResourceId::for_test(1), ResourceId::for_test(2)] {
-        let (proof_bytes, _) = store_for_prover.prove(&[*resource_id.as_bytes()], 1).unwrap();
+        let (proof_bytes, _) = storage.prove(&[*resource_id.as_bytes()], 1).unwrap();
         let smt_proof = vprogs_core_smt::proving::Proof::decode(&proof_bytes).unwrap();
         assert_eq!(
             *smt_proof.leaves[0].value_hash, expected_hash,
@@ -153,24 +144,10 @@ async fn batch_proof_two_transactions() {
     let batch1_new_root = proof.new_root;
 
     // --- Second batch: increment counters from 1 to 2 ---
-
-    // Recreate the pipeline - prover consumed its receiver, need a fresh channel.
-    scheduler.shutdown();
-    let backend = Backend::new(&transaction_elf, &batch_elf);
-    let (proof_tx_2, proof_rx_2) = mpsc::unbounded_channel();
-    let vm_2 = Vm::with_proof_channel(backend.clone(), proof_tx_2);
-    let mut scheduler = Scheduler::new(
-        ExecutionConfig::default().with_processor(vm_2),
-        StorageConfig::default().with_store(store_for_prover.clone()),
-    );
+    // No need to recreate the pipeline - the VM handles it internally.
 
     let block_metadata_2 = ChainBlockMetadata::default();
-    let block_hash_2 = block_metadata_2.block_hash().as_bytes();
-
-    let mut batch_prover_2 =
-        BatchProver::new(backend, proof_rx_2, image_id, store_for_prover.clone());
-    batch_prover_2.register_batch(block_hash_2, 2, 2);
-    let mut batch_proof_rx_2 = batch_prover_2.run().await;
+    let _block_hash_2 = block_metadata_2.block_hash().as_bytes();
 
     // Schedule a second batch touching the same resources.
     let mut tx3 = L1Transaction::default();
@@ -188,7 +165,7 @@ async fn batch_proof_two_transactions() {
 
     batch_2.wait_committed_blocking();
 
-    let proof_2 = batch_proof_rx_2.recv().await.expect("expected a batch proof for batch 2");
+    let proof_2 = batch_proof_rx.wait_and_pop().await;
 
     // Chain continuity: batch 2's prev_root should equal batch 1's new_root.
     assert_eq!(
@@ -198,9 +175,9 @@ async fn batch_proof_two_transactions() {
     assert_ne!(proof_2.prev_root, proof_2.new_root, "state should change again");
 
     // Verify counter values are now 2.
-    let r1_data_v2 = StateVersion::get(&store_for_prover, 2, &ResourceId::for_test(1))
+    let r1_data_v2 = StateVersion::get(&storage, 2, &ResourceId::for_test(1))
         .expect("resource 1 should have v2 data");
-    let r2_data_v2 = StateVersion::get(&store_for_prover, 2, &ResourceId::for_test(2))
+    let r2_data_v2 = StateVersion::get(&storage, 2, &ResourceId::for_test(2))
         .expect("resource 2 should have v2 data");
     assert_eq!(
         u32::from_le_bytes(r1_data_v2.as_slice().try_into().unwrap()),
@@ -216,7 +193,7 @@ async fn batch_proof_two_transactions() {
     // Verify SMT leaves at version 2 match blake3(counter=2).
     let expected_hash_v2 = *blake3::hash(&2u32.to_le_bytes()).as_bytes();
     for resource_id in [ResourceId::for_test(1), ResourceId::for_test(2)] {
-        let (proof_bytes, _) = store_for_prover.prove(&[*resource_id.as_bytes()], 2).unwrap();
+        let (proof_bytes, _) = storage.prove(&[*resource_id.as_bytes()], 2).unwrap();
         let smt_proof = vprogs_core_smt::proving::Proof::decode(&proof_bytes).unwrap();
         assert_eq!(
             *smt_proof.leaves[0].value_hash, expected_hash_v2,

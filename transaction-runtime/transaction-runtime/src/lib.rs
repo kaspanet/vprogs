@@ -14,7 +14,7 @@ use vprogs_transaction_runtime_transaction_effects::TransactionEffects;
 pub struct TransactionRuntime<'a, 'b, S, P>
 where
     S: Store,
-    P: Processor,
+    P: Processor<S>,
 {
     handles: &'a mut [AccessHandle<'b, S, P>],
     signers: HashSet<PubKey>,
@@ -25,7 +25,7 @@ where
 impl<'a, 'b, S, P> TransactionRuntime<'a, 'b, S, P>
 where
     S: Store,
-    P: Processor,
+    P: Processor<S>,
 {
     pub fn execute(
         tx: &'a Transaction,

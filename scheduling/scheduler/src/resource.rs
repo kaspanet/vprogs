@@ -8,17 +8,17 @@ use crate::{
     ResourceAccess, ScheduledBatchRef, ScheduledTransactionRef, StateDiff, processor::Processor,
 };
 
-pub(crate) struct Resource<S: Store, P: Processor> {
+pub(crate) struct Resource<S: Store, P: Processor<S>> {
     last_access: Option<ResourceAccess<S, P>>,
 }
 
-impl<S: Store, P: Processor> Default for Resource<S, P> {
+impl<S: Store, P: Processor<S>> Default for Resource<S, P> {
     fn default() -> Self {
         Self { last_access: None }
     }
 }
 
-impl<S: Store, P: Processor> Resource<S, P> {
+impl<S: Store, P: Processor<S>> Resource<S, P> {
     pub(crate) fn access(
         &mut self,
         access_metadata: &AccessMetadata,

@@ -14,13 +14,13 @@ use crate::{Processor, ScheduledBatch};
 /// Batches are pushed into a queue and processed sequentially: wait for all transactions to
 /// execute, wait for all state diffs to persist, then submit the batch for commit and wait for
 /// finalization.
-pub(crate) struct BatchLifecycleWorker<S: Store, P: Processor> {
+pub(crate) struct BatchLifecycleWorker<S: Store, P: Processor<S>> {
     queue: Arc<SegQueue<ScheduledBatch<S, P>>>,
     notify: Arc<Notify>,
     handle: JoinHandle<()>,
 }
 
-impl<S: Store, P: Processor> BatchLifecycleWorker<S, P> {
+impl<S: Store, P: Processor<S>> BatchLifecycleWorker<S, P> {
     pub(crate) fn new() -> Self {
         let queue = Arc::new(SegQueue::new());
         let notify = Arc::new(Notify::new());

@@ -7851,39 +7851,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "vprogs-zk-prover"
+name = "vprogs-zk-vm"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "crossbeam-queue",
  "log",
  "risc0-binfmt",
  "risc0-zkos-v1compat",
  "tempfile",
  "tokio",
+ "vprogs-core-macros",
  "vprogs-core-smt",
  "vprogs-core-test-utils",
  "vprogs-core-types",
  "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
  "vprogs-state-version",
- "vprogs-storage-manager",
- "vprogs-storage-rocksdb-store",
- "vprogs-storage-types",
- "vprogs-zk-abi",
- "vprogs-zk-backend-risc0-api",
- "vprogs-zk-vm",
-]
-
-[[package]]
-name = "vprogs-zk-vm"
-version = "0.1.0"
-dependencies = [
- "tempfile",
- "tokio",
- "vprogs-core-test-utils",
- "vprogs-core-types",
- "vprogs-l1-types",
- "vprogs-scheduling-scheduler",
  "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
