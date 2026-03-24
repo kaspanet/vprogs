@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, thread::JoinHandle};
 
 use vprogs_core_atomics::AsyncQueue;
 use vprogs_core_macros::smart_pointer;
@@ -6,21 +6,21 @@ use vprogs_scheduling_scheduler::Processor;
 use vprogs_storage_types::Store;
 
 use crate::{
-    TransactionBackend, pending_transaction::PendingTransaction,
-    proved_transaction::ProvedTransaction, worker::TransactionProverWorker,
+    TransactionBackend, proved_transaction::ProvedTransaction, worker::Worker,
+    worker_api::WorkerApi,
 };
 
 /// Handle for the transaction prover background thread.
 ///
-/// Push transactions to `inbox` for proving. Individual proved receipts appear on `outbox`.
+/// Access the worker API via `api` to push transactions (`api.inbox`) or read results
+/// (`api.outbox`).
 #[smart_pointer]
 pub struct TransactionProver<P: Processor<S>, B: TransactionBackend, S: Store> {
-    /// The backend used for proving.
-    pub backend: B,
-    /// Queue of transactions awaiting proving.
-    pub inbox: AsyncQueue<PendingTransaction<P, S>>,
-    /// Proved transaction receipts (consumed by caller or batch prover).
-    pub outbox: AsyncQueue<ProvedTransaction<P, B, S>>,
+    /// Shared worker API (backend, inbox, outbox).
+    pub api: WorkerApi<P, B, S>,
+    /// Handle to the background worker thread.
+    #[allow(dead_code)]
+    worker: JoinHandle<()>,
 }
 
 impl<P: Processor<S>, B: TransactionBackend, S: Store> TransactionProver<P, B, S> {
@@ -29,11 +29,8 @@ impl<P: Processor<S>, B: TransactionBackend, S: Store> TransactionProver<P, B, S
     /// Proved transaction receipts are pushed to `outbox`. In transaction-only mode this is the
     /// caller's results queue; in batch mode the batch prover reads from it.
     pub fn new(backend: B, outbox: AsyncQueue<ProvedTransaction<P, B, S>>) -> Self {
-        let inbox = AsyncQueue::new();
-
-        let worker = TransactionProverWorker::new(backend.clone(), inbox.clone(), outbox.clone());
-        worker.spawn();
-
-        Self(Arc::new(TransactionProverData { backend, inbox, outbox }))
+        let api = WorkerApi::new(backend, outbox);
+        let worker = Worker::spawn(api.clone());
+        Self(Arc::new(TransactionProverData { api, worker }))
     }
 }

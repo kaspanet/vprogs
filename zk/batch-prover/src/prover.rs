@@ -3,7 +3,7 @@ use vprogs_scheduling_scheduler::Processor;
 use vprogs_storage_types::Store;
 use vprogs_zk_transaction_prover::{TransactionBackend, TransactionProver};
 
-use crate::{BatchBackend, worker::BatchProverWorker};
+use crate::{BatchBackend, worker::Worker};
 
 /// Handle for the batch prover background thread.
 ///
@@ -12,7 +12,7 @@ use crate::{BatchBackend, worker::BatchProverWorker};
 /// completed batch. Batch proof receipts are pushed to the caller-provided results queue.
 #[derive(Clone)]
 pub struct BatchProver<P: Processor<S>, TB: TransactionBackend, S: Store> {
-    /// The inner transaction prover -- submit transactions via `tx_prover.inbox`.
+    /// The inner transaction prover -- submit transactions via `tx_prover.api.inbox`.
     pub tx_prover: TransactionProver<P, TB, S>,
 }
 
@@ -23,14 +23,7 @@ impl<P: Processor<S>, BB: BatchBackend, S: Store> BatchProver<P, BB, S> {
     /// are pushed to `results`.
     pub fn new(backend: BB, store: S, results: AsyncQueue<BB::Receipt>) -> Self {
         let tx_prover = TransactionProver::new(backend, AsyncQueue::new());
-        let worker = BatchProverWorker::new(
-            tx_prover.backend.clone(),
-            store,
-            tx_prover.outbox.clone(),
-            results,
-        );
-        worker.spawn();
-
+        Worker::spawn(tx_prover.api.clone(), store, results);
         Self { tx_prover }
     }
 }

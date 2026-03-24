@@ -43,17 +43,11 @@ impl<P: Processor<S>, TB: TransactionBackend, S: Store> ProvingPipeline<P, TB, S
 
     /// Submits a transaction for proving. No-op for `None`.
     pub(crate) fn submit(&self, batch: &ScheduledBatch<S, P>, tx_inputs: Vec<u8>) {
-        if let Some(prover) = self.transaction_prover() {
-            prover.inbox.push(PendingTransaction { batch: batch.clone(), tx_inputs });
-        }
-    }
-
-    fn transaction_prover(&self) -> Option<&TransactionProver<P, TB, S>> {
-        match self {
-            Self::None => None,
-            Self::Transaction(tx_prover) => Some(tx_prover),
-            Self::Batch(batch_prover) => Some(&batch_prover.tx_prover),
-        }
+        let api = match self {
+            Self::None => return,
+            Self::Transaction(tx_prover) => &tx_prover.api,
+            Self::Batch(batch_prover) => &batch_prover.tx_prover.api,
+        };
+        api.inbox.push(PendingTransaction { batch: batch.clone(), tx_inputs });
     }
 }
-
