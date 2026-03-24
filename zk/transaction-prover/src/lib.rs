@@ -1,12 +1,12 @@
+mod api;
 mod backend;
-mod pending_transaction;
-mod proved_transaction;
+mod input;
+mod output;
 mod prover;
 mod worker;
-mod worker_api;
 
+pub use api::Api;
 pub use backend::TransactionBackend;
-pub use pending_transaction::PendingTransaction;
-pub use proved_transaction::ProvedTransaction;
+pub use input::Input;
+pub use output::Output;
 pub use prover::TransactionProver;
-pub use worker_api::WorkerApi;

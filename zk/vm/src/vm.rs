@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
 use vprogs_scheduling_scheduler::{Processor, TransactionContext};
 use vprogs_storage_types::Store;
@@ -14,19 +16,20 @@ use crate::{ExecutionBackend, ProvingPipeline};
 ///
 /// `EB` is the execution backend (synchronous). `TB` is the transaction/batch proving backend
 /// (async). `S` is the store type (inferred from the scheduler context). The proving strategy
-/// is selected via [`ProvingPipeline`].
+/// is selected via [`ProvingPipeline`], shared behind `Arc` since the Vm is cloneable but the
+/// pipeline owns non-cloneable worker handles.
 #[derive(Clone)]
 pub struct Vm<EB: ExecutionBackend, TB: TransactionBackend, S: Store> {
     /// The ZK backend used for execution.
     backend: EB,
     /// Proving strategy (None, Transaction-only, or full Batch).
-    proving_pipeline: ProvingPipeline<Self, TB, S>,
+    proving: Arc<ProvingPipeline<Self, TB, S>>,
 }
 
 impl<EB: ExecutionBackend, TB: TransactionBackend, S: Store> Vm<EB, TB, S> {
     /// Creates a new ZK VM with the given execution backend and proving pipeline.
-    pub fn new(backend: EB, proving_pipeline: ProvingPipeline<Self, TB, S>) -> Self {
-        Self { backend, proving_pipeline }
+    pub fn new(backend: EB, proving: ProvingPipeline<Self, TB, S>) -> Self {
+        Self { backend, proving: Arc::new(proving) }
     }
 }
 
@@ -55,7 +58,7 @@ impl<EB: ExecutionBackend, TB: TransactionBackend, S: Store> Processor<S> for Vm
         });
 
         // 4. Submit transaction to proving pipeline (no-op if ProvingPipeline::None).
-        self.proving_pipeline.submit(ctx.batch(), input_bytes);
+        self.proving.submit(ctx.batch(), input_bytes);
 
         return_value
     }

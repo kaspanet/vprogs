@@ -8,7 +8,7 @@ use crate::TransactionBackend;
 /// Produced by the [`TransactionProver`](crate::TransactionProver) for each proved transaction.
 /// In batch mode, the batch prover accumulates these into per-batch receipt sets. In
 /// transaction-only mode, these flow directly to the caller's results queue.
-pub struct ProvedTransaction<P: Processor<S>, B: TransactionBackend, S: Store> {
+pub struct Output<P: Processor<S>, B: TransactionBackend, S: Store> {
     /// The batch this transaction belongs to.
     pub batch: ScheduledBatch<S, P>,
     /// The transaction's position within its batch.

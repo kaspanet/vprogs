@@ -1,7 +1,9 @@
+mod api;
 mod backend;
-mod pending_batch;
+mod input;
 mod prover;
-pub(crate) mod worker;
+mod worker;
 
+pub use api::Api;
 pub use backend::BatchBackend;
 pub use prover::BatchProver;

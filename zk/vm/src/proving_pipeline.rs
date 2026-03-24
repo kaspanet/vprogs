@@ -2,16 +2,13 @@ use vprogs_core_atomics::AsyncQueue;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
 use vprogs_zk_batch_prover::{BatchBackend, BatchProver};
-use vprogs_zk_transaction_prover::{
-    PendingTransaction, ProvedTransaction, TransactionBackend, TransactionProver,
-};
+use vprogs_zk_transaction_prover::{TransactionBackend, TransactionProver};
 
 /// Proving strategy for the [`Vm`](crate::Vm).
 ///
 /// This is a closed set -- the backend implementations are the extension point, not the
 /// pipeline structure itself. Both proving modes accept a caller-owned results queue at
 /// construction time.
-#[derive(Clone)]
 pub enum ProvingPipeline<P: Processor<S>, TB: TransactionBackend, S: Store> {
     /// No proving -- execution only.
     None,
@@ -25,7 +22,10 @@ impl<P: Processor<S>, TB: TransactionBackend, S: Store> ProvingPipeline<P, TB, S
     /// Creates a transaction-only proving pipeline.
     ///
     /// Individual proved transaction receipts are pushed to `results`.
-    pub fn transaction(backend: TB, results: AsyncQueue<ProvedTransaction<P, TB, S>>) -> Self {
+    pub fn transaction(
+        backend: TB,
+        results: AsyncQueue<vprogs_zk_transaction_prover::Output<P, TB, S>>,
+    ) -> Self {
         Self::Transaction(TransactionProver::new(backend, results))
     }
 
@@ -48,6 +48,6 @@ impl<P: Processor<S>, TB: TransactionBackend, S: Store> ProvingPipeline<P, TB, S
             Self::Transaction(tx_prover) => &tx_prover.api,
             Self::Batch(batch_prover) => &batch_prover.tx_prover.api,
         };
-        api.inbox.push(PendingTransaction { batch: batch.clone(), tx_inputs });
+        api.inbox.push(vprogs_zk_transaction_prover::Input { batch: batch.clone(), tx_inputs });
     }
 }
