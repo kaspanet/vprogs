@@ -1,36 +1,36 @@
-use std::{marker::PhantomData, sync::Arc};
-
 use vprogs_core_atomics::AsyncQueue;
-use vprogs_core_macros::smart_pointer;
 use vprogs_scheduling_scheduler::Processor;
 use vprogs_storage_types::Store;
-use vprogs_zk_transaction_prover::{PendingBatch, TransactionProver};
+use vprogs_zk_transaction_prover::{TransactionBackend, TransactionProver};
 
 use crate::{BatchBackend, worker::BatchProverWorker};
 
 /// Handle for the batch prover background thread.
 ///
-/// Reads completed batches from the transaction prover's outbox, assembles batch witnesses with
-/// SMT proofs, and produces batch receipts on `proof_queue`.
-#[smart_pointer]
-pub struct BatchProver<P: Processor<S>, BB: BatchBackend, S: Store> {
-    /// Output queue for completed batch proof receipts.
-    pub proof_queue: AsyncQueue<BB::Receipt>,
-    _phantom: PhantomData<(P, S)>,
+/// Owns a [`TransactionProver`] internally and spawns an additional worker that accumulates
+/// proved transaction receipts, assembles batch witnesses (with SMT proofs), and proves each
+/// completed batch. Batch proof receipts are pushed to the caller-provided results queue.
+#[derive(Clone)]
+pub struct BatchProver<P: Processor<S>, TB: TransactionBackend, S: Store> {
+    /// The inner transaction prover -- submit transactions via `tx_prover.inbox`.
+    pub tx_prover: TransactionProver<P, TB, S>,
 }
 
 impl<P: Processor<S>, BB: BatchBackend, S: Store> BatchProver<P, BB, S> {
-    /// Creates a new batch prover and spawns the background worker thread.
+    /// Creates a new batch prover and spawns both the transaction and batch worker threads.
     ///
-    /// The `store` provides SMT state proofs for batch witness assembly.
-    pub fn new(tx_prover: TransactionProver<P, BB, S>, store: S) -> Self {
-        let inbox: AsyncQueue<PendingBatch<P, BB, S>> = tx_prover.outbox.clone();
-        let proof_queue = AsyncQueue::new();
-
-        let worker =
-            BatchProverWorker::new(tx_prover.backend.clone(), store, inbox, proof_queue.clone());
+    /// The store provides SMT state proofs for batch witness assembly. Batch proof receipts
+    /// are pushed to `results`.
+    pub fn new(backend: BB, store: S, results: AsyncQueue<BB::Receipt>) -> Self {
+        let tx_prover = TransactionProver::new(backend, AsyncQueue::new());
+        let worker = BatchProverWorker::new(
+            tx_prover.backend.clone(),
+            store,
+            tx_prover.outbox.clone(),
+            results,
+        );
         worker.spawn();
 
-        Self(Arc::new(BatchProverData { proof_queue, _phantom: PhantomData }))
+        Self { tx_prover }
     }
 }

@@ -102,9 +102,9 @@ impl vprogs_zk_transaction_prover::TransactionBackend for Backend {
 impl vprogs_zk_batch_prover::BatchBackend for Backend {
     type BatchProveFuture = future::Ready<Receipt>;
 
-    fn prove_batch(&self, batch_witness: &[u8], receipts: Vec<Receipt>) -> Self::BatchProveFuture {
+    fn prove_batch(&self, inputs: &[u8], receipts: Vec<Receipt>) -> Self::BatchProveFuture {
         let mut builder = ExecutorEnv::builder();
-        builder.write_slice(&[batch_witness.len() as u32]).write_slice(batch_witness);
+        builder.write_slice(&[inputs.len() as u32]).write_slice(inputs);
 
         for receipt in receipts {
             builder.add_assumption(receipt);

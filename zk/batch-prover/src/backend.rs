@@ -14,9 +14,5 @@ pub trait BatchBackend: TransactionBackend {
     ///
     /// `receipts` contains the inner transaction receipts that the batch guest will verify
     /// via composition.
-    fn prove_batch(
-        &self,
-        batch_witness: &[u8],
-        receipts: Vec<Self::Receipt>,
-    ) -> Self::BatchProveFuture;
+    fn prove_batch(&self, inputs: &[u8], receipts: Vec<Self::Receipt>) -> Self::BatchProveFuture;
 }

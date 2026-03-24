@@ -1,13 +1,12 @@
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
+use vprogs_zk_transaction_prover::TransactionBackend;
 
-use crate::TransactionBackend;
-
-/// Per-batch proving state: accumulates receipts in the transaction prover, then moves to the
-/// batch prover for assembly once complete.
-pub struct PendingBatch<P: Processor<S>, B: TransactionBackend, S: Store> {
-    pub batch: ScheduledBatch<S, P>,
-    pub receipts: Vec<Option<B::Receipt>>,
+/// Per-batch proving state: accumulates individual transaction receipts until all are collected,
+/// then moves to assembly and batch proving.
+pub(crate) struct PendingBatch<P: Processor<S>, B: TransactionBackend, S: Store> {
+    pub(crate) batch: ScheduledBatch<S, P>,
+    pub(crate) receipts: Vec<Option<B::Receipt>>,
     pub(crate) pending: u32,
 }
 

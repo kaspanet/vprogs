@@ -20,18 +20,13 @@ pub struct Vm<EB: ExecutionBackend, TB: TransactionBackend, S: Store> {
     /// The ZK backend used for execution.
     backend: EB,
     /// Proving strategy (None, Transaction-only, or full Batch).
-    proving: ProvingPipeline<Self, TB, S>,
+    proving_pipeline: ProvingPipeline<Self, TB, S>,
 }
 
 impl<EB: ExecutionBackend, TB: TransactionBackend, S: Store> Vm<EB, TB, S> {
     /// Creates a new ZK VM with the given execution backend and proving pipeline.
-    pub fn new(backend: EB, proving: ProvingPipeline<Self, TB, S>) -> Self {
-        Self { backend, proving }
-    }
-
-    /// Returns the proving pipeline configuration.
-    pub fn proving(&self) -> &ProvingPipeline<Self, TB, S> {
-        &self.proving
+    pub fn new(backend: EB, proving_pipeline: ProvingPipeline<Self, TB, S>) -> Self {
+        Self { backend, proving_pipeline }
     }
 }
 
@@ -59,8 +54,8 @@ impl<EB: ExecutionBackend, TB: TransactionBackend, S: Store> Processor<S> for Vm
             }
         });
 
-        // 4. Submit transaction for proving (no-op if ProvingPipeline::None).
-        self.proving.submit(ctx.batch(), input_bytes);
+        // 4. Submit transaction to proving pipeline (no-op if ProvingPipeline::None).
+        self.proving_pipeline.submit(ctx.batch(), input_bytes);
 
         return_value
     }

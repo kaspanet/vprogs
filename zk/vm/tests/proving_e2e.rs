@@ -1,4 +1,5 @@
 use tempfile::TempDir;
+use vprogs_core_atomics::AsyncQueue;
 use vprogs_core_smt::{EMPTY_HASH, Tree};
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId, SchedulerTransaction};
@@ -53,8 +54,8 @@ async fn batch_proof_two_transactions() {
     let backend = Backend::new(&transaction_elf, &batch_elf);
 
     // Create the VM with batch proving enabled.
-    let proving = ProvingPipeline::batch(backend.clone(), storage.clone());
-    let batch_proof_rx = proving.proof_queue().unwrap().clone();
+    let batch_proof_rx = AsyncQueue::new();
+    let proving = ProvingPipeline::batch(backend.clone(), storage.clone(), batch_proof_rx.clone());
     let vm = Vm::new(backend.clone(), proving);
 
     let mut scheduler = Scheduler::new(

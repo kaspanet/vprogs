@@ -1,4 +1,5 @@
 mod backend;
+mod pending_batch;
 mod prover;
 pub(crate) mod worker;
 

@@ -7861,7 +7861,6 @@ version = "0.1.0"
 dependencies = [
  "tokio",
  "vprogs-core-atomics",
- "vprogs-core-macros",
  "vprogs-scheduling-scheduler",
  "vprogs-storage-types",
  "vprogs-zk-abi",

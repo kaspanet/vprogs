@@ -1,25 +1,27 @@
-use std::thread::JoinHandle;
+use std::{collections::HashMap, thread::JoinHandle};
 
 use tokio::runtime::Builder;
 use vprogs_core_atomics::AsyncQueue;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
 use vprogs_zk_abi::batch_processor::Inputs as BatchInputs;
-use vprogs_zk_transaction_prover::PendingBatch;
+use vprogs_zk_transaction_prover::ProvedTransaction;
 
-use crate::BatchBackend;
+use crate::{BatchBackend, pending_batch::PendingBatch};
 
-/// Background worker that waits for completed batches, handles commit ordering, assembles batch
-/// witnesses with SMT proofs, and proves them.
+/// Background worker that accumulates proved transaction receipts into per-batch sets, waits
+/// for commit ordering, assembles batch witnesses with SMT proofs, and proves them.
 pub(crate) struct BatchProverWorker<P: Processor<S>, BB: BatchBackend, S: Store> {
     /// The backend used for journal extraction, image IDs, and batch proving.
     backend: BB,
     /// The store used for reading SMT state proofs at the pre-batch version.
     store: S,
-    /// Completed batches from the transaction prover.
-    inbox: AsyncQueue<PendingBatch<P, BB, S>>,
+    /// Individual proved transaction receipts from the transaction prover.
+    inbox: AsyncQueue<ProvedTransaction<P, BB, S>>,
     /// Output queue for completed batch proof receipts.
     outbox: AsyncQueue<BB::Receipt>,
+    /// Receipts accumulating per batch (keyed by batch index).
+    pending: HashMap<u64, PendingBatch<P, BB, S>>,
     /// The most recently processed batch (for commit ordering).
     prev_batch: Option<ScheduledBatch<S, P>>,
 }
@@ -28,10 +30,10 @@ impl<P: Processor<S>, BB: BatchBackend, S: Store> BatchProverWorker<P, BB, S> {
     pub(crate) fn new(
         backend: BB,
         store: S,
-        inbox: AsyncQueue<PendingBatch<P, BB, S>>,
+        inbox: AsyncQueue<ProvedTransaction<P, BB, S>>,
         outbox: AsyncQueue<BB::Receipt>,
     ) -> Self {
-        Self { backend, store, inbox, outbox, prev_batch: None }
+        Self { backend, store, inbox, outbox, pending: HashMap::new(), prev_batch: None }
     }
 
     pub(crate) fn spawn(self) -> JoinHandle<()> {
@@ -45,35 +47,50 @@ impl<P: Processor<S>, BB: BatchBackend, S: Store> BatchProverWorker<P, BB, S> {
     }
 
     async fn run(mut self) {
-        while !self.inbox.is_singleton() {
-            self.process_completed_batches().await;
+        while !self.inbox.is_singleton() || !self.pending.is_empty() {
+            // Drain proved transactions and accumulate receipts per batch.
+            while let Some(tx) = self.inbox.pop() {
+                if let Some(completed) = self.accumulate(tx) {
+                    self.process_batch(completed).await;
+                }
+            }
 
             self.inbox.notified().await;
         }
     }
 
-    /// Drains completed batches, waiting for commit ordering before assembling each.
-    async fn process_completed_batches(&mut self) {
-        while let Some(PendingBatch { batch, receipts, .. }) = self.inbox.pop() {
-            // Wait for the previous batch to commit before reading the store.
-            if let Some(ref prev) = self.prev_batch {
-                prev.wait_committed().await;
-            }
+    /// Records a proved transaction receipt. Returns the completed batch when all receipts
+    /// for that batch have been collected.
+    fn accumulate(&mut self, tx: ProvedTransaction<P, BB, S>) -> Option<PendingBatch<P, BB, S>> {
+        let batch_id = tx.batch.checkpoint().index();
+        let batch = self.pending.entry(batch_id).or_insert_with(|| PendingBatch::new(tx.batch));
 
-            // Skip canceled batches.
-            if batch.was_canceled() {
-                self.prev_batch = Some(batch);
-                continue;
-            }
+        batch.receipts[tx.index as usize] = Some(tx.receipt);
+        batch.pending -= 1;
 
-            let (batch, receipt) = self.assemble_and_prove(batch, receipts).await;
-            self.outbox.push(receipt);
-            self.prev_batch = Some(batch);
+        if batch.pending == 0 { self.pending.remove(&batch_id) } else { None }
+    }
+
+    /// Waits for commit ordering, assembles the batch witness, and proves it.
+    async fn process_batch(&mut self, batch: PendingBatch<P, BB, S>) {
+        // Wait for the previous batch to commit before reading SMT state.
+        if let Some(ref prev) = self.prev_batch {
+            prev.wait_committed().await;
         }
+
+        // Skip cancelled batches but still track them for ordering.
+        if batch.batch.was_canceled() {
+            self.prev_batch = Some(batch.batch);
+            return;
+        }
+
+        let (scheduled, receipt) = self.assemble_and_prove(batch.batch, batch.receipts).await;
+        self.outbox.push(receipt);
+        self.prev_batch = Some(scheduled);
     }
 
     /// Assembles a batch witness from collected transaction receipts, proves the batch, and
-    /// returns the raw batch receipt.
+    /// returns the scheduled batch handle and raw batch receipt.
     async fn assemble_and_prove(
         &self,
         batch: ScheduledBatch<S, P>,
@@ -82,8 +99,6 @@ impl<P: Processor<S>, BB: BatchBackend, S: Store> BatchProverWorker<P, BB, S> {
         let prev_version = batch.checkpoint().index().saturating_sub(1);
 
         // Read resource IDs from the batch's state diffs (one per unique resource).
-        // TODO: This allocation could be avoided if Tree::prove accepted an iterator instead
-        //       of &[[u8; 32]].
         let resource_ids: Vec<[u8; 32]> =
             batch.state_diffs().iter().map(|diff| *diff.resource_id().as_bytes()).collect();
         let (proof_bytes, leaf_order) =
