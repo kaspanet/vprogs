@@ -26,8 +26,8 @@ impl<P: Processor<S>, TB: TransactionBackend, S: Store> Api<P, TB, S> {
         outbox: AsyncQueue<TB::Receipt>,
     ) -> Self {
         Self(Arc::new(ApiData {
-            backend: tx_api.backend.clone(),
             store,
+            backend: tx_api.backend.clone(),
             inbox: tx_api.outbox.clone(),
             outbox,
         }))

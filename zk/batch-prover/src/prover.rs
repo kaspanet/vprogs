@@ -29,7 +29,6 @@ impl<P: Processor<S>, BB: BatchBackend, S: Store> BatchProver<P, BB, S> {
     pub fn new(backend: BB, store: S, results: AsyncQueue<BB::Receipt>) -> Self {
         let tx_prover = TransactionProver::new(backend, AsyncQueue::new());
         let api = Api::new(&tx_prover.api, store, results);
-        let worker = Worker::spawn(api.clone());
-        Self { tx_prover, api, worker }
+        Self { tx_prover, worker: Worker::spawn(api.clone()), api }
     }
 }
