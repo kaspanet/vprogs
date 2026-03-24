@@ -33,7 +33,6 @@ impl<P: Processor<S>, R: Send + 'static, S: Store> ProvingOrchestrator<P, R, S> 
         let outbox = AsyncQueue::new();
 
         TransactionProver::<P, B, S>::spawn(backend.clone(), inbox.clone(), outbox.clone());
-
         BatchProver::<P, B, S>::spawn(backend, store, image_id, proof_queue.clone(), outbox);
 
         Self(Arc::new(ProvingOrchestratorData { inbox, proof_queue }))

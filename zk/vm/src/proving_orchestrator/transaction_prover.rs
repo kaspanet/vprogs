@@ -22,10 +22,10 @@ pub(crate) struct TransactionProver<P: Processor<S>, B: Backend, S: Store> {
     /// Completed batches forwarded to the batch prover.
     outbox: AsyncQueue<PendingBatch<P, B, S>>,
     /// Receipts accumulating per batch (keyed by batch index).
-    pending_batches: HashMap<u64, PendingBatch<P, B, S>>,
+    batches: HashMap<u64, PendingBatch<P, B, S>>,
     /// Transaction proofs currently in flight.
     #[allow(clippy::type_complexity)]
-    pending_transactions: FuturesUnordered<
+    transactions: FuturesUnordered<
         Pin<Box<dyn futures::Future<Output = CompletedTransaction<P, B, S>> + Send>>,
     >,
 }
@@ -36,82 +36,62 @@ impl<P: Processor<S>, B: Backend, S: Store> TransactionProver<P, B, S> {
         inbox: AsyncQueue<PendingTransaction<P, S>>,
         outbox: AsyncQueue<PendingBatch<P, B, S>>,
     ) -> JoinHandle<()> {
+        let this = Self {
+            backend,
+            inbox,
+            outbox,
+            batches: HashMap::new(),
+            transactions: FuturesUnordered::new(),
+        };
+
         std::thread::spawn(move || {
             Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .expect("failed to build tokio runtime")
-                .block_on(
-                    Self {
-                        backend,
-                        inbox,
-                        outbox,
-                        pending_batches: HashMap::new(),
-                        pending_transactions: FuturesUnordered::new(),
-                    }
-                    .run(),
-                )
+                .expect("tokio runtime")
+                .block_on(this.run())
         })
     }
 
     async fn run(mut self) {
-        while !self.should_exit() {
-            self.drain_inbox();
+        while !self.inbox.is_singleton() || !self.transactions.is_empty() {
+            // Submit all queued transactions for proving.
+            while let Some(PendingTransaction { batch, mut input_bytes }) = self.inbox.pop() {
+                if !batch.was_canceled() {
+                    if let Ok(Inputs { tx_index, .. }) = Inputs::decode(&mut input_bytes[..]) {
+                        let receipt = self.backend.prove_transaction(input_bytes);
+                        self.transactions.push(Box::pin(async move {
+                            CompletedTransaction { batch, index: tx_index, receipt: receipt.await }
+                        }));
+                    };
+                }
+            }
 
+            // Wait for either a new task or a completed proof.
             tokio::select! {
                 biased;
                 () = self.inbox.notified() => {}
-                Some(proof) = self.pending_transactions.next(), if !self.pending_transactions.is_empty() => {
-                    self.record_receipt(proof);
+                Some(tx) = self.transactions.next(), if !self.transactions.is_empty() => {
+                    self.publish_receipt(tx);
                 }
             }
         }
     }
 
-    /// Drains all queued tasks and submits them to the proof backend.
-    fn drain_inbox(&mut self) {
-        while let Some(mut task) = self.inbox.pop() {
-            if task.batch.was_canceled() {
-                continue;
-            }
-
-            let Ok(Inputs { tx_index, .. }) = Inputs::decode(&mut task.input_bytes[..]) else {
-                continue;
-            };
-
-            let proof_future = self.backend.prove_transaction(task.input_bytes);
-            let batch = task.batch;
-
-            self.pending_transactions.push(Box::pin(async move {
-                CompletedTransaction { batch, index: tx_index, receipt: proof_future.await }
-            }));
-        }
-    }
-
     /// Records a completed transaction receipt and forwards the batch when all receipts are
     /// collected.
-    fn record_receipt(&mut self, proof: CompletedTransaction<P, B, S>) {
-        let batch_index = proof.batch.checkpoint().index();
-        let tx_count = proof.batch.txs().len() as u32;
+    fn publish_receipt(&mut self, tx: CompletedTransaction<P, B, S>) {
+        // Get or create the pending batch for this transaction.
+        let batch_id = tx.batch.checkpoint().index();
+        let batch = self.batches.entry(batch_id).or_insert_with(|| PendingBatch::new(tx.batch));
 
-        let batch = self.pending_batches.entry(batch_index).or_insert_with(|| PendingBatch {
-            batch: proof.batch,
-            receipts: vec![None; tx_count as usize],
-            received: 0,
-        });
+        // Record the receipt and decrement the pending count.
+        batch.receipts[tx.index as usize] = Some(tx.receipt);
+        batch.pending -= 1;
 
-        batch.receipts[proof.index as usize] = Some(proof.receipt);
-        batch.received += 1;
-
-        // All transactions proven - forward to batch prover.
-        if tx_count > 0 && batch.received >= tx_count {
-            let batch = self.pending_batches.remove(&batch_index).unwrap();
-            self.outbox.push(batch);
+        // All receipts for this batch are collected, push it to the outbox and remove from pending.
+        if batch.pending == 0 {
+            self.outbox.push(self.batches.remove(&batch_id).unwrap());
         }
-    }
-
-    /// Returns true when all external references are dropped and no work remains.
-    fn should_exit(&self) -> bool {
-        self.inbox.is_singleton() && self.pending_transactions.is_empty()
     }
 }

@@ -8,5 +8,12 @@ use crate::Backend;
 pub(crate) struct PendingBatch<P: Processor<S>, B: Backend, S: Store> {
     pub(crate) batch: ScheduledBatch<S, P>,
     pub(crate) receipts: Vec<Option<B::Receipt>>,
-    pub(crate) received: u32,
+    pub(crate) pending: u32,
+}
+
+impl<P: Processor<S>, B: Backend, S: Store> PendingBatch<P, B, S> {
+    pub(crate) fn new(batch: ScheduledBatch<S, P>) -> Self {
+        let tx_count = batch.txs().len();
+        Self { batch, receipts: vec![None; tx_count], pending: tx_count as u32 }
+    }
 }
