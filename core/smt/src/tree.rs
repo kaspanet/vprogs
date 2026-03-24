@@ -13,7 +13,7 @@ pub const DEPTH: usize = 256;
 ///
 /// Implementors only need to provide `node`, `prune`, and `rollback`; all tree operations
 /// (commits, proofs, root lookups) are default methods.
-pub trait Tree: Sized {
+pub trait Tree: Clone + Send + Sync + Sized + 'static {
     /// The hash function used for node and leaf hashing.
     type Hasher: Hasher;
 

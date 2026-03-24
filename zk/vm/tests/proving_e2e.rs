@@ -1,4 +1,3 @@
-use risc0_binfmt::ProgramBinary;
 use tempfile::TempDir;
 use vprogs_core_smt::{EMPTY_HASH, Tree};
 use vprogs_core_test_utils::ResourceIdExt;
@@ -10,7 +9,8 @@ use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_abi::batch_processor::StateTransition;
 use vprogs_zk_backend_risc0_api::Backend;
-use vprogs_zk_vm::{Backend as BackendTrait, ProvingOrchestrator, Vm};
+use vprogs_zk_transaction_prover::TransactionBackend;
+use vprogs_zk_vm::{ProvingPipeline, Vm};
 
 /// Loads the pre-built transaction processor ELF from the repository.
 fn transaction_processor_elf() -> Vec<u8> {
@@ -51,18 +51,11 @@ async fn batch_proof_two_transactions() {
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
 
     let backend = Backend::new(&transaction_elf, &batch_elf);
-    let image_id: [u8; 32] =
-        ProgramBinary::new(&transaction_elf, risc0_zkos_v1compat::V1COMPAT_ELF)
-            .compute_image_id()
-            .expect("failed to compute image ID")
-            .as_bytes()
-            .try_into()
-            .unwrap();
 
-    // Create the VM with proving enabled.
-    let proving = ProvingOrchestrator::new(backend.clone(), storage.clone(), image_id);
-    let batch_proof_rx = proving.proof_queue().clone();
-    let vm = Vm::new(backend.clone(), Some(proving));
+    // Create the VM with batch proving enabled.
+    let proving = ProvingPipeline::batch(backend.clone(), storage.clone());
+    let batch_proof_rx = proving.proof_queue().unwrap().clone();
+    let vm = Vm::new(backend.clone(), proving);
 
     let mut scheduler = Scheduler::new(
         ExecutionConfig::default().with_processor(vm),
@@ -90,12 +83,12 @@ async fn batch_proof_two_transactions() {
 
     // Wait for the batch proof receipt.
     let receipt = batch_proof_rx.wait_and_pop().await;
-    let journal = <Backend as BackendTrait>::journal_bytes(&receipt);
+    let journal = Backend::journal_bytes(&receipt);
 
     // Decode the state transition from the receipt journal.
     match StateTransition::decode(&journal).expect("journal should decode") {
         StateTransition::Success { image_id: journal_image_id, prev_root, new_root } => {
-            assert_eq!(*journal_image_id, image_id);
+            assert_eq!(journal_image_id, backend.image_id());
             assert_ne!(prev_root, new_root, "state should change after counter increment");
             assert_eq!(*prev_root, EMPTY_HASH, "prev_root should be empty (no prior state)");
             assert_eq!(*new_root, storage.root(1), "new_root should match store's version 1");
@@ -139,7 +132,7 @@ async fn batch_proof_two_transactions() {
     batch_2.wait_committed_blocking();
 
     let receipt_2 = batch_proof_rx.wait_and_pop().await;
-    let journal_2 = <Backend as BackendTrait>::journal_bytes(&receipt_2);
+    let journal_2 = Backend::journal_bytes(&receipt_2);
 
     // Chain continuity: batch 2's prev_root should equal batch 1's new_root.
     match StateTransition::decode(&journal_2).expect("journal should decode") {

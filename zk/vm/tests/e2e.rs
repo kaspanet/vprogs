@@ -6,7 +6,7 @@ use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_backend_risc0_api::Backend;
-use vprogs_zk_vm::Vm;
+use vprogs_zk_vm::{ProvingPipeline, Vm};
 
 /// Loads the pre-built transaction processor ELF from the repository.
 fn transaction_processor_elf() -> Vec<u8> {
@@ -42,7 +42,7 @@ fn test_zk_scheduler_e2e() {
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
 
     let backend = Backend::new(&transaction_elf, &batch_elf);
-    let vm = Vm::new(backend, None::<vprogs_zk_vm::ProvingOrchestrator<_, _, _>>);
+    let vm: Vm<_, Backend, _> = Vm::new(backend, ProvingPipeline::None);
     let mut scheduler = Scheduler::new(
         ExecutionConfig::default().with_processor(vm),
         StorageConfig::default().with_store(storage),

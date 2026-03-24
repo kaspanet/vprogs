@@ -1,46 +1,46 @@
 use std::thread::JoinHandle;
 
 use tokio::runtime::Builder;
+use vprogs_core_atomics::AsyncQueue;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
 use vprogs_zk_abi::batch_processor::Inputs as BatchInputs;
+use vprogs_zk_transaction_prover::PendingBatch;
 
-use super::pending_batch::PendingBatch;
-use crate::{AsyncQueue, Backend};
+use crate::BatchBackend;
 
-/// Worker that waits for completed batches, handles commit ordering, assembles batch
-/// witnesses, and proves them.
-pub(crate) struct BatchProver<P: Processor<S>, B: Backend, S: Store> {
-    /// The proof backend used for proving batches.
-    backend: B,
-    /// The store used for reading SMT state at the pre-batch version.
+/// Background worker that waits for completed batches, handles commit ordering, assembles batch
+/// witnesses with SMT proofs, and proves them.
+pub(crate) struct BatchProverWorker<P: Processor<S>, BB: BatchBackend, S: Store> {
+    /// The backend used for journal extraction, image IDs, and batch proving.
+    backend: BB,
+    /// The store used for reading SMT state proofs at the pre-batch version.
     store: S,
-    /// Transaction processor guest image ID.
-    image_id: [u8; 32],
-    /// Output queue for completed batch proof receipts.
-    proof_queue: AsyncQueue<B::Receipt>,
     /// Completed batches from the transaction prover.
-    inbox: AsyncQueue<PendingBatch<P, B, S>>,
+    inbox: AsyncQueue<PendingBatch<P, BB, S>>,
+    /// Output queue for completed batch proof receipts.
+    outbox: AsyncQueue<BB::Receipt>,
     /// The most recently processed batch (for commit ordering).
     prev_batch: Option<ScheduledBatch<S, P>>,
 }
 
-impl<P: Processor<S>, B: Backend, S: Store> BatchProver<P, B, S> {
-    pub(crate) fn spawn(
-        backend: B,
+impl<P: Processor<S>, BB: BatchBackend, S: Store> BatchProverWorker<P, BB, S> {
+    pub(crate) fn new(
+        backend: BB,
         store: S,
-        image_id: [u8; 32],
-        proof_queue: AsyncQueue<B::Receipt>,
-        inbox: AsyncQueue<PendingBatch<P, B, S>>,
-    ) -> JoinHandle<()> {
+        inbox: AsyncQueue<PendingBatch<P, BB, S>>,
+        outbox: AsyncQueue<BB::Receipt>,
+    ) -> Self {
+        Self { backend, store, inbox, outbox, prev_batch: None }
+    }
+
+    pub(crate) fn spawn(self) -> JoinHandle<()> {
         std::thread::spawn(move || {
             Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .expect("failed to build tokio runtime")
-                .block_on(
-                    Self { backend, store, image_id, proof_queue, inbox, prev_batch: None }.run(),
-                )
+                .expect("tokio runtime")
+                .block_on(self.run())
         })
     }
 
@@ -67,7 +67,7 @@ impl<P: Processor<S>, B: Backend, S: Store> BatchProver<P, B, S> {
             }
 
             let (batch, receipt) = self.assemble_and_prove(batch, receipts).await;
-            self.proof_queue.push(receipt);
+            self.outbox.push(receipt);
             self.prev_batch = Some(batch);
         }
     }
@@ -77,8 +77,8 @@ impl<P: Processor<S>, B: Backend, S: Store> BatchProver<P, B, S> {
     async fn assemble_and_prove(
         &self,
         batch: ScheduledBatch<S, P>,
-        receipts: Vec<Option<B::Receipt>>,
-    ) -> (ScheduledBatch<S, P>, B::Receipt) {
+        receipts: Vec<Option<BB::Receipt>>,
+    ) -> (ScheduledBatch<S, P>, BB::Receipt) {
         let prev_version = batch.checkpoint().index().saturating_sub(1);
 
         // Read resource IDs from the batch's state diffs (one per unique resource).
@@ -90,11 +90,12 @@ impl<P: Processor<S>, B: Backend, S: Store> BatchProver<P, B, S> {
             self.store.prove(&resource_ids, prev_version).expect("SMT prove failed");
 
         // Consume receipt slots -- extract journals by ref, then take ownership.
-        let tx_receipts: Vec<B::Receipt> =
+        let tx_receipts: Vec<BB::Receipt> =
             receipts.into_iter().map(|slot| slot.expect("missing receipt")).collect();
-        let journals: Vec<Vec<u8>> = tx_receipts.iter().map(|r| B::journal_bytes(r)).collect();
+        let journals: Vec<Vec<u8>> = tx_receipts.iter().map(|r| BB::journal_bytes(r)).collect();
 
-        let input = BatchInputs::encode(&self.image_id, &proof_bytes, &leaf_order, &journals);
+        let input =
+            BatchInputs::encode(self.backend.image_id(), &proof_bytes, &leaf_order, &journals);
         let receipt = self.backend.prove_batch(&input, tx_receipts).await;
         (batch, receipt)
     }

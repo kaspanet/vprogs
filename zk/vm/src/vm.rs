@@ -5,29 +5,37 @@ use vprogs_zk_abi::{
     Error, Result,
     transaction_processor::{Inputs, Outputs, StorageOp},
 };
+use vprogs_zk_transaction_prover::TransactionBackend;
 
-use crate::{Backend, ProvingOrchestrator};
+use crate::{ExecutionBackend, ProvingPipeline};
 
-/// ZK processor that executes programs via a [`Backend`] and optionally coordinates proving.
+/// ZK processor that executes programs via an [`ExecutionBackend`] and optionally coordinates
+/// proving.
 ///
-/// `B` is the ZK backend. `S` is the store type (inferred from the scheduler context).
-/// When proving is disabled, the orchestrator is `None` and no background threads are spawned.
+/// `EB` is the execution backend (synchronous). `TB` is the transaction/batch proving backend
+/// (async). `S` is the store type (inferred from the scheduler context). The proving strategy
+/// is selected via [`ProvingPipeline`].
 #[derive(Clone)]
-pub struct Vm<B: Backend, S: Store> {
+pub struct Vm<EB: ExecutionBackend, TB: TransactionBackend, S: Store> {
     /// The ZK backend used for execution.
-    backend: B,
-    /// Proving orchestrator (present when proving is enabled).
-    proving: Option<ProvingOrchestrator<Self, B::Receipt, S>>,
+    backend: EB,
+    /// Proving strategy (None, Transaction-only, or full Batch).
+    proving: ProvingPipeline<Self, TB, S>,
 }
 
-impl<B: Backend, S: Store> Vm<B, S> {
-    /// Creates a new ZK VM with the given backend and optional proving orchestrator.
-    pub fn new(backend: B, proving: Option<ProvingOrchestrator<Self, B::Receipt, S>>) -> Self {
+impl<EB: ExecutionBackend, TB: TransactionBackend, S: Store> Vm<EB, TB, S> {
+    /// Creates a new ZK VM with the given execution backend and proving pipeline.
+    pub fn new(backend: EB, proving: ProvingPipeline<Self, TB, S>) -> Self {
         Self { backend, proving }
+    }
+
+    /// Returns the proving pipeline configuration.
+    pub fn proving(&self) -> &ProvingPipeline<Self, TB, S> {
+        &self.proving
     }
 }
 
-impl<B: Backend, S: Store> Processor<S> for Vm<B, S> {
+impl<EB: ExecutionBackend, TB: TransactionBackend, S: Store> Processor<S> for Vm<EB, TB, S> {
     fn process_transaction(&self, ctx: &mut TransactionContext<S, Self>) -> Result<()> {
         // 1. Encode into ABI wire format.
         let input_bytes = Inputs::encode(&*ctx);
@@ -51,10 +59,8 @@ impl<B: Backend, S: Store> Processor<S> for Vm<B, S> {
             }
         });
 
-        // 4. Optionally register transaction for proving.
-        if let Some(ref proving) = self.proving {
-            proving.register_transaction(ctx.batch(), input_bytes);
-        }
+        // 4. Submit transaction for proving (no-op if ProvingPipeline::None).
+        self.proving.submit(ctx.batch(), input_bytes);
 
         return_value
     }

@@ -2,19 +2,19 @@ use std::{collections::HashMap, pin::Pin, thread::JoinHandle};
 
 use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::runtime::Builder;
+use vprogs_core_atomics::AsyncQueue;
 use vprogs_scheduling_scheduler::Processor;
 use vprogs_storage_types::Store;
 use vprogs_zk_abi::transaction_processor::Inputs;
 
-use super::{
-    completed_transaction::CompletedTransaction, pending_batch::PendingBatch,
+use crate::{
+    TransactionBackend, completed_transaction::CompletedTransaction, pending_batch::PendingBatch,
     pending_transaction::PendingTransaction,
 };
-use crate::{AsyncQueue, Backend};
 
-/// Worker that dispatches transaction proofs to a [`Backend`] concurrently, tracks
-/// per-batch receipt accumulation, and pushes completed batches to the batch prover.
-pub(crate) struct TransactionProver<P: Processor<S>, B: Backend, S: Store> {
+/// Background worker that dispatches transaction proofs to a [`TransactionBackend`] concurrently,
+/// tracks per-batch receipt accumulation, and pushes completed batches to the batch prover.
+pub(crate) struct TransactionProverWorker<P: Processor<S>, B: TransactionBackend, S: Store> {
     /// The proof backend used for proving transactions.
     backend: B,
     /// Proof tasks submitted by execution workers.
@@ -30,36 +30,38 @@ pub(crate) struct TransactionProver<P: Processor<S>, B: Backend, S: Store> {
     >,
 }
 
-impl<P: Processor<S>, B: Backend, S: Store> TransactionProver<P, B, S> {
-    pub(crate) fn spawn(
+impl<P: Processor<S>, B: TransactionBackend, S: Store> TransactionProverWorker<P, B, S> {
+    pub(crate) fn new(
         backend: B,
         inbox: AsyncQueue<PendingTransaction<P, S>>,
         outbox: AsyncQueue<PendingBatch<P, B, S>>,
-    ) -> JoinHandle<()> {
-        let this = Self {
+    ) -> Self {
+        Self {
             backend,
             inbox,
             outbox,
             batches: HashMap::new(),
             transactions: FuturesUnordered::new(),
-        };
+        }
+    }
 
+    pub(crate) fn spawn(self) -> JoinHandle<()> {
         std::thread::spawn(move || {
             Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .expect("tokio runtime")
-                .block_on(this.run())
+                .block_on(self.run())
         })
     }
 
     async fn run(mut self) {
         while !self.inbox.is_singleton() || !self.transactions.is_empty() {
             // Submit all queued transactions for proving.
-            while let Some(PendingTransaction { batch, mut input_bytes }) = self.inbox.pop() {
+            while let Some(PendingTransaction { batch, mut tx_inputs }) = self.inbox.pop() {
                 if !batch.was_canceled() {
-                    if let Ok(Inputs { tx_index, .. }) = Inputs::decode(&mut input_bytes[..]) {
-                        let receipt = self.backend.prove_transaction(input_bytes);
+                    if let Ok(Inputs { tx_index, .. }) = Inputs::decode(&mut tx_inputs[..]) {
+                        let receipt = self.backend.prove_transaction(tx_inputs);
                         self.transactions.push(Box::pin(async move {
                             CompletedTransaction { batch, index: tx_index, receipt: receipt.await }
                         }));
@@ -89,7 +91,7 @@ impl<P: Processor<S>, B: Backend, S: Store> TransactionProver<P, B, S> {
         batch.receipts[tx.index as usize] = Some(tx.receipt);
         batch.pending -= 1;
 
-        // All receipts for this batch are collected, push it to the outbox and remove from pending.
+        // All receipts collected - forward to batch prover.
         if batch.pending == 0 {
             self.outbox.push(self.batches.remove(&batch_id).unwrap());
         }

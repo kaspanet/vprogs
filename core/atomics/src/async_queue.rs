@@ -14,8 +14,14 @@ pub struct AsyncQueue<T: Send + 'static> {
     notify: Notify,
 }
 
+impl<T: Send + 'static> Default for AsyncQueue<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T: Send + 'static> AsyncQueue<T> {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self(Arc::new(AsyncQueueData { queue: SegQueue::new(), notify: Notify::new() }))
     }
 
@@ -36,18 +42,18 @@ impl<T: Send + 'static> AsyncQueue<T> {
     }
 
     /// Pushes an item and wakes one consumer.
-    pub(crate) fn push(&self, item: T) {
+    pub fn push(&self, item: T) {
         self.queue.push(item);
         self.notify.notify_one();
     }
 
     /// Returns a future that resolves when the queue is notified (an item was pushed).
-    pub(crate) async fn notified(&self) {
+    pub async fn notified(&self) {
         self.notify.notified().await
     }
 
     /// Returns true if this is the only remaining reference to the queue.
-    pub(crate) fn is_singleton(&self) -> bool {
+    pub fn is_singleton(&self) -> bool {
         Arc::strong_count(&self.0) == 1
     }
 }
