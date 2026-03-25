@@ -47,7 +47,9 @@ impl Backend {
             batch_elf: ProgramBinary::new(batch_elf, V1COMPAT_ELF).encode(),
         }))
     }
+}
 
+impl vprogs_zk_vm::Backend for Backend {
     fn execute_transaction(&self, wire_bytes: &[u8]) -> Vec<u8> {
         let mut execution_result = Vec::new();
 
@@ -66,12 +68,17 @@ impl Backend {
 
         execution_result
     }
+}
+
+impl vprogs_zk_transaction_prover::Backend for Backend {
+    type Receipt = Receipt;
+    type ProveFuture = future::Ready<Receipt>;
 
     fn image_id(&self) -> &[u8; 32] {
         &self.transaction_image_id
     }
 
-    fn prove_transaction(&self, input_bytes: Vec<u8>) -> future::Ready<Receipt> {
+    fn prove_transaction(&self, input_bytes: Vec<u8>) -> Self::ProveFuture {
         future::ready(PROVER.with(|p| {
             p.prove_with_opts(
                 ExecutorEnv::builder()
@@ -90,8 +97,12 @@ impl Backend {
     fn journal_bytes(receipt: &Receipt) -> Vec<u8> {
         receipt.journal.bytes.clone()
     }
+}
 
-    fn prove_batch(&self, inputs: &[u8], receipts: Vec<Receipt>) -> future::Ready<Receipt> {
+impl vprogs_zk_batch_prover::Backend for Backend {
+    type BatchProveFuture = future::Ready<Receipt>;
+
+    fn prove_batch(&self, inputs: &[u8], receipts: Vec<Receipt>) -> Self::BatchProveFuture {
         let mut builder = ExecutorEnv::builder();
         builder.write_slice(&[inputs.len() as u32]).write_slice(inputs);
 
@@ -106,36 +117,5 @@ impl Backend {
                 .expect("batch proving failed")
                 .receipt
         }))
-    }
-}
-
-impl vprogs_zk_vm::Backend for Backend {
-    fn execute_transaction(&self, wire_bytes: &[u8]) -> Vec<u8> {
-        Self::execute_transaction(self, wire_bytes)
-    }
-}
-
-impl vprogs_zk_transaction_prover::Backend for Backend {
-    type Receipt = Receipt;
-    type ProveFuture = future::Ready<Receipt>;
-
-    fn image_id(&self) -> &[u8; 32] {
-        Self::image_id(self)
-    }
-
-    fn prove_transaction(&self, input_bytes: Vec<u8>) -> Self::ProveFuture {
-        Self::prove_transaction(self, input_bytes)
-    }
-
-    fn journal_bytes(receipt: &Receipt) -> Vec<u8> {
-        Self::journal_bytes(receipt)
-    }
-}
-
-impl vprogs_zk_batch_prover::Backend for Backend {
-    type BatchProveFuture = future::Ready<Receipt>;
-
-    fn prove_batch(&self, inputs: &[u8], receipts: Vec<Receipt>) -> Self::BatchProveFuture {
-        Self::prove_batch(self, inputs, receipts)
     }
 }
