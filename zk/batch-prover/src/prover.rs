@@ -1,44 +1,45 @@
-use vprogs_core_atomics::AsyncQueue;
-use vprogs_scheduling_scheduler::{Processor, ScheduledTransaction};
+use std::sync::Arc;
+
+use tap::Tap;
+use vprogs_core_atomics::{AsyncQueue, AtomicAsyncLatch};
+use vprogs_core_macros::smart_pointer;
+use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
-use vprogs_zk_transaction_prover::TransactionProver;
 
-use crate::{Backend, api::Api, worker::Worker};
+use crate::{Backend, worker::Worker};
 
-/// Manages the batch and transaction prover worker threads.
+/// Batch prover that assembles batch witnesses and dispatches proofs to a background worker.
+#[smart_pointer]
 pub struct BatchProver<S: Store, P: Processor<S>> {
-    /// Inner transaction prover.
-    tx_prover: TransactionProver<S, P>,
-    /// Shared worker state.
-    api: Api<S, P>,
+    /// Batches awaiting proving.
+    pub inbox: AsyncQueue<ScheduledBatch<S, P>>,
+    /// Opened to signal worker shutdown.
+    pub shutdown: AtomicAsyncLatch,
 }
 
 impl<S: Store, P: Processor<S>> BatchProver<S, P> {
-    /// Creates a new batch prover and spawns the worker threads.
+    /// Creates a new batch prover and spawns its worker thread.
     pub fn new<B: Backend<Receipt = P::TransactionEffects>>(
         backend: B,
         store: S,
         results: AsyncQueue<B::Receipt>,
     ) -> Self {
-        let tx_prover = TransactionProver::new(backend.clone());
-        let api = Api::new();
-        Worker::spawn(api.clone(), backend, store, results);
-        Self { tx_prover, api }
+        Self(Arc::new(BatchProverData {
+            inbox: AsyncQueue::new(),
+            shutdown: AtomicAsyncLatch::new(),
+        }))
+        .tap(|p| Worker::spawn(p.clone(), backend, store, results))
     }
 
-    /// Submits a transaction for proving. Registers the batch on first call.
-    pub fn submit(&self, tx: &ScheduledTransaction<S, P>, tx_inputs: Vec<u8>) {
-        if let Some(batch) = tx.batch().upgrade() {
-            if batch.mark_effects_processed() {
-                self.api.inbox.push(batch);
-            }
+    /// Submits a batch for proving. Only the first call per batch takes effect.
+    pub fn submit(&self, batch: ScheduledBatch<S, P>) {
+        if batch.mark_effects_processed() {
+            self.inbox.push(batch);
         }
-        self.tx_prover.submit(tx, tx_inputs);
     }
 
-    /// Signals both workers to shut down.
+    /// Signals the worker to shut down.
     pub fn shutdown(&self) {
-        self.api.shutdown.open();
-        self.tx_prover.shutdown();
+        self.shutdown.open();
     }
 }

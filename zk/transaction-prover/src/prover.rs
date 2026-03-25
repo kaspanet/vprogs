@@ -1,29 +1,39 @@
+use std::sync::Arc;
+
+use tap::Tap;
+use vprogs_core_atomics::{AsyncQueue, AtomicAsyncLatch};
+use vprogs_core_macros::smart_pointer;
 use vprogs_scheduling_scheduler::{Processor, ScheduledTransaction};
 use vprogs_storage_types::Store;
 
-use crate::{Backend, api::Api, worker::Worker};
+use crate::{Backend, worker::Worker};
 
-/// Manages the transaction prover worker thread.
+/// Transaction prover that dispatches proofs to a background worker.
+#[smart_pointer]
 pub struct TransactionProver<S: Store, P: Processor<S>> {
-    /// Shared worker state.
-    api: Api<S, P>,
+    /// Transactions awaiting proving.
+    pub inbox: AsyncQueue<(ScheduledTransaction<S, P>, Vec<u8>)>,
+    /// Opened to signal worker shutdown.
+    pub shutdown: AtomicAsyncLatch,
 }
 
 impl<S: Store, P: Processor<S>> TransactionProver<S, P> {
     /// Creates a new transaction prover and spawns its worker thread.
     pub fn new<B: Backend<Receipt = P::TransactionEffects>>(backend: B) -> Self {
-        let api = Api::new();
-        Worker::spawn(api.clone(), backend);
-        Self { api }
+        Self(Arc::new(TransactionProverData {
+            inbox: AsyncQueue::new(),
+            shutdown: AtomicAsyncLatch::new(),
+        }))
+        .tap(|p| Worker::spawn(p.clone(), backend))
     }
 
     /// Submits a transaction for proving.
     pub fn submit(&self, tx: &ScheduledTransaction<S, P>, tx_inputs: Vec<u8>) {
-        self.api.inbox.push((tx.clone(), tx_inputs));
+        self.inbox.push((tx.clone(), tx_inputs));
     }
 
     /// Signals the worker to shut down.
     pub fn shutdown(&self) {
-        self.api.shutdown.open();
+        self.shutdown.open();
     }
 }

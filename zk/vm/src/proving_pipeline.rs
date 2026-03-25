@@ -10,10 +10,10 @@ use crate::Backend;
 pub enum ProvingPipeline<S: Store, P: Processor<S>> {
     /// No proving -- execution only.
     None,
-    /// Transaction-only proving (individual receipts, no batch aggregation).
+    /// Transaction-only proving.
     Transaction(TransactionProver<S, P>),
-    /// Full batch proving (transaction proofs + batch aggregation with SMT witnesses).
-    Batch(BatchProver<S, P>),
+    /// Full batch proving (transaction prover + batch prover).
+    Batch(TransactionProver<S, P>, BatchProver<S, P>),
 }
 
 impl<S: Store, P: Processor<S>> ProvingPipeline<S, P> {
@@ -26,9 +26,9 @@ impl<S: Store, P: Processor<S>> ProvingPipeline<S, P> {
     pub fn batch<B: Backend<Receipt = P::TransactionEffects>>(
         backend: B,
         store: S,
-        results: AsyncQueue<B::Receipt>,
+        out: AsyncQueue<B::Receipt>,
     ) -> Self {
-        Self::Batch(BatchProver::new(backend, store, results))
+        Self::Batch(TransactionProver::new(backend.clone()), BatchProver::new(backend, store, out))
     }
 
     /// Submits a transaction for proving. No-op for `None`.
@@ -36,7 +36,10 @@ impl<S: Store, P: Processor<S>> ProvingPipeline<S, P> {
         match self {
             Self::None => {}
             Self::Transaction(tx_prover) => tx_prover.submit(tx, tx_inputs),
-            Self::Batch(batch_prover) => batch_prover.submit(tx, tx_inputs),
+            Self::Batch(tx_prover, batch_prover) => {
+                batch_prover.submit(tx.batch().upgrade().expect("batch dropped"));
+                tx_prover.submit(tx, tx_inputs);
+            }
         }
     }
 
@@ -45,7 +48,10 @@ impl<S: Store, P: Processor<S>> ProvingPipeline<S, P> {
         match self {
             Self::None => {}
             Self::Transaction(tx_prover) => tx_prover.shutdown(),
-            Self::Batch(batch_prover) => batch_prover.shutdown(),
+            Self::Batch(tx_prover, batch_prover) => {
+                batch_prover.shutdown();
+                tx_prover.shutdown();
+            }
         }
     }
 }

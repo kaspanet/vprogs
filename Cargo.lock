@@ -7859,6 +7859,7 @@ dependencies = [
 name = "vprogs-zk-batch-prover"
 version = "0.1.0"
 dependencies = [
+ "tap",
  "tokio",
  "vprogs-core-atomics",
  "vprogs-core-macros",
@@ -7872,6 +7873,7 @@ dependencies = [
 name = "vprogs-zk-transaction-prover"
 version = "0.1.0"
 dependencies = [
+ "tap",
  "tokio",
  "vprogs-core-atomics",
  "vprogs-core-macros",

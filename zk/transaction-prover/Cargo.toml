@@ -4,6 +4,7 @@ name              = "vprogs-zk-transaction-prover"
 version.workspace = true
 
 [dependencies]
+tap.workspace                         = true
 tokio                                 = { workspace = true, features = ["rt"] }
 vprogs-core-atomics.workspace         = true
 vprogs-core-macros.workspace          = true

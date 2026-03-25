@@ -6,12 +6,12 @@ use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
 use vprogs_zk_abi::batch_processor::Inputs as BatchInputs;
 
-use crate::{Backend, api::Api};
+use crate::{Backend, BatchProver};
 
 /// Background worker that assembles batch witnesses and proves them.
 pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend> {
     /// Shared prover state (inbox, shutdown).
-    api: Api<S, P>,
+    prover: BatchProver<S, P>,
     /// Backend used for proving.
     backend: B,
     /// Store for reading SMT state proofs.
@@ -23,25 +23,30 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend> {
 }
 
 impl<S: Store, P: Processor<S, TransactionEffects = B::Receipt>, B: Backend> Worker<S, P, B> {
-    pub(crate) fn spawn(api: Api<S, P>, backend: B, store: S, outbox: AsyncQueue<B::Receipt>) {
+    pub(crate) fn spawn(
+        prover: BatchProver<S, P>,
+        backend: B,
+        store: S,
+        outbox: AsyncQueue<B::Receipt>,
+    ) {
         let runtime = Builder::new_current_thread().enable_all().build().expect("runtime");
         spawn(move || {
-            runtime.block_on(Self { api, backend, store, outbox, prev_batch: None }.run())
+            runtime.block_on(Self { prover, backend, store, outbox, prev_batch: None }.run())
         });
     }
 
     async fn run(mut self) {
         loop {
             // Drain all batches queued for proving.
-            while let Some(batch) = self.api.inbox.pop() {
+            while let Some(batch) = self.prover.inbox.pop() {
                 self.process_batch(batch).await;
             }
 
             // Wait for a new batch or shutdown.
             tokio::select! {
                 biased;
-                () = self.api.shutdown.wait() => break,
-                () = self.api.inbox.notified() => {}
+                () = self.prover.shutdown.wait() => break,
+                () = self.prover.inbox.notified() => {}
             }
         }
     }
