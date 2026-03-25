@@ -71,10 +71,13 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
     ) -> ScheduledBatch<S, P> {
         let checkpoint = self.next_checkpoint(metadata);
 
-        ScheduledBatch::new(self, txs, checkpoint)
+        ScheduledBatch::new(self, txs, checkpoint, self.state.last_batch_ref())
             // Connect transactions to resource dependency chains.
             .tap(ScheduledBatch::connect)
             .tap(|batch| {
+                // Update the batch chain head.
+                self.state.set_last_batch(Some(batch.clone()));
+
                 // Push to the batch lifecycle worker for lifecycle progression.
                 self.batch_lifecycle_worker.push(batch.clone());
 
@@ -142,6 +145,9 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
 
             // Clear in-memory resource pointers, as their state may no longer be valid.
             self.resources.clear();
+
+            // Reset the batch chain head to the rollback target.
+            self.state.set_last_batch(self.state.batch(target_index));
 
             Ok(target)
         } else {

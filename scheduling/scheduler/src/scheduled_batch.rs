@@ -33,6 +33,8 @@ pub struct ScheduledBatch<S: Store, P: Processor<S>> {
     state: SchedulerState<S, P>,
     /// This batch's sequential index and metadata.
     checkpoint: Checkpoint<P::BatchMetadata>,
+    /// Weak reference to the predecessor batch.
+    prev: ScheduledBatchRef<S, P>,
     /// All transactions in this batch.
     txs: Vec<ScheduledTransaction<S, P>>,
     /// One state diff per unique resource accessed by this batch.
@@ -61,6 +63,11 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
     /// Returns the checkpoint (index + metadata) identifying this batch.
     pub fn checkpoint(&self) -> &Checkpoint<P::BatchMetadata> {
         &self.checkpoint
+    }
+
+    /// Returns the predecessor batch, if still alive.
+    pub fn prev(&self) -> &ScheduledBatchRef<S, P> {
+        &self.prev
     }
 
     /// Returns the transactions in this batch.
@@ -184,6 +191,7 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         scheduler: &mut Scheduler<S, P>,
         txs: Vec<SchedulerTransaction<P::Transaction>>,
         checkpoint: Checkpoint<P::BatchMetadata>,
+        prev: ScheduledBatchRef<S, P>,
     ) -> Self {
         Self(Arc::new_cyclic(|this| {
             let was_processed = AtomicAsyncLatch::default();
@@ -205,6 +213,7 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
                 cancellation: scheduler.cancellation().clone(),
                 state: scheduler.state().clone(),
                 checkpoint,
+                prev,
                 // pending_txs/pending_effects must precede txs (into_iter consumes the vec).
                 pending_txs: AtomicU64::new(txs.len() as u64),
                 pending_effects: AtomicU64::new(txs.len() as u64),
