@@ -6,9 +6,13 @@ use crate::{AccessHandle, ScheduledBatch, ScheduledTransaction, processor::Proce
 /// Context passed to [`Processor::process_transaction`] providing the transaction, its
 /// position within the batch, the batch reference, and the resource access handles.
 pub struct TransactionContext<'a, S: Store, P: Processor<S>> {
+    /// The user-submitted transaction.
     scheduler_tx: &'a SchedulerTransaction<P::Transaction>,
+    /// Zero-based position within the batch.
     tx_index: u32,
+    /// The owning batch.
     batch: &'a ScheduledBatch<S, P>,
+    /// Resource access handles for this transaction.
     resources: Vec<AccessHandle<'a, S, P>>,
 }
 

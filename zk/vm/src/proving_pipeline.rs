@@ -22,7 +22,7 @@ impl<S: Store, P: Processor<S>> ProvingPipeline<S, P> {
         Self::Transaction(TransactionProver::new(backend))
     }
 
-    /// Creates a full batch proving pipeline. Batch proof receipts are pushed to `results`.
+    /// Creates a full batch proving pipeline. Batch proof receipts are pushed to `out`.
     pub fn batch<B: Backend<Receipt = P::TransactionEffects>>(
         backend: B,
         store: S,
