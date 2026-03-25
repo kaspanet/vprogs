@@ -39,4 +39,13 @@ impl<S: Store, P: Processor<S>> ProvingPipeline<S, P> {
             Self::Batch(batch_prover) => batch_prover.submit(tx, tx_inputs),
         }
     }
+
+    /// Shuts down the prover worker threads. No-op for `None`.
+    pub fn shutdown(&self) {
+        match self {
+            Self::None => {}
+            Self::Transaction(tx_prover) => tx_prover.shutdown(),
+            Self::Batch(batch_prover) => batch_prover.shutdown(),
+        }
+    }
 }

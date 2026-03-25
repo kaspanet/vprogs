@@ -1,5 +1,3 @@
-use std::thread::JoinHandle;
-
 use vprogs_core_atomics::AsyncQueue;
 use vprogs_scheduling_scheduler::{Processor, ScheduledTransaction};
 use vprogs_storage_types::Store;
@@ -13,9 +11,6 @@ pub struct BatchProver<S: Store, P: Processor<S>> {
     tx_prover: TransactionProver<S, P>,
     /// Shared worker state.
     api: Api<S, P>,
-    /// Worker thread handle.
-    #[allow(dead_code)]
-    worker: JoinHandle<()>,
 }
 
 impl<S: Store, P: Processor<S>> BatchProver<S, P> {
@@ -27,7 +22,8 @@ impl<S: Store, P: Processor<S>> BatchProver<S, P> {
     ) -> Self {
         let tx_prover = TransactionProver::new(backend.clone());
         let api = Api::new();
-        Self { tx_prover, worker: Worker::spawn(api.clone(), backend, store, results), api }
+        Worker::spawn(api.clone(), backend, store, results);
+        Self { tx_prover, api }
     }
 
     /// Submits a transaction for proving. Registers the batch on first call.
@@ -40,7 +36,7 @@ impl<S: Store, P: Processor<S>> BatchProver<S, P> {
         self.tx_prover.submit(tx, tx_inputs);
     }
 
-    /// Signals both the batch and transaction worker threads to shut down.
+    /// Signals both workers to shut down.
     pub fn shutdown(&self) {
         self.api.shutdown.open();
         self.tx_prover.shutdown();

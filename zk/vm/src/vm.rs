@@ -27,16 +27,16 @@ impl<B: Backend, S: Store> Vm<B, S> {
 
     /// Processes a single transaction against the ZK backend.
     fn process_transaction(&self, ctx: &mut TransactionContext<S, Self>) -> Result<()> {
-        // 1. Encode into ABI wire format.
+        // Encode into ABI wire format.
         let input_bytes = Inputs::encode(&*ctx);
 
-        // 2. Execute via backend (returns raw bytes).
+        // Execute via backend.
         let output_bytes = self.backend.execute_transaction(&input_bytes);
 
-        // 3. Submit transaction to proving pipeline (no-op if ProvingPipeline::None).
+        // Submit to proving pipeline (no-op if ProvingPipeline::None).
         self.proving.submit(ctx.scheduled_tx(), input_bytes);
 
-        // 4. Decode and apply storage operations on success.
+        // Decode and apply storage operations.
         Outputs::decode(&output_bytes).map(|output| {
             for (i, op) in output.storage_ops().iter().enumerate() {
                 if let Some(op) = op {
@@ -51,6 +51,11 @@ impl<B: Backend, S: Store> Vm<B, S> {
                 }
             }
         })
+    }
+
+    /// Signals the proving pipeline to shut down.
+    pub fn shutdown(&self) {
+        self.proving.shutdown();
     }
 }
 

@@ -21,7 +21,8 @@ use crate::{
 /// A batch of transactions progressing through the scheduler's lifecycle.
 ///
 /// Each batch moves through three stages: processed (all transactions executed), persisted (all
-/// state diffs written to disk), and committed (batch metadata finalized). Callers can observe
+/// state diffs written to disk), and committed (batch metadata finalized). When proving is active,
+/// an additional effects-ready latch tracks asynchronous receipt publication. Callers can observe
 /// progress via the `was_*` / `wait_*` methods. A batch may be canceled by a rollback, in which
 /// case the wait methods return immediately.
 #[smart_pointer]
@@ -167,7 +168,7 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         self
     }
 
-    /// Returns `true` on the first call, `false` on subsequent calls.
+    /// Claims this batch for effects processing. Returns `true` on the first call only.
     pub fn mark_effects_processed(&self) -> bool {
         !self.effects_processed.swap(true, Ordering::AcqRel)
     }

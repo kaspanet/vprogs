@@ -1,5 +1,6 @@
-use std::thread::{JoinHandle, spawn};
+use std::thread::spawn;
 
+use tokio::runtime::Builder;
 use vprogs_core_atomics::AsyncQueue;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
@@ -22,17 +23,11 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend> {
 }
 
 impl<S: Store, P: Processor<S, TransactionEffects = B::Receipt>, B: Backend> Worker<S, P, B> {
-    pub(crate) fn spawn(
-        api: Api<S, P>,
-        backend: B,
-        store: S,
-        outbox: AsyncQueue<B::Receipt>,
-    ) -> JoinHandle<()> {
-        let runtime =
-            tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+    pub(crate) fn spawn(api: Api<S, P>, backend: B, store: S, outbox: AsyncQueue<B::Receipt>) {
+        let runtime = Builder::new_current_thread().enable_all().build().expect("runtime");
         spawn(move || {
             runtime.block_on(Self { api, backend, store, outbox, prev_batch: None }.run())
-        })
+        });
     }
 
     async fn run(mut self) {

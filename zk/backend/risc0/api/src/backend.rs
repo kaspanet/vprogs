@@ -34,16 +34,11 @@ impl Backend {
     /// only sanctioned syscalls are available to guest programs.
     pub fn new(tx_processor_elf: &[u8], batch_elf: &[u8]) -> Self {
         let tx_binary = ProgramBinary::new(tx_processor_elf, V1COMPAT_ELF);
-        let transaction_image_id: [u8; 32] = tx_binary
-            .compute_image_id()
-            .expect("failed to compute transaction processor image ID")
-            .as_bytes()
-            .try_into()
-            .unwrap();
+        let image_id = tx_binary.compute_image_id().expect("image id");
 
         Self(Arc::new(BackendData {
             transaction_elf: tx_binary.encode(),
-            transaction_image_id,
+            transaction_image_id: image_id.as_bytes().try_into().unwrap(),
             batch_elf: ProgramBinary::new(batch_elf, V1COMPAT_ELF).encode(),
         }))
     }
