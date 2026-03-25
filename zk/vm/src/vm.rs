@@ -25,7 +25,18 @@ impl<B: Backend, S: Store> Vm<B, S> {
         Self { backend, proving: Arc::new(proving) }
     }
 
-    /// Processes a single transaction against the ZK backend.
+    /// Signals the proving pipeline to shut down.
+    pub fn shutdown(&self) {
+        self.proving.shutdown();
+    }
+}
+
+impl<B: Backend, S: Store> Processor<S> for Vm<B, S> {
+    type Transaction = L1Transaction;
+    type TransactionEffects = B::Receipt;
+    type BatchMetadata = ChainBlockMetadata;
+    type Error = Error;
+
     fn process_transaction(&self, ctx: &mut TransactionContext<S, Self>) -> Result<()> {
         // Encode into ABI wire format.
         let input_bytes = Inputs::encode(&*ctx);
@@ -51,21 +62,5 @@ impl<B: Backend, S: Store> Vm<B, S> {
                 }
             }
         })
-    }
-
-    /// Signals the proving pipeline to shut down.
-    pub fn shutdown(&self) {
-        self.proving.shutdown();
-    }
-}
-
-impl<B: Backend, S: Store> Processor<S> for Vm<B, S> {
-    type Transaction = L1Transaction;
-    type TransactionEffects = B::Receipt;
-    type BatchMetadata = ChainBlockMetadata;
-    type Error = Error;
-
-    fn process_transaction(&self, ctx: &mut TransactionContext<S, Self>) -> Result<()> {
-        Self::process_transaction(self, ctx)
     }
 }
