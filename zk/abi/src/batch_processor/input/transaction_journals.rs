@@ -3,9 +3,6 @@ use vprogs_core_codec::Reader;
 use crate::Result;
 
 /// Iterator over per-transaction journal slices in a batch witness.
-///
-/// Journals are the last segment in the wire format, so the iterator reads length-prefixed
-/// entries until the buffer is exhausted.
 pub struct TransactionJournals<'a> {
     /// Remaining unconsumed bytes of the journal entries.
     buf: &'a [u8],
@@ -31,6 +28,7 @@ impl<'a> Iterator for TransactionJournals<'a> {
         if self.buf.is_empty() {
             return None;
         }
+        
         Some(self.decode_entry())
     }
 }
