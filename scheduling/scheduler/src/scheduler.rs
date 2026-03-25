@@ -78,6 +78,9 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
                 // Update the batch chain head.
                 self.state.set_last_batch(Some(batch.clone()));
 
+                // Notify the processor, allowing it to initialize internal caches or buffers.
+                self.processor.on_batch_scheduled(batch);
+
                 // Push to the batch lifecycle worker for lifecycle progression.
                 self.batch_lifecycle_worker.push(batch.clone());
 
@@ -148,6 +151,9 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
 
             // Reset the batch chain head to the rollback target.
             self.state.set_last_batch(self.state.batch(target_index));
+
+            // Notify the processor of the rollback, allowing it to clear any internal caches.
+            self.processor.on_rollback(target_index);
 
             Ok(target)
         } else {
