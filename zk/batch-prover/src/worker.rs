@@ -55,15 +55,21 @@ impl<S: Store, P: Processor<S, TransactionEffects = B::Receipt>, B: Backend> Wor
 
     /// Processes a single batch through the proving pipeline.
     async fn process_batch(&mut self, batch: ScheduledBatch<S, P>) {
-        // Wait for all transaction receipts to be published.
+        // Wait for all transaction effects to be published.
         batch.wait_effects_ready().await;
+
+        // Skip canceled batches but still track them for ordering.
+        if batch.was_canceled() {
+            self.prev_batch = Some(batch);
+            return;
+        }
 
         // Wait for the previous batch to commit before reading SMT state.
         if let Some(ref prev) = self.prev_batch {
             prev.wait_committed().await;
         }
 
-        // Skip canceled batches but still track them for ordering.
+        // Re-check after waiting - batch may have been canceled in the meantime.
         if batch.was_canceled() {
             self.prev_batch = Some(batch);
             return;

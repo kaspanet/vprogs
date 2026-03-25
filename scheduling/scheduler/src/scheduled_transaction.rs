@@ -49,9 +49,14 @@ impl<S: Store, P: Processor<S>> ScheduledTransaction<S, P> {
         self.effects.load_full().expect("effects not ready")
     }
 
-    /// Sets the effects for this transaction and decrements the batch's pending effects counter.
-    pub fn set_effects(&self, effects: P::TransactionEffects) {
-        self.effects.store(Some(Arc::new(effects)));
+    /// Publishes this transaction's effects. `None` skips the transaction without storing effects.
+    pub fn set_effects(&self, effects: Option<P::TransactionEffects>) {
+        // Store the effects if provided.
+        if let Some(effects) = effects {
+            self.effects.store(Some(Arc::new(effects)));
+        }
+
+        // Always advance the batch's pending effects counter to ensure the latch will open.
         if let Some(batch) = self.batch.upgrade() {
             batch.decrease_pending_effects();
         }
