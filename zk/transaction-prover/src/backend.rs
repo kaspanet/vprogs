@@ -4,7 +4,7 @@ use std::future::Future;
 ///
 /// Implementations own their ELF binaries and receive pre-encoded wire bytes. Proving is async
 /// to support concurrent proving, thread pools, or remote proving networks.
-pub trait TransactionBackend: Clone + Send + Sync + 'static {
+pub trait Backend: Clone + Send + Sync + 'static {
     /// The proof receipt type produced by this backend.
     type Receipt: Clone + Send + Sync + 'static;
 

@@ -12,38 +12,29 @@ use vprogs_scheduling_scheduler::Processor;
 use vprogs_storage_types::Store;
 use vprogs_zk_abi::transaction_processor::Inputs;
 
-use crate::{TransactionBackend, api::Api, input::Input};
+use crate::{Backend, api::Api};
 
-/// A boxed proving future.
-type ProvingFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
-
-/// Background worker that dispatches transaction proofs to a [`TransactionBackend`] concurrently.
-pub(crate) struct Worker<P: Processor<S>, B: TransactionBackend, S: Store> {
-    /// Api state with the prover handle.
-    api: Api<P, B, S>,
-    /// Transaction proofs currently pending.
-    pending: FuturesUnordered<ProvingFuture>,
+/// Background worker that dispatches transaction proofs to a [`Backend`] concurrently.
+pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend> {
+    api: Api<S, P>,
+    backend: B,
+    pending: FuturesUnordered<Pin<Box<dyn Future<Output = ()> + Send>>>,
 }
 
-impl<P, B, S> Worker<P, B, S>
-where
-    P: Processor<S, TransactionEffects = B::Receipt>,
-    B: TransactionBackend,
-    S: Store,
-{
-    pub(crate) fn spawn(api: Api<P, B, S>) -> JoinHandle<()> {
+impl<S: Store, P: Processor<S, TransactionEffects = B::Receipt>, B: Backend> Worker<S, P, B> {
+    pub(crate) fn spawn(api: Api<S, P>, backend: B) -> JoinHandle<()> {
         let runtime = Builder::new_current_thread().enable_all().build().expect("runtime");
-        spawn(move || runtime.block_on(Self { api, pending: Default::default() }.run()))
+        spawn(move || runtime.block_on(Self { api, backend, pending: Default::default() }.run()))
     }
 
     async fn run(mut self) {
-        while !self.api.is_sole_owner() || !self.pending.is_empty() {
+        loop {
             // Dispatch all queued transactions for proving.
-            while let Some(Input { tx, mut tx_inputs }) = self.api.inbox.pop() {
+            while let Some((tx, mut tx_inputs)) = self.api.inbox.pop() {
                 let canceled = tx.batch().upgrade().is_none_or(|b| b.was_canceled());
                 if !canceled {
                     if let Ok(Inputs { .. }) = Inputs::decode(&mut tx_inputs[..]) {
-                        let receipt = self.api.backend.prove_transaction(tx_inputs);
+                        let receipt = self.backend.prove_transaction(tx_inputs);
                         self.pending.push(Box::pin(async move {
                             tx.set_effects(receipt.await);
                         }));
@@ -51,9 +42,10 @@ where
                 }
             }
 
-            // Wait for either a new submission or a completed proof.
+            // Wait for a new submission, a completed proof, or shutdown.
             tokio::select! {
                 biased;
+                () = self.api.shutdown.wait() => break,
                 () = self.api.inbox.notified() => {}
                 Some(()) = self.pending.next(), if !self.pending.is_empty() => {}
             }

@@ -1,33 +1,34 @@
-use std::{
-    sync::Arc,
-    thread::{JoinHandle, spawn},
-};
+use std::thread::{JoinHandle, spawn};
 
-use tokio::runtime::Builder;
+use vprogs_core_atomics::AsyncQueue;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
 use vprogs_zk_abi::batch_processor::Inputs as BatchInputs;
 
-use crate::{BatchBackend, api::Api};
+use crate::{Backend, api::Api};
 
 /// Background worker that waits for batch effects to be ready, assembles batch witnesses with
 /// SMT proofs, and proves them.
-pub(crate) struct Worker<P: Processor<S>, BB: BatchBackend, S: Store> {
-    /// Shared API (store, results queue).
-    api: Api<P, BB, S>,
-    /// The most recently processed batch (for commit ordering).
+pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend> {
+    api: Api<S, P>,
+    backend: B,
+    store: S,
+    outbox: AsyncQueue<B::Receipt>,
     prev_batch: Option<ScheduledBatch<S, P>>,
 }
 
-impl<P, BB, S> Worker<P, BB, S>
-where
-    P: Processor<S, TransactionEffects = BB::Receipt>,
-    BB: BatchBackend,
-    S: Store,
-{
-    pub(crate) fn spawn(api: Api<P, BB, S>) -> JoinHandle<()> {
-        let runtime = Builder::new_current_thread().enable_all().build().expect("runtime");
-        spawn(move || runtime.block_on(Self { api, prev_batch: None }.run()))
+impl<S: Store, P: Processor<S, TransactionEffects = B::Receipt>, B: Backend> Worker<S, P, B> {
+    pub(crate) fn spawn(
+        api: Api<S, P>,
+        backend: B,
+        store: S,
+        outbox: AsyncQueue<B::Receipt>,
+    ) -> JoinHandle<()> {
+        let runtime =
+            tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+        spawn(move || {
+            runtime.block_on(Self { api, backend, store, outbox, prev_batch: None }.run())
+        })
     }
 
     async fn run(mut self) {
@@ -37,12 +38,12 @@ where
                 self.process_batch(batch).await;
             }
 
-            // Exit once all external Api references are dropped and no batches remain.
-            if Arc::strong_count(&self.api.0) == 1 {
-                break;
+            // Wait for a new batch or shutdown.
+            tokio::select! {
+                biased;
+                () = self.api.shutdown.wait() => break,
+                () = self.api.inbox.notified() => {}
             }
-
-            self.api.inbox.notified().await;
         }
     }
 
@@ -63,10 +64,9 @@ where
         }
 
         // Read receipts directly from batch transactions.
-        let receipts: Vec<BB::Receipt> =
-            batch.txs().iter().map(|tx| (*tx.effects()).clone()).collect();
+        let receipts = batch.txs().iter().map(|tx| (*tx.effects()).clone()).collect();
         let (scheduled, receipt) = self.assemble_and_prove(batch, receipts).await;
-        self.api.outbox.push(receipt);
+        self.outbox.push(receipt);
         self.prev_batch = Some(scheduled);
     }
 
@@ -75,21 +75,21 @@ where
     async fn assemble_and_prove(
         &self,
         batch: ScheduledBatch<S, P>,
-        receipts: Vec<BB::Receipt>,
-    ) -> (ScheduledBatch<S, P>, BB::Receipt) {
+        receipts: Vec<B::Receipt>,
+    ) -> (ScheduledBatch<S, P>, B::Receipt) {
         let prev_version = batch.checkpoint().index().saturating_sub(1);
 
         // Read resource IDs from the batch's state diffs (one per unique resource).
         let resource_ids: Vec<[u8; 32]> =
             batch.state_diffs().iter().map(|diff| *diff.resource_id().as_bytes()).collect();
         let (proof_bytes, leaf_order) =
-            self.api.store.prove(&resource_ids, prev_version).expect("SMT prove failed");
+            self.store.prove(&resource_ids, prev_version).expect("SMT prove failed");
 
-        let journals: Vec<Vec<u8>> = receipts.iter().map(|r| BB::journal_bytes(r)).collect();
+        let journals: Vec<Vec<u8>> = receipts.iter().map(|r| B::journal_bytes(r)).collect();
 
         let input =
-            BatchInputs::encode(self.api.backend.image_id(), &proof_bytes, &leaf_order, &journals);
-        let receipt = self.api.backend.prove_batch(&input, receipts).await;
+            BatchInputs::encode(self.backend.image_id(), &proof_bytes, &leaf_order, &journals);
+        let receipt = self.backend.prove_batch(&input, receipts).await;
         (batch, receipt)
     }
 }

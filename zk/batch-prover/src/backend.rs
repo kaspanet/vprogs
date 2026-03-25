@@ -1,12 +1,10 @@
 use std::future::Future;
 
-use vprogs_zk_transaction_prover::TransactionBackend;
-
 /// Abstraction over a zero-knowledge backend's batch proving capabilities.
 ///
-/// Extends [`TransactionBackend`] because batch proving requires transaction receipts
-/// (journal extraction, image IDs) produced by the transaction prover.
-pub trait BatchBackend: TransactionBackend {
+/// Extends [`vprogs_zk_transaction_prover::Backend`] because batch proving requires transaction
+/// receipts (journal extraction, image IDs) produced by the transaction prover.
+pub trait Backend: vprogs_zk_transaction_prover::Backend {
     /// The future type returned by batch proving.
     type BatchProveFuture: Future<Output = Self::Receipt> + Send + 'static;
 

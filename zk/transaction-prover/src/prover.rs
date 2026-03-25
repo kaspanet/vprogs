@@ -1,31 +1,26 @@
 use std::thread::JoinHandle;
 
-use vprogs_scheduling_scheduler::Processor;
+use vprogs_scheduling_scheduler::{Processor, ScheduledTransaction};
 use vprogs_storage_types::Store;
 
-use crate::{TransactionBackend, api::Api, worker::Worker};
+use crate::{Backend, api::Api, worker::Worker};
 
 /// Manager for the transaction prover background thread.
-///
-/// Owns the [`Api`] and the worker's [`JoinHandle`]. Not cloneable -- hold a
-/// [`Api`] clone instead if you need shared access to the queues.
-pub struct TransactionProver<P: Processor<S>, B: TransactionBackend, S: Store> {
-    /// Shared worker API (backend, inbox).
-    pub api: Api<P, B, S>,
-    /// Handle to the background worker thread.
+pub struct TransactionProver<S: Store, P: Processor<S>> {
+    api: Api<S, P>,
     #[allow(dead_code)]
-    pub worker: JoinHandle<()>,
+    worker: JoinHandle<()>,
 }
 
-impl<P, B, S> TransactionProver<P, B, S>
-where
-    P: Processor<S, TransactionEffects = B::Receipt>,
-    B: TransactionBackend,
-    S: Store,
-{
+impl<S: Store, P: Processor<S>> TransactionProver<S, P> {
     /// Creates a new transaction prover and spawns the background worker thread.
-    pub fn new(backend: B) -> Self {
-        let api = Api::new(backend);
-        Self { worker: Worker::spawn(api.clone()), api }
+    pub fn new<B: Backend<Receipt = P::TransactionEffects>>(backend: B) -> Self {
+        let api = Api::new();
+        Self { worker: Worker::spawn(api.clone(), backend), api }
+    }
+
+    /// Submits a transaction for proving.
+    pub fn submit(&self, tx: &ScheduledTransaction<S, P>, tx_inputs: Vec<u8>) {
+        self.api.inbox.push((tx.clone(), tx_inputs));
     }
 }

@@ -7,33 +7,28 @@ use vprogs_zk_abi::{
     Error, Result,
     transaction_processor::{Inputs, Outputs, StorageOp},
 };
-use vprogs_zk_transaction_prover::TransactionBackend;
 
-use crate::{ExecutionBackend, ProvingPipeline};
+use crate::{Backend, ProvingPipeline};
 
-/// ZK processor that executes programs via an [`ExecutionBackend`] and optionally coordinates
-/// proving.
+/// ZK processor that executes programs via a backend and optionally coordinates proving.
 ///
-/// `EB` is the execution backend (synchronous). `TB` is the transaction/batch proving backend
-/// (async). `S` is the store type (inferred from the scheduler context). The proving strategy
-/// is selected via [`ProvingPipeline`], shared behind `Arc` since the Vm is cloneable but the
-/// pipeline owns non-cloneable worker handles.
+/// The proving strategy is selected via [`ProvingPipeline`], shared behind `Arc` since the Vm is
+/// cloneable but the pipeline owns non-cloneable worker handles.
 #[derive(Clone)]
-pub struct Vm<EB: ExecutionBackend, TB: TransactionBackend, S: Store> {
-    /// The ZK backend used for execution.
-    backend: EB,
+pub struct Vm<B: Backend, S: Store> {
+    /// The ZK backend used for execution and proving.
+    backend: B,
     /// Proving strategy (None, Transaction-only, or full Batch).
-    proving: Arc<ProvingPipeline<Self, TB, S>>,
+    proving: Arc<ProvingPipeline<S, Self>>,
 }
 
-impl<EB: ExecutionBackend, TB: TransactionBackend, S: Store> Vm<EB, TB, S> {
-    /// Creates a new ZK VM with the given execution backend and proving pipeline.
-    pub fn new(backend: EB, proving: ProvingPipeline<Self, TB, S>) -> Self {
+impl<B: Backend, S: Store> Vm<B, S> {
+    /// Creates a new ZK VM with the given backend and proving pipeline.
+    pub fn new(backend: B, proving: ProvingPipeline<S, Self>) -> Self {
         Self { backend, proving: Arc::new(proving) }
     }
-}
 
-impl<EB: ExecutionBackend, TB: TransactionBackend, S: Store> Processor<S> for Vm<EB, TB, S> {
+    /// Processes a single transaction against the ZK backend.
     fn process_transaction(&self, ctx: &mut TransactionContext<S, Self>) -> Result<()> {
         // 1. Encode into ABI wire format.
         let input_bytes = Inputs::encode(&*ctx);
@@ -41,8 +36,11 @@ impl<EB: ExecutionBackend, TB: TransactionBackend, S: Store> Processor<S> for Vm
         // 2. Execute via backend (returns raw bytes).
         let output_bytes = self.backend.execute_transaction(&input_bytes);
 
-        // 3. Decode and apply storage operations on success.
-        let return_value = Outputs::decode(&output_bytes).map(|output| {
+        // 3. Submit transaction to proving pipeline (no-op if ProvingPipeline::None).
+        self.proving.submit(ctx.scheduled_tx(), input_bytes);
+
+        // 4. Decode and apply storage operations on success.
+        Outputs::decode(&output_bytes).map(|output| {
             for (i, op) in output.storage_ops().iter().enumerate() {
                 if let Some(op) = op {
                     let data = ctx.resources_mut()[i].data_mut();
@@ -55,16 +53,17 @@ impl<EB: ExecutionBackend, TB: TransactionBackend, S: Store> Processor<S> for Vm
                     }
                 }
             }
-        });
-
-        // 4. Submit transaction to proving pipeline (no-op if ProvingPipeline::None).
-        self.proving.submit(ctx.scheduled_tx(), input_bytes);
-
-        return_value
+        })
     }
+}
 
+impl<B: Backend, S: Store> Processor<S> for Vm<B, S> {
     type Transaction = L1Transaction;
-    type TransactionEffects = TB::Receipt;
+    type TransactionEffects = B::Receipt;
     type BatchMetadata = ChainBlockMetadata;
     type Error = Error;
+
+    fn process_transaction(&self, ctx: &mut TransactionContext<S, Self>) -> Result<()> {
+        Self::process_transaction(self, ctx)
+    }
 }

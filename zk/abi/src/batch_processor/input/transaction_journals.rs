@@ -28,7 +28,7 @@ impl<'a> Iterator for TransactionJournals<'a> {
         if self.buf.is_empty() {
             return None;
         }
-        
+
         Some(self.decode_entry())
     }
 }

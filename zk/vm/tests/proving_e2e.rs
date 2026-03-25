@@ -10,7 +10,7 @@ use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_abi::batch_processor::StateTransition;
 use vprogs_zk_backend_risc0_api::Backend;
-use vprogs_zk_transaction_prover::TransactionBackend;
+use vprogs_zk_transaction_prover::Backend as _;
 use vprogs_zk_vm::{ProvingPipeline, Vm};
 
 /// Loads the pre-built transaction processor ELF from the repository.

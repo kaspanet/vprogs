@@ -3,6 +3,5 @@ mod backend;
 mod prover;
 mod worker;
 
-pub use api::Api;
-pub use backend::BatchBackend;
+pub use backend::Backend;
 pub use prover::BatchProver;
