@@ -5,13 +5,12 @@ use vprogs_core_macros::smart_pointer;
 use vprogs_scheduling_scheduler::{Processor, ScheduledTransaction};
 use vprogs_storage_types::Store;
 
-/// Shared state between the [`TransactionProver`](crate::TransactionProver) handle and its
-/// background worker.
+/// Shared state between the [`TransactionProver`](crate::TransactionProver) and its worker.
 #[smart_pointer]
 pub struct Api<S: Store, P: Processor<S>> {
-    /// Queue of transactions awaiting proving.
+    /// Transactions awaiting proving.
     pub inbox: AsyncQueue<(ScheduledTransaction<S, P>, Vec<u8>)>,
-    /// Opened when the prover is shutting down.
+    /// Opened to signal worker shutdown.
     pub shutdown: AtomicAsyncLatch,
 }
 

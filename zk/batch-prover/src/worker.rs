@@ -7,13 +7,17 @@ use vprogs_zk_abi::batch_processor::Inputs as BatchInputs;
 
 use crate::{Backend, api::Api};
 
-/// Background worker that waits for batch effects to be ready, assembles batch witnesses with
-/// SMT proofs, and proves them.
+/// Background worker that assembles batch witnesses and proves them.
 pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend> {
+    /// Shared prover state (inbox, shutdown).
     api: Api<S, P>,
+    /// Backend used for proving.
     backend: B,
+    /// Store for reading SMT state proofs.
     store: S,
+    /// Batch proof receipts.
     outbox: AsyncQueue<B::Receipt>,
+    /// Previous batch, tracked for commit ordering.
     prev_batch: Option<ScheduledBatch<S, P>>,
 }
 
@@ -47,7 +51,7 @@ impl<S: Store, P: Processor<S, TransactionEffects = B::Receipt>, B: Backend> Wor
         }
     }
 
-    /// Waits for effects, assembles the batch witness, and proves it.
+    /// Processes a single batch through the proving pipeline.
     async fn process_batch(&mut self, batch: ScheduledBatch<S, P>) {
         // Wait for all transaction receipts to be published.
         batch.wait_effects_ready().await;
@@ -57,21 +61,20 @@ impl<S: Store, P: Processor<S, TransactionEffects = B::Receipt>, B: Backend> Wor
             prev.wait_committed().await;
         }
 
-        // Skip cancelled batches but still track them for ordering.
+        // Skip canceled batches but still track them for ordering.
         if batch.was_canceled() {
             self.prev_batch = Some(batch);
             return;
         }
 
-        // Read receipts directly from batch transactions.
+        // Collect receipts from batch transactions and prove.
         let receipts = batch.txs().iter().map(|tx| (*tx.effects()).clone()).collect();
         let (scheduled, receipt) = self.assemble_and_prove(batch, receipts).await;
         self.outbox.push(receipt);
         self.prev_batch = Some(scheduled);
     }
 
-    /// Assembles a batch witness from collected transaction receipts, proves the batch, and
-    /// returns the scheduled batch handle and raw batch receipt.
+    /// Assembles the batch witness from transaction receipts and proves it.
     async fn assemble_and_prove(
         &self,
         batch: ScheduledBatch<S, P>,
@@ -79,7 +82,6 @@ impl<S: Store, P: Processor<S, TransactionEffects = B::Receipt>, B: Backend> Wor
     ) -> (ScheduledBatch<S, P>, B::Receipt) {
         let prev_version = batch.checkpoint().index().saturating_sub(1);
 
-        // Read resource IDs from the batch's state diffs (one per unique resource).
         let resource_ids: Vec<[u8; 32]> =
             batch.state_diffs().iter().map(|diff| *diff.resource_id().as_bytes()).collect();
         let (proof_bytes, leaf_order) =

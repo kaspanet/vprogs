@@ -1,6 +1,6 @@
 use tempfile::TempDir;
 use vprogs_core_atomics::AsyncQueue;
-use vprogs_core_smt::{EMPTY_HASH, Tree};
+use vprogs_core_smt::{EMPTY_HASH, Tree as _};
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId, SchedulerTransaction};
 use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};

@@ -6,10 +6,7 @@ use vprogs_zk_transaction_prover::TransactionProver;
 
 use crate::Backend;
 
-/// Proving strategy for the [`Vm`](crate::Vm).
-///
-/// This is a closed set -- the backend implementations are the extension point, not the pipeline
-/// structure itself.
+/// Proving strategy for the [`Vm`](crate::Vm). Backend implementations are the extension point.
 pub enum ProvingPipeline<S: Store, P: Processor<S>> {
     /// No proving -- execution only.
     None,
@@ -25,10 +22,7 @@ impl<S: Store, P: Processor<S>> ProvingPipeline<S, P> {
         Self::Transaction(TransactionProver::new(backend))
     }
 
-    /// Creates a full batch proving pipeline (transaction proofs + batch aggregation).
-    ///
-    /// Spawns both the transaction prover and batch prover worker threads. The store provides
-    /// SMT state proofs. Batch proof receipts are pushed to `results`.
+    /// Creates a full batch proving pipeline. Batch proof receipts are pushed to `results`.
     pub fn batch<B: Backend<Receipt = P::TransactionEffects>>(
         backend: B,
         store: S,

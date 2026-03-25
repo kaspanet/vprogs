@@ -10,10 +10,7 @@ use vprogs_zk_abi::{
 
 use crate::{Backend, ProvingPipeline};
 
-/// ZK processor that executes programs via a backend and optionally coordinates proving.
-///
-/// The proving strategy is selected via [`ProvingPipeline`], shared behind `Arc` since the Vm is
-/// cloneable but the pipeline owns non-cloneable worker handles.
+/// ZK processor that executes programs and optionally coordinates proving via [`ProvingPipeline`].
 #[derive(Clone)]
 pub struct Vm<B: Backend, S: Store> {
     /// The ZK backend used for execution and proving.

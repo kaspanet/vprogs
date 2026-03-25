@@ -5,12 +5,12 @@ use vprogs_core_macros::smart_pointer;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
 
-/// Shared state between the [`BatchProver`](crate::BatchProver) handle and its background worker.
+/// Shared state between the [`BatchProver`](crate::BatchProver) and its worker.
 #[smart_pointer]
 pub struct Api<S: Store, P: Processor<S>> {
-    /// Scheduled batches awaiting proving (pushed once per batch by the pipeline).
+    /// Batches awaiting proving.
     pub inbox: AsyncQueue<ScheduledBatch<S, P>>,
-    /// Opened when the prover is shutting down.
+    /// Opened to signal worker shutdown.
     pub shutdown: AtomicAsyncLatch,
 }
 

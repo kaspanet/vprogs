@@ -1,4 +1,4 @@
-use std::{future, rc::Rc, sync::Arc};
+use std::{future, future::Future, rc::Rc, sync::Arc};
 
 use risc0_binfmt::ProgramBinary;
 use risc0_zkos_v1compat::V1COMPAT_ELF;
@@ -72,13 +72,15 @@ impl vprogs_zk_vm::Backend for Backend {
 
 impl vprogs_zk_transaction_prover::Backend for Backend {
     type Receipt = Receipt;
-    type ProveFuture = future::Ready<Receipt>;
 
     fn image_id(&self) -> &[u8; 32] {
         &self.transaction_image_id
     }
 
-    fn prove_transaction(&self, input_bytes: Vec<u8>) -> Self::ProveFuture {
+    fn prove_transaction(
+        &self,
+        input_bytes: Vec<u8>,
+    ) -> impl Future<Output = Receipt> + Send + 'static {
         future::ready(PROVER.with(|p| {
             p.prove_with_opts(
                 ExecutorEnv::builder()
@@ -100,9 +102,11 @@ impl vprogs_zk_transaction_prover::Backend for Backend {
 }
 
 impl vprogs_zk_batch_prover::Backend for Backend {
-    type BatchProveFuture = future::Ready<Receipt>;
-
-    fn prove_batch(&self, inputs: &[u8], receipts: Vec<Receipt>) -> Self::BatchProveFuture {
+    fn prove_batch(
+        &self,
+        inputs: &[u8],
+        receipts: Vec<Receipt>,
+    ) -> impl Future<Output = Receipt> + Send + 'static {
         let mut builder = ExecutorEnv::builder();
         builder.write_slice(&[inputs.len() as u32]).write_slice(inputs);
 

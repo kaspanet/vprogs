@@ -7872,13 +7872,11 @@ dependencies = [
 name = "vprogs-zk-transaction-prover"
 version = "0.1.0"
 dependencies = [
- "futures",
  "tokio",
  "vprogs-core-atomics",
  "vprogs-core-macros",
  "vprogs-scheduling-scheduler",
  "vprogs-storage-types",
- "vprogs-zk-abi",
 ]
 
 [[package]]
