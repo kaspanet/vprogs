@@ -90,10 +90,6 @@ impl vprogs_zk_transaction_prover::Backend for Backend {
             .receipt
         }))
     }
-
-    fn journal_bytes(receipt: &Receipt) -> Vec<u8> {
-        receipt.journal.bytes.clone()
-    }
 }
 
 impl vprogs_zk_batch_prover::Backend for Backend {
@@ -116,5 +112,9 @@ impl vprogs_zk_batch_prover::Backend for Backend {
                 .expect("batch proving failed")
                 .receipt
         }))
+    }
+
+    fn journal_bytes(receipt: &Receipt) -> Vec<u8> {
+        receipt.journal.bytes.clone()
     }
 }

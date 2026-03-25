@@ -10,4 +10,7 @@ pub trait Backend: vprogs_zk_transaction_prover::Backend {
         inputs: &[u8],
         receipts: Vec<Self::Receipt>,
     ) -> impl Future<Output = Self::Receipt> + Send + 'static;
+
+    /// Extracts journal bytes from a receipt.
+    fn journal_bytes(receipt: &Self::Receipt) -> Vec<u8>;
 }

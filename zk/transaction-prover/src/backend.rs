@@ -13,7 +13,4 @@ pub trait Backend: Clone + Send + Sync + 'static {
         &self,
         input_bytes: Vec<u8>,
     ) -> impl Future<Output = Self::Receipt> + Send + 'static;
-
-    /// Extracts journal bytes from a receipt.
-    fn journal_bytes(receipt: &Self::Receipt) -> Vec<u8>;
 }
