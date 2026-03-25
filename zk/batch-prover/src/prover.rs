@@ -21,14 +21,19 @@ pub struct BatchProver<P: Processor<S>, TB: TransactionBackend, S: Store> {
     pub worker: JoinHandle<()>,
 }
 
-impl<P: Processor<S>, BB: BatchBackend, S: Store> BatchProver<P, BB, S> {
+impl<P, B, S> BatchProver<P, B, S>
+where
+    P: Processor<S, TransactionEffects = B::Receipt>,
+    B: BatchBackend,
+    S: Store,
+{
     /// Creates a new batch prover and spawns both the transaction and batch worker threads.
     ///
     /// The store provides SMT state proofs for batch witness assembly. Batch proof receipts
     /// are pushed to `results`.
-    pub fn new(backend: BB, store: S, results: AsyncQueue<BB::Receipt>) -> Self {
-        let tx_prover = TransactionProver::new(backend, AsyncQueue::new());
-        let api = Api::new(&tx_prover.api, store, results);
+    pub fn new(backend: B, store: S, results: AsyncQueue<B::Receipt>) -> Self {
+        let tx_prover = TransactionProver::new(backend.clone());
+        let api = Api::new(backend, store, results);
         Self { tx_prover, worker: Worker::spawn(api.clone()), api }
     }
 }

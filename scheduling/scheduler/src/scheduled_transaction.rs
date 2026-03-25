@@ -44,9 +44,17 @@ impl<S: Store, P: Processor<S>> ScheduledTransaction<S, P> {
     /// Returns the effects produced by executing this transaction.
     ///
     /// # Panics
-    /// Panics if called before execution completes.
+    /// Panics if called before [`set_effects`](Self::set_effects).
     pub fn effects(&self) -> Arc<P::TransactionEffects> {
         self.effects.load_full().expect("effects not ready")
+    }
+
+    /// Sets the effects for this transaction and decrements the batch's pending effects counter.
+    pub fn set_effects(&self, effects: P::TransactionEffects) {
+        self.effects.store(Some(Arc::new(effects)));
+        if let Some(batch) = self.batch.upgrade() {
+            batch.decrease_pending_effects();
+        }
     }
 
     pub(crate) fn new(
@@ -98,10 +106,7 @@ impl<S: Store, P: Processor<S>> ScheduledTransaction<S, P> {
 
             // Process the transaction using the processor.
             match self.processor.process_transaction(&mut ctx) {
-                Ok(effects) => {
-                    self.effects.store(Some(Arc::new(effects)));
-                    ctx.commit_all();
-                }
+                Ok(()) => ctx.commit_all(),
                 // TODO: Handle errors (e.g. store with transaction)
                 Err(_) => ctx.rollback_all(),
             }
@@ -111,7 +116,8 @@ impl<S: Store, P: Processor<S>> ScheduledTransaction<S, P> {
         }
     }
 
-    pub(crate) fn batch(&self) -> &ScheduledBatchRef<S, P> {
+    /// Returns the weak reference to the owning batch.
+    pub fn batch(&self) -> &ScheduledBatchRef<S, P> {
         &self.batch
     }
 }

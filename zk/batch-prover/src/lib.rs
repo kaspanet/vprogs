@@ -1,6 +1,5 @@
 mod api;
 mod backend;
-mod input;
 mod prover;
 mod worker;
 

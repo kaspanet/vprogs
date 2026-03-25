@@ -1,6 +1,6 @@
 use std::sync::{
     Arc,
-    atomic::{AtomicI64, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
 };
 
 use crossbeam_deque::{Injector, Steal, Worker};
@@ -40,10 +40,16 @@ pub struct ScheduledBatch<S: Store, P: Processor<S>> {
     available_txs: Injector<ManagerTask<S, P>>,
     /// Number of transactions not yet fully executed.
     pending_txs: AtomicU64,
+    /// Number of transactions whose effects haven't been published yet.
+    pending_effects: AtomicU64,
     /// Number of state diff writes not yet persisted to disk.
     pending_writes: AtomicI64,
     /// Opens when all transactions have been executed.
     was_processed: AtomicAsyncLatch,
+    /// Opens when all transaction effects have been published.
+    effects_ready: AtomicAsyncLatch,
+    /// Whether this batch's effects have been consumed by a downstream processor.
+    effects_processed: AtomicBool,
     /// Opens when all state diffs have been written to disk.
     was_persisted: AtomicAsyncLatch,
     /// Opens when batch metadata has been committed.
@@ -141,6 +147,31 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         self
     }
 
+    /// Returns true if all transaction effects have been published.
+    pub fn is_effects_ready(&self) -> bool {
+        self.effects_ready.is_open()
+    }
+
+    /// Waits until all transaction effects have been published, or returns immediately if canceled.
+    pub async fn wait_effects_ready(&self) {
+        if !self.was_canceled() {
+            self.effects_ready.wait().await
+        }
+    }
+
+    /// Blocking version of [`wait_effects_ready`](Self::wait_effects_ready).
+    pub fn wait_effects_ready_blocking(&self) -> &Self {
+        if !self.was_canceled() {
+            self.effects_ready.wait_blocking();
+        }
+        self
+    }
+
+    /// Returns `true` on the first call, `false` on subsequent calls.
+    pub fn mark_effects_processed(&self) -> bool {
+        !self.effects_processed.swap(true, Ordering::AcqRel)
+    }
+
     /// Submits this batch for commit on the write worker. No-op if canceled.
     pub fn schedule_commit(&self) {
         if !self.was_canceled() {
@@ -156,12 +187,14 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         Self(Arc::new_cyclic(|this| {
             let was_processed = AtomicAsyncLatch::default();
             let was_persisted = AtomicAsyncLatch::default();
+            let effects_ready = AtomicAsyncLatch::default();
 
-            // An empty batch has nothing to process or persist - open the latches
+            // An empty batch has nothing to process, persist, or prove - open the latches
             // immediately so the lifecycle worker can commit it right away.
             if txs.is_empty() {
                 was_processed.open();
                 was_persisted.open();
+                effects_ready.open();
             }
 
             let mut state_diffs = Vec::new();
@@ -172,6 +205,7 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
                 cancellation: scheduler.cancellation().clone(),
                 state: scheduler.state().clone(),
                 pending_txs: AtomicU64::new(txs.len() as u64),
+                pending_effects: AtomicU64::new(txs.len() as u64),
                 pending_writes: AtomicI64::new(0),
                 txs: txs
                     .into_iter()
@@ -192,6 +226,8 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
                 was_processed,
                 was_persisted,
                 was_committed: Default::default(),
+                effects_ready,
+                effects_processed: AtomicBool::new(false),
             }
         }))
     }
@@ -222,6 +258,12 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
             if self.pending_writes.load(Ordering::Acquire) == 0 {
                 self.was_persisted.open();
             }
+        }
+    }
+
+    pub(crate) fn decrease_pending_effects(&self) {
+        if self.pending_effects.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.effects_ready.open();
         }
     }
 

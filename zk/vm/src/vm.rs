@@ -58,13 +58,13 @@ impl<EB: ExecutionBackend, TB: TransactionBackend, S: Store> Processor<S> for Vm
         });
 
         // 4. Submit transaction to proving pipeline (no-op if ProvingPipeline::None).
-        self.proving.submit(ctx.batch(), input_bytes);
+        self.proving.submit(ctx.scheduled_tx(), input_bytes);
 
         return_value
     }
 
     type Transaction = L1Transaction;
-    type TransactionEffects = ();
+    type TransactionEffects = TB::Receipt;
     type BatchMetadata = ChainBlockMetadata;
     type Error = Error;
 }

@@ -12,10 +12,7 @@ use vprogs_transaction_runtime_transaction_effects::TransactionEffects;
 pub struct VM;
 
 impl<S: Store> Processor<S> for VM {
-    fn process_transaction(
-        &self,
-        _ctx: &mut TransactionContext<S, Self>,
-    ) -> VmResult<TransactionEffects> {
+    fn process_transaction(&self, _ctx: &mut TransactionContext<S, Self>) -> VmResult<()> {
         // let (tx, resources) = ctx.parts_mut();
         // TransactionRuntime::execute(tx, resources)
         todo!("transaction execution from SchedulerTransaction<L1Transaction>")

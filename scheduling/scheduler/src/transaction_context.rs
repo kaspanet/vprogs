@@ -1,7 +1,7 @@
 use vprogs_core_types::SchedulerTransaction;
 use vprogs_storage_types::Store;
 
-use crate::{AccessHandle, ScheduledBatch, processor::Processor};
+use crate::{AccessHandle, ScheduledBatch, ScheduledTransaction, processor::Processor};
 
 /// Context passed to [`Processor::process_transaction`] providing the transaction, its
 /// position within the batch, the batch reference, and the resource access handles.
@@ -40,6 +40,11 @@ impl<'a, S: Store, P: Processor<S>> TransactionContext<'a, S, P> {
     /// Returns a reference to the scheduled batch this transaction belongs to.
     pub fn batch(&self) -> &ScheduledBatch<S, P> {
         self.batch
+    }
+
+    /// Returns the scheduled transaction this context belongs to.
+    pub fn scheduled_tx(&self) -> &ScheduledTransaction<S, P> {
+        &self.batch.txs()[self.tx_index as usize]
     }
 
     /// Returns the resource access handles.
