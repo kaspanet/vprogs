@@ -12,9 +12,9 @@ use crate::{Backend, worker::Worker};
 #[smart_pointer]
 pub struct TransactionProver<S: Store, P: Processor<S>> {
     /// Transactions awaiting proving.
-    pub inbox: AsyncQueue<(ScheduledTransaction<S, P>, Vec<u8>)>,
+    pub(crate) inbox: AsyncQueue<(ScheduledTransaction<S, P>, Vec<u8>)>,
     /// Opened to signal worker shutdown.
-    pub shutdown: AtomicAsyncLatch,
+    pub(crate) shutdown: AtomicAsyncLatch,
 }
 
 impl<S: Store, P: Processor<S>> TransactionProver<S, P> {

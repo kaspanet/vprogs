@@ -23,6 +23,7 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend> {
 }
 
 impl<S: Store, P: Processor<S, TransactionEffects = B::Receipt>, B: Backend> Worker<S, P, B> {
+    /// Spawns the worker on a new thread with a single-threaded tokio runtime.
     pub(crate) fn spawn(
         prover: BatchProver<S, P>,
         backend: B,
@@ -35,6 +36,7 @@ impl<S: Store, P: Processor<S, TransactionEffects = B::Receipt>, B: Backend> Wor
         });
     }
 
+    /// Main loop: drains the inbox, processes batches, and waits for new work or shutdown.
     async fn run(mut self) {
         loop {
             // Drain all batches queued for proving.

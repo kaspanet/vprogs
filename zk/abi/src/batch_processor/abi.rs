@@ -17,7 +17,7 @@ use crate::{
 /// `verify_journal` callback handles backend-specific inner proof verification (e.g.
 /// `env::verify` in risc0).
 pub struct Abi<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> {
-    /// Decoded batch inputs (header, leaf_order, proof, tx_journals).
+    /// Decoded batch inputs (image_id, proof, leaf_order, tx_journals).
     pub inputs: Inputs<'a>,
     /// Latest value hashes indexed by resource_index.
     pub value_hashes: Vec<&'a [u8; 32]>,

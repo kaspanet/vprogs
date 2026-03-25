@@ -16,12 +16,6 @@ pub struct AsyncQueue<T: Send + 'static> {
     notify: Notify,
 }
 
-impl<T: Send + 'static> Default for AsyncQueue<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl<T: Send + 'static> AsyncQueue<T> {
     /// Creates a new empty queue.
     pub fn new() -> Self {
@@ -53,5 +47,11 @@ impl<T: Send + 'static> AsyncQueue<T> {
     /// Returns a future that resolves when the queue is notified (an item was pushed).
     pub async fn notified(&self) {
         self.notify.notified().await
+    }
+}
+
+impl<T: Send + 'static> Default for AsyncQueue<T> {
+    fn default() -> Self {
+        Self::new()
     }
 }

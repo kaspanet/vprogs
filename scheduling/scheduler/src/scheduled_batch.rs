@@ -202,12 +202,12 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
             let mut resource_index = 0u32;
 
             ScheduledBatchData {
-                checkpoint,
                 cancellation: scheduler.cancellation().clone(),
                 state: scheduler.state().clone(),
+                checkpoint,
+                // pending_txs/pending_effects must precede txs (into_iter consumes the vec).
                 pending_txs: AtomicU64::new(txs.len() as u64),
                 pending_effects: AtomicU64::new(txs.len() as u64),
-                pending_writes: AtomicI64::new(0),
                 txs: txs
                     .into_iter()
                     .enumerate()
@@ -224,11 +224,12 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
                     .collect(),
                 state_diffs,
                 available_txs: Injector::new(),
+                pending_writes: AtomicI64::new(0),
                 was_processed,
-                was_persisted,
-                was_committed: Default::default(),
                 effects_ready,
                 effects_processed: AtomicBool::new(false),
+                was_persisted,
+                was_committed: Default::default(),
             }
         }))
     }

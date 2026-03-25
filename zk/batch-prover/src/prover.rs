@@ -12,9 +12,9 @@ use crate::{Backend, worker::Worker};
 #[smart_pointer]
 pub struct BatchProver<S: Store, P: Processor<S>> {
     /// Batches awaiting proving.
-    pub inbox: AsyncQueue<ScheduledBatch<S, P>>,
+    pub(crate) inbox: AsyncQueue<ScheduledBatch<S, P>>,
     /// Opened to signal worker shutdown.
-    pub shutdown: AtomicAsyncLatch,
+    pub(crate) shutdown: AtomicAsyncLatch,
 }
 
 impl<S: Store, P: Processor<S>> BatchProver<S, P> {
