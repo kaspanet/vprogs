@@ -4,7 +4,6 @@ name              = "vprogs-node-test-utils"
 version.workspace = true
 
 [dependencies]
-borsh.workspace                        = true
 kaspa-addresses.workspace              = true
 kaspa-consensus-core.workspace         = true
 kaspa-core.workspace                   = true
@@ -19,13 +18,11 @@ serde_json.workspace                   = true
 tap.workspace                          = true
 tempfile.workspace                     = true
 tokio                                  = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
-vprogs-core-test-utils.workspace       = true
 vprogs-core-types.workspace            = true
 vprogs-l1-bridge.workspace             = true
 vprogs-l1-types.workspace              = true
 vprogs-node-framework.workspace        = true
 vprogs-scheduling-scheduler.workspace  = true
-vprogs-scheduling-test-utils.workspace = true
 vprogs-state-metadata.workspace        = true
 vprogs-state-version.workspace         = true
 vprogs-storage-rocksdb-store.workspace = true

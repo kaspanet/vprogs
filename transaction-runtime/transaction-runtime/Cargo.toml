@@ -4,19 +4,14 @@ name              = "vprogs-transaction-runtime"
 version.workspace = true
 
 [dependencies]
-borsh.workspace                                          = true
-vprogs-core-types.workspace                              = true
 vprogs-scheduling-scheduler.workspace                    = true
 vprogs-storage-types.workspace                           = true
 vprogs-transaction-runtime-address.workspace             = true
 vprogs-transaction-runtime-auth-context.workspace        = true
 vprogs-transaction-runtime-authenticated-data.workspace  = true
-vprogs-transaction-runtime-data.workspace                = true
 vprogs-transaction-runtime-data-context.workspace        = true
 vprogs-transaction-runtime-error.workspace               = true
 vprogs-transaction-runtime-instruction.workspace         = true
-vprogs-transaction-runtime-lock.workspace                = true
-vprogs-transaction-runtime-object-id.workspace           = true
 vprogs-transaction-runtime-program.workspace             = true
 vprogs-transaction-runtime-pubkey.workspace              = true
 vprogs-transaction-runtime-transaction.workspace         = true

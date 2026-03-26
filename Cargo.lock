@@ -7408,11 +7408,8 @@ name = "vprogs-l1-bridge"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
- "borsh",
  "crossbeam-queue",
  "futures",
- "kaspa-consensus-core",
- "kaspa-hashes",
  "kaspa-notify",
  "kaspa-rpc-core",
  "kaspa-wrpc-client",
@@ -7485,7 +7482,6 @@ dependencies = [
 name = "vprogs-node-test-utils"
 version = "0.1.0"
 dependencies = [
- "borsh",
  "kaspa-addresses",
  "kaspa-consensus-core",
  "kaspa-core",
@@ -7500,13 +7496,11 @@ dependencies = [
  "tap",
  "tempfile",
  "tokio",
- "vprogs-core-test-utils",
  "vprogs-core-types",
  "vprogs-l1-bridge",
  "vprogs-l1-types",
  "vprogs-node-framework",
  "vprogs-scheduling-scheduler",
- "vprogs-scheduling-test-utils",
  "vprogs-state-metadata",
  "vprogs-state-version",
  "vprogs-storage-rocksdb-store",
@@ -7573,15 +7567,9 @@ dependencies = [
 name = "vprogs-scheduling-test-utils"
 version = "0.1.0"
 dependencies = [
- "borsh",
- "tempfile",
- "vprogs-core-test-utils",
  "vprogs-core-types",
  "vprogs-scheduling-scheduler",
- "vprogs-state-metadata",
- "vprogs-state-ptr-rollback",
  "vprogs-state-version",
- "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
 ]
@@ -7670,19 +7658,14 @@ dependencies = [
 name = "vprogs-transaction-runtime"
 version = "0.1.0"
 dependencies = [
- "borsh",
- "vprogs-core-types",
  "vprogs-scheduling-scheduler",
  "vprogs-storage-types",
  "vprogs-transaction-runtime-address",
  "vprogs-transaction-runtime-auth-context",
  "vprogs-transaction-runtime-authenticated-data",
- "vprogs-transaction-runtime-data",
  "vprogs-transaction-runtime-data-context",
  "vprogs-transaction-runtime-error",
  "vprogs-transaction-runtime-instruction",
- "vprogs-transaction-runtime-lock",
- "vprogs-transaction-runtime-object-id",
  "vprogs-transaction-runtime-program",
  "vprogs-transaction-runtime-pubkey",
  "vprogs-transaction-runtime-transaction",
