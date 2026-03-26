@@ -36,6 +36,11 @@ pub struct ScheduledTransaction<S: Store, P: Processor<S>> {
 }
 
 impl<S: Store, P: Processor<S>> ScheduledTransaction<S, P> {
+    /// Returns the weak reference to the owning batch.
+    pub fn batch(&self) -> &ScheduledBatchRef<S, P> {
+        &self.batch
+    }
+
     /// Returns the resources accessed by this transaction.
     pub fn resources(&self) -> &[ResourceAccess<S, P>] {
         &self.resources
@@ -118,11 +123,6 @@ impl<S: Store, P: Processor<S>> ScheduledTransaction<S, P> {
             // Notify the batch that this transaction has been processed.
             batch.decrease_pending_txs();
         }
-    }
-
-    /// Returns the weak reference to the owning batch.
-    pub fn batch(&self) -> &ScheduledBatchRef<S, P> {
-        &self.batch
     }
 }
 
