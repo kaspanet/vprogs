@@ -4,20 +4,20 @@ name              = "vprogs-l1-bridge"
 version.workspace = true
 
 [dependencies]
-arc-swap.workspace             = true
-crossbeam-queue.workspace      = true
-futures.workspace              = true
-kaspa-notify.workspace         = true
-kaspa-rpc-core.workspace       = true
-kaspa-wrpc-client.workspace    = true
-log.workspace                  = true
-tap.workspace                  = true
-thiserror.workspace            = true
-tokio.workspace                = true
-vprogs-core-macros.workspace   = true
-vprogs-core-types.workspace    = true
-vprogs-l1-types.workspace      = true
-workflow-core.workspace        = true
+arc-swap.workspace           = true
+crossbeam-queue.workspace    = true
+futures.workspace            = true
+kaspa-notify.workspace       = true
+kaspa-rpc-core.workspace     = true
+kaspa-wrpc-client.workspace  = true
+log.workspace                = true
+tap.workspace                = true
+thiserror.workspace          = true
+tokio.workspace              = true
+vprogs-core-macros.workspace = true
+vprogs-core-types.workspace  = true
+vprogs-l1-types.workspace    = true
+workflow-core.workspace      = true
 
 [dev-dependencies]
 tokio                            = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
