@@ -1,5 +1,5 @@
 use vprogs_core_atomics::AsyncQueue;
-use vprogs_scheduling_scheduler::{Processor, ScheduledTransaction};
+use vprogs_scheduling_scheduler::{Processor, ScheduledBatch, ScheduledTransaction};
 use vprogs_storage_types::Store;
 use vprogs_zk_batch_prover::BatchProver;
 use vprogs_zk_transaction_prover::TransactionProver;
@@ -35,11 +35,23 @@ impl<S: Store, P: Processor<S>> ProvingPipeline<S, P> {
     pub(crate) fn submit(&self, tx: &ScheduledTransaction<S, P>, tx_inputs: Vec<u8>) {
         match self {
             Self::None => {}
-            Self::Transaction(tx_prover) => tx_prover.submit(tx, tx_inputs),
-            Self::Batch(tx_prover, batch_prover) => {
-                batch_prover.submit(tx.batch().upgrade().expect("batch dropped"));
+            Self::Transaction(tx_prover) | Self::Batch(tx_prover, _) => {
                 tx_prover.submit(tx, tx_inputs);
             }
+        }
+    }
+
+    /// Schedules a batch for proving. No-op unless in `Batch` mode.
+    pub fn schedule_batch(&self, batch: &ScheduledBatch<S, P>) {
+        if let Self::Batch(_, batch_prover) = self {
+            batch_prover.schedule_batch(batch);
+        }
+    }
+
+    /// Rolls back the batch prover past `target_index`. No-op unless in `Batch` mode.
+    pub fn rollback(&self, target_index: u64) {
+        if let Self::Batch(_, batch_prover) = self {
+            batch_prover.rollback(target_index);
         }
     }
 

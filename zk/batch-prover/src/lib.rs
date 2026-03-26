@@ -1,4 +1,5 @@
 mod backend;
+mod command;
 mod prover;
 mod worker;
 

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
-use vprogs_scheduling_scheduler::{Processor, TransactionContext};
+use vprogs_scheduling_scheduler::{Processor, ScheduledBatch, TransactionContext};
 use vprogs_storage_types::Store;
 use vprogs_zk_abi::{
     Error, Result,
@@ -32,11 +32,6 @@ impl<B: Backend, S: Store> Vm<B, S> {
 }
 
 impl<B: Backend, S: Store> Processor<S> for Vm<B, S> {
-    type Transaction = L1Transaction;
-    type TransactionEffects = B::Receipt;
-    type BatchMetadata = ChainBlockMetadata;
-    type Error = Error;
-
     fn process_transaction(&self, ctx: &mut TransactionContext<S, Self>) -> Result<()> {
         // Encode into ABI wire format.
         let input_bytes = Inputs::encode(&*ctx);
@@ -63,4 +58,17 @@ impl<B: Backend, S: Store> Processor<S> for Vm<B, S> {
             }
         })
     }
+
+    fn on_batch_scheduled(&self, batch: &ScheduledBatch<S, Self>) {
+        self.proving.schedule_batch(batch);
+    }
+
+    fn on_rollback(&self, target_index: u64) {
+        self.proving.rollback(target_index);
+    }
+
+    type Transaction = L1Transaction;
+    type TransactionEffects = B::Receipt;
+    type BatchMetadata = ChainBlockMetadata;
+    type Error = Error;
 }

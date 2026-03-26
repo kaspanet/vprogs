@@ -1,4 +1,4 @@
-use std::thread::spawn;
+use std::{collections::VecDeque, thread::spawn};
 
 use tokio::runtime::Builder;
 use vprogs_core_atomics::AsyncQueue;
@@ -6,7 +6,7 @@ use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
 use vprogs_zk_abi::batch_processor::Inputs as BatchInputs;
 
-use crate::{Backend, BatchProver};
+use crate::{Backend, BatchProver, command::Command};
 
 /// Background worker that assembles batch witnesses and proves them.
 pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend> {
@@ -18,8 +18,8 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend> {
     store: S,
     /// Batch proof receipts.
     outbox: AsyncQueue<B::Receipt>,
-    /// Previous batch, tracked for commit ordering.
-    prev_batch: Option<ScheduledBatch<S, P>>,
+    /// Batches waiting to be proved, in scheduling order.
+    pending: VecDeque<ScheduledBatch<S, P>>,
 }
 
 impl<S: Store, P: Processor<S, TransactionEffects = B::Receipt>, B: Backend> Worker<S, P, B> {
@@ -30,25 +30,42 @@ impl<S: Store, P: Processor<S, TransactionEffects = B::Receipt>, B: Backend> Wor
         store: S,
         outbox: AsyncQueue<B::Receipt>,
     ) {
+        let this = Self { prover, backend, store, outbox, pending: VecDeque::new() };
         let runtime = Builder::new_current_thread().enable_all().build().expect("runtime");
-        spawn(move || {
-            runtime.block_on(Self { prover, backend, store, outbox, prev_batch: None }.run())
-        });
+        spawn(move || runtime.block_on(this.run()));
     }
 
-    /// Main loop: drains the inbox, processes batches, and waits for new work or shutdown.
+    /// Main loop: drains commands from the inbox, processes pending batches, and waits for new
+    /// work or shutdown.
     async fn run(mut self) {
         loop {
-            // Drain all batches queued for proving.
-            while let Some(batch) = self.prover.inbox.pop() {
-                self.process_batch(batch).await;
+            // Apply commands from the inbox to local state.
+            while let Some(cmd) = self.prover.inbox.pop() {
+                match cmd {
+                    Command::Batch(batch) => self.pending.push_back(batch),
+                    Command::Rollback(target) => {
+                        self.pending.retain(|b| b.checkpoint().index() <= target);
+                    }
+                }
             }
 
-            // Wait for a new batch or shutdown.
-            tokio::select! {
-                biased;
-                () = self.prover.shutdown.wait() => break,
-                () = self.prover.inbox.notified() => {}
+            // Register notification before popping so we don't race with new commands arriving.
+            let inbox_updated = self.prover.inbox.notified();
+
+            // Process the next batch or wait for a new command / shutdown.
+            match self.pending.pop_front() {
+                Some(batch) => {
+                    // Release the inbox borrow so `process_batch` can take `&mut self`.
+                    drop(inbox_updated);
+
+                    // Process the next batch in the schedule.
+                    self.process_batch(batch).await;
+                }
+                None => tokio::select! {
+                    biased;
+                    () = self.prover.shutdown.wait() => break,
+                    () = inbox_updated => {}
+                },
             }
         }
     }
@@ -57,37 +74,26 @@ impl<S: Store, P: Processor<S, TransactionEffects = B::Receipt>, B: Backend> Wor
     async fn process_batch(&mut self, batch: ScheduledBatch<S, P>) {
         // Wait for all transaction effects to be published.
         batch.wait_effects_ready().await;
-
-        // Skip canceled batches but still track them for ordering.
         if batch.was_canceled() {
-            self.prev_batch = Some(batch);
-            return;
-        }
-
-        // Wait for the previous batch to commit before reading SMT state.
-        if let Some(ref prev) = self.prev_batch {
-            prev.wait_committed().await;
-        }
-
-        // Re-check after waiting - batch may have been canceled in the meantime.
-        if batch.was_canceled() {
-            self.prev_batch = Some(batch);
             return;
         }
 
         // Collect receipts from batch transactions and prove.
         let receipts = batch.txs().iter().map(|tx| (*tx.effects()).clone()).collect();
-        let (scheduled, receipt) = self.assemble_and_prove(batch, receipts).await;
+        let receipt = self.assemble_and_prove(&batch, receipts).await;
         self.outbox.push(receipt);
-        self.prev_batch = Some(scheduled);
+
+        // Wait for this batch to commit before returning to the main loop. This guarantees the
+        // next batch sees committed SMT state when it reads proofs.
+        batch.wait_committed().await;
     }
 
     /// Assembles the batch witness from transaction receipts and proves it.
     async fn assemble_and_prove(
         &self,
-        batch: ScheduledBatch<S, P>,
+        batch: &ScheduledBatch<S, P>,
         receipts: Vec<B::Receipt>,
-    ) -> (ScheduledBatch<S, P>, B::Receipt) {
+    ) -> B::Receipt {
         let prev_version = batch.checkpoint().index().saturating_sub(1);
 
         let resource_ids: Vec<[u8; 32]> =
@@ -99,7 +105,6 @@ impl<S: Store, P: Processor<S, TransactionEffects = B::Receipt>, B: Backend> Wor
 
         let input =
             BatchInputs::encode(self.backend.image_id(), &proof_bytes, &leaf_order, &journals);
-        let receipt = self.backend.prove_batch(&input, receipts).await;
-        (batch, receipt)
+        self.backend.prove_batch(&input, receipts).await
     }
 }
