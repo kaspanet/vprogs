@@ -16,7 +16,7 @@ use crate::{Processor, state::SchedulerState};
 ///
 /// Walks batches from `upper_bound` down to `target.index() + 1` in reverse order, restoring each
 /// affected resource to the version it had before the batch was applied.
-pub struct Rollback<S: Store, P: Processor> {
+pub struct Rollback<S: Store, P: Processor<S>> {
     /// The checkpoint we're rolling back to. Its metadata is resolved by the scheduler from
     /// in-memory state to avoid a disk read race condition.
     target: Checkpoint<P::BatchMetadata>,
@@ -28,7 +28,7 @@ pub struct Rollback<S: Store, P: Processor> {
     done_signal: Arc<AtomicAsyncLatch>,
 }
 
-impl<S: Store, P: Processor> Rollback<S, P> {
+impl<S: Store, P: Processor<S>> Rollback<S, P> {
     /// Creates a new rollback operation that reverts all batches from `target.index() + 1` through
     /// `upper_bound` (inclusive).
     pub fn new(
@@ -88,6 +88,16 @@ impl<S: Store, P: Processor> Rollback<S, P> {
             if rollback_to_genesis {
                 StateMetadata::set_root(wb, &self.target);
             }
+
+            // Delete SMT nodes and stale markers for each rolled-back version. Without this,
+            // orphaned nodes from the old versions would be found by `node` after re-commit,
+            // corrupting the tree.
+            for index in (self.target.index() + 1..=self.upper_bound).rev() {
+                store.rollback(wb, index);
+            }
+
+            // Reset the persisted state root to the target version's root.
+            StateMetadata::set_state_root(wb, &store.root(self.target.index()));
         }));
 
         // Return a new empty write batch for further operations.

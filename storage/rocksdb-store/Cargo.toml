@@ -7,4 +7,6 @@ version.workspace = true
 num_cpus.workspace             = true
 rocksdb.workspace              = true
 tap.workspace                  = true
+vprogs-core-codec.workspace    = true
+vprogs-core-smt.workspace      = true
 vprogs-storage-types.workspace = true

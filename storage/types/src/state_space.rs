@@ -4,4 +4,6 @@ pub enum StateSpace {
     StatePtrRollback,
     BatchMetadata,
     Metadata,
+    SmtNode,
+    SmtStale,
 }

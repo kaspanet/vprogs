@@ -16,12 +16,12 @@ pub trait Config: Send + Sync + 'static {
             // --- Write path semantics --------------------------------------------
             // We have exactly ONE writer worker that issues large WriteBatches.
             // Pipelined writes help when multiple writers contend (WAL vs memtable).
-            // With a single writer they add overhead but no benefit—turn them off.
+            // With a single writer they add overhead but no benefit-turn them off.
             o.set_enable_pipelined_write(false);
 
             // Unordered writes relax memtable insert order (WAL order still serialized).
             // That’s great for many concurrent writers, but unnecessary here and can
-            // complicate iterator/snapshot semantics across CFs—so keep it off.
+            // complicate iterator/snapshot semantics across CFs-so keep it off.
             o.set_unordered_write(false);
 
             // Allow concurrent memtable writes is a no-op with one writer, but harmless.
@@ -76,6 +76,22 @@ pub trait Config: Send + Sync + 'static {
 
     fn cf_metas_opts() -> Options {
         Options::default()
+    }
+
+    fn cf_smt_node_opts() -> Options {
+        Options::default().tap_mut(|o| {
+            // SmtNode keys are: path(32) || level(2 BE) || !version(8 BE)
+            // 34-byte prefix groups all versions of the same node for prefix iteration.
+            o.set_prefix_extractor(SliceTransform::create_fixed_prefix(34));
+        })
+    }
+
+    fn cf_smt_stale_opts() -> Options {
+        Options::default().tap_mut(|o| {
+            // SmtStale keys are: stale_since_version(8 BE) || path(32) || level(2 BE)
+            // 8-byte prefix groups all stale markers for the same version.
+            o.set_prefix_extractor(SliceTransform::create_fixed_prefix(8));
+        })
     }
 }
 

@@ -2,22 +2,78 @@
 
 extern crate alloc;
 
-mod account;
-mod block_metadata;
+pub mod batch_processor {
+    pub(crate) mod abi;
+    pub(crate) mod error_code;
+
+    pub(crate) mod input {
+        pub(crate) mod inputs;
+        pub(crate) mod transaction_journals;
+    }
+
+    pub(crate) mod journal {
+        pub(crate) mod state_transition;
+    }
+
+    pub use abi::Abi;
+    pub use error_code::ErrorCode;
+    pub use input::{inputs::Inputs, transaction_journals::TransactionJournals};
+    pub use journal::state_transition::StateTransition;
+}
 mod error;
-pub mod guest;
-#[cfg(feature = "host")]
-pub mod host;
-mod storage_op;
+mod read;
+mod write;
 
-pub use account::Account;
-pub use block_metadata::BlockMetadata;
+pub mod transaction_processor {
+    pub(crate) mod abi;
+    pub(crate) mod transaction_handler;
+
+    pub(crate) mod input {
+        pub(crate) mod batch_metadata;
+        pub(crate) mod inputs;
+        pub(crate) mod resource;
+    }
+
+    pub(crate) mod output {
+        pub(crate) mod outputs;
+        pub(crate) mod storage_op;
+    }
+
+    pub(crate) mod journal {
+        pub(crate) mod entries;
+        pub(crate) mod entry;
+
+        pub(crate) mod input {
+            pub(crate) mod commitment;
+            pub(crate) mod resource_commitment;
+            pub(crate) mod resource_commitments;
+        }
+
+        pub(crate) mod output {
+            pub(crate) mod commitment;
+            pub(crate) mod resource_commitment;
+            pub(crate) mod resource_commitments;
+        }
+    }
+
+    pub use abi::Abi;
+    pub use input::{batch_metadata::BatchMetadata, inputs::Inputs, resource::Resource};
+    pub use journal::{
+        entries::JournalEntries,
+        entry::JournalEntry,
+        input::{
+            commitment::InputCommitment, resource_commitment::InputResourceCommitment,
+            resource_commitments::InputResourceCommitments,
+        },
+        output::{
+            commitment::OutputCommitment, resource_commitment::OutputResourceCommitment,
+            resource_commitments::OutputResourceCommitments,
+        },
+    };
+    pub use output::{outputs::Outputs, storage_op::StorageOp};
+    pub use transaction_handler::TransactionHandler;
+}
+
 pub use error::{Error, Result};
-pub use storage_op::StorageOp;
-
-/// Fixed header size: tx_index(4) + n_accounts(4) + block_hash(32) + blue_score(8) +
-/// tx_bytes_len(4).
-pub(crate) const FIXED_HEADER_SIZE: usize = 4 + 4 + 32 + 8 + 4;
-
-/// Per-account header size: resource_id(32) + flags(1) + data_len(4).
-pub(crate) const ACCOUNT_HEADER_SIZE: usize = 32 + 1 + 4;
+pub use read::Read;
+pub use write::Write;

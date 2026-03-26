@@ -1,4 +1,6 @@
 mod config;
+mod key_ext;
+mod stale_node_ext;
 mod state_space_ext;
 mod store;
 mod write_batch;

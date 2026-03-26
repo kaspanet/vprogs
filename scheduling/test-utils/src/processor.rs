@@ -6,8 +6,8 @@ use vprogs_storage_types::Store;
 #[derive(Clone)]
 pub struct Processor;
 
-impl vprogs_scheduling_scheduler::Processor for Processor {
-    fn process_transaction<S: Store>(
+impl<S: Store> vprogs_scheduling_scheduler::Processor<S> for Processor {
+    fn process_transaction(
         &self,
         ctx: &mut TransactionContext<S, Self>,
     ) -> Result<(), Self::Error> {
@@ -21,7 +21,8 @@ impl vprogs_scheduling_scheduler::Processor for Processor {
     }
 
     type Transaction = usize;
-    type TransactionEffects = ();
+    type TransactionArtifact = ();
+    type BatchArtifact = ();
     type BatchMetadata = u64;
     type Error = ();
 }

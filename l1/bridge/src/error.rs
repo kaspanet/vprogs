@@ -4,7 +4,7 @@ use vprogs_l1_types::Hash;
 /// Bridge error types, split into recoverable (RPC) and fatal.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
-    /// Recoverable RPC/network error — will retry on reconnect.
+    /// Recoverable RPC/network error - will retry on reconnect.
     #[error("RPC error: {0}")]
     Rpc(RpcError),
 

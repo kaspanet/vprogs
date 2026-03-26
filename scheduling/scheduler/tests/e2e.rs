@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use tempfile::TempDir;
+use vprogs_core_smt::{Blake3, EMPTY_HASH, Tree, proving::Proof};
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, Checkpoint, ResourceId, SchedulerTransaction};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
@@ -126,7 +127,7 @@ pub fn test_rollback_committed() {
         assert_eq!(target.index(), 1);
         assert_eq!(*target.metadata(), 1);
 
-        // Verify state after rollback - only batch1 effects should remain
+        // Verify state after rollback - only batch1 state changes should remain
         scheduler
             .assert_written_state(ResourceId::for_test(1), vec![0]) // Only tx 0's write remains
             .assert_written_state(ResourceId::for_test(2), vec![1]) // tx 1's write remains (in batch1)
@@ -229,7 +230,7 @@ pub fn test_add_batches_after_rollback() {
 }
 
 /// Tests in-flight batch cancellation without waiting for commitment. When a rollback occurs,
-/// batches that haven't been committed yet should detect cancellation via was_canceled() and skip
+/// batches that haven't been committed yet should detect cancellation via canceled() and skip
 /// their writes.
 #[test]
 pub fn test_inflight_cancellation_without_waiting() {
@@ -278,10 +279,10 @@ pub fn test_inflight_cancellation_without_waiting() {
         // This tests in-flight cancellation
         scheduler.rollback_to(1).expect("rollback should succeed");
 
-        // After rollback, the canceled batches should have was_canceled() == true
-        assert!(batch2.was_canceled(), "batch2 should be canceled");
-        assert!(batch3.was_canceled(), "batch3 should be canceled");
-        assert!(batch4.was_canceled(), "batch4 should be canceled");
+        // After rollback, the canceled batches should have canceled() == true
+        assert!(batch2.canceled(), "batch2 should be canceled");
+        assert!(batch3.canceled(), "batch3 should be canceled");
+        assert!(batch4.canceled(), "batch4 should be canceled");
 
         // Resource 1 should still exist (from batch1 which was committed)
         // Resources 2, 3, 4 should be cleaned up by rollback
@@ -300,7 +301,7 @@ pub fn test_inflight_cancellation_without_waiting() {
             )],
         );
         batch5.wait_committed_blocking();
-        assert!(!batch5.was_canceled(), "batch5 should not be canceled");
+        assert!(!batch5.canceled(), "batch5 should not be canceled");
         scheduler.assert_written_state(ResourceId::for_test(100), vec![100]);
 
         scheduler.shutdown();
@@ -736,8 +737,8 @@ pub fn test_cancellation_skips_writes() {
         scheduler.rollback_to(1).expect("rollback should succeed");
 
         // Verify both batches were canceled
-        assert!(batch2.was_canceled(), "batch2 should be canceled");
-        assert!(batch3.was_canceled(), "batch3 should be canceled");
+        assert!(batch2.canceled(), "batch2 should be canceled");
+        assert!(batch3.canceled(), "batch3 should be canceled");
 
         // The wait functions should return immediately for canceled batches
         batch2.wait_committed_blocking();
@@ -1330,7 +1331,7 @@ pub fn test_pruning_pause_and_unpause() {
             );
         }
 
-        // Unpause — the worker should now catch up to the full threshold.
+        // Unpause - the worker should now catch up to the full threshold.
         scheduler.pruning().unpause();
         scheduler.wait_pruned(5, Duration::from_secs(10));
 
@@ -1383,13 +1384,429 @@ pub fn test_rollback_pruning_conflict() {
         scheduler.pruning().set_threshold(4);
         scheduler.wait_pruned(3, Duration::from_secs(10));
 
-        // Rollback to batch 2 should fail — its rollback pointers are gone.
+        // Rollback to batch 2 should fail - its rollback pointers are gone.
         let err = scheduler.rollback_to(2).unwrap_err();
         assert!(matches!(err, SchedulerError::PruningConflict));
 
-        // Rollback to batch 4 should still succeed — above the pruned range.
+        // Rollback to batch 4 should still succeed - above the pruned range.
         let target = scheduler.rollback_to(4).expect("rollback should succeed");
         assert_eq!(target.index(), 4);
+
+        scheduler.shutdown();
+    }
+}
+
+/// Tests that committing batches produces non-empty, evolving state roots in the SMT.
+#[test]
+pub fn test_smt_state_root_after_commits() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(Processor),
+            StorageConfig::default().with_store(storage),
+        );
+
+        /// Reads the current state root from metadata.
+        fn state_root(scheduler: &Scheduler<RocksDbStore, Processor>) -> [u8; 32] {
+            StateMetadata::state_root(&**scheduler.state().storage().store())
+        }
+
+        // Before any batches, state root should be empty.
+        assert_eq!(state_root(&scheduler), EMPTY_HASH);
+
+        // Batch 1: write to resource 1
+        let batch1 = scheduler.schedule(
+            1,
+            vec![SchedulerTransaction::new(
+                1,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+            )],
+        );
+        batch1.wait_committed_blocking();
+
+        let root1 = state_root(&scheduler);
+        assert_ne!(root1, EMPTY_HASH, "state root should be non-empty after first commit");
+
+        // Batch 2: write to a different resource
+        let batch2 = scheduler.schedule(
+            2,
+            vec![SchedulerTransaction::new(
+                2,
+                vec![AccessMetadata::write(ResourceId::for_test(2))],
+            )],
+        );
+        batch2.wait_committed_blocking();
+
+        let root2 = state_root(&scheduler);
+        assert_ne!(root2, EMPTY_HASH);
+        assert_ne!(root2, root1, "state root should change when new leaves are inserted");
+
+        // Batch 3: overwrite resource 1 (value changes → root changes)
+        let batch3 = scheduler.schedule(
+            3,
+            vec![SchedulerTransaction::new(
+                3,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+            )],
+        );
+        batch3.wait_committed_blocking();
+
+        let root3 = state_root(&scheduler);
+        assert_ne!(root3, EMPTY_HASH);
+        assert_ne!(root3, root2, "state root should change when an existing leaf is updated");
+
+        // The tree's per-version root should match the metadata root for the latest version.
+        let store = scheduler.state().storage().store();
+        assert_eq!(
+            store.root(3),
+            root3,
+            "smt::Tree::root should match the persisted metadata root"
+        );
+
+        scheduler.shutdown();
+    }
+}
+
+/// Tests that rolling back restores the state root to the target version's root.
+#[test]
+pub fn test_smt_state_root_after_rollback() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(Processor),
+            StorageConfig::default().with_store(storage),
+        );
+
+        fn state_root(scheduler: &Scheduler<RocksDbStore, Processor>) -> [u8; 32] {
+            StateMetadata::state_root(&**scheduler.state().storage().store())
+        }
+
+        // Commit 3 batches, each touching a distinct resource.
+        let batch1 = scheduler.schedule(
+            1,
+            vec![SchedulerTransaction::new(
+                1,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+            )],
+        );
+        batch1.wait_committed_blocking();
+        let root_after_1 = state_root(&scheduler);
+
+        let batch2 = scheduler.schedule(
+            2,
+            vec![SchedulerTransaction::new(
+                2,
+                vec![AccessMetadata::write(ResourceId::for_test(2))],
+            )],
+        );
+        batch2.wait_committed_blocking();
+        let root_after_2 = state_root(&scheduler);
+
+        let batch3 = scheduler.schedule(
+            3,
+            vec![SchedulerTransaction::new(
+                3,
+                vec![AccessMetadata::write(ResourceId::for_test(3))],
+            )],
+        );
+        batch3.wait_committed_blocking();
+        let root_after_3 = state_root(&scheduler);
+
+        // All roots should be distinct.
+        assert_ne!(root_after_1, root_after_2);
+        assert_ne!(root_after_2, root_after_3);
+
+        // Rollback to batch 1 - state root should match the root after batch 1.
+        scheduler.rollback_to(1).expect("rollback should succeed");
+        assert_eq!(
+            state_root(&scheduler),
+            root_after_1,
+            "state root should be restored to the target version's root after rollback"
+        );
+
+        // Schedule a new batch after rollback - root should diverge from the original batch 2.
+        let batch4 = scheduler.schedule(
+            10,
+            vec![SchedulerTransaction::new(
+                10,
+                vec![AccessMetadata::write(ResourceId::for_test(10))],
+            )],
+        );
+        batch4.wait_committed_blocking();
+        let root_after_new = state_root(&scheduler);
+        assert_ne!(root_after_new, root_after_1, "root should change after new commit");
+        assert_ne!(root_after_new, root_after_2, "root should differ from the original branch");
+
+        scheduler.shutdown();
+    }
+}
+
+/// Tests that rolling back to zero produces an empty state root.
+#[test]
+pub fn test_smt_state_root_rollback_to_zero() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(Processor),
+            StorageConfig::default().with_store(storage),
+        );
+
+        fn state_root(scheduler: &Scheduler<RocksDbStore, Processor>) -> [u8; 32] {
+            StateMetadata::state_root(&**scheduler.state().storage().store())
+        }
+
+        // Commit a batch so the root is non-empty.
+        let batch1 = scheduler.schedule(
+            1,
+            vec![SchedulerTransaction::new(
+                1,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+            )],
+        );
+        batch1.wait_committed_blocking();
+        assert_ne!(state_root(&scheduler), EMPTY_HASH);
+
+        // Rollback to 0 - should reset to empty.
+        scheduler.rollback_to(0).expect("rollback should succeed");
+        assert_eq!(
+            state_root(&scheduler),
+            EMPTY_HASH,
+            "state root should be empty after rollback to 0"
+        );
+
+        // A new batch from scratch should produce a non-empty root again.
+        let batch2 = scheduler.schedule(
+            1,
+            vec![SchedulerTransaction::new(
+                1,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+            )],
+        );
+        batch2.wait_committed_blocking();
+        assert_ne!(
+            state_root(&scheduler),
+            EMPTY_HASH,
+            "state root should be non-empty after re-committing"
+        );
+
+        scheduler.shutdown();
+    }
+}
+
+/// Tests that the SMT root correctly reflects multiple resources committed in a single batch.
+#[test]
+pub fn test_smt_multi_resource_single_batch() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(Processor),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // Single batch with 3 resources.
+        let batch = scheduler.schedule(
+            1,
+            vec![
+                SchedulerTransaction::new(1, vec![AccessMetadata::write(ResourceId::for_test(1))]),
+                SchedulerTransaction::new(2, vec![AccessMetadata::write(ResourceId::for_test(2))]),
+                SchedulerTransaction::new(3, vec![AccessMetadata::write(ResourceId::for_test(3))]),
+            ],
+        );
+        batch.wait_committed_blocking();
+
+        let store = scheduler.state().storage().store();
+        let root = StateMetadata::state_root(&**store);
+        assert_ne!(root, EMPTY_HASH, "multi-resource batch should produce non-empty root");
+
+        // Tree version root should agree with metadata.
+        assert_eq!(store.root(1), root);
+
+        scheduler.shutdown();
+    }
+}
+
+/// Tests that a multi-proof verifies against the correct root and rejects an incorrect one.
+#[test]
+pub fn test_smt_multi_proof_verify() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(Processor),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // Commit a batch with two resources to create tree state.
+        let batch = scheduler.schedule(
+            1,
+            vec![
+                SchedulerTransaction::new(1, vec![AccessMetadata::write(ResourceId::for_test(1))]),
+                SchedulerTransaction::new(2, vec![AccessMetadata::write(ResourceId::for_test(2))]),
+            ],
+        );
+        batch.wait_committed_blocking();
+
+        let store = scheduler.state().storage().store();
+        let root = store.root(1);
+
+        // Generate a proof for resource 1's key and verify it.
+        let (proof_bytes, _) = store.prove(&[ResourceId::for_test(1)], 1).unwrap();
+        let proof = Proof::decode(&proof_bytes).expect("valid proof");
+
+        assert_eq!(
+            proof.root::<Blake3>().unwrap(),
+            root,
+            "proof should verify against the correct root",
+        );
+        assert_ne!(
+            proof.root::<Blake3>().unwrap(),
+            [0xFFu8; 32],
+            "proof should reject an incorrect root",
+        );
+
+        scheduler.shutdown();
+    }
+}
+
+/// Tests that a multi-proof for a non-existent key verifies (proving absence).
+#[test]
+pub fn test_smt_multi_proof_absent_key() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(Processor),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // Commit a batch with resource 1 only.
+        let batch = scheduler.schedule(
+            1,
+            vec![SchedulerTransaction::new(
+                1,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+            )],
+        );
+        batch.wait_committed_blocking();
+
+        let store = scheduler.state().storage().store();
+        let root = store.root(1);
+
+        // Generate a proof for resource 99 (absent) - should still verify against the root.
+        let (proof_bytes, _) = store.prove(&[ResourceId::for_test(99)], 1).unwrap();
+        let proof = Proof::decode(&proof_bytes).expect("valid proof");
+
+        assert_eq!(
+            proof.root::<Blake3>().unwrap(),
+            root,
+            "proof for an absent key should verify against the root",
+        );
+        assert_ne!(
+            proof.root::<Blake3>().unwrap(),
+            [0xFFu8; 32],
+            "proof should reject an incorrect root",
+        );
+
+        scheduler.shutdown();
+    }
+}
+
+/// Tests that a multi-proof covers multiple keys (both present and absent).
+#[test]
+pub fn test_smt_multi_proof_mixed_keys() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(Processor),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // Commit resources 1, 2, 3.
+        let batch = scheduler.schedule(
+            1,
+            vec![
+                SchedulerTransaction::new(1, vec![AccessMetadata::write(ResourceId::for_test(1))]),
+                SchedulerTransaction::new(2, vec![AccessMetadata::write(ResourceId::for_test(2))]),
+                SchedulerTransaction::new(3, vec![AccessMetadata::write(ResourceId::for_test(3))]),
+            ],
+        );
+        batch.wait_committed_blocking();
+
+        let store = scheduler.state().storage().store();
+        let root = store.root(1);
+
+        // Proof for existing key 1, existing key 3, and absent key 99.
+        let keys = [ResourceId::for_test(1), ResourceId::for_test(3), ResourceId::for_test(99)];
+        let (proof_bytes, _) = store.prove(&keys, 1).unwrap();
+        let proof = Proof::decode(&proof_bytes).expect("valid proof");
+
+        assert_eq!(
+            proof.root::<Blake3>().unwrap(),
+            root,
+            "mixed proof should verify against the correct root",
+        );
+        assert!(proof.leaves.len() >= 3, "proof should have at least 3 leaves");
+
+        scheduler.shutdown();
+    }
+}
+
+/// Tests that the SMT produces consistent roots across a commit-rollback-recommit cycle.
+#[test]
+pub fn test_smt_deterministic_roots() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(Processor),
+            StorageConfig::default().with_store(storage),
+        );
+
+        fn state_root(scheduler: &Scheduler<RocksDbStore, Processor>) -> [u8; 32] {
+            StateMetadata::state_root(&**scheduler.state().storage().store())
+        }
+
+        // Commit batch 1, record root.
+        let batch1 = scheduler.schedule(
+            1,
+            vec![SchedulerTransaction::new(
+                1,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+            )],
+        );
+        batch1.wait_committed_blocking();
+        let root1 = state_root(&scheduler);
+
+        // Commit batch 2, then rollback to 1.
+        let batch2 = scheduler.schedule(
+            2,
+            vec![SchedulerTransaction::new(
+                2,
+                vec![AccessMetadata::write(ResourceId::for_test(2))],
+            )],
+        );
+        batch2.wait_committed_blocking();
+
+        scheduler.rollback_to(1).expect("rollback should succeed");
+        assert_eq!(state_root(&scheduler), root1, "rollback should restore exact root");
+
+        // Commit batch 2 again with the same data pattern.
+        let batch2_again = scheduler.schedule(
+            2,
+            vec![SchedulerTransaction::new(
+                2,
+                vec![AccessMetadata::write(ResourceId::for_test(2))],
+            )],
+        );
+        batch2_again.wait_committed_blocking();
+
+        // The tree builds from (version=1 root) + same diffs → same result.
+        assert_ne!(state_root(&scheduler), root1, "adding batch 2 should change root");
 
         scheduler.shutdown();
     }

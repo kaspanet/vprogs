@@ -85,9 +85,8 @@ impl NodeExt for NodeApi<RocksDbStore, TestNodeVm> {
 
     fn assert_resource_deleted(&self, resource_id: ResourceId) {
         let store = self.storage().store();
-        let id_bytes = *resource_id.as_bytes();
         assert!(
-            store.get(StateSpace::StatePtrLatest, &id_bytes).is_none(),
+            store.get(StateSpace::StatePtrLatest, &resource_id[..]).is_none(),
             "Resource {resource_id:?} should have been deleted but still exists",
         );
     }

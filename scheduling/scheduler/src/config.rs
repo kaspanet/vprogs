@@ -1,19 +1,20 @@
-use crate::Processor;
-
 /// Configuration for the scheduler's execution environment.
 #[derive(Clone, Debug)]
-pub struct ExecutionConfig<P: Processor> {
+pub struct ExecutionConfig<P> {
+    /// Number of parallel execution worker threads.
     pub worker_count: usize,
+    /// The processor used to execute transactions.
     pub processor: Option<P>,
 }
 
-impl<P: Processor> Default for ExecutionConfig<P> {
+impl<P> Default for ExecutionConfig<P> {
     fn default() -> Self {
         Self { worker_count: num_cpus::get_physical(), processor: None }
     }
 }
 
-impl<P: Processor> ExecutionConfig<P> {
+impl<P> ExecutionConfig<P> {
+    /// Sets the number of parallel execution worker threads.
     pub fn with_worker_count(mut self, workers: usize) -> Self {
         self.worker_count = workers;
         self

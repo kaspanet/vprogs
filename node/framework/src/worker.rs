@@ -14,7 +14,7 @@ use crate::{Processor, api::ApiRequest};
 ///
 /// Consumes [`L1Event`]s from the bridge, extracts access metadata from L1 transaction payloads,
 /// and feeds the resulting transactions to the scheduler in order.
-pub(crate) struct NodeWorker<S: Store, P: Processor> {
+pub(crate) struct NodeWorker<S: Store, P: Processor<S>> {
     /// L1 chain event source - the primary data entry point into the node.
     bridge: L1Bridge,
     /// Transaction scheduler and execution engine.
@@ -25,7 +25,7 @@ pub(crate) struct NodeWorker<S: Store, P: Processor> {
     shutdown: Arc<AtomicAsyncLatch>,
 }
 
-impl<S: Store, P: Processor> NodeWorker<S, P> {
+impl<S: Store, P: Processor<S>> NodeWorker<S, P> {
     /// Creates the worker and runs the event loop until shutdown is signaled or a fatal error
     /// occurs. Shuts down the bridge and scheduler before returning.
     pub(crate) async fn spawn(

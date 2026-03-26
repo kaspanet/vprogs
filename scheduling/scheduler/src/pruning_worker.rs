@@ -23,7 +23,7 @@ use crate::{Processor, state::SchedulerState};
 ///
 /// Runs on a dedicated thread with direct store access to avoid contention with the main write
 /// path.
-pub struct PruningWorker<S: Store, P: Processor> {
+pub struct PruningWorker<S: Store, P: Processor<S>> {
     /// The batch index up to which pruning is allowed (exclusive). Batches with index < threshold
     /// can be pruned.
     pruning_threshold: Arc<AtomicU64>,
@@ -44,7 +44,7 @@ pub struct PruningWorker<S: Store, P: Processor> {
     _marker: PhantomData<(S, P)>,
 }
 
-impl<S: Store, P: Processor> PruningWorker<S, P> {
+impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
     /// Sets the pruning threshold.
     ///
     /// Batches with index < threshold become eligible for pruning. The actual pruning happens
@@ -145,7 +145,7 @@ impl<S: Store, P: Processor> PruningWorker<S, P> {
                 async move {
                     // Use strong_count to detect shutdown (when the outer struct is dropped).
                     while Arc::strong_count(&pruning_threshold) != 1 {
-                        // Root is the oldest surviving batch — the first candidate for pruning.
+                        // Root is the oldest surviving batch - the first candidate for pruning.
                         let lower_bound = state.root().index();
 
                         // Last batch eligible for pruning: (min of requested threshold and pause
@@ -171,7 +171,7 @@ impl<S: Store, P: Processor> PruningWorker<S, P> {
                             }
 
                             // Execute pruning directly on the store.
-                            // The cursor stays at upper_bound — it now reflects completed progress.
+                            // The cursor stays at upper_bound - it now reflects completed progress.
                             Self::prune(&state, lower_bound, upper_bound);
                         } else if Arc::strong_count(&pruning_threshold) != 1 {
                             // No work to do, wait for notification.
@@ -224,6 +224,9 @@ impl<S: Store, P: Processor> PruningWorker<S, P> {
 
                 // Delete batch metadata entries for this batch.
                 StoredBatchMetadata::delete(wb, index);
+
+                // Prune stale SMT nodes for this version.
+                store.prune(wb, index);
             }
 
             // Advance root on disk.

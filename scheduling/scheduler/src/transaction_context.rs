@@ -1,25 +1,29 @@
 use vprogs_core_types::SchedulerTransaction;
 use vprogs_storage_types::Store;
 
-use crate::{AccessHandle, processor::Processor};
+use crate::{AccessHandle, ScheduledBatch, ScheduledTransaction, processor::Processor};
 
 /// Context passed to [`Processor::process_transaction`] providing the transaction, its
-/// position within the batch, the batch's opaque metadata, and the resource access handles.
-pub struct TransactionContext<'a, S: Store, P: Processor> {
+/// position within the batch, the batch reference, and the resource access handles.
+pub struct TransactionContext<'a, S: Store, P: Processor<S>> {
+    /// The user-submitted transaction.
     scheduler_tx: &'a SchedulerTransaction<P::Transaction>,
+    /// Zero-based position within the batch.
     tx_index: u32,
-    batch_metadata: &'a P::BatchMetadata,
+    /// The owning batch.
+    batch: &'a ScheduledBatch<S, P>,
+    /// Resource access handles for this transaction.
     resources: Vec<AccessHandle<'a, S, P>>,
 }
 
-impl<'a, S: Store, P: Processor> TransactionContext<'a, S, P> {
+impl<'a, S: Store, P: Processor<S>> TransactionContext<'a, S, P> {
     pub(crate) fn new(
         scheduler_tx: &'a SchedulerTransaction<P::Transaction>,
         tx_index: u32,
-        batch_metadata: &'a P::BatchMetadata,
+        batch: &'a ScheduledBatch<S, P>,
         resources: Vec<AccessHandle<'a, S, P>>,
     ) -> Self {
-        Self { scheduler_tx, tx_index, batch_metadata, resources }
+        Self { scheduler_tx, tx_index, batch, resources }
     }
 
     /// Returns the transaction being processed.
@@ -34,7 +38,17 @@ impl<'a, S: Store, P: Processor> TransactionContext<'a, S, P> {
 
     /// Returns the batch metadata associated with this execution context.
     pub fn batch_metadata(&self) -> &P::BatchMetadata {
-        self.batch_metadata
+        self.batch.checkpoint().metadata()
+    }
+
+    /// Returns a reference to the scheduled batch this transaction belongs to.
+    pub fn batch(&self) -> &ScheduledBatch<S, P> {
+        self.batch
+    }
+
+    /// Returns the scheduled transaction this context belongs to.
+    pub fn scheduled_tx(&self) -> &ScheduledTransaction<S, P> {
+        &self.batch.txs()[self.tx_index as usize]
     }
 
     /// Returns the resource access handles.

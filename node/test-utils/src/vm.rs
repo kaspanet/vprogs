@@ -7,8 +7,8 @@ use vprogs_storage_types::Store;
 #[derive(Clone)]
 pub struct TestNodeVm;
 
-impl Processor for TestNodeVm {
-    fn process_transaction<S: Store>(
+impl<S: Store> Processor<S> for TestNodeVm {
+    fn process_transaction(
         &self,
         ctx: &mut TransactionContext<S, Self>,
     ) -> Result<(), Self::Error> {
@@ -23,7 +23,8 @@ impl Processor for TestNodeVm {
     }
 
     type Transaction = L1Transaction;
-    type TransactionEffects = ();
+    type TransactionArtifact = ();
+    type BatchArtifact = ();
     type BatchMetadata = ChainBlockMetadata;
     type Error = ();
 }

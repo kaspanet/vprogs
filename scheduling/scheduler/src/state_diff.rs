@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwapOption;
 use vprogs_core_macros::smart_pointer;
+use vprogs_core_smt::{Commitment, EMPTY_HASH};
 use vprogs_core_types::ResourceId;
 use vprogs_state_version::StateVersion;
 use vprogs_storage_types::{Store, WriteBatch};
@@ -14,18 +15,20 @@ use crate::{ScheduledBatchRef, Write, processor::Processor};
 /// execution) and the written state (after execution), which are used to persist versioned data and
 /// rollback pointers.
 #[smart_pointer]
-pub struct StateDiff<S: Store, P: Processor> {
+pub struct StateDiff<S: Store, P: Processor<S>> {
     /// Weak reference to the owning batch (used for commit checks and write submission).
     batch: ScheduledBatchRef<S, P>,
     /// The resource this diff tracks.
     resource_id: ResourceId,
+    /// Position of this resource among all unique resources accessed in the batch (0-based).
+    index: u32,
     /// Resource state before the batch executed (set when the first access resolves).
     read_state: ArcSwapOption<StateVersion>,
     /// Resource state after the batch executed (set when the last access commits).
     written_state: ArcSwapOption<StateVersion>,
 }
 
-impl<S: Store, P: Processor> StateDiff<S, P> {
+impl<S: Store, P: Processor<S>> StateDiff<S, P> {
     /// Returns the resource ID this state diff tracks.
     pub fn resource_id(&self) -> &ResourceId {
         &self.resource_id
@@ -47,10 +50,16 @@ impl<S: Store, P: Processor> StateDiff<S, P> {
         self.written_state.load_full().expect("written state unknown")
     }
 
-    pub(crate) fn new(batch: ScheduledBatchRef<S, P>, resource_id: ResourceId) -> Self {
+    /// Returns the per-batch resource index.
+    pub fn index(&self) -> u32 {
+        self.index
+    }
+
+    pub(crate) fn new(batch: ScheduledBatchRef<S, P>, resource_id: ResourceId, index: u32) -> Self {
         Self(Arc::new(StateDiffData {
             batch,
             resource_id,
+            index,
             read_state: ArcSwapOption::empty(),
             written_state: ArcSwapOption::empty(),
         }))
@@ -60,8 +69,8 @@ impl<S: Store, P: Processor> StateDiff<S, P> {
     ///
     /// If the batch reference can no longer be upgraded (batch dropped), returns true as the batch
     /// has completed its lifecycle.
-    pub(crate) fn was_committed(&self) -> bool {
-        self.batch.upgrade().is_none_or(|batch| batch.was_committed())
+    pub(crate) fn committed(&self) -> bool {
+        self.batch.upgrade().is_none_or(|batch| batch.committed())
     }
 
     pub(crate) fn set_read_state(&self, state: Arc<StateVersion>) {
@@ -86,7 +95,7 @@ impl<S: Store, P: Processor> StateDiff<S, P> {
             panic!("written_state must be known at write time");
         };
 
-        if !batch.was_canceled() {
+        if !batch.canceled() {
             written_state.write_data(wb);
             read_state.write_rollback_ptr(wb, batch.checkpoint().index());
         }
@@ -96,5 +105,17 @@ impl<S: Store, P: Processor> StateDiff<S, P> {
         if let Some(batch) = self.batch.upgrade() {
             batch.decrease_pending_writes();
         }
+    }
+}
+
+impl<S: Store, P: Processor<S>> From<&StateDiff<S, P>> for Commitment {
+    fn from(diff: &StateDiff<S, P>) -> Self {
+        let written_state = diff.written_state();
+        let data = written_state.data();
+
+        Self::new(
+            diff.resource_id,
+            if data.is_empty() { EMPTY_HASH } else { *blake3::hash(data).as_bytes() },
+        )
     }
 }

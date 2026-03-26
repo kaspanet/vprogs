@@ -1,76 +1,74 @@
-use tokio::sync::mpsc;
+use std::sync::Arc;
+
 use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
-use vprogs_scheduling_scheduler::{Processor, TransactionContext};
+use vprogs_scheduling_scheduler::{Processor, ScheduledBatch, TransactionContext};
 use vprogs_storage_types::Store;
-use vprogs_zk_abi::{Error, Result, StorageOp, host};
+use vprogs_zk_abi::{
+    Error, Result,
+    transaction_processor::{Inputs, Outputs, StorageOp},
+};
 
-use crate::{Backend, ProofRequest};
+use crate::{Backend, ProvingPipeline};
 
-/// ZK processor that executes programs via a [`Backend`] and optionally sends proof requests
-/// to a proving pipeline.
+/// ZK processor that executes programs and optionally coordinates proving via [`ProvingPipeline`].
 #[derive(Clone)]
-pub struct Vm<B> {
+pub struct Vm<B: Backend, S: Store> {
     /// The ZK backend used for execution and proving.
     backend: B,
-    /// Optional channel for sending proof requests to the proving pipeline.
-    proof_tx: Option<mpsc::UnboundedSender<ProofRequest>>,
+    /// Proving strategy (None, Transaction-only, or full Batch).
+    proving_pipeline: Arc<ProvingPipeline<S, Self>>,
 }
 
-impl<B> Vm<B> {
-    /// Creates a new ZK VM with the given backend.
-    pub fn new(backend: B) -> Self {
-        Self { backend, proof_tx: None }
-    }
-
-    /// Creates a new ZK VM that sends proof requests to the given channel after execution.
-    pub fn with_proof_channel(backend: B, proof_tx: mpsc::UnboundedSender<ProofRequest>) -> Self {
-        Self { backend, proof_tx: Some(proof_tx) }
+impl<B: Backend, S: Store> Vm<B, S> {
+    /// Creates a new ZK VM with the given backend and proving pipeline.
+    pub fn new(backend: B, proving_pipeline: ProvingPipeline<S, Self>) -> Self {
+        Self { backend, proving_pipeline: Arc::new(proving_pipeline) }
     }
 }
 
-impl<B: Backend> Processor for Vm<B> {
-    fn process_transaction<S: Store>(&self, ctx: &mut TransactionContext<S, Self>) -> Result<()> {
-        // 1. Encode into ABI wire format.
-        let wire_bytes = host::encode_transaction_context(&*ctx);
+impl<B: Backend, S: Store> Processor<S> for Vm<B, S> {
+    fn process_transaction(&self, ctx: &mut TransactionContext<S, Self>) -> Result<()> {
+        // Encode into ABI wire format.
+        let input_bytes = Inputs::encode(&*ctx);
 
-        // 2. Execute via backend.
-        let execution_result = self.backend.execute_transaction(&wire_bytes);
+        // Execute via backend.
+        let output_bytes = self.backend.execute_transaction(&input_bytes);
 
-        // 3. Apply storage operations on success, capture error on failure.
-        let return_value = match &execution_result {
-            Ok(storage_ops) => {
-                for (i, storage_op) in storage_ops.iter().enumerate() {
-                    if let Some(op) = storage_op {
-                        let data = ctx.resources_mut()[i].data_mut();
-                        match op {
-                            StorageOp::Create(new_data) | StorageOp::Update(new_data) => {
-                                data.clear();
-                                data.extend_from_slice(new_data);
-                            }
-                            StorageOp::Delete => data.clear(),
+        // Submit to proving pipeline (no-op if ProvingPipeline::None).
+        self.proving_pipeline.submit_transaction(ctx.scheduled_tx(), input_bytes);
+
+        // Decode and apply storage operations.
+        Outputs::decode(&output_bytes).map(|output| {
+            for (i, op) in output.storage_ops().iter().enumerate() {
+                if let Some(op) = op {
+                    let data = ctx.resources_mut()[i].data_mut();
+                    match op {
+                        StorageOp::Create(new_data) | StorageOp::Update(new_data) => {
+                            data.clear();
+                            data.extend_from_slice(new_data);
                         }
+                        StorageOp::Delete => data.clear(),
                     }
                 }
-                Ok(())
             }
-            Err(e) => Err(*e),
-        };
+        })
+    }
 
-        // 4. Optionally send a proof request to the proving pipeline.
-        if let Some(ref proof_tx) = self.proof_tx {
-            let _ = proof_tx.send(ProofRequest {
-                wire_bytes,
-                block_hash: ctx.batch_metadata().block_hash().as_bytes(),
-                tx_index: ctx.tx_index(),
-                execution_result,
-            });
-        }
+    fn on_batch_scheduled(&self, batch: &ScheduledBatch<S, Self>) {
+        self.proving_pipeline.submit_batch(batch);
+    }
 
-        return_value
+    fn on_rollback(&self, target_index: u64) {
+        self.proving_pipeline.rollback(target_index);
+    }
+
+    fn on_shutdown(&self) {
+        self.proving_pipeline.shutdown();
     }
 
     type Transaction = L1Transaction;
-    type TransactionEffects = ();
+    type TransactionArtifact = B::Receipt;
+    type BatchArtifact = B::Receipt;
     type BatchMetadata = ChainBlockMetadata;
     type Error = Error;
 }
