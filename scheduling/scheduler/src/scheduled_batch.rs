@@ -1,6 +1,6 @@
 use std::sync::{
     Arc,
-    atomic::{AtomicI64, AtomicU64, Ordering},
+    atomic::{AtomicU64, Ordering},
 };
 
 use arc_swap::ArcSwapOption;
@@ -48,7 +48,7 @@ pub struct ScheduledBatch<S: Store, P: Processor<S>> {
     /// Number of transactions whose artifacts haven't been published yet.
     pending_tx_artifacts: AtomicU64,
     /// Number of state diff writes not yet persisted to disk.
-    pending_writes: AtomicI64,
+    pending_writes: AtomicU64,
     /// Opens when all transactions have been executed.
     processed: AtomicAsyncLatch,
     /// Opens when all transaction artifacts have been published.
@@ -272,7 +272,7 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
                     .collect(),
                 state_diffs,
                 available_txs: Injector::new(),
-                pending_writes: AtomicI64::new(0),
+                pending_writes: AtomicU64::new(0),
                 processed,
                 tx_artifacts_published,
                 artifact: ArcSwapOption::empty(),

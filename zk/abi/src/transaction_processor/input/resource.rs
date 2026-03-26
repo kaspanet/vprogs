@@ -19,7 +19,7 @@ pub struct Resource<'a> {
     /// Heap-allocated buffer, used only when the resource data outgrows `backing`.
     promoted: Option<Vec<u8>>,
     /// Per-batch resource index assigned when the resource is first accessed.
-    resource_index: u32,
+    index: u32,
     /// Whether this resource was created by the current transaction.
     is_new: bool,
     /// Whether the resource data has been modified.
@@ -41,7 +41,7 @@ impl<'a> Resource<'a> {
 
     /// Returns the per-batch resource index.
     pub fn index(&self) -> u32 {
-        self.resource_index
+        self.index
     }
 
     /// Returns a shared reference to the current data (backing or promoted).
@@ -104,7 +104,7 @@ impl<'a> Resource<'a> {
 
 // Wire format internals - resources are managed by the framework, not serialized by guests.
 impl<'a> Resource<'a> {
-    /// Wire size of a resource header: resource_id(32) + flags(1) + resource_index(4) +
+    /// Wire size of a resource header: resource_id(32) + flags(1) + index(4) +
     /// data_len(4).
     pub const HEADER_SIZE: usize = 32 + 1 + 4 + 4;
 
@@ -114,7 +114,7 @@ impl<'a> Resource<'a> {
         // Parse header fields.
         let resource_id = header.array::<32>("resource_id")?;
         let is_new = header.bool("is_new")?;
-        let resource_index = header.le_u32("resource_index")?;
+        let index = header.le_u32("index")?;
         let data_length = header.le_u32("data_length")? as usize;
 
         // Split off the backing slice from the start of `data` and advance `data` past it.
@@ -125,7 +125,7 @@ impl<'a> Resource<'a> {
             resource_id: resource_id.into(),
             backing,
             promoted: None,
-            resource_index,
+            index,
             is_new,
             dirty: false,
             deleted: false,
@@ -138,13 +138,13 @@ impl<'a> Resource<'a> {
         w: &mut impl crate::Write,
         resource_id: &ResourceId,
         is_new: bool,
-        resource_index: u32,
+        index: u32,
         data_len: u32,
     ) {
         // Write header fields.
         w.write(&resource_id[..]);
         w.write(&[if is_new { 1 } else { 0 }]);
-        w.write(&resource_index.to_le_bytes());
+        w.write(&index.to_le_bytes());
         w.write(&data_len.to_le_bytes());
     }
 }
