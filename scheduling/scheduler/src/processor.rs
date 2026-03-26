@@ -19,6 +19,11 @@ pub trait Processor<S: Store>: Clone + Sized + Send + Sync + 'static {
         // Default implementation does nothing (override if needed).
     }
 
+    /// Called when the scheduler is shutting down, after all execution workers have stopped.
+    fn on_shutdown(&self) {
+        // Default implementation does nothing (override if needed).
+    }
+
     /// The transaction payload type (e.g. kaspa `L1Transaction`, `usize` in tests).
     /// The scheduler wraps it in `SchedulerTransaction<Self::Transaction>`.
     type Transaction: Send + Sync + 'static;

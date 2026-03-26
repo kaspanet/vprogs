@@ -32,19 +32,16 @@ impl<S: Store, P: Processor<S>> ProvingPipeline<S, P> {
     }
 
     /// Submits a transaction for proving. No-op for `None`.
-    pub(crate) fn submit(&self, tx: &ScheduledTransaction<S, P>, tx_inputs: Vec<u8>) {
-        match self {
-            Self::None => {}
-            Self::Transaction(tx_prover) | Self::Batch(tx_prover, _) => {
-                tx_prover.submit(tx, tx_inputs);
-            }
+    pub(crate) fn submit_transaction(&self, tx: &ScheduledTransaction<S, P>, tx_inputs: Vec<u8>) {
+        if let Self::Transaction(tx_prover) | Self::Batch(tx_prover, _) = self {
+            tx_prover.submit(tx, tx_inputs);
         }
     }
 
-    /// Schedules a batch for proving. No-op unless in `Batch` mode.
-    pub fn schedule_batch(&self, batch: &ScheduledBatch<S, P>) {
+    /// Submits a batch for proving. No-op unless in `Batch` mode.
+    pub fn submit_batch(&self, batch: &ScheduledBatch<S, P>) {
         if let Self::Batch(_, batch_prover) = self {
-            batch_prover.schedule_batch(batch);
+            batch_prover.submit(batch);
         }
     }
 

@@ -183,6 +183,7 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
         self.pruning_worker.shutdown();
         self.batch_lifecycle_worker.shutdown();
         self.execution_workers.shutdown();
+        self.processor.on_shutdown();
         self.state.storage().shutdown();
     }
 

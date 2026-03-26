@@ -32,7 +32,7 @@ impl<S: Store, P: Processor<S>> BatchProver<S, P> {
     }
 
     /// Enqueues a batch for proving.
-    pub fn schedule_batch(&self, batch: &ScheduledBatch<S, P>) {
+    pub fn submit(&self, batch: &ScheduledBatch<S, P>) {
         self.inbox.push(Command::Batch(batch.clone()));
     }
 

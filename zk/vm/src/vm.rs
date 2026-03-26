@@ -16,18 +16,13 @@ pub struct Vm<B: Backend, S: Store> {
     /// The ZK backend used for execution and proving.
     backend: B,
     /// Proving strategy (None, Transaction-only, or full Batch).
-    proving: Arc<ProvingPipeline<S, Self>>,
+    proving_pipeline: Arc<ProvingPipeline<S, Self>>,
 }
 
 impl<B: Backend, S: Store> Vm<B, S> {
     /// Creates a new ZK VM with the given backend and proving pipeline.
-    pub fn new(backend: B, proving: ProvingPipeline<S, Self>) -> Self {
-        Self { backend, proving: Arc::new(proving) }
-    }
-
-    /// Signals the proving pipeline to shut down.
-    pub fn shutdown(&self) {
-        self.proving.shutdown();
+    pub fn new(backend: B, proving_pipeline: ProvingPipeline<S, Self>) -> Self {
+        Self { backend, proving_pipeline: Arc::new(proving_pipeline) }
     }
 }
 
@@ -40,7 +35,7 @@ impl<B: Backend, S: Store> Processor<S> for Vm<B, S> {
         let output_bytes = self.backend.execute_transaction(&input_bytes);
 
         // Submit to proving pipeline (no-op if ProvingPipeline::None).
-        self.proving.submit(ctx.scheduled_tx(), input_bytes);
+        self.proving_pipeline.submit_transaction(ctx.scheduled_tx(), input_bytes);
 
         // Decode and apply storage operations.
         Outputs::decode(&output_bytes).map(|output| {
@@ -60,11 +55,15 @@ impl<B: Backend, S: Store> Processor<S> for Vm<B, S> {
     }
 
     fn on_batch_scheduled(&self, batch: &ScheduledBatch<S, Self>) {
-        self.proving.schedule_batch(batch);
+        self.proving_pipeline.submit_batch(batch);
     }
 
     fn on_rollback(&self, target_index: u64) {
-        self.proving.rollback(target_index);
+        self.proving_pipeline.rollback(target_index);
+    }
+
+    fn on_shutdown(&self) {
+        self.proving_pipeline.shutdown();
     }
 
     type Transaction = L1Transaction;
