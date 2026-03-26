@@ -1,5 +1,4 @@
 use tempfile::TempDir;
-use vprogs_core_atomics::AsyncQueue;
 use vprogs_core_smt::{EMPTY_HASH, Tree as _};
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId, SchedulerTransaction};
@@ -55,8 +54,7 @@ async fn batch_proof_two_transactions() {
     let backend = Backend::new(&transaction_elf, &batch_elf);
 
     // Create the VM with batch proving enabled.
-    let batch_proof_rx = AsyncQueue::new();
-    let proving = ProvingPipeline::batch(backend.clone(), storage.clone(), batch_proof_rx.clone());
+    let proving = ProvingPipeline::batch(backend.clone(), storage.clone());
     let vm = Vm::new(backend.clone(), proving);
 
     let mut scheduler = Scheduler::new(
@@ -82,9 +80,10 @@ async fn batch_proof_two_transactions() {
     );
 
     batch.wait_committed_blocking();
+    batch.wait_effects_ready_blocking();
 
-    // Wait for the batch proof receipt.
-    let receipt = batch_proof_rx.wait_and_pop().await;
+    // Read the batch proof receipt from batch effects.
+    let receipt = batch.effects();
     let journal = Backend::journal_bytes(&receipt);
 
     // Decode the state transition from the receipt journal.
@@ -132,8 +131,9 @@ async fn batch_proof_two_transactions() {
     );
 
     batch_2.wait_committed_blocking();
+    batch_2.wait_effects_ready_blocking();
 
-    let receipt_2 = batch_proof_rx.wait_and_pop().await;
+    let receipt_2 = batch_2.effects();
     let journal_2 = Backend::journal_bytes(&receipt_2);
 
     // Chain continuity: batch 2's prev_root should equal batch 1's new_root.

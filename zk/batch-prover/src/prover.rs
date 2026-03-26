@@ -19,16 +19,15 @@ pub struct BatchProver<S: Store, P: Processor<S>> {
 
 impl<S: Store, P: Processor<S>> BatchProver<S, P> {
     /// Creates a new batch prover and spawns its worker thread.
-    pub fn new<B: Backend<Receipt = P::TransactionEffects>>(
-        backend: B,
-        store: S,
-        results: AsyncQueue<B::Receipt>,
-    ) -> Self {
+    pub fn new<B: Backend>(backend: B, store: S) -> Self
+    where
+        P: Processor<S, TransactionEffects = B::Receipt, BatchEffects = B::Receipt>,
+    {
         Self(Arc::new(BatchProverData {
             inbox: AsyncQueue::new(),
             shutdown: AtomicAsyncLatch::new(),
         }))
-        .tap(|p| Worker::spawn(p.clone(), backend, store, results))
+        .tap(|p| Worker::spawn(p.clone(), backend, store))
     }
 
     /// Enqueues a batch for proving.

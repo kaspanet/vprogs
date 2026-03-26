@@ -292,9 +292,10 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         if self.pending_txs.fetch_sub(1, Ordering::AcqRel) == 1 {
             self.was_processed.open();
 
-            // Canceled txs may never receive effects - open the latch immediately.
+            // Canceled batches may never receive effects - open the latches immediately.
             if self.was_canceled() {
                 self.tx_effects_ready.open();
+                self.effects_ready.open();
             }
 
             // Also check if was_persisted should open (handles case where last TX has no writes)

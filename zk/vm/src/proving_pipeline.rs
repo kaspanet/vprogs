@@ -1,4 +1,3 @@
-use vprogs_core_atomics::AsyncQueue;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch, ScheduledTransaction};
 use vprogs_storage_types::Store;
 use vprogs_zk_batch_prover::BatchProver;
@@ -22,13 +21,12 @@ impl<S: Store, P: Processor<S>> ProvingPipeline<S, P> {
         Self::Transaction(TransactionProver::new(backend))
     }
 
-    /// Creates a full batch proving pipeline. Batch proof receipts are pushed to `out`.
-    pub fn batch<B: Backend<Receipt = P::TransactionEffects>>(
-        backend: B,
-        store: S,
-        out: AsyncQueue<B::Receipt>,
-    ) -> Self {
-        Self::Batch(TransactionProver::new(backend.clone()), BatchProver::new(backend, store, out))
+    /// Creates a full batch proving pipeline.
+    pub fn batch<B: Backend>(backend: B, store: S) -> Self
+    where
+        P: Processor<S, TransactionEffects = B::Receipt, BatchEffects = B::Receipt>,
+    {
+        Self::Batch(TransactionProver::new(backend.clone()), BatchProver::new(backend, store))
     }
 
     /// Submits a transaction for proving. No-op for `None`.

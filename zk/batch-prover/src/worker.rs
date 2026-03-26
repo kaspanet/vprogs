@@ -1,7 +1,6 @@
 use std::{collections::VecDeque, thread::spawn};
 
 use tokio::runtime::Builder;
-use vprogs_core_atomics::AsyncQueue;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
 use vprogs_zk_abi::batch_processor::Inputs as BatchInputs;
@@ -16,21 +15,17 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend> {
     backend: B,
     /// Store for reading SMT state proofs.
     store: S,
-    /// Batch proof receipts.
-    outbox: AsyncQueue<B::Receipt>,
     /// Batches waiting to be proved, in scheduling order.
     pending: VecDeque<ScheduledBatch<S, P>>,
 }
 
-impl<S: Store, P: Processor<S, TransactionEffects = B::Receipt>, B: Backend> Worker<S, P, B> {
+impl<S: Store, P, B: Backend> Worker<S, P, B>
+where
+    P: Processor<S, TransactionEffects = B::Receipt, BatchEffects = B::Receipt>,
+{
     /// Spawns the worker on a new thread with a single-threaded tokio runtime.
-    pub(crate) fn spawn(
-        prover: BatchProver<S, P>,
-        backend: B,
-        store: S,
-        outbox: AsyncQueue<B::Receipt>,
-    ) {
-        let this = Self { prover, backend, store, outbox, pending: VecDeque::new() };
+    pub(crate) fn spawn(prover: BatchProver<S, P>, backend: B, store: S) {
+        let this = Self { prover, backend, store, pending: VecDeque::new() };
         let runtime = Builder::new_current_thread().enable_all().build().expect("runtime");
         spawn(move || runtime.block_on(this.run()));
     }
@@ -81,7 +76,9 @@ impl<S: Store, P: Processor<S, TransactionEffects = B::Receipt>, B: Backend> Wor
         // Collect receipts from batch transactions and prove.
         let receipts = batch.txs().iter().map(|tx| (*tx.effects()).clone()).collect();
         let receipt = self.assemble_and_prove(&batch, receipts).await;
-        self.outbox.push(receipt);
+
+        // Publish the batch proof as batch-level effects.
+        batch.set_effects(Some(receipt));
 
         // Wait for this batch to commit before returning to the main loop. This guarantees the
         // next batch sees committed SMT state when it reads proofs.
