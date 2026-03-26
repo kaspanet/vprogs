@@ -24,6 +24,9 @@ impl<S: Store, P: Processor<S, TransactionArtifact = B::Receipt>, B: Backend> Wo
     /// Main loop: drains the inbox, dispatches proofs, and waits for new work or shutdown.
     async fn run(self) {
         loop {
+            // Register notification before draining so we don't miss pushes.
+            let notified = self.prover.inbox.notified();
+
             // Dispatch all queued transactions for proving.
             while let Some((tx, tx_inputs)) = self.prover.inbox.pop() {
                 if tx.batch().upgrade().is_some_and(|b| !b.canceled()) {
@@ -39,7 +42,7 @@ impl<S: Store, P: Processor<S, TransactionArtifact = B::Receipt>, B: Backend> Wo
             tokio::select! {
                 biased;
                 () = self.prover.shutdown.wait() => break,
-                () = self.prover.inbox.notified() => {}
+                () = notified => {}
             }
         }
     }

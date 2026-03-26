@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
 
 use crossbeam_queue::SegQueue;
 use tokio::sync::Notify;
@@ -44,9 +44,11 @@ impl<T: Send + 'static> AsyncQueue<T> {
         self.notify.notify_one();
     }
 
-    /// Returns a future that resolves when the queue is notified (an item was pushed).
-    pub async fn notified(&self) {
-        self.notify.notified().await
+    /// Returns a future that completes when an item is pushed.
+    ///
+    /// Register this *before* checking the queue to avoid missed-notification races.
+    pub fn notified(&self) -> impl Future<Output = ()> + '_ {
+        self.notify.notified()
     }
 }
 
