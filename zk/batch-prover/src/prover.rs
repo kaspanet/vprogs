@@ -21,7 +21,7 @@ impl<S: Store, P: Processor<S>> BatchProver<S, P> {
     /// Creates a new batch prover and spawns its worker thread.
     pub fn new<B: Backend>(backend: B, store: S) -> Self
     where
-        P: Processor<S, TransactionEffects = B::Receipt, BatchEffects = B::Receipt>,
+        P: Processor<S, TransactionArtifact = B::Receipt, BatchArtifact = B::Receipt>,
     {
         Self(Arc::new(BatchProverData {
             inbox: AsyncQueue::new(),

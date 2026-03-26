@@ -19,7 +19,7 @@ pub struct TransactionProver<S: Store, P: Processor<S>> {
 
 impl<S: Store, P: Processor<S>> TransactionProver<S, P> {
     /// Creates a new transaction prover and spawns its worker thread.
-    pub fn new<B: Backend<Receipt = P::TransactionEffects>>(backend: B) -> Self {
+    pub fn new<B: Backend<Receipt = P::TransactionArtifact>>(backend: B) -> Self {
         Self(Arc::new(TransactionProverData {
             inbox: AsyncQueue::new(),
             shutdown: AtomicAsyncLatch::new(),

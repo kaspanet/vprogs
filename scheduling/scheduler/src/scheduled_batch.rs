@@ -23,7 +23,7 @@ use crate::{
 ///
 /// Each batch moves through three stages: processed (all transactions executed), persisted (all
 /// state diffs written to disk), and committed (batch metadata finalized). When proving is active,
-/// additional latches track asynchronous transaction and batch effect publication. Callers can
+/// additional latches track asynchronous transaction and batch artifact publication. Callers can
 /// observe progress via the `was_*` / `wait_*` methods. A batch may be canceled by a rollback, in
 /// which case the wait methods return immediately.
 #[smart_pointer]
@@ -38,22 +38,24 @@ pub struct ScheduledBatch<S: Store, P: Processor<S>> {
     txs: Vec<ScheduledTransaction<S, P>>,
     /// One state diff per unique resource accessed by this batch.
     state_diffs: Vec<StateDiff<S, P>>,
-    /// Batch-level effects (e.g. batch proof receipt), set via [`set_effects`](Self::set_effects).
-    effects: ArcSwapOption<P::BatchEffects>,
+    /// Batch artifact (e.g. batch proof receipt), set via
+    /// [`publish_artifact`](Self::publish_artifact).
+    artifact: ArcSwapOption<P::BatchArtifact>,
     /// Work-stealing queue of transactions ready for execution.
     available_txs: Injector<ManagerTask<S, P>>,
     /// Number of transactions not yet fully executed.
     pending_txs: AtomicU64,
-    /// Number of transactions whose effects haven't been published yet.
-    pending_tx_effects: AtomicU64,
+    /// Number of transactions whose artifacts haven't been published yet.
+    pending_tx_artifacts: AtomicU64,
     /// Number of state diff writes not yet persisted to disk.
     pending_writes: AtomicI64,
     /// Opens when all transactions have been executed.
     was_processed: AtomicAsyncLatch,
-    /// Opens when all transaction effects have been published.
-    tx_effects_ready: AtomicAsyncLatch,
-    /// Opens when batch-level effects have been published via [`set_effects`](Self::set_effects).
-    effects_ready: AtomicAsyncLatch,
+    /// Opens when all transaction artifacts have been published.
+    tx_artifacts_published: AtomicAsyncLatch,
+    /// Opens when the batch artifact has been published via
+    /// [`publish_artifact`](Self::publish_artifact).
+    artifact_published: AtomicAsyncLatch,
     /// Opens when all state diffs have been written to disk.
     was_persisted: AtomicAsyncLatch,
     /// Opens when batch metadata has been committed.
@@ -81,9 +83,9 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         self.state_diffs.iter().map(|d| *d.resource_id()).collect()
     }
 
-    /// Returns an iterator over the transaction effects in this batch.
-    pub fn tx_effects(&self) -> impl Iterator<Item = Arc<P::TransactionEffects>> + '_ {
-        self.txs.iter().map(|tx| tx.effects())
+    /// Returns an iterator over the transaction artifacts in this batch.
+    pub fn tx_artifacts(&self) -> impl Iterator<Item = Arc<P::TransactionArtifact>> + '_ {
+        self.txs.iter().map(|tx| tx.artifact())
     }
 
     /// Returns the number of transactions ready for execution.
@@ -161,58 +163,59 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         self
     }
 
-    /// Returns true if all transaction effects have been published.
-    pub fn is_tx_effects_ready(&self) -> bool {
-        self.tx_effects_ready.is_open()
+    /// Returns true if all transaction artifacts have been published.
+    pub fn tx_artifacts_published(&self) -> bool {
+        self.tx_artifacts_published.is_open()
     }
 
-    /// Waits until all transaction effects have been published, or returns immediately if canceled.
-    pub async fn wait_tx_effects_ready(&self) {
+    /// Waits until all transaction artifacts have been published, or returns immediately if
+    /// canceled.
+    pub async fn wait_tx_artifacts_published(&self) {
         if !self.was_canceled() {
-            self.tx_effects_ready.wait().await
+            self.tx_artifacts_published.wait().await
         }
     }
 
-    /// Blocking version of [`wait_tx_effects_ready`](Self::wait_tx_effects_ready).
-    pub fn wait_tx_effects_ready_blocking(&self) -> &Self {
+    /// Blocking version of [`wait_tx_artifacts_published`](Self::wait_tx_artifacts_published).
+    pub fn wait_tx_artifacts_published_blocking(&self) -> &Self {
         if !self.was_canceled() {
-            self.tx_effects_ready.wait_blocking();
+            self.tx_artifacts_published.wait_blocking();
         }
         self
     }
 
-    /// Returns the batch-level effects.
+    /// Returns the batch artifact.
     ///
     /// # Panics
-    /// Panics if called before [`set_effects`](Self::set_effects).
-    pub fn effects(&self) -> Arc<P::BatchEffects> {
-        self.effects.load_full().expect("batch effects not ready")
+    /// Panics if called before [`publish_artifact`](Self::publish_artifact).
+    pub fn artifact(&self) -> Arc<P::BatchArtifact> {
+        self.artifact.load_full().expect("batch artifact not ready")
     }
 
-    /// Publishes batch-level effects and opens the `effects_ready` latch.
-    pub fn set_effects(&self, effects: Option<P::BatchEffects>) {
-        if let Some(effects) = effects {
-            self.effects.store(Some(Arc::new(effects)));
+    /// Publishes the batch artifact and opens the `artifact_published` latch.
+    pub fn publish_artifact(&self, artifact: Option<P::BatchArtifact>) {
+        if let Some(artifact) = artifact {
+            self.artifact.store(Some(Arc::new(artifact)));
         }
-        self.effects_ready.open();
+        self.artifact_published.open();
     }
 
-    /// Returns true if batch-level effects have been published.
-    pub fn is_effects_ready(&self) -> bool {
-        self.effects_ready.is_open()
+    /// Returns true if the batch artifact has been published.
+    pub fn artifact_published(&self) -> bool {
+        self.artifact_published.is_open()
     }
 
-    /// Waits until batch-level effects have been published, or returns immediately if canceled.
-    pub async fn wait_effects_ready(&self) {
+    /// Waits until the batch artifact has been published, or returns immediately if canceled.
+    pub async fn wait_artifact_published(&self) {
         if !self.was_canceled() {
-            self.effects_ready.wait().await
+            self.artifact_published.wait().await
         }
     }
 
-    /// Blocking version of [`wait_effects_ready`](Self::wait_effects_ready).
-    pub fn wait_effects_ready_blocking(&self) -> &Self {
+    /// Blocking version of [`wait_artifact_published`](Self::wait_artifact_published).
+    pub fn wait_artifact_published_blocking(&self) -> &Self {
         if !self.was_canceled() {
-            self.effects_ready.wait_blocking();
+            self.artifact_published.wait_blocking();
         }
         self
     }
@@ -232,16 +235,16 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         Self(Arc::new_cyclic(|this| {
             let was_processed = AtomicAsyncLatch::default();
             let was_persisted = AtomicAsyncLatch::default();
-            let tx_effects_ready = AtomicAsyncLatch::default();
-            let effects_ready = AtomicAsyncLatch::default();
+            let tx_artifacts_published = AtomicAsyncLatch::default();
+            let artifact_published = AtomicAsyncLatch::default();
 
             // An empty batch has nothing to process, persist, or prove - open the latches
             // immediately so the lifecycle worker can commit it right away.
             if txs.is_empty() {
                 was_processed.open();
                 was_persisted.open();
-                tx_effects_ready.open();
-                effects_ready.open();
+                tx_artifacts_published.open();
+                artifact_published.open();
             }
 
             let mut state_diffs = Vec::new();
@@ -252,7 +255,7 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
                 state: scheduler.state().clone(),
                 checkpoint,
                 pending_txs: AtomicU64::new(txs.len() as u64),
-                pending_tx_effects: AtomicU64::new(txs.len() as u64),
+                pending_tx_artifacts: AtomicU64::new(txs.len() as u64),
                 txs: txs
                     .into_iter()
                     .enumerate()
@@ -271,9 +274,9 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
                 available_txs: Injector::new(),
                 pending_writes: AtomicI64::new(0),
                 was_processed,
-                tx_effects_ready,
-                effects: ArcSwapOption::empty(),
-                effects_ready,
+                tx_artifacts_published,
+                artifact: ArcSwapOption::empty(),
+                artifact_published,
                 was_persisted,
                 was_committed: Default::default(),
             }
@@ -302,10 +305,10 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         if self.pending_txs.fetch_sub(1, Ordering::AcqRel) == 1 {
             self.was_processed.open();
 
-            // Canceled batches may never receive effects - open the latches immediately.
+            // Canceled batches may never receive artifacts - open the latches immediately.
             if self.was_canceled() {
-                self.tx_effects_ready.open();
-                self.effects_ready.open();
+                self.tx_artifacts_published.open();
+                self.artifact_published.open();
             }
 
             // Also check if was_persisted should open (handles case where last TX has no writes)
@@ -315,9 +318,9 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         }
     }
 
-    pub(crate) fn decrease_pending_tx_effects(&self) {
-        if self.pending_tx_effects.fetch_sub(1, Ordering::AcqRel) == 1 {
-            self.tx_effects_ready.open();
+    pub(crate) fn decrease_pending_tx_artifacts(&self) {
+        if self.pending_tx_artifacts.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.tx_artifacts_published.open();
         }
     }
 

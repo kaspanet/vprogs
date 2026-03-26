@@ -80,10 +80,10 @@ async fn batch_proof_two_transactions() {
     );
 
     batch.wait_committed_blocking();
-    batch.wait_effects_ready_blocking();
+    batch.wait_artifact_published_blocking();
 
-    // Read the batch proof receipt from batch effects.
-    let receipt = batch.effects();
+    // Read the batch proof receipt from batch artifact.
+    let receipt = batch.artifact();
     let journal = Backend::journal_bytes(&receipt);
 
     // Decode the state transition from the receipt journal.
@@ -131,9 +131,9 @@ async fn batch_proof_two_transactions() {
     );
 
     batch_2.wait_committed_blocking();
-    batch_2.wait_effects_ready_blocking();
+    batch_2.wait_artifact_published_blocking();
 
-    let receipt_2 = batch_2.effects();
+    let receipt_2 = batch_2.artifact();
     let journal_2 = Backend::journal_bytes(&receipt_2);
 
     // Chain continuity: batch 2's prev_root should equal batch 1's new_root.

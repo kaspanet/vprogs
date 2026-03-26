@@ -21,8 +21,8 @@ impl<S: Store> vprogs_scheduling_scheduler::Processor<S> for Processor {
     }
 
     type Transaction = usize;
-    type TransactionEffects = ();
-    type BatchEffects = ();
+    type TransactionArtifact = ();
+    type BatchArtifact = ();
     type BatchMetadata = u64;
     type Error = ();
 }

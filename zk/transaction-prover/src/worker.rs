@@ -14,7 +14,7 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend> {
     backend: B,
 }
 
-impl<S: Store, P: Processor<S, TransactionEffects = B::Receipt>, B: Backend> Worker<S, P, B> {
+impl<S: Store, P: Processor<S, TransactionArtifact = B::Receipt>, B: Backend> Worker<S, P, B> {
     /// Spawns the worker on a new thread with a single-threaded tokio runtime.
     pub(crate) fn spawn(prover: TransactionProver<S, P>, backend: B) {
         let runtime = Builder::new_current_thread().enable_all().build().expect("runtime");
@@ -28,10 +28,10 @@ impl<S: Store, P: Processor<S, TransactionEffects = B::Receipt>, B: Backend> Wor
             while let Some((tx, tx_inputs)) = self.prover.inbox.pop() {
                 if tx.batch().upgrade().is_some_and(|b| !b.was_canceled()) {
                     let receipt = self.backend.prove_transaction(tx_inputs);
-                    tokio::spawn(async move { tx.set_effects(Some(receipt.await)) });
+                    tokio::spawn(async move { tx.publish_artifact(Some(receipt.await)) });
                 } else {
                     // Canceled or dropped batch - advance the counter without proving.
-                    tx.set_effects(None);
+                    tx.publish_artifact(None);
                 }
             }
 

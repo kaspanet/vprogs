@@ -127,7 +127,7 @@ pub fn test_rollback_committed() {
         assert_eq!(target.index(), 1);
         assert_eq!(*target.metadata(), 1);
 
-        // Verify state after rollback - only batch1 effects should remain
+        // Verify state after rollback - only batch1 state changes should remain
         scheduler
             .assert_written_state(ResourceId::for_test(1), vec![0]) // Only tx 0's write remains
             .assert_written_state(ResourceId::for_test(2), vec![1]) // tx 1's write remains (in batch1)

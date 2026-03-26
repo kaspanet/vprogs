@@ -17,14 +17,14 @@ pub enum ProvingPipeline<S: Store, P: Processor<S>> {
 
 impl<S: Store, P: Processor<S>> ProvingPipeline<S, P> {
     /// Creates a transaction-only proving pipeline.
-    pub fn transaction<B: Backend<Receipt = P::TransactionEffects>>(backend: B) -> Self {
+    pub fn transaction<B: Backend<Receipt = P::TransactionArtifact>>(backend: B) -> Self {
         Self::Transaction(TransactionProver::new(backend))
     }
 
     /// Creates a full batch proving pipeline.
     pub fn batch<B: Backend>(backend: B, store: S) -> Self
     where
-        P: Processor<S, TransactionEffects = B::Receipt, BatchEffects = B::Receipt>,
+        P: Processor<S, TransactionArtifact = B::Receipt, BatchArtifact = B::Receipt>,
     {
         Self::Batch(TransactionProver::new(backend.clone()), BatchProver::new(backend, store))
     }

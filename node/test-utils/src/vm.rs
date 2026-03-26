@@ -23,8 +23,8 @@ impl<S: Store> Processor<S> for TestNodeVm {
     }
 
     type Transaction = L1Transaction;
-    type TransactionEffects = ();
-    type BatchEffects = ();
+    type TransactionArtifact = ();
+    type BatchArtifact = ();
     type BatchMetadata = ChainBlockMetadata;
     type Error = ();
 }

@@ -19,8 +19,8 @@ impl<S: Store> Processor<S> for VM {
     }
 
     type Transaction = L1Transaction;
-    type TransactionEffects = TransactionEffects;
-    type BatchEffects = ();
+    type TransactionArtifact = TransactionEffects;
+    type BatchArtifact = ();
     type BatchMetadata = ChainBlockMetadata;
     type Error = VmError;
 }

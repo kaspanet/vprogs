@@ -27,8 +27,8 @@ pub struct ScheduledTransaction<S: Store, P: Processor<S>> {
     resources: Vec<ResourceAccess<S, P>>,
     /// Number of resources whose data hasn't been resolved yet.
     pending_resources: AtomicU64,
-    /// Execution result, set after `process_transaction` succeeds.
-    effects: ArcSwapOption<P::TransactionEffects>,
+    /// Transaction artifact (e.g. proof receipt), set after processing.
+    artifact: ArcSwapOption<P::TransactionArtifact>,
     /// Zero-based position of this transaction within its batch.
     tx_index: u32,
     /// The user-submitted transaction (deref target).
@@ -41,24 +41,23 @@ impl<S: Store, P: Processor<S>> ScheduledTransaction<S, P> {
         &self.resources
     }
 
-    /// Returns the effects produced by executing this transaction.
+    /// Returns the artifact produced by this transaction.
     ///
     /// # Panics
-    /// Panics if called before [`set_effects`](Self::set_effects).
-    pub fn effects(&self) -> Arc<P::TransactionEffects> {
-        self.effects.load_full().expect("effects not ready")
+    /// Panics if called before [`publish_artifact`](Self::publish_artifact).
+    pub fn artifact(&self) -> Arc<P::TransactionArtifact> {
+        self.artifact.load_full().expect("artifact not ready")
     }
 
-    /// Publishes this transaction's effects. `None` skips the transaction without storing effects.
-    pub fn set_effects(&self, effects: Option<P::TransactionEffects>) {
-        // Store the effects if provided.
-        if let Some(effects) = effects {
-            self.effects.store(Some(Arc::new(effects)));
+    /// Publishes this transaction's artifact. `None` skips without storing an artifact.
+    pub fn publish_artifact(&self, artifact: Option<P::TransactionArtifact>) {
+        if let Some(artifact) = artifact {
+            self.artifact.store(Some(Arc::new(artifact)));
         }
 
-        // Always advance the batch's pending effects counter to ensure the latch will open.
+        // Always advance the batch's pending artifact counter to ensure the latch will open.
         if let Some(batch) = self.batch.upgrade() {
-            batch.decrease_pending_tx_effects();
+            batch.decrease_pending_tx_artifacts();
         }
     }
 
@@ -76,7 +75,7 @@ impl<S: Store, P: Processor<S>> ScheduledTransaction<S, P> {
             ScheduledTransactionData {
                 processor: scheduler.processor().clone(),
                 pending_resources: AtomicU64::new(resources.len() as u64),
-                effects: ArcSwapOption::empty(),
+                artifact: ArcSwapOption::empty(),
                 batch,
                 tx_index,
                 tx,
