@@ -108,7 +108,7 @@ async fn batch_proof_two_transactions() {
     // Verify SMT proof leaves contain correct value hashes.
     let expected_hash = *blake3::hash(&1u32.to_le_bytes()).as_bytes();
     for resource_id in [ResourceId::for_test(1), ResourceId::for_test(2)] {
-        let (proof_bytes, _) = storage.prove(&[*resource_id.as_bytes()], 1).unwrap();
+        let (proof_bytes, _) = storage.prove(&[resource_id], 1).unwrap();
         let smt_proof = vprogs_core_smt::proving::Proof::decode(&proof_bytes).unwrap();
         assert_eq!(*smt_proof.leaves[0].value_hash, expected_hash);
     }
@@ -156,7 +156,7 @@ async fn batch_proof_two_transactions() {
     // Verify SMT leaves at version 2.
     let expected_hash_v2 = *blake3::hash(&2u32.to_le_bytes()).as_bytes();
     for resource_id in [ResourceId::for_test(1), ResourceId::for_test(2)] {
-        let (proof_bytes, _) = storage.prove(&[*resource_id.as_bytes()], 2).unwrap();
+        let (proof_bytes, _) = storage.prove(&[resource_id], 2).unwrap();
         let smt_proof = vprogs_core_smt::proving::Proof::decode(&proof_bytes).unwrap();
         assert_eq!(*smt_proof.leaves[0].value_hash, expected_hash_v2);
     }

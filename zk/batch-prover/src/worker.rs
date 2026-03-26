@@ -73,9 +73,10 @@ where
             return;
         }
 
-        // Collect receipts from batch transactions and prove.
-        let receipts = batch.txs().iter().map(|tx| (*tx.effects()).clone()).collect();
-        let receipt = self.assemble_and_prove(&batch, receipts).await;
+        // Build the witness and prove.
+        let receipts: Vec<_> = batch.tx_effects().map(|a| (*a).clone()).collect();
+        let inputs = self.build_inputs(&batch, &receipts);
+        let receipt = self.backend.prove_batch(&inputs, receipts).await;
 
         // Publish the batch proof as batch-level effects.
         batch.set_effects(Some(receipt));
@@ -85,23 +86,15 @@ where
         batch.wait_committed().await;
     }
 
-    /// Assembles the batch witness from transaction receipts and proves it.
-    async fn assemble_and_prove(
-        &self,
-        batch: &ScheduledBatch<S, P>,
-        receipts: Vec<B::Receipt>,
-    ) -> B::Receipt {
+    /// Assembles the batch witness from transaction receipts and SMT state proofs.
+    fn build_inputs(&self, batch: &ScheduledBatch<S, P>, receipts: &[B::Receipt]) -> Vec<u8> {
+        // Collect required details.
         let prev_version = batch.checkpoint().index().saturating_sub(1);
+        let resources = batch.resource_ids();
+        let (proof, leaf_order) = self.store.prove(&resources, prev_version).expect("proof");
+        let journals: Vec<_> = receipts.iter().map(B::journal_bytes).collect();
 
-        let resource_ids: Vec<[u8; 32]> =
-            batch.state_diffs().iter().map(|diff| *diff.resource_id().as_bytes()).collect();
-        let (proof_bytes, leaf_order) =
-            self.store.prove(&resource_ids, prev_version).expect("SMT prove failed");
-
-        let journals: Vec<Vec<u8>> = receipts.iter().map(|r| B::journal_bytes(r)).collect();
-
-        let input =
-            BatchInputs::encode(self.backend.image_id(), &proof_bytes, &leaf_order, &journals);
-        self.backend.prove_batch(&input, receipts).await
+        // Encode into ABI wire format.
+        BatchInputs::encode(self.backend.image_id(), &proof, &leaf_order, &journals)
     }
 }

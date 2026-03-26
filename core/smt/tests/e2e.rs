@@ -1,12 +1,13 @@
 use tempfile::TempDir;
 use vprogs_core_smt::{Blake3, Commitment, EMPTY_HASH, Hasher, Key, Node, Tree, proving::Proof};
+use vprogs_core_types::ResourceId;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_storage_types::Store;
 
 // -- Helpers --
 
 /// Helper: commits a set of (key, value) pairs at the given version and returns the new root.
-fn commit(store: &RocksDbStore, version: u64, entries: &[([u8; 32], [u8; 32])]) -> [u8; 32] {
+fn commit(store: &RocksDbStore, version: u64, entries: &[(ResourceId, [u8; 32])]) -> [u8; 32] {
     let diffs =
         entries.iter().map(|&(key, value)| Commitment::new(key, Blake3::hash(&value))).collect();
 
@@ -25,10 +26,10 @@ fn commit_raw(store: &RocksDbStore, version: u64, diffs: Vec<Commitment>) -> [u8
 }
 
 /// Deterministic test key from an integer.
-fn test_key(id: u64) -> [u8; 32] {
+fn test_key(id: u64) -> ResourceId {
     let mut key = [0u8; 32];
     key[24..32].copy_from_slice(&id.to_be_bytes());
-    key
+    ResourceId::from(key)
 }
 
 /// Deterministic test value from an integer.
@@ -46,7 +47,7 @@ fn domain_separation_produces_different_hashes() {
     let a = [1u8; 32];
     let b = [2u8; 32];
     let internal = Node::internal::<Blake3>(&a, &b);
-    let leaf = Node::leaf::<Blake3>(a, b);
+    let leaf = Node::leaf::<Blake3>(ResourceId::from(a), b);
     assert_ne!(internal.hash(), leaf.hash());
 }
 
@@ -58,7 +59,7 @@ fn empty_compression_internal() {
 
 #[test]
 fn empty_compression_leaf() {
-    let key = [0xABu8; 32];
+    let key = ResourceId::from([0xABu8; 32]);
     let node = Node::leaf::<Blake3>(key, EMPTY_HASH);
     assert_eq!(*node.hash(), EMPTY_HASH);
 }
@@ -72,7 +73,7 @@ fn non_empty_internal_is_not_empty() {
 
 #[test]
 fn non_empty_leaf_is_not_empty() {
-    let key = [1u8; 32];
+    let key = ResourceId::from([1u8; 32]);
     let value = [2u8; 32];
     let node = Node::leaf::<Blake3>(key, value);
     assert_ne!(*node.hash(), EMPTY_HASH);
@@ -90,7 +91,7 @@ fn internal_roundtrip() {
 
 #[test]
 fn leaf_roundtrip() {
-    let node = Node::leaf::<Blake3>([1u8; 32], [2u8; 32]);
+    let node = Node::leaf::<Blake3>(ResourceId::from([1u8; 32]), [2u8; 32]);
     let bytes = node.encode();
     assert_eq!(bytes.len(), 97);
     assert_eq!(Node::decode(&mut bytes.as_slice()).unwrap(), node);

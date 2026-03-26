@@ -1585,6 +1585,7 @@ dependencies = [
  "blake3",
  "tap",
  "vprogs-core-codec",
+ "vprogs-core-types",
 ]
 
 [[package]]

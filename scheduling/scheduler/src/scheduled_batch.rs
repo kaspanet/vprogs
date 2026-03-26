@@ -8,7 +8,7 @@ use crossbeam_deque::{Injector, Steal, Worker};
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_macros::smart_pointer;
 use vprogs_core_smt::Commitment;
-use vprogs_core_types::{Checkpoint, SchedulerTransaction};
+use vprogs_core_types::{Checkpoint, ResourceId, SchedulerTransaction};
 use vprogs_scheduling_execution_workers::Batch;
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
@@ -74,6 +74,16 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
     /// Returns the state diffs produced by this batch (one per unique resource).
     pub fn state_diffs(&self) -> &[StateDiff<S, P>] {
         &self.state_diffs
+    }
+
+    /// Returns the resource IDs touched by this batch.
+    pub fn resource_ids(&self) -> Vec<ResourceId> {
+        self.state_diffs.iter().map(|d| *d.resource_id()).collect()
+    }
+
+    /// Returns an iterator over the transaction effects in this batch.
+    pub fn tx_effects(&self) -> impl Iterator<Item = Arc<P::TransactionEffects>> + '_ {
+        self.txs.iter().map(|tx| tx.effects())
     }
 
     /// Returns the number of transactions ready for execution.

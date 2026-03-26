@@ -7383,6 +7383,7 @@ dependencies = [
  "tap",
  "tempfile",
  "vprogs-core-codec",
+ "vprogs-core-types",
  "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
 ]

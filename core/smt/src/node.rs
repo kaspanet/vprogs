@@ -2,6 +2,7 @@ use alloc::vec::Vec;
 
 use tap::Tap;
 use vprogs_core_codec::{Error, Reader, Result};
+use vprogs_core_types::ResourceId;
 
 use crate::{EMPTY_HASH, Hasher};
 
@@ -15,8 +16,8 @@ pub enum Node {
     },
     /// Shortcut leaf - can sit at any depth, avoiding 256-deep paths for isolated keys.
     Leaf {
-        /// The full 256-bit key this leaf represents.
-        key: [u8; 32],
+        /// The resource this leaf represents.
+        key: ResourceId,
         /// Hash of the leaf's value.
         value_hash: [u8; 32],
         /// Domain-separated hash of key and value hash.
@@ -30,8 +31,8 @@ impl Node {
         Node::Internal { hash: Self::hash_internal::<H>(left, right) }
     }
 
-    /// Creates a shortcut leaf node from a key and value hash.
-    pub fn leaf<H: Hasher>(key: [u8; 32], value_hash: [u8; 32]) -> Self {
+    /// Creates a shortcut leaf node from a resource ID and value hash.
+    pub fn leaf<H: Hasher>(key: ResourceId, value_hash: [u8; 32]) -> Self {
         Node::Leaf { key, value_hash, hash: Self::hash_leaf::<H>(&key, &value_hash) }
     }
 
@@ -68,7 +69,7 @@ impl Node {
         match buf.byte("tag")? {
             0x00 => Ok(Node::Internal { hash: *buf.array::<32>("hash")? }),
             0x01 => Ok(Node::Leaf {
-                key: *buf.array::<32>("key")?,
+                key: (*buf.array::<32>("key")?).into(),
                 value_hash: *buf.array::<32>("value_hash")?,
                 hash: *buf.array::<32>("hash")?,
             }),
@@ -91,10 +92,10 @@ impl Node {
     pub fn encode(&self) -> Vec<u8> {
         match self {
             // Internal: tag(0x00) + hash(32) = 33 bytes.
-            Node::Internal { hash } => [&[0x00], hash.as_slice()].concat(),
+            Node::Internal { hash } => [&[0x00], &hash[..]].concat(),
             // Leaf: tag(0x01) + key(32) + value_hash(32) + hash(32) = 97 bytes.
             Node::Leaf { key, value_hash, hash } => {
-                [&[0x01], key.as_slice(), value_hash.as_slice(), hash.as_slice()].concat()
+                [&[0x01], &key[..], &value_hash[..], &hash[..]].concat()
             }
         }
     }

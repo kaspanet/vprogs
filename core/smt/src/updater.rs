@@ -1,6 +1,7 @@
 use alloc::vec::Vec;
 
 use vprogs_core_codec::Bits;
+use vprogs_core_types::ResourceId;
 
 use crate::{Commitment, DEPTH, EMPTY_HASH, Key, Node, StaleNode, Tree, WriteBatch};
 
@@ -101,7 +102,7 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
         &mut self,
         key: &Key,
         commitments: &[Commitment],
-        existing_key: [u8; 32],
+        existing_key: ResourceId,
         existing_vh: [u8; 32],
     ) -> Option<Node> {
         // The existing leaf is being superseded regardless of outcome.

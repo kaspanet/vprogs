@@ -114,7 +114,7 @@ impl<S: Store, P: Processor<S>> From<&StateDiff<S, P>> for Commitment {
         let data = written_state.data();
 
         Self::new(
-            *diff.resource_id.as_bytes(),
+            diff.resource_id,
             if data.is_empty() { EMPTY_HASH } else { *blake3::hash(data).as_bytes() },
         )
     }
