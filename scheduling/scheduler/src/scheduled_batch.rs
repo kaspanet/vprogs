@@ -24,7 +24,7 @@ use crate::{
 /// Each batch moves through three stages: processed (all transactions executed), persisted (all
 /// state diffs written to disk), and committed (batch metadata finalized). When proving is active,
 /// additional latches track asynchronous transaction and batch artifact publication. Callers can
-/// observe progress via the `was_*` / `wait_*` methods. A batch may be canceled by a rollback, in
+/// observe progress via the query / `wait_*` methods. A batch may be canceled by a rollback, in
 /// which case the wait methods return immediately.
 #[smart_pointer]
 pub struct ScheduledBatch<S: Store, P: Processor<S>> {
@@ -50,16 +50,16 @@ pub struct ScheduledBatch<S: Store, P: Processor<S>> {
     /// Number of state diff writes not yet persisted to disk.
     pending_writes: AtomicI64,
     /// Opens when all transactions have been executed.
-    was_processed: AtomicAsyncLatch,
+    processed: AtomicAsyncLatch,
     /// Opens when all transaction artifacts have been published.
     tx_artifacts_published: AtomicAsyncLatch,
     /// Opens when the batch artifact has been published via
     /// [`publish_artifact`](Self::publish_artifact).
     artifact_published: AtomicAsyncLatch,
     /// Opens when all state diffs have been written to disk.
-    was_persisted: AtomicAsyncLatch,
+    persisted: AtomicAsyncLatch,
     /// Opens when batch metadata has been committed.
-    was_committed: AtomicAsyncLatch,
+    committed: AtomicAsyncLatch,
 }
 
 impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
@@ -99,66 +99,66 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
     }
 
     /// Returns true if this batch was canceled by a rollback.
-    pub fn was_canceled(&self) -> bool {
+    pub fn canceled(&self) -> bool {
         self.checkpoint.index() > self.cancellation.threshold()
     }
 
     /// Returns true if all transactions have been executed.
-    pub fn was_processed(&self) -> bool {
-        self.was_processed.is_open()
+    pub fn processed(&self) -> bool {
+        self.processed.is_open()
     }
 
     /// Waits until all transactions have been executed, or returns immediately if canceled.
     pub async fn wait_processed(&self) {
-        if !self.was_canceled() {
-            self.was_processed.wait().await
+        if !self.canceled() {
+            self.processed.wait().await
         }
     }
 
     /// Blocking version of [`wait_processed`](Self::wait_processed).
     pub fn wait_processed_blocking(&self) -> &Self {
-        if !self.was_canceled() {
-            self.was_processed.wait_blocking();
+        if !self.canceled() {
+            self.processed.wait_blocking();
         }
         self
     }
 
     /// Returns true if all state diffs have been written to disk.
-    pub fn was_persisted(&self) -> bool {
-        self.was_persisted.is_open()
+    pub fn persisted(&self) -> bool {
+        self.persisted.is_open()
     }
 
     /// Waits until all state diffs have been written to disk, or returns immediately if canceled.
     pub async fn wait_persisted(&self) {
-        if !self.was_canceled() {
-            self.was_persisted.wait().await
+        if !self.canceled() {
+            self.persisted.wait().await
         }
     }
 
     /// Blocking version of [`wait_persisted`](Self::wait_persisted).
     pub fn wait_persisted_blocking(&self) -> &Self {
-        if !self.was_canceled() {
-            self.was_persisted.wait_blocking();
+        if !self.canceled() {
+            self.persisted.wait_blocking();
         }
         self
     }
 
     /// Returns true if the batch metadata has been committed to disk.
-    pub fn was_committed(&self) -> bool {
-        self.was_committed.is_open()
+    pub fn committed(&self) -> bool {
+        self.committed.is_open()
     }
 
     /// Waits until the batch has been committed, or returns immediately if canceled.
     pub async fn wait_committed(&self) {
-        if !self.was_canceled() {
-            self.was_committed.wait().await
+        if !self.canceled() {
+            self.committed.wait().await
         }
     }
 
     /// Blocking version of [`wait_committed`](Self::wait_committed).
     pub fn wait_committed_blocking(&self) -> &Self {
-        if !self.was_canceled() {
-            self.was_committed.wait_blocking();
+        if !self.canceled() {
+            self.committed.wait_blocking();
         }
         self
     }
@@ -171,14 +171,14 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
     /// Waits until all transaction artifacts have been published, or returns immediately if
     /// canceled.
     pub async fn wait_tx_artifacts_published(&self) {
-        if !self.was_canceled() {
+        if !self.canceled() {
             self.tx_artifacts_published.wait().await
         }
     }
 
     /// Blocking version of [`wait_tx_artifacts_published`](Self::wait_tx_artifacts_published).
     pub fn wait_tx_artifacts_published_blocking(&self) -> &Self {
-        if !self.was_canceled() {
+        if !self.canceled() {
             self.tx_artifacts_published.wait_blocking();
         }
         self
@@ -207,14 +207,14 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
 
     /// Waits until the batch artifact has been published, or returns immediately if canceled.
     pub async fn wait_artifact_published(&self) {
-        if !self.was_canceled() {
+        if !self.canceled() {
             self.artifact_published.wait().await
         }
     }
 
     /// Blocking version of [`wait_artifact_published`](Self::wait_artifact_published).
     pub fn wait_artifact_published_blocking(&self) -> &Self {
-        if !self.was_canceled() {
+        if !self.canceled() {
             self.artifact_published.wait_blocking();
         }
         self
@@ -222,7 +222,7 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
 
     /// Submits this batch for commit on the write worker. No-op if canceled.
     pub fn schedule_commit(&self) {
-        if !self.was_canceled() {
+        if !self.canceled() {
             self.state.storage().submit_write(Write::CommitBatch(self.clone()));
         }
     }
@@ -233,16 +233,16 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         checkpoint: Checkpoint<P::BatchMetadata>,
     ) -> Self {
         Self(Arc::new_cyclic(|this| {
-            let was_processed = AtomicAsyncLatch::default();
-            let was_persisted = AtomicAsyncLatch::default();
+            let processed = AtomicAsyncLatch::default();
+            let persisted = AtomicAsyncLatch::default();
             let tx_artifacts_published = AtomicAsyncLatch::default();
             let artifact_published = AtomicAsyncLatch::default();
 
             // An empty batch has nothing to process, persist, or prove - open the latches
             // immediately so the lifecycle worker can commit it right away.
             if txs.is_empty() {
-                was_processed.open();
-                was_persisted.open();
+                processed.open();
+                persisted.open();
                 tx_artifacts_published.open();
                 artifact_published.open();
             }
@@ -273,12 +273,12 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
                 state_diffs,
                 available_txs: Injector::new(),
                 pending_writes: AtomicI64::new(0),
-                was_processed,
+                processed,
                 tx_artifacts_published,
                 artifact: ArcSwapOption::empty(),
                 artifact_published,
-                was_persisted,
-                was_committed: Default::default(),
+                persisted,
+                committed: Default::default(),
             }
         }))
     }
@@ -303,17 +303,17 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
 
     pub(crate) fn decrease_pending_txs(&self) {
         if self.pending_txs.fetch_sub(1, Ordering::AcqRel) == 1 {
-            self.was_processed.open();
+            self.processed.open();
 
             // Canceled batches may never receive artifacts - open the latches immediately.
-            if self.was_canceled() {
+            if self.canceled() {
                 self.tx_artifacts_published.open();
                 self.artifact_published.open();
             }
 
-            // Also check if was_persisted should open (handles case where last TX has no writes)
+            // Also check if persisted should open (handles case where last TX has no writes)
             if self.pending_writes.load(Ordering::Acquire) == 0 {
-                self.was_persisted.open();
+                self.persisted.open();
             }
         }
     }
@@ -325,7 +325,7 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
     }
 
     pub(crate) fn submit_write(&self, write: Write<S, P>) {
-        if !self.was_canceled() {
+        if !self.canceled() {
             self.pending_writes.fetch_add(1, Ordering::AcqRel);
             self.state.storage().submit_write(write);
         }
@@ -336,13 +336,13 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
             // Double-check: once pending_txs == 0, no new writes can be submitted, so if
             // pending_writes is still 0, it will stay 0.
             if self.num_pending() == 0 && self.pending_writes.load(Ordering::Acquire) == 0 {
-                self.was_persisted.open();
+                self.persisted.open();
             }
         }
     }
 
     pub(crate) fn commit<ST: Store>(&self, store: &ST, wb: &mut ST::WriteBatch) {
-        if !self.was_canceled() {
+        if !self.canceled() {
             for state_diff in self.state_diffs() {
                 state_diff.written_state().write_latest_ptr(wb);
             }
@@ -370,13 +370,13 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
     }
 
     pub(crate) fn commit_done(self) {
-        if !self.was_canceled() {
+        if !self.canceled() {
             // Eagerly update last_committed in the shared state.
             self.state.set_last_committed(Arc::new(self.checkpoint.clone()));
         }
 
         // Mark the batch as committed.
-        self.was_committed.open();
+        self.committed.open();
 
         // Register all resources accessed by this batch for potential eviction. The scheduler will
         // check if each resource's last access still belongs to a committed batch before actually

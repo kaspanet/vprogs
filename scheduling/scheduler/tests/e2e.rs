@@ -230,7 +230,7 @@ pub fn test_add_batches_after_rollback() {
 }
 
 /// Tests in-flight batch cancellation without waiting for commitment. When a rollback occurs,
-/// batches that haven't been committed yet should detect cancellation via was_canceled() and skip
+/// batches that haven't been committed yet should detect cancellation via canceled() and skip
 /// their writes.
 #[test]
 pub fn test_inflight_cancellation_without_waiting() {
@@ -279,10 +279,10 @@ pub fn test_inflight_cancellation_without_waiting() {
         // This tests in-flight cancellation
         scheduler.rollback_to(1).expect("rollback should succeed");
 
-        // After rollback, the canceled batches should have was_canceled() == true
-        assert!(batch2.was_canceled(), "batch2 should be canceled");
-        assert!(batch3.was_canceled(), "batch3 should be canceled");
-        assert!(batch4.was_canceled(), "batch4 should be canceled");
+        // After rollback, the canceled batches should have canceled() == true
+        assert!(batch2.canceled(), "batch2 should be canceled");
+        assert!(batch3.canceled(), "batch3 should be canceled");
+        assert!(batch4.canceled(), "batch4 should be canceled");
 
         // Resource 1 should still exist (from batch1 which was committed)
         // Resources 2, 3, 4 should be cleaned up by rollback
@@ -301,7 +301,7 @@ pub fn test_inflight_cancellation_without_waiting() {
             )],
         );
         batch5.wait_committed_blocking();
-        assert!(!batch5.was_canceled(), "batch5 should not be canceled");
+        assert!(!batch5.canceled(), "batch5 should not be canceled");
         scheduler.assert_written_state(ResourceId::for_test(100), vec![100]);
 
         scheduler.shutdown();
@@ -737,8 +737,8 @@ pub fn test_cancellation_skips_writes() {
         scheduler.rollback_to(1).expect("rollback should succeed");
 
         // Verify both batches were canceled
-        assert!(batch2.was_canceled(), "batch2 should be canceled");
-        assert!(batch3.was_canceled(), "batch3 should be canceled");
+        assert!(batch2.canceled(), "batch2 should be canceled");
+        assert!(batch3.canceled(), "batch3 should be canceled");
 
         // The wait functions should return immediately for canceled batches
         batch2.wait_committed_blocking();

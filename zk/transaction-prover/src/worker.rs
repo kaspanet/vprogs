@@ -26,7 +26,7 @@ impl<S: Store, P: Processor<S, TransactionArtifact = B::Receipt>, B: Backend> Wo
         loop {
             // Dispatch all queued transactions for proving.
             while let Some((tx, tx_inputs)) = self.prover.inbox.pop() {
-                if tx.batch().upgrade().is_some_and(|b| !b.was_canceled()) {
+                if tx.batch().upgrade().is_some_and(|b| !b.canceled()) {
                     let receipt = self.backend.prove_transaction(tx_inputs);
                     tokio::spawn(async move { tx.publish_artifact(Some(receipt.await)) });
                 } else {

@@ -123,8 +123,8 @@ impl<S: Store, P: Processor<S>> ResourceAccess<S, P> {
     }
 
     /// Returns true if the state diff this resource access belongs to has been committed.
-    pub(crate) fn was_committed(&self) -> bool {
-        self.state_diff.was_committed()
+    pub(crate) fn committed(&self) -> bool {
+        self.state_diff.committed()
     }
 
     pub(crate) fn set_read_state(&self, state: Arc<StateVersion>) {

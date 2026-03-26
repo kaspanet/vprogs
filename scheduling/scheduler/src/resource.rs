@@ -51,7 +51,7 @@ impl<S: Store, P: Processor<S>> Resource<S, P> {
     /// If the access reference has been dropped (upgrade fails), the resource can also be evicted.
     pub(crate) fn should_evict(&self) -> bool {
         match &self.last_access {
-            Some(access) => access.was_committed(),
+            Some(access) => access.committed(),
             None => true, // No access means safe to evict
         }
     }

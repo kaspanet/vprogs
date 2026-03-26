@@ -69,7 +69,7 @@ where
     async fn process_batch(&mut self, batch: ScheduledBatch<S, P>) {
         // Wait for all transaction artifacts to be published.
         batch.wait_tx_artifacts_published().await;
-        if batch.was_canceled() {
+        if batch.canceled() {
             return;
         }
 

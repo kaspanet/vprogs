@@ -102,7 +102,7 @@ impl<S: Store, P: Processor<S>> ScheduledTransaction<S, P> {
             );
 
             // If the batch was canceled, roll back all changes and exit early.
-            if batch.was_canceled() {
+            if batch.canceled() {
                 ctx.rollback_all();
                 batch.decrease_pending_txs();
                 return;
