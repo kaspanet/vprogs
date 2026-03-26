@@ -1,6 +1,6 @@
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
+    atomic::{AtomicI64, AtomicU64, Ordering},
 };
 
 use crossbeam_deque::{Injector, Steal, Worker};
@@ -51,8 +51,6 @@ pub struct ScheduledBatch<S: Store, P: Processor<S>> {
     was_processed: AtomicAsyncLatch,
     /// Opens when all transaction effects have been published.
     effects_ready: AtomicAsyncLatch,
-    /// Whether this batch's effects have been consumed by a downstream processor.
-    effects_processed: AtomicBool,
     /// Opens when all state diffs have been written to disk.
     was_persisted: AtomicAsyncLatch,
     /// Opens when batch metadata has been committed.
@@ -175,11 +173,6 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         self
     }
 
-    /// Claims this batch for effects processing. Returns `true` on the first call only.
-    pub fn mark_effects_processed(&self) -> bool {
-        !self.effects_processed.swap(true, Ordering::AcqRel)
-    }
-
     /// Submits this batch for commit on the write worker. No-op if canceled.
     pub fn schedule_commit(&self) {
         if !self.was_canceled() {
@@ -236,7 +229,6 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
                 pending_writes: AtomicI64::new(0),
                 was_processed,
                 effects_ready,
-                effects_processed: AtomicBool::new(false),
                 was_persisted,
                 was_committed: Default::default(),
             }
