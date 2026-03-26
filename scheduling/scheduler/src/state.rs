@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use arc_swap::{ArcSwap, ArcSwapOption};
+use arc_swap::ArcSwap;
 use crossbeam_queue::SegQueue;
 use vprogs_core_macros::smart_pointer;
 use vprogs_core_types::{Checkpoint, ResourceId};
@@ -8,10 +8,7 @@ use vprogs_state_metadata::StateMetadata;
 use vprogs_storage_manager::{StorageConfig, StorageManager};
 use vprogs_storage_types::Store;
 
-use crate::{
-    Read, ScheduledBatch, ScheduledBatchRef, Write, processor::Processor,
-    scheduled_batch::ScheduledBatchData,
-};
+use crate::{Read, Write, processor::Processor};
 
 /// Shared scheduler state accessible by all components.
 #[smart_pointer]
@@ -27,9 +24,6 @@ pub struct SchedulerState<S: Store, P: Processor<S>> {
     /// Most recently scheduled batch. Advanced by `next_checkpoint`, reset on rollback. Only
     /// mutated from `&mut Scheduler`.
     last_processed: ArcSwap<Checkpoint<P::BatchMetadata>>,
-    /// Head of the batch chain. Advanced by `schedule`, reset on rollback. Only mutated from
-    /// `&mut Scheduler`.
-    last_batch: ArcSwapOption<ScheduledBatchData<S, P>>,
 }
 
 impl<S: Store, P: Processor<S>> SchedulerState<S, P> {
@@ -49,7 +43,6 @@ impl<S: Store, P: Processor<S>> SchedulerState<S, P> {
             root: ArcSwap::from_pointee(root),
             last_committed: ArcSwap::from_pointee(last_committed.clone()),
             last_processed: ArcSwap::from_pointee(last_committed),
-            last_batch: ArcSwapOption::empty(),
         }))
     }
 
@@ -78,30 +71,6 @@ impl<S: Store, P: Processor<S>> SchedulerState<S, P> {
         self.last_processed.load_full()
     }
 
-    /// Returns the head of the batch chain, if any.
-    pub fn last_batch(&self) -> Option<ScheduledBatch<S, P>> {
-        self.last_batch.load_full().map(ScheduledBatch)
-    }
-
-    /// Returns a reference to the head of the batch chain, or a default if none exists.
-    pub fn last_batch_ref(&self) -> ScheduledBatchRef<S, P> {
-        self.last_batch().map_or_else(ScheduledBatchRef::default, |b| b.downgrade())
-    }
-
-    /// Walks the batch chain backwards to find the batch at the given index.
-    pub fn batch(&self, index: u64) -> Option<ScheduledBatch<S, P>> {
-        let mut cursor = self.last_batch();
-        loop {
-            match cursor {
-                Some(batch) if batch.checkpoint().index() > index => {
-                    cursor = batch.prev().upgrade();
-                }
-                Some(batch) if batch.checkpoint().index() == index => break Some(batch),
-                _ => break None,
-            }
-        }
-    }
-
     /// Sets the root checkpoint.
     pub(crate) fn set_root(&self, checkpoint: Arc<Checkpoint<P::BatchMetadata>>) {
         self.root.store(checkpoint);
@@ -115,10 +84,5 @@ impl<S: Store, P: Processor<S>> SchedulerState<S, P> {
     /// Sets the most recently processed (scheduled) checkpoint.
     pub(crate) fn set_last_processed(&self, checkpoint: Arc<Checkpoint<P::BatchMetadata>>) {
         self.last_processed.store(checkpoint);
-    }
-
-    /// Sets the head of the batch chain.
-    pub(crate) fn set_last_batch(&self, batch: Option<ScheduledBatch<S, P>>) {
-        self.last_batch.store(batch.map(|b| b.0));
     }
 }
