@@ -20,6 +20,7 @@ impl<S: Store> Processor<S> for VM {
 
     type Transaction = L1Transaction;
     type TransactionEffects = TransactionEffects;
+    type BatchEffects = ();
     type BatchMetadata = ChainBlockMetadata;
     type Error = VmError;
 }

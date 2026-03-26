@@ -68,6 +68,7 @@ impl<B: Backend, S: Store> Processor<S> for Vm<B, S> {
 
     type Transaction = L1Transaction;
     type TransactionEffects = B::Receipt;
+    type BatchEffects = B::Receipt;
     type BatchMetadata = ChainBlockMetadata;
     type Error = Error;
 }

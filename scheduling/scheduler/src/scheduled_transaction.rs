@@ -58,7 +58,7 @@ impl<S: Store, P: Processor<S>> ScheduledTransaction<S, P> {
 
         // Always advance the batch's pending effects counter to ensure the latch will open.
         if let Some(batch) = self.batch.upgrade() {
-            batch.decrease_pending_effects();
+            batch.decrease_pending_tx_effects();
         }
     }
 

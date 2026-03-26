@@ -27,9 +27,10 @@ pub trait Processor<S: Store>: Clone + Sized + Send + Sync + 'static {
     /// The transaction payload type (e.g. kaspa `L1Transaction`, `usize` in tests).
     /// The scheduler wraps it in `SchedulerTransaction<Self::Transaction>`.
     type Transaction: Send + Sync + 'static;
-    /// Effects type for a processed transaction, published via
-    /// [`ScheduledTransaction::set_effects`].
+    /// Effects type for a processed transaction ([`ScheduledTransaction::set_effects`]).
     type TransactionEffects: Send + Sync + 'static;
+    /// Effects type for a processed batch ([`ScheduledBatch::set_effects`]).
+    type BatchEffects: Send + Sync + 'static;
     /// Opaque metadata attached to each batch for persistence.
     type BatchMetadata: BatchMetadata;
     /// Error type returned when transaction processing fails.

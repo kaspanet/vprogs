@@ -73,7 +73,7 @@ impl<S: Store, P: Processor<S, TransactionEffects = B::Receipt>, B: Backend> Wor
     /// Processes a single batch through the proving pipeline.
     async fn process_batch(&mut self, batch: ScheduledBatch<S, P>) {
         // Wait for all transaction effects to be published.
-        batch.wait_effects_ready().await;
+        batch.wait_tx_effects_ready().await;
         if batch.was_canceled() {
             return;
         }

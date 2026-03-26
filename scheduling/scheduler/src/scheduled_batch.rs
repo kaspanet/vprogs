@@ -3,6 +3,7 @@ use std::sync::{
     atomic::{AtomicI64, AtomicU64, Ordering},
 };
 
+use arc_swap::ArcSwapOption;
 use crossbeam_deque::{Injector, Steal, Worker};
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_macros::smart_pointer;
@@ -22,9 +23,9 @@ use crate::{
 ///
 /// Each batch moves through three stages: processed (all transactions executed), persisted (all
 /// state diffs written to disk), and committed (batch metadata finalized). When proving is active,
-/// an additional effects-ready latch tracks asynchronous receipt publication. Callers can observe
-/// progress via the `was_*` / `wait_*` methods. A batch may be canceled by a rollback, in which
-/// case the wait methods return immediately.
+/// additional latches track asynchronous transaction and batch effect publication. Callers can
+/// observe progress via the `was_*` / `wait_*` methods. A batch may be canceled by a rollback, in
+/// which case the wait methods return immediately.
 #[smart_pointer]
 pub struct ScheduledBatch<S: Store, P: Processor<S>> {
     /// Cancellation context captured at creation time for rollback detection.
@@ -37,17 +38,21 @@ pub struct ScheduledBatch<S: Store, P: Processor<S>> {
     txs: Vec<ScheduledTransaction<S, P>>,
     /// One state diff per unique resource accessed by this batch.
     state_diffs: Vec<StateDiff<S, P>>,
+    /// Batch-level effects (e.g. batch proof receipt), set via [`set_effects`](Self::set_effects).
+    effects: ArcSwapOption<P::BatchEffects>,
     /// Work-stealing queue of transactions ready for execution.
     available_txs: Injector<ManagerTask<S, P>>,
     /// Number of transactions not yet fully executed.
     pending_txs: AtomicU64,
     /// Number of transactions whose effects haven't been published yet.
-    pending_effects: AtomicU64,
+    pending_tx_effects: AtomicU64,
     /// Number of state diff writes not yet persisted to disk.
     pending_writes: AtomicI64,
     /// Opens when all transactions have been executed.
     was_processed: AtomicAsyncLatch,
     /// Opens when all transaction effects have been published.
+    tx_effects_ready: AtomicAsyncLatch,
+    /// Opens when batch-level effects have been published via [`set_effects`](Self::set_effects).
     effects_ready: AtomicAsyncLatch,
     /// Opens when all state diffs have been written to disk.
     was_persisted: AtomicAsyncLatch,
@@ -147,11 +152,47 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
     }
 
     /// Returns true if all transaction effects have been published.
+    pub fn is_tx_effects_ready(&self) -> bool {
+        self.tx_effects_ready.is_open()
+    }
+
+    /// Waits until all transaction effects have been published, or returns immediately if canceled.
+    pub async fn wait_tx_effects_ready(&self) {
+        if !self.was_canceled() {
+            self.tx_effects_ready.wait().await
+        }
+    }
+
+    /// Blocking version of [`wait_tx_effects_ready`](Self::wait_tx_effects_ready).
+    pub fn wait_tx_effects_ready_blocking(&self) -> &Self {
+        if !self.was_canceled() {
+            self.tx_effects_ready.wait_blocking();
+        }
+        self
+    }
+
+    /// Returns the batch-level effects.
+    ///
+    /// # Panics
+    /// Panics if called before [`set_effects`](Self::set_effects).
+    pub fn effects(&self) -> Arc<P::BatchEffects> {
+        self.effects.load_full().expect("batch effects not ready")
+    }
+
+    /// Publishes batch-level effects and opens the `effects_ready` latch.
+    pub fn set_effects(&self, effects: Option<P::BatchEffects>) {
+        if let Some(effects) = effects {
+            self.effects.store(Some(Arc::new(effects)));
+        }
+        self.effects_ready.open();
+    }
+
+    /// Returns true if batch-level effects have been published.
     pub fn is_effects_ready(&self) -> bool {
         self.effects_ready.is_open()
     }
 
-    /// Waits until all transaction effects have been published, or returns immediately if canceled.
+    /// Waits until batch-level effects have been published, or returns immediately if canceled.
     pub async fn wait_effects_ready(&self) {
         if !self.was_canceled() {
             self.effects_ready.wait().await
@@ -181,6 +222,7 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         Self(Arc::new_cyclic(|this| {
             let was_processed = AtomicAsyncLatch::default();
             let was_persisted = AtomicAsyncLatch::default();
+            let tx_effects_ready = AtomicAsyncLatch::default();
             let effects_ready = AtomicAsyncLatch::default();
 
             // An empty batch has nothing to process, persist, or prove - open the latches
@@ -188,6 +230,7 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
             if txs.is_empty() {
                 was_processed.open();
                 was_persisted.open();
+                tx_effects_ready.open();
                 effects_ready.open();
             }
 
@@ -198,9 +241,8 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
                 cancellation: scheduler.cancellation().clone(),
                 state: scheduler.state().clone(),
                 checkpoint,
-                // pending_txs/pending_effects must precede txs (into_iter consumes the vec).
                 pending_txs: AtomicU64::new(txs.len() as u64),
-                pending_effects: AtomicU64::new(txs.len() as u64),
+                pending_tx_effects: AtomicU64::new(txs.len() as u64),
                 txs: txs
                     .into_iter()
                     .enumerate()
@@ -219,6 +261,8 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
                 available_txs: Injector::new(),
                 pending_writes: AtomicI64::new(0),
                 was_processed,
+                tx_effects_ready,
+                effects: ArcSwapOption::empty(),
                 effects_ready,
                 was_persisted,
                 was_committed: Default::default(),
@@ -250,7 +294,7 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
 
             // Canceled txs may never receive effects - open the latch immediately.
             if self.was_canceled() {
-                self.effects_ready.open();
+                self.tx_effects_ready.open();
             }
 
             // Also check if was_persisted should open (handles case where last TX has no writes)
@@ -260,9 +304,9 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         }
     }
 
-    pub(crate) fn decrease_pending_effects(&self) {
-        if self.pending_effects.fetch_sub(1, Ordering::AcqRel) == 1 {
-            self.effects_ready.open();
+    pub(crate) fn decrease_pending_tx_effects(&self) {
+        if self.pending_tx_effects.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.tx_effects_ready.open();
         }
     }
 
