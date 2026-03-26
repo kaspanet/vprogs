@@ -22,7 +22,7 @@ use crate::{
 /// The scheduler is the main entry point for batch processing. It schedules transactions, manages
 /// resource dependency chains, coordinates parallel execution via worker threads, and handles
 /// rollbacks when chain reorganization occurs.
-pub struct Scheduler<S: Store, P: Processor> {
+pub struct Scheduler<S: Store, P: Processor<S>> {
     /// The processor used to execute transactions.
     processor: P,
     /// Shared scheduler state (storage, eviction_queue, root, last_committed, last_processed).
@@ -41,7 +41,7 @@ pub struct Scheduler<S: Store, P: Processor> {
     pruning_worker: PruningWorker<S, P>,
 }
 
-impl<S: Store, P: Processor> Scheduler<S, P> {
+impl<S: Store, P: Processor<S>> Scheduler<S, P> {
     /// Creates a new scheduler with the given execution and storage configurations.
     pub fn new(execution_config: ExecutionConfig<P>, storage_config: StorageConfig<S>) -> Self {
         let (worker_count, processor) = execution_config.unpack();
@@ -75,6 +75,9 @@ impl<S: Store, P: Processor> Scheduler<S, P> {
             // Connect transactions to resource dependency chains.
             .tap(ScheduledBatch::connect)
             .tap(|batch| {
+                // Notify the processor, allowing it to initialize internal caches or buffers.
+                self.processor.on_batch_scheduled(batch);
+
                 // Push to the batch lifecycle worker for lifecycle progression.
                 self.batch_lifecycle_worker.push(batch.clone());
 
@@ -143,6 +146,9 @@ impl<S: Store, P: Processor> Scheduler<S, P> {
             // Clear in-memory resource pointers, as their state may no longer be valid.
             self.resources.clear();
 
+            // Notify the processor of the rollback, allowing it to clear any internal caches.
+            self.processor.on_rollback(target_index);
+
             Ok(target)
         } else {
             Ok((*self.state.last_processed()).clone())
@@ -177,6 +183,7 @@ impl<S: Store, P: Processor> Scheduler<S, P> {
         self.pruning_worker.shutdown();
         self.batch_lifecycle_worker.shutdown();
         self.execution_workers.shutdown();
+        self.processor.on_shutdown();
         self.state.storage().shutdown();
     }
 

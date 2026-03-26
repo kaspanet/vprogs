@@ -7352,8 +7352,11 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "vprogs-core-atomics"
 version = "0.1.0"
 dependencies = [
+ "crossbeam-queue",
  "futures",
+ "tokio",
  "tokio-util",
+ "vprogs-core-macros",
 ]
 
 [[package]]
@@ -7380,6 +7383,7 @@ dependencies = [
  "tap",
  "tempfile",
  "vprogs-core-codec",
+ "vprogs-core-types",
  "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
 ]
@@ -7847,19 +7851,45 @@ dependencies = [
  "risc0-zkvm",
  "vprogs-core-macros",
  "vprogs-zk-abi",
+ "vprogs-zk-batch-prover",
+ "vprogs-zk-transaction-prover",
  "vprogs-zk-vm",
 ]
 
 [[package]]
-name = "vprogs-zk-prover"
+name = "vprogs-zk-batch-prover"
+version = "0.1.0"
+dependencies = [
+ "tap",
+ "tokio",
+ "vprogs-core-atomics",
+ "vprogs-core-macros",
+ "vprogs-scheduling-scheduler",
+ "vprogs-storage-types",
+ "vprogs-zk-abi",
+ "vprogs-zk-transaction-prover",
+]
+
+[[package]]
+name = "vprogs-zk-transaction-prover"
+version = "0.1.0"
+dependencies = [
+ "tap",
+ "tokio",
+ "vprogs-core-atomics",
+ "vprogs-core-macros",
+ "vprogs-scheduling-scheduler",
+ "vprogs-storage-types",
+]
+
+[[package]]
+name = "vprogs-zk-vm"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "log",
- "risc0-binfmt",
- "risc0-zkos-v1compat",
  "tempfile",
  "tokio",
+ "vprogs-core-atomics",
  "vprogs-core-smt",
  "vprogs-core-test-utils",
  "vprogs-core-types",
@@ -7871,24 +7901,8 @@ dependencies = [
  "vprogs-storage-types",
  "vprogs-zk-abi",
  "vprogs-zk-backend-risc0-api",
- "vprogs-zk-vm",
-]
-
-[[package]]
-name = "vprogs-zk-vm"
-version = "0.1.0"
-dependencies = [
- "tempfile",
- "tokio",
- "vprogs-core-test-utils",
- "vprogs-core-types",
- "vprogs-l1-types",
- "vprogs-scheduling-scheduler",
- "vprogs-storage-manager",
- "vprogs-storage-rocksdb-store",
- "vprogs-storage-types",
- "vprogs-zk-abi",
- "vprogs-zk-backend-risc0-api",
+ "vprogs-zk-batch-prover",
+ "vprogs-zk-transaction-prover",
 ]
 
 [[package]]

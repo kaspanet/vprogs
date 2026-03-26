@@ -7,6 +7,7 @@ version.workspace = true
 blake3            = { workspace = true }
 tap               = { workspace = true }
 vprogs-core-codec = { workspace = true }
+vprogs-core-types = { workspace = true }
 
 [dev-dependencies]
 tempfile.workspace                     = true

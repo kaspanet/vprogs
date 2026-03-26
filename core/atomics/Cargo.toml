@@ -4,5 +4,8 @@ name              = "vprogs-core-atomics"
 version.workspace = true
 
 [dependencies]
-futures.workspace    = true
-tokio-util.workspace = true
+crossbeam-queue.workspace    = true
+futures.workspace            = true
+tokio                        = { workspace = true, features = ["sync"] }
+tokio-util.workspace         = true
+vprogs-core-macros.workspace = true

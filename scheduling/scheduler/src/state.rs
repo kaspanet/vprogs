@@ -12,7 +12,7 @@ use crate::{Read, Write, processor::Processor};
 
 /// Shared scheduler state accessible by all components.
 #[smart_pointer]
-pub struct SchedulerState<S: Store, P: Processor> {
+pub struct SchedulerState<S: Store, P: Processor<S>> {
     /// Storage manager for read/write coordination with background workers.
     storage: StorageManager<S, Read<S, P>, Write<S, P>>,
     /// Queue of resource IDs to potentially evict after their batches committed.
@@ -26,7 +26,7 @@ pub struct SchedulerState<S: Store, P: Processor> {
     last_processed: ArcSwap<Checkpoint<P::BatchMetadata>>,
 }
 
-impl<S: Store, P: Processor> SchedulerState<S, P> {
+impl<S: Store, P: Processor<S>> SchedulerState<S, P> {
     /// Creates a new state from a storage configuration.
     ///
     /// `root` and `last_committed` are loaded from `StateMetadata`. `last_processed` is initialized

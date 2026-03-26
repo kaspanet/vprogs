@@ -7,7 +7,6 @@ pub mod batch_processor {
     pub(crate) mod error_code;
 
     pub(crate) mod input {
-        pub(crate) mod header;
         pub(crate) mod inputs;
         pub(crate) mod transaction_journals;
     }
@@ -18,7 +17,7 @@ pub mod batch_processor {
 
     pub use abi::Abi;
     pub use error_code::ErrorCode;
-    pub use input::{header::Header, inputs::Inputs, transaction_journals::TransactionJournals};
+    pub use input::{inputs::Inputs, transaction_journals::TransactionJournals};
     pub use journal::state_transition::StateTransition;
 }
 mod error;

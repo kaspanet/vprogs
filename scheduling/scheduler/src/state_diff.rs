@@ -15,7 +15,7 @@ use crate::{ScheduledBatchRef, Write, processor::Processor};
 /// execution) and the written state (after execution), which are used to persist versioned data and
 /// rollback pointers.
 #[smart_pointer]
-pub struct StateDiff<S: Store, P: Processor> {
+pub struct StateDiff<S: Store, P: Processor<S>> {
     /// Weak reference to the owning batch (used for commit checks and write submission).
     batch: ScheduledBatchRef<S, P>,
     /// The resource this diff tracks.
@@ -28,7 +28,7 @@ pub struct StateDiff<S: Store, P: Processor> {
     written_state: ArcSwapOption<StateVersion>,
 }
 
-impl<S: Store, P: Processor> StateDiff<S, P> {
+impl<S: Store, P: Processor<S>> StateDiff<S, P> {
     /// Returns the resource ID this state diff tracks.
     pub fn resource_id(&self) -> &ResourceId {
         &self.resource_id
@@ -69,8 +69,8 @@ impl<S: Store, P: Processor> StateDiff<S, P> {
     ///
     /// If the batch reference can no longer be upgraded (batch dropped), returns true as the batch
     /// has completed its lifecycle.
-    pub(crate) fn was_committed(&self) -> bool {
-        self.batch.upgrade().is_none_or(|batch| batch.was_committed())
+    pub(crate) fn committed(&self) -> bool {
+        self.batch.upgrade().is_none_or(|batch| batch.committed())
     }
 
     pub(crate) fn set_read_state(&self, state: Arc<StateVersion>) {
@@ -95,7 +95,7 @@ impl<S: Store, P: Processor> StateDiff<S, P> {
             panic!("written_state must be known at write time");
         };
 
-        if !batch.was_canceled() {
+        if !batch.canceled() {
             written_state.write_data(wb);
             read_state.write_rollback_ptr(wb, batch.checkpoint().index());
         }
@@ -108,13 +108,13 @@ impl<S: Store, P: Processor> StateDiff<S, P> {
     }
 }
 
-impl<S: Store, P: Processor> From<&StateDiff<S, P>> for Commitment {
+impl<S: Store, P: Processor<S>> From<&StateDiff<S, P>> for Commitment {
     fn from(diff: &StateDiff<S, P>) -> Self {
         let written_state = diff.written_state();
         let data = written_state.data();
 
         Self::new(
-            *diff.resource_id.as_bytes(),
+            diff.resource_id,
             if data.is_empty() { EMPTY_HASH } else { *blake3::hash(data).as_bytes() },
         )
     }

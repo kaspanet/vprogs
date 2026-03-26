@@ -23,7 +23,7 @@ use crate::{Processor, state::SchedulerState};
 ///
 /// Runs on a dedicated thread with direct store access to avoid contention with the main write
 /// path.
-pub struct PruningWorker<S: Store, P: Processor> {
+pub struct PruningWorker<S: Store, P: Processor<S>> {
     /// The batch index up to which pruning is allowed (exclusive). Batches with index < threshold
     /// can be pruned.
     pruning_threshold: Arc<AtomicU64>,
@@ -44,7 +44,7 @@ pub struct PruningWorker<S: Store, P: Processor> {
     _marker: PhantomData<(S, P)>,
 }
 
-impl<S: Store, P: Processor> PruningWorker<S, P> {
+impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
     /// Sets the pruning threshold.
     ///
     /// Batches with index < threshold become eligible for pruning. The actual pruning happens

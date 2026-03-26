@@ -16,7 +16,7 @@ use crate::{Processor, state::SchedulerState};
 ///
 /// Walks batches from `upper_bound` down to `target.index() + 1` in reverse order, restoring each
 /// affected resource to the version it had before the batch was applied.
-pub struct Rollback<S: Store, P: Processor> {
+pub struct Rollback<S: Store, P: Processor<S>> {
     /// The checkpoint we're rolling back to. Its metadata is resolved by the scheduler from
     /// in-memory state to avoid a disk read race condition.
     target: Checkpoint<P::BatchMetadata>,
@@ -28,7 +28,7 @@ pub struct Rollback<S: Store, P: Processor> {
     done_signal: Arc<AtomicAsyncLatch>,
 }
 
-impl<S: Store, P: Processor> Rollback<S, P> {
+impl<S: Store, P: Processor<S>> Rollback<S, P> {
     /// Creates a new rollback operation that reverts all batches from `target.index() + 1` through
     /// `upper_bound` (inclusive).
     pub fn new(

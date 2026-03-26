@@ -122,7 +122,7 @@ impl<'a> Resource<'a> {
         *buf = rest;
 
         Ok(Self {
-            resource_id: ResourceId::from_bytes_ref(resource_id),
+            resource_id: resource_id.into(),
             backing,
             promoted: None,
             resource_index,
@@ -142,7 +142,7 @@ impl<'a> Resource<'a> {
         data_len: u32,
     ) {
         // Write header fields.
-        w.write(resource_id.as_bytes());
+        w.write(&resource_id[..]);
         w.write(&[if is_new { 1 } else { 0 }]);
         w.write(&resource_index.to_le_bytes());
         w.write(&data_len.to_le_bytes());

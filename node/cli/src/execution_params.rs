@@ -1,6 +1,6 @@
 use clap::Args;
 use serde::{Deserialize, Serialize};
-use vprogs_scheduling_scheduler::{ExecutionConfig, Processor};
+use vprogs_scheduling_scheduler::ExecutionConfig;
 
 use crate::backend::Vm;
 
@@ -15,7 +15,7 @@ pub struct ExecutionParams {
 
 impl ExecutionParams {
     /// Converts CLI params into an [`ExecutionConfig`], injecting the given processor.
-    pub fn into_config<P: Processor>(self, processor: P) -> ExecutionConfig<P> {
+    pub fn into_config<P>(self, processor: P) -> ExecutionConfig<P> {
         ExecutionConfig { worker_count: self.worker_count, processor: Some(processor) }
     }
 }

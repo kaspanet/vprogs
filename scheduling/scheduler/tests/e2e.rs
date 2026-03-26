@@ -127,7 +127,7 @@ pub fn test_rollback_committed() {
         assert_eq!(target.index(), 1);
         assert_eq!(*target.metadata(), 1);
 
-        // Verify state after rollback - only batch1 effects should remain
+        // Verify state after rollback - only batch1 state changes should remain
         scheduler
             .assert_written_state(ResourceId::for_test(1), vec![0]) // Only tx 0's write remains
             .assert_written_state(ResourceId::for_test(2), vec![1]) // tx 1's write remains (in batch1)
@@ -230,7 +230,7 @@ pub fn test_add_batches_after_rollback() {
 }
 
 /// Tests in-flight batch cancellation without waiting for commitment. When a rollback occurs,
-/// batches that haven't been committed yet should detect cancellation via was_canceled() and skip
+/// batches that haven't been committed yet should detect cancellation via canceled() and skip
 /// their writes.
 #[test]
 pub fn test_inflight_cancellation_without_waiting() {
@@ -279,10 +279,10 @@ pub fn test_inflight_cancellation_without_waiting() {
         // This tests in-flight cancellation
         scheduler.rollback_to(1).expect("rollback should succeed");
 
-        // After rollback, the canceled batches should have was_canceled() == true
-        assert!(batch2.was_canceled(), "batch2 should be canceled");
-        assert!(batch3.was_canceled(), "batch3 should be canceled");
-        assert!(batch4.was_canceled(), "batch4 should be canceled");
+        // After rollback, the canceled batches should have canceled() == true
+        assert!(batch2.canceled(), "batch2 should be canceled");
+        assert!(batch3.canceled(), "batch3 should be canceled");
+        assert!(batch4.canceled(), "batch4 should be canceled");
 
         // Resource 1 should still exist (from batch1 which was committed)
         // Resources 2, 3, 4 should be cleaned up by rollback
@@ -301,7 +301,7 @@ pub fn test_inflight_cancellation_without_waiting() {
             )],
         );
         batch5.wait_committed_blocking();
-        assert!(!batch5.was_canceled(), "batch5 should not be canceled");
+        assert!(!batch5.canceled(), "batch5 should not be canceled");
         scheduler.assert_written_state(ResourceId::for_test(100), vec![100]);
 
         scheduler.shutdown();
@@ -737,8 +737,8 @@ pub fn test_cancellation_skips_writes() {
         scheduler.rollback_to(1).expect("rollback should succeed");
 
         // Verify both batches were canceled
-        assert!(batch2.was_canceled(), "batch2 should be canceled");
-        assert!(batch3.was_canceled(), "batch3 should be canceled");
+        assert!(batch2.canceled(), "batch2 should be canceled");
+        assert!(batch3.canceled(), "batch3 should be canceled");
 
         // The wait functions should return immediately for canceled batches
         batch2.wait_committed_blocking();
@@ -1654,8 +1654,7 @@ pub fn test_smt_multi_proof_verify() {
         let root = store.root(1);
 
         // Generate a proof for resource 1's key and verify it.
-        let key = *ResourceId::for_test(1).as_bytes();
-        let (proof_bytes, _) = store.prove(&[key], 1).unwrap();
+        let (proof_bytes, _) = store.prove(&[ResourceId::for_test(1)], 1).unwrap();
         let proof = Proof::decode(&proof_bytes).expect("valid proof");
 
         assert_eq!(
@@ -1698,8 +1697,7 @@ pub fn test_smt_multi_proof_absent_key() {
         let root = store.root(1);
 
         // Generate a proof for resource 99 (absent) - should still verify against the root.
-        let absent_key = *ResourceId::for_test(99).as_bytes();
-        let (proof_bytes, _) = store.prove(&[absent_key], 1).unwrap();
+        let (proof_bytes, _) = store.prove(&[ResourceId::for_test(99)], 1).unwrap();
         let proof = Proof::decode(&proof_bytes).expect("valid proof");
 
         assert_eq!(
@@ -1743,11 +1741,7 @@ pub fn test_smt_multi_proof_mixed_keys() {
         let root = store.root(1);
 
         // Proof for existing key 1, existing key 3, and absent key 99.
-        let keys = [
-            *ResourceId::for_test(1).as_bytes(),
-            *ResourceId::for_test(3).as_bytes(),
-            *ResourceId::for_test(99).as_bytes(),
-        ];
+        let keys = [ResourceId::for_test(1), ResourceId::for_test(3), ResourceId::for_test(99)];
         let (proof_bytes, _) = store.prove(&keys, 1).unwrap();
         let proof = Proof::decode(&proof_bytes).expect("valid proof");
 

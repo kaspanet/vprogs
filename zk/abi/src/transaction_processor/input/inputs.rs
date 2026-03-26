@@ -62,6 +62,7 @@ impl<'a> Inputs<'a> {
     where
         S: vprogs_storage_types::Store,
         P: vprogs_scheduling_scheduler::Processor<
+                S,
                 BatchMetadata = vprogs_l1_types::ChainBlockMetadata,
             >,
         P::Transaction: borsh::BorshSerialize,

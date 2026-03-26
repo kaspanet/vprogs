@@ -10,7 +10,7 @@ use crate::Processor;
 /// Wraps the sub-system configs and adds node-level settings. Use the `with_*` builder methods
 /// to override defaults.
 #[derive(Clone, Debug)]
-pub struct NodeConfig<S: Store, P: Processor> {
+pub struct NodeConfig<S: Store, P: Processor<S>> {
     /// Bounded capacity of the [`NodeApi`](crate::NodeApi) request channel.
     pub api_channel_capacity: usize,
     /// Execution worker pool and VM configuration.
@@ -21,7 +21,7 @@ pub struct NodeConfig<S: Store, P: Processor> {
     pub l1_bridge_config: L1BridgeConfig,
 }
 
-impl<S: Store, P: Processor> Default for NodeConfig<S, P> {
+impl<S: Store, P: Processor<S>> Default for NodeConfig<S, P> {
     fn default() -> Self {
         Self {
             api_channel_capacity: 64,
@@ -32,7 +32,7 @@ impl<S: Store, P: Processor> Default for NodeConfig<S, P> {
     }
 }
 
-impl<S: Store, P: Processor> NodeConfig<S, P> {
+impl<S: Store, P: Processor<S>> NodeConfig<S, P> {
     pub fn with_api_channel_capacity(mut self, capacity: usize) -> Self {
         self.api_channel_capacity = capacity;
         self

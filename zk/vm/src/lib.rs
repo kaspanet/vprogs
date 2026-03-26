@@ -1,7 +1,7 @@
 mod backend;
-mod proof_request;
+mod proving_pipeline;
 mod vm;
 
 pub use backend::Backend;
-pub use proof_request::ProofRequest;
+pub use proving_pipeline::ProvingPipeline;
 pub use vm::Vm;

@@ -7,9 +7,10 @@ default-members = [
   "state/*",
   "storage/*",
   "transaction-runtime/*",
-  "zk/prover",
   "zk/backend/risc0/api",
   "zk/abi",
+  "zk/batch-prover",
+  "zk/transaction-prover",
   "zk/vm",
 ]
 exclude = [
@@ -24,9 +25,10 @@ members = [
   "state/*",
   "storage/*",
   "transaction-runtime/*",
-  "zk/prover",
   "zk/backend/risc0/api",
   "zk/abi",
+  "zk/batch-prover",
+  "zk/transaction-prover",
   "zk/vm",
 ]
 resolver = "3"
@@ -144,8 +146,10 @@ resolver = "3"
   vprogs-zk-backend-risc0-api = { path = "zk/backend/risc0/api", default-features = false, features = [
     "host",
   ] }
-  vprogs-zk-prover = { path = "zk/prover" }
-  vprogs-zk-vm = { path = "zk/vm" }
+
+  vprogs-zk-batch-prover       = { path = "zk/batch-prover" }
+  vprogs-zk-transaction-prover = { path = "zk/transaction-prover" }
+  vprogs-zk-vm                 = { path = "zk/vm" }
 
 [patch.'https://github.com/kaspanet/rusty-kaspa']
 kaspa-math  = { git = "https://github.com/hmoog/rusty-kaspa", branch = "feat/kaspa-math-32bit" }
