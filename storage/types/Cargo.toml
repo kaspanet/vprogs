@@ -4,4 +4,3 @@ name              = "vprogs-storage-types"
 version.workspace = true
 
 [dependencies]
-vprogs-core-smt.workspace = true

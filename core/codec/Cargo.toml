@@ -1,7 +1,0 @@
-[package]
-edition.workspace = true
-name              = "vprogs-core-codec"
-version.workspace = true
-
-[dependencies]
-thiserror = { workspace = true, default-features = false }

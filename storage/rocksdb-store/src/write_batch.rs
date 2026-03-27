@@ -1,13 +1,10 @@
 use std::{marker::PhantomData, sync::Arc};
 
 use rocksdb::DB;
-use vprogs_core_smt::{Key, Node, StaleNode, WriteBatch as SmtWriteBatch};
-use vprogs_storage_types::{StateSpace, WriteBatch as _};
+use vprogs_storage_types::StateSpace;
 
 use crate::{
     config::{Config, DefaultConfig},
-    key_ext::KeyExt,
-    stale_node_ext::StaleNodeExt,
     state_space_ext::StateSpaceExt,
 };
 
@@ -38,24 +35,6 @@ impl<C: Config> vprogs_storage_types::WriteBatch for WriteBatch<C> {
             panic!("missing column family '{}'", cf_handle)
         };
         self.inner.delete_cf(cf, key)
-    }
-}
-
-impl<C: Config> SmtWriteBatch for WriteBatch<C> {
-    fn put_node(&mut self, node_key: &Key, version: u64, data: &Node) {
-        self.put(StateSpace::SmtNode, &node_key.encode_with_version(version), &data.encode());
-    }
-
-    fn put_stale_node(&mut self, stale: &StaleNode) {
-        self.put(StateSpace::SmtStale, &stale.encode_key(), &stale.encode_value());
-    }
-
-    fn delete_node(&mut self, node_key: &Key, version: u64) {
-        self.delete(StateSpace::SmtNode, &node_key.encode_with_version(version));
-    }
-
-    fn delete_stale_node(&mut self, stale: &StaleNode) {
-        self.delete(StateSpace::SmtStale, &stale.encode_key());
     }
 }
 

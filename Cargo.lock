@@ -5720,32 +5720,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "vprogs-core-codec"
-version = "0.1.0"
-dependencies = [
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "vprogs-core-macros"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "vprogs-core-smt"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "tap",
- "tempfile",
- "vprogs-core-codec",
- "vprogs-core-types",
- "vprogs-storage-rocksdb-store",
- "vprogs-storage-types",
 ]
 
 [[package]]
@@ -5908,7 +5888,6 @@ dependencies = [
  "tokio",
  "vprogs-core-atomics",
  "vprogs-core-macros",
- "vprogs-core-smt",
  "vprogs-core-test-utils",
  "vprogs-core-types",
  "vprogs-scheduling-execution-workers",
@@ -5948,7 +5927,6 @@ name = "vprogs-state-metadata"
 version = "0.1.0"
 dependencies = [
  "borsh",
- "vprogs-core-smt",
  "vprogs-core-types",
  "vprogs-storage-types",
 ]
@@ -6002,17 +5980,12 @@ dependencies = [
  "num_cpus",
  "rocksdb",
  "tap",
- "vprogs-core-codec",
- "vprogs-core-smt",
  "vprogs-storage-types",
 ]
 
 [[package]]
 name = "vprogs-storage-types"
 version = "0.1.0"
-dependencies = [
- "vprogs-core-smt",
-]
 
 [[package]]
 name = "vprogs-transaction-runtime"
