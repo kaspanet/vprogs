@@ -1,9 +1,13 @@
 use std::{marker::PhantomData, path::Path, sync::Arc};
 
 use rocksdb::{DB, DBIteratorWithThreadMode, Direction, IteratorMode};
+use vprogs_core_smt::{Key, Node, StaleNode, Tree, WriteBatch as SmtWriteBatch};
 use vprogs_storage_types::{PrefixIterator, StateSpace, Store};
 
-use crate::{Config, DefaultConfig, WriteBatch, state_space_ext::StateSpaceExt};
+use crate::{
+    Config, DefaultConfig, WriteBatch, key_ext::KeyExt, stale_node_ext::StaleNodeExt,
+    state_space_ext::StateSpaceExt,
+};
 
 pub struct RocksDbStore<C: Config = DefaultConfig> {
     db: Arc<DB>,
@@ -72,6 +76,52 @@ impl<C: Config> Store for RocksDbStore<C> {
         let mode = IteratorMode::From(prefix, Direction::Forward);
         let iter = self.db.iterator_cf_opt(cf, read_opts, mode);
         Box::new(RocksDbPrefixIter { inner: iter })
+    }
+}
+
+impl<C: Config> Tree for RocksDbStore<C> {
+    type Hasher = vprogs_core_smt::Blake3;
+
+    fn node(&self, key: &Key, max_version: u64) -> Option<(u64, Node)> {
+        let mut iter = self.prefix_iter(StateSpace::SmtNode, &key.encode_with_version(max_version));
+        let (raw_key, raw_value) = iter.next()?;
+        let version = Key::decode_version(&raw_key).expect("corrupted smt node key");
+        let node = Node::decode(&mut raw_value.as_ref()).expect("corrupted smt node");
+        Some((version, node))
+    }
+
+    fn prune(&self, wb: &mut impl SmtWriteBatch, version: u64) {
+        for (raw_key, raw_value) in self.prefix_iter(StateSpace::SmtStale, &version.to_be_bytes()) {
+            let node_key = StaleNode::decode_key(&raw_key).expect("corrupted stale key");
+            let node_version = StaleNode::decode_value(&raw_value).expect("corrupted stale value");
+
+            wb.delete_node(&node_key, node_version);
+            wb.delete_stale_node(&StaleNode::new(version, node_key, node_version));
+        }
+    }
+
+    fn rollback(&self, wb: &mut impl SmtWriteBatch, version: u64) {
+        // Delete all stale markers recorded at this version. These markers reference nodes that
+        // were superseded when this version was committed - removing them "un-supersedes" those
+        // nodes so they become current again.
+        for (raw_key, raw_value) in self.prefix_iter(StateSpace::SmtStale, &version.to_be_bytes()) {
+            let node_key = StaleNode::decode_key(&raw_key).expect("corrupted stale key");
+            let node_version = StaleNode::decode_value(&raw_value).expect("corrupted stale value");
+            wb.delete_stale_node(&StaleNode::new(version, node_key, node_version));
+        }
+
+        // Delete all nodes written at this version. Requires a full CF scan since version is a
+        // key suffix, not a prefix. Rollback is rare, so the scan cost is acceptable.
+        let cf = self.cf(&StateSpace::SmtNode);
+        let iter = self.db.iterator_cf(cf, IteratorMode::Start);
+        for entry in iter {
+            let (raw_key, _) = entry.expect("rocksdb iteration failed");
+            let node_version = Key::decode_version(&raw_key).expect("corrupted smt node key");
+            if node_version == version {
+                let node_key = Key::decode(&mut &raw_key[..34]).expect("corrupted smt node key");
+                wb.delete_node(&node_key, version);
+            }
+        }
     }
 }
 
