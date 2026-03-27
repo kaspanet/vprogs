@@ -7,16 +7,6 @@ default-members = [
   "state/*",
   "storage/*",
   "transaction-runtime/*",
-  "zk/backend/risc0/api",
-  "zk/backend/risc0/test-suite",
-  "zk/abi",
-  "zk/batch-prover",
-  "zk/transaction-prover",
-  "zk/vm",
-]
-exclude = [
-  "zk/backend/risc0/transaction-processor",
-  "zk/backend/risc0/batch-processor",
 ]
 members = [
   "core/*",
@@ -26,12 +16,6 @@ members = [
   "state/*",
   "storage/*",
   "transaction-runtime/*",
-  "zk/backend/risc0/api",
-  "zk/backend/risc0/test-suite",
-  "zk/abi",
-  "zk/batch-prover",
-  "zk/transaction-prover",
-  "zk/vm",
 ]
 resolver = "3"
 
