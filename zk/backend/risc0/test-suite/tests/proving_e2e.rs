@@ -9,34 +9,10 @@ use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_abi::batch_processor::StateTransition;
 use vprogs_zk_backend_risc0_api::Backend;
+use vprogs_zk_backend_risc0_test_suite::{batch_processor_elf, transaction_processor_elf};
 use vprogs_zk_batch_prover::Backend as _;
 use vprogs_zk_transaction_prover::Backend as _;
 use vprogs_zk_vm::{ProvingPipeline, Vm};
-
-/// Loads the pre-built transaction processor ELF from the repository.
-fn transaction_processor_elf() -> Vec<u8> {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let elf_path =
-        format!("{manifest_dir}/../backend/risc0/transaction-processor/compiled/program.elf");
-    std::fs::read(&elf_path).unwrap_or_else(|e| {
-        panic!(
-            "transaction processor ELF not found at {elf_path}: {e}\n\
-             Run `./zk/backend/risc0/build-guests.sh transaction-processor` to rebuild it."
-        )
-    })
-}
-
-/// Loads the pre-built batch processor ELF from the repository.
-fn batch_processor_elf() -> Vec<u8> {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let elf_path = format!("{manifest_dir}/../backend/risc0/batch-processor/compiled/program.elf");
-    std::fs::read(&elf_path).unwrap_or_else(|e| {
-        panic!(
-            "batch processor ELF not found at {elf_path}: {e}\n\
-             Run `./zk/backend/risc0/build-guests.sh batch-processor` to rebuild it."
-        )
-    })
-}
 
 /// Proves two transactions that each increment a u32 counter on distinct resources.
 ///

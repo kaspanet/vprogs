@@ -7840,6 +7840,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-zk-backend-risc0-test-suite"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "tempfile",
+ "tokio",
+ "vprogs-core-smt",
+ "vprogs-core-test-utils",
+ "vprogs-core-types",
+ "vprogs-l1-types",
+ "vprogs-scheduling-scheduler",
+ "vprogs-state-version",
+ "vprogs-storage-manager",
+ "vprogs-storage-rocksdb-store",
+ "vprogs-zk-abi",
+ "vprogs-zk-backend-risc0-api",
+ "vprogs-zk-batch-prover",
+ "vprogs-zk-transaction-prover",
+ "vprogs-zk-vm",
+]
+
+[[package]]
 name = "vprogs-zk-batch-prover"
 version = "0.1.0"
 dependencies = [
@@ -7869,21 +7891,10 @@ dependencies = [
 name = "vprogs-zk-vm"
 version = "0.1.0"
 dependencies = [
- "blake3",
- "tempfile",
- "tokio",
- "vprogs-core-atomics",
- "vprogs-core-smt",
- "vprogs-core-test-utils",
- "vprogs-core-types",
  "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
- "vprogs-state-version",
- "vprogs-storage-manager",
- "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
  "vprogs-zk-abi",
- "vprogs-zk-backend-risc0-api",
  "vprogs-zk-batch-prover",
  "vprogs-zk-transaction-prover",
 ]
