@@ -7,8 +7,10 @@ use crate::{Result, batch_processor::TransactionJournals};
 
 /// Decoded batch processor input (zero-copy).
 ///
-/// Wire layout: `proof (length-prefixed) | leaf_order | tx_journals`
+/// Wire layout: `image_id(32) | proof (length-prefixed) | leaf_order | tx_journals`
 pub struct Inputs<'a> {
+    /// Transaction processor guest image ID.
+    pub image_id: &'a [u8; 32],
     /// Sparse Merkle tree proof (leaves carry pre-batch key + value_hash per resource).
     pub proof: Proof<'a>,
     /// Leaf order mapping: `leaf_order[leaf_pos] = resource_index` (materialized for O(1) access).
@@ -20,6 +22,9 @@ pub struct Inputs<'a> {
 impl<'a> Inputs<'a> {
     /// Decodes the batch processor input from a raw byte buffer into zero-copy views.
     pub fn decode(mut buf: &'a [u8]) -> Result<Self> {
+        // Image ID (32 bytes).
+        let image_id = buf.array::<32>("image_id")?;
+
         // Decode length-prefixed proof (comes before leaf_order so we know the leaf count).
         let proof_length = buf.le_u32("proof_length")? as usize;
         let proof = Proof::decode(buf.bytes(proof_length, "proof")?)?;
@@ -34,19 +39,27 @@ impl<'a> Inputs<'a> {
         // Remaining bytes are per-transaction journal entries.
         let tx_journals = TransactionJournals::new(buf);
 
-        Ok(Self { proof, leaf_order, tx_journals })
+        Ok(Self { image_id, proof, leaf_order, tx_journals })
     }
 
     /// Encodes the batch processor input into bytes (host-side).
     ///
-    /// Wire layout: `proof (length-prefixed) | leaf_order | tx_journals`
+    /// Wire layout: `image_id(32) | proof (length-prefixed) | leaf_order | tx_journals`
     #[cfg(feature = "host")]
-    pub fn encode(proof_bytes: &[u8], leaf_order: &[u32], tx_journals: &[Vec<u8>]) -> Vec<u8> {
+    pub fn encode(
+        image_id: &[u8; 32],
+        proof_bytes: &[u8],
+        leaf_order: &[u32],
+        tx_journals: &[Vec<u8>],
+    ) -> Vec<u8> {
         use crate::Write;
 
         let journals_size: usize = tx_journals.iter().map(|j| 4 + j.len()).sum();
-        let total = 4 + proof_bytes.len() + leaf_order.len() * 4 + journals_size;
+        let total = 32 + 4 + proof_bytes.len() + leaf_order.len() * 4 + journals_size;
         let mut buf = Vec::with_capacity(total);
+
+        // Image ID.
+        buf.write(image_id);
 
         // Proof (length-prefixed raw bytes).
         buf.extend_from_slice(&(proof_bytes.len() as u32).to_le_bytes());

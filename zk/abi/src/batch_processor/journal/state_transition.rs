@@ -2,11 +2,13 @@ use crate::{Error, Result, Write};
 
 /// Proven state transition for a batch - success or error (zero-copy on decode).
 ///
-/// Wire format: `discriminant(1) + payload`. Success payload is `prev_root(32) + new_root(32)`.
-/// Error payload is the encoded `Error`.
+/// Wire format: `discriminant(1) + payload`. Success payload is `image_id(32) + prev_root(32) +
+/// new_root(32)`. Error payload is the encoded `Error`.
 pub enum StateTransition<'a> {
     /// Batch verified successfully.
     Success {
+        /// Transaction processor guest image ID that was verified.
+        image_id: &'a [u8; 32],
         /// State root before this batch was applied.
         prev_root: &'a [u8; 32],
         /// State root after this batch was applied.
@@ -23,10 +25,11 @@ impl<'a> StateTransition<'a> {
     const ERROR: u8 = 0x01;
 
     /// Encodes a batch result to the journal (guest-side).
-    pub fn encode(w: &mut impl Write, result: &Result<([u8; 32], [u8; 32])>) {
+    pub fn encode(w: &mut impl Write, result: &Result<(&[u8; 32], [u8; 32], [u8; 32])>) {
         match result {
-            Ok((prev_root, new_root)) => {
+            Ok((image_id, prev_root, new_root)) => {
                 w.write(&[Self::SUCCESS]);
+                w.write(*image_id);
                 w.write(prev_root);
                 w.write(new_root);
             }
@@ -45,6 +48,7 @@ impl<'a> StateTransition<'a> {
         let mut buf = buf;
         match buf.byte("discriminant")? {
             Self::SUCCESS => Ok(Self::Success {
+                image_id: buf.array::<32>("image_id")?,
                 prev_root: buf.array::<32>("prev_root")?,
                 new_root: buf.array::<32>("new_root")?,
             }),
