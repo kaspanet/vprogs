@@ -13,11 +13,11 @@ use crate::{
 
 /// Batch processor context - holds all state needed for batch verification.
 ///
-/// Call `process_batch` for the full pipeline (read → verify → encode journal). The
+/// Call `process_batch` for the full pipeline (read -> verify -> encode journal). The
 /// `verify_journal` callback handles backend-specific inner proof verification (e.g.
 /// `env::verify` in risc0).
-pub struct Abi<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> {
-    /// Decoded batch inputs (image_id, proof, leaf_order, tx_journals).
+pub struct Abi<'a, V: Fn(&[u8]) -> Result<()>> {
+    /// Decoded batch inputs (proof, leaf_order, tx_journals).
     pub inputs: Inputs<'a>,
     /// Latest value hashes indexed by resource_index.
     pub value_hashes: Vec<&'a [u8; 32]>,
@@ -29,7 +29,7 @@ pub struct Abi<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> {
     pub verify_journal: V,
 }
 
-impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
+impl<'a, V: Fn(&[u8]) -> Result<()>> Abi<'a, V> {
     /// Reads inputs from the host, verifies all transactions, computes the state root transition,
     /// and writes the result (success or error) to the journal.
     pub fn process_batch(host: &mut impl Read, journal: &mut impl Write, verify_journal: V) {
@@ -39,7 +39,7 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
     }
 
     /// Decodes inputs, verifies all transactions, and computes the state root transition.
-    fn verify(inputs: &'a [u8], verify_journal: V) -> Result<(&'a [u8; 32], [u8; 32], [u8; 32])> {
+    fn verify(inputs: &'a [u8], verify_journal: V) -> Result<([u8; 32], [u8; 32])> {
         // Decode inputs and initialize context.
         let inputs = Inputs::decode(inputs)?;
         let mut this = Self {
@@ -67,7 +67,7 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
         let prev_root = this.inputs.proof.root::<Blake3>()?;
         let new_root = this.inputs.proof.compute_root::<Blake3>(|i| this.latest_hash(i))?;
 
-        Ok((this.inputs.image_id, prev_root, new_root))
+        Ok((prev_root, new_root))
     }
 
     /// Verifies a single transaction journal and applies its output mutations.
@@ -78,7 +78,7 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
         mapping_buf: &mut Vec<usize>,
     ) -> Result<()> {
         // Verify the inner ZK proof, then decode the journal.
-        (self.verify_journal)(self.inputs.image_id, journal_bytes)?;
+        (self.verify_journal)(journal_bytes)?;
         let journal = JournalEntries::decode(journal_bytes)?;
 
         // Sequential tx_index check.
