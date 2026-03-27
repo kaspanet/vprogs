@@ -86,56 +86,46 @@ resolver = "3"
   kaspad                    = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
 
   # Internal dependencies
-  vprogs-core-atomics = { path = "core/atomics" }
-  vprogs-core-codec = { path = "core/codec" }
-  vprogs-core-macros = { path = "core/macros" }
-  vprogs-core-smt = { path = "core/smt" }
-  vprogs-core-test-utils = { path = "core/test-utils" }
-  vprogs-core-types = { path = "core/types", default-features = false }
-  vprogs-l1-bridge = { path = "l1/bridge" }
-  vprogs-l1-types = { path = "l1/types" }
-  vprogs-node-cli = { path = "node/cli" }
-  vprogs-node-framework = { path = "node/framework" }
-  vprogs-node-test-utils = { path = "node/test-utils" }
-  vprogs-node-vm = { path = "node/vm" }
-  vprogs-scheduling-execution-workers = { path = "scheduling/execution-workers" }
-  vprogs-scheduling-scheduler = { path = "scheduling/scheduler" }
-  vprogs-scheduling-test-utils = { path = "scheduling/test-utils" }
-  vprogs-state-batch-metadata = { path = "state/batch-metadata" }
-  vprogs-state-metadata = { path = "state/metadata" }
-  vprogs-state-ptr-latest = { path = "state/ptr-latest" }
-  vprogs-state-ptr-rollback = { path = "state/ptr-rollback" }
-  vprogs-state-version = { path = "state/version" }
-  vprogs-storage-manager = { path = "storage/manager" }
-  vprogs-storage-rocksdb-store = { path = "storage/rocksdb-store" }
-  vprogs-storage-types = { path = "storage/types" }
-  vprogs-transaction-runtime = { path = "transaction-runtime/transaction-runtime" }
-  vprogs-transaction-runtime-address = { path = "transaction-runtime/address" }
-  vprogs-transaction-runtime-auth-context = { path = "transaction-runtime/auth-context" }
-  vprogs-transaction-runtime-authenticated-data = { path = "transaction-runtime/authenticated-data" }
+  vprogs-core-atomics                             = { path = "core/atomics" }
+  vprogs-core-macros                              = { path = "core/macros" }
+  vprogs-core-test-utils                          = { path = "core/test-utils" }
+  vprogs-core-types                               = { path = "core/types", default-features = false }
+  vprogs-l1-bridge                                = { path = "l1/bridge" }
+  vprogs-l1-types                                 = { path = "l1/types" }
+  vprogs-node-cli                                 = { path = "node/cli" }
+  vprogs-node-framework                           = { path = "node/framework" }
+  vprogs-node-test-utils                          = { path = "node/test-utils" }
+  vprogs-node-vm                                  = { path = "node/vm" }
+  vprogs-scheduling-execution-workers             = { path = "scheduling/execution-workers" }
+  vprogs-scheduling-scheduler                     = { path = "scheduling/scheduler" }
+  vprogs-scheduling-test-utils                    = { path = "scheduling/test-utils" }
+  vprogs-state-batch-metadata                     = { path = "state/batch-metadata" }
+  vprogs-state-metadata                           = { path = "state/metadata" }
+  vprogs-state-ptr-latest                         = { path = "state/ptr-latest" }
+  vprogs-state-ptr-rollback                       = { path = "state/ptr-rollback" }
+  vprogs-state-version                            = { path = "state/version" }
+  vprogs-storage-manager                          = { path = "storage/manager" }
+  vprogs-storage-rocksdb-store                    = { path = "storage/rocksdb-store" }
+  vprogs-storage-types                            = { path = "storage/types" }
+  vprogs-transaction-runtime                      = { path = "transaction-runtime/transaction-runtime" }
+  vprogs-transaction-runtime-address              = { path = "transaction-runtime/address" }
+  vprogs-transaction-runtime-auth-context         = { path = "transaction-runtime/auth-context" }
+  vprogs-transaction-runtime-authenticated-data   = { path = "transaction-runtime/authenticated-data" }
   vprogs-transaction-runtime-builtin-capabilities = { path = "transaction-runtime/builtin-capabilities" }
-  vprogs-transaction-runtime-data = { path = "transaction-runtime/data" }
-  vprogs-transaction-runtime-data-context = { path = "transaction-runtime/data-context" }
-  vprogs-transaction-runtime-error = { path = "transaction-runtime/error" }
-  vprogs-transaction-runtime-instruction = { path = "transaction-runtime/instruction" }
-  vprogs-transaction-runtime-lock = { path = "transaction-runtime/lock" }
-  vprogs-transaction-runtime-object-id = { path = "transaction-runtime/object-id" }
-  vprogs-transaction-runtime-program = { path = "transaction-runtime/program" }
-  vprogs-transaction-runtime-program-arg = { path = "transaction-runtime/program-arg" }
-  vprogs-transaction-runtime-program-context = { path = "transaction-runtime/program-context" }
-  vprogs-transaction-runtime-program-type = { path = "transaction-runtime/program-type" }
-  vprogs-transaction-runtime-pubkey = { path = "transaction-runtime/pubkey" }
-  vprogs-transaction-runtime-signature-lock = { path = "transaction-runtime/signature-lock" }
-  vprogs-transaction-runtime-transaction = { path = "transaction-runtime/transaction" }
-  vprogs-transaction-runtime-transaction-effects = { path = "transaction-runtime/transaction-effects" }
-  vprogs-zk-abi = { path = "zk/abi", default-features = false }
-  vprogs-zk-backend-risc0-api = { path = "zk/backend/risc0/api", default-features = false, features = [
-    "host",
-  ] }
-
-  vprogs-zk-batch-prover       = { path = "zk/batch-prover" }
-  vprogs-zk-transaction-prover = { path = "zk/transaction-prover" }
-  vprogs-zk-vm                 = { path = "zk/vm" }
+  vprogs-transaction-runtime-data                 = { path = "transaction-runtime/data" }
+  vprogs-transaction-runtime-data-context         = { path = "transaction-runtime/data-context" }
+  vprogs-transaction-runtime-error                = { path = "transaction-runtime/error" }
+  vprogs-transaction-runtime-instruction          = { path = "transaction-runtime/instruction" }
+  vprogs-transaction-runtime-lock                 = { path = "transaction-runtime/lock" }
+  vprogs-transaction-runtime-object-id            = { path = "transaction-runtime/object-id" }
+  vprogs-transaction-runtime-program              = { path = "transaction-runtime/program" }
+  vprogs-transaction-runtime-program-arg          = { path = "transaction-runtime/program-arg" }
+  vprogs-transaction-runtime-program-context      = { path = "transaction-runtime/program-context" }
+  vprogs-transaction-runtime-program-type         = { path = "transaction-runtime/program-type" }
+  vprogs-transaction-runtime-pubkey               = { path = "transaction-runtime/pubkey" }
+  vprogs-transaction-runtime-signature-lock       = { path = "transaction-runtime/signature-lock" }
+  vprogs-transaction-runtime-transaction          = { path = "transaction-runtime/transaction" }
+  vprogs-transaction-runtime-transaction-effects  = { path = "transaction-runtime/transaction-effects" }
 
 [patch.'https://github.com/kaspanet/rusty-kaspa']
 kaspa-math  = { git = "https://github.com/hmoog/rusty-kaspa", branch = "feat/kaspa-math-32bit" }

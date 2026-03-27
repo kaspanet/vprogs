@@ -224,7 +224,6 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
 
                 // Delete batch metadata entries for this batch.
                 StoredBatchMetadata::delete(wb, index);
-
             }
 
             // Advance root on disk.

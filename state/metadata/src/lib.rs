@@ -65,5 +65,4 @@ impl StateMetadata {
             &borsh::to_vec(checkpoint).expect("failed to serialize Checkpoint"),
         );
     }
-
 }
