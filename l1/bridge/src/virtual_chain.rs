@@ -9,7 +9,7 @@ use crate::{
 /// Tracks the virtual chain as a doubly-linked list between a finalized `root` and the latest
 /// processed `tip`.
 pub(crate) struct VirtualChain {
-    /// Finalization boundary — blocks at or before this point are considered final.
+    /// Finalization boundary - blocks at or before this point are considered final.
     root: ChainBlock,
     /// Most recently processed block.
     tip: ChainBlock,
@@ -71,7 +71,7 @@ impl VirtualChain {
         &mut self,
         hash: &Hash,
     ) -> Result<Option<Checkpoint<ChainBlockMetadata>>> {
-        // Already at this pruning point — nothing to do.
+        // Already at this pruning point - nothing to do.
         if self.root.metadata().block_hash() == *hash {
             return Ok(None);
         }
@@ -86,7 +86,7 @@ impl VirtualChain {
             current = block.advance_root();
         }
 
-        // The target hash was not found — the chain is now destroyed and the bridge must stop.
+        // The target hash was not found - the chain is now destroyed and the bridge must stop.
         Err(Error::HashNotFound(*hash))
     }
 }

@@ -18,7 +18,7 @@ use crate::{Read, ScheduledTransactionRef, StateDiff, Write, processor::Processo
 /// to the same resource are linked via `prev`/`next` pointers so that write results flow forward to
 /// dependent reads. Derefs to the inner `AccessMetadata`.
 #[smart_pointer(deref(access_metadata))]
-pub struct ResourceAccess<S: Store, P: Processor> {
+pub struct ResourceAccess<S: Store, P: Processor<S>> {
     /// The access metadata (deref target).
     access_metadata: AccessMetadata,
     /// True if this is the first access to the resource in this batch.
@@ -39,7 +39,7 @@ pub struct ResourceAccess<S: Store, P: Processor> {
     next: ArcSwapOption<Self>,
 }
 
-impl<S: Store, P: Processor> ResourceAccess<S, P> {
+impl<S: Store, P: Processor<S>> ResourceAccess<S, P> {
     /// Returns the resource state as it was before this access.
     #[inline(always)]
     pub fn read_state(&self) -> Arc<StateVersion> {
@@ -62,6 +62,12 @@ impl<S: Store, P: Processor> ResourceAccess<S, P> {
     #[inline(always)]
     pub fn is_batch_tail(&self) -> bool {
         self.is_batch_tail.load(Ordering::Relaxed)
+    }
+
+    /// Returns the per-batch resource index.
+    #[inline(always)]
+    pub fn resource_index(&self) -> u32 {
+        self.state_diff.index()
     }
 
     pub(crate) fn new(
@@ -117,8 +123,8 @@ impl<S: Store, P: Processor> ResourceAccess<S, P> {
     }
 
     /// Returns true if the state diff this resource access belongs to has been committed.
-    pub(crate) fn was_committed(&self) -> bool {
-        self.state_diff.was_committed()
+    pub(crate) fn committed(&self) -> bool {
+        self.state_diff.committed()
     }
 
     pub(crate) fn set_read_state(&self, state: Arc<StateVersion>) {

@@ -237,7 +237,7 @@ impl BridgeWorker {
     }
 
     /// Registers a notification listener for VirtualChainChanged (used as a "something changed"
-    /// signal — actual data is fetched via the v2 API) and PruningPointUtxoSetOverride
+    /// signal - actual data is fetched via the v2 API) and PruningPointUtxoSetOverride
     /// (finalization).
     async fn subscribe_to_notifications(&mut self) -> Result<()> {
         // Register a persistent listener that pipes notifications into our channel.
@@ -247,7 +247,7 @@ impl BridgeWorker {
             ChannelType::Persistent,
         ));
 
-        // VCC is subscribed without accepted_transaction_ids — we only use it as a "something
+        // VCC is subscribed without accepted_transaction_ids - we only use it as a "something
         // changed" signal and fetch verbose data via the v2 API.
         for scope in [
             Scope::VirtualChainChanged(VirtualChainChangedScope::new(false)),
@@ -270,7 +270,7 @@ impl BridgeWorker {
             target.index(),
         );
 
-        // Fetch with Low verbosity — sufficient for hash and blue_score needed for chain blocks.
+        // Fetch with Low verbosity - sufficient for hash and blue_score needed for chain blocks.
         let response = self
             .client
             .get_virtual_chain_from_block_v2(start.metadata().block_hash(), Some(Low), None)
@@ -303,7 +303,7 @@ impl BridgeWorker {
     async fn fetch_chain_updates(&mut self) -> Result<()> {
         let tip = self.virtual_chain.tip();
 
-        // Index 0 is the sentinel — no blocks processed yet, start from the L1 pruning point.
+        // Index 0 is the sentinel - no blocks processed yet, start from the L1 pruning point.
         let start_hash = if tip.index() == 0 {
             self.client.get_block_dag_info().await?.pruning_point_hash
         } else {
@@ -316,7 +316,7 @@ impl BridgeWorker {
             .get_virtual_chain_from_block_v2(start_hash, Some(Full), self.reorg_filter.threshold())
             .await?;
 
-        // Removed hashes indicate a reorg — roll back before processing additions.
+        // Removed hashes indicate a reorg - roll back before processing additions.
         if !response.removed_chain_block_hashes.is_empty() {
             self.handle_reorg(&response)?;
         }

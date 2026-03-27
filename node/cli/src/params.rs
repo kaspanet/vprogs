@@ -55,7 +55,7 @@ pub struct NodeParams {
 impl NodeParams {
     /// Converts the top-level CLI params into a [`NodeConfig`], recursively converting each
     /// subsection and injecting the VM and store implementations.
-    pub fn into_config<S: Store, P: Processor>(self, vm: P, store: S) -> NodeConfig<S, P> {
+    pub fn into_config<S: Store, P: Processor<S>>(self, vm: P, store: S) -> NodeConfig<S, P> {
         NodeConfig {
             api_channel_capacity: self.api_channel_capacity,
             execution_config: self.execution.into_config(vm),

@@ -7,7 +7,7 @@ use vprogs_transaction_runtime_error::{VmError, VmResult};
 
 use crate::TransactionRuntime;
 
-impl<'a, 'b, S: Store, P: Processor> DataContext for TransactionRuntime<'a, 'b, S, P> {
+impl<'a, 'b, S: Store, P: Processor<S>> DataContext for TransactionRuntime<'a, 'b, S, P> {
     fn borrow(&mut self, address: Address) -> VmResult<&AuthenticatedData> {
         self.loaded_data.get(&address).ok_or(VmError::DataNotFound(address))
     }

@@ -5,7 +5,7 @@ use vprogs_transaction_runtime_pubkey::PubKey;
 
 use crate::TransactionRuntime;
 
-impl<'a, 'b, S: Store, P: Processor> AuthContext for TransactionRuntime<'a, 'b, S, P> {
+impl<'a, 'b, S: Store, P: Processor<S>> AuthContext for TransactionRuntime<'a, 'b, S, P> {
     fn has_signer(&self, pub_key: &PubKey) -> bool {
         self.signers.contains(pub_key)
     }
