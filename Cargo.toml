@@ -8,6 +8,7 @@ default-members = [
   "storage/*",
   "transaction-runtime/*",
   "zk/abi",
+  "zk/transaction-prover",
 ]
 members = [
   "core/*",
@@ -18,6 +19,7 @@ members = [
   "storage/*",
   "transaction-runtime/*",
   "zk/abi",
+  "zk/transaction-prover",
 ]
 resolver = "3"
 
