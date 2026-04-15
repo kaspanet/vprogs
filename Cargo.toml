@@ -9,6 +9,7 @@ default-members = [
   "transaction-runtime/*",
   "zk/abi",
   "zk/transaction-prover",
+  "zk/batch-prover",
 ]
 members = [
   "core/*",
@@ -20,6 +21,7 @@ members = [
   "transaction-runtime/*",
   "zk/abi",
   "zk/transaction-prover",
+  "zk/batch-prover",
 ]
 resolver = "3"
 
@@ -133,6 +135,7 @@ resolver = "3"
   vprogs-transaction-runtime-transaction          = { path = "transaction-runtime/transaction" }
   vprogs-transaction-runtime-transaction-effects  = { path = "transaction-runtime/transaction-effects" }
   vprogs-zk-abi                                   = { path = "zk/abi", default-features = false }
+  vprogs-zk-batch-prover                          = { path = "zk/batch-prover" }
   vprogs-zk-transaction-prover                    = { path = "zk/transaction-prover" }
 
 [patch.'https://github.com/kaspanet/rusty-kaspa']
