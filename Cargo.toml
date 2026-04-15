@@ -7,6 +7,7 @@ default-members = [
   "state/*",
   "storage/*",
   "transaction-runtime/*",
+  "zk/abi",
 ]
 members = [
   "core/*",
@@ -16,6 +17,7 @@ members = [
   "state/*",
   "storage/*",
   "transaction-runtime/*",
+  "zk/abi",
 ]
 resolver = "3"
 
@@ -128,6 +130,7 @@ resolver = "3"
   vprogs-transaction-runtime-signature-lock       = { path = "transaction-runtime/signature-lock" }
   vprogs-transaction-runtime-transaction          = { path = "transaction-runtime/transaction" }
   vprogs-transaction-runtime-transaction-effects  = { path = "transaction-runtime/transaction-effects" }
+  vprogs-zk-abi                                   = { path = "zk/abi", default-features = false }
 
 [patch.'https://github.com/kaspanet/rusty-kaspa']
 kaspa-math  = { git = "https://github.com/hmoog/rusty-kaspa", branch = "feat/kaspa-math-32bit" }
