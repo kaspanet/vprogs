@@ -1,32 +1,34 @@
-use crate::VmInterface;
-
 /// Configuration for the scheduler's execution environment.
 #[derive(Clone, Debug)]
-pub struct ExecutionConfig<V: VmInterface> {
+pub struct ExecutionConfig<P> {
+    /// Number of parallel execution worker threads.
     pub worker_count: usize,
-    pub vm: Option<V>,
+    /// The processor used to execute transactions.
+    pub processor: Option<P>,
 }
 
-impl<V: VmInterface> Default for ExecutionConfig<V> {
+impl<P> Default for ExecutionConfig<P> {
     fn default() -> Self {
-        Self { worker_count: num_cpus::get_physical(), vm: None }
+        Self { worker_count: num_cpus::get_physical(), processor: None }
     }
 }
 
-impl<V: VmInterface> ExecutionConfig<V> {
+impl<P> ExecutionConfig<P> {
+    /// Sets the number of parallel execution worker threads.
     pub fn with_worker_count(mut self, workers: usize) -> Self {
         self.worker_count = workers;
         self
     }
 
-    /// Sets the VM implementation used to execute transactions.
-    pub fn with_vm(mut self, vm: V) -> Self {
-        self.vm = Some(vm);
+    /// Sets the processor used to execute transactions.
+    pub fn with_processor(mut self, processor: P) -> Self {
+        self.processor = Some(processor);
         self
     }
 
-    /// Consumes the config, returning the worker count and VM. Panics if no VM was set.
-    pub fn unpack(mut self) -> (usize, V) {
-        (self.worker_count, self.vm.take().expect("unpack requires vm to be set"))
+    /// Consumes the config, returning the worker count and processor. Panics if no processor
+    /// was set.
+    pub fn unpack(mut self) -> (usize, P) {
+        (self.worker_count, self.processor.take().expect("unpack requires processor to be set"))
     }
 }

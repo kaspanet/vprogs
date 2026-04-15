@@ -5,6 +5,7 @@ version.workspace = true
 
 [dependencies]
 arc-swap.workspace                            = true
+blake3.workspace                              = true
 borsh.workspace                               = true
 crossbeam-deque.workspace                     = true
 crossbeam-queue.workspace                     = true
@@ -20,7 +21,15 @@ vprogs-state-batch-metadata.workspace         = true
 vprogs-state-metadata.workspace               = true
 vprogs-state-ptr-latest.workspace             = true
 vprogs-state-ptr-rollback.workspace           = true
-vprogs-state-space.workspace                  = true
 vprogs-state-version.workspace                = true
 vprogs-storage-manager.workspace              = true
 vprogs-storage-types.workspace                = true
+
+[dev-dependencies]
+tempfile.workspace                     = true
+vprogs-core-test-utils.workspace       = true
+vprogs-core-types.workspace            = true
+vprogs-scheduling-test-utils.workspace = true
+vprogs-state-metadata.workspace        = true
+vprogs-storage-manager.workspace       = true
+vprogs-storage-rocksdb-store.workspace = true

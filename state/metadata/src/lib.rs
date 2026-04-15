@@ -1,6 +1,5 @@
 use vprogs_core_types::{BatchMetadata, Checkpoint};
-use vprogs_state_space::StateSpace;
-use vprogs_storage_types::{ReadStore, WriteBatch};
+use vprogs_storage_types::{ReadStore, StateSpace, WriteBatch};
 
 /// Well-known metadata keys.
 mod keys {
@@ -24,7 +23,7 @@ impl StateMetadata {
     /// older batches. A default (index 0) indicates a fresh database with no commits.
     pub fn root<M: BatchMetadata, S>(store: &S) -> Checkpoint<M>
     where
-        S: ReadStore<StateSpace = StateSpace>,
+        S: ReadStore,
     {
         store
             .get(StateSpace::Metadata, keys::ROOT)
@@ -35,7 +34,7 @@ impl StateMetadata {
     /// Sets the root checkpoint (oldest surviving batch).
     pub fn set_root<M: BatchMetadata, W>(wb: &mut W, checkpoint: &Checkpoint<M>)
     where
-        W: WriteBatch<StateSpace = StateSpace>,
+        W: WriteBatch,
     {
         wb.put(
             StateSpace::Metadata,
@@ -47,7 +46,7 @@ impl StateMetadata {
     /// Returns the last committed batch, or defaults if no batches have been committed yet.
     pub fn last_committed<M: BatchMetadata, S>(store: &S) -> Checkpoint<M>
     where
-        S: ReadStore<StateSpace = StateSpace>,
+        S: ReadStore,
     {
         store
             .get(StateSpace::Metadata, keys::LAST_COMMITTED)
@@ -58,7 +57,7 @@ impl StateMetadata {
     /// Sets the last committed batch.
     pub fn set_last_committed<M: BatchMetadata, W>(wb: &mut W, checkpoint: &Checkpoint<M>)
     where
-        W: WriteBatch<StateSpace = StateSpace>,
+        W: WriteBatch,
     {
         wb.put(
             StateSpace::Metadata,

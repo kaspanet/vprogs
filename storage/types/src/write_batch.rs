@@ -1,5 +1,6 @@
+use crate::StateSpace;
+
 pub trait WriteBatch {
-    type StateSpace;
-    fn put(&mut self, ns: Self::StateSpace, key: &[u8], value: &[u8]);
-    fn delete(&mut self, ns: Self::StateSpace, key: &[u8]);
+    fn put(&mut self, ns: StateSpace, key: &[u8], value: &[u8]);
+    fn delete(&mut self, ns: StateSpace, key: &[u8]);
 }

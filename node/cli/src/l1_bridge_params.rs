@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use clap::Args;
 use serde::{Deserialize, Serialize};
-use vprogs_node_l1_bridge::L1BridgeConfig;
+use vprogs_l1_bridge::L1BridgeConfig;
 
 use crate::extensions::ConnectStrategyExt;
 

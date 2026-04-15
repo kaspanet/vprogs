@@ -1,5 +1,11 @@
+use borsh::{BorshDeserialize, BorshSerialize};
+use rkyv::{Archive, Deserialize, Serialize};
+
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Archive, Serialize, Deserialize)] // rkyv serialization
+#[derive(BorshSerialize, BorshDeserialize)] // borsh serialization
+#[borsh(use_discriminant = true)]
 pub enum AccessType {
     Read = 0,
     Write = 1,

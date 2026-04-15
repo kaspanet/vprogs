@@ -1,19 +1,16 @@
-use vprogs_state_space::StateSpace;
 use vprogs_storage_manager::{ReadCmd, WriteCmd};
 use vprogs_storage_types::{ReadStore, Store};
 
-use crate::{
-    ResourceAccess, RuntimeBatch, StateDiff, rollback::Rollback, vm_interface::VmInterface,
-};
+use crate::{ResourceAccess, ScheduledBatch, StateDiff, processor::Processor, rollback::Rollback};
 
 /// Commands dispatched to the storage manager's read worker.
-pub enum Read<S: Store<StateSpace = StateSpace>, V: VmInterface> {
+pub enum Read<S: Store, P: Processor<S>> {
     /// Fetch the latest version data for a resource from disk.
-    LatestData(ResourceAccess<S, V>),
+    LatestData(ResourceAccess<S, P>),
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: VmInterface> ReadCmd<StateSpace> for Read<S, V> {
-    fn exec<RS: ReadStore<StateSpace = StateSpace>>(&self, store: &RS) {
+impl<S: Store, P: Processor<S>> ReadCmd for Read<S, P> {
+    fn exec<RS: ReadStore>(&self, store: &RS) {
         match self {
             Read::LatestData(resource_access) => resource_access.read_latest_data(store),
         }
@@ -21,24 +18,20 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> ReadCmd<StateSpace> for 
 }
 
 /// Commands dispatched to the storage manager's write worker.
-pub enum Write<S: Store<StateSpace = StateSpace>, V: VmInterface> {
+pub enum Write<S: Store, P: Processor<S>> {
     /// Persist a resource's versioned data and rollback pointer.
-    StateDiff(StateDiff<S, V>),
+    StateDiff(StateDiff<S, P>),
     /// Finalize a batch by writing latest pointers and batch metadata.
-    CommitBatch(RuntimeBatch<S, V>),
+    CommitBatch(ScheduledBatch<S, P>),
     /// Revert all batches after a target checkpoint.
-    Rollback(Rollback<S, V>),
+    Rollback(Rollback<S, P>),
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: VmInterface> WriteCmd<StateSpace> for Write<S, V> {
-    fn exec<ST: Store<StateSpace = StateSpace>>(
-        &self,
-        store: &ST,
-        mut wb: ST::WriteBatch,
-    ) -> ST::WriteBatch {
+impl<S: Store, P: Processor<S>> WriteCmd for Write<S, P> {
+    fn exec<ST: Store>(&self, store: &ST, mut wb: ST::WriteBatch) -> ST::WriteBatch {
         match self {
             Write::StateDiff(state_diff) => state_diff.write(&mut wb),
-            Write::CommitBatch(batch) => batch.commit(&mut wb),
+            Write::CommitBatch(batch) => batch.commit(store, &mut wb),
             Write::Rollback(rollback) => return rollback.execute(store, wb),
         }
         wb

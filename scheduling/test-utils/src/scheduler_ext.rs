@@ -1,0 +1,77 @@
+use std::time::{Duration, Instant};
+
+use vprogs_core_types::ResourceId;
+use vprogs_scheduling_scheduler::Scheduler;
+use vprogs_state_version::StateVersion;
+use vprogs_storage_rocksdb_store::RocksDbStore;
+use vprogs_storage_types::{ReadStore, StateSpace};
+
+use crate::Processor;
+
+/// Extension trait for scheduler test helpers.
+pub trait SchedulerExt {
+    /// Waits until batch `expected` has been fully pruned (metadata deleted from disk), or panics
+    /// on timeout.
+    fn wait_pruned(&self, expected: u64, timeout: Duration) -> &Self;
+
+    /// Repeatedly processes the eviction queue until the cache is empty or timeout is reached.
+    fn wait_cache_empty(&mut self, timeout: Duration) -> &mut Self;
+
+    /// Asserts that a resource has the expected version and writer log.
+    fn assert_written_state(&self, resource_id: ResourceId, writers: Vec<usize>) -> &Self;
+
+    /// Asserts that a resource has been deleted (no latest pointer exists).
+    fn assert_resource_deleted(&self, resource_id: ResourceId) -> &Self;
+}
+
+impl SchedulerExt for Scheduler<RocksDbStore, Processor> {
+    fn wait_pruned(&self, expected: u64, timeout: Duration) -> &Self {
+        let start = Instant::now();
+        let key = expected.to_be_bytes();
+        loop {
+            if self.state().storage().store().get(StateSpace::BatchMetadata, &key).is_none() {
+                return self;
+            }
+            if start.elapsed() > timeout {
+                panic!("Timeout waiting for batch {} to be pruned from disk.", expected);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn wait_cache_empty(&mut self, timeout: Duration) -> &mut Self {
+        let start = Instant::now();
+        while self.cached_resource_count() > 0 {
+            if start.elapsed() > timeout {
+                panic!(
+                    "Timeout waiting for cache to empty. Still have {} cached resources.",
+                    self.cached_resource_count()
+                );
+            }
+            self.process_eviction_queue();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        self
+    }
+
+    fn assert_written_state(&self, resource_id: ResourceId, writers: Vec<usize>) -> &Self {
+        let store = self.state().storage().store();
+        let writer_count = writers.len();
+        let writer_log: Vec<u8> = writers.iter().flat_map(|id| id.to_be_bytes()).collect();
+
+        let versioned_state = StateVersion::from_latest_data(store.as_ref(), resource_id);
+        assert_eq!(versioned_state.version(), writer_count as u64);
+        assert_eq!(*versioned_state.data(), writer_log);
+        self
+    }
+
+    fn assert_resource_deleted(&self, resource_id: ResourceId) -> &Self {
+        let store = self.state().storage().store();
+        assert!(
+            store.get(StateSpace::StatePtrLatest, &resource_id[..]).is_none(),
+            "Resource {:?} should have been deleted but still exists",
+            resource_id
+        );
+        self
+    }
+}

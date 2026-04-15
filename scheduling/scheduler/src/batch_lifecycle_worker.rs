@@ -5,32 +5,31 @@ use std::{
 
 use crossbeam_queue::SegQueue;
 use tokio::{runtime::Builder, sync::Notify};
-use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
-use crate::{RuntimeBatch, VmInterface};
+use crate::{Processor, ScheduledBatch};
 
 /// Background worker that drives each batch through its lifecycle stages.
 ///
 /// Batches are pushed into a queue and processed sequentially: wait for all transactions to
-/// execute, call the VM's post-process hook, wait for all state diffs to persist, then submit the
-/// batch for commit and wait for finalization.
-pub(crate) struct BatchLifecycleWorker<S: Store<StateSpace = StateSpace>, V: VmInterface> {
-    queue: Arc<SegQueue<RuntimeBatch<S, V>>>,
+/// execute, wait for all state diffs to persist, then submit the batch for commit and wait for
+/// finalization.
+pub(crate) struct BatchLifecycleWorker<S: Store, P: Processor<S>> {
+    queue: Arc<SegQueue<ScheduledBatch<S, P>>>,
     notify: Arc<Notify>,
     handle: JoinHandle<()>,
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: VmInterface> BatchLifecycleWorker<S, V> {
-    pub(crate) fn new(vm: V) -> Self {
+impl<S: Store, P: Processor<S>> BatchLifecycleWorker<S, P> {
+    pub(crate) fn new() -> Self {
         let queue = Arc::new(SegQueue::new());
         let notify = Arc::new(Notify::new());
-        let handle = Self::start(queue.clone(), notify.clone(), vm);
+        let handle = Self::start(queue.clone(), notify.clone());
 
         Self { queue, notify, handle }
     }
 
-    pub(crate) fn push(&self, batch: RuntimeBatch<S, V>) {
+    pub(crate) fn push(&self, batch: ScheduledBatch<S, P>) {
         self.queue.push(batch);
         self.notify.notify_one();
     }
@@ -41,18 +40,13 @@ impl<S: Store<StateSpace = StateSpace>, V: VmInterface> BatchLifecycleWorker<S, 
         self.handle.join().expect("batch lifecycle worker panicked");
     }
 
-    fn start(
-        queue: Arc<SegQueue<RuntimeBatch<S, V>>>,
-        notify: Arc<Notify>,
-        vm: V,
-    ) -> JoinHandle<()> {
+    fn start(queue: Arc<SegQueue<ScheduledBatch<S, P>>>, notify: Arc<Notify>) -> JoinHandle<()> {
         thread::spawn(move || {
             Builder::new_current_thread().build().expect("failed to build tokio runtime").block_on(
                 async move {
                     while Arc::strong_count(&queue) != 1 {
                         while let Some(batch) = queue.pop() {
                             batch.wait_processed().await;
-                            vm.post_process_batch(&batch);
                             batch.wait_persisted().await;
                             batch.schedule_commit();
                             batch.wait_committed().await;

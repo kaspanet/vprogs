@@ -5,29 +5,28 @@ use std::{
 
 use tokio::{runtime::Builder, sync::mpsc};
 use vprogs_core_atomics::AtomicAsyncLatch;
-use vprogs_node_l1_bridge::L1Bridge;
+use vprogs_l1_bridge::L1Bridge;
 use vprogs_scheduling_scheduler::Scheduler;
-use vprogs_state_space::StateSpace;
 use vprogs_storage_types::Store;
 
-use crate::{NodeVm, api::NodeApi, config::NodeConfig, worker::NodeWorker};
+use crate::{Processor, api::NodeApi, config::NodeConfig, worker::NodeWorker};
 
 /// A running node that processes L1 chain blocks through the L2 scheduler.
 ///
 /// Created via [`Node::new`], which starts all background components (bridge, scheduler, event
 /// loop). The node runs autonomously until [`shutdown`](Self::shutdown) is called.
-pub struct Node<S: Store<StateSpace = StateSpace>, V: NodeVm> {
+pub struct Node<S: Store, P: Processor<S>> {
     /// Cloneable handle for interacting with the node.
-    api: NodeApi<S, V>,
+    api: NodeApi<S, P>,
     /// Worker thread running the event loop.
     handle: Option<JoinHandle<()>>,
     /// Signal to stop the event loop.
     shutdown: Arc<AtomicAsyncLatch>,
 }
 
-impl<S: Store<StateSpace = StateSpace>, V: NodeVm> Node<S, V> {
+impl<S: Store, P: Processor<S>> Node<S, P> {
     /// Creates and starts a new node.
-    pub fn new(config: NodeConfig<S, V>) -> Self {
+    pub fn new(config: NodeConfig<S, P>) -> Self {
         // Create the scheduler - internally reads last checkpoint from store.
         let scheduler = Scheduler::new(config.execution_config, config.storage_config);
 
@@ -60,7 +59,7 @@ impl<S: Store<StateSpace = StateSpace>, V: NodeVm> Node<S, V> {
     }
 
     /// Returns a handle for interacting with the node.
-    pub fn api(&self) -> &NodeApi<S, V> {
+    pub fn api(&self) -> &NodeApi<S, P> {
         &self.api
     }
 
@@ -78,7 +77,7 @@ impl<S: Store<StateSpace = StateSpace>, V: NodeVm> Node<S, V> {
 
 /// Ensures the worker thread receives a shutdown signal even if the node is dropped without an
 /// explicit [`shutdown`] call.
-impl<S: Store<StateSpace = StateSpace>, V: NodeVm> Drop for Node<S, V> {
+impl<S: Store, P: Processor<S>> Drop for Node<S, P> {
     fn drop(&mut self) {
         self.shutdown.open();
     }

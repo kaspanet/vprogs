@@ -16,7 +16,7 @@ use crate::{
     write::WriteConfig,
 };
 
-pub struct WriteWorker<K: Store, W: WriteCmd<K::StateSpace>> {
+pub struct WriteWorker<K: Store, W: WriteCmd> {
     config: WriteConfig,
     store: Arc<K>,
     queue: CmdQueue<W>,
@@ -25,7 +25,7 @@ pub struct WriteWorker<K: Store, W: WriteCmd<K::StateSpace>> {
     is_shutdown: Arc<AtomicBool>,
 }
 
-impl<K: Store, W: WriteCmd<K::StateSpace>> WriteWorker<K, W> {
+impl<K: Store, W: WriteCmd> WriteWorker<K, W> {
     pub(crate) fn spawn(
         config: &WriteConfig,
         queue: &CmdQueue<W>,

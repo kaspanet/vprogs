@@ -1,8 +1,0 @@
-[package]
-edition.workspace = true
-name              = "vprogs-transaction-runtime-object-access"
-version.workspace = true
-
-[dependencies]
-vprogs-core-types.workspace                    = true
-vprogs-transaction-runtime-object-id.workspace = true

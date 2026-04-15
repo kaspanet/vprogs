@@ -1,4 +1,0 @@
-[package]
-edition.workspace = true
-name              = "vprogs-state-space"
-version.workspace = true

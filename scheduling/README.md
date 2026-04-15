@@ -10,8 +10,8 @@ Defines **how we provide access** to state. This layer orchestrates transaction 
 The main orchestrator for transaction execution:
 
 - **Scheduler** - Entry point for batch processing
-- **RuntimeBatch** - Groups transactions for atomic execution
-- **RuntimeTx** - Individual transaction runtime state
+- **ScheduledBatch** - Groups transactions for atomic execution
+- **ScheduledTransaction** - Individual transaction runtime state
 - **Resource** - Tracks dependency chains per resource
 - **ResourceAccess** - Manages read/write access to resources
 - **StateDiff** - Captures state changes per resource per batch
@@ -32,7 +32,7 @@ Thread pool for parallel transaction execution:
 
 - Work-stealing deque for load balancing
 - Configurable worker count
-- Integrates with RuntimeBatch for task distribution
+- Integrates with ScheduledBatch for task distribution
 
 ### test-suite/
 `vprogs-scheduling-test-suite`

@@ -1,7 +1,7 @@
 use std::{marker::PhantomData, sync::Arc};
 
 use rocksdb::DB;
-use vprogs_state_space::StateSpace;
+use vprogs_storage_types::StateSpace;
 
 use crate::{
     config::{Config, DefaultConfig},
@@ -21,8 +21,6 @@ impl<C: Config> WriteBatch<C> {
 }
 
 impl<C: Config> vprogs_storage_types::WriteBatch for WriteBatch<C> {
-    type StateSpace = StateSpace;
-
     fn put(&mut self, ns: StateSpace, key: &[u8], value: &[u8]) {
         let cf_handle = <StateSpace as StateSpaceExt<C>>::cf_name(&ns);
         let Some(cf) = self.db.cf_handle(cf_handle) else {
