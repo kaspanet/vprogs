@@ -46,7 +46,7 @@ RocksDB implementation of the Store trait:
 
 - Column families for each StateSpace variant
 - Configurable compression (lz4, zstd, snappy, zlib, bzip2)
-- jemalloc allocator for performance
+- jemalloc allocator for performance on non-Windows targets
 
 ## Layer Position
 

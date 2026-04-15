@@ -5,8 +5,28 @@ version.workspace = true
 
 [dependencies]
 num_cpus.workspace             = true
-rocksdb.workspace              = true
 tap.workspace                  = true
 vprogs-core-codec.workspace    = true
 vprogs-core-smt.workspace      = true
 vprogs-storage-types.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+rocksdb = { version = "0.24.0", default-features = false, features = [
+  "lz4",
+  "zstd",
+  "snappy",
+  "zlib",
+  "bzip2",
+  "mt_static",
+] }
+
+[target.'cfg(not(windows))'.dependencies]
+rocksdb = { version = "0.24.0", default-features = false, features = [
+  "lz4",
+  "zstd",
+  "snappy",
+  "zlib",
+  "bzip2",
+  "jemalloc",
+  "mt_static",
+] }
