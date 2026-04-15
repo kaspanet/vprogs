@@ -7,6 +7,7 @@ use arc_swap::ArcSwapOption;
 use crossbeam_deque::{Injector, Steal, Worker};
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_macros::smart_pointer;
+use vprogs_core_smt::Commitment;
 use vprogs_core_types::{Checkpoint, ResourceId, SchedulerTransaction};
 use vprogs_scheduling_execution_workers::Batch;
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
@@ -340,10 +341,21 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         }
     }
 
-    pub(crate) fn commit<ST: Store>(&self, _store: &ST, wb: &mut ST::WriteBatch) {
+    pub(crate) fn commit<ST: Store>(&self, store: &ST, wb: &mut ST::WriteBatch) {
         if !self.canceled() {
             for state_diff in self.state_diffs() {
                 state_diff.written_state().write_latest_ptr(wb);
+            }
+
+            // Update the authenticated state tree with all resource state diffs from this batch.
+            if !self.state_diffs().is_empty() {
+                let new_root = store.update(
+                    wb,
+                    self.state_diffs().iter().map(Commitment::from).collect(),
+                    self.checkpoint.index(),
+                );
+
+                StateMetadata::set_state_root(wb, &new_root);
             }
 
             StoredBatchMetadata::set(wb, self.checkpoint.index(), self.checkpoint.metadata());

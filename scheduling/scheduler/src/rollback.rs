@@ -88,6 +88,16 @@ impl<S: Store, P: Processor<S>> Rollback<S, P> {
             if rollback_to_genesis {
                 StateMetadata::set_root(wb, &self.target);
             }
+
+            // Delete SMT nodes and stale markers for each rolled-back version. Without this,
+            // orphaned nodes from the old versions would be found by `node` after re-commit,
+            // corrupting the tree.
+            for index in (self.target.index() + 1..=self.upper_bound).rev() {
+                store.rollback(wb, index);
+            }
+
+            // Reset the persisted state root to the target version's root.
+            StateMetadata::set_state_root(wb, &store.root(self.target.index()));
         }));
 
         // Return a new empty write batch for further operations.

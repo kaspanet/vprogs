@@ -89,6 +89,7 @@ resolver = "3"
   vprogs-core-atomics                             = { path = "core/atomics" }
   vprogs-core-codec                               = { path = "core/codec" }
   vprogs-core-macros                              = { path = "core/macros" }
+  vprogs-core-smt                                 = { path = "core/smt" }
   vprogs-core-test-utils                          = { path = "core/test-utils" }
   vprogs-core-types                               = { path = "core/types", default-features = false }
   vprogs-l1-bridge                                = { path = "l1/bridge" }
