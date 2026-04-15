@@ -11,6 +11,12 @@ default-members = [
   "zk/transaction-prover",
   "zk/batch-prover",
   "zk/vm",
+  "zk/backend/risc0/api",
+  "zk/backend/risc0/test-suite",
+]
+exclude = [
+  "zk/backend/risc0/transaction-processor",
+  "zk/backend/risc0/batch-processor",
 ]
 members = [
   "core/*",
@@ -24,6 +30,8 @@ members = [
   "zk/transaction-prover",
   "zk/batch-prover",
   "zk/vm",
+  "zk/backend/risc0/api",
+  "zk/backend/risc0/test-suite",
 ]
 resolver = "3"
 
@@ -137,6 +145,7 @@ resolver = "3"
   vprogs-transaction-runtime-transaction          = { path = "transaction-runtime/transaction" }
   vprogs-transaction-runtime-transaction-effects  = { path = "transaction-runtime/transaction-effects" }
   vprogs-zk-abi                                   = { path = "zk/abi", default-features = false }
+  vprogs-zk-backend-risc0-api                     = { path = "zk/backend/risc0/api", default-features = false }
   vprogs-zk-batch-prover                          = { path = "zk/batch-prover" }
   vprogs-zk-transaction-prover                    = { path = "zk/transaction-prover" }
   vprogs-zk-vm                                    = { path = "zk/vm" }
