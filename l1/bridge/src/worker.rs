@@ -6,6 +6,7 @@ use kaspa_notify::scope::{PruningPointUtxoSetOverrideScope, Scope, VirtualChainC
 use kaspa_rpc_core::{
     GetVirtualChainFromBlockV2Response, Notification,
     RpcDataVerbosityLevel::{Full, Low},
+    RpcOptionalTransaction,
     api::{ctl::RpcState, rpc::RpcApi},
 };
 use kaspa_wrpc_client::prelude::*;
@@ -335,7 +336,10 @@ impl BridgeWorker {
             let accepted_transactions: Vec<L1Transaction> = chain_block
                 .accepted_transactions
                 .iter()
-                .map(|tx| L1Transaction::try_from(tx.clone()).expect("missing transaction fields"))
+                .map(|tx| {
+                    L1Transaction::try_from(sanitize_optional_tx(tx.clone()))
+                        .expect("missing transaction fields")
+                })
                 .collect();
             self.push_event(L1Event::ChainBlockAdded {
                 checkpoint,
@@ -380,4 +384,26 @@ impl BridgeWorker {
 
         Ok(())
     }
+}
+
+/// Clears version-inconsistent mass fields from an `RpcOptionalTransaction`.
+///
+/// The GRPC deserialization always wraps protobuf defaults as `Some(0)`, but the
+/// `TryFrom<RpcOptionalTransaction>` conversion treats `Some(0)` as "field present"
+/// and rejects v0 transactions that carry `compute_budget` (or v1+ transactions
+/// that carry `sig_op_count`). This function strips the inapplicable field so the
+/// conversion succeeds.
+fn sanitize_optional_tx(mut tx: RpcOptionalTransaction) -> RpcOptionalTransaction {
+    if let Some(version) = tx.version {
+        // Version >= 1 uses compute_budget; version 0 uses sig_op_count.
+        let expects_compute_budget = version >= 1;
+        for input in &mut tx.inputs {
+            if expects_compute_budget {
+                input.sig_op_count = None;
+            } else {
+                input.compute_budget = None;
+            }
+        }
+    }
+    tx
 }

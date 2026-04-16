@@ -88,18 +88,18 @@ resolver = "3"
   ] }
 
   # Kaspa dependencies
-  kaspa-addresses           = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-  kaspa-consensus-core      = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-  kaspa-core                = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-  kaspa-grpc-client         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-  kaspa-hashes              = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-  kaspa-notify              = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-  kaspa-rpc-core            = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-  kaspa-testing-integration = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-  kaspa-txscript            = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-  kaspa-wrpc-client         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-  kaspa-wrpc-server         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-  kaspad                    = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+  kaspa-addresses           = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "kip21-impl" }
+  kaspa-consensus-core      = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "kip21-impl" }
+  kaspa-core                = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "kip21-impl" }
+  kaspa-grpc-client         = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "kip21-impl" }
+  kaspa-hashes              = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "kip21-impl" }
+  kaspa-notify              = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "kip21-impl" }
+  kaspa-rpc-core            = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "kip21-impl" }
+  kaspa-testing-integration = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "kip21-impl" }
+  kaspa-txscript            = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "kip21-impl" }
+  kaspa-wrpc-client         = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "kip21-impl" }
+  kaspa-wrpc-server         = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "kip21-impl" }
+  kaspad                    = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "kip21-impl" }
 
   # Internal dependencies
   vprogs-core-atomics                             = { path = "core/atomics" }
@@ -150,6 +150,5 @@ resolver = "3"
   vprogs-zk-transaction-prover                    = { path = "zk/transaction-prover" }
   vprogs-zk-vm                                    = { path = "zk/vm" }
 
-[patch.'https://github.com/kaspanet/rusty-kaspa']
-kaspa-math  = { git = "https://github.com/hmoog/rusty-kaspa", branch = "feat/kaspa-math-32bit" }
-kaspa-utils = { git = "https://github.com/hmoog/rusty-kaspa", branch = "feat/kaspa-math-32bit" }
+[patch.crates-io]
+serde_nested_with = { git = "https://github.com/murar8/serde_nested_with", tag = "0.2.6" }
