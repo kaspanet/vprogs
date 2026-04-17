@@ -9,7 +9,9 @@ use crate::{
 
 /// Decoded transaction inputs holding zero-copy views into the wire buffer.
 pub struct Inputs<'a> {
-    /// L2 payload bytes (the application data from the L1 transaction's payload field).
+    /// The L1 transaction's `payload` field, as-is. The guest hashes this with `PayloadDigest`
+    /// to derive `payload_digest` for `tx_id` reconstruction. Guest programs that want the L2
+    /// application slice must strip the borsh-encoded `Vec<AccessMetadata>` prefix themselves.
     pub payload: &'a [u8],
     /// Position of this transaction within the batch.
     pub tx_index: u32,
@@ -69,9 +71,6 @@ impl<'a> Inputs<'a> {
     }
 
     /// Encodes a scheduler [`TransactionContext`] into the ABI wire format (host-side only).
-    ///
-    /// The `payload` and `rest_preimage` are derived from the transaction via
-    /// [`L1TransactionExt`].
     #[cfg(feature = "host")]
     pub fn encode<S, P>(ctx: &vprogs_scheduling_scheduler::TransactionContext<'_, S, P>) -> Vec<u8>
     where
@@ -82,13 +81,12 @@ impl<'a> Inputs<'a> {
                 BatchMetadata = vprogs_l1_types::ChainBlockMetadata,
             >,
     {
-        use vprogs_l1_types::L1TransactionExt;
+        use kaspa_consensus_core::hashing::tx::transaction_v1_rest_preimage;
 
         use crate::Write;
 
-        // Derive ZK-specific fields from the L1 transaction.
-        let payload = ctx.tx().l2_payload();
-        let rest_preimage = ctx.tx().rest_preimage();
+        let payload = ctx.tx().payload.as_slice();
+        let rest_preimage = transaction_v1_rest_preimage(ctx.tx());
 
         // Calculate total size and allocate buffer.
         let res_header_size = ctx.resources().len() * Resource::HEADER_SIZE;

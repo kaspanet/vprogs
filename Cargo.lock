@@ -8155,6 +8155,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "borsh",
+ "kaspa-consensus-core",
  "thiserror 2.0.18",
  "vprogs-core-codec",
  "vprogs-core-smt",
