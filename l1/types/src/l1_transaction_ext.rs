@@ -1,4 +1,6 @@
-use crate::{L1Transaction, tx_hashing};
+use kaspa_consensus_core::hashing::tx::transaction_v1_rest_preimage;
+
+use crate::L1Transaction;
 
 /// Extension trait for [`L1Transaction`] providing ZK-pipeline accessors.
 ///
@@ -31,6 +33,6 @@ impl L1TransactionExt for L1Transaction {
     }
 
     fn rest_preimage(&self) -> Vec<u8> {
-        tx_hashing::rest_preimage(self)
+        transaction_v1_rest_preimage(self)
     }
 }

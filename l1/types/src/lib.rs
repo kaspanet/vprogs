@@ -5,7 +5,6 @@ mod l1_transaction;
 mod l1_transaction_ext;
 mod network_id;
 mod network_type;
-pub(crate) mod tx_hashing;
 
 pub use chain_block_metadata::ChainBlockMetadata;
 pub use connect_strategy::ConnectStrategy;

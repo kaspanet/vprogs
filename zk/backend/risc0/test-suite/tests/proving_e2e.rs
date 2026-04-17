@@ -40,8 +40,10 @@ async fn batch_proof_two_transactions() {
 
     // Create two transactions touching distinct resources.
     let mut tx1 = L1Transaction::default();
+    tx1.version = 1;
     tx1.payload = vec![1, 2, 3];
     let mut tx2 = L1Transaction::default();
+    tx2.version = 1;
     tx2.payload = vec![4, 5, 6];
 
     let block_metadata = ChainBlockMetadata::default();
@@ -94,8 +96,10 @@ async fn batch_proof_two_transactions() {
     let block_metadata_2 = ChainBlockMetadata::default();
 
     let mut tx3 = L1Transaction::default();
+    tx3.version = 1;
     tx3.payload = vec![7, 8, 9];
     let mut tx4 = L1Transaction::default();
+    tx4.version = 1;
     tx4.payload = vec![10, 11, 12];
 
     let batch_2 = scheduler.schedule(
