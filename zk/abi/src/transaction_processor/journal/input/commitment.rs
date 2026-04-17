@@ -10,7 +10,7 @@ use crate::{
 
 /// Decoded input commitment from a transaction processor journal.
 pub struct InputCommitment<'a> {
-    /// BLAKE3 hash of the serialized transaction bytes.
+    /// L1 transaction ID, reconstructed from `H_v1_id(payload_digest || rest_digest)`.
     pub tx_id: &'a [u8; 32],
     /// Position of this transaction within the batch.
     pub tx_index: u32,
@@ -45,8 +45,10 @@ impl<'a> InputCommitment<'a> {
         w.write(&[JournalEntry::OPCODE_INPUT]);
         w.write(&(payload_len as u32).to_le_bytes());
 
-        // Write header: tx_id hash, tx_index, batch metadata, resource count.
-        w.write(blake3::hash(input.tx).as_bytes());
+        // Compute the L1 transaction ID: H_v1_id(H_payload(payload) || H_rest(rest_preimage)).
+        let tx_id = compute_tx_id(input.payload, input.rest_preimage);
+        w.write(&tx_id);
+
         w.write(&input.tx_index.to_le_bytes());
         input.batch_metadata.encode(w);
         w.write(&(input.resources.len() as u32).to_le_bytes());
@@ -59,4 +61,36 @@ impl<'a> InputCommitment<'a> {
             w.write(&if data.is_empty() { EMPTY_HASH } else { *blake3::hash(data).as_bytes() });
         }
     }
+}
+
+/// Computes the L1 v1 transaction ID from payload bytes and rest preimage.
+///
+/// Mirrors the Kaspa `id_v1` computation:
+/// ```text
+/// payload_digest = H_PayloadDigest(payload)
+/// rest_digest    = H_TransactionRest(rest_preimage)
+/// tx_id          = H_TransactionV1Id(payload_digest || rest_digest)
+/// ```
+///
+/// Uses BLAKE3 keyed mode with the same domain separation keys as `kaspa-hashes`.
+fn compute_tx_id(payload: &[u8], rest_preimage: &[u8]) -> [u8; 32] {
+    let payload_digest = blake3::keyed_hash(&padded_key(b"PayloadDigest"), payload);
+
+    let rest_digest = blake3::keyed_hash(&padded_key(b"TransactionRest"), rest_preimage);
+
+    let mut hasher = blake3::Hasher::new_keyed(&padded_key(b"TransactionV1Id"));
+    hasher.update(payload_digest.as_bytes());
+    hasher.update(rest_digest.as_bytes());
+    *hasher.finalize().as_bytes()
+}
+
+/// Creates a 32-byte key by copying the input bytes and zero-padding the remainder.
+const fn padded_key(src: &[u8]) -> [u8; 32] {
+    let mut key = [0u8; 32];
+    let mut i = 0;
+    while i < src.len() {
+        key[i] = src[i];
+        i += 1;
+    }
+    key
 }

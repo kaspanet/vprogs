@@ -32,11 +32,11 @@ fn test_zk_scheduler_e2e() {
     let batch = scheduler.schedule(
         ChainBlockMetadata::default(),
         vec![
-            SchedulerTransaction::new(
+            SchedulerTransaction::new_for_test(
                 kaspa_tx1,
                 vec![AccessMetadata::write(ResourceId::for_test(1))],
             ),
-            SchedulerTransaction::new(
+            SchedulerTransaction::new_for_test(
                 kaspa_tx2,
                 vec![AccessMetadata::write(ResourceId::for_test(2))],
             ),

@@ -4,7 +4,7 @@ use tokio::sync::mpsc;
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_types::SchedulerTransaction;
 use vprogs_l1_bridge::{L1Bridge, L1Event};
-use vprogs_l1_types::L1Transaction;
+use vprogs_l1_types::{L1Transaction, rest_preimage};
 use vprogs_scheduling_scheduler::Scheduler;
 use vprogs_storage_types::Store;
 
@@ -84,7 +84,8 @@ impl<S: Store, P: Processor<S>> NodeWorker<S, P> {
                     .map(|tx| {
                         let (resources, l2_payload) =
                             SchedulerTransaction::<L1Transaction>::extract_payload(&tx.payload);
-                        SchedulerTransaction { tx, resources, l2_payload }
+                        let rest_preimage = rest_preimage(&tx);
+                        SchedulerTransaction { tx, resources, l2_payload, rest_preimage }
                     })
                     .collect();
                 self.scheduler.schedule(*checkpoint.metadata(), txs);
