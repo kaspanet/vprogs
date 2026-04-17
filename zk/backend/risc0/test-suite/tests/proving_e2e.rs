@@ -50,14 +50,8 @@ async fn batch_proof_two_transactions() {
     let batch = scheduler.schedule(
         block_metadata,
         vec![
-            SchedulerTransaction::new(
-                tx1,
-                vec![AccessMetadata::write(ResourceId::for_test(1))],
-            ),
-            SchedulerTransaction::new(
-                tx2,
-                vec![AccessMetadata::write(ResourceId::for_test(2))],
-            ),
+            SchedulerTransaction::new(tx1, vec![AccessMetadata::write(ResourceId::for_test(1))]),
+            SchedulerTransaction::new(tx2, vec![AccessMetadata::write(ResourceId::for_test(2))]),
         ],
     );
 
@@ -107,14 +101,8 @@ async fn batch_proof_two_transactions() {
     let batch_2 = scheduler.schedule(
         block_metadata_2,
         vec![
-            SchedulerTransaction::new(
-                tx3,
-                vec![AccessMetadata::write(ResourceId::for_test(1))],
-            ),
-            SchedulerTransaction::new(
-                tx4,
-                vec![AccessMetadata::write(ResourceId::for_test(2))],
-            ),
+            SchedulerTransaction::new(tx3, vec![AccessMetadata::write(ResourceId::for_test(1))]),
+            SchedulerTransaction::new(tx4, vec![AccessMetadata::write(ResourceId::for_test(2))]),
         ],
     );
 
