@@ -7769,6 +7769,7 @@ dependencies = [
  "kaspa-consensus-core",
  "kaspa-hashes",
  "kaspa-wrpc-client",
+ "vprogs-core-types",
 ]
 
 [[package]]

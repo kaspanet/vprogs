@@ -69,19 +69,26 @@ impl<'a> Inputs<'a> {
     }
 
     /// Encodes a scheduler [`TransactionContext`] into the ABI wire format (host-side only).
+    ///
+    /// The `payload` and `rest_preimage` are derived from the transaction via
+    /// [`L1TransactionExt`].
     #[cfg(feature = "host")]
     pub fn encode<S, P>(ctx: &vprogs_scheduling_scheduler::TransactionContext<'_, S, P>) -> Vec<u8>
     where
         S: vprogs_storage_types::Store,
         P: vprogs_scheduling_scheduler::Processor<
                 S,
+                Transaction = vprogs_l1_types::L1Transaction,
                 BatchMetadata = vprogs_l1_types::ChainBlockMetadata,
             >,
     {
+        use vprogs_l1_types::L1TransactionExt;
+
         use crate::Write;
 
-        let payload = ctx.l2_payload();
-        let rest_preimage = ctx.rest_preimage();
+        // Derive ZK-specific fields from the L1 transaction.
+        let payload = ctx.tx().l2_payload();
+        let rest_preimage = ctx.tx().rest_preimage();
 
         // Calculate total size and allocate buffer.
         let res_header_size = ctx.resources().len() * Resource::HEADER_SIZE;
@@ -102,10 +109,10 @@ impl<'a> Inputs<'a> {
         buf.write(&(payload.len() as u32).to_le_bytes());
 
         // Write rest preimage.
-        buf.write(rest_preimage);
+        buf.write(&rest_preimage);
 
         // Write payload bytes.
-        buf.write(payload);
+        buf.write(&payload);
 
         // Write resource headers.
         for r in ctx.resources() {

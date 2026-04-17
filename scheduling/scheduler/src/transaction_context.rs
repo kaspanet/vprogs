@@ -61,18 +61,6 @@ impl<'a, S: Store, P: Processor<S>> TransactionContext<'a, S, P> {
         &mut self.resources
     }
 
-    /// Returns the L2 payload bytes from the scheduler transaction.
-    pub fn l2_payload(&self) -> &[u8] {
-        &self.scheduler_tx.l2_payload
-    }
-
-    /// Returns the rest preimage — the serialized L1 transaction fields excluding payload,
-    /// signature scripts, and mass commitment. The ZK guest hashes this with `TransactionRest`
-    /// to derive `rest_digest`, and can parse it for input outpoints, outputs, etc.
-    pub fn rest_preimage(&self) -> &[u8] {
-        &self.scheduler_tx.rest_preimage
-    }
-
     /// Split borrow: returns (&P::Transaction, &mut [AccessHandle]) simultaneously.
     pub fn parts_mut(&mut self) -> (&P::Transaction, &mut [AccessHandle<'a, S, P>]) {
         (&self.scheduler_tx.tx, &mut self.resources)
