@@ -16,14 +16,9 @@ impl<T> SchedulerTransaction<T> {
         Self { tx, resources }
     }
 
-    /// Extracts borsh-encoded `Vec<AccessMetadata>` prefix from a payload, returning the decoded
-    /// resources and the remaining bytes as the L2 payload. On decode failure, returns empty
-    /// resources and an empty L2 payload.
-    pub fn extract_payload(payload: &[u8]) -> (Vec<AccessMetadata>, Vec<u8>) {
-        let mut cursor = payload;
-        match Vec::<AccessMetadata>::deserialize(&mut cursor) {
-            Ok(resources) => (resources, cursor.to_vec()),
-            Err(_) => (Vec::new(), Vec::new()),
-        }
+    /// Decodes the borsh-encoded `Vec<AccessMetadata>` prefix from a payload. On decode failure,
+    /// returns empty resources.
+    pub fn extract_resources(mut payload: &[u8]) -> Vec<AccessMetadata> {
+        Vec::<AccessMetadata>::deserialize(&mut payload).unwrap_or_default()
     }
 }

@@ -82,8 +82,8 @@ impl<S: Store, P: Processor<S>> NodeWorker<S, P> {
                 let txs = accepted_transactions
                     .into_iter()
                     .map(|tx| {
-                        let (resources, _l2_payload) =
-                            SchedulerTransaction::<L1Transaction>::extract_payload(&tx.payload);
+                        let resources =
+                            SchedulerTransaction::<L1Transaction>::extract_resources(&tx.payload);
                         SchedulerTransaction { tx, resources }
                     })
                     .collect();

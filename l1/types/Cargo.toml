@@ -8,4 +8,3 @@ borsh.workspace                = true
 kaspa-consensus-core.workspace = true
 kaspa-hashes.workspace         = true
 kaspa-wrpc-client.workspace    = true
-vprogs-core-types.workspace    = true
