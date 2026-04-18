@@ -4,6 +4,7 @@ name              = "vprogs-node-framework"
 version.workspace = true
 
 [dependencies]
+borsh.workspace                       = true
 log.workspace                         = true
 thiserror.workspace                   = true
 tokio.workspace                       = true

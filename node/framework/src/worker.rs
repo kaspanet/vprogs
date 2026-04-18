@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
+use borsh::BorshDeserialize;
 use tokio::sync::mpsc;
 use vprogs_core_atomics::AtomicAsyncLatch;
-use vprogs_core_types::SchedulerTransaction;
+use vprogs_core_types::{AccessMetadata, SchedulerTransaction};
 use vprogs_l1_bridge::{L1Bridge, L1Event};
-use vprogs_l1_types::L1Transaction;
 use vprogs_scheduling_scheduler::Scheduler;
 use vprogs_storage_types::Store;
 
@@ -82,9 +82,8 @@ impl<S: Store, P: Processor<S>> NodeWorker<S, P> {
                 let txs = accepted_transactions
                     .into_iter()
                     .map(|tx| {
-                        let resources =
-                            SchedulerTransaction::<L1Transaction>::extract_resources(&tx.payload);
-                        SchedulerTransaction { tx, resources }
+                        let resources = Self::extract_resources(&tx.payload);
+                        SchedulerTransaction::new(tx, resources)
                     })
                     .collect();
                 self.scheduler.schedule(*checkpoint.metadata(), txs);
@@ -110,5 +109,11 @@ impl<S: Store, P: Processor<S>> NodeWorker<S, P> {
         }
 
         true
+    }
+
+    /// Decodes the borsh-encoded `Vec<AccessMetadata>` prefix from an L1 transaction payload.
+    /// Returns an empty vec on decode failure.
+    fn extract_resources(mut payload: &[u8]) -> Vec<AccessMetadata> {
+        Vec::<AccessMetadata>::deserialize(&mut payload).unwrap_or_default()
     }
 }

@@ -110,7 +110,7 @@ impl<'a> Inputs<'a> {
         buf.write(&rest_preimage);
 
         // Write payload bytes.
-        buf.write(&payload);
+        buf.write(payload);
 
         // Write resource headers.
         for r in ctx.resources() {
