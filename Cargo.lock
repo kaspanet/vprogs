@@ -7773,6 +7773,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-l1-utils"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+]
+
+[[package]]
 name = "vprogs-node-cli"
 version = "0.1.0"
 dependencies = [
@@ -8160,6 +8167,7 @@ dependencies = [
  "vprogs-core-smt",
  "vprogs-core-types",
  "vprogs-l1-types",
+ "vprogs-l1-utils",
  "vprogs-scheduling-scheduler",
  "vprogs-storage-types",
 ]

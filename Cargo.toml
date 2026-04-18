@@ -110,6 +110,7 @@ resolver = "3"
   vprogs-core-types                               = { path = "core/types", default-features = false }
   vprogs-l1-bridge                                = { path = "l1/bridge" }
   vprogs-l1-types                                 = { path = "l1/types" }
+  vprogs-l1-utils                                 = { path = "l1/utils" }
   vprogs-node-cli                                 = { path = "node/cli" }
   vprogs-node-framework                           = { path = "node/framework" }
   vprogs-node-test-utils                          = { path = "node/test-utils" }

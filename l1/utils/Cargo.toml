@@ -1,0 +1,7 @@
+[package]
+edition.workspace = true
+name              = "vprogs-l1-utils"
+version.workspace = true
+
+[dependencies]
+blake3 = { workspace = true }
