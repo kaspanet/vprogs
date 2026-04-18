@@ -24,20 +24,20 @@ pub fn test_scheduler() {
             1,
             vec![
                 SchedulerTransaction::new(
-                    0,
                     vec![
                         AccessMetadata::write(ResourceId::for_test(1)),
                         AccessMetadata::read(ResourceId::for_test(3)),
                     ],
+                    0,
                 ),
                 SchedulerTransaction::new(
-                    1,
                     vec![
                         AccessMetadata::write(ResourceId::for_test(1)),
                         AccessMetadata::write(ResourceId::for_test(2)),
                     ],
+                    1,
                 ),
-                SchedulerTransaction::new(2, vec![AccessMetadata::read(ResourceId::for_test(3))]),
+                SchedulerTransaction::new(vec![AccessMetadata::read(ResourceId::for_test(3))], 2),
             ],
         );
 
@@ -45,18 +45,18 @@ pub fn test_scheduler() {
             2,
             vec![
                 SchedulerTransaction::new(
-                    3,
                     vec![
                         AccessMetadata::write(ResourceId::for_test(1)),
                         AccessMetadata::read(ResourceId::for_test(3)),
                     ],
+                    3,
                 ),
                 SchedulerTransaction::new(
-                    4,
                     vec![
                         AccessMetadata::write(ResourceId::for_test(10)),
                         AccessMetadata::write(ResourceId::for_test(20)),
                     ],
+                    4,
                 ),
             ],
         );
@@ -89,22 +89,22 @@ pub fn test_rollback_committed() {
         scheduler.schedule(
             1,
             vec![
-                SchedulerTransaction::new(0, vec![AccessMetadata::write(ResourceId::for_test(1))]),
-                SchedulerTransaction::new(1, vec![AccessMetadata::write(ResourceId::for_test(2))]),
+                SchedulerTransaction::new(vec![AccessMetadata::write(ResourceId::for_test(1))], 0),
+                SchedulerTransaction::new(vec![AccessMetadata::write(ResourceId::for_test(2))], 1),
             ],
         );
         scheduler.schedule(
             2,
             vec![
-                SchedulerTransaction::new(2, vec![AccessMetadata::write(ResourceId::for_test(1))]),
-                SchedulerTransaction::new(3, vec![AccessMetadata::write(ResourceId::for_test(3))]),
+                SchedulerTransaction::new(vec![AccessMetadata::write(ResourceId::for_test(1))], 2),
+                SchedulerTransaction::new(vec![AccessMetadata::write(ResourceId::for_test(3))], 3),
             ],
         );
         let last_batch = scheduler.schedule(
             3,
             vec![
-                SchedulerTransaction::new(4, vec![AccessMetadata::write(ResourceId::for_test(1))]),
-                SchedulerTransaction::new(5, vec![AccessMetadata::write(ResourceId::for_test(4))]),
+                SchedulerTransaction::new(vec![AccessMetadata::write(ResourceId::for_test(1))], 4),
+                SchedulerTransaction::new(vec![AccessMetadata::write(ResourceId::for_test(4))], 5),
             ],
         );
         last_batch.wait_committed_blocking();
@@ -160,22 +160,22 @@ pub fn test_add_batches_after_rollback() {
         let batch1 = scheduler.schedule(
             1,
             vec![SchedulerTransaction::new(
-                0,
                 vec![AccessMetadata::write(ResourceId::for_test(1))],
+                0,
             )],
         );
         let batch2 = scheduler.schedule(
             2,
             vec![SchedulerTransaction::new(
-                1,
                 vec![AccessMetadata::write(ResourceId::for_test(2))],
+                1,
             )],
         );
         let batch3 = scheduler.schedule(
             3,
             vec![SchedulerTransaction::new(
-                2,
                 vec![AccessMetadata::write(ResourceId::for_test(3))],
+                2,
             )],
         );
         batch3.wait_committed_blocking();
@@ -203,15 +203,15 @@ pub fn test_add_batches_after_rollback() {
         let batch4 = scheduler.schedule(
             4,
             vec![SchedulerTransaction::new(
-                10,
                 vec![AccessMetadata::write(ResourceId::for_test(10))],
+                10,
             )],
         );
         let batch5 = scheduler.schedule(
             5,
             vec![SchedulerTransaction::new(
-                11,
                 vec![AccessMetadata::write(ResourceId::for_test(11))],
+                11,
             )],
         );
         batch5.wait_committed_blocking();
@@ -246,8 +246,8 @@ pub fn test_inflight_cancellation_without_waiting() {
         let batch1 = scheduler.schedule(
             1,
             vec![SchedulerTransaction::new(
-                0,
                 vec![AccessMetadata::write(ResourceId::for_test(1))],
+                0,
             )],
         );
         batch1.wait_committed_blocking();
@@ -256,22 +256,22 @@ pub fn test_inflight_cancellation_without_waiting() {
         let batch2 = scheduler.schedule(
             2,
             vec![SchedulerTransaction::new(
-                1,
                 vec![AccessMetadata::write(ResourceId::for_test(2))],
+                1,
             )],
         );
         let batch3 = scheduler.schedule(
             3,
             vec![SchedulerTransaction::new(
-                2,
                 vec![AccessMetadata::write(ResourceId::for_test(3))],
+                2,
             )],
         );
         let batch4 = scheduler.schedule(
             4,
             vec![SchedulerTransaction::new(
-                3,
                 vec![AccessMetadata::write(ResourceId::for_test(4))],
+                3,
             )],
         );
 
@@ -296,8 +296,8 @@ pub fn test_inflight_cancellation_without_waiting() {
         let batch5 = scheduler.schedule(
             5,
             vec![SchedulerTransaction::new(
-                100,
                 vec![AccessMetadata::write(ResourceId::for_test(100))],
+                100,
             )],
         );
         batch5.wait_committed_blocking();
@@ -325,43 +325,43 @@ pub fn test_rollback_multiple_contexts() {
         let batch1 = scheduler.schedule(
             1,
             vec![SchedulerTransaction::new(
-                1,
                 vec![AccessMetadata::write(ResourceId::for_test(1))],
+                1,
             )],
         );
         scheduler.schedule(
             2,
             vec![SchedulerTransaction::new(
-                2,
                 vec![AccessMetadata::write(ResourceId::for_test(2))],
+                2,
             )],
         );
         scheduler.schedule(
             3,
             vec![SchedulerTransaction::new(
-                3,
                 vec![AccessMetadata::write(ResourceId::for_test(3))],
+                3,
             )],
         );
         scheduler.schedule(
             4,
             vec![SchedulerTransaction::new(
-                4,
                 vec![AccessMetadata::write(ResourceId::for_test(4))],
+                4,
             )],
         );
         scheduler.schedule(
             5,
             vec![SchedulerTransaction::new(
-                5,
                 vec![AccessMetadata::write(ResourceId::for_test(5))],
+                5,
             )],
         );
         let batch6 = scheduler.schedule(
             6,
             vec![SchedulerTransaction::new(
-                6,
                 vec![AccessMetadata::write(ResourceId::for_test(6))],
+                6,
             )],
         );
         batch6.wait_committed_blocking();
@@ -394,15 +394,15 @@ pub fn test_rollback_multiple_contexts() {
         let new_batch6 = scheduler.schedule(
             60,
             vec![SchedulerTransaction::new(
-                60,
                 vec![AccessMetadata::write(ResourceId::for_test(60))],
+                60,
             )],
         );
         let batch7 = scheduler.schedule(
             70,
             vec![SchedulerTransaction::new(
-                70,
                 vec![AccessMetadata::write(ResourceId::for_test(70))],
+                70,
             )],
         );
         batch7.wait_committed_blocking();
@@ -431,15 +431,15 @@ pub fn test_rollback_multiple_contexts() {
         let final_batch4 = scheduler.schedule(
             40,
             vec![SchedulerTransaction::new(
-                40,
                 vec![AccessMetadata::write(ResourceId::for_test(40))],
+                40,
             )],
         );
         let final_batch5 = scheduler.schedule(
             50,
             vec![SchedulerTransaction::new(
-                50,
                 vec![AccessMetadata::write(ResourceId::for_test(50))],
+                50,
             )],
         );
         final_batch5.wait_committed_blocking();
@@ -474,22 +474,22 @@ pub fn test_rollback_to_zero() {
         scheduler.schedule(
             1,
             vec![SchedulerTransaction::new(
-                1,
                 vec![AccessMetadata::write(ResourceId::for_test(1))],
+                1,
             )],
         );
         scheduler.schedule(
             2,
             vec![SchedulerTransaction::new(
-                2,
                 vec![AccessMetadata::write(ResourceId::for_test(2))],
+                2,
             )],
         );
         let batch3 = scheduler.schedule(
             3,
             vec![SchedulerTransaction::new(
-                3,
                 vec![AccessMetadata::write(ResourceId::for_test(3))],
+                3,
             )],
         );
         batch3.wait_committed_blocking();
@@ -513,8 +513,8 @@ pub fn test_rollback_to_zero() {
         let new_batch1 = scheduler.schedule(
             100,
             vec![SchedulerTransaction::new(
-                100,
                 vec![AccessMetadata::write(ResourceId::for_test(100))],
+                100,
             )],
         );
         new_batch1.wait_committed_blocking();
@@ -542,36 +542,36 @@ pub fn test_consecutive_rollbacks() {
         scheduler.schedule(
             1,
             vec![SchedulerTransaction::new(
-                1,
                 vec![AccessMetadata::write(ResourceId::for_test(1))],
+                1,
             )],
         );
         scheduler.schedule(
             2,
             vec![SchedulerTransaction::new(
-                2,
                 vec![AccessMetadata::write(ResourceId::for_test(2))],
+                2,
             )],
         );
         scheduler.schedule(
             3,
             vec![SchedulerTransaction::new(
-                3,
                 vec![AccessMetadata::write(ResourceId::for_test(3))],
+                3,
             )],
         );
         scheduler.schedule(
             4,
             vec![SchedulerTransaction::new(
-                4,
                 vec![AccessMetadata::write(ResourceId::for_test(4))],
+                4,
             )],
         );
         let batch5 = scheduler.schedule(
             5,
             vec![SchedulerTransaction::new(
-                5,
                 vec![AccessMetadata::write(ResourceId::for_test(5))],
+                5,
             )],
         );
         batch5.wait_committed_blocking();
@@ -613,8 +613,8 @@ pub fn test_consecutive_rollbacks() {
         let new_batch = scheduler.schedule(
             100,
             vec![SchedulerTransaction::new(
-                100,
                 vec![AccessMetadata::write(ResourceId::for_test(100))],
+                100,
             )],
         );
         new_batch.wait_committed_blocking();
@@ -640,29 +640,29 @@ pub fn test_rollback_same_resource_multiple_writes() {
         scheduler.schedule(
             1,
             vec![SchedulerTransaction::new(
-                10,
                 vec![AccessMetadata::write(ResourceId::for_test(1))],
+                10,
             )],
         );
         scheduler.schedule(
             2,
             vec![SchedulerTransaction::new(
-                20,
                 vec![AccessMetadata::write(ResourceId::for_test(1))],
+                20,
             )],
         );
         scheduler.schedule(
             3,
             vec![SchedulerTransaction::new(
-                30,
                 vec![AccessMetadata::write(ResourceId::for_test(1))],
+                30,
             )],
         );
         let batch4 = scheduler.schedule(
             4,
             vec![SchedulerTransaction::new(
-                40,
                 vec![AccessMetadata::write(ResourceId::for_test(1))],
+                40,
             )],
         );
         batch4.wait_committed_blocking();
@@ -678,8 +678,8 @@ pub fn test_rollback_same_resource_multiple_writes() {
         let batch5 = scheduler.schedule(
             5,
             vec![SchedulerTransaction::new(
-                50,
                 vec![AccessMetadata::write(ResourceId::for_test(1))],
+                50,
             )],
         );
         batch5.wait_committed_blocking();
@@ -711,8 +711,8 @@ pub fn test_cancellation_skips_writes() {
         let batch1 = scheduler.schedule(
             1,
             vec![SchedulerTransaction::new(
-                1,
                 vec![AccessMetadata::write(ResourceId::for_test(1))],
+                1,
             )],
         );
         batch1.wait_committed_blocking();
@@ -721,15 +721,15 @@ pub fn test_cancellation_skips_writes() {
         let batch2 = scheduler.schedule(
             2,
             vec![SchedulerTransaction::new(
-                2,
                 vec![AccessMetadata::write(ResourceId::for_test(100))],
+                2,
             )],
         );
         let batch3 = scheduler.schedule(
             3,
             vec![SchedulerTransaction::new(
-                3,
                 vec![AccessMetadata::write(ResourceId::for_test(200))],
+                3,
             )],
         );
 
@@ -771,8 +771,8 @@ pub fn test_rollback_interleaved_multi_resource() {
         scheduler.schedule(
             1,
             vec![
-                SchedulerTransaction::new(10, vec![AccessMetadata::write(ResourceId::for_test(1))]),
-                SchedulerTransaction::new(11, vec![AccessMetadata::write(ResourceId::for_test(2))]),
+                SchedulerTransaction::new(vec![AccessMetadata::write(ResourceId::for_test(1))], 10),
+                SchedulerTransaction::new(vec![AccessMetadata::write(ResourceId::for_test(2))], 11),
             ],
         );
 
@@ -780,8 +780,8 @@ pub fn test_rollback_interleaved_multi_resource() {
         scheduler.schedule(
             2,
             vec![
-                SchedulerTransaction::new(20, vec![AccessMetadata::write(ResourceId::for_test(2))]),
-                SchedulerTransaction::new(21, vec![AccessMetadata::write(ResourceId::for_test(3))]),
+                SchedulerTransaction::new(vec![AccessMetadata::write(ResourceId::for_test(2))], 20),
+                SchedulerTransaction::new(vec![AccessMetadata::write(ResourceId::for_test(3))], 21),
             ],
         );
 
@@ -789,8 +789,8 @@ pub fn test_rollback_interleaved_multi_resource() {
         scheduler.schedule(
             3,
             vec![
-                SchedulerTransaction::new(30, vec![AccessMetadata::write(ResourceId::for_test(1))]),
-                SchedulerTransaction::new(31, vec![AccessMetadata::write(ResourceId::for_test(3))]),
+                SchedulerTransaction::new(vec![AccessMetadata::write(ResourceId::for_test(1))], 30),
+                SchedulerTransaction::new(vec![AccessMetadata::write(ResourceId::for_test(3))], 31),
             ],
         );
 
@@ -798,9 +798,9 @@ pub fn test_rollback_interleaved_multi_resource() {
         let batch4 = scheduler.schedule(
             4,
             vec![
-                SchedulerTransaction::new(40, vec![AccessMetadata::write(ResourceId::for_test(1))]),
-                SchedulerTransaction::new(41, vec![AccessMetadata::write(ResourceId::for_test(2))]),
-                SchedulerTransaction::new(42, vec![AccessMetadata::write(ResourceId::for_test(3))]),
+                SchedulerTransaction::new(vec![AccessMetadata::write(ResourceId::for_test(1))], 40),
+                SchedulerTransaction::new(vec![AccessMetadata::write(ResourceId::for_test(2))], 41),
+                SchedulerTransaction::new(vec![AccessMetadata::write(ResourceId::for_test(3))], 42),
             ],
         );
         batch4.wait_committed_blocking();
@@ -825,12 +825,12 @@ pub fn test_rollback_interleaved_multi_resource() {
                 5,
                 vec![
                     SchedulerTransaction::new(
-                        50,
                         vec![AccessMetadata::write(ResourceId::for_test(1))],
+                        50,
                     ),
                     SchedulerTransaction::new(
-                        51,
                         vec![AccessMetadata::write(ResourceId::for_test(4))],
+                        51,
                     ), // New resource 4
                 ],
             );
@@ -867,8 +867,8 @@ pub fn test_resource_eviction() {
             let txs: Vec<_> = (0..RESOURCES_PER_BATCH)
                 .map(|i| {
                     SchedulerTransaction::new(
-                        base_resource + i,
                         vec![AccessMetadata::write(ResourceId::for_test(base_resource + i))],
+                        base_resource + i,
                     )
                 })
                 .collect();
@@ -918,8 +918,8 @@ pub fn test_eviction_under_load() {
                     scheduler.schedule(
                         (base + i + 1) as u64,
                         vec![SchedulerTransaction::new(
-                            resource_id,
                             vec![AccessMetadata::write(ResourceId::for_test(resource_id))],
+                            resource_id,
                         )],
                     )
                 })
@@ -953,22 +953,22 @@ pub fn test_basic_pruning() {
         let batch1 = scheduler.schedule(
             1,
             vec![SchedulerTransaction::new(
-                1,
                 vec![AccessMetadata::write(ResourceId::for_test(1))],
+                1,
             )],
         );
         let batch2 = scheduler.schedule(
             2,
             vec![SchedulerTransaction::new(
-                2,
                 vec![AccessMetadata::write(ResourceId::for_test(1))],
+                2,
             )],
         );
         let batch3 = scheduler.schedule(
             3,
             vec![SchedulerTransaction::new(
-                3,
                 vec![AccessMetadata::write(ResourceId::for_test(1))],
+                3,
             )],
         );
         batch3.wait_committed_blocking();
@@ -1034,8 +1034,8 @@ pub fn test_pruning_preserves_recent_batches() {
             let batch = scheduler.schedule(
                 i as u64,
                 vec![SchedulerTransaction::new(
-                    i,
                     vec![AccessMetadata::write(ResourceId::for_test(1))],
+                    i,
                 )],
             );
             batch.wait_committed_blocking();
@@ -1101,8 +1101,8 @@ pub fn test_pruning_crash_recovery() {
             let batch = scheduler.schedule(
                 i as u64,
                 vec![SchedulerTransaction::new(
-                    i,
                     vec![AccessMetadata::write(ResourceId::for_test(1))],
+                    i,
                 )],
             );
             batch.wait_committed_blocking();
@@ -1197,9 +1197,9 @@ pub fn test_pruning_multiple_resources() {
         let batch1 = scheduler.schedule(
             1,
             vec![
-                SchedulerTransaction::new(1, vec![AccessMetadata::write(ResourceId::for_test(1))]),
-                SchedulerTransaction::new(2, vec![AccessMetadata::write(ResourceId::for_test(2))]),
-                SchedulerTransaction::new(3, vec![AccessMetadata::write(ResourceId::for_test(3))]),
+                SchedulerTransaction::new(vec![AccessMetadata::write(ResourceId::for_test(1))], 1),
+                SchedulerTransaction::new(vec![AccessMetadata::write(ResourceId::for_test(2))], 2),
+                SchedulerTransaction::new(vec![AccessMetadata::write(ResourceId::for_test(3))], 3),
             ],
         );
         batch1.wait_committed_blocking();
@@ -1208,9 +1208,9 @@ pub fn test_pruning_multiple_resources() {
         let batch2 = scheduler.schedule(
             2,
             vec![
-                SchedulerTransaction::new(10, vec![AccessMetadata::write(ResourceId::for_test(1))]),
-                SchedulerTransaction::new(20, vec![AccessMetadata::write(ResourceId::for_test(2))]),
-                SchedulerTransaction::new(30, vec![AccessMetadata::write(ResourceId::for_test(3))]),
+                SchedulerTransaction::new(vec![AccessMetadata::write(ResourceId::for_test(1))], 10),
+                SchedulerTransaction::new(vec![AccessMetadata::write(ResourceId::for_test(2))], 20),
+                SchedulerTransaction::new(vec![AccessMetadata::write(ResourceId::for_test(3))], 30),
             ],
         );
         batch2.wait_committed_blocking();
@@ -1220,16 +1220,16 @@ pub fn test_pruning_multiple_resources() {
             3,
             vec![
                 SchedulerTransaction::new(
-                    100,
                     vec![AccessMetadata::write(ResourceId::for_test(1))],
+                    100,
                 ),
                 SchedulerTransaction::new(
-                    200,
                     vec![AccessMetadata::write(ResourceId::for_test(2))],
+                    200,
                 ),
                 SchedulerTransaction::new(
-                    300,
                     vec![AccessMetadata::write(ResourceId::for_test(3))],
+                    300,
                 ),
             ],
         );
@@ -1304,8 +1304,8 @@ pub fn test_pruning_pause_and_unpause() {
             let batch = scheduler.schedule(
                 i as u64,
                 vec![SchedulerTransaction::new(
-                    i,
                     vec![AccessMetadata::write(ResourceId::for_test(1))],
+                    i,
                 )],
             );
             batch.wait_committed_blocking();
@@ -1373,8 +1373,8 @@ pub fn test_rollback_pruning_conflict() {
             let batch = scheduler.schedule(
                 i as u64,
                 vec![SchedulerTransaction::new(
-                    i,
                     vec![AccessMetadata::write(ResourceId::for_test(1))],
+                    i,
                 )],
             );
             batch.wait_committed_blocking();
@@ -1419,8 +1419,8 @@ pub fn test_smt_state_root_after_commits() {
         let batch1 = scheduler.schedule(
             1,
             vec![SchedulerTransaction::new(
-                1,
                 vec![AccessMetadata::write(ResourceId::for_test(1))],
+                1,
             )],
         );
         batch1.wait_committed_blocking();
@@ -1432,8 +1432,8 @@ pub fn test_smt_state_root_after_commits() {
         let batch2 = scheduler.schedule(
             2,
             vec![SchedulerTransaction::new(
-                2,
                 vec![AccessMetadata::write(ResourceId::for_test(2))],
+                2,
             )],
         );
         batch2.wait_committed_blocking();
@@ -1446,8 +1446,8 @@ pub fn test_smt_state_root_after_commits() {
         let batch3 = scheduler.schedule(
             3,
             vec![SchedulerTransaction::new(
-                3,
                 vec![AccessMetadata::write(ResourceId::for_test(1))],
+                3,
             )],
         );
         batch3.wait_committed_blocking();
@@ -1487,8 +1487,8 @@ pub fn test_smt_state_root_after_rollback() {
         let batch1 = scheduler.schedule(
             1,
             vec![SchedulerTransaction::new(
-                1,
                 vec![AccessMetadata::write(ResourceId::for_test(1))],
+                1,
             )],
         );
         batch1.wait_committed_blocking();
@@ -1497,8 +1497,8 @@ pub fn test_smt_state_root_after_rollback() {
         let batch2 = scheduler.schedule(
             2,
             vec![SchedulerTransaction::new(
-                2,
                 vec![AccessMetadata::write(ResourceId::for_test(2))],
+                2,
             )],
         );
         batch2.wait_committed_blocking();
@@ -1507,8 +1507,8 @@ pub fn test_smt_state_root_after_rollback() {
         let batch3 = scheduler.schedule(
             3,
             vec![SchedulerTransaction::new(
-                3,
                 vec![AccessMetadata::write(ResourceId::for_test(3))],
+                3,
             )],
         );
         batch3.wait_committed_blocking();
@@ -1530,8 +1530,8 @@ pub fn test_smt_state_root_after_rollback() {
         let batch4 = scheduler.schedule(
             10,
             vec![SchedulerTransaction::new(
-                10,
                 vec![AccessMetadata::write(ResourceId::for_test(10))],
+                10,
             )],
         );
         batch4.wait_committed_blocking();
@@ -1562,8 +1562,8 @@ pub fn test_smt_state_root_rollback_to_zero() {
         let batch1 = scheduler.schedule(
             1,
             vec![SchedulerTransaction::new(
-                1,
                 vec![AccessMetadata::write(ResourceId::for_test(1))],
+                1,
             )],
         );
         batch1.wait_committed_blocking();
@@ -1581,8 +1581,8 @@ pub fn test_smt_state_root_rollback_to_zero() {
         let batch2 = scheduler.schedule(
             1,
             vec![SchedulerTransaction::new(
-                1,
                 vec![AccessMetadata::write(ResourceId::for_test(1))],
+                1,
             )],
         );
         batch2.wait_committed_blocking();
@@ -1611,9 +1611,9 @@ pub fn test_smt_multi_resource_single_batch() {
         let batch = scheduler.schedule(
             1,
             vec![
-                SchedulerTransaction::new(1, vec![AccessMetadata::write(ResourceId::for_test(1))]),
-                SchedulerTransaction::new(2, vec![AccessMetadata::write(ResourceId::for_test(2))]),
-                SchedulerTransaction::new(3, vec![AccessMetadata::write(ResourceId::for_test(3))]),
+                SchedulerTransaction::new(vec![AccessMetadata::write(ResourceId::for_test(1))], 1),
+                SchedulerTransaction::new(vec![AccessMetadata::write(ResourceId::for_test(2))], 2),
+                SchedulerTransaction::new(vec![AccessMetadata::write(ResourceId::for_test(3))], 3),
             ],
         );
         batch.wait_committed_blocking();
@@ -1644,8 +1644,8 @@ pub fn test_smt_multi_proof_verify() {
         let batch = scheduler.schedule(
             1,
             vec![
-                SchedulerTransaction::new(1, vec![AccessMetadata::write(ResourceId::for_test(1))]),
-                SchedulerTransaction::new(2, vec![AccessMetadata::write(ResourceId::for_test(2))]),
+                SchedulerTransaction::new(vec![AccessMetadata::write(ResourceId::for_test(1))], 1),
+                SchedulerTransaction::new(vec![AccessMetadata::write(ResourceId::for_test(2))], 2),
             ],
         );
         batch.wait_committed_blocking();
@@ -1687,8 +1687,8 @@ pub fn test_smt_multi_proof_absent_key() {
         let batch = scheduler.schedule(
             1,
             vec![SchedulerTransaction::new(
-                1,
                 vec![AccessMetadata::write(ResourceId::for_test(1))],
+                1,
             )],
         );
         batch.wait_committed_blocking();
@@ -1730,9 +1730,9 @@ pub fn test_smt_multi_proof_mixed_keys() {
         let batch = scheduler.schedule(
             1,
             vec![
-                SchedulerTransaction::new(1, vec![AccessMetadata::write(ResourceId::for_test(1))]),
-                SchedulerTransaction::new(2, vec![AccessMetadata::write(ResourceId::for_test(2))]),
-                SchedulerTransaction::new(3, vec![AccessMetadata::write(ResourceId::for_test(3))]),
+                SchedulerTransaction::new(vec![AccessMetadata::write(ResourceId::for_test(1))], 1),
+                SchedulerTransaction::new(vec![AccessMetadata::write(ResourceId::for_test(2))], 2),
+                SchedulerTransaction::new(vec![AccessMetadata::write(ResourceId::for_test(3))], 3),
             ],
         );
         batch.wait_committed_blocking();
@@ -1775,8 +1775,8 @@ pub fn test_smt_deterministic_roots() {
         let batch1 = scheduler.schedule(
             1,
             vec![SchedulerTransaction::new(
-                1,
                 vec![AccessMetadata::write(ResourceId::for_test(1))],
+                1,
             )],
         );
         batch1.wait_committed_blocking();
@@ -1786,8 +1786,8 @@ pub fn test_smt_deterministic_roots() {
         let batch2 = scheduler.schedule(
             2,
             vec![SchedulerTransaction::new(
-                2,
                 vec![AccessMetadata::write(ResourceId::for_test(2))],
+                2,
             )],
         );
         batch2.wait_committed_blocking();
@@ -1799,8 +1799,8 @@ pub fn test_smt_deterministic_roots() {
         let batch2_again = scheduler.schedule(
             2,
             vec![SchedulerTransaction::new(
-                2,
                 vec![AccessMetadata::write(ResourceId::for_test(2))],
+                2,
             )],
         );
         batch2_again.wait_committed_blocking();
