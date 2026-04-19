@@ -38,9 +38,8 @@ impl<'a> Inputs<'a> {
         let batch_metadata = BatchMetadata::decode(&mut header)?;
 
         // Split the transaction bytes off (self-delimited via the tx envelope header).
-        let (tx_bytes, data) = data.split_at_mut(Transaction::wire_size(data)?);
-        let mut tx_cursor: &[u8] = tx_bytes;
-        let tx = Transaction::decode(&mut tx_cursor)?;
+        let (tx_bytes, resources) = data.split_at_mut(Transaction::wire_size(data)?);
+        let tx = Transaction::decode(&mut &*tx_bytes)?;
 
         // Sanity check that header offsets do not overflow.
         let resources_len = resource_count
@@ -48,7 +47,7 @@ impl<'a> Inputs<'a> {
             .ok_or_else(|| Error::Decode("resource_count overflow".into()))?;
 
         // Decode resources.
-        let (res_headers, mut res_data) = data.split_at_mut(resources_len);
+        let (res_headers, mut res_data) = resources.split_at_mut(resources_len);
         let mut resources = Vec::with_capacity(resource_count);
         for i in 0..resource_count {
             resources
