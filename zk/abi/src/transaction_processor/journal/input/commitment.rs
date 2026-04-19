@@ -1,6 +1,5 @@
 use vprogs_core_codec::Reader;
 use vprogs_core_smt::EMPTY_HASH;
-use vprogs_l1_utils::compute_tx_id;
 
 use crate::{
     Result, Write,
@@ -46,8 +45,9 @@ impl<'a> InputCommitment<'a> {
         w.write(&[JournalEntry::OPCODE_INPUT]);
         w.write(&(payload_len as u32).to_le_bytes());
 
-        // Compute the L1 transaction ID: H_v1_id(H_payload(payload) || H_rest(rest_preimage)).
-        let tx_id = compute_tx_id(input.payload, input.rest_preimage);
+        // Derive the L1 transaction ID per the tx version. Unknown versions must be filtered
+        // out upstream - they cannot produce a commitment.
+        let tx_id = input.tx.tx_id().expect("tx_id required for input commitment");
         w.write(&tx_id);
 
         w.write(&input.tx_index.to_le_bytes());
