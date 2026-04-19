@@ -9,8 +9,7 @@ use crate::{
 
 /// Decoded transaction inputs holding zero-copy views into the wire buffer.
 pub struct Inputs<'a> {
-    /// The versioned L1 transaction view. Guest programs that want the L2 application slice
-    /// must strip the borsh-encoded `Vec<AccessMetadata>` prefix from `tx.payload()` themselves.
+    /// Transaction to execute.
     pub tx: Transaction<'a>,
     /// Position of this transaction within the batch.
     pub tx_index: u32,
@@ -26,9 +25,9 @@ impl<'a> Inputs<'a> {
 
     /// Decodes transaction inputs from the wire buffer.
     ///
-    /// Wire layout: `fixed_header | transaction_bytes | resource_headers | resource_data`.
+    /// Wire layout: `fixed_header | tx_bytes | resource_headers | resource_data`.
     pub fn decode(buf: &'a mut [u8]) -> Result<Self> {
-        // Split fixed header from the rest of the buffer.
+        // Split fixed header from the rest of the buffer, creating mutable view for resource data.
         let (header, data) = buf.split_at_mut(Self::FIXED_HEADER_SIZE);
         let mut header: &[u8] = header;
 
