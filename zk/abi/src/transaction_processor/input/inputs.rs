@@ -109,6 +109,7 @@ impl<'a> Inputs<'a> {
             buf.write(r.data());
         }
 
+        // Sanity check total size.
         debug_assert_eq!(buf.len(), total_size);
 
         buf
