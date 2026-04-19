@@ -38,8 +38,7 @@ impl<'a> Inputs<'a> {
         let batch_metadata = BatchMetadata::decode(&mut header)?;
 
         // Split the transaction bytes off (self-delimited via the tx envelope header).
-        let tx_total = Transaction::wire_size(data)?;
-        let (tx_bytes, data) = data.split_at_mut(tx_total);
+        let (tx_bytes, data) = data.split_at_mut(Transaction::wire_size(data)?);
         let mut tx_cursor: &[u8] = tx_bytes;
         let tx = Transaction::decode(&mut tx_cursor)?;
 
