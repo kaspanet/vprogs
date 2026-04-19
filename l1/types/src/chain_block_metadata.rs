@@ -4,7 +4,8 @@ use crate::Hash;
 
 /// Relevant metadata extracted from an L1 chain block.
 ///
-/// Satisfies the `vprogs_core_types::BatchMetadata` blanket impl via its derived traits.
+/// Satisfies the [`BatchMetadata`](vprogs_core_types::BatchMetadata) blanket impl via its derived
+/// traits.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[derive(BorshSerialize, BorshDeserialize)] // borsh serialization
 pub struct ChainBlockMetadata {
