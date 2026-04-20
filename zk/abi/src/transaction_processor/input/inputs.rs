@@ -36,7 +36,7 @@ impl<'a> Inputs<'a> {
         let resource_count = header.le_u32("resource_count")? as usize;
         let batch_metadata = BatchMetadata::decode(&mut header)?;
 
-        // Split the transaction bytes off (self-delimited via the tx envelope header).
+        // Decode transaction bytes.
         let (tx_bytes, resources) = data.split_at_mut(Transaction::wire_size(data)?);
         let tx = Transaction::decode(&mut &*tx_bytes)?;
 
