@@ -81,7 +81,7 @@ impl<'a> Inputs<'a> {
         buf.write(&ctx.batch_metadata().block_hash().as_bytes());
         buf.write(&ctx.batch_metadata().blue_score().to_le_bytes());
 
-        // Write the transaction envelope (dispatches on tx.version).
+        // Write transaction bytes.
         Transaction::encode(&mut buf, ctx.tx());
 
         // Write resource headers.
