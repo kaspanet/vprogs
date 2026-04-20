@@ -10,7 +10,7 @@ use crate::{
 
 /// Decoded input commitment from a transaction processor journal.
 pub struct InputCommitment<'a> {
-    /// L1 transaction ID, reconstructed from `H_v1_id(payload_digest || rest_digest)`.
+    /// L1 transaction ID.
     pub tx_id: &'a [u8; 32],
     /// Position of this transaction within the batch.
     pub tx_index: u32,
@@ -45,11 +45,8 @@ impl<'a> InputCommitment<'a> {
         w.write(&[JournalEntry::OPCODE_INPUT]);
         w.write(&(payload_len as u32).to_le_bytes());
 
-        // Derive the L1 transaction ID per the tx version. Unknown versions must be filtered
-        // out upstream - they cannot produce a commitment.
-        let tx_id = input.tx.tx_id().expect("tx_id required for input commitment");
-        w.write(&tx_id);
-
+        // Write header: tx_id hash, tx_index, batch metadata, resource count.
+        w.write(&input.tx.tx_id().expect("tx_id")); // TODO: handle error
         w.write(&input.tx_index.to_le_bytes());
         input.batch_metadata.encode(w);
         w.write(&(input.resources.len() as u32).to_le_bytes());

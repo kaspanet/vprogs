@@ -13,6 +13,6 @@ pub struct SchedulerTransaction<T> {
 
 impl<T> SchedulerTransaction<T> {
     pub fn new(resources: Vec<AccessMetadata>, tx: T) -> Self {
-        Self { tx, resources }
+        Self { resources, tx }
     }
 }
