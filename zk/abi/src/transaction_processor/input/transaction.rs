@@ -114,23 +114,31 @@ impl<'a> Transaction<'a> {
         }
     }
 
-    /// Encodes the transaction to the wire format (host-side only).
+    /// Encodes an L1 transaction to the wire envelope (host-side only), dispatching on
+    /// [`L1Transaction::version`](vprogs_l1_types::L1Transaction) to derive the appropriate
+    /// per-version body. Panics on versions this build doesn't understand - unknown versions
+    /// must be filtered upstream before reaching the encoder.
     #[cfg(feature = "host")]
-    pub fn encode(&self, w: &mut impl Write) {
-        w.write(&self.version().to_le_bytes());
-        match self {
-            Self::V0 { payload, rest_preimage } | Self::V1 { payload, rest_preimage } => {
-                // Body layout mirrors `decode`: payload_len(4) | payload | rest_preimage.
-                let body_len = 4 + payload.len() + rest_preimage.len();
-                w.write(&(body_len as u32).to_le_bytes());
-                w.write(&(payload.len() as u32).to_le_bytes());
-                w.write(payload);
-                w.write(rest_preimage);
+    pub fn encode(w: &mut impl Write, tx: &vprogs_l1_types::L1Transaction) {
+        match tx.version {
+            Self::VERSION_V1 => {
+                use kaspa_consensus_core::hashing::tx::transaction_v1_rest_preimage;
+                let rest_preimage = transaction_v1_rest_preimage(tx);
+                Self::encode_body(w, Self::VERSION_V1, tx.payload.as_slice(), &rest_preimage);
             }
-            Self::Unknown { body, .. } => {
-                w.write(&(body.len() as u32).to_le_bytes());
-                w.write(body);
-            }
+            // TODO: implement v0 encoding (rest preimage derivation differs from v1).
+            v => panic!("unsupported tx version: {v}"),
         }
+    }
+
+    /// Writes a V0/V1 envelope: `version | body_len | payload_len | payload | rest_preimage`.
+    #[cfg(feature = "host")]
+    fn encode_body(w: &mut impl Write, version: u16, payload: &[u8], rest_preimage: &[u8]) {
+        let body_len = 4 + payload.len() + rest_preimage.len();
+        w.write(&version.to_le_bytes());
+        w.write(&(body_len as u32).to_le_bytes());
+        w.write(&(payload.len() as u32).to_le_bytes());
+        w.write(payload);
+        w.write(rest_preimage);
     }
 }

@@ -67,31 +67,22 @@ impl<'a> Inputs<'a> {
                 BatchMetadata = vprogs_l1_types::ChainBlockMetadata,
             >,
     {
-        use kaspa_consensus_core::hashing::tx::transaction_v1_rest_preimage;
-
         use crate::Write;
 
-        // Build the versioned transaction view. The host currently emits v1 transactions only;
-        // extending support to other versions happens here.
-        let payload = ctx.tx().payload.as_slice();
-        let rest_preimage = transaction_v1_rest_preimage(ctx.tx());
-        let tx = Transaction::V1 { payload, rest_preimage: &rest_preimage };
-
-        // Calculate total size and allocate buffer.
-        let tx_size = Transaction::ENVELOPE_HEADER_SIZE + 4 + payload.len() + rest_preimage.len();
+        // Pre-allocate buffer: fixed header, resource headers, resource data. The transaction
+        // envelope size depends on per-version preimage derivation, so it grows the buffer.
         let res_header_size = ctx.resources().len() * Resource::HEADER_SIZE;
         let res_data_size: usize = ctx.resources().iter().map(|r| r.data().len()).sum();
-        let total_size = Self::FIXED_HEADER_SIZE + tx_size + res_header_size + res_data_size;
-        let mut buf = Vec::with_capacity(total_size);
+        let mut buf = Vec::with_capacity(Self::FIXED_HEADER_SIZE + res_header_size + res_data_size);
 
-        // Write fixed header.
+        // Write fixed header: tx_index, n_resources, batch metadata.
         buf.write(&ctx.tx_index().to_le_bytes());
         buf.write(&(ctx.resources().len() as u32).to_le_bytes());
         buf.write(&ctx.batch_metadata().block_hash().as_bytes());
         buf.write(&ctx.batch_metadata().blue_score().to_le_bytes());
 
-        // Write the transaction envelope.
-        tx.encode(&mut buf);
+        // Write the transaction envelope (dispatches on tx.version).
+        Transaction::encode(&mut buf, ctx.tx());
 
         // Write resource headers.
         for r in ctx.resources() {
@@ -108,9 +99,6 @@ impl<'a> Inputs<'a> {
         for r in ctx.resources() {
             buf.write(r.data());
         }
-
-        // Sanity check total size.
-        debug_assert_eq!(buf.len(), total_size);
 
         buf
     }
