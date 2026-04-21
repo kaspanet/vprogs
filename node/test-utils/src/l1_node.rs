@@ -1,6 +1,6 @@
 //! A single Kaspa L1 node for testing.
 
-use std::{io::Write, time::Duration};
+use std::{cmp, io::Write, time::Duration};
 
 use kaspa_addresses::Address;
 use kaspa_consensus_core::{
@@ -266,6 +266,6 @@ impl L1Node {
             })
             .map(|e| (TransactionOutpoint::from(e.outpoint), UtxoEntry::from(e.utxo_entry)))
             .collect::<Vec<_>>()
-            .tap_mut(|utxos| utxos.sort_by(|a, b| b.1.amount.cmp(&a.1.amount)))
+            .tap_mut(|utxos| utxos.sort_by_key(|b| cmp::Reverse(b.1.amount)))
     }
 }
