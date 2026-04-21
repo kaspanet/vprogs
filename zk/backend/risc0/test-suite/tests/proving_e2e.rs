@@ -1,3 +1,4 @@
+use kaspa_consensus_core::hashing::tx::id as kaspa_tx_id;
 use tempfile::TempDir;
 use vprogs_core_smt::{EMPTY_HASH, Tree as _};
 use vprogs_core_test_utils::ResourceIdExt;
@@ -7,7 +8,7 @@ use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_state_version::StateVersion;
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
-use vprogs_zk_abi::batch_processor::StateTransition;
+use vprogs_zk_abi::{batch_processor::StateTransition, transaction_processor::JournalEntries};
 use vprogs_zk_backend_risc0_api::Backend;
 use vprogs_zk_backend_risc0_test_suite::{batch_processor_elf, transaction_processor_elf};
 use vprogs_zk_batch_prover::Backend as _;
@@ -46,6 +47,9 @@ async fn batch_proof_two_transactions() {
     tx2.version = 1;
     tx2.payload = vec![4, 5, 6];
 
+    // Capture native kaspa tx_ids before moving the txs into the scheduler.
+    let expected_tx_ids = [kaspa_tx_id(&tx1).as_bytes(), kaspa_tx_id(&tx2).as_bytes()];
+
     let block_metadata = ChainBlockMetadata::default();
 
     // Schedule the batch (executes both transactions and starts proving).
@@ -59,6 +63,16 @@ async fn batch_proof_two_transactions() {
 
     batch.wait_committed_blocking();
     batch.wait_artifact_published_blocking();
+
+    // Each tx's input commitment must embed the same tx_id kaspa derives natively.
+    for (artifact, expected) in batch.tx_artifacts().zip(expected_tx_ids.iter()) {
+        let journal = Backend::journal_bytes(&artifact);
+        let parsed = JournalEntries::decode(&journal).expect("valid tx journal");
+        assert_eq!(
+            parsed.input_commitment.tx_id, expected,
+            "committed tx_id must match kaspa's native id"
+        );
+    }
 
     // Read the batch proof receipt from batch artifact.
     let receipt = batch.artifact();
@@ -102,6 +116,9 @@ async fn batch_proof_two_transactions() {
     tx4.version = 1;
     tx4.payload = vec![10, 11, 12];
 
+    // Capture native kaspa tx_ids for the second batch's txs.
+    let expected_tx_ids_2 = [kaspa_tx_id(&tx3).as_bytes(), kaspa_tx_id(&tx4).as_bytes()];
+
     let batch_2 = scheduler.schedule(
         block_metadata_2,
         vec![
@@ -112,6 +129,16 @@ async fn batch_proof_two_transactions() {
 
     batch_2.wait_committed_blocking();
     batch_2.wait_artifact_published_blocking();
+
+    // Same tx_id parity check on the second batch.
+    for (artifact, expected) in batch_2.tx_artifacts().zip(expected_tx_ids_2.iter()) {
+        let journal = Backend::journal_bytes(&artifact);
+        let parsed = JournalEntries::decode(&journal).expect("valid tx journal");
+        assert_eq!(
+            parsed.input_commitment.tx_id, expected,
+            "committed tx_id must match kaspa's native id"
+        );
+    }
 
     let receipt_2 = batch_2.artifact();
     let journal_2 = Backend::journal_bytes(&receipt_2);
