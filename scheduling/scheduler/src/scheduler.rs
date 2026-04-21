@@ -45,7 +45,7 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
     /// Creates a new scheduler with the given execution and storage configurations.
     pub fn new(execution_config: ExecutionConfig<P>, storage_config: StorageConfig<S>) -> Self {
         let (worker_count, processor) = execution_config.unpack();
-        let state = SchedulerState::new(storage_config);
+        let state = SchedulerState::new(storage_config, processor.clone());
         Self {
             batch_lifecycle_worker: BatchLifecycleWorker::new(),
             pruning_worker: PruningWorker::new(state.clone()),

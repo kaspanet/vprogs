@@ -44,7 +44,8 @@ impl<S: Store, P: Processor<S>> Node<S, P> {
         let api = NodeApi::new(scheduler.state().clone(), tx);
 
         // Spawn the worker on a dedicated thread.
-        let worker = NodeWorker::spawn(bridge, scheduler, rx, shutdown.clone());
+        let worker =
+            NodeWorker::spawn(bridge, scheduler, rx, shutdown.clone(), config.lane_subnetwork_id);
         Self {
             handle: Some(spawn(move || {
                 Builder::new_current_thread()

@@ -2,6 +2,7 @@ use std::{collections::VecDeque, thread::spawn};
 
 use tokio::runtime::Builder;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
+use vprogs_state_lane_tip::LaneTip;
 use vprogs_storage_types::Store;
 use vprogs_zk_abi::batch_processor::Inputs as BatchInputs;
 
@@ -88,11 +89,22 @@ where
 
     /// Assembles the batch witness from transaction receipts and SMT state proofs.
     fn build_inputs(&self, batch: &ScheduledBatch<S, P>, receipts: &[B::Receipt]) -> Vec<u8> {
-        let prev_version = batch.checkpoint().index().saturating_sub(1);
+        let batch_index = batch.checkpoint().index();
+        let prev_version = batch_index.saturating_sub(1);
         let resources = batch.resource_ids();
         let (proof, leaf_order) = self.store.prove(&resources, prev_version).expect("proof");
         let journals: Vec<_> = receipts.iter().map(B::journal_bytes).collect();
 
-        BatchInputs::encode(self.backend.image_id(), &proof, &leaf_order, &journals)
+        // Load the committed lane tip for the preceding batch; zero hash at genesis.
+        let parent_lane_tip = LaneTip::get(&self.store, prev_version).unwrap_or([0; 32]);
+
+        BatchInputs::encode(
+            self.backend.image_id(),
+            &parent_lane_tip,
+            &self.prover.lane_key,
+            &proof,
+            &leaf_order,
+            &journals,
+        )
     }
 }

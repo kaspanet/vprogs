@@ -6,6 +6,7 @@ version = "0.1.0"
 [dev-dependencies]
 blake3.workspace                       = true
 kaspa-consensus-core.workspace         = true
+kaspa-seq-commit.workspace             = true
 tempfile.workspace                     = true
 tokio                                  = { workspace = true, features = ["rt-multi-thread"] }
 vprogs-core-smt.workspace              = true

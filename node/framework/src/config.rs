@@ -19,6 +19,10 @@ pub struct NodeConfig<S: Store, P: Processor<S>> {
     pub storage_config: StorageConfig<S>,
     /// L1 bridge connection and sync configuration.
     pub l1_bridge_config: L1BridgeConfig,
+    /// Subnetwork ID this L2 binds to. The node worker filters each L1 block's accepted-tx list
+    /// down to this subnetwork before scheduling, and the batch prover's kip21 seq-commit
+    /// `lane_key` is derived from it.
+    pub lane_subnetwork_id: [u8; 20],
 }
 
 impl<S: Store, P: Processor<S>> Default for NodeConfig<S, P> {
@@ -28,6 +32,7 @@ impl<S: Store, P: Processor<S>> Default for NodeConfig<S, P> {
             execution_config: ExecutionConfig::default(),
             storage_config: StorageConfig::default(),
             l1_bridge_config: L1BridgeConfig::default(),
+            lane_subnetwork_id: [0; 20],
         }
     }
 }
@@ -50,6 +55,11 @@ impl<S: Store, P: Processor<S>> NodeConfig<S, P> {
 
     pub fn with_l1_bridge_config(mut self, config: L1BridgeConfig) -> Self {
         self.l1_bridge_config = config;
+        self
+    }
+
+    pub fn with_lane_subnetwork_id(mut self, id: [u8; 20]) -> Self {
+        self.lane_subnetwork_id = id;
         self
     }
 }

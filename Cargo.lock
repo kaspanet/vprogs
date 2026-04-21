@@ -7744,6 +7744,7 @@ dependencies = [
  "arc-swap",
  "crossbeam-queue",
  "futures",
+ "kaspa-hashes",
  "kaspa-notify",
  "kaspa-rpc-core",
  "kaspa-wrpc-client",
@@ -7921,6 +7922,13 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "vprogs-core-types",
+ "vprogs-storage-types",
+]
+
+[[package]]
+name = "vprogs-state-lane-tip"
+version = "0.1.0"
+dependencies = [
  "vprogs-storage-types",
 ]
 
@@ -8158,6 +8166,8 @@ dependencies = [
  "blake3",
  "borsh",
  "kaspa-consensus-core",
+ "kaspa-hashes",
+ "kaspa-seq-commit",
  "thiserror 2.0.18",
  "vprogs-core-codec",
  "vprogs-core-smt",
@@ -8188,6 +8198,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "kaspa-consensus-core",
+ "kaspa-seq-commit",
  "tempfile",
  "tokio",
  "vprogs-core-smt",
@@ -8214,6 +8225,7 @@ dependencies = [
  "vprogs-core-atomics",
  "vprogs-core-macros",
  "vprogs-scheduling-scheduler",
+ "vprogs-state-lane-tip",
  "vprogs-storage-types",
  "vprogs-zk-abi",
  "vprogs-zk-transaction-prover",
@@ -8237,6 +8249,7 @@ version = "0.1.0"
 dependencies = [
  "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
+ "vprogs-state-lane-tip",
  "vprogs-storage-types",
  "vprogs-zk-abi",
  "vprogs-zk-batch-prover",

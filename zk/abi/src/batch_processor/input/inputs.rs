@@ -7,10 +7,17 @@ use crate::{Result, batch_processor::TransactionJournals};
 
 /// Decoded batch processor input (zero-copy).
 ///
-/// Wire layout: `image_id(32) | proof (length-prefixed) | leaf_order | tx_journals`
+/// Wire layout:
+/// `image_id(32) | parent_lane_tip(32) | lane_key(32) | proof (length-prefixed) | leaf_order |
+/// tx_journals`
 pub struct Inputs<'a> {
     /// Transaction processor guest image ID.
     pub image_id: &'a [u8; 32],
+    /// Lane tip this batch advances from - the prior committed value for our L2's lane.
+    pub parent_lane_tip: &'a [u8; 32],
+    /// `H_lane_key(subnetwork_id)` for our L2's lane. Host-precomputed to keep the guest off the
+    /// `SeqCommitLaneKey` path.
+    pub lane_key: &'a [u8; 32],
     /// Sparse Merkle tree proof (leaves carry pre-batch key + value_hash per resource).
     pub proof: Proof<'a>,
     /// Leaf order mapping: `leaf_order[leaf_pos] = resource_index` (materialized for O(1) access).
@@ -24,6 +31,10 @@ impl<'a> Inputs<'a> {
     pub fn decode(mut buf: &'a [u8]) -> Result<Self> {
         // Image ID (32 bytes).
         let image_id = buf.array::<32>("image_id")?;
+
+        // Parent lane tip + lane key (32 bytes each).
+        let parent_lane_tip = buf.array::<32>("parent_lane_tip")?;
+        let lane_key = buf.array::<32>("lane_key")?;
 
         // Decode length-prefixed proof (comes before leaf_order so we know the leaf count).
         let proof_length = buf.le_u32("proof_length")? as usize;
@@ -39,15 +50,19 @@ impl<'a> Inputs<'a> {
         // Remaining bytes are per-transaction journal entries.
         let tx_journals = TransactionJournals::new(buf);
 
-        Ok(Self { image_id, proof, leaf_order, tx_journals })
+        Ok(Self { image_id, parent_lane_tip, lane_key, proof, leaf_order, tx_journals })
     }
 
     /// Encodes the batch processor input into bytes (host-side).
     ///
-    /// Wire layout: `image_id(32) | proof (length-prefixed) | leaf_order | tx_journals`
+    /// Wire layout:
+    /// `image_id(32) | parent_lane_tip(32) | lane_key(32) | proof (length-prefixed) | leaf_order |
+    /// tx_journals`
     #[cfg(feature = "host")]
     pub fn encode(
         image_id: &[u8; 32],
+        parent_lane_tip: &[u8; 32],
+        lane_key: &[u8; 32],
         proof_bytes: &[u8],
         leaf_order: &[u32],
         tx_journals: &[Vec<u8>],
@@ -55,11 +70,15 @@ impl<'a> Inputs<'a> {
         use crate::Write;
 
         let journals_size: usize = tx_journals.iter().map(|j| 4 + j.len()).sum();
-        let total = 32 + 4 + proof_bytes.len() + leaf_order.len() * 4 + journals_size;
+        let total = 32 + 32 + 32 + 4 + proof_bytes.len() + leaf_order.len() * 4 + journals_size;
         let mut buf = Vec::with_capacity(total);
 
         // Image ID.
         buf.write(image_id);
+
+        // Parent lane tip + lane key.
+        buf.write(parent_lane_tip);
+        buf.write(lane_key);
 
         // Proof (length-prefixed raw bytes).
         buf.extend_from_slice(&(proof_bytes.len() as u32).to_le_bytes());

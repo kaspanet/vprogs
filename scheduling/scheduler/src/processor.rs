@@ -14,6 +14,26 @@ pub trait Processor<S: Store>: Clone + Sized + Send + Sync + 'static {
         // Default implementation does nothing (override if needed).
     }
 
+    /// Called inside the commit write batch for a successful batch. Implementations can add
+    /// processor-specific writes (e.g. persisting the lane-tip produced by the batch proof) so
+    /// they commit atomically with the scheduler's own state changes.
+    ///
+    /// Runs on the storage write worker. The artifact is `None` if publication was skipped.
+    fn on_batch_commit<ST: Store>(
+        &self,
+        _store: &ST,
+        _wb: &mut ST::WriteBatch,
+        _batch: &ScheduledBatch<S, Self>,
+    ) {
+        // Default implementation does nothing (override if needed).
+    }
+
+    /// Called inside the rollback write batch for each batch being reverted. Implementations can
+    /// delete processor-specific state written in `on_batch_commit`.
+    fn on_batch_rollback<ST: Store>(&self, _wb: &mut ST::WriteBatch, _batch_index: u64) {
+        // Default implementation does nothing (override if needed).
+    }
+
     /// Called after a rollback to `target_index` (runs in the scheduler's single-threaded context).
     fn on_rollback(&self, _target_index: u64) {
         // Default implementation does nothing (override if needed).

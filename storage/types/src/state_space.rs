@@ -3,6 +3,7 @@ pub enum StateSpace {
     StatePtrLatest,
     StatePtrRollback,
     BatchMetadata,
+    LaneTip,
     Metadata,
     SmtNode,
     SmtStale,

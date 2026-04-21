@@ -30,8 +30,10 @@ async fn batch_proof_two_transactions() {
 
     let backend = Backend::new(&transaction_elf, &batch_elf);
 
-    // Create the VM with batch proving enabled.
-    let proving = ProvingPipeline::batch(backend.clone(), storage.clone());
+    // Create the VM with batch proving enabled. Lane key derived from a fixed test subnetwork id
+    // so the produced journal's lane_key field is deterministic.
+    let lane_key = kaspa_seq_commit::hashing::lane_key(&[0x42; 20]).as_bytes();
+    let proving = ProvingPipeline::batch(backend.clone(), storage.clone(), lane_key);
     let vm = Vm::new(backend.clone(), proving);
 
     let mut scheduler = Scheduler::new(
@@ -80,11 +82,22 @@ async fn batch_proof_two_transactions() {
 
     // Decode the state transition from the receipt journal.
     match StateTransition::decode(&journal).expect("journal should decode") {
-        StateTransition::Success { image_id: journal_image_id, prev_root, new_root } => {
+        StateTransition::Success {
+            image_id: journal_image_id,
+            prev_root,
+            new_root,
+            lane_key: journal_lane_key,
+            parent_lane_tip,
+            new_lane_tip,
+            ..
+        } => {
             assert_eq!(journal_image_id, backend.image_id());
             assert_ne!(prev_root, new_root, "state should change after counter increment");
             assert_eq!(*prev_root, EMPTY_HASH, "prev_root should be empty (no prior state)");
             assert_eq!(*new_root, storage.root(1), "new_root should match store's version 1");
+            assert_eq!(*journal_lane_key, lane_key, "lane_key should be pinned by input");
+            assert_eq!(*parent_lane_tip, [0u8; 32], "parent_lane_tip is zero at genesis");
+            assert_ne!(new_lane_tip, [0u8; 32], "new_lane_tip should advance past zero");
         }
         StateTransition::Error(e) => panic!("expected success, got error: {e}"),
     }

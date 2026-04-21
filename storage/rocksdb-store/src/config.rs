@@ -74,6 +74,10 @@ pub trait Config: Send + Sync + 'static {
         Options::default()
     }
 
+    fn cf_lane_tip_opts() -> Options {
+        Options::default()
+    }
+
     fn cf_metas_opts() -> Options {
         Options::default()
     }

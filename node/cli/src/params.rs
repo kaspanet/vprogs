@@ -61,6 +61,10 @@ impl NodeParams {
             execution_config: self.execution.into_config(vm),
             storage_config: self.storage.into_config(store),
             l1_bridge_config: self.l1_bridge.into_config(),
+            // TODO: expose this as a CLI flag once the lane identity is part of node operator
+            // configuration. For now the default zero-id means "no lane filtering applied" -
+            // covers tests and dev setups until lane deployment lands.
+            lane_subnetwork_id: [0; 20],
         }
     }
 }

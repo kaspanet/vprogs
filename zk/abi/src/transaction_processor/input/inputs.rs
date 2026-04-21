@@ -76,10 +76,14 @@ impl<'a> Inputs<'a> {
         let mut buf = Vec::with_capacity(Self::FIXED_HEADER_SIZE + res_header_size + res_data_size);
 
         // Write fixed header: tx_index, n_resources, batch metadata.
+        let bm = ctx.batch_metadata();
         buf.write(&ctx.tx_index().to_le_bytes());
         buf.write(&(ctx.resources().len() as u32).to_le_bytes());
-        buf.write(&ctx.batch_metadata().block_hash().as_bytes());
-        buf.write(&ctx.batch_metadata().blue_score().to_le_bytes());
+        buf.write(&bm.block_hash().as_bytes());
+        buf.write(&bm.blue_score().to_le_bytes());
+        buf.write(&bm.daa_score().to_le_bytes());
+        buf.write(&bm.timestamp().to_le_bytes());
+        buf.write(&bm.selected_parent_timestamp().to_le_bytes());
 
         // Write transaction bytes.
         Transaction::encode(&mut buf, ctx.tx());

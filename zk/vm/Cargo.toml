@@ -6,6 +6,7 @@ version.workspace = true
 [dependencies]
 vprogs-l1-types.workspace              = true
 vprogs-scheduling-scheduler.workspace  = true
+vprogs-state-lane-tip.workspace        = true
 vprogs-storage-types.workspace         = true
 vprogs-zk-abi                          = { workspace = true, features = ["host"] }
 vprogs-zk-batch-prover.workspace       = true

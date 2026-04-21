@@ -93,7 +93,7 @@ async fn test_bridge_syncs_from_specific_block() {
         .with_network_type(NetworkType::Simnet)
         .with_connect_strategy(ConnectStrategy::Fallback)
         .with_filter_half_life(Duration::ZERO)
-        .with_tip(Some(Checkpoint::new(3, ChainBlockMetadata::new(start_from, 0))));
+        .with_tip(Some(Checkpoint::new(3, ChainBlockMetadata::new(start_from, 0, 0, 0, 0))));
 
     let bridge = L1Bridge::new(config);
 
@@ -153,8 +153,10 @@ async fn test_bridge_catches_up_after_reconnection() {
 
     // Save the last processed position as a checkpoint.
     let (last_index, last_header, _) = &blocks[2];
-    let checkpoint =
-        Checkpoint::new(*last_index, ChainBlockMetadata::new(last_header.hash.unwrap(), 0));
+    let checkpoint = Checkpoint::new(
+        *last_index,
+        ChainBlockMetadata::new(last_header.hash.unwrap(), 0, 0, 0, 0),
+    );
     assert_eq!(*last_index, 3);
 
     // Phase 2: Shutdown the bridge, mine blocks while it's down.

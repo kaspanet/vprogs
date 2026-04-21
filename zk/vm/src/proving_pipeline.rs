@@ -22,11 +22,18 @@ impl<S: Store, P: Processor<S>> ProvingPipeline<S, P> {
     }
 
     /// Creates a full batch proving pipeline.
-    pub fn batch<B: Backend>(backend: B, store: S) -> Self
+    ///
+    /// `lane_key` is the kip21 seq-commit lane key (= `H_lane_key(subnetwork_id)`) that the batch
+    /// prover binds all produced batch proofs to. Compute it once at node bootstrap via
+    /// `kaspa_seq_commit::hashing::lane_key` and pass it in here.
+    pub fn batch<B: Backend>(backend: B, store: S, lane_key: [u8; 32]) -> Self
     where
         P: Processor<S, TransactionArtifact = B::Receipt, BatchArtifact = B::Receipt>,
     {
-        Self::Batch(TransactionProver::new(backend.clone()), BatchProver::new(backend, store))
+        Self::Batch(
+            TransactionProver::new(backend.clone()),
+            BatchProver::new(backend, store, lane_key),
+        )
     }
 
     /// Submits a transaction for proving. No-op for `None`.

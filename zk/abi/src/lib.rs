@@ -18,7 +18,7 @@ pub mod batch_processor {
     pub use abi::Abi;
     pub use error_code::ErrorCode;
     pub use input::{inputs::Inputs, transaction_journals::TransactionJournals};
-    pub use journal::state_transition::StateTransition;
+    pub use journal::state_transition::{StateTransition, SuccessInputs};
 }
 mod error;
 mod read;

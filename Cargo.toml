@@ -92,9 +92,12 @@ resolver = "3"
   kaspa-consensus-core      = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
   kaspa-core                = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
   kaspa-grpc-client         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
-  kaspa-hashes              = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
+  kaspa-hashes              = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2", default-features = false }
+  kaspa-merkle              = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
   kaspa-notify              = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
   kaspa-rpc-core            = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
+  kaspa-seq-commit          = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2", default-features = false }
+  kaspa-smt                 = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2", default-features = false }
   kaspa-testing-integration = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
   kaspa-txscript            = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
   kaspa-wrpc-client         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
@@ -119,6 +122,7 @@ resolver = "3"
   vprogs-scheduling-scheduler                     = { path = "scheduling/scheduler" }
   vprogs-scheduling-test-utils                    = { path = "scheduling/test-utils" }
   vprogs-state-batch-metadata                     = { path = "state/batch-metadata" }
+  vprogs-state-lane-tip                           = { path = "state/lane-tip" }
   vprogs-state-metadata                           = { path = "state/metadata" }
   vprogs-state-ptr-latest                         = { path = "state/ptr-latest" }
   vprogs-state-ptr-rollback                       = { path = "state/ptr-rollback" }

@@ -1,7 +1,8 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use crossbeam_queue::SegQueue;
 use futures::{FutureExt, select_biased};
+use kaspa_hashes::Hash as KaspaHash;
 use kaspa_notify::scope::{PruningPointUtxoSetOverrideScope, Scope, VirtualChainChangedScope};
 use kaspa_rpc_core::{
     GetVirtualChainFromBlockV2Response, Notification,
@@ -45,6 +46,10 @@ pub(crate) struct BridgeWorker {
     backfill_target: Option<Checkpoint<ChainBlockMetadata>>,
     /// Filters shallow reorgs based on accumulated depth.
     reorg_filter: ReorgFilter,
+    /// Cache of recently-seen block hashes to their header timestamps, used to resolve
+    /// selected-parent timestamps for the kip21 `mergeset_context_hash` without re-fetching.
+    /// Pruned at finalization so it doesn't grow unbounded.
+    timestamps: HashMap<KaspaHash, u64>,
 }
 
 impl BridgeWorker {
@@ -122,6 +127,7 @@ impl BridgeWorker {
             fatal: false,
             backfill_target,
             reorg_filter: ReorgFilter::new(config.filter_half_life),
+            timestamps: HashMap::new(),
         }
         .run()
         .await;
@@ -283,7 +289,11 @@ impl BridgeWorker {
         for chain_block in response.chain_block_accepted_transactions.iter() {
             let hash = chain_block.chain_block_header.hash.unwrap_or_default();
             let blue_score = chain_block.chain_block_header.blue_score.unwrap_or(0);
-            self.virtual_chain.advance_tip(ChainBlockMetadata::new(hash, blue_score));
+            // Backfill uses Low verbosity - timestamps / daa_score are absent here. They're only
+            // needed for the seq-commit context hash, which is computed against emitted blocks
+            // (fetch_chain_updates path), not backfilled ones. Leave defaults; any later block
+            // that names a backfilled block as its selected parent will hit the RPC fallback.
+            self.virtual_chain.advance_tip(ChainBlockMetadata::new(hash, blue_score, 0, 0, 0));
             if hash == target_hash {
                 found = true;
                 break;
@@ -330,7 +340,27 @@ impl BridgeWorker {
         for chain_block in response.chain_block_accepted_transactions.iter() {
             let hash = chain_block.chain_block_header.hash.expect("missing hash");
             let blue_score = chain_block.chain_block_header.blue_score.expect("missing blue_score");
-            let metadata = ChainBlockMetadata::new(hash, blue_score);
+            let daa_score = chain_block.chain_block_header.daa_score.expect("missing daa_score");
+            let timestamp = chain_block.chain_block_header.timestamp.expect("missing timestamp");
+
+            // On the selected-parent chain stream, each block's selected parent is the previous
+            // streamed chain block, i.e. the current virtual-chain tip. Resolve its timestamp
+            // from the cache, falling back to a one-shot RPC on miss (first sync or backfilled
+            // predecessor).
+            let selected_parent_hash = self.virtual_chain.tip().metadata().block_hash();
+            let selected_parent_timestamp =
+                self.resolve_parent_timestamp(selected_parent_hash, timestamp).await?;
+
+            // Cache this block's timestamp before emit so downstream blocks can resolve it.
+            self.timestamps.insert(hash, timestamp);
+
+            let metadata = ChainBlockMetadata::new(
+                hash,
+                blue_score,
+                daa_score,
+                timestamp,
+                selected_parent_timestamp,
+            );
             let checkpoint = self.virtual_chain.advance_tip(metadata);
             let accepted_transactions: Vec<L1Transaction> = chain_block
                 .accepted_transactions
@@ -345,6 +375,28 @@ impl BridgeWorker {
         }
 
         Ok(())
+    }
+
+    /// Returns the header timestamp of `parent_hash`, falling back to a one-shot `get_block`
+    /// RPC lookup if not in cache. The sentinel root (default hash, present only on first-ever
+    /// sync) has no real predecessor, so we use the current block's own timestamp as the
+    /// bootstrap value - matching the `seq_commit_timestamp` identity semantics.
+    async fn resolve_parent_timestamp(
+        &mut self,
+        parent_hash: KaspaHash,
+        current_timestamp: u64,
+    ) -> Result<u64> {
+        if parent_hash == KaspaHash::default() {
+            return Ok(current_timestamp);
+        }
+        if let Some(&ts) = self.timestamps.get(&parent_hash) {
+            return Ok(ts);
+        }
+        // Cache miss - fetch the header. `include_transactions = false` keeps the payload small.
+        let block = self.client.get_block(parent_hash, false).await?;
+        let ts = block.header.timestamp;
+        self.timestamps.insert(parent_hash, ts);
+        Ok(ts)
     }
 
     /// Rolls back the virtual chain, updates the reorg filter, and emits a `Rollback` event.
@@ -375,6 +427,12 @@ impl BridgeWorker {
                 new_root.index(),
                 pruning_hash
             );
+            // Drop cached timestamps - stale entries below the new root can't be named as a
+            // future selected parent, and any still-needed entry will be re-fetched by
+            // `resolve_parent_timestamp`'s RPC fallback on the first post-finalization block.
+            // Keep only the current tip so the next block's lookup stays fast.
+            let tip_hash = self.virtual_chain.tip().metadata().block_hash();
+            self.timestamps.retain(|&hash, _| hash == tip_hash);
             self.push_event(L1Event::Finalized(new_root));
         }
 

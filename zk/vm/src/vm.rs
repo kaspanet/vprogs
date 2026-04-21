@@ -2,9 +2,11 @@ use std::sync::Arc;
 
 use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch, TransactionContext};
+use vprogs_state_lane_tip::LaneTip;
 use vprogs_storage_types::Store;
 use vprogs_zk_abi::{
     Error, Result,
+    batch_processor::StateTransition,
     transaction_processor::{Inputs, Outputs, StorageOp},
 };
 
@@ -56,6 +58,32 @@ impl<B: Backend, S: Store> Processor<S> for Vm<B, S> {
 
     fn on_batch_scheduled(&self, batch: &ScheduledBatch<S, Self>) {
         self.proving_pipeline.submit_batch(batch);
+    }
+
+    fn on_batch_commit<ST: Store>(
+        &self,
+        _store: &ST,
+        wb: &mut ST::WriteBatch,
+        batch: &ScheduledBatch<S, Self>,
+    ) {
+        // Extract the new lane tip from the batch proof receipt's journal and persist it atomic
+        // with the rest of the commit. If proving is inactive (ProvingPipeline::None) there is no
+        // artifact, so we have nothing to record - the covenant path is moot in that mode.
+        let Some(artifact) = batch.try_artifact() else { return };
+        let journal = B::journal_bytes(&artifact);
+        match StateTransition::decode(&journal) {
+            Ok(StateTransition::Success { new_lane_tip, .. }) => {
+                LaneTip::set(wb, batch.checkpoint().index(), &new_lane_tip);
+            }
+            Ok(StateTransition::Error(_)) | Err(_) => {
+                // A guest-reported error or a malformed journal means the batch never produced a
+                // valid lane-tip transition; nothing to persist.
+            }
+        }
+    }
+
+    fn on_batch_rollback<ST: Store>(&self, wb: &mut ST::WriteBatch, batch_index: u64) {
+        LaneTip::delete(wb, batch_index);
     }
 
     fn on_rollback(&self, target_index: u64) {
