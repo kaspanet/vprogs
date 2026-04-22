@@ -14,14 +14,10 @@ use crate::{Error, Result, Write};
 /// image_id(32) | prev_root(32) | new_root(32)
 ///   | lane_key(32) | parent_lane_tip(32) | new_lane_tip(32)
 ///   | block_hash(32) | blue_score(8) | daa_score(8)
-///   | timestamp(8) | selected_parent_timestamp(8)
+///   | timestamp(8) | prev_timestamp(8)
 /// ```
 ///
 /// Error payload is the encoded `Error`.
-///
-/// The raw seq-commit context fields (block_hash, blue_score, daa_score, timestamp, and
-/// selected_parent_timestamp) are exposed so a covenant script on L1 can reconstruct the kip21
-/// `mergeset_context_hash` independently rather than trusting a pre-computed hash.
 pub enum StateTransition<'a> {
     /// Batch verified successfully.
     Success {
@@ -31,23 +27,22 @@ pub enum StateTransition<'a> {
         prev_root: &'a [u8; 32],
         /// State root after this batch was applied.
         new_root: &'a [u8; 32],
-        /// `H_lane_key(subnetwork_id)` for the lane this batch commits against.
+        /// Lane key this batch is bound to.
         lane_key: &'a [u8; 32],
-        /// Lane tip the batch advanced from.
+        /// Lane tip entering the batch.
         parent_lane_tip: &'a [u8; 32],
-        /// Lane tip after applying this batch's activity digest + mergeset context.
+        /// Lane tip after the batch.
         new_lane_tip: [u8; 32],
-        /// L1 block hash the batch's transactions are drawn from.
+        /// L1 block hash.
         block_hash: &'a [u8; 32],
-        /// DAG blue score of the block.
+        /// DAG blue score.
         blue_score: u64,
-        /// DAA score of the block.
+        /// DAA score.
         daa_score: u64,
-        /// Block header timestamp (milliseconds).
+        /// Block header timestamp in milliseconds.
         timestamp: u64,
-        /// Selected-parent timestamp (milliseconds) - the value kip21 `mergeset_context_hash`
-        /// commits to.
-        selected_parent_timestamp: u64,
+        /// Previous block's header timestamp in milliseconds.
+        prev_timestamp: u64,
     },
     /// Batch verification failed.
     Error(Error),
@@ -61,11 +56,11 @@ pub struct SuccessInputs<'a> {
     pub prev_root: [u8; 32],
     /// State root after this batch was applied.
     pub new_root: [u8; 32],
-    /// Lane key this batch binds to.
+    /// Lane key this batch is bound to.
     pub lane_key: &'a [u8; 32],
-    /// Lane tip the batch advanced from.
+    /// Lane tip entering the batch.
     pub parent_lane_tip: &'a [u8; 32],
-    /// Lane tip after applying this batch's activity digest.
+    /// Lane tip after the batch.
     pub new_lane_tip: [u8; 32],
     /// L1 block hash.
     pub block_hash: &'a [u8; 32],
@@ -73,10 +68,10 @@ pub struct SuccessInputs<'a> {
     pub blue_score: u64,
     /// DAA score.
     pub daa_score: u64,
-    /// Block timestamp.
+    /// Block header timestamp in milliseconds.
     pub timestamp: u64,
-    /// Selected-parent timestamp.
-    pub selected_parent_timestamp: u64,
+    /// Previous block's header timestamp in milliseconds.
+    pub prev_timestamp: u64,
 }
 
 impl<'a> StateTransition<'a> {
@@ -100,7 +95,7 @@ impl<'a> StateTransition<'a> {
                 w.write(&s.blue_score.to_le_bytes());
                 w.write(&s.daa_score.to_le_bytes());
                 w.write(&s.timestamp.to_le_bytes());
-                w.write(&s.selected_parent_timestamp.to_le_bytes());
+                w.write(&s.prev_timestamp.to_le_bytes());
             }
             Err(error) => {
                 w.write(&[Self::ERROR]);
@@ -127,7 +122,7 @@ impl<'a> StateTransition<'a> {
                 blue_score: buf.le_u64("blue_score")?,
                 daa_score: buf.le_u64("daa_score")?,
                 timestamp: buf.le_u64("timestamp")?,
-                selected_parent_timestamp: buf.le_u64("selected_parent_timestamp")?,
+                prev_timestamp: buf.le_u64("prev_timestamp")?,
             }),
             Self::ERROR => Ok(Self::Error(Error::decode(&mut buf)?)),
             _ => Err(Error::Decode("invalid state transition discriminant".into())),

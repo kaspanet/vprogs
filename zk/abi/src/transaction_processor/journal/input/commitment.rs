@@ -12,11 +12,9 @@ use crate::{
 pub struct InputCommitment<'a> {
     /// L1 transaction ID.
     pub tx_id: &'a [u8; 32],
-    /// L1 transaction protocol version. Needed by the seq-commit `activity_leaf` hash so the batch
-    /// processor can reconstruct the lane's mergeset activity digest.
+    /// L1 transaction protocol version.
     pub version: u16,
-    /// Position of this transaction within the batch (and, by host-side construction, its
-    /// block-wide merge_idx used by kip21 seq-commit).
+    /// Block-wide position of this transaction.
     pub tx_index: u32,
     /// Block-level metadata for the current batch.
     pub batch_metadata: BatchMetadata<'a>,

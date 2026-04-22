@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tap::Tap;
 use vprogs_core_atomics::{AsyncQueue, AtomicAsyncLatch};
 use vprogs_core_macros::smart_pointer;
+use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
 
@@ -15,22 +16,22 @@ pub struct BatchProver<S: Store, P: Processor<S>> {
     pub(crate) inbox: AsyncQueue<Command<S, P>>,
     /// Opened to signal worker shutdown.
     pub(crate) shutdown: AtomicAsyncLatch,
-    /// The kip21 seq-commit lane key (= `H_lane_key(subnetwork_id)`) this prover binds all
-    /// produced batch proofs to. Pre-computed at node bootstrap and fixed for the life of the
-    /// prover instance.
-    pub(crate) lane_key: [u8; 32],
 }
 
 impl<S: Store, P: Processor<S>> BatchProver<S, P> {
     /// Creates a new batch prover and spawns its worker thread.
-    pub fn new<B: Backend>(backend: B, store: S, lane_key: [u8; 32]) -> Self
+    pub fn new<B: Backend>(backend: B, store: S) -> Self
     where
-        P: Processor<S, TransactionArtifact = B::Receipt, BatchArtifact = B::Receipt>,
+        P: Processor<
+                S,
+                TransactionArtifact = B::Receipt,
+                BatchArtifact = B::Receipt,
+                BatchMetadata = ChainBlockMetadata,
+            >,
     {
         Self(Arc::new(BatchProverData {
             inbox: AsyncQueue::new(),
             shutdown: AtomicAsyncLatch::new(),
-            lane_key,
         }))
         .tap(|p| Worker::spawn(p.clone(), backend, store))
     }

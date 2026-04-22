@@ -20,8 +20,8 @@ pub enum ErrorCode {
     DaaScoreMismatch = 7,
     /// Block header timestamp differs from the first transaction in the batch.
     TimestampMismatch = 8,
-    /// Selected-parent timestamp differs from the first transaction in the batch.
-    SelectedParentTimestampMismatch = 9,
+    /// Previous block's timestamp differs from the first transaction in the batch.
+    PrevTimestampMismatch = 9,
     /// Transaction subnetwork differs from the lane this batch binds to.
     SubnetworkMismatch = 10,
 }

@@ -28,7 +28,7 @@ pub struct Abi<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> {
     pub value_hashes: Vec<&'a [u8; 32]>,
     /// Batch metadata from the first transaction - subsequent txs must match exactly.
     pub batch_metadata: Option<BatchMetadata<'a>>,
-    /// Streaming builder over `activity_leaf(tx_id, version, merge_idx)` for kip21 seq-commit.
+    /// Streaming builder over `activity_leaf(tx_id, version, merge_idx)`.
     pub activity_builder: ActivityDigestBuilder,
     /// Backend-specific inner proof verification callback.
     pub verify_journal: V,
@@ -60,10 +60,8 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
             this.value_hashes[res_idx as usize] = this.inputs.proof.leaves[leaf_pos].value_hash;
         }
 
-        // Process all transactions - cheap checks first, then cache mutations. `tx_index` values
-        // carried in each journal are the transactions' block-wide `merge_idx` positions and are
-        // not necessarily contiguous (lane filtering at the host level can leave gaps). We
-        // enforce strict monotonicity instead of contiguity.
+        // Process all transactions - cheap checks first, then cache mutations. Each journal's
+        // `tx_index` must be strictly greater than the previous one; gaps are allowed.
         let mut mapping_buf = Vec::new(); // Reusable buffer to avoid per-tx allocation.
         let mut last_tx_index: Option<u32> = None;
         while let Some(tx_journal) = this.inputs.tx_journals.next() {
@@ -83,7 +81,7 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
         let bm = this.batch_metadata.ok_or(Error::from(ErrorCode::TxIndexMismatch))?;
         let activity_digest = this.activity_builder.finalize();
         let context_hash = mergeset_context_hash(&MergesetContext {
-            timestamp: bm.selected_parent_timestamp,
+            timestamp: bm.prev_timestamp,
             daa_score: bm.daa_score,
             blue_score: bm.blue_score,
         });
@@ -107,15 +105,13 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
             blue_score: bm.blue_score,
             daa_score: bm.daa_score,
             timestamp: bm.timestamp,
-            selected_parent_timestamp: bm.selected_parent_timestamp,
+            prev_timestamp: bm.prev_timestamp,
         })
     }
 
     /// Verifies a single transaction journal, applies its output mutations, and feeds its
-    /// activity leaf into the lane's streaming merkle builder.
-    ///
-    /// Returns the journal's `tx_index` (= block-wide `merge_idx`) so the caller can enforce
-    /// strict monotonicity across the batch.
+    /// activity leaf into the lane's streaming merkle builder. Returns the journal's `tx_index`
+    /// so the caller can chain monotonicity checks.
     fn check_transaction_journal(
         &mut self,
         last_tx_index: Option<u32>,
@@ -127,17 +123,14 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
         let journal = JournalEntries::decode(journal_bytes)?;
         let tx_index = journal.input_commitment.tx_index;
 
-        // Strict-monotonicity check: each journal's block-wide tx_index (= merge_idx) must be
-        // greater than the previous one. Gaps are allowed - they correspond to other lanes'
-        // transactions in the same block.
+        // Strict-monotonicity check: must be greater than the previous one.
         if let Some(prev) = last_tx_index {
             if tx_index <= prev {
                 return Err(Error::from(ErrorCode::TxIndexMismatch));
             }
         }
 
-        // Batch metadata consistency (block_hash / blue_score / daa_score / timestamp /
-        // selected_parent_timestamp must match across all txs).
+        // Batch metadata consistency - all fields must match across the batch.
         self.check_batch_metadata(&journal.input_commitment.batch_metadata)?;
 
         // Feed this tx's identity into the activity digest.
@@ -182,8 +175,8 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
         if expected.timestamp != metadata.timestamp {
             return Err(Error::from(ErrorCode::TimestampMismatch));
         }
-        if expected.selected_parent_timestamp != metadata.selected_parent_timestamp {
-            return Err(Error::from(ErrorCode::SelectedParentTimestampMismatch));
+        if expected.prev_timestamp != metadata.prev_timestamp {
+            return Err(Error::from(ErrorCode::PrevTimestampMismatch));
         }
         Ok(())
     }

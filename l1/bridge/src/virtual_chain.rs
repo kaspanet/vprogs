@@ -55,11 +55,11 @@ impl VirtualChain {
         }
 
         // Calculate reorg depth and walk backwards, unlinking each node from its predecessor.
-        let old_blue_score = self.tip.metadata().blue_score();
+        let old_blue_score = self.tip.metadata().blue_score;
         for _ in 0..num_checkpoints {
             self.tip = self.tip.rollback_tip();
         }
-        let blue_score_depth = old_blue_score.saturating_sub(self.tip.metadata().blue_score());
+        let blue_score_depth = old_blue_score.saturating_sub(self.tip.metadata().blue_score);
 
         Ok((self.tip.checkpoint().clone(), blue_score_depth))
     }
@@ -72,14 +72,14 @@ impl VirtualChain {
         hash: &Hash,
     ) -> Result<Option<Checkpoint<ChainBlockMetadata>>> {
         // Already at this pruning point - nothing to do.
-        if self.root.metadata().block_hash() == *hash {
+        if self.root.metadata().block_hash == *hash {
             return Ok(None);
         }
 
         // Walk forward from root, unlinking each node until we find the target.
         let mut current = self.root.advance_root();
         while let Some(block) = current {
-            if block.metadata().block_hash() == *hash {
+            if block.metadata().block_hash == *hash {
                 self.root = block;
                 return Ok(Some(self.root.checkpoint().clone()));
             }

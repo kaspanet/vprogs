@@ -13,7 +13,7 @@ fn batch_metadata_round_trip() {
         blue_score: 123_456,
         daa_score: 987_654,
         timestamp: 1_700_000_000_000,
-        selected_parent_timestamp: 1_699_999_999_000,
+        prev_timestamp: 1_699_999_999_000,
     };
     bm.encode(&mut buf);
     assert_eq!(buf.len(), BatchMetadata::SIZE);
@@ -24,7 +24,7 @@ fn batch_metadata_round_trip() {
     assert_eq!(decoded.blue_score, bm.blue_score);
     assert_eq!(decoded.daa_score, bm.daa_score);
     assert_eq!(decoded.timestamp, bm.timestamp);
-    assert_eq!(decoded.selected_parent_timestamp, bm.selected_parent_timestamp);
+    assert_eq!(decoded.prev_timestamp, bm.prev_timestamp);
     assert!(cursor.is_empty(), "decode should consume exactly SIZE bytes");
 }
 
@@ -50,7 +50,7 @@ fn state_transition_success_round_trip() {
         blue_score: 42,
         daa_score: 7,
         timestamp: 1_700_000_000,
-        selected_parent_timestamp: 1_699_999_999,
+        prev_timestamp: 1_699_999_999,
     };
     StateTransition::encode(&mut buf, &Ok(success));
 
@@ -66,7 +66,7 @@ fn state_transition_success_round_trip() {
             blue_score,
             daa_score,
             timestamp,
-            selected_parent_timestamp,
+            prev_timestamp,
         } => {
             assert_eq!(d_image_id, &image_id);
             assert_eq!(d_prev_root, &prev_root);
@@ -78,7 +78,7 @@ fn state_transition_success_round_trip() {
             assert_eq!(blue_score, 42);
             assert_eq!(daa_score, 7);
             assert_eq!(timestamp, 1_700_000_000);
-            assert_eq!(selected_parent_timestamp, 1_699_999_999);
+            assert_eq!(prev_timestamp, 1_699_999_999);
         }
         StateTransition::Error(e) => panic!("expected Success, got Error({e:?})"),
     }

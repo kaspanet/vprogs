@@ -3,7 +3,6 @@ use std::{collections::VecDeque, thread::spawn};
 use tokio::runtime::Builder;
 use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
-use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_storage_types::Store;
 use vprogs_zk_abi::batch_processor::Inputs as BatchInputs;
 
@@ -23,7 +22,12 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend> {
 
 impl<S: Store, P, B: Backend> Worker<S, P, B>
 where
-    P: Processor<S, TransactionArtifact = B::Receipt, BatchArtifact = B::Receipt>,
+    P: Processor<
+            S,
+            TransactionArtifact = B::Receipt,
+            BatchArtifact = B::Receipt,
+            BatchMetadata = ChainBlockMetadata,
+        >,
 {
     /// Spawns the worker on a new thread with a single-threaded tokio runtime.
     pub(crate) fn spawn(prover: BatchProver<S, P>, backend: B, store: S) {
@@ -90,21 +94,19 @@ where
 
     /// Assembles the batch witness from transaction receipts and SMT state proofs.
     fn build_inputs(&self, batch: &ScheduledBatch<S, P>, receipts: &[B::Receipt]) -> Vec<u8> {
-        let batch_index = batch.checkpoint().index();
-        let prev_version = batch_index.saturating_sub(1);
+        let prev_version = batch.checkpoint().index().saturating_sub(1);
         let resources = batch.resource_ids();
         let (proof, leaf_order) = self.store.prove(&resources, prev_version).expect("proof");
         let journals: Vec<_> = receipts.iter().map(B::journal_bytes).collect();
 
-        // Load the bridge-committed lane tip for the preceding batch; zero hash at genesis or
-        // when the bridge isn't configured with a subnetwork filter.
-        let parent_lane_tip =
-            StoredBatchMetadata::get::<ChainBlockMetadata, _>(&self.store, prev_version).lane_tip();
+        let metadata = batch.checkpoint().metadata();
+        let parent_lane_tip = metadata.prev_lane_tip;
+        let lane_key = metadata.lane_key;
 
         BatchInputs::encode(
             self.backend.image_id(),
             &parent_lane_tip,
-            &self.prover.lane_key,
+            &lane_key,
             &proof,
             &leaf_order,
             &journals,

@@ -13,10 +13,9 @@ use crate::{Result, batch_processor::TransactionJournals};
 pub struct Inputs<'a> {
     /// Transaction processor guest image ID.
     pub image_id: &'a [u8; 32],
-    /// Lane tip this batch advances from - the prior committed value for our L2's lane.
+    /// Lane tip entering the batch.
     pub parent_lane_tip: &'a [u8; 32],
-    /// `H_lane_key(subnetwork_id)` for our L2's lane. Host-precomputed to keep the guest off the
-    /// `SeqCommitLaneKey` path.
+    /// Lane key this batch is bound to.
     pub lane_key: &'a [u8; 32],
     /// Sparse Merkle tree proof (leaves carry pre-batch key + value_hash per resource).
     pub proof: Proof<'a>,

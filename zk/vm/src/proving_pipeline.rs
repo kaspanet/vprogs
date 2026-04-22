@@ -1,3 +1,4 @@
+use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch, ScheduledTransaction};
 use vprogs_storage_types::Store;
 use vprogs_zk_batch_prover::BatchProver;
@@ -22,18 +23,16 @@ impl<S: Store, P: Processor<S>> ProvingPipeline<S, P> {
     }
 
     /// Creates a full batch proving pipeline.
-    ///
-    /// `lane_key` is the kip21 seq-commit lane key (= `H_lane_key(subnetwork_id)`) that the batch
-    /// prover binds all produced batch proofs to. Compute it once at node bootstrap via
-    /// `kaspa_seq_commit::hashing::lane_key` and pass it in here.
-    pub fn batch<B: Backend>(backend: B, store: S, lane_key: [u8; 32]) -> Self
+    pub fn batch<B: Backend>(backend: B, store: S) -> Self
     where
-        P: Processor<S, TransactionArtifact = B::Receipt, BatchArtifact = B::Receipt>,
+        P: Processor<
+                S,
+                TransactionArtifact = B::Receipt,
+                BatchArtifact = B::Receipt,
+                BatchMetadata = ChainBlockMetadata,
+            >,
     {
-        Self::Batch(
-            TransactionProver::new(backend.clone()),
-            BatchProver::new(backend, store, lane_key),
-        )
+        Self::Batch(TransactionProver::new(backend.clone()), BatchProver::new(backend, store))
     }
 
     /// Submits a transaction for proving. No-op for `None`.
