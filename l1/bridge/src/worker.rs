@@ -360,8 +360,7 @@ impl BridgeWorker {
 
             // Selected parent on the chain stream is the current virtual-chain tip.
             let selected_parent_hash = self.virtual_chain.tip().metadata().hash;
-            let prev_timestamp =
-                self.resolve_parent_timestamp(selected_parent_hash, timestamp).await?;
+            let prev_timestamp = self.resolve_timestamp(selected_parent_hash, timestamp).await?;
 
             self.timestamps.insert(hash, timestamp);
 
@@ -426,23 +425,19 @@ impl BridgeWorker {
         Ok(())
     }
 
-    /// Returns the header timestamp of `parent_hash`, falling back to a one-shot `get_block`
-    /// RPC lookup on cache miss. For the default-hash sentinel, returns `current_timestamp`.
-    async fn resolve_parent_timestamp(
-        &mut self,
-        parent_hash: KaspaHash,
-        current_timestamp: u64,
-    ) -> Result<u64> {
-        if parent_hash == KaspaHash::default() {
-            return Ok(current_timestamp);
+    /// Returns the header timestamp of `hash`, falling back to a one-shot `get_block` RPC
+    /// lookup on cache miss. For the default-hash sentinel, returns `fallback`.
+    async fn resolve_timestamp(&mut self, hash: KaspaHash, fallback: u64) -> Result<u64> {
+        if hash == KaspaHash::default() {
+            return Ok(fallback);
         }
-        if let Some(&ts) = self.timestamps.get(&parent_hash) {
+        if let Some(&ts) = self.timestamps.get(&hash) {
             return Ok(ts);
         }
         // Cache miss - fetch the header (without transactions).
-        let block = self.client.get_block(parent_hash, false).await?;
+        let block = self.client.get_block(hash, false).await?;
         let ts = block.header.timestamp;
-        self.timestamps.insert(parent_hash, ts);
+        self.timestamps.insert(hash, ts);
         Ok(ts)
     }
 
