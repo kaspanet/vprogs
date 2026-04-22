@@ -122,7 +122,6 @@ resolver = "3"
   vprogs-scheduling-scheduler                     = { path = "scheduling/scheduler" }
   vprogs-scheduling-test-utils                    = { path = "scheduling/test-utils" }
   vprogs-state-batch-metadata                     = { path = "state/batch-metadata" }
-  vprogs-state-lane-tip                           = { path = "state/lane-tip" }
   vprogs-state-metadata                           = { path = "state/metadata" }
   vprogs-state-ptr-latest                         = { path = "state/ptr-latest" }
   vprogs-state-ptr-rollback                       = { path = "state/ptr-rollback" }

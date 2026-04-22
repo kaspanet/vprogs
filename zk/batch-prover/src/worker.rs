@@ -1,8 +1,9 @@
 use std::{collections::VecDeque, thread::spawn};
 
 use tokio::runtime::Builder;
+use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
-use vprogs_state_lane_tip::LaneTip;
+use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_storage_types::Store;
 use vprogs_zk_abi::batch_processor::Inputs as BatchInputs;
 
@@ -95,8 +96,10 @@ where
         let (proof, leaf_order) = self.store.prove(&resources, prev_version).expect("proof");
         let journals: Vec<_> = receipts.iter().map(B::journal_bytes).collect();
 
-        // Load the committed lane tip for the preceding batch; zero hash at genesis.
-        let parent_lane_tip = LaneTip::get(&self.store, prev_version).unwrap_or([0; 32]);
+        // Load the bridge-committed lane tip for the preceding batch; zero hash at genesis or
+        // when the bridge isn't configured with a subnetwork filter.
+        let parent_lane_tip =
+            StoredBatchMetadata::get::<ChainBlockMetadata, _>(&self.store, prev_version).lane_tip();
 
         BatchInputs::encode(
             self.backend.image_id(),

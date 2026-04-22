@@ -1,7 +1,0 @@
-[package]
-edition.workspace = true
-name              = "vprogs-state-lane-tip"
-version.workspace = true
-
-[dependencies]
-vprogs-storage-types.workspace = true

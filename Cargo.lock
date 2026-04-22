@@ -7747,6 +7747,7 @@ dependencies = [
  "kaspa-hashes",
  "kaspa-notify",
  "kaspa-rpc-core",
+ "kaspa-seq-commit",
  "kaspa-wrpc-client",
  "log",
  "tap",
@@ -7923,13 +7924,6 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "vprogs-core-types",
- "vprogs-storage-types",
-]
-
-[[package]]
-name = "vprogs-state-lane-tip"
-version = "0.1.0"
-dependencies = [
  "vprogs-storage-types",
 ]
 
@@ -8225,8 +8219,9 @@ dependencies = [
  "tokio",
  "vprogs-core-atomics",
  "vprogs-core-macros",
+ "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
- "vprogs-state-lane-tip",
+ "vprogs-state-batch-metadata",
  "vprogs-storage-types",
  "vprogs-zk-abi",
  "vprogs-zk-transaction-prover",
@@ -8250,7 +8245,6 @@ version = "0.1.0"
 dependencies = [
  "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
- "vprogs-state-lane-tip",
  "vprogs-storage-types",
  "vprogs-zk-abi",
  "vprogs-zk-batch-prover",

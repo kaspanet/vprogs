@@ -24,17 +24,14 @@ pub struct SchedulerState<S: Store, P: Processor<S>> {
     /// Most recently scheduled batch. Advanced by `next_checkpoint`, reset on rollback. Only
     /// mutated from `&mut Scheduler`.
     last_processed: ArcSwap<Checkpoint<P::BatchMetadata>>,
-    /// A clone of the processor, so workers running outside of `&mut Scheduler` (commit, rollback)
-    /// can invoke Processor hooks.
-    processor: P,
 }
 
 impl<S: Store, P: Processor<S>> SchedulerState<S, P> {
-    /// Creates a new state from a storage configuration and a processor instance.
+    /// Creates a new state from a storage configuration.
     ///
     /// `root` and `last_committed` are loaded from `StateMetadata`. `last_processed` is initialized
     /// to `last_committed` since no new batches have been scheduled yet.
-    pub fn new(storage_config: StorageConfig<S>, processor: P) -> Self {
+    pub fn new(storage_config: StorageConfig<S>) -> Self {
         let storage = StorageManager::new(storage_config);
         let root: Checkpoint<P::BatchMetadata> = StateMetadata::root(storage.store().as_ref());
         let last_committed: Checkpoint<P::BatchMetadata> =
@@ -46,13 +43,7 @@ impl<S: Store, P: Processor<S>> SchedulerState<S, P> {
             root: ArcSwap::from_pointee(root),
             last_committed: ArcSwap::from_pointee(last_committed.clone()),
             last_processed: ArcSwap::from_pointee(last_committed),
-            processor,
         }))
-    }
-
-    /// Returns a reference to the processor clone.
-    pub fn processor(&self) -> &P {
-        &self.processor
     }
 
     /// Returns a reference to the storage manager.

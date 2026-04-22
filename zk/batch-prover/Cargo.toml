@@ -8,8 +8,9 @@ tap.workspace                          = true
 tokio                                  = { workspace = true, features = ["rt"] }
 vprogs-core-atomics.workspace          = true
 vprogs-core-macros.workspace           = true
+vprogs-l1-types.workspace              = true
 vprogs-scheduling-scheduler.workspace  = true
-vprogs-state-lane-tip.workspace        = true
+vprogs-state-batch-metadata.workspace  = true
 vprogs-storage-types.workspace         = true
 vprogs-zk-abi                          = { workspace = true, features = ["host"] }
 vprogs-zk-transaction-prover.workspace = true

@@ -76,10 +76,6 @@ impl<S: Store, P: Processor<S>> Rollback<S, P> {
 
                 // Delete batch metadata entries for this batch.
                 StoredBatchMetadata::delete(wb, index);
-
-                // Let the processor delete its own per-batch state (e.g. lane-tip entries) in
-                // the same atomic write batch.
-                self.state.processor().on_batch_rollback::<ST>(wb, index);
             }
 
             // Only update `last_committed` on disk if the target is already committed. If the

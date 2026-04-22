@@ -9,6 +9,12 @@ use kaspa_rpc_core::{
     RpcDataVerbosityLevel::{Full, Low},
     api::{ctl::RpcState, rpc::RpcApi},
 };
+use kaspa_seq_commit::{
+    hashing::{
+        ActivityDigestBuilder, activity_leaf, lane_key, lane_tip_next, mergeset_context_hash,
+    },
+    types::{LaneTipInput, MergesetContext},
+};
 use kaspa_wrpc_client::prelude::*;
 use tokio::sync::Notify;
 use vprogs_core_types::Checkpoint;
@@ -54,6 +60,13 @@ pub(crate) struct BridgeWorker {
     /// `subnetwork_id` matches. Block-wide positions are preserved alongside each kept tx so
     /// downstream can still form the kip21 `activity_leaf(tx_id, version, merge_idx)`.
     subnetwork_filter: Option<[u8; 20]>,
+    /// Pre-computed `H_lane_key(subnetwork_id)`, or `None` when no subnetwork filter is set
+    /// (generic-observer mode - no lane binding, emitted `lane_tip` stays at the zero hash).
+    lane_key: Option<KaspaHash>,
+    /// Running lane tip across emitted chain blocks. Advances by one call to `lane_tip_next` per
+    /// block, then lands on that block's `ChainBlockMetadata.lane_tip`. Reset to zero on reorg
+    /// rollback; seeded from the resumed tip on startup.
+    last_lane_tip: KaspaHash,
 }
 
 impl BridgeWorker {
@@ -68,7 +81,14 @@ impl BridgeWorker {
     ) {
         // Prefer root, fall back to tip, or default to a sentinel at index 0.
         let root_checkpoint = config.root.clone().or(config.tip.clone()).unwrap_or_default();
+        // Seed the running lane tip from the resume tip so restarts continue the chain without
+        // recomputing from genesis. Zero when starting fresh.
+        let last_lane_tip = KaspaHash::from_bytes(root_checkpoint.metadata().lane_tip());
         let virtual_chain = VirtualChain::new(root_checkpoint);
+
+        // Pre-compute the lane key (one-time kip21 hash over the subnetwork id) if filtering is
+        // configured. With no filter we're in generic-observer mode and skip lane_tip updates.
+        let lane_key = config.subnetwork_id.map(|id| lane_key(&id));
 
         // If both root and tip are provided and differ, we need to backfill the chain between them
         // on first connect (lightweight, non-verbose sync).
@@ -133,6 +153,8 @@ impl BridgeWorker {
             reorg_filter: ReorgFilter::new(config.filter_half_life),
             timestamps: HashMap::new(),
             subnetwork_filter: config.subnetwork_id,
+            lane_key,
+            last_lane_tip,
         }
         .run()
         .await;
@@ -294,7 +316,12 @@ impl BridgeWorker {
         for chain_block in response.chain_block_accepted_transactions.iter() {
             let hash = chain_block.chain_block_header.hash.unwrap_or_default();
             let blue_score = chain_block.chain_block_header.blue_score.unwrap_or(0);
-            self.virtual_chain.advance_tip(ChainBlockMetadata::new(hash, blue_score, 0, 0, 0));
+            // Backfill uses Low verbosity - timestamps / daa_score are absent here. They're only
+            // needed for the seq-commit context hash, which is computed against emitted blocks
+            // (fetch_chain_updates path), not backfilled ones. Leave defaults; any later block
+            // that names a backfilled block as its selected parent will hit the RPC fallback.
+            self.virtual_chain
+                .advance_tip(ChainBlockMetadata::new(hash, blue_score, 0, 0, 0, [0; 32]));
             if hash == target_hash {
                 found = true;
                 break;
@@ -355,17 +382,8 @@ impl BridgeWorker {
             // Cache this block's timestamp before emit so downstream blocks can resolve it.
             self.timestamps.insert(hash, timestamp);
 
-            let metadata = ChainBlockMetadata::new(
-                hash,
-                blue_score,
-                daa_score,
-                timestamp,
-                selected_parent_timestamp,
-            );
-            let checkpoint = self.virtual_chain.advance_tip(metadata);
-
-            // Enumerate before filtering so each kept tx retains its block-wide `merge_idx`
-            // (the value kip21 `activity_leaf(tx_id, version, merge_idx)` commits to).
+            // Filter the accepted-tx list to the configured lane (if any), preserving each kept
+            // tx's block-wide position as its kip21 `merge_idx`.
             let accepted_transactions: Vec<(u32, L1Transaction)> = chain_block
                 .accepted_transactions
                 .iter()
@@ -378,6 +396,41 @@ impl BridgeWorker {
                     }
                 })
                 .collect();
+
+            // Advance the lane tip over this block's lane activity. Without a configured
+            // subnetwork filter we have no lane binding, so the tip stays at zero.
+            let lane_tip = match self.lane_key.as_ref() {
+                Some(lane_key) => {
+                    let mut activity = ActivityDigestBuilder::new();
+                    for (merge_idx, tx) in &accepted_transactions {
+                        activity.add_leaf(activity_leaf(&tx.id(), tx.version, *merge_idx));
+                    }
+                    let context_hash = mergeset_context_hash(&MergesetContext {
+                        timestamp: selected_parent_timestamp,
+                        daa_score,
+                        blue_score,
+                    });
+                    self.last_lane_tip = lane_tip_next(&LaneTipInput {
+                        parent_ref: &self.last_lane_tip,
+                        lane_key,
+                        activity_digest: &activity.finalize(),
+                        context_hash: &context_hash,
+                    });
+                    self.last_lane_tip.as_bytes()
+                }
+                None => [0; 32],
+            };
+
+            let metadata = ChainBlockMetadata::new(
+                hash,
+                blue_score,
+                daa_score,
+                timestamp,
+                selected_parent_timestamp,
+                lane_tip,
+            );
+            let checkpoint = self.virtual_chain.advance_tip(metadata);
+
             self.push_event(L1Event::ChainBlockAdded {
                 checkpoint,
                 header: Box::new(chain_block.chain_block_header.clone()),
@@ -415,6 +468,9 @@ impl BridgeWorker {
         let num_removed = response.removed_chain_block_hashes.len() as u64;
         let (checkpoint, blue_score_depth) = self.virtual_chain.rollback(num_removed)?;
         self.reorg_filter.record(blue_score_depth);
+        // Reseed the running lane tip from the new post-rollback tip so subsequent blocks chain
+        // off the reorg-winning history.
+        self.last_lane_tip = KaspaHash::from_bytes(checkpoint.metadata().lane_tip());
 
         log::info!(
             "L1 bridge: reorg detected, {} blocks removed, rolling back to index {} \

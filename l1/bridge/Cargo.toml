@@ -10,6 +10,7 @@ futures.workspace            = true
 kaspa-hashes.workspace       = true
 kaspa-notify.workspace       = true
 kaspa-rpc-core.workspace     = true
+kaspa-seq-commit.workspace   = true
 kaspa-wrpc-client.workspace  = true
 log.workspace                = true
 tap.workspace                = true

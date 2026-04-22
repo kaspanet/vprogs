@@ -192,14 +192,6 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         self.artifact.load_full().expect("batch artifact not ready")
     }
 
-    /// Returns the batch artifact if it has been published, or `None` if not. Unlike
-    /// [`artifact`](Self::artifact), this does not panic on an unpublished artifact - callers in
-    /// the commit path (where proving may be disabled) use this to skip artifact-dependent
-    /// writes gracefully.
-    pub fn try_artifact(&self) -> Option<Arc<P::BatchArtifact>> {
-        self.artifact.load_full()
-    }
-
     /// Publishes the batch artifact and opens the `artifact_published` latch.
     pub fn publish_artifact(&self, artifact: Option<P::BatchArtifact>) {
         if let Some(artifact) = artifact {
@@ -373,11 +365,6 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
             if self.checkpoint.index() == self.state.root().index() {
                 StateMetadata::set_root(wb, &self.checkpoint);
             }
-
-            // Give the processor a chance to add its own per-batch commit writes (e.g. lane-tip
-            // persistence for the ZK batch prover). Runs in the same WriteBatch so it's atomic
-            // with the rest of this commit.
-            self.state.processor().on_batch_commit(store, wb, self);
         }
     }
 
