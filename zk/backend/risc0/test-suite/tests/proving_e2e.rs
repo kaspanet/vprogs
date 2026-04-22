@@ -51,8 +51,7 @@ async fn batch_proof_two_transactions() {
     // Capture native kaspa tx_ids before moving the txs into the scheduler.
     let expected_tx_ids = [kaspa_tx_id(&tx1).as_bytes(), kaspa_tx_id(&tx2).as_bytes()];
 
-    let block_metadata =
-        ChainBlockMetadata::new(Default::default(), 0, 0, 0, 0, lane_key, [0; 32], [0; 32]);
+    let block_metadata = ChainBlockMetadata { lane_key, ..Default::default() };
 
     // Schedule the batch (executes both transactions and starts proving).
     let batch = scheduler.schedule(
@@ -120,8 +119,7 @@ async fn batch_proof_two_transactions() {
 
     // --- Second batch: increment counters from 1 to 2 ---
 
-    let block_metadata_2 =
-        ChainBlockMetadata::new(Default::default(), 0, 0, 0, 0, lane_key, [0; 32], [0; 32]);
+    let block_metadata_2 = ChainBlockMetadata { lane_key, ..Default::default() };
 
     let mut tx3 = L1Transaction::default();
     tx3.version = 1;

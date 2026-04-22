@@ -79,7 +79,7 @@ impl<'a> Inputs<'a> {
         let bm = ctx.batch_metadata();
         buf.write(&ctx.tx_index().to_le_bytes());
         buf.write(&(ctx.resources().len() as u32).to_le_bytes());
-        buf.write(&bm.block_hash.as_bytes());
+        buf.write(&bm.hash.as_bytes());
         buf.write(&bm.blue_score.to_le_bytes());
         buf.write(&bm.daa_score.to_le_bytes());
         buf.write(&bm.timestamp.to_le_bytes());

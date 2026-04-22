@@ -72,14 +72,14 @@ impl VirtualChain {
         hash: &Hash,
     ) -> Result<Option<Checkpoint<ChainBlockMetadata>>> {
         // Already at this pruning point - nothing to do.
-        if self.root.metadata().block_hash == *hash {
+        if self.root.metadata().hash == *hash {
             return Ok(None);
         }
 
         // Walk forward from root, unlinking each node until we find the target.
         let mut current = self.root.advance_root();
         while let Some(block) = current {
-            if block.metadata().block_hash == *hash {
+            if block.metadata().hash == *hash {
                 self.root = block;
                 return Ok(Some(self.root.checkpoint().clone()));
             }

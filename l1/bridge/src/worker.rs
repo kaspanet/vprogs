@@ -82,7 +82,7 @@ impl BridgeWorker {
         // If both root and tip are provided and differ, we need to backfill the chain between them
         // on first connect (lightweight, non-verbose sync).
         let backfill_target = match (&config.root, &config.tip) {
-            (Some(root), Some(tip)) if root.metadata().block_hash != tip.metadata().block_hash => {
+            (Some(root), Some(tip)) if root.metadata().hash != tip.metadata().hash => {
                 Some(tip.clone())
             }
             _ => None,
@@ -293,20 +293,22 @@ impl BridgeWorker {
         // Fetch with Low verbosity - sufficient for hash and blue_score needed for chain blocks.
         let response = self
             .client
-            .get_virtual_chain_from_block_v2(start.metadata().block_hash, Some(Low), None)
+            .get_virtual_chain_from_block_v2(start.metadata().hash, Some(Low), None)
             .await?;
 
         // Walk the chain block accepted transactions to get both hash and blue_score.
-        let target_hash = target.metadata().block_hash;
+        let target_hash = target.metadata().hash;
         let mut found = false;
 
         for chain_block in response.chain_block_accepted_transactions.iter() {
             let hash = chain_block.chain_block_header.hash.unwrap_or_default();
             let blue_score = chain_block.chain_block_header.blue_score.unwrap_or(0);
             // Low verbosity: only hash and blue_score are populated here; remaining fields default.
-            self.virtual_chain.advance_tip(ChainBlockMetadata::new(
-                hash, blue_score, 0, 0, 0, [0; 32], [0; 32], [0; 32],
-            ));
+            self.virtual_chain.advance_tip(ChainBlockMetadata {
+                hash,
+                blue_score,
+                ..Default::default()
+            });
             if hash == target_hash {
                 found = true;
                 break;
@@ -330,7 +332,7 @@ impl BridgeWorker {
         let start_hash = if tip.index() == 0 {
             self.client.get_block_dag_info().await?.pruning_point_hash
         } else {
-            tip.metadata().block_hash
+            tip.metadata().hash
         };
 
         // Fetch with Full verbosity to get complete headers and accepted transactions.
@@ -357,7 +359,7 @@ impl BridgeWorker {
             let timestamp = chain_block.chain_block_header.timestamp.expect("missing timestamp");
 
             // Selected parent on the chain stream is the current virtual-chain tip.
-            let selected_parent_hash = self.virtual_chain.tip().metadata().block_hash;
+            let selected_parent_hash = self.virtual_chain.tip().metadata().hash;
             let prev_timestamp =
                 self.resolve_parent_timestamp(selected_parent_hash, timestamp).await?;
 
@@ -402,7 +404,7 @@ impl BridgeWorker {
             };
 
             let lane_key = self.lane_key.as_ref().map_or([0; 32], |k| k.as_bytes());
-            let metadata = ChainBlockMetadata::new(
+            let metadata = ChainBlockMetadata {
                 hash,
                 blue_score,
                 daa_score,
@@ -411,7 +413,7 @@ impl BridgeWorker {
                 lane_key,
                 prev_lane_tip,
                 lane_tip,
-            );
+            };
             let checkpoint = self.virtual_chain.advance_tip(metadata);
 
             self.push_event(L1Event::ChainBlockAdded {
@@ -474,7 +476,7 @@ impl BridgeWorker {
                 pruning_hash
             );
             // Drop all cached timestamps except the current tip.
-            let tip_hash = self.virtual_chain.tip().metadata().block_hash;
+            let tip_hash = self.virtual_chain.tip().metadata().hash;
             self.timestamps.retain(|&hash, _| hash == tip_hash);
             self.push_event(L1Event::Finalized(new_root));
         }

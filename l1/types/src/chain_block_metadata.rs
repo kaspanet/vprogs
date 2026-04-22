@@ -6,11 +6,10 @@ use crate::Hash;
 ///
 /// Satisfies the [`BatchMetadata`](vprogs_core_types::BatchMetadata) blanket impl via its derived
 /// traits.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[derive(BorshSerialize, BorshDeserialize)] // borsh serialization
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct ChainBlockMetadata {
     /// L1 block hash.
-    pub block_hash: Hash,
+    pub hash: Hash,
     /// DAG blue score at this block's position.
     pub blue_score: u64,
     /// DAA score at this block's position.
@@ -25,29 +24,4 @@ pub struct ChainBlockMetadata {
     pub prev_lane_tip: [u8; 32],
     /// Lane tip after applying this block's accepted txs.
     pub lane_tip: [u8; 32],
-}
-
-impl ChainBlockMetadata {
-    /// Positional constructor covering every field.
-    pub fn new(
-        block_hash: Hash,
-        blue_score: u64,
-        daa_score: u64,
-        timestamp: u64,
-        prev_timestamp: u64,
-        lane_key: [u8; 32],
-        prev_lane_tip: [u8; 32],
-        lane_tip: [u8; 32],
-    ) -> Self {
-        Self {
-            block_hash,
-            blue_score,
-            daa_score,
-            timestamp,
-            prev_timestamp,
-            lane_key,
-            prev_lane_tip,
-            lane_tip,
-        }
-    }
 }
