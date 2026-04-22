@@ -7,7 +7,6 @@ version.workspace = true
 arc-swap.workspace           = true
 crossbeam-queue.workspace    = true
 futures.workspace            = true
-kaspa-hashes.workspace       = true
 kaspa-notify.workspace       = true
 kaspa-rpc-core.workspace     = true
 kaspa-seq-commit.workspace   = true

@@ -2,7 +2,6 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use crossbeam_queue::SegQueue;
 use futures::{FutureExt, select_biased};
-use kaspa_hashes::Hash as KaspaHash;
 use kaspa_notify::scope::{PruningPointUtxoSetOverrideScope, Scope, VirtualChainChangedScope};
 use kaspa_rpc_core::{
     GetVirtualChainFromBlockV2Response, Notification,
@@ -18,7 +17,7 @@ use kaspa_seq_commit::{
 use kaspa_wrpc_client::prelude::*;
 use tokio::sync::Notify;
 use vprogs_core_types::Checkpoint;
-use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
+use vprogs_l1_types::{ChainBlockMetadata, Hash, L1Transaction};
 use workflow_core::channel::{Channel, MultiplexerChannel};
 
 use crate::{
@@ -53,13 +52,13 @@ pub(crate) struct BridgeWorker {
     /// Filters shallow reorgs based on accumulated depth.
     reorg_filter: ReorgFilter,
     /// Cache of recently-seen block hashes to their header timestamps. Pruned at finalization.
-    timestamps: HashMap<KaspaHash, u64>,
+    timestamps: HashMap<Hash, u64>,
     /// If `Some`, filter emitted transactions to this subnetwork.
     subnetwork_filter: Option<[u8; 20]>,
     /// Lane key used when chaining lane tips. `None` disables lane-tip tracking.
-    lane_key: Option<KaspaHash>,
+    lane_key: Option<Hash>,
     /// Running lane tip across emitted chain blocks. Seeded from the resume tip.
-    last_lane_tip: KaspaHash,
+    last_lane_tip: Hash,
 }
 
 impl BridgeWorker {
@@ -74,7 +73,7 @@ impl BridgeWorker {
     ) {
         // Prefer root, fall back to tip, or default to a sentinel at index 0.
         let root_checkpoint = config.root.clone().or(config.tip.clone()).unwrap_or_default();
-        let last_lane_tip = KaspaHash::from_bytes(root_checkpoint.metadata().lane_tip);
+        let last_lane_tip = Hash::from_bytes(root_checkpoint.metadata().lane_tip);
         let virtual_chain = VirtualChain::new(root_checkpoint);
 
         let lane_key = config.subnetwork_id.map(|id| lane_key(&id));
@@ -427,8 +426,8 @@ impl BridgeWorker {
 
     /// Returns the header timestamp of `hash`, falling back to a one-shot `get_block` RPC
     /// lookup on cache miss. For the default-hash sentinel, returns `fallback`.
-    async fn resolve_timestamp(&mut self, hash: KaspaHash, fallback: u64) -> Result<u64> {
-        if hash == KaspaHash::default() {
+    async fn resolve_timestamp(&mut self, hash: Hash, fallback: u64) -> Result<u64> {
+        if hash == Hash::default() {
             return Ok(fallback);
         }
         if let Some(&ts) = self.timestamps.get(&hash) {
@@ -446,7 +445,7 @@ impl BridgeWorker {
         let num_removed = response.removed_chain_block_hashes.len() as u64;
         let (checkpoint, blue_score_depth) = self.virtual_chain.rollback(num_removed)?;
         self.reorg_filter.record(blue_score_depth);
-        self.last_lane_tip = KaspaHash::from_bytes(checkpoint.metadata().lane_tip);
+        self.last_lane_tip = Hash::from_bytes(checkpoint.metadata().lane_tip);
 
         log::info!(
             "L1 bridge: reorg detected, {} blocks removed, rolling back to index {} \
