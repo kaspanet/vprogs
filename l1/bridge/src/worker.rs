@@ -294,10 +294,6 @@ impl BridgeWorker {
         for chain_block in response.chain_block_accepted_transactions.iter() {
             let hash = chain_block.chain_block_header.hash.unwrap_or_default();
             let blue_score = chain_block.chain_block_header.blue_score.unwrap_or(0);
-            // Backfill uses Low verbosity - timestamps / daa_score are absent here. They're only
-            // needed for the seq-commit context hash, which is computed against emitted blocks
-            // (fetch_chain_updates path), not backfilled ones. Leave defaults; any later block
-            // that names a backfilled block as its selected parent will hit the RPC fallback.
             self.virtual_chain.advance_tip(ChainBlockMetadata::new(hash, blue_score, 0, 0, 0));
             if hash == target_hash {
                 found = true;
