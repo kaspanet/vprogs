@@ -266,17 +266,12 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
                 pending_tx_artifacts: AtomicU64::new(txs.len() as u64),
                 txs: txs
                     .into_iter()
-                    .enumerate()
-                    .map(|(i, tx)| {
-                        // Use the caller's pinned merge_idx if provided (e.g. from a lane
-                        // filter that preserved block-wide positions), else fall back to the
-                        // contiguous batch-local index.
-                        let merge_idx = tx.merge_idx.unwrap_or(i as u32);
+                    .map(|tx| {
                         ScheduledTransaction::new(
                             scheduler,
                             &mut state_diffs,
                             ScheduledBatchRef(this.clone()),
-                            merge_idx,
+                            tx.index,
                             tx,
                             &mut resource_index,
                         )

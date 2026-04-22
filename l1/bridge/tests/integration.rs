@@ -424,16 +424,19 @@ async fn setup_node_with_bridge(
 }
 
 /// Unwraps a list of events into `ChainBlockAdded` tuples. Panics if any event is not
-/// `ChainBlockAdded`.
+/// `ChainBlockAdded`. Integration tests here don't exercise the subnetwork filter, so the
+/// per-tx `merge_idx` is discarded.
 fn unwrap_chain_blocks(
     events: Vec<L1Event>,
 ) -> Vec<(u64, Box<RpcOptionalHeader>, Vec<L1Transaction>)> {
     events
         .into_iter()
         .map(|e| match e {
-            L1Event::ChainBlockAdded { checkpoint, header, accepted_transactions } => {
-                (checkpoint.index(), header, accepted_transactions)
-            }
+            L1Event::ChainBlockAdded { checkpoint, header, accepted_transactions } => (
+                checkpoint.index(),
+                header,
+                accepted_transactions.into_iter().map(|(_, tx)| tx).collect(),
+            ),
             other => panic!("expected ChainBlockAdded, got {:?}", other),
         })
         .collect()

@@ -7784,6 +7784,7 @@ dependencies = [
  "ctrlc",
  "env_logger 0.11.10",
  "figment",
+ "kaspa-consensus-core",
  "log",
  "serde",
  "tap",

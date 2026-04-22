@@ -13,8 +13,7 @@ use crate::{Processor, api::ApiRequest};
 /// Owns the scheduler and bridge, processing L1 events through the L2 scheduler.
 ///
 /// Consumes [`L1Event`]s from the bridge, extracts access metadata from L1 transaction payloads,
-/// filters the block's accepted-tx list down to this node's lane, and feeds the resulting
-/// transactions to the scheduler in order.
+/// and feeds the resulting transactions to the scheduler in order.
 pub(crate) struct NodeWorker<S: Store, P: Processor<S>> {
     /// L1 chain event source - the primary data entry point into the node.
     bridge: L1Bridge,
@@ -24,9 +23,6 @@ pub(crate) struct NodeWorker<S: Store, P: Processor<S>> {
     api_requests: mpsc::Receiver<ApiRequest<S, P>>,
     /// Signal to stop the event loop.
     shutdown: Arc<AtomicAsyncLatch>,
-    /// Subnetwork this L2 binds to. Transactions with any other subnetwork id are dropped before
-    /// scheduling (their block-wide position is still preserved as `merge_idx` for kept txs).
-    lane_subnetwork_id: [u8; 20],
 }
 
 impl<S: Store, P: Processor<S>> NodeWorker<S, P> {
@@ -37,9 +33,8 @@ impl<S: Store, P: Processor<S>> NodeWorker<S, P> {
         scheduler: Scheduler<S, P>,
         api_requests: mpsc::Receiver<ApiRequest<S, P>>,
         shutdown: Arc<AtomicAsyncLatch>,
-        lane_subnetwork_id: [u8; 20],
     ) {
-        Self { bridge, scheduler, api_requests, shutdown, lane_subnetwork_id }.run().await;
+        Self { bridge, scheduler, api_requests, shutdown }.run().await;
     }
 
     /// Priority-based event loop: shutdown > API request > bridge event.
@@ -84,19 +79,10 @@ impl<S: Store, P: Processor<S>> NodeWorker<S, P> {
             }
 
             L1Event::ChainBlockAdded { checkpoint, accepted_transactions, .. } => {
-                // Filter the block's accepted-tx list down to this lane's subnetwork, preserving
-                // each kept tx's block-wide position as `merge_idx` so the kip21 seq-commit
-                // `activity_leaf(tx_id, version, merge_idx)` matches L1.
                 let txs = accepted_transactions
                     .into_iter()
-                    .enumerate()
-                    .filter(|(_, tx)| tx.subnetwork_id.as_bytes() == &self.lane_subnetwork_id)
-                    .map(|(block_position, tx)| {
-                        SchedulerTransaction::with_merge_idx(
-                            Self::extract_resources(&tx.payload),
-                            tx,
-                            block_position as u32,
-                        )
+                    .map(|(idx, tx)| {
+                        SchedulerTransaction::new(idx, Self::extract_resources(&tx.payload), tx)
                     })
                     .collect();
                 self.scheduler.schedule(*checkpoint.metadata(), txs);

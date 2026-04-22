@@ -50,6 +50,10 @@ pub(crate) struct BridgeWorker {
     /// selected-parent timestamps for the kip21 `mergeset_context_hash` without re-fetching.
     /// Pruned at finalization so it doesn't grow unbounded.
     timestamps: HashMap<KaspaHash, u64>,
+    /// If `Some`, each emitted block's accepted-tx list is filtered to transactions whose
+    /// `subnetwork_id` matches. Block-wide positions are preserved alongside each kept tx so
+    /// downstream can still form the kip21 `activity_leaf(tx_id, version, merge_idx)`.
+    subnetwork_filter: Option<[u8; 20]>,
 }
 
 impl BridgeWorker {
@@ -128,6 +132,7 @@ impl BridgeWorker {
             backfill_target,
             reorg_filter: ReorgFilter::new(config.filter_half_life),
             timestamps: HashMap::new(),
+            subnetwork_filter: config.subnetwork_id,
         }
         .run()
         .await;
@@ -362,10 +367,20 @@ impl BridgeWorker {
                 selected_parent_timestamp,
             );
             let checkpoint = self.virtual_chain.advance_tip(metadata);
-            let accepted_transactions: Vec<L1Transaction> = chain_block
+
+            // Enumerate before filtering so each kept tx retains its block-wide `merge_idx`
+            // (the value kip21 `activity_leaf(tx_id, version, merge_idx)` commits to).
+            let accepted_transactions: Vec<(u32, L1Transaction)> = chain_block
                 .accepted_transactions
                 .iter()
-                .map(|tx| L1Transaction::try_from(tx.clone()).expect("missing transaction fields"))
+                .enumerate()
+                .filter_map(|(idx, tx)| {
+                    let tx = L1Transaction::try_from(tx.clone()).expect("missing tx fields");
+                    match self.subnetwork_filter.as_ref() {
+                        Some(want) if tx.subnetwork_id.as_bytes() != want => None,
+                        _ => Some((idx as u32, tx)),
+                    }
+                })
                 .collect();
             self.push_event(L1Event::ChainBlockAdded {
                 checkpoint,

@@ -22,6 +22,9 @@ pub struct L1BridgeConfig {
     /// Reorg filter half-life. Observed reorg depths accumulate into a threshold that halves
     /// every half-life until it decays to zero. Set to `Duration::ZERO` to disable.
     pub filter_half_life: Duration,
+    /// If set, the bridge only emits transactions whose `subnetwork_id` matches. `None` emits
+    /// every accepted transaction unfiltered (generic-observer mode).
+    pub subnetwork_id: Option<[u8; 20]>,
 }
 
 impl Default for L1BridgeConfig {
@@ -35,6 +38,7 @@ impl Default for L1BridgeConfig {
             root: None,                               // Start from the L1 pruning point.
             tip: None,
             filter_half_life: Duration::from_secs(3600), // 1 hour.
+            subnetwork_id: None,
         }
     }
 }
@@ -86,6 +90,13 @@ impl L1BridgeConfig {
     /// halves every half-life, filtering smaller reorgs until the threshold decays to zero.
     pub fn with_filter_half_life(mut self, half_life: Duration) -> Self {
         self.filter_half_life = half_life;
+        self
+    }
+
+    /// Restricts emitted transactions to a specific subnetwork. `None` means "no filter, emit
+    /// every accepted transaction" (the generic-observer default).
+    pub fn with_subnetwork_id(mut self, subnetwork_id: Option<[u8; 20]>) -> Self {
+        self.subnetwork_id = subnetwork_id;
         self
     }
 }

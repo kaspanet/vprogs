@@ -16,7 +16,7 @@ pub enum L1Event {
         /// Block header.
         header: Box<RpcOptionalHeader>,
         /// Native transactions from this block's mergeset that became confirmed.
-        accepted_transactions: Vec<L1Transaction>,
+        accepted_transactions: Vec<(u32, L1Transaction)>,
     },
     /// Blocks after this checkpoint have been removed due to a reorg.
     Rollback {
