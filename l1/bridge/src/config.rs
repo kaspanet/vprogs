@@ -25,6 +25,10 @@ pub struct L1BridgeConfig {
     /// If set, the bridge only emits transactions whose `subnetwork_id` matches. `None` emits
     /// every accepted transaction unfiltered (generic-observer mode).
     pub subnetwork_id: Option<[u8; 20]>,
+    /// Blue-score window within which a lane stays active without new transactions. A lane that
+    /// sees no activity for more than this many blue-score units is treated as expired; the next
+    /// activity restarts the tip from the parent block's `seq_commit`.
+    pub finality_depth: u64,
 }
 
 impl Default for L1BridgeConfig {
@@ -39,6 +43,7 @@ impl Default for L1BridgeConfig {
             tip: None,
             filter_half_life: Duration::from_secs(3600), // 1 hour.
             subnetwork_id: None,
+            finality_depth: 86_400, // ~1 day of blocks at 1-BPS
         }
     }
 }
@@ -97,6 +102,12 @@ impl L1BridgeConfig {
     /// every accepted transaction" (the generic-observer default).
     pub fn with_subnetwork_id(mut self, subnetwork_id: Option<[u8; 20]>) -> Self {
         self.subnetwork_id = subnetwork_id;
+        self
+    }
+
+    /// Sets the finality-depth window used by lane-tip expiration.
+    pub fn with_finality_depth(mut self, finality_depth: u64) -> Self {
+        self.finality_depth = finality_depth;
         self
     }
 }

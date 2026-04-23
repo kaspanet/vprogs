@@ -57,8 +57,8 @@ pub(crate) struct BridgeWorker {
     subnetwork_filter: Option<[u8; 20]>,
     /// Lane key used when chaining lane tips. `None` disables lane-tip tracking.
     lane_key: Option<Hash>,
-    /// Running lane tip across emitted chain blocks. Seeded from the resume tip.
-    last_lane_tip: Hash,
+    /// Blue-score window within which a lane stays active without new transactions.
+    finality_depth: u64,
 }
 
 impl BridgeWorker {
@@ -73,7 +73,6 @@ impl BridgeWorker {
     ) {
         // Prefer root, fall back to tip, or default to a sentinel at index 0.
         let root_checkpoint = config.root.clone().or(config.tip.clone()).unwrap_or_default();
-        let last_lane_tip = Hash::from_bytes(root_checkpoint.metadata().lane_tip);
         let virtual_chain = VirtualChain::new(root_checkpoint);
 
         let lane_key = config.subnetwork_id.map(|id| lane_key(&id));
@@ -140,7 +139,7 @@ impl BridgeWorker {
             timestamps: HashMap::new(),
             subnetwork_filter: config.subnetwork_id,
             lane_key,
-            last_lane_tip,
+            finality_depth: config.finality_depth,
         }
         .run()
         .await;
@@ -377,10 +376,19 @@ impl BridgeWorker {
                 })
                 .collect();
 
-            // With no lane_key both prev and new lane tips stay at zero.
-            let prev_lane_tip = self.last_lane_tip.as_bytes();
-            let lane_tip = match self.lane_key.as_ref() {
-                Some(lane_key) => {
+            // Carry forward lane state from the parent. If the lane has activity this block and
+            // has been silent past `finality_depth`, reset the anchor from the parent's
+            // `seq_commit`; otherwise chain from the parent's `lane_tip`. With no `lane_key` or
+            // no activity we leave lane_tip and lane_last_active_blue_score unchanged.
+            let parent_meta = *self.virtual_chain.tip().metadata();
+            let prev_lane_tip = parent_meta.lane_tip;
+            let seq_commit =
+                chain_block.chain_block_header.accepted_id_merkle_root.unwrap_or_default();
+            let (lane_tip, lane_last_active_blue_score) = self
+                .lane_key
+                .as_ref()
+                .filter(|_| !accepted_transactions.is_empty())
+                .map(|lane_key| {
                     let mut activity = ActivityDigestBuilder::new();
                     for (merge_idx, tx) in &accepted_transactions {
                         activity.add_leaf(activity_leaf(&tx.id(), tx.version, *merge_idx));
@@ -390,16 +398,23 @@ impl BridgeWorker {
                         daa_score,
                         blue_score,
                     });
-                    self.last_lane_tip = lane_tip_next(&LaneTipInput {
-                        parent_ref: &self.last_lane_tip,
+                    let expired = blue_score
+                        .saturating_sub(parent_meta.lane_last_active_blue_score)
+                        > self.finality_depth;
+                    let parent_ref = if expired {
+                        parent_meta.seq_commit
+                    } else {
+                        Hash::from_bytes(prev_lane_tip)
+                    };
+                    let tip = lane_tip_next(&LaneTipInput {
+                        parent_ref: &parent_ref,
                         lane_key,
                         activity_digest: &activity.finalize(),
                         context_hash: &context_hash,
                     });
-                    self.last_lane_tip.as_bytes()
-                }
-                None => [0; 32],
-            };
+                    (tip.as_bytes(), blue_score)
+                })
+                .unwrap_or((prev_lane_tip, parent_meta.lane_last_active_blue_score));
 
             let lane_key = self.lane_key.as_ref().map_or([0; 32], |k| k.as_bytes());
             let metadata = ChainBlockMetadata {
@@ -409,6 +424,8 @@ impl BridgeWorker {
                 timestamp,
                 prev_timestamp,
                 lane_key,
+                seq_commit,
+                lane_last_active_blue_score,
                 prev_lane_tip,
                 lane_tip,
             };
@@ -445,7 +462,6 @@ impl BridgeWorker {
         let num_removed = response.removed_chain_block_hashes.len() as u64;
         let (checkpoint, blue_score_depth) = self.virtual_chain.rollback(num_removed)?;
         self.reorg_filter.record(blue_score_depth);
-        self.last_lane_tip = Hash::from_bytes(checkpoint.metadata().lane_tip);
 
         log::info!(
             "L1 bridge: reorg detected, {} blocks removed, rolling back to index {} \

@@ -33,6 +33,9 @@ pub struct L1BridgeParams {
     /// mode).
     #[arg(long = "l1-bridge-subnetwork-id")]
     pub subnetwork_id: Option<SubnetworkId>,
+    /// Blue-score window within which a lane stays active without new transactions.
+    #[arg(long = "l1-bridge-finality-depth", default_value_t = L1BridgeConfig::default().finality_depth)]
+    pub finality_depth: u64,
 }
 
 impl L1BridgeParams {
@@ -49,6 +52,7 @@ impl L1BridgeParams {
             root: None,
             tip: None,
             subnetwork_id: self.subnetwork_id.map(SubnetworkId::into_bytes),
+            finality_depth: self.finality_depth,
         }
     }
 }

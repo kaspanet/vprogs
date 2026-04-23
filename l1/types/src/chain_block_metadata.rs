@@ -20,6 +20,10 @@ pub struct ChainBlockMetadata {
     pub prev_timestamp: u64,
     /// Lane key this block's accepted txs are bound to.
     pub lane_key: [u8; 32],
+    /// Sequencing commitment carried by this block's header.
+    pub seq_commit: Hash,
+    /// Blue score at which the lane was last active. Zero if never active.
+    pub lane_last_active_blue_score: u64,
     /// Lane tip entering this block.
     pub prev_lane_tip: [u8; 32],
     /// Lane tip after applying this block's accepted txs.
