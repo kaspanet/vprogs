@@ -393,7 +393,7 @@ impl BridgeWorker {
                 })
                 .collect();
 
-            let (lane_tip, lane_last_active_blue_score) =
+            let (lane_tip, lane_blue_score) =
                 self.advance_lane(&parent_meta, &accepted_transactions, header);
 
             let checkpoint = self.virtual_chain.advance_tip(ChainBlockMetadata {
@@ -405,7 +405,7 @@ impl BridgeWorker {
                 lane_key: self.lane_key.as_ref().map_or([0; 32], |k| k.as_bytes()),
                 prev_timestamp: parent_meta.timestamp,
                 prev_lane_tip: parent_meta.lane_tip,
-                lane_last_active_blue_score,
+                lane_blue_score,
                 lane_tip,
             });
 
@@ -419,21 +419,25 @@ impl BridgeWorker {
         Ok(())
     }
 
-    /// Computes the next lane tip and its activation blue-score. If the lane has activity in
-    /// this block and has been silent past `finality_depth`, the tip resets to the parent's
-    /// `seq_commit`; otherwise it chains off the parent's `lane_tip`. With no configured lane
-    /// or no activity, the parent's lane state is carried forward unchanged.
+    /// Returns the next `(lane_tip, lane_blue_score)` for this block.
     fn advance_lane(
         &self,
         parent: &ChainBlockMetadata,
         accepted_transactions: &[(u32, L1Transaction)],
         header: &RpcOptionalHeader,
     ) -> ([u8; 32], u64) {
-        let blue_score = header.blue_score.expect("missing blue_score");
+        // Advance only when a lane is configured and saw at least one tx this block; otherwise
+        // carry the parent's lane state forward unchanged.
         self.lane_key
             .as_ref()
             .filter(|_| !accepted_transactions.is_empty())
             .map(|lane_key| {
+                // Check whether the lane has gone silent past the finality window.
+                let blue_score = header.blue_score.expect("missing blue_score");
+                let lane_blue_score = parent.lane_blue_score;
+                let lane_expired = blue_score.saturating_sub(lane_blue_score) > self.finality_depth;
+
+                // Merkle root over this block's activity leaves.
                 let mut activity = ActivityDigestBuilder::new();
                 for (merge_idx, tx) in accepted_transactions {
                     activity.add_leaf(activity_leaf(&tx.id(), tx.version, *merge_idx));
@@ -445,24 +449,24 @@ impl BridgeWorker {
                     blue_score,
                 });
 
-                let parent_ref = if blue_score.saturating_sub(parent.lane_last_active_blue_score)
-                    > self.finality_depth
-                {
+                // If the lane has been silent past the finality window, reset the anchor from
+                // the parent's `seq_commit`; otherwise chain from its `lane_tip`.
+                let parent_ref = if lane_expired {
                     parent.seq_commit
                 } else {
                     Hash::from_bytes(parent.lane_tip)
                 };
 
                 let tip = lane_tip_next(&LaneTipInput {
-                    parent_ref: &parent_ref,
                     lane_key,
+                    parent_ref: &parent_ref,
                     activity_digest: &activity.finalize(),
                     context_hash: &context_hash,
                 });
 
                 (tip.as_bytes(), blue_score)
             })
-            .unwrap_or((parent.lane_tip, parent.lane_last_active_blue_score))
+            .unwrap_or((parent.lane_tip, parent.lane_blue_score))
     }
 
     /// Rolls back the virtual chain, updates the reorg filter, and emits a `Rollback` event.
