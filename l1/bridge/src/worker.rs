@@ -5,7 +5,7 @@ use futures::{FutureExt, select_biased};
 use kaspa_notify::scope::{PruningPointUtxoSetOverrideScope, Scope, VirtualChainChangedScope};
 use kaspa_rpc_core::{
     GetVirtualChainFromBlockV2Response, Notification,
-    RpcDataVerbosityLevel::{Full, Low},
+    RpcDataVerbosityLevel::Full,
     api::{ctl::RpcState, rpc::RpcApi},
 };
 use kaspa_seq_commit::{
@@ -217,8 +217,8 @@ impl BridgeWorker {
         }
     }
 
-    /// Called on RPC connect: subscribes to notifications, backfills the chain if resuming, then
-    /// syncs to the current chain state.
+    /// Called on RPC connect: subscribes to notifications, initializes or backfills the chain,
+    /// then syncs to the current chain state.
     async fn handle_connected(&mut self) {
         log::info!("L1 bridge connected to {}", self.client.url().unwrap_or_default());
 
@@ -228,21 +228,49 @@ impl BridgeWorker {
             return;
         }
 
-        // Step 2: If resuming, backfill the chain between root and tip.
-        if let Some(target) = self.backfill_target.take() {
-            let result = self.backfill_chain(&target).await;
-            self.handle_sync_result(result);
-            if self.fatal {
-                return;
-            }
+        // Step 2: Prepare the virtual chain. Resume paths backfill from root to the saved tip;
+        // cold-start seeds the pruning point as tip so subsequent emits always see a real parent.
+        let result = if let Some(target) = self.backfill_target.take() {
+            self.backfill_chain(&target).await
+        } else if self.virtual_chain.tip().index() == 0 {
+            self.seed_from_pruning_point().await
+        } else {
+            Ok(())
+        };
+        self.handle_sync_result(result);
+        if self.fatal {
+            return;
         }
 
-        // Notify consumer only after backfill succeeds.
+        // Notify consumer only after initialization succeeds.
         self.push_event(L1Event::Connected);
 
         // Step 3: Sync to the current chain state.
         let result = self.fetch_chain_updates().await;
         self.handle_sync_result(result);
+    }
+
+    /// Fetches the L1 pruning-point header and installs it as the virtual chain's root/tip at
+    /// index 0 so the first emitted block lands at index 1 and always has a real parent.
+    async fn seed_from_pruning_point(&mut self) -> Result<()> {
+        let pruning_point = self
+            .client
+            .get_block(self.client.get_block_dag_info().await?.pruning_point_hash, false)
+            .await?;
+
+        self.virtual_chain = VirtualChain::new(Checkpoint::new(
+            0,
+            ChainBlockMetadata {
+                hash: pruning_point.header.hash,
+                blue_score: pruning_point.header.blue_score,
+                daa_score: pruning_point.header.daa_score,
+                timestamp: pruning_point.header.timestamp,
+                seq_commit: pruning_point.header.accepted_id_merkle_root,
+                ..Default::default()
+            },
+        ));
+
+        Ok(())
     }
 
     /// Notifies the consumer that the connection was lost.
@@ -285,29 +313,32 @@ impl BridgeWorker {
             target.index(),
         );
 
-        // Fetch with Low verbosity - sufficient for hash and blue_score needed for chain blocks.
+        // Fetch with Full verbosity so backfilled entries carry complete header fields.
         let response = self
             .client
-            .get_virtual_chain_from_block_v2(start.metadata().hash, Some(Low), None)
+            .get_virtual_chain_from_block_v2(start.metadata().hash, Some(Full), None)
             .await?;
 
-        // Walk the chain block accepted transactions to get both hash and blue_score.
         let target_hash = target.metadata().hash;
         let mut found = false;
 
         for chain_block in response.chain_block_accepted_transactions.iter() {
-            let hash = chain_block.chain_block_header.hash.unwrap_or_default();
-            let blue_score = chain_block.chain_block_header.blue_score.unwrap_or(0);
-            // Low verbosity: only hash and blue_score are populated here; remaining fields default.
-            self.virtual_chain.advance_tip(ChainBlockMetadata {
-                hash,
-                blue_score,
-                ..Default::default()
-            });
+            let header = &chain_block.chain_block_header;
+            let hash = header.hash.expect("missing hash");
             if hash == target_hash {
+                // Preserve the saved tip metadata so resume retains full lane state.
+                self.virtual_chain.advance_tip(*target.metadata());
                 found = true;
                 break;
             }
+            self.virtual_chain.advance_tip(ChainBlockMetadata {
+                hash,
+                blue_score: header.blue_score.expect("missing blue_score"),
+                daa_score: header.daa_score.expect("missing daa_score"),
+                timestamp: header.timestamp.expect("missing timestamp"),
+                seq_commit: header.accepted_id_merkle_root.expect("missing seq_commit"),
+                ..Default::default()
+            });
         }
 
         if !found {
@@ -318,22 +349,17 @@ impl BridgeWorker {
         Ok(())
     }
 
-    /// Fetches chain updates from the current tip (or the L1 pruning point on first sync). Handles
-    /// reorgs and emits `ChainBlockAdded` events.
+    /// Fetches chain updates from the current tip. Handles reorgs and emits `ChainBlockAdded`
+    /// events. Assumes the virtual chain has been initialized by `handle_connected`.
     async fn fetch_chain_updates(&mut self) -> Result<()> {
-        let tip = self.virtual_chain.tip();
-
-        // Index 0 is the sentinel - no blocks processed yet, start from the L1 pruning point.
-        let start_hash = if tip.index() == 0 {
-            self.client.get_block_dag_info().await?.pruning_point_hash
-        } else {
-            tip.metadata().hash
-        };
-
         // Fetch with Full verbosity to get complete headers and accepted transactions.
         let response = self
             .client
-            .get_virtual_chain_from_block_v2(start_hash, Some(Full), self.reorg_filter.threshold())
+            .get_virtual_chain_from_block_v2(
+                self.virtual_chain.tip().metadata().hash,
+                Some(Full),
+                self.reorg_filter.threshold(),
+            )
             .await?;
 
         // Removed hashes indicate a reorg - roll back before processing additions.
@@ -348,14 +374,13 @@ impl BridgeWorker {
 
         // Extend the virtual chain and emit an event for each new block.
         for chain_block in response.chain_block_accepted_transactions.iter() {
-            let hash = chain_block.chain_block_header.hash.expect("missing hash");
-            let blue_score = chain_block.chain_block_header.blue_score.expect("missing blue_score");
-            let daa_score = chain_block.chain_block_header.daa_score.expect("missing daa_score");
-            let timestamp = chain_block.chain_block_header.timestamp.expect("missing timestamp");
+            let header = &chain_block.chain_block_header;
+            let blue_score = header.blue_score.expect("missing blue_score");
+            let daa_score = header.daa_score.expect("missing daa_score");
 
             // Selected parent on the chain stream is the current virtual-chain tip.
             let parent_meta = *self.virtual_chain.tip().metadata();
-            let prev_timestamp = self.resolve_timestamp(&parent_meta, timestamp).await?;
+            let prev_timestamp = parent_meta.timestamp;
 
             // Enumerate before filtering so kept txs retain their block-wide positions.
             let accepted_transactions: Vec<(u32, L1Transaction)> = chain_block
@@ -376,8 +401,6 @@ impl BridgeWorker {
             // `seq_commit`; otherwise chain from the parent's `lane_tip`. With no `lane_key` or
             // no activity we leave lane_tip and lane_last_active_blue_score unchanged.
             let prev_lane_tip = parent_meta.lane_tip;
-            let seq_commit =
-                chain_block.chain_block_header.accepted_id_merkle_root.unwrap_or_default();
             let (lane_tip, lane_last_active_blue_score) = self
                 .lane_key
                 .as_ref()
@@ -410,43 +433,27 @@ impl BridgeWorker {
                 })
                 .unwrap_or((prev_lane_tip, parent_meta.lane_last_active_blue_score));
 
-            let lane_key = self.lane_key.as_ref().map_or([0; 32], |k| k.as_bytes());
-            let metadata = ChainBlockMetadata {
-                hash,
+            let checkpoint = self.virtual_chain.advance_tip(ChainBlockMetadata {
+                hash: header.hash.expect("missing hash"),
+                timestamp: header.timestamp.expect("missing timestamp"),
+                seq_commit: header.accepted_id_merkle_root.expect("missing seq_commit"),
+                lane_key: self.lane_key.as_ref().map_or([0; 32], |k| k.as_bytes()),
                 blue_score,
                 daa_score,
-                timestamp,
                 prev_timestamp,
-                lane_key,
-                seq_commit,
                 lane_last_active_blue_score,
                 prev_lane_tip,
                 lane_tip,
-            };
-            let checkpoint = self.virtual_chain.advance_tip(metadata);
+            });
 
             self.push_event(L1Event::ChainBlockAdded {
                 checkpoint,
-                header: Box::new(chain_block.chain_block_header.clone()),
+                header: Box::new(header.clone()),
                 accepted_transactions,
             });
         }
 
         Ok(())
-    }
-
-    /// Returns the block's header timestamp, preferring the value already on `meta`. Falls back
-    /// to an RPC lookup when the cached timestamp is zero (backfill) and to `fallback` when the
-    /// block is the default-hash sentinel.
-    async fn resolve_timestamp(&self, meta: &ChainBlockMetadata, fallback: u64) -> Result<u64> {
-        if meta.timestamp != 0 {
-            return Ok(meta.timestamp);
-        }
-        if meta.hash == Hash::default() {
-            return Ok(fallback);
-        }
-        let block = self.client.get_block(meta.hash, false).await?;
-        Ok(block.header.timestamp)
     }
 
     /// Rolls back the virtual chain, updates the reorg filter, and emits a `Rollback` event.
