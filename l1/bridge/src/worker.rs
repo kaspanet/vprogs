@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use crossbeam_queue::SegQueue;
 use futures::{FutureExt, select_biased};
@@ -51,8 +51,6 @@ pub(crate) struct BridgeWorker {
     backfill_target: Option<Checkpoint<ChainBlockMetadata>>,
     /// Filters shallow reorgs based on accumulated depth.
     reorg_filter: ReorgFilter,
-    /// Cache of recently-seen block hashes to their header timestamps. Pruned at finalization.
-    timestamps: HashMap<Hash, u64>,
     /// If `Some`, filter emitted transactions to this subnetwork.
     subnetwork_filter: Option<[u8; 20]>,
     /// Lane key used when chaining lane tips. `None` disables lane-tip tracking.
@@ -136,7 +134,6 @@ impl BridgeWorker {
             fatal: false,
             backfill_target,
             reorg_filter: ReorgFilter::new(config.filter_half_life),
-            timestamps: HashMap::new(),
             subnetwork_filter: config.subnetwork_id,
             lane_key,
             finality_depth: config.finality_depth,
@@ -357,10 +354,8 @@ impl BridgeWorker {
             let timestamp = chain_block.chain_block_header.timestamp.expect("missing timestamp");
 
             // Selected parent on the chain stream is the current virtual-chain tip.
-            let selected_parent_hash = self.virtual_chain.tip().metadata().hash;
-            let prev_timestamp = self.resolve_timestamp(selected_parent_hash, timestamp).await?;
-
-            self.timestamps.insert(hash, timestamp);
+            let parent_meta = *self.virtual_chain.tip().metadata();
+            let prev_timestamp = self.resolve_timestamp(&parent_meta, timestamp).await?;
 
             // Enumerate before filtering so kept txs retain their block-wide positions.
             let accepted_transactions: Vec<(u32, L1Transaction)> = chain_block
@@ -380,7 +375,6 @@ impl BridgeWorker {
             // has been silent past `finality_depth`, reset the anchor from the parent's
             // `seq_commit`; otherwise chain from the parent's `lane_tip`. With no `lane_key` or
             // no activity we leave lane_tip and lane_last_active_blue_score unchanged.
-            let parent_meta = *self.virtual_chain.tip().metadata();
             let prev_lane_tip = parent_meta.lane_tip;
             let seq_commit =
                 chain_block.chain_block_header.accepted_id_merkle_root.unwrap_or_default();
@@ -441,20 +435,18 @@ impl BridgeWorker {
         Ok(())
     }
 
-    /// Returns the header timestamp of `hash`, falling back to a one-shot `get_block` RPC
-    /// lookup on cache miss. For the default-hash sentinel, returns `fallback`.
-    async fn resolve_timestamp(&mut self, hash: Hash, fallback: u64) -> Result<u64> {
-        if hash == Hash::default() {
+    /// Returns the block's header timestamp, preferring the value already on `meta`. Falls back
+    /// to an RPC lookup when the cached timestamp is zero (backfill) and to `fallback` when the
+    /// block is the default-hash sentinel.
+    async fn resolve_timestamp(&self, meta: &ChainBlockMetadata, fallback: u64) -> Result<u64> {
+        if meta.timestamp != 0 {
+            return Ok(meta.timestamp);
+        }
+        if meta.hash == Hash::default() {
             return Ok(fallback);
         }
-        if let Some(&ts) = self.timestamps.get(&hash) {
-            return Ok(ts);
-        }
-        // Cache miss - fetch the header (without transactions).
-        let block = self.client.get_block(hash, false).await?;
-        let ts = block.header.timestamp;
-        self.timestamps.insert(hash, ts);
-        Ok(ts)
+        let block = self.client.get_block(meta.hash, false).await?;
+        Ok(block.header.timestamp)
     }
 
     /// Rolls back the virtual chain, updates the reorg filter, and emits a `Rollback` event.
@@ -485,9 +477,6 @@ impl BridgeWorker {
                 new_root.index(),
                 pruning_hash
             );
-            // Drop all cached timestamps except the current tip.
-            let tip_hash = self.virtual_chain.tip().metadata().hash;
-            self.timestamps.retain(|&hash, _| hash == tip_hash);
             self.push_event(L1Event::Finalized(new_root));
         }
 
