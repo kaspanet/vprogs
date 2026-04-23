@@ -7744,6 +7744,7 @@ dependencies = [
  "arc-swap",
  "crossbeam-queue",
  "futures",
+ "kaspa-consensus-core",
  "kaspa-notify",
  "kaspa-rpc-core",
  "kaspa-seq-commit",

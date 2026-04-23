@@ -4,10 +4,11 @@ name              = "vprogs-l1-bridge"
 version.workspace = true
 
 [dependencies]
-arc-swap.workspace           = true
-crossbeam-queue.workspace    = true
-futures.workspace            = true
-kaspa-notify.workspace       = true
+arc-swap.workspace             = true
+crossbeam-queue.workspace      = true
+futures.workspace              = true
+kaspa-consensus-core.workspace = true
+kaspa-notify.workspace         = true
 kaspa-rpc-core.workspace     = true
 kaspa-seq-commit.workspace   = true
 kaspa-wrpc-client.workspace  = true

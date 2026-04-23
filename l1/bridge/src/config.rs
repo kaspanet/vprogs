@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use kaspa_consensus_core::config::params::Params;
 use vprogs_core_types::Checkpoint;
 use vprogs_l1_types::{ChainBlockMetadata, ConnectStrategy, NetworkId, NetworkType};
 
@@ -25,9 +26,7 @@ pub struct L1BridgeConfig {
     /// If set, the bridge only emits transactions whose `subnetwork_id` matches. `None` emits
     /// every accepted transaction unfiltered (generic-observer mode).
     pub subnetwork_id: Option<[u8; 20]>,
-    /// Blue-score window within which a lane stays active without new transactions. A lane that
-    /// sees no activity for more than this many blue-score units is treated as expired; the next
-    /// activity restarts the tip from the parent block's `seq_commit`.
+    /// Blue-score window within which a lane stays active without new transactions.
     pub finality_depth: u64,
 }
 
@@ -43,7 +42,7 @@ impl Default for L1BridgeConfig {
             tip: None,
             filter_half_life: Duration::from_secs(3600), // 1 hour.
             subnetwork_id: None,
-            finality_depth: 86_400, // ~1 day of blocks at 1-BPS
+            finality_depth: Params::from(NetworkId::new(NetworkType::Mainnet)).finality_depth(),
         }
     }
 }
@@ -105,7 +104,7 @@ impl L1BridgeConfig {
         self
     }
 
-    /// Sets the finality-depth window used by lane-tip expiration.
+    /// Sets the lane-expiration blue-score window.
     pub fn with_finality_depth(mut self, finality_depth: u64) -> Self {
         self.finality_depth = finality_depth;
         self
