@@ -73,7 +73,6 @@ impl BridgeWorker {
         // Prefer root, fall back to tip, or default to a sentinel at index 0.
         let root_checkpoint = config.root.clone().or(config.tip.clone()).unwrap_or_default();
         let virtual_chain = VirtualChain::new(root_checkpoint);
-
         let lane_key = config.subnetwork_id.map(|id| lane_key(&id));
 
         // If both root and tip are provided and differ, we need to backfill the chain between them
@@ -218,9 +217,9 @@ impl BridgeWorker {
         }
     }
 
-    /// Called on RPC connect: subscribes to notifications, initializes or backfills the chain,
-    /// then syncs to the current chain state.
+    /// Called on RPC connect: subscribes to notifications, initializes and syncs the chain.
     async fn handle_connected(&mut self) {
+        // Emit log message.
         log::info!("L1 bridge connected to {}", self.client.url().unwrap_or_default());
 
         // Step 1: Subscribe to chain notifications.
@@ -229,26 +228,21 @@ impl BridgeWorker {
             return;
         }
 
-        // Step 2: Prepare the virtual chain. Resume paths backfill from root to the saved tip;
-        // cold-start seeds the pruning point as tip so subsequent emits always see a real parent.
-        let result = if let Some(target) = self.backfill_target.take() {
-            self.backfill_chain(&target).await
+        // Step 2: Prepare the virtual chain (backfill or init from pruning point).
+        if let Some(target) = self.backfill_target.take() {
+            let result = self.backfill_chain(&target).await;
+            self.handle_sync_result(result);
         } else if self.virtual_chain.tip().index() == 0 {
-            self.seed_from_pruning_point().await
-        } else {
-            Ok(())
+            let result = self.seed_from_pruning_point().await;
+            self.handle_sync_result(result);
         };
-        self.handle_sync_result(result);
-        if self.fatal {
-            return;
+
+        // Step 3: Notify consumer after initialization succeeds and sync to current chain state.
+        if !self.fatal {
+            self.push_event(L1Event::Connected);
+            let result = self.fetch_chain_updates().await;
+            self.handle_sync_result(result);
         }
-
-        // Notify consumer only after initialization succeeds.
-        self.push_event(L1Event::Connected);
-
-        // Step 3: Sync to the current chain state.
-        let result = self.fetch_chain_updates().await;
-        self.handle_sync_result(result);
     }
 
     /// Fetches the L1 pruning-point header and installs it as the virtual chain's root/tip at
@@ -306,8 +300,8 @@ impl BridgeWorker {
     /// Backfills the chain between root and `target`. Only runs once on first connect when resuming
     /// with a saved root/tip pair.
     async fn backfill_chain(&mut self, target: &Checkpoint<ChainBlockMetadata>) -> Result<()> {
+        // Emit log message.
         let start = self.virtual_chain.root();
-
         log::info!(
             "L1 bridge: backfilling chain from index {} to index {}",
             start.index(),
@@ -320,26 +314,26 @@ impl BridgeWorker {
             .get_virtual_chain_from_block_v2(start.metadata().hash, Some(Full), None)
             .await?;
 
+        // Advance the chain until the target.
         let target_hash = target.metadata().hash;
         let mut found = false;
-
         for chain_block in response.chain_block_accepted_transactions.iter() {
             let header = &chain_block.chain_block_header;
             let hash = header.hash.expect("missing hash");
-            if hash == target_hash {
-                // Preserve the saved tip metadata so resume retains full lane state.
+            if hash != target_hash {
+                self.virtual_chain.advance_tip(ChainBlockMetadata {
+                    hash,
+                    blue_score: header.blue_score.expect("missing blue_score"),
+                    daa_score: header.daa_score.expect("missing daa_score"),
+                    timestamp: header.timestamp.expect("missing timestamp"),
+                    seq_commit: header.accepted_id_merkle_root.expect("missing seq_commit"),
+                    ..Default::default()
+                });
+            } else {
                 self.virtual_chain.advance_tip(*target.metadata());
                 found = true;
                 break;
             }
-            self.virtual_chain.advance_tip(ChainBlockMetadata {
-                hash,
-                blue_score: header.blue_score.expect("missing blue_score"),
-                daa_score: header.daa_score.expect("missing daa_score"),
-                timestamp: header.timestamp.expect("missing timestamp"),
-                seq_commit: header.accepted_id_merkle_root.expect("missing seq_commit"),
-                ..Default::default()
-            });
         }
 
         if !found {
@@ -427,8 +421,7 @@ impl BridgeWorker {
         header: &RpcOptionalHeader,
     ) -> ([u8; 32], u64) {
         // No lane configured or no activity this block -> carry parent state forward unchanged.
-        let Some(lane_key) =
-            self.lane_key.as_ref().filter(|_| !accepted_transactions.is_empty())
+        let Some(lane_key) = self.lane_key.as_ref().filter(|_| !accepted_transactions.is_empty())
         else {
             return (parent.lane_tip, parent.lane_blue_score);
         };
@@ -436,11 +429,8 @@ impl BridgeWorker {
         // Check whether the lane has gone silent past the finality window and needs to reset.
         let blue_score = header.blue_score.expect("missing blue_score");
         let lane_expired = blue_score.saturating_sub(parent.lane_blue_score) > self.finality_depth;
-        let parent_ref = if lane_expired {
-            parent.seq_commit
-        } else {
-            Hash::from_bytes(parent.lane_tip)
-        };
+        let parent_ref =
+            if lane_expired { parent.seq_commit } else { Hash::from_bytes(parent.lane_tip) };
 
         // Merkle root over this block's activity leaves.
         let mut activity = ActivityDigestBuilder::new();
