@@ -426,47 +426,44 @@ impl BridgeWorker {
         accepted_transactions: &[(u32, L1Transaction)],
         header: &RpcOptionalHeader,
     ) -> ([u8; 32], u64) {
-        // Advance only when a lane is configured and saw at least one tx this block; otherwise
-        // carry the parent's lane state forward unchanged.
-        self.lane_key
-            .as_ref()
-            .filter(|_| !accepted_transactions.is_empty())
-            .map(|lane_key| {
-                // Check whether the lane has gone silent past the finality window.
-                let blue_score = header.blue_score.expect("missing blue_score");
-                let lane_blue_score = parent.lane_blue_score;
-                let lane_expired = blue_score.saturating_sub(lane_blue_score) > self.finality_depth;
+        // No lane configured or no activity this block -> carry parent state forward unchanged.
+        let Some(lane_key) =
+            self.lane_key.as_ref().filter(|_| !accepted_transactions.is_empty())
+        else {
+            return (parent.lane_tip, parent.lane_blue_score);
+        };
 
-                // Merkle root over this block's activity leaves.
-                let mut activity = ActivityDigestBuilder::new();
-                for (merge_idx, tx) in accepted_transactions {
-                    activity.add_leaf(activity_leaf(&tx.id(), tx.version, *merge_idx));
-                }
+        // Check whether the lane has gone silent past the finality window and needs to reset.
+        let blue_score = header.blue_score.expect("missing blue_score");
+        let lane_expired = blue_score.saturating_sub(parent.lane_blue_score) > self.finality_depth;
+        let parent_ref = if lane_expired {
+            parent.seq_commit
+        } else {
+            Hash::from_bytes(parent.lane_tip)
+        };
 
-                let context_hash = mergeset_context_hash(&MergesetContext {
-                    timestamp: parent.timestamp,
-                    daa_score: header.daa_score.expect("missing daa_score"),
-                    blue_score,
-                });
+        // Merkle root over this block's activity leaves.
+        let mut activity = ActivityDigestBuilder::new();
+        for (merge_idx, tx) in accepted_transactions {
+            activity.add_leaf(activity_leaf(&tx.id(), tx.version, *merge_idx));
+        }
 
-                // If the lane has been silent past the finality window, reset the anchor from
-                // the parent's `seq_commit`; otherwise chain from its `lane_tip`.
-                let parent_ref = if lane_expired {
-                    parent.seq_commit
-                } else {
-                    Hash::from_bytes(parent.lane_tip)
-                };
+        // Context hash of the current chain block.
+        let context_hash = mergeset_context_hash(&MergesetContext {
+            timestamp: parent.timestamp,
+            daa_score: header.daa_score.expect("missing daa_score"),
+            blue_score,
+        });
 
-                let tip = lane_tip_next(&LaneTipInput {
-                    lane_key,
-                    parent_ref: &parent_ref,
-                    activity_digest: &activity.finalize(),
-                    context_hash: &context_hash,
-                });
+        // Construct the new lane tip.
+        let tip = lane_tip_next(&LaneTipInput {
+            lane_key,
+            parent_ref: &parent_ref,
+            activity_digest: &activity.finalize(),
+            context_hash: &context_hash,
+        });
 
-                (tip.as_bytes(), blue_score)
-            })
-            .unwrap_or((parent.lane_tip, parent.lane_blue_score))
+        (tip.as_bytes(), blue_score)
     }
 
     /// Rolls back the virtual chain, updates the reorg filter, and emits a `Rollback` event.
