@@ -6,6 +6,7 @@ use kaspa_notify::scope::{PruningPointUtxoSetOverrideScope, Scope, VirtualChainC
 use kaspa_rpc_core::{
     GetVirtualChainFromBlockV2Response, Notification,
     RpcDataVerbosityLevel::Full,
+    RpcOptionalHeader,
     api::{ctl::RpcState, rpc::RpcApi},
 };
 use kaspa_seq_commit::{
@@ -374,13 +375,9 @@ impl BridgeWorker {
 
         // Extend the virtual chain and emit an event for each new block.
         for chain_block in response.chain_block_accepted_transactions.iter() {
-            let header = &chain_block.chain_block_header;
-            let blue_score = header.blue_score.expect("missing blue_score");
-            let daa_score = header.daa_score.expect("missing daa_score");
-
             // Selected parent on the chain stream is the current virtual-chain tip.
+            let header = &chain_block.chain_block_header;
             let parent_meta = *self.virtual_chain.tip().metadata();
-            let prev_timestamp = parent_meta.timestamp;
 
             // Enumerate before filtering so kept txs retain their block-wide positions.
             let accepted_transactions: Vec<(u32, L1Transaction)> = chain_block
@@ -396,53 +393,19 @@ impl BridgeWorker {
                 })
                 .collect();
 
-            // Carry forward lane state from the parent. If the lane has activity this block and
-            // has been silent past `finality_depth`, reset the anchor from the parent's
-            // `seq_commit`; otherwise chain from the parent's `lane_tip`. With no `lane_key` or
-            // no activity we leave lane_tip and lane_last_active_blue_score unchanged.
-            let prev_lane_tip = parent_meta.lane_tip;
-            let (lane_tip, lane_last_active_blue_score) = self
-                .lane_key
-                .as_ref()
-                .filter(|_| !accepted_transactions.is_empty())
-                .map(|lane_key| {
-                    let mut activity = ActivityDigestBuilder::new();
-                    for (merge_idx, tx) in &accepted_transactions {
-                        activity.add_leaf(activity_leaf(&tx.id(), tx.version, *merge_idx));
-                    }
-                    let context_hash = mergeset_context_hash(&MergesetContext {
-                        timestamp: prev_timestamp,
-                        daa_score,
-                        blue_score,
-                    });
-                    let expired = blue_score
-                        .saturating_sub(parent_meta.lane_last_active_blue_score)
-                        > self.finality_depth;
-                    let parent_ref = if expired {
-                        parent_meta.seq_commit
-                    } else {
-                        Hash::from_bytes(prev_lane_tip)
-                    };
-                    let tip = lane_tip_next(&LaneTipInput {
-                        parent_ref: &parent_ref,
-                        lane_key,
-                        activity_digest: &activity.finalize(),
-                        context_hash: &context_hash,
-                    });
-                    (tip.as_bytes(), blue_score)
-                })
-                .unwrap_or((prev_lane_tip, parent_meta.lane_last_active_blue_score));
+            let (lane_tip, lane_last_active_blue_score) =
+                self.advance_lane(&parent_meta, &accepted_transactions, header);
 
             let checkpoint = self.virtual_chain.advance_tip(ChainBlockMetadata {
                 hash: header.hash.expect("missing hash"),
+                blue_score: header.blue_score.expect("missing blue_score"),
+                daa_score: header.daa_score.expect("missing daa_score"),
                 timestamp: header.timestamp.expect("missing timestamp"),
                 seq_commit: header.accepted_id_merkle_root.expect("missing seq_commit"),
                 lane_key: self.lane_key.as_ref().map_or([0; 32], |k| k.as_bytes()),
-                blue_score,
-                daa_score,
-                prev_timestamp,
+                prev_timestamp: parent_meta.timestamp,
+                prev_lane_tip: parent_meta.lane_tip,
                 lane_last_active_blue_score,
-                prev_lane_tip,
                 lane_tip,
             });
 
@@ -454,6 +417,52 @@ impl BridgeWorker {
         }
 
         Ok(())
+    }
+
+    /// Computes the next lane tip and its activation blue-score. If the lane has activity in
+    /// this block and has been silent past `finality_depth`, the tip resets to the parent's
+    /// `seq_commit`; otherwise it chains off the parent's `lane_tip`. With no configured lane
+    /// or no activity, the parent's lane state is carried forward unchanged.
+    fn advance_lane(
+        &self,
+        parent: &ChainBlockMetadata,
+        accepted_transactions: &[(u32, L1Transaction)],
+        header: &RpcOptionalHeader,
+    ) -> ([u8; 32], u64) {
+        let blue_score = header.blue_score.expect("missing blue_score");
+        self.lane_key
+            .as_ref()
+            .filter(|_| !accepted_transactions.is_empty())
+            .map(|lane_key| {
+                let mut activity = ActivityDigestBuilder::new();
+                for (merge_idx, tx) in accepted_transactions {
+                    activity.add_leaf(activity_leaf(&tx.id(), tx.version, *merge_idx));
+                }
+
+                let context_hash = mergeset_context_hash(&MergesetContext {
+                    timestamp: parent.timestamp,
+                    daa_score: header.daa_score.expect("missing daa_score"),
+                    blue_score,
+                });
+
+                let parent_ref = if blue_score.saturating_sub(parent.lane_last_active_blue_score)
+                    > self.finality_depth
+                {
+                    parent.seq_commit
+                } else {
+                    Hash::from_bytes(parent.lane_tip)
+                };
+
+                let tip = lane_tip_next(&LaneTipInput {
+                    parent_ref: &parent_ref,
+                    lane_key,
+                    activity_digest: &activity.finalize(),
+                    context_hash: &context_hash,
+                });
+
+                (tip.as_bytes(), blue_score)
+            })
+            .unwrap_or((parent.lane_tip, parent.lane_last_active_blue_score))
     }
 
     /// Rolls back the virtual chain, updates the reorg filter, and emits a `Rollback` event.
@@ -470,7 +479,9 @@ impl BridgeWorker {
             blue_score_depth,
             self.reorg_filter.threshold(),
         );
+
         self.push_event(L1Event::Rollback { checkpoint, blue_score_depth });
+
         Ok(())
     }
 
