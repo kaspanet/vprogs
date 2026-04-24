@@ -10,9 +10,7 @@ use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_abi::batch_processor::StateTransition;
 use vprogs_zk_backend_risc0_api::Backend;
-use vprogs_zk_backend_risc0_test_suite::{
-    batch_processor_elf, settlement_processor_elf, transaction_processor_elf,
-};
+use vprogs_zk_backend_risc0_test_suite::{batch_processor_elf, transaction_processor_elf};
 use vprogs_zk_batch_prover::Backend as _;
 use vprogs_zk_covenant::{
     Settlement, SettlementInput, SettlementJournal, SuccinctWitness, build_redeem_script,
@@ -20,21 +18,19 @@ use vprogs_zk_covenant::{
 };
 use vprogs_zk_vm::{ProvingPipeline, Vm};
 
-/// Runs a batch proof through the full pipeline, then wraps it with the settlement guest and
-/// asserts that the settlement receipt's journal is exactly the 160-byte layout the covenant
-/// script expects.
+/// Runs a batch proof through the full pipeline and asserts the batch receipt's journal is
+/// exactly the 160-byte settlement preimage the covenant script expects. The batch processor
+/// emits the settlement journal directly — no wrapping guest.
 #[tokio::test(flavor = "multi_thread")]
-async fn settlement_proof_over_single_batch() {
+async fn batch_proof_is_directly_settleable() {
     let transaction_elf = transaction_processor_elf();
     let batch_elf = batch_processor_elf();
-    let settlement_elf = settlement_processor_elf();
 
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
 
-    let backend = Backend::new(&transaction_elf, &batch_elf, Some(&settlement_elf));
+    let backend = Backend::new(&transaction_elf, &batch_elf);
 
-    let lane_key = kaspa_seq_commit::hashing::lane_key(&[0x42; 20]).as_bytes();
     let proving = ProvingPipeline::batch(backend.clone(), storage.clone());
     let vm = Vm::new(backend.clone(), proving);
 
@@ -50,11 +46,11 @@ async fn settlement_proof_over_single_batch() {
     tx2.version = 1;
     tx2.payload = vec![4, 5, 6];
 
+    // Non-zero seq_commit / prev_seq_commit so the settlement journal carries meaningful data.
     let block_metadata = ChainBlockMetadata {
         hash: Hash::from_bytes([0x77; 32]),
         seq_commit: Hash::from_bytes([0x88; 32]),
         prev_seq_commit: Hash::from_bytes([0x99; 32]),
-        lane_key,
         ..Default::default()
     };
 
@@ -70,51 +66,40 @@ async fn settlement_proof_over_single_batch() {
     batch.wait_artifact_published_blocking();
 
     let batch_receipt = (*batch.artifact()).clone();
-    let batch_journal = Backend::journal_bytes(&batch_receipt);
+    let journal_bytes = Backend::journal_bytes(&batch_receipt);
 
-    let (expected_prev_state, expected_new_state, expected_prev_seq, expected_new_seq) =
-        match StateTransition::decode(&batch_journal).expect("batch journal decodes") {
-            StateTransition::Success {
-                prev_root, new_root, seq_commit, prev_seq_commit, ..
-            } => (*prev_root, *new_root, *prev_seq_commit, *seq_commit),
-            StateTransition::Error(e) => panic!("expected batch success, got error: {e}"),
-        };
-
-    let covenant_id = [0xC0u8; 32];
-    let settlement_receipt = backend.prove_settlement(&covenant_id, batch_receipt).await;
-
-    settlement_receipt
-        .verify(*backend.settlement_image_id().expect("settlement image id present"))
-        .expect("settlement receipt verifies against its own image id");
-
-    let settlement_journal = settlement_receipt.journal.bytes;
+    // The batch journal IS the settlement preimage now - no wrapping guest.
     assert_eq!(
-        settlement_journal.len(),
+        journal_bytes.len(),
         vprogs_zk_covenant::JOURNAL_SIZE,
-        "settlement journal must be exactly {} bytes",
+        "batch journal must be exactly {} bytes",
         vprogs_zk_covenant::JOURNAL_SIZE,
     );
 
-    let parsed = SettlementJournal::decode(&settlement_journal)
-        .expect("settlement journal must decode at the canonical layout");
-    assert_eq!(parsed.prev_state, &expected_prev_state);
-    assert_eq!(parsed.prev_seq, &expected_prev_seq);
-    assert_eq!(parsed.new_state, &expected_new_state);
-    assert_eq!(parsed.new_seq, &expected_new_seq);
-    assert_eq!(parsed.covenant_id, &covenant_id);
+    let parsed = SettlementJournal::decode(&journal_bytes)
+        .expect("batch journal must decode as a settlement journal");
+    // covenant_id is zero in the non-settling test path (see batch-prover/src/worker.rs).
+    assert_eq!(parsed.covenant_id, &[0u8; 32]);
+    assert_eq!(parsed.prev_seq, &[0x99; 32], "prev_seq echoed from metadata");
+    assert_eq!(parsed.new_seq, &[0x88; 32], "new_seq echoed from metadata");
 
-    // Build the host-side settlement transaction. We don't submit it here (that's the simnet
-    // integration test) - just verify the structure matches what a covenant-enabled L1 expects:
-    // single output SPK = P2SH of the new redeem script, covenant binding preserved.
-    let program_id = *backend.settlement_image_id().expect("settlement image id present");
-    let covenant_id_hash = Hash::from_bytes(covenant_id);
+    // Cross-check against StateTransition's typed view - same bytes, structured decode.
+    let st = StateTransition::decode(&journal_bytes).expect("StateTransition decodes");
+    assert_eq!(st.prev_state, *parsed.prev_state);
+    assert_eq!(st.new_state, *parsed.new_state);
+    assert_eq!(st.prev_seq, parsed.prev_seq);
+    assert_eq!(st.new_seq, parsed.new_seq);
+
+    // Build the host-side settlement transaction against the real batch image id.
+    let program_id = *backend.batch_image_id();
+    let covenant_id_hash = Hash::from_bytes(*parsed.covenant_id);
     let settlement = Settlement::build(&SettlementInput {
         covenant_id: covenant_id_hash,
         program_id: &program_id,
-        prev_state: &expected_prev_state,
-        prev_seq: &expected_prev_seq,
-        new_state: &expected_new_state,
-        new_seq: &expected_new_seq,
+        prev_state: parsed.prev_state,
+        prev_seq: parsed.prev_seq,
+        new_state: parsed.new_state,
+        new_seq: parsed.new_seq,
         block_prove_to: Hash::from_bytes([0xAB; 32]),
         prev_outpoint: TransactionOutpoint::new(Hash::from_bytes([0xCD; 32]), 0),
         value: 100_000_000,
@@ -132,19 +117,16 @@ async fn settlement_proof_over_single_batch() {
     assert_eq!(
         settlement.transaction.outputs[0].script_public_key,
         pay_to_script_hash_script(&settlement.next_redeem),
-        "continuation SPK must be P2SH of the next redeem",
     );
     assert_eq!(
         settlement.transaction.outputs[0].covenant,
         Some(CovenantBinding::new(0, covenant_id_hash)),
-        "continuation output must preserve the covenant id",
     );
 
-    // Sanity-check the redeem-script-length self-referential invariant holds for both ends.
-    let expected_len = redeem_script_len(&expected_prev_state, &program_id, ZkTag::R0Succinct);
+    let expected_len = redeem_script_len(parsed.prev_state, &program_id, ZkTag::R0Succinct);
     let expected_prev_redeem = build_redeem_script(
-        &expected_prev_state,
-        &expected_prev_seq,
+        parsed.prev_state,
+        parsed.prev_seq,
         expected_len,
         &program_id,
         ZkTag::R0Succinct,

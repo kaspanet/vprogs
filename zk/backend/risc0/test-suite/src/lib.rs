@@ -21,15 +21,3 @@ pub fn batch_processor_elf() -> Vec<u8> {
         )
     })
 }
-
-/// Loads the pre-built settlement processor ELF from the repository.
-pub fn settlement_processor_elf() -> Vec<u8> {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let elf_path = format!("{manifest_dir}/../settlement-processor/compiled/program.elf");
-    std::fs::read(&elf_path).unwrap_or_else(|e| {
-        panic!(
-            "settlement processor ELF not found at {elf_path}: {e}\n\
-             Run `./zk/backend/risc0/build-guests.sh settlement-processor` to rebuild it."
-        )
-    })
-}

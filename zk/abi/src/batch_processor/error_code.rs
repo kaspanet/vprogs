@@ -12,22 +12,10 @@ pub enum ErrorCode {
     ResourceHashMismatch = 3,
     /// Block hash differs from the first transaction in the batch.
     BlockHashMismatch = 4,
-    /// Blue score differs from the first transaction in the batch.
-    BlueScoreMismatch = 5,
+    /// Context hash differs from the first transaction in the batch.
+    ContextHashMismatch = 5,
     /// Inner transaction journal verification failed.
     JournalVerificationFailed = 6,
-    /// DAA score differs from the first transaction in the batch.
-    DaaScoreMismatch = 7,
-    /// Block header timestamp differs from the first transaction in the batch.
-    TimestampMismatch = 8,
-    /// Previous block's timestamp differs from the first transaction in the batch.
-    PrevTimestampMismatch = 9,
-    /// Transaction subnetwork differs from the lane this batch binds to.
-    SubnetworkMismatch = 10,
-    /// Block sequencing commitment differs from the first transaction in the batch.
-    SeqCommitMismatch = 11,
-    /// Parent block's sequencing commitment differs from the first transaction in the batch.
-    PrevSeqCommitMismatch = 12,
 }
 
 impl From<ErrorCode> for Error {

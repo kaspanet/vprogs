@@ -77,15 +77,17 @@ impl<'a> Inputs<'a> {
 
         // Write fixed header: tx_index, n_resources, batch metadata.
         let bm = ctx.batch_metadata();
+        let context_hash = kaspa_seq_commit::hashing::mergeset_context_hash(
+            &kaspa_seq_commit::types::MergesetContext {
+                timestamp: kaspa_seq_commit::hashing::seq_commit_timestamp(bm.prev_timestamp),
+                daa_score: bm.daa_score,
+                blue_score: bm.blue_score,
+            },
+        );
         buf.write(&ctx.tx_index().to_le_bytes());
         buf.write(&(ctx.resources().len() as u32).to_le_bytes());
         buf.write(&bm.hash.as_bytes());
-        buf.write(&bm.seq_commit.as_bytes());
-        buf.write(&bm.prev_seq_commit.as_bytes());
-        buf.write(&bm.blue_score.to_le_bytes());
-        buf.write(&bm.daa_score.to_le_bytes());
-        buf.write(&bm.timestamp.to_le_bytes());
-        buf.write(&bm.prev_timestamp.to_le_bytes());
+        buf.write(&context_hash.as_bytes());
 
         // Write transaction bytes.
         Transaction::encode(&mut buf, ctx.tx());

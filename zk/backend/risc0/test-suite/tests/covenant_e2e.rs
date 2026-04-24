@@ -13,9 +13,7 @@ use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_txscript::{standard::pay_to_script_hash_script, zk_precompiles::tags::ZkTag};
 use vprogs_core_smt::EMPTY_HASH;
 use vprogs_node_test_utils::L1Node;
-use vprogs_zk_backend_risc0_test_suite::{
-    batch_processor_elf, settlement_processor_elf, transaction_processor_elf,
-};
+use vprogs_zk_backend_risc0_test_suite::{batch_processor_elf, transaction_processor_elf};
 use vprogs_zk_covenant::{build_redeem_script, redeem_script_len};
 
 const TEST_COVENANT_VALUE: u64 = 100_000_000;
@@ -34,15 +32,12 @@ async fn covenant_bootstrap_is_accepted_on_simnet() {
     // Mine enough blocks so at least one coinbase UTXO matures.
     l1.mine_utxos(1).await;
 
-    // Build a redeem script pinned to a realistic image id. We use the settlement guest's id here
-    // because that's what a real on-chain covenant would verify against, even though we don't run
-    // the full settlement spend in this test.
+    // Build a redeem script pinned to the batch-processor image id — the covenant binds
+    // directly to the batch guest since it now emits the settlement journal itself.
     let tx_elf = transaction_processor_elf();
     let batch_elf = batch_processor_elf();
-    let settlement_elf = settlement_processor_elf();
-    let backend =
-        vprogs_zk_backend_risc0_api::Backend::new(&tx_elf, &batch_elf, Some(&settlement_elf));
-    let program_id = *backend.settlement_image_id().expect("settlement image id");
+    let backend = vprogs_zk_backend_risc0_api::Backend::new(&tx_elf, &batch_elf);
+    let program_id = *backend.batch_image_id();
 
     let initial_state = EMPTY_HASH;
     let initial_seq = [0u8; 32];

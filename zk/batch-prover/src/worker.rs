@@ -100,13 +100,18 @@ where
         let journals: Vec<_> = receipts.iter().map(B::journal_bytes).collect();
 
         let metadata = batch.checkpoint().metadata();
-        let parent_lane_tip = metadata.prev_lane_tip;
-        let lane_key = metadata.lane_key;
+        let prev_seq = metadata.prev_seq_commit.as_bytes();
+        let new_seq = metadata.seq_commit.as_bytes();
+
+        // TODO: plumb covenant_id through the prover config. Zero for now - a non-settling
+        // prover (batch-only tests) can use the zero covenant.
+        let covenant_id = [0u8; 32];
 
         BatchInputs::encode(
             self.backend.image_id(),
-            &parent_lane_tip,
-            &lane_key,
+            &covenant_id,
+            &prev_seq,
+            &new_seq,
             &proof,
             &leaf_order,
             &journals,

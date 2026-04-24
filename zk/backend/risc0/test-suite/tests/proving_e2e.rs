@@ -18,8 +18,8 @@ use vprogs_zk_vm::{ProvingPipeline, Vm};
 /// Proves two transactions that each increment a u32 counter on distinct resources.
 ///
 /// Verifies the full pipeline: execution -> transaction proving -> batch proving -> state root
-/// transition. The guest increments each resource's counter from 0 to 1, so prev_root should
-/// differ from new_root (state changed).
+/// transition. The guest increments each resource's counter from 0 to 1, so prev_state should
+/// differ from new_state (state changed).
 #[tokio::test(flavor = "multi_thread")]
 async fn batch_proof_two_transactions() {
     let transaction_elf = transaction_processor_elf();
@@ -28,10 +28,8 @@ async fn batch_proof_two_transactions() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
 
-    let backend = Backend::new(&transaction_elf, &batch_elf, None);
+    let backend = Backend::new(&transaction_elf, &batch_elf);
 
-    // Fixed test subnetwork id so the journal's lane_key field is deterministic.
-    let lane_key = kaspa_seq_commit::hashing::lane_key(&[0x42; 20]).as_bytes();
     let proving = ProvingPipeline::batch(backend.clone(), storage.clone());
     let vm = Vm::new(backend.clone(), proving);
 
@@ -40,7 +38,6 @@ async fn batch_proof_two_transactions() {
         StorageConfig::default().with_store(storage.clone()),
     );
 
-    // Create two transactions touching distinct resources.
     let mut tx1 = L1Transaction::default();
     tx1.version = 1;
     tx1.payload = vec![1, 2, 3];
@@ -48,14 +45,10 @@ async fn batch_proof_two_transactions() {
     tx2.version = 1;
     tx2.payload = vec![4, 5, 6];
 
-    // Capture native kaspa tx_ids before moving the txs into the scheduler.
     let expected_tx_ids = [kaspa_tx_id(&tx1).as_bytes(), kaspa_tx_id(&tx2).as_bytes()];
 
-    let block_metadata = ChainBlockMetadata { lane_key, ..Default::default() };
-
-    // Schedule the batch (executes both transactions and starts proving).
     let batch = scheduler.schedule(
-        block_metadata,
+        ChainBlockMetadata::default(),
         vec![
             SchedulerTransaction::new(0, vec![AccessMetadata::write(ResourceId::for_test(1))], tx1),
             SchedulerTransaction::new(1, vec![AccessMetadata::write(ResourceId::for_test(2))], tx2),
@@ -65,7 +58,6 @@ async fn batch_proof_two_transactions() {
     batch.wait_committed_blocking();
     batch.wait_artifact_published_blocking();
 
-    // Each tx's input commitment must embed the same tx_id kaspa derives natively.
     for (artifact, expected) in batch.tx_artifacts().zip(expected_tx_ids.iter()) {
         let journal = Backend::journal_bytes(&artifact);
         let parsed = JournalEntries::decode(&journal).expect("valid tx journal");
@@ -75,33 +67,14 @@ async fn batch_proof_two_transactions() {
         );
     }
 
-    // Read the batch proof receipt from batch artifact.
     let receipt = batch.artifact();
     let journal = Backend::journal_bytes(&receipt);
 
-    // Decode the state transition from the receipt journal.
-    match StateTransition::decode(&journal).expect("journal should decode") {
-        StateTransition::Success {
-            image_id: journal_image_id,
-            prev_root,
-            new_root,
-            lane_key: journal_lane_key,
-            parent_lane_tip,
-            new_lane_tip,
-            ..
-        } => {
-            assert_eq!(journal_image_id, backend.image_id());
-            assert_ne!(prev_root, new_root, "state should change after counter increment");
-            assert_eq!(*prev_root, EMPTY_HASH, "prev_root should be empty (no prior state)");
-            assert_eq!(*new_root, storage.root(1), "new_root should match store's version 1");
-            assert_eq!(*journal_lane_key, lane_key, "lane_key should be pinned by input");
-            assert_eq!(*parent_lane_tip, [0u8; 32], "parent_lane_tip is zero at genesis");
-            assert_ne!(new_lane_tip, [0u8; 32], "new_lane_tip should advance past zero");
-        }
-        StateTransition::Error(e) => panic!("expected success, got error: {e}"),
-    }
+    let state = StateTransition::decode(&journal).expect("journal should decode");
+    assert_ne!(state.prev_state, state.new_state, "state should change after counter increment");
+    assert_eq!(state.prev_state, EMPTY_HASH, "prev_state should be empty (no prior state)");
+    assert_eq!(state.new_state, storage.root(1), "new_state should match store's version 1");
 
-    // Verify committed counter values - both resources should be 1 (incremented from 0).
     let r1_data = StateVersion::get(&storage, 1, &ResourceId::for_test(1))
         .expect("resource 1 should have committed data");
     let r2_data = StateVersion::get(&storage, 1, &ResourceId::for_test(2))
@@ -109,7 +82,6 @@ async fn batch_proof_two_transactions() {
     assert_eq!(u32::from_le_bytes(r1_data.as_slice().try_into().unwrap()), 1);
     assert_eq!(u32::from_le_bytes(r2_data.as_slice().try_into().unwrap()), 1);
 
-    // Verify SMT proof leaves contain correct value hashes.
     let expected_hash = *blake3::hash(&1u32.to_le_bytes()).as_bytes();
     for resource_id in [ResourceId::for_test(1), ResourceId::for_test(2)] {
         let (proof_bytes, _) = storage.prove(&[resource_id], 1).unwrap();
@@ -119,8 +91,6 @@ async fn batch_proof_two_transactions() {
 
     // --- Second batch: increment counters from 1 to 2 ---
 
-    let block_metadata_2 = ChainBlockMetadata { lane_key, ..Default::default() };
-
     let mut tx3 = L1Transaction::default();
     tx3.version = 1;
     tx3.payload = vec![7, 8, 9];
@@ -128,11 +98,10 @@ async fn batch_proof_two_transactions() {
     tx4.version = 1;
     tx4.payload = vec![10, 11, 12];
 
-    // Capture native kaspa tx_ids for the second batch's txs.
     let expected_tx_ids_2 = [kaspa_tx_id(&tx3).as_bytes(), kaspa_tx_id(&tx4).as_bytes()];
 
     let batch_2 = scheduler.schedule(
-        block_metadata_2,
+        ChainBlockMetadata::default(),
         vec![
             SchedulerTransaction::new(0, vec![AccessMetadata::write(ResourceId::for_test(1))], tx3),
             SchedulerTransaction::new(1, vec![AccessMetadata::write(ResourceId::for_test(2))], tx4),
@@ -142,7 +111,6 @@ async fn batch_proof_two_transactions() {
     batch_2.wait_committed_blocking();
     batch_2.wait_artifact_published_blocking();
 
-    // Same tx_id parity check on the second batch.
     for (artifact, expected) in batch_2.tx_artifacts().zip(expected_tx_ids_2.iter()) {
         let journal = Backend::journal_bytes(&artifact);
         let parsed = JournalEntries::decode(&journal).expect("valid tx journal");
@@ -155,16 +123,10 @@ async fn batch_proof_two_transactions() {
     let receipt_2 = batch_2.artifact();
     let journal_2 = Backend::journal_bytes(&receipt_2);
 
-    // Chain continuity: batch 2's prev_root should equal batch 1's new_root.
-    match StateTransition::decode(&journal_2).expect("journal should decode") {
-        StateTransition::Success { prev_root, new_root, .. } => {
-            assert_eq!(*prev_root, storage.root(1), "batch 2 prev_root should chain from batch 1");
-            assert_ne!(prev_root, new_root, "state should change again");
-        }
-        StateTransition::Error(e) => panic!("expected success, got error: {e}"),
-    }
+    let state_2 = StateTransition::decode(&journal_2).expect("journal should decode");
+    assert_eq!(state_2.prev_state, storage.root(1), "batch 2 prev_state should chain from batch 1");
+    assert_ne!(state_2.prev_state, state_2.new_state, "state should change again");
 
-    // Verify counter values are now 2.
     let r1_v2 = StateVersion::get(&storage, 2, &ResourceId::for_test(1))
         .expect("resource 1 should have v2 data");
     let r2_v2 = StateVersion::get(&storage, 2, &ResourceId::for_test(2))
@@ -172,7 +134,6 @@ async fn batch_proof_two_transactions() {
     assert_eq!(u32::from_le_bytes(r1_v2.as_slice().try_into().unwrap()), 2);
     assert_eq!(u32::from_le_bytes(r2_v2.as_slice().try_into().unwrap()), 2);
 
-    // Verify SMT leaves at version 2.
     let expected_hash_v2 = *blake3::hash(&2u32.to_le_bytes()).as_bytes();
     for resource_id in [ResourceId::for_test(1), ResourceId::for_test(2)] {
         let (proof_bytes, _) = storage.prove(&[resource_id], 2).unwrap();
