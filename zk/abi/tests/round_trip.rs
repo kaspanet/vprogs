@@ -33,7 +33,7 @@ fn state_transition_round_trip() {
         prev_state,
         prev_seq: &prev_seq,
         new_state,
-        new_seq: &new_seq,
+        new_seq,
         covenant_id: &covenant_id,
     };
     StateTransition::encode(&mut buf, &success);
@@ -43,6 +43,6 @@ fn state_transition_round_trip() {
     assert_eq!(decoded.prev_state, prev_state);
     assert_eq!(decoded.prev_seq, &prev_seq);
     assert_eq!(decoded.new_state, new_state);
-    assert_eq!(decoded.new_seq, &new_seq);
+    assert_eq!(decoded.new_seq, new_seq);
     assert_eq!(decoded.covenant_id, &covenant_id);
 }

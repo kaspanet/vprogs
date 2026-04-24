@@ -99,19 +99,37 @@ where
         let (proof, leaf_order) = self.store.prove(&resources, prev_version).expect("proof");
         let journals: Vec<_> = receipts.iter().map(B::journal_bytes).collect();
 
-        let metadata = batch.checkpoint().metadata();
-        let prev_seq = metadata.prev_seq_commit.as_bytes();
-        let new_seq = metadata.seq_commit.as_bytes();
+        let m = batch.checkpoint().metadata();
 
-        // TODO: plumb covenant_id through the prover config. Zero for now - a non-settling
-        // prover (batch-only tests) can use the zero covenant.
+        // TODO: plumb covenant_id through the prover config. Zero for non-settling runs
+        // (batch-only tests, bridge-only runs that don't produce an on-chain settlement).
         let covenant_id = [0u8; 32];
+
+        // `prev_seq` binds to the previous *settlement*'s `new_seq`, enforced by the covenant's
+        // redeem prefix. In the single-block-per-batch model where every batch settles one
+        // block, the previous active block is always this block's immediate selected parent,
+        // so `prev_seq == parent_seq_commit`. Diverge these once the bridge tracks per-lane
+        // "previous active block's seq_commit" separately to support silent-block skipping.
+        let parent_seq_commit = m.prev_seq_commit.as_bytes();
+        let prev_seq = parent_seq_commit;
+
+        let miner_payload_leaves: Vec<[u8; 32]> =
+            m.miner_payload_leaves.iter().map(|h| h.as_bytes()).collect();
 
         BatchInputs::encode(
             self.backend.image_id(),
             &covenant_id,
             &prev_seq,
-            &new_seq,
+            &parent_seq_commit,
+            m.blue_score,
+            m.daa_score,
+            m.prev_timestamp,
+            &m.prev_lane_tip,
+            m.lane_blue_score,
+            m.lane_expired,
+            &m.lane_key,
+            &miner_payload_leaves,
+            &m.lane_smt_proof,
             &proof,
             &leaf_order,
             &journals,

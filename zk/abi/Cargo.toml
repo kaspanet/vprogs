@@ -21,6 +21,7 @@ borsh                       = { workspace = true, default-features = false, opti
 kaspa-consensus-core        = { workspace = true, optional = true }
 kaspa-hashes                = { workspace = true }
 kaspa-seq-commit            = { workspace = true }
+kaspa-smt                   = { workspace = true }
 thiserror                   = { workspace = true, default-features = false }
 vprogs-core-codec           = { workspace = true }
 vprogs-core-smt             = { workspace = true }

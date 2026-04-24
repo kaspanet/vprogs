@@ -12,7 +12,6 @@ use vprogs_zk_abi::{batch_processor::StateTransition, transaction_processor::Jou
 use vprogs_zk_backend_risc0_api::Backend;
 use vprogs_zk_backend_risc0_test_suite::{batch_processor_elf, transaction_processor_elf};
 use vprogs_zk_batch_prover::Backend as _;
-use vprogs_zk_transaction_prover::Backend as _;
 use vprogs_zk_vm::{ProvingPipeline, Vm};
 
 /// Proves two transactions that each increment a u32 counter on distinct resources.

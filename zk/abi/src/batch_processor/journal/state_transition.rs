@@ -1,4 +1,6 @@
-use crate::{Error, Result, Write};
+use crate::Write;
+#[cfg(feature = "host")]
+use crate::{Error, Result};
 
 /// Proven state transition journal — exactly 160 bytes, SHA-256's to the value the covenant
 /// script reconstructs on-stack via `OpChainblockSeqCommit` + data pushes, then checks via
@@ -19,8 +21,9 @@ pub struct StateTransition<'a> {
     /// State root after this batch.
     pub new_state: [u8; 32],
     /// Sequencing commitment after the batch (covenant cross-checks against
-    /// `OpChainblockSeqCommit(block_prove_to)`).
-    pub new_seq: &'a [u8; 32],
+    /// `OpChainblockSeqCommit(block_prove_to)`). Owned — the guest derives it from kip21
+    /// primitives rather than echoing a host input.
+    pub new_seq: [u8; 32],
     /// Covenant id the settlement binds to.
     pub covenant_id: &'a [u8; 32],
 }
@@ -34,7 +37,7 @@ impl<'a> StateTransition<'a> {
         w.write(&s.prev_state);
         w.write(s.prev_seq);
         w.write(&s.new_state);
-        w.write(s.new_seq);
+        w.write(&s.new_seq);
         w.write(s.covenant_id);
     }
 
@@ -51,7 +54,7 @@ impl<'a> StateTransition<'a> {
             prev_state: *buf.array::<32>("prev_state")?,
             prev_seq: buf.array::<32>("prev_seq")?,
             new_state: *buf.array::<32>("new_state")?,
-            new_seq: buf.array::<32>("new_seq")?,
+            new_seq: *buf.array::<32>("new_seq")?,
             covenant_id: buf.array::<32>("covenant_id")?,
         })
     }

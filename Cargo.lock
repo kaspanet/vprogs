@@ -2913,7 +2913,6 @@ dependencies = [
 [[package]]
 name = "kaspa-addresses"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "borsh",
  "js-sys",
@@ -2928,7 +2927,6 @@ dependencies = [
 [[package]]
 name = "kaspa-addressmanager"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "borsh",
  "igd-next",
@@ -2950,7 +2948,6 @@ dependencies = [
 [[package]]
 name = "kaspa-alloc"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "mimalloc",
 ]
@@ -2958,7 +2955,6 @@ dependencies = [
 [[package]]
 name = "kaspa-bip32"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "borsh",
  "bs58",
@@ -2985,7 +2981,6 @@ dependencies = [
 [[package]]
 name = "kaspa-connectionmanager"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "duration-string",
  "futures-util",
@@ -3003,7 +2998,6 @@ dependencies = [
 [[package]]
 name = "kaspa-consensus"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "arc-swap",
  "async-channel 2.5.0",
@@ -3047,7 +3041,6 @@ dependencies = [
 [[package]]
 name = "kaspa-consensus-client"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "ahash",
  "borsh",
@@ -3077,7 +3070,6 @@ dependencies = [
 [[package]]
 name = "kaspa-consensus-core"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -3115,7 +3107,6 @@ dependencies = [
 [[package]]
 name = "kaspa-consensus-notify"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "async-channel 2.5.0",
  "cfg-if",
@@ -3135,7 +3126,6 @@ dependencies = [
 [[package]]
 name = "kaspa-consensus-wasm"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "cfg-if",
  "faster-hex",
@@ -3160,7 +3150,6 @@ dependencies = [
 [[package]]
 name = "kaspa-consensusmanager"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "duration-string",
  "futures",
@@ -3180,7 +3169,6 @@ dependencies = [
 [[package]]
 name = "kaspa-core"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "anyhow",
  "cfg-if",
@@ -3200,7 +3188,6 @@ dependencies = [
 [[package]]
 name = "kaspa-database"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "bincode",
  "enum-primitive-derive",
@@ -3223,7 +3210,6 @@ dependencies = [
 [[package]]
 name = "kaspa-grpc-client"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "async-channel 2.5.0",
  "async-stream",
@@ -3256,7 +3242,6 @@ dependencies = [
 [[package]]
 name = "kaspa-grpc-core"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "async-channel 2.5.0",
  "async-stream",
@@ -3287,7 +3272,6 @@ dependencies = [
 [[package]]
 name = "kaspa-grpc-server"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "async-channel 2.5.0",
  "async-stream",
@@ -3323,7 +3307,6 @@ dependencies = [
 [[package]]
 name = "kaspa-hashes"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "blake2b_simd",
  "blake3",
@@ -3344,7 +3327,6 @@ dependencies = [
 [[package]]
 name = "kaspa-index-core"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "async-channel 2.5.0",
  "async-trait",
@@ -3364,7 +3346,6 @@ dependencies = [
 [[package]]
 name = "kaspa-index-processor"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "async-channel 2.5.0",
  "async-trait",
@@ -3390,7 +3371,6 @@ dependencies = [
 [[package]]
 name = "kaspa-math"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "borsh",
  "faster-hex",
@@ -3410,7 +3390,6 @@ dependencies = [
 [[package]]
 name = "kaspa-merkle"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "kaspa-hashes",
 ]
@@ -3418,7 +3397,6 @@ dependencies = [
 [[package]]
 name = "kaspa-mining"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "futures-util",
  "itertools 0.13.0",
@@ -3444,7 +3422,6 @@ dependencies = [
 [[package]]
 name = "kaspa-mining-errors"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "kaspa-consensus-core",
  "thiserror 2.0.18",
@@ -3453,7 +3430,6 @@ dependencies = [
 [[package]]
 name = "kaspa-muhash"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "kaspa-hashes",
  "kaspa-math",
@@ -3464,7 +3440,6 @@ dependencies = [
 [[package]]
 name = "kaspa-notify"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "async-channel 2.5.0",
  "async-trait",
@@ -3496,7 +3471,6 @@ dependencies = [
 [[package]]
 name = "kaspa-p2p-flows"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3531,7 +3505,6 @@ dependencies = [
 [[package]]
 name = "kaspa-p2p-lib"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "borsh",
  "ctrlc",
@@ -3562,7 +3535,6 @@ dependencies = [
 [[package]]
 name = "kaspa-p2p-mining"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "kaspa-consensus-core",
  "kaspa-consensusmanager",
@@ -3580,7 +3552,6 @@ dependencies = [
 [[package]]
 name = "kaspa-perf-monitor"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "kaspa-core",
  "log",
@@ -3593,7 +3564,6 @@ dependencies = [
 [[package]]
 name = "kaspa-pow"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "js-sys",
  "kaspa-consensus-client",
@@ -3609,7 +3579,6 @@ dependencies = [
 [[package]]
 name = "kaspa-rpc-core"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "async-channel 2.5.0",
  "async-trait",
@@ -3652,7 +3621,6 @@ dependencies = [
 [[package]]
 name = "kaspa-rpc-macros"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "convert_case 0.6.0",
  "proc-macro-error",
@@ -3665,7 +3633,6 @@ dependencies = [
 [[package]]
 name = "kaspa-rpc-service"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "async-trait",
  "kaspa-addresses",
@@ -3696,7 +3663,6 @@ dependencies = [
 [[package]]
 name = "kaspa-seq-commit"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "kaspa-hashes",
  "kaspa-merkle",
@@ -3707,7 +3673,6 @@ dependencies = [
 [[package]]
 name = "kaspa-smt"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "blake3",
  "kaspa-hashes",
@@ -3718,7 +3683,6 @@ dependencies = [
 [[package]]
 name = "kaspa-smt-store"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "kaspa-consensus-core",
  "kaspa-core",
@@ -3738,7 +3702,6 @@ dependencies = [
 [[package]]
 name = "kaspa-testing-integration"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "async-channel 2.5.0",
  "async-trait",
@@ -3798,7 +3761,6 @@ dependencies = [
 [[package]]
 name = "kaspa-txscript"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "ark-bn254",
  "ark-ec",
@@ -3841,7 +3803,6 @@ dependencies = [
 [[package]]
 name = "kaspa-txscript-errors"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "borsh",
  "kaspa-hashes",
@@ -3852,7 +3813,6 @@ dependencies = [
 [[package]]
 name = "kaspa-utils"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "arc-swap",
  "async-channel 2.5.0",
@@ -3882,7 +3842,6 @@ dependencies = [
 [[package]]
 name = "kaspa-utils-tower"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -3899,7 +3858,6 @@ dependencies = [
 [[package]]
 name = "kaspa-utxoindex"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "futures",
  "kaspa-consensus-core",
@@ -3919,7 +3877,6 @@ dependencies = [
 [[package]]
 name = "kaspa-wasm-core"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "faster-hex",
  "hexplay",
@@ -3931,7 +3888,6 @@ dependencies = [
 [[package]]
 name = "kaspa-wrpc-client"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "async-std",
  "async-trait",
@@ -3968,7 +3924,6 @@ dependencies = [
 [[package]]
 name = "kaspa-wrpc-server"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "async-trait",
  "borsh",
@@ -3997,7 +3952,6 @@ dependencies = [
 [[package]]
 name = "kaspad"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
 dependencies = [
  "async-channel 2.5.0",
  "cfg-if",
@@ -8163,6 +8117,7 @@ dependencies = [
  "kaspa-consensus-core",
  "kaspa-hashes",
  "kaspa-seq-commit",
+ "kaspa-smt",
  "thiserror 2.0.18",
  "vprogs-core-codec",
  "vprogs-core-smt",

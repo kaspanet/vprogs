@@ -6,7 +6,7 @@ use crate::Hash;
 ///
 /// Satisfies the [`BatchMetadata`](vprogs_core_types::BatchMetadata) blanket impl via its derived
 /// traits.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct ChainBlockMetadata {
     /// L1 block hash.
     pub hash: Hash,
@@ -31,4 +31,14 @@ pub struct ChainBlockMetadata {
     pub prev_lane_tip: [u8; 32],
     /// Lane tip after applying this block's accepted txs.
     pub lane_tip: [u8; 32],
+    /// True when the lane was silent past the finality window at this block and the next
+    /// activity re-anchors on `prev_seq_commit` instead of `prev_lane_tip` (kip21 §5.1).
+    pub lane_expired: bool,
+    /// `miner_payload_leaf(merged_block_hash, blue_work, coinbase_payload)` for every block
+    /// in this chain block's mergeset. Populated from the kaspa v2 RPC `lane_data` bundle;
+    /// empty when no lane was queried.
+    pub miner_payload_leaves: Vec<Hash>,
+    /// Serialized `kaspa_smt::proof::OwnedSmtProof` for the bridge's `lane_key` position in
+    /// this block's `lanes_root`. Empty when no lane was queried.
+    pub lane_smt_proof: Vec<u8>,
 }

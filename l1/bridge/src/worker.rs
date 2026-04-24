@@ -311,7 +311,7 @@ impl BridgeWorker {
         // Fetch with Full verbosity so backfilled entries carry complete header fields.
         let response = self
             .client
-            .get_virtual_chain_from_block_v2(start.metadata().hash, Some(Full), None)
+            .get_virtual_chain_from_block_v2(start.metadata().hash, Some(Full), None, None)
             .await?;
 
         // Advance the chain until the target.
@@ -330,7 +330,7 @@ impl BridgeWorker {
                     ..Default::default()
                 });
             } else {
-                self.virtual_chain.advance_tip(*target.metadata());
+                self.virtual_chain.advance_tip(target.metadata().clone());
                 found = true;
                 break;
             }
@@ -354,6 +354,7 @@ impl BridgeWorker {
                 self.virtual_chain.tip().metadata().hash,
                 Some(Full),
                 self.reorg_filter.threshold(),
+                self.lane_key,
             )
             .await?;
 
@@ -371,7 +372,7 @@ impl BridgeWorker {
         for chain_block in response.chain_block_accepted_transactions.iter() {
             // Selected parent on the chain stream is the current virtual-chain tip.
             let header = &chain_block.chain_block_header;
-            let parent_meta = *self.virtual_chain.tip().metadata();
+            let parent_meta = self.virtual_chain.tip().metadata().clone();
 
             // Enumerate before filtering so kept txs retain their block-wide positions.
             let accepted_transactions: Vec<(u32, L1Transaction)> = chain_block
@@ -387,8 +388,15 @@ impl BridgeWorker {
                 })
                 .collect();
 
-            let (lane_tip, lane_blue_score) =
+            let (lane_tip, lane_blue_score, lane_expired) =
                 self.advance_lane(&parent_meta, &accepted_transactions, header);
+
+            // Carry the per-block kip21 bundle through — empty when the RPC response omitted
+            // it (e.g. configured without a subnetwork filter, pre-activation blocks).
+            let (miner_payload_leaves, lane_smt_proof) = match chain_block.lane_data.as_ref() {
+                Some(d) => (d.miner_payload_leaves.clone(), d.lane_proof.clone()),
+                None => (Vec::new(), Vec::new()),
+            };
 
             let checkpoint = self.virtual_chain.advance_tip(ChainBlockMetadata {
                 hash: header.hash.expect("missing hash"),
@@ -402,6 +410,9 @@ impl BridgeWorker {
                 prev_lane_tip: parent_meta.lane_tip,
                 lane_blue_score,
                 lane_tip,
+                lane_expired,
+                miner_payload_leaves,
+                lane_smt_proof,
             });
 
             self.push_event(L1Event::ChainBlockAdded {
@@ -414,22 +425,26 @@ impl BridgeWorker {
         Ok(())
     }
 
-    /// Returns the next `(lane_tip, lane_blue_score)` for this block.
+    /// Returns the next `(lane_tip, lane_blue_score, lane_expired)` for this block.
+    ///
+    /// `lane_expired` is true when this block's blue_score exceeds the parent's
+    /// `lane_blue_score` by more than the finality window — in which case the lane tip
+    /// re-anchors on the parent block's `seq_commit` instead of the previous `lane_tip`.
     fn advance_lane(
         &self,
         parent: &ChainBlockMetadata,
         accepted_transactions: &[(u32, L1Transaction)],
         header: &RpcOptionalHeader,
-    ) -> ([u8; 32], u64) {
+    ) -> ([u8; 32], u64, bool) {
+        let blue_score = header.blue_score.expect("missing blue_score");
+        let lane_expired = blue_score.saturating_sub(parent.lane_blue_score) > self.finality_depth;
+
         // No lane configured or no activity this block -> carry parent state forward unchanged.
         let Some(lane_key) = self.lane_key.as_ref().filter(|_| !accepted_transactions.is_empty())
         else {
-            return (parent.lane_tip, parent.lane_blue_score);
+            return (parent.lane_tip, parent.lane_blue_score, lane_expired);
         };
 
-        // Check whether the lane has gone silent past the finality window and needs to reset.
-        let blue_score = header.blue_score.expect("missing blue_score");
-        let lane_expired = blue_score.saturating_sub(parent.lane_blue_score) > self.finality_depth;
         let parent_ref =
             if lane_expired { parent.seq_commit } else { Hash::from_bytes(parent.lane_tip) };
 
@@ -454,7 +469,7 @@ impl BridgeWorker {
             context_hash: &context_hash,
         });
 
-        (tip.as_bytes(), blue_score)
+        (tip.as_bytes(), blue_score, lane_expired)
     }
 
     /// Rolls back the virtual chain, updates the reorg filter, and emits a `Rollback` event.
