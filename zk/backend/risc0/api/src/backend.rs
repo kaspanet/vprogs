@@ -25,21 +25,78 @@ pub struct Backend {
     transaction_image_id: [u8; 32],
     /// Wrapped ELF binary for batch aggregation proving.
     batch_elf: Vec<u8>,
+    /// Batch processor guest image ID (the settlement guest verifies against this id).
+    batch_image_id: [u8; 32],
+    /// Wrapped ELF binary for settlement proving (optional).
+    settlement_elf: Option<Vec<u8>>,
+    /// Settlement processor guest image ID.
+    settlement_image_id: Option<[u8; 32]>,
 }
 
 impl Backend {
     /// Creates a new backend from raw guest ELF binaries.
     ///
     /// Always wraps the provided ELFs with the trusted v1compat kernel to ensure
-    /// only sanctioned syscalls are available to guest programs.
-    pub fn new(tx_processor_elf: &[u8], batch_elf: &[u8]) -> Self {
+    /// only sanctioned syscalls are available to guest programs. Pass `None` for
+    /// `settlement_elf` when settlement is not needed (e.g. batch-only tests).
+    pub fn new(tx_processor_elf: &[u8], batch_elf: &[u8], settlement_elf: Option<&[u8]>) -> Self {
         let tx_binary = ProgramBinary::new(tx_processor_elf, V1COMPAT_ELF);
-        let image_id = tx_binary.compute_image_id().expect("image id");
+        let tx_image_id = tx_binary.compute_image_id().expect("tx image id");
+
+        let batch_binary = ProgramBinary::new(batch_elf, V1COMPAT_ELF);
+        let batch_image_id = batch_binary.compute_image_id().expect("batch image id");
+
+        let (settlement_elf, settlement_image_id) = match settlement_elf {
+            Some(elf) => {
+                let binary = ProgramBinary::new(elf, V1COMPAT_ELF);
+                let id = binary.compute_image_id().expect("settlement image id");
+                (Some(binary.encode()), Some(id.as_bytes().try_into().unwrap()))
+            }
+            None => (None, None),
+        };
 
         Self(Arc::new(BackendData {
             transaction_elf: tx_binary.encode(),
-            transaction_image_id: image_id.as_bytes().try_into().unwrap(),
-            batch_elf: ProgramBinary::new(batch_elf, V1COMPAT_ELF).encode(),
+            transaction_image_id: tx_image_id.as_bytes().try_into().unwrap(),
+            batch_elf: batch_binary.encode(),
+            batch_image_id: batch_image_id.as_bytes().try_into().unwrap(),
+            settlement_elf,
+            settlement_image_id,
+        }))
+    }
+
+    /// Settlement guest image id, once [`new`](Self::new) was called with a settlement ELF.
+    pub fn settlement_image_id(&self) -> Option<&[u8; 32]> {
+        self.settlement_image_id.as_ref()
+    }
+
+    /// Proves the settlement wrapper over a previously-proven batch receipt.
+    ///
+    /// The returned receipt's journal is the 160-byte settlement preimage consumed on-chain.
+    pub fn prove_settlement(
+        &self,
+        covenant_id: &[u8; 32],
+        batch_receipt: Receipt,
+    ) -> impl Future<Output = Receipt> + Send + 'static {
+        let elf = self.settlement_elf.clone().expect("settlement ELF not configured");
+        let covenant_id = *covenant_id;
+        let batch_image_id = self.batch_image_id;
+        let journal_bytes = batch_receipt.journal.bytes.clone();
+
+        future::ready(PROVER.with(|p| {
+            let mut builder = ExecutorEnv::builder();
+            builder
+                .write_slice(&covenant_id)
+                .write_slice(&batch_image_id)
+                .write_slice(&[journal_bytes.len() as u32])
+                .write_slice(&journal_bytes)
+                .add_assumption(batch_receipt);
+
+            let env = builder.build().expect("failed to build settlement prover environment");
+
+            p.prove_with_opts(env, &elf, &ProverOpts::succinct())
+                .expect("settlement proving failed")
+                .receipt
         }))
     }
 }

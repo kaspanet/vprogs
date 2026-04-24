@@ -7,9 +7,13 @@ use vprogs_zk_abi::{batch_processor::StateTransition, transaction_processor::Bat
 #[test]
 fn batch_metadata_round_trip() {
     let block_hash = [0xAB; 32];
+    let seq_commit = [0xCD; 32];
+    let prev_seq_commit = [0xEF; 32];
     let mut buf = Vec::new();
     let bm = BatchMetadata {
         block_hash: &block_hash,
+        seq_commit: &seq_commit,
+        prev_seq_commit: &prev_seq_commit,
         blue_score: 123_456,
         daa_score: 987_654,
         timestamp: 1_700_000_000_000,
@@ -21,6 +25,8 @@ fn batch_metadata_round_trip() {
     let mut cursor: &[u8] = &buf;
     let decoded = BatchMetadata::decode(&mut cursor).unwrap();
     assert_eq!(decoded.block_hash, &block_hash);
+    assert_eq!(decoded.seq_commit, &seq_commit);
+    assert_eq!(decoded.prev_seq_commit, &prev_seq_commit);
     assert_eq!(decoded.blue_score, bm.blue_score);
     assert_eq!(decoded.daa_score, bm.daa_score);
     assert_eq!(decoded.timestamp, bm.timestamp);
@@ -37,6 +43,8 @@ fn state_transition_success_round_trip() {
     let parent_lane_tip = [0x55; 32];
     let new_lane_tip = [0x66; 32];
     let block_hash = [0x77; 32];
+    let seq_commit = [0x88; 32];
+    let prev_seq_commit = [0x99; 32];
 
     let mut buf = Vec::new();
     let success = vprogs_zk_abi::batch_processor::SuccessInputs {
@@ -47,6 +55,8 @@ fn state_transition_success_round_trip() {
         parent_lane_tip: &parent_lane_tip,
         new_lane_tip,
         block_hash: &block_hash,
+        seq_commit: &seq_commit,
+        prev_seq_commit: &prev_seq_commit,
         blue_score: 42,
         daa_score: 7,
         timestamp: 1_700_000_000,
@@ -63,6 +73,8 @@ fn state_transition_success_round_trip() {
             parent_lane_tip: d_parent_lane_tip,
             new_lane_tip: d_new_lane_tip,
             block_hash: d_block_hash,
+            seq_commit: d_seq_commit,
+            prev_seq_commit: d_prev_seq_commit,
             blue_score,
             daa_score,
             timestamp,
@@ -75,6 +87,8 @@ fn state_transition_success_round_trip() {
             assert_eq!(d_parent_lane_tip, &parent_lane_tip);
             assert_eq!(d_new_lane_tip, new_lane_tip);
             assert_eq!(d_block_hash, &block_hash);
+            assert_eq!(d_seq_commit, &seq_commit);
+            assert_eq!(d_prev_seq_commit, &prev_seq_commit);
             assert_eq!(blue_score, 42);
             assert_eq!(daa_score, 7);
             assert_eq!(timestamp, 1_700_000_000);

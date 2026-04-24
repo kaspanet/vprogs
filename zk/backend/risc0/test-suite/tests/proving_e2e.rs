@@ -28,7 +28,7 @@ async fn batch_proof_two_transactions() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
 
-    let backend = Backend::new(&transaction_elf, &batch_elf);
+    let backend = Backend::new(&transaction_elf, &batch_elf, None);
 
     // Fixed test subnetwork id so the journal's lane_key field is deterministic.
     let lane_key = kaspa_seq_commit::hashing::lane_key(&[0x42; 20]).as_bytes();

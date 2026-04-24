@@ -22,6 +22,9 @@ pub struct ChainBlockMetadata {
     pub lane_key: [u8; 32],
     /// Sequencing commitment carried by this block's header.
     pub seq_commit: Hash,
+    /// Parent block's sequencing commitment (enables settlement chains to bind prev→new
+    /// across successive batches).
+    pub prev_seq_commit: Hash,
     /// Blue score at which the lane was last active. Zero if never active.
     pub lane_blue_score: u64,
     /// Lane tip entering this block.

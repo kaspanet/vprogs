@@ -396,6 +396,7 @@ impl BridgeWorker {
                 daa_score: header.daa_score.expect("missing daa_score"),
                 timestamp: header.timestamp.expect("missing timestamp"),
                 seq_commit: header.accepted_id_merkle_root.expect("missing seq_commit"),
+                prev_seq_commit: parent_meta.seq_commit,
                 lane_key: self.lane_key.as_ref().map_or([0; 32], |k| k.as_bytes()),
                 prev_timestamp: parent_meta.timestamp,
                 prev_lane_tip: parent_meta.lane_tip,

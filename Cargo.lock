@@ -8193,13 +8193,17 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "kaspa-consensus-core",
+ "kaspa-hashes",
+ "kaspa-rpc-core",
  "kaspa-seq-commit",
+ "kaspa-txscript",
  "tempfile",
  "tokio",
  "vprogs-core-smt",
  "vprogs-core-test-utils",
  "vprogs-core-types",
  "vprogs-l1-types",
+ "vprogs-node-test-utils",
  "vprogs-scheduling-scheduler",
  "vprogs-state-version",
  "vprogs-storage-manager",
@@ -8207,6 +8211,7 @@ dependencies = [
  "vprogs-zk-abi",
  "vprogs-zk-backend-risc0-api",
  "vprogs-zk-batch-prover",
+ "vprogs-zk-covenant",
  "vprogs-zk-transaction-prover",
  "vprogs-zk-vm",
 ]
@@ -8224,6 +8229,18 @@ dependencies = [
  "vprogs-storage-types",
  "vprogs-zk-abi",
  "vprogs-zk-transaction-prover",
+]
+
+[[package]]
+name = "vprogs-zk-covenant"
+version = "0.1.0"
+dependencies = [
+ "kaspa-addresses",
+ "kaspa-consensus-core",
+ "kaspa-hashes",
+ "kaspa-txscript",
+ "vprogs-l1-types",
+ "vprogs-zk-abi",
 ]
 
 [[package]]

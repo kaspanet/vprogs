@@ -6,9 +6,10 @@
 # changes recompile in ~30 seconds.
 #
 # Usage:
-#   ./zk/backend/risc0/build-guests.sh                        # build all programs
-#   ./zk/backend/risc0/build-guests.sh transaction-processor   # build only the transaction processor
-#   ./zk/backend/risc0/build-guests.sh batch-processor         # build only the batch processor
+#   ./zk/backend/risc0/build-guests.sh                           # build all programs
+#   ./zk/backend/risc0/build-guests.sh transaction-processor     # build only the transaction processor
+#   ./zk/backend/risc0/build-guests.sh batch-processor           # build only the batch processor
+#   ./zk/backend/risc0/build-guests.sh settlement-processor      # build only the settlement processor
 set -euo pipefail
 
 DOCKER_TAG="r0.1.88.0"
@@ -16,7 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 if [ $# -eq 0 ]; then
-  PROGRAMS=(transaction-processor batch-processor)
+  PROGRAMS=(transaction-processor batch-processor settlement-processor)
 else
   PROGRAMS=("$@")
 fi

@@ -13,8 +13,8 @@ use crate::{Error, Result, Write};
 /// ```text
 /// image_id(32) | prev_root(32) | new_root(32)
 ///   | lane_key(32) | parent_lane_tip(32) | new_lane_tip(32)
-///   | block_hash(32) | blue_score(8) | daa_score(8)
-///   | timestamp(8) | prev_timestamp(8)
+///   | block_hash(32) | seq_commit(32) | prev_seq_commit(32)
+///   | blue_score(8) | daa_score(8) | timestamp(8) | prev_timestamp(8)
 /// ```
 ///
 /// Error payload is the encoded `Error`.
@@ -35,6 +35,10 @@ pub enum StateTransition<'a> {
         new_lane_tip: [u8; 32],
         /// L1 block hash.
         block_hash: &'a [u8; 32],
+        /// This block's sequencing commitment (what on-chain `OpChainblockSeqCommit` returns).
+        seq_commit: &'a [u8; 32],
+        /// Parent block's sequencing commitment - anchors the settlement chain's prev side.
+        prev_seq_commit: &'a [u8; 32],
         /// DAG blue score.
         blue_score: u64,
         /// DAA score.
@@ -64,6 +68,10 @@ pub struct SuccessInputs<'a> {
     pub new_lane_tip: [u8; 32],
     /// L1 block hash.
     pub block_hash: &'a [u8; 32],
+    /// This block's sequencing commitment (what on-chain `OpChainblockSeqCommit` returns).
+    pub seq_commit: &'a [u8; 32],
+    /// Parent block's sequencing commitment - anchors the settlement chain's prev side.
+    pub prev_seq_commit: &'a [u8; 32],
     /// DAG blue score.
     pub blue_score: u64,
     /// DAA score.
@@ -92,6 +100,8 @@ impl<'a> StateTransition<'a> {
                 w.write(s.parent_lane_tip);
                 w.write(&s.new_lane_tip);
                 w.write(s.block_hash);
+                w.write(s.seq_commit);
+                w.write(s.prev_seq_commit);
                 w.write(&s.blue_score.to_le_bytes());
                 w.write(&s.daa_score.to_le_bytes());
                 w.write(&s.timestamp.to_le_bytes());
@@ -119,6 +129,8 @@ impl<'a> StateTransition<'a> {
                 parent_lane_tip: buf.array::<32>("parent_lane_tip")?,
                 new_lane_tip: *buf.array::<32>("new_lane_tip")?,
                 block_hash: buf.array::<32>("block_hash")?,
+                seq_commit: buf.array::<32>("seq_commit")?,
+                prev_seq_commit: buf.array::<32>("prev_seq_commit")?,
                 blue_score: buf.le_u64("blue_score")?,
                 daa_score: buf.le_u64("daa_score")?,
                 timestamp: buf.le_u64("timestamp")?,

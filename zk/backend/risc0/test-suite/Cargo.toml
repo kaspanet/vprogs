@@ -6,7 +6,10 @@ version = "0.1.0"
 [dev-dependencies]
 blake3.workspace                       = true
 kaspa-consensus-core.workspace         = true
+kaspa-hashes.workspace                 = true
+kaspa-rpc-core.workspace               = true
 kaspa-seq-commit.workspace             = true
+kaspa-txscript.workspace               = true
 tempfile.workspace                     = true
 tokio                                  = { workspace = true, features = ["rt-multi-thread"] }
 vprogs-core-smt.workspace              = true
@@ -18,7 +21,9 @@ vprogs-state-version.workspace         = true
 vprogs-storage-manager.workspace       = true
 vprogs-storage-rocksdb-store.workspace = true
 vprogs-zk-abi                          = { workspace = true, features = ["host"] }
+vprogs-node-test-utils.workspace       = true
 vprogs-zk-backend-risc0-api            = { path = "../api", features = ["host"] }
 vprogs-zk-batch-prover                 = { path = "../../../batch-prover" }
+vprogs-zk-covenant                     = { path = "../../../covenant" }
 vprogs-zk-transaction-prover           = { path = "../../../transaction-prover" }
 vprogs-zk-vm                           = { path = "../../../vm" }

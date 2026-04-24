@@ -80,6 +80,8 @@ impl<'a> Inputs<'a> {
         buf.write(&ctx.tx_index().to_le_bytes());
         buf.write(&(ctx.resources().len() as u32).to_le_bytes());
         buf.write(&bm.hash.as_bytes());
+        buf.write(&bm.seq_commit.as_bytes());
+        buf.write(&bm.prev_seq_commit.as_bytes());
         buf.write(&bm.blue_score.to_le_bytes());
         buf.write(&bm.daa_score.to_le_bytes());
         buf.write(&bm.timestamp.to_le_bytes());

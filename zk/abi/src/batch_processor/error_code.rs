@@ -24,6 +24,10 @@ pub enum ErrorCode {
     PrevTimestampMismatch = 9,
     /// Transaction subnetwork differs from the lane this batch binds to.
     SubnetworkMismatch = 10,
+    /// Block sequencing commitment differs from the first transaction in the batch.
+    SeqCommitMismatch = 11,
+    /// Parent block's sequencing commitment differs from the first transaction in the batch.
+    PrevSeqCommitMismatch = 12,
 }
 
 impl From<ErrorCode> for Error {

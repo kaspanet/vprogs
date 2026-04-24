@@ -102,6 +102,8 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
             parent_lane_tip: this.inputs.parent_lane_tip,
             new_lane_tip: new_lane_tip.as_bytes(),
             block_hash: bm.block_hash,
+            seq_commit: bm.seq_commit,
+            prev_seq_commit: bm.prev_seq_commit,
             blue_score: bm.blue_score,
             daa_score: bm.daa_score,
             timestamp: bm.timestamp,
@@ -165,6 +167,12 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
         let expected = *self.batch_metadata.get_or_insert(*metadata);
         if expected.block_hash != metadata.block_hash {
             return Err(Error::from(ErrorCode::BlockHashMismatch));
+        }
+        if expected.seq_commit != metadata.seq_commit {
+            return Err(Error::from(ErrorCode::SeqCommitMismatch));
+        }
+        if expected.prev_seq_commit != metadata.prev_seq_commit {
+            return Err(Error::from(ErrorCode::PrevSeqCommitMismatch));
         }
         if expected.blue_score != metadata.blue_score {
             return Err(Error::from(ErrorCode::BlueScoreMismatch));

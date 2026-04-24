@@ -8,6 +8,7 @@ default-members = [
   "storage/*",
   "transaction-runtime/*",
   "zk/abi",
+  "zk/covenant",
   "zk/transaction-prover",
   "zk/batch-prover",
   "zk/vm",
@@ -17,6 +18,7 @@ default-members = [
 exclude = [
   "zk/backend/risc0/transaction-processor",
   "zk/backend/risc0/batch-processor",
+  "zk/backend/risc0/settlement-processor",
 ]
 members = [
   "core/*",
@@ -27,6 +29,7 @@ members = [
   "storage/*",
   "transaction-runtime/*",
   "zk/abi",
+  "zk/covenant",
   "zk/transaction-prover",
   "zk/batch-prover",
   "zk/vm",
@@ -151,6 +154,7 @@ resolver = "3"
   vprogs-zk-abi                                   = { path = "zk/abi", default-features = false }
   vprogs-zk-backend-risc0-api                     = { path = "zk/backend/risc0/api", default-features = false }
   vprogs-zk-batch-prover                          = { path = "zk/batch-prover" }
+  vprogs-zk-covenant                              = { path = "zk/covenant" }
   vprogs-zk-transaction-prover                    = { path = "zk/transaction-prover" }
   vprogs-zk-vm                                    = { path = "zk/vm" }
 

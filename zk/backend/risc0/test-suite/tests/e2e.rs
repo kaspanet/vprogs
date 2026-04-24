@@ -17,7 +17,7 @@ fn test_zk_scheduler_e2e() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
 
-    let backend = Backend::new(&transaction_elf, &batch_elf);
+    let backend = Backend::new(&transaction_elf, &batch_elf, None);
     let vm = Vm::new(backend, ProvingPipeline::None);
     let mut scheduler = Scheduler::new(
         ExecutionConfig::default().with_processor(vm),

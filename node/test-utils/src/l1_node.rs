@@ -110,6 +110,11 @@ impl L1Node {
         &self.daemon
     }
 
+    /// Returns a reference to the gRPC client for direct RPC calls (block lookup, UTXO queries).
+    pub fn grpc_client(&self) -> &GrpcClient {
+        &self.grpc_client
+    }
+
     /// Returns the wRPC Borsh URL for connecting to this node.
     pub fn wrpc_borsh_url(&self) -> String {
         // Extract the port from the daemon's Borsh listen address.
@@ -247,6 +252,52 @@ impl L1Node {
                 .tx
             })
             .collect()
+    }
+
+    /// Builds a signed transaction whose single output is pay-to-script-hash of `redeem_script`,
+    /// annotated with a genesis covenant binding.
+    ///
+    /// Returns the signed transaction and the covenant id that the consensus validator will
+    /// recompute from the input outpoint + output.
+    pub async fn build_covenant_bootstrap_transaction(
+        &self,
+        redeem_script: &[u8],
+        value: u64,
+    ) -> (Transaction, Hash) {
+        use kaspa_consensus_core::{
+            constants::TX_VERSION_POST_COV_HF, hashing::covenant_id::covenant_id,
+            tx::CovenantBinding,
+        };
+        use kaspa_txscript::standard::pay_to_script_hash_script;
+
+        let utxos = self.fetch_spendable_utxos().await;
+        let (outpoint, entry) = utxos.into_iter().next().expect("no spendable UTXO");
+
+        let covenant_spk = pay_to_script_hash_script(redeem_script);
+        let covenant_id = {
+            let provisional = TransactionOutput::new(value, covenant_spk.clone());
+            covenant_id(outpoint, std::iter::once((0u32, &provisional)))
+        };
+
+        let tx_input = TransactionInput::new(outpoint, Vec::new(), 0, 1);
+        let tx_output = TransactionOutput::with_covenant(
+            value,
+            covenant_spk,
+            Some(CovenantBinding::new(0, covenant_id)),
+        );
+
+        let unsigned = Transaction::new(
+            TX_VERSION_POST_COV_HF,
+            vec![tx_input],
+            vec![tx_output],
+            0,
+            SUBNETWORK_ID_NATIVE,
+            0,
+            Vec::new(),
+        );
+
+        let signed = sign(MutableTransaction::with_entries(unsigned, vec![entry]), self.keypair).tx;
+        (signed, covenant_id)
     }
 
     /// Fetches spendable UTXOs for the miner address, sorted by amount (largest first).
