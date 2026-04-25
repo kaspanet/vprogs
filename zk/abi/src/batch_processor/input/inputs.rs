@@ -10,7 +10,7 @@ use crate::{Result, batch_processor::TransactionJournals};
 /// Wire layout:
 ///
 /// ```text
-/// image_id(32) | covenant_id(32) | prev_seq(32)
+/// image_id(32) | covenant_id(32)
 ///   | parent_seq_commit(32)
 ///   | blue_score(8) | daa_score(8) | parent_timestamp(8)
 ///   | prev_lane_tip(32) | lane_blue_score(8) | lane_expired(1)
@@ -20,15 +20,14 @@ use crate::{Result, batch_processor::TransactionJournals};
 ///   | smt_proof (length-prefixed) | leaf_order | tx_journals
 /// ```
 ///
-/// `new_seq` is no longer an input — the guest derives it from these ingredients via kip21
-/// primitives and commits the result in the 160-byte settlement journal.
+/// The previous-UTXO-state is carried by `prev_lane_tip` alone; the covenant's redeem prefix
+/// embeds the same value so the on-chain P2SH check binds it. `new_lane_tip` and
+/// `new_seq_commit` are guest-derived outputs emitted in the 192-byte settlement journal.
 pub struct Inputs<'a> {
     /// Transaction processor guest image ID used to verify each inner tx journal.
     pub image_id: &'a [u8; 32],
     /// Covenant id the emitted settlement journal binds to.
     pub covenant_id: &'a [u8; 32],
-    /// Sequencing commitment entering the batch (covenant redeem prefix enforces this).
-    pub prev_seq: &'a [u8; 32],
     /// `seq_commit` of this block's immediate DAG selected parent — the `H_seq` chain input
     /// for kip21's `seq_commit = H_seq(parent_seq_commit, state_root)` computation.
     pub parent_seq_commit: &'a [u8; 32],
@@ -66,7 +65,6 @@ impl<'a> Inputs<'a> {
     pub fn decode(mut buf: &'a [u8]) -> Result<Self> {
         let image_id = buf.array::<32>("image_id")?;
         let covenant_id = buf.array::<32>("covenant_id")?;
-        let prev_seq = buf.array::<32>("prev_seq")?;
         let parent_seq_commit = buf.array::<32>("parent_seq_commit")?;
         let blue_score = buf.le_u64("blue_score")?;
         let daa_score = buf.le_u64("daa_score")?;
@@ -99,7 +97,6 @@ impl<'a> Inputs<'a> {
         Ok(Self {
             image_id,
             covenant_id,
-            prev_seq,
             parent_seq_commit,
             blue_score,
             daa_score,
@@ -122,7 +119,6 @@ impl<'a> Inputs<'a> {
     pub fn encode(
         image_id: &[u8; 32],
         covenant_id: &[u8; 32],
-        prev_seq: &[u8; 32],
         parent_seq_commit: &[u8; 32],
         blue_score: u64,
         daa_score: u64,
@@ -139,22 +135,10 @@ impl<'a> Inputs<'a> {
     ) -> Vec<u8> {
         use crate::Write;
 
-        let journals_size: usize = tx_journals.iter().map(|j| 4 + j.len()).sum();
-        let total = 32 * 5                                    // image_id, covenant_id, prev_seq, parent_seq_commit, prev_lane_tip, lane_key
-            + 32                                              // lane_key (counted above as 5; one more 32 for parent_seq_commit → recount below)
-            + 8 * 4                                           // blue_score, daa_score, parent_timestamp, lane_blue_score
-            + 1                                               // lane_expired
-            + 4 + 32 * miner_payload_leaves.len()            // miner_payload_leaves
-            + 4 + lane_smt_proof.len()                       // lane_smt_proof
-            + 4 + proof_bytes.len()                          // smt proof
-            + leaf_order.len() * 4                           // leaf_order
-            + journals_size;
-        let _ = total; // capacity hint is approximate; Vec grows as needed.
         let mut buf = Vec::new();
 
         buf.write(image_id);
         buf.write(covenant_id);
-        buf.write(prev_seq);
         buf.write(parent_seq_commit);
         buf.extend_from_slice(&blue_score.to_le_bytes());
         buf.extend_from_slice(&daa_score.to_le_bytes());

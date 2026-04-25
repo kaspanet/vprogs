@@ -23,9 +23,9 @@ use crate::{
 
 /// Batch processor context - holds all state needed for batch verification.
 ///
-/// Call `process_batch` for the full pipeline (read → verify → derive new_seq → emit 160-byte
-/// journal). The `verify_journal` callback handles backend-specific inner proof verification
-/// (e.g. `env::verify` in risc0).
+/// Call `process_batch` for the full pipeline (read → verify → derive new_seq_commit → emit
+/// 192-byte journal). The `verify_journal` callback handles backend-specific inner proof
+/// verification (e.g. `env::verify` in risc0).
 pub struct Abi<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> {
     /// Decoded batch inputs (image_id, covenant binding, kip21 ingredients, SMT proof, tx
     /// journals).
@@ -50,8 +50,8 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
         StateTransition::encode(journal, &state);
     }
 
-    /// Decodes inputs, verifies all transactions, derives `new_seq` via kip21 primitives, and
-    /// builds the settlement journal.
+    /// Decodes inputs, verifies all transactions, derives `new_lane_tip` + `new_seq_commit`
+    /// via kip21 primitives, and builds the settlement journal.
     fn verify(inputs: &'a [u8], verify_journal: V) -> Result<StateTransition<'a>> {
         let inputs = Inputs::decode(inputs)?;
         let mut this = Self {
@@ -94,28 +94,29 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
         let prev_state = this.inputs.proof.root::<Blake3>()?;
         let new_state = this.inputs.proof.compute_root::<Blake3>(|i| this.latest_hash(i))?;
 
-        // kip21 seq_commit derivation requires per-block ingredients (SMT proof + mergeset
-        // miner-payload leaves) sourced from the extended v2 RPC. Skip when they're absent —
-        // e.g. batch-only tests that don't intend to settle, or bridges configured without
-        // a subnetwork filter. In that case `new_seq` is emitted as zero and the resulting
-        // receipt is not on-chain-settleable.
-        let new_seq = if this.inputs.lane_smt_proof.is_empty() {
+        // kip21 lane tip + seq-commit derivation. `new_lane_tip` is always computable from
+        // the activity digest (chains the L2 UTXO forward), but `new_seq_commit` additionally
+        // needs the per-block SMT proof + mergeset miner-payload leaves sourced from the
+        // extended v2 RPC. Tests that don't settle on-chain (no bridge lane ingredients)
+        // emit `new_seq_commit = 0`; the covenant script would reject such a receipt, which
+        // is the correct behaviour for a non-settleable run.
+        let parent_ref = if this.inputs.lane_expired {
+            Hash::from_bytes(*this.inputs.parent_seq_commit)
+        } else {
+            Hash::from_bytes(*this.inputs.prev_lane_tip)
+        };
+        let lane_key_hash = Hash::from_bytes(*this.inputs.lane_key);
+        let activity_digest = this.activity_builder.finalize();
+        let new_lane_tip = lane_tip_next(&LaneTipInput {
+            parent_ref: &parent_ref,
+            lane_key: &lane_key_hash,
+            activity_digest: &activity_digest,
+            context_hash: &context_hash,
+        });
+
+        let new_seq_commit = if this.inputs.lane_smt_proof.is_empty() {
             Hash::default()
         } else {
-            let parent_ref = if this.inputs.lane_expired {
-                Hash::from_bytes(*this.inputs.parent_seq_commit)
-            } else {
-                Hash::from_bytes(*this.inputs.prev_lane_tip)
-            };
-            let lane_key_hash = Hash::from_bytes(*this.inputs.lane_key);
-            let activity_digest = this.activity_builder.finalize();
-            let new_lane_tip = lane_tip_next(&LaneTipInput {
-                parent_ref: &parent_ref,
-                lane_key: &lane_key_hash,
-                activity_digest: &activity_digest,
-                context_hash: &context_hash,
-            });
-
             // Recompute this block's lanes_root from the host-supplied merkle proof + our
             // computed new leaf. The covenant's final `seq_commit == OpChainblockSeqCommit`
             // check catches any lie about siblings or prev_lane_tip.
@@ -146,10 +147,12 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
 
         Ok(StateTransition {
             prev_state,
-            prev_seq: this.inputs.prev_seq,
+            prev_lane_tip: this.inputs.prev_lane_tip,
             new_state,
-            new_seq: new_seq.as_bytes(),
+            new_lane_tip: new_lane_tip.as_bytes(),
+            new_seq_commit: new_seq_commit.as_bytes(),
             covenant_id: this.inputs.covenant_id,
+            tx_image_id: this.inputs.image_id,
         })
     }
 

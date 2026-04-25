@@ -8,18 +8,17 @@ use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
-use vprogs_zk_abi::batch_processor::StateTransition;
 use vprogs_zk_backend_risc0_api::Backend;
 use vprogs_zk_backend_risc0_test_suite::{batch_processor_elf, transaction_processor_elf};
 use vprogs_zk_batch_prover::Backend as _;
 use vprogs_zk_covenant::{
-    Settlement, SettlementInput, SettlementJournal, SuccinctWitness, build_redeem_script,
+    Settlement, SettlementInput, StateTransition, SuccinctWitness, build_redeem_script,
     redeem_script_len,
 };
 use vprogs_zk_vm::{ProvingPipeline, Vm};
 
 /// Runs a batch proof through the full pipeline and asserts the batch receipt's journal is
-/// exactly the 160-byte settlement preimage the covenant script expects. The batch processor
+/// exactly the 192-byte settlement preimage the covenant script expects. The batch processor
 /// emits the settlement journal directly — no wrapping guest.
 #[tokio::test(flavor = "multi_thread")]
 async fn batch_proof_is_directly_settleable() {
@@ -76,39 +75,45 @@ async fn batch_proof_is_directly_settleable() {
         vprogs_zk_covenant::JOURNAL_SIZE,
     );
 
-    let parsed = SettlementJournal::decode(&journal_bytes)
-        .expect("batch journal must decode as a settlement journal");
+    let parsed = StateTransition::decode(&journal_bytes)
+        .expect("batch journal must decode as a state transition");
     // covenant_id is zero in the non-settling test path (see batch-prover/src/worker.rs).
     assert_eq!(parsed.covenant_id, &[0u8; 32]);
-    assert_eq!(parsed.prev_seq, &[0x99; 32], "prev_seq echoed from metadata");
+    // `prev_lane_tip` defaults to the empty-hash zero value when ChainBlockMetadata doesn't
+    // carry a previous tip (non-settling run).
+    assert_eq!(parsed.prev_lane_tip, &[0u8; 32], "prev_lane_tip echoes metadata's empty default");
     // This test doesn't populate lane_smt_proof/miner_payload_leaves in ChainBlockMetadata,
-    // so the guest's kip21 derivation is skipped and new_seq is emitted as zero. The covenant
-    // would reject this receipt on-chain — which is correct behavior for a non-settling run.
-    assert_eq!(parsed.new_seq, &[0u8; 32], "new_seq is zero when lane ingredients missing");
+    // so the guest's kip21 derivation is skipped and new_seq_commit is emitted as zero. The
+    // covenant would reject this receipt on-chain — which is correct behavior for a
+    // non-settling run.
+    assert_eq!(
+        parsed.new_seq_commit, [0u8; 32],
+        "new_seq_commit is zero when lane ingredients missing"
+    );
 
-    // Cross-check against StateTransition's typed view - same bytes, structured decode.
-    let st = StateTransition::decode(&journal_bytes).expect("StateTransition decodes");
-    assert_eq!(st.prev_state, *parsed.prev_state);
-    assert_eq!(st.new_state, *parsed.new_state);
-    assert_eq!(st.prev_seq, parsed.prev_seq);
-    assert_eq!(&st.new_seq, parsed.new_seq);
-
-    // Build the host-side settlement transaction against the real batch image id.
+    // Build the host-side settlement transaction against the real batch + tx image ids.
     let program_id = *backend.batch_image_id();
+    let tx_image_id = *backend.transaction_image_id();
+    assert_eq!(
+        parsed.tx_image_id, &tx_image_id,
+        "guest must echo the host-supplied tx image id into the journal",
+    );
     let covenant_id_hash = Hash::from_bytes(*parsed.covenant_id);
     let settlement = Settlement::build(&SettlementInput {
         covenant_id: covenant_id_hash,
         program_id: &program_id,
-        prev_state: parsed.prev_state,
-        prev_seq: parsed.prev_seq,
-        new_state: parsed.new_state,
-        new_seq: parsed.new_seq,
+        tx_image_id: &tx_image_id,
+        prev_state: &parsed.prev_state,
+        prev_lane_tip: parsed.prev_lane_tip,
+        new_state: &parsed.new_state,
+        new_lane_tip: &parsed.new_lane_tip,
         block_prove_to: Hash::from_bytes([0xAB; 32]),
         prev_outpoint: TransactionOutpoint::new(Hash::from_bytes([0xCD; 32]), 0),
         value: 100_000_000,
         witness: SuccinctWitness {
             seal: &[0u8; 8],
             claim: &[0u8; 32],
+            control_id: &[0u8; 32],
             hashfn: 0,
             control_index: 0,
             control_digests: &[],
@@ -126,12 +131,14 @@ async fn batch_proof_is_directly_settleable() {
         Some(CovenantBinding::new(0, covenant_id_hash)),
     );
 
-    let expected_len = redeem_script_len(parsed.prev_state, &program_id, ZkTag::R0Succinct);
+    let expected_len =
+        redeem_script_len(&parsed.prev_state, &program_id, &tx_image_id, ZkTag::R0Succinct);
     let expected_prev_redeem = build_redeem_script(
-        parsed.prev_state,
-        parsed.prev_seq,
+        &parsed.prev_state,
+        parsed.prev_lane_tip,
         expected_len,
         &program_id,
+        &tx_image_id,
         ZkTag::R0Succinct,
     );
     assert_eq!(settlement.prev_redeem, expected_prev_redeem);

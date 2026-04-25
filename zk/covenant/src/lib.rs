@@ -6,16 +6,21 @@
 //! to the proven block's sequencing commitment.
 //!
 //! This crate provides:
-//! - [`journal`]: the 160-byte settlement journal format expected by the covenant script.
 //! - [`script`]: the P2SH redeem script builder.
 //! - [`settlement`]: the host-side Kaspa transaction builder.
+//!
+//! The 192-byte settlement journal format is defined once in [`vprogs_zk_abi::batch_processor`]
+//! as [`StateTransition`] — re-exported here so host-side callers can decode it without adding
+//! a direct dependency on the abi crate.
 
 pub mod bootstrap;
-pub mod journal;
 pub mod script;
 pub mod settlement;
 
 pub use bootstrap::{Bootstrap, BootstrapInput};
-pub use journal::{JOURNAL_SIZE, SettlementJournal};
 pub use script::{REDEEM_PREFIX_LEN, build_redeem_script, redeem_script_len};
 pub use settlement::{Settlement, SettlementInput, SuccinctWitness};
+pub use vprogs_zk_abi::batch_processor::StateTransition;
+
+/// Byte length of the settlement journal committed by the batch guest.
+pub const JOURNAL_SIZE: usize = StateTransition::SIZE;

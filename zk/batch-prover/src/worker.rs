@@ -105,13 +105,7 @@ where
         // (batch-only tests, bridge-only runs that don't produce an on-chain settlement).
         let covenant_id = [0u8; 32];
 
-        // `prev_seq` binds to the previous *settlement*'s `new_seq`, enforced by the covenant's
-        // redeem prefix. In the single-block-per-batch model where every batch settles one
-        // block, the previous active block is always this block's immediate selected parent,
-        // so `prev_seq == parent_seq_commit`. Diverge these once the bridge tracks per-lane
-        // "previous active block's seq_commit" separately to support silent-block skipping.
         let parent_seq_commit = m.prev_seq_commit.as_bytes();
-        let prev_seq = parent_seq_commit;
 
         let miner_payload_leaves: Vec<[u8; 32]> =
             m.miner_payload_leaves.iter().map(|h| h.as_bytes()).collect();
@@ -119,7 +113,6 @@ where
         BatchInputs::encode(
             self.backend.image_id(),
             &covenant_id,
-            &prev_seq,
             &parent_seq_commit,
             m.blue_score,
             m.daa_score,

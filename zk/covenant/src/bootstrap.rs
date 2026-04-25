@@ -19,12 +19,15 @@ use crate::script::{build_redeem_script, redeem_script_len};
 
 /// Inputs describing an initial covenant UTXO bootstrap.
 pub struct BootstrapInput<'a> {
-    /// Transaction processor guest image id the covenant pins against.
+    /// Batch processor guest image id the covenant pins against (the proof verifier).
     pub program_id: &'a [u8; 32],
+    /// Transaction processor guest image id hardcoded into the redeem script (binds the
+    /// inner-proof verifier identity into the journal preimage).
+    pub tx_image_id: &'a [u8; 32],
     /// Initial L2 state root (typically `EMPTY_HASH`).
     pub initial_state: &'a [u8; 32],
-    /// Initial lane tip (typically zero).
-    pub initial_seq: &'a [u8; 32],
+    /// Initial lane tip embedded in the genesis covenant UTXO's redeem prefix (typically zero).
+    pub initial_lane_tip: &'a [u8; 32],
     /// Funding outpoint supplying the covenant UTXO's value.
     pub funding_outpoint: TransactionOutpoint,
     /// Amount to lock into the covenant UTXO (must be funded by the input).
@@ -44,13 +47,18 @@ pub struct Bootstrap {
 impl Bootstrap {
     /// Builds the bootstrap transaction.
     pub fn build(input: &BootstrapInput<'_>) -> Self {
-        let redeem_len =
-            redeem_script_len(input.initial_state, input.program_id, ZkTag::R0Succinct);
+        let redeem_len = redeem_script_len(
+            input.initial_state,
+            input.program_id,
+            input.tx_image_id,
+            ZkTag::R0Succinct,
+        );
         let initial_redeem = build_redeem_script(
             input.initial_state,
-            input.initial_seq,
+            input.initial_lane_tip,
             redeem_len,
             input.program_id,
+            input.tx_image_id,
             ZkTag::R0Succinct,
         );
 

@@ -38,15 +38,18 @@ async fn covenant_bootstrap_is_accepted_on_simnet() {
     let batch_elf = batch_processor_elf();
     let backend = vprogs_zk_backend_risc0_api::Backend::new(&tx_elf, &batch_elf);
     let program_id = *backend.batch_image_id();
+    let tx_image_id = *backend.transaction_image_id();
 
     let initial_state = EMPTY_HASH;
-    let initial_seq = [0u8; 32];
-    let redeem_len = redeem_script_len(&initial_state, &program_id, ZkTag::R0Succinct);
+    let initial_lane_tip = [0u8; 32];
+    let redeem_len =
+        redeem_script_len(&initial_state, &program_id, &tx_image_id, ZkTag::R0Succinct);
     let redeem = build_redeem_script(
         &initial_state,
-        &initial_seq,
+        &initial_lane_tip,
         redeem_len,
         &program_id,
+        &tx_image_id,
         ZkTag::R0Succinct,
     );
     let expected_spk = pay_to_script_hash_script(&redeem);

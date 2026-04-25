@@ -49,9 +49,17 @@ impl Backend {
         }))
     }
 
-    /// Batch-processor guest image id. This is what the covenant script pins against.
+    /// Batch-processor guest image id. This is what the covenant script pins against as
+    /// `program_id` (the proof verifier).
     pub fn batch_image_id(&self) -> &[u8; 32] {
         &self.batch_image_id
+    }
+
+    /// Transaction-processor guest image id. The covenant hardcodes this in its redeem script
+    /// so the journal hash binds it — preventing the host from swapping in a backdoored
+    /// inner verifier.
+    pub fn transaction_image_id(&self) -> &[u8; 32] {
+        &self.transaction_image_id
     }
 }
 
