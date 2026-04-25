@@ -90,21 +90,21 @@ resolver = "3"
   ] }
 
   # Kaspa dependencies
-  kaspa-addresses           = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
-  kaspa-consensus-core      = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
-  kaspa-core                = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
-  kaspa-grpc-client         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
-  kaspa-hashes              = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2", default-features = false }
-  kaspa-merkle              = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
-  kaspa-notify              = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
-  kaspa-rpc-core            = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
-  kaspa-seq-commit          = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2", default-features = false }
-  kaspa-smt                 = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2", default-features = false }
-  kaspa-testing-integration = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
-  kaspa-txscript            = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
-  kaspa-wrpc-client         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
-  kaspa-wrpc-server         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
-  kaspad                    = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
+  kaspa-addresses           = { git = "https://github.com/hmoog/rusty-kaspa", branch = "lane-data-in-v2-response" }
+  kaspa-consensus-core      = { git = "https://github.com/hmoog/rusty-kaspa", branch = "lane-data-in-v2-response" }
+  kaspa-core                = { git = "https://github.com/hmoog/rusty-kaspa", branch = "lane-data-in-v2-response" }
+  kaspa-grpc-client         = { git = "https://github.com/hmoog/rusty-kaspa", branch = "lane-data-in-v2-response" }
+  kaspa-hashes              = { git = "https://github.com/hmoog/rusty-kaspa", branch = "lane-data-in-v2-response", default-features = false }
+  kaspa-merkle              = { git = "https://github.com/hmoog/rusty-kaspa", branch = "lane-data-in-v2-response" }
+  kaspa-notify              = { git = "https://github.com/hmoog/rusty-kaspa", branch = "lane-data-in-v2-response" }
+  kaspa-rpc-core            = { git = "https://github.com/hmoog/rusty-kaspa", branch = "lane-data-in-v2-response" }
+  kaspa-seq-commit          = { git = "https://github.com/hmoog/rusty-kaspa", branch = "lane-data-in-v2-response", default-features = false }
+  kaspa-smt                 = { git = "https://github.com/hmoog/rusty-kaspa", branch = "lane-data-in-v2-response", default-features = false }
+  kaspa-testing-integration = { git = "https://github.com/hmoog/rusty-kaspa", branch = "lane-data-in-v2-response" }
+  kaspa-txscript            = { git = "https://github.com/hmoog/rusty-kaspa", branch = "lane-data-in-v2-response" }
+  kaspa-wrpc-client         = { git = "https://github.com/hmoog/rusty-kaspa", branch = "lane-data-in-v2-response" }
+  kaspa-wrpc-server         = { git = "https://github.com/hmoog/rusty-kaspa", branch = "lane-data-in-v2-response" }
+  kaspad                    = { git = "https://github.com/hmoog/rusty-kaspa", branch = "lane-data-in-v2-response" }
 
   # Internal dependencies
   vprogs-core-atomics                             = { path = "core/atomics" }
@@ -159,22 +159,3 @@ resolver = "3"
 
 [patch.crates-io]
 serde_nested_with = { git = "https://github.com/murar8/serde_nested_with", tag = "0.2.6" }
-
-# Redirect kaspa deps to the local fork while we iterate on the lane_data v2 extension.
-# Switch back to the git dep declarations above once the PR lands upstream.
-[patch."https://github.com/kaspanet/rusty-kaspa"]
-kaspa-addresses           = { path = "../rusty-kaspa-covpp-reset2/crypto/addresses" }
-kaspa-consensus-core      = { path = "../rusty-kaspa-covpp-reset2/consensus/core" }
-kaspa-core                = { path = "../rusty-kaspa-covpp-reset2/core" }
-kaspa-grpc-client         = { path = "../rusty-kaspa-covpp-reset2/rpc/grpc/client" }
-kaspa-hashes              = { path = "../rusty-kaspa-covpp-reset2/crypto/hashes" }
-kaspa-merkle              = { path = "../rusty-kaspa-covpp-reset2/crypto/merkle" }
-kaspa-notify              = { path = "../rusty-kaspa-covpp-reset2/notify" }
-kaspa-rpc-core            = { path = "../rusty-kaspa-covpp-reset2/rpc/core" }
-kaspa-seq-commit          = { path = "../rusty-kaspa-covpp-reset2/consensus/seq-commit" }
-kaspa-smt                 = { path = "../rusty-kaspa-covpp-reset2/crypto/smt" }
-kaspa-testing-integration = { path = "../rusty-kaspa-covpp-reset2/testing/integration" }
-kaspa-txscript            = { path = "../rusty-kaspa-covpp-reset2/crypto/txscript" }
-kaspa-wrpc-client         = { path = "../rusty-kaspa-covpp-reset2/rpc/wrpc/client" }
-kaspa-wrpc-server         = { path = "../rusty-kaspa-covpp-reset2/rpc/wrpc/server" }
-kaspad                    = { path = "../rusty-kaspa-covpp-reset2/kaspad" }

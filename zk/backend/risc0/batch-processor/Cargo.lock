@@ -819,7 +819,7 @@ dependencies = [
 [[package]]
 name = "kaspa-hashes"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
+source = "git+https://github.com/hmoog/rusty-kaspa?branch=lane-data-in-v2-response#27720c572bb5ec1fb8f7b79802b52d2bffecef70"
 dependencies = [
  "blake2b_simd",
  "blake3",
@@ -838,7 +838,7 @@ dependencies = [
 [[package]]
 name = "kaspa-merkle"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
+source = "git+https://github.com/hmoog/rusty-kaspa?branch=lane-data-in-v2-response#27720c572bb5ec1fb8f7b79802b52d2bffecef70"
 dependencies = [
  "kaspa-hashes",
 ]
@@ -846,7 +846,7 @@ dependencies = [
 [[package]]
 name = "kaspa-seq-commit"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
+source = "git+https://github.com/hmoog/rusty-kaspa?branch=lane-data-in-v2-response#27720c572bb5ec1fb8f7b79802b52d2bffecef70"
 dependencies = [
  "kaspa-hashes",
  "kaspa-merkle",
@@ -857,7 +857,7 @@ dependencies = [
 [[package]]
 name = "kaspa-smt"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
+source = "git+https://github.com/hmoog/rusty-kaspa?branch=lane-data-in-v2-response#27720c572bb5ec1fb8f7b79802b52d2bffecef70"
 dependencies = [
  "blake3",
  "kaspa-hashes",
@@ -868,7 +868,7 @@ dependencies = [
 [[package]]
 name = "kaspa-utils"
 version = "1.1.0"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#fd6b386aa41e591c0d00e639e5f66ec00274fa24"
+source = "git+https://github.com/hmoog/rusty-kaspa?branch=lane-data-in-v2-response#27720c572bb5ec1fb8f7b79802b52d2bffecef70"
 dependencies = [
  "async-channel",
  "borsh",
