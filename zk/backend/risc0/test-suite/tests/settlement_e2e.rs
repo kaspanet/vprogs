@@ -18,7 +18,7 @@ use vprogs_zk_covenant::{
 use vprogs_zk_vm::{ProvingPipeline, Vm};
 
 /// Runs a batch proof through the full pipeline and asserts the batch receipt's journal is
-/// exactly the 192-byte settlement preimage the covenant script expects. The batch processor
+/// exactly the 224-byte settlement preimage the covenant script expects. The batch processor
 /// emits the settlement journal directly — no wrapping guest.
 #[tokio::test(flavor = "multi_thread")]
 async fn batch_proof_is_directly_settleable() {

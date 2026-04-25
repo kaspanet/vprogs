@@ -7,7 +7,7 @@
 //! `(new_state, new_lane_tip)` pair the covenant script reconstructs into the next redeem
 //! prefix.
 //!
-//! The ZK receipt supplied here must have committed the 192-byte settlement journal defined
+//! The ZK receipt supplied here must have committed the 224-byte settlement journal defined
 //! by `StateTransition` in [`vprogs_zk_abi::batch_processor`]; this builder does not recompute
 //! or verify it.
 

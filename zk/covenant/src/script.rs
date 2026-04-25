@@ -5,7 +5,9 @@
 //! 1. **State continuation**: the single covenant output's SPK is a P2SH of this script rebuilt
 //!    with the advanced `(new_state, new_lane_tip)` pair pushed as the prefix.
 //! 2. **Journal binding**: the ZK proof's committed journal hashes to `sha256(prev_state ||
-//!    prev_lane_tip || new_state || new_lane_tip || new_seq_commit || covenant_id)`.
+//!    prev_lane_tip || new_state || new_lane_tip || new_seq_commit || covenant_id || tx_image_id)`.
+//!    The `tx_image_id` is hardcoded into the script body, so the binding pins which
+//!    transaction-processor guest the batch's inner-proof verifications were checked against.
 //! 3. **Seq commitment freshness**: the journal's `new_seq_commit` equals
 //!    `OpChainblockSeqCommit(block_prove_to)` pushed at spend time, which itself is derived by the
 //!    guest from `new_lane_tip` via kip21 — so the chain of UTXO-locked `lane_tip` values is
