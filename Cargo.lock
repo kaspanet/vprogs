@@ -8184,6 +8184,7 @@ dependencies = [
  "vprogs-core-macros",
  "vprogs-zk-abi",
  "vprogs-zk-batch-prover",
+ "vprogs-zk-covenant",
  "vprogs-zk-transaction-prover",
  "vprogs-zk-vm",
 ]
