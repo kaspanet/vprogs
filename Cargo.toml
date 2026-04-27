@@ -89,22 +89,25 @@ resolver = "3"
     "bytecheck",
   ] }
 
-  # Kaspa dependencies
-  kaspa-addresses           = { git = "https://github.com/hmoog/rusty-kaspa", branch = "lane-data-in-v2-response" }
-  kaspa-consensus-core      = { git = "https://github.com/hmoog/rusty-kaspa", branch = "lane-data-in-v2-response" }
-  kaspa-core                = { git = "https://github.com/hmoog/rusty-kaspa", branch = "lane-data-in-v2-response" }
-  kaspa-grpc-client         = { git = "https://github.com/hmoog/rusty-kaspa", branch = "lane-data-in-v2-response" }
-  kaspa-hashes              = { git = "https://github.com/hmoog/rusty-kaspa", branch = "lane-data-in-v2-response", default-features = false }
-  kaspa-merkle              = { git = "https://github.com/hmoog/rusty-kaspa", branch = "lane-data-in-v2-response" }
-  kaspa-notify              = { git = "https://github.com/hmoog/rusty-kaspa", branch = "lane-data-in-v2-response" }
-  kaspa-rpc-core            = { git = "https://github.com/hmoog/rusty-kaspa", branch = "lane-data-in-v2-response" }
-  kaspa-seq-commit          = { git = "https://github.com/hmoog/rusty-kaspa", branch = "lane-data-in-v2-response", default-features = false }
-  kaspa-smt                 = { git = "https://github.com/hmoog/rusty-kaspa", branch = "lane-data-in-v2-response", default-features = false }
-  kaspa-testing-integration = { git = "https://github.com/hmoog/rusty-kaspa", branch = "lane-data-in-v2-response" }
-  kaspa-txscript            = { git = "https://github.com/hmoog/rusty-kaspa", branch = "lane-data-in-v2-response" }
-  kaspa-wrpc-client         = { git = "https://github.com/hmoog/rusty-kaspa", branch = "lane-data-in-v2-response" }
-  kaspa-wrpc-server         = { git = "https://github.com/hmoog/rusty-kaspa", branch = "lane-data-in-v2-response" }
-  kaspad                    = { git = "https://github.com/hmoog/rusty-kaspa", branch = "lane-data-in-v2-response" }
+  # Kaspa dependencies — biryukovmaxim's branch carries PR #961 (the
+  # `get_seq_commit_lane_proof` RPC) which we use for on-demand settlement-context
+  # fetch. Replaces the previous `hmoog/rusty-kaspa#lane-data-in-v2-response` fork
+  # whose per-block lane_data extension is no longer needed under bundling.
+  kaspa-addresses           = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof" }
+  kaspa-consensus-core      = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof" }
+  kaspa-core                = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof" }
+  kaspa-grpc-client         = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof" }
+  kaspa-hashes              = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof", default-features = false }
+  kaspa-merkle              = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof" }
+  kaspa-notify              = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof" }
+  kaspa-rpc-core            = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof" }
+  kaspa-seq-commit          = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof", default-features = false }
+  kaspa-smt                 = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof", default-features = false }
+  kaspa-testing-integration = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof" }
+  kaspa-txscript            = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof" }
+  kaspa-wrpc-client         = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof" }
+  kaspa-wrpc-server         = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof" }
+  kaspad                    = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof" }
 
   # Internal dependencies
   vprogs-core-atomics                             = { path = "core/atomics" }

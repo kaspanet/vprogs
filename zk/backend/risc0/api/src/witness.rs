@@ -50,12 +50,8 @@ impl OwnedSuccinctWitness {
             other => panic!("unsupported risc0 hashfn for kaspa precompile: {other:?}"),
         };
         let control_index = s.control_inclusion_proof.index;
-        let control_digests = s
-            .control_inclusion_proof
-            .digests
-            .iter()
-            .flat_map(|d| <[u8; 32]>::from(*d))
-            .collect();
+        let control_digests =
+            s.control_inclusion_proof.digests.iter().flat_map(|d| <[u8; 32]>::from(*d)).collect();
 
         Self { seal, claim, control_id, hashfn, control_index, control_digests }
     }

@@ -311,7 +311,7 @@ impl BridgeWorker {
         // Fetch with Full verbosity so backfilled entries carry complete header fields.
         let response = self
             .client
-            .get_virtual_chain_from_block_v2(start.metadata().hash, Some(Full), None, None)
+            .get_virtual_chain_from_block_v2(start.metadata().hash, Some(Full), None)
             .await?;
 
         // Advance the chain until the target.
@@ -354,7 +354,6 @@ impl BridgeWorker {
                 self.virtual_chain.tip().metadata().hash,
                 Some(Full),
                 self.reorg_filter.threshold(),
-                self.lane_key,
             )
             .await?;
 
@@ -391,13 +390,11 @@ impl BridgeWorker {
             let (lane_tip, lane_blue_score, lane_expired) =
                 self.advance_lane(&parent_meta, &accepted_transactions, header);
 
-            // Carry the per-block kip21 bundle through — empty when the RPC response omitted
-            // it (e.g. configured without a subnetwork filter, pre-activation blocks).
-            let (miner_payload_leaves, lane_smt_proof) = match chain_block.lane_data.as_ref() {
-                Some(d) => (d.miner_payload_leaves.clone(), d.lane_proof.clone()),
-                None => (Vec::new(), Vec::new()),
-            };
-
+            // Settlement-only fields (`lane_smt_proof`, `payload_and_ctx_digest`, the
+            // final-block kip21 `parent_seq_commit`) are no longer carried per block — they
+            // get fetched on demand at bundle boundary via `get_seq_commit_lane_proof`.
+            // The per-block `prev_seq_commit` here is the chain parent's seq_commit, kept
+            // because the guest's lane_expired re-anchor path needs it per section.
             let checkpoint = self.virtual_chain.advance_tip(ChainBlockMetadata {
                 hash: header.hash.expect("missing hash"),
                 blue_score: header.blue_score.expect("missing blue_score"),
@@ -411,8 +408,6 @@ impl BridgeWorker {
                 lane_blue_score,
                 lane_tip,
                 lane_expired,
-                miner_payload_leaves,
-                lane_smt_proof,
             });
 
             self.push_event(L1Event::ChainBlockAdded {

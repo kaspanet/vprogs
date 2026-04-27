@@ -214,7 +214,8 @@ impl L1Node {
 
     /// Builds signed transactions carrying `payloads` and tagged with the given KIP-21 user-lane
     /// `subnetwork_id` and `tx_version`. Used by tests that need lane activity (e.g. settlement
-    /// E2E with our rollup lane). For native subnetwork, prefer [`Self::build_payload_transactions`].
+    /// E2E with our rollup lane). For native subnetwork, prefer
+    /// [`Self::build_payload_transactions`].
     ///
     /// `subnetwork_id` must satisfy KIP-21's user-lane shape `[4-byte namespace, 16 zero bytes]`,
     /// and `tx_version` must be `>= TX_VERSION_POST_COV_HF` for non-native subnetworks.
@@ -269,7 +270,6 @@ impl L1Node {
             .collect()
     }
 
-
     /// Finalizes a settlement transaction by funding it (via a mature spendable UTXO) and
     /// signing only the fee input, leaving the covenant input's witness intact.
     ///
@@ -282,9 +282,8 @@ impl L1Node {
     /// 3. Signs the resulting tx with the test keypair (this transiently clobbers input 0's
     ///    `signature_script` but we restore it from a snapshot taken before signing)
     /// 4. Sets input 0's mass to a generous `ComputeBudget` so consensus' compute-budget rule
-    ///    accepts the precompile-laden redeem script. R0Succinct alone costs ~250000 grams
-    ///    (≈ 2500 compute-budget units); we set 10000 to leave headroom for the surrounding
-    ///    script ops.
+    ///    accepts the precompile-laden redeem script. R0Succinct alone costs ~250000 grams (≈ 2500
+    ///    compute-budget units); we set 10000 to leave headroom for the surrounding script ops.
     /// 5. Submits via gRPC, returns the tx hash.
     ///
     /// Caveat: the actual fee/mass calculation is approximate. If mempool rejects, increase
@@ -303,7 +302,8 @@ impl L1Node {
 
         // Pick a fee input.
         let utxos = self.fetch_spendable_utxos().await;
-        let (fee_outpoint, fee_entry) = utxos.into_iter().next().expect("no spendable UTXO for fee");
+        let (fee_outpoint, fee_entry) =
+            utxos.into_iter().next().expect("no spendable UTXO for fee");
         assert!(fee_entry.amount > FEE, "fee UTXO amount {} ≤ fee {FEE}", fee_entry.amount);
 
         // Assemble the funded tx.

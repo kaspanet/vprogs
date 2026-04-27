@@ -3,19 +3,22 @@ edition = "2021"
 name    = "vprogs-zk-backend-risc0-test-suite"
 version = "0.1.0"
 
+[dependencies]
+kaspa-consensus-core.workspace = true
+kaspa-hashes.workspace         = true
+kaspa-seq-commit.workspace     = true
+vprogs-l1-types.workspace      = true
+
 [dev-dependencies]
 blake3.workspace                       = true
-kaspa-consensus-core.workspace         = true
-kaspa-hashes.workspace                 = true
+kaspa-grpc-client.workspace            = true
 kaspa-rpc-core.workspace               = true
-kaspa-seq-commit.workspace             = true
 kaspa-txscript.workspace               = true
 tempfile.workspace                     = true
 tokio                                  = { workspace = true, features = ["rt-multi-thread"] }
 vprogs-core-smt.workspace              = true
 vprogs-core-test-utils.workspace       = true
 vprogs-core-types.workspace            = true
-vprogs-l1-types.workspace              = true
 vprogs-node-test-utils.workspace       = true
 vprogs-scheduling-scheduler.workspace  = true
 vprogs-state-version.workspace         = true

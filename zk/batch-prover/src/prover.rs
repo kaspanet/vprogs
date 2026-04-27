@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use kaspa_grpc_client::GrpcClient;
 use tap::Tap;
 use vprogs_core_atomics::{AsyncQueue, AtomicAsyncLatch};
 use vprogs_core_macros::smart_pointer;
@@ -7,9 +8,10 @@ use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
 
-use crate::{Backend, command::Command, worker::Worker};
+use crate::{Backend, BatchProverConfig, command::Command, worker::Worker};
 
-/// Batch prover that assembles batch witnesses and dispatches proofs to a background worker.
+/// Batch prover that assembles bundle witnesses from N consecutive batches and dispatches
+/// proofs to a background worker.
 #[smart_pointer]
 pub struct BatchProver<S: Store, P: Processor<S>> {
     /// Commands awaiting processing by the worker.
@@ -20,7 +22,16 @@ pub struct BatchProver<S: Store, P: Processor<S>> {
 
 impl<S: Store, P: Processor<S>> BatchProver<S, P> {
     /// Creates a new batch prover and spawns its worker thread.
-    pub fn new<B: Backend>(backend: B, store: S) -> Self
+    ///
+    /// `grpc_client` is used by the worker to fetch settlement context from the kaspa node
+    /// (via `get_seq_commit_lane_proof`) once per bundle. `config.bundle_size` controls how
+    /// many batches are bundled per proof.
+    pub fn new<B: Backend>(
+        backend: B,
+        store: S,
+        grpc_client: GrpcClient,
+        config: BatchProverConfig,
+    ) -> Self
     where
         P: Processor<
                 S,
@@ -33,7 +44,7 @@ impl<S: Store, P: Processor<S>> BatchProver<S, P> {
             inbox: AsyncQueue::new(),
             shutdown: AtomicAsyncLatch::new(),
         }))
-        .tap(|p| Worker::spawn(p.clone(), backend, store))
+        .tap(|p| Worker::spawn(p.clone(), backend, store, grpc_client, config))
     }
 
     /// Enqueues a batch for proving.

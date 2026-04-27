@@ -4,6 +4,17 @@ use crate::Hash;
 
 /// Per-block metadata the bridge attaches to each L1 chain block.
 ///
+/// Carries only per-block context — fields that the batch prover needs once per chain block
+/// (for `lane_tip_next`, `mergeset_context_hash`, the lane_expired re-anchor path, and
+/// tx-receipt cross-checks). Settlement-only inputs (`payload_and_ctx_digest`,
+/// `lane_smt_proof`, and the *final-block* `parent_seq_commit` used in the kip21 seq_commit
+/// derivation) are fetched on demand at bundle boundary via `get_seq_commit_lane_proof`.
+///
+/// Note that `prev_seq_commit` here is the chain *parent's* `seq_commit` for *this* block —
+/// per-block info used by the guest's lane_expired re-anchor (`parent_ref =
+/// parent_seq_commit`). It is unrelated to the settlement-context `parent_seq_commit` (which
+/// is the bundle's final block's chain parent seq_commit, used once for kip21).
+///
 /// Satisfies the [`BatchMetadata`](vprogs_core_types::BatchMetadata) blanket impl via its derived
 /// traits.
 #[derive(Clone, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
@@ -22,8 +33,8 @@ pub struct ChainBlockMetadata {
     pub lane_key: [u8; 32],
     /// Sequencing commitment carried by this block's header.
     pub seq_commit: Hash,
-    /// Parent block's sequencing commitment (enables settlement chains to bind prev→new
-    /// across successive batches).
+    /// Chain parent's `seq_commit` — feeds the guest's lane_expired re-anchor when this
+    /// block's section has `lane_expired = true`.
     pub prev_seq_commit: Hash,
     /// Blue score at which the lane was last active. Zero if never active.
     pub lane_blue_score: u64,
@@ -32,13 +43,7 @@ pub struct ChainBlockMetadata {
     /// Lane tip after applying this block's accepted txs.
     pub lane_tip: [u8; 32],
     /// True when the lane was silent past the finality window at this block and the next
-    /// activity re-anchors on `prev_seq_commit` instead of `prev_lane_tip` (kip21 §5.1).
+    /// activity re-anchors on the parent block's `seq_commit` instead of `prev_lane_tip`
+    /// (kip21 §5.1).
     pub lane_expired: bool,
-    /// `miner_payload_leaf(merged_block_hash, blue_work, coinbase_payload)` for every block
-    /// in this chain block's mergeset. Populated from the kaspa v2 RPC `lane_data` bundle;
-    /// empty when no lane was queried.
-    pub miner_payload_leaves: Vec<Hash>,
-    /// Serialized `kaspa_smt::proof::OwnedSmtProof` for the bridge's `lane_key` position in
-    /// this block's `lanes_root`. Empty when no lane was queried.
-    pub lane_smt_proof: Vec<u8>,
 }
