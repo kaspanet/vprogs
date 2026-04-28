@@ -67,9 +67,10 @@ impl<'a> Inputs<'a> {
 
     /// Encodes a bundle input to bytes (host-side).
     ///
-    /// `sections` carries one entry per batch; each entry is the per-section context plus
-    /// its translation table and tx journals. `settlement` is fetched once per bundle from
-    /// the kaspa node's `get_seq_commit_lane_proof` against the final section's block.
+    /// Takes per-section data via [`BatchContext`] which references each section's
+    /// `ChainBlockMetadata` directly along with its translation table and tx journals — no
+    /// intermediate field-by-field copy. `settlement_*` come pre-formed from the kaspa
+    /// node's `get_seq_commit_lane_proof` against the bundle's final block.
     #[cfg(feature = "host")]
     #[allow(clippy::too_many_arguments)]
     pub fn encode(
@@ -78,8 +79,10 @@ impl<'a> Inputs<'a> {
         lane_key: &[u8; 32],
         proof_bytes: &[u8],
         leaf_order: &[u32],
-        sections: &[EncodedBatchSection<'_>],
-        settlement: &EncodedSettlementContext<'_>,
+        sections: &[BatchContext<'_>],
+        settlement_payload_and_ctx_digest: &[u8; 32],
+        settlement_parent_seq_commit: &[u8; 32],
+        settlement_lane_smt_proof: &[u8],
     ) -> Vec<u8> {
         let mut buf = Vec::new();
 
@@ -97,15 +100,16 @@ impl<'a> Inputs<'a> {
 
         buf.extend_from_slice(&(sections.len() as u32).to_le_bytes());
         for section in sections {
+            let m = section.metadata;
             BatchSection::encode(
                 &mut buf,
-                section.blue_score,
-                section.daa_score,
-                section.parent_timestamp,
-                section.prev_lane_tip,
-                section.lane_blue_score,
-                section.lane_expired,
-                section.parent_seq_commit,
+                m.blue_score,
+                m.daa_score,
+                m.prev_timestamp,
+                &m.prev_lane_tip,
+                m.lane_blue_score,
+                m.lane_expired,
+                &m.prev_seq_commit.as_bytes(),
                 section.batch_to_bundle_index,
                 section.tx_journals,
             );
@@ -113,33 +117,22 @@ impl<'a> Inputs<'a> {
 
         SettlementContext::encode(
             &mut buf,
-            settlement.payload_and_ctx_digest,
-            settlement.parent_seq_commit,
-            settlement.lane_smt_proof,
+            settlement_payload_and_ctx_digest,
+            settlement_parent_seq_commit,
+            settlement_lane_smt_proof,
         );
 
         buf
     }
 }
 
-/// Host-side input for one section, used by [`Inputs::encode`].
+/// Per-batch encode input: the chain-block metadata (read directly), the host-built
+/// `batch_to_bundle_index` translation, and the bundle's tx-journal byte slices for this
+/// batch's transactions. Mirrors how `transaction_processor::Inputs::encode` consumes a
+/// `TransactionContext` directly — no field-by-field copying.
 #[cfg(feature = "host")]
-pub struct EncodedBatchSection<'a> {
-    pub blue_score: u64,
-    pub daa_score: u64,
-    pub parent_timestamp: u64,
-    pub prev_lane_tip: &'a [u8; 32],
-    pub lane_blue_score: u64,
-    pub lane_expired: bool,
-    pub parent_seq_commit: &'a [u8; 32],
+pub struct BatchContext<'a> {
+    pub metadata: &'a vprogs_l1_types::ChainBlockMetadata,
     pub batch_to_bundle_index: &'a [u32],
     pub tx_journals: &'a [Vec<u8>],
-}
-
-/// Host-side settlement-context input, used by [`Inputs::encode`].
-#[cfg(feature = "host")]
-pub struct EncodedSettlementContext<'a> {
-    pub payload_and_ctx_digest: &'a [u8; 32],
-    pub parent_seq_commit: &'a [u8; 32],
-    pub lane_smt_proof: &'a [u8],
 }

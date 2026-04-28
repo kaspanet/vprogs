@@ -13,13 +13,12 @@ use vprogs_core_smt::Blake3;
 
 use crate::{
     Error, Read, Result, Write,
-    batch_processor::{BatchSection, ErrorCode, Inputs, StateTransition},
+    batch_processor::{BatchSection, ErrorCode, Inputs, StateTransition, TransactionJournals},
     transaction_processor::{
         BatchMetadata, InputResourceCommitment, JournalEntries, OutputCommitment,
         OutputResourceCommitment,
     },
 };
-use crate::batch_processor::TransactionJournals;
 
 /// Bundle proof entry point. Holds bundle-wide state across the section loop and the
 /// backend-specific inner-proof verifier callback.
@@ -160,8 +159,7 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
         }
 
         // Iterate this section's tx journals from the wire buffer.
-        let mut journals = TransactionJournals::new(section.tx_journals_buf);
-        while let Some(tx_journal) = journals.next() {
+        for tx_journal in TransactionJournals::new(section.tx_journals_buf) {
             let tx_journal = tx_journal?;
             (self.verify_journal)(self.inputs.image_id, tx_journal)?;
             let entry = JournalEntries::decode(tx_journal)?;

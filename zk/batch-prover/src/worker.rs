@@ -8,9 +8,7 @@ use vprogs_core_types::ResourceId;
 use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
-use vprogs_zk_abi::batch_processor::{
-    EncodedBatchSection, EncodedSettlementContext, Inputs as BundleInputs,
-};
+use vprogs_zk_abi::batch_processor::{BatchContext, Inputs as BundleInputs};
 
 use crate::{Backend, BatchProver, BatchProverConfig, command::Command};
 
@@ -135,73 +133,48 @@ where
             }
         }
 
-        // Encode sectioned bundle inputs.
-        let sections_data: Vec<SectionEncodeData> = batches
+        // Materialize tx receipts + journals once; they're referenced by both the bundle
+        // input encode (needs journal bytes) and the backend.prove_batch call (needs
+        // receipts for env::verify composition).
+        let tx_receipts_per_section: Vec<Vec<B::Receipt>> =
+            batches.iter().map(|b| b.tx_artifacts().map(|a| (*a).clone()).collect()).collect();
+        let tx_journals_per_section: Vec<Vec<Vec<u8>>> = tx_receipts_per_section
             .iter()
-            .zip(translations.iter())
-            .map(|(batch, translation)| {
-                let m = batch.checkpoint().metadata();
-                let tx_receipts: Vec<B::Receipt> =
-                    batch.tx_artifacts().map(|a| (*a).clone()).collect();
-                let tx_journals: Vec<Vec<u8>> = tx_receipts.iter().map(B::journal_bytes).collect();
-                SectionEncodeData {
-                    blue_score: m.blue_score,
-                    daa_score: m.daa_score,
-                    parent_timestamp: m.prev_timestamp,
-                    prev_lane_tip: m.prev_lane_tip,
-                    lane_blue_score: m.lane_blue_score,
-                    lane_expired: m.lane_expired,
-                    parent_seq_commit: m.prev_seq_commit.as_bytes(),
-                    batch_to_bundle_index: translation.clone(),
-                    tx_journals,
-                }
+            .map(|recs| recs.iter().map(B::journal_bytes).collect())
+            .collect();
+
+        // Per-section encode input refers to the chain block's metadata directly — no
+        // field-by-field copy. Translations and journals borrow from the Vecs above.
+        let contexts: Vec<BatchContext<'_>> = batches
+            .iter()
+            .zip(&translations)
+            .zip(&tx_journals_per_section)
+            .map(|((batch, translation), journals)| BatchContext {
+                metadata: batch.checkpoint().metadata(),
+                batch_to_bundle_index: translation,
+                tx_journals: journals,
             })
             .collect();
 
-        // covenant_id and image_id wiring lives at the call site that built the prover; for
-        // now we treat covenant_id as zero (non-settling) when not wired through. The
-        // backend supplies the batch-processor image id.
+        // covenant_id wiring lives at the call site that built the prover; for now we treat
+        // covenant_id as zero (non-settling) when not wired through. The backend supplies
+        // the batch-processor image id.
         let covenant_id = [0u8; 32];
-
-        let encoded_sections: Vec<EncodedBatchSection<'_>> = sections_data
-            .iter()
-            .map(|s| EncodedBatchSection {
-                blue_score: s.blue_score,
-                daa_score: s.daa_score,
-                parent_timestamp: s.parent_timestamp,
-                prev_lane_tip: &s.prev_lane_tip,
-                lane_blue_score: s.lane_blue_score,
-                lane_expired: s.lane_expired,
-                parent_seq_commit: &s.parent_seq_commit,
-                batch_to_bundle_index: &s.batch_to_bundle_index,
-                tx_journals: &s.tx_journals,
-            })
-            .collect();
-
-        let payload_and_ctx_digest = resp.payload_and_ctx_digest.as_bytes();
-        let parent_seq_commit_settle = resp.parent_seq_commit.as_bytes();
-        let settlement = EncodedSettlementContext {
-            payload_and_ctx_digest: &payload_and_ctx_digest,
-            parent_seq_commit: &parent_seq_commit_settle,
-            lane_smt_proof: &resp.smt_proof,
-        };
-
         let inputs = BundleInputs::encode(
             self.backend.image_id(),
             &covenant_id,
             &lane_key_h.as_bytes(),
             &proof_bytes,
             &leaf_order,
-            &encoded_sections,
-            &settlement,
+            &contexts,
+            &resp.payload_and_ctx_digest.as_bytes(),
+            &resp.parent_seq_commit.as_bytes(),
+            &resp.smt_proof,
         );
 
-        // Concatenate inner tx receipts from all batches (the order matches sectioned
-        // tx_journals because we walk batches in the same scheduling order).
-        let all_tx_receipts: Vec<B::Receipt> = batches
-            .iter()
-            .flat_map(|b| b.tx_artifacts().map(|a| (*a).clone()).collect::<Vec<_>>())
-            .collect();
+        // Flatten inner tx receipts in scheduling order for backend composition.
+        let all_tx_receipts: Vec<B::Receipt> =
+            tx_receipts_per_section.into_iter().flatten().collect();
 
         let receipt = self.backend.prove_batch(&inputs, all_tx_receipts).await;
 
@@ -217,18 +190,6 @@ where
             batch.wait_committed().await;
         }
     }
-}
-
-struct SectionEncodeData {
-    blue_score: u64,
-    daa_score: u64,
-    parent_timestamp: u64,
-    prev_lane_tip: [u8; 32],
-    lane_blue_score: u64,
-    lane_expired: bool,
-    parent_seq_commit: [u8; 32],
-    batch_to_bundle_index: Vec<u32>,
-    tx_journals: Vec<Vec<u8>>,
 }
 
 /// Walks each batch's `resource_ids()` in scheduling order, building the bundle-wide

@@ -2,8 +2,6 @@ use alloc::vec::Vec;
 
 use vprogs_core_codec::{Reader, Result};
 
-use crate::batch_processor::TransactionJournals;
-
 /// One batch's portion of a bundle: the per-chain-block context and the txs that landed on
 /// our lane in that block.
 ///
