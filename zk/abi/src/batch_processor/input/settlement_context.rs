@@ -34,7 +34,7 @@ impl<'a> SettlementContext<'a> {
     }
 
     /// Encodes a `SettlementContext` to bytes (host-side). Reads the fields directly off
-    /// the kaspa `GetSeqCommitLaneProofResponse` — same pattern as `BatchSection::encode`
+    /// the kaspa `GetSeqCommitLaneProofResponse` — same pattern as `Batch::encode`
     /// reading off `ChainBlockMetadata`.
     #[cfg(feature = "host")]
     pub fn encode(buf: &mut Vec<u8>, response: &kaspa_rpc_core::GetSeqCommitLaneProofResponse) {

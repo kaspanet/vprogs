@@ -13,7 +13,7 @@ use vprogs_core_smt::Blake3;
 
 use crate::{
     Error, Read, Result, Write,
-    batch_processor::{BatchSection, ErrorCode, Inputs, StateTransition, TransactionJournals},
+    batch_processor::{Batch, ErrorCode, Inputs, StateTransition, TransactionJournals},
     transaction_processor::{
         BatchMetadata, InputResourceCommitment, JournalEntries, OutputCommitment,
         OutputResourceCommitment,
@@ -77,13 +77,13 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
         let mut last_blue_score: u64 = 0;
         let bundle_prev_lane_tip = this.inputs.batches[0].prev_lane_tip;
 
-        // Take ownership of sections so `verify_section` gets &BatchSection while `&mut self`
+        // Take ownership of sections so `verify_section` gets &Batch while `&mut self`
         // covers value_hashes mutation.
-        let sections = core::mem::take(&mut this.inputs.batches);
-        for section in &sections {
-            let new_lane_tip = this.verify_section(section, &lane_key_hash, current_lane_tip)?;
+        let batches = core::mem::take(&mut this.inputs.batches);
+        for batch in &batches {
+            let new_lane_tip = this.verify_batch(batch, &lane_key_hash, current_lane_tip)?;
             current_lane_tip = Some(new_lane_tip);
-            last_blue_score = section.blue_score;
+            last_blue_score = batch.blue_score;
         }
 
         let new_lane_tip = current_lane_tip.expect("non-empty bundle has a lane tip");
@@ -127,22 +127,22 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
     /// Verifies one section: cross-checks each tx receipt's metadata against the section's
     /// derived context, applies state mutations through the bundle-wide `value_hashes`, and
     /// returns the section's `new_lane_tip` for the caller to chain forward.
-    fn verify_section(
+    fn verify_batch(
         &mut self,
-        section: &BatchSection<'a>,
+        batch: &Batch<'a>,
         lane_key_hash: &Hash,
         prev_lane_tip_carry: Option<Hash>,
     ) -> Result<Hash> {
         // Per-section state — reset each call.
         let context_hash = mergeset_context_hash(&MergesetContext {
-            timestamp: seq_commit_timestamp(section.parent_timestamp),
-            daa_score: section.daa_score,
-            blue_score: section.blue_score,
+            timestamp: seq_commit_timestamp(batch.parent_timestamp),
+            daa_score: batch.daa_score,
+            blue_score: batch.blue_score,
         });
         let context_hash_bytes = context_hash.as_bytes();
 
         let mut activity_builder = ActivityDigestBuilder::new();
-        let mut section_metadata: Option<BatchMetadata<'a>> = None;
+        let mut expected_metadata: Option<BatchMetadata<'a>> = None;
         let mut last_tx_index: Option<u32> = None;
         let mut mapping_buf: Vec<usize> = Vec::new();
 
@@ -150,16 +150,16 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
         // prev_lane_tip must equal the previous section's derived new_lane_tip. The first
         // section's prev_lane_tip is the bundle's start (= the spent UTXO's redeem prefix),
         // checked on-chain by the covenant's P2SH binding.
-        if !section.lane_expired {
+        if !batch.lane_expired {
             if let Some(carry) = prev_lane_tip_carry {
-                if section.prev_lane_tip != &carry.as_bytes() {
+                if batch.prev_lane_tip != &carry.as_bytes() {
                     return Err(Error::from(ErrorCode::LaneChainMismatch));
                 }
             }
         }
 
         // Iterate this section's tx journals from the wire buffer.
-        for tx_journal in TransactionJournals::new(section.tx_journals_buf) {
+        for tx_journal in TransactionJournals::new(batch.tx_journals_buf) {
             let tx_journal = tx_journal?;
             (self.verify_journal)(self.inputs.image_id, tx_journal)?;
             let entry = JournalEntries::decode(tx_journal)?;
@@ -174,7 +174,7 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
             // Cross-check that all txs in this section share the same BatchMetadata, and
             // that their context_hash matches our derived one.
             let metadata = &entry.input_commitment.batch_metadata;
-            let expected = *section_metadata.get_or_insert(*metadata);
+            let expected = *expected_metadata.get_or_insert(*metadata);
             if expected.block_hash != metadata.block_hash {
                 return Err(Error::from(ErrorCode::BlockHashMismatch));
             }
@@ -196,7 +196,7 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
             mapping_buf.clear();
             for input in entry.input_commitment.resources {
                 let r = input?;
-                mapping_buf.push(self.check_input_resource(section, &r)?);
+                mapping_buf.push(self.check_input_resource(batch, &r)?);
             }
 
             if let OutputCommitment::Success(outputs) = entry.output_commitment {
@@ -210,10 +210,10 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
             last_tx_index = Some(tx_index);
         }
 
-        let parent_ref = if section.lane_expired {
-            Hash::from_bytes(*section.parent_seq_commit)
+        let parent_ref = if batch.lane_expired {
+            Hash::from_bytes(*batch.parent_seq_commit)
         } else {
-            Hash::from_bytes(*section.prev_lane_tip)
+            Hash::from_bytes(*batch.prev_lane_tip)
         };
         let new_lane_tip = lane_tip_next(&LaneTipInput {
             parent_ref: &parent_ref,
@@ -232,14 +232,14 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
     /// batch-local index).
     fn check_input_resource(
         &mut self,
-        section: &BatchSection<'a>,
+        batch: &Batch<'a>,
         r: &InputResourceCommitment<'a>,
     ) -> Result<usize> {
         let local_idx = r.resource_index as usize;
-        if local_idx >= section.batch_to_bundle_index.len() {
+        if local_idx >= batch.batch_to_bundle_index.len() {
             return Err(Error::from(ErrorCode::ResourceIndexOutOfRange));
         }
-        let bundle_idx = section.batch_to_bundle_index[local_idx] as usize;
+        let bundle_idx = batch.batch_to_bundle_index[local_idx] as usize;
         if bundle_idx >= self.value_hashes.len() {
             return Err(Error::from(ErrorCode::ResourceIndexOutOfRange));
         }

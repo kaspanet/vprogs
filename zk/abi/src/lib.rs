@@ -7,7 +7,7 @@ pub mod batch_processor {
     pub(crate) mod error_code;
 
     pub(crate) mod input {
-        pub(crate) mod batch_section;
+        pub(crate) mod batch;
         pub(crate) mod inputs;
         pub(crate) mod settlement_context;
         pub(crate) mod transaction_journals;
@@ -22,7 +22,7 @@ pub mod batch_processor {
     #[cfg(feature = "host")]
     pub use input::inputs::BatchContext;
     pub use input::{
-        batch_section::BatchSection, inputs::Inputs, settlement_context::SettlementContext,
+        batch::Batch, inputs::Inputs, settlement_context::SettlementContext,
         transaction_journals::TransactionJournals,
     };
     pub use journal::state_transition::StateTransition;

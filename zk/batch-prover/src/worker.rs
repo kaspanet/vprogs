@@ -136,9 +136,9 @@ where
         // Materialize tx receipts + journals once; they're referenced by both the bundle
         // input encode (needs journal bytes) and the backend.prove_batch call (needs
         // receipts for env::verify composition).
-        let tx_receipts_per_section: Vec<Vec<B::Receipt>> =
+        let tx_receipts_per_batch: Vec<Vec<B::Receipt>> =
             batches.iter().map(|b| b.tx_artifacts().map(|a| (*a).clone()).collect()).collect();
-        let tx_journals_per_section: Vec<Vec<Vec<u8>>> = tx_receipts_per_section
+        let tx_journals_per_batch: Vec<Vec<Vec<u8>>> = tx_receipts_per_batch
             .iter()
             .map(|recs| recs.iter().map(B::journal_bytes).collect())
             .collect();
@@ -148,7 +148,7 @@ where
         let contexts: Vec<BatchContext<'_>> = batches
             .iter()
             .zip(&translations)
-            .zip(&tx_journals_per_section)
+            .zip(&tx_journals_per_batch)
             .map(|((batch, translation), journals)| BatchContext {
                 metadata: batch.checkpoint().metadata(),
                 batch_to_bundle_index: translation,
@@ -172,7 +172,7 @@ where
 
         // Flatten inner tx receipts in scheduling order for backend composition.
         let all_tx_receipts: Vec<B::Receipt> =
-            tx_receipts_per_section.into_iter().flatten().collect();
+            tx_receipts_per_batch.into_iter().flatten().collect();
 
         let receipt = self.backend.prove_batch(&inputs, all_tx_receipts).await;
 

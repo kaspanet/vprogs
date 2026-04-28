@@ -5,7 +5,7 @@ use vprogs_core_smt::proving::Proof;
 
 use crate::{
     Result,
-    batch_processor::{BatchSection, SettlementContext},
+    batch_processor::{Batch, SettlementContext},
 };
 
 /// Decoded batch processor input (zero-copy).
@@ -21,7 +21,7 @@ use crate::{
 /// image_id(32) | covenant_id(32) | lane_key(32)
 ///   | proof_length(u32 LE) | proof bytes
 ///   | leaf_order_count(u32 LE) | leaf_order entries (u32 LE each)
-///   | num_sections(u32 LE) | sections (BatchSection wire format, K of them)
+///   | num_sections(u32 LE) | sections (Batch wire format, K of them)
 ///   | settlement_context (SettlementContext wire format)
 /// ```
 ///
@@ -46,7 +46,7 @@ pub struct Inputs<'a> {
     /// Length equals `proof.leaves.len()`.
     pub leaf_order: Vec<u32>,
     /// K batch sections in scheduling order.
-    pub batches: Vec<BatchSection<'a>>,
+    pub batches: Vec<Batch<'a>>,
     /// Final-block ingredients for the single `new_seq_commit` derivation.
     pub settlement: SettlementContext<'a>,
 }
@@ -60,7 +60,7 @@ impl<'a> Inputs<'a> {
             lane_key: buf.array::<32>("lane_key")?,
             proof: Proof::decode(buf.blob("proof")?)?,
             leaf_order: buf.many("leaf_order", |b| b.le_u32("leaf_order"))?,
-            batches: buf.many("batches", BatchSection::decode)?,
+            batches: buf.many("batches", Batch::decode)?,
             settlement: SettlementContext::decode(&mut buf)?,
         })
     }
@@ -78,7 +78,7 @@ impl<'a> Inputs<'a> {
         lane_key: &[u8; 32],
         proof_bytes: &[u8],
         leaf_order: &[u32],
-        sections: &[BatchContext<'_>],
+        batches: &[BatchContext<'_>],
         settlement: &kaspa_rpc_core::GetSeqCommitLaneProofResponse,
     ) -> Vec<u8> {
         use crate::Write;
@@ -95,13 +95,13 @@ impl<'a> Inputs<'a> {
             buf.write(&idx.to_le_bytes());
         }
 
-        buf.write(&(sections.len() as u32).to_le_bytes());
-        for section in sections {
-            BatchSection::encode(
+        buf.write(&(batches.len() as u32).to_le_bytes());
+        for batch in batches {
+            Batch::encode(
                 &mut buf,
-                section.metadata,
-                section.batch_to_bundle_index,
-                section.tx_journals,
+                batch.metadata,
+                batch.batch_to_bundle_index,
+                batch.tx_journals,
             );
         }
 

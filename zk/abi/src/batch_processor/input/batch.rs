@@ -9,7 +9,7 @@ use vprogs_core_codec::{Reader, Result};
 /// guest (activity digest, expected metadata, last_tx_index, derived context_hash) resets at
 /// each section boundary; bundle-wide state (`value_hashes`, `current_lane_tip`) carries
 /// forward.
-pub struct BatchSection<'a> {
+pub struct Batch<'a> {
     /// DAG blue score of this section's chain block.
     pub blue_score: u64,
     /// DAA score of this section's chain block.
@@ -33,8 +33,8 @@ pub struct BatchSection<'a> {
     pub tx_journals_buf: &'a [u8],
 }
 
-impl<'a> BatchSection<'a> {
-    /// Decodes one `BatchSection` from a wire buffer (zero-copy, advances `buf`).
+impl<'a> Batch<'a> {
+    /// Decodes one `Batch` from a wire buffer (zero-copy, advances `buf`).
     pub fn decode(buf: &mut &'a [u8]) -> Result<Self> {
         Ok(Self {
             blue_score: buf.le_u64("blue_score")?,
