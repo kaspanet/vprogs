@@ -67,20 +67,29 @@ impl<'a> Inputs<'a> {
 
     /// Encodes a bundle input to bytes (host-side).
     ///
-    /// Takes per-section data via [`BatchContext`] (each section references its
-    /// `ChainBlockMetadata` directly) and the kaspa node's
-    /// `GetSeqCommitLaneProofResponse` directly — `SettlementContext<'a>` is the zero-copy
-    /// decode view of the same fields, so the wire layout for settlement is symmetric.
+    /// Takes the bundle as `&Bundle<S, P>` — owning per-batch data: the `ScheduledBatch`
+    /// (which carries `ChainBlockMetadata` via its checkpoint), the host-built
+    /// `batch_to_bundle_index` translation, and the per-tx journal byte slices. The kaspa
+    /// node's `GetSeqCommitLaneProofResponse` is consumed directly — `SettlementContext<'a>`
+    /// is the zero-copy decode view of the same fields, so the wire layout for settlement
+    /// is symmetric.
     #[cfg(feature = "host")]
-    pub fn encode(
+    pub fn encode<S, P>(
         image_id: &[u8; 32],
         covenant_id: &[u8; 32],
         lane_key: &[u8; 32],
         proof_bytes: &[u8],
         leaf_order: &[u32],
-        batches: &[BatchContext<'_>],
+        bundle: &Bundle<S, P>,
         settlement: &kaspa_rpc_core::GetSeqCommitLaneProofResponse,
-    ) -> Vec<u8> {
+    ) -> Vec<u8>
+    where
+        S: vprogs_storage_types::Store,
+        P: vprogs_scheduling_scheduler::Processor<
+                S,
+                BatchMetadata = vprogs_l1_types::ChainBlockMetadata,
+            >,
+    {
         use crate::Write;
 
         let mut buf = Vec::new();
@@ -95,13 +104,13 @@ impl<'a> Inputs<'a> {
             buf.write(&idx.to_le_bytes());
         }
 
-        buf.write(&(batches.len() as u32).to_le_bytes());
-        for batch in batches {
+        buf.write(&(bundle.len() as u32).to_le_bytes());
+        for (batch, batch_to_bundle_index, tx_journals) in bundle {
             Batch::encode(
                 &mut buf,
-                batch.metadata,
-                batch.batch_to_bundle_index,
-                batch.tx_journals,
+                batch.checkpoint().metadata(),
+                batch_to_bundle_index,
+                tx_journals,
             );
         }
 
@@ -111,13 +120,10 @@ impl<'a> Inputs<'a> {
     }
 }
 
-/// Per-batch encode input: the chain-block metadata (read directly), the host-built
-/// `batch_to_bundle_index` translation, and the bundle's tx-journal byte slices for this
-/// batch's transactions. Mirrors how `transaction_processor::Inputs::encode` consumes a
-/// `TransactionContext` directly — no field-by-field copying.
+/// Owned bundle of per-batch encode inputs: each entry holds the `ScheduledBatch` (which
+/// carries `ChainBlockMetadata` via `batch.checkpoint().metadata()`), its host-built
+/// `batch_to_bundle_index` translation, and the per-tx journal byte slices for that batch's
+/// transactions.
 #[cfg(feature = "host")]
-pub struct BatchContext<'a> {
-    pub metadata: &'a vprogs_l1_types::ChainBlockMetadata,
-    pub batch_to_bundle_index: &'a [u32],
-    pub tx_journals: &'a [Vec<u8>],
-}
+pub type Bundle<S, P> =
+    Vec<(vprogs_scheduling_scheduler::ScheduledBatch<S, P>, Vec<u32>, Vec<Vec<u8>>)>;

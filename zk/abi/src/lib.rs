@@ -20,7 +20,7 @@ pub mod batch_processor {
     pub use abi::Abi;
     pub use error_code::ErrorCode;
     #[cfg(feature = "host")]
-    pub use input::inputs::BatchContext;
+    pub use input::inputs::Bundle;
     pub use input::{
         batch::Batch, inputs::Inputs, settlement_context::SettlementContext,
         transaction_journals::TransactionJournals,

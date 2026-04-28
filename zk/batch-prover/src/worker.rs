@@ -8,7 +8,7 @@ use vprogs_core_types::ResourceId;
 use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
-use vprogs_zk_abi::batch_processor::{BatchContext, Inputs as BundleInputs};
+use vprogs_zk_abi::batch_processor::{Bundle, Inputs as BundleInputs};
 
 use crate::{Backend, BatchProver, BatchProverConfig, command::Command};
 
@@ -114,10 +114,9 @@ where
 
         // Fetch settlement context for the bundle's FINAL block via PR #961's RPC.
         let last_meta = batches.last().unwrap().checkpoint().metadata().clone();
-        let lane_key_h = self.config.lane_key;
         let resp = self
             .grpc_client
-            .get_seq_commit_lane_proof(last_meta.hash, lane_key_h)
+            .get_seq_commit_lane_proof(last_meta.hash, self.config.lane_key)
             .await
             .expect("get_seq_commit_lane_proof");
 
@@ -133,58 +132,52 @@ where
             }
         }
 
-        // Materialize tx receipts + journals once; they're referenced by both the bundle
-        // input encode (needs journal bytes) and the backend.prove_batch call (needs
-        // receipts for env::verify composition).
-        let tx_receipts_per_batch: Vec<Vec<B::Receipt>> =
-            batches.iter().map(|b| b.tx_artifacts().map(|a| (*a).clone()).collect()).collect();
-        let tx_journals_per_batch: Vec<Vec<Vec<u8>>> = tx_receipts_per_batch
+        // Materialize per-batch tx journal bytes for bundle encoding.
+        let tx_journals_per_batch: Vec<Vec<Vec<u8>>> = batches
             .iter()
-            .map(|recs| recs.iter().map(B::journal_bytes).collect())
+            .map(|b| b.tx_artifacts().map(|a| B::journal_bytes(&a)).collect())
             .collect();
 
-        // Per-section encode input refers to the chain block's metadata directly — no
-        // field-by-field copy. Translations and journals borrow from the Vecs above.
-        let contexts: Vec<BatchContext<'_>> = batches
-            .iter()
-            .zip(&translations)
-            .zip(&tx_journals_per_batch)
-            .map(|((batch, translation), journals)| BatchContext {
-                metadata: batch.checkpoint().metadata(),
-                batch_to_bundle_index: translation,
-                tx_journals: journals,
-            })
+        // Build the owned bundle: each entry holds the ScheduledBatch (carries
+        // ChainBlockMetadata via its checkpoint), its translation, and its tx journals.
+        let bundle: Bundle<S, P> = batches
+            .into_iter()
+            .zip(translations)
+            .zip(tx_journals_per_batch)
+            .map(|((batch, translation), journals)| (batch, translation, journals))
             .collect();
 
         // covenant_id wiring lives at the call site that built the prover; for now we treat
         // covenant_id as zero (non-settling) when not wired through. The backend supplies
         // the batch-processor image id.
         let covenant_id = [0u8; 32];
-        let inputs = BundleInputs::encode(
+        let bundle_inputs = BundleInputs::encode(
             self.backend.image_id(),
             &covenant_id,
-            &lane_key_h.as_bytes(),
+            &self.config.lane_key.as_bytes(),
             &proof_bytes,
             &leaf_order,
-            &contexts,
+            &bundle,
             &resp,
         );
 
         // Flatten inner tx receipts in scheduling order for backend composition.
-        let all_tx_receipts: Vec<B::Receipt> =
-            tx_receipts_per_batch.into_iter().flatten().collect();
+        let all_tx_receipts: Vec<B::Receipt> = bundle
+            .iter()
+            .flat_map(|(b, _, _)| b.tx_artifacts().map(|a| (*a).clone()).collect::<Vec<_>>())
+            .collect();
 
-        let receipt = self.backend.prove_batch(&inputs, all_tx_receipts).await;
+        let receipt = self.backend.prove_batch(&bundle_inputs, all_tx_receipts).await;
 
         // Publish the same bundle receipt to every batch in the bundle. Settlement layer /
         // tests can read it from any of them; the LAST batch's checkpoint anchors the
         // bundle's covenant transition on chain.
-        for batch in &batches {
+        for (batch, _, _) in &bundle {
             batch.publish_artifact(Some(receipt.clone()));
         }
 
         // Wait for the bundle's final commit before pulling the next bundle.
-        for batch in &batches {
+        for (batch, _, _) in &bundle {
             batch.wait_committed().await;
         }
     }
