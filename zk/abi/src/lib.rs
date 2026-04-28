@@ -8,6 +8,8 @@ pub mod batch_processor {
 
     pub(crate) mod input {
         pub(crate) mod batch;
+        #[cfg(feature = "host")]
+        pub(crate) mod bundle;
         pub(crate) mod inputs;
         pub(crate) mod settlement_context;
         pub(crate) mod transaction_journals;
@@ -20,7 +22,7 @@ pub mod batch_processor {
     pub use abi::Abi;
     pub use error_code::ErrorCode;
     #[cfg(feature = "host")]
-    pub use input::inputs::Bundle;
+    pub use input::bundle::Bundle;
     pub use input::{
         batch::Batch, inputs::Inputs, settlement_context::SettlementContext,
         transaction_journals::TransactionJournals,

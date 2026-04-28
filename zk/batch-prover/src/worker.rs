@@ -132,20 +132,7 @@ where
             }
         }
 
-        // Materialize per-batch tx journal bytes for bundle encoding.
-        let tx_journals_per_batch: Vec<Vec<Vec<u8>>> = batches
-            .iter()
-            .map(|b| b.tx_artifacts().map(|a| B::journal_bytes(&a)).collect())
-            .collect();
-
-        // Build the owned bundle: each entry holds the ScheduledBatch (carries
-        // ChainBlockMetadata via its checkpoint), its translation, and its tx journals.
-        let bundle: Bundle<S, P> = batches
-            .into_iter()
-            .zip(translations)
-            .zip(tx_journals_per_batch)
-            .map(|((batch, translation), journals)| (batch, translation, journals))
-            .collect();
+        let bundle = Bundle::new(batches, translations, B::journal_bytes);
 
         // covenant_id wiring lives at the call site that built the prover; for now we treat
         // covenant_id as zero (non-settling) when not wired through. The backend supplies
@@ -161,23 +148,17 @@ where
             &resp,
         );
 
-        // Flatten inner tx receipts in scheduling order for backend composition.
-        let all_tx_receipts: Vec<B::Receipt> = bundle
-            .iter()
-            .flat_map(|(b, _, _)| b.tx_artifacts().map(|a| (*a).clone()).collect::<Vec<_>>())
-            .collect();
-
-        let receipt = self.backend.prove_batch(&bundle_inputs, all_tx_receipts).await;
+        let receipt = self.backend.prove_batch(&bundle_inputs, bundle.tx_receipts()).await;
 
         // Publish the same bundle receipt to every batch in the bundle. Settlement layer /
         // tests can read it from any of them; the LAST batch's checkpoint anchors the
         // bundle's covenant transition on chain.
-        for (batch, _, _) in &bundle {
+        for batch in bundle.batches() {
             batch.publish_artifact(Some(receipt.clone()));
         }
 
         // Wait for the bundle's final commit before pulling the next bundle.
-        for (batch, _, _) in &bundle {
+        for batch in bundle.batches() {
             batch.wait_committed().await;
         }
     }

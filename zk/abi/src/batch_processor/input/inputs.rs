@@ -3,6 +3,8 @@ use alloc::vec::Vec;
 use vprogs_core_codec::Reader;
 use vprogs_core_smt::proving::Proof;
 
+#[cfg(feature = "host")]
+use crate::batch_processor::Bundle;
 use crate::{
     Result,
     batch_processor::{Batch, SettlementContext},
@@ -105,7 +107,7 @@ impl<'a> Inputs<'a> {
         }
 
         buf.write(&(bundle.len() as u32).to_le_bytes());
-        for (batch, batch_to_bundle_index, tx_journals) in bundle {
+        for (batch, batch_to_bundle_index, tx_journals) in bundle.iter() {
             Batch::encode(
                 &mut buf,
                 batch.checkpoint().metadata(),
@@ -119,11 +121,3 @@ impl<'a> Inputs<'a> {
         buf
     }
 }
-
-/// Owned bundle of per-batch encode inputs: each entry holds the `ScheduledBatch` (which
-/// carries `ChainBlockMetadata` via `batch.checkpoint().metadata()`), its host-built
-/// `batch_to_bundle_index` translation, and the per-tx journal byte slices for that batch's
-/// transactions.
-#[cfg(feature = "host")]
-pub type Bundle<S, P> =
-    Vec<(vprogs_scheduling_scheduler::ScheduledBatch<S, P>, Vec<u32>, Vec<Vec<u8>>)>;
