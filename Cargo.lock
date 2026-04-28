@@ -8163,6 +8163,7 @@ dependencies = [
  "borsh",
  "kaspa-consensus-core",
  "kaspa-hashes",
+ "kaspa-rpc-core",
  "kaspa-seq-commit",
  "kaspa-smt",
  "thiserror 2.0.18",

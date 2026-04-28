@@ -167,9 +167,7 @@ where
             &proof_bytes,
             &leaf_order,
             &contexts,
-            &resp.payload_and_ctx_digest.as_bytes(),
-            &resp.parent_seq_commit.as_bytes(),
-            &resp.smt_proof,
+            &resp,
         );
 
         // Flatten inner tx receipts in scheduling order for backend composition.

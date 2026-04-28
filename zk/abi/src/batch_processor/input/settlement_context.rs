@@ -33,19 +33,16 @@ impl<'a> SettlementContext<'a> {
         })
     }
 
-    /// Encodes a `SettlementContext` to bytes (host-side).
+    /// Encodes a `SettlementContext` to bytes (host-side). Reads the fields directly off
+    /// the kaspa `GetSeqCommitLaneProofResponse` — same pattern as `BatchSection::encode`
+    /// reading off `ChainBlockMetadata`.
     #[cfg(feature = "host")]
-    pub fn encode(
-        buf: &mut Vec<u8>,
-        payload_and_ctx_digest: &[u8; 32],
-        parent_seq_commit: &[u8; 32],
-        lane_smt_proof: &[u8],
-    ) {
+    pub fn encode(buf: &mut Vec<u8>, response: &kaspa_rpc_core::GetSeqCommitLaneProofResponse) {
         use crate::Write;
 
-        buf.write(payload_and_ctx_digest);
-        buf.write(parent_seq_commit);
-        buf.write(&(lane_smt_proof.len() as u32).to_le_bytes());
-        buf.write(lane_smt_proof);
+        buf.write(&response.payload_and_ctx_digest.as_bytes());
+        buf.write(&response.parent_seq_commit.as_bytes());
+        buf.write(&(response.smt_proof.len() as u32).to_le_bytes());
+        buf.write(&response.smt_proof);
     }
 }

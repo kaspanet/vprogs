@@ -67,12 +67,11 @@ impl<'a> Inputs<'a> {
 
     /// Encodes a bundle input to bytes (host-side).
     ///
-    /// Takes per-section data via [`BatchContext`] which references each section's
-    /// `ChainBlockMetadata` directly along with its translation table and tx journals — no
-    /// intermediate field-by-field copy. `settlement_*` come pre-formed from the kaspa
-    /// node's `get_seq_commit_lane_proof` against the bundle's final block.
+    /// Takes per-section data via [`BatchContext`] (each section references its
+    /// `ChainBlockMetadata` directly) and the kaspa node's
+    /// `GetSeqCommitLaneProofResponse` directly — `SettlementContext<'a>` is the zero-copy
+    /// decode view of the same fields, so the wire layout for settlement is symmetric.
     #[cfg(feature = "host")]
-    #[allow(clippy::too_many_arguments)]
     pub fn encode(
         image_id: &[u8; 32],
         covenant_id: &[u8; 32],
@@ -80,9 +79,7 @@ impl<'a> Inputs<'a> {
         proof_bytes: &[u8],
         leaf_order: &[u32],
         sections: &[BatchContext<'_>],
-        settlement_payload_and_ctx_digest: &[u8; 32],
-        settlement_parent_seq_commit: &[u8; 32],
-        settlement_lane_smt_proof: &[u8],
+        settlement: &kaspa_rpc_core::GetSeqCommitLaneProofResponse,
     ) -> Vec<u8> {
         use crate::Write;
 
@@ -108,12 +105,7 @@ impl<'a> Inputs<'a> {
             );
         }
 
-        SettlementContext::encode(
-            &mut buf,
-            settlement_payload_and_ctx_digest,
-            settlement_parent_seq_commit,
-            settlement_lane_smt_proof,
-        );
+        SettlementContext::encode(&mut buf, settlement);
 
         buf
     }
