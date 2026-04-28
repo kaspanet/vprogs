@@ -84,32 +84,25 @@ impl<'a> Inputs<'a> {
         settlement_parent_seq_commit: &[u8; 32],
         settlement_lane_smt_proof: &[u8],
     ) -> Vec<u8> {
+        use crate::Write;
+
         let mut buf = Vec::new();
+        buf.write(image_id);
+        buf.write(covenant_id);
+        buf.write(lane_key);
+        buf.write(&(proof_bytes.len() as u32).to_le_bytes());
+        buf.write(proof_bytes);
 
-        buf.extend_from_slice(image_id);
-        buf.extend_from_slice(covenant_id);
-        buf.extend_from_slice(lane_key);
-
-        buf.extend_from_slice(&(proof_bytes.len() as u32).to_le_bytes());
-        buf.extend_from_slice(proof_bytes);
-
-        buf.extend_from_slice(&(leaf_order.len() as u32).to_le_bytes());
+        buf.write(&(leaf_order.len() as u32).to_le_bytes());
         for &idx in leaf_order {
-            buf.extend_from_slice(&idx.to_le_bytes());
+            buf.write(&idx.to_le_bytes());
         }
 
-        buf.extend_from_slice(&(sections.len() as u32).to_le_bytes());
+        buf.write(&(sections.len() as u32).to_le_bytes());
         for section in sections {
-            let m = section.metadata;
             BatchSection::encode(
                 &mut buf,
-                m.blue_score,
-                m.daa_score,
-                m.prev_timestamp,
-                &m.prev_lane_tip,
-                m.lane_blue_score,
-                m.lane_expired,
-                &m.prev_seq_commit.as_bytes(),
+                section.metadata,
                 section.batch_to_bundle_index,
                 section.tx_journals,
             );

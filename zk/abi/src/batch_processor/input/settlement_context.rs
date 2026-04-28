@@ -36,14 +36,16 @@ impl<'a> SettlementContext<'a> {
     /// Encodes a `SettlementContext` to bytes (host-side).
     #[cfg(feature = "host")]
     pub fn encode(
-        buf: &mut alloc::vec::Vec<u8>,
+        buf: &mut Vec<u8>,
         payload_and_ctx_digest: &[u8; 32],
         parent_seq_commit: &[u8; 32],
         lane_smt_proof: &[u8],
     ) {
-        buf.extend_from_slice(payload_and_ctx_digest);
-        buf.extend_from_slice(parent_seq_commit);
-        buf.extend_from_slice(&(lane_smt_proof.len() as u32).to_le_bytes());
-        buf.extend_from_slice(lane_smt_proof);
+        use crate::Write;
+
+        buf.write(payload_and_ctx_digest);
+        buf.write(parent_seq_commit);
+        buf.write(&(lane_smt_proof.len() as u32).to_le_bytes());
+        buf.write(lane_smt_proof);
     }
 }

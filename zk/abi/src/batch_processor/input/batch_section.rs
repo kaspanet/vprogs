@@ -52,39 +52,31 @@ impl<'a> BatchSection<'a> {
 
     /// Encodes one section to bytes (host-side).
     #[cfg(feature = "host")]
-    #[allow(clippy::too_many_arguments)]
     pub fn encode(
         buf: &mut Vec<u8>,
-        blue_score: u64,
-        daa_score: u64,
-        parent_timestamp: u64,
-        prev_lane_tip: &[u8; 32],
-        lane_blue_score: u64,
-        lane_expired: bool,
-        parent_seq_commit: &[u8; 32],
+        metadata: &vprogs_l1_types::ChainBlockMetadata,
         batch_to_bundle_index: &[u32],
         tx_journals: &[Vec<u8>],
     ) {
-        buf.extend_from_slice(&blue_score.to_le_bytes());
-        buf.extend_from_slice(&daa_score.to_le_bytes());
-        buf.extend_from_slice(&parent_timestamp.to_le_bytes());
-        buf.extend_from_slice(prev_lane_tip);
-        buf.extend_from_slice(&lane_blue_score.to_le_bytes());
-        buf.push(if lane_expired { 1 } else { 0 });
-        buf.extend_from_slice(parent_seq_commit);
+        use crate::Write;
 
-        buf.extend_from_slice(&(batch_to_bundle_index.len() as u32).to_le_bytes());
+        buf.write(&metadata.blue_score.to_le_bytes());
+        buf.write(&metadata.daa_score.to_le_bytes());
+        buf.write(&metadata.prev_timestamp.to_le_bytes());
+        buf.write(&metadata.prev_lane_tip);
+        buf.write(&metadata.lane_blue_score.to_le_bytes());
+        buf.write(&[if metadata.lane_expired { 1 } else { 0 }]);
+        buf.write(&metadata.prev_seq_commit.as_bytes());
+
+        buf.write(&(batch_to_bundle_index.len() as u32).to_le_bytes());
         for &idx in batch_to_bundle_index {
-            buf.extend_from_slice(&idx.to_le_bytes());
+            buf.write(&idx.to_le_bytes());
         }
 
-        // Section-local tx_journals carry their own length so we know where the section ends.
-        let mut tx_journals_buf: Vec<u8> = Vec::new();
+        buf.write(&tx_journals.iter().map(|j| 4 + j.len() as u32).sum::<u32>().to_le_bytes());
         for journal in tx_journals {
-            tx_journals_buf.extend_from_slice(&(journal.len() as u32).to_le_bytes());
-            tx_journals_buf.extend_from_slice(journal);
+            buf.write(&(journal.len() as u32).to_le_bytes());
+            buf.write(journal);
         }
-        buf.extend_from_slice(&(tx_journals_buf.len() as u32).to_le_bytes());
-        buf.extend_from_slice(&tx_journals_buf);
     }
 }
