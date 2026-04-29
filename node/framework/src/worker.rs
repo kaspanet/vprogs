@@ -85,7 +85,7 @@ impl<S: Store, P: Processor<S>> NodeWorker<S, P> {
                         SchedulerTransaction::new(idx, Self::extract_resources(&tx.payload), tx)
                     })
                     .collect();
-                self.scheduler.schedule(checkpoint.metadata().clone(), txs);
+                self.scheduler.schedule(*checkpoint.metadata(), txs);
             }
 
             L1Event::Rollback { checkpoint, .. } => {

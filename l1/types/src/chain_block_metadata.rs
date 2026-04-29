@@ -22,8 +22,7 @@ pub struct ChainBlockMetadata {
     pub lane_key: [u8; 32],
     /// Sequencing commitment carried by this block's header.
     pub seq_commit: Hash,
-    /// Chain parent's `seq_commit` — feeds the guest's lane_expired re-anchor when this
-    /// block's section has `lane_expired = true`.
+    /// Sequencing commitment carried by the previous block's header.
     pub prev_seq_commit: Hash,
     /// Blue score at which the lane was last active. Zero if never active.
     pub lane_blue_score: u64,
