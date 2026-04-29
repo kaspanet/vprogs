@@ -3,46 +3,26 @@ use alloc::vec::Vec;
 use vprogs_core_codec::Reader;
 use vprogs_core_smt::proving::Proof;
 
-#[cfg(feature = "host")]
-use crate::batch_processor::Bundle;
 use crate::{
     Result,
     batch_processor::{Batch, LaneProof},
 };
 
-/// Decoded batch processor input (zero-copy).
-///
-/// Wire layout:
-///
-/// ```text
-/// image_id(32) | covenant_id(32) | lane_key(32)
-///   | proof_length(u32 LE) | proof bytes
-///   | leaf_order_count(u32 LE) | leaf_order entries (u32 LE each)
-///   | num_batches(u32 LE) | batches (Batch wire format, K of them)
-///   | lane_proof (LaneProof wire format)
-/// ```
-///
-/// `prev_state` is the bundle-wide SMT root before any batch's writes apply (= `proof.root()`).
-/// `new_state` is the bundle-wide SMT root after every batch's writes have been chained
-/// through bundle-wide `value_hashes` and re-rooted via `proof.compute_root(...)`.
-///
-/// `new_seq_commit` derivation uses the *final* batch's `blue_score` together with the
-/// bundle-wide `lane_proof` (pre-formed `payload_and_ctx_digest`, `lane_smt_proof`,
-/// `parent_seq_commit`) - no per-batch seq-commit derivation.
+/// Decoded batch processor input.
 pub struct Inputs<'a> {
     /// Transaction processor guest image ID used to verify each inner tx journal.
     pub image_id: &'a [u8; 32],
-    /// Covenant id the emitted settlement journal binds to.
+    /// Covenant id this bundle settles into.
     pub covenant_id: &'a [u8; 32],
-    /// Our lane's key. Bundle-wide (one lane per bundle).
+    /// Lane key for this bundle (one lane per bundle).
     pub lane_key: &'a [u8; 32],
-    /// SMT proof at `v_pre_bundle`, covering union of resources touched across batches.
+    /// SMT proof covering the union of resources touched across all batches.
     pub proof: Proof<'a>,
-    /// Bundle-wide leaf-order permutation: `leaf_order[leaf_pos] = bundle_resource_index`.
+    /// Leaf-order permutation: `leaf_order[leaf_pos] = bundle_resource_index`.
     pub leaf_order: Vec<u32>,
     /// Batches in scheduling order.
     pub batches: Vec<Batch<'a>>,
-    /// Final-block ingredients for the single `new_seq_commit` derivation.
+    /// Lane proof for the bundle's final block.
     pub lane_proof: LaneProof<'a>,
 }
 
@@ -62,34 +42,31 @@ impl<'a> Inputs<'a> {
 
     /// Encodes a bundle input to bytes.
     #[cfg(feature = "host")]
-    pub fn encode<S, P>(
+    pub fn encode<'b, I>(
         image_id: &[u8; 32],
         covenant_id: &[u8; 32],
         lane_key: &[u8; 32],
         proof_bytes: &[u8],
         leaf_order: &[u32],
-        bundle: &Bundle<S, P>,
+        batches: I,
         lane_proof: &kaspa_rpc_core::GetSeqCommitLaneProofResponse,
     ) -> Vec<u8>
     where
-        S: vprogs_storage_types::Store,
-        P: vprogs_scheduling_scheduler::Processor<
-                S,
-                BatchMetadata = vprogs_l1_types::ChainBlockMetadata,
-            >,
+        I: IntoIterator<Item = crate::batch_processor::BundlePart<'b>>,
+        I::IntoIter: ExactSizeIterator,
     {
+        use tap::Tap;
+
         use crate::Write;
 
-        let mut buf = Vec::new();
-        buf.write(image_id);
-        buf.write(covenant_id);
-        buf.write(lane_key);
-        buf.write_blob(proof_bytes);
-        buf.write_many(leaf_order, |&idx| idx.to_le_bytes());
-        buf.encode_many(bundle.iter(), |w, (batch, translation, tx_journals)| {
-            Batch::encode(w, batch.checkpoint().metadata(), translation, tx_journals);
-        });
-        LaneProof::encode(&mut buf, lane_proof);
-        buf
+        Vec::new().tap_mut(|buf| {
+            buf.write(image_id);
+            buf.write(covenant_id);
+            buf.write(lane_key);
+            buf.write_blob(proof_bytes);
+            buf.write_many(leaf_order, |&idx| idx.to_le_bytes());
+            buf.encode_many(batches, Batch::encode);
+            LaneProof::encode(buf, lane_proof);
+        })
     }
 }

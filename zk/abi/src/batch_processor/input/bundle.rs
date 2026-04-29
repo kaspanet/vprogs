@@ -1,56 +1,52 @@
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 
+use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
 
-/// Bundle of batches with their host-side encode inputs.
+/// Bundle of batches with their encode inputs.
 pub struct Bundle<S: Store, P: Processor<S>>(Vec<BundleEntry<S, P>>);
 
-impl<S, P> Bundle<S, P>
-where
-    S: Store,
-    P: Processor<S, BatchMetadata = vprogs_l1_types::ChainBlockMetadata>,
-{
+impl<S: Store, P: Processor<S, BatchMetadata = ChainBlockMetadata>> Bundle<S, P> {
     /// Builds a bundle from scheduled batches, translations, and a journal-bytes extractor.
     pub fn new(
         batches: Vec<ScheduledBatch<S, P>>,
         translations: Vec<Vec<u32>>,
         journal_bytes: impl Fn(&P::TransactionArtifact) -> Vec<u8>,
     ) -> Self {
-        let tx_journals: Vec<Vec<Vec<u8>>> =
-            batches.iter().map(|b| b.tx_artifacts().map(|a| journal_bytes(&a)).collect()).collect();
-
         Self(
             batches
                 .into_iter()
                 .zip(translations)
-                .zip(tx_journals)
-                .map(|((b, t), j)| (b, t, j))
+                .map(|(b, t)| {
+                    let j = b.tx_artifacts().map(|a| journal_bytes(&a)).collect();
+                    (b, t, j)
+                })
                 .collect(),
         )
     }
 
-    /// Iterates over `(batch, batch_to_bundle_index, tx_journals)` tuples.
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = &BundleEntry<S, P>> {
-        self.0.iter()
+    /// Per-batch encode parts in scheduling order.
+    pub fn parts(&self) -> impl ExactSizeIterator<Item = BundlePart<'_>> {
+        self.0.iter().map(|(b, t, j)| (b.checkpoint().metadata(), t.as_slice(), j.as_slice()))
     }
 
     /// Iterates over the bundle's `ScheduledBatch`es in scheduling order.
-    pub fn batches(&self) -> impl Iterator<Item = &ScheduledBatch<S, P>> {
+    pub fn batches(&self) -> impl ExactSizeIterator<Item = &ScheduledBatch<S, P>> {
         self.0.iter().map(|(b, _, _)| b)
     }
 
-    /// Flattens the bundle's per-batch tx receipts in scheduling order.
+    /// All tx artifacts across the bundle in scheduling order.
     pub fn tx_receipts(&self) -> Vec<P::TransactionArtifact>
     where
         P::TransactionArtifact: Clone,
     {
-        self.0
-            .iter()
-            .flat_map(|(b, _, _)| b.tx_artifacts().map(|a| (*a).clone()).collect::<Vec<_>>())
-            .collect()
+        self.0.iter().flat_map(|(b, _, _)| b.tx_artifacts().map(Arc::unwrap_or_clone)).collect()
     }
 }
+
+/// Per-batch encode part: `(metadata, batch-to-bundle-index translation, per-tx journals)`.
+pub type BundlePart<'a> = (&'a ChainBlockMetadata, &'a [u32], &'a [Vec<u8>]);
 
 /// Per-batch entry: `(scheduled batch, batch-to-bundle-index translation, per-tx journals)`.
 type BundleEntry<S, P> = (ScheduledBatch<S, P>, Vec<u32>, Vec<Vec<u8>>);

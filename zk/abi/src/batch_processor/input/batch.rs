@@ -4,8 +4,7 @@ use vprogs_core_codec::{Reader, Result};
 
 use crate::batch_processor::TransactionJournals;
 
-/// One batch's portion of a bundle: per-chain-block context and the txs that landed on our lane in
-/// that block.
+/// One batch of a bundle: per-block context plus the lane txs in that block.
 pub struct Batch<'a> {
     /// DAG blue score of this batch's chain block.
     pub blue_score: u64,
@@ -48,9 +47,7 @@ impl<'a> Batch<'a> {
     #[cfg(feature = "host")]
     pub fn encode(
         buf: &mut Vec<u8>,
-        metadata: &vprogs_l1_types::ChainBlockMetadata,
-        batch_to_bundle_index: &[u32],
-        tx_journals: &[Vec<u8>],
+        (metadata, batch_to_bundle_index, tx_journals): crate::batch_processor::BundlePart<'_>,
     ) {
         use crate::Write;
 

@@ -8166,6 +8166,7 @@ dependencies = [
  "kaspa-rpc-core",
  "kaspa-seq-commit",
  "kaspa-smt",
+ "tap",
  "thiserror 2.0.18",
  "vprogs-core-codec",
  "vprogs-core-smt",

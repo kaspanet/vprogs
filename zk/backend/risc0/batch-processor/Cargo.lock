@@ -1852,6 +1852,7 @@ dependencies = [
  "kaspa-hashes",
  "kaspa-seq-commit",
  "kaspa-smt",
+ "tap",
  "thiserror",
  "vprogs-core-codec",
  "vprogs-core-smt",

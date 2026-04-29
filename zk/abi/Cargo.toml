@@ -24,6 +24,7 @@ kaspa-hashes                = { workspace = true }
 kaspa-rpc-core              = { workspace = true, optional = true }
 kaspa-seq-commit            = { workspace = true }
 kaspa-smt                   = { workspace = true }
+tap                         = { workspace = true }
 thiserror                   = { workspace = true, default-features = false }
 vprogs-core-codec           = { workspace = true }
 vprogs-core-smt             = { workspace = true }

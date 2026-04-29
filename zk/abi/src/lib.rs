@@ -22,7 +22,7 @@ pub mod batch_processor {
     pub use abi::Abi;
     pub use error_code::ErrorCode;
     #[cfg(feature = "host")]
-    pub use input::bundle::Bundle;
+    pub use input::bundle::{Bundle, BundlePart};
     pub use input::{
         batch::Batch, inputs::Inputs, lane_proof::LaneProof,
         transaction_journals::TransactionJournals,

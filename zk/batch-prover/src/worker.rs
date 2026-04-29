@@ -144,7 +144,7 @@ where
             &self.config.lane_key.as_bytes(),
             &proof_bytes,
             &leaf_order,
-            &bundle,
+            bundle.parts(),
             &resp,
         );
 
