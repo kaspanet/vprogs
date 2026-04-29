@@ -10,7 +10,7 @@
 //!    transaction-processor guest the batch's inner-proof verifications were checked against.
 //! 3. **Seq commitment freshness**: the journal's `new_seq_commit` equals
 //!    `OpChainblockSeqCommit(block_prove_to)` pushed at spend time, which itself is derived by the
-//!    guest from `new_lane_tip` — so the chain of UTXO-locked `lane_tip` values is load-bearing all
+//!    guest from `new_lane_tip` - so the chain of UTXO-locked `lane_tip` values is load-bearing all
 //!    the way through the seq-commit derivation, preventing rewinds.
 //! 4. **Proof validity**: `OpZkPrecompile` verifies the risc0 succinct receipt against the
 //!    configured image id.
@@ -286,7 +286,7 @@ fn verify_covenant_single_output(b: &mut ScriptBuilder) {
 /// `[journal_hash, image_id, control_id, hashfn]` so the final layout matches
 /// R0Succinct's pop order (top→bottom:
 /// `hashfn, control_id, image_id, journal, seal, control_digests, control_index, claim`).
-/// Kaspa PR #957 introduced the upstream `control_id` check — the sig_script supplies it
+/// Kaspa PR #957 introduced the upstream `control_id` check - the sig_script supplies it
 /// alongside `hashfn` right after `seal`, and this swap moves them past the redeem-derived
 /// `journal_hash, image_id`.
 fn verify_risc0_succinct(b: &mut ScriptBuilder) {

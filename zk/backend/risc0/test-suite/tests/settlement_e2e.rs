@@ -61,9 +61,9 @@ fn assert_settlement_structure(
     );
 
     let expected_len =
-        redeem_script_len(&parsed.prev_state, program_id, tx_image_id, ZkTag::R0Succinct);
+        redeem_script_len(parsed.prev_state, program_id, tx_image_id, ZkTag::R0Succinct);
     let expected_prev_redeem = build_redeem_script(
-        &parsed.prev_state,
+        parsed.prev_state,
         parsed.prev_lane_tip,
         expected_len,
         program_id,
@@ -74,7 +74,7 @@ fn assert_settlement_structure(
     assert_eq!(settlement.prev_redeem.len(), settlement.next_redeem.len());
 }
 
-/// K=1 — single-batch bundle. Verifies that the bundling pipeline produces a 224-byte
+/// K=1 - single-batch bundle. Verifies that the bundling pipeline produces a 224-byte
 /// settlement journal that can be wrapped in a host-side `Settlement::build` call.
 #[tokio::test(flavor = "multi_thread")]
 async fn batch_proof_is_directly_settleable_single_batch() {
@@ -147,10 +147,10 @@ async fn batch_proof_is_directly_settleable_single_batch() {
         covenant_id: covenant_id_hash,
         program_id: &program_id,
         tx_image_id: &tx_image_id,
-        prev_state: &parsed.prev_state,
+        prev_state: parsed.prev_state,
         prev_lane_tip: parsed.prev_lane_tip,
-        new_state: &parsed.new_state,
-        new_lane_tip: &parsed.new_lane_tip,
+        new_state: parsed.new_state,
+        new_lane_tip: parsed.new_lane_tip,
         block_prove_to: block_hashes[0],
         prev_outpoint: TransactionOutpoint::new(Hash::from_bytes([0xCD; 32]), 0),
         value: 100_000_000,
@@ -169,7 +169,7 @@ async fn batch_proof_is_directly_settleable_single_batch() {
     l1.shutdown().await;
 }
 
-/// K=2 — bundles two batches into one bundle proof + one settlement. Verifies that the
+/// K=2 - bundles two batches into one bundle proof + one settlement. Verifies that the
 /// bundle's outer journal carries the correct endpoint state (`prev_state` = pre-batch-1,
 /// `new_state` = post-batch-2) and that the same receipt is published to both batches.
 #[tokio::test(flavor = "multi_thread")]
@@ -269,11 +269,11 @@ async fn batch_proof_bundles_two_batches() {
         covenant_id: covenant_id_hash,
         program_id: &program_id,
         tx_image_id: &tx_image_id,
-        prev_state: &parsed.prev_state,
+        prev_state: parsed.prev_state,
         prev_lane_tip: parsed.prev_lane_tip,
-        new_state: &parsed.new_state,
-        new_lane_tip: &parsed.new_lane_tip,
-        // Anchor to the bundle's *final* block — the covenant only verifies one seq_commit.
+        new_state: parsed.new_state,
+        new_lane_tip: parsed.new_lane_tip,
+        // Anchor to the bundle's *final* block - the covenant only verifies one seq_commit.
         block_prove_to: block_hashes[1],
         prev_outpoint: TransactionOutpoint::new(Hash::from_bytes([0xCD; 32]), 0),
         value: 100_000_000,

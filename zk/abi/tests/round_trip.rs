@@ -31,24 +31,24 @@ fn state_transition_round_trip() {
     let tx_image_id = [0x77; 32];
 
     let mut buf = Vec::new();
-    let success = StateTransition {
-        prev_state,
-        prev_lane_tip: &prev_lane_tip,
-        new_state,
-        new_lane_tip,
-        new_seq_commit,
-        covenant_id: &covenant_id,
-        tx_image_id: &tx_image_id,
-    };
-    StateTransition::encode(&mut buf, &success);
+    StateTransition::encode(
+        &mut buf,
+        &prev_state,
+        &prev_lane_tip,
+        &new_state,
+        &new_lane_tip,
+        &new_seq_commit,
+        &covenant_id,
+        &tx_image_id,
+    );
     assert_eq!(buf.len(), StateTransition::SIZE);
 
     let decoded = StateTransition::decode(&buf).expect("decode");
-    assert_eq!(decoded.prev_state, prev_state);
+    assert_eq!(decoded.prev_state, &prev_state);
     assert_eq!(decoded.prev_lane_tip, &prev_lane_tip);
-    assert_eq!(decoded.new_state, new_state);
-    assert_eq!(decoded.new_lane_tip, new_lane_tip);
-    assert_eq!(decoded.new_seq_commit, new_seq_commit);
+    assert_eq!(decoded.new_state, &new_state);
+    assert_eq!(decoded.new_lane_tip, &new_lane_tip);
+    assert_eq!(decoded.new_seq_commit, &new_seq_commit);
     assert_eq!(decoded.covenant_id, &covenant_id);
     assert_eq!(decoded.tx_image_id, &tx_image_id);
 }

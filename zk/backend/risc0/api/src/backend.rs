@@ -25,7 +25,7 @@ pub struct Backend {
     transaction_image_id: [u8; 32],
     /// Wrapped ELF binary for batch aggregation proving.
     batch_elf: Vec<u8>,
-    /// Batch processor guest image ID — the covenant script pins against this id.
+    /// Batch processor guest image ID - the covenant script pins against this id.
     batch_image_id: [u8; 32],
 }
 
@@ -56,7 +56,7 @@ impl Backend {
     }
 
     /// Transaction-processor guest image id. The covenant hardcodes this in its redeem script
-    /// so the journal hash binds it — preventing the host from swapping in a backdoored
+    /// so the journal hash binds it - preventing the host from swapping in a backdoored
     /// inner verifier.
     pub fn transaction_image_id(&self) -> &[u8; 32] {
         &self.transaction_image_id

@@ -11,7 +11,7 @@ pub struct LaneProof<'a> {
     /// Serialized `kaspa_smt::proof::OwnedSmtProof` for `lane_key` against the final block's
     /// post-update `lanes_root`.
     pub lane_smt_proof: &'a [u8],
-    /// `seq_commit` of the bundle's final-block selected parent — the `H_seq` chain input
+    /// `seq_commit` of the bundle's final-block selected parent - the `H_seq` chain input
     /// for `seq_commit = H_seq(parent_seq_commit, state_root)`.
     pub parent_seq_commit: &'a [u8; 32],
 }

@@ -20,13 +20,11 @@ use crate::{
     },
 };
 
-/// Bundle proof entry point. Holds bundle-wide state across the batch loop and the
-/// backend-specific inner-proof verifier callback.
+/// Bundle proof entry point.
 pub struct Abi<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> {
-    /// Decoded bundle inputs (bundle-wide proof + leaf_order, K batches, settlement).
+    /// Decoded bundle inputs.
     pub inputs: Inputs<'a>,
-    /// Latest L2 value hashes indexed by bundle-wide resource_index. Carried across all
-    /// batches — bundling does not partition state.
+    /// Latest L2 value hashes indexed by bundle-wide resource_index.
     pub value_hashes: Vec<&'a [u8; 32]>,
     /// Inverse of `leaf_order`: `bundle_idx_to_leaf_pos[bundle_idx] = leaf_pos`. Built once
     /// at scatter time so the per-tx `resource_id` cross-check is O(1).
@@ -36,19 +34,14 @@ pub struct Abi<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> {
 }
 
 impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
-    /// Reads inputs from the host, verifies all batches, derives `new_state` and
-    /// `new_seq_commit`, and writes the 224-byte settlement journal. Panics on verification
-    /// failure.
+    /// Reads inputs, verifies the bundle, and writes the settlement journal.
     pub fn process_batch(host: &mut impl Read, journal: &mut impl Write, verify_journal: V) {
         let input_bytes = host.read_blob();
-        let state =
-            Abi::<'_, V>::verify(&input_bytes, verify_journal).expect("batch verification failed");
-        StateTransition::encode(journal, &state);
+        Abi::<'_, V>::verify(&input_bytes, journal, verify_journal).expect("batch invalid");
     }
 
-    /// Decodes a bundle, verifies each batch in order chaining lane and L2 state, derives
-    /// the bundle-wide endpoint values, and builds the settlement journal.
-    fn verify(inputs_buf: &'a [u8], verify_journal: V) -> Result<StateTransition<'a>> {
+    /// Verifies the bundle and writes the settlement journal.
+    fn verify(inputs_buf: &'a [u8], journal: &mut impl Write, verify_journal: V) -> Result<()> {
         let inputs = Inputs::decode(inputs_buf)?;
         if inputs.batches.is_empty() {
             return Err(Error::from(ErrorCode::EmptyBundle));
@@ -92,47 +85,30 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
         let prev_state = this.inputs.proof.root::<Blake3>()?;
         let new_state = this.inputs.proof.compute_root::<Blake3>(|i| this.latest_hash(i))?;
 
-        // Final-block seq_commit derivation.
-        let new_lane_leaf =
-            smt_leaf_hash(&SmtLeafInput { lane_tip: &new_lane_tip, blue_score: last_blue_score });
-        let lanes_smt_proof = OwnedSmtProof::from_bytes(this.inputs.lane_proof.lane_smt_proof)
-            .map_err(|e| Error::Decode(format!("lane_smt_proof: {e}")))?;
-        let new_lanes_root = lanes_smt_proof
-            .compute_root::<SeqCommitActiveNode>(&lane_key_hash, Some(new_lane_leaf))
-            .map_err(|e| Error::Decode(format!("lane_smt_proof compute_root: {e}")))?;
-        let payload_and_ctx_digest =
-            Hash::from_bytes(*this.inputs.lane_proof.payload_and_ctx_digest);
-        let state_root_seq = seq_state_root(&SeqState {
-            lanes_root: &new_lanes_root,
-            payload_and_ctx_digest: &payload_and_ctx_digest,
-        });
-        let parent_seq_commit_hash = Hash::from_bytes(*this.inputs.lane_proof.parent_seq_commit);
-        let new_seq_commit = seq_commit(&SeqCommitInput {
-            parent_seq_commit: &parent_seq_commit_hash,
-            state_root: &state_root_seq,
-        });
+        let new_seq_commit =
+            this.derive_new_seq_commit(&new_lane_tip, last_blue_score, &lane_key_hash)?;
 
-        Ok(StateTransition {
-            prev_state,
-            prev_lane_tip: bundle_prev_lane_tip,
-            new_state,
-            new_lane_tip: new_lane_tip.as_bytes(),
-            new_seq_commit: new_seq_commit.as_bytes(),
-            covenant_id: this.inputs.covenant_id,
-            tx_image_id: this.inputs.image_id,
-        })
+        StateTransition::encode(
+            journal,
+            &prev_state,
+            bundle_prev_lane_tip,
+            &new_state,
+            &new_lane_tip.as_bytes(),
+            &new_seq_commit.as_bytes(),
+            this.inputs.covenant_id,
+            this.inputs.image_id,
+        );
+        Ok(())
     }
 
-    /// Verifies one batch: cross-checks each tx receipt's metadata against the batch's
-    /// derived context, applies state mutations through the bundle-wide `value_hashes`, and
-    /// returns the batch's `new_lane_tip` for the caller to chain forward.
+    /// Verifies one batch and returns its derived `new_lane_tip` for the caller to chain.
     fn verify_batch(
         &mut self,
         batch: &Batch<'a>,
         lane_key_hash: &Hash,
         prev_lane_tip_carry: Option<Hash>,
     ) -> Result<Hash> {
-        // Per-batch state — reset each call.
+        // Per-batch state - reset each call.
         let context_hash = mergeset_context_hash(&MergesetContext {
             timestamp: seq_commit_timestamp(batch.parent_timestamp),
             daa_score: batch.daa_score,
@@ -223,11 +199,9 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
         Ok(new_lane_tip)
     }
 
-    /// Translates a tx receipt's batch-local `resource_index` into a bundle-wide
-    /// `value_hashes` index, then validates the input commitment. Cross-checks that the
-    /// receipt's claimed `resource_id` matches the SMT proof leaf at the bundle position
-    /// — without this, a buggy or malicious host could mis-route a tx receipt to the wrong
-    /// resource via a forged `batch_to_bundle_index` table.
+    /// Validates a tx receipt's input commitment, translating its batch-local index to
+    /// the bundle-wide one and cross-checking `resource_id` against the SMT proof leaf -
+    /// guards against forged `batch_to_bundle_index` translation tables.
     fn check_input_resource(
         &mut self,
         batch: &Batch<'a>,
@@ -257,5 +231,33 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
     /// `leaf_order` permutation.
     fn latest_hash(&self, leaf_pos: usize) -> &'a [u8; 32] {
         self.value_hashes[self.inputs.leaf_order[leaf_pos] as usize]
+    }
+
+    /// Derives the bundle's final-block `seq_commit` from `new_lane_tip` and
+    /// `self.inputs.lane_proof`.
+    fn derive_new_seq_commit(
+        &self,
+        new_lane_tip: &Hash,
+        last_blue_score: u64,
+        lane_key_hash: &Hash,
+    ) -> Result<Hash> {
+        let new_lane_leaf =
+            smt_leaf_hash(&SmtLeafInput { lane_tip: new_lane_tip, blue_score: last_blue_score });
+        let lanes_smt_proof = OwnedSmtProof::from_bytes(self.inputs.lane_proof.lane_smt_proof)
+            .map_err(|e| Error::Decode(format!("lane_smt_proof: {e}")))?;
+        let new_lanes_root = lanes_smt_proof
+            .compute_root::<SeqCommitActiveNode>(lane_key_hash, Some(new_lane_leaf))
+            .map_err(|e| Error::Decode(format!("lane_smt_proof compute_root: {e}")))?;
+        let payload_and_ctx_digest =
+            Hash::from_bytes(*self.inputs.lane_proof.payload_and_ctx_digest);
+        let state_root_seq = seq_state_root(&SeqState {
+            lanes_root: &new_lanes_root,
+            payload_and_ctx_digest: &payload_and_ctx_digest,
+        });
+        let parent_seq_commit = Hash::from_bytes(*self.inputs.lane_proof.parent_seq_commit);
+        Ok(seq_commit(&SeqCommitInput {
+            parent_seq_commit: &parent_seq_commit,
+            state_root: &state_root_seq,
+        }))
     }
 }

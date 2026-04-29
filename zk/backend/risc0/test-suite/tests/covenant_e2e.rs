@@ -32,7 +32,7 @@ async fn covenant_bootstrap_is_accepted_on_simnet() {
     // Mine enough blocks so at least one coinbase UTXO matures.
     l1.mine_utxos(1).await;
 
-    // Build a redeem script pinned to the batch-processor image id — the covenant binds
+    // Build a redeem script pinned to the batch-processor image id - the covenant binds
     // directly to the batch guest since it now emits the settlement journal itself.
     let tx_elf = transaction_processor_elf();
     let batch_elf = batch_processor_elf();

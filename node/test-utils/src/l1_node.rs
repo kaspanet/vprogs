@@ -314,7 +314,7 @@ impl L1Node {
             pay_to_address_script(&self.address),
         ));
 
-        // Sign — this overwrites both inputs' signature_scripts and sets default mass.
+        // Sign - this overwrites both inputs' signature_scripts and sets default mass.
         let signed = sign(
             MutableTransaction::with_entries(tx, vec![covenant_entry, fee_entry]),
             self.keypair,

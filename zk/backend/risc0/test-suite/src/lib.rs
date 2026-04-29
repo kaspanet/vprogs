@@ -34,12 +34,6 @@ pub fn batch_processor_elf() -> Vec<u8> {
 }
 
 /// Computes `lane_tip_next` for a single batch's worth of activity.
-///
-/// Mirrors the per-section derivation in `vprogs_zk_abi::batch_processor::abi::Abi::verify_section`
-/// — used by tests to chain `prev_lane_tip` across bundle sections without depending on the
-/// bridge's `advance_lane`. In production the bridge populates `ChainBlockMetadata.lane_tip`
-/// per block; tests that build metadata fresh from `metadata_for_block` need to derive the
-/// next section's `prev_lane_tip` manually.
 pub fn compute_section_lane_tip(
     metadata: &ChainBlockMetadata,
     txs: &[(u32, &L1Transaction)],

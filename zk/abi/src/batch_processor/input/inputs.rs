@@ -28,7 +28,7 @@ use crate::{
 ///
 /// `new_seq_commit` derivation uses the *final* batch's `blue_score` together with the
 /// bundle-wide `lane_proof` (pre-formed `payload_and_ctx_digest`, `lane_smt_proof`,
-/// `parent_seq_commit`) — no per-batch seq-commit derivation.
+/// `parent_seq_commit`) - no per-batch seq-commit derivation.
 pub struct Inputs<'a> {
     /// Transaction processor guest image ID used to verify each inner tx journal.
     pub image_id: &'a [u8; 32],
@@ -60,14 +60,7 @@ impl<'a> Inputs<'a> {
         })
     }
 
-    /// Encodes a bundle input to bytes (host-side).
-    ///
-    /// Takes the bundle as `&Bundle<S, P>` — owning per-batch data: the `ScheduledBatch`
-    /// (which carries `ChainBlockMetadata` via its checkpoint), the host-built
-    /// `batch_to_bundle_index` translation, and the per-tx journal byte slices. The kaspa
-    /// node's `GetSeqCommitLaneProofResponse` is consumed directly — `LaneProof<'a>`
-    /// is the zero-copy decode view of the same fields, so the wire layout for settlement
-    /// is symmetric.
+    /// Encodes a bundle input to bytes.
     #[cfg(feature = "host")]
     pub fn encode<S, P>(
         image_id: &[u8; 32],

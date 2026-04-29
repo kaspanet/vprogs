@@ -17,9 +17,7 @@ where
     S: Store,
     P: Processor<S, BatchMetadata = vprogs_l1_types::ChainBlockMetadata>,
 {
-    /// Builds a bundle from per-batch scheduled batches and translations, materializing
-    /// tx journal byte slices via the supplied `journal_bytes` extractor (typically the
-    /// backend's `journal_bytes` function pointer).
+    /// Builds a bundle from scheduled batches, translations, and a journal-bytes extractor.
     pub fn new<F>(
         batches: Vec<ScheduledBatch<S, P>>,
         translations: Vec<Vec<u32>>,
@@ -61,8 +59,7 @@ where
         self.0.iter().map(|(b, _, _)| b)
     }
 
-    /// Flattens the bundle's per-batch tx receipts in scheduling order. Used by the
-    /// backend's `prove_batch` for inner-receipt composition.
+    /// Flattens the bundle's per-batch tx receipts in scheduling order.
     pub fn tx_receipts(&self) -> Vec<P::TransactionArtifact>
     where
         P::TransactionArtifact: Clone,

@@ -41,7 +41,7 @@ pub struct SettlementInput<'a> {
     /// State root after this batch.
     pub new_state: &'a [u8; 32],
     /// Lane tip after this batch (locks into the continuation UTXO's redeem prefix and feeds
-    /// into the guest's `seq_commit` derivation — rewind-resistant).
+    /// into the guest's `seq_commit` derivation - rewind-resistant).
     pub new_lane_tip: &'a [u8; 32],
     /// L1 chain block whose seq commitment the covenant script anchors `new_seq_commit` to.
     pub block_prove_to: Hash,

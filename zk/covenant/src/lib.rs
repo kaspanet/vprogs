@@ -10,7 +10,7 @@
 //! - [`settlement`]: the host-side Kaspa transaction builder.
 //!
 //! The 192-byte settlement journal format is defined once in [`vprogs_zk_abi::batch_processor`]
-//! as [`StateTransition`] — re-exported here so host-side callers can decode it without adding
+//! as [`StateTransition`] - re-exported here so host-side callers can decode it without adding
 //! a direct dependency on the abi crate.
 
 pub mod bootstrap;

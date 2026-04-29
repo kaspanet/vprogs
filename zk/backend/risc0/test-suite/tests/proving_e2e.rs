@@ -105,8 +105,8 @@ async fn batch_proof_two_transactions() {
 
     let state = StateTransition::decode(&journal).expect("journal should decode");
     assert_ne!(state.prev_state, state.new_state, "state should change after counter increment");
-    assert_eq!(state.prev_state, EMPTY_HASH, "prev_state should be empty (no prior state)");
-    assert_eq!(state.new_state, storage.root(1), "new_state should match store's version 1");
+    assert_eq!(state.prev_state, &EMPTY_HASH, "prev_state should be empty (no prior state)");
+    assert_eq!(state.new_state, &storage.root(1), "new_state should match store's version 1");
 
     let r1_data = StateVersion::get(&storage, 1, &ResourceId::for_test(1))
         .expect("resource 1 should have committed data");
@@ -160,7 +160,11 @@ async fn batch_proof_two_transactions() {
     let journal_2 = Backend::journal_bytes(&receipt_2);
 
     let state_2 = StateTransition::decode(&journal_2).expect("journal should decode");
-    assert_eq!(state_2.prev_state, storage.root(1), "batch 2 prev_state should chain from batch 1");
+    assert_eq!(
+        state_2.prev_state,
+        &storage.root(1),
+        "batch 2 prev_state should chain from batch 1"
+    );
     assert_ne!(state_2.prev_state, state_2.new_state, "state should change again");
 
     let r1_v2 = StateVersion::get(&storage, 2, &ResourceId::for_test(1))
@@ -272,8 +276,8 @@ async fn batch_proof_bundle_of_two() {
     assert_eq!(journal_1, journal_2, "bundle publishes the same receipt to every batch");
 
     let state = StateTransition::decode(&journal_1).expect("bundle journal should decode");
-    assert_eq!(state.prev_state, EMPTY_HASH, "bundle prev_state is the bundle's start");
-    assert_eq!(state.new_state, storage.root(2), "bundle new_state is post-batch-2 root");
+    assert_eq!(state.prev_state, &EMPTY_HASH, "bundle prev_state is the bundle's start");
+    assert_eq!(state.new_state, &storage.root(2), "bundle new_state is post-batch-2 root");
 
     // Per-resource state: counter incremented twice (1 → 2) by the two batches in the bundle.
     let r1_v2 = StateVersion::get(&storage, 2, &ResourceId::for_test(1))

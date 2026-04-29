@@ -5,7 +5,7 @@ use kaspa_hashes::Hash;
 /// Static configuration for the batch prover.
 ///
 /// Bundles K consecutive batches into a single proof + single settlement transaction. K=1
-/// degenerates to per-batch proving — the same circuit handles both regimes via the
+/// degenerates to per-batch proving - the same circuit handles both regimes via the
 /// batch-loop ABI.
 #[derive(Clone, Debug)]
 pub struct BatchProverConfig {
