@@ -13,7 +13,7 @@ use vprogs_core_smt::Blake3;
 
 use crate::{
     Error, Read, Result, Write,
-    batch_processor::{Batch, ErrorCode, Inputs, StateTransition, TransactionJournals},
+    batch_processor::{Batch, ErrorCode, Inputs, StateTransition},
     transaction_processor::{
         BatchMetadata, InputResourceCommitment, JournalEntries, OutputCommitment,
         OutputResourceCommitment,
@@ -133,8 +133,7 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
             }
         }
 
-        // Iterate this batch's tx journals from the wire buffer.
-        for tx_journal in TransactionJournals::new(batch.tx_journals_buf) {
+        for tx_journal in batch.tx_journals {
             let tx_journal = tx_journal?;
             (self.verify_journal)(self.inputs.image_id, tx_journal)?;
             let entry = JournalEntries::decode(tx_journal)?;

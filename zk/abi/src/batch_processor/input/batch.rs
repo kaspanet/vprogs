@@ -2,35 +2,29 @@ use alloc::vec::Vec;
 
 use vprogs_core_codec::{Reader, Result};
 
-/// One batch's portion of a bundle: the per-chain-block context and the txs that landed on
-/// our lane in that block.
-///
-/// A bundle proof carries K of these in scheduling order. Per-batch guest-side state
-/// (activity digest, expected metadata, last_tx_index, derived context_hash) resets at
-/// each batch boundary; bundle-wide state (`value_hashes`, `current_lane_tip`) carries
-/// forward.
+use crate::batch_processor::TransactionJournals;
+
+/// One batch's portion of a bundle: per-chain-block context and the txs that landed on our lane in
+/// that block.
 pub struct Batch<'a> {
     /// DAG blue score of this batch's chain block.
     pub blue_score: u64,
     /// DAA score of this batch's chain block.
     pub daa_score: u64,
-    /// Selected-parent timestamp (used by `mergeset_context_hash`'s `seq_commit_timestamp`).
+    /// Selected-parent timestamp.
     pub parent_timestamp: u64,
     /// Lane tip entering this batch's block.
     pub prev_lane_tip: &'a [u8; 32],
     /// Blue score at which the lane was last active before this block.
     pub lane_blue_score: u64,
-    /// True when the lane was silent past the finality window and re-anchors on
-    /// `parent_seq_commit` instead of `prev_lane_tip`.
+    /// True when the lane re-anchors on `parent_seq_commit` instead of `prev_lane_tip`.
     pub lane_expired: bool,
     /// `seq_commit` of this block's selected parent (used iff `lane_expired`).
     pub parent_seq_commit: &'a [u8; 32],
-    /// Translation from this batch's batch-local `resource_index` to the bundle-wide
-    /// resource_index space (= position into `Inputs::leaf_order` / `value_hashes`).
+    /// Maps batch-local `resource_index` to bundle-wide resource_index.
     pub batch_to_bundle_index: Vec<u32>,
-    /// Wire bytes for this batch's per-tx journal entries. Construct a
-    /// [`TransactionJournals`] over this slice when iterating.
-    pub tx_journals_buf: &'a [u8],
+    /// Per-tx journal entries.
+    pub tx_journals: TransactionJournals<'a>,
 }
 
 impl<'a> Batch<'a> {
@@ -46,7 +40,7 @@ impl<'a> Batch<'a> {
             parent_seq_commit: buf.array::<32>("parent_seq_commit")?,
             batch_to_bundle_index: buf
                 .many("batch_to_bundle", |b| b.le_u32("batch_to_bundle_index"))?,
-            tx_journals_buf: buf.blob("tx_journals")?,
+            tx_journals: TransactionJournals::new(buf.blob("tx_journals")?),
         })
     }
 
