@@ -390,11 +390,6 @@ impl BridgeWorker {
             let (lane_tip, lane_blue_score, lane_expired) =
                 self.advance_lane(&parent_meta, &accepted_transactions, header);
 
-            // Settlement-only fields (`lane_smt_proof`, `payload_and_ctx_digest`, the
-            // final-block kip21 `parent_seq_commit`) are no longer carried per block — they
-            // get fetched on demand at bundle boundary via `get_seq_commit_lane_proof`.
-            // The per-block `prev_seq_commit` here is the chain parent's seq_commit, kept
-            // because the guest's lane_expired re-anchor path needs it per section.
             let checkpoint = self.virtual_chain.advance_tip(ChainBlockMetadata {
                 hash: header.hash.expect("missing hash"),
                 blue_score: header.blue_score.expect("missing blue_score"),
@@ -421,10 +416,6 @@ impl BridgeWorker {
     }
 
     /// Returns the next `(lane_tip, lane_blue_score, lane_expired)` for this block.
-    ///
-    /// `lane_expired` is true when this block's blue_score exceeds the parent's
-    /// `lane_blue_score` by more than the finality window — in which case the lane tip
-    /// re-anchors on the parent block's `seq_commit` instead of the previous `lane_tip`.
     fn advance_lane(
         &self,
         parent: &ChainBlockMetadata,
