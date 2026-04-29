@@ -422,6 +422,7 @@ impl BridgeWorker {
         accepted_transactions: &[(u32, L1Transaction)],
         header: &RpcOptionalHeader,
     ) -> ([u8; 32], u64, bool) {
+        // Check whether the lane has gone silent past the finality window and needs to reset.
         let blue_score = header.blue_score.expect("missing blue_score");
         let lane_expired = blue_score.saturating_sub(parent.lane_blue_score) > self.finality_depth;
 
