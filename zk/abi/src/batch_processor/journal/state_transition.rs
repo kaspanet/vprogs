@@ -32,9 +32,9 @@ pub struct StateTransition<'a> {
     /// State root after this batch.
     pub new_state: [u8; 32],
     /// Lane tip after applying this batch — locked into the next covenant UTXO's redeem
-    /// prefix. Owned: guest-derived from kip21 `lane_tip_next`.
+    /// prefix. Owned: guest-derived from `lane_tip_next`.
     pub new_lane_tip: [u8; 32],
-    /// Block-header seq-commit derived from `new_lane_tip` + kip21 ingredients. Covenant
+    /// Block-header seq-commit derived from `new_lane_tip` + lane-proof ingredients. Covenant
     /// cross-checks against `OpChainblockSeqCommit(block_prove_to)`. Owned.
     pub new_seq_commit: [u8; 32],
     /// Covenant id the settlement binds to.

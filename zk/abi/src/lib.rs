@@ -11,7 +11,7 @@ pub mod batch_processor {
         #[cfg(feature = "host")]
         pub(crate) mod bundle;
         pub(crate) mod inputs;
-        pub(crate) mod settlement_context;
+        pub(crate) mod lane_proof;
         pub(crate) mod transaction_journals;
     }
 
@@ -24,7 +24,7 @@ pub mod batch_processor {
     #[cfg(feature = "host")]
     pub use input::bundle::Bundle;
     pub use input::{
-        batch::Batch, inputs::Inputs, settlement_context::SettlementContext,
+        batch::Batch, inputs::Inputs, lane_proof::LaneProof,
         transaction_journals::TransactionJournals,
     };
     pub use journal::state_transition::StateTransition;

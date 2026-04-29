@@ -33,7 +33,7 @@ pub fn batch_processor_elf() -> Vec<u8> {
     })
 }
 
-/// Computes the kip21 `lane_tip_next` for a single batch's worth of activity.
+/// Computes `lane_tip_next` for a single batch's worth of activity.
 ///
 /// Mirrors the per-section derivation in `vprogs_zk_abi::batch_processor::abi::Abi::verify_section`
 /// — used by tests to chain `prev_lane_tip` across bundle sections without depending on the

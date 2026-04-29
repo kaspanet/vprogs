@@ -6,7 +6,7 @@ use kaspa_hashes::Hash;
 ///
 /// Bundles K consecutive batches into a single proof + single settlement transaction. K=1
 /// degenerates to per-batch proving — the same circuit handles both regimes via the
-/// section-loop ABI.
+/// batch-loop ABI.
 #[derive(Clone, Debug)]
 pub struct BatchProverConfig {
     /// How many scheduled batches to bundle into a single bundle proof. Larger bundles

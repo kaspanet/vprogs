@@ -23,8 +23,8 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend> {
     store: S,
     /// Batches waiting to be proved, in scheduling order.
     pending: VecDeque<ScheduledBatch<S, P>>,
-    /// Connected kaspa gRPC client. Used to fetch the bundle's final-block settlement
-    /// context via `get_seq_commit_lane_proof` (PR #961).
+    /// Connected kaspa gRPC client. Used to fetch the bundle's final-block lane proof
+    /// via `get_seq_commit_lane_proof`.
     grpc_client: GrpcClient,
     /// Static config (bundle size, lane key).
     config: BatchProverConfig,
@@ -112,11 +112,11 @@ where
         let (proof_bytes, leaf_order) =
             self.store.prove(&bundle_resources, prev_version).expect("proof");
 
-        // Fetch settlement context for the bundle's FINAL block via PR #961's RPC.
-        let last_meta = batches.last().unwrap().checkpoint().metadata().clone();
+        // Fetch the lane proof for the bundle's FINAL block.
+        let last_block_hash = batches.last().unwrap().checkpoint().metadata().hash;
         let resp = self
             .grpc_client
-            .get_seq_commit_lane_proof(last_meta.hash, self.config.lane_key)
+            .get_seq_commit_lane_proof(last_block_hash, self.config.lane_key)
             .await
             .expect("get_seq_commit_lane_proof");
 

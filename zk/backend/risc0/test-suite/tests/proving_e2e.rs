@@ -219,7 +219,7 @@ async fn batch_proof_bundle_of_two() {
     let lane_key = [0u8; 32];
     let metadata_1 = metadata_for_block(&l1, block_hashes[0]).await;
     let batch_1 = scheduler.schedule(
-        metadata_1.clone(),
+        metadata_1,
         vec![
             SchedulerTransaction::new(
                 0,

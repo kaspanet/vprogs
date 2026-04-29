@@ -7,15 +7,10 @@ use vprogs_core_smt::proving::Proof;
 use crate::batch_processor::Bundle;
 use crate::{
     Result,
-    batch_processor::{Batch, SettlementContext},
+    batch_processor::{Batch, LaneProof},
 };
 
 /// Decoded batch processor input (zero-copy).
-///
-/// A bundle proof advances the L2 state from `prev_state` to `new_state` and the lane tip
-/// from the first section's `prev_lane_tip` to the last section's derived `new_lane_tip`,
-/// across K batches that share a single bundle-wide SMT proof. K=1 is the degenerate single-
-/// batch case.
 ///
 /// Wire layout:
 ///
@@ -23,17 +18,17 @@ use crate::{
 /// image_id(32) | covenant_id(32) | lane_key(32)
 ///   | proof_length(u32 LE) | proof bytes
 ///   | leaf_order_count(u32 LE) | leaf_order entries (u32 LE each)
-///   | num_sections(u32 LE) | sections (Batch wire format, K of them)
-///   | settlement_context (SettlementContext wire format)
+///   | num_batches(u32 LE) | batches (Batch wire format, K of them)
+///   | lane_proof (LaneProof wire format)
 /// ```
 ///
-/// `prev_state` is the bundle-wide SMT root before any section's writes apply (= `proof.root()`).
-/// `new_state` is the bundle-wide SMT root after every section's writes have been chained
+/// `prev_state` is the bundle-wide SMT root before any batch's writes apply (= `proof.root()`).
+/// `new_state` is the bundle-wide SMT root after every batch's writes have been chained
 /// through bundle-wide `value_hashes` and re-rooted via `proof.compute_root(...)`.
 ///
-/// `new_seq_commit` derivation uses the *final* section's `blue_score` together with
-/// `settlement_context` (pre-formed `payload_and_ctx_digest`, `lane_smt_proof`,
-/// `parent_seq_commit`) — no per-section seq-commit derivation.
+/// `new_seq_commit` derivation uses the *final* batch's `blue_score` together with the
+/// bundle-wide `lane_proof` (pre-formed `payload_and_ctx_digest`, `lane_smt_proof`,
+/// `parent_seq_commit`) — no per-batch seq-commit derivation.
 pub struct Inputs<'a> {
     /// Transaction processor guest image ID used to verify each inner tx journal.
     pub image_id: &'a [u8; 32],
@@ -41,16 +36,14 @@ pub struct Inputs<'a> {
     pub covenant_id: &'a [u8; 32],
     /// Our lane's key. Bundle-wide (one lane per bundle).
     pub lane_key: &'a [u8; 32],
-    /// Bundle-wide L2 state SMT proof at `v_pre_bundle`, covering `union(R_1..R_K)` of
-    /// resources touched across all sections.
+    /// SMT proof at `v_pre_bundle`, covering union of resources touched across batches.
     pub proof: Proof<'a>,
     /// Bundle-wide leaf-order permutation: `leaf_order[leaf_pos] = bundle_resource_index`.
-    /// Length equals `proof.leaves.len()`.
     pub leaf_order: Vec<u32>,
-    /// K batch sections in scheduling order.
+    /// Batches in scheduling order.
     pub batches: Vec<Batch<'a>>,
     /// Final-block ingredients for the single `new_seq_commit` derivation.
-    pub settlement: SettlementContext<'a>,
+    pub lane_proof: LaneProof<'a>,
 }
 
 impl<'a> Inputs<'a> {
@@ -63,7 +56,7 @@ impl<'a> Inputs<'a> {
             proof: Proof::decode(buf.blob("proof")?)?,
             leaf_order: buf.many("leaf_order", |b| b.le_u32("leaf_order"))?,
             batches: buf.many("batches", Batch::decode)?,
-            settlement: SettlementContext::decode(&mut buf)?,
+            lane_proof: LaneProof::decode(&mut buf)?,
         })
     }
 
@@ -72,7 +65,7 @@ impl<'a> Inputs<'a> {
     /// Takes the bundle as `&Bundle<S, P>` — owning per-batch data: the `ScheduledBatch`
     /// (which carries `ChainBlockMetadata` via its checkpoint), the host-built
     /// `batch_to_bundle_index` translation, and the per-tx journal byte slices. The kaspa
-    /// node's `GetSeqCommitLaneProofResponse` is consumed directly — `SettlementContext<'a>`
+    /// node's `GetSeqCommitLaneProofResponse` is consumed directly — `LaneProof<'a>`
     /// is the zero-copy decode view of the same fields, so the wire layout for settlement
     /// is symmetric.
     #[cfg(feature = "host")]
@@ -83,7 +76,7 @@ impl<'a> Inputs<'a> {
         proof_bytes: &[u8],
         leaf_order: &[u32],
         bundle: &Bundle<S, P>,
-        settlement: &kaspa_rpc_core::GetSeqCommitLaneProofResponse,
+        lane_proof: &kaspa_rpc_core::GetSeqCommitLaneProofResponse,
     ) -> Vec<u8>
     where
         S: vprogs_storage_types::Store,
@@ -116,7 +109,7 @@ impl<'a> Inputs<'a> {
             );
         }
 
-        SettlementContext::encode(&mut buf, settlement);
+        LaneProof::encode(&mut buf, lane_proof);
 
         buf
     }

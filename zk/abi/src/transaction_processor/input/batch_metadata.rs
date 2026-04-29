@@ -12,7 +12,7 @@ use crate::{Result, Write};
 pub struct BatchMetadata<'a> {
     /// L1 block hash this tx was accepted in.
     pub block_hash: &'a [u8; 32],
-    /// Mergeset context hash for the chain block - exposes the kip21 context digest to the VM as
+    /// Mergeset context hash for the chain block - exposes the context digest to the VM as
     /// a source of on-chain randomness and anchors cross-tx consistency within a block group.
     pub context_hash: &'a [u8; 32],
 }

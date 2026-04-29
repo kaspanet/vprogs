@@ -10,16 +10,16 @@ pub enum ErrorCode {
     ResourceIndexOutOfRange = 2,
     /// Resource value hash does not match the expected pre-state.
     ResourceHashMismatch = 3,
-    /// Block hash differs from the first transaction in the section.
+    /// Block hash differs from the first transaction in the batch.
     BlockHashMismatch = 4,
-    /// Context hash differs from the first transaction in the section, or from the section's
+    /// Context hash differs from the first transaction in the batch, or from the batch's
     /// derived context hash.
     ContextHashMismatch = 5,
     /// Inner transaction journal verification failed.
     JournalVerificationFailed = 6,
-    /// Bundle has zero sections.
+    /// Bundle has zero batches.
     EmptyBundle = 7,
-    /// A non-expired section's `prev_lane_tip` does not match the previous section's derived
+    /// A non-expired batch's `prev_lane_tip` does not match the previous batch's derived
     /// `new_lane_tip`.
     LaneChainMismatch = 8,
     /// Tx receipt's `resource_id` does not match the SMT proof leaf at the bundle position

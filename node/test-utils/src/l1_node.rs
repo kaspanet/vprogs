@@ -212,12 +212,12 @@ impl L1Node {
         self.build_subnet_payload_transactions(payloads, SUBNETWORK_ID_NATIVE, TX_VERSION).await
     }
 
-    /// Builds signed transactions carrying `payloads` and tagged with the given KIP-21 user-lane
+    /// Builds signed transactions carrying `payloads` and tagged with the given user-lane
     /// `subnetwork_id` and `tx_version`. Used by tests that need lane activity (e.g. settlement
     /// E2E with our rollup lane). For native subnetwork, prefer
     /// [`Self::build_payload_transactions`].
     ///
-    /// `subnetwork_id` must satisfy KIP-21's user-lane shape `[4-byte namespace, 16 zero bytes]`,
+    /// `subnetwork_id` must satisfy the user-lane shape `[4-byte namespace, 16 zero bytes]`,
     /// and `tx_version` must be `>= TX_VERSION_POST_COV_HF` for non-native subnetworks.
     pub async fn build_subnet_payload_transactions(
         &self,

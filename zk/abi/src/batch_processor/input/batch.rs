@@ -5,18 +5,18 @@ use vprogs_core_codec::{Reader, Result};
 /// One batch's portion of a bundle: the per-chain-block context and the txs that landed on
 /// our lane in that block.
 ///
-/// A bundle proof carries K of these in scheduling order. Per-section state in the batch
-/// guest (activity digest, expected metadata, last_tx_index, derived context_hash) resets at
-/// each section boundary; bundle-wide state (`value_hashes`, `current_lane_tip`) carries
+/// A bundle proof carries K of these in scheduling order. Per-batch guest-side state
+/// (activity digest, expected metadata, last_tx_index, derived context_hash) resets at
+/// each batch boundary; bundle-wide state (`value_hashes`, `current_lane_tip`) carries
 /// forward.
 pub struct Batch<'a> {
-    /// DAG blue score of this section's chain block.
+    /// DAG blue score of this batch's chain block.
     pub blue_score: u64,
-    /// DAA score of this section's chain block.
+    /// DAA score of this batch's chain block.
     pub daa_score: u64,
     /// Selected-parent timestamp (used by `mergeset_context_hash`'s `seq_commit_timestamp`).
     pub parent_timestamp: u64,
-    /// Lane tip entering this section's block.
+    /// Lane tip entering this batch's block.
     pub prev_lane_tip: &'a [u8; 32],
     /// Blue score at which the lane was last active before this block.
     pub lane_blue_score: u64,
@@ -28,7 +28,7 @@ pub struct Batch<'a> {
     /// Translation from this batch's batch-local `resource_index` to the bundle-wide
     /// resource_index space (= position into `Inputs::leaf_order` / `value_hashes`).
     pub batch_to_bundle_index: Vec<u32>,
-    /// Wire bytes for this section's per-tx journal entries. Construct a
+    /// Wire bytes for this batch's per-tx journal entries. Construct a
     /// [`TransactionJournals`] over this slice when iterating.
     pub tx_journals_buf: &'a [u8],
 }
@@ -50,7 +50,7 @@ impl<'a> Batch<'a> {
         })
     }
 
-    /// Encodes one section to bytes (host-side).
+    /// Encodes one batch to bytes (host-side).
     #[cfg(feature = "host")]
     pub fn encode(
         buf: &mut Vec<u8>,
@@ -67,12 +67,10 @@ impl<'a> Batch<'a> {
         buf.write(&metadata.lane_blue_score.to_le_bytes());
         buf.write(&[if metadata.lane_expired { 1 } else { 0 }]);
         buf.write(&metadata.prev_seq_commit.as_bytes());
-
         buf.write(&(batch_to_bundle_index.len() as u32).to_le_bytes());
         for &idx in batch_to_bundle_index {
             buf.write(&idx.to_le_bytes());
         }
-
         buf.write(&tx_journals.iter().map(|j| 4 + j.len() as u32).sum::<u32>().to_le_bytes());
         for journal in tx_journals {
             buf.write(&(journal.len() as u32).to_le_bytes());

@@ -10,13 +10,13 @@
 //!    transaction-processor guest the batch's inner-proof verifications were checked against.
 //! 3. **Seq commitment freshness**: the journal's `new_seq_commit` equals
 //!    `OpChainblockSeqCommit(block_prove_to)` pushed at spend time, which itself is derived by the
-//!    guest from `new_lane_tip` via kip21 — so the chain of UTXO-locked `lane_tip` values is
-//!    load-bearing all the way through the seq-commit derivation, preventing rewinds.
+//!    guest from `new_lane_tip` — so the chain of UTXO-locked `lane_tip` values is load-bearing all
+//!    the way through the seq-commit derivation, preventing rewinds.
 //! 4. **Proof validity**: `OpZkPrecompile` verifies the risc0 succinct receipt against the
 //!    configured image id.
 //!
-//! Structure mirrors biryukovmaxim's `zk-covenant-rollup` (kip21 variant). The MVP here omits
-//! the optional permission-tree exit path - the covenant always has exactly one output.
+//! The MVP here omits the optional permission-tree exit path - the covenant always has
+//! exactly one output.
 
 use kaspa_txscript::{
     opcodes::codes::{
