@@ -330,7 +330,7 @@ impl BridgeWorker {
                     ..Default::default()
                 });
             } else {
-                self.virtual_chain.advance_tip(target.metadata().clone());
+                self.virtual_chain.advance_tip(*target.metadata());
                 found = true;
                 break;
             }
@@ -371,7 +371,7 @@ impl BridgeWorker {
         for chain_block in response.chain_block_accepted_transactions.iter() {
             // Selected parent on the chain stream is the current virtual-chain tip.
             let header = &chain_block.chain_block_header;
-            let parent_meta = self.virtual_chain.tip().metadata().clone();
+            let parent_meta = *self.virtual_chain.tip().metadata();
 
             // Enumerate before filtering so kept txs retain their block-wide positions.
             let accepted_transactions: Vec<(u32, L1Transaction)> = chain_block
