@@ -3,13 +3,7 @@ use alloc::vec::Vec;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
 
-/// Per-batch entry within a [`Bundle`]: the `ScheduledBatch` (which carries
-/// `ChainBlockMetadata` via `batch.checkpoint().metadata()`), its host-built
-/// `batch_to_bundle_index` translation, and the per-tx journal byte slices for that batch's
-/// transactions.
-type BundleEntry<S, P> = (ScheduledBatch<S, P>, Vec<u32>, Vec<Vec<u8>>);
-
-/// Owned bundle of per-batch encode inputs.
+/// Bundle of batches with their host-side encode inputs.
 pub struct Bundle<S: Store, P: Processor<S>>(Vec<BundleEntry<S, P>>);
 
 impl<S, P> Bundle<S, P>
@@ -18,14 +12,11 @@ where
     P: Processor<S, BatchMetadata = vprogs_l1_types::ChainBlockMetadata>,
 {
     /// Builds a bundle from scheduled batches, translations, and a journal-bytes extractor.
-    pub fn new<F>(
+    pub fn new(
         batches: Vec<ScheduledBatch<S, P>>,
         translations: Vec<Vec<u32>>,
-        journal_bytes: F,
-    ) -> Self
-    where
-        F: Fn(&P::TransactionArtifact) -> Vec<u8>,
-    {
+        journal_bytes: impl Fn(&P::TransactionArtifact) -> Vec<u8>,
+    ) -> Self {
         let tx_journals: Vec<Vec<Vec<u8>>> =
             batches.iter().map(|b| b.tx_artifacts().map(|a| journal_bytes(&a)).collect()).collect();
 
@@ -37,16 +28,6 @@ where
                 .map(|((b, t), j)| (b, t, j))
                 .collect(),
         )
-    }
-
-    /// Number of batches in the bundle.
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    /// True iff the bundle has no batches.
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
     }
 
     /// Iterates over `(batch, batch_to_bundle_index, tx_journals)` tuples.
@@ -70,3 +51,6 @@ where
             .collect()
     }
 }
+
+/// Per-batch entry: `(scheduled batch, batch-to-bundle-index translation, per-tx journals)`.
+type BundleEntry<S, P> = (ScheduledBatch<S, P>, Vec<u32>, Vec<Vec<u8>>);
