@@ -33,7 +33,6 @@ impl<'a> LaneProof<'a> {
 
         buf.write(&response.payload_and_ctx_digest.as_bytes());
         buf.write(&response.parent_seq_commit.as_bytes());
-        buf.write(&(response.smt_proof.len() as u32).to_le_bytes());
-        buf.write(&response.smt_proof);
+        buf.write_blob(&response.smt_proof);
     }
 }

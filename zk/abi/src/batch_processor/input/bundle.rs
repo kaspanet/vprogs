@@ -50,7 +50,7 @@ where
     }
 
     /// Iterates over `(batch, batch_to_bundle_index, tx_journals)` tuples.
-    pub fn iter(&self) -> impl Iterator<Item = &BundleEntry<S, P>> {
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = &BundleEntry<S, P>> {
         self.0.iter()
     }
 

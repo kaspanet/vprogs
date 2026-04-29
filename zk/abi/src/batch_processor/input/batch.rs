@@ -67,14 +67,10 @@ impl<'a> Batch<'a> {
         buf.write(&metadata.lane_blue_score.to_le_bytes());
         buf.write(&[if metadata.lane_expired { 1 } else { 0 }]);
         buf.write(&metadata.prev_seq_commit.as_bytes());
-        buf.write(&(batch_to_bundle_index.len() as u32).to_le_bytes());
-        for &idx in batch_to_bundle_index {
-            buf.write(&idx.to_le_bytes());
-        }
+        buf.write_many(batch_to_bundle_index, |&idx| idx.to_le_bytes());
         buf.write(&tx_journals.iter().map(|j| 4 + j.len() as u32).sum::<u32>().to_le_bytes());
         for journal in tx_journals {
-            buf.write(&(journal.len() as u32).to_le_bytes());
-            buf.write(journal);
+            buf.write_blob(journal);
         }
     }
 }

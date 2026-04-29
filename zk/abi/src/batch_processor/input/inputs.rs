@@ -84,26 +84,12 @@ impl<'a> Inputs<'a> {
         buf.write(image_id);
         buf.write(covenant_id);
         buf.write(lane_key);
-        buf.write(&(proof_bytes.len() as u32).to_le_bytes());
-        buf.write(proof_bytes);
-
-        buf.write(&(leaf_order.len() as u32).to_le_bytes());
-        for &idx in leaf_order {
-            buf.write(&idx.to_le_bytes());
-        }
-
-        buf.write(&(bundle.len() as u32).to_le_bytes());
-        for (batch, batch_to_bundle_index, tx_journals) in bundle.iter() {
-            Batch::encode(
-                &mut buf,
-                batch.checkpoint().metadata(),
-                batch_to_bundle_index,
-                tx_journals,
-            );
-        }
-
+        buf.write_blob(proof_bytes);
+        buf.write_many(leaf_order, |&idx| idx.to_le_bytes());
+        buf.encode_many(bundle.iter(), |w, (batch, translation, tx_journals)| {
+            Batch::encode(w, batch.checkpoint().metadata(), translation, tx_journals);
+        });
         LaneProof::encode(&mut buf, lane_proof);
-
         buf
     }
 }
