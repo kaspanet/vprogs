@@ -1,4 +1,4 @@
-use alloc::{format, vec, vec::Vec};
+use alloc::{vec, vec::Vec};
 
 use kaspa_hashes::{Hash, SeqCommitActiveNode};
 use kaspa_seq_commit::{
@@ -23,6 +23,8 @@ use crate::{
 pub struct Abi<'a> {
     /// Decoded bundle inputs.
     inputs: Inputs<'a>,
+    /// Lane key hash for this bundle.
+    lane_key: Hash,
     /// Latest L2 value hashes indexed by bundle-wide resource_index.
     value_hashes: Vec<&'a [u8; 32]>,
     /// Inverse of `leaf_order`: `bundle_idx_to_leaf_pos[bundle_idx] = leaf_pos`. Built once
@@ -38,68 +40,16 @@ impl Abi<'_> {
         verify_journal: impl Fn(&[u8; 32], &[u8]) -> Result<()>,
     ) {
         let input_bytes = host.read_blob();
-        let inputs = Inputs::decode(&input_bytes).expect("decode bundle inputs");
-        let mut this = Abi {
-            value_hashes: vec![&[0; 32]; inputs.proof.leaves.len()],
-            bundle_idx_to_leaf_pos: vec![u32::MAX; inputs.proof.leaves.len()],
-            inputs,
-        };
+        let mut this = Abi::new(Inputs::decode(&input_bytes).expect("decode bundle inputs"));
 
-        assert!(!this.inputs.batches.is_empty(), "bundle is empty");
-        assert_eq!(
-            this.inputs.leaf_order.len(),
-            this.inputs.proof.leaves.len(),
-            "leaf_order length mismatch"
-        );
-
-        let lane_key_hash = Hash::from_bytes(*this.inputs.lane_key);
-
-        // Bundle-wide scatter: leaf_pos -> bundle_resource_index, scoped to the union of
-        // touched resources across all batches. Build the inverse map at the same time.
-
-        for (leaf_pos, &res_idx) in this.inputs.leaf_order.iter().enumerate() {
-            assert!(
-                (res_idx as usize) < this.inputs.proof.leaves.len(),
-                "leaf_order entry out of range"
-            );
-            this.value_hashes[res_idx as usize] = this.inputs.proof.leaves[leaf_pos].value_hash;
-            this.bundle_idx_to_leaf_pos[res_idx as usize] = leaf_pos as u32;
-        }
-
-        // Walk batches in order, chaining lane tip across them. Each batch processes its
-        // own block's txs against bundle-wide value_hashes (which mutates in place).
-        let mut current_lane_tip = None;
-        let mut last_blue_score = 0u64;
-        let bundle_prev_lane_tip = this.inputs.batches[0].prev_lane_tip;
-
-        // Take ownership of batches so `verify_batch` gets &Batch while `&mut self`
-        // covers value_hashes mutation.
-        let batches = core::mem::take(&mut this.inputs.batches);
-        for batch in &batches {
-            let new_lane_tip = this
-                .verify_batch(batch, &lane_key_hash, current_lane_tip, &verify_journal)
-                .unwrap_or_else(|e| panic!("verify batch: {e:?}"));
-            current_lane_tip = Some(new_lane_tip);
-            last_blue_score = batch.blue_score;
-        }
-
-        let new_lane_tip = current_lane_tip.expect("non-empty bundle has a lane tip");
-
-        // L2 state transition: re-root the bundle-wide proof with mutated value_hashes.
-        let prev_state = this.inputs.proof.root::<Blake3>().expect("proof root");
-        let new_state = this
-            .inputs
-            .proof
-            .compute_root::<Blake3>(|i| this.latest_hash(i))
-            .expect("compute new root");
-
-        let new_seq_commit = this
-            .derive_new_seq_commit(&new_lane_tip, last_blue_score, &lane_key_hash)
-            .expect("derive new_seq_commit");
+        let (new_lane_tip, last_blue_score) = this.verify_batches(&verify_journal);
+        let prev_state = this.prev_state();
+        let new_state = this.new_state();
+        let new_seq_commit = this.new_seq_commit(&new_lane_tip, last_blue_score);
 
         StateTransition::encode(
             journal,
-            (&prev_state, bundle_prev_lane_tip),
+            (&prev_state, this.inputs.batches[0].prev_lane_tip),
             (&new_state, &new_lane_tip.as_bytes(), &new_seq_commit.as_bytes()),
             this.inputs.covenant_id,
             this.inputs.image_id,
@@ -108,11 +58,72 @@ impl Abi<'_> {
 }
 
 impl<'a> Abi<'a> {
+    /// Builds an `Abi` workspace pre-sized for the bundle's resource union, with the
+    /// `leaf_pos -> bundle_resource_index` scatter and its inverse pre-computed.
+    fn new(inputs: Inputs<'a>) -> Self {
+        assert!(!inputs.batches.is_empty(), "bundle is empty");
+        assert_eq!(inputs.leaf_order.len(), inputs.proof.leaves.len(), "invalid leaf_order length");
+
+        let mut value_hashes = vec![&[0; 32]; inputs.proof.leaves.len()];
+        let mut bundle_idx_to_leaf_pos = vec![u32::MAX; inputs.proof.leaves.len()];
+        for (leaf_pos, &res_idx) in inputs.leaf_order.iter().enumerate() {
+            assert!(
+                (res_idx as usize) < inputs.proof.leaves.len(),
+                "leaf_order entry out of range"
+            );
+
+            value_hashes[res_idx as usize] = inputs.proof.leaves[leaf_pos].value_hash;
+            bundle_idx_to_leaf_pos[res_idx as usize] = leaf_pos as u32;
+        }
+
+        Self {
+            lane_key: Hash::from_bytes(*inputs.lane_key),
+            value_hashes,
+            bundle_idx_to_leaf_pos,
+            inputs,
+        }
+    }
+
+    /// Bundle-wide L2 state root before any batch writes apply.
+    fn prev_state(&self) -> [u8; 32] {
+        self.inputs.proof.root::<Blake3>().expect("proof root")
+    }
+
+    /// Bundle-wide L2 state root after all batch writes have been applied.
+    fn new_state(&self) -> [u8; 32] {
+        self.inputs.proof.compute_root::<Blake3>(|i| self.latest_hash(i)).expect("new root")
+    }
+
+    /// Walks every batch in scheduling order, chains lane tips across them, and returns
+    /// the bundle's final `(new_lane_tip, last_blue_score)`.
+    fn verify_batches(
+        &mut self,
+        verify_journal: &impl Fn(&[u8; 32], &[u8]) -> Result<()>,
+    ) -> (Hash, u64) {
+        let mut current_lane_tip = None;
+        let mut last_blue_score = 0u64;
+
+        // Take ownership of batches so `verify_batch` gets &Batch while `&mut self`
+        // covers value_hashes mutation. Restored before returning.
+        let batches = core::mem::take(&mut self.inputs.batches);
+        for batch in &batches {
+            let new_lane_tip = self
+                .verify_batch(batch, current_lane_tip, verify_journal)
+                .unwrap_or_else(|e| panic!("verify batch: {e:?}"));
+            current_lane_tip = Some(new_lane_tip);
+            last_blue_score = batch.blue_score;
+        }
+        self.inputs.batches = batches;
+
+        let new_lane_tip = current_lane_tip.expect("non-empty bundle has a lane tip");
+
+        (new_lane_tip, last_blue_score)
+    }
+
     /// Verifies one batch and returns its derived `new_lane_tip` for the caller to chain.
     fn verify_batch(
         &mut self,
         batch: &Batch<'a>,
-        lane_key_hash: &Hash,
         prev_lane_tip_carry: Option<Hash>,
         verify_journal: &impl Fn(&[u8; 32], &[u8]) -> Result<()>,
     ) -> Result<Hash> {
@@ -199,7 +210,7 @@ impl<'a> Abi<'a> {
         };
         let new_lane_tip = lane_tip_next(&LaneTipInput {
             parent_ref: &parent_ref,
-            lane_key: lane_key_hash,
+            lane_key: &self.lane_key,
             activity_digest: &activity_builder.finalize(),
             context_hash: &context_hash,
         });
@@ -242,19 +253,14 @@ impl<'a> Abi<'a> {
 
     /// Derives the bundle's final-block `seq_commit` from `new_lane_tip` and
     /// `self.inputs.lane_proof`.
-    fn derive_new_seq_commit(
-        &self,
-        new_lane_tip: &Hash,
-        last_blue_score: u64,
-        lane_key_hash: &Hash,
-    ) -> Result<Hash> {
+    fn new_seq_commit(&self, new_lane_tip: &Hash, last_blue_score: u64) -> Hash {
         let new_lane_leaf =
             smt_leaf_hash(&SmtLeafInput { lane_tip: new_lane_tip, blue_score: last_blue_score });
         let lanes_smt_proof = OwnedSmtProof::from_bytes(self.inputs.lane_proof.lane_smt_proof)
-            .map_err(|e| Error::Decode(format!("lane_smt_proof: {e}")))?;
+            .expect("lane_smt_proof");
         let new_lanes_root = lanes_smt_proof
-            .compute_root::<SeqCommitActiveNode>(lane_key_hash, Some(new_lane_leaf))
-            .map_err(|e| Error::Decode(format!("lane_smt_proof compute_root: {e}")))?;
+            .compute_root::<SeqCommitActiveNode>(&self.lane_key, Some(new_lane_leaf))
+            .expect("lane_smt_proof compute_root");
         let payload_and_ctx_digest =
             Hash::from_bytes(*self.inputs.lane_proof.payload_and_ctx_digest);
         let state_root_seq = seq_state_root(&SeqState {
@@ -262,9 +268,9 @@ impl<'a> Abi<'a> {
             payload_and_ctx_digest: &payload_and_ctx_digest,
         });
         let parent_seq_commit = Hash::from_bytes(*self.inputs.lane_proof.parent_seq_commit);
-        Ok(seq_commit(&SeqCommitInput {
+        seq_commit(&SeqCommitInput {
             parent_seq_commit: &parent_seq_commit,
             state_root: &state_root_seq,
-        }))
+        })
     }
 }
