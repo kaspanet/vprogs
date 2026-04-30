@@ -38,7 +38,6 @@ pub mod transaction_processor {
     pub(crate) mod transaction_handler;
 
     pub(crate) mod input {
-        pub(crate) mod batch_metadata;
         pub(crate) mod inputs;
         pub(crate) mod resource;
         pub(crate) mod transaction;
@@ -67,9 +66,7 @@ pub mod transaction_processor {
     }
 
     pub use abi::Abi;
-    pub use input::{
-        batch_metadata::BatchMetadata, inputs::Inputs, resource::Resource, transaction::Transaction,
-    };
+    pub use input::{inputs::Inputs, resource::Resource, transaction::Transaction};
     pub use journal::{
         entries::JournalEntries,
         entry::JournalEntry,

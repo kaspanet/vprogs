@@ -12,7 +12,8 @@ use kaspa_smt::proof::OwnedSmtProof;
 use vprogs_core_smt::Blake3;
 
 use crate::{
-    batch_processor::{Batch, Inputs},
+    Write,
+    batch_processor::{Batch, Inputs, StateTransition},
     transaction_processor::{
         InputResourceCommitment, JournalEntries, OutputCommitment, OutputResourceCommitment,
     },
@@ -31,10 +32,34 @@ pub struct Abi<'a> {
     bundle_idx_to_leaf_pos: Vec<u32>,
 }
 
+impl Abi<'_> {
+    /// Verifies the bundle described by `input_bytes` and writes the settlement journal.
+    pub fn verify(
+        input_bytes: &[u8],
+        journal: &mut impl Write,
+        verify_journal: &impl Fn(&[u8; 32], &[u8]),
+    ) {
+        let mut this = Abi::new(input_bytes);
+
+        let (new_lane_tip, last_blue_score) = this.verify_batches(verify_journal);
+        let prev_state = this.inputs.proof.root::<Blake3>().expect("proof root");
+        let new_state = this.inputs.proof.compute_root::<Blake3>(|i| this.latest_hash(i));
+        let new_seq_commit = this.new_seq_commit(&new_lane_tip, last_blue_score);
+
+        StateTransition::encode(
+            journal,
+            (&prev_state, this.inputs.batches[0].prev_lane_tip),
+            (&new_state.expect("new_state"), &new_lane_tip.as_bytes(), &new_seq_commit.as_bytes()),
+            this.inputs.covenant_id,
+            this.inputs.image_id,
+        );
+    }
+}
+
 impl<'a> Abi<'a> {
     /// Builds an `Abi` workspace pre-sized for the bundle's resource union, with the
     /// `leaf_pos -> bundle_resource_index` scatter and its inverse pre-computed.
-    pub fn new(input_bytes: &'a [u8]) -> Self {
+    fn new(input_bytes: &'a [u8]) -> Self {
         // Parse inputs.
         let inputs = Inputs::decode(input_bytes).expect("decode bundle inputs");
         assert!(!inputs.batches.is_empty(), "bundle is empty");
@@ -57,34 +82,9 @@ impl<'a> Abi<'a> {
         }
     }
 
-    /// Lane tip entering the bundle (first batch's `prev_lane_tip`).
-    pub fn prev_lane_tip(&self) -> &'a [u8; 32] {
-        self.inputs.batches[0].prev_lane_tip
-    }
-
-    /// Covenant id this bundle settles into.
-    pub fn covenant_id(&self) -> &'a [u8; 32] {
-        self.inputs.covenant_id
-    }
-
-    /// Transaction-processor guest image id used to verify inner tx receipts.
-    pub fn image_id(&self) -> &'a [u8; 32] {
-        self.inputs.image_id
-    }
-
-    /// Bundle-wide L2 state root before any batch writes apply.
-    pub fn prev_state(&self) -> [u8; 32] {
-        self.inputs.proof.root::<Blake3>().expect("proof root")
-    }
-
-    /// Bundle-wide L2 state root after all batch writes have been applied.
-    pub fn new_state(&self) -> [u8; 32] {
-        self.inputs.proof.compute_root::<Blake3>(|i| self.latest_hash(i)).expect("new root")
-    }
-
     /// Walks every batch in scheduling order, chains lane tips across them, and returns
     /// the bundle's final `(new_lane_tip, last_blue_score)`.
-    pub fn verify_batches(&mut self, verify_journal: &impl Fn(&[u8; 32], &[u8])) -> (Hash, u64) {
+    fn verify_batches(&mut self, verify_journal: &impl Fn(&[u8; 32], &[u8])) -> (Hash, u64) {
         let mut lane_tip = None;
         let mut blue_score = 0u64;
 
@@ -105,19 +105,6 @@ impl<'a> Abi<'a> {
         prev_lane_tip_carry: Option<Hash>,
         verify_journal: &impl Fn(&[u8; 32], &[u8]),
     ) -> Hash {
-        // Per-batch state - reset each call.
-        let context_hash = mergeset_context_hash(&MergesetContext {
-            timestamp: seq_commit_timestamp(batch.parent_timestamp),
-            daa_score: batch.daa_score,
-            blue_score: batch.blue_score,
-        });
-        let context_hash_bytes = context_hash.as_bytes();
-
-        let mut activity_builder = ActivityDigestBuilder::new();
-        let mut expected_metadata = None;
-        let mut last_tx_index = None;
-        let mut mapping_buf = Vec::new();
-
         // Lane chain check: when not expired and not the first batch, this batch's
         // prev_lane_tip must equal the previous batch's derived new_lane_tip. The first
         // batch's prev_lane_tip is the bundle's start (= the spent UTXO's redeem prefix),
@@ -127,6 +114,17 @@ impl<'a> Abi<'a> {
                 assert_eq!(batch.prev_lane_tip, &carry.as_bytes(), "lane chain mismatch");
             }
         }
+
+        // Per-batch state - reset each call.
+        let context_hash = mergeset_context_hash(&MergesetContext {
+            timestamp: seq_commit_timestamp(batch.parent_timestamp),
+            daa_score: batch.daa_score,
+            blue_score: batch.blue_score,
+        });
+
+        let mut activity_builder = ActivityDigestBuilder::new();
+        let mut last_tx_index = None;
+        let mut mapping_buf = Vec::new();
 
         for tx_journal in batch.tx_journals {
             let tx_journal = tx_journal.expect("decode tx_journal");
@@ -138,13 +136,13 @@ impl<'a> Abi<'a> {
                 assert!(tx_index > prev, "tx_index not strictly increasing");
             }
 
-            // Cross-check that all txs in this batch share the same BatchMetadata, and
-            // that their context_hash matches our derived one.
-            let metadata = &entry.input_commitment.batch_metadata;
-            let expected = expected_metadata.get_or_insert(*metadata);
-            assert_eq!(expected.block_hash, metadata.block_hash, "block_hash mismatch");
-            assert_eq!(expected.context_hash, metadata.context_hash, "context_hash mismatch");
-            assert_eq!(metadata.context_hash, &context_hash_bytes, "context_hash mismatch");
+            // Each tx's context_hash must match the one derived from the chain block. This
+            // also transitively enforces cross-tx context_hash agreement.
+            assert_eq!(
+                entry.input_commitment.context_hash,
+                context_hash.as_slice(),
+                "context_hash does not match derived value"
+            );
 
             // Activity digest accumulates per-batch (one digest per chain block).
             let tx_id = Hash::from_bytes(*entry.input_commitment.tx_id);
@@ -209,7 +207,7 @@ impl<'a> Abi<'a> {
 
     /// Derives the bundle's final-block `seq_commit` from `new_lane_tip` and
     /// `self.inputs.lane_proof`.
-    pub fn new_seq_commit(&self, new_lane_tip: &Hash, last_blue_score: u64) -> Hash {
+    fn new_seq_commit(&self, new_lane_tip: &Hash, last_blue_score: u64) -> Hash {
         let new_lane_leaf =
             smt_leaf_hash(&SmtLeafInput { lane_tip: new_lane_tip, blue_score: last_blue_score });
         let lanes_smt_proof = OwnedSmtProof::from_bytes(self.inputs.lane_proof.lane_smt_proof)

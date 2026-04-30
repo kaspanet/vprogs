@@ -2,23 +2,7 @@
 
 #![cfg(feature = "host")]
 
-use vprogs_zk_abi::{batch_processor::StateTransition, transaction_processor::BatchMetadata};
-
-#[test]
-fn batch_metadata_round_trip() {
-    let block_hash = [0xAB; 32];
-    let context_hash = [0xCD; 32];
-    let mut buf = Vec::new();
-    let bm = BatchMetadata { block_hash: &block_hash, context_hash: &context_hash };
-    bm.encode(&mut buf);
-    assert_eq!(buf.len(), BatchMetadata::SIZE);
-
-    let mut cursor: &[u8] = &buf;
-    let decoded = BatchMetadata::decode(&mut cursor).unwrap();
-    assert_eq!(decoded.block_hash, &block_hash);
-    assert_eq!(decoded.context_hash, &context_hash);
-    assert!(cursor.is_empty(), "decode should consume exactly SIZE bytes");
-}
+use vprogs_zk_abi::batch_processor::StateTransition;
 
 #[test]
 fn state_transition_round_trip() {
