@@ -1,4 +1,5 @@
 use alloc::{vec, vec::Vec};
+use core::mem::take;
 
 use kaspa_hashes::{Hash, SeqCommitActiveNode};
 use kaspa_seq_commit::{
@@ -9,6 +10,7 @@ use kaspa_seq_commit::{
     types::{LaneTipInput, MergesetContext, SeqCommitInput, SeqState, SmtLeafInput},
 };
 use kaspa_smt::proof::OwnedSmtProof;
+use tap::Tap;
 use vprogs_core_smt::Blake3;
 
 use crate::{
@@ -42,9 +44,9 @@ impl Abi<'_> {
         let mut this = Abi::new(input_bytes);
 
         let (new_lane_tip, last_blue_score) = this.verify_batches(verify_journal);
+        let new_seq_commit = this.new_seq_commit(&new_lane_tip, last_blue_score);
         let prev_state = this.inputs.proof.root::<Blake3>().expect("proof root");
         let new_state = this.inputs.proof.compute_root::<Blake3>(|i| this.latest_hash(i));
-        let new_seq_commit = this.new_seq_commit(&new_lane_tip, last_blue_score);
 
         StateTransition::encode(
             journal,
@@ -88,12 +90,12 @@ impl<'a> Abi<'a> {
         let mut lane_tip = None;
         let mut blue_score = 0u64;
 
-        let batches = core::mem::take(&mut self.inputs.batches);
-        for batch in &batches {
-            lane_tip = Some(self.verify_batch(batch, lane_tip, verify_journal));
-            blue_score = batch.blue_score;
-        }
-        self.inputs.batches = batches;
+        self.inputs.batches = take(&mut self.inputs.batches).tap(|batches| {
+            for batch in batches {
+                lane_tip = Some(self.verify_batch(batch, lane_tip, verify_journal));
+                blue_score = batch.blue_score;
+            }
+        });
 
         (lane_tip.expect("must exist"), blue_score)
     }
@@ -105,93 +107,96 @@ impl<'a> Abi<'a> {
         prev_lane_tip_carry: Option<Hash>,
         verify_journal: &impl Fn(&[u8; 32], &[u8]),
     ) -> Hash {
-        // Lane chain check: when not expired and not the first batch, this batch's
-        // prev_lane_tip must equal the previous batch's derived new_lane_tip. The first
-        // batch's prev_lane_tip is the bundle's start (= the spent UTXO's redeem prefix),
-        // checked on-chain by the covenant's P2SH binding.
         if !batch.lane_expired {
             if let Some(carry) = prev_lane_tip_carry {
                 assert_eq!(batch.prev_lane_tip, &carry.as_bytes(), "lane chain mismatch");
             }
         }
 
-        // Per-batch state - reset each call.
         let context_hash = mergeset_context_hash(&MergesetContext {
             timestamp: seq_commit_timestamp(batch.parent_timestamp),
             daa_score: batch.daa_score,
             blue_score: batch.blue_score,
         });
 
-        let mut activity_builder = ActivityDigestBuilder::new();
-        let mut last_tx_index = None;
-        let mut mapping_buf = Vec::new();
-
-        for tx_journal in batch.tx_journals {
-            let tx_journal = tx_journal.expect("decode tx_journal");
-            verify_journal(self.inputs.image_id, tx_journal);
-            let entry = JournalEntries::decode(tx_journal).expect("decode journal entries");
-            let tx_index = entry.input_commitment.tx_index;
-
-            if let Some(prev) = last_tx_index {
-                assert!(tx_index > prev, "tx_index not strictly increasing");
-            }
-
-            // Each tx's context_hash must match the one derived from the chain block. This
-            // also transitively enforces cross-tx context_hash agreement.
-            assert_eq!(
-                entry.input_commitment.context_hash,
-                context_hash.as_slice(),
-                "context_hash does not match derived value"
-            );
-
-            // Activity digest accumulates per-batch (one digest per chain block).
-            let tx_id = Hash::from_bytes(*entry.input_commitment.tx_id);
-            activity_builder.add_leaf(activity_leaf(
-                &tx_id,
-                entry.input_commitment.version,
-                tx_index,
-            ));
-
-            mapping_buf.clear();
-            for input in entry.input_commitment.resources {
-                let r = input.expect("decode input resource");
-                mapping_buf.push(self.check_input_resource(batch, &r));
-            }
-
-            if let OutputCommitment::Success(outputs) = entry.output_commitment {
-                for (i, output) in outputs.enumerate() {
-                    if let OutputResourceCommitment::Changed(hash) =
-                        output.expect("decode output resource")
-                    {
-                        self.value_hashes[mapping_buf[i]] = hash;
-                    }
-                }
-            }
-
-            last_tx_index = Some(tx_index);
-        }
+        let activity_digest = self.verify_txs(batch, verify_journal, &context_hash).finalize();
 
         let parent_ref = if batch.lane_expired {
             Hash::from_bytes(*batch.parent_seq_commit)
         } else {
             Hash::from_bytes(*batch.prev_lane_tip)
         };
+
         lane_tip_next(&LaneTipInput {
             parent_ref: &parent_ref,
             lane_key: &self.lane_key,
-            activity_digest: &activity_builder.finalize(),
+            activity_digest: &activity_digest,
             context_hash: &context_hash,
+        })
+    }
+
+    /// Verifies every tx in `batch`, scatters resource updates into `value_hashes`, and
+    /// returns the batch's finalized activity digest.
+    fn verify_txs(
+        &mut self,
+        batch: &Batch<'a>,
+        verify_journal: &impl Fn(&[u8; 32], &[u8]),
+        context_hash: &Hash,
+    ) -> ActivityDigestBuilder {
+        ActivityDigestBuilder::new().tap_mut(|activity_builder| {
+            let mut last_tx_index = None;
+            for tx_journal in batch.tx_journals {
+                let tx_journal_bytes = tx_journal.expect("decode tx_journal");
+                verify_journal(self.inputs.image_id, tx_journal_bytes);
+                let tx_journal =
+                    JournalEntries::decode(tx_journal_bytes).expect("decode journal entries");
+                let tx_index = tx_journal.input_commitment.tx_index;
+
+                if let Some(prev) = last_tx_index {
+                    assert!(tx_index > prev, "tx_index not strictly increasing");
+                }
+
+                // Each tx's context_hash must match the one derived from the chain block. This
+                // also transitively enforces cross-tx context_hash agreement.
+                assert_eq!(
+                    tx_journal.input_commitment.context_hash,
+                    context_hash.as_slice(),
+                    "context_hash does not match derived value"
+                );
+
+                // Activity digest accumulates per-batch (one digest per chain block).
+                let tx_id = Hash::from_bytes(*tx_journal.input_commitment.tx_id);
+                activity_builder.add_leaf(activity_leaf(
+                    &tx_id,
+                    tx_journal.input_commitment.version,
+                    tx_index,
+                ));
+
+                let mut outputs = match tx_journal.output_commitment {
+                    OutputCommitment::Success(o) => Some(o),
+                    _ => None,
+                };
+                for input in tx_journal.input_commitment.resources {
+                    let bundle_idx = self.check_input_resource(batch, input.expect("input"));
+
+                    if let Some(output) = outputs.as_mut().and_then(|o| o.next()) {
+                        if let OutputResourceCommitment::Changed(hash) =
+                            output.expect("decode output resource")
+                        {
+                            self.value_hashes[bundle_idx] = hash;
+                        }
+                    }
+                }
+
+                last_tx_index = Some(tx_index);
+            }
         })
     }
 
     /// Validates a tx receipt's input commitment, translating its batch-local index to
     /// the bundle-wide one and cross-checking `resource_id` against the SMT proof leaf -
     /// guards against forged translation tables.
-    fn check_input_resource(
-        &mut self,
-        batch: &Batch<'a>,
-        r: &InputResourceCommitment<'a>,
-    ) -> usize {
+    fn check_input_resource(&mut self, batch: &Batch<'a>, r: InputResourceCommitment<'a>) -> usize {
         let bundle_idx = batch.translation[r.resource_index as usize] as usize;
         let leaf_pos = self.bundle_idx_to_leaf_pos[bundle_idx] as usize;
         assert_eq!(r.resource_id, self.inputs.proof.leaves[leaf_pos].key, "resource_id mismatch");
