@@ -90,11 +90,8 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
 
         StateTransition::encode(
             journal,
-            &prev_state,
-            bundle_prev_lane_tip,
-            &new_state,
-            &new_lane_tip.as_bytes(),
-            &new_seq_commit.as_bytes(),
+            (&prev_state, bundle_prev_lane_tip),
+            (&new_state, &new_lane_tip.as_bytes(), &new_seq_commit.as_bytes()),
             this.inputs.covenant_id,
             this.inputs.image_id,
         );

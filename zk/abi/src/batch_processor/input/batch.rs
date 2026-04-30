@@ -2,6 +2,10 @@ use alloc::vec::Vec;
 
 use vprogs_core_codec::{Reader, Result};
 
+#[cfg(feature = "host")]
+use crate::Write;
+#[cfg(feature = "host")]
+use crate::batch_processor::BundlePart;
 use crate::batch_processor::TransactionJournals;
 
 /// One batch of a bundle: per-block context plus the lane txs in that block.
@@ -47,10 +51,8 @@ impl<'a> Batch<'a> {
     #[cfg(feature = "host")]
     pub fn encode(
         buf: &mut Vec<u8>,
-        (metadata, batch_to_bundle_index, tx_journals): crate::batch_processor::BundlePart<'_>,
+        (metadata, batch_to_bundle_index, tx_journals): BundlePart<'_>,
     ) {
-        use crate::Write;
-
         buf.write(&metadata.blue_score.to_le_bytes());
         buf.write(&metadata.daa_score.to_le_bytes());
         buf.write(&metadata.prev_timestamp.to_le_bytes());

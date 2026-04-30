@@ -1,3 +1,6 @@
+#[cfg(feature = "host")]
+use vprogs_core_codec::Reader;
+
 use crate::Write;
 #[cfg(feature = "host")]
 use crate::{Error, Result};
@@ -16,25 +19,20 @@ pub struct StateTransition<'a> {
     pub new_seq_commit: &'a [u8; 32],
     /// Covenant id this settlement binds to.
     pub covenant_id: &'a [u8; 32],
-    /// Transaction-processor image id used to verify inner tx receipts. Pinned in the
-    /// journal so the covenant can bind it - without this, a malicious host could swap in
-    /// a backdoored verifier.
+    /// Transaction-processor image id this settlement binds to.
     pub tx_image_id: &'a [u8; 32],
 }
 
 impl<'a> StateTransition<'a> {
     /// Wire size of the emitted journal.
-    pub const SIZE: usize = 32 * 7;
+    pub const SIZE: usize = 7 * 32;
 
     /// Decodes a state transition journal from bytes.
     #[cfg(feature = "host")]
-    pub fn decode(buf: &'a [u8]) -> Result<Self> {
-        use vprogs_core_codec::Reader;
-
+    pub fn decode(mut buf: &'a [u8]) -> Result<Self> {
         if buf.len() != Self::SIZE {
             return Err(Error::Decode("batch journal must be exactly 224 bytes".into()));
         }
-        let mut buf = buf;
         Ok(Self {
             prev_state: buf.array::<32>("prev_state")?,
             prev_lane_tip: buf.array::<32>("prev_lane_tip")?,
@@ -47,14 +45,10 @@ impl<'a> StateTransition<'a> {
     }
 
     /// Writes the state transition journal to `w`.
-    #[allow(clippy::too_many_arguments)]
     pub fn encode(
         w: &mut impl Write,
-        prev_state: &[u8; 32],
-        prev_lane_tip: &[u8; 32],
-        new_state: &[u8; 32],
-        new_lane_tip: &[u8; 32],
-        new_seq_commit: &[u8; 32],
+        (prev_state, prev_lane_tip): (&[u8; 32], &[u8; 32]),
+        (new_state, new_lane_tip, new_seq_commit): (&[u8; 32], &[u8; 32], &[u8; 32]),
         covenant_id: &[u8; 32],
         tx_image_id: &[u8; 32],
     ) {

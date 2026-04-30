@@ -1,8 +1,16 @@
 use alloc::vec::Vec;
 
+#[cfg(feature = "host")]
+use kaspa_rpc_core::GetSeqCommitLaneProofResponse;
+#[cfg(feature = "host")]
+use tap::Tap;
 use vprogs_core_codec::Reader;
 use vprogs_core_smt::proving::Proof;
 
+#[cfg(feature = "host")]
+use crate::Write;
+#[cfg(feature = "host")]
+use crate::batch_processor::BundlePart;
 use crate::{
     Result,
     batch_processor::{Batch, LaneProof},
@@ -49,16 +57,12 @@ impl<'a> Inputs<'a> {
         proof_bytes: &[u8],
         leaf_order: &[u32],
         batches: I,
-        lane_proof: &kaspa_rpc_core::GetSeqCommitLaneProofResponse,
+        lane_proof: &GetSeqCommitLaneProofResponse,
     ) -> Vec<u8>
     where
-        I: IntoIterator<Item = crate::batch_processor::BundlePart<'b>>,
+        I: IntoIterator<Item = BundlePart<'b>>,
         I::IntoIter: ExactSizeIterator,
     {
-        use tap::Tap;
-
-        use crate::Write;
-
         Vec::new().tap_mut(|buf| {
             buf.write(image_id);
             buf.write(covenant_id);

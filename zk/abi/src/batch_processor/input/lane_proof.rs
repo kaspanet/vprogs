@@ -1,4 +1,9 @@
+#[cfg(feature = "host")]
+use kaspa_rpc_core::GetSeqCommitLaneProofResponse;
 use vprogs_core_codec::{Reader, Result};
+
+#[cfg(feature = "host")]
+use crate::Write;
 
 /// Final-block inputs for deriving the bundle's `new_seq_commit`.
 pub struct LaneProof<'a> {
@@ -22,9 +27,7 @@ impl<'a> LaneProof<'a> {
 
     /// Encodes a lane proof to bytes.
     #[cfg(feature = "host")]
-    pub fn encode(buf: &mut Vec<u8>, response: &kaspa_rpc_core::GetSeqCommitLaneProofResponse) {
-        use crate::Write;
-
+    pub fn encode(buf: &mut Vec<u8>, response: &GetSeqCommitLaneProofResponse) {
         buf.write(&response.payload_and_ctx_digest.as_bytes());
         buf.write(&response.parent_seq_commit.as_bytes());
         buf.write_blob(&response.smt_proof);

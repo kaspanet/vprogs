@@ -33,11 +33,8 @@ fn state_transition_round_trip() {
     let mut buf = Vec::new();
     StateTransition::encode(
         &mut buf,
-        &prev_state,
-        &prev_lane_tip,
-        &new_state,
-        &new_lane_tip,
-        &new_seq_commit,
+        (&prev_state, &prev_lane_tip),
+        (&new_state, &new_lane_tip, &new_seq_commit),
         &covenant_id,
         &tx_image_id,
     );
