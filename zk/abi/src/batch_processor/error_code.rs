@@ -24,7 +24,7 @@ pub enum ErrorCode {
     LaneChainMismatch = 8,
     /// Tx receipt's `resource_id` does not match the SMT proof leaf at the bundle position
     /// the host's translation table maps to. Indicates a host bug or tampering with the
-    /// `batch_to_bundle_index` table.
+    /// `translation` table.
     ResourceIdMismatch = 9,
 }
 

@@ -197,17 +197,17 @@ impl<'a, V: Fn(&[u8; 32], &[u8]) -> Result<()>> Abi<'a, V> {
 
     /// Validates a tx receipt's input commitment, translating its batch-local index to
     /// the bundle-wide one and cross-checking `resource_id` against the SMT proof leaf -
-    /// guards against forged `batch_to_bundle_index` translation tables.
+    /// guards against forged translation tables.
     fn check_input_resource(
         &mut self,
         batch: &Batch<'a>,
         r: &InputResourceCommitment<'a>,
     ) -> Result<usize> {
         let local_idx = r.resource_index as usize;
-        if local_idx >= batch.batch_to_bundle_index.len() {
+        if local_idx >= batch.translation.len() {
             return Err(Error::from(ErrorCode::ResourceIndexOutOfRange));
         }
-        let bundle_idx = batch.batch_to_bundle_index[local_idx] as usize;
+        let bundle_idx = batch.translation[local_idx] as usize;
         if bundle_idx >= self.value_hashes.len() {
             return Err(Error::from(ErrorCode::ResourceIndexOutOfRange));
         }

@@ -165,7 +165,7 @@ where
 }
 
 /// Walks each batch's `resource_ids()` in scheduling order, building the bundle-wide
-/// resource list (union, deduped) and per-batch `batch_to_bundle_index` translation tables.
+/// resource list (union, deduped) and per-batch translation tables.
 fn build_bundle_union<S, P>(batches: &[ScheduledBatch<S, P>]) -> (Vec<ResourceId>, Vec<Vec<u32>>)
 where
     S: Store,

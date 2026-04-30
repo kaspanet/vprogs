@@ -25,7 +25,7 @@ pub struct Batch<'a> {
     /// `seq_commit` of this block's selected parent (used iff `lane_expired`).
     pub parent_seq_commit: &'a [u8; 32],
     /// Maps batch-local `resource_index` to bundle-wide resource_index.
-    pub batch_to_bundle_index: Vec<u32>,
+    pub translation: Vec<u32>,
     /// Per-tx journal entries.
     pub tx_journals: TransactionJournals<'a>,
 }
@@ -41,18 +41,14 @@ impl<'a> Batch<'a> {
             lane_blue_score: buf.le_u64("lane_blue_score")?,
             lane_expired: buf.byte("lane_expired")? != 0,
             parent_seq_commit: buf.array::<32>("parent_seq_commit")?,
-            batch_to_bundle_index: buf
-                .many("batch_to_bundle", |b| b.le_u32("batch_to_bundle_index"))?,
+            translation: buf.many("translation", |b| b.le_u32("translation"))?,
             tx_journals: TransactionJournals::new(buf.blob("tx_journals")?),
         })
     }
 
     /// Encodes one batch to bytes (host-side).
     #[cfg(feature = "host")]
-    pub fn encode(
-        buf: &mut Vec<u8>,
-        (metadata, batch_to_bundle_index, tx_journals): BundlePart<'_>,
-    ) {
+    pub fn encode(buf: &mut Vec<u8>, (metadata, translation, tx_journals): BundlePart<'_>) {
         buf.write(&metadata.blue_score.to_le_bytes());
         buf.write(&metadata.daa_score.to_le_bytes());
         buf.write(&metadata.prev_timestamp.to_le_bytes());
@@ -60,7 +56,7 @@ impl<'a> Batch<'a> {
         buf.write(&metadata.lane_blue_score.to_le_bytes());
         buf.write(&[if metadata.lane_expired { 1 } else { 0 }]);
         buf.write(&metadata.prev_seq_commit.as_bytes());
-        buf.write_many(batch_to_bundle_index, |&idx| idx.to_le_bytes());
+        buf.write_many(translation, |&idx| idx.to_le_bytes());
         buf.write(&tx_journals.iter().map(|j| 4 + j.len() as u32).sum::<u32>().to_le_bytes());
         for journal in tx_journals {
             buf.write_blob(journal);

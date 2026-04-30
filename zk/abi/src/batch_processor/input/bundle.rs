@@ -45,8 +45,8 @@ impl<S: Store, P: Processor<S, BatchMetadata = ChainBlockMetadata>> Bundle<S, P>
     }
 }
 
-/// Per-batch encode part: `(metadata, batch-to-bundle-index translation, per-tx journals)`.
+/// Per-batch encode part: `(metadata, translation, per-tx journals)`.
 pub type BundlePart<'a> = (&'a ChainBlockMetadata, &'a [u32], &'a [Vec<u8>]);
 
-/// Per-batch entry: `(scheduled batch, batch-to-bundle-index translation, per-tx journals)`.
+/// Per-batch entry: `(scheduled batch, translation, per-tx journals)`.
 type BundleEntry<S, P> = (ScheduledBatch<S, P>, Vec<u32>, Vec<Vec<u8>>);
