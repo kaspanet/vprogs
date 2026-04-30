@@ -12,14 +12,13 @@ use kaspa_smt::proof::OwnedSmtProof;
 use vprogs_core_smt::Blake3;
 
 use crate::{
-    Error, Read, Result, Write,
-    batch_processor::{Batch, ErrorCode, Inputs, StateTransition},
+    batch_processor::{Batch, Inputs},
     transaction_processor::{
         InputResourceCommitment, JournalEntries, OutputCommitment, OutputResourceCommitment,
     },
 };
 
-/// Bundle proof entry point.
+/// Bundle proof workspace exposing per-step helpers for guest orchestration.
 pub struct Abi<'a> {
     /// Decoded bundle inputs.
     inputs: Inputs<'a>,
@@ -32,46 +31,20 @@ pub struct Abi<'a> {
     bundle_idx_to_leaf_pos: Vec<u32>,
 }
 
-impl Abi<'_> {
-    /// Reads inputs, verifies the bundle, and writes the settlement journal.
-    pub fn process_bundle(
-        host: &mut impl Read,
-        journal: &mut impl Write,
-        verify_journal: impl Fn(&[u8; 32], &[u8]) -> Result<()>,
-    ) {
-        let input_bytes = host.read_blob();
-        let mut this = Abi::new(Inputs::decode(&input_bytes).expect("decode bundle inputs"));
-
-        let (new_lane_tip, last_blue_score) = this.verify_batches(&verify_journal);
-        let prev_state = this.prev_state();
-        let new_state = this.new_state();
-        let new_seq_commit = this.new_seq_commit(&new_lane_tip, last_blue_score);
-
-        StateTransition::encode(
-            journal,
-            (&prev_state, this.inputs.batches[0].prev_lane_tip),
-            (&new_state, &new_lane_tip.as_bytes(), &new_seq_commit.as_bytes()),
-            this.inputs.covenant_id,
-            this.inputs.image_id,
-        );
-    }
-}
-
 impl<'a> Abi<'a> {
     /// Builds an `Abi` workspace pre-sized for the bundle's resource union, with the
     /// `leaf_pos -> bundle_resource_index` scatter and its inverse pre-computed.
-    fn new(inputs: Inputs<'a>) -> Self {
+    pub fn new(input_bytes: &'a [u8]) -> Self {
+        // Parse inputs.
+        let inputs = Inputs::decode(input_bytes).expect("decode bundle inputs");
         assert!(!inputs.batches.is_empty(), "bundle is empty");
         assert_eq!(inputs.leaf_order.len(), inputs.proof.leaves.len(), "invalid leaf_order length");
 
+        // Scatter the loaded values and their resources indexes into their correct position.
         let mut value_hashes = vec![&[0; 32]; inputs.proof.leaves.len()];
         let mut bundle_idx_to_leaf_pos = vec![u32::MAX; inputs.proof.leaves.len()];
         for (leaf_pos, &res_idx) in inputs.leaf_order.iter().enumerate() {
-            assert!(
-                (res_idx as usize) < inputs.proof.leaves.len(),
-                "leaf_order entry out of range"
-            );
-
+            assert!((res_idx as usize) < inputs.proof.leaves.len(), "res_index out of range");
             value_hashes[res_idx as usize] = inputs.proof.leaves[leaf_pos].value_hash;
             bundle_idx_to_leaf_pos[res_idx as usize] = leaf_pos as u32;
         }
@@ -84,40 +57,45 @@ impl<'a> Abi<'a> {
         }
     }
 
+    /// Lane tip entering the bundle (first batch's `prev_lane_tip`).
+    pub fn prev_lane_tip(&self) -> &'a [u8; 32] {
+        self.inputs.batches[0].prev_lane_tip
+    }
+
+    /// Covenant id this bundle settles into.
+    pub fn covenant_id(&self) -> &'a [u8; 32] {
+        self.inputs.covenant_id
+    }
+
+    /// Transaction-processor guest image id used to verify inner tx receipts.
+    pub fn image_id(&self) -> &'a [u8; 32] {
+        self.inputs.image_id
+    }
+
     /// Bundle-wide L2 state root before any batch writes apply.
-    fn prev_state(&self) -> [u8; 32] {
+    pub fn prev_state(&self) -> [u8; 32] {
         self.inputs.proof.root::<Blake3>().expect("proof root")
     }
 
     /// Bundle-wide L2 state root after all batch writes have been applied.
-    fn new_state(&self) -> [u8; 32] {
+    pub fn new_state(&self) -> [u8; 32] {
         self.inputs.proof.compute_root::<Blake3>(|i| self.latest_hash(i)).expect("new root")
     }
 
     /// Walks every batch in scheduling order, chains lane tips across them, and returns
     /// the bundle's final `(new_lane_tip, last_blue_score)`.
-    fn verify_batches(
-        &mut self,
-        verify_journal: &impl Fn(&[u8; 32], &[u8]) -> Result<()>,
-    ) -> (Hash, u64) {
-        let mut current_lane_tip = None;
-        let mut last_blue_score = 0u64;
+    pub fn verify_batches(&mut self, verify_journal: &impl Fn(&[u8; 32], &[u8])) -> (Hash, u64) {
+        let mut lane_tip = None;
+        let mut blue_score = 0u64;
 
-        // Take ownership of batches so `verify_batch` gets &Batch while `&mut self`
-        // covers value_hashes mutation. Restored before returning.
         let batches = core::mem::take(&mut self.inputs.batches);
         for batch in &batches {
-            let new_lane_tip = self
-                .verify_batch(batch, current_lane_tip, verify_journal)
-                .unwrap_or_else(|e| panic!("verify batch: {e:?}"));
-            current_lane_tip = Some(new_lane_tip);
-            last_blue_score = batch.blue_score;
+            lane_tip = Some(self.verify_batch(batch, lane_tip, verify_journal));
+            blue_score = batch.blue_score;
         }
         self.inputs.batches = batches;
 
-        let new_lane_tip = current_lane_tip.expect("non-empty bundle has a lane tip");
-
-        (new_lane_tip, last_blue_score)
+        (lane_tip.expect("must exist"), blue_score)
     }
 
     /// Verifies one batch and returns its derived `new_lane_tip` for the caller to chain.
@@ -125,8 +103,8 @@ impl<'a> Abi<'a> {
         &mut self,
         batch: &Batch<'a>,
         prev_lane_tip_carry: Option<Hash>,
-        verify_journal: &impl Fn(&[u8; 32], &[u8]) -> Result<()>,
-    ) -> Result<Hash> {
+        verify_journal: &impl Fn(&[u8; 32], &[u8]),
+    ) -> Hash {
         // Per-batch state - reset each call.
         let context_hash = mergeset_context_hash(&MergesetContext {
             timestamp: seq_commit_timestamp(batch.parent_timestamp),
@@ -146,37 +124,27 @@ impl<'a> Abi<'a> {
         // checked on-chain by the covenant's P2SH binding.
         if !batch.lane_expired {
             if let Some(carry) = prev_lane_tip_carry {
-                if batch.prev_lane_tip != &carry.as_bytes() {
-                    return Err(Error::from(ErrorCode::LaneChainMismatch));
-                }
+                assert_eq!(batch.prev_lane_tip, &carry.as_bytes(), "lane chain mismatch");
             }
         }
 
         for tx_journal in batch.tx_journals {
-            let tx_journal = tx_journal?;
-            verify_journal(self.inputs.image_id, tx_journal)?;
-            let entry = JournalEntries::decode(tx_journal)?;
+            let tx_journal = tx_journal.expect("decode tx_journal");
+            verify_journal(self.inputs.image_id, tx_journal);
+            let entry = JournalEntries::decode(tx_journal).expect("decode journal entries");
             let tx_index = entry.input_commitment.tx_index;
 
             if let Some(prev) = last_tx_index {
-                if tx_index <= prev {
-                    return Err(Error::from(ErrorCode::TxIndexMismatch));
-                }
+                assert!(tx_index > prev, "tx_index not strictly increasing");
             }
 
             // Cross-check that all txs in this batch share the same BatchMetadata, and
             // that their context_hash matches our derived one.
             let metadata = &entry.input_commitment.batch_metadata;
             let expected = expected_metadata.get_or_insert(*metadata);
-            if expected != metadata {
-                if expected.block_hash != metadata.block_hash {
-                    return Err(Error::from(ErrorCode::BlockHashMismatch));
-                }
-                return Err(Error::from(ErrorCode::ContextHashMismatch));
-            }
-            if metadata.context_hash != &context_hash_bytes {
-                return Err(Error::from(ErrorCode::ContextHashMismatch));
-            }
+            assert_eq!(expected.block_hash, metadata.block_hash, "block_hash mismatch");
+            assert_eq!(expected.context_hash, metadata.context_hash, "context_hash mismatch");
+            assert_eq!(metadata.context_hash, &context_hash_bytes, "context_hash mismatch");
 
             // Activity digest accumulates per-batch (one digest per chain block).
             let tx_id = Hash::from_bytes(*entry.input_commitment.tx_id);
@@ -188,13 +156,15 @@ impl<'a> Abi<'a> {
 
             mapping_buf.clear();
             for input in entry.input_commitment.resources {
-                let r = input?;
-                mapping_buf.push(self.check_input_resource(batch, &r)?);
+                let r = input.expect("decode input resource");
+                mapping_buf.push(self.check_input_resource(batch, &r));
             }
 
             if let OutputCommitment::Success(outputs) = entry.output_commitment {
                 for (i, output) in outputs.enumerate() {
-                    if let OutputResourceCommitment::Changed(hash) = output? {
+                    if let OutputResourceCommitment::Changed(hash) =
+                        output.expect("decode output resource")
+                    {
                         self.value_hashes[mapping_buf[i]] = hash;
                     }
                 }
@@ -208,13 +178,12 @@ impl<'a> Abi<'a> {
         } else {
             Hash::from_bytes(*batch.prev_lane_tip)
         };
-        let new_lane_tip = lane_tip_next(&LaneTipInput {
+        lane_tip_next(&LaneTipInput {
             parent_ref: &parent_ref,
             lane_key: &self.lane_key,
             activity_digest: &activity_builder.finalize(),
             context_hash: &context_hash,
-        });
-        Ok(new_lane_tip)
+        })
     }
 
     /// Validates a tx receipt's input commitment, translating its batch-local index to
@@ -224,25 +193,12 @@ impl<'a> Abi<'a> {
         &mut self,
         batch: &Batch<'a>,
         r: &InputResourceCommitment<'a>,
-    ) -> Result<usize> {
-        let local_idx = r.resource_index as usize;
-        if local_idx >= batch.translation.len() {
-            return Err(Error::from(ErrorCode::ResourceIndexOutOfRange));
-        }
-        let bundle_idx = batch.translation[local_idx] as usize;
-        if bundle_idx >= self.value_hashes.len() {
-            return Err(Error::from(ErrorCode::ResourceIndexOutOfRange));
-        }
-
+    ) -> usize {
+        let bundle_idx = batch.translation[r.resource_index as usize] as usize;
         let leaf_pos = self.bundle_idx_to_leaf_pos[bundle_idx] as usize;
-        if r.resource_id != self.inputs.proof.leaves[leaf_pos].key {
-            return Err(Error::from(ErrorCode::ResourceIdMismatch));
-        }
-
-        if r.hash != self.value_hashes[bundle_idx] {
-            return Err(Error::from(ErrorCode::ResourceHashMismatch));
-        }
-        Ok(bundle_idx)
+        assert_eq!(r.resource_id, self.inputs.proof.leaves[leaf_pos].key, "resource_id mismatch");
+        assert_eq!(r.hash, self.value_hashes[bundle_idx], "resource hash mismatch");
+        bundle_idx
     }
 
     /// Looks up the latest value hash for a proof leaf position via the bundle-wide
@@ -253,7 +209,7 @@ impl<'a> Abi<'a> {
 
     /// Derives the bundle's final-block `seq_commit` from `new_lane_tip` and
     /// `self.inputs.lane_proof`.
-    fn new_seq_commit(&self, new_lane_tip: &Hash, last_blue_score: u64) -> Hash {
+    pub fn new_seq_commit(&self, new_lane_tip: &Hash, last_blue_score: u64) -> Hash {
         let new_lane_leaf =
             smt_leaf_hash(&SmtLeafInput { lane_tip: new_lane_tip, blue_score: last_blue_score });
         let lanes_smt_proof = OwnedSmtProof::from_bytes(self.inputs.lane_proof.lane_smt_proof)
