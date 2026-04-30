@@ -8,7 +8,7 @@ use crate::{Result, Write};
 /// cross-tx consistency checks in the batch processor. Everything else (timestamps, scores,
 /// parent refs) is per-block context consumed only by the batch processor and plumbed through
 /// its top-level inputs, not committed per-tx.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct BatchMetadata<'a> {
     /// L1 block hash this tx was accepted in.
     pub block_hash: &'a [u8; 32],
