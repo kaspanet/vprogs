@@ -10,6 +10,8 @@ mod guest;
 mod host;
 #[cfg(feature = "guest")]
 mod journal;
+#[cfg(feature = "host")]
+mod witness;
 
 #[cfg(feature = "host")]
 pub use backend::Backend;
@@ -19,3 +21,5 @@ pub use guest::Guest;
 pub use host::Host;
 #[cfg(feature = "guest")]
 pub use journal::Journal;
+#[cfg(feature = "host")]
+pub use witness::OwnedSuccinctWitness;

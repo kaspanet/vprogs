@@ -8,6 +8,7 @@ default-members = [
   "storage/*",
   "transaction-runtime/*",
   "zk/abi",
+  "zk/covenant",
   "zk/transaction-prover",
   "zk/batch-prover",
   "zk/vm",
@@ -27,6 +28,7 @@ members = [
   "storage/*",
   "transaction-runtime/*",
   "zk/abi",
+  "zk/covenant",
   "zk/transaction-prover",
   "zk/batch-prover",
   "zk/vm",
@@ -76,6 +78,7 @@ resolver = "3"
   tokio-util = "0.7.17"
   toml = "0.8"
   workflow-core = "0.18.0"
+  zerocopy = { version = "0.8", default-features = false }
 
   secp256k1 = { version = "0.29.1", features = ["rand-std"] }
 
@@ -87,22 +90,27 @@ resolver = "3"
     "bytecheck",
   ] }
 
-  # Kaspa dependencies
-  kaspa-addresses           = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
-  kaspa-consensus-core      = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
-  kaspa-core                = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
-  kaspa-grpc-client         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
-  kaspa-hashes              = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2", default-features = false }
-  kaspa-merkle              = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
-  kaspa-notify              = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
-  kaspa-rpc-core            = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
-  kaspa-seq-commit          = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2", default-features = false }
-  kaspa-smt                 = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2", default-features = false }
-  kaspa-testing-integration = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
-  kaspa-txscript            = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
-  kaspa-wrpc-client         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
-  kaspa-wrpc-server         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
-  kaspad                    = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset2" }
+  # Kaspa dependencies — biryukovmaxim's branch carries PR #961 (the
+  # `get_seq_commit_lane_proof` RPC) which we use for on-demand settlement-context
+  # fetch. Replaces the previous `hmoog/rusty-kaspa#lane-data-in-v2-response` fork
+  # whose per-block lane_data extension is no longer needed under bundling.
+  kaspa-addresses = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof" }
+  kaspa-consensus-core = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof" }
+  kaspa-core = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof" }
+  kaspa-grpc-client = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof" }
+  kaspa-hashes = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof", default-features = false, features = [
+    "zerocopy",
+  ] }
+  kaspa-merkle = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof" }
+  kaspa-notify = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof" }
+  kaspa-rpc-core = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof" }
+  kaspa-seq-commit = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof", default-features = false }
+  kaspa-smt = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof", default-features = false }
+  kaspa-testing-integration = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof" }
+  kaspa-txscript = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof" }
+  kaspa-wrpc-client = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof" }
+  kaspa-wrpc-server = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof" }
+  kaspad = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof" }
 
   # Internal dependencies
   vprogs-core-atomics                             = { path = "core/atomics" }
@@ -151,6 +159,7 @@ resolver = "3"
   vprogs-zk-abi                                   = { path = "zk/abi", default-features = false }
   vprogs-zk-backend-risc0-api                     = { path = "zk/backend/risc0/api", default-features = false }
   vprogs-zk-batch-prover                          = { path = "zk/batch-prover" }
+  vprogs-zk-covenant                              = { path = "zk/covenant" }
   vprogs-zk-transaction-prover                    = { path = "zk/transaction-prover" }
   vprogs-zk-vm                                    = { path = "zk/vm" }
 

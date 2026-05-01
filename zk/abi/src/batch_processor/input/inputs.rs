@@ -1,99 +1,78 @@
 use alloc::vec::Vec;
 
+use kaspa_hashes::Hash;
+#[cfg(feature = "host")]
+use kaspa_rpc_core::GetSeqCommitLaneProofResponse;
+#[cfg(feature = "host")]
+use tap::Tap;
 use vprogs_core_codec::Reader;
 use vprogs_core_smt::proving::Proof;
+use zerocopy::FromBytes;
 
-use crate::{Result, batch_processor::TransactionJournals};
+#[cfg(feature = "host")]
+use crate::Write;
+#[cfg(feature = "host")]
+use crate::batch_processor::BundlePart;
+use crate::{
+    Result,
+    batch_processor::{Batch, LaneProof},
+};
 
-/// Decoded batch processor input (zero-copy).
-///
-/// Wire layout:
-/// `image_id(32) | parent_lane_tip(32) | lane_key(32) | proof (length-prefixed) | leaf_order |
-/// tx_journals`
+/// Decoded batch processor input.
 pub struct Inputs<'a> {
-    /// Transaction processor guest image ID.
+    /// Transaction processor guest image ID used to verify each inner tx journal.
     pub image_id: &'a [u8; 32],
-    /// Lane tip entering the batch.
-    pub parent_lane_tip: &'a [u8; 32],
-    /// Lane key this batch is bound to.
-    pub lane_key: &'a [u8; 32],
-    /// Sparse Merkle tree proof (leaves carry pre-batch key + value_hash per resource).
+    /// Covenant id this bundle settles into.
+    pub covenant_id: &'a [u8; 32],
+    /// Lane key for this bundle (one lane per bundle).
+    pub lane_key: &'a Hash,
+    /// SMT proof covering the union of resources touched across all batches.
     pub proof: Proof<'a>,
-    /// Leaf order mapping: `leaf_order[leaf_pos] = resource_index` (materialized for O(1) access).
+    /// Leaf-order permutation: `leaf_order[leaf_pos] = bundle_resource_index`.
     pub leaf_order: Vec<u32>,
-    /// Iterator over per-transaction journal entries.
-    pub tx_journals: TransactionJournals<'a>,
+    /// Batches in scheduling order.
+    pub batches: Vec<Batch<'a>>,
+    /// Lane proof for the bundle's final block.
+    pub lane_proof: LaneProof<'a>,
 }
 
 impl<'a> Inputs<'a> {
-    /// Decodes the batch processor input from a raw byte buffer into zero-copy views.
+    /// Decodes the bundle input from a raw byte buffer into zero-copy views.
     pub fn decode(mut buf: &'a [u8]) -> Result<Self> {
-        // Image ID (32 bytes).
-        let image_id = buf.array::<32>("image_id")?;
-
-        // Parent lane tip + lane key (32 bytes each).
-        let parent_lane_tip = buf.array::<32>("parent_lane_tip")?;
-        let lane_key = buf.array::<32>("lane_key")?;
-
-        // Decode length-prefixed proof (comes before leaf_order so we know the leaf count).
-        let proof_length = buf.le_u32("proof_length")? as usize;
-        let proof = Proof::decode(buf.bytes(proof_length, "proof")?)?;
-
-        // Decode leaf_order (one u32 per leaf, count derived from proof).
-        let n_resources = proof.leaves.len();
-        let mut leaf_order = Vec::with_capacity(n_resources);
-        for _ in 0..n_resources {
-            leaf_order.push(buf.le_u32("leaf_order")?);
-        }
-
-        // Remaining bytes are per-transaction journal entries.
-        let tx_journals = TransactionJournals::new(buf);
-
-        Ok(Self { image_id, parent_lane_tip, lane_key, proof, leaf_order, tx_journals })
+        Ok(Self {
+            image_id: buf.array::<32>("image_id")?,
+            covenant_id: buf.array::<32>("covenant_id")?,
+            lane_key: Hash::ref_from_bytes(buf.array::<32>("lane_key")?)?,
+            proof: Proof::decode(buf.blob("proof")?)?,
+            leaf_order: buf.many("leaf_order", |b| b.le_u32("leaf_order"))?,
+            batches: buf.many("batches", Batch::decode)?,
+            lane_proof: LaneProof::decode(&mut buf)?,
+        })
     }
 
-    /// Encodes the batch processor input into bytes (host-side).
-    ///
-    /// Wire layout:
-    /// `image_id(32) | parent_lane_tip(32) | lane_key(32) | proof (length-prefixed) | leaf_order |
-    /// tx_journals`
+    /// Encodes a bundle input to bytes.
     #[cfg(feature = "host")]
-    pub fn encode(
+    pub fn encode<'b, I>(
         image_id: &[u8; 32],
-        parent_lane_tip: &[u8; 32],
-        lane_key: &[u8; 32],
+        covenant_id: &[u8; 32],
+        lane_key: &Hash,
         proof_bytes: &[u8],
         leaf_order: &[u32],
-        tx_journals: &[Vec<u8>],
-    ) -> Vec<u8> {
-        use crate::Write;
-
-        let journals_size: usize = tx_journals.iter().map(|j| 4 + j.len()).sum();
-        let total = 32 + 32 + 32 + 4 + proof_bytes.len() + leaf_order.len() * 4 + journals_size;
-        let mut buf = Vec::with_capacity(total);
-
-        // Image ID.
-        buf.write(image_id);
-
-        // Parent lane tip + lane key.
-        buf.write(parent_lane_tip);
-        buf.write(lane_key);
-
-        // Proof (length-prefixed raw bytes).
-        buf.extend_from_slice(&(proof_bytes.len() as u32).to_le_bytes());
-        buf.extend_from_slice(proof_bytes);
-
-        // Leaf order mapping (one u32 per leaf).
-        for &idx in leaf_order {
-            buf.extend_from_slice(&idx.to_le_bytes());
-        }
-
-        // Transaction journals (each length-prefixed).
-        for journal in tx_journals {
-            buf.extend_from_slice(&(journal.len() as u32).to_le_bytes());
-            buf.extend_from_slice(journal);
-        }
-
-        buf
+        batches: I,
+        lane_proof: &GetSeqCommitLaneProofResponse,
+    ) -> Vec<u8>
+    where
+        I: IntoIterator<Item = BundlePart<'b>>,
+        I::IntoIter: ExactSizeIterator,
+    {
+        Vec::new().tap_mut(|buf| {
+            buf.write(image_id);
+            buf.write(covenant_id);
+            buf.write(lane_key.as_slice());
+            buf.write_blob(proof_bytes);
+            buf.write_many(leaf_order, |&idx| idx.to_le_bytes());
+            buf.encode_many(batches, Batch::encode);
+            LaneProof::encode(buf, lane_proof);
+        })
     }
 }

@@ -387,7 +387,7 @@ impl BridgeWorker {
                 })
                 .collect();
 
-            let (lane_tip, lane_blue_score) =
+            let (lane_tip, lane_blue_score, lane_expired) =
                 self.advance_lane(&parent_meta, &accepted_transactions, header);
 
             let checkpoint = self.virtual_chain.advance_tip(ChainBlockMetadata {
@@ -396,11 +396,13 @@ impl BridgeWorker {
                 daa_score: header.daa_score.expect("missing daa_score"),
                 timestamp: header.timestamp.expect("missing timestamp"),
                 seq_commit: header.accepted_id_merkle_root.expect("missing seq_commit"),
-                lane_key: self.lane_key.as_ref().map_or([0; 32], |k| k.as_bytes()),
+                prev_seq_commit: parent_meta.seq_commit,
+                lane_key: self.lane_key.unwrap_or_default(),
                 prev_timestamp: parent_meta.timestamp,
                 prev_lane_tip: parent_meta.lane_tip,
                 lane_blue_score,
                 lane_tip,
+                lane_expired,
             });
 
             self.push_event(L1Event::ChainBlockAdded {
@@ -413,22 +415,23 @@ impl BridgeWorker {
         Ok(())
     }
 
-    /// Returns the next `(lane_tip, lane_blue_score)` for this block.
+    /// Returns the next `(lane_tip, lane_blue_score, lane_expired)` for this block.
     fn advance_lane(
         &self,
         parent: &ChainBlockMetadata,
         accepted_transactions: &[(u32, L1Transaction)],
         header: &RpcOptionalHeader,
-    ) -> ([u8; 32], u64) {
-        // No lane configured or no activity this block -> carry parent state forward unchanged.
-        let Some(lane_key) = self.lane_key.as_ref().filter(|_| !accepted_transactions.is_empty())
-        else {
-            return (parent.lane_tip, parent.lane_blue_score);
-        };
-
+    ) -> ([u8; 32], u64, bool) {
         // Check whether the lane has gone silent past the finality window and needs to reset.
         let blue_score = header.blue_score.expect("missing blue_score");
         let lane_expired = blue_score.saturating_sub(parent.lane_blue_score) > self.finality_depth;
+
+        // No lane configured or no activity this block -> carry parent state forward unchanged.
+        let Some(lane_key) = self.lane_key.as_ref().filter(|_| !accepted_transactions.is_empty())
+        else {
+            return (parent.lane_tip, parent.lane_blue_score, lane_expired);
+        };
+
         let parent_ref =
             if lane_expired { parent.seq_commit } else { Hash::from_bytes(parent.lane_tip) };
 
@@ -453,7 +456,7 @@ impl BridgeWorker {
             context_hash: &context_hash,
         });
 
-        (tip.as_bytes(), blue_score)
+        (tip.as_bytes(), blue_score, lane_expired)
     }
 
     /// Rolls back the virtual chain, updates the reorg filter, and emits a `Rollback` event.

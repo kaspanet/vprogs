@@ -7,7 +7,11 @@ pub mod batch_processor {
     pub(crate) mod error_code;
 
     pub(crate) mod input {
+        pub(crate) mod batch;
+        #[cfg(feature = "host")]
+        pub(crate) mod bundle;
         pub(crate) mod inputs;
+        pub(crate) mod lane_proof;
         pub(crate) mod transaction_journals;
     }
 
@@ -17,8 +21,13 @@ pub mod batch_processor {
 
     pub use abi::Abi;
     pub use error_code::ErrorCode;
-    pub use input::{inputs::Inputs, transaction_journals::TransactionJournals};
-    pub use journal::state_transition::{StateTransition, SuccessInputs};
+    #[cfg(feature = "host")]
+    pub use input::bundle::{Bundle, BundlePart};
+    pub use input::{
+        batch::Batch, inputs::Inputs, lane_proof::LaneProof,
+        transaction_journals::TransactionJournals,
+    };
+    pub use journal::state_transition::StateTransition;
 }
 mod error;
 mod read;
@@ -29,7 +38,6 @@ pub mod transaction_processor {
     pub(crate) mod transaction_handler;
 
     pub(crate) mod input {
-        pub(crate) mod batch_metadata;
         pub(crate) mod inputs;
         pub(crate) mod resource;
         pub(crate) mod transaction;
@@ -58,9 +66,7 @@ pub mod transaction_processor {
     }
 
     pub use abi::Abi;
-    pub use input::{
-        batch_metadata::BatchMetadata, inputs::Inputs, resource::Resource, transaction::Transaction,
-    };
+    pub use input::{inputs::Inputs, resource::Resource, transaction::Transaction};
     pub use journal::{
         entries::JournalEntries,
         entry::JournalEntry,

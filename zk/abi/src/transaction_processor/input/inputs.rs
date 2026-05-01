@@ -4,7 +4,7 @@ use vprogs_core_codec::Reader;
 
 use crate::{
     Error, Result,
-    transaction_processor::{BatchMetadata, Resource, Transaction},
+    transaction_processor::{Resource, Transaction},
 };
 
 /// Decoded transaction inputs holding zero-copy views into the wire buffer.
@@ -13,15 +13,15 @@ pub struct Inputs<'a> {
     pub tx: Transaction<'a>,
     /// Position of this transaction within the batch.
     pub tx_index: u32,
-    /// Block-level metadata for the current batch.
-    pub batch_metadata: BatchMetadata<'a>,
+    /// Mergeset context hash - exposed to the VM as a source of on-chain randomness.
+    pub context_hash: &'a [u8; 32],
     /// Mutable resource views decoded from the wire buffer.
     pub resources: Vec<Resource<'a>>,
 }
 
 impl<'a> Inputs<'a> {
-    /// Fixed header size: tx_index(4) + n_resources(4) + BatchMetadata.
-    pub const FIXED_HEADER_SIZE: usize = 4 + 4 + BatchMetadata::SIZE;
+    /// Fixed header size: tx_index(4) + n_resources(4) + context_hash(32).
+    pub const FIXED_HEADER_SIZE: usize = 4 + 4 + 32;
 
     /// Decodes transaction inputs from the wire buffer.
     ///
@@ -34,7 +34,7 @@ impl<'a> Inputs<'a> {
         // Decode fixed header.
         let tx_index = header.le_u32("tx_index")?;
         let resource_count = header.le_u32("resource_count")? as usize;
-        let batch_metadata = BatchMetadata::decode(&mut header)?;
+        let context_hash = header.array::<32>("context_hash")?;
 
         // Decode transaction bytes.
         let (tx_bytes, resources) = data.split_at_mut(Transaction::wire_size(data)?);
@@ -53,7 +53,7 @@ impl<'a> Inputs<'a> {
                 .push(Resource::decode(&res_headers[i * Resource::HEADER_SIZE..], &mut res_data)?);
         }
 
-        Ok(Self { tx, tx_index, batch_metadata, resources })
+        Ok(Self { tx, tx_index, context_hash, resources })
     }
 
     /// Encodes a scheduler [`TransactionContext`] into the ABI wire format (host-side only).
@@ -77,13 +77,16 @@ impl<'a> Inputs<'a> {
 
         // Write fixed header: tx_index, n_resources, batch metadata.
         let bm = ctx.batch_metadata();
+        let context_hash = kaspa_seq_commit::hashing::mergeset_context_hash(
+            &kaspa_seq_commit::types::MergesetContext {
+                timestamp: kaspa_seq_commit::hashing::seq_commit_timestamp(bm.prev_timestamp),
+                daa_score: bm.daa_score,
+                blue_score: bm.blue_score,
+            },
+        );
         buf.write(&ctx.tx_index().to_le_bytes());
         buf.write(&(ctx.resources().len() as u32).to_le_bytes());
-        buf.write(&bm.hash.as_bytes());
-        buf.write(&bm.blue_score.to_le_bytes());
-        buf.write(&bm.daa_score.to_le_bytes());
-        buf.write(&bm.timestamp.to_le_bytes());
-        buf.write(&bm.prev_timestamp.to_le_bytes());
+        buf.write(&context_hash.as_bytes());
 
         // Write transaction bytes.
         Transaction::encode(&mut buf, ctx.tx());
