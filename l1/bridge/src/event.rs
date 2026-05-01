@@ -15,7 +15,7 @@ pub enum L1Event {
         checkpoint: Checkpoint<ChainBlockMetadata>,
         /// Block header.
         header: Box<RpcOptionalHeader>,
-        /// Native transactions from this block's mergeset that became confirmed.
+        /// Subnetwork-filtered mergeset transactions, each paired with its block-wide index.
         accepted_transactions: Vec<(u32, L1Transaction)>,
     },
     /// Blocks after this checkpoint have been removed due to a reorg.
