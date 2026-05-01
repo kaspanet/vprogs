@@ -205,7 +205,7 @@ async fn batch_proof_bundles_two_batches() {
     tx2.version = 1;
     tx2.payload = vec![4, 5, 6];
 
-    let lane_key = [0u8; 32];
+    let lane_key = Hash::default();
     let metadata_1 = metadata_for_block(&l1, block_hashes[0]).await;
     let batch_1 = scheduler.schedule(
         metadata_1,

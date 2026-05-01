@@ -141,7 +141,7 @@ where
         let bundle_inputs = BundleInputs::encode(
             self.backend.image_id(),
             &covenant_id,
-            &self.config.lane_key.as_bytes(),
+            &self.config.lane_key,
             &proof_bytes,
             &leaf_order,
             bundle.parts(),

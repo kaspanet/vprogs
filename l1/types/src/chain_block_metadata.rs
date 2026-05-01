@@ -19,7 +19,7 @@ pub struct ChainBlockMetadata {
     /// Previous block's header timestamp in milliseconds.
     pub prev_timestamp: u64,
     /// Lane key this block's accepted txs are bound to.
-    pub lane_key: [u8; 32],
+    pub lane_key: Hash,
     /// Sequencing commitment carried by this block's header.
     pub seq_commit: Hash,
     /// Sequencing commitment carried by the previous block's header.

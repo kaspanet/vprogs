@@ -37,7 +37,7 @@ pub fn batch_processor_elf() -> Vec<u8> {
 pub fn compute_section_lane_tip(
     metadata: &ChainBlockMetadata,
     txs: &[(u32, &L1Transaction)],
-    lane_key: &[u8; 32],
+    lane_key: &Hash,
 ) -> [u8; 32] {
     let context_hash = mergeset_context_hash(&MergesetContext {
         timestamp: seq_commit_timestamp(metadata.prev_timestamp),
@@ -56,11 +56,10 @@ pub fn compute_section_lane_tip(
     } else {
         Hash::from_bytes(metadata.prev_lane_tip)
     };
-    let lane_key_h = Hash::from_bytes(*lane_key);
 
     lane_tip_next(&LaneTipInput {
         parent_ref: &parent_ref,
-        lane_key: &lane_key_h,
+        lane_key,
         activity_digest: &activity.finalize(),
         context_hash: &context_hash,
     })

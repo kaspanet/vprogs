@@ -55,7 +55,7 @@ impl<'a> Inputs<'a> {
     pub fn encode<'b, I>(
         image_id: &[u8; 32],
         covenant_id: &[u8; 32],
-        lane_key: &[u8; 32],
+        lane_key: &Hash,
         proof_bytes: &[u8],
         leaf_order: &[u32],
         batches: I,
@@ -68,7 +68,7 @@ impl<'a> Inputs<'a> {
         Vec::new().tap_mut(|buf| {
             buf.write(image_id);
             buf.write(covenant_id);
-            buf.write(lane_key);
+            buf.write(lane_key.as_slice());
             buf.write_blob(proof_bytes);
             buf.write_many(leaf_order, |&idx| idx.to_le_bytes());
             buf.encode_many(batches, Batch::encode);
