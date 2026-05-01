@@ -1,0 +1,35 @@
+//! Wire round-trip tests for the host-feature-exposed decoders and their encode counterparts.
+
+#![cfg(feature = "host")]
+
+use vprogs_zk_abi::batch_processor::StateTransition;
+
+#[test]
+fn state_transition_round_trip() {
+    let prev_state = [0x11; 32];
+    let prev_lane_tip = [0x22; 32];
+    let new_state = [0x33; 32];
+    let new_lane_tip = [0x44; 32];
+    let new_seq_commit = [0x55; 32];
+    let covenant_id = [0x66; 32];
+    let tx_image_id = [0x77; 32];
+
+    let mut buf = Vec::new();
+    StateTransition::encode(
+        &mut buf,
+        (&prev_state, &prev_lane_tip),
+        (&new_state, &new_lane_tip, &new_seq_commit),
+        &covenant_id,
+        &tx_image_id,
+    );
+    assert_eq!(buf.len(), StateTransition::SIZE);
+
+    let decoded = StateTransition::decode(&buf).expect("decode");
+    assert_eq!(decoded.prev_state, &prev_state);
+    assert_eq!(decoded.prev_lane_tip, &prev_lane_tip);
+    assert_eq!(decoded.new_state, &new_state);
+    assert_eq!(decoded.new_lane_tip, &new_lane_tip);
+    assert_eq!(decoded.new_seq_commit, &new_seq_commit);
+    assert_eq!(decoded.covenant_id, &covenant_id);
+    assert_eq!(decoded.tx_image_id, &tx_image_id);
+}

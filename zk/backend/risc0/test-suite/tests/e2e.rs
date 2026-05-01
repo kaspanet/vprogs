@@ -35,10 +35,12 @@ fn test_zk_scheduler_e2e() {
         ChainBlockMetadata::default(),
         vec![
             SchedulerTransaction::new(
+                0,
                 vec![AccessMetadata::write(ResourceId::for_test(1))],
                 kaspa_tx1,
             ),
             SchedulerTransaction::new(
+                1,
                 vec![AccessMetadata::write(ResourceId::for_test(2))],
                 kaspa_tx2,
             ),

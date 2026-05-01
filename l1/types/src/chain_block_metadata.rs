@@ -2,32 +2,34 @@ use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::Hash;
 
-/// Relevant metadata extracted from an L1 chain block.
+/// Per-block metadata the bridge attaches to each L1 chain block.
 ///
 /// Satisfies the [`BatchMetadata`](vprogs_core_types::BatchMetadata) blanket impl via its derived
 /// traits.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[derive(BorshSerialize, BorshDeserialize)] // borsh serialization
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct ChainBlockMetadata {
     /// L1 block hash.
-    block_hash: Hash,
+    pub hash: Hash,
     /// DAG blue score at this block's position.
-    blue_score: u64,
-}
-
-impl ChainBlockMetadata {
-    /// Creates metadata from a block hash and blue score.
-    pub fn new(block_hash: Hash, blue_score: u64) -> Self {
-        Self { block_hash, blue_score }
-    }
-
-    /// Returns the L1 block hash.
-    pub fn block_hash(&self) -> Hash {
-        self.block_hash
-    }
-
-    /// Returns the DAG blue score.
-    pub fn blue_score(&self) -> u64 {
-        self.blue_score
-    }
+    pub blue_score: u64,
+    /// DAA score at this block's position.
+    pub daa_score: u64,
+    /// Block header timestamp in milliseconds.
+    pub timestamp: u64,
+    /// Previous block's header timestamp in milliseconds.
+    pub prev_timestamp: u64,
+    /// Lane key this block's accepted txs are bound to.
+    pub lane_key: Hash,
+    /// Sequencing commitment carried by this block's header.
+    pub seq_commit: Hash,
+    /// Sequencing commitment carried by the previous block's header.
+    pub prev_seq_commit: Hash,
+    /// Blue score at which the lane was last active. Zero if never active.
+    pub lane_blue_score: u64,
+    /// Lane tip entering this block.
+    pub prev_lane_tip: [u8; 32],
+    /// Lane tip after applying this block's accepted txs.
+    pub lane_tip: [u8; 32],
+    /// True when the lane was silent past the finality window at this block.
+    pub lane_expired: bool,
 }

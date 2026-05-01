@@ -1,4 +1,5 @@
-use alloc::string::String;
+use alloc::{format, string::String};
+use core::fmt::Display;
 
 use vprogs_core_codec::Reader;
 
@@ -64,6 +65,12 @@ impl From<vprogs_core_codec::Error> for Error {
         match e {
             vprogs_core_codec::Error::Decode(field) => Self::Decode(field.into()),
         }
+    }
+}
+
+impl<A: Display, S: Display, V: Display> From<zerocopy::ConvertError<A, S, V>> for Error {
+    fn from(e: zerocopy::ConvertError<A, S, V>) -> Self {
+        Self::Decode(format!("zerocopy: {e}"))
     }
 }
 

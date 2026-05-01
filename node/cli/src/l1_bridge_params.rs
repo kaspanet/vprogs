@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use clap::Args;
+use kaspa_consensus_core::subnets::SubnetworkId;
 use serde::{Deserialize, Serialize};
 use vprogs_l1_bridge::L1BridgeConfig;
 
@@ -27,6 +28,14 @@ pub struct L1BridgeParams {
     /// that halves every half-life. Set to 0 to disable.
     #[arg(long = "l1-bridge-filter-half-life-secs", default_value_t = L1BridgeConfig::default().filter_half_life.as_secs())]
     pub filter_half_life_secs: u64,
+    /// Subnetwork id (40-char hex) this node binds to. When set, the bridge drops every accepted
+    /// tx whose subnetwork id doesn't match. Omit to observe every subnetwork (generic-observer
+    /// mode).
+    #[arg(long = "l1-bridge-subnetwork-id")]
+    pub subnetwork_id: Option<SubnetworkId>,
+    /// Blue-score window within which a lane stays active without new transactions.
+    #[arg(long = "l1-bridge-finality-depth", default_value_t = L1BridgeConfig::default().finality_depth)]
+    pub finality_depth: u64,
 }
 
 impl L1BridgeParams {
@@ -42,6 +51,8 @@ impl L1BridgeParams {
             filter_half_life: Duration::from_secs(self.filter_half_life_secs),
             root: None,
             tip: None,
+            subnetwork_id: self.subnetwork_id.map(SubnetworkId::into_bytes),
+            finality_depth: self.finality_depth,
         }
     }
 }

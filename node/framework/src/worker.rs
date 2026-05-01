@@ -81,7 +81,9 @@ impl<S: Store, P: Processor<S>> NodeWorker<S, P> {
             L1Event::ChainBlockAdded { checkpoint, accepted_transactions, .. } => {
                 let txs = accepted_transactions
                     .into_iter()
-                    .map(|tx| SchedulerTransaction::new(Self::extract_resources(&tx.payload), tx))
+                    .map(|(idx, tx)| {
+                        SchedulerTransaction::new(idx, Self::extract_resources(&tx.payload), tx)
+                    })
                     .collect();
                 self.scheduler.schedule(*checkpoint.metadata(), txs);
             }

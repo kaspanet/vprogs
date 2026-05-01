@@ -6,16 +6,26 @@ use crate::Error;
 pub enum ErrorCode {
     /// Transaction index does not match the expected sequential order.
     TxIndexMismatch = 1,
-    /// Resource index is out of range for this batch.
+    /// Resource index is out of range (either as a batch-local index or a bundle index).
     ResourceIndexOutOfRange = 2,
     /// Resource value hash does not match the expected pre-state.
     ResourceHashMismatch = 3,
     /// Block hash differs from the first transaction in the batch.
     BlockHashMismatch = 4,
-    /// Blue score differs from the first transaction in the batch.
-    BlueScoreMismatch = 5,
+    /// Context hash differs from the first transaction in the batch, or from the batch's
+    /// derived context hash.
+    ContextHashMismatch = 5,
     /// Inner transaction journal verification failed.
     JournalVerificationFailed = 6,
+    /// Bundle has zero batches.
+    EmptyBundle = 7,
+    /// A non-expired batch's `prev_lane_tip` does not match the previous batch's derived
+    /// `new_lane_tip`.
+    LaneChainMismatch = 8,
+    /// Tx receipt's `resource_id` does not match the SMT proof leaf at the bundle position
+    /// the host's translation table maps to. Indicates a host bug or tampering with the
+    /// `translation` table.
+    ResourceIdMismatch = 9,
 }
 
 impl From<ErrorCode> for Error {
