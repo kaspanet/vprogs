@@ -12,6 +12,7 @@ use kaspa_seq_commit::{
 use kaspa_smt::proof::OwnedSmtProof;
 use tap::Tap;
 use vprogs_core_smt::Blake3;
+use zerocopy::FromBytes;
 
 use crate::{
     Write,
@@ -26,7 +27,7 @@ pub struct Abi<'a> {
     /// Decoded bundle inputs.
     inputs: Inputs<'a>,
     /// Lane key hash for this bundle.
-    lane_key: Hash,
+    lane_key: &'a Hash,
     /// Latest L2 value hashes indexed by bundle-wide resource_index.
     value_hashes: Vec<&'a [u8; 32]>,
     /// Inverse of `leaf_order`: `bundle_idx_to_leaf_pos[bundle_idx] = leaf_pos`. Built once
@@ -76,12 +77,7 @@ impl<'a> Abi<'a> {
             bundle_idx_to_leaf_pos[res_idx as usize] = leaf_pos as u32;
         }
 
-        Self {
-            lane_key: Hash::from_bytes(*inputs.lane_key),
-            value_hashes,
-            bundle_idx_to_leaf_pos,
-            inputs,
-        }
+        Self { lane_key: inputs.lane_key, value_hashes, bundle_idx_to_leaf_pos, inputs }
     }
 
     /// Walks every batch in scheduling order, chains lane tips across them, and returns
@@ -122,14 +118,14 @@ impl<'a> Abi<'a> {
         let activity_digest = self.verify_txs(batch, verify_journal, &context_hash).finalize();
 
         let parent_ref = if batch.lane_expired {
-            Hash::from_bytes(*batch.parent_seq_commit)
+            Hash::ref_from_bytes(batch.parent_seq_commit).expect("parent_seq_commit")
         } else {
-            Hash::from_bytes(*batch.prev_lane_tip)
+            Hash::ref_from_bytes(batch.prev_lane_tip).expect("prev_lane_tip")
         };
 
         lane_tip_next(&LaneTipInput {
-            parent_ref: &parent_ref,
-            lane_key: &self.lane_key,
+            parent_ref,
+            lane_key: self.lane_key,
             activity_digest: &activity_digest,
             context_hash: &context_hash,
         })
@@ -148,10 +144,9 @@ impl<'a> Abi<'a> {
             for tx_journal in batch.tx_journals {
                 let tx_journal_bytes = tx_journal.expect("decode tx_journal");
                 verify_journal(self.inputs.image_id, tx_journal_bytes);
-                let tx_journal =
-                    JournalEntries::decode(tx_journal_bytes).expect("decode journal entries");
-                let tx_index = tx_journal.input_commitment.tx_index;
+                let tx_journal = JournalEntries::decode(tx_journal_bytes).expect("tx journal");
 
+                let tx_index = tx_journal.input_commitment.tx_index;
                 if let Some(prev) = last_tx_index {
                     assert!(tx_index > prev, "tx_index not strictly increasing");
                 }
@@ -165,9 +160,9 @@ impl<'a> Abi<'a> {
                 );
 
                 // Activity digest accumulates per-batch (one digest per chain block).
-                let tx_id = Hash::from_bytes(*tx_journal.input_commitment.tx_id);
+                let tx_id = Hash::ref_from_bytes(tx_journal.input_commitment.tx_id).expect("tx_id");
                 activity_builder.add_leaf(activity_leaf(
-                    &tx_id,
+                    tx_id,
                     tx_journal.input_commitment.version,
                     tx_index,
                 ));
@@ -218,18 +213,15 @@ impl<'a> Abi<'a> {
         let lanes_smt_proof = OwnedSmtProof::from_bytes(self.inputs.lane_proof.lane_smt_proof)
             .expect("lane_smt_proof");
         let new_lanes_root = lanes_smt_proof
-            .compute_root::<SeqCommitActiveNode>(&self.lane_key, Some(new_lane_leaf))
+            .compute_root::<SeqCommitActiveNode>(self.lane_key, Some(new_lane_leaf))
             .expect("lane_smt_proof compute_root");
         let payload_and_ctx_digest =
-            Hash::from_bytes(*self.inputs.lane_proof.payload_and_ctx_digest);
-        let state_root_seq = seq_state_root(&SeqState {
-            lanes_root: &new_lanes_root,
-            payload_and_ctx_digest: &payload_and_ctx_digest,
-        });
-        let parent_seq_commit = Hash::from_bytes(*self.inputs.lane_proof.parent_seq_commit);
-        seq_commit(&SeqCommitInput {
-            parent_seq_commit: &parent_seq_commit,
-            state_root: &state_root_seq,
-        })
+            Hash::ref_from_bytes(self.inputs.lane_proof.payload_and_ctx_digest)
+                .expect("payload_and_ctx_digest");
+        let state_root_seq =
+            seq_state_root(&SeqState { lanes_root: &new_lanes_root, payload_and_ctx_digest });
+        let parent_seq_commit = Hash::ref_from_bytes(self.inputs.lane_proof.parent_seq_commit)
+            .expect("parent_seq_commit");
+        seq_commit(&SeqCommitInput { parent_seq_commit, state_root: &state_root_seq })
     }
 }

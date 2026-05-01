@@ -33,6 +33,7 @@ vprogs-l1-types             = { workspace = true, optional = true }
 vprogs-l1-utils             = { workspace = true }
 vprogs-scheduling-scheduler = { workspace = true, optional = true }
 vprogs-storage-types        = { workspace = true, optional = true }
+zerocopy                    = { workspace = true }
 
 [dev-dependencies]
 blake3          = "1"

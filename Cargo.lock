@@ -8175,6 +8175,7 @@ dependencies = [
  "vprogs-l1-utils",
  "vprogs-scheduling-scheduler",
  "vprogs-storage-types",
+ "zerocopy",
 ]
 
 [[package]]

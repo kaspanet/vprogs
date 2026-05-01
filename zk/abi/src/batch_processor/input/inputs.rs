@@ -1,11 +1,13 @@
 use alloc::vec::Vec;
 
+use kaspa_hashes::Hash;
 #[cfg(feature = "host")]
 use kaspa_rpc_core::GetSeqCommitLaneProofResponse;
 #[cfg(feature = "host")]
 use tap::Tap;
 use vprogs_core_codec::Reader;
 use vprogs_core_smt::proving::Proof;
+use zerocopy::FromBytes;
 
 #[cfg(feature = "host")]
 use crate::Write;
@@ -23,7 +25,7 @@ pub struct Inputs<'a> {
     /// Covenant id this bundle settles into.
     pub covenant_id: &'a [u8; 32],
     /// Lane key for this bundle (one lane per bundle).
-    pub lane_key: &'a [u8; 32],
+    pub lane_key: &'a Hash,
     /// SMT proof covering the union of resources touched across all batches.
     pub proof: Proof<'a>,
     /// Leaf-order permutation: `leaf_order[leaf_pos] = bundle_resource_index`.
@@ -40,7 +42,7 @@ impl<'a> Inputs<'a> {
         Ok(Self {
             image_id: buf.array::<32>("image_id")?,
             covenant_id: buf.array::<32>("covenant_id")?,
-            lane_key: buf.array::<32>("lane_key")?,
+            lane_key: Hash::ref_from_bytes(buf.array::<32>("lane_key")?)?,
             proof: Proof::decode(buf.blob("proof")?)?,
             leaf_order: buf.many("leaf_order", |b| b.le_u32("leaf_order"))?,
             batches: buf.many("batches", Batch::decode)?,
