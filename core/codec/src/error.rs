@@ -12,6 +12,7 @@ pub enum Error {
     ZeroCopy(String),
 }
 
+/// Erases the three generic params of `ConvertError` into a string so `Error` stays non-generic.
 impl<A: Display, S: Display, V: Display> From<zerocopy::ConvertError<A, S, V>> for Error {
     fn from(e: zerocopy::ConvertError<A, S, V>) -> Self {
         Self::ZeroCopy(format!("{e}"))
