@@ -7,7 +7,7 @@ pub enum Error {
     /// A field could not be decoded. Contains the field name for diagnostics.
     #[error("decode error: {0}")]
     Decode(&'static str),
-    /// A zerocopy reinterpretation of the underlying bytes failed.
+    /// A zero copy reinterpretation of the underlying bytes failed.
     #[error("zero copy error: {0}")]
     ZeroCopy(String),
 }
