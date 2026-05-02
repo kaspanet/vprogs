@@ -1,5 +1,5 @@
 use borsh::{BorshDeserialize, BorshSerialize};
-use kaspa_rpc_core::RpcOptionalHeader;
+use kaspa_rpc_core::{RpcHeader, RpcOptionalHeader};
 
 use crate::Hash;
 
@@ -35,18 +35,36 @@ pub struct ChainBlockMetadata {
     pub lane_expired: bool,
 }
 
-impl From<&RpcOptionalHeader> for ChainBlockMetadata {
-    /// Builds metadata from a verbose RPC header, populating only the header-derived fields and
-    /// leaving lane / parent-derived state at its default. Panics if a required field is absent,
-    /// which only happens when the kaspa node returns a malformed Full-verbosity response.
-    fn from(h: &RpcOptionalHeader) -> Self {
+impl From<&RpcHeader> for ChainBlockMetadata {
+    /// Builds metadata from a regular RPC header, populating only the header-derived fields and
+    /// leaving lane / parent-derived state at its default.
+    fn from(h: &RpcHeader) -> Self {
         Self {
-            hash: h.hash.expect("missing hash"),
-            blue_score: h.blue_score.expect("missing blue_score"),
-            daa_score: h.daa_score.expect("missing daa_score"),
-            timestamp: h.timestamp.expect("missing timestamp"),
-            seq_commit: h.accepted_id_merkle_root.expect("missing seq_commit"),
+            hash: h.hash,
+            blue_score: h.blue_score,
+            daa_score: h.daa_score,
+            timestamp: h.timestamp,
+            seq_commit: h.accepted_id_merkle_root,
             ..Default::default()
         }
+    }
+}
+
+impl TryFrom<&RpcOptionalHeader> for ChainBlockMetadata {
+    /// Name of the first missing required field.
+    type Error = &'static str;
+
+    /// Builds metadata from a verbose RPC header, populating only the header-derived fields and
+    /// leaving lane / parent-derived state at its default. Returns the name of the first missing
+    /// required field if the kaspa node returned a malformed Full-verbosity response.
+    fn try_from(h: &RpcOptionalHeader) -> Result<Self, Self::Error> {
+        Ok(Self {
+            hash: h.hash.ok_or("missing hash")?,
+            blue_score: h.blue_score.ok_or("missing blue_score")?,
+            daa_score: h.daa_score.ok_or("missing daa_score")?,
+            timestamp: h.timestamp.ok_or("missing timestamp")?,
+            seq_commit: h.accepted_id_merkle_root.ok_or("missing seq_commit")?,
+            ..Default::default()
+        })
     }
 }

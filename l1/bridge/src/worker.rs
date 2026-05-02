@@ -254,17 +254,7 @@ impl BridgeWorker {
             .get_block(self.client.get_block_dag_info().await?.pruning_point_hash, false)
             .await?;
 
-        self.virtual_chain = VirtualChain::new(Checkpoint::new(
-            0,
-            ChainBlockMetadata {
-                hash: pruning_point.header.hash,
-                blue_score: pruning_point.header.blue_score,
-                daa_score: pruning_point.header.daa_score,
-                timestamp: pruning_point.header.timestamp,
-                seq_commit: pruning_point.header.accepted_id_merkle_root,
-                ..Default::default()
-            },
-        ));
+        self.virtual_chain = VirtualChain::new(Checkpoint::new(0, (&pruning_point.header).into()));
 
         Ok(())
     }
@@ -319,7 +309,7 @@ impl BridgeWorker {
         let target_hash = target.metadata().hash;
         let mut found = false;
         for chain_block in response.chain_block_accepted_transactions.iter() {
-            let metadata = ChainBlockMetadata::from(&chain_block.chain_block_header);
+            let metadata = ChainBlockMetadata::try_from(&chain_block.chain_block_header).unwrap();
             if metadata.hash != target_hash {
                 self.virtual_chain.advance_tip(metadata);
             } else {
@@ -391,7 +381,7 @@ impl BridgeWorker {
                 lane_blue_score,
                 lane_tip,
                 lane_expired,
-                ..header.into()
+                ..ChainBlockMetadata::try_from(header).unwrap()
             });
 
             self.push_event(L1Event::ChainBlockAdded {
