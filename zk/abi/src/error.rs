@@ -64,7 +64,7 @@ impl From<vprogs_core_codec::Error> for Error {
     fn from(e: vprogs_core_codec::Error) -> Self {
         match e {
             vprogs_core_codec::Error::Decode(field) => Self::Decode(field.into()),
-            vprogs_core_codec::Error::Zerocopy(msg) => Self::Decode(msg),
+            vprogs_core_codec::Error::ZeroCopy(msg) => Self::Decode(msg),
         }
     }
 }

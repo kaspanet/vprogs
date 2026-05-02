@@ -1,4 +1,4 @@
-use alloc::string::String;
+use alloc::{format, string::String};
 use core::fmt::Display;
 
 /// Wire format decode error.
@@ -8,13 +8,13 @@ pub enum Error {
     #[error("decode error: {0}")]
     Decode(&'static str),
     /// A zerocopy reinterpretation of the underlying bytes failed.
-    #[error("zerocopy: {0}")]
-    Zerocopy(String),
+    #[error("zero copy error: {0}")]
+    ZeroCopy(String),
 }
 
 impl<A: Display, S: Display, V: Display> From<zerocopy::ConvertError<A, S, V>> for Error {
     fn from(e: zerocopy::ConvertError<A, S, V>) -> Self {
-        Self::Zerocopy(alloc::format!("{e}"))
+        Self::ZeroCopy(format!("{e}"))
     }
 }
 
