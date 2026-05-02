@@ -33,16 +33,16 @@ pub struct SettlementInput<'a> {
     /// the inner-proof verifier identity is constrained on-chain. Hardcoded into the redeem
     /// script body.
     pub tx_image_id: &'a [u8; 32],
-    /// State root before this batch.
+    /// L2 SMT state root before this batch.
     pub prev_state: &'a [u8; 32],
     /// Lane tip embedded in the covenant UTXO's redeem prefix (carried from the previous
     /// settlement).
-    pub prev_lane_tip: &'a [u8; 32],
-    /// State root after this batch.
+    pub prev_lane_tip: &'a Hash,
+    /// L2 SMT state root after this batch.
     pub new_state: &'a [u8; 32],
     /// Lane tip after this batch (locks into the continuation UTXO's redeem prefix and feeds
     /// into the guest's `seq_commit` derivation - rewind-resistant).
-    pub new_lane_tip: &'a [u8; 32],
+    pub new_lane_tip: &'a Hash,
     /// L1 chain block whose seq commitment the covenant script anchors `new_seq_commit` to.
     pub block_prove_to: Hash,
     /// UTXO outpoint of the covenant being spent.
@@ -150,7 +150,7 @@ fn sig_script(
     redeem: &[u8],
     block_prove_to: Hash,
     new_state: &[u8; 32],
-    new_lane_tip: &[u8; 32],
+    new_lane_tip: &Hash,
     witness: &SuccinctWitness<'_>,
 ) -> Vec<u8> {
     ScriptBuilder::new()
@@ -166,11 +166,11 @@ fn sig_script(
         .unwrap()
         .add_data(&[witness.hashfn])
         .unwrap()
-        .add_data(block_prove_to.as_bytes().as_slice())
+        .add_data(block_prove_to.as_slice())
         .unwrap()
         .add_data(new_state)
         .unwrap()
-        .add_data(new_lane_tip)
+        .add_data(new_lane_tip.as_slice())
         .unwrap()
         .add_data(redeem)
         .unwrap()
@@ -188,9 +188,9 @@ mod tests {
             program_id: &[0xBB; 32],
             tx_image_id: &[0xCC; 32],
             prev_state: &[0x11; 32],
-            prev_lane_tip: &[0x22; 32],
+            prev_lane_tip: &Hash::from_bytes([0x22; 32]),
             new_state: &[0x33; 32],
-            new_lane_tip: &[0x44; 32],
+            new_lane_tip: &Hash::from_bytes([0x44; 32]),
             block_prove_to: Hash::from_bytes([0x55; 32]),
             prev_outpoint: TransactionOutpoint::new(Hash::from_bytes([0x66; 32]), 0),
             value: 100_000_000,

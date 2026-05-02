@@ -1,7 +1,6 @@
 use std::{collections::VecDeque, thread::spawn};
 
 use kaspa_grpc_client::GrpcClient;
-use kaspa_hashes::Hash;
 use kaspa_rpc_core::api::rpc::RpcApi;
 use tokio::runtime::Builder;
 use vprogs_core_types::ResourceId;
@@ -122,13 +121,10 @@ where
 
         // Pre-prove sanity: derive new_lane_tip locally and compare against consensus
         // before paying for proving (Maxim's demo pattern).
-        let derived_lane_tip = derive_bundle_lane_tip::<S, P>(&batches);
+        let derived_tip = batches.last().expect("empty bundle").checkpoint().metadata().lane_tip;
         if let Some(consensus_tip) = resp.lane_tip {
-            if consensus_tip != derived_lane_tip {
-                panic!(
-                    "lane_tip mismatch: derived {:?} != consensus {:?}",
-                    derived_lane_tip, consensus_tip
-                );
+            if consensus_tip != derived_tip {
+                panic!("lane_tip mismatch: derived {derived_tip} != consensus {consensus_tip}");
             }
         }
 
@@ -195,17 +191,4 @@ where
     }
 
     (bundle_resources, translations)
-}
-
-/// Reads the bundle's final lane_tip from the bridge-tracked metadata. The bridge already
-/// runs `lane_tip_next` per block in `advance_lane`, so the last batch's `lane_tip` is the
-/// value the guest is expected to reproduce. We compare it against the consensus-reported
-/// lane_tip in `get_seq_commit_lane_proof`'s response before paying for proving.
-fn derive_bundle_lane_tip<S, P>(batches: &[ScheduledBatch<S, P>]) -> Hash
-where
-    S: Store,
-    P: Processor<S, BatchMetadata = ChainBlockMetadata>,
-{
-    let m = batches.last().expect("non-empty bundle").checkpoint().metadata();
-    Hash::from_bytes(m.lane_tip)
 }

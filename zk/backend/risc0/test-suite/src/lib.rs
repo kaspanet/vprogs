@@ -38,7 +38,7 @@ pub fn compute_section_lane_tip(
     metadata: &ChainBlockMetadata,
     txs: &[(u32, &L1Transaction)],
     lane_key: &Hash,
-) -> [u8; 32] {
+) -> Hash {
     let context_hash = mergeset_context_hash(&MergesetContext {
         timestamp: seq_commit_timestamp(metadata.prev_timestamp),
         daa_score: metadata.daa_score,
@@ -51,11 +51,8 @@ pub fn compute_section_lane_tip(
         activity.add_leaf(activity_leaf(&tx_id, tx.version, *tx_index));
     }
 
-    let parent_ref = if metadata.lane_expired {
-        Hash::from_bytes(metadata.prev_seq_commit.as_bytes())
-    } else {
-        Hash::from_bytes(metadata.prev_lane_tip)
-    };
+    let parent_ref =
+        if metadata.lane_expired { metadata.prev_seq_commit } else { metadata.prev_lane_tip };
 
     lane_tip_next(&LaneTipInput {
         parent_ref: &parent_ref,
@@ -63,5 +60,4 @@ pub fn compute_section_lane_tip(
         activity_digest: &activity.finalize(),
         context_hash: &context_hash,
     })
-    .as_bytes()
 }

@@ -1,6 +1,8 @@
 use alloc::vec::Vec;
 
+use kaspa_hashes::Hash;
 use vprogs_core_codec::{Reader, Result};
+use zerocopy::FromBytes;
 
 #[cfg(feature = "host")]
 use crate::Write;
@@ -17,13 +19,13 @@ pub struct Batch<'a> {
     /// Selected-parent timestamp.
     pub parent_timestamp: u64,
     /// Lane tip entering this batch's block.
-    pub prev_lane_tip: &'a [u8; 32],
+    pub prev_lane_tip: &'a Hash,
     /// Blue score at which the lane was last active before this block.
     pub lane_blue_score: u64,
     /// True when the lane re-anchors on `parent_seq_commit` instead of `prev_lane_tip`.
     pub lane_expired: bool,
     /// `seq_commit` of this block's selected parent (used iff `lane_expired`).
-    pub parent_seq_commit: &'a [u8; 32],
+    pub parent_seq_commit: &'a Hash,
     /// Maps batch-local `resource_index` to bundle-wide resource_index.
     pub translation: Vec<u32>,
     /// Per-tx journal entries.
@@ -37,10 +39,10 @@ impl<'a> Batch<'a> {
             blue_score: buf.le_u64("blue_score")?,
             daa_score: buf.le_u64("daa_score")?,
             parent_timestamp: buf.le_u64("parent_timestamp")?,
-            prev_lane_tip: buf.array::<32>("prev_lane_tip")?,
+            prev_lane_tip: Hash::ref_from_bytes(buf.array::<32>("prev_lane_tip")?)?,
             lane_blue_score: buf.le_u64("lane_blue_score")?,
             lane_expired: buf.byte("lane_expired")? != 0,
-            parent_seq_commit: buf.array::<32>("parent_seq_commit")?,
+            parent_seq_commit: Hash::ref_from_bytes(buf.array::<32>("parent_seq_commit")?)?,
             translation: buf.many("translation", |b| b.le_u32("translation"))?,
             tx_journals: TransactionJournals::new(buf.blob("tx_journals")?),
         })
@@ -52,10 +54,10 @@ impl<'a> Batch<'a> {
         buf.write(&metadata.blue_score.to_le_bytes());
         buf.write(&metadata.daa_score.to_le_bytes());
         buf.write(&metadata.prev_timestamp.to_le_bytes());
-        buf.write(&metadata.prev_lane_tip);
+        buf.write(metadata.prev_lane_tip.as_slice());
         buf.write(&metadata.lane_blue_score.to_le_bytes());
         buf.write(&[if metadata.lane_expired { 1 } else { 0 }]);
-        buf.write(&metadata.prev_seq_commit.as_bytes());
+        buf.write(metadata.prev_seq_commit.as_slice());
         buf.write_many(translation, |&idx| idx.to_le_bytes());
         buf.write(&tx_journals.iter().map(|j| 4 + j.len() as u32).sum::<u32>().to_le_bytes());
         for journal in tx_journals {

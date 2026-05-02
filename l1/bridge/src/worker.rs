@@ -2,6 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use crossbeam_queue::SegQueue;
 use futures::{FutureExt, select_biased};
+use kaspa_consensus_core::subnets::SubnetworkId;
 use kaspa_notify::scope::{PruningPointUtxoSetOverrideScope, Scope, VirtualChainChangedScope};
 use kaspa_rpc_core::{
     GetVirtualChainFromBlockV2Response, Notification,
@@ -53,7 +54,7 @@ pub(crate) struct BridgeWorker {
     /// Filters shallow reorgs based on accumulated depth.
     reorg_filter: ReorgFilter,
     /// If `Some`, filter emitted transactions to this subnetwork.
-    subnetwork_filter: Option<[u8; 20]>,
+    subnetwork_filter: Option<SubnetworkId>,
     /// Lane key used when chaining lane tips. `None` disables lane-tip tracking.
     lane_key: Option<Hash>,
     /// Blue-score window within which a lane stays active without new transactions.
@@ -73,7 +74,7 @@ impl BridgeWorker {
         // Prefer root, fall back to tip, or default to a sentinel at index 0.
         let root_checkpoint = config.root.clone().or(config.tip.clone()).unwrap_or_default();
         let virtual_chain = VirtualChain::new(root_checkpoint);
-        let lane_key = config.subnetwork_id.map(|id| lane_key(&id));
+        let lane_key = config.subnetwork_id.as_ref().map(|id| lane_key(id.as_bytes()));
 
         // If both root and tip are provided and differ, we need to backfill the chain between them
         // on first connect (lightweight, non-verbose sync).
@@ -318,17 +319,9 @@ impl BridgeWorker {
         let target_hash = target.metadata().hash;
         let mut found = false;
         for chain_block in response.chain_block_accepted_transactions.iter() {
-            let header = &chain_block.chain_block_header;
-            let hash = header.hash.expect("missing hash");
-            if hash != target_hash {
-                self.virtual_chain.advance_tip(ChainBlockMetadata {
-                    hash,
-                    blue_score: header.blue_score.expect("missing blue_score"),
-                    daa_score: header.daa_score.expect("missing daa_score"),
-                    timestamp: header.timestamp.expect("missing timestamp"),
-                    seq_commit: header.accepted_id_merkle_root.expect("missing seq_commit"),
-                    ..Default::default()
-                });
+            let metadata = ChainBlockMetadata::from(&chain_block.chain_block_header);
+            if metadata.hash != target_hash {
+                self.virtual_chain.advance_tip(metadata);
             } else {
                 self.virtual_chain.advance_tip(*target.metadata());
                 found = true;
@@ -381,7 +374,7 @@ impl BridgeWorker {
                 .filter_map(|(idx, tx)| {
                     let tx = L1Transaction::try_from(tx.clone()).expect("missing tx fields");
                     match self.subnetwork_filter.as_ref() {
-                        Some(want) if tx.subnetwork_id.as_bytes() != want => None,
+                        Some(want) if tx.subnetwork_id != *want => None,
                         _ => Some((idx as u32, tx)),
                     }
                 })
@@ -391,11 +384,6 @@ impl BridgeWorker {
                 self.advance_lane(&parent_meta, &accepted_transactions, header);
 
             let checkpoint = self.virtual_chain.advance_tip(ChainBlockMetadata {
-                hash: header.hash.expect("missing hash"),
-                blue_score: header.blue_score.expect("missing blue_score"),
-                daa_score: header.daa_score.expect("missing daa_score"),
-                timestamp: header.timestamp.expect("missing timestamp"),
-                seq_commit: header.accepted_id_merkle_root.expect("missing seq_commit"),
                 prev_seq_commit: parent_meta.seq_commit,
                 lane_key: self.lane_key.unwrap_or_default(),
                 prev_timestamp: parent_meta.timestamp,
@@ -403,6 +391,7 @@ impl BridgeWorker {
                 lane_blue_score,
                 lane_tip,
                 lane_expired,
+                ..header.into()
             });
 
             self.push_event(L1Event::ChainBlockAdded {
@@ -421,7 +410,7 @@ impl BridgeWorker {
         parent: &ChainBlockMetadata,
         accepted_transactions: &[(u32, L1Transaction)],
         header: &RpcOptionalHeader,
-    ) -> ([u8; 32], u64, bool) {
+    ) -> (Hash, u64, bool) {
         // Check whether the lane has gone silent past the finality window and needs to reset.
         let blue_score = header.blue_score.expect("missing blue_score");
         let lane_expired = blue_score.saturating_sub(parent.lane_blue_score) > self.finality_depth;
@@ -432,8 +421,7 @@ impl BridgeWorker {
             return (parent.lane_tip, parent.lane_blue_score, lane_expired);
         };
 
-        let parent_ref =
-            if lane_expired { parent.seq_commit } else { Hash::from_bytes(parent.lane_tip) };
+        let parent_ref = if lane_expired { parent.seq_commit } else { parent.lane_tip };
 
         // Merkle root over this block's activity leaves.
         let mut activity = ActivityDigestBuilder::new();
@@ -456,7 +444,7 @@ impl BridgeWorker {
             context_hash: &context_hash,
         });
 
-        (tip.as_bytes(), blue_score, lane_expired)
+        (tip, blue_score, lane_expired)
     }
 
     /// Rolls back the virtual chain, updates the reorg filter, and emits a `Rollback` event.

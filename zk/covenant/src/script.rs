@@ -18,6 +18,7 @@
 //! The MVP here omits the optional permission-tree exit path - the covenant always has
 //! exactly one output.
 
+use kaspa_hashes::Hash;
 use kaspa_txscript::{
     opcodes::codes::{
         Op0, Op2Swap, OpAdd, OpBlake2b, OpCat, OpChainblockSeqCommit, OpCovOutputCount, OpData32,
@@ -46,7 +47,7 @@ pub const REDEEM_PREFIX_LEN: i64 = 66;
 /// once and reused.
 pub fn build_redeem_script(
     prev_state: &[u8; 32],
-    prev_lane_tip: &[u8; 32],
+    prev_lane_tip: &Hash,
     redeem_script_len: i64,
     program_id: &[u8; 32],
     tx_image_id: &[u8; 32],
@@ -55,7 +56,7 @@ pub fn build_redeem_script(
     let mut b = ScriptBuilder::new();
 
     // 66-byte data prefix (redeem-script-identifying bytes).
-    b.add_data(prev_lane_tip).unwrap();
+    b.add_data(prev_lane_tip.as_slice()).unwrap();
     b.add_data(prev_state).unwrap();
 
     // Hardcoded inner-guest identity: the batch guest's `env::verify` call uses an input-supplied
@@ -102,9 +103,15 @@ pub fn redeem_script_len(
 ) -> i64 {
     let mut guess: i64 = 75;
     loop {
-        let len =
-            build_redeem_script(prev_state, prev_state, guess, program_id, tx_image_id, zk_tag)
-                .len() as i64;
+        let len = build_redeem_script(
+            prev_state,
+            &Hash::default(),
+            guess,
+            program_id,
+            tx_image_id,
+            zk_tag,
+        )
+        .len() as i64;
         if len == guess {
             return len;
         }
@@ -306,8 +313,14 @@ mod tests {
         let program_id = [1u8; 32];
         let tx_image_id = [2u8; 32];
         let len = redeem_script_len(&state, &program_id, &tx_image_id, ZkTag::R0Succinct);
-        let built =
-            build_redeem_script(&state, &state, len, &program_id, &tx_image_id, ZkTag::R0Succinct);
+        let built = build_redeem_script(
+            &state,
+            &Hash::default(),
+            len,
+            &program_id,
+            &tx_image_id,
+            ZkTag::R0Succinct,
+        );
         assert_eq!(built.len() as i64, len, "self-referential length must match");
     }
 

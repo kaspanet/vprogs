@@ -24,10 +24,10 @@ pub struct BootstrapInput<'a> {
     /// Transaction processor guest image id hardcoded into the redeem script (binds the
     /// inner-proof verifier identity into the journal preimage).
     pub tx_image_id: &'a [u8; 32],
-    /// Initial L2 state root (typically `EMPTY_HASH`).
+    /// Initial L2 SMT state root (typically `EMPTY_HASH`).
     pub initial_state: &'a [u8; 32],
     /// Initial lane tip embedded in the genesis covenant UTXO's redeem prefix (typically zero).
-    pub initial_lane_tip: &'a [u8; 32],
+    pub initial_lane_tip: &'a Hash,
     /// Funding outpoint supplying the covenant UTXO's value.
     pub funding_outpoint: TransactionOutpoint,
     /// Amount to lock into the covenant UTXO (must be funded by the input).

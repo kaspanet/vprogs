@@ -7699,6 +7699,7 @@ name = "vprogs-core-codec"
 version = "0.1.0"
 dependencies = [
  "thiserror 2.0.18",
+ "zerocopy",
 ]
 
 [[package]]
@@ -7768,6 +7769,7 @@ dependencies = [
  "borsh",
  "kaspa-consensus-core",
  "kaspa-hashes",
+ "kaspa-rpc-core",
  "kaspa-wrpc-client",
 ]
 

@@ -134,7 +134,11 @@ async fn batch_proof_is_directly_settleable_single_batch() {
         .expect("batch journal must decode as a state transition");
     // covenant_id is zero in the non-settling test path (see batch-prover/src/worker.rs).
     assert_eq!(parsed.covenant_id, &[0u8; 32]);
-    assert_eq!(parsed.prev_lane_tip, &[0u8; 32], "first section's prev_lane_tip is bundle's start");
+    assert_eq!(
+        parsed.prev_lane_tip,
+        &Hash::default(),
+        "first section's prev_lane_tip is bundle's start"
+    );
 
     let program_id = *backend.batch_image_id();
     let tx_image_id = *backend.transaction_image_id();
@@ -260,7 +264,7 @@ async fn batch_proof_bundles_two_batches() {
 
     let parsed = StateTransition::decode(&j1).expect("bundle journal should decode");
     assert_eq!(parsed.covenant_id, &[0u8; 32]);
-    assert_eq!(parsed.prev_lane_tip, &[0u8; 32], "bundle prev_lane_tip is bundle's start");
+    assert_eq!(parsed.prev_lane_tip, &Hash::default(), "bundle prev_lane_tip is bundle's start");
 
     let program_id = *backend.batch_image_id();
     let tx_image_id = *backend.transaction_image_id();

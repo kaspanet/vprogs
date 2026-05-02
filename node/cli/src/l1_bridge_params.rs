@@ -51,7 +51,7 @@ impl L1BridgeParams {
             filter_half_life: Duration::from_secs(self.filter_half_life_secs),
             root: None,
             tip: None,
-            subnetwork_id: self.subnetwork_id.map(SubnetworkId::into_bytes),
+            subnetwork_id: self.subnetwork_id,
             finality_depth: self.finality_depth,
         }
     }

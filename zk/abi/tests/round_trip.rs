@@ -2,15 +2,16 @@
 
 #![cfg(feature = "host")]
 
+use kaspa_hashes::Hash;
 use vprogs_zk_abi::batch_processor::StateTransition;
 
 #[test]
 fn state_transition_round_trip() {
     let prev_state = [0x11; 32];
-    let prev_lane_tip = [0x22; 32];
+    let prev_lane_tip = Hash::from_bytes([0x22; 32]);
     let new_state = [0x33; 32];
-    let new_lane_tip = [0x44; 32];
-    let new_seq_commit = [0x55; 32];
+    let new_lane_tip = Hash::from_bytes([0x44; 32]);
+    let new_seq_commit = Hash::from_bytes([0x55; 32]);
     let covenant_id = [0x66; 32];
     let tx_image_id = [0x77; 32];
 

@@ -9,6 +9,7 @@
 use std::time::Duration;
 
 use kaspa_consensus_core::{config::params::ForkActivation, tx::Transaction};
+use kaspa_hashes::Hash;
 use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_txscript::{standard::pay_to_script_hash_script, zk_precompiles::tags::ZkTag};
 use vprogs_core_smt::EMPTY_HASH;
@@ -41,7 +42,7 @@ async fn covenant_bootstrap_is_accepted_on_simnet() {
     let tx_image_id = *backend.transaction_image_id();
 
     let initial_state = EMPTY_HASH;
-    let initial_lane_tip = [0u8; 32];
+    let initial_lane_tip = Hash::default();
     let redeem_len =
         redeem_script_len(&initial_state, &program_id, &tx_image_id, ZkTag::R0Succinct);
     let redeem = build_redeem_script(

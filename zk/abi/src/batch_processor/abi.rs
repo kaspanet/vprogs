@@ -52,7 +52,7 @@ impl Abi<'_> {
         StateTransition::encode(
             journal,
             (&prev_state, this.inputs.batches[0].prev_lane_tip),
-            (&new_state.expect("new_state"), &new_lane_tip.as_bytes(), &new_seq_commit.as_bytes()),
+            (&new_state.expect("new_state"), &new_lane_tip, &new_seq_commit),
             this.inputs.covenant_id,
             this.inputs.image_id,
         );
@@ -105,7 +105,7 @@ impl<'a> Abi<'a> {
     ) -> Hash {
         if !batch.lane_expired {
             if let Some(carry) = prev_lane_tip_carry {
-                assert_eq!(batch.prev_lane_tip, &carry.as_bytes(), "lane chain mismatch");
+                assert_eq!(batch.prev_lane_tip, &carry, "lane chain mismatch");
             }
         }
 
@@ -117,11 +117,8 @@ impl<'a> Abi<'a> {
 
         let activity_digest = self.verify_txs(batch, verify_journal, &context_hash).finalize();
 
-        let parent_ref = if batch.lane_expired {
-            Hash::ref_from_bytes(batch.parent_seq_commit).expect("parent_seq_commit")
-        } else {
-            Hash::ref_from_bytes(batch.prev_lane_tip).expect("prev_lane_tip")
-        };
+        let parent_ref =
+            if batch.lane_expired { batch.parent_seq_commit } else { batch.prev_lane_tip };
 
         lane_tip_next(&LaneTipInput {
             parent_ref,

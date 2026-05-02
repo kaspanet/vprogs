@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use kaspa_consensus_core::config::params::Params;
+use kaspa_consensus_core::{config::params::Params, subnets::SubnetworkId};
 use vprogs_core_types::Checkpoint;
 use vprogs_l1_types::{ChainBlockMetadata, ConnectStrategy, NetworkId, NetworkType};
 
@@ -25,7 +25,7 @@ pub struct L1BridgeConfig {
     pub filter_half_life: Duration,
     /// If set, the bridge only emits transactions whose `subnetwork_id` matches. `None` emits
     /// every accepted transaction unfiltered (generic-observer mode).
-    pub subnetwork_id: Option<[u8; 20]>,
+    pub subnetwork_id: Option<SubnetworkId>,
     /// Blue-score window within which a lane stays active without new transactions.
     pub finality_depth: u64,
 }
@@ -99,7 +99,7 @@ impl L1BridgeConfig {
 
     /// Restricts emitted transactions to a specific subnetwork. `None` means "no filter, emit
     /// every accepted transaction" (the generic-observer default).
-    pub fn with_subnetwork_id(mut self, subnetwork_id: Option<[u8; 20]>) -> Self {
+    pub fn with_subnetwork_id(mut self, subnetwork_id: Option<SubnetworkId>) -> Self {
         self.subnetwork_id = subnetwork_id;
         self
     }
