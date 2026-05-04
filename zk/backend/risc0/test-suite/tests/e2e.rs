@@ -25,20 +25,24 @@ fn test_zk_scheduler_e2e() {
     );
 
     let mut kaspa_tx1 = L1Transaction::default();
+    kaspa_tx1.version = 1;
     kaspa_tx1.payload = vec![1, 2, 3];
     let mut kaspa_tx2 = L1Transaction::default();
+    kaspa_tx2.version = 1;
     kaspa_tx2.payload = vec![4, 5, 6];
 
     let batch = scheduler.schedule(
         ChainBlockMetadata::default(),
         vec![
             SchedulerTransaction::new(
-                kaspa_tx1,
+                0,
                 vec![AccessMetadata::write(ResourceId::for_test(1))],
+                kaspa_tx1,
             ),
             SchedulerTransaction::new(
-                kaspa_tx2,
+                1,
                 vec![AccessMetadata::write(ResourceId::for_test(2))],
+                kaspa_tx2,
             ),
         ],
     );

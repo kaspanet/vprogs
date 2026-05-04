@@ -4,28 +4,20 @@ use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::AccessMetadata;
 
-/// A transaction payload `T` paired with pre-parsed access metadata, ready for scheduling.
-#[derive(Clone, Debug)]
-#[derive(BorshSerialize, BorshDeserialize)] // borsh serialization
+/// A transaction `T` paired with its declared resource accesses and a batch-unique index.
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct SchedulerTransaction<T> {
-    pub tx: T,
+    /// Strictly-increasing position of this tx within its batch.
+    pub index: u32,
+    /// Resources this tx reads or writes.
     pub resources: Vec<AccessMetadata>,
-    pub l2_payload: Vec<u8>,
+    /// Opaque transaction payload.
+    pub tx: T,
 }
 
 impl<T> SchedulerTransaction<T> {
-    pub fn new(tx: T, resources: Vec<AccessMetadata>) -> Self {
-        Self { tx, resources, l2_payload: Vec::new() }
-    }
-
-    /// Extracts borsh-encoded `Vec<AccessMetadata>` prefix from a payload, returning the decoded
-    /// resources and the remaining bytes as the L2 payload. On decode failure, returns empty
-    /// resources and an empty L2 payload.
-    pub fn extract_payload(payload: &[u8]) -> (Vec<AccessMetadata>, Vec<u8>) {
-        let mut cursor = payload;
-        match Vec::<AccessMetadata>::deserialize(&mut cursor) {
-            Ok(resources) => (resources, cursor.to_vec()),
-            Err(_) => (Vec::new(), Vec::new()),
-        }
+    /// Constructs a new [`SchedulerTransaction`].
+    pub fn new(index: u32, resources: Vec<AccessMetadata>, tx: T) -> Self {
+        Self { index, resources, tx }
     }
 }

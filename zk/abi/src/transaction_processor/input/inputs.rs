@@ -4,28 +4,28 @@ use vprogs_core_codec::Reader;
 
 use crate::{
     Error, Result,
-    transaction_processor::{BatchMetadata, Resource},
+    transaction_processor::{Resource, Transaction},
 };
 
 /// Decoded transaction inputs holding zero-copy views into the wire buffer.
 pub struct Inputs<'a> {
-    /// Borsh-serialized transaction bytes.
-    pub tx: &'a [u8],
+    /// Transaction to execute.
+    pub tx: Transaction<'a>,
     /// Position of this transaction within the batch.
     pub tx_index: u32,
-    /// Block-level metadata for the current batch.
-    pub batch_metadata: BatchMetadata<'a>,
+    /// Mergeset context hash - exposed to the VM as a source of on-chain randomness.
+    pub context_hash: &'a [u8; 32],
     /// Mutable resource views decoded from the wire buffer.
     pub resources: Vec<Resource<'a>>,
 }
 
 impl<'a> Inputs<'a> {
-    /// Fixed header size: tx_index(4) + n_resources(4) + BatchMetadata + tx_bytes_len(4).
-    pub const FIXED_HEADER_SIZE: usize = 4 + 4 + BatchMetadata::SIZE + 4;
+    /// Fixed header size: tx_index(4) + n_resources(4) + context_hash(32).
+    pub const FIXED_HEADER_SIZE: usize = 4 + 4 + 32;
 
     /// Decodes transaction inputs from the wire buffer.
     ///
-    /// Wire layout: `fixed_header | tx_bytes | resource_headers | resource_data`
+    /// Wire layout: `fixed_header | tx_bytes | resource_headers | resource_data`.
     pub fn decode(buf: &'a mut [u8]) -> Result<Self> {
         // Split fixed header from the rest of the buffer, creating mutable view for resource data.
         let (header, data) = buf.split_at_mut(Self::FIXED_HEADER_SIZE);
@@ -34,11 +34,11 @@ impl<'a> Inputs<'a> {
         // Decode fixed header.
         let tx_index = header.le_u32("tx_index")?;
         let resource_count = header.le_u32("resource_count")? as usize;
-        let batch_metadata = BatchMetadata::decode(&mut header)?;
-        let tx_length = header.le_u32("tx_length")? as usize;
+        let context_hash = header.array::<32>("context_hash")?;
 
         // Decode transaction bytes.
-        let (tx, resources) = data.split_at_mut(tx_length);
+        let (tx_bytes, resources) = data.split_at_mut(Transaction::wire_size(data)?);
+        let tx = Transaction::decode(&mut &*tx_bytes)?;
 
         // Sanity check that header offsets do not overflow.
         let resources_len = resource_count
@@ -53,7 +53,7 @@ impl<'a> Inputs<'a> {
                 .push(Resource::decode(&res_headers[i * Resource::HEADER_SIZE..], &mut res_data)?);
         }
 
-        Ok(Self { tx, tx_index, batch_metadata, resources })
+        Ok(Self { tx, tx_index, context_hash, resources })
     }
 
     /// Encodes a scheduler [`TransactionContext`] into the ABI wire format (host-side only).
@@ -63,30 +63,33 @@ impl<'a> Inputs<'a> {
         S: vprogs_storage_types::Store,
         P: vprogs_scheduling_scheduler::Processor<
                 S,
+                Transaction = vprogs_l1_types::L1Transaction,
                 BatchMetadata = vprogs_l1_types::ChainBlockMetadata,
             >,
-        P::Transaction: borsh::BorshSerialize,
     {
         use crate::Write;
 
-        // Serialize transaction to bytes.
-        let tx_bytes = borsh::to_vec(ctx.tx()).expect("failed to serialize transaction");
-
-        // Calculate total size and allocate buffer.
+        // Pre-allocate buffer: fixed header, resource headers, resource data. The transaction
+        // envelope size depends on per-version preimage derivation, so it grows the buffer.
         let res_header_size = ctx.resources().len() * Resource::HEADER_SIZE;
         let res_data_size: usize = ctx.resources().iter().map(|r| r.data().len()).sum();
-        let total_size = Self::FIXED_HEADER_SIZE + tx_bytes.len() + res_header_size + res_data_size;
-        let mut buf = Vec::with_capacity(total_size);
+        let mut buf = Vec::with_capacity(Self::FIXED_HEADER_SIZE + res_header_size + res_data_size);
 
-        // Write fixed header: tx_index, n_resources, batch metadata, tx_bytes_len.
+        // Write fixed header: tx_index, n_resources, batch metadata.
+        let bm = ctx.batch_metadata();
+        let context_hash = kaspa_seq_commit::hashing::mergeset_context_hash(
+            &kaspa_seq_commit::types::MergesetContext {
+                timestamp: kaspa_seq_commit::hashing::seq_commit_timestamp(bm.prev_timestamp),
+                daa_score: bm.daa_score,
+                blue_score: bm.blue_score,
+            },
+        );
         buf.write(&ctx.tx_index().to_le_bytes());
         buf.write(&(ctx.resources().len() as u32).to_le_bytes());
-        buf.write(&ctx.batch_metadata().block_hash().as_bytes());
-        buf.write(&ctx.batch_metadata().blue_score().to_le_bytes());
-        buf.write(&(tx_bytes.len() as u32).to_le_bytes());
+        buf.write(&context_hash.as_bytes());
 
         // Write transaction bytes.
-        buf.write(&tx_bytes);
+        Transaction::encode(&mut buf, ctx.tx());
 
         // Write resource headers.
         for r in ctx.resources() {
@@ -103,9 +106,6 @@ impl<'a> Inputs<'a> {
         for r in ctx.resources() {
             buf.write(r.data());
         }
-
-        // Sanity check total size.
-        debug_assert_eq!(buf.len(), total_size);
 
         buf
     }

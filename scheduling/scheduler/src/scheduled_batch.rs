@@ -258,13 +258,12 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
                 pending_tx_artifacts: AtomicU64::new(txs.len() as u64),
                 txs: txs
                     .into_iter()
-                    .enumerate()
-                    .map(|(i, tx)| {
+                    .map(|tx| {
                         ScheduledTransaction::new(
                             scheduler,
                             &mut state_diffs,
                             ScheduledBatchRef(this.clone()),
-                            i as u32,
+                            tx.index,
                             tx,
                             &mut resource_index,
                         )

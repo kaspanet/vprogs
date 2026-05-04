@@ -24,13 +24,15 @@ impl Abi {
         InputCommitment::encode(journal, &inputs);
 
         // Execute guest closure.
-        let Inputs { tx, tx_index, batch_metadata, mut resources } = inputs;
-        let output = f(tx, tx_index, &batch_metadata, &mut resources).map(|_| resources.as_slice());
+        let Inputs { tx, tx_index, context_hash, mut resources } = inputs;
+        let payload = tx.payload().expect("unknown tx version reached guest");
+        let output = f(payload, tx_index, context_hash, &mut resources);
+        let result = output.map(|_| resources.as_slice());
 
         // Commit output commitment to journal.
-        OutputCommitment::encode(journal, &output);
+        OutputCommitment::encode(journal, &result);
 
         // Stream execution result to host.
-        Outputs::encode(&output, host);
+        Outputs::encode(&result, host);
     }
 }

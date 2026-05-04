@@ -1,8 +1,10 @@
 use std::time::Duration;
 
 use clap::Args;
+use kaspa_consensus_core::subnets::SubnetworkId;
 use serde::{Deserialize, Serialize};
 use vprogs_l1_bridge::L1BridgeConfig;
+use vprogs_l1_types::NetworkId;
 
 use crate::extensions::ConnectStrategyExt;
 
@@ -15,8 +17,8 @@ pub struct L1BridgeParams {
     #[arg(long = "l1-bridge-url")]
     pub url: Option<String>,
     /// Target network: mainnet, testnet-10, testnet-11, devnet, simnet.
-    #[arg(long = "l1-bridge-network-id", default_value_t = L1BridgeConfig::default().network_id.to_string())]
-    pub network_id: String,
+    #[arg(long = "l1-bridge-network-id", default_value_t = L1BridgeConfig::default().network_id)]
+    pub network_id: NetworkId,
     /// L1 connection timeout in milliseconds.
     #[arg(long = "l1-bridge-connect-timeout-ms", default_value_t = L1BridgeConfig::default().connect_timeout_ms)]
     pub connect_timeout_ms: u64,
@@ -27,21 +29,31 @@ pub struct L1BridgeParams {
     /// that halves every half-life. Set to 0 to disable.
     #[arg(long = "l1-bridge-filter-half-life-secs", default_value_t = L1BridgeConfig::default().filter_half_life.as_secs())]
     pub filter_half_life_secs: u64,
+    /// Subnetwork id (40-char hex) this node binds to. When set, the bridge drops every accepted
+    /// tx whose subnetwork id doesn't match. Omit to observe every subnetwork (generic-observer
+    /// mode).
+    #[arg(long = "l1-bridge-subnetwork-id")]
+    pub subnetwork_id: Option<SubnetworkId>,
+    /// Blue-score window within which a lane stays active without new transactions.
+    #[arg(long = "l1-bridge-finality-depth", default_value_t = L1BridgeConfig::default().finality_depth)]
+    pub finality_depth: u64,
 }
 
 impl L1BridgeParams {
-    /// Converts CLI params into an [`L1BridgeConfig`], parsing string fields into their typed
-    /// representations. Root and tip are left unset - they are populated from the scheduler's
-    /// persisted state at startup.
+    /// Converts CLI params into an [`L1BridgeConfig`]. Root and tip are left unset - they are
+    /// populated from the scheduler's persisted state at startup.
     pub fn into_config(self) -> L1BridgeConfig {
         L1BridgeConfig {
             url: self.url,
-            network_id: self.network_id.parse().expect("invalid network id"),
+            network_id: self.network_id,
             connect_timeout_ms: self.connect_timeout_ms,
+            // Kept as String upstream because `ConnectStrategy` lacks `Display`/`Serialize`.
             connect_strategy: self.connect_strategy.parse().expect("invalid connect strategy"),
             filter_half_life: Duration::from_secs(self.filter_half_life_secs),
             root: None,
             tip: None,
+            subnetwork_id: self.subnetwork_id,
+            finality_depth: self.finality_depth,
         }
     }
 }

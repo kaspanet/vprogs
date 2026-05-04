@@ -25,6 +25,8 @@ pub struct Backend {
     transaction_image_id: [u8; 32],
     /// Wrapped ELF binary for batch aggregation proving.
     batch_elf: Vec<u8>,
+    /// Batch processor guest image ID - the covenant script pins against this id.
+    batch_image_id: [u8; 32],
 }
 
 impl Backend {
@@ -34,13 +36,30 @@ impl Backend {
     /// only sanctioned syscalls are available to guest programs.
     pub fn new(tx_processor_elf: &[u8], batch_elf: &[u8]) -> Self {
         let tx_binary = ProgramBinary::new(tx_processor_elf, V1COMPAT_ELF);
-        let image_id = tx_binary.compute_image_id().expect("image id");
+        let tx_image_id = tx_binary.compute_image_id().expect("tx image id");
+
+        let batch_binary = ProgramBinary::new(batch_elf, V1COMPAT_ELF);
+        let batch_image_id = batch_binary.compute_image_id().expect("batch image id");
 
         Self(Arc::new(BackendData {
             transaction_elf: tx_binary.encode(),
-            transaction_image_id: image_id.as_bytes().try_into().unwrap(),
-            batch_elf: ProgramBinary::new(batch_elf, V1COMPAT_ELF).encode(),
+            transaction_image_id: tx_image_id.as_bytes().try_into().unwrap(),
+            batch_elf: batch_binary.encode(),
+            batch_image_id: batch_image_id.as_bytes().try_into().unwrap(),
         }))
+    }
+
+    /// Batch-processor guest image id. This is what the covenant script pins against as
+    /// `program_id` (the proof verifier).
+    pub fn batch_image_id(&self) -> &[u8; 32] {
+        &self.batch_image_id
+    }
+
+    /// Transaction-processor guest image id. The covenant hardcodes this in its redeem script
+    /// so the journal hash binds it - preventing the host from swapping in a backdoored
+    /// inner verifier.
+    pub fn transaction_image_id(&self) -> &[u8; 32] {
+        &self.transaction_image_id
     }
 }
 
