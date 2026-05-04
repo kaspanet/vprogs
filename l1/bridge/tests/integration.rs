@@ -427,8 +427,7 @@ async fn setup_node_with_bridge(
 }
 
 /// Unwraps a list of events into `ChainBlockAdded` tuples. Panics if any event is not
-/// `ChainBlockAdded`. Integration tests here don't exercise the subnetwork filter, so the
-/// per-tx `merge_idx` is discarded.
+/// `ChainBlockAdded`.
 fn unwrap_chain_blocks(
     events: Vec<L1Event>,
 ) -> Vec<(u64, Box<RpcOptionalHeader>, Vec<L1Transaction>)> {
