@@ -81,7 +81,7 @@ impl<'a> Transaction<'a> {
             // TODO: implement v0-specific tx_id derivation.
             Self::V0 { .. } => None,
             Self::V1 { payload, rest_preimage } => {
-                Some(vprogs_l1_utils::compute_tx_id(payload, rest_preimage))
+                Some(vprogs_l1_utils::tx_id_v1(payload, rest_preimage))
             }
             Self::Unknown { .. } => None,
         }

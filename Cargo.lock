@@ -7778,6 +7778,8 @@ name = "vprogs-l1-utils"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "kaspa-consensus-core",
+ "kaspa-hashes",
 ]
 
 [[package]]
