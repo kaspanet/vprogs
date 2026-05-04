@@ -13,7 +13,7 @@ pub struct L1BridgeConfig {
     pub network_id: NetworkId,
     /// Connection timeout in milliseconds.
     pub connect_timeout_ms: u64,
-    /// Reconnection strategy.
+    /// First-time connect behavior: `Retry` blocks until connected, `Fallback` fails fast.
     pub connect_strategy: ConnectStrategy,
     /// Finalization boundary, or `None` to start from the L1 pruning point. When set together with
     /// `tip`, the bridge backfills the chain between them on startup.
@@ -31,13 +31,13 @@ pub struct L1BridgeConfig {
 }
 
 impl Default for L1BridgeConfig {
-    /// Defaults to mainnet with a 10-second timeout, automatic reconnection, and no resume state.
+    /// Defaults to mainnet with a 10-second timeout, blocking initial connect, and no resume state.
     fn default() -> Self {
         Self {
             url: None, // Use the public resolver.
             network_id: NetworkId::new(NetworkType::Mainnet),
             connect_timeout_ms: 10_000,
-            connect_strategy: ConnectStrategy::Retry, // Reconnect automatically on disconnect.
+            connect_strategy: ConnectStrategy::Retry, // Block until the first connect succeeds.
             root: None,                               // Start from the L1 pruning point.
             tip: None,
             filter_half_life: Duration::from_secs(3600), // 1 hour.
@@ -72,7 +72,7 @@ impl L1BridgeConfig {
         self
     }
 
-    /// Sets the reconnection strategy.
+    /// Sets the first-time connect strategy (block-until-connected vs. fail-fast).
     pub fn with_connect_strategy(mut self, strategy: ConnectStrategy) -> Self {
         self.connect_strategy = strategy;
         self
