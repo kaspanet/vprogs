@@ -1,9 +1,7 @@
 use alloc::{format, string::String};
 use core::fmt::Display;
 
-use vprogs_core_codec::Reader;
-
-use crate::Write;
+use vprogs_core_codec::{Reader, Writer};
 
 /// Errors from ZK ABI operations.
 #[derive(Clone, Debug, thiserror::Error)]
@@ -43,7 +41,7 @@ impl Error {
     }
 
     /// Encodes the error to the given writer.
-    pub fn encode(&self, w: &mut impl Write) {
+    pub fn encode(&self, w: &mut impl Writer) {
         match self {
             Self::Guest(code) => {
                 // Write discriminant and code.

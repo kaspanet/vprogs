@@ -1,8 +1,8 @@
 use vprogs_core_codec::Reader;
+#[cfg(feature = "host")]
+use vprogs_core_codec::Writer;
 
 use crate::Result;
-#[cfg(feature = "host")]
-use crate::Write;
 
 /// A zero-copy view of a versioned L1 transaction.
 ///
@@ -119,7 +119,7 @@ impl<'a> Transaction<'a> {
     /// per-version body. Panics on versions this build doesn't understand - unknown versions
     /// must be filtered upstream before reaching the encoder.
     #[cfg(feature = "host")]
-    pub fn encode(w: &mut impl Write, tx: &vprogs_l1_types::L1Transaction) {
+    pub fn encode(w: &mut impl Writer, tx: &vprogs_l1_types::L1Transaction) {
         match tx.version {
             Self::VERSION_V1 => {
                 use kaspa_consensus_core::hashing::tx::transaction_v1_rest_preimage;
@@ -133,7 +133,7 @@ impl<'a> Transaction<'a> {
 
     /// Writes a V0/V1 envelope: `version | body_len | payload_len | payload | rest_preimage`.
     #[cfg(feature = "host")]
-    fn encode_body(w: &mut impl Write, version: u16, payload: &[u8], rest_preimage: &[u8]) {
+    fn encode_body(w: &mut impl Writer, version: u16, payload: &[u8], rest_preimage: &[u8]) {
         let body_len = 4 + payload.len() + rest_preimage.len();
         w.write(&version.to_le_bytes());
         w.write(&(body_len as u32).to_le_bytes());

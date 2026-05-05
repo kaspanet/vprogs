@@ -1,10 +1,10 @@
 use alloc::vec::Vec;
 
-/// Infallible byte writer for ABI encoding.
+/// Infallible byte writer for wire-format encoding. Mirror of [`Reader`](crate::Reader).
 ///
-/// Panics on write failure rather than returning errors, since write failures
-/// in the zkVM guest are unrecoverable.
-pub trait Write {
+/// Panics on write failure rather than returning errors, since write failures in the zkVM guest
+/// are unrecoverable.
+pub trait Writer {
     /// Writes the given bytes to the output stream.
     fn write(&mut self, buf: &[u8]);
 
@@ -29,8 +29,8 @@ pub trait Write {
         }
     }
 
-    /// Writes a u32 LE length prefix followed by each item encoded via `encode_fn`. Used
-    /// when items themselves do multi-chunk writes (e.g. invoke other `encode` methods).
+    /// Writes a u32 LE length prefix followed by each item encoded via `encode_fn`. Used when
+    /// items themselves do multi-chunk writes (e.g. invoke other `encode` methods).
     fn encode_many<I, F>(&mut self, items: I, mut encode_fn: F)
     where
         I: IntoIterator,
@@ -45,7 +45,7 @@ pub trait Write {
     }
 }
 
-impl Write for Vec<u8> {
+impl Writer for Vec<u8> {
     fn write(&mut self, buf: &[u8]) {
         self.extend_from_slice(buf);
     }

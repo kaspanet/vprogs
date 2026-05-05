@@ -67,7 +67,7 @@ impl<'a> Inputs<'a> {
                 BatchMetadata = vprogs_l1_types::ChainBlockMetadata,
             >,
     {
-        use crate::Write;
+        use vprogs_core_codec::Writer;
 
         // Pre-allocate buffer: fixed header, resource headers, resource data. The transaction
         // envelope size depends on per-version preimage derivation, so it grows the buffer.

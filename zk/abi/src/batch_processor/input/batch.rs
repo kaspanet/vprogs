@@ -1,11 +1,11 @@
 use alloc::vec::Vec;
 
 use kaspa_hashes::Hash;
+#[cfg(feature = "host")]
+use vprogs_core_codec::Writer;
 use vprogs_core_codec::{Reader, Result};
 use zerocopy::FromBytes;
 
-#[cfg(feature = "host")]
-use crate::Write;
 #[cfg(feature = "host")]
 use crate::batch_processor::BundlePart;
 use crate::batch_processor::TransactionJournals;

@@ -1,10 +1,10 @@
 use kaspa_hashes::Hash;
 #[cfg(feature = "host")]
 use vprogs_core_codec::Reader;
+use vprogs_core_codec::Writer;
 #[cfg(feature = "host")]
 use zerocopy::FromBytes;
 
-use crate::Write;
 #[cfg(feature = "host")]
 use crate::{Error, Result};
 
@@ -49,7 +49,7 @@ impl<'a> StateTransition<'a> {
 
     /// Writes the state transition journal to `w`.
     pub fn encode(
-        w: &mut impl Write,
+        w: &mut impl Writer,
         (prev_state, prev_lane_tip): (&[u8; 32], &Hash),
         (new_state, new_lane_tip, new_seq_commit): (&[u8; 32], &Hash, &Hash),
         covenant_id: &[u8; 32],

@@ -1,6 +1,8 @@
 use std::time::Duration;
 
+use tap::Tap;
 use tempfile::TempDir;
+use vprogs_core_codec::Writer;
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId};
 use vprogs_l1_bridge::L1BridgeConfig;
@@ -36,8 +38,14 @@ fn create_node(l1: &L1Node, temp_dir: &TempDir) -> Node<RocksDbStore, TestNodeVm
 async fn mine_payload_blocks(l1: &L1Node, count: usize) -> Vec<Hash> {
     let mut tx_hashes = Vec::with_capacity(count);
     for i in 1..=count {
-        let payload = borsh::to_vec(&vec![AccessMetadata::write(ResourceId::for_test(i))]).unwrap();
-        let txs = l1.build_payload_transactions(vec![payload]).await;
+        let txs = l1
+            .build_payload_transactions(vec![Vec::new().tap_mut(|p| {
+                p.write_many(
+                    [&AccessMetadata::write(ResourceId::for_test(i))],
+                    AccessMetadata::encode,
+                );
+            })])
+            .await;
         tx_hashes.push(txs[0].id());
         l1.mine_block(Some(&txs)).await;
     }
@@ -211,8 +219,14 @@ async fn test_transactions_via_l1_payload() {
     node.api().wait_committed(maturity_blocks, Duration::from_secs(120));
 
     // Submit a transaction via L1 payload (only the access metadata is serialized).
-    let payload = borsh::to_vec(&vec![AccessMetadata::write(ResourceId::for_test(42))]).unwrap();
-    let txs = l1.build_payload_transactions(vec![payload]).await;
+    let txs = l1
+        .build_payload_transactions(vec![Vec::new().tap_mut(|p| {
+            p.write_many(
+                [&AccessMetadata::write(ResourceId::for_test(42))],
+                AccessMetadata::encode,
+            );
+        })])
+        .await;
     let tx_hash = txs[0].id();
     l1.mine_block(Some(&txs)).await;
 

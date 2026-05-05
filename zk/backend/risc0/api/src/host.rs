@@ -1,7 +1,8 @@
 use alloc::vec::Vec;
 
 use risc0_zkvm::guest::env;
-use vprogs_zk_abi::{Read, Write};
+use vprogs_core_codec::Writer;
+use vprogs_zk_abi::Read;
 
 /// RISC-0 host I/O bridge.
 pub struct Host;
@@ -25,7 +26,7 @@ impl Read for Host {
     }
 }
 
-impl Write for Host {
+impl Writer for Host {
     fn write(&mut self, buf: &[u8]) {
         env::write_slice::<u8>(buf);
     }

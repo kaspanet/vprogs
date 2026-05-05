@@ -1,9 +1,8 @@
 #[cfg(feature = "host")]
 use kaspa_rpc_core::GetSeqCommitLaneProofResponse;
-use vprogs_core_codec::{Reader, Result};
-
 #[cfg(feature = "host")]
-use crate::Write;
+use vprogs_core_codec::Writer;
+use vprogs_core_codec::{Reader, Result};
 
 /// Final-block inputs for deriving the bundle's `new_seq_commit`.
 pub struct LaneProof<'a> {

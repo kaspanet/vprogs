@@ -4,11 +4,12 @@ name              = "vprogs-node-framework"
 version.workspace = true
 
 [dependencies]
-borsh.workspace                       = true
 log.workspace                         = true
+tap.workspace                         = true
 thiserror.workspace                   = true
 tokio.workspace                       = true
 vprogs-core-atomics.workspace         = true
+vprogs-core-codec.workspace           = true
 vprogs-core-macros.workspace          = true
 vprogs-core-types.workspace           = true
 vprogs-l1-bridge.workspace            = true
@@ -18,7 +19,6 @@ vprogs-storage-manager.workspace      = true
 vprogs-storage-types.workspace        = true
 
 [dev-dependencies]
-borsh.workspace                        = true
 tempfile.workspace                     = true
 tokio                                  = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 vprogs-core-test-utils.workspace       = true

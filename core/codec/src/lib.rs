@@ -11,8 +11,10 @@ mod bits;
 mod error;
 mod reader;
 mod sort_unique;
+mod writer;
 
 pub use bits::Bits;
 pub use error::{Error, Result};
 pub use reader::Reader;
 pub use sort_unique::SortUnique;
+pub use writer::Writer;

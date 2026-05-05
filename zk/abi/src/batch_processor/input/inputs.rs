@@ -6,11 +6,11 @@ use kaspa_rpc_core::GetSeqCommitLaneProofResponse;
 #[cfg(feature = "host")]
 use tap::Tap;
 use vprogs_core_codec::Reader;
+#[cfg(feature = "host")]
+use vprogs_core_codec::Writer;
 use vprogs_core_smt::proving::Proof;
 use zerocopy::FromBytes;
 
-#[cfg(feature = "host")]
-use crate::Write;
 #[cfg(feature = "host")]
 use crate::batch_processor::BundlePart;
 use crate::{

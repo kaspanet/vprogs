@@ -31,7 +31,6 @@ pub mod batch_processor {
 }
 mod error;
 mod read;
-mod write;
 
 pub mod transaction_processor {
     pub(crate) mod abi;
@@ -85,4 +84,3 @@ pub mod transaction_processor {
 
 pub use error::{Error, Result};
 pub use read::Read;
-pub use write::Write;

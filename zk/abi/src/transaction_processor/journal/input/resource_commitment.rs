@@ -1,6 +1,6 @@
-use vprogs_core_codec::Reader;
+use vprogs_core_codec::{Reader, Writer};
 
-use crate::{Result, Write};
+use crate::Result;
 
 /// A single resource's input commitment: its index, identity, and data hash.
 pub struct InputResourceCommitment<'a> {
@@ -37,13 +37,13 @@ impl<'a> InputResourceCommitment<'a> {
     }
 
     /// Encodes the full wire format: `resource_index(4) + resource_id(32) + hash(32)`.
-    pub fn encode(&self, w: &mut impl Write) {
+    pub fn encode(&self, w: &mut impl Writer) {
         w.write(&self.resource_index.to_le_bytes());
         self.encode_pre_indexed(w);
     }
 
     /// Encodes without the index: `resource_id(32) + hash(32)`.
-    pub fn encode_pre_indexed(&self, w: &mut impl Write) {
+    pub fn encode_pre_indexed(&self, w: &mut impl Writer) {
         w.write(self.resource_id);
         w.write(self.hash);
     }

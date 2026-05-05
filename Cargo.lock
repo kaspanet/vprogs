@@ -7737,6 +7737,7 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "rkyv",
+ "vprogs-core-codec",
 ]
 
 [[package]]
@@ -7808,12 +7809,13 @@ dependencies = [
 name = "vprogs-node-framework"
 version = "0.1.0"
 dependencies = [
- "borsh",
  "log",
+ "tap",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "vprogs-core-atomics",
+ "vprogs-core-codec",
  "vprogs-core-macros",
  "vprogs-core-test-utils",
  "vprogs-core-types",
@@ -8189,6 +8191,7 @@ dependencies = [
  "risc0-binfmt",
  "risc0-zkos-v1compat",
  "risc0-zkvm",
+ "vprogs-core-codec",
  "vprogs-core-macros",
  "vprogs-zk-abi",
  "vprogs-zk-batch-prover",

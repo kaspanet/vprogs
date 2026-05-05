@@ -2,6 +2,8 @@ use alloc::vec::Vec;
 use core::mem;
 
 use vprogs_core_codec::Reader;
+#[cfg(feature = "host")]
+use vprogs_core_codec::Writer;
 use vprogs_core_types::ResourceId;
 
 use crate::Result;
@@ -135,7 +137,7 @@ impl<'a> Resource<'a> {
     /// Encodes a resource header to the given writer.
     #[cfg(feature = "host")]
     pub(crate) fn encode_header(
-        w: &mut impl crate::Write,
+        w: &mut impl Writer,
         resource_id: &ResourceId,
         is_new: bool,
         index: u32,

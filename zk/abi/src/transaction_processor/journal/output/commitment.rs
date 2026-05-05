@@ -1,8 +1,8 @@
-use vprogs_core_codec::Reader;
+use vprogs_core_codec::{Reader, Writer};
 use vprogs_core_smt::EMPTY_HASH;
 
 use crate::{
-    Error, Result, Write,
+    Error, Result,
     transaction_processor::{
         JournalEntry, OutputResourceCommitment, OutputResourceCommitments, Resource,
     },
@@ -32,7 +32,7 @@ impl<'a> OutputCommitment<'a> {
     }
 
     /// Encodes an output commitment segment to the journal (guest-side).
-    pub fn encode(w: &mut impl Write, result: &Result<&[Resource<'_>]>) {
+    pub fn encode(w: &mut impl Writer, result: &Result<&[Resource<'_>]>) {
         match *result {
             Ok(resources) => {
                 // Calculate payload: discriminant(1) + per-resource flags and optional hashes.

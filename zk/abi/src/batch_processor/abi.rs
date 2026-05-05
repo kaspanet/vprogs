@@ -11,11 +11,11 @@ use kaspa_seq_commit::{
 };
 use kaspa_smt::proof::OwnedSmtProof;
 use tap::Tap;
+use vprogs_core_codec::Writer;
 use vprogs_core_smt::Blake3;
 use zerocopy::FromBytes;
 
 use crate::{
-    Write,
     batch_processor::{Batch, Inputs, StateTransition},
     transaction_processor::{
         InputResourceCommitment, JournalEntries, OutputCommitment, OutputResourceCommitment,
@@ -39,7 +39,7 @@ impl Abi<'_> {
     /// Verifies the bundle described by `input_bytes` and writes the settlement journal.
     pub fn verify(
         input_bytes: &[u8],
-        journal: &mut impl Write,
+        journal: &mut impl Writer,
         verify_journal: &impl Fn(&[u8; 32], &[u8]),
     ) {
         let mut this = Abi::new(input_bytes);

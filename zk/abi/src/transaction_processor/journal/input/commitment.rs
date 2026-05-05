@@ -1,8 +1,8 @@
-use vprogs_core_codec::Reader;
+use vprogs_core_codec::{Reader, Writer};
 use vprogs_core_smt::EMPTY_HASH;
 
 use crate::{
-    Result, Write,
+    Result,
     transaction_processor::{
         InputResourceCommitment, InputResourceCommitments, Inputs, JournalEntry,
     },
@@ -43,7 +43,7 @@ impl<'a> InputCommitment<'a> {
     }
 
     /// Encodes an input commitment segment to the journal (guest-side).
-    pub fn encode(w: &mut impl Write, input: &Inputs<'_>) {
+    pub fn encode(w: &mut impl Writer, input: &Inputs<'_>) {
         // Segment header: opcode + payload length.
         let payload_len = Self::HEADER_SIZE + InputResourceCommitment::SIZE * input.resources.len();
         w.write(&[JournalEntry::OPCODE_INPUT]);

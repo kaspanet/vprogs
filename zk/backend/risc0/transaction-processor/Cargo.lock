@@ -1836,6 +1836,7 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "rkyv",
+ "vprogs-core-codec",
 ]
 
 [[package]]
@@ -1867,6 +1868,7 @@ name = "vprogs-zk-backend-risc0-api"
 version = "0.1.0"
 dependencies = [
  "risc0-zkvm",
+ "vprogs-core-codec",
  "vprogs-zk-abi",
 ]
 
