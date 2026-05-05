@@ -7737,6 +7737,7 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "rkyv",
+ "tap",
  "vprogs-core-codec",
 ]
 
@@ -8211,8 +8212,10 @@ dependencies = [
  "kaspa-rpc-core",
  "kaspa-seq-commit",
  "kaspa-txscript",
+ "tap",
  "tempfile",
  "tokio",
+ "vprogs-core-codec",
  "vprogs-core-smt",
  "vprogs-core-test-utils",
  "vprogs-core-types",

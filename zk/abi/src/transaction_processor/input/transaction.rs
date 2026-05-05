@@ -2,19 +2,19 @@ use vprogs_core_codec::Reader;
 #[cfg(feature = "host")]
 use vprogs_core_codec::Writer;
 
-use crate::Result;
+use crate::{Result, transaction_processor::Payload};
 
 /// A zero-copy view of a versioned L1 transaction.
 ///
 /// Different L1 transaction versions compute their transaction ID differently but all expose a
-/// payload. The wire envelope is `version(2 LE) | body_len(4 LE) | body_bytes(body_len)`, so a
-/// guest can always advance past any transaction regardless of whether it understands the version
-/// - unknown versions are preserved as opaque bytes in [`Transaction::Unknown`].
+/// payload. The wire envelope is `version(2 LE) | body_len(4 LE) | body_bytes(body_len)`. Decode
+/// fails for unrecognized versions or malformed payloads - any successfully-decoded transaction
+/// has a well-formed [`Payload`].
 pub enum Transaction<'a> {
     /// Legacy Kaspa v0 transactions. Uses the v0-specific `tx_id` derivation rule.
     V0 {
-        /// L1 `payload` field, as-is.
-        payload: &'a [u8],
+        /// Pre-parsed L2 payload (access metadata + instruction data + raw bytes).
+        payload: Payload<'a>,
         /// Serialized L1 transaction fields excluding payload, signature scripts, and mass
         /// commitment. Hashed with the v0 domain keys to derive the v0 `tx_id`.
         rest_preimage: &'a [u8],
@@ -22,19 +22,11 @@ pub enum Transaction<'a> {
     /// Current Kaspa v1 transactions. `tx_id = H_v1_id(H_payload(payload) ||
     /// H_rest(rest_preimage))`.
     V1 {
-        /// L1 `payload` field, as-is.
-        payload: &'a [u8],
+        /// Pre-parsed L2 payload (access metadata + instruction data + raw bytes).
+        payload: Payload<'a>,
         /// Serialized L1 transaction fields excluding payload, signature scripts, and mass
         /// commitment. Hashed with the v1 domain keys to derive the v1 `tx_id`.
         rest_preimage: &'a [u8],
-    },
-    /// A version this guest does not understand. Kept opaque for forward-compatibility so the
-    /// wire envelope still decodes and subsequent transactions remain reachable.
-    Unknown {
-        /// The unrecognized version tag.
-        version: u16,
-        /// The raw body bytes as they appeared on the wire.
-        body: &'a [u8],
     },
 }
 
@@ -61,56 +53,46 @@ impl<'a> Transaction<'a> {
         match self {
             Self::V0 { .. } => Self::VERSION_V0,
             Self::V1 { .. } => Self::VERSION_V1,
-            Self::Unknown { version, .. } => *version,
         }
     }
 
-    /// Returns the transaction's payload bytes, or `None` for [`Self::Unknown`] variants whose
-    /// body layout is not known to this guest.
-    pub fn payload(&self) -> Option<&'a [u8]> {
+    /// Returns the parsed payload.
+    pub fn payload(&self) -> &Payload<'a> {
         match self {
-            Self::V0 { payload, .. } | Self::V1 { payload, .. } => Some(payload),
-            Self::Unknown { .. } => None,
+            Self::V0 { payload, .. } | Self::V1 { payload, .. } => payload,
         }
     }
 
-    /// Computes the L1 transaction ID according to the variant's rules. Returns `None` for
-    /// [`Self::Unknown`] since the guest cannot derive an ID for a version it does not understand.
+    /// Computes the L1 transaction ID according to the variant's rules. Returns `None` for V0
+    /// until v0-specific derivation is wired up.
     pub fn tx_id(&self) -> Option<[u8; 32]> {
         match self {
             // TODO: implement v0-specific tx_id derivation.
             Self::V0 { .. } => None,
             Self::V1 { payload, rest_preimage } => {
-                Some(vprogs_l1_utils::tx_id_v1(payload, rest_preimage))
+                Some(vprogs_l1_utils::tx_id_v1(payload.bytes, rest_preimage))
             }
-            Self::Unknown { .. } => None,
         }
     }
 
     /// Decodes a transaction from the wire buffer, advancing `buf` past the consumed bytes.
     ///
-    /// Envelope: `version(2 LE) | body_len(4 LE) | body_bytes`. Unknown versions yield
-    /// [`Self::Unknown`] rather than an error so the outer decoder can keep making progress.
+    /// Envelope: `version(2 LE) | body_len(4 LE) | body_bytes`. Unrecognized versions or
+    /// malformed payloads cause decode to fail - any successfully-returned transaction has a
+    /// well-formed [`Payload`].
     pub fn decode(buf: &mut &'a [u8]) -> Result<Self> {
         let version = buf.le_u16("tx_version")?;
         let body = buf.blob("tx_body")?;
+        let mut cursor = body;
+        let payload_bytes = cursor.blob("payload")?;
+        let rest_preimage = cursor;
+        let payload = Payload::decode(payload_bytes)?;
 
         match version {
-            Self::VERSION_V0 => {
-                // Body layout: payload_len(4) | payload | rest_preimage(remaining).
-                let mut cursor = body;
-                let payload = cursor.blob("v0_payload")?;
-                let rest_preimage = cursor;
-                Ok(Self::V0 { payload, rest_preimage })
-            }
-            Self::VERSION_V1 => {
-                // Body layout: payload_len(4) | payload | rest_preimage(remaining).
-                let mut cursor = body;
-                let payload = cursor.blob("v1_payload")?;
-                let rest_preimage = cursor;
-                Ok(Self::V1 { payload, rest_preimage })
-            }
-            _ => Ok(Self::Unknown { version, body }),
+            // Body layout (V0/V1): payload_len(4) | payload | rest_preimage(remaining).
+            Self::VERSION_V0 => Ok(Self::V0 { payload, rest_preimage }),
+            Self::VERSION_V1 => Ok(Self::V1 { payload, rest_preimage }),
+            _ => Err(crate::Error::Decode("unknown tx version".into())),
         }
     }
 

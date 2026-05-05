@@ -6,7 +6,7 @@ use kaspa_rpc_core::api::rpc::RpcApi;
 use tempfile::TempDir;
 use vprogs_core_smt::{EMPTY_HASH, Tree as _};
 use vprogs_core_test_utils::ResourceIdExt;
-use vprogs_core_types::{AccessMetadata, ResourceId, SchedulerTransaction};
+use vprogs_core_types::{AccessMetadata, ResourceId};
 use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
 use vprogs_node_test_utils::L1Node;
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
@@ -16,7 +16,7 @@ use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_abi::{batch_processor::StateTransition, transaction_processor::JournalEntries};
 use vprogs_zk_backend_risc0_api::Backend;
 use vprogs_zk_backend_risc0_test_suite::{
-    batch_processor_elf, compute_section_lane_tip, transaction_processor_elf,
+    L1TransactionExt, batch_processor_elf, compute_section_lane_tip, transaction_processor_elf,
 };
 use vprogs_zk_batch_prover::{Backend as _, BatchProverConfig};
 use vprogs_zk_vm::{ProvingPipeline, Vm};
@@ -69,24 +69,18 @@ async fn batch_proof_two_transactions() {
         StorageConfig::default().with_store(storage.clone()),
     );
 
-    let mut tx1 = L1Transaction::default();
-    tx1.version = 1;
-    tx1.payload = vec![1, 2, 3];
-    let mut tx2 = L1Transaction::default();
-    tx2.version = 1;
-    tx2.payload = vec![4, 5, 6];
-
+    // tx1/tx2 are bound so we can compute their expected ids before moving them into the
+    // scheduler.
+    let tx1 =
+        L1Transaction::for_l2_test(&[AccessMetadata::write(ResourceId::for_test(1))], &[1, 2, 3]);
+    let tx2 =
+        L1Transaction::for_l2_test(&[AccessMetadata::write(ResourceId::for_test(2))], &[4, 5, 6]);
     let expected_tx_ids = [kaspa_tx_id(&tx1).as_bytes(), kaspa_tx_id(&tx2).as_bytes()];
 
     let metadata_1 = metadata_for_block(&l1, block_hashes[0]).await;
 
-    let batch = scheduler.schedule(
-        metadata_1,
-        vec![
-            SchedulerTransaction::new(0, vec![AccessMetadata::write(ResourceId::for_test(1))], tx1),
-            SchedulerTransaction::new(1, vec![AccessMetadata::write(ResourceId::for_test(2))], tx2),
-        ],
-    );
+    let batch =
+        scheduler.schedule(metadata_1, vec![tx1.into_scheduler_tx(0), tx2.into_scheduler_tx(1)]);
 
     batch.wait_committed_blocking();
     batch.wait_artifact_published_blocking();
@@ -125,24 +119,18 @@ async fn batch_proof_two_transactions() {
     // --- Second batch: increment counters from 1 to 2 ---
     // K=1 again, so this batch becomes a separate bundle of one and chains state from batch 1.
 
-    let mut tx3 = L1Transaction::default();
-    tx3.version = 1;
-    tx3.payload = vec![7, 8, 9];
-    let mut tx4 = L1Transaction::default();
-    tx4.version = 1;
-    tx4.payload = vec![10, 11, 12];
-
+    let tx3 =
+        L1Transaction::for_l2_test(&[AccessMetadata::write(ResourceId::for_test(1))], &[7, 8, 9]);
+    let tx4 = L1Transaction::for_l2_test(
+        &[AccessMetadata::write(ResourceId::for_test(2))],
+        &[10, 11, 12],
+    );
     let expected_tx_ids_2 = [kaspa_tx_id(&tx3).as_bytes(), kaspa_tx_id(&tx4).as_bytes()];
 
     let metadata_2 = metadata_for_block(&l1, block_hashes[1]).await;
 
-    let batch_2 = scheduler.schedule(
-        metadata_2,
-        vec![
-            SchedulerTransaction::new(0, vec![AccessMetadata::write(ResourceId::for_test(1))], tx3),
-            SchedulerTransaction::new(1, vec![AccessMetadata::write(ResourceId::for_test(2))], tx4),
-        ],
-    );
+    let batch_2 =
+        scheduler.schedule(metadata_2, vec![tx3.into_scheduler_tx(0), tx4.into_scheduler_tx(1)]);
 
     batch_2.wait_committed_blocking();
     batch_2.wait_artifact_published_blocking();
@@ -213,37 +201,19 @@ async fn batch_proof_bundle_of_two() {
         StorageConfig::default().with_store(storage.clone()),
     );
 
-    let mut tx1 = L1Transaction::default();
-    tx1.version = 1;
-    tx1.payload = vec![1, 2, 3];
-    let mut tx2 = L1Transaction::default();
-    tx2.version = 1;
-    tx2.payload = vec![4, 5, 6];
+    // tx1/tx2 are bound (and cloned into the scheduler) so we can reuse them below for
+    // lane-tip derivation.
+    let tx1 =
+        L1Transaction::for_l2_test(&[AccessMetadata::write(ResourceId::for_test(1))], &[1, 2, 3]);
+    let tx2 =
+        L1Transaction::for_l2_test(&[AccessMetadata::write(ResourceId::for_test(2))], &[4, 5, 6]);
 
     let lane_key = Hash::default();
     let metadata_1 = metadata_for_block(&l1, block_hashes[0]).await;
     let batch_1 = scheduler.schedule(
         metadata_1,
-        vec![
-            SchedulerTransaction::new(
-                0,
-                vec![AccessMetadata::write(ResourceId::for_test(1))],
-                tx1.clone(),
-            ),
-            SchedulerTransaction::new(
-                1,
-                vec![AccessMetadata::write(ResourceId::for_test(2))],
-                tx2.clone(),
-            ),
-        ],
+        vec![tx1.clone().into_scheduler_tx(0), tx2.clone().into_scheduler_tx(1)],
     );
-
-    let mut tx3 = L1Transaction::default();
-    tx3.version = 1;
-    tx3.payload = vec![7, 8, 9];
-    let mut tx4 = L1Transaction::default();
-    tx4.version = 1;
-    tx4.payload = vec![10, 11, 12];
 
     // Production runs through the bridge, which chains `lane_tip` block to block so
     // section[i+1].prev_lane_tip == section[i].new_lane_tip. Tests bypass the bridge and
@@ -255,8 +225,16 @@ async fn batch_proof_bundle_of_two() {
     let batch_2 = scheduler.schedule(
         metadata_2,
         vec![
-            SchedulerTransaction::new(0, vec![AccessMetadata::write(ResourceId::for_test(1))], tx3),
-            SchedulerTransaction::new(1, vec![AccessMetadata::write(ResourceId::for_test(2))], tx4),
+            L1Transaction::for_l2_test(
+                &[AccessMetadata::write(ResourceId::for_test(1))],
+                &[7, 8, 9],
+            )
+            .into_scheduler_tx(0),
+            L1Transaction::for_l2_test(
+                &[AccessMetadata::write(ResourceId::for_test(2))],
+                &[10, 11, 12],
+            )
+            .into_scheduler_tx(1),
         ],
     );
 

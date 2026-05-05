@@ -1836,6 +1836,7 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "rkyv",
+ "tap",
  "vprogs-core-codec",
 ]
 

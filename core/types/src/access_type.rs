@@ -1,3 +1,5 @@
+use vprogs_core_codec::Error;
+
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccessType {
@@ -12,12 +14,12 @@ impl From<AccessType> for u8 {
 }
 
 impl TryFrom<u8> for AccessType {
-    type Error = ();
+    type Error = Error;
     fn try_from(v: u8) -> Result<Self, Self::Error> {
         match v {
             0 => Ok(AccessType::Read),
             1 => Ok(AccessType::Write),
-            _ => Err(()),
+            _ => Err(Error::Decode("unknown access type")),
         }
     }
 }

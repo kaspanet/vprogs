@@ -106,15 +106,18 @@ impl<'a> Resource<'a> {
 
 // Wire format internals - resources are managed by the framework, not serialized by guests.
 impl<'a> Resource<'a> {
-    /// Wire size of a resource header: resource_id(32) + flags(1) + index(4) +
-    /// data_len(4).
-    pub const HEADER_SIZE: usize = 32 + 1 + 4 + 4;
+    /// Wire size of a resource header: flags(1) + index(4) + data_len(4).
+    pub const HEADER_SIZE: usize = 1 + 4 + 4;
 
     /// Decodes a resource from its header bytes, splitting off its backing from `data` and
-    /// advancing past the consumed bytes.
-    pub(crate) fn decode(mut header: &'a [u8], buf: &mut &'a mut [u8]) -> Result<Self> {
+    /// advancing past the consumed bytes. `resource_id` is supplied by the caller (typically
+    /// looked up from the transaction's access metadata at the matching position).
+    pub(crate) fn decode(
+        mut header: &'a [u8],
+        resource_id: &'a ResourceId,
+        buf: &mut &'a mut [u8],
+    ) -> Result<Self> {
         // Parse header fields.
-        let resource_id = header.array::<32>("resource_id")?;
         let is_new = header.bool("is_new")?;
         let index = header.le_u32("index")?;
         let data_length = header.le_u32("data_length")? as usize;
@@ -124,7 +127,7 @@ impl<'a> Resource<'a> {
         *buf = rest;
 
         Ok(Self {
-            resource_id: resource_id.into(),
+            resource_id,
             backing,
             promoted: None,
             index,
@@ -136,15 +139,8 @@ impl<'a> Resource<'a> {
 
     /// Encodes a resource header to the given writer.
     #[cfg(feature = "host")]
-    pub(crate) fn encode_header(
-        w: &mut impl Writer,
-        resource_id: &ResourceId,
-        is_new: bool,
-        index: u32,
-        data_len: u32,
-    ) {
+    pub(crate) fn encode_header(w: &mut impl Writer, is_new: bool, index: u32, data_len: u32) {
         // Write header fields.
-        w.write(&resource_id[..]);
         w.write(&[if is_new { 1 } else { 0 }]);
         w.write(&index.to_le_bytes());
         w.write(&data_len.to_le_bytes());

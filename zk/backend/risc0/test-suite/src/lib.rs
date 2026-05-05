@@ -9,6 +9,10 @@ use kaspa_seq_commit::{
 };
 use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
 
+mod l1_transaction_ext;
+
+pub use l1_transaction_ext::L1TransactionExt;
+
 /// Loads the pre-built transaction processor ELF from the repository.
 pub fn transaction_processor_elf() -> Vec<u8> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");

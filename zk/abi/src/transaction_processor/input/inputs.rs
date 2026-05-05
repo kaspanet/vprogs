@@ -36,21 +36,27 @@ impl<'a> Inputs<'a> {
         let resource_count = header.le_u32("resource_count")? as usize;
         let context_hash = header.array::<32>("context_hash")?;
 
-        // Decode transaction bytes.
+        // Decode transaction bytes (immutably reborrowed so access metadata can borrow from them).
         let (tx_bytes, resources) = data.split_at_mut(Transaction::wire_size(data)?);
         let tx = Transaction::decode(&mut &*tx_bytes)?;
+        if tx.payload().access_metadata.len() != resource_count {
+            return Err(Error::Decode("access_metadata/resource_count mismatch".into()));
+        }
 
         // Sanity check that header offsets do not overflow.
         let resources_len = resource_count
             .checked_mul(Resource::HEADER_SIZE)
             .ok_or_else(|| Error::Decode("resource_count overflow".into()))?;
 
-        // Decode resources.
+        // Decode resources, pairing each with its access_metadata entry by position.
         let (res_headers, mut res_data) = resources.split_at_mut(resources_len);
         let mut resources = Vec::with_capacity(resource_count);
-        for i in 0..resource_count {
-            resources
-                .push(Resource::decode(&res_headers[i * Resource::HEADER_SIZE..], &mut res_data)?);
+        for (i, meta) in tx.payload().access_metadata.iter().enumerate() {
+            resources.push(Resource::decode(
+                &res_headers[i * Resource::HEADER_SIZE..],
+                meta.resource_id,
+                &mut res_data,
+            )?);
         }
 
         Ok(Self { tx, tx_index, context_hash, resources })
@@ -95,7 +101,6 @@ impl<'a> Inputs<'a> {
         for r in ctx.resources() {
             Resource::encode_header(
                 &mut buf,
-                &r.access_metadata().resource_id,
                 r.is_new(),
                 r.resource_index(),
                 r.data().len() as u32,

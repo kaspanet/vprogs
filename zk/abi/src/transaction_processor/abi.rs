@@ -27,8 +27,7 @@ impl Abi {
 
         // Execute guest closure.
         let Inputs { tx, tx_index, context_hash, mut resources } = inputs;
-        let payload = tx.payload().expect("unknown tx version reached guest");
-        let output = f(payload, tx_index, context_hash, &mut resources);
+        let output = f(tx.payload(), tx_index, context_hash, &mut resources);
         let result = output.map(|_| resources.as_slice());
 
         // Commit output commitment to journal.
