@@ -27,7 +27,7 @@ impl Abi {
 
         // Execute guest closure.
         let Inputs { tx, tx_index, context_hash, mut resources } = inputs;
-        let output = f(tx.payload(), tx_index, context_hash, &mut resources);
+        let output = f(&tx, tx_index, context_hash, &mut resources);
         let result = output.map(|_| resources.as_slice());
 
         // Commit output commitment to journal.
