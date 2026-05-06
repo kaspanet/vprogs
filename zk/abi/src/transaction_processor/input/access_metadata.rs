@@ -8,6 +8,7 @@ use vprogs_core_types::{AccessType, ResourceId};
 /// Wire layout matches the host encoder
 /// [`vprogs_core_types::AccessMetadata::encode`](vprogs_core_types::AccessMetadata::encode):
 /// `resource_id(32) || access_type(1)`.
+#[derive(Clone, Copy)]
 pub struct AccessMetadata<'a> {
     /// Zero-copy reference into the payload's resource id bytes.
     pub resource_id: &'a ResourceId,
