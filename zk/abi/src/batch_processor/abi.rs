@@ -13,7 +13,6 @@ use kaspa_smt::proof::OwnedSmtProof;
 use tap::Tap;
 use vprogs_core_codec::Writer;
 use vprogs_core_smt::Blake3;
-use zerocopy::FromBytes;
 
 use crate::{
     batch_processor::{Batch, Inputs, StateTransition},
@@ -152,15 +151,13 @@ impl<'a> Abi<'a> {
                 // Each tx's context_hash must match the one derived from the chain block. This
                 // also transitively enforces cross-tx context_hash agreement.
                 assert_eq!(
-                    tx_journal.input_commitment.context_hash,
-                    context_hash.as_slice(),
+                    tx_journal.input_commitment.context_hash, context_hash,
                     "context_hash does not match derived value"
                 );
 
                 // Activity digest accumulates per-batch (one digest per chain block).
-                let tx_id = Hash::ref_from_bytes(tx_journal.input_commitment.tx_id).expect("tx_id");
                 activity_builder.add_leaf(activity_leaf(
-                    tx_id,
+                    tx_journal.input_commitment.tx_id,
                     tx_journal.input_commitment.version,
                     merge_idx,
                 ));
@@ -205,21 +202,24 @@ impl<'a> Abi<'a> {
 
     /// Derives the bundle's final-block `seq_commit` from `new_lane_tip` and
     /// `self.inputs.lane_proof`.
-    fn new_seq_commit(&self, new_lane_tip: &Hash, last_blue_score: u64) -> Hash {
-        let new_lane_leaf =
-            smt_leaf_hash(&SmtLeafInput { lane_tip: new_lane_tip, blue_score: last_blue_score });
+    fn new_seq_commit(&self, lane_tip: &Hash, blue_score: u64) -> Hash {
+        let new_lane_leaf = smt_leaf_hash(&SmtLeafInput { lane_tip, blue_score });
+
         let lanes_smt_proof = OwnedSmtProof::from_bytes(self.inputs.lane_proof.lane_smt_proof)
             .expect("lane_smt_proof");
+
         let new_lanes_root = lanes_smt_proof
             .compute_root::<SeqCommitActiveNode>(self.lane_key, Some(new_lane_leaf))
             .expect("lane_smt_proof compute_root");
-        let payload_and_ctx_digest =
-            Hash::ref_from_bytes(self.inputs.lane_proof.payload_and_ctx_digest)
-                .expect("payload_and_ctx_digest");
-        let state_root_seq =
-            seq_state_root(&SeqState { lanes_root: &new_lanes_root, payload_and_ctx_digest });
-        let parent_seq_commit = Hash::ref_from_bytes(self.inputs.lane_proof.parent_seq_commit)
-            .expect("parent_seq_commit");
-        seq_commit(&SeqCommitInput { parent_seq_commit, state_root: &state_root_seq })
+
+        let state_root_seq = seq_state_root(&SeqState {
+            lanes_root: &new_lanes_root,
+            payload_and_ctx_digest: self.inputs.lane_proof.payload_and_ctx_digest,
+        });
+
+        seq_commit(&SeqCommitInput {
+            parent_seq_commit: self.inputs.lane_proof.prev_seq_commit,
+            state_root: &state_root_seq,
+        })
     }
 }

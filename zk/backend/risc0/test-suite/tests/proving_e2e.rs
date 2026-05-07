@@ -75,7 +75,7 @@ async fn batch_proof_two_transactions() {
         L1Transaction::for_l2_test(&[AccessMetadata::write(ResourceId::for_test(1))], &[1, 2, 3]);
     let tx2 =
         L1Transaction::for_l2_test(&[AccessMetadata::write(ResourceId::for_test(2))], &[4, 5, 6]);
-    let expected_tx_ids = [kaspa_tx_id(&tx1).as_bytes(), kaspa_tx_id(&tx2).as_bytes()];
+    let expected_tx_ids = [kaspa_tx_id(&tx1), kaspa_tx_id(&tx2)];
 
     let metadata_1 = metadata_for_block(&l1, block_hashes[0]).await;
 
@@ -125,7 +125,7 @@ async fn batch_proof_two_transactions() {
         &[AccessMetadata::write(ResourceId::for_test(2))],
         &[10, 11, 12],
     );
-    let expected_tx_ids_2 = [kaspa_tx_id(&tx3).as_bytes(), kaspa_tx_id(&tx4).as_bytes()];
+    let expected_tx_ids_2 = [kaspa_tx_id(&tx3), kaspa_tx_id(&tx4)];
 
     let metadata_2 = metadata_for_block(&l1, block_hashes[1]).await;
 

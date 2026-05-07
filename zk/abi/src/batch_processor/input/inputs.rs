@@ -44,7 +44,7 @@ impl<'a> Inputs<'a> {
         Ok(Self {
             image_id: buf.array::<32>("image_id")?,
             covenant_id: buf.array::<32>("covenant_id")?,
-            lane_key: Hash::ref_from_bytes(buf.array::<32>("lane_key")?)?,
+            lane_key: buf.array_as::<Hash>("lane_key")?,
             proof: Proof::decode(buf.blob("proof")?)?,
             leaf_order: <[U32]>::ref_from_bytes(buf.blob("leaf_order")?)?,
             batches: buf.many("batches", Batch::decode)?,

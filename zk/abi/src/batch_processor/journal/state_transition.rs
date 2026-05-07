@@ -2,8 +2,6 @@ use kaspa_hashes::Hash;
 #[cfg(feature = "host")]
 use vprogs_core_codec::Reader;
 use vprogs_core_codec::Writer;
-#[cfg(feature = "host")]
-use zerocopy::FromBytes;
 
 #[cfg(feature = "host")]
 use crate::{Error, Result};
@@ -38,10 +36,10 @@ impl<'a> StateTransition<'a> {
         }
         Ok(Self {
             prev_state: buf.array::<32>("prev_state")?,
-            prev_lane_tip: Hash::ref_from_bytes(buf.array::<32>("prev_lane_tip")?)?,
+            prev_lane_tip: buf.array_as::<Hash>("prev_lane_tip")?,
             new_state: buf.array::<32>("new_state")?,
-            new_lane_tip: Hash::ref_from_bytes(buf.array::<32>("new_lane_tip")?)?,
-            new_seq_commit: Hash::ref_from_bytes(buf.array::<32>("new_seq_commit")?)?,
+            new_lane_tip: buf.array_as::<Hash>("new_lane_tip")?,
+            new_seq_commit: buf.array_as::<Hash>("new_seq_commit")?,
             covenant_id: buf.array::<32>("covenant_id")?,
             tx_image_id: buf.array::<32>("tx_image_id")?,
         })

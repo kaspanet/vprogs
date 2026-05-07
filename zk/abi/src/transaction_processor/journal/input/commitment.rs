@@ -1,3 +1,4 @@
+use kaspa_hashes::Hash;
 use vprogs_core_codec::{Reader, Writer};
 use vprogs_core_smt::EMPTY_HASH;
 
@@ -11,13 +12,13 @@ use crate::{
 /// Decoded input commitment from a transaction processor journal.
 pub struct InputCommitment<'a> {
     /// L1 transaction ID.
-    pub tx_id: &'a [u8; 32],
+    pub tx_id: &'a Hash,
     /// L1 transaction protocol version.
     pub version: u16,
     /// L1 block-wide position of this tx.
     pub merge_idx: u32,
     /// Mergeset context hash for the chain block.
-    pub context_hash: &'a [u8; 32],
+    pub context_hash: &'a Hash,
     /// Zero-copy iterator over per-resource input commitments.
     pub resources: InputResourceCommitments<'a>,
 }
@@ -30,10 +31,10 @@ impl<'a> InputCommitment<'a> {
     /// Decodes an input commitment from a journal segment payload.
     pub fn decode(mut buf: &'a [u8]) -> Result<Self> {
         // Decode fixed header fields.
-        let tx_id = buf.array::<32>("tx_id")?;
+        let tx_id = buf.array_as::<Hash>("tx_id")?;
         let version = buf.le_u16("version")?;
         let merge_idx = buf.le_u32("merge_idx")?;
-        let context_hash = buf.array::<32>("context_hash")?;
+        let context_hash = buf.array_as::<Hash>("context_hash")?;
         let resource_count = buf.le_u32("resource_count")?;
 
         // Create zero-copy iterator over resource entries.
