@@ -54,7 +54,7 @@ impl<'a> InputCommitment<'a> {
         w.write(&input.tx.tx_id().expect("tx_id")); // TODO: handle error
         w.write(&input.tx.version().to_le_bytes());
         w.write(&input.merge_idx.to_le_bytes());
-        w.write(input.context_hash);
+        w.write(input.context_hash.as_slice());
         w.write(&(input.resources.len() as u32).to_le_bytes());
 
         // Per-resource input commitments.

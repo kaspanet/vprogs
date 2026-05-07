@@ -1,6 +1,15 @@
 use alloc::vec::Vec;
 
+use kaspa_hashes::Hash;
 use vprogs_core_codec::Reader;
+#[cfg(feature = "host")]
+use vprogs_core_codec::Writer;
+#[cfg(feature = "host")]
+use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
+#[cfg(feature = "host")]
+use vprogs_scheduling_scheduler::{Processor, TransactionContext};
+#[cfg(feature = "host")]
+use vprogs_storage_types::Store;
 
 use crate::{
     Error, Result,
@@ -14,7 +23,7 @@ pub struct Inputs<'a> {
     /// L1 block-wide position of this tx.
     pub merge_idx: u32,
     /// Mergeset context hash - exposed to the VM as a source of on-chain randomness.
-    pub context_hash: &'a [u8; 32],
+    pub context_hash: &'a Hash,
     /// Mutable resource views decoded from the wire buffer.
     pub resources: Vec<Resource<'a>>,
 }
@@ -34,7 +43,7 @@ impl<'a> Inputs<'a> {
         // Decode fixed header.
         let merge_idx = header.le_u32("merge_idx")?;
         let resource_count = header.le_u32("resource_count")? as usize;
-        let context_hash = header.array::<32>("context_hash")?;
+        let context_hash = header.array_as::<Hash>("context_hash")?;
 
         // Decode transaction bytes (immutably reborrowed so access metadata can borrow from them).
         let (tx_bytes, resources) = data.split_at_mut(Transaction::wire_size(data)?);
@@ -51,10 +60,10 @@ impl<'a> Inputs<'a> {
         // Decode resources, pairing each with its access_metadata entry by position.
         let (res_headers, mut res_data) = resources.split_at_mut(resources_len);
         let mut resources = Vec::with_capacity(resource_count);
-        for (i, meta) in tx.payload().access_metadata.iter().enumerate() {
+        for (i, access_metadata) in tx.payload().access_metadata.iter().enumerate() {
             resources.push(Resource::decode(
                 &res_headers[i * Resource::HEADER_SIZE..],
-                meta,
+                access_metadata,
                 &mut res_data,
             )?);
         }
@@ -64,24 +73,18 @@ impl<'a> Inputs<'a> {
 
     /// Encodes a scheduler [`TransactionContext`] into the ABI wire format (host-side only).
     #[cfg(feature = "host")]
-    pub fn encode<S, P>(ctx: &vprogs_scheduling_scheduler::TransactionContext<'_, S, P>) -> Vec<u8>
+    pub fn encode<S, P>(ctx: &TransactionContext<'_, S, P>) -> Vec<u8>
     where
-        S: vprogs_storage_types::Store,
-        P: vprogs_scheduling_scheduler::Processor<
-                S,
-                Transaction = vprogs_l1_types::L1Transaction,
-                BatchMetadata = vprogs_l1_types::ChainBlockMetadata,
-            >,
+        S: Store,
+        P: Processor<S, Transaction = L1Transaction, BatchMetadata = ChainBlockMetadata>,
     {
-        use vprogs_core_codec::Writer;
-
         // Pre-allocate buffer: fixed header, resource headers, resource data. The transaction
         // envelope size depends on per-version preimage derivation, so it grows the buffer.
         let res_header_size = ctx.resources().len() * Resource::HEADER_SIZE;
         let res_data_size: usize = ctx.resources().iter().map(|r| r.data().len()).sum();
         let mut buf = Vec::with_capacity(Self::FIXED_HEADER_SIZE + res_header_size + res_data_size);
 
-        // Write fixed header: merge_idx, n_resources, batch metadata.
+        // Write fixed header: merge_idx, n_resources, context_hash.
         let bm = ctx.batch_metadata();
         let context_hash = kaspa_seq_commit::hashing::mergeset_context_hash(
             &kaspa_seq_commit::types::MergesetContext {
@@ -92,7 +95,7 @@ impl<'a> Inputs<'a> {
         );
         buf.write(&ctx.scheduler_tx().merge_idx.to_le_bytes());
         buf.write(&(ctx.resources().len() as u32).to_le_bytes());
-        buf.write(&context_hash.as_bytes());
+        buf.write(context_hash.as_slice());
 
         // Write transaction bytes.
         Transaction::encode(&mut buf, &ctx.scheduler_tx().tx);

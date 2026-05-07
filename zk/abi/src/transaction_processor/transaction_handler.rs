@@ -1,3 +1,5 @@
+use kaspa_hashes::Hash;
+
 use crate::transaction_processor::{Resource, Transaction};
 
 /// Developer-provided transaction execution logic.
@@ -6,16 +8,11 @@ use crate::transaction_processor::{Resource, Transaction};
 /// transaction's resources. Returns `Ok(())` on success or an error that gets committed to the
 /// journal.
 pub trait TransactionHandler:
-    for<'a> FnOnce(&Transaction<'a>, u32, &'a [u8; 32], &mut [Resource<'a>]) -> crate::Result<()>
+    for<'a> FnOnce(&Transaction<'a>, u32, &'a Hash, &mut [Resource<'a>]) -> crate::Result<()>
 {
 }
 
 impl<F> TransactionHandler for F where
-    F: for<'a> FnOnce(
-        &Transaction<'a>,
-        u32,
-        &'a [u8; 32],
-        &mut [Resource<'a>],
-    ) -> crate::Result<()>
+    F: for<'a> FnOnce(&Transaction<'a>, u32, &'a Hash, &mut [Resource<'a>]) -> crate::Result<()>
 {
 }
