@@ -65,8 +65,7 @@ impl<'a> ConfigView<'a> {
 
     /// Returns the typed lock view over the body bytes.
     pub fn lock(&self) -> LockEnum<'a> {
-        decode_lock_body(self.0.lock_tag, &self.0.lock_body)
-            .expect("body validated by from_bytes")
+        decode_lock_body(self.0.lock_tag, &self.0.lock_body).expect("body validated by from_bytes")
     }
 }
 
@@ -155,11 +154,7 @@ fn validate_lock_body(tag: u8, body: &[u8]) -> Result<(), &'static str> {
             }
             let threshold = body[0];
             let n = body[1];
-            if threshold == 0
-                || n == 0
-                || threshold > n
-                || n > MULTISIG_MAX_PUBKEYS
-            {
+            if threshold == 0 || n == 0 || threshold > n || n > MULTISIG_MAX_PUBKEYS {
                 return Err("config.multisig: invalid threshold/n_pubkeys");
             }
             if body.len() != 2 + (n as usize) * 32 {
@@ -197,8 +192,7 @@ fn validate_lock_body(tag: u8, body: &[u8]) -> Result<(), &'static str> {
 fn decode_lock_body<'a>(tag: u8, body: &'a [u8]) -> Result<LockEnum<'a>, &'static str> {
     match tag {
         SchnorrLockView::TAG => {
-            let pubkey: &[u8; 32] =
-                body.try_into().map_err(|_| "config.schnorr: bad len")?;
+            let pubkey: &[u8; 32] = body.try_into().map_err(|_| "config.schnorr: bad len")?;
             Ok(LockEnum::Schnorr(SchnorrLockView { pubkey }))
         }
         MultisigLockView::TAG => {
@@ -209,12 +203,10 @@ fn decode_lock_body<'a>(tag: u8, body: &'a [u8]) -> Result<LockEnum<'a>, &'stati
         UnlockedLockView::TAG => Ok(LockEnum::Unlocked(UnlockedLockView)),
         #[cfg(feature = "experimental-image-lock")]
         PreimageLockView::TAG => {
-            let image_id: &[u8; 32] = body[..32]
-                .try_into()
-                .map_err(|_| "config.preimage: image_id slice")?;
-            let data_image: &[u8; 32] = body[32..]
-                .try_into()
-                .map_err(|_| "config.preimage: data_image slice")?;
+            let image_id: &[u8; 32] =
+                body[..32].try_into().map_err(|_| "config.preimage: image_id slice")?;
+            let data_image: &[u8; 32] =
+                body[32..].try_into().map_err(|_| "config.preimage: data_image slice")?;
             Ok(LockEnum::Preimage(PreimageLockView { image_id, data_image }))
         }
         _ => Err("config: unknown lock tag"),
@@ -278,10 +270,7 @@ mod tests {
     fn multisig_round_trip() {
         let pks = [pk(0x01), pk(0x02), pk(0x03)];
         let body = build_multisig_body(2, &pks);
-        let lock = LockEnum::Multisig(MultisigLockView {
-            threshold: 2,
-            pubkeys: &body[2..],
-        });
+        let lock = LockEnum::Multisig(MultisigLockView { threshold: 2, pubkeys: &body[2..] });
         let total = config_total_len(&lock);
         assert_eq!(total, CONFIG_HEADER_LEN + 2 + 3 * 32);
 

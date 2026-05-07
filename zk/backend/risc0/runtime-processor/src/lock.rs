@@ -168,10 +168,8 @@ mod tests {
         use crate::auth_context::PreimageUnlocker;
         let image_id = [0xC0u8; 32];
         let data_image = [0xDEu8; 32];
-        let lock = LockEnum::Preimage(PreimageLockView {
-            image_id: &image_id,
-            data_image: &data_image,
-        });
+        let lock =
+            LockEnum::Preimage(PreimageLockView { image_id: &image_id, data_image: &data_image });
         let mut ctx = AuthContext::default();
         ctx.preimage.push((0, PreimageUnlocker));
         assert!(lock.unlock(0, &ctx));

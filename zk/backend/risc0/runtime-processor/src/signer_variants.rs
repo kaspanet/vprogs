@@ -275,9 +275,7 @@ fn read_schnorr_lock_pubkey<'a>(
     let cur = ConfigView::from_bytes(resource.data()).map_err(Error::Decode)?;
     match cur.lock() {
         LockEnum::Schnorr(SchnorrLockView { pubkey }) => Ok(*pubkey),
-        _ => Err(Error::Decode(
-            "signer.schnorr: target resource is not a Schnorr lock",
-        )),
+        _ => Err(Error::Decode("signer.schnorr: target resource is not a Schnorr lock")),
     }
 }
 

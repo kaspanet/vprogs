@@ -23,30 +23,28 @@ pub fn apply_action<'a>(
     auth_ctx: &AuthContext,
 ) -> AbiResult<()> {
     match &action.body {
-        ActionBody::Update { new_min_withdrawal_amount, new_lock } => {
-            apply_update(*new_min_withdrawal_amount, new_lock, resources, auth_ctx)
+        ActionBody::Update { updater_idx, new_min_withdrawal_amount, new_lock } => {
+            apply_update(*updater_idx, *new_min_withdrawal_amount, new_lock, resources, auth_ctx)
         }
-        ActionBody::Init { new_min_withdrawal_amount, new_lock } => {
-            apply_init(*new_min_withdrawal_amount, new_lock, resources, auth_ctx)
+        ActionBody::Init { updater_idx, new_min_withdrawal_amount, new_lock } => {
+            apply_init(*updater_idx, *new_min_withdrawal_amount, new_lock, resources, auth_ctx)
         }
     }
 }
 
 fn apply_update<'a>(
+    updater_idx: u8,
     new_min_withdrawal_amount: u64,
     new_lock: &LockEnum<'a>,
     resources: &mut [Resource<'a>],
     auth_ctx: &AuthContext,
 ) -> AbiResult<()> {
-    // Config is the singleton at index 0 (caller's access metadata must order it first).
-    const TARGET_IDX: u8 = 0;
-
-    let target = resources
-        .get_mut(TARGET_IDX as usize)
-        .ok_or_else(|| AbiError::Decode("update: resources[0] missing".into()))?;
+    // `decode_ix` already bounds-checked `updater_idx` against resources.len(),
+    // so this lookup cannot fail.
+    let target = &mut resources[updater_idx as usize];
 
     if target.id() != &config_resource_id() {
-        return Err(AbiError::Decode("update: resources[0] is not the config resource".into()));
+        return Err(AbiError::Decode("update: target is not the config resource".into()));
     }
     if target.is_new() {
         return Err(AbiError::Decode("update: config resource must already exist".into()));
@@ -56,10 +54,9 @@ fn apply_update<'a>(
     }
 
     // Read current lock and check authorization through the matcher trait.
-    let cur = ConfigView::from_bytes(target.data()).map_err(|m| AbiError::Decode(m.into()))?;
-    let cur_lock = cur.lock();
-    drop(cur);
-    if !cur_lock.unlock(TARGET_IDX, auth_ctx) {
+    let cur_lock =
+        ConfigView::from_bytes(target.data()).map_err(|m| AbiError::Decode(m.into()))?.lock();
+    if !cur_lock.unlock(updater_idx, auth_ctx) {
         return Err(AbiError::Decode("update: lock not satisfied".into()));
     }
 
@@ -67,19 +64,16 @@ fn apply_update<'a>(
 }
 
 fn apply_init<'a>(
+    updater_idx: u8,
     new_min_withdrawal_amount: u64,
     new_lock: &LockEnum<'a>,
     resources: &mut [Resource<'a>],
     auth_ctx: &AuthContext,
 ) -> AbiResult<()> {
-    const TARGET_IDX: u8 = 0;
-
-    let target = resources
-        .get_mut(TARGET_IDX as usize)
-        .ok_or_else(|| AbiError::Decode("init: resources[0] missing".into()))?;
+    let target = &mut resources[updater_idx as usize];
 
     if target.id() != &config_resource_id() {
-        return Err(AbiError::Decode("init: resources[0] is not the config resource".into()));
+        return Err(AbiError::Decode("init: target is not the config resource".into()));
     }
     if !target.is_new() {
         return Err(AbiError::Decode("init: config resource already exists".into()));
@@ -89,7 +83,7 @@ fn apply_init<'a>(
     // ad-hoc Schnorr lock around GENESIS_PUBKEY and run it through the same
     // matcher path as Update — no special-case auth code.
     let genesis_lock = LockEnum::Schnorr(SchnorrLockView { pubkey: &GENESIS_SCHNORR_BYTES });
-    if !genesis_lock.unlock(TARGET_IDX, auth_ctx) {
+    if !genesis_lock.unlock(updater_idx, auth_ctx) {
         return Err(AbiError::Decode("init: not authorized by genesis pubkey".into()));
     }
 

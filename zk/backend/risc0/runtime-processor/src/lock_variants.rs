@@ -26,7 +26,7 @@ use crate::{
 
 /// Returns the slice of `bucket` whose entries match `resource_idx`.
 /// Bucket must be sorted by resource_idx ascending.
-fn slice_for_resource<'b, U>(bucket: &'b [(u8, U)], resource_idx: u8) -> &'b [(u8, U)] {
+fn slice_for_resource<U>(bucket: &[(u8, U)], resource_idx: u8) -> &[(u8, U)] {
     let start = bucket.partition_point(|(i, _)| *i < resource_idx);
     let end = bucket.partition_point(|(i, _)| *i <= resource_idx);
     &bucket[start..end]
@@ -312,10 +312,7 @@ mod tests {
         // picking one and ignoring the rest.
         let pubkey = pk(0x42);
         let lock = SchnorrLockView { pubkey: &pubkey };
-        let bucket = [
-            (0u8, schnorr_unlocker(pk(0x42))),
-            (0u8, schnorr_unlocker(pk(0x77))),
-        ];
+        let bucket = [(0u8, schnorr_unlocker(pk(0x42))), (0u8, schnorr_unlocker(pk(0x77)))];
         assert!(!lock.try_unlock(0, &bucket));
     }
 
@@ -323,10 +320,7 @@ mod tests {
     fn schnorr_unaffected_by_unlockers_for_other_resources() {
         let pubkey = pk(0x42);
         let lock = SchnorrLockView { pubkey: &pubkey };
-        let bucket = [
-            (0u8, schnorr_unlocker(pk(0x42))),
-            (1u8, schnorr_unlocker(pk(0x99))),
-        ];
+        let bucket = [(0u8, schnorr_unlocker(pk(0x42))), (1u8, schnorr_unlocker(pk(0x99)))];
         assert!(lock.try_unlock(0, &bucket));
     }
 

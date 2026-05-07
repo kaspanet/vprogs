@@ -40,7 +40,8 @@ pub fn run<'a>(
     };
 
     let payload = tx.payload();
-    let DecodedIx { signers, actions, end_of_actions_in_ix } = decode_ix(payload.ix_data)?;
+    let DecodedIx { signers, actions, end_of_actions_in_ix } =
+        decode_ix(payload.ix_data, resources.len())?;
 
     // Translate end_of_actions from ix-relative to payload-relative bytes.
     // payload.bytes = access_metadata_prefix || ix_data, so the prefix length
@@ -176,9 +177,7 @@ mod tests {
         let mut concat = Vec::new();
         concat.extend_from_slice(rp);
         concat.extend_from_slice(pp);
-        let want = blake3::Hasher::new_keyed(&KEY_SIG_MSG_V1)
-            .update(&concat)
-            .finalize();
+        let want = blake3::Hasher::new_keyed(&KEY_SIG_MSG_V1).update(&concat).finalize();
         assert_eq!(&got, want.as_bytes());
     }
 
@@ -271,17 +270,10 @@ mod tests {
         // append calls — no sort. Matchers reject if not strict-asc.
         let mut bucket = Vec::new();
         for pk in [[0x03u8; 32], [0x01u8; 32], [0x02u8; 32]] {
-            append_multisig_contrib(
-                &mut bucket,
-                7,
-                MultisigUnlocker { pubkeys: alloc::vec![pk] },
-            );
+            append_multisig_contrib(&mut bucket, 7, MultisigUnlocker { pubkeys: alloc::vec![pk] });
         }
         assert_eq!(bucket.len(), 1);
-        assert_eq!(
-            bucket[0].1.pubkeys,
-            alloc::vec![[0x03u8; 32], [0x01u8; 32], [0x02u8; 32]]
-        );
+        assert_eq!(bucket[0].1.pubkeys, alloc::vec![[0x03u8; 32], [0x01u8; 32], [0x02u8; 32]]);
     }
 
     #[test]

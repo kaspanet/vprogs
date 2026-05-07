@@ -8,6 +8,15 @@
 //!                     witness preimages referenced by signer pointers)
 //! ```
 //!
+//! Resources (and their `AccessMetadata`) arrive ordered by `resource_id`
+//! (asserted at decode in the ABI layer). To let program logic address
+//! resources in the order *it* needs — independent of id ordering — every
+//! action body carries explicit `u8` index(es) into the resource list. Today
+//! both `Update` and `Init` operate on a single resource and so carry a single
+//! leading `updater_idx: u8`; future variants may carry more or
+//! length-prefixed lists. Indices are bounds-checked at decode time against
+//! the resource count and the action is rejected as malformed otherwise.
+//!
 //! The signed-message prefix for a Schnorr signer is
 //! `payload.bytes[..end_of_actions]` — i.e. everything up to but not including
 //! the tail. Signers commit to access metadata, signer pointers, and actions,
@@ -43,10 +52,14 @@ pub struct ActionView<'a> {
 
 pub enum ActionBody<'a> {
     Update {
+        /// Index into the resource list of the config resource being updated.
+        updater_idx: u8,
         new_min_withdrawal_amount: u64,
         new_lock: LockEnum<'a>,
     },
     Init {
+        /// Index into the resource list of the config resource being created.
+        updater_idx: u8,
         new_min_withdrawal_amount: u64,
         new_lock: LockEnum<'a>,
     },
@@ -67,7 +80,12 @@ pub struct DecodedIx<'a> {
 /// Decodes the instruction stream from `ix_data`. Bytes after the actions
 /// section are treated as the tail and remain part of `payload.bytes` for
 /// signer offset dereferencing.
-pub fn decode_ix<'a>(orig: &'a [u8]) -> CodecResult<DecodedIx<'a>> {
+///
+/// `n_resources` is the count of resources declared by the transaction's
+/// `AccessMetadata`. It bounds the resource indices that actions are allowed
+/// to reference; an action with `updater_idx >= n_resources` is rejected here
+/// so callers can dispatch unconditionally.
+pub fn decode_ix<'a>(orig: &'a [u8], n_resources: usize) -> CodecResult<DecodedIx<'a>> {
     let mut bytes: &'a [u8] = orig;
 
     // Signers: enforce non-strict ascending by resource_idx during decode.
@@ -83,16 +101,45 @@ pub fn decode_ix<'a>(orig: &'a [u8]) -> CodecResult<DecodedIx<'a>> {
         Ok(entry)
     })?;
 
-    let actions = bytes.many("ix.actions", decode_action)?;
+    let actions = bytes.many("ix.actions", |buf: &mut &'a [u8]| decode_action(buf, n_resources))?;
     let end_of_actions_in_ix = orig.len() - bytes.len();
 
     Ok(DecodedIx { signers, actions, end_of_actions_in_ix })
 }
 
+fn decode_action<'a>(buf: &mut &'a [u8], n_resources: usize) -> CodecResult<ActionView<'a>> {
+    let action_tag = buf.byte("action.action_tag")?;
+    let body = match action_tag {
+        ACTION_TAG_UPDATE => {
+            let updater_idx = read_resource_idx(buf, "action.update.updater_idx", n_resources)?;
+            let new_min_withdrawal_amount =
+                buf.le_u64("action.update.new_min_withdrawal_amount")?;
+            let new_lock = decode_lock(buf)?;
+            ActionBody::Update { updater_idx, new_min_withdrawal_amount, new_lock }
+        }
+        ACTION_TAG_INIT => {
+            let updater_idx = read_resource_idx(buf, "action.init.updater_idx", n_resources)?;
+            let new_min_withdrawal_amount = buf.le_u64("action.init.new_min_withdrawal_amount")?;
+            let new_lock = decode_lock(buf)?;
+            ActionBody::Init { updater_idx, new_min_withdrawal_amount, new_lock }
+        }
+        _ => return Err(Error::Decode("action: unknown tag")),
+    };
+    Ok(ActionView { action_tag, body })
+}
+
+fn read_resource_idx(buf: &mut &[u8], field: &'static str, n_resources: usize) -> CodecResult<u8> {
+    let idx = buf.byte(field)?;
+    if (idx as usize) >= n_resources {
+        return Err(Error::Decode("action: updater_idx out of range"));
+    }
+    Ok(idx)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{lock_variants::SchnorrLockView, lock_trait::Lock as _};
+    use crate::{lock_trait::Lock as _, lock_variants::SchnorrLockView};
 
     fn signer_section(entries: &[(u8, u8, Vec<u8>)]) -> Vec<u8> {
         let mut out = Vec::new();
@@ -127,7 +174,7 @@ mod tests {
         let mut ix = signer_section(&[(0, 0x01, schnorr_signer_body(100))]);
         ix.extend_from_slice(&empty_actions_section());
 
-        let decoded = decode_ix(&ix).unwrap();
+        let decoded = decode_ix(&ix, 0).unwrap();
         assert_eq!(decoded.signers.len(), 1);
         assert_eq!(decoded.signers[0].0, 0);
         assert_eq!(decoded.actions.len(), 0);
@@ -144,7 +191,7 @@ mod tests {
         ]);
         ix.extend_from_slice(&empty_actions_section());
 
-        let decoded = decode_ix(&ix).unwrap();
+        let decoded = decode_ix(&ix, 0).unwrap();
         assert_eq!(decoded.signers.len(), 2);
     }
 
@@ -156,41 +203,153 @@ mod tests {
         ]);
         ix.extend_from_slice(&empty_actions_section());
 
-        assert!(decode_ix(&ix).is_err());
+        assert!(decode_ix(&ix, 0).is_err());
     }
 
     #[test]
     fn decode_signers_rejects_unknown_kind() {
         let mut ix = signer_section(&[(0, 0xEE, vec![0u8; 5])]);
         ix.extend_from_slice(&empty_actions_section());
-        assert!(decode_ix(&ix).is_err());
+        assert!(decode_ix(&ix, 0).is_err());
+    }
+
+    /// Builds an `Update` action body: `updater_idx u8 || new_min u64 || schnorr_lock(pk)`.
+    fn update_action(updater_idx: u8, new_min: u64, pk: [u8; 32]) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.push(ACTION_TAG_UPDATE);
+        body.push(updater_idx);
+        body.extend_from_slice(&new_min.to_le_bytes());
+        body.push(SchnorrLockView::TAG);
+        body.extend_from_slice(&pk);
+        body
     }
 
     #[test]
     fn decode_action_update_with_schnorr_lock() {
         // ix = empty signers || one Update action with Schnorr lock || empty tail
         let mut ix = 0u32.to_le_bytes().to_vec(); // n_signers = 0
-        // n_actions = 1
-        ix.extend_from_slice(&1u32.to_le_bytes());
-        // action_tag = ACTION_TAG_UPDATE
-        ix.push(ACTION_TAG_UPDATE);
-        // new_min_withdrawal_amount = 12345 (LE u64)
-        ix.extend_from_slice(&12345u64.to_le_bytes());
-        // new_lock = Schnorr(pk=0xAA)
-        let pk = [0xAAu8; 32];
-        ix.push(SchnorrLockView::TAG);
-        ix.extend_from_slice(&pk);
+        ix.extend_from_slice(&1u32.to_le_bytes()); // n_actions = 1
+        ix.extend_from_slice(&update_action(0, 12345, [0xAAu8; 32]));
 
-        let decoded = decode_ix(&ix).unwrap();
+        let decoded = decode_ix(&ix, 1).unwrap();
         assert!(decoded.signers.is_empty());
         assert_eq!(decoded.actions.len(), 1);
         match &decoded.actions[0].body {
-            ActionBody::Update { new_min_withdrawal_amount, new_lock } => {
+            ActionBody::Update { updater_idx, new_min_withdrawal_amount, new_lock } => {
+                assert_eq!(*updater_idx, 0);
                 assert_eq!(*new_min_withdrawal_amount, 12345);
                 assert_eq!(new_lock.tag(), SchnorrLockView::TAG);
             }
             _ => panic!("expected Update"),
         }
+    }
+
+    #[test]
+    fn decode_action_rejects_updater_idx_out_of_range() {
+        // updater_idx = 2, but only 2 resources declared (valid range: 0..=1).
+        let mut ix = 0u32.to_le_bytes().to_vec();
+        ix.extend_from_slice(&1u32.to_le_bytes());
+        ix.extend_from_slice(&update_action(2, 12345, [0xAAu8; 32]));
+
+        assert!(decode_ix(&ix, 2).is_err());
+    }
+
+    #[test]
+    fn decode_action_accepts_updater_idx_at_upper_bound() {
+        // updater_idx = 1 with n_resources = 2 is valid.
+        let mut ix = 0u32.to_le_bytes().to_vec();
+        ix.extend_from_slice(&1u32.to_le_bytes());
+        ix.extend_from_slice(&update_action(1, 12345, [0xAAu8; 32]));
+
+        let decoded = decode_ix(&ix, 2).unwrap();
+        match &decoded.actions[0].body {
+            ActionBody::Update { updater_idx, .. } => assert_eq!(*updater_idx, 1),
+            _ => panic!("expected Update"),
+        }
+    }
+
+    /// With three resources declared, every in-range `updater_idx` is accepted.
+    /// This is the multi-resource analogue of the single-resource happy path:
+    /// the program addresses one of N resources by its position in the
+    /// id-sorted access metadata. The decoder is order-agnostic — it only
+    /// enforces `updater_idx < n_resources`; mapping idx → semantic resource
+    /// is the encoder's job.
+    #[test]
+    fn decode_action_accepts_each_idx_in_three_resource_set() {
+        for idx in 0..3u8 {
+            let mut ix = 0u32.to_le_bytes().to_vec();
+            ix.extend_from_slice(&1u32.to_le_bytes());
+            ix.extend_from_slice(&update_action(idx, 999, [0xBBu8; 32]));
+
+            let decoded = decode_ix(&ix, 3).unwrap();
+            match &decoded.actions[0].body {
+                ActionBody::Update { updater_idx, .. } => {
+                    assert_eq!(*updater_idx, idx, "round-trip must preserve idx");
+                }
+                _ => panic!("expected Update"),
+            }
+        }
+    }
+
+    /// Two actions in one ix can target distinct resources by index — e.g.
+    /// updater_idx=0 then updater_idx=2 in a 3-resource set. Mirrors a tx
+    /// where the program operates on resources whose id-sorted positions are
+    /// non-contiguous.
+    #[test]
+    fn decode_two_actions_target_different_resources() {
+        let mut ix = 0u32.to_le_bytes().to_vec();
+        ix.extend_from_slice(&2u32.to_le_bytes()); // n_actions = 2
+        ix.extend_from_slice(&update_action(0, 100, [0x11u8; 32]));
+        ix.extend_from_slice(&update_action(2, 200, [0x22u8; 32]));
+
+        let decoded = decode_ix(&ix, 3).unwrap();
+        assert_eq!(decoded.actions.len(), 2);
+        let idx0 = match &decoded.actions[0].body {
+            ActionBody::Update { updater_idx, .. } => *updater_idx,
+            _ => panic!("expected Update"),
+        };
+        let idx1 = match &decoded.actions[1].body {
+            ActionBody::Update { updater_idx, .. } => *updater_idx,
+            _ => panic!("expected Update"),
+        };
+        assert_eq!((idx0, idx1), (0, 2));
+    }
+
+    /// One bad index in a multi-action stream rejects the whole ix — there's
+    /// no partial decode. Validates that bounds-checking happens inline as
+    /// each action is parsed, not as a post-pass.
+    #[test]
+    fn decode_rejects_when_one_action_idx_out_of_range() {
+        let mut ix = 0u32.to_le_bytes().to_vec();
+        ix.extend_from_slice(&2u32.to_le_bytes());
+        ix.extend_from_slice(&update_action(1, 100, [0x33u8; 32])); // valid
+        ix.extend_from_slice(&update_action(5, 200, [0x44u8; 32])); // out of range
+
+        assert!(decode_ix(&ix, 3).is_err());
+    }
+
+    /// The decoder doesn't care about the *order* in which actions reference
+    /// resources — only that each idx is in range. A descending (or any
+    /// permuted) sequence of indices is fine. The same wire format admits all
+    /// ordering choices the encoder needs to make.
+    #[test]
+    fn decode_accepts_descending_action_idxs() {
+        let mut ix = 0u32.to_le_bytes().to_vec();
+        ix.extend_from_slice(&3u32.to_le_bytes());
+        ix.extend_from_slice(&update_action(2, 1, [0x55u8; 32]));
+        ix.extend_from_slice(&update_action(1, 2, [0x66u8; 32]));
+        ix.extend_from_slice(&update_action(0, 3, [0x77u8; 32]));
+
+        let decoded = decode_ix(&ix, 3).unwrap();
+        let idxs: Vec<u8> = decoded
+            .actions
+            .iter()
+            .map(|a| match &a.body {
+                ActionBody::Update { updater_idx, .. } => *updater_idx,
+                _ => panic!("expected Update"),
+            })
+            .collect();
+        assert_eq!(idxs, alloc::vec![2, 1, 0]);
     }
 
     #[test]
@@ -200,25 +359,7 @@ mod tests {
         let end = ix.len();
         ix.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]); // tail blob
 
-        let decoded = decode_ix(&ix).unwrap();
+        let decoded = decode_ix(&ix, 0).unwrap();
         assert_eq!(decoded.end_of_actions_in_ix, end);
     }
-}
-
-fn decode_action<'a>(buf: &mut &'a [u8]) -> CodecResult<ActionView<'a>> {
-    let action_tag = buf.byte("action.action_tag")?;
-    let body = match action_tag {
-        ACTION_TAG_UPDATE => {
-            let new_min_withdrawal_amount = buf.le_u64("action.update.new_min_withdrawal_amount")?;
-            let new_lock = decode_lock(buf)?;
-            ActionBody::Update { new_min_withdrawal_amount, new_lock }
-        }
-        ACTION_TAG_INIT => {
-            let new_min_withdrawal_amount = buf.le_u64("action.init.new_min_withdrawal_amount")?;
-            let new_lock = decode_lock(buf)?;
-            ActionBody::Init { new_min_withdrawal_amount, new_lock }
-        }
-        _ => return Err(Error::Decode("action: unknown tag")),
-    };
-    Ok(ActionView { action_tag, body })
 }

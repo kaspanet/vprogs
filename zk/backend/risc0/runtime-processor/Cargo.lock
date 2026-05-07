@@ -5993,6 +5993,7 @@ dependencies = [
  "rkyv",
  "tap",
  "vprogs-core-codec",
+ "zerocopy",
 ]
 
 [[package]]

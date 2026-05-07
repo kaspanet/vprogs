@@ -45,10 +45,7 @@ fn skip_input(buf: &mut &[u8]) -> CodecResult<()> {
 /// Returns the `(prev_tx_id, prev_index)` outpoint at `idx` in the current
 /// transaction's V1 `rest_preimage`. Errors if `idx` is out of range or the
 /// preimage truncates.
-pub fn parse_input_outpoint_at<'a>(
-    rest_preimage: &'a [u8],
-    idx: u32,
-) -> CodecResult<(&'a [u8; 32], u32)> {
+pub fn parse_input_outpoint_at(rest_preimage: &[u8], idx: u32) -> CodecResult<(&[u8; 32], u32)> {
     let mut buf = rest_preimage;
     buf.skip(2, "tx.version")?;
     let n_inputs = buf.le_u64("tx.n_inputs")?;

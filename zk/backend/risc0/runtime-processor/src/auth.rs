@@ -1,15 +1,16 @@
 //! Witness verification helpers used by `runtime::resolve_sigs`.
 //!
 //! Two flavors:
-//! - `recover_prev_tx_v1_p2pk_pubkey` — turns a `PrevTxV1Witness` into the
-//!   P2PK pubkey from the prev-tx output that the named current-tx input
-//!   spends. The runtime then matches this against the resource's lock.
-//! - `verify_k256_schnorr_sig` — verifies a BIP-340 schnorr signature
-//!   against a pubkey already named by the resource's lock.
+//! - `recover_prev_tx_v1_p2pk_pubkey`: turns a `PrevTxV1Witness` into the P2PK pubkey from the
+//!   prev-tx output that the named current-tx input spends. The runtime then matches this against
+//!   the resource's lock.
+//! - `verify_k256_schnorr_sig`: verifies a BIP-340 schnorr signature against a pubkey already named
+//!   by the resource's lock.
 //!
 //! Cheat detection (host substitution attempts → proof aborts):
-//! - `recover_prev_tx_v1_p2pk_pubkey` `assert_eq!`s the witness preimage
-//!   against the outpoint's `prev_tx_id`.
+//! - `recover_prev_tx_v1_p2pk_pubkey` `assert_eq!`s the witness preimage against the outpoint's
+//!   `prev_tx_id`.
+//!
 //! User-error cases (return `Ok(None)` / `false`, runtime errors out):
 //! - prev output not P2PK; output index out of range.
 //! - schnorr signature invalid.
@@ -31,10 +32,9 @@ const P2PK_SPK_SIZE: usize = 34;
 ///
 /// Returns:
 /// - `Ok(Some(pubkey))` if the witness verifies and the prev output is P2PK.
-/// - `Ok(None)` if input_idx is in range but the prev output isn't P2PK
-///   (user error — runtime will treat as no auth).
-/// - `Err(_)` if the current tx's input list is too short, or if the
-///   witness preimage is malformed.
+/// - `Ok(None)` if input_idx is in range but the prev output isn't P2PK (user error; runtime will
+///   treat as no auth).
+/// - `Err(_)` if the current tx's input list is too short, or if the witness preimage is malformed.
 ///
 /// Panics on host cheating (witness doesn't hash to claimed outpoint).
 pub fn recover_prev_tx_v1_p2pk_pubkey(
@@ -48,11 +48,9 @@ pub fn recover_prev_tx_v1_p2pk_pubkey(
         parse_input_outpoint_at(current_tx_rest_preimage, input_idx as u32)?;
 
     // Step 2: ASSERT witness hashes to that outpoint's prev_tx_id.
-    let computed_prev_tx_id =
-        tx_id_v1_from_digest(witness_payload_digest, witness_rest_preimage);
+    let computed_prev_tx_id = tx_id_v1_from_digest(witness_payload_digest, witness_rest_preimage);
     assert_eq!(
-        &computed_prev_tx_id,
-        expected_prev_tx_id,
+        &computed_prev_tx_id, expected_prev_tx_id,
         "host cheating: prev_tx witness does not match outpoint"
     );
 

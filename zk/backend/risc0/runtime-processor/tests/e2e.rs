@@ -22,9 +22,7 @@ use vprogs_zk_backend_risc0_runtime_processor::{
     resource_id::config_resource_id,
     runtime::compute_sig_message,
     signer_trait::Signer,
-    signer_variants::{
-        MultisigSchnorrSigPtrSigner, PrevTxV1WitnessSigner, SchnorrSigPtrSigner,
-    },
+    signer_variants::{MultisigSchnorrSigPtrSigner, PrevTxV1WitnessSigner, SchnorrSigPtrSigner},
 };
 
 /// Loads the pre-built runtime-processor ELF and wraps it with the v1compat
@@ -82,11 +80,7 @@ fn encode_schnorr_signer(resource_idx: u8, sig_offset: u32) -> Vec<u8> {
 
 /// Multisig Schnorr signer entry:
 /// `resource_idx(1) || kind(1) || pubkey_idx(1) || sig_offset(4)`.
-fn encode_multisig_schnorr_signer(
-    resource_idx: u8,
-    pubkey_idx: u8,
-    sig_offset: u32,
-) -> Vec<u8> {
+fn encode_multisig_schnorr_signer(resource_idx: u8, pubkey_idx: u8, sig_offset: u32) -> Vec<u8> {
     let mut out = Vec::new();
     out.push(resource_idx);
     out.push(MultisigSchnorrSigPtrSigner::TAG);
@@ -105,10 +99,14 @@ fn encode_signers_section(signers: &[Vec<u8>]) -> Vec<u8> {
     out
 }
 
-/// Encodes one Update action: `tag || new_min_withdrawal(8) || new_lock(tag+body)`.
-fn encode_update_action(new_min: u64, new_lock: &LockEnum<'_>) -> Vec<u8> {
+/// Encodes one Update action:
+/// `tag || updater_idx(1) || new_min_withdrawal(8) || new_lock(tag+body)`.
+/// `updater_idx` is the position of the config resource in the (id-sorted)
+/// access metadata — clients compute this when assembling the ix.
+fn encode_update_action(updater_idx: u8, new_min: u64, new_lock: &LockEnum<'_>) -> Vec<u8> {
     let mut out = Vec::new();
     out.push(ACTION_TAG_UPDATE);
+    out.push(updater_idx);
     out.extend_from_slice(&new_min.to_le_bytes());
     new_lock.encode(&mut out);
     out
@@ -180,7 +178,7 @@ impl TestSigner {
 
     fn sign(&self, msg: &[u8]) -> [u8; 64] {
         let sig: Signature = self.sk.sign(msg);
-        sig.to_bytes().into()
+        sig.to_bytes()
     }
 }
 
@@ -202,11 +200,7 @@ fn build_schnorr_locked_config(pubkey: &[u8; 32], min_w: u64) -> Vec<u8> {
 /// Builds the existing-config resource bytes locked by a Multisig threshold
 /// over `pubkeys` (must be lex-asc and unique). `pubkeys_blob` is owned by
 /// the caller because `MultisigLockView` borrows it.
-fn build_multisig_locked_config(
-    threshold: u8,
-    pubkeys_blob: &[u8],
-    min_w: u64,
-) -> Vec<u8> {
+fn build_multisig_locked_config(threshold: u8, pubkeys_blob: &[u8], min_w: u64) -> Vec<u8> {
     let lock = LockEnum::Multisig(MultisigLockView { threshold, pubkeys: pubkeys_blob });
     let mut buf = vec![0u8; config_total_len(&lock)];
     write_config(&mut buf, min_w, &lock).unwrap();
@@ -221,11 +215,11 @@ fn update_rotates_min_withdrawal_amount() {
 
     let initial_min: u64 = 100;
     let initial_data = build_schnorr_locked_config(&signer.pubkey, initial_min);
-    let resource_id_bytes: [u8; 32] = (*config_resource_id()).into();
+    let resource_id_bytes: [u8; 32] = *config_resource_id();
 
     let new_min: u64 = 200;
     let new_lock = LockEnum::Schnorr(SchnorrLockView { pubkey: &signer.pubkey });
-    let action_bytes = encode_update_action(new_min, &new_lock);
+    let action_bytes = encode_update_action(0, new_min, &new_lock);
     let actions_section = encode_actions_section(&[action_bytes]);
 
     let access_meta = encode_access_metadata(&[(resource_id_bytes, AccessType::Write)]);
@@ -279,10 +273,10 @@ fn update_rejected_with_wrong_signer() {
     let attacker = TestSigner::new();
 
     let initial_data = build_schnorr_locked_config(&owner.pubkey, 100);
-    let resource_id_bytes: [u8; 32] = (*config_resource_id()).into();
+    let resource_id_bytes: [u8; 32] = *config_resource_id();
 
     let new_lock = LockEnum::Schnorr(SchnorrLockView { pubkey: &owner.pubkey });
-    let action_bytes = encode_update_action(200, &new_lock);
+    let action_bytes = encode_update_action(0, 200, &new_lock);
     let actions_section = encode_actions_section(&[action_bytes]);
     let access_meta = encode_access_metadata(&[(resource_id_bytes, AccessType::Write)]);
 
@@ -308,10 +302,7 @@ fn update_rejected_with_wrong_signer() {
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
-    assert!(
-        Outputs::decode(&outputs_bytes).is_err(),
-        "expected guest to fail with bad signer"
-    );
+    assert!(Outputs::decode(&outputs_bytes).is_err(), "expected guest to fail with bad signer");
 }
 
 #[test]
@@ -320,7 +311,8 @@ fn multisig_2_of_3_unlocks_with_two_distinct_signers() {
     let signer_a = TestSigner::new();
     let signer_b = TestSigner::new();
     let signer_c = TestSigner::new();
-    let lex_sorted_pubkeys = sort_pubkeys_lex(vec![signer_a.pubkey, signer_b.pubkey, signer_c.pubkey]);
+    let lex_sorted_pubkeys =
+        sort_pubkeys_lex(vec![signer_a.pubkey, signer_b.pubkey, signer_c.pubkey]);
 
     // Lock requires lex-asc pubkeys. Flatten into a 96-byte blob.
     let mut pubkeys_blob = Vec::with_capacity(96);
@@ -329,7 +321,7 @@ fn multisig_2_of_3_unlocks_with_two_distinct_signers() {
     }
 
     let initial_data = build_multisig_locked_config(2, &pubkeys_blob, 100);
-    let resource_id_bytes: [u8; 32] = (*config_resource_id()).into();
+    let resource_id_bytes: [u8; 32] = *config_resource_id();
 
     // Pick the two lex-smallest contributors (indices 0 and 1 in the lock list).
     // We need to know which TestSigner owns which pubkey to sign correctly.
@@ -348,20 +340,15 @@ fn multisig_2_of_3_unlocks_with_two_distinct_signers() {
     let contributor_1 = signer_for_pubkey(&lex_sorted_pubkeys[1]);
 
     // —— Action: rotate min_withdrawal, keep the same multisig lock.
-    let new_lock = LockEnum::Multisig(MultisigLockView {
-        threshold: 2,
-        pubkeys: &pubkeys_blob,
-    });
-    let action_bytes = encode_update_action(777, &new_lock);
+    let new_lock = LockEnum::Multisig(MultisigLockView { threshold: 2, pubkeys: &pubkeys_blob });
+    let action_bytes = encode_update_action(0, 777, &new_lock);
     let actions_section = encode_actions_section(&[action_bytes]);
     let access_meta = encode_access_metadata(&[(resource_id_bytes, AccessType::Write)]);
 
     // Two multisig signer entries — both for resource 0, indices 0 and 1.
     // Probe to size the section before computing real sig_offsets.
-    let probe = vec![
-        encode_multisig_schnorr_signer(0, 0, 0),
-        encode_multisig_schnorr_signer(0, 1, 0),
-    ];
+    let probe =
+        vec![encode_multisig_schnorr_signer(0, 0, 0), encode_multisig_schnorr_signer(0, 1, 0)];
     let probe_section = encode_signers_section(&probe);
     let sig0_offset = access_meta.len() + probe_section.len() + actions_section.len();
     let sig1_offset = sig0_offset + 64;
@@ -420,14 +407,15 @@ fn multisig_rejected_with_below_threshold_signers() {
     let signer_a = TestSigner::new();
     let signer_b = TestSigner::new();
     let signer_c = TestSigner::new();
-    let lex_sorted_pubkeys = sort_pubkeys_lex(vec![signer_a.pubkey, signer_b.pubkey, signer_c.pubkey]);
+    let lex_sorted_pubkeys =
+        sort_pubkeys_lex(vec![signer_a.pubkey, signer_b.pubkey, signer_c.pubkey]);
 
     let mut pubkeys_blob = Vec::with_capacity(96);
     for pk in &lex_sorted_pubkeys {
         pubkeys_blob.extend_from_slice(pk);
     }
     let initial_data = build_multisig_locked_config(2, &pubkeys_blob, 100);
-    let resource_id_bytes: [u8; 32] = (*config_resource_id()).into();
+    let resource_id_bytes: [u8; 32] = *config_resource_id();
 
     let signer_for_pubkey = |pk: &[u8; 32]| -> &TestSigner {
         if &signer_a.pubkey == pk {
@@ -440,11 +428,8 @@ fn multisig_rejected_with_below_threshold_signers() {
     };
     let lone_contributor = signer_for_pubkey(&lex_sorted_pubkeys[0]);
 
-    let new_lock = LockEnum::Multisig(MultisigLockView {
-        threshold: 2,
-        pubkeys: &pubkeys_blob,
-    });
-    let action_bytes = encode_update_action(777, &new_lock);
+    let new_lock = LockEnum::Multisig(MultisigLockView { threshold: 2, pubkeys: &pubkeys_blob });
+    let action_bytes = encode_update_action(0, 777, &new_lock);
     let actions_section = encode_actions_section(&[action_bytes]);
     let access_meta = encode_access_metadata(&[(resource_id_bytes, AccessType::Write)]);
 
@@ -452,9 +437,8 @@ fn multisig_rejected_with_below_threshold_signers() {
     let probe_section = encode_signers_section(&probe);
     let sig0_offset = access_meta.len() + probe_section.len() + actions_section.len();
 
-    let signers_section = encode_signers_section(&[
-        encode_multisig_schnorr_signer(0, 0, sig0_offset as u32),
-    ]);
+    let signers_section =
+        encode_signers_section(&[encode_multisig_schnorr_signer(0, 0, sig0_offset as u32)]);
 
     let mut payload_presig = Vec::new();
     payload_presig.extend_from_slice(&access_meta);
@@ -513,13 +497,13 @@ fn build_prev_tx_v1_with_p2pk(pubkey: &[u8; 32]) -> KaspaTransaction {
     let spk = ScriptPublicKey::new(0, ScriptVec::from_slice(&spk_bytes));
 
     KaspaTransaction::new(
-        1,                                        // version
-        Vec::new(),                               // inputs (none)
-        vec![TransactionOutput::new(0, spk)],     // outputs
-        0,                                        // lock_time
+        1,                                    // version
+        Vec::new(),                           // inputs (none)
+        vec![TransactionOutput::new(0, spk)], // outputs
+        0,                                    // lock_time
         SUBNETWORK_ID_NATIVE,
-        0,                                        // gas
-        Vec::new(),                               // payload
+        0,          // gas
+        Vec::new(), // payload
     )
 }
 
@@ -563,7 +547,7 @@ fn prev_tx_v1_witness_unlocks_schnorr_locked_config() {
 
     let owner = TestSigner::new();
     let initial_data = build_schnorr_locked_config(&owner.pubkey, 100);
-    let resource_id_bytes: [u8; 32] = (*config_resource_id()).into();
+    let resource_id_bytes: [u8; 32] = *config_resource_id();
 
     // —— Synthesize prev tx (output 0 = P2PK to owner.pubkey) and derive
     // its tx_id via the runtime's hashing util. We compute the prev tx_id
@@ -585,7 +569,7 @@ fn prev_tx_v1_witness_unlocks_schnorr_locked_config() {
 
     // —— Build payload prefix (access_meta || signers || actions).
     let new_lock = LockEnum::Schnorr(SchnorrLockView { pubkey: &owner.pubkey });
-    let action_bytes = encode_update_action(555, &new_lock);
+    let action_bytes = encode_update_action(0, 555, &new_lock);
     let actions_section = encode_actions_section(&[action_bytes]);
     let access_meta = encode_access_metadata(&[(resource_id_bytes, AccessType::Write)]);
 
@@ -593,8 +577,7 @@ fn prev_tx_v1_witness_unlocks_schnorr_locked_config() {
     // tail (prev_rest_preimage || prev_payload_digest) at the right offsets.
     let probe = encode_witness_signer(0, 0, 0, 0, 0);
     let probe_section = encode_signers_section(&[probe]);
-    let payload_presig_len =
-        access_meta.len() + probe_section.len() + actions_section.len();
+    let payload_presig_len = access_meta.len() + probe_section.len() + actions_section.len();
     let rp_offset = payload_presig_len;
     let rp_len = prev_rest_preimage.len();
     let pd_offset = rp_offset + rp_len;
@@ -648,3 +631,143 @@ const PAYLOAD_DIGEST_KEY: [u8; 32] = *b"PayloadDigest\0\0\0\0\0\0\0\0\0\0\0\0\0\
 // unsound (see the type-level comment in `lock_variants.rs`). Not exercised
 // in e2e — needs a real in-guest verifier (groth16-class) before it can be
 // reliably tested end-to-end.
+
+/// The transaction touches two resources: a "decoy" with id `[0u8; 32]` (lex-
+/// smallest possible) and the singleton config. After id-sorting, the config
+/// lands at position 1, so the action's `updater_idx` and the signer's
+/// `resource_idx` are both 1 even though the program has only one config.
+/// This exercises the post-merge invariant that resources arrive id-sorted
+/// and that callers must address them by their sorted position rather than by
+/// declaration order.
+#[test]
+fn update_addresses_config_at_lex_position_1_in_two_resource_tx() {
+    let signer = TestSigner::new();
+
+    // Decoy: lex-smallest possible id. Blake3-derived `config_resource_id()`
+    // is overwhelmingly unlikely to be all-zeros, so this places config at
+    // lex-position 1; we assert the ordering anyway to keep the test honest.
+    let decoy_id_bytes: [u8; 32] = [0u8; 32];
+    let config_id_bytes: [u8; 32] = *config_resource_id();
+    assert!(
+        decoy_id_bytes < config_id_bytes,
+        "test precondition: decoy id must lex-precede the config id"
+    );
+
+    let initial_min: u64 = 100;
+    let initial_config_data = build_schnorr_locked_config(&signer.pubkey, initial_min);
+
+    let new_min: u64 = 200;
+    let new_lock = LockEnum::Schnorr(SchnorrLockView { pubkey: &signer.pubkey });
+    // Both updater_idx (action target) and resource_idx (signer scope) are 1
+    // — the config's lex position.
+    let action_bytes = encode_update_action(1, new_min, &new_lock);
+    let actions_section = encode_actions_section(&[action_bytes]);
+
+    // Access metadata is lex-sorted: decoy (Read) first, config (Write) second.
+    let access_meta = encode_access_metadata(&[
+        (decoy_id_bytes, AccessType::Read),
+        (config_id_bytes, AccessType::Write),
+    ]);
+
+    let probe_signer = encode_schnorr_signer(1, 0);
+    let probe_signers_section = encode_signers_section(&[probe_signer]);
+    let sig_offset_in_payload =
+        access_meta.len() + probe_signers_section.len() + actions_section.len();
+    let signer_entry = encode_schnorr_signer(1, sig_offset_in_payload as u32);
+    let signers_section = encode_signers_section(&[signer_entry]);
+    debug_assert_eq!(signers_section.len(), probe_signers_section.len());
+
+    let mut payload_presig = Vec::new();
+    payload_presig.extend_from_slice(&access_meta);
+    payload_presig.extend_from_slice(&signers_section);
+    payload_presig.extend_from_slice(&actions_section);
+
+    let rest_preimage: &[u8] = &[];
+    let sig_msg = compute_sig_message(rest_preimage, &payload_presig);
+    let sig_bytes = signer.sign(&sig_msg);
+
+    let mut payload = payload_presig;
+    payload.extend_from_slice(&sig_bytes);
+    let tx_bytes = encode_v1_transaction(&payload, rest_preimage);
+
+    // Resources passed in the same lex order as access_metadata: decoy first
+    // (empty data, read-only, not new), config second (existing config bytes).
+    let inputs = encode_inputs(
+        0,
+        [0u8; 32],
+        &tx_bytes,
+        &[(false, 0, Vec::new()), (false, 1, initial_config_data)],
+    );
+
+    let elf = wrapped_runtime_processor_elf();
+    let outputs_bytes = execute_guest(&elf, &inputs);
+    let decoded = Outputs::decode(&outputs_bytes).expect("guest succeeded");
+
+    // One Option<StorageOp> per resource: decoy untouched (None), config updated.
+    assert_eq!(decoded.storage_ops.len(), 2);
+    assert!(decoded.storage_ops[0].is_none(), "decoy must be untouched");
+    let Some(StorageOp::Update(data)) = &decoded.storage_ops[1] else {
+        panic!("expected StorageOp::Update at idx 1, got {:?}", decoded.storage_ops[1]);
+    };
+    let view = ConfigView::from_bytes(data).expect("valid config bytes");
+    assert_eq!(view.min_withdrawal_amount(), new_min);
+}
+
+/// Same two-resource layout as the test above, but the action mistakenly
+/// addresses the decoy at idx 0 instead of the config at idx 1. The handler
+/// inspects `resources[updater_idx].id()` and rejects when it doesn't match
+/// `config_resource_id()`. Demonstrates that the lex-position must be
+/// computed correctly by the encoder — there is no positional fallback.
+#[test]
+fn update_at_wrong_lex_position_is_rejected() {
+    let signer = TestSigner::new();
+
+    let decoy_id_bytes: [u8; 32] = [0u8; 32];
+    let config_id_bytes: [u8; 32] = *config_resource_id();
+
+    let initial_config_data = build_schnorr_locked_config(&signer.pubkey, 100);
+
+    let new_lock = LockEnum::Schnorr(SchnorrLockView { pubkey: &signer.pubkey });
+    // Wrong: idx 0 is the decoy, not the config.
+    let action_bytes = encode_update_action(0, 200, &new_lock);
+    let actions_section = encode_actions_section(&[action_bytes]);
+
+    let access_meta = encode_access_metadata(&[
+        (decoy_id_bytes, AccessType::Read),
+        (config_id_bytes, AccessType::Write),
+    ]);
+
+    // Signer points at the config (idx 1) so signer-resolution doesn't fail
+    // first — we want the failure to come from the action's wrong target.
+    let probe_signer = encode_schnorr_signer(1, 0);
+    let probe_signers_section = encode_signers_section(&[probe_signer]);
+    let sig_offset_in_payload =
+        access_meta.len() + probe_signers_section.len() + actions_section.len();
+    let signers_section =
+        encode_signers_section(&[encode_schnorr_signer(1, sig_offset_in_payload as u32)]);
+
+    let mut payload_presig = Vec::new();
+    payload_presig.extend_from_slice(&access_meta);
+    payload_presig.extend_from_slice(&signers_section);
+    payload_presig.extend_from_slice(&actions_section);
+
+    let sig_msg = compute_sig_message(&[], &payload_presig);
+    let sig_bytes = signer.sign(&sig_msg);
+
+    let mut payload = payload_presig;
+    payload.extend_from_slice(&sig_bytes);
+    let tx_bytes = encode_v1_transaction(&payload, &[]);
+    let inputs = encode_inputs(
+        0,
+        [0u8; 32],
+        &tx_bytes,
+        &[(false, 0, Vec::new()), (false, 1, initial_config_data)],
+    );
+
+    let elf = wrapped_runtime_processor_elf();
+    let outputs_bytes = execute_guest(&elf, &inputs);
+    assert!(
+        Outputs::decode(&outputs_bytes).is_err(),
+        "expected guest to reject when updater_idx points at the decoy"
+    );
+}
