@@ -16,7 +16,7 @@ pub struct LaneProof<'a> {
 
 impl<'a> LaneProof<'a> {
     /// Decodes a `LaneProof` from a wire buffer.
-    pub fn decode(buf: &mut &'a [u8]) -> Result<Self> {
+    pub fn decode(mut buf: &'a [u8]) -> Result<Self> {
         Ok(Self {
             payload_and_ctx_digest: buf.array::<32>("payload_and_ctx_digest")?,
             parent_seq_commit: buf.array::<32>("parent_seq_commit")?,

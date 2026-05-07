@@ -7722,6 +7722,7 @@ dependencies = [
  "vprogs-core-types",
  "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
+ "zerocopy",
 ]
 
 [[package]]

@@ -72,9 +72,10 @@ impl<'a> Abi<'a> {
         let mut value_hashes = vec![&[0; 32]; inputs.proof.leaves.len()];
         let mut bundle_idx_to_leaf_pos = vec![u32::MAX; inputs.proof.leaves.len()];
         for (leaf_pos, &res_idx) in inputs.leaf_order.iter().enumerate() {
-            assert!((res_idx as usize) < inputs.proof.leaves.len(), "res_index out of range");
-            value_hashes[res_idx as usize] = inputs.proof.leaves[leaf_pos].value_hash;
-            bundle_idx_to_leaf_pos[res_idx as usize] = leaf_pos as u32;
+            let res_idx = res_idx.get() as usize;
+            assert!(res_idx < inputs.proof.leaves.len(), "res_index out of range");
+            value_hashes[res_idx] = inputs.proof.leaves[leaf_pos].value_hash;
+            bundle_idx_to_leaf_pos[res_idx] = leaf_pos as u32;
         }
 
         Self { lane_key: inputs.lane_key, value_hashes, bundle_idx_to_leaf_pos, inputs }
@@ -199,7 +200,7 @@ impl<'a> Abi<'a> {
     /// Looks up the latest value hash for a proof leaf position via the bundle-wide
     /// `leaf_order` permutation.
     fn latest_hash(&self, leaf_pos: usize) -> &'a [u8; 32] {
-        self.value_hashes[self.inputs.leaf_order[leaf_pos] as usize]
+        self.value_hashes[self.inputs.leaf_order[leaf_pos].get() as usize]
     }
 
     /// Derives the bundle's final-block `seq_commit` from `new_lane_tip` and

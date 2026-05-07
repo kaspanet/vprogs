@@ -1828,6 +1828,7 @@ dependencies = [
  "tap",
  "vprogs-core-codec",
  "vprogs-core-types",
+ "zerocopy",
 ]
 
 [[package]]

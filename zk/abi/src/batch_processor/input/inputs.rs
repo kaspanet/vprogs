@@ -9,7 +9,9 @@ use vprogs_core_codec::Reader;
 #[cfg(feature = "host")]
 use vprogs_core_codec::Writer;
 use vprogs_core_smt::proving::Proof;
-use zerocopy::FromBytes;
+#[cfg(feature = "host")]
+use zerocopy::IntoBytes;
+use zerocopy::{FromBytes, little_endian::U32};
 
 #[cfg(feature = "host")]
 use crate::batch_processor::BundlePart;
@@ -29,7 +31,7 @@ pub struct Inputs<'a> {
     /// SMT proof covering the union of resources touched across all batches.
     pub proof: Proof<'a>,
     /// Leaf-order permutation: `leaf_order[leaf_pos] = bundle_resource_index`.
-    pub leaf_order: Vec<u32>,
+    pub leaf_order: &'a [U32],
     /// Batches in scheduling order.
     pub batches: Vec<Batch<'a>>,
     /// Lane proof for the bundle's final block.
@@ -44,9 +46,9 @@ impl<'a> Inputs<'a> {
             covenant_id: buf.array::<32>("covenant_id")?,
             lane_key: Hash::ref_from_bytes(buf.array::<32>("lane_key")?)?,
             proof: Proof::decode(buf.blob("proof")?)?,
-            leaf_order: buf.many("leaf_order", |b| b.le_u32("leaf_order"))?,
+            leaf_order: <[U32]>::ref_from_bytes(buf.blob("leaf_order")?)?,
             batches: buf.many("batches", Batch::decode)?,
-            lane_proof: LaneProof::decode(&mut buf)?,
+            lane_proof: LaneProof::decode(buf)?,
         })
     }
 
@@ -57,7 +59,7 @@ impl<'a> Inputs<'a> {
         covenant_id: &[u8; 32],
         lane_key: &Hash,
         proof_bytes: &[u8],
-        leaf_order: &[u32],
+        leaf_order: &[U32],
         batches: I,
         lane_proof: &GetSeqCommitLaneProofResponse,
     ) -> Vec<u8>
@@ -70,7 +72,7 @@ impl<'a> Inputs<'a> {
             buf.write(covenant_id);
             buf.write(lane_key.as_slice());
             buf.write_blob(proof_bytes);
-            buf.write_many(leaf_order, |&idx| idx.to_le_bytes());
+            buf.write_blob(leaf_order.as_bytes());
             buf.encode_many(batches, Batch::encode);
             LaneProof::encode(buf, lane_proof);
         })
