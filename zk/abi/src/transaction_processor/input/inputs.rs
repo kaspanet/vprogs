@@ -54,7 +54,7 @@ impl<'a> Inputs<'a> {
         for (i, meta) in tx.payload().access_metadata.iter().enumerate() {
             resources.push(Resource::decode(
                 &res_headers[i * Resource::HEADER_SIZE..],
-                *meta,
+                meta,
                 &mut res_data,
             )?);
         }

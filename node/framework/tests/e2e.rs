@@ -13,6 +13,7 @@ use vprogs_scheduling_scheduler::ExecutionConfig;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
+use zerocopy::IntoBytes;
 
 const TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -42,7 +43,7 @@ async fn mine_payload_blocks(l1: &L1Node, count: usize) -> Vec<Hash> {
             .build_payload_transactions(vec![Vec::new().tap_mut(|p| {
                 p.write_many(
                     [&AccessMetadata::write(ResourceId::for_test(i))],
-                    AccessMetadata::encode,
+                    AccessMetadata::as_bytes,
                 );
             })])
             .await;
@@ -223,7 +224,7 @@ async fn test_transactions_via_l1_payload() {
         .build_payload_transactions(vec![Vec::new().tap_mut(|p| {
             p.write_many(
                 [&AccessMetadata::write(ResourceId::for_test(42))],
-                AccessMetadata::encode,
+                AccessMetadata::as_bytes,
             );
         })])
         .await;

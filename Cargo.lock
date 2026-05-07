@@ -7739,6 +7739,7 @@ dependencies = [
  "rkyv",
  "tap",
  "vprogs-core-codec",
+ "zerocopy",
 ]
 
 [[package]]
@@ -7828,6 +7829,7 @@ dependencies = [
  "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
+ "zerocopy",
 ]
 
 [[package]]
@@ -8231,6 +8233,7 @@ dependencies = [
  "vprogs-zk-covenant",
  "vprogs-zk-transaction-prover",
  "vprogs-zk-vm",
+ "zerocopy",
 ]
 
 [[package]]

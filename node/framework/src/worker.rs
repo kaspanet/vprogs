@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 use vprogs_core_atomics::AtomicAsyncLatch;
-use vprogs_core_codec::Reader;
 use vprogs_core_types::{AccessMetadata, SchedulerTransaction};
 use vprogs_l1_bridge::{L1Bridge, L1Event};
 use vprogs_scheduling_scheduler::Scheduler;
@@ -82,7 +81,13 @@ impl<S: Store, P: Processor<S>> NodeWorker<S, P> {
                 let txs = accepted_transactions
                     .into_iter()
                     .map(|(idx, tx)| {
-                        SchedulerTransaction::new(idx, Self::extract_resources(&tx.payload), tx)
+                        // Malformed access metadata = no dependencies; prover attests invalidity.
+                        SchedulerTransaction::new(
+                            idx,
+                            AccessMetadata::decode_vec(&mut tx.payload.as_slice())
+                                .unwrap_or_default(),
+                            tx,
+                        )
                     })
                     .collect();
                 self.scheduler.schedule(*checkpoint.metadata(), txs);
@@ -108,12 +113,5 @@ impl<S: Store, P: Processor<S>> NodeWorker<S, P> {
         }
 
         true
-    }
-
-    /// Decodes the codec-encoded `Vec<AccessMetadata>` prefix from an L1 transaction payload
-    /// (`u32 LE count || (id(32) || access_type(1))*count`). Returns an empty vec on decode
-    /// failure - malformed payloads still flow downstream so the prover can attest to invalidity.
-    fn extract_resources(mut payload: &[u8]) -> Vec<AccessMetadata> {
-        payload.many("resources", AccessMetadata::decode).unwrap_or_default()
     }
 }

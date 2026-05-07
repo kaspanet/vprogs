@@ -25,3 +25,4 @@ vprogs-core-test-utils.workspace       = true
 vprogs-node-test-utils.workspace       = true
 vprogs-state-metadata.workspace        = true
 vprogs-storage-rocksdb-store.workspace = true
+zerocopy.workspace                     = true

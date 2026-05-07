@@ -37,7 +37,6 @@ pub mod transaction_processor {
     pub(crate) mod transaction_handler;
 
     pub(crate) mod input {
-        pub(crate) mod access_metadata;
         pub(crate) mod inputs;
         pub(crate) mod payload;
         pub(crate) mod resource;
@@ -68,8 +67,7 @@ pub mod transaction_processor {
 
     pub use abi::Abi;
     pub use input::{
-        access_metadata::AccessMetadata, inputs::Inputs, payload::Payload, resource::Resource,
-        transaction::Transaction,
+        inputs::Inputs, payload::Payload, resource::Resource, transaction::Transaction,
     };
     pub use journal::{
         entries::JournalEntries,

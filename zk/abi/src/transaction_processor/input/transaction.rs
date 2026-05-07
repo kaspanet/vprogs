@@ -77,9 +77,7 @@ impl<'a> Transaction<'a> {
 
     /// Decodes a transaction from the wire buffer, advancing `buf` past the consumed bytes.
     ///
-    /// Envelope: `version(2 LE) | body_len(4 LE) | body_bytes`. Unrecognized versions or
-    /// malformed payloads cause decode to fail - any successfully-returned transaction has a
-    /// well-formed [`Payload`].
+    /// Envelope: `version(2 LE) | body_len(4 LE) | body_bytes`.
     pub fn decode(buf: &mut &'a [u8]) -> Result<Self> {
         let version = buf.le_u16("tx_version")?;
         let body = buf.blob("tx_body")?;

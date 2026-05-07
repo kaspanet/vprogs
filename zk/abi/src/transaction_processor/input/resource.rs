@@ -4,9 +4,9 @@ use core::mem;
 use vprogs_core_codec::Reader;
 #[cfg(feature = "host")]
 use vprogs_core_codec::Writer;
-use vprogs_core_types::{AccessType, ResourceId};
+use vprogs_core_types::{AccessMetadata, AccessType, ResourceId};
 
-use crate::{Result, transaction_processor::AccessMetadata};
+use crate::Result;
 
 /// A mutable view of a single resource's data within a decoded wire buffer.
 ///
@@ -15,7 +15,7 @@ use crate::{Result, transaction_processor::AccessMetadata};
 /// `Vec` (`promoted`). Reads and writes always go through the active buffer.
 pub struct Resource<'a> {
     /// Access metadata declared for this resource.
-    access_metadata: AccessMetadata<'a>,
+    access_metadata: &'a AccessMetadata,
     /// Zero-copy mutable slice into the wire buffer's payload region.
     backing: &'a mut [u8],
     /// Heap-allocated buffer, used only when the resource data outgrows `backing`.
@@ -33,7 +33,7 @@ pub struct Resource<'a> {
 impl<'a> Resource<'a> {
     /// Returns the resource identifier.
     pub fn id(&self) -> &'a ResourceId {
-        self.access_metadata.resource_id
+        &self.access_metadata.resource_id
     }
 
     /// Returns the declared access type (Read or Write) for this resource.
@@ -115,11 +115,10 @@ impl<'a> Resource<'a> {
     pub const HEADER_SIZE: usize = 1 + 4 + 4;
 
     /// Decodes a resource from its header bytes, splitting off its backing from `data` and
-    /// advancing past the consumed bytes. `access_metadata` is supplied by the caller (looked up
-    /// from the transaction's payload access metadata at the matching position).
+    /// advancing past the consumed bytes.
     pub(crate) fn decode(
         mut header: &'a [u8],
-        access_metadata: AccessMetadata<'a>,
+        access_metadata: &'a AccessMetadata,
         buf: &mut &'a mut [u8],
     ) -> Result<Self> {
         // Parse header fields.
