@@ -1,11 +1,11 @@
-use alloc::{sync::Arc, vec::Vec};
+use alloc::vec::Vec;
 
 use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
 use zerocopy::little_endian::U32;
 
-/// Bundle of batches with their encode inputs.
+/// Scheduled batches with translation tables and tx journals, ready for batch proving.
 pub struct Bundle<S: Store, P: Processor<S>>(Vec<BundleEntry<S, P>>);
 
 impl<S: Store, P: Processor<S, BatchMetadata = ChainBlockMetadata>> Bundle<S, P> {
@@ -15,6 +15,8 @@ impl<S: Store, P: Processor<S, BatchMetadata = ChainBlockMetadata>> Bundle<S, P>
         translations: Vec<Vec<U32>>,
         journal_bytes: impl Fn(&P::TransactionArtifact) -> Vec<u8>,
     ) -> Self {
+        debug_assert_eq!(batches.len(), translations.len());
+
         Self(
             batches
                 .into_iter()
@@ -37,12 +39,12 @@ impl<S: Store, P: Processor<S, BatchMetadata = ChainBlockMetadata>> Bundle<S, P>
         self.0.iter().map(|(b, _, _)| b)
     }
 
-    /// All tx artifacts across the bundle in scheduling order.
+    /// All tx receipts across the bundle in scheduling order.
     pub fn tx_receipts(&self) -> Vec<P::TransactionArtifact>
     where
         P::TransactionArtifact: Clone,
     {
-        self.0.iter().flat_map(|(b, _, _)| b.tx_artifacts().map(Arc::unwrap_or_clone)).collect()
+        self.0.iter().flat_map(|(b, _, _)| b.tx_artifacts().map(|a| (*a).clone())).collect()
     }
 }
 
