@@ -94,7 +94,13 @@ pub fn parse_output_at_index_v1<'a>(
     for i in 0..=output_index {
         let value = buf.le_u64("output.value")?;
         let spk_version = buf.le_u16("output.spk_version")?;
-        let spk = buf.blob("output.spk")?;
+        // Kaspa's `write_var_bytes` (consensus/core/src/hashing/mod.rs) emits
+        // a u64 length prefix, not u32 — so we can't use `blob` here, which
+        // reads u32. Length is bounded by tx size; cast is safe on 32/64-bit
+        // hosts because the slice length below is checked against `buf.len()`
+        // inside `bytes`.
+        let spk_len = buf.le_u64("output.spk_len")? as usize;
+        let spk = buf.bytes(spk_len, "output.spk")?;
         let has_covenant = buf.byte("output.has_covenant")?;
         if has_covenant != 0 {
             buf.skip(2, "output.auth_input")?;

@@ -7,6 +7,8 @@ use alloc::vec::Vec;
 
 use vprogs_core_codec::{Error, Reader, Result as CodecResult};
 
+#[cfg(feature = "experimental-image-lock")]
+use crate::lock_variants::PreimageLockView;
 use crate::{
     auth_context::AuthContext,
     lock_trait::Lock,
@@ -19,6 +21,12 @@ pub enum LockEnum<'a> {
     Schnorr(SchnorrLockView<'a>),
     Multisig(MultisigLockView<'a>),
     Unlocked(UnlockedLockView),
+    /// **Unsound under the current threat model — gated.** A real
+    /// implementation must verify the inner receipt *in-guest* with a real
+    /// verifier (e.g. native groth16) — `risc0_zkvm::guest::env::verify`'s
+    /// host-attached assumption can be forged by an adversarial host.
+    #[cfg(feature = "experimental-image-lock")]
+    Preimage(PreimageLockView<'a>),
 }
 
 /// Decodes a tag-prefixed lock from a self-advancing buffer.
@@ -28,6 +36,8 @@ pub fn decode_lock<'a>(buf: &mut &'a [u8]) -> CodecResult<LockEnum<'a>> {
         SchnorrLockView::TAG => Ok(LockEnum::Schnorr(SchnorrLockView::decode(buf)?)),
         MultisigLockView::TAG => Ok(LockEnum::Multisig(MultisigLockView::decode(buf)?)),
         UnlockedLockView::TAG => Ok(LockEnum::Unlocked(UnlockedLockView::decode(buf)?)),
+        #[cfg(feature = "experimental-image-lock")]
+        PreimageLockView::TAG => Ok(LockEnum::Preimage(PreimageLockView::decode(buf)?)),
         _ => Err(Error::Decode("lock: unknown tag")),
     }
 }
@@ -39,6 +49,8 @@ impl<'a> LockEnum<'a> {
             LockEnum::Schnorr(_) => SchnorrLockView::TAG,
             LockEnum::Multisig(_) => MultisigLockView::TAG,
             LockEnum::Unlocked(_) => UnlockedLockView::TAG,
+            #[cfg(feature = "experimental-image-lock")]
+            LockEnum::Preimage(_) => PreimageLockView::TAG,
         }
     }
 
@@ -48,6 +60,8 @@ impl<'a> LockEnum<'a> {
             LockEnum::Schnorr(l) => l.wire_body_len(),
             LockEnum::Multisig(l) => l.wire_body_len(),
             LockEnum::Unlocked(l) => l.wire_body_len(),
+            #[cfg(feature = "experimental-image-lock")]
+            LockEnum::Preimage(l) => l.wire_body_len(),
         }
     }
 
@@ -63,18 +77,23 @@ impl<'a> LockEnum<'a> {
             LockEnum::Schnorr(l) => l.encode(out),
             LockEnum::Multisig(l) => l.encode(out),
             LockEnum::Unlocked(l) => l.encode(out),
+            #[cfg(feature = "experimental-image-lock")]
+            LockEnum::Preimage(l) => l.encode(out),
         }
     }
 
     /// Picks the right unlocker bucket from `ctx` and dispatches to the
-    /// concrete `Lock::try_unlock` impl. Adding a new lock variant whose
-    /// unlocker type is already represented in `AuthContext` is one match
-    /// arm; a new unlocker type adds a new field on `AuthContext`.
+    /// concrete `Lock::try_unlock` impl. Each lock kind has its own
+    /// dedicated `AuthContext` field — Multisig does *not* share Schnorr's
+    /// bucket, so a Schnorr-targeted unlocker can never accidentally
+    /// satisfy a Multisig lock.
     pub fn unlock(&self, resource_idx: u8, ctx: &AuthContext) -> bool {
         match self {
             LockEnum::Schnorr(l) => l.try_unlock(resource_idx, &ctx.schnorr),
-            LockEnum::Multisig(l) => l.try_unlock(resource_idx, &ctx.schnorr),
+            LockEnum::Multisig(l) => l.try_unlock(resource_idx, &ctx.multisig),
             LockEnum::Unlocked(l) => l.try_unlock(resource_idx, &[]),
+            #[cfg(feature = "experimental-image-lock")]
+            LockEnum::Preimage(l) => l.try_unlock(resource_idx, &ctx.preimage),
         }
     }
 }
@@ -82,7 +101,7 @@ impl<'a> LockEnum<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth_context::SchnorrUnlocker;
+    use crate::auth_context::{MultisigUnlocker, SchnorrUnlocker};
 
     #[test]
     fn dispatcher_routes_schnorr_to_schnorr_bucket() {
@@ -94,7 +113,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatcher_routes_multisig_to_schnorr_bucket() {
+    fn dispatcher_routes_multisig_to_multisig_bucket() {
         let pks = [[0x01u8; 32], [0x02u8; 32]];
         let body: Vec<u8> = {
             let mut v = Vec::new();
@@ -108,15 +127,53 @@ mod tests {
         let multisig = MultisigLockView::decode(&mut buf).unwrap();
         let lock = LockEnum::Multisig(multisig);
 
+        // Multisig consumes its dedicated bucket, not the Schnorr one.
         let mut ctx = AuthContext::default();
-        ctx.schnorr.push((0, SchnorrUnlocker { pubkey: pks[1] }));
+        ctx.multisig.push((0, MultisigUnlocker { pubkeys: alloc::vec![pks[1]] }));
         assert!(lock.unlock(0, &ctx));
+    }
+
+    #[test]
+    fn dispatcher_does_not_satisfy_multisig_from_schnorr_bucket() {
+        // A Schnorr-targeted unlocker landing in `ctx.schnorr` must NOT
+        // satisfy a Multisig lock — the buckets are typed separately.
+        let pks = [[0x01u8; 32], [0x02u8; 32]];
+        let body: Vec<u8> = {
+            let mut v = Vec::new();
+            v.push(1);
+            v.push(2);
+            v.extend_from_slice(&pks[0]);
+            v.extend_from_slice(&pks[1]);
+            v
+        };
+        let mut buf: &[u8] = &body;
+        let multisig = MultisigLockView::decode(&mut buf).unwrap();
+        let lock = LockEnum::Multisig(multisig);
+
+        let mut ctx = AuthContext::default();
+        ctx.schnorr.push((0, SchnorrUnlocker { pubkey: pks[0] }));
+        assert!(!lock.unlock(0, &ctx));
     }
 
     #[test]
     fn dispatcher_routes_unlocked_with_empty_bucket() {
         let lock = LockEnum::Unlocked(UnlockedLockView);
         let ctx = AuthContext::default();
+        assert!(lock.unlock(0, &ctx));
+    }
+
+    #[cfg(feature = "experimental-image-lock")]
+    #[test]
+    fn dispatcher_routes_preimage_to_preimage_bucket() {
+        use crate::auth_context::PreimageUnlocker;
+        let image_id = [0xC0u8; 32];
+        let data_image = [0xDEu8; 32];
+        let lock = LockEnum::Preimage(PreimageLockView {
+            image_id: &image_id,
+            data_image: &data_image,
+        });
+        let mut ctx = AuthContext::default();
+        ctx.preimage.push((0, PreimageUnlocker));
         assert!(lock.unlock(0, &ctx));
     }
 

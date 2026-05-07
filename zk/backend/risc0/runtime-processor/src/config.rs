@@ -21,6 +21,8 @@
 use zerocopy::little_endian::U64 as Le64;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
+#[cfg(feature = "experimental-image-lock")]
+use crate::lock_variants::PreimageLockView;
 use crate::{
     lock::LockEnum,
     lock_trait::Lock,
@@ -131,6 +133,11 @@ fn write_lock_body(out: &mut [u8], lock: &LockEnum<'_>) {
         LockEnum::Unlocked(_) => {
             debug_assert!(out.is_empty());
         }
+        #[cfg(feature = "experimental-image-lock")]
+        LockEnum::Preimage(p) => {
+            out[..32].copy_from_slice(p.image_id);
+            out[32..].copy_from_slice(p.data_image);
+        }
     }
 }
 
@@ -176,6 +183,13 @@ fn validate_lock_body(tag: u8, body: &[u8]) -> Result<(), &'static str> {
             }
             Ok(())
         }
+        #[cfg(feature = "experimental-image-lock")]
+        PreimageLockView::TAG => {
+            if body.len() != 64 {
+                return Err("config.preimage: body must be 64 bytes (image_id || data_image)");
+            }
+            Ok(())
+        }
         _ => Err("config: unknown lock tag"),
     }
 }
@@ -193,6 +207,16 @@ fn decode_lock_body<'a>(tag: u8, body: &'a [u8]) -> Result<LockEnum<'a>, &'stati
             Ok(LockEnum::Multisig(MultisigLockView { threshold, pubkeys }))
         }
         UnlockedLockView::TAG => Ok(LockEnum::Unlocked(UnlockedLockView)),
+        #[cfg(feature = "experimental-image-lock")]
+        PreimageLockView::TAG => {
+            let image_id: &[u8; 32] = body[..32]
+                .try_into()
+                .map_err(|_| "config.preimage: image_id slice")?;
+            let data_image: &[u8; 32] = body[32..]
+                .try_into()
+                .map_err(|_| "config.preimage: data_image slice")?;
+            Ok(LockEnum::Preimage(PreimageLockView { image_id, data_image }))
+        }
         _ => Err("config: unknown lock tag"),
     }
 }
@@ -347,6 +371,48 @@ mod tests {
         buf[8] = UnlockedLockView::TAG;
         // 4 spurious tail bytes — must be rejected.
         assert!(ConfigView::from_bytes(&buf).is_err());
+    }
+
+    // —— Preimage layout (gated) ————————————————————————————————————————
+    #[cfg(feature = "experimental-image-lock")]
+    mod preimage {
+        use super::*;
+
+        #[test]
+        fn preimage_round_trip() {
+            let image_id = pk(0xC0);
+            let data_image = pk(0xDE);
+            let lock = LockEnum::Preimage(PreimageLockView {
+                image_id: &image_id,
+                data_image: &data_image,
+            });
+            let total = config_total_len(&lock);
+            assert_eq!(total, CONFIG_HEADER_LEN + 64);
+
+            let mut buf = vec![0u8; total];
+            write_config(&mut buf, 9000, &lock).unwrap();
+
+            let view = ConfigView::from_bytes(&buf).unwrap();
+            assert_eq!(view.min_withdrawal_amount(), 9000);
+            match view.lock() {
+                LockEnum::Preimage(p) => {
+                    assert_eq!(p.image_id, &image_id);
+                    assert_eq!(p.data_image, &data_image);
+                }
+                _ => panic!("expected Preimage"),
+            }
+        }
+
+        #[test]
+        fn preimage_rejects_wrong_body_length() {
+            let mut buf = vec![0u8; CONFIG_HEADER_LEN + 63];
+            buf[8] = PreimageLockView::TAG;
+            assert!(ConfigView::from_bytes(&buf).is_err());
+
+            let mut buf = vec![0u8; CONFIG_HEADER_LEN + 65];
+            buf[8] = PreimageLockView::TAG;
+            assert!(ConfigView::from_bytes(&buf).is_err());
+        }
     }
 
     // —— Tag dispatch ————————————————————————————————————————————————————

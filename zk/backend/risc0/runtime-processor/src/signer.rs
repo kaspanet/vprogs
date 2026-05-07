@@ -4,18 +4,28 @@
 
 use vprogs_core_codec::{Error, Reader, Result as CodecResult};
 
+#[cfg(feature = "experimental-image-lock")]
+use crate::signer_variants::ImageProofSigner;
 use crate::{
     signer_trait::Signer,
-    signer_variants::{PrevTxV1WitnessSigner, SchnorrSigPtrSigner},
+    signer_variants::{
+        MultisigPrevTxV1WitnessSigner, MultisigSchnorrSigPtrSigner, PrevTxV1WitnessSigner,
+        SchnorrSigPtrSigner,
+    },
 };
 
-/// All known signer kinds. Each variant's resolve produces a different
-/// unlocker type (or the same — both currently produce `SchnorrUnlocker`);
-/// the dispatcher in `runtime::resolve_signers` routes the result into the
+/// All known signer kinds. Each variant's `resolve` produces an `Unlocker` of
+/// some concrete type; `runtime::resolve_signers` routes the result into the
 /// matching `AuthContext` bucket.
 pub enum SignerEnum<'a> {
     SchnorrSigPtr(SchnorrSigPtrSigner),
     PrevTxV1Witness(PrevTxV1WitnessSigner),
+    MultisigSchnorrSigPtr(MultisigSchnorrSigPtrSigner),
+    MultisigPrevTxV1Witness(MultisigPrevTxV1WitnessSigner),
+    /// **Unsound under the current threat model; gated.** See
+    /// `signer_variants::ImageProofSigner` for the rationale.
+    #[cfg(feature = "experimental-image-lock")]
+    ImageProof(ImageProofSigner),
     /// Lifetime parameter is reserved for future signer variants that borrow
     /// from the wire buffer; current variants are owned.
     #[doc(hidden)]
@@ -33,6 +43,14 @@ pub fn decode_signer<'a>(buf: &mut &'a [u8]) -> CodecResult<(u8, SignerEnum<'a>)
         PrevTxV1WitnessSigner::TAG => {
             SignerEnum::PrevTxV1Witness(PrevTxV1WitnessSigner::decode(buf)?)
         }
+        MultisigSchnorrSigPtrSigner::TAG => {
+            SignerEnum::MultisigSchnorrSigPtr(MultisigSchnorrSigPtrSigner::decode(buf)?)
+        }
+        MultisigPrevTxV1WitnessSigner::TAG => {
+            SignerEnum::MultisigPrevTxV1Witness(MultisigPrevTxV1WitnessSigner::decode(buf)?)
+        }
+        #[cfg(feature = "experimental-image-lock")]
+        ImageProofSigner::TAG => SignerEnum::ImageProof(ImageProofSigner::decode(buf)?),
         _ => return Err(Error::Decode("signer: unknown kind")),
     };
     Ok((resource_idx, body))

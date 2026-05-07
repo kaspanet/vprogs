@@ -2,18 +2,27 @@
 //! `impl Lock`; the dispatcher in `crate::lock` matches on the tag byte and
 //! routes into one of these.
 //!
-//! All `try_unlock` impls assume the unlocker bucket is sorted by
-//! `(resource_idx asc, pubkey lex-asc)` — `runtime::resolve_signers` enforces
-//! this. Combined with the lock's own pubkey ordering (Multisig pubkeys are
-//! strict-asc lex), matching is `O(log K)` for Schnorr (binary search) and
-//! `O(N + M)` for Multisig (merge walk). No N×M nested loops anywhere.
+//! `try_unlock` is **strict** about the per-resource unlocker slice — the
+//! wire format must already deliver the canonical shape, and matchers reject
+//! anything malformed rather than silently re-sorting:
+//! - `SchnorrLockView` accepts exactly one unlocker for its resource.
+//! - `MultisigLockView` consumes the *aggregated* contribution for its
+//!   resource (`MultisigUnlocker { pubkeys }`); the contribution list must be
+//!   strictly ascending in lex order so the merge walk's invariants hold.
+//! - `PreimageLockView` (gated on `experimental-image-lock`) accepts exactly
+//!   one unlocker (the signer's `resolve` already verified the inner receipt).
 
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 
 use vprogs_core_codec::{Error, Reader, Result as CodecResult};
 
-use crate::{auth_context::SchnorrUnlocker, lock_trait::Lock};
+#[cfg(feature = "experimental-image-lock")]
+use crate::auth_context::PreimageUnlocker;
+use crate::{
+    auth_context::{MultisigUnlocker, SchnorrUnlocker},
+    lock_trait::Lock,
+};
 
 /// Returns the slice of `bucket` whose entries match `resource_idx`.
 /// Bucket must be sorted by resource_idx ascending.
@@ -48,9 +57,13 @@ impl<'a> Lock<'a> for SchnorrLockView<'a> {
 
     fn try_unlock(&self, resource_idx: u8, us: &[(u8, SchnorrUnlocker)]) -> bool {
         let slice = slice_for_resource(us, resource_idx);
-        slice
-            .binary_search_by(|(_, u)| u.pubkey.as_slice().cmp(self.pubkey.as_slice()))
-            .is_ok()
+        // A single-key lock allows exactly one unlocker. More than one is a
+        // wire-format error (the prover shouldn't include keys that won't be
+        // checked); zero means unauthorized.
+        if slice.len() != 1 {
+            return false;
+        }
+        slice[0].1.pubkey.as_slice() == self.pubkey.as_slice()
     }
 }
 
@@ -81,7 +94,7 @@ impl<'a> MultisigLockView<'a> {
 
 impl<'a> Lock<'a> for MultisigLockView<'a> {
     const TAG: u8 = 0x02;
-    type Unlocker = SchnorrUnlocker;
+    type Unlocker = MultisigUnlocker;
 
     fn decode(buf: &mut &'a [u8]) -> CodecResult<Self> {
         let threshold = buf.byte("lock.multisig.threshold")?;
@@ -116,20 +129,31 @@ impl<'a> Lock<'a> for MultisigLockView<'a> {
         2 + self.pubkeys.len()
     }
 
-    fn try_unlock(&self, resource_idx: u8, us: &[(u8, SchnorrUnlocker)]) -> bool {
-        // Merge walk: lock pubkeys are sorted lex-asc (decoder enforces),
-        // and the unlocker slice is sorted by pubkey lex-asc (runtime
-        // enforces post-resolve). Both pointers move forward only.
+    fn try_unlock(&self, resource_idx: u8, us: &[(u8, MultisigUnlocker)]) -> bool {
+        // Exactly one aggregated contribution is expected per resource.
         let slice = slice_for_resource(us, resource_idx);
+        if slice.len() != 1 {
+            return false;
+        }
+        let contrib = &slice[0].1.pubkeys;
+        // Contributions must be strictly ascending in lex pubkey order — this
+        // is the merge walk's precondition. `runtime::resolve_signers` does
+        // not sort/dedup, so we verify here and reject if violated.
+        if !is_strictly_ascending(contrib) {
+            return false;
+        }
+        // Merge walk: both streams are sorted lex-asc; advance the contrib
+        // pointer past anything below the current lock pubkey, count a match
+        // on equality. O(N + M).
         let mut matched: u8 = 0;
-        let mut s_idx = 0usize;
+        let mut c_idx = 0usize;
         for lock_pk in self.pubkeys.chunks_exact(32) {
-            while s_idx < slice.len() {
-                match slice[s_idx].1.pubkey.as_slice().cmp(lock_pk) {
-                    Ordering::Less => s_idx += 1,
+            while c_idx < contrib.len() {
+                match contrib[c_idx].as_slice().cmp(lock_pk) {
+                    Ordering::Less => c_idx += 1,
                     Ordering::Equal => {
                         matched += 1;
-                        s_idx += 1;
+                        c_idx += 1;
                         break;
                     }
                     Ordering::Greater => break,
@@ -141,6 +165,11 @@ impl<'a> Lock<'a> for MultisigLockView<'a> {
         }
         matched >= self.threshold
     }
+}
+
+/// Returns `true` if `pubkeys` is strictly ascending in lex order.
+fn is_strictly_ascending(pubkeys: &[[u8; 32]]) -> bool {
+    pubkeys.windows(2).all(|w| w[0] < w[1])
 }
 
 /// Always-unlocked lock (shared/public data). Body: empty.
@@ -166,6 +195,53 @@ impl<'a> Lock<'a> for UnlockedLockView {
     }
 }
 
+/// Preimage / hash-image lock. Body: `image_id(32) || data_image(32)`.
+///
+/// `image_id` is the risc0 image ID of the inner preimage-proof guest; the
+/// guest's job is to compute `keyed_hash(data) == data_image` for some private
+/// `data` and write the digest to its journal. Unlocking means a verified
+/// inner receipt exists whose journal equals `data_image`.
+///
+/// **Gated behind `experimental-image-lock` and currently unsound.** The
+/// `Signer` impl that produces a `PreimageUnlocker` must verify the inner
+/// receipt *in-guest* with a real verifier (e.g. a native groth16 verifier
+/// wired into the guest). `risc0_zkvm::guest::env::verify` is **not**
+/// acceptable: it only declares an assumption that the host attaches a
+/// matching receipt at proving time, and the host is adversarial in our
+/// threat model, so the assumption can be forged. Until a real in-guest
+/// verifier is wired up, this whole surface is compiled out.
+#[cfg(feature = "experimental-image-lock")]
+#[derive(Copy, Clone)]
+pub struct PreimageLockView<'a> {
+    pub image_id: &'a [u8; 32],
+    pub data_image: &'a [u8; 32],
+}
+
+#[cfg(feature = "experimental-image-lock")]
+impl<'a> Lock<'a> for PreimageLockView<'a> {
+    const TAG: u8 = 0x04;
+    type Unlocker = PreimageUnlocker;
+
+    fn decode(buf: &mut &'a [u8]) -> CodecResult<Self> {
+        let image_id = buf.array::<32>("lock.preimage.image_id")?;
+        let data_image = buf.array::<32>("lock.preimage.data_image")?;
+        Ok(Self { image_id, data_image })
+    }
+
+    fn encode(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(self.image_id);
+        out.extend_from_slice(self.data_image);
+    }
+
+    fn wire_body_len(&self) -> usize {
+        64
+    }
+
+    fn try_unlock(&self, resource_idx: u8, us: &[(u8, PreimageUnlocker)]) -> bool {
+        slice_for_resource(us, resource_idx).len() == 1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,8 +250,12 @@ mod tests {
         [b; 32]
     }
 
-    fn unlocker(pubkey: [u8; 32]) -> SchnorrUnlocker {
+    fn schnorr_unlocker(pubkey: [u8; 32]) -> SchnorrUnlocker {
         SchnorrUnlocker { pubkey }
+    }
+
+    fn multisig_unlocker(pubkeys: Vec<[u8; 32]>) -> MultisigUnlocker {
+        MultisigUnlocker { pubkeys }
     }
 
     // —— Schnorr lock ——————————————————————————————————————————————————
@@ -198,7 +278,7 @@ mod tests {
     fn schnorr_unlocks_with_matching_pubkey() {
         let pubkey = pk(0x42);
         let lock = SchnorrLockView { pubkey: &pubkey };
-        let bucket = [(0u8, unlocker(pk(0x42)))];
+        let bucket = [(0u8, schnorr_unlocker(pk(0x42)))];
         assert!(lock.try_unlock(0, &bucket));
     }
 
@@ -206,7 +286,7 @@ mod tests {
     fn schnorr_rejects_with_wrong_pubkey() {
         let pubkey = pk(0x42);
         let lock = SchnorrLockView { pubkey: &pubkey };
-        let bucket = [(0u8, unlocker(pk(0x99)))];
+        let bucket = [(0u8, schnorr_unlocker(pk(0x99)))];
         assert!(!lock.try_unlock(0, &bucket));
     }
 
@@ -214,9 +294,40 @@ mod tests {
     fn schnorr_rejects_when_unlocker_is_for_other_resource() {
         let pubkey = pk(0x42);
         let lock = SchnorrLockView { pubkey: &pubkey };
-        // Bucket sorted by (resource_idx, pubkey).
-        let bucket = [(1u8, unlocker(pk(0x42)))];
+        let bucket = [(1u8, schnorr_unlocker(pk(0x42)))];
         assert!(!lock.try_unlock(0, &bucket));
+    }
+
+    #[test]
+    fn schnorr_rejects_zero_unlockers() {
+        let pubkey = pk(0x42);
+        let lock = SchnorrLockView { pubkey: &pubkey };
+        assert!(!lock.try_unlock(0, &[]));
+    }
+
+    #[test]
+    fn schnorr_rejects_multiple_unlockers_for_same_resource() {
+        // A single-key lock has no use for a second unlocker; the wire format
+        // shouldn't produce one. If it does, the matcher rejects rather than
+        // picking one and ignoring the rest.
+        let pubkey = pk(0x42);
+        let lock = SchnorrLockView { pubkey: &pubkey };
+        let bucket = [
+            (0u8, schnorr_unlocker(pk(0x42))),
+            (0u8, schnorr_unlocker(pk(0x77))),
+        ];
+        assert!(!lock.try_unlock(0, &bucket));
+    }
+
+    #[test]
+    fn schnorr_unaffected_by_unlockers_for_other_resources() {
+        let pubkey = pk(0x42);
+        let lock = SchnorrLockView { pubkey: &pubkey };
+        let bucket = [
+            (0u8, schnorr_unlocker(pk(0x42))),
+            (1u8, schnorr_unlocker(pk(0x99))),
+        ];
+        assert!(lock.try_unlock(0, &bucket));
     }
 
     // —— Multisig lock ——————————————————————————————————————————————————
@@ -268,39 +379,77 @@ mod tests {
     }
 
     #[test]
-    fn multisig_2_of_3_passes_with_two_distinct_unlockers() {
+    fn multisig_2_of_3_passes_with_two_distinct_contribs() {
         let pks = [pk(0x01), pk(0x02), pk(0x03)];
         let body = build_multisig_body(2, &pks);
         let mut buf: &[u8] = &body;
         let lock = MultisigLockView::decode(&mut buf).unwrap();
 
-        // Bucket sorted by (resource_idx, pubkey lex-asc) — runtime invariant.
-        let bucket = [(0u8, unlocker(pk(0x01))), (0u8, unlocker(pk(0x03)))];
+        let bucket = [(0u8, multisig_unlocker(alloc::vec![pk(0x01), pk(0x03)]))];
         assert!(lock.try_unlock(0, &bucket));
     }
 
     #[test]
-    fn multisig_2_of_3_rejects_with_one_unlocker() {
+    fn multisig_2_of_3_rejects_with_one_contrib() {
         let pks = [pk(0x01), pk(0x02), pk(0x03)];
         let body = build_multisig_body(2, &pks);
         let mut buf: &[u8] = &body;
         let lock = MultisigLockView::decode(&mut buf).unwrap();
 
-        let bucket = [(0u8, unlocker(pk(0x02)))];
+        let bucket = [(0u8, multisig_unlocker(alloc::vec![pk(0x02)]))];
         assert!(!lock.try_unlock(0, &bucket));
     }
 
     #[test]
-    fn multisig_2_of_3_dup_unlocker_for_same_pk_counts_once() {
-        // Even if the wire format had two unlocker entries with the same pubkey,
-        // the merge walk advances both pointers past a match — so a single lock
-        // pubkey can't be matched twice.
+    fn multisig_rejects_zero_aggregated_unlockers() {
         let pks = [pk(0x01), pk(0x02), pk(0x03)];
         let body = build_multisig_body(2, &pks);
         let mut buf: &[u8] = &body;
         let lock = MultisigLockView::decode(&mut buf).unwrap();
 
-        let bucket = [(0u8, unlocker(pk(0x02))), (0u8, unlocker(pk(0x02)))];
+        // Empty multisig bucket.
+        let bucket: [(u8, MultisigUnlocker); 0] = [];
+        assert!(!lock.try_unlock(0, &bucket));
+    }
+
+    #[test]
+    fn multisig_rejects_two_aggregated_unlockers_for_same_resource() {
+        // The aggregator produces ≤1 entry per resource; if two arrive, the
+        // wire format/runtime is buggy. Reject.
+        let pks = [pk(0x01), pk(0x02), pk(0x03)];
+        let body = build_multisig_body(2, &pks);
+        let mut buf: &[u8] = &body;
+        let lock = MultisigLockView::decode(&mut buf).unwrap();
+
+        let bucket = [
+            (0u8, multisig_unlocker(alloc::vec![pk(0x01)])),
+            (0u8, multisig_unlocker(alloc::vec![pk(0x03)])),
+        ];
+        assert!(!lock.try_unlock(0, &bucket));
+    }
+
+    #[test]
+    fn multisig_rejects_duplicate_pubkey_in_contrib() {
+        // Strict-asc on the contribution list rules out duplicates outright.
+        let pks = [pk(0x01), pk(0x02), pk(0x03)];
+        let body = build_multisig_body(2, &pks);
+        let mut buf: &[u8] = &body;
+        let lock = MultisigLockView::decode(&mut buf).unwrap();
+
+        let bucket = [(0u8, multisig_unlocker(alloc::vec![pk(0x02), pk(0x02)]))];
+        assert!(!lock.try_unlock(0, &bucket));
+    }
+
+    #[test]
+    fn multisig_rejects_unsorted_contrib() {
+        // `runtime::resolve_signers` no longer post-sorts; if the wire produced
+        // contributions in the wrong order, the matcher rejects.
+        let pks = [pk(0x01), pk(0x02), pk(0x03)];
+        let body = build_multisig_body(2, &pks);
+        let mut buf: &[u8] = &body;
+        let lock = MultisigLockView::decode(&mut buf).unwrap();
+
+        let bucket = [(0u8, multisig_unlocker(alloc::vec![pk(0x03), pk(0x01)]))];
         assert!(!lock.try_unlock(0, &bucket));
     }
 
@@ -311,8 +460,29 @@ mod tests {
         let mut buf: &[u8] = &body;
         let lock = MultisigLockView::decode(&mut buf).unwrap();
 
-        // Unlocker is for resource_idx=1, lock targets resource_idx=0.
-        let bucket = [(1u8, unlocker(pk(0x02)))];
+        let bucket = [(1u8, multisig_unlocker(alloc::vec![pk(0x02)]))];
+        assert!(!lock.try_unlock(0, &bucket));
+    }
+
+    #[test]
+    fn multisig_3_of_3_passes_with_three_distinct_contribs() {
+        let pks = [pk(0x01), pk(0x02), pk(0x03)];
+        let body = build_multisig_body(3, &pks);
+        let mut buf: &[u8] = &body;
+        let lock = MultisigLockView::decode(&mut buf).unwrap();
+
+        let bucket = [(0u8, multisig_unlocker(alloc::vec![pk(0x01), pk(0x02), pk(0x03)]))];
+        assert!(lock.try_unlock(0, &bucket));
+    }
+
+    #[test]
+    fn multisig_rejects_when_threshold_keys_are_wrong_keys() {
+        let pks = [pk(0x01), pk(0x02), pk(0x03)];
+        let body = build_multisig_body(2, &pks);
+        let mut buf: &[u8] = &body;
+        let lock = MultisigLockView::decode(&mut buf).unwrap();
+
+        let bucket = [(0u8, multisig_unlocker(alloc::vec![pk(0xAA), pk(0xBB)]))];
         assert!(!lock.try_unlock(0, &bucket));
     }
 
@@ -334,5 +504,62 @@ mod tests {
 
         let mut buf: &[u8] = &bytes;
         let _ = UnlockedLockView::decode(&mut buf).unwrap();
+    }
+
+    // —— Preimage lock (gated) —————————————————————————————————————————
+    #[cfg(feature = "experimental-image-lock")]
+    mod preimage {
+        use super::*;
+
+        #[test]
+        fn preimage_round_trip() {
+            let image_id = pk(0xC0);
+            let data_image = pk(0xDE);
+            let lock = PreimageLockView { image_id: &image_id, data_image: &data_image };
+            let mut bytes = Vec::new();
+            lock.encode(&mut bytes);
+            assert_eq!(bytes.len(), 64);
+
+            let mut buf: &[u8] = &bytes;
+            let decoded = PreimageLockView::decode(&mut buf).unwrap();
+            assert_eq!(decoded.image_id, &image_id);
+            assert_eq!(decoded.data_image, &data_image);
+            assert!(buf.is_empty());
+        }
+
+        #[test]
+        fn preimage_unlocks_with_one_unlocker_for_resource() {
+            let image_id = pk(0xC0);
+            let data_image = pk(0xDE);
+            let lock = PreimageLockView { image_id: &image_id, data_image: &data_image };
+            let bucket = [(0u8, PreimageUnlocker)];
+            assert!(lock.try_unlock(0, &bucket));
+        }
+
+        #[test]
+        fn preimage_rejects_zero_unlockers() {
+            let image_id = pk(0xC0);
+            let data_image = pk(0xDE);
+            let lock = PreimageLockView { image_id: &image_id, data_image: &data_image };
+            assert!(!lock.try_unlock(0, &[]));
+        }
+
+        #[test]
+        fn preimage_rejects_two_unlockers_for_same_resource() {
+            let image_id = pk(0xC0);
+            let data_image = pk(0xDE);
+            let lock = PreimageLockView { image_id: &image_id, data_image: &data_image };
+            let bucket = [(0u8, PreimageUnlocker), (0u8, PreimageUnlocker)];
+            assert!(!lock.try_unlock(0, &bucket));
+        }
+
+        #[test]
+        fn preimage_rejects_unlocker_for_other_resource() {
+            let image_id = pk(0xC0);
+            let data_image = pk(0xDE);
+            let lock = PreimageLockView { image_id: &image_id, data_image: &data_image };
+            let bucket = [(1u8, PreimageUnlocker)];
+            assert!(!lock.try_unlock(0, &bucket));
+        }
     }
 }

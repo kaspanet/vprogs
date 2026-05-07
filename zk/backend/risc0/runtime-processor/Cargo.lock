@@ -6160,6 +6160,8 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "k256",
+ "kaspa-consensus-core",
+ "kaspa-txscript",
  "rand 0.8.5",
  "risc0-binfmt",
  "risc0-zkos-v1compat",

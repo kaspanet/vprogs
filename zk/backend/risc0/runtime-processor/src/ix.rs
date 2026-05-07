@@ -105,8 +105,14 @@ mod tests {
         out
     }
 
-    fn schnorr_signer_body(pubkey_idx: u8, sig_offset: u32) -> Vec<u8> {
-        let mut v = Vec::new();
+    /// Single-key Schnorr signer body: 4 bytes (`u32 sig_offset`).
+    fn schnorr_signer_body(sig_offset: u32) -> Vec<u8> {
+        sig_offset.to_le_bytes().to_vec()
+    }
+
+    /// Multisig Schnorr signer body: `u8 pubkey_idx || u32 sig_offset` (5 bytes).
+    fn multisig_schnorr_signer_body(pubkey_idx: u8, sig_offset: u32) -> Vec<u8> {
+        let mut v = Vec::with_capacity(5);
         v.push(pubkey_idx);
         v.extend_from_slice(&sig_offset.to_le_bytes());
         v
@@ -118,7 +124,7 @@ mod tests {
 
     #[test]
     fn decode_signers_happy_path() {
-        let mut ix = signer_section(&[(0, 0x01, schnorr_signer_body(0, 100))]);
+        let mut ix = signer_section(&[(0, 0x01, schnorr_signer_body(100))]);
         ix.extend_from_slice(&empty_actions_section());
 
         let decoded = decode_ix(&ix).unwrap();
@@ -130,10 +136,11 @@ mod tests {
 
     #[test]
     fn decode_signers_allows_duplicate_resource_idx() {
-        // Multisig case: two signers for the same resource.
+        // Multisig case: two contributions for the same resource via the
+        // dedicated multisig signer kind.
         let mut ix = signer_section(&[
-            (0, 0x01, schnorr_signer_body(0, 100)),
-            (0, 0x01, schnorr_signer_body(1, 200)),
+            (0, 0x03, multisig_schnorr_signer_body(0, 100)),
+            (0, 0x03, multisig_schnorr_signer_body(1, 200)),
         ]);
         ix.extend_from_slice(&empty_actions_section());
 
@@ -144,8 +151,8 @@ mod tests {
     #[test]
     fn decode_signers_rejects_out_of_order_resource_idx() {
         let mut ix = signer_section(&[
-            (1, 0x01, schnorr_signer_body(0, 100)),
-            (0, 0x01, schnorr_signer_body(0, 200)),
+            (1, 0x01, schnorr_signer_body(100)),
+            (0, 0x01, schnorr_signer_body(200)),
         ]);
         ix.extend_from_slice(&empty_actions_section());
 
