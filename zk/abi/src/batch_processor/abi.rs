@@ -25,8 +25,6 @@ use crate::{
 pub struct Abi<'a> {
     /// Decoded bundle inputs.
     inputs: Inputs<'a>,
-    /// Lane key hash for this bundle.
-    lane_key: &'a Hash,
     /// Latest L2 value hashes indexed by bundle-wide resource_index.
     value_hashes: Vec<&'a [u8; 32]>,
     /// Inverse of `leaf_order`: `bundle_idx_to_leaf_pos[bundle_idx] = leaf_pos`. Built once
@@ -34,10 +32,10 @@ pub struct Abi<'a> {
     bundle_idx_to_leaf_pos: Vec<u32>,
 }
 
-impl Abi<'_> {
+impl<'a> Abi<'a> {
     /// Verifies the bundle described by `input_bytes` and writes the settlement journal.
     pub fn verify(
-        input_bytes: &[u8],
+        input_bytes: &'a [u8],
         journal: &mut impl Writer,
         verify_journal: &impl Fn(&[u8; 32], &[u8]),
     ) {
@@ -56,9 +54,7 @@ impl Abi<'_> {
             this.inputs.image_id,
         );
     }
-}
 
-impl<'a> Abi<'a> {
     /// Builds an `Abi` workspace pre-sized for the bundle's resource union, with the
     /// `leaf_pos -> bundle_resource_index` scatter and its inverse pre-computed.
     fn new(input_bytes: &'a [u8]) -> Self {
@@ -77,7 +73,7 @@ impl<'a> Abi<'a> {
             bundle_idx_to_leaf_pos[res_idx] = leaf_pos as u32;
         }
 
-        Self { lane_key: inputs.lane_key, value_hashes, bundle_idx_to_leaf_pos, inputs }
+        Self { inputs, value_hashes, bundle_idx_to_leaf_pos }
     }
 
     /// Walks every batch in scheduling order, chains lane tips across them, and returns
@@ -93,7 +89,7 @@ impl<'a> Abi<'a> {
             }
         });
 
-        (lane_tip.expect("must exist"), blue_score)
+        (lane_tip.expect("non-empty bundle yields a final lane tip"), blue_score)
     }
 
     /// Verifies one batch and returns its derived `new_lane_tip` for the caller to chain.
@@ -122,7 +118,7 @@ impl<'a> Abi<'a> {
 
         lane_tip_next(&LaneTipInput {
             parent_ref,
-            lane_key: self.lane_key,
+            lane_key: self.inputs.lane_key,
             activity_digest: &activity_digest,
             context_hash: &context_hash,
         })
@@ -200,8 +196,7 @@ impl<'a> Abi<'a> {
         self.value_hashes[self.inputs.leaf_order[leaf_pos].get() as usize]
     }
 
-    /// Derives the bundle's final-block `seq_commit` from `new_lane_tip` and
-    /// `self.inputs.lane_proof`.
+    /// Derives the bundle's final-block `seq_commit` from `lane_tip` and `self.inputs.lane_proof`.
     fn new_seq_commit(&self, lane_tip: &Hash, blue_score: u64) -> Hash {
         let new_lane_leaf = smt_leaf_hash(&SmtLeafInput { lane_tip, blue_score });
 
@@ -209,7 +204,7 @@ impl<'a> Abi<'a> {
             .expect("lane_smt_proof");
 
         let new_lanes_root = lanes_smt_proof
-            .compute_root::<SeqCommitActiveNode>(self.lane_key, Some(new_lane_leaf))
+            .compute_root::<SeqCommitActiveNode>(self.inputs.lane_key, Some(new_lane_leaf))
             .expect("lane_smt_proof compute_root");
 
         let state_root_seq = seq_state_root(&SeqState {
