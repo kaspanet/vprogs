@@ -263,7 +263,6 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
                             scheduler,
                             &mut state_diffs,
                             ScheduledBatchRef(this.clone()),
-                            tx.index,
                             tx,
                             &mut resource_index,
                         )

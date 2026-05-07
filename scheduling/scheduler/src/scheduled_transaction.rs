@@ -29,8 +29,6 @@ pub struct ScheduledTransaction<S: Store, P: Processor<S>> {
     pending_resources: AtomicU64,
     /// Transaction artifact (e.g. proof receipt), set after processing.
     artifact: ArcSwapOption<P::TransactionArtifact>,
-    /// Zero-based position of this transaction within its batch.
-    tx_index: u32,
     /// The user-submitted transaction (deref target).
     tx: SchedulerTransaction<P::Transaction>,
 }
@@ -70,7 +68,6 @@ impl<S: Store, P: Processor<S>> ScheduledTransaction<S, P> {
         scheduler: &mut Scheduler<S, P>,
         state_diffs: &mut Vec<StateDiff<S, P>>,
         batch: ScheduledBatchRef<S, P>,
-        tx_index: u32,
         tx: SchedulerTransaction<P::Transaction>,
         resource_index: &mut u32,
     ) -> Self {
@@ -82,7 +79,6 @@ impl<S: Store, P: Processor<S>> ScheduledTransaction<S, P> {
                 pending_resources: AtomicU64::new(resources.len() as u64),
                 artifact: ArcSwapOption::empty(),
                 batch,
-                tx_index,
                 tx,
                 resources,
             }
@@ -101,7 +97,6 @@ impl<S: Store, P: Processor<S>> ScheduledTransaction<S, P> {
         if let Some(batch) = self.batch.upgrade() {
             let mut ctx = TransactionContext::new(
                 &self.tx,
-                self.tx_index,
                 &batch,
                 self.resources.iter().map(AccessHandle::new).collect(),
             );
