@@ -14,8 +14,17 @@ use blake3::{Hasher, keyed_hash};
 /// TODO: remove this once `kaspa-consensus-core` exposes a byte-oriented
 /// `tx_id_from_parts(payload, rest_preimage)` helper usable from the zkVM guest.
 pub fn tx_id_v1(payload: &[u8], rest_preimage: &[u8]) -> [u8; 32] {
+    let payload_digest = keyed_hash(&KEY_PAYLOAD_DIGEST, payload);
+    tx_id_v1_from_digest(payload_digest.as_bytes(), rest_preimage)
+}
+
+/// Same as [`tx_id_v1`] but takes an already-computed `payload_digest` (the
+/// `H_PayloadDigest(payload)` output). Used when the prover only carries the
+/// payload digest, not the full payload — e.g. previous-transaction witnesses
+/// where the payload bytes aren't needed for output extraction.
+pub fn tx_id_v1_from_digest(payload_digest: &[u8; 32], rest_preimage: &[u8]) -> [u8; 32] {
     let mut hasher = Hasher::new_keyed(&KEY_TRANSACTION_V1_ID);
-    hasher.update(keyed_hash(&KEY_PAYLOAD_DIGEST, payload).as_bytes());
+    hasher.update(payload_digest);
     hasher.update(keyed_hash(&KEY_TRANSACTION_REST, rest_preimage).as_bytes());
     *hasher.finalize().as_bytes()
 }

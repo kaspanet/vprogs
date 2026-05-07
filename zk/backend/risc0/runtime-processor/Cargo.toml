@@ -1,0 +1,46 @@
+[package]
+edition = "2021"
+name    = "vprogs-zk-backend-risc0-runtime-processor"
+version = "0.1.0"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "vprogs-zk-backend-risc0-runtime-processor"
+path = "src/main.rs"
+
+[dependencies]
+blake3                      = { version = "1", default-features = false }
+zerocopy                    = { version = "0.8", default-features = false, features = ["derive"] }
+# BIP-340 schnorr verification. For risc0 guest builds, pin to a precompile-accelerated
+# fork via `[patch.crates-io]` (e.g. risc0/RustCrypto-elliptic-curves) when wiring up
+# the docker build.
+k256                        = { version = "0.13", default-features = false, features = ["schnorr"] }
+risc0-zkvm                  = { version = "3.0", default-features = false, features = ["std"] }
+signature                   = { version = "2", default-features = false }
+vprogs-core-codec           = { path = "../../../../core/codec" }
+vprogs-core-types           = { path = "../../../../core/types", default-features = false }
+vprogs-l1-utils             = { path = "../../../../l1/utils" }
+vprogs-zk-abi               = { path = "../../../abi", default-features = false }
+vprogs-zk-backend-risc0-api = { path = "../api", default-features = false, features = ["guest"] }
+
+[dev-dependencies]
+# Host-side dev-deps for the e2e test harness. We talk to risc0-zkvm directly
+# (executor + v1compat kernel wrap) instead of going through the api crate's
+# Backend, which would drag in the covenant/vm crates and their kaspa-consensus
+# transitive deps. The abi crate needs `host` for Outputs::decode.
+blake3              = "1"
+k256                = { version = "0.13", features = ["schnorr"] }
+rand                = "0.8"
+risc0-binfmt        = "3.0.4"
+risc0-zkos-v1compat = "2.2.2"
+risc0-zkvm          = { version = "3.0", features = ["std", "prove"] }
+signature           = "2"
+vprogs-core-types   = { path = "../../../../core/types" }
+vprogs-zk-abi       = { path = "../../../abi", features = ["host"] }
+
+# Match the workspace's pinned git source — the published 0.2.5/0.2.6 are yanked.
+[patch.crates-io]
+serde_nested_with = { git = "https://github.com/murar8/serde_nested_with", tag = "0.2.6" }
+
