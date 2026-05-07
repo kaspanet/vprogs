@@ -30,6 +30,13 @@ impl<'a> Iterator for TransactionJournals<'a> {
             return None;
         }
 
-        Some(self.decode_entry())
+        match self.decode_entry() {
+            Ok(entry) => Some(Ok(entry)),
+            Err(e) => {
+                // Fuse on error: a bad length prefix corrupts every following entry.
+                self.buf = &[];
+                Some(Err(e))
+            }
+        }
     }
 }
