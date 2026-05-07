@@ -14,8 +14,8 @@ pub struct InputCommitment<'a> {
     pub tx_id: &'a [u8; 32],
     /// L1 transaction protocol version.
     pub version: u16,
-    /// Block-wide position of this transaction.
-    pub tx_index: u32,
+    /// L1 block-wide position of this tx.
+    pub merge_idx: u32,
     /// Mergeset context hash for the chain block.
     pub context_hash: &'a [u8; 32],
     /// Zero-copy iterator over per-resource input commitments.
@@ -23,7 +23,7 @@ pub struct InputCommitment<'a> {
 }
 
 impl<'a> InputCommitment<'a> {
-    /// Wire size of the fixed header: tx_id(32) + version(2) + tx_index(4) + context_hash(32) +
+    /// Wire size of the fixed header: tx_id(32) + version(2) + merge_idx(4) + context_hash(32) +
     /// n_resources(4).
     pub const HEADER_SIZE: usize = 32 + 2 + 4 + 32 + 4;
 
@@ -32,14 +32,14 @@ impl<'a> InputCommitment<'a> {
         // Decode fixed header fields.
         let tx_id = buf.array::<32>("tx_id")?;
         let version = buf.le_u16("version")?;
-        let tx_index = buf.le_u32("tx_index")?;
+        let merge_idx = buf.le_u32("merge_idx")?;
         let context_hash = buf.array::<32>("context_hash")?;
         let resource_count = buf.le_u32("resource_count")?;
 
         // Create zero-copy iterator over resource entries.
         let resources = InputResourceCommitments::new(buf, resource_count);
 
-        Ok(Self { tx_id, version, tx_index, context_hash, resources })
+        Ok(Self { tx_id, version, merge_idx, context_hash, resources })
     }
 
     /// Encodes an input commitment segment to the journal (guest-side).
@@ -49,10 +49,10 @@ impl<'a> InputCommitment<'a> {
         w.write(&[JournalEntry::OPCODE_INPUT]);
         w.write(&(payload_len as u32).to_le_bytes());
 
-        // Write header: tx_id hash, version, tx_index, context_hash, resource count.
+        // Write header: tx_id hash, version, merge_idx, context_hash, resource count.
         w.write(&input.tx.tx_id().expect("tx_id")); // TODO: handle error
         w.write(&input.tx.version().to_le_bytes());
-        w.write(&input.tx_index.to_le_bytes());
+        w.write(&input.merge_idx.to_le_bytes());
         w.write(input.context_hash);
         w.write(&(input.resources.len() as u32).to_le_bytes());
 

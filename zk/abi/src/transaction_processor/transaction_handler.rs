@@ -2,7 +2,7 @@ use crate::transaction_processor::{Resource, Transaction};
 
 /// Developer-provided transaction execution logic.
 ///
-/// Receives the full parsed transaction, batch position, context hash, and mutable access to the
+/// Receives the full parsed transaction, its merge_idx, context hash, and mutable access to the
 /// transaction's resources. Returns `Ok(())` on success or an error that gets committed to the
 /// journal.
 pub trait TransactionHandler:

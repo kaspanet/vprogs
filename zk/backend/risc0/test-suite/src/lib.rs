@@ -50,9 +50,9 @@ pub fn compute_section_lane_tip(
     });
 
     let mut activity = ActivityDigestBuilder::new();
-    for (tx_index, tx) in txs {
+    for (merge_idx, tx) in txs {
         let tx_id = kaspa_tx_id(tx);
-        activity.add_leaf(activity_leaf(&tx_id, tx.version, *tx_index));
+        activity.add_leaf(activity_leaf(&tx_id, tx.version, *merge_idx));
     }
 
     let parent_ref =

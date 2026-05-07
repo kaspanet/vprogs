@@ -11,7 +11,7 @@ pub trait L1TransactionExt: Sized {
 
     /// Wraps `self` into a [`SchedulerTransaction`], re-parsing the access metadata from the
     /// payload as the single source of truth.
-    fn into_scheduler_tx(self, index: u32) -> SchedulerTransaction<Self>;
+    fn into_scheduler_tx(self, merge_idx: u32) -> SchedulerTransaction<Self>;
 }
 
 impl L1TransactionExt for L1Transaction {
@@ -27,9 +27,9 @@ impl L1TransactionExt for L1Transaction {
         })
     }
 
-    fn into_scheduler_tx(self, index: u32) -> SchedulerTransaction<Self> {
+    fn into_scheduler_tx(self, merge_idx: u32) -> SchedulerTransaction<Self> {
         SchedulerTransaction::new(
-            index,
+            merge_idx,
             AccessMetadata::decode_vec(&mut self.payload.as_slice()).expect("unsorted access meta"),
             self,
         )

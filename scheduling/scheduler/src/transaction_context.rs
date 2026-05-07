@@ -8,6 +8,8 @@ use crate::{AccessHandle, ScheduledBatch, ScheduledTransaction, processor::Proce
 pub struct TransactionContext<'a, S: Store, P: Processor<S>> {
     /// The user-submitted transaction.
     scheduler_tx: &'a SchedulerTransaction<P::Transaction>,
+    /// Zero-based contiguous position of this transaction within `batch.txs()`.
+    batch_position: u32,
     /// The owning batch.
     batch: &'a ScheduledBatch<S, P>,
     /// Resource access handles for this transaction.
@@ -17,20 +19,16 @@ pub struct TransactionContext<'a, S: Store, P: Processor<S>> {
 impl<'a, S: Store, P: Processor<S>> TransactionContext<'a, S, P> {
     pub(crate) fn new(
         scheduler_tx: &'a SchedulerTransaction<P::Transaction>,
+        batch_position: u32,
         batch: &'a ScheduledBatch<S, P>,
         resources: Vec<AccessHandle<'a, S, P>>,
     ) -> Self {
-        Self { scheduler_tx, batch, resources }
+        Self { scheduler_tx, batch_position, batch, resources }
     }
 
-    /// Returns the transaction being processed.
-    pub fn tx(&self) -> &P::Transaction {
-        &self.scheduler_tx.tx
-    }
-
-    /// Returns the zero-based index of the transaction within its batch.
-    pub fn tx_index(&self) -> u32 {
-        self.scheduler_tx.index
+    /// Returns the scheduler transaction (inner tx, merge_idx, and declared access metadata).
+    pub fn scheduler_tx(&self) -> &SchedulerTransaction<P::Transaction> {
+        self.scheduler_tx
     }
 
     /// Returns the batch metadata associated with this execution context.
@@ -45,7 +43,7 @@ impl<'a, S: Store, P: Processor<S>> TransactionContext<'a, S, P> {
 
     /// Returns the scheduled transaction this context belongs to.
     pub fn scheduled_tx(&self) -> &ScheduledTransaction<S, P> {
-        &self.batch.txs()[self.scheduler_tx.index as usize]
+        &self.batch.txs()[self.batch_position as usize]
     }
 
     /// Returns the resource access handles.

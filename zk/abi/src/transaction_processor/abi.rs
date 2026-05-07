@@ -26,8 +26,8 @@ impl Abi {
         InputCommitment::encode(journal, &inputs);
 
         // Execute guest closure.
-        let Inputs { tx, tx_index, context_hash, mut resources } = inputs;
-        let output = f(&tx, tx_index, context_hash, &mut resources);
+        let Inputs { tx, merge_idx, context_hash, mut resources } = inputs;
+        let output = f(&tx, merge_idx, context_hash, &mut resources);
         let result = output.map(|_| resources.as_slice());
 
         // Commit output commitment to journal.

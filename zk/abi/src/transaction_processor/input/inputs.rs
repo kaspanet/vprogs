@@ -11,8 +11,8 @@ use crate::{
 pub struct Inputs<'a> {
     /// Transaction to execute.
     pub tx: Transaction<'a>,
-    /// Position of this transaction within the batch.
-    pub tx_index: u32,
+    /// L1 block-wide position of this tx.
+    pub merge_idx: u32,
     /// Mergeset context hash - exposed to the VM as a source of on-chain randomness.
     pub context_hash: &'a [u8; 32],
     /// Mutable resource views decoded from the wire buffer.
@@ -20,7 +20,7 @@ pub struct Inputs<'a> {
 }
 
 impl<'a> Inputs<'a> {
-    /// Fixed header size: tx_index(4) + n_resources(4) + context_hash(32).
+    /// Fixed header size: merge_idx(4) + n_resources(4) + context_hash(32).
     pub const FIXED_HEADER_SIZE: usize = 4 + 4 + 32;
 
     /// Decodes transaction inputs from the wire buffer.
@@ -32,7 +32,7 @@ impl<'a> Inputs<'a> {
         let mut header: &[u8] = header;
 
         // Decode fixed header.
-        let tx_index = header.le_u32("tx_index")?;
+        let merge_idx = header.le_u32("merge_idx")?;
         let resource_count = header.le_u32("resource_count")? as usize;
         let context_hash = header.array::<32>("context_hash")?;
 
@@ -59,7 +59,7 @@ impl<'a> Inputs<'a> {
             )?);
         }
 
-        Ok(Self { tx, tx_index, context_hash, resources })
+        Ok(Self { tx, merge_idx, context_hash, resources })
     }
 
     /// Encodes a scheduler [`TransactionContext`] into the ABI wire format (host-side only).
@@ -81,7 +81,7 @@ impl<'a> Inputs<'a> {
         let res_data_size: usize = ctx.resources().iter().map(|r| r.data().len()).sum();
         let mut buf = Vec::with_capacity(Self::FIXED_HEADER_SIZE + res_header_size + res_data_size);
 
-        // Write fixed header: tx_index, n_resources, batch metadata.
+        // Write fixed header: merge_idx, n_resources, batch metadata.
         let bm = ctx.batch_metadata();
         let context_hash = kaspa_seq_commit::hashing::mergeset_context_hash(
             &kaspa_seq_commit::types::MergesetContext {
@@ -90,12 +90,12 @@ impl<'a> Inputs<'a> {
                 blue_score: bm.blue_score,
             },
         );
-        buf.write(&ctx.tx_index().to_le_bytes());
+        buf.write(&ctx.scheduler_tx().merge_idx.to_le_bytes());
         buf.write(&(ctx.resources().len() as u32).to_le_bytes());
         buf.write(&context_hash.as_bytes());
 
         // Write transaction bytes.
-        Transaction::encode(&mut buf, ctx.tx());
+        Transaction::encode(&mut buf, &ctx.scheduler_tx().tx);
 
         // Write resource headers.
         for r in ctx.resources() {

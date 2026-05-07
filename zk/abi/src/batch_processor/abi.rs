@@ -137,15 +137,15 @@ impl<'a> Abi<'a> {
         context_hash: &Hash,
     ) -> ActivityDigestBuilder {
         ActivityDigestBuilder::new().tap_mut(|activity_builder| {
-            let mut last_tx_index = None;
+            let mut last_merge_idx = None;
             for tx_journal in batch.tx_journals {
                 let tx_journal_bytes = tx_journal.expect("decode tx_journal");
                 verify_journal(self.inputs.image_id, tx_journal_bytes);
                 let tx_journal = JournalEntries::decode(tx_journal_bytes).expect("tx journal");
 
-                let tx_index = tx_journal.input_commitment.tx_index;
-                if let Some(prev) = last_tx_index {
-                    assert!(tx_index > prev, "tx_index not strictly increasing");
+                let merge_idx = tx_journal.input_commitment.merge_idx;
+                if let Some(prev) = last_merge_idx {
+                    assert!(merge_idx > prev, "merge_idx not strictly increasing");
                 }
 
                 // Each tx's context_hash must match the one derived from the chain block. This
@@ -161,7 +161,7 @@ impl<'a> Abi<'a> {
                 activity_builder.add_leaf(activity_leaf(
                     tx_id,
                     tx_journal.input_commitment.version,
-                    tx_index,
+                    merge_idx,
                 ));
 
                 let mut outputs = match tx_journal.output_commitment {
@@ -180,7 +180,7 @@ impl<'a> Abi<'a> {
                     }
                 }
 
-                last_tx_index = Some(tx_index);
+                last_merge_idx = Some(merge_idx);
             }
         })
     }
