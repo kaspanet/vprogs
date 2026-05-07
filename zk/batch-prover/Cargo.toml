@@ -20,3 +20,4 @@ vprogs-scheduling-scheduler.workspace  = true
 vprogs-storage-types.workspace         = true
 vprogs-zk-abi                          = { workspace = true, features = ["host"] }
 vprogs-zk-transaction-prover.workspace = true
+zerocopy.workspace                     = true

@@ -110,7 +110,7 @@ impl<'a> Abi<'a> {
         }
 
         let context_hash = mergeset_context_hash(&MergesetContext {
-            timestamp: seq_commit_timestamp(batch.parent_timestamp),
+            timestamp: seq_commit_timestamp(batch.prev_timestamp),
             daa_score: batch.daa_score,
             blue_score: batch.blue_score,
         });
@@ -118,7 +118,7 @@ impl<'a> Abi<'a> {
         let activity_digest = self.verify_txs(batch, verify_journal, &context_hash).finalize();
 
         let parent_ref =
-            if batch.lane_expired { batch.parent_seq_commit } else { batch.prev_lane_tip };
+            if batch.lane_expired { batch.prev_seq_commit } else { batch.prev_lane_tip };
 
         lane_tip_next(&LaneTipInput {
             parent_ref,
@@ -189,7 +189,7 @@ impl<'a> Abi<'a> {
     /// the bundle-wide one and cross-checking `resource_id` against the SMT proof leaf -
     /// guards against forged translation tables.
     fn check_input_resource(&mut self, batch: &Batch<'a>, r: InputResourceCommitment<'a>) -> usize {
-        let bundle_idx = batch.translation[r.resource_index as usize] as usize;
+        let bundle_idx = batch.translation[r.resource_index as usize].get() as usize;
         let leaf_pos = self.bundle_idx_to_leaf_pos[bundle_idx] as usize;
         assert_eq!(r.resource_id, self.inputs.proof.leaves[leaf_pos].key, "resource_id mismatch");
         assert_eq!(r.hash, self.value_hashes[bundle_idx], "resource hash mismatch");

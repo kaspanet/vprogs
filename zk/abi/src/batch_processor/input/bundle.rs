@@ -3,6 +3,7 @@ use alloc::{sync::Arc, vec::Vec};
 use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
+use zerocopy::little_endian::U32;
 
 /// Bundle of batches with their encode inputs.
 pub struct Bundle<S: Store, P: Processor<S>>(Vec<BundleEntry<S, P>>);
@@ -11,7 +12,7 @@ impl<S: Store, P: Processor<S, BatchMetadata = ChainBlockMetadata>> Bundle<S, P>
     /// Builds a bundle from scheduled batches, translations, and a journal-bytes extractor.
     pub fn new(
         batches: Vec<ScheduledBatch<S, P>>,
-        translations: Vec<Vec<u32>>,
+        translations: Vec<Vec<U32>>,
         journal_bytes: impl Fn(&P::TransactionArtifact) -> Vec<u8>,
     ) -> Self {
         Self(
@@ -46,7 +47,7 @@ impl<S: Store, P: Processor<S, BatchMetadata = ChainBlockMetadata>> Bundle<S, P>
 }
 
 /// Per-batch encode part: `(metadata, translation, per-tx journals)`.
-pub type BundlePart<'a> = (&'a ChainBlockMetadata, &'a [u32], &'a [Vec<u8>]);
+pub type BundlePart<'a> = (&'a ChainBlockMetadata, &'a [U32], &'a [Vec<u8>]);
 
 /// Per-batch entry: `(scheduled batch, translation, per-tx journals)`.
-type BundleEntry<S, P> = (ScheduledBatch<S, P>, Vec<u32>, Vec<Vec<u8>>);
+type BundleEntry<S, P> = (ScheduledBatch<S, P>, Vec<U32>, Vec<Vec<u8>>);

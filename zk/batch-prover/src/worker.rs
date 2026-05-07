@@ -8,6 +8,7 @@ use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
 use vprogs_zk_abi::batch_processor::{Bundle, Inputs as BundleInputs};
+use zerocopy::little_endian::U32;
 
 use crate::{Backend, BatchProver, BatchProverConfig, command::Command};
 
@@ -162,7 +163,7 @@ where
 
 /// Walks each batch's `resource_ids()` in scheduling order, building the bundle-wide
 /// resource list (union, deduped) and per-batch translation tables.
-fn build_bundle_union<S, P>(batches: &[ScheduledBatch<S, P>]) -> (Vec<ResourceId>, Vec<Vec<u32>>)
+fn build_bundle_union<S, P>(batches: &[ScheduledBatch<S, P>]) -> (Vec<ResourceId>, Vec<Vec<U32>>)
 where
     S: Store,
     P: Processor<S>,
@@ -171,7 +172,7 @@ where
 
     let mut bundle_resources: Vec<ResourceId> = Vec::new();
     let mut id_to_idx: HashMap<ResourceId, u32> = HashMap::new();
-    let mut translations: Vec<Vec<u32>> = Vec::with_capacity(batches.len());
+    let mut translations: Vec<Vec<U32>> = Vec::with_capacity(batches.len());
 
     for batch in batches {
         let mut t = Vec::new();
@@ -185,7 +186,7 @@ where
                     i
                 }
             };
-            t.push(idx);
+            t.push(U32::new(idx));
         }
         translations.push(t);
     }

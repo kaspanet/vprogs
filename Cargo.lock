@@ -8256,6 +8256,7 @@ dependencies = [
  "vprogs-storage-types",
  "vprogs-zk-abi",
  "vprogs-zk-transaction-prover",
+ "zerocopy",
 ]
 
 [[package]]
