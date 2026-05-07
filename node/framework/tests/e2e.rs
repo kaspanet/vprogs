@@ -48,7 +48,7 @@ async fn mine_payload_blocks(l1: &L1Node, count: usize) -> Vec<Hash> {
             })])
             .await;
         tx_hashes.push(txs[0].id());
-        l1.mine_block(Some(&txs)).await;
+        l1.mine_block(&txs).await;
     }
     // In Kaspa DAG consensus, a block's transactions are accepted by the next chain
     // block. Mine one more so the last payload gets accepted.
@@ -229,7 +229,7 @@ async fn test_transactions_via_l1_payload() {
         })])
         .await;
     let tx_hash = txs[0].id();
-    l1.mine_block(Some(&txs)).await;
+    l1.mine_block(&txs).await;
 
     // In Kaspa DAG consensus, a block's transactions are accepted by the next chain
     // block. Mine one more block so the payload transactions get accepted.

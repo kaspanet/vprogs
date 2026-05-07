@@ -62,7 +62,7 @@ async fn covenant_bootstrap_is_accepted_on_simnet() {
 
     // Mine the bootstrap into its own chain block. Kaspa DAG consensus requires a follow-up block
     // for the tx to be "accepted" by the virtual selected chain.
-    let block_hash = l1.mine_block(Some(&[bootstrap_tx])).await;
+    let block_hash = l1.mine_block(&[bootstrap_tx]).await;
     l1.mine_blocks(1).await;
 
     // Wait briefly for the daemon to update its UTXO index.

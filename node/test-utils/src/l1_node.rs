@@ -6,20 +6,22 @@ use kaspa_addresses::Address;
 use kaspa_consensus_core::{
     Hash,
     config::params::{OverrideParams, Params, SIMNET_PARAMS},
-    constants::TX_VERSION,
+    constants::{TX_VERSION, TX_VERSION_POST_COV_HF},
+    hashing::covenant_id::covenant_id,
     header::Header,
+    mass::units::ComputeBudget,
     merkle::calc_hash_merkle_root,
     sign::sign,
     subnets::{SUBNETWORK_ID_NATIVE, SubnetworkId},
     tx::{
-        MutableTransaction, Transaction, TransactionInput, TransactionOutpoint, TransactionOutput,
-        UtxoEntry,
+        CovenantBinding, MutableTransaction, Transaction, TransactionInput, TransactionOutpoint,
+        TransactionOutput, UtxoEntry,
     },
 };
 use kaspa_grpc_client::GrpcClient;
 use kaspa_rpc_core::{RpcTransaction, api::rpc::RpcApi};
 use kaspa_testing_integration::common::daemon::Daemon;
-use kaspa_txscript::pay_to_address_script;
+use kaspa_txscript::{pay_to_address_script, standard::pay_to_script_hash_script};
 use kaspa_wrpc_server::address::WrpcNetAddress;
 use kaspad_lib::args::Args;
 use secp256k1::Keypair;
@@ -76,10 +78,18 @@ impl L1Node {
             f(&mut params);
         }
 
-        // Serialize the params to a temp file that the daemon reads on startup.
+        // Serialize the params to a temp file the daemon reads on startup. The file's lifetime is
+        // tied to this scope - if the daemon ever re-reads `override_params_file` post-startup,
+        // it'll find nothing.
         let overrides = OverrideParams::from(params.clone());
-        let mut params_file = tempfile::NamedTempFile::new().unwrap();
-        write!(params_file, "{}", serde_json::to_string(&overrides).unwrap()).unwrap();
+        let mut params_file =
+            tempfile::NamedTempFile::new().expect("failed to create override-params tempfile");
+        write!(
+            params_file,
+            "{}",
+            serde_json::to_string(&overrides).expect("OverrideParams must serialize"),
+        )
+        .expect("failed to write override-params tempfile");
 
         // Spawn a simnet daemon with unsafe RPC, unsynced mining, and UTXO index enabled
         // so we can mine blocks without waiting for IBD and query UTXOs by address.
@@ -90,10 +100,12 @@ impl L1Node {
                 enable_unsynced_mining: true,
                 disable_upnp: true,
                 utxoindex: true,
-                override_params_file: Some(params_file.path().to_str().unwrap().to_string()),
+                override_params_file: Some(
+                    params_file.path().to_str().expect("tempfile path must be utf-8").to_string(),
+                ),
                 ..Default::default()
             },
-            10,
+            10, // fd budget
         );
         let grpc_client = daemon.start().await;
 
@@ -151,16 +163,15 @@ impl L1Node {
         }
     }
 
-    /// Mines a single block, optionally injecting pre-built L1 transactions into the block
-    /// template.
+    /// Mines a single block, injecting any pre-built L1 transactions into the block template.
     ///
     /// Note: in Kaspa DAG consensus, a block's transactions are accepted by the next chain block.
     /// The caller must mine an additional block for the transactions to be accepted.
-    pub async fn mine_block(&self, txs: Option<&[Transaction]>) -> Hash {
+    pub async fn mine_block(&self, txs: &[Transaction]) -> Hash {
         let mut template =
             self.grpc_client.get_block_template(self.address.clone(), vec![]).await.unwrap();
 
-        if let Some(txs) = txs {
+        if !txs.is_empty() {
             for tx in txs {
                 template.block.transactions.push(RpcTransaction::from(tx));
             }
@@ -185,7 +196,7 @@ impl L1Node {
     pub async fn mine_blocks(&self, count: usize) -> Vec<Hash> {
         let mut hashes = Vec::with_capacity(count);
         for _ in 0..count {
-            hashes.push(self.mine_block(None).await);
+            hashes.push(self.mine_block(&[]).await);
         }
         hashes
     }
@@ -212,19 +223,26 @@ impl L1Node {
         self.build_subnet_payload_transactions(payloads, SUBNETWORK_ID_NATIVE, TX_VERSION).await
     }
 
-    /// Builds signed transactions carrying `payloads` and tagged with the given user-lane
-    /// `subnetwork_id` and `tx_version`. Used by tests that need lane activity (e.g. settlement
-    /// E2E with our rollup lane). For native subnetwork, prefer
-    /// [`Self::build_payload_transactions`].
-    ///
-    /// `subnetwork_id` must satisfy the user-lane shape `[4-byte namespace, 16 zero bytes]`,
-    /// and `tx_version` must be `>= TX_VERSION_POST_COV_HF` for non-native subnetworks.
+    /// Builds signed transactions tagged with the given `subnetwork_id` and `tx_version`. For
+    /// native-subnetwork txs prefer [`Self::build_payload_transactions`].
     pub async fn build_subnet_payload_transactions(
         &self,
         payloads: Vec<Vec<u8>>,
         subnetwork_id: SubnetworkId,
         tx_version: u16,
     ) -> Vec<Transaction> {
+        // User-lane subnetwork shape: 4-byte namespace followed by 16 zero bytes.
+        debug_assert!(
+            subnetwork_id == SUBNETWORK_ID_NATIVE
+                || subnetwork_id.as_bytes()[4..].iter().all(|&b| b == 0),
+            "non-native subnetwork id must have 16 zero bytes after the 4-byte namespace",
+        );
+        // Non-native subnetworks require post-covenant tx version.
+        debug_assert!(
+            subnetwork_id == SUBNETWORK_ID_NATIVE || tx_version >= TX_VERSION_POST_COV_HF,
+            "non-native subnetwork requires tx_version >= TX_VERSION_POST_COV_HF",
+        );
+
         let utxos = self.fetch_spendable_utxos().await;
         assert!(
             utxos.len() >= payloads.len(),
@@ -239,7 +257,14 @@ impl L1Node {
             .into_iter()
             .zip(utxos)
             .map(|(payload, (outpoint, entry))| {
-                let fee = 10 * (200 + 34 + 1000 + payload.len() as u64);
+                // Approx tx mass × per-byte multiplier. Kaspa-mempool-friendly heuristic:
+                //   10 × (input_size(~200) + output_size(~34) + base_overhead(1000) + payload).
+                const FEE_PER_BYTE: u64 = 10;
+                const INPUT_SIZE: u64 = 200;
+                const OUTPUT_SIZE: u64 = 34;
+                const BASE_OVERHEAD: u64 = 1000;
+                let fee = FEE_PER_BYTE
+                    * (INPUT_SIZE + OUTPUT_SIZE + BASE_OVERHEAD + payload.len() as u64);
                 assert!(
                     entry.amount > fee,
                     "UTXO amount {} too small for fee {}",
@@ -270,43 +295,24 @@ impl L1Node {
             .collect()
     }
 
-    /// Finalizes a settlement transaction by funding it (via a mature spendable UTXO) and
-    /// signing only the fee input, leaving the covenant input's witness intact.
-    ///
-    /// `Settlement::build` returns a tx with one input (the covenant being spent, with its
-    /// `signature_script` already populated as the witness payload) and one continuation
-    /// output. Mempool needs a fee, so this helper:
-    ///
-    /// 1. Picks a mature spendable UTXO and appends it as input 1
-    /// 2. Adds a change output pay-to-self for `fee_input_amount - fee`
-    /// 3. Signs the resulting tx with the test keypair (this transiently clobbers input 0's
-    ///    `signature_script` but we restore it from a snapshot taken before signing)
-    /// 4. Sets input 0's mass to a generous `ComputeBudget` so consensus' compute-budget rule
-    ///    accepts the precompile-laden redeem script. R0Succinct alone costs ~250000 grams (≈ 2500
-    ///    compute-budget units); we set 10000 to leave headroom for the surrounding script ops.
-    /// 5. Submits via gRPC, returns the tx hash.
-    ///
-    /// Caveat: the actual fee/mass calculation is approximate. If mempool rejects, increase
-    /// `FEE` or the compute-budget override below.
+    /// Funds and submits a settlement transaction: appends a fee input + change output, signs only
+    /// the fee input, and preserves the covenant input's witness.
     pub async fn submit_settlement_transaction(
         &self,
         settlement_tx: Transaction,
         covenant_entry: UtxoEntry,
     ) -> Hash {
-        use kaspa_consensus_core::mass::units::ComputeBudget;
-
+        // Approximate fee/mass; bump if mempool rejects.
         const FEE: u64 = 100_000;
 
-        // Snapshot the covenant input's witness before any signing.
+        // Snapshot the covenant witness before signing - `sign` overwrites all signature scripts.
         let covenant_sig_script = settlement_tx.inputs[0].signature_script.clone();
 
-        // Pick a fee input.
         let utxos = self.fetch_spendable_utxos().await;
         let (fee_outpoint, fee_entry) =
             utxos.into_iter().next().expect("no spendable UTXO for fee");
         assert!(fee_entry.amount > FEE, "fee UTXO amount {} ≤ fee {FEE}", fee_entry.amount);
 
-        // Assemble the funded tx.
         let mut tx = settlement_tx;
         tx.inputs.push(TransactionInput::new(fee_outpoint, vec![], 0, 1));
         tx.outputs.push(TransactionOutput::new(
@@ -314,18 +320,16 @@ impl L1Node {
             pay_to_address_script(&self.address),
         ));
 
-        // Sign - this overwrites both inputs' signature_scripts and sets default mass.
         let signed = sign(
             MutableTransaction::with_entries(tx, vec![covenant_entry, fee_entry]),
             self.keypair,
         );
         let mut tx = signed.tx;
 
-        // Restore the covenant input's witness (sign() clobbered it).
+        // Restore the covenant witness.
         tx.inputs[0].signature_script = covenant_sig_script;
-
-        // Override the covenant input's mass: precompile-laden redeem needs more than the
-        // generic per-input compute-budget that `sign()` defaulted to.
+        // Precompile-laden redeem needs more headroom than the default per-input compute budget.
+        // R0Succinct alone is ~2500 budget units; 10000 leaves room for surrounding script ops.
         tx.inputs[0].mass = ComputeBudget(10_000).into();
 
         let tx_id = tx.id();
@@ -346,12 +350,6 @@ impl L1Node {
         redeem_script: &[u8],
         value: u64,
     ) -> (Transaction, Hash) {
-        use kaspa_consensus_core::{
-            constants::TX_VERSION_POST_COV_HF, hashing::covenant_id::covenant_id,
-            tx::CovenantBinding,
-        };
-        use kaspa_txscript::standard::pay_to_script_hash_script;
-
         let utxos = self.fetch_spendable_utxos().await;
         let (outpoint, entry) = utxos.into_iter().next().expect("no spendable UTXO");
 
