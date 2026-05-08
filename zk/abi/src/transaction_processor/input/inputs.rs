@@ -1,3 +1,4 @@
+#[cfg(feature = "host")]
 use alloc::vec::Vec;
 
 use kaspa_hashes::Hash;
@@ -11,80 +12,86 @@ use vprogs_scheduling_scheduler::{Processor, TransactionContext};
 #[cfg(feature = "host")]
 use vprogs_storage_types::Store;
 
+#[cfg(feature = "host")]
+use crate::transaction_processor::Resource;
 use crate::{
-    Error, Result,
-    transaction_processor::{Resource, Transaction},
+    Result,
+    transaction_processor::{ExecutionInput, Transaction},
 };
 
 /// Decoded transaction inputs holding zero-copy views into the wire buffer.
+///
+/// `version` is the discriminator: a supported version pulls in `execution_input` (full
+/// payload + resources); an unsupported version stops at the prefix and leaves
+/// `execution_input` as `None`, signaling the guest to emit a skipped journal entry.
 pub struct Inputs<'a> {
-    /// Transaction to execute.
-    pub tx: Transaction<'a>,
+    /// L1 transaction protocol version. Determines whether `execution_input` is present.
+    pub version: u16,
+    /// Host-supplied L1 transaction ID. Verified against the cryptographic derivation when the
+    /// version is executable; trusted otherwise (the L1 activity-digest check catches lies).
+    pub tx_id: &'a Hash,
     /// L1 block-wide position of this tx.
     pub merge_idx: u32,
-    /// Mergeset context hash - exposed to the VM as a source of on-chain randomness.
-    pub context_hash: &'a Hash,
-    /// Mutable resource views decoded from the wire buffer.
-    pub resources: Vec<Resource<'a>>,
+    /// Per-tx execution data; present iff `version` is supported.
+    pub execution_input: Option<ExecutionInput<'a>>,
 }
 
 impl<'a> Inputs<'a> {
-    /// Fixed header size: merge_idx(4) + n_resources(4) + context_hash(32).
-    pub const FIXED_HEADER_SIZE: usize = 4 + 4 + 32;
+    /// Wire size of the always-present prefix: version(2) + tx_id(32) + merge_idx(4).
+    pub const PREFIX_SIZE: usize = 2 + 32 + 4;
 
     /// Decodes transaction inputs from the wire buffer.
     ///
-    /// Wire layout: `fixed_header | tx_bytes | resource_headers | resource_data`.
+    /// Wire layout: `prefix | [execution_input bytes if version supported]`.
     pub fn decode(buf: &'a mut [u8]) -> Result<Self> {
-        // Split fixed header from the rest of the buffer, creating mutable view for resource data.
-        let (header, data) = buf.split_at_mut(Self::FIXED_HEADER_SIZE);
-        let mut header: &[u8] = header;
+        // Split the always-present prefix from the rest of the buffer.
+        let (mut prefix, rest) = buf.split_at_mut(Self::PREFIX_SIZE);
+        let version = prefix.le_u16("version")?;
+        let tx_id = prefix.array_as::<Hash>("tx_id")?;
+        let merge_idx = prefix.le_u32("merge_idx")?;
 
-        // Decode fixed header.
-        let merge_idx = header.le_u32("merge_idx")?;
-        let resource_count = header.le_u32("resource_count")? as usize;
-        let context_hash = header.array_as::<Hash>("context_hash")?;
+        // Decode the version-conditional execution input.
+        let execution_input = match version {
+            Transaction::VERSION_V1 => Some(ExecutionInput::decode(rest)?),
+            _ => None,
+        };
 
-        // Decode transaction bytes (immutably reborrowed so access metadata can borrow from them).
-        let (tx_bytes, resources) = data.split_at_mut(Transaction::wire_size(data)?);
-        let tx = Transaction::decode(&mut &*tx_bytes)?;
-        if tx.payload().access_metadata.len() != resource_count {
-            return Err(Error::Decode("access_metadata/resource_count mismatch".into()));
-        }
-
-        // Sanity check that header offsets do not overflow.
-        let resources_len = resource_count
-            .checked_mul(Resource::HEADER_SIZE)
-            .ok_or_else(|| Error::Decode("resource_count overflow".into()))?;
-
-        // Decode resources, pairing each with its access_metadata entry by position.
-        let (res_headers, mut res_data) = resources.split_at_mut(resources_len);
-        let mut resources = Vec::with_capacity(resource_count);
-        for (i, access_metadata) in tx.payload().access_metadata.iter().enumerate() {
-            resources.push(Resource::decode(
-                &res_headers[i * Resource::HEADER_SIZE..],
-                access_metadata,
-                &mut res_data,
-            )?);
-        }
-
-        Ok(Self { tx, merge_idx, context_hash, resources })
+        Ok(Self { version, tx_id, merge_idx, execution_input })
     }
 
     /// Encodes a scheduler [`TransactionContext`] into the ABI wire format (host-side only).
+    ///
+    /// The scheduler only routes executable txs through the prover; this encode path always
+    /// produces a wire envelope with `execution_input` populated. For unsupported versions a
+    /// host-side caller would write a prefix-only envelope directly (no `TransactionContext`).
     #[cfg(feature = "host")]
     pub fn encode<S, P>(ctx: &TransactionContext<'_, S, P>) -> Vec<u8>
     where
         S: Store,
         P: Processor<S, Transaction = L1Transaction, BatchMetadata = ChainBlockMetadata>,
     {
-        // Pre-allocate buffer: fixed header, resource headers, resource data. The transaction
-        // envelope size depends on per-version preimage derivation, so it grows the buffer.
+        use kaspa_consensus_core::hashing::tx::transaction_v1_rest_preimage;
+
+        // Pre-allocate buffer: prefix + execution-input header + resource headers + resource data.
+        // The transaction envelope size depends on per-version preimage derivation, so it grows
+        // the buffer further.
         let res_header_size = ctx.resources().len() * Resource::HEADER_SIZE;
         let res_data_size: usize = ctx.resources().iter().map(|r| r.data().len()).sum();
-        let mut buf = Vec::with_capacity(Self::FIXED_HEADER_SIZE + res_header_size + res_data_size);
+        let mut buf = Vec::with_capacity(
+            Self::PREFIX_SIZE + ExecutionInput::FIXED_HEADER_SIZE + res_header_size + res_data_size,
+        );
 
-        // Write fixed header: merge_idx, n_resources, context_hash.
+        // Derive tx_id from the V1 preimage so the host writes the canonical value.
+        let l1_tx = &ctx.scheduler_tx().tx;
+        let rest_preimage = transaction_v1_rest_preimage(l1_tx);
+        let tx_id = vprogs_l1_utils::tx_id_v1(&l1_tx.payload, &rest_preimage);
+
+        // Write prefix: version, tx_id, merge_idx.
+        buf.write(&l1_tx.version.to_le_bytes());
+        buf.write(&tx_id);
+        buf.write(&ctx.scheduler_tx().merge_idx.to_le_bytes());
+
+        // Write execution-input header: resource_count, context_hash.
         let bm = ctx.batch_metadata();
         let context_hash = kaspa_seq_commit::hashing::mergeset_context_hash(
             &kaspa_seq_commit::types::MergesetContext {
@@ -93,12 +100,11 @@ impl<'a> Inputs<'a> {
                 blue_score: bm.blue_score,
             },
         );
-        buf.write(&ctx.scheduler_tx().merge_idx.to_le_bytes());
         buf.write(&(ctx.resources().len() as u32).to_le_bytes());
         buf.write(context_hash.as_slice());
 
         // Write transaction bytes.
-        Transaction::encode(&mut buf, &ctx.scheduler_tx().tx);
+        Transaction::encode(&mut buf, l1_tx);
 
         // Write resource headers.
         for r in ctx.resources() {

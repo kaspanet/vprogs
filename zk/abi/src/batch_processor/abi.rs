@@ -17,7 +17,8 @@ use vprogs_core_smt::Blake3;
 use crate::{
     batch_processor::{Batch, Inputs, StateTransition},
     transaction_processor::{
-        InputResourceCommitment, JournalEntries, OutputCommitment, OutputResourceCommitment,
+        ErrorCode as TxErrorCode, InputResourceCommitment, JournalEntries, OutputCommitment,
+        OutputResourceCommitment,
     },
 };
 
@@ -139,37 +140,41 @@ impl<'a> Abi<'a> {
                 verify_journal(self.inputs.image_id, tx_journal_bytes);
                 let tx_journal = JournalEntries::decode(tx_journal_bytes).expect("tx journal");
 
-                let merge_idx = tx_journal.input_commitment.merge_idx;
+                let input = &tx_journal.input_commitment;
+                let merge_idx = input.merge_idx;
                 if let Some(prev) = last_merge_idx {
                     assert!(merge_idx > prev, "merge_idx not strictly increasing");
                 }
 
-                // Each tx's context_hash must match the one derived from the chain block. This
-                // also transitively enforces cross-tx context_hash agreement.
-                assert_eq!(
-                    tx_journal.input_commitment.context_hash, context_hash,
-                    "context_hash does not match derived value"
-                );
+                // Activity digest accumulates per-batch (one digest per chain block). Every tx
+                // (executed or skipped) contributes its identifying tuple so the digest matches
+                // the L1-derived one regardless of execution outcome.
+                activity_builder.add_leaf(activity_leaf(input.tx_id, input.version, merge_idx));
 
-                // Activity digest accumulates per-batch (one digest per chain block).
-                activity_builder.add_leaf(activity_leaf(
-                    tx_journal.input_commitment.tx_id,
-                    tx_journal.input_commitment.version,
-                    merge_idx,
-                ));
+                // Verify the input/output shape invariants and apply state changes only on
+                // successful execution.
+                Self::assert_journal_invariants(&tx_journal);
+                if let Some(exec_ctx) = input.execution_context.as_ref() {
+                    // Each executed tx's context_hash must match the one derived from the chain
+                    // block. This transitively enforces cross-tx context_hash agreement.
+                    assert_eq!(
+                        exec_ctx.context_hash, context_hash,
+                        "context_hash does not match derived value"
+                    );
 
-                let mut outputs = match tx_journal.output_commitment {
-                    OutputCommitment::Success(o) => Some(o),
-                    _ => None,
-                };
-                for input in tx_journal.input_commitment.resources {
-                    let bundle_idx = self.check_input_resource(batch, input.expect("input"));
+                    let mut outputs = match &tx_journal.output_commitment {
+                        OutputCommitment::Success(o) => Some(*o),
+                        _ => None,
+                    };
+                    for resource in exec_ctx.resources {
+                        let bundle_idx = self.check_input_resource(batch, resource.expect("input"));
 
-                    if let Some(output) = outputs.as_mut().and_then(|o| o.next()) {
-                        if let OutputResourceCommitment::Changed(hash) =
-                            output.expect("decode output resource")
-                        {
-                            self.value_hashes[bundle_idx] = hash;
+                        if let Some(output) = outputs.as_mut().and_then(|o| o.next()) {
+                            if let OutputResourceCommitment::Changed(hash) =
+                                output.expect("decode output resource")
+                            {
+                                self.value_hashes[bundle_idx] = hash;
+                            }
                         }
                     }
                 }
@@ -177,6 +182,30 @@ impl<'a> Abi<'a> {
                 last_merge_idx = Some(merge_idx);
             }
         })
+    }
+
+    /// Enforces the version-shape consistency invariants on a decoded tx journal.
+    ///
+    /// Skipped txs (no `execution_context`) MUST pair with `OutputCommitment::Error` carrying
+    /// `ErrorCode::VersionIncompatible`; executed txs MUST carry an `execution_context` and
+    /// produce either `Success` or any execution-related `Error`. Anything else is a forged
+    /// journal — the prover panics.
+    fn assert_journal_invariants(tx_journal: &JournalEntries<'a>) {
+        match (&tx_journal.input_commitment.execution_context, &tx_journal.output_commitment) {
+            (Some(_), _) => {
+                // Executed: any output variant is permitted (Success or various errors).
+            }
+            (None, OutputCommitment::Error(crate::Error::Guest(code)))
+                if *code == TxErrorCode::VersionIncompatible as u32 =>
+            {
+                // Skipped: the only valid output is the version-incompatibility error code.
+            }
+            (None, _) => {
+                panic!(
+                    "invalid journal: missing execution_context with non-version-incompat output"
+                )
+            }
+        }
     }
 
     /// Validates a tx receipt's input commitment, translating its batch-local index to

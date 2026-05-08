@@ -32,9 +32,11 @@ mod read;
 
 pub mod transaction_processor {
     pub(crate) mod abi;
+    pub(crate) mod error_code;
     pub(crate) mod transaction_handler;
 
     pub(crate) mod input {
+        pub(crate) mod execution_input;
         pub(crate) mod inputs;
         pub(crate) mod payload;
         pub(crate) mod resource;
@@ -52,6 +54,7 @@ pub mod transaction_processor {
 
         pub(crate) mod input {
             pub(crate) mod commitment;
+            pub(crate) mod execution_context;
             pub(crate) mod resource_commitment;
             pub(crate) mod resource_commitments;
         }
@@ -64,14 +67,17 @@ pub mod transaction_processor {
     }
 
     pub use abi::Abi;
+    pub use error_code::ErrorCode;
     pub use input::{
-        inputs::Inputs, payload::Payload, resource::Resource, transaction::Transaction,
+        execution_input::ExecutionInput, inputs::Inputs, payload::Payload, resource::Resource,
+        transaction::Transaction,
     };
     pub use journal::{
         entries::JournalEntries,
         entry::JournalEntry,
         input::{
-            commitment::InputCommitment, resource_commitment::InputResourceCommitment,
+            commitment::InputCommitment, execution_context::ExecutionContext,
+            resource_commitment::InputResourceCommitment,
             resource_commitments::InputResourceCommitments,
         },
         output::{

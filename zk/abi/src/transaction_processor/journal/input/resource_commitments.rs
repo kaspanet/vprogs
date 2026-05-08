@@ -1,6 +1,7 @@
 use crate::{Result, transaction_processor::InputResourceCommitment};
 
 /// Zero-copy iterator over resource input commitment entries.
+#[derive(Clone, Copy)]
 pub struct InputResourceCommitments<'a> {
     /// Remaining unconsumed bytes of the commitment entries.
     buf: &'a [u8],
