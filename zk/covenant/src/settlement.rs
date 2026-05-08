@@ -12,7 +12,7 @@
 //! or verify it.
 
 use kaspa_consensus_core::{
-    constants::TX_VERSION_POST_COV_HF,
+    constants::TX_VERSION_TOCCATA,
     subnets::SUBNETWORK_ID_NATIVE,
     tx::{CovenantBinding, Transaction, TransactionInput, TransactionOutpoint, TransactionOutput},
 };
@@ -123,7 +123,7 @@ impl Settlement {
         );
 
         let tx = Transaction::new(
-            TX_VERSION_POST_COV_HF,
+            TX_VERSION_TOCCATA,
             vec![tx_input],
             vec![tx_output],
             0,

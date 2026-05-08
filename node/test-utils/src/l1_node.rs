@@ -6,7 +6,7 @@ use kaspa_addresses::Address;
 use kaspa_consensus_core::{
     Hash,
     config::params::{OverrideParams, Params, SIMNET_PARAMS},
-    constants::{TX_VERSION, TX_VERSION_POST_COV_HF},
+    constants::{TX_VERSION, TX_VERSION_TOCCATA},
     hashing::covenant_id::covenant_id,
     header::Header,
     mass::units::ComputeBudget,
@@ -239,8 +239,8 @@ impl L1Node {
         );
         // Non-native subnetworks require post-covenant tx version.
         debug_assert!(
-            subnetwork_id == SUBNETWORK_ID_NATIVE || tx_version >= TX_VERSION_POST_COV_HF,
-            "non-native subnetwork requires tx_version >= TX_VERSION_POST_COV_HF",
+            subnetwork_id == SUBNETWORK_ID_NATIVE || tx_version >= TX_VERSION_TOCCATA,
+            "non-native subnetwork requires tx_version >= TX_VERSION_TOCCATA",
         );
 
         let utxos = self.fetch_spendable_utxos().await;
@@ -367,7 +367,7 @@ impl L1Node {
         );
 
         let unsigned = Transaction::new(
-            TX_VERSION_POST_COV_HF,
+            TX_VERSION_TOCCATA,
             vec![tx_input],
             vec![tx_output],
             0,

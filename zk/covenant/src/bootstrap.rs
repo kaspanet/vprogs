@@ -7,7 +7,7 @@
 //! first settlement step.
 
 use kaspa_consensus_core::{
-    constants::TX_VERSION_POST_COV_HF,
+    constants::TX_VERSION_TOCCATA,
     hashing::covenant_id::covenant_id,
     subnets::SUBNETWORK_ID_NATIVE,
     tx::{CovenantBinding, Transaction, TransactionInput, TransactionOutpoint, TransactionOutput},
@@ -79,7 +79,7 @@ impl Bootstrap {
         );
 
         let tx = Transaction::new(
-            TX_VERSION_POST_COV_HF,
+            TX_VERSION_TOCCATA,
             vec![tx_input],
             vec![tx_output],
             0,
