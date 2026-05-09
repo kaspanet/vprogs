@@ -46,7 +46,7 @@ impl<'a> ExecutionInput<'a> {
         // Decode transaction bytes (immutably reborrowed so access metadata can borrow from them).
         let (tx_bytes, resources) = data.split_at_mut(Transaction::wire_size(data)?);
         let tx = Transaction::decode(&mut &*tx_bytes)?;
-        if tx.payload().access_metadata.len() != resource_count {
+        if tx.payload.access_metadata.len() != resource_count {
             return Err(Error::Decode("access_metadata/resource_count mismatch".into()));
         }
 
@@ -58,7 +58,7 @@ impl<'a> ExecutionInput<'a> {
         // Decode resources, pairing each with its access_metadata entry by position.
         let (res_headers, mut res_data) = resources.split_at_mut(resources_len);
         let mut resources = Vec::with_capacity(resource_count);
-        for (i, access_metadata) in tx.payload().access_metadata.iter().enumerate() {
+        for (i, access_metadata) in tx.payload.access_metadata.iter().enumerate() {
             resources.push(Resource::decode(
                 &res_headers[i * Resource::HEADER_SIZE..],
                 access_metadata,
@@ -78,7 +78,7 @@ impl<'a> ExecutionInput<'a> {
         S: Store,
         P: Processor<S, Transaction = L1Transaction, BatchMetadata = ChainBlockMetadata>,
     {
-        if ctx.scheduler_tx().tx.version != Transaction::VERSION_V1 {
+        if ctx.scheduler_tx().tx.version != Transaction::SUPPORTED_VERSION {
             return 0;
         }
 

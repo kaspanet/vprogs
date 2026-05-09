@@ -1,12 +1,12 @@
 use vprogs_core_codec::Writer;
 
 use crate::{
-    Error, Read,
+    Read,
     transaction_processor::{
-        ErrorCode, InputCommitment, Inputs, OutputCommitment, Outputs, Resource, TransactionHandler,
+        ErrorCode, InputCommitment, Inputs, OutputCommitment, Outputs, Transaction,
+        TransactionHandler,
     },
 };
-use crate::transaction_processor::Transaction;
 
 /// Transaction processor API for use inside zkVM guests.
 pub struct Abi;
@@ -29,13 +29,12 @@ impl Abi {
         // Execute guest closure.
         let Inputs { version, tx_id, merge_idx, mut execution_input } = inputs;
         let result = match version {
-            Transaction::VERSION_V1 => 'v1: {
+            Transaction::SUPPORTED_VERSION => 'v1: {
                 let Some(exec) = execution_input.as_mut() else {
                     break 'v1 Err(ErrorCode::MissingExecutionInputs.into());
                 };
 
-                let derived_tx_id = exec.tx.tx_id().expect("supported version must have tx_id");
-                if tx_id.as_slice() != derived_tx_id {
+                if tx_id.as_slice() != exec.tx.tx_id() {
                     break 'v1 Err(ErrorCode::TxIdMismatch.into());
                 }
 
