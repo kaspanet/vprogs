@@ -3,7 +3,7 @@ use vprogs_core_codec::{Reader, Writer};
 
 use crate::{
     Error, Result,
-    transaction_processor::{ExecutionContext, ExecutionInput, JournalEntry, Transaction},
+    transaction_processor::{ExecutionContext, ExecutionInput, Inputs, JournalEntry, Transaction},
 };
 
 /// Decoded input commitment from a transaction processor journal.
@@ -48,16 +48,12 @@ impl<'a> InputCommitment<'a> {
     }
 
     /// Encodes an input commitment segment to the journal (guest-side).
-    pub fn encode(
-        w: &mut impl Writer,
-        version: u16,
-        tx_id: &Hash,
-        merge_idx: u32,
-        execution_input: Option<&ExecutionInput<'_>>,
-    ) {
+    pub fn encode(w: &mut impl Writer, inputs: &Inputs<'_>) {
         // Compute payload length: prefix + optional execution context.
         let payload_len = Self::PREFIX_SIZE
-            + execution_input
+            + inputs
+                .execution_input
+                .as_ref()
                 .map(|exec| ExecutionContext::payload_size(exec.resources.len()))
                 .unwrap_or(0);
 
@@ -66,12 +62,12 @@ impl<'a> InputCommitment<'a> {
         w.write(&(payload_len as u32).to_le_bytes());
 
         // Prefix: version, tx_id, merge_idx.
-        w.write(&version.to_le_bytes());
-        w.write(tx_id.as_slice());
-        w.write(&merge_idx.to_le_bytes());
+        w.write(&inputs.version.to_le_bytes());
+        w.write(inputs.tx_id.as_slice());
+        w.write(&inputs.merge_idx.to_le_bytes());
 
         // Execution context (only for supported versions).
-        if let Some(exec) = execution_input {
+        if let Some(exec) = inputs.execution_input.as_ref() {
             ExecutionContext::encode(w, exec);
             // Per-resource input commitments.
             for r in &exec.resources {

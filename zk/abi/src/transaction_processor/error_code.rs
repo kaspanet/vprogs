@@ -10,6 +10,7 @@ pub enum ErrorCode {
     /// Host-supplied `tx_id` does not match the cryptographically derived value for this tx's
     /// version. Emitted only on the executable path; signals host bug or tampering.
     TxIdMismatch = 2,
+    MissingExecutionInputs = 3,
 }
 
 impl From<ErrorCode> for Error {

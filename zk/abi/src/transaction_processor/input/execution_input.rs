@@ -2,6 +2,14 @@ use alloc::vec::Vec;
 
 use kaspa_hashes::Hash;
 use vprogs_core_codec::Reader;
+#[cfg(feature = "host")]
+use vprogs_core_codec::Writer;
+#[cfg(feature = "host")]
+use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
+#[cfg(feature = "host")]
+use vprogs_scheduling_scheduler::{Processor, TransactionContext};
+#[cfg(feature = "host")]
+use vprogs_storage_types::Store;
 
 use crate::{
     Error, Result,
@@ -59,5 +67,58 @@ impl<'a> ExecutionInput<'a> {
         }
 
         Ok(Self { context_hash, tx, resources })
+    }
+
+    /// Returns the wire size of the resource portion (header + data) plus the fixed header.
+    /// Excludes the transaction envelope, whose size depends on per-version preimage derivation
+    /// and is appended at encode time.
+    #[cfg(feature = "host")]
+    pub fn wire_size<S, P>(ctx: &TransactionContext<'_, S, P>) -> usize
+    where
+        S: Store,
+        P: Processor<S, Transaction = L1Transaction, BatchMetadata = ChainBlockMetadata>,
+    {
+        if ctx.scheduler_tx().tx.version != Transaction::VERSION_V1 {
+            return 0;
+        }
+
+        let res_header_total = ctx.resources().len() * Resource::HEADER_SIZE;
+        let res_data_total: usize = ctx.resources().iter().map(|r| r.data().len()).sum();
+
+        Self::FIXED_HEADER_SIZE + res_header_total + res_data_total
+    }
+
+    /// Encodes the execution-input portion of the wire envelope from a scheduler
+    /// [`TransactionContext`] (host-side only).
+    ///
+    /// Wire layout: `resource_count | context_hash | tx_bytes | resource_headers | resource_data`.
+    #[cfg(feature = "host")]
+    pub fn encode<S, P>(buf: &mut Vec<u8>, ctx: &TransactionContext<'_, S, P>)
+    where
+        S: Store,
+        P: Processor<S, Transaction = L1Transaction, BatchMetadata = ChainBlockMetadata>,
+    {
+        // Fixed header: resource_count, context_hash (derived from batch metadata).
+        let bm = ctx.batch_metadata();
+        let context_hash = kaspa_seq_commit::hashing::mergeset_context_hash(
+            &kaspa_seq_commit::types::MergesetContext {
+                timestamp: kaspa_seq_commit::hashing::seq_commit_timestamp(bm.prev_timestamp),
+                daa_score: bm.daa_score,
+                blue_score: bm.blue_score,
+            },
+        );
+        buf.write(&(ctx.resources().len() as u32).to_le_bytes());
+        buf.write(context_hash.as_slice());
+
+        // Transaction envelope.
+        Transaction::encode(buf, &ctx.scheduler_tx().tx);
+
+        // Resource headers, then resource data.
+        for r in ctx.resources() {
+            Resource::encode_header(buf, r.is_new(), r.resource_index(), r.data().len() as u32);
+        }
+        for r in ctx.resources() {
+            buf.write(r.data());
+        }
     }
 }
