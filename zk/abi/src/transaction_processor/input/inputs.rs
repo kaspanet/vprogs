@@ -32,9 +32,6 @@ pub struct Inputs<'a> {
 }
 
 impl<'a> Inputs<'a> {
-    /// Wire size of the always-present prefix: version(2) + tx_id(32) + merge_idx(4).
-    pub const PREFIX_SIZE: usize = 2 + 32 + 4;
-
     /// Decodes transaction inputs from the wire buffer.
     pub fn decode(mut buf: &'a mut [u8]) -> Result<Self> {
         let version = buf.le_u16("version")?;
@@ -43,7 +40,7 @@ impl<'a> Inputs<'a> {
             tx_id: buf.array_as::<Hash>("tx_id")?,
             merge_idx: buf.le_u32("merge_idx")?,
             execution_input: match version {
-                Transaction::SUPPORTED_VERSION => Some(ExecutionInput::decode(buf)?),
+                Transaction::V1 => Some(ExecutionInput::decode(buf)?),
                 _ => None,
             },
         })
@@ -56,11 +53,12 @@ impl<'a> Inputs<'a> {
         S: Store,
         P: Processor<S, Transaction = L1Transaction, BatchMetadata = ChainBlockMetadata>,
     {
-        Vec::with_capacity(Self::PREFIX_SIZE + ExecutionInput::wire_size(ctx)).tap_mut(|buf| {
+        Vec::new().tap_mut(|buf| {
             buf.write(&ctx.scheduler_tx().tx.version.to_le_bytes());
             buf.write(ctx.scheduler_tx().tx.id().as_slice());
             buf.write(&ctx.scheduler_tx().merge_idx.to_le_bytes());
-            if ctx.scheduler_tx().tx.version == Transaction::SUPPORTED_VERSION {
+            
+            if ctx.scheduler_tx().tx.version == Transaction::V1 {
                 ExecutionInput::encode(buf, ctx);
             }
         })

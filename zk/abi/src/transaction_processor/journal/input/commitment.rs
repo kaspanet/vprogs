@@ -35,7 +35,7 @@ impl<'a> InputCommitment<'a> {
 
         // Decode the version-conditional execution context.
         let execution_context = match version {
-            Transaction::SUPPORTED_VERSION => Some(ExecutionContext::decode(buf)?),
+            Transaction::V1 => Some(ExecutionContext::decode(buf)?),
             _ => {
                 if !buf.is_empty() {
                     return Err(Error::Decode("unexpected trailing bytes for skipped tx".into()));

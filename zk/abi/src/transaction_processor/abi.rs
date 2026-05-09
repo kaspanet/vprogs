@@ -26,15 +26,15 @@ impl Abi {
         // Commit input commitment to journal.
         InputCommitment::encode(journal, &inputs);
 
-        // Execute guest closure.
+        // Execute guest closure (if version is supported).
         let Inputs { version, tx_id, merge_idx, mut execution_input } = inputs;
         let result = match version {
-            Transaction::SUPPORTED_VERSION => 'v1: {
+            Transaction::V1 => 'v1: {
                 let Some(exec) = execution_input.as_mut() else {
                     break 'v1 Err(ErrorCode::MissingExecutionInputs.into());
                 };
 
-                if tx_id.as_slice() != exec.tx.tx_id() {
+                if tx_id.as_slice() != exec.tx.id() {
                     break 'v1 Err(ErrorCode::TxIdMismatch.into());
                 }
 
