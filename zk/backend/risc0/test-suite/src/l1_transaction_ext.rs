@@ -24,6 +24,7 @@ impl L1TransactionExt for L1Transaction {
                 p.write_many(&meta, AccessMetadata::as_bytes);
                 p.write(ix_data);
             });
+            tx.finalize();
         })
     }
 

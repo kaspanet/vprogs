@@ -39,9 +39,10 @@ impl<'a> Inputs<'a> {
             version,
             tx_id: buf.array_as::<Hash>("tx_id")?,
             merge_idx: buf.le_u32("merge_idx")?,
-            execution_input: match version {
-                Transaction::V1 => Some(ExecutionInput::decode(buf)?),
-                _ => None,
+            execution_input: if version == Transaction::V1 {
+                Some(ExecutionInput::decode(buf)?)
+            } else {
+                None
             },
         })
     }
@@ -57,7 +58,7 @@ impl<'a> Inputs<'a> {
             buf.write(&ctx.scheduler_tx().tx.version.to_le_bytes());
             buf.write(ctx.scheduler_tx().tx.id().as_slice());
             buf.write(&ctx.scheduler_tx().merge_idx.to_le_bytes());
-            
+
             if ctx.scheduler_tx().tx.version == Transaction::V1 {
                 ExecutionInput::encode(buf, ctx);
             }
