@@ -21,13 +21,13 @@ use crate::{
 
 /// Decoded transaction inputs. `execution_input` is present iff `version` is supported.
 pub struct Inputs<'a> {
-    /// L1 transaction protocol version. Determines whether `execution_input` is present.
+    /// L1 transaction protocol version.
     pub version: u16,
     /// Host-supplied L1 transaction ID.
     pub tx_id: &'a Hash,
     /// L1 block-wide position of this tx.
     pub merge_idx: u32,
-    /// Per-tx execution data; present iff `version` is supported.
+    /// Per-tx execution data.
     pub execution_input: Option<ExecutionInput<'a>>,
 }
 
@@ -58,7 +58,6 @@ impl<'a> Inputs<'a> {
             buf.write(&ctx.scheduler_tx().tx.version.to_le_bytes());
             buf.write(ctx.scheduler_tx().tx.id().as_slice());
             buf.write(&ctx.scheduler_tx().merge_idx.to_le_bytes());
-
             if ctx.scheduler_tx().tx.version == Transaction::V1 {
                 ExecutionInput::encode(buf, ctx);
             }
