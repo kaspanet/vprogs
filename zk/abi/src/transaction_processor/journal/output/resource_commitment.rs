@@ -19,7 +19,7 @@ impl<'a> OutputResourceCommitment<'a> {
 
     /// Wire size of the encoded entry: discriminant(1) + optional hash(32).
     pub fn wire_size(r: &Resource<'_>) -> usize {
-        if r.is_dirty() || r.is_deleted() { 1 + 32 } else { 1 }
+        if r.is_dirty() { 1 + 32 } else { 1 }
     }
 
     /// Decodes a single output commitment, advancing `buf` past the consumed bytes.

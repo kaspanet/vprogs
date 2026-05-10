@@ -33,7 +33,7 @@ impl<'a> ExecutionInput<'a> {
     pub fn decode(mut buf: &'a mut [u8]) -> Result<Self> {
         let context_hash = buf.array_as::<Hash>("context_hash")?;
         let tx = Transaction::decode(&mut buf)?;
-        let res_iter = tx.payload.access_metadata.iter().map(|am| Resource::decode(am, &mut buf));
+        let res_iter = tx.payload.access_metadata.iter().map(|am| Resource::decode(&mut buf, am));
         Ok(Self { context_hash, tx, resources: res_iter.collect::<Result<_>>()? })
     }
 

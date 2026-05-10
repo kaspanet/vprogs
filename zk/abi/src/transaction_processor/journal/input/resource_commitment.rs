@@ -21,9 +21,12 @@ impl InputResourceCommitment {
     /// Encodes a resource's input commitment to the journal.
     pub fn encode(w: &mut impl Writer, r: &Resource<'_>) {
         let data = r.data();
-        let hash = if data.is_empty() { EMPTY_HASH } else { *blake3::hash(data).as_bytes() };
         w.write(&r.index().to_le_bytes());
         w.write(r.id().as_slice());
-        w.write(&hash);
+        if data.is_empty() {
+            w.write(&EMPTY_HASH);
+        } else {
+            w.write(blake3::hash(data).as_bytes());
+        }
     }
 }

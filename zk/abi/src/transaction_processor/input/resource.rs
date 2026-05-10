@@ -118,7 +118,7 @@ impl<'a> Resource<'a> {
     }
 
     /// Decodes a resource, splitting off its backing from `buf`.
-    pub fn decode(access_metadata: &'a AccessMetadata, buf: &mut &'a mut [u8]) -> Result<Self> {
+    pub fn decode(buf: &mut &'a mut [u8], access_metadata: &'a AccessMetadata) -> Result<Self> {
         Ok(Self {
             access_metadata,
             is_new: buf.bool("is_new")?,
