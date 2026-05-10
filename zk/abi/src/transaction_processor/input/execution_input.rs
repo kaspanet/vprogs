@@ -33,8 +33,8 @@ impl<'a> ExecutionInput<'a> {
     pub fn decode(mut buf: &'a mut [u8]) -> Result<Self> {
         let context_hash = buf.array_as::<Hash>("context_hash")?;
         let tx = Transaction::decode(&mut buf)?;
-        let resources = Resource::decode_many(&mut buf, tx.payload.access_metadata)?;
-        Ok(Self { context_hash, tx, resources })
+        let res_iter = tx.payload.access_metadata.iter().map(|am| Resource::decode(am, &mut buf));
+        Ok(Self { context_hash, tx, resources: res_iter.collect::<Result<_>>()? })
     }
 
     /// Encodes an execution input to the wire buffer.
@@ -53,6 +53,8 @@ impl<'a> ExecutionInput<'a> {
             .as_slice(),
         );
         Transaction::encode(buf, &ctx.scheduler_tx().tx);
-        Resource::encode_many(buf, ctx.resources());
+        for r in ctx.resources() {
+            Resource::encode(buf, r);
+        }
     }
 }

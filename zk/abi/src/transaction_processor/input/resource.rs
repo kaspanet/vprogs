@@ -71,7 +71,12 @@ impl<'a> Resource<'a> {
 
     /// Resizes data to `new_len` bytes, promoting to a heap-allocated buffer if necessary.
     pub fn resize(&mut self, new_len: usize) {
-        if new_len <= self.data().len() {
+        let current_len = self.data().len();
+        if new_len == current_len {
+            return;
+        }
+
+        if new_len < current_len {
             // Shrink: truncate in-place without allocating.
             match self.promoted {
                 Some(ref mut v) => v.truncate(new_len),
@@ -111,77 +116,29 @@ impl<'a> Resource<'a> {
     pub fn is_deleted(&self) -> bool {
         self.deleted
     }
-}
 
-// Wire format internals - resources are managed by the framework, not serialized by guests.
-impl<'a> Resource<'a> {
-    /// Decodes a resource from its header bytes, splitting off its backing from `buf` and
-    /// advancing past the consumed bytes.
-    pub(crate) fn decode(
-        mut header: &'a [u8],
-        access_metadata: &'a AccessMetadata,
-        buf: &mut &'a mut [u8],
-    ) -> Result<Self> {
-        // Parse header fields.
-        let is_new = header.bool("is_new")?;
-        let index = header.le_u32("index")?;
-        let data_length = header.le_u32("data_length")? as usize;
-
-        // Split off the backing slice from the start of `buf` and advance `buf` past it.
-        let backing = buf.bytes_mut(data_length, "data")?;
-
+    /// Decodes a resource, splitting off its backing from `buf`.
+    pub fn decode(access_metadata: &'a AccessMetadata, buf: &mut &'a mut [u8]) -> Result<Self> {
         Ok(Self {
             access_metadata,
-            backing,
+            is_new: buf.bool("is_new")?,
+            index: buf.le_u32("index")?,
+            backing: buf.blob_mut("data")?,
             promoted: None,
-            index,
-            is_new,
             dirty: false,
             deleted: false,
         })
     }
 
-    /// Decodes a count-prefixed sequence of resources from `buf`, paired by position with
-    /// the given `access_metadata`.
-    pub(crate) fn decode_many(
-        buf: &mut &'a mut [u8],
-        access_metadata: &'a [AccessMetadata],
-    ) -> Result<Vec<Self>> {
-        // Header layout: flags(1) + index(4) + data_len(4).
-        let res_headers = buf.slice_as::<[u8; 1 + 4 + 4]>("resource_headers")?;
-        if access_metadata.len() != res_headers.len() {
-            return Err(crate::Error::Decode("access_metadata/resource_count mismatch".into()));
-        }
-
-        let mut resources = Vec::with_capacity(res_headers.len());
-        for (header, am) in res_headers.iter().zip(access_metadata) {
-            resources.push(Self::decode(header, am, buf)?);
-        }
-        Ok(resources)
-    }
-
-    /// Encodes a resource header to the given writer.
+    /// Encodes a single resource to the journal.
     #[cfg(feature = "host")]
-    pub(crate) fn encode_header(w: &mut impl Writer, is_new: bool, index: u32, data_len: u32) {
-        // Write header fields.
-        w.write(&[if is_new { 1 } else { 0 }]);
-        w.write(&index.to_le_bytes());
-        w.write(&data_len.to_le_bytes());
-    }
-
-    /// Encodes a count-prefixed sequence of resources to the journal: count + headers + data.
-    #[cfg(feature = "host")]
-    pub fn encode_many<S, P>(w: &mut impl Writer, resources: &[AccessHandle<'_, S, P>])
+    pub fn encode<S, P>(w: &mut impl Writer, r: &AccessHandle<'_, S, P>)
     where
         S: Store,
         P: Processor<S>,
     {
-        w.write(&(resources.len() as u32).to_le_bytes());
-        for r in resources {
-            Self::encode_header(w, r.is_new(), r.resource_index(), r.data().len() as u32);
-        }
-        for r in resources {
-            w.write(r.data());
-        }
+        w.write(&[r.is_new() as u8]);
+        w.write(&r.resource_index().to_le_bytes());
+        w.write_blob(r.data());
     }
 }
