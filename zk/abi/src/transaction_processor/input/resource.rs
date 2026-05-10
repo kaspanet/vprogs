@@ -1,10 +1,14 @@
 use alloc::vec::Vec;
 use core::mem;
 
-use vprogs_core_codec::Reader;
 #[cfg(feature = "host")]
 use vprogs_core_codec::Writer;
+use vprogs_core_codec::{MutReader, Reader};
 use vprogs_core_types::{AccessMetadata, AccessType, ResourceId};
+#[cfg(feature = "host")]
+use vprogs_scheduling_scheduler::{AccessHandle, Processor};
+#[cfg(feature = "host")]
+use vprogs_storage_types::Store;
 
 use crate::Result;
 
@@ -111,10 +115,7 @@ impl<'a> Resource<'a> {
 
 // Wire format internals - resources are managed by the framework, not serialized by guests.
 impl<'a> Resource<'a> {
-    /// Wire size of a resource header: flags(1) + index(4) + data_len(4).
-    pub const HEADER_SIZE: usize = 1 + 4 + 4;
-
-    /// Decodes a resource from its header bytes, splitting off its backing from `data` and
+    /// Decodes a resource from its header bytes, splitting off its backing from `buf` and
     /// advancing past the consumed bytes.
     pub(crate) fn decode(
         mut header: &'a [u8],
@@ -126,9 +127,8 @@ impl<'a> Resource<'a> {
         let index = header.le_u32("index")?;
         let data_length = header.le_u32("data_length")? as usize;
 
-        // Split off the backing slice from the start of `data` and advance `data` past it.
-        let (backing, rest) = mem::take(buf).split_at_mut(data_length);
-        *buf = rest;
+        // Split off the backing slice from the start of `buf` and advance `buf` past it.
+        let backing = buf.bytes_mut(data_length, "data")?;
 
         Ok(Self {
             access_metadata,
@@ -141,6 +141,25 @@ impl<'a> Resource<'a> {
         })
     }
 
+    /// Decodes a count-prefixed sequence of resources from `buf`, paired by position with
+    /// the given `access_metadata`.
+    pub(crate) fn decode_many(
+        buf: &mut &'a mut [u8],
+        access_metadata: &'a [AccessMetadata],
+    ) -> Result<Vec<Self>> {
+        // Header layout: flags(1) + index(4) + data_len(4).
+        let res_headers = buf.slice_as::<[u8; 1 + 4 + 4]>("resource_headers")?;
+        if access_metadata.len() != res_headers.len() {
+            return Err(crate::Error::Decode("access_metadata/resource_count mismatch".into()));
+        }
+
+        let mut resources = Vec::with_capacity(res_headers.len());
+        for (header, am) in res_headers.iter().zip(access_metadata) {
+            resources.push(Self::decode(header, am, buf)?);
+        }
+        Ok(resources)
+    }
+
     /// Encodes a resource header to the given writer.
     #[cfg(feature = "host")]
     pub(crate) fn encode_header(w: &mut impl Writer, is_new: bool, index: u32, data_len: u32) {
@@ -148,5 +167,21 @@ impl<'a> Resource<'a> {
         w.write(&[if is_new { 1 } else { 0 }]);
         w.write(&index.to_le_bytes());
         w.write(&data_len.to_le_bytes());
+    }
+
+    /// Encodes a count-prefixed sequence of resources to the journal: count + headers + data.
+    #[cfg(feature = "host")]
+    pub fn encode_many<S, P>(w: &mut impl Writer, resources: &[AccessHandle<'_, S, P>])
+    where
+        S: Store,
+        P: Processor<S>,
+    {
+        w.write(&(resources.len() as u32).to_le_bytes());
+        for r in resources {
+            Self::encode_header(w, r.is_new(), r.resource_index(), r.data().len() as u32);
+        }
+        for r in resources {
+            w.write(r.data());
+        }
     }
 }

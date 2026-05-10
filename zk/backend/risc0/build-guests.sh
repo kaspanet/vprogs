@@ -94,3 +94,9 @@ EOF
   cp "$out_dir/${bin_name}" "$elf_dest"
   echo "Done: ${program} → ${elf_dest}"
 done
+
+# NOTE: Each `--output=` build orphans its `COPY . .` layer (no tagged image
+# references it), so build cache grows unboundedly over time. Run
+# `docker builder prune` manually when disk fills up. Do NOT add it here:
+# the prune also evicts the cached base image layers for the next build,
+# forcing a multi-GB re-pull and a large rebuild context transfer.
