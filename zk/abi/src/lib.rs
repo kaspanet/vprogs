@@ -2,6 +2,9 @@
 
 extern crate alloc;
 
+mod error;
+mod read;
+
 pub mod batch_processor {
     pub(crate) mod abi;
 
@@ -27,8 +30,6 @@ pub mod batch_processor {
     };
     pub use journal::state_transition::StateTransition;
 }
-mod error;
-mod read;
 
 pub mod transaction_processor {
     pub(crate) mod abi;
