@@ -10,7 +10,9 @@ use crate::{AccessType, ResourceId};
 #[derive(Clone, Copy, Debug)]
 #[derive(TryFromBytes, IntoBytes, Immutable, KnownLayout)]
 pub struct AccessMetadata {
+    /// Unique identifier of the accessed resource.
     pub resource_id: ResourceId,
+    /// Whether this is a read or write access.
     pub access_type: AccessType,
 }
 
