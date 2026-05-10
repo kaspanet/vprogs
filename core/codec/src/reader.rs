@@ -26,14 +26,14 @@ pub trait Reader<'a> {
     /// Returns the number of bytes left in the buffer.
     fn remaining(&self) -> usize;
 
-    /// Reads a single byte as a boolean (`!= 0`).
-    fn bool(&mut self, field: &'static str) -> Result<bool> {
-        self.byte(field).map(|b| b != 0)
-    }
-
     /// Reads a single byte.
     fn byte(&mut self, field: &'static str) -> Result<u8> {
         Ok(self.array::<1>(field)?[0])
+    }
+
+    /// Reads a single byte as a boolean (`!= 0`).
+    fn bool(&mut self, field: &'static str) -> Result<bool> {
+        self.byte(field).map(|b| b != 0)
     }
 
     /// Reads a little-endian `u16`.
@@ -66,7 +66,7 @@ pub trait Reader<'a> {
         Ok(u64::from_be_bytes(*self.array::<8>(field)?))
     }
 
-    /// Reads `size_of::<T>` bytes and casts them to a `&T`.
+    /// Reads `size_of::<T>()` bytes and casts them to a `&T`.
     fn array_as<T: TryFromBytes + KnownLayout + Immutable>(
         &mut self,
         field: &'static str,
@@ -74,14 +74,14 @@ pub trait Reader<'a> {
         Ok(T::try_ref_from_bytes(self.bytes(size_of::<T>(), field)?)?)
     }
 
-    /// Reads a u32 LE count, then `count * size_of::<T>` bytes cast to a `&[T]`.
+    /// Reads a u32 LE count, then `count * size_of::<T>()` bytes cast to a `&[T]`.
     fn slice_as<T: TryFromBytes + KnownLayout + Immutable>(
         &mut self,
         field: &'static str,
     ) -> Result<&'a [T]> {
         let count = self.le_u32(field)? as usize;
-        let bytes = self.bytes(count * size_of::<T>(), field)?;
-        Ok(<[T]>::try_ref_from_bytes(bytes)?)
+        let len = count.checked_mul(size_of::<T>()).ok_or(Error::Decode(field))?;
+        Ok(<[T]>::try_ref_from_bytes(self.bytes(len, field)?)?)
     }
 
     /// Reads a length-prefixed byte blob: `len(4 LE) + bytes(len)`.
@@ -104,6 +104,8 @@ pub trait Reader<'a> {
     /// Reads a LE `u32` count, then calls `decode_fn` that many times, collecting into a `Vec`.
     ///
     /// Pre-allocation is capped by remaining buffer length to prevent OOM from untrusted counts.
+    /// For fixed-layout `T: TryFromBytes + KnownLayout + Immutable`, prefer
+    /// [`slice_as`](Self::slice_as): zero-copy and avoids the per-element closure call.
     fn many<T>(
         &mut self,
         field: &'static str,
@@ -120,17 +122,13 @@ pub trait Reader<'a> {
 
 impl<'a> Reader<'a> for &'a [u8] {
     fn bytes(&mut self, len: usize, field: &'static str) -> Result<&'a [u8]> {
-        if self.len() < len {
-            return Err(Error::Decode(field));
-        }
-
-        let (consumed, rest) = (*self).split_at(len);
+        let (consumed, rest) = self.split_at_checked(len).ok_or(Error::Decode(field))?;
         *self = rest;
         Ok(consumed)
     }
 
     fn array<const N: usize>(&mut self, field: &'static str) -> Result<&'a [u8; N]> {
-        let (chunk, rest) = (*self).split_first_chunk::<N>().ok_or(Error::Decode(field))?;
+        let (chunk, rest) = self.split_first_chunk::<N>().ok_or(Error::Decode(field))?;
         *self = rest;
         Ok(chunk)
     }
@@ -142,11 +140,8 @@ impl<'a> Reader<'a> for &'a [u8] {
 
 impl<'a> Reader<'a> for &'a mut [u8] {
     fn bytes(&mut self, len: usize, field: &'static str) -> Result<&'a [u8]> {
-        if self.len() < len {
-            return Err(Error::Decode(field));
-        }
-
-        let (consumed, rest) = take(self).split_at_mut(len);
+        let (consumed, rest) =
+            take(self).split_at_mut_checked(len).ok_or(Error::Decode(field))?;
         *self = rest;
         Ok(consumed)
     }
