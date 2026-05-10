@@ -140,8 +140,7 @@ impl<'a> Reader<'a> for &'a [u8] {
 
 impl<'a> Reader<'a> for &'a mut [u8] {
     fn bytes(&mut self, len: usize, field: &'static str) -> Result<&'a [u8]> {
-        let (consumed, rest) =
-            take(self).split_at_mut_checked(len).ok_or(Error::Decode(field))?;
+        let (consumed, rest) = take(self).split_at_mut_checked(len).ok_or(Error::Decode(field))?;
         *self = rest;
         Ok(consumed)
     }
