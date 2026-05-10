@@ -31,7 +31,7 @@ impl L1TransactionExt for L1Transaction {
     fn into_scheduler_tx(self, merge_idx: u32) -> SchedulerTransaction<Self> {
         SchedulerTransaction::new(
             merge_idx,
-            AccessMetadata::decode_vec(&mut self.payload.as_slice()).expect("unsorted access meta"),
+            AccessMetadata::decode_vec(&mut self.payload.as_slice()).unwrap(),
             self,
         )
     }
