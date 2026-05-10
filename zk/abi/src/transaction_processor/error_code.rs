@@ -1,15 +1,14 @@
 use crate::Error;
 
-/// Transaction processor verification error codes emitted as `OutputCommitment::Error` payloads.
+/// Transaction processor error codes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum ErrorCode {
-    /// Transaction's protocol version is not supported by this prover build. Emitted by the
-    /// guest after committing only the minimal `(tx_id, version, merge_idx)` input header.
+    /// Transaction protocol version is not supported by this prover build.
     VersionIncompatible = 1,
-    /// Host-supplied `tx_id` does not match the cryptographically derived value for this tx's
-    /// version. Emitted only on the executable path; signals host bug or tampering.
+    /// Host-supplied `tx_id` does not match the cryptographically derived value.
     TxIdMismatch = 2,
+    /// Version is supported but `execution_input` was not supplied.
     MissingExecutionInputs = 3,
 }
 
