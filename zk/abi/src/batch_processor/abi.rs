@@ -167,7 +167,7 @@ impl<'a> Abi<'a> {
                         _ => None,
                     };
                     for resource in exec_ctx.resources {
-                        let bundle_idx = self.check_input_resource(batch, resource.expect("input"));
+                        let bundle_idx = self.check_input_resource(batch, resource);
 
                         if let Some(output) = outputs.as_mut().and_then(|o| o.next()) {
                             if let OutputResourceCommitment::Changed(hash) =
@@ -211,11 +211,11 @@ impl<'a> Abi<'a> {
     /// Validates a tx receipt's input commitment, translating its batch-local index to
     /// the bundle-wide one and cross-checking `resource_id` against the SMT proof leaf -
     /// guards against forged translation tables.
-    fn check_input_resource(&mut self, batch: &Batch<'a>, r: InputResourceCommitment<'a>) -> usize {
-        let bundle_idx = batch.translation[r.resource_index as usize].get() as usize;
+    fn check_input_resource(&mut self, batch: &Batch<'a>, r: &InputResourceCommitment) -> usize {
+        let bundle_idx = batch.translation[r.resource_index.get() as usize].get() as usize;
         let leaf_pos = self.bundle_idx_to_leaf_pos[bundle_idx] as usize;
-        assert_eq!(r.resource_id, self.inputs.proof.leaves[leaf_pos].key, "resource_id mismatch");
-        assert_eq!(r.hash, self.value_hashes[bundle_idx], "resource hash mismatch");
+        assert_eq!(&*r.resource_id, self.inputs.proof.leaves[leaf_pos].key, "resource_id mismatch");
+        assert_eq!(&r.hash, self.value_hashes[bundle_idx], "resource hash mismatch");
         bundle_idx
     }
 

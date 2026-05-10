@@ -1,50 +1,29 @@
-use vprogs_core_codec::{Reader, Writer};
+use vprogs_core_codec::Writer;
+use vprogs_core_smt::EMPTY_HASH;
+use vprogs_core_types::ResourceId;
+use zerocopy::{FromBytes, Immutable, KnownLayout, little_endian::U32};
 
-use crate::Result;
+use crate::transaction_processor::Resource;
 
 /// A single resource's input commitment: its index, identity, and data hash.
-pub struct InputResourceCommitment<'a> {
+#[repr(C)]
+#[derive(FromBytes, Immutable, KnownLayout)]
+pub struct InputResourceCommitment {
     /// Per-batch resource index.
-    pub resource_index: u32,
+    pub resource_index: U32,
     /// Unique identifier of this resource.
-    pub resource_id: &'a [u8; 32],
+    pub resource_id: ResourceId,
     /// BLAKE3 hash of the resource data (or empty leaf hash if no data).
-    pub hash: &'a [u8; 32],
+    pub hash: [u8; 32],
 }
 
-impl<'a> InputResourceCommitment<'a> {
-    /// Wire size of the full encoding: resource_index(4) + resource_id(32) + hash(32).
-    pub const SIZE: usize = 4 + 32 + 32;
-    /// Wire size without the index prefix: resource_id(32) + hash(32).
-    pub const PRE_INDEXED_SIZE: usize = Self::SIZE - 4;
-
-    /// Decodes the full wire format, advancing `buf` past the consumed bytes.
-    pub fn decode(buf: &mut &'a [u8]) -> Result<Self> {
-        Ok(Self {
-            resource_index: buf.le_u32("resource_index")?,
-            resource_id: buf.array::<32>("resource_id")?,
-            hash: buf.array::<32>("hash")?,
-        })
-    }
-
-    /// Decodes without the index prefix, advancing `buf` past the consumed bytes.
-    pub fn decode_pre_indexed(buf: &mut &'a [u8], resource_index: u32) -> Result<Self> {
-        Ok(Self {
-            resource_index,
-            resource_id: buf.array::<32>("resource_id")?,
-            hash: buf.array::<32>("hash")?,
-        })
-    }
-
-    /// Encodes the full wire format: `resource_index(4) + resource_id(32) + hash(32)`.
-    pub fn encode(&self, w: &mut impl Writer) {
-        w.write(&self.resource_index.to_le_bytes());
-        self.encode_pre_indexed(w);
-    }
-
-    /// Encodes without the index: `resource_id(32) + hash(32)`.
-    pub fn encode_pre_indexed(&self, w: &mut impl Writer) {
-        w.write(self.resource_id);
-        w.write(self.hash);
+impl InputResourceCommitment {
+    /// Encodes a resource's input commitment to the journal.
+    pub fn encode(w: &mut impl Writer, r: &Resource<'_>) {
+        let data = r.data();
+        let hash = if data.is_empty() { EMPTY_HASH } else { *blake3::hash(data).as_bytes() };
+        w.write(&r.index().to_le_bytes());
+        w.write(r.id().as_slice());
+        w.write(&hash);
     }
 }

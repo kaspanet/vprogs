@@ -1,5 +1,4 @@
 use alloc::vec::Vec;
-use core::mem::size_of;
 
 use vprogs_core_codec::{Error, Reader, Result};
 use zerocopy::{Immutable, IntoBytes, KnownLayout, TryFromBytes};
@@ -16,8 +15,6 @@ pub struct AccessMetadata {
 }
 
 impl AccessMetadata {
-    pub const WIRE_SIZE: usize = size_of::<Self>();
-
     /// Constructs a read access entry for `resource_id`.
     pub fn read(resource_id: ResourceId) -> Self {
         Self { resource_id, access_type: AccessType::Read }
@@ -28,13 +25,9 @@ impl AccessMetadata {
         Self { resource_id, access_type: AccessType::Write }
     }
 
-    /// Decodes a length-prefixed list zero-copy, verifying strict-ascending order by
-    /// `resource_id`.
+    /// Decodes a length-prefixed list zero-copy, verifying strict-ascending order by `resource_id`.
     pub fn decode_slice<'a>(buf: &mut &'a [u8]) -> Result<&'a [Self]> {
-        let count = buf.le_u32("access_metadata_count")? as usize;
-        let bytes = buf.bytes(count * Self::WIRE_SIZE, "access_metadata_entries")?;
-
-        let view = <[Self]>::try_ref_from_bytes(bytes)?;
+        let view = buf.slice_as::<Self>("access_metadata")?;
         for w in view.windows(2) {
             if w[0].resource_id >= w[1].resource_id {
                 return Err(Error::Decode("access metadata not strictly ascending"));

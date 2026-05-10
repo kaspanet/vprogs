@@ -56,7 +56,6 @@ pub mod transaction_processor {
             pub(crate) mod commitment;
             pub(crate) mod execution_context;
             pub(crate) mod resource_commitment;
-            pub(crate) mod resource_commitments;
         }
 
         pub(crate) mod output {
@@ -78,7 +77,6 @@ pub mod transaction_processor {
         input::{
             commitment::InputCommitment, execution_context::ExecutionContext,
             resource_commitment::InputResourceCommitment,
-            resource_commitments::InputResourceCommitments,
         },
         output::{
             commitment::OutputCommitment, resource_commitment::OutputResourceCommitment,

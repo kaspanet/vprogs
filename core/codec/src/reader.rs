@@ -74,6 +74,16 @@ pub trait Reader<'a> {
         Ok(T::try_ref_from_bytes(self.bytes(size_of::<T>(), field)?)?)
     }
 
+    /// Reads a u32 LE count, then `count * size_of::<T>` bytes cast to a `&[T]`.
+    fn slice_as<T: TryFromBytes + KnownLayout + Immutable>(
+        &mut self,
+        field: &'static str,
+    ) -> Result<&'a [T]> {
+        let count = self.le_u32(field)? as usize;
+        let bytes = self.bytes(count * size_of::<T>(), field)?;
+        Ok(<[T]>::try_ref_from_bytes(bytes)?)
+    }
+
     /// Reads a length-prefixed byte blob: `len(4 LE) + bytes(len)`.
     fn blob(&mut self, field: &'static str) -> Result<&'a [u8]> {
         let len = self.le_u32(field)? as usize;
