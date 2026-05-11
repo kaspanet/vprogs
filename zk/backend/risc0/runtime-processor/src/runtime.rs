@@ -1,4 +1,5 @@
-//! Top-level handler invoked by `Guest::process_transaction`.
+//! Core transaction handler, wrapped by `main` into the ABI `TransactionHandler`
+//! shape passed to `process_transaction`.
 
 use vprogs_zk_abi::{
     Error as AbiError, Result as AbiResult,
@@ -25,21 +26,16 @@ use crate::{
 /// replay a tx_id digest as a runtime sig.
 pub const KEY_SIG_MSG_V1: [u8; 32] = *b"RuntimeSigMessageV1\0\0\0\0\0\0\0\0\0\0\0\0\0";
 
-pub fn run<'a>(
-    tx: &Transaction<'a>,
-    _tx_index: u32,
-    _context_hash: &'a [u8; 32],
-    resources: &mut [Resource<'a>],
-) -> AbiResult<()> {
-    // Only V1 transactions are supported (the witness format is V1-specific).
-    let current_rest_preimage = match tx {
-        Transaction::V1 { rest_preimage, .. } => *rest_preimage,
-        Transaction::V0 { .. } => {
-            return Err(AbiError::Decode("runtime: V0 transactions not supported".into()));
-        }
-    };
-
-    let payload = tx.payload();
+/// Verifies signers against resource locks and applies the decoded actions.
+///
+/// `main` adapts this into the ABI [`TransactionHandler`] shape; the merge_idx,
+/// context hash, and exit sink it also receives are unused by the runtime.
+///
+/// [`TransactionHandler`]: vprogs_zk_abi::transaction_processor::TransactionHandler
+pub fn run<'a>(tx: &Transaction<'a>, resources: &mut [Resource<'a>]) -> AbiResult<()> {
+    // The witness format is V1-specific; the ABI only decodes V1 transactions.
+    let current_rest_preimage = tx.rest_preimage;
+    let payload = &tx.payload;
     let DecodedIx { signers, actions, end_of_actions_in_ix } =
         decode_ix(payload.ix_data, resources.len())?;
 
@@ -53,7 +49,7 @@ pub fn run<'a>(
 
     // Resolve signers → AuthContext. Entries are pushed in wire order. The
     // wire format must already be `(resource_idx asc, pubkey asc within
-    // resource)` — `decode_ix` enforces the resource_idx ordering, and the
+    // resource)`; `decode_ix` enforces the resource_idx ordering, and the
     // lock matchers (`SchnorrLockView`, `MultisigLockView`) reject malformed
     // per-resource slices at match time rather than silently re-sorting.
     let auth_ctx = resolve_signers(
@@ -73,7 +69,7 @@ pub fn run<'a>(
     Ok(())
 }
 
-/// `M = blake3_keyed(KEY_SIG_MSG_V1, rest_preimage || payload_presig)` — the
+/// `M = blake3_keyed(KEY_SIG_MSG_V1, rest_preimage || payload_presig)`: the
 /// 32-byte digest a BIP-340 schnorr signer commits to. Off-chain signers must
 /// produce the exact same blake3 keyed-hash input. Exposed publicly so test
 /// harnesses sign against the same function the guest verifies (no drift).
@@ -92,8 +88,8 @@ pub fn compute_sig_message(rest_preimage: &[u8], payload_presig: &[u8]) -> [u8; 
 /// wire signer list is required to already be `(resource_idx asc, pubkey asc
 /// within resource)`. `decode_ix` enforces the outer (resource_idx) ordering;
 /// the inner (pubkey) ordering is verified by the lock matchers when they
-/// slice the per-resource bucket. A malformed bucket — duplicates, wrong
-/// order, or extras for a single-key lock — is rejected by the matcher and
+/// slice the per-resource bucket. A malformed bucket (duplicates, wrong
+/// order, or extras for a single-key lock) is rejected by the matcher and
 /// surfaces as `lock not satisfied`.
 ///
 /// Multisig contributions are *aggregated* per `resource_idx`: each
@@ -101,7 +97,7 @@ pub fn compute_sig_message(rest_preimage: &[u8], payload_presig: &[u8]) -> [u8; 
 /// `MultisigUnlocker.pubkeys` Vec for its resource. Since `decode_ix`
 /// guarantees signers are sorted by `resource_idx`, a contiguous run of
 /// multisig signers for the same resource lands in the same aggregated
-/// entry — no map lookup or sort.
+/// entry (no map lookup or sort).
 fn resolve_signers<'a>(
     signers: &[(u8, SignerEnum<'a>)],
     ctx: &SignerResolveContext<'a>,
@@ -132,7 +128,12 @@ fn resolve_signers<'a>(
                 let u = ImageProofSigner::resolve(s, resource_idx, ctx)?;
                 auth.preimage.push((resource_idx, u));
             }
-            SignerEnum::_Phantom(_) => unreachable!("phantom variant"),
+            SignerEnum::_Phantom(_) => {
+                // `_Phantom` is never constructed by `decode_signer`; this
+                // arm exists only to consume the lifetime parameter. Return
+                // a defensive error instead of panicking.
+                return Err(AbiError::Decode("runtime: phantom signer variant".into()));
+            }
         }
     }
 
@@ -141,7 +142,7 @@ fn resolve_signers<'a>(
 
 /// Appends `contrib`'s pubkeys into the multisig bucket entry for
 /// `resource_idx`, creating the entry if absent. Wire signers are sorted by
-/// `resource_idx` (decode_ix invariant), so the target entry — if present —
+/// `resource_idx` (decode_ix invariant), so the target entry, if present,
 /// is always the last one in the bucket; this avoids any map lookup.
 pub(crate) fn append_multisig_contrib(
     bucket: &mut alloc::vec::Vec<(u8, MultisigUnlocker)>,
@@ -163,7 +164,7 @@ mod tests {
 
     use super::*;
 
-    // —— Sig-message digest ————————————————————————————————————————————————
+    // Sig-message digest
 
     #[test]
     fn sig_msg_is_keyed_blake3_of_concat() {
@@ -201,7 +202,7 @@ mod tests {
 
     #[test]
     fn sig_msg_concat_order_matters() {
-        // The two halves of the input are not commutative — `rp || pp` and
+        // The two halves of the input are not commutative; `rp || pp` and
         // `pp || rp` produce different digests for non-equal inputs.
         let a = compute_sig_message(b"left", b"right");
         let b = compute_sig_message(b"right", b"left");
@@ -210,7 +211,7 @@ mod tests {
 
     #[test]
     fn sig_msg_split_invariance() {
-        // Splitting the second argument across two calls is forbidden — the
+        // Splitting the second argument across two calls is forbidden; the
         // function commits to (rp, pp) as two distinct fields. This is what
         // lets the test harness keep `rest_preimage` and `payload_presig`
         // separate without an ambiguity-prone glue byte.
@@ -226,7 +227,7 @@ mod tests {
         assert_eq!(split, combined);
     }
 
-    // —— Multisig aggregator ————————————————————————————————————————————
+    // Multisig aggregator
 
     #[test]
     fn multisig_aggregator_appends_to_existing_entry_for_same_resource() {
@@ -267,7 +268,7 @@ mod tests {
     #[test]
     fn multisig_aggregator_preserves_wire_order_within_resource() {
         // Order of pubkeys in the aggregated list mirrors the order of
-        // append calls — no sort. Matchers reject if not strict-asc.
+        // append calls; no sort. Matchers reject if not strict-asc.
         let mut bucket = Vec::new();
         for pk in [[0x03u8; 32], [0x01u8; 32], [0x02u8; 32]] {
             append_multisig_contrib(&mut bucket, 7, MultisigUnlocker { pubkeys: alloc::vec![pk] });

@@ -2,15 +2,15 @@
 //! `impl Lock`; the dispatcher in `crate::lock` matches on the tag byte and
 //! routes into one of these.
 //!
-//! `try_unlock` is **strict** about the per-resource unlocker slice — the
+//! `try_unlock` is **strict** about the per-resource unlocker slice; the
 //! wire format must already deliver the canonical shape, and matchers reject
 //! anything malformed rather than silently re-sorting:
 //! - `SchnorrLockView` accepts exactly one unlocker for its resource.
-//! - `MultisigLockView` consumes the *aggregated* contribution for its
-//!   resource (`MultisigUnlocker { pubkeys }`); the contribution list must be
-//!   strictly ascending in lex order so the merge walk's invariants hold.
-//! - `PreimageLockView` (gated on `experimental-image-lock`) accepts exactly
-//!   one unlocker (the signer's `resolve` already verified the inner receipt).
+//! - `MultisigLockView` consumes the *aggregated* contribution for its resource (`MultisigUnlocker
+//!   { pubkeys }`); the contribution list must be strictly ascending in lex order so the merge
+//!   walk's invariants hold.
+//! - `PreimageLockView` (gated on `experimental-image-lock`) accepts exactly one unlocker (the
+//!   signer's `resolve` already verified the inner receipt).
 
 use alloc::vec::Vec;
 use core::cmp::Ordering;
@@ -67,7 +67,7 @@ impl<'a> Lock<'a> for SchnorrLockView<'a> {
     }
 }
 
-/// Hard cap on multisig list size — bounds wire size and pre-allocated state.
+/// Hard cap on multisig list size; bounds wire size and pre-allocated state.
 pub const MULTISIG_MAX_PUBKEYS: u8 = 16;
 
 /// M-of-N Schnorr-keys lock. Body: `u8 threshold || u8 n_pubkeys || [u8; 32 * n_pubkeys]`.
@@ -88,7 +88,11 @@ impl<'a> MultisigLockView<'a> {
     }
 
     pub fn iter_pubkeys(&self) -> impl Iterator<Item = &'a [u8; 32]> + 'a {
-        self.pubkeys.chunks_exact(32).map(|c| <&[u8; 32]>::try_from(c).unwrap())
+        // `as_chunks::<32>` yields `&[[u8; 32]]` directly; no try_into/unwrap.
+        // The trailing remainder slice is dropped; the decoder's
+        // `n_pubkeys * 32` length check ensures it's always empty.
+        let (chunks, _rem) = self.pubkeys.as_chunks::<32>();
+        chunks.iter()
     }
 }
 
@@ -136,7 +140,7 @@ impl<'a> Lock<'a> for MultisigLockView<'a> {
             return false;
         }
         let contrib = &slice[0].1.pubkeys;
-        // Contributions must be strictly ascending in lex pubkey order — this
+        // Contributions must be strictly ascending in lex pubkey order; this
         // is the merge walk's precondition. `runtime::resolve_signers` does
         // not sort/dedup, so we verify here and reject if violated.
         if !is_strictly_ascending(contrib) {
@@ -258,7 +262,7 @@ mod tests {
         MultisigUnlocker { pubkeys }
     }
 
-    // —— Schnorr lock ——————————————————————————————————————————————————
+    // Schnorr lock
 
     #[test]
     fn schnorr_round_trip() {
@@ -324,7 +328,7 @@ mod tests {
         assert!(lock.try_unlock(0, &bucket));
     }
 
-    // —— Multisig lock ——————————————————————————————————————————————————
+    // Multisig lock
 
     fn build_multisig_body(threshold: u8, pks: &[[u8; 32]]) -> Vec<u8> {
         let mut out = Vec::new();
@@ -480,7 +484,7 @@ mod tests {
         assert!(!lock.try_unlock(0, &bucket));
     }
 
-    // —— Unlocked lock ——————————————————————————————————————————————————
+    // Unlocked lock
 
     #[test]
     fn unlocked_always_passes() {
@@ -500,7 +504,7 @@ mod tests {
         let _ = UnlockedLockView::decode(&mut buf).unwrap();
     }
 
-    // —— Preimage lock (gated) —————————————————————————————————————————
+    // Preimage lock (gated)
     #[cfg(feature = "experimental-image-lock")]
     mod preimage {
         use super::*;

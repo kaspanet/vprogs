@@ -21,9 +21,9 @@ pub enum LockEnum<'a> {
     Schnorr(SchnorrLockView<'a>),
     Multisig(MultisigLockView<'a>),
     Unlocked(UnlockedLockView),
-    /// **Unsound under the current threat model — gated.** A real
+    /// **Unsound under the current threat model; gated.** A real
     /// implementation must verify the inner receipt *in-guest* with a real
-    /// verifier (e.g. native groth16) — `risc0_zkvm::guest::env::verify`'s
+    /// verifier (e.g. native groth16); `risc0_zkvm::guest::env::verify`'s
     /// host-attached assumption can be forged by an adversarial host.
     #[cfg(feature = "experimental-image-lock")]
     Preimage(PreimageLockView<'a>),
@@ -82,9 +82,42 @@ impl<'a> LockEnum<'a> {
         }
     }
 
+    /// Writes the body bytes (no tag) into `out`. `out.len()` must equal
+    /// `self.wire_body_len()`. Shared by config and user wire writers so the
+    /// body encoding lives in exactly one place.
+    pub fn write_body(&self, out: &mut [u8]) {
+        match self {
+            LockEnum::Schnorr(SchnorrLockView { pubkey }) => out.copy_from_slice(*pubkey),
+            LockEnum::Multisig(m) => {
+                out[0] = m.threshold;
+                out[1] = m.n_pubkeys();
+                out[2..].copy_from_slice(m.pubkeys);
+            }
+            LockEnum::Unlocked(_) => debug_assert!(out.is_empty()),
+            #[cfg(feature = "experimental-image-lock")]
+            LockEnum::Preimage(p) => {
+                out[..32].copy_from_slice(p.image_id);
+                out[32..].copy_from_slice(p.data_image);
+            }
+        }
+    }
+
+    /// Stable 32-byte identity hash of this lock: `blake3(tag || body)`.
+    /// Dispatches to the variant's `Lock::id_hash`. See `Lock::id_hash` for
+    /// the contract (used to derive user-resource addresses).
+    pub fn id_hash(&self) -> [u8; 32] {
+        match self {
+            LockEnum::Schnorr(l) => l.id_hash(),
+            LockEnum::Multisig(l) => l.id_hash(),
+            LockEnum::Unlocked(l) => l.id_hash(),
+            #[cfg(feature = "experimental-image-lock")]
+            LockEnum::Preimage(l) => l.id_hash(),
+        }
+    }
+
     /// Picks the right unlocker bucket from `ctx` and dispatches to the
     /// concrete `Lock::try_unlock` impl. Each lock kind has its own
-    /// dedicated `AuthContext` field — Multisig does *not* share Schnorr's
+    /// dedicated `AuthContext` field; Multisig does *not* share Schnorr's
     /// bucket, so a Schnorr-targeted unlocker can never accidentally
     /// satisfy a Multisig lock.
     pub fn unlock(&self, resource_idx: u8, ctx: &AuthContext) -> bool {
@@ -136,7 +169,7 @@ mod tests {
     #[test]
     fn dispatcher_does_not_satisfy_multisig_from_schnorr_bucket() {
         // A Schnorr-targeted unlocker landing in `ctx.schnorr` must NOT
-        // satisfy a Multisig lock — the buckets are typed separately.
+        // satisfy a Multisig lock; the buckets are typed separately.
         let pks = [[0x01u8; 32], [0x02u8; 32]];
         let body: Vec<u8> = {
             let mut v = Vec::new();
@@ -193,5 +226,73 @@ mod tests {
         let bytes = [0xFFu8, 0x00, 0x00];
         let mut buf: &[u8] = &bytes;
         assert!(decode_lock(&mut buf).is_err());
+    }
+
+    // Lock identity hash (Lock::id_hash)
+
+    #[test]
+    fn id_hash_matches_blake3_of_tag_and_body() {
+        // The canonical id-hash input is `tag || body`: same bytes the wire
+        // dispatcher produces via `LockEnum::encode`.
+        let pubkey = [0x77u8; 32];
+        let lock = LockEnum::Schnorr(SchnorrLockView { pubkey: &pubkey });
+
+        let mut canonical = Vec::new();
+        lock.encode(&mut canonical);
+        let expected = *blake3::hash(&canonical).as_bytes();
+        assert_eq!(lock.id_hash(), expected);
+    }
+
+    #[test]
+    fn id_hash_is_deterministic_across_calls() {
+        let pubkey = [0x42u8; 32];
+        let lock = LockEnum::Schnorr(SchnorrLockView { pubkey: &pubkey });
+        assert_eq!(lock.id_hash(), lock.id_hash());
+    }
+
+    #[test]
+    fn id_hash_distinguishes_variants_by_tag_prefix() {
+        // Two locks whose bodies happen to coincide as bytes still produce
+        // distinct id-hashes because the tag prefix differs.
+        let schnorr = LockEnum::Schnorr(SchnorrLockView { pubkey: &[0u8; 32] });
+        let unlocked = LockEnum::Unlocked(UnlockedLockView);
+        assert_ne!(schnorr.id_hash(), unlocked.id_hash());
+    }
+
+    #[test]
+    fn id_hash_changes_with_pubkey() {
+        let a = LockEnum::Schnorr(SchnorrLockView { pubkey: &[0x01u8; 32] });
+        let b = LockEnum::Schnorr(SchnorrLockView { pubkey: &[0x02u8; 32] });
+        assert_ne!(a.id_hash(), b.id_hash());
+    }
+
+    #[test]
+    fn id_hash_changes_with_multisig_threshold() {
+        let pks = [[0x01u8; 32], [0x02u8; 32], [0x03u8; 32]];
+        let body: Vec<u8> = {
+            let mut v = Vec::new();
+            v.push(2); // threshold
+            v.push(3); // n
+            for p in &pks {
+                v.extend_from_slice(p);
+            }
+            v
+        };
+        let mut buf: &[u8] = &body;
+        let m2 = LockEnum::Multisig(MultisigLockView::decode(&mut buf).unwrap());
+
+        let body3: Vec<u8> = {
+            let mut v = Vec::new();
+            v.push(3); // different threshold
+            v.push(3);
+            for p in &pks {
+                v.extend_from_slice(p);
+            }
+            v
+        };
+        let mut buf3: &[u8] = &body3;
+        let m3 = LockEnum::Multisig(MultisigLockView::decode(&mut buf3).unwrap());
+
+        assert_ne!(m2.id_hash(), m3.id_hash());
     }
 }

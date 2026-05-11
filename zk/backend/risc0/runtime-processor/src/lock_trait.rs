@@ -24,6 +24,21 @@ pub trait Lock<'a>: Sized {
 
     /// Returns `true` if `unlockers` (a sorted `(resource_idx, unlocker)`
     /// bucket) contains enough entries with `resource_idx == this resource`
-    /// to satisfy this lock. The impl filters inline — no allocation.
+    /// to satisfy this lock. The impl filters inline; no allocation.
     fn try_unlock(&self, resource_idx: u8, unlockers: &[(u8, Self::Unlocker)]) -> bool;
+
+    /// Stable identity hash for this lock. Used to derive the user-resource
+    /// address (`derive_user_resource`) and recorded in `UserRaw::initial_lock_hash`
+    /// so the address can be re-validated against a (possibly rotated) lock.
+    ///
+    /// Canonical form is `[Self::TAG || encode()]`: same bytes the wire
+    /// dispatcher in `crate::lock` would produce. The tag prefix prevents
+    /// cross-variant collisions (e.g. a Schnorr body that happens to alias
+    /// the leading bytes of a Multisig body).
+    fn id_hash(&self) -> [u8; 32] {
+        let mut buf = Vec::with_capacity(1 + self.wire_body_len());
+        buf.push(Self::TAG);
+        self.encode(&mut buf);
+        *blake3::hash(&buf).as_bytes()
+    }
 }

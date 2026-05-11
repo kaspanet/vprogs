@@ -92,7 +92,7 @@ pub fn parse_output_at_index_v1<'a>(
         let value = buf.le_u64("output.value")?;
         let spk_version = buf.le_u16("output.spk_version")?;
         // Kaspa's `write_var_bytes` (consensus/core/src/hashing/mod.rs) emits
-        // a u64 length prefix, not u32 — so we can't use `blob` here, which
+        // a u64 length prefix, not u32, so we can't use `blob` here, which
         // reads u32. Length is bounded by tx size; cast is safe on 32/64-bit
         // hosts because the slice length below is checked against `buf.len()`
         // inside `bytes`.
@@ -107,7 +107,10 @@ pub fn parse_output_at_index_v1<'a>(
             return Ok(OutputData { value, spk_version, spk });
         }
     }
-    unreachable!("loop returns when i == output_index")
+    // Loop body always returns on `i == output_index`; this path is
+    // unreachable in correct control flow. Return a defensive error rather
+    // than panicking; keeps the no-panic invariant in the guest.
+    Err(Error::Decode("rest_preimage: output loop fell through"))
 }
 
 /// Skips the trailing fields after outputs (lock_time, subnetwork_id, gas,

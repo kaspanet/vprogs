@@ -8,7 +8,7 @@
 //! - [`MultisigSchnorrSigPtrSigner`] (TAG=0x03) → `MultisigUnlocker` contribution.
 //! - [`MultisigPrevTxV1WitnessSigner`] (TAG=0x04) → `MultisigUnlocker` contribution.
 //!
-//! Behind `experimental-image-lock` (off by default and unsound — see the
+//! Behind `experimental-image-lock` (off by default and unsound; see the
 //! feature comment in `Cargo.toml`):
 //! - [`ImageProofSigner`] (TAG=0x05) → `PreimageUnlocker`.
 
@@ -22,15 +22,17 @@ use crate::{
     auth::{recover_prev_tx_v1_p2pk_pubkey, verify_k256_schnorr_sig},
     auth_context::{MultisigUnlocker, SchnorrUnlocker},
     config::ConfigView,
+    kind::{KIND_CONFIG, KIND_USER, kind_of},
     lock::LockEnum,
     lock_variants::SchnorrLockView,
     signer_trait::{Signer, SignerResolveContext},
+    user::UserView,
 };
 
-// —— Single-key Schnorr signers ——————————————————————————————————————————
+// Single-key Schnorr signers
 
 /// Schnorr-signature-by-pointer signer for a single-key (Schnorr) lock.
-/// Body: `u32 sig_offset` — offset into `payload_bytes` of the 64-byte
+/// Body: `u32 sig_offset`, offset into `payload_bytes` of the 64-byte
 /// BIP-340 signature.
 ///
 /// A Schnorr lock has exactly one pubkey, so no `pubkey_idx` is needed.
@@ -111,7 +113,7 @@ impl<'a> Signer<'a> for PrevTxV1WitnessSigner {
     }
 }
 
-// —— Multisig signers ————————————————————————————————————————————————————
+// Multisig signers
 
 /// Schnorr-signature-by-pointer contribution to a Multisig lock. Body:
 /// ```text
@@ -188,17 +190,17 @@ impl<'a> Signer<'a> for MultisigPrevTxV1WitnessSigner {
     }
 }
 
-// —— Preimage signer ————————————————————————————————————————————————————
+// Preimage signer
 
 /// Discharges a `PreimageLockView`'s assumption via in-guest receipt
-/// verification. Empty wire body — both `image_id` and `data_image` are read
+/// verification. Empty wire body; both `image_id` and `data_image` are read
 /// from the lock at `resource_idx`.
 ///
 /// **Gated behind `experimental-image-lock` and currently unsound.** The
 /// `resolve` impl below MUST NOT use `risc0_zkvm::guest::env::verify`: that
 /// function only declares an assumption that the host attaches a matching
 /// receipt at proving time, and the host is adversarial in our threat model
-/// — the assumption can be forged. A correct implementation has to verify
+/// the assumption can be forged. A correct implementation has to verify
 /// the inner receipt *in-guest* with a real verifier (e.g. a native groth16
 /// verifier wired into the guest's constraint system). Until that's wired
 /// up, this whole signer kind is compiled out so the default build can't
@@ -217,35 +219,22 @@ impl<'a> Signer<'a> for ImageProofSigner {
 
     fn resolve(
         &self,
-        resource_idx: u8,
-        ctx: &SignerResolveContext<'a>,
+        _resource_idx: u8,
+        _ctx: &SignerResolveContext<'a>,
     ) -> CodecResult<PreimageUnlocker> {
-        // Confirm the resource is actually a Preimage lock so the prover
-        // can't aim an ImageProof signer at e.g. a Schnorr resource.
-        let resource = ctx
-            .resources
-            .get(resource_idx as usize)
-            .ok_or(Error::Decode("signer.image_proof: resource_idx out of range"))?;
-        let cur = ConfigView::from_bytes(resource.data()).map_err(Error::Decode)?;
-        let LockEnum::Preimage(_) = cur.lock() else {
-            return Err(Error::Decode(
-                "signer.image_proof: target resource is not a Preimage lock",
-            ));
-        };
-
         // TODO: real in-guest receipt verifier (e.g. native groth16) over the
-        // lock's `image_id` / `data_image`. **Do not** call
-        // `risc0_zkvm::guest::env::verify` here — see the type-level comment
-        // above for why an assumption-based discharge is unsound.
-        unimplemented!(
-            "ImageProofSigner needs a real in-guest verifier (groth16-class). \
-             env::verify is unsound: an adversarial host can forge the \
-             assumption."
-        )
+        // target resource's lock body (`image_id` / `data_image`). **Do not**
+        // call `risc0_zkvm::guest::env::verify` here; an assumption-based
+        // discharge is unsound under our adversarial-host threat model. Until
+        // a real verifier is wired up, this whole arm refuses cleanly so any
+        // tx that hits it is rejected (never panicked) in the guest.
+        Err(Error::Decode(
+            "signer.image_proof: in-guest verifier not implemented (env::verify is unsound)",
+        ))
     }
 }
 
-// —— Shared helpers ——————————————————————————————————————————————————————
+// Shared helpers
 
 /// Reads `payload_bytes[sig_offset..sig_offset+64]` as a 64-byte signature.
 fn read_sig_at_offset<'a, 'ctx>(
@@ -253,27 +242,32 @@ fn read_sig_at_offset<'a, 'ctx>(
     ctx: &'ctx SignerResolveContext<'a>,
 ) -> CodecResult<&'ctx [u8; 64]> {
     let off = sig_offset as usize;
-    let bytes = ctx
-        .payload_bytes
-        .get(off..off.saturating_add(64))
-        .ok_or(Error::Decode("signer: sig_offset out of range"))?;
-    Ok(bytes.try_into().unwrap())
+    // `first_chunk::<64>()` is the safe length-checked cast: no try_into +
+    // unwrap, no separate length check.
+    ctx.payload_bytes
+        .get(off..)
+        .and_then(|b| b.first_chunk::<64>())
+        .ok_or(Error::Decode("signer: sig_offset out of range"))
 }
 
 /// Reads the 32-byte pubkey from a Schnorr lock at `resource_idx`. Errors if
-/// the resource isn't a Schnorr lock.
-fn read_schnorr_lock_pubkey<'a>(
+/// the resource isn't a Schnorr lock. Dispatches on the resource's kind byte
+/// so it works for any kind that carries a `LockEnum` tail (Config, User, …).
+fn read_schnorr_lock_pubkey(
     resource_idx: u8,
-    ctx: &SignerResolveContext<'a>,
+    ctx: &SignerResolveContext<'_>,
 ) -> CodecResult<[u8; 32]> {
     let resource = ctx
         .resources
         .get(resource_idx as usize)
         .ok_or(Error::Decode("signer: resource_idx out of range"))?;
-    // TODO: generalize when more resource types exist; config is the only
-    // resource shape today.
-    let cur = ConfigView::from_bytes(resource.data()).map_err(Error::Decode)?;
-    match cur.lock() {
+    let data = resource.data();
+    let lock = match kind_of(data) {
+        Some(KIND_CONFIG) => ConfigView::from_bytes(data).map_err(Error::Decode)?.lock(),
+        Some(KIND_USER) => UserView::from_bytes(data).map_err(Error::Decode)?.lock(),
+        _ => return Err(Error::Decode("signer: unknown or absent resource kind")),
+    };
+    match lock {
         LockEnum::Schnorr(SchnorrLockView { pubkey }) => Ok(*pubkey),
         _ => Err(Error::Decode("signer.schnorr: target resource is not a Schnorr lock")),
     }
@@ -281,18 +275,23 @@ fn read_schnorr_lock_pubkey<'a>(
 
 /// Reads the 32-byte pubkey at `pubkey_idx` from a Multisig lock at
 /// `resource_idx`. Errors if the resource isn't a Multisig lock or the index
-/// is out of range.
-fn read_multisig_lock_pubkey_at<'a>(
+/// is out of range. Dispatches on the kind byte like `read_schnorr_lock_pubkey`.
+fn read_multisig_lock_pubkey_at(
     resource_idx: u8,
     pubkey_idx: u8,
-    ctx: &SignerResolveContext<'a>,
+    ctx: &SignerResolveContext,
 ) -> CodecResult<[u8; 32]> {
     let resource = ctx
         .resources
         .get(resource_idx as usize)
         .ok_or(Error::Decode("signer: resource_idx out of range"))?;
-    let cur = ConfigView::from_bytes(resource.data()).map_err(Error::Decode)?;
-    let LockEnum::Multisig(m) = cur.lock() else {
+    let data = resource.data();
+    let lock = match kind_of(data) {
+        Some(KIND_CONFIG) => ConfigView::from_bytes(data).map_err(Error::Decode)?.lock(),
+        Some(KIND_USER) => UserView::from_bytes(data).map_err(Error::Decode)?.lock(),
+        _ => return Err(Error::Decode("signer: unknown or absent resource kind")),
+    };
+    let LockEnum::Multisig(m) = lock else {
         return Err(Error::Decode(
             "signer.multisig_schnorr: target resource is not a Multisig lock",
         ));
@@ -301,17 +300,25 @@ fn read_multisig_lock_pubkey_at<'a>(
         return Err(Error::Decode("signer.multisig_schnorr: pubkey_idx out of range"));
     }
     let off = (pubkey_idx as usize) * 32;
-    Ok(m.pubkeys[off..off + 32].try_into().unwrap())
+    // pubkey_idx is bounds-checked against n_pubkeys; the slice has length
+    // `n_pubkeys * 32`. Use `first_chunk::<32>` to express the cast without
+    // panicking primitives.
+    let arr: &[u8; 32] = m
+        .pubkeys
+        .get(off..)
+        .and_then(|b| b.first_chunk::<32>())
+        .ok_or(Error::Decode("signer.multisig_schnorr: pubkey slice oob"))?;
+    Ok(*arr)
 }
 
 /// Recovers a P2PK pubkey from a prev-tx V1 witness pointer. Shared by both
 /// the single-key and multisig witness signers.
-fn recover_witness_pubkey<'a>(
+fn recover_witness_pubkey(
     input_idx: u8,
     rest_preimage_offset: u32,
     rest_preimage_len: u32,
     payload_digest_offset: u32,
-    ctx: &SignerResolveContext<'a>,
+    ctx: &SignerResolveContext,
 ) -> CodecResult<[u8; 32]> {
     let rp_off = rest_preimage_offset as usize;
     let rp_len = rest_preimage_len as usize;
@@ -321,11 +328,11 @@ fn recover_witness_pubkey<'a>(
         .ok_or(Error::Decode("signer.witness: rest_preimage range out of bounds"))?;
 
     let pd_off = payload_digest_offset as usize;
-    let pd_bytes = ctx
+    let payload_digest: &[u8; 32] = ctx
         .payload_bytes
-        .get(pd_off..pd_off.saturating_add(32))
+        .get(pd_off..)
+        .and_then(|b| b.first_chunk::<32>())
         .ok_or(Error::Decode("signer.witness: payload_digest range out of bounds"))?;
-    let payload_digest: &[u8; 32] = pd_bytes.try_into().unwrap();
 
     let recovered = recover_prev_tx_v1_p2pk_pubkey(
         ctx.current_rest_preimage,

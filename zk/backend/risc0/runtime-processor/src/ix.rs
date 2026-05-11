@@ -10,7 +10,7 @@
 //!
 //! Resources (and their `AccessMetadata`) arrive ordered by `resource_id`
 //! (asserted at decode in the ABI layer). To let program logic address
-//! resources in the order *it* needs — independent of id ordering — every
+//! resources in the order *it* needs (independent of id ordering), every
 //! action body carries explicit `u8` index(es) into the resource list. Today
 //! both `Update` and `Init` operate on a single resource and so carry a single
 //! leading `updater_idx: u8`; future variants may carry more or
@@ -18,7 +18,7 @@
 //! the resource count and the action is rejected as malformed otherwise.
 //!
 //! The signed-message prefix for a Schnorr signer is
-//! `payload.bytes[..end_of_actions]` — i.e. everything up to but not including
+//! `payload.bytes[..end_of_actions]`: i.e. everything up to but not including
 //! the tail. Signers commit to access metadata, signer pointers, and actions,
 //! but not to the tail bytes (which contain their own signatures). This
 //! breaks the circularity of "signing over your own signature" and lets a
@@ -26,7 +26,7 @@
 //!
 //! Signers must appear sorted by `resource_idx` (non-strict; multisig allows
 //! multiple signers per resource). Within a resource no further wire ordering
-//! is enforced — `runtime::resolve_signers` post-sorts the resolved unlocker
+//! is enforced; `runtime::resolve_signers` post-sorts the resolved unlocker
 //! buckets by pubkey for O(log K) / O(N+M) matching.
 
 use alloc::vec::Vec;
@@ -43,6 +43,16 @@ pub const ACTION_TAG_UPDATE: u8 = 0x01;
 /// Action variant: bootstrap (create) the singleton config resource. Gated by
 /// the hardcoded genesis pubkey at apply time.
 pub const ACTION_TAG_INIT: u8 = 0x02;
+/// Action variant: bootstrap (create) a user resource at its derived address.
+/// The resource id must equal `derive_user_resource(initial_lock.id_hash())`,
+/// and the same `initial_lock` must be satisfied by the auth context.
+pub const ACTION_TAG_USER_INIT: u8 = 0x03;
+/// Action variant: move balance between two user resources. Auth is checked
+/// against the source's current lock; destination is not authed.
+pub const ACTION_TAG_TRANSFER: u8 = 0x04;
+/// Action variant: rotate the lock on a user resource. The current lock must
+/// authorize the rotation; `initial_lock_hash` is preserved.
+pub const ACTION_TAG_UPDATE_USER_LOCK: u8 = 0x05;
 
 /// Read view over a single action entry.
 pub struct ActionView<'a> {
@@ -61,6 +71,21 @@ pub enum ActionBody<'a> {
         /// Index into the resource list of the config resource being created.
         updater_idx: u8,
         new_min_withdrawal_amount: u64,
+        new_lock: LockEnum<'a>,
+    },
+    UserInit {
+        /// Index into the resource list of the user resource being created.
+        user_idx: u8,
+        initial_balance: u64,
+        initial_lock: LockEnum<'a>,
+    },
+    Transfer {
+        source_idx: u8,
+        dest_idx: u8,
+        amount: u64,
+    },
+    UpdateUserLock {
+        user_idx: u8,
         new_lock: LockEnum<'a>,
     },
 }
@@ -122,6 +147,23 @@ fn decode_action<'a>(buf: &mut &'a [u8], n_resources: usize) -> CodecResult<Acti
             let new_min_withdrawal_amount = buf.le_u64("action.init.new_min_withdrawal_amount")?;
             let new_lock = decode_lock(buf)?;
             ActionBody::Init { updater_idx, new_min_withdrawal_amount, new_lock }
+        }
+        ACTION_TAG_USER_INIT => {
+            let user_idx = read_resource_idx(buf, "action.user_init.user_idx", n_resources)?;
+            let initial_balance = buf.le_u64("action.user_init.initial_balance")?;
+            let initial_lock = decode_lock(buf)?;
+            ActionBody::UserInit { user_idx, initial_balance, initial_lock }
+        }
+        ACTION_TAG_TRANSFER => {
+            let source_idx = read_resource_idx(buf, "action.transfer.source_idx", n_resources)?;
+            let dest_idx = read_resource_idx(buf, "action.transfer.dest_idx", n_resources)?;
+            let amount = buf.le_u64("action.transfer.amount")?;
+            ActionBody::Transfer { source_idx, dest_idx, amount }
+        }
+        ACTION_TAG_UPDATE_USER_LOCK => {
+            let user_idx = read_resource_idx(buf, "action.update_user_lock.user_idx", n_resources)?;
+            let new_lock = decode_lock(buf)?;
+            ActionBody::UpdateUserLock { user_idx, new_lock }
         }
         _ => return Err(Error::Decode("action: unknown tag")),
     };
@@ -271,7 +313,7 @@ mod tests {
     /// With three resources declared, every in-range `updater_idx` is accepted.
     /// This is the multi-resource analogue of the single-resource happy path:
     /// the program addresses one of N resources by its position in the
-    /// id-sorted access metadata. The decoder is order-agnostic — it only
+    /// id-sorted access metadata. The decoder is order-agnostic; it only
     /// enforces `updater_idx < n_resources`; mapping idx → semantic resource
     /// is the encoder's job.
     #[test]
@@ -291,7 +333,7 @@ mod tests {
         }
     }
 
-    /// Two actions in one ix can target distinct resources by index — e.g.
+    /// Two actions in one ix can target distinct resources by index, e.g.
     /// updater_idx=0 then updater_idx=2 in a 3-resource set. Mirrors a tx
     /// where the program operates on resources whose id-sorted positions are
     /// non-contiguous.
@@ -315,7 +357,7 @@ mod tests {
         assert_eq!((idx0, idx1), (0, 2));
     }
 
-    /// One bad index in a multi-action stream rejects the whole ix — there's
+    /// One bad index in a multi-action stream rejects the whole ix; there's
     /// no partial decode. Validates that bounds-checking happens inline as
     /// each action is parsed, not as a post-pass.
     #[test]
@@ -329,7 +371,7 @@ mod tests {
     }
 
     /// The decoder doesn't care about the *order* in which actions reference
-    /// resources — only that each idx is in range. A descending (or any
+    /// resources, only that each idx is in range. A descending (or any
     /// permuted) sequence of indices is fine. The same wire format admits all
     /// ordering choices the encoder needs to make.
     #[test]
@@ -361,5 +403,95 @@ mod tests {
 
         let decoded = decode_ix(&ix, 0).unwrap();
         assert_eq!(decoded.end_of_actions_in_ix, end);
+    }
+
+    // UserInit / Transfer / UpdateUserLock decoder arms
+
+    fn user_init_action(user_idx: u8, balance: u64, pk: [u8; 32]) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.push(ACTION_TAG_USER_INIT);
+        body.push(user_idx);
+        body.extend_from_slice(&balance.to_le_bytes());
+        body.push(SchnorrLockView::TAG);
+        body.extend_from_slice(&pk);
+        body
+    }
+
+    fn transfer_action(source: u8, dest: u8, amount: u64) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.push(ACTION_TAG_TRANSFER);
+        body.push(source);
+        body.push(dest);
+        body.extend_from_slice(&amount.to_le_bytes());
+        body
+    }
+
+    fn update_user_lock_action(user_idx: u8, pk: [u8; 32]) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.push(ACTION_TAG_UPDATE_USER_LOCK);
+        body.push(user_idx);
+        body.push(SchnorrLockView::TAG);
+        body.extend_from_slice(&pk);
+        body
+    }
+
+    #[test]
+    fn decode_user_init_action() {
+        let mut ix = 0u32.to_le_bytes().to_vec();
+        ix.extend_from_slice(&1u32.to_le_bytes());
+        ix.extend_from_slice(&user_init_action(0, 1_000, [0xAAu8; 32]));
+
+        let decoded = decode_ix(&ix, 1).unwrap();
+        match &decoded.actions[0].body {
+            ActionBody::UserInit { user_idx, initial_balance, initial_lock } => {
+                assert_eq!(*user_idx, 0);
+                assert_eq!(*initial_balance, 1_000);
+                assert_eq!(initial_lock.tag(), SchnorrLockView::TAG);
+            }
+            _ => panic!("expected UserInit"),
+        }
+    }
+
+    #[test]
+    fn decode_transfer_action() {
+        let mut ix = 0u32.to_le_bytes().to_vec();
+        ix.extend_from_slice(&1u32.to_le_bytes());
+        ix.extend_from_slice(&transfer_action(0, 1, 500));
+
+        let decoded = decode_ix(&ix, 2).unwrap();
+        match &decoded.actions[0].body {
+            ActionBody::Transfer { source_idx, dest_idx, amount } => {
+                assert_eq!(*source_idx, 0);
+                assert_eq!(*dest_idx, 1);
+                assert_eq!(*amount, 500);
+            }
+            _ => panic!("expected Transfer"),
+        }
+    }
+
+    #[test]
+    fn decode_transfer_rejects_out_of_range_index() {
+        let mut ix = 0u32.to_le_bytes().to_vec();
+        ix.extend_from_slice(&1u32.to_le_bytes());
+        // dest_idx = 5 but only 2 resources declared
+        ix.extend_from_slice(&transfer_action(0, 5, 500));
+
+        assert!(decode_ix(&ix, 2).is_err());
+    }
+
+    #[test]
+    fn decode_update_user_lock_action() {
+        let mut ix = 0u32.to_le_bytes().to_vec();
+        ix.extend_from_slice(&1u32.to_le_bytes());
+        ix.extend_from_slice(&update_user_lock_action(0, [0xBBu8; 32]));
+
+        let decoded = decode_ix(&ix, 1).unwrap();
+        match &decoded.actions[0].body {
+            ActionBody::UpdateUserLock { user_idx, new_lock } => {
+                assert_eq!(*user_idx, 0);
+                assert_eq!(new_lock.tag(), SchnorrLockView::TAG);
+            }
+            _ => panic!("expected UpdateUserLock"),
+        }
     }
 }
