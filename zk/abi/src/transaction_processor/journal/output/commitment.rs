@@ -21,17 +21,6 @@ impl<'a> OutputCommitment<'a> {
     /// Wire discriminant for a failed execution.
     pub const ERROR: u8 = 0x01;
 
-    /// Wire size of the encoded output commitment payload.
-    pub fn wire_size(result: &Result<&[Resource<'_>]>) -> usize {
-        // discriminant(1) + variant body.
-        1 + match result {
-            Ok(resources) => {
-                resources.iter().map(OutputResourceCommitment::wire_size).sum::<usize>()
-            }
-            Err(err) => err.wire_size(),
-        }
-    }
-
     /// Decodes an output commitment, advancing `buf` past the consumed bytes.
     pub fn decode(buf: &mut &'a [u8]) -> Result<Self> {
         match buf.byte("discriminant")? {

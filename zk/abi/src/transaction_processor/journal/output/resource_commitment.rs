@@ -17,11 +17,6 @@ impl<'a> OutputResourceCommitment<'a> {
     /// Wire flag: resource data was not modified (no hash follows).
     pub const UNCHANGED: u8 = 0x00;
 
-    /// Wire size of the encoded entry: discriminant(1) + optional hash(32).
-    pub fn wire_size(r: &Resource<'_>) -> usize {
-        if r.is_dirty() { 1 + 32 } else { 1 }
-    }
-
     /// Decodes a single output commitment, advancing `buf` past the consumed bytes.
     pub fn decode(buf: &mut &'a [u8]) -> Result<Self> {
         match buf.byte("flag")? {

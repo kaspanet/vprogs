@@ -20,16 +20,6 @@ impl Error {
     /// Wire discriminant for a decode error.
     const DECODE: u8 = 0x01;
 
-    /// Returns the wire size of the encoded error.
-    pub fn wire_size(&self) -> usize {
-        match self {
-            // discriminant(1) + code(4).
-            Self::Guest(_) => 1 + 4,
-            // discriminant(1) + msg_len(4) + msg(N).
-            Self::Decode(msg) => 1 + 4 + msg.len(),
-        }
-    }
-
     /// Decodes an error, advancing `buf` past the consumed bytes.
     pub fn decode(buf: &mut &[u8]) -> Result<Self> {
         // Dispatch based on discriminant.
