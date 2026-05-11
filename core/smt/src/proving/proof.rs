@@ -12,10 +12,10 @@ use crate::{
 /// Wire format: `n_leaves(4) + leaves(66 each) + n_siblings(4) + siblings(32 each) +
 /// topology_len(4) + topology_bytes`. All counts are LE u32.
 pub struct Proof<'a> {
-    /// Shortcut leaves with depths and key/value hashes (materialized in Vec for O(1) access).
-    pub leaves: Vec<Leaf<'a>>,
-    /// Sibling hashes consumed during traversal (materialized in Vec for O(1) access).
-    pub siblings: Vec<&'a [u8; 32]>,
+    /// Shortcut leaves with depths and key/value hashes.
+    pub leaves: &'a [Leaf],
+    /// Sibling hashes consumed during traversal.
+    pub siblings: &'a [[u8; 32]],
     /// Packed topology bitfield encoding the proof tree structure.
     pub topology: &'a [u8],
 }
@@ -24,15 +24,15 @@ impl<'a> Proof<'a> {
     /// Decodes a multi-proof from a flat byte buffer.
     pub fn decode(mut buf: &'a [u8]) -> Result<Self> {
         Ok(Self {
-            leaves: buf.many("leaves", Leaf::decode)?,
-            siblings: buf.many("siblings", |buf| buf.array::<32>("sibling"))?,
+            leaves: buf.slice_as::<Leaf>("leaves")?,
+            siblings: buf.slice_as::<[u8; 32]>("siblings")?,
             topology: buf.blob("topology")?,
         })
     }
 
     /// Computes the root hash from the proof's own leaf value hashes.
     pub fn root<H: Hasher>(&self) -> Result<[u8; 32]> {
-        Traversal::compute_root::<H>(self, |i| self.leaves[i].value_hash)
+        Traversal::compute_root::<H>(self, |i| &self.leaves[i].value_hash)
     }
 
     /// Computes the root hash using caller-provided value hashes (e.g. after mutations).
@@ -50,13 +50,13 @@ impl<'a> Proof<'a> {
         topology: &[u8],
     ) -> Vec<u8> {
         let mut buf = Vec::with_capacity(
-            4 + leaves.len() * Leaf::SIZE + 4 + siblings.len() * 32 + 4 + topology.len(),
+            4 + leaves.len() * size_of::<Leaf>() + 4 + siblings.len() * 32 + 4 + topology.len(),
         );
 
         // Section 1: leaf entries - each is depth(2) + key(32) + value_hash(32).
         buf.extend_from_slice(&(leaves.len() as u32).to_le_bytes());
-        for &(depth, Commitment { key, value_hash }) in leaves {
-            Leaf::encode(&mut buf, depth, &key, &value_hash);
+        for (depth, Commitment { key, value_hash }) in leaves {
+            Leaf::encode(&mut buf, *depth, key, value_hash);
         }
 
         // Section 2: sibling hashes - each is 32 bytes.

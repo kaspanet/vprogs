@@ -75,7 +75,7 @@ impl<'a> Abi<'a> {
             assert!(res_idx < inputs.proof.leaves.len(), "res_index out of range");
 
             // Scatter values and mapping.
-            value_hashes[res_idx] = inputs.proof.leaves[leaf_pos].value_hash;
+            value_hashes[res_idx] = &inputs.proof.leaves[leaf_pos].value_hash;
             bundle_idx_to_leaf_pos[res_idx] = leaf_pos as u32;
         }
 
@@ -230,7 +230,7 @@ impl<'a> Abi<'a> {
 
         // Check resource id matches.
         let leaf_pos = self.bundle_idx_to_leaf_pos[bundle_idx] as usize;
-        assert_eq!(&*r.resource_id, self.inputs.proof.leaves[leaf_pos].key, "resource_id mismatch");
+        assert_eq!(*r.resource_id, self.inputs.proof.leaves[leaf_pos].key, "resource_id mismatch");
 
         bundle_idx
     }

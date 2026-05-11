@@ -113,7 +113,7 @@ async fn batch_proof_two_transactions() {
     for resource_id in [ResourceId::for_test(1), ResourceId::for_test(2)] {
         let (proof_bytes, _) = storage.prove(&[resource_id], 1).unwrap();
         let smt_proof = vprogs_core_smt::proving::Proof::decode(&proof_bytes).unwrap();
-        assert_eq!(*smt_proof.leaves[0].value_hash, expected_hash);
+        assert_eq!(smt_proof.leaves[0].value_hash, expected_hash);
     }
 
     // --- Second batch: increment counters from 1 to 2 ---
@@ -166,7 +166,7 @@ async fn batch_proof_two_transactions() {
     for resource_id in [ResourceId::for_test(1), ResourceId::for_test(2)] {
         let (proof_bytes, _) = storage.prove(&[resource_id], 2).unwrap();
         let smt_proof = vprogs_core_smt::proving::Proof::decode(&proof_bytes).unwrap();
-        assert_eq!(*smt_proof.leaves[0].value_hash, expected_hash_v2);
+        assert_eq!(smt_proof.leaves[0].value_hash, expected_hash_v2);
     }
 
     scheduler.shutdown();
