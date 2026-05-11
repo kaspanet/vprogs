@@ -5,6 +5,7 @@ use kaspa_hashes::Hash;
 use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_txscript::{standard::pay_to_script_hash_script, zk_precompiles::tags::ZkTag};
 use tempfile::TempDir;
+use vprogs_core_codec::Reader;
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId};
 use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
@@ -61,10 +62,10 @@ fn assert_settlement_structure(
     );
 
     let expected_len =
-        redeem_script_len(parsed.prev_state, program_id, tx_image_id, ZkTag::R0Succinct);
+        redeem_script_len(&parsed.prev_state, program_id, tx_image_id, ZkTag::R0Succinct);
     let expected_prev_redeem = build_redeem_script(
-        parsed.prev_state,
-        parsed.prev_lane_tip,
+        &parsed.prev_state,
+        &parsed.prev_lane_tip,
         expected_len,
         program_id,
         tx_image_id,
@@ -131,31 +132,30 @@ async fn batch_proof_is_directly_settleable_single_batch() {
         vprogs_zk_covenant::JOURNAL_SIZE,
     );
 
-    let parsed = StateTransition::decode(&journal_bytes)
-        .expect("batch journal must decode as a state transition");
+    let parsed = (&mut &journal_bytes[..]).array_as::<StateTransition>("state_transition").unwrap();
     // covenant_id is zero in the non-settling test path (see batch-prover/src/worker.rs).
-    assert_eq!(parsed.covenant_id, &[0u8; 32]);
+    assert_eq!(parsed.covenant_id, [0u8; 32]);
     assert_eq!(
         parsed.prev_lane_tip,
-        &Hash::default(),
+        Hash::default(),
         "first section's prev_lane_tip is bundle's start"
     );
 
     let program_id = *backend.batch_image_id();
     let tx_image_id = *backend.transaction_image_id();
     assert_eq!(
-        parsed.tx_image_id, &tx_image_id,
+        parsed.tx_image_id, tx_image_id,
         "guest must echo the host-supplied tx image id into the journal",
     );
-    let covenant_id_hash = Hash::from_bytes(*parsed.covenant_id);
+    let covenant_id_hash = Hash::from_bytes(parsed.covenant_id);
     let settlement = Settlement::build(&SettlementInput {
         covenant_id: covenant_id_hash,
         program_id: &program_id,
         tx_image_id: &tx_image_id,
-        prev_state: parsed.prev_state,
-        prev_lane_tip: parsed.prev_lane_tip,
-        new_state: parsed.new_state,
-        new_lane_tip: parsed.new_lane_tip,
+        prev_state: &parsed.prev_state,
+        prev_lane_tip: &parsed.prev_lane_tip,
+        new_state: &parsed.new_state,
+        new_lane_tip: &parsed.new_lane_tip,
         block_prove_to: block_hashes[0],
         prev_outpoint: TransactionOutpoint::new(Hash::from_bytes([0xCD; 32]), 0),
         value: 100_000_000,
@@ -168,7 +168,7 @@ async fn batch_proof_is_directly_settleable_single_batch() {
             control_digests: &[],
         },
     });
-    assert_settlement_structure(&settlement, &parsed, &program_id, &tx_image_id, covenant_id_hash);
+    assert_settlement_structure(&settlement, parsed, &program_id, &tx_image_id, covenant_id_hash);
 
     scheduler.shutdown();
     l1.shutdown().await;
@@ -251,21 +251,21 @@ async fn batch_proof_bundles_two_batches() {
     assert_eq!(j1, j2, "bundle publishes the same receipt to every batch");
     assert_eq!(j1.len(), vprogs_zk_covenant::JOURNAL_SIZE);
 
-    let parsed = StateTransition::decode(&j1).expect("bundle journal should decode");
-    assert_eq!(parsed.covenant_id, &[0u8; 32]);
-    assert_eq!(parsed.prev_lane_tip, &Hash::default(), "bundle prev_lane_tip is bundle's start");
+    let parsed = (&mut &j1[..]).array_as::<StateTransition>("state_transition").unwrap();
+    assert_eq!(parsed.covenant_id, [0u8; 32]);
+    assert_eq!(parsed.prev_lane_tip, Hash::default(), "bundle prev_lane_tip is bundle's start");
 
     let program_id = *backend.batch_image_id();
     let tx_image_id = *backend.transaction_image_id();
-    let covenant_id_hash = Hash::from_bytes(*parsed.covenant_id);
+    let covenant_id_hash = Hash::from_bytes(parsed.covenant_id);
     let settlement = Settlement::build(&SettlementInput {
         covenant_id: covenant_id_hash,
         program_id: &program_id,
         tx_image_id: &tx_image_id,
-        prev_state: parsed.prev_state,
-        prev_lane_tip: parsed.prev_lane_tip,
-        new_state: parsed.new_state,
-        new_lane_tip: parsed.new_lane_tip,
+        prev_state: &parsed.prev_state,
+        prev_lane_tip: &parsed.prev_lane_tip,
+        new_state: &parsed.new_state,
+        new_lane_tip: &parsed.new_lane_tip,
         // Anchor to the bundle's *final* block - the covenant only verifies one seq_commit.
         block_prove_to: block_hashes[1],
         prev_outpoint: TransactionOutpoint::new(Hash::from_bytes([0xCD; 32]), 0),
@@ -279,7 +279,7 @@ async fn batch_proof_bundles_two_batches() {
             control_digests: &[],
         },
     });
-    assert_settlement_structure(&settlement, &parsed, &program_id, &tx_image_id, covenant_id_hash);
+    assert_settlement_structure(&settlement, parsed, &program_id, &tx_image_id, covenant_id_hash);
 
     scheduler.shutdown();
     l1.shutdown().await;

@@ -9,9 +9,9 @@
 //! - [`script`]: the P2SH redeem script builder.
 //! - [`settlement`]: the host-side Kaspa transaction builder.
 //!
-//! The 192-byte settlement journal format is defined once in [`vprogs_zk_abi::batch_processor`]
-//! as [`StateTransition`] - re-exported here so host-side callers can decode it without adding
-//! a direct dependency on the abi crate.
+//! The settlement journal format is defined once in [`vprogs_zk_abi::batch_processor`] as
+//! [`StateTransition`] - re-exported here so host-side callers can decode it without adding a
+//! direct dependency on the abi crate.
 
 pub mod bootstrap;
 pub mod script;
@@ -23,4 +23,4 @@ pub use settlement::{Settlement, SettlementInput, SuccinctWitness};
 pub use vprogs_zk_abi::batch_processor::StateTransition;
 
 /// Byte length of the settlement journal committed by the batch guest.
-pub const JOURNAL_SIZE: usize = StateTransition::SIZE;
+pub const JOURNAL_SIZE: usize = size_of::<StateTransition>();

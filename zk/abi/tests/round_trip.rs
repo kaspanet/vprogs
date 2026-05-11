@@ -3,6 +3,7 @@
 #![cfg(feature = "host")]
 
 use kaspa_hashes::Hash;
+use vprogs_core_codec::Reader;
 use vprogs_zk_abi::batch_processor::StateTransition;
 
 #[test]
@@ -23,14 +24,14 @@ fn state_transition_round_trip() {
         &covenant_id,
         &tx_image_id,
     );
-    assert_eq!(buf.len(), StateTransition::SIZE);
+    assert_eq!(buf.len(), size_of::<StateTransition>());
 
-    let decoded = StateTransition::decode(&buf).expect("decode");
-    assert_eq!(decoded.prev_state, &prev_state);
-    assert_eq!(decoded.prev_lane_tip, &prev_lane_tip);
-    assert_eq!(decoded.new_state, &new_state);
-    assert_eq!(decoded.new_lane_tip, &new_lane_tip);
-    assert_eq!(decoded.new_seq_commit, &new_seq_commit);
-    assert_eq!(decoded.covenant_id, &covenant_id);
-    assert_eq!(decoded.tx_image_id, &tx_image_id);
+    let decoded = (&mut &buf[..]).array_as::<StateTransition>("state_transition").unwrap();
+    assert_eq!(decoded.prev_state, prev_state);
+    assert_eq!(decoded.prev_lane_tip, prev_lane_tip);
+    assert_eq!(decoded.new_state, new_state);
+    assert_eq!(decoded.new_lane_tip, new_lane_tip);
+    assert_eq!(decoded.new_seq_commit, new_seq_commit);
+    assert_eq!(decoded.covenant_id, covenant_id);
+    assert_eq!(decoded.tx_image_id, tx_image_id);
 }
