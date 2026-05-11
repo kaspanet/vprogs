@@ -51,7 +51,6 @@ pub mod transaction_processor {
 
     pub(crate) mod journal {
         pub(crate) mod entries;
-        pub(crate) mod entry;
 
         pub(crate) mod input {
             pub(crate) mod commitment;
@@ -74,7 +73,6 @@ pub mod transaction_processor {
     };
     pub use journal::{
         entries::JournalEntries,
-        entry::JournalEntry,
         input::{
             commitment::InputCommitment, execution_context::ExecutionContext,
             resource_commitment::InputResourceCommitment,

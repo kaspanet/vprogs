@@ -1,3 +1,5 @@
+use core::mem::take;
+
 use vprogs_core_codec::{Reader, Writer};
 
 use crate::{
@@ -30,11 +32,11 @@ impl<'a> OutputCommitment<'a> {
         }
     }
 
-    /// Decodes an output commitment from a journal segment payload.
-    pub fn decode(mut buf: &'a [u8]) -> Result<Self> {
+    /// Decodes an output commitment, advancing `buf` past the consumed bytes.
+    pub fn decode(buf: &mut &'a [u8]) -> Result<Self> {
         match buf.byte("discriminant")? {
-            Self::SUCCESS => Ok(Self::Success(OutputResourceCommitments::new(buf))),
-            Self::ERROR => Ok(Self::Error(Error::decode(&mut buf)?)),
+            Self::SUCCESS => Ok(Self::Success(OutputResourceCommitments::new(take(buf)))),
+            Self::ERROR => Ok(Self::Error(Error::decode(buf)?)),
             _ => Err(Error::Decode("invalid output commitment discriminant".into())),
         }
     }

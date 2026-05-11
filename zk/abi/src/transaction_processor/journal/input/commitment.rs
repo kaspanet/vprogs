@@ -19,13 +19,8 @@ pub struct InputCommitment<'a> {
 }
 
 impl<'a> InputCommitment<'a> {
-    /// Wire size of the encoded input commitment payload.
-    pub fn wire_size(inputs: &Inputs<'_>) -> usize {
-        2 + 32 + 4 + ExecutionContext::wire_size(&inputs.execution_input)
-    }
-
-    /// Decodes an input commitment from a journal segment payload.
-    pub fn decode(mut buf: &'a [u8]) -> Result<Self> {
+    /// Decodes an input commitment, advancing `buf` past the consumed bytes.
+    pub fn decode(buf: &mut &'a [u8]) -> Result<Self> {
         let version = buf.le_u16("version")?;
         Ok(Self {
             version,
@@ -39,7 +34,7 @@ impl<'a> InputCommitment<'a> {
         })
     }
 
-    /// Encodes an input commitment payload to the journal.
+    /// Encodes an input commitment to the journal.
     pub fn encode(w: &mut impl Writer, inputs: &Inputs<'_>) {
         w.write(&inputs.version.to_le_bytes());
         w.write(inputs.tx_id.as_slice());

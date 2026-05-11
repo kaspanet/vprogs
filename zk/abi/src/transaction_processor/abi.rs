@@ -3,7 +3,8 @@ use vprogs_core_codec::Writer;
 use crate::{
     Read,
     transaction_processor::{
-        ErrorCode, Inputs, JournalEntry, Outputs, Transaction, TransactionHandler,
+        ErrorCode, InputCommitment, Inputs, OutputCommitment, Outputs, Transaction,
+        TransactionHandler,
     },
 };
 
@@ -23,7 +24,7 @@ impl Abi {
         let inputs = Inputs::decode(inputs_buf.as_mut_slice()).expect("malformed host input");
 
         // Commit input commitment to journal.
-        JournalEntry::encode_input(journal, &inputs);
+        InputCommitment::encode(journal, &inputs);
 
         // Execute guest closure (if version is supported).
         let Inputs { version, tx_id, merge_idx, mut execution_input } = inputs;
@@ -44,7 +45,7 @@ impl Abi {
         };
 
         // Commit output commitment to journal.
-        JournalEntry::encode_output(journal, &result);
+        OutputCommitment::encode(journal, &result);
 
         // Stream execution result to host.
         Outputs::encode(&result, host);

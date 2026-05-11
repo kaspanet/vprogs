@@ -15,14 +15,8 @@ pub struct ExecutionContext<'a> {
 }
 
 impl<'a> ExecutionContext<'a> {
-    /// Wire size of the encoded execution context.
-    pub fn wire_size(exec: &Option<ExecutionInput<'_>>) -> usize {
-        let Some(exec) = exec else { return 0 };
-        32 + 4 + size_of::<InputResourceCommitment>() * exec.resources.len()
-    }
-
-    /// Decodes an execution context from a journal segment tail.
-    pub fn decode(mut buf: &'a [u8]) -> Result<Self> {
+    /// Decodes an execution context, advancing `buf` past the consumed bytes.
+    pub fn decode(buf: &mut &'a [u8]) -> Result<Self> {
         Ok(Self {
             context_hash: buf.array_as::<Hash>("context_hash")?,
             resources: buf.slice_as::<InputResourceCommitment>("resources")?,
