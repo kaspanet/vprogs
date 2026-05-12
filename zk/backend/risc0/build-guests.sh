@@ -28,6 +28,7 @@ if [ ! -f "$DOCKERIGNORE" ]; then
   CLEANUP_DOCKERIGNORE=true
   cat > "$DOCKERIGNORE" <<'IGNORE'
 target/
+target-idea/
 .git/
 .claude/
 node_modules/

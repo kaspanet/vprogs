@@ -15,6 +15,11 @@ impl<'a> TransactionJournals<'a> {
         Self { buf }
     }
 
+    /// Returns true if no unconsumed journal entries remain.
+    pub fn is_empty(&self) -> bool {
+        self.buf.is_empty()
+    }
+
     /// Decodes a single length-prefixed journal entry from the buffer.
     fn decode_entry(&mut self) -> Result<&'a [u8]> {
         let length = self.buf.le_u32("journal_length")? as usize;

@@ -22,47 +22,50 @@ use crate::{
     },
 };
 
-/// Bundle proof workspace exposing per-step helpers for guest orchestration.
-pub struct Abi<'a> {
+/// Bundle proof workspace.
+pub struct Abi<'a, V: Fn(&[u8; 32], &[u8])> {
     /// Decoded bundle inputs.
     inputs: Inputs<'a>,
     /// Latest L2 value hashes indexed by bundle-wide resource_index.
     latest_value_hashes: Vec<&'a [u8; 32]>,
     /// Inverse of `leaf_order`: `bundle_idx_to_leaf_pos[bundle_idx] = leaf_pos`.
     bundle_idx_to_leaf_pos: Vec<u32>,
+    /// Verifies a tx journal against the configured transaction-processor image.
+    verify_journal: V,
 }
 
-impl<'a> Abi<'a> {
+impl<'a, V: Fn(&[u8; 32], &[u8])> Abi<'a, V> {
     /// Verifies a bundle and emits its settlement journal.
-    pub fn process_bundle(
-        input_bytes: &'a [u8],
-        journal: &mut impl Writer,
-        verify_journal: &impl Fn(&[u8; 32], &[u8]),
-    ) {
-        // Process batches of this bundle.
-        let mut this = Abi::new(input_bytes);
-        let (new_lane_tip, last_blue_score) = this.process_batches(verify_journal);
+    pub fn process_bundle(input_bytes: &'a [u8], journal: &mut impl Writer, verify_journal: V) {
+        let mut this = Abi::new(input_bytes, verify_journal);
+
+        // First batch carries the bundle's pre-state.
+        let first_batch = this.inputs.batches.first().unwrap();
+        let prev_lane_tip = *first_batch.prev_lane_tip;
+        let prev_lane_blue_score = first_batch.prev_lane_blue_score;
+
+        // Verify all batches and derive the post-state.
+        let (lane_tip, lane_blue_score) = this.process_batches(prev_lane_tip, prev_lane_blue_score);
 
         // Calculate final commitments.
-        let new_seq_commit = this.new_seq_commit(&new_lane_tip, last_blue_score);
+        let new_seq_commit = this.new_seq_commit(&lane_tip, lane_blue_score);
         let prev_state = this.inputs.proof.root::<Blake3>().expect("proof root");
         let new_state = this.inputs.proof.compute_root::<Blake3>(|i| this.latest_value_hash(i));
 
         // Commit resulting state transition.
         StateTransition::encode(
             journal,
-            (&prev_state, this.inputs.batches.first().unwrap().prev_lane_tip),
-            (&new_state.expect("new_state"), &new_lane_tip, &new_seq_commit),
+            (&prev_state, &prev_lane_tip),
+            (&new_state.expect("new_state"), &lane_tip, &new_seq_commit),
             this.inputs.covenant_id,
             this.inputs.image_id,
         );
     }
 
     /// Builds an `Abi` workspace for the bundle.
-    fn new(input_bytes: &'a [u8]) -> Self {
+    fn new(input_bytes: &'a [u8], verify_journal: V) -> Self {
         // Parse inputs and assert bounds.
         let inputs = Inputs::decode(input_bytes).expect("decode bundle inputs");
-        assert!(!inputs.batches.is_empty(), "bundle is empty");
         assert_eq!(inputs.leaf_order.len(), inputs.proof.leaves.len(), "invalid leaf_order length");
 
         // Scatter the loaded values and their resource indexes into their correct position.
@@ -78,40 +81,34 @@ impl<'a> Abi<'a> {
             bundle_idx_to_leaf_pos[res_idx] = leaf_pos as u32;
         }
 
-        Self { inputs, latest_value_hashes: value_hashes, bundle_idx_to_leaf_pos }
+        Self { inputs, latest_value_hashes: value_hashes, bundle_idx_to_leaf_pos, verify_journal }
     }
 
-    /// Verifies all batches and returns the bundle's final `(new_lane_tip, last_blue_score)`.
-    fn process_batches(&mut self, verify_journal: &impl Fn(&[u8; 32], &[u8])) -> (Hash, u64) {
-        // Initialize carried forward state.
-        let mut last_lane_tip = None;
-        let mut last_blue_score = 0u64;
-
-        // Verify each batch and carry the lane tip and blue score forward.
+    /// Verifies all batches and returns the bundle's final `(lane_tip, lane_blue_score)`.
+    fn process_batches(&mut self, mut lane_tip: Hash, mut lane_blue_score: u64) -> (Hash, u64) {
         for batch in self.inputs.batches {
             let batch = batch.unwrap();
-            last_lane_tip = Some(self.process_batch(&batch, last_lane_tip, verify_journal));
-            last_blue_score = batch.blue_score;
-        }
 
-        // Return last lane tip and blue score.
-        (last_lane_tip.expect("non-empty bundle yields a lane tip"), last_blue_score)
-    }
-
-    /// Verifies one batch and returns its derived `new_lane_tip`.
-    fn process_batch(
-        &mut self,
-        batch: &Batch<'a>,
-        prev_lane_tip: Option<Hash>,
-        verify_journal: &impl Fn(&[u8; 32], &[u8]),
-    ) -> Hash {
-        // Assert that the lane_tips are chained (if not expired).
-        if let Some(prev_lane_tip) = prev_lane_tip {
+            // Assert that lane_tips are chained (skipped on expiry).
             if !batch.lane_expired {
-                assert_eq!(batch.prev_lane_tip, &prev_lane_tip, "lane chain mismatch");
+                assert_eq!(batch.prev_lane_tip, &lane_tip, "lane_tip mismatch");
+            }
+
+            // Assert that lane_blue_scores are chained.
+            assert_eq!(batch.prev_lane_blue_score, lane_blue_score, "lane_blue_score mismatch");
+
+            // Active batch advances both; empty batch leaves the carry-forward intact.
+            if !batch.tx_journals.is_empty() {
+                lane_tip = self.process_activity(&batch);
+                lane_blue_score = batch.blue_score;
             }
         }
 
+        (lane_tip, lane_blue_score)
+    }
+
+    /// Verifies an active batch's tx activity and returns the derived lane tip.
+    fn process_activity(&mut self, batch: &Batch<'a>) -> Hash {
         // Determine expected context hash.
         let context_hash = mergeset_context_hash(&MergesetContext {
             timestamp: seq_commit_timestamp(batch.prev_timestamp),
@@ -120,7 +117,7 @@ impl<'a> Abi<'a> {
         });
 
         // Determine new activity digest.
-        let activity_digest = self.verified_activity_digest(batch, verify_journal, &context_hash);
+        let activity_digest = self.verified_activity_digest(batch, &context_hash);
 
         // Determine new lane tip.
         lane_tip_next(&LaneTipInput {
@@ -136,18 +133,13 @@ impl<'a> Abi<'a> {
     }
 
     /// Verifies every tx in `batch` and returns its activity digest.
-    fn verified_activity_digest(
-        &mut self,
-        batch: &Batch<'a>,
-        verify_journal: &impl Fn(&[u8; 32], &[u8]),
-        context_hash: &Hash,
-    ) -> Hash {
+    fn verified_activity_digest(&mut self, batch: &Batch<'a>, context_hash: &Hash) -> Hash {
         // Build new activity digest for the lane.
         let activity_digest_builder = ActivityDigestBuilder::new().tap_mut(|lane_activity| {
             // Verify each tx.
             let mut last_merge_idx = None;
             for journal in batch.tx_journals {
-                let entries = self.verified_journal(journal, verify_journal, &mut last_merge_idx);
+                let entries = self.verified_journal(journal, &mut last_merge_idx);
 
                 // Check execution related context for supported transactions.
                 if let Some(exec_ctx) = entries.input_commitment.execution_context.as_ref() {
@@ -191,12 +183,11 @@ impl<'a> Abi<'a> {
     fn verified_journal(
         &self,
         tx_journal: Result<&'a [u8], Error>,
-        verify_journal: &impl Fn(&[u8; 32], &[u8]),
         last_merge_idx: &mut Option<u32>,
     ) -> JournalEntries<'a> {
         // Verify the journal bytes against the tx-processor image.
         let journal_bytes = tx_journal.expect("decode tx_journal");
-        verify_journal(self.inputs.image_id, journal_bytes);
+        (self.verify_journal)(self.inputs.image_id, journal_bytes);
 
         // Parse journal entries.
         let entries = JournalEntries::decode(journal_bytes).expect("tx journal");
