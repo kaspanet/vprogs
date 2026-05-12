@@ -818,8 +818,7 @@ dependencies = [
 
 [[package]]
 name = "kaspa-hashes"
-version = "1.1.0"
-source = "git+https://github.com/biryukovmaxim/rusty-kaspa?branch=zk-rollup-covenant-example-rpc-lane-proof#a5652ff71b2b74444cd651949113afe7f4ff5440"
+version = "1.1.1-toc.1"
 dependencies = [
  "blake2b_simd",
  "blake3",
@@ -837,16 +836,14 @@ dependencies = [
 
 [[package]]
 name = "kaspa-merkle"
-version = "1.1.0"
-source = "git+https://github.com/biryukovmaxim/rusty-kaspa?branch=zk-rollup-covenant-example-rpc-lane-proof#a5652ff71b2b74444cd651949113afe7f4ff5440"
+version = "1.1.1-toc.1"
 dependencies = [
  "kaspa-hashes",
 ]
 
 [[package]]
 name = "kaspa-seq-commit"
-version = "1.1.0"
-source = "git+https://github.com/biryukovmaxim/rusty-kaspa?branch=zk-rollup-covenant-example-rpc-lane-proof#a5652ff71b2b74444cd651949113afe7f4ff5440"
+version = "1.1.1-toc.1"
 dependencies = [
  "kaspa-hashes",
  "kaspa-merkle",
@@ -856,8 +853,7 @@ dependencies = [
 
 [[package]]
 name = "kaspa-smt"
-version = "1.1.0"
-source = "git+https://github.com/biryukovmaxim/rusty-kaspa?branch=zk-rollup-covenant-example-rpc-lane-proof#a5652ff71b2b74444cd651949113afe7f4ff5440"
+version = "1.1.1-toc.1"
 dependencies = [
  "blake3",
  "kaspa-hashes",
@@ -867,8 +863,7 @@ dependencies = [
 
 [[package]]
 name = "kaspa-utils"
-version = "1.1.0"
-source = "git+https://github.com/biryukovmaxim/rusty-kaspa?branch=zk-rollup-covenant-example-rpc-lane-proof#a5652ff71b2b74444cd651949113afe7f4ff5440"
+version = "1.1.1-toc.1"
 dependencies = [
  "async-channel",
  "borsh",
