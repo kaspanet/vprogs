@@ -1,9 +1,9 @@
 use vprogs_core_codec::Error;
-use zerocopy::{Immutable, IntoBytes, KnownLayout, TryFromBytes};
+use zerocopy::{Immutable, IntoBytes, KnownLayout, TryFromBytes, Unaligned};
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(TryFromBytes, IntoBytes, Immutable, KnownLayout)]
+#[derive(TryFromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 pub enum AccessType {
     Read = 0,
     Write = 1,

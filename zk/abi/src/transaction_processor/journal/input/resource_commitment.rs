@@ -1,13 +1,13 @@
 use vprogs_core_codec::Writer;
 use vprogs_core_smt::EMPTY_HASH;
 use vprogs_core_types::ResourceId;
-use zerocopy::{FromBytes, Immutable, KnownLayout, little_endian::U32};
+use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned, little_endian::U32};
 
 use crate::transaction_processor::Resource;
 
 /// A single resource's input commitment: its index, identity, and data hash.
 #[repr(C)]
-#[derive(FromBytes, Immutable, KnownLayout)]
+#[derive(FromBytes, Immutable, KnownLayout, Unaligned)]
 pub struct InputResourceCommitment {
     /// Per-batch resource index.
     pub resource_index: U32,

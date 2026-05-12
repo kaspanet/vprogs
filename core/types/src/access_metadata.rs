@@ -1,14 +1,14 @@
 use alloc::vec::Vec;
 
 use vprogs_core_codec::{Error, Reader, Result};
-use zerocopy::{Immutable, IntoBytes, KnownLayout, TryFromBytes};
+use zerocopy::{Immutable, IntoBytes, KnownLayout, TryFromBytes, Unaligned};
 
 use crate::{AccessType, ResourceId};
 
 /// A transaction's declared access to a single resource.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-#[derive(TryFromBytes, IntoBytes, Immutable, KnownLayout)]
+#[derive(TryFromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 pub struct AccessMetadata {
     /// Unique identifier of the accessed resource.
     pub resource_id: ResourceId,

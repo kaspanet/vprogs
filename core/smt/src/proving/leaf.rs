@@ -1,9 +1,9 @@
 use vprogs_core_codec::Writer;
-use zerocopy::{FromBytes, Immutable, KnownLayout, little_endian::U16};
+use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned, little_endian::U16};
 
 /// Zero-copy POD view of a single leaf entry in the proof wire format.
 #[repr(C)]
-#[derive(FromBytes, Immutable, KnownLayout)]
+#[derive(FromBytes, Immutable, KnownLayout, Unaligned)]
 pub struct Leaf {
     /// Tree depth at which this leaf sits (shortcut depth).
     pub depth: U16,
