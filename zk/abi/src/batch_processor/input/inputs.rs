@@ -1,5 +1,3 @@
-use alloc::vec::Vec;
-
 use kaspa_hashes::Hash;
 #[cfg(feature = "host")]
 use kaspa_rpc_core::GetSeqCommitLaneProofResponse;
@@ -14,10 +12,10 @@ use zerocopy::IntoBytes;
 use zerocopy::{FromBytes, little_endian::U32};
 
 #[cfg(feature = "host")]
-use crate::batch_processor::BundlePart;
+use crate::batch_processor::{Batch, BundlePart};
 use crate::{
     Result,
-    batch_processor::{Batch, LaneProof},
+    batch_processor::{Batches, LaneProof},
 };
 
 /// Decoded batch processor input.
@@ -32,10 +30,10 @@ pub struct Inputs<'a> {
     pub proof: Proof<'a>,
     /// Leaf-order permutation: `leaf_order[leaf_pos] = bundle_resource_index`.
     pub leaf_order: &'a [U32],
-    /// Batches in scheduling order.
-    pub batches: Vec<Batch<'a>>,
     /// Lane proof for the bundle's final block.
     pub lane_proof: LaneProof<'a>,
+    /// Batches in scheduling order.
+    pub batches: Batches<'a>,
 }
 
 impl<'a> Inputs<'a> {
@@ -47,8 +45,8 @@ impl<'a> Inputs<'a> {
             lane_key: buf.array_as::<Hash>("lane_key")?,
             proof: Proof::decode(buf.blob("proof")?)?,
             leaf_order: <[U32]>::ref_from_bytes(buf.blob("leaf_order")?)?,
-            batches: buf.many("batches", Batch::decode)?,
-            lane_proof: LaneProof::decode(buf)?,
+            lane_proof: LaneProof::decode(&mut buf)?,
+            batches: Batches::decode(buf)?,
         })
     }
 
@@ -60,8 +58,8 @@ impl<'a> Inputs<'a> {
         lane_key: &Hash,
         proof_bytes: &[u8],
         leaf_order: &[U32],
-        batches: I,
         lane_proof: &GetSeqCommitLaneProofResponse,
+        batches: I,
     ) -> Vec<u8>
     where
         I: IntoIterator<Item = BundlePart<'b>>,
@@ -73,8 +71,8 @@ impl<'a> Inputs<'a> {
             buf.write(lane_key.as_slice());
             buf.write_blob(proof_bytes);
             buf.write_blob(leaf_order.as_bytes());
-            buf.encode_many(batches, Batch::encode);
             LaneProof::encode(buf, lane_proof);
+            buf.encode_many(batches, Batch::encode);
         })
     }
 }

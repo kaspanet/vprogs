@@ -1,5 +1,4 @@
 use alloc::{vec, vec::Vec};
-use core::mem::take;
 
 use kaspa_hashes::{Hash, SeqCommitActiveNode};
 use kaspa_seq_commit::{
@@ -52,7 +51,7 @@ impl<'a> Abi<'a> {
         // Commit resulting state transition.
         StateTransition::encode(
             journal,
-            (&prev_state, this.inputs.batches[0].prev_lane_tip),
+            (&prev_state, this.inputs.batches.first().unwrap().prev_lane_tip),
             (&new_state.expect("new_state"), &new_lane_tip, &new_seq_commit),
             this.inputs.covenant_id,
             this.inputs.image_id,
@@ -88,13 +87,12 @@ impl<'a> Abi<'a> {
         let mut last_lane_tip = None;
         let mut last_blue_score = 0u64;
 
-        // Take batches out of `self` to get mutable access to `Abi` context and verify each.
-        self.inputs.batches = take(&mut self.inputs.batches).tap(|batches| {
-            for batch in batches {
-                last_lane_tip = Some(self.process_batch(batch, last_lane_tip, verify_journal));
-                last_blue_score = batch.blue_score;
-            }
-        });
+        // Verify each batch and carry the lane tip and blue score forward.
+        for batch in self.inputs.batches {
+            let batch = batch.unwrap();
+            last_lane_tip = Some(self.process_batch(&batch, last_lane_tip, verify_journal));
+            last_blue_score = batch.blue_score;
+        }
 
         // Return last lane tip and blue score.
         (last_lane_tip.expect("non-empty bundle yields a lane tip"), last_blue_score)
@@ -170,8 +168,7 @@ impl<'a> Abi<'a> {
                         // Update latest value hash.
                         if let Some(outputs) = output_resources.as_mut() {
                             let output = outputs.next().expect("output for input resource");
-                            let output_commitment = output.expect("decoded output commitment");
-                            if let OutputResourceCommitment::Changed(hash) = output_commitment {
+                            if let OutputResourceCommitment::Changed(hash) = output.unwrap() {
                                 self.latest_value_hashes[bundle_idx] = hash;
                             }
                         }

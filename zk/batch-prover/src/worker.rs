@@ -141,8 +141,8 @@ where
             &self.config.lane_key,
             &proof_bytes,
             &leaf_order,
-            bundle.parts(),
             &resp,
+            bundle.parts(),
         );
 
         let receipt = self.backend.prove_batch(&bundle_inputs, bundle.tx_receipts()).await;
