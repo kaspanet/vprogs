@@ -38,9 +38,16 @@ fn should_verify_receipts() -> bool {
 }
 
 /// HashMap-backed accessor for `OpChainblockSeqCommit`. The opcode delegates the
-/// ancestor / depth checks to this trait, so a static map of
-/// `block_hash -> accepted_id_merkle_root` is enough to satisfy the covenant's seq-commit
-/// lookup in tests.
+/// ancestor / depth checks to this trait, so a static map of `block_hash -> seq_commit`
+/// is enough to satisfy the covenant's seq-commit lookup in tests.
+///
+/// The mapped value must equal the journal's `new_seq_commit` for the anchor block: the
+/// covenant script reuses the accessor's response inside the journal preimage and that
+/// preimage's SHA-256 must reproduce the receipt's committed journal hash. On the real
+/// chain the block's `accepted_id_merkle_root` IS that `new_seq_commit` by construction,
+/// but in these tests the simnet block is empty (the scheduled L2 txs never enter the
+/// block), so the chain's value diverges from what the guest computes and we have to
+/// echo the guest's value back through the accessor.
 struct MockSeqCommitAccessor(HashMap<Hash, Hash>);
 
 impl SeqCommitAccessor for MockSeqCommitAccessor {
@@ -50,18 +57,6 @@ impl SeqCommitAccessor for MockSeqCommitAccessor {
     fn seq_commitment_within_depth(&self, block_hash: Hash) -> Option<Hash> {
         self.0.get(&block_hash).copied()
     }
-}
-
-/// Reads each simnet block's `accepted_id_merkle_root` (the on-chain seq commitment) and
-/// indexes it by block hash, mirroring what a real consensus node would expose to
-/// `OpChainblockSeqCommit`.
-async fn build_seq_commit_accessor(l1: &L1Node, block_hashes: &[Hash]) -> MockSeqCommitAccessor {
-    let mut map = HashMap::new();
-    for h in block_hashes {
-        let block = l1.grpc_client().get_block(*h, false).await.expect("get_block");
-        map.insert(*h, block.header.accepted_id_merkle_root);
-    }
-    MockSeqCommitAccessor(map)
 }
 
 /// Runs the Kaspa script engine on the settlement transaction's single covenant input.
@@ -286,7 +281,9 @@ async fn batch_proof_is_directly_settleable_single_batch() {
             value: 100_000_000,
             witness: owned.as_witness(),
         });
-        let accessor = build_seq_commit_accessor(&l1, &[block_hashes[0]]).await;
+        let mut seq_commits = HashMap::new();
+        seq_commits.insert(block_hashes[0], parsed.new_seq_commit);
+        let accessor = MockSeqCommitAccessor(seq_commits);
         verify_settlement_onchain(&real_settlement, covenant_id_hash, &accessor);
     }
 
@@ -436,7 +433,11 @@ async fn batch_proof_bundles_two_batches() {
             value: 100_000_000,
             witness: owned.as_witness(),
         });
-        let accessor = build_seq_commit_accessor(&l1, &block_hashes).await;
+        // Bundle anchors to the final block (block_hashes[1]); only that one needs the
+        // guest-computed seq_commit echo (see MockSeqCommitAccessor doc).
+        let mut seq_commits = HashMap::new();
+        seq_commits.insert(block_hashes[1], parsed.new_seq_commit);
+        let accessor = MockSeqCommitAccessor(seq_commits);
         verify_settlement_onchain(&real_settlement, covenant_id_hash, &accessor);
     }
 
