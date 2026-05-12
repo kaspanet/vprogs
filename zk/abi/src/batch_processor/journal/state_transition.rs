@@ -1,50 +1,28 @@
 use kaspa_hashes::Hash;
-#[cfg(feature = "host")]
-use vprogs_core_codec::Reader;
 use vprogs_core_codec::Writer;
+use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
-#[cfg(feature = "host")]
-use crate::{Error, Result};
-
-/// Bundle state transition journal (exactly 224 bytes).
-pub struct StateTransition<'a> {
+/// Bundle state transition journal.
+#[repr(C)]
+#[derive(FromBytes, Immutable, KnownLayout, Unaligned)]
+pub struct StateTransition {
     /// L2 SMT state root before the bundle.
-    pub prev_state: &'a [u8; 32],
+    pub prev_state: [u8; 32],
     /// Lane tip entering the bundle.
-    pub prev_lane_tip: &'a Hash,
+    pub prev_lane_tip: Hash,
     /// L2 SMT state root after the bundle.
-    pub new_state: &'a [u8; 32],
+    pub new_state: [u8; 32],
     /// Lane tip after the bundle.
-    pub new_lane_tip: &'a Hash,
+    pub new_lane_tip: Hash,
     /// Block-header `seq_commit` derived from `new_lane_tip` and the lane proof.
-    pub new_seq_commit: &'a Hash,
+    pub new_seq_commit: Hash,
     /// Covenant id this settlement binds to.
-    pub covenant_id: &'a [u8; 32],
+    pub covenant_id: [u8; 32],
     /// Transaction-processor image id this settlement binds to.
-    pub tx_image_id: &'a [u8; 32],
+    pub tx_image_id: [u8; 32],
 }
 
-impl<'a> StateTransition<'a> {
-    /// Wire size of the emitted journal.
-    pub const SIZE: usize = 7 * 32;
-
-    /// Decodes a state transition journal from bytes.
-    #[cfg(feature = "host")]
-    pub fn decode(mut buf: &'a [u8]) -> Result<Self> {
-        if buf.len() != Self::SIZE {
-            return Err(Error::Decode("batch journal must be exactly 224 bytes".into()));
-        }
-        Ok(Self {
-            prev_state: buf.array::<32>("prev_state")?,
-            prev_lane_tip: buf.array_as::<Hash>("prev_lane_tip")?,
-            new_state: buf.array::<32>("new_state")?,
-            new_lane_tip: buf.array_as::<Hash>("new_lane_tip")?,
-            new_seq_commit: buf.array_as::<Hash>("new_seq_commit")?,
-            covenant_id: buf.array::<32>("covenant_id")?,
-            tx_image_id: buf.array::<32>("tx_image_id")?,
-        })
-    }
-
+impl StateTransition {
     /// Writes the state transition journal to `w`.
     pub fn encode(
         w: &mut impl Writer,

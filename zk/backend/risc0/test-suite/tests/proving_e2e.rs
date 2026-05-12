@@ -4,6 +4,7 @@ use kaspa_consensus_core::hashing::tx::id as kaspa_tx_id;
 use kaspa_hashes::Hash;
 use kaspa_rpc_core::api::rpc::RpcApi;
 use tempfile::TempDir;
+use vprogs_core_codec::Reader;
 use vprogs_core_smt::{EMPTY_HASH, Tree as _};
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId};
@@ -97,10 +98,10 @@ async fn batch_proof_two_transactions() {
     let receipt = batch.artifact();
     let journal = Backend::journal_bytes(&receipt);
 
-    let state = StateTransition::decode(&journal).expect("journal should decode");
+    let state = (&mut &journal[..]).array_as::<StateTransition>("state_transition").unwrap();
     assert_ne!(state.prev_state, state.new_state, "state should change after counter increment");
-    assert_eq!(state.prev_state, &EMPTY_HASH, "prev_state should be empty (no prior state)");
-    assert_eq!(state.new_state, &storage.root(1), "new_state should match store's version 1");
+    assert_eq!(state.prev_state, EMPTY_HASH, "prev_state should be empty (no prior state)");
+    assert_eq!(state.new_state, storage.root(1), "new_state should match store's version 1");
 
     let r1_data = StateVersion::get(&storage, 1, &ResourceId::for_test(1))
         .expect("resource 1 should have committed data");
@@ -113,7 +114,7 @@ async fn batch_proof_two_transactions() {
     for resource_id in [ResourceId::for_test(1), ResourceId::for_test(2)] {
         let (proof_bytes, _) = storage.prove(&[resource_id], 1).unwrap();
         let smt_proof = vprogs_core_smt::proving::Proof::decode(&proof_bytes).unwrap();
-        assert_eq!(*smt_proof.leaves[0].value_hash, expected_hash);
+        assert_eq!(smt_proof.leaves[0].value_hash, expected_hash);
     }
 
     // --- Second batch: increment counters from 1 to 2 ---
@@ -147,12 +148,8 @@ async fn batch_proof_two_transactions() {
     let receipt_2 = batch_2.artifact();
     let journal_2 = Backend::journal_bytes(&receipt_2);
 
-    let state_2 = StateTransition::decode(&journal_2).expect("journal should decode");
-    assert_eq!(
-        state_2.prev_state,
-        &storage.root(1),
-        "batch 2 prev_state should chain from batch 1"
-    );
+    let state_2 = (&mut &journal_2[..]).array_as::<StateTransition>("state_transition").unwrap();
+    assert_eq!(state_2.prev_state, storage.root(1), "batch 2 prev_state should chain from batch 1");
     assert_ne!(state_2.prev_state, state_2.new_state, "state should change again");
 
     let r1_v2 = StateVersion::get(&storage, 2, &ResourceId::for_test(1))
@@ -166,7 +163,7 @@ async fn batch_proof_two_transactions() {
     for resource_id in [ResourceId::for_test(1), ResourceId::for_test(2)] {
         let (proof_bytes, _) = storage.prove(&[resource_id], 2).unwrap();
         let smt_proof = vprogs_core_smt::proving::Proof::decode(&proof_bytes).unwrap();
-        assert_eq!(*smt_proof.leaves[0].value_hash, expected_hash_v2);
+        assert_eq!(smt_proof.leaves[0].value_hash, expected_hash_v2);
     }
 
     scheduler.shutdown();
@@ -253,9 +250,9 @@ async fn batch_proof_bundle_of_two() {
     // Same bundle receipt published to both batches → identical journals.
     assert_eq!(journal_1, journal_2, "bundle publishes the same receipt to every batch");
 
-    let state = StateTransition::decode(&journal_1).expect("bundle journal should decode");
-    assert_eq!(state.prev_state, &EMPTY_HASH, "bundle prev_state is the bundle's start");
-    assert_eq!(state.new_state, &storage.root(2), "bundle new_state is post-batch-2 root");
+    let state = (&mut &journal_1[..]).array_as::<StateTransition>("state_transition").unwrap();
+    assert_eq!(state.prev_state, EMPTY_HASH, "bundle prev_state is the bundle's start");
+    assert_eq!(state.new_state, storage.root(2), "bundle new_state is post-batch-2 root");
 
     // Per-resource state: counter incremented twice (1 → 2) by the two batches in the bundle.
     let r1_v2 = StateVersion::get(&storage, 2, &ResourceId::for_test(1))

@@ -2,11 +2,15 @@
 
 extern crate alloc;
 
+mod error;
+mod read;
+
 pub mod batch_processor {
     pub(crate) mod abi;
 
     pub(crate) mod input {
         pub(crate) mod batch;
+        pub(crate) mod batches;
         #[cfg(feature = "host")]
         pub(crate) mod bundle;
         pub(crate) mod inputs;
@@ -22,19 +26,19 @@ pub mod batch_processor {
     #[cfg(feature = "host")]
     pub use input::bundle::{Bundle, BundlePart};
     pub use input::{
-        batch::Batch, inputs::Inputs, lane_proof::LaneProof,
+        batch::Batch, batches::Batches, inputs::Inputs, lane_proof::LaneProof,
         transaction_journals::TransactionJournals,
     };
     pub use journal::state_transition::StateTransition;
 }
-mod error;
-mod read;
 
 pub mod transaction_processor {
     pub(crate) mod abi;
+    pub(crate) mod error_code;
     pub(crate) mod transaction_handler;
 
     pub(crate) mod input {
+        pub(crate) mod execution_input;
         pub(crate) mod inputs;
         pub(crate) mod payload;
         pub(crate) mod resource;
@@ -48,12 +52,11 @@ pub mod transaction_processor {
 
     pub(crate) mod journal {
         pub(crate) mod entries;
-        pub(crate) mod entry;
 
         pub(crate) mod input {
             pub(crate) mod commitment;
+            pub(crate) mod execution_context;
             pub(crate) mod resource_commitment;
-            pub(crate) mod resource_commitments;
         }
 
         pub(crate) mod output {
@@ -64,15 +67,16 @@ pub mod transaction_processor {
     }
 
     pub use abi::Abi;
+    pub use error_code::ErrorCode;
     pub use input::{
-        inputs::Inputs, payload::Payload, resource::Resource, transaction::Transaction,
+        execution_input::ExecutionInput, inputs::Inputs, payload::Payload, resource::Resource,
+        transaction::Transaction,
     };
     pub use journal::{
         entries::JournalEntries,
-        entry::JournalEntry,
         input::{
-            commitment::InputCommitment, resource_commitment::InputResourceCommitment,
-            resource_commitments::InputResourceCommitments,
+            commitment::InputCommitment, execution_context::ExecutionContext,
+            resource_commitment::InputResourceCommitment,
         },
         output::{
             commitment::OutputCommitment, resource_commitment::OutputResourceCommitment,

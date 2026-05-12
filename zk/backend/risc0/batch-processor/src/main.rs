@@ -10,7 +10,7 @@ risc0_zkvm::guest::entry!(main);
 /// Entrypoint for the batch processor.
 fn main() {
     let inputs = Host.read_blob();
-    Abi::verify(&inputs, &mut Journal, &verify_tx_journal);
+    Abi::process_bundle(&inputs, &mut Journal, &verify_tx_journal);
 }
 
 /// Verifies a single transaction journal.

@@ -40,10 +40,11 @@ impl<'a, 'v, F: Fn(usize) -> &'v [u8; 32]> Traversal<'a, F> {
         // Shortcut leaf check: if there's exactly one leaf, check against its declared depth.
         if end - start == 1 {
             let leaf = &self.proof.leaves[start];
-            if level > leaf.depth {
+            let depth = leaf.depth.get();
+            if level > depth {
                 return Err(Error::Decode("malformed proof"));
-            } else if level == leaf.depth {
-                return Ok(Node::hash_leaf::<H>(leaf.key, (self.value_hash_fn)(start)));
+            } else if level == depth {
+                return Ok(Node::hash_leaf::<H>(&leaf.key, (self.value_hash_fn)(start)));
             }
         }
 
