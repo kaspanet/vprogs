@@ -22,7 +22,9 @@ use kaspa_txscript::{
     zk_precompiles::tags::ZkTag,
 };
 
-use crate::script::{build_redeem_script, redeem_script_len};
+use crate::script::{
+    build_dev_redeem_script, build_redeem_script, dev_redeem_script_len, redeem_script_len,
+};
 
 /// Inputs describing a single settlement step.
 pub struct SettlementInput<'a> {
@@ -137,6 +139,109 @@ impl Settlement {
     }
 }
 
+/// Inputs describing a single dev-mode settlement step. Mirrors [`SettlementInput`] but drops
+/// `program_id` / `tx_image_id` / `witness` (the dev redeem script has no journal binding and
+/// no ZK precompile) and adds `claimed_seq_commit` - the sig-script-supplied seq commitment
+/// the dev script will [`OpEqualVerify`] against [`OpChainblockSeqCommit(block_prove_to)`].
+///
+/// [`OpEqualVerify`]: kaspa_txscript::opcodes::codes::OpEqualVerify
+/// [`OpChainblockSeqCommit(block_prove_to)`]: kaspa_txscript::opcodes::codes::OpChainblockSeqCommit
+pub struct SettlementDevInput<'a> {
+    /// Covenant id carried forward by the continuation output.
+    pub covenant_id: Hash,
+    /// L2 state root before this batch.
+    pub prev_state: &'a [u8; 32],
+    /// Lane tip embedded in the covenant UTXO's redeem prefix (carried from the previous
+    /// settlement).
+    pub prev_lane_tip: &'a Hash,
+    /// L2 state root after this batch.
+    pub new_state: &'a [u8; 32],
+    /// Lane tip after this batch (locks into the continuation UTXO's redeem prefix).
+    pub new_lane_tip: &'a Hash,
+    /// L1 chain block whose seq commitment the dev script anchors `claimed_seq_commit` to.
+    pub block_prove_to: Hash,
+    /// Seq commitment the host claims for `block_prove_to`. The dev script enforces this
+    /// equals the chain's value via `OpEqualVerify` - any divergence between off-chain and
+    /// chain-derived seq commits will fail script execution.
+    pub claimed_seq_commit: Hash,
+    /// UTXO outpoint of the covenant being spent.
+    pub prev_outpoint: TransactionOutpoint,
+    /// Value carried on the covenant UTXO (forwarded verbatim to the continuation output).
+    pub value: u64,
+}
+
+impl Settlement {
+    /// Builds a dev-mode settlement transaction. Uses the [`build_dev_redeem_script`] redeem
+    /// variant so the test path can drive the full chain pipeline (mempool, block inclusion,
+    /// acceptance) without a real ZK seal.
+    pub fn build_dev(input: &SettlementDevInput<'_>) -> Self {
+        let redeem_len = dev_redeem_script_len(input.prev_state);
+
+        let prev_redeem =
+            build_dev_redeem_script(input.prev_state, input.prev_lane_tip, redeem_len);
+        let next_redeem =
+            build_dev_redeem_script(input.new_state, input.new_lane_tip, redeem_len);
+
+        let sig_script = sig_script_dev(
+            &prev_redeem,
+            input.block_prove_to,
+            input.new_state,
+            input.new_lane_tip,
+            input.claimed_seq_commit,
+        );
+
+        let tx_input = TransactionInput::new(input.prev_outpoint, sig_script, 0, 1);
+        let tx_output = TransactionOutput::with_covenant(
+            input.value,
+            pay_to_script_hash_script(&next_redeem),
+            Some(CovenantBinding::new(0, input.covenant_id)),
+        );
+
+        let tx = Transaction::new(
+            TX_VERSION_TOCCATA,
+            vec![tx_input],
+            vec![tx_output],
+            0,
+            SUBNETWORK_ID_NATIVE,
+            0,
+            Vec::new(),
+        );
+
+        Self { transaction: tx, prev_redeem, next_redeem }
+    }
+}
+
+/// Dev-mode sig script. Push order (bottom to top):
+/// `[claimed_seq_commit, new_lane_tip, new_state, block_prove_to, redeem]`.
+///
+/// After the P2SH check pops `redeem`, the redeem prefix pushes `prev_lane_tip` /
+/// `prev_state`, the script stashes them to alt, consumes `block_prove_to` via
+/// `OpChainblockSeqCommit`, then `OpEqualVerify`s the resulting `chain_seq_commit` against
+/// `claimed_seq_commit`. The remaining `new_state` / `new_lane_tip` feed the next-redeem
+/// prefix builder.
+fn sig_script_dev(
+    redeem: &[u8],
+    block_prove_to: Hash,
+    new_state: &[u8; 32],
+    new_lane_tip: &Hash,
+    claimed_seq_commit: Hash,
+) -> Vec<u8> {
+    // Dev sig_script is small (no seal), but use the covenants-enabled flags for parity with
+    // the production sig_script builder.
+    ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
+        .add_data(claimed_seq_commit.as_slice())
+        .unwrap()
+        .add_data(new_lane_tip.as_slice())
+        .unwrap()
+        .add_data(new_state)
+        .unwrap()
+        .add_data(block_prove_to.as_slice())
+        .unwrap()
+        .add_data(redeem)
+        .unwrap()
+        .drain()
+}
+
 /// Builds the signature script witness layout consumed by the covenant's redeem script.
 ///
 /// Push order (bottom to top):
@@ -226,5 +331,31 @@ mod tests {
             settlement.prev_redeem, settlement.next_redeem,
             "next redeem must embed advanced state",
         );
+    }
+
+    #[test]
+    fn dev_settlement_tx_has_single_covenant_output() {
+        let input = SettlementDevInput {
+            covenant_id: Hash::from_bytes([0xAA; 32]),
+            prev_state: &[0x11; 32],
+            prev_lane_tip: &Hash::from_bytes([0x22; 32]),
+            new_state: &[0x33; 32],
+            new_lane_tip: &Hash::from_bytes([0x44; 32]),
+            block_prove_to: Hash::from_bytes([0x55; 32]),
+            claimed_seq_commit: Hash::from_bytes([0x66; 32]),
+            prev_outpoint: TransactionOutpoint::new(Hash::from_bytes([0x77; 32]), 0),
+            value: 100_000_000,
+        };
+
+        let settlement = Settlement::build_dev(&input);
+
+        assert_eq!(settlement.transaction.inputs.len(), 1);
+        assert_eq!(settlement.transaction.outputs.len(), 1);
+        assert_eq!(settlement.transaction.outputs[0].value, 100_000_000);
+        assert_eq!(
+            settlement.transaction.outputs[0].covenant,
+            Some(CovenantBinding::new(0, Hash::from_bytes([0xAA; 32]))),
+        );
+        assert_ne!(settlement.prev_redeem, settlement.next_redeem);
     }
 }

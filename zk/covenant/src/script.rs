@@ -119,6 +119,60 @@ pub fn redeem_script_len(
     }
 }
 
+/// Builds a dev-mode settlement redeem script: identical structure to
+/// [`build_redeem_script`] except the proof-side journal preimage and `OpZkPrecompile` call
+/// are replaced with `OpEqualVerify` of a sig-script-supplied `claimed_seq_commit` against
+/// `OpChainblockSeqCommit(block_prove_to)`.
+///
+/// Trade-off: drops `program_id`, `tx_image_id`, and the journal-hash binding. What remains
+/// is still load-bearing on-chain:
+/// - `prev_state` / `prev_lane_tip` are bound by this script's SPK.
+/// - `new_state` / `new_lane_tip` are bound by the output-SPK continuation check.
+/// - `covenant_id` is bound by [`CovenantsContext::from_tx`] at the consensus level.
+/// - `new_seq_commit` is strictly equated to the chain's value for `block_prove_to`.
+///
+/// Use this only for tests that want to exercise the full chain pipeline (bootstrap, lane
+/// carriers, mempool, block inclusion, acceptance data) without paying the cost of a real
+/// CUDA-produced STARK seal.
+pub fn build_dev_redeem_script(
+    prev_state: &[u8; 32],
+    prev_lane_tip: &Hash,
+    redeem_script_len: i64,
+) -> Vec<u8> {
+    let mut b = ScriptBuilder::new();
+
+    // Same 66-byte prefix as the production script (OpData32||prev_lane_tip||OpData32||prev_state).
+    b.add_data(prev_lane_tip.as_slice()).unwrap();
+    b.add_data(prev_state).unwrap();
+
+    stash_prev_values(&mut b);
+    obtain_new_seq_commitment(&mut b);
+    verify_claimed_seq_commit(&mut b);
+    build_next_redeem_prefix_no_stash(&mut b);
+    extract_redeem_suffix_and_concat(&mut b, redeem_script_len);
+    hash_redeem_to_spk(&mut b);
+    verify_output_spk(&mut b);
+    drop_stashed_prev_values(&mut b);
+    verify_input_index_zero(&mut b);
+    verify_covenant_single_output(&mut b);
+    b.add_op(OpTrue).unwrap();
+
+    b.drain()
+}
+
+/// Iteratively computes the dev redeem script length (the dev script also embeds its own
+/// length as an offset, so the value is computed the same way as [`redeem_script_len`]).
+pub fn dev_redeem_script_len(prev_state: &[u8; 32]) -> i64 {
+    let mut guess: i64 = 75;
+    loop {
+        let len = build_dev_redeem_script(prev_state, &Hash::default(), guess).len() as i64;
+        if len == guess {
+            return len;
+        }
+        guess = len;
+    }
+}
+
 /// Stack: `[..., new_lane_tip, new_state, block_prove_to, prev_lane_tip, prev_state]`
 /// →      `[..., new_lane_tip, new_state, block_prove_to]`  alt: `[prev_state, prev_lane_tip]`
 fn stash_prev_values(b: &mut ScriptBuilder) {
@@ -132,6 +186,58 @@ fn stash_prev_values(b: &mut ScriptBuilder) {
 /// →      `[..., new_lane_tip, new_state, new_seq_commit]`
 fn obtain_new_seq_commitment(b: &mut ScriptBuilder) {
     b.add_op(OpChainblockSeqCommit).unwrap();
+}
+
+/// Dev-mode only. Asserts that the sig-script-supplied `claimed_seq_commit` equals
+/// `OpChainblockSeqCommit(block_prove_to)`. Consumes both seq-commit values and preserves
+/// `new_state` / `new_lane_tip` on the stack for the prefix builder downstream.
+///
+/// Stack: `[..., claimed_seq_commit, new_lane_tip, new_state, chain_seq_commit]`
+/// →      `[..., new_lane_tip, new_state]`
+fn verify_claimed_seq_commit(b: &mut ScriptBuilder) {
+    b.add_op(OpSwap).unwrap();
+    // Stack: [..., claimed, new_lane_tip, chain_seq_commit, new_state]
+    b.add_op(OpToAltStack).unwrap();
+    // Stack: [..., claimed, new_lane_tip, chain_seq_commit]  alt:[..., new_state]
+    b.add_op(OpSwap).unwrap();
+    // Stack: [..., claimed, chain_seq_commit, new_lane_tip]
+    b.add_op(OpToAltStack).unwrap();
+    // Stack: [..., claimed, chain_seq_commit]  alt:[..., new_state, new_lane_tip]
+    b.add_op(OpEqualVerify).unwrap();
+    // Stack: [...]
+    b.add_op(OpFromAltStack).unwrap();
+    // Stack: [..., new_lane_tip]  alt:[..., new_state]
+    b.add_op(OpFromAltStack).unwrap();
+    // Stack: [..., new_lane_tip, new_state]
+}
+
+/// Dev-mode only. Same byte layout as [`build_next_redeem_prefix`] but skips the journal
+/// stashes (no `new_seq_commit`, no dup/stash of `new_state` / `new_lane_tip`).
+///
+/// Stack: `[..., new_lane_tip, new_state]` → `[..., (OpData32||new_lane_tip||OpData32||new_state)]`
+fn build_next_redeem_prefix_no_stash(b: &mut ScriptBuilder) {
+    b.add_data(&[OpData32]).unwrap();
+    b.add_op(OpSwap).unwrap();
+    b.add_op(OpCat).unwrap();
+    // Stack: [..., new_lane_tip, (OpData32||new_state)]
+    b.add_op(OpSwap).unwrap();
+    // Stack: [..., (OpData32||new_state), new_lane_tip]
+    b.add_data(&[OpData32]).unwrap();
+    b.add_op(OpSwap).unwrap();
+    b.add_op(OpCat).unwrap();
+    // Stack: [..., (OpData32||new_state), (OpData32||new_lane_tip)]
+    b.add_op(OpSwap).unwrap();
+    b.add_op(OpCat).unwrap();
+    // Stack: [..., (OpData32||new_lane_tip||OpData32||new_state)] = 66B prefix
+}
+
+/// Dev-mode only. Pops and discards `prev_lane_tip` and `prev_state` from the alt stack
+/// (production consumes them inside `build_and_hash_journal`; dev has no journal).
+fn drop_stashed_prev_values(b: &mut ScriptBuilder) {
+    b.add_op(OpFromAltStack).unwrap();
+    b.add_op(OpDrop).unwrap();
+    b.add_op(OpFromAltStack).unwrap();
+    b.add_op(OpDrop).unwrap();
 }
 
 /// Constructs the 66-byte redeem-script prefix for the next covenant UTXO (embedding
@@ -331,5 +437,34 @@ mod tests {
         let a = redeem_script_len(&[0u8; 32], &program_id, &tx_image_id, ZkTag::R0Succinct);
         let b = redeem_script_len(&[0xffu8; 32], &program_id, &tx_image_id, ZkTag::R0Succinct);
         assert_eq!(a, b, "length must not depend on prev state");
+    }
+
+    #[test]
+    fn dev_redeem_script_length_converges() {
+        let state = [0u8; 32];
+        let len = dev_redeem_script_len(&state);
+        let built = build_dev_redeem_script(&state, &Hash::default(), len);
+        assert_eq!(built.len() as i64, len, "self-referential length must match");
+    }
+
+    #[test]
+    fn dev_redeem_script_distinct_from_prod() {
+        let state = [0u8; 32];
+        let program_id = [1u8; 32];
+        let tx_image_id = [2u8; 32];
+        let prod_len =
+            redeem_script_len(&state, &program_id, &tx_image_id, ZkTag::R0Succinct);
+        let prod = build_redeem_script(
+            &state,
+            &Hash::default(),
+            prod_len,
+            &program_id,
+            &tx_image_id,
+            ZkTag::R0Succinct,
+        );
+        let dev_len = dev_redeem_script_len(&state);
+        let dev = build_dev_redeem_script(&state, &Hash::default(), dev_len);
+        assert_ne!(prod, dev, "dev and prod scripts must differ");
+        assert!(dev.len() < prod.len(), "dev script should be shorter (no journal/zk verify)");
     }
 }
