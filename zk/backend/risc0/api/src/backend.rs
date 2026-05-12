@@ -61,6 +61,16 @@ impl Backend {
     pub fn transaction_image_id(&self) -> &[u8; 32] {
         &self.transaction_image_id
     }
+
+    /// Cryptographically verifies a transaction-processor receipt against the trusted image id.
+    pub fn verify_transaction_receipt(&self, receipt: &Receipt) {
+        receipt.verify(self.transaction_image_id).expect("transaction receipt verification failed");
+    }
+
+    /// Cryptographically verifies a batch-processor receipt against the trusted image id.
+    pub fn verify_batch_receipt(&self, receipt: &Receipt) {
+        receipt.verify(self.batch_image_id).expect("batch receipt verification failed");
+    }
 }
 
 impl vprogs_zk_vm::Backend for Backend {
