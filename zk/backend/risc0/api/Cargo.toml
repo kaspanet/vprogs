@@ -19,6 +19,7 @@ host = [
   "dep:vprogs-zk-vm",
 ]
 std = ["vprogs-zk-abi/std"]
+cuda = ["risc0-zkvm/cuda"]
 
 [dependencies]
 vprogs-core-codec = { workspace = true }

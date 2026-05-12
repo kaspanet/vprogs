@@ -3,6 +3,9 @@ edition = "2021"
 name    = "vprogs-zk-backend-risc0-test-suite"
 version = "0.1.0"
 
+[features]
+cuda = ["vprogs-zk-backend-risc0-api/cuda"]
+
 [dependencies]
 kaspa-consensus-core.workspace = true
 kaspa-hashes.workspace         = true
