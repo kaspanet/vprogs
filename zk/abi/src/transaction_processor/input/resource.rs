@@ -1,10 +1,14 @@
 use alloc::vec::Vec;
 use core::mem;
 
-use vprogs_core_codec::Reader;
 #[cfg(feature = "host")]
 use vprogs_core_codec::Writer;
+use vprogs_core_codec::{MutReader, Reader};
 use vprogs_core_types::{AccessMetadata, AccessType, ResourceId};
+#[cfg(feature = "host")]
+use vprogs_scheduling_scheduler::{AccessHandle, Processor};
+#[cfg(feature = "host")]
+use vprogs_storage_types::Store;
 
 use crate::Result;
 
@@ -67,7 +71,12 @@ impl<'a> Resource<'a> {
 
     /// Resizes data to `new_len` bytes, promoting to a heap-allocated buffer if necessary.
     pub fn resize(&mut self, new_len: usize) {
-        if new_len <= self.data().len() {
+        let current_len = self.data().len();
+        if new_len == current_len {
+            return;
+        }
+
+        if new_len < current_len {
             // Shrink: truncate in-place without allocating.
             match self.promoted {
                 Some(ref mut v) => v.truncate(new_len),
@@ -107,46 +116,29 @@ impl<'a> Resource<'a> {
     pub fn is_deleted(&self) -> bool {
         self.deleted
     }
-}
 
-// Wire format internals - resources are managed by the framework, not serialized by guests.
-impl<'a> Resource<'a> {
-    /// Wire size of a resource header: flags(1) + index(4) + data_len(4).
-    pub const HEADER_SIZE: usize = 1 + 4 + 4;
-
-    /// Decodes a resource from its header bytes, splitting off its backing from `data` and
-    /// advancing past the consumed bytes.
-    pub(crate) fn decode(
-        mut header: &'a [u8],
-        access_metadata: &'a AccessMetadata,
-        buf: &mut &'a mut [u8],
-    ) -> Result<Self> {
-        // Parse header fields.
-        let is_new = header.bool("is_new")?;
-        let index = header.le_u32("index")?;
-        let data_length = header.le_u32("data_length")? as usize;
-
-        // Split off the backing slice from the start of `data` and advance `data` past it.
-        let (backing, rest) = mem::take(buf).split_at_mut(data_length);
-        *buf = rest;
-
+    /// Decodes a resource, splitting off its backing from `buf`.
+    pub fn decode(buf: &mut &'a mut [u8], access_metadata: &'a AccessMetadata) -> Result<Self> {
         Ok(Self {
             access_metadata,
-            backing,
+            is_new: buf.bool("is_new")?,
+            index: buf.le_u32("index")?,
+            backing: buf.blob_mut("data")?,
             promoted: None,
-            index,
-            is_new,
             dirty: false,
             deleted: false,
         })
     }
 
-    /// Encodes a resource header to the given writer.
+    /// Encodes a single resource to the journal.
     #[cfg(feature = "host")]
-    pub(crate) fn encode_header(w: &mut impl Writer, is_new: bool, index: u32, data_len: u32) {
-        // Write header fields.
-        w.write(&[if is_new { 1 } else { 0 }]);
-        w.write(&index.to_le_bytes());
-        w.write(&data_len.to_le_bytes());
+    pub fn encode<S, P>(w: &mut impl Writer, r: &AccessHandle<'_, S, P>)
+    where
+        S: Store,
+        P: Processor<S>,
+    {
+        w.write(&[r.is_new() as u8]);
+        w.write(&r.resource_index().to_le_bytes());
+        w.write_blob(r.data());
     }
 }

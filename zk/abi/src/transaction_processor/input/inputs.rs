@@ -1,6 +1,9 @@
+#[cfg(feature = "host")]
 use alloc::vec::Vec;
 
 use kaspa_hashes::Hash;
+#[cfg(feature = "host")]
+use tap::Tap;
 use vprogs_core_codec::Reader;
 #[cfg(feature = "host")]
 use vprogs_core_codec::Writer;
@@ -12,63 +15,36 @@ use vprogs_scheduling_scheduler::{Processor, TransactionContext};
 use vprogs_storage_types::Store;
 
 use crate::{
-    Error, Result,
-    transaction_processor::{Resource, Transaction},
+    Result,
+    transaction_processor::{ExecutionInput, Transaction},
 };
 
-/// Decoded transaction inputs holding zero-copy views into the wire buffer.
+/// Decoded transaction inputs. `execution_input` is present iff `version` is supported.
 pub struct Inputs<'a> {
-    /// Transaction to execute.
-    pub tx: Transaction<'a>,
+    /// L1 transaction protocol version.
+    pub version: u16,
+    /// Host-supplied L1 transaction ID.
+    pub tx_id: &'a Hash,
     /// L1 block-wide position of this tx.
     pub merge_idx: u32,
-    /// Mergeset context hash - exposed to the VM as a source of on-chain randomness.
-    pub context_hash: &'a Hash,
-    /// Mutable resource views decoded from the wire buffer.
-    pub resources: Vec<Resource<'a>>,
+    /// Per-tx execution data.
+    pub execution_input: Option<ExecutionInput<'a>>,
 }
 
 impl<'a> Inputs<'a> {
-    /// Fixed header size: merge_idx(4) + n_resources(4) + context_hash(32).
-    pub const FIXED_HEADER_SIZE: usize = 4 + 4 + 32;
-
     /// Decodes transaction inputs from the wire buffer.
-    ///
-    /// Wire layout: `fixed_header | tx_bytes | resource_headers | resource_data`.
-    pub fn decode(buf: &'a mut [u8]) -> Result<Self> {
-        // Split fixed header from the rest of the buffer, creating mutable view for resource data.
-        let (header, data) = buf.split_at_mut(Self::FIXED_HEADER_SIZE);
-        let mut header: &[u8] = header;
-
-        // Decode fixed header.
-        let merge_idx = header.le_u32("merge_idx")?;
-        let resource_count = header.le_u32("resource_count")? as usize;
-        let context_hash = header.array_as::<Hash>("context_hash")?;
-
-        // Decode transaction bytes (immutably reborrowed so access metadata can borrow from them).
-        let (tx_bytes, resources) = data.split_at_mut(Transaction::wire_size(data)?);
-        let tx = Transaction::decode(&mut &*tx_bytes)?;
-        if tx.payload().access_metadata.len() != resource_count {
-            return Err(Error::Decode("access_metadata/resource_count mismatch".into()));
-        }
-
-        // Sanity check that header offsets do not overflow.
-        let resources_len = resource_count
-            .checked_mul(Resource::HEADER_SIZE)
-            .ok_or_else(|| Error::Decode("resource_count overflow".into()))?;
-
-        // Decode resources, pairing each with its access_metadata entry by position.
-        let (res_headers, mut res_data) = resources.split_at_mut(resources_len);
-        let mut resources = Vec::with_capacity(resource_count);
-        for (i, access_metadata) in tx.payload().access_metadata.iter().enumerate() {
-            resources.push(Resource::decode(
-                &res_headers[i * Resource::HEADER_SIZE..],
-                access_metadata,
-                &mut res_data,
-            )?);
-        }
-
-        Ok(Self { tx, merge_idx, context_hash, resources })
+    pub fn decode(mut buf: &'a mut [u8]) -> Result<Self> {
+        let version = buf.le_u16("version")?;
+        Ok(Self {
+            version,
+            tx_id: buf.array_as::<Hash>("tx_id")?,
+            merge_idx: buf.le_u32("merge_idx")?,
+            execution_input: if version == Transaction::V1 {
+                Some(ExecutionInput::decode(buf)?)
+            } else {
+                None
+            },
+        })
     }
 
     /// Encodes a scheduler [`TransactionContext`] into the ABI wire format (host-side only).
@@ -78,43 +54,13 @@ impl<'a> Inputs<'a> {
         S: Store,
         P: Processor<S, Transaction = L1Transaction, BatchMetadata = ChainBlockMetadata>,
     {
-        // Pre-allocate buffer: fixed header, resource headers, resource data. The transaction
-        // envelope size depends on per-version preimage derivation, so it grows the buffer.
-        let res_header_size = ctx.resources().len() * Resource::HEADER_SIZE;
-        let res_data_size: usize = ctx.resources().iter().map(|r| r.data().len()).sum();
-        let mut buf = Vec::with_capacity(Self::FIXED_HEADER_SIZE + res_header_size + res_data_size);
-
-        // Write fixed header: merge_idx, n_resources, context_hash.
-        let bm = ctx.batch_metadata();
-        let context_hash = kaspa_seq_commit::hashing::mergeset_context_hash(
-            &kaspa_seq_commit::types::MergesetContext {
-                timestamp: kaspa_seq_commit::hashing::seq_commit_timestamp(bm.prev_timestamp),
-                daa_score: bm.daa_score,
-                blue_score: bm.blue_score,
-            },
-        );
-        buf.write(&ctx.scheduler_tx().merge_idx.to_le_bytes());
-        buf.write(&(ctx.resources().len() as u32).to_le_bytes());
-        buf.write(context_hash.as_slice());
-
-        // Write transaction bytes.
-        Transaction::encode(&mut buf, &ctx.scheduler_tx().tx);
-
-        // Write resource headers.
-        for r in ctx.resources() {
-            Resource::encode_header(
-                &mut buf,
-                r.is_new(),
-                r.resource_index(),
-                r.data().len() as u32,
-            );
-        }
-
-        // Write resource data.
-        for r in ctx.resources() {
-            buf.write(r.data());
-        }
-
-        buf
+        Vec::new().tap_mut(|buf| {
+            buf.write(&ctx.scheduler_tx().tx.version.to_le_bytes());
+            buf.write(ctx.scheduler_tx().tx.id().as_slice());
+            buf.write(&ctx.scheduler_tx().merge_idx.to_le_bytes());
+            if ctx.scheduler_tx().tx.version == Transaction::V1 {
+                ExecutionInput::encode(buf, ctx);
+            }
+        })
     }
 }
