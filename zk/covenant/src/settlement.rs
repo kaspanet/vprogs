@@ -141,12 +141,14 @@ impl Settlement {
 ///
 /// Push order (bottom to top):
 /// `[claim, control_index, control_digests, seal, control_id, hashfn,
-///   block_prove_to, new_state, new_lane_tip, redeem]`.
+///   new_lane_tip, new_state, block_prove_to, redeem]`.
 ///
-/// After the P2SH check pops `redeem`, the redeem execution stashes `prev_lane_tip` /
-/// `prev_state` from its own prefix, consumes `block_prove_to` via `OpChainblockSeqCommit`,
-/// stashes `new_state` / `new_lane_tip` / `new_seq_commit` for the journal, and finishes
-/// with `Op2Swap + OpZkPrecompile` consuming the remaining 8 items in the R0Succinct layout.
+/// After the P2SH check pops `redeem`, the redeem prefix pushes `prev_lane_tip` /
+/// `prev_state`, the script stashes them to alt, then consumes `block_prove_to` via
+/// `OpChainblockSeqCommit` (so `block_prove_to` must be the top-of-stack item once
+/// `prev_*` are stashed away). It then stashes `new_state` / `new_lane_tip` /
+/// `new_seq_commit` for the journal and finishes with `Op2Swap + OpZkPrecompile`
+/// consuming the remaining 8 items in the R0Succinct layout.
 fn sig_script(
     redeem: &[u8],
     block_prove_to: Hash,
@@ -171,11 +173,11 @@ fn sig_script(
         .unwrap()
         .add_data(&[witness.hashfn])
         .unwrap()
-        .add_data(block_prove_to.as_slice())
+        .add_data(new_lane_tip.as_slice())
         .unwrap()
         .add_data(new_state)
         .unwrap()
-        .add_data(new_lane_tip.as_slice())
+        .add_data(block_prove_to.as_slice())
         .unwrap()
         .add_data(redeem)
         .unwrap()
