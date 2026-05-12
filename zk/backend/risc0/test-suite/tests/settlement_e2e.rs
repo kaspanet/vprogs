@@ -1,4 +1,4 @@
-use std::num::NonZeroUsize;
+use std::{num::NonZeroUsize, time::Instant};
 
 use kaspa_consensus_core::tx::{CovenantBinding, TransactionOutpoint};
 use kaspa_hashes::Hash;
@@ -23,6 +23,12 @@ use vprogs_zk_covenant::{
     redeem_script_len,
 };
 use vprogs_zk_vm::{ProvingPipeline, Vm};
+
+/// Receipts are cryptographically verified unless `RISC0_DEV_MODE` is set to anything other
+/// than `0` (in dev mode, the prover emits fake receipts, so verification is meaningless).
+fn should_verify_receipts() -> bool {
+    matches!(std::env::var("RISC0_DEV_MODE").as_deref(), Err(_) | Ok("0"))
+}
 
 /// Builds a `ChainBlockMetadata` from a real simnet block. Required because the bundling
 /// prover calls `get_seq_commit_lane_proof(block_hash, lane_key)` which only resolves for
@@ -103,6 +109,7 @@ async fn batch_proof_is_directly_settleable_single_batch() {
     );
 
     let metadata = metadata_for_block(&l1, block_hashes[0]).await;
+    let t_batch = Instant::now();
     let batch = scheduler.schedule(
         metadata,
         vec![
@@ -121,8 +128,21 @@ async fn batch_proof_is_directly_settleable_single_batch() {
 
     batch.wait_committed_blocking();
     batch.wait_artifact_published_blocking();
+    eprintln!(
+        "[batch_proof_is_directly_settleable_single_batch] schedule->proven wall time: {:?}",
+        t_batch.elapsed()
+    );
+
+    if should_verify_receipts() {
+        for artifact in batch.tx_artifacts() {
+            backend.verify_transaction_receipt(&artifact);
+        }
+    }
 
     let batch_receipt = (*batch.artifact()).clone();
+    if should_verify_receipts() {
+        backend.verify_batch_receipt(&batch_receipt);
+    }
     let journal_bytes = Backend::journal_bytes(&batch_receipt);
 
     assert_eq!(
@@ -239,16 +259,33 @@ async fn batch_proof_bundles_two_batches() {
         ],
     );
 
+    let t_bundle = Instant::now();
     batch_1.wait_committed_blocking();
     batch_2.wait_committed_blocking();
     batch_1.wait_artifact_published_blocking();
     batch_2.wait_artifact_published_blocking();
+    eprintln!(
+        "[batch_proof_bundles_two_batches] bundle (K=2) schedule->proven wall time: {:?}",
+        t_bundle.elapsed()
+    );
 
     let r1 = (*batch_1.artifact()).clone();
     let r2 = (*batch_2.artifact()).clone();
     let j1 = Backend::journal_bytes(&r1);
     let j2 = Backend::journal_bytes(&r2);
     assert_eq!(j1, j2, "bundle publishes the same receipt to every batch");
+
+    if should_verify_receipts() {
+        // One bundle receipt is shared by both batches; verifying once is sufficient.
+        backend.verify_batch_receipt(&r1);
+        // Per-tx inner receipts are folded into the bundle via composition, but each is also
+        // independently verifiable against the transaction image id.
+        for batch in [&batch_1, &batch_2] {
+            for artifact in batch.tx_artifacts() {
+                backend.verify_transaction_receipt(&artifact);
+            }
+        }
+    }
     assert_eq!(j1.len(), vprogs_zk_covenant::JOURNAL_SIZE);
 
     let parsed = (&mut &j1[..]).array_as::<StateTransition>("state_transition").unwrap();
