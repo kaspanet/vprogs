@@ -18,7 +18,8 @@ use kaspa_consensus_core::{
 };
 use kaspa_hashes::Hash;
 use kaspa_txscript::{
-    script_builder::ScriptBuilder, standard::pay_to_script_hash_script, zk_precompiles::tags::ZkTag,
+    EngineFlags, script_builder::ScriptBuilder, standard::pay_to_script_hash_script,
+    zk_precompiles::tags::ZkTag,
 };
 
 use crate::script::{build_redeem_script, redeem_script_len};
@@ -153,7 +154,11 @@ fn sig_script(
     new_lane_tip: &Hash,
     witness: &SuccinctWitness<'_>,
 ) -> Vec<u8> {
-    ScriptBuilder::new()
+    // The R0Succinct seal is ~222 KB - well over the 10 KB pre-Toccata script cap that
+    // `ScriptBuilder::new()` (covenants_enabled=false) enforces. Building with
+    // covenants-enabled flags raises the cap to the 1 MB post-Toccata limit, which the
+    // settlement covenant requires anyway (it spends a Toccata covenant UTXO).
+    ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
         .add_data(witness.claim)
         .unwrap()
         .add_data(&witness.control_index.to_le_bytes())
