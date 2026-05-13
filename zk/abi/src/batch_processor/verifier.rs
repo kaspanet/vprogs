@@ -23,7 +23,7 @@ use crate::{
 };
 
 /// Verifies a bundle and accumulates its post-state.
-pub struct Verifier<'a, V: Fn(&[u8; 32], &[u8])> {
+pub struct Verifier<'a, V: FnMut(&[u8; 32], &[u8])> {
     /// Decoded bundle inputs.
     inputs: Inputs<'a>,
     /// Lane tip entering the bundle (from the first batch's `prev_lane_tip`).
@@ -38,7 +38,7 @@ pub struct Verifier<'a, V: Fn(&[u8; 32], &[u8])> {
     verify_tx_journal: V,
 }
 
-impl<'a, V: Fn(&[u8; 32], &[u8])> Verifier<'a, V> {
+impl<'a, V: FnMut(&[u8; 32], &[u8])> Verifier<'a, V> {
     /// Builds a `Verifier` for the bundle.
     pub fn new(input_bytes: &'a [u8], verify_tx_journal: V) -> Self {
         // Parse inputs and snapshot the bundle's pre-state from the first batch.
@@ -187,7 +187,7 @@ impl<'a, V: Fn(&[u8; 32], &[u8])> Verifier<'a, V> {
 
     /// Decodes and verifies a tx journal (proof, shape, merge_idx).
     fn verified_journal(
-        &self,
+        &mut self,
         tx_journal: Result<&'a [u8], Error>,
         last_merge_idx: &mut Option<u32>,
     ) -> JournalEntries<'a> {
