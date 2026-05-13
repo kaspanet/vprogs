@@ -22,50 +22,30 @@ use crate::{
     },
 };
 
-/// Bundle proof workspace.
-pub struct Abi<'a, V: Fn(&[u8; 32], &[u8])> {
+/// Verifies a bundle and accumulates its post-state.
+pub struct Verifier<'a, V: Fn(&[u8; 32], &[u8])> {
     /// Decoded bundle inputs.
     inputs: Inputs<'a>,
+    /// Lane tip entering the bundle (from the first batch's `prev_lane_tip`).
+    prev_lane_tip: &'a Hash,
+    /// Blue score at which the lane was last active before the bundle.
+    prev_lane_blue_score: u64,
     /// Latest L2 value hashes indexed by bundle-wide resource_index.
     latest_value_hashes: Vec<&'a [u8; 32]>,
     /// Inverse of `leaf_order`: `bundle_idx_to_leaf_pos[bundle_idx] = leaf_pos`.
     bundle_idx_to_leaf_pos: Vec<u32>,
     /// Verifies a tx journal against the configured transaction-processor image.
-    verify_journal: V,
+    verify_tx_journal: V,
 }
 
-impl<'a, V: Fn(&[u8; 32], &[u8])> Abi<'a, V> {
-    /// Verifies a bundle and emits its settlement journal.
-    pub fn process_bundle(input_bytes: &'a [u8], journal: &mut impl Writer, verify_journal: V) {
-        let mut this = Abi::new(input_bytes, verify_journal);
-
-        // First batch carries the bundle's pre-state.
-        let first_batch = this.inputs.batches.first().unwrap();
-        let prev_lane_tip = *first_batch.prev_lane_tip;
-        let prev_lane_blue_score = first_batch.prev_lane_blue_score;
-
-        // Verify all batches and derive the post-state.
-        let (lane_tip, lane_blue_score) = this.process_batches(prev_lane_tip, prev_lane_blue_score);
-
-        // Calculate final commitments.
-        let new_seq_commit = this.new_seq_commit(&lane_tip, lane_blue_score);
-        let prev_state = this.inputs.proof.root::<Blake3>().expect("proof root");
-        let new_state = this.inputs.proof.compute_root::<Blake3>(|i| this.latest_value_hash(i));
-
-        // Commit resulting state transition.
-        StateTransition::encode(
-            journal,
-            (&prev_state, &prev_lane_tip),
-            (&new_state.expect("new_state"), &lane_tip, &new_seq_commit),
-            this.inputs.covenant_id,
-            this.inputs.image_id,
-        );
-    }
-
-    /// Builds an `Abi` workspace for the bundle.
-    fn new(input_bytes: &'a [u8], verify_journal: V) -> Self {
-        // Parse inputs and assert bounds.
+impl<'a, V: Fn(&[u8; 32], &[u8])> Verifier<'a, V> {
+    /// Builds a `Verifier` for the bundle.
+    pub fn new(input_bytes: &'a [u8], verify_tx_journal: V) -> Self {
+        // Parse inputs and snapshot the bundle's pre-state from the first batch.
         let inputs = Inputs::decode(input_bytes).expect("decode bundle inputs");
+        let first_batch = inputs.batches.first().unwrap();
+
+        // Assert bounds before scattering resources.
         assert_eq!(inputs.leaf_order.len(), inputs.proof.leaves.len(), "invalid leaf_order length");
 
         // Scatter the loaded values and their resource indexes into their correct position.
@@ -81,11 +61,21 @@ impl<'a, V: Fn(&[u8; 32], &[u8])> Abi<'a, V> {
             bundle_idx_to_leaf_pos[res_idx] = leaf_pos as u32;
         }
 
-        Self { inputs, latest_value_hashes: value_hashes, bundle_idx_to_leaf_pos, verify_journal }
+        Self {
+            inputs,
+            prev_lane_tip: first_batch.prev_lane_tip,
+            prev_lane_blue_score: first_batch.prev_lane_blue_score,
+            latest_value_hashes: value_hashes,
+            bundle_idx_to_leaf_pos,
+            verify_tx_journal,
+        }
     }
 
     /// Verifies all batches and returns the bundle's final `(lane_tip, lane_blue_score)`.
-    fn process_batches(&mut self, mut lane_tip: Hash, mut lane_blue_score: u64) -> (Hash, u64) {
+    pub fn verify_batches(&mut self) -> (Hash, u64) {
+        let mut lane_tip = *self.prev_lane_tip;
+        let mut lane_blue_score = self.prev_lane_blue_score;
+
         for batch in self.inputs.batches {
             let batch = batch.unwrap();
 
@@ -99,7 +89,7 @@ impl<'a, V: Fn(&[u8; 32], &[u8])> Abi<'a, V> {
 
             // Active batch advances both; empty batch leaves the carry-forward intact.
             if !batch.tx_journals.is_empty() {
-                lane_tip = self.process_activity(&batch);
+                lane_tip = self.verify_activity(&batch);
                 lane_blue_score = batch.blue_score;
             }
         }
@@ -107,8 +97,24 @@ impl<'a, V: Fn(&[u8; 32], &[u8])> Abi<'a, V> {
         (lane_tip, lane_blue_score)
     }
 
+    /// Commits the bundle's settlement journal.
+    pub fn commit_state_transition(
+        &self,
+        journal: &mut impl Writer,
+        lane_tip: &Hash,
+        lane_blue_score: u64,
+    ) {
+        StateTransition::encode(
+            journal,
+            (&self.prev_root(), self.prev_lane_tip),
+            (&self.new_root(), lane_tip, &self.new_seq_commit(lane_tip, lane_blue_score)),
+            self.inputs.covenant_id,
+            self.inputs.image_id,
+        );
+    }
+
     /// Verifies an active batch's tx activity and returns the derived lane tip.
-    fn process_activity(&mut self, batch: &Batch<'a>) -> Hash {
+    fn verify_activity(&mut self, batch: &Batch<'a>) -> Hash {
         // Determine expected context hash.
         let context_hash = mergeset_context_hash(&MergesetContext {
             timestamp: seq_commit_timestamp(batch.prev_timestamp),
@@ -187,7 +193,7 @@ impl<'a, V: Fn(&[u8; 32], &[u8])> Abi<'a, V> {
     ) -> JournalEntries<'a> {
         // Verify the journal bytes against the tx-processor image.
         let journal_bytes = tx_journal.expect("decode tx_journal");
-        (self.verify_journal)(self.inputs.image_id, journal_bytes);
+        (self.verify_tx_journal)(self.inputs.image_id, journal_bytes);
 
         // Parse journal entries.
         let entries = JournalEntries::decode(journal_bytes).expect("tx journal");
@@ -223,6 +229,21 @@ impl<'a, V: Fn(&[u8; 32], &[u8])> Abi<'a, V> {
         bundle_idx
     }
 
+    /// Returns the bundle's pre-state SMT root.
+    fn prev_root(&self) -> [u8; 32] {
+        self.inputs.proof.root::<Blake3>().expect("prev_root")
+    }
+
+    /// Returns the bundle's post-state SMT root after batch processing.
+    fn new_root(&self) -> [u8; 32] {
+        self.inputs.proof.compute_root::<Blake3>(|i| self.latest_value_hash(i)).expect("new_root")
+    }
+
+    /// Returns the latest value hash for a proof leaf position.
+    fn latest_value_hash(&self, leaf_pos: usize) -> &'a [u8; 32] {
+        self.latest_value_hashes[self.inputs.leaf_order[leaf_pos].get() as usize]
+    }
+
     /// Derives the bundle's final-block `seq_commit`.
     fn new_seq_commit(&self, lane_tip: &Hash, blue_score: u64) -> Hash {
         // Determine new lane leaf.
@@ -248,10 +269,5 @@ impl<'a, V: Fn(&[u8; 32], &[u8])> Abi<'a, V> {
             parent_seq_commit: self.inputs.lane_proof.prev_seq_commit,
             state_root: &state_root_seq,
         })
-    }
-
-    /// Returns the latest value hash for a proof leaf position.
-    fn latest_value_hash(&self, leaf_pos: usize) -> &'a [u8; 32] {
-        self.latest_value_hashes[self.inputs.leaf_order[leaf_pos].get() as usize]
     }
 }

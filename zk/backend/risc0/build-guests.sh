@@ -11,7 +11,7 @@
 #   ./zk/backend/risc0/build-guests.sh batch-processor         # build only the batch processor
 set -euo pipefail
 
-DOCKER_TAG="r0.1.88.0"
+DOCKER_TAG="r0.1.91.1"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
@@ -21,14 +21,14 @@ else
   PROGRAMS=("$@")
 fi
 
-# Write a temporary .dockerignore to avoid sending target/ and .git/ as build context.
+# Write a temporary .dockerignore to avoid sending unnecessary context.
 DOCKERIGNORE="$REPO_ROOT/.dockerignore"
 CLEANUP_DOCKERIGNORE=false
 if [ ! -f "$DOCKERIGNORE" ]; then
   CLEANUP_DOCKERIGNORE=true
   cat > "$DOCKERIGNORE" <<'IGNORE'
-target/
-target-idea/
+**/target/
+**/target-idea/
 .git/
 .claude/
 node_modules/

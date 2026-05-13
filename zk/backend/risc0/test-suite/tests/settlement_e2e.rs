@@ -216,13 +216,14 @@ async fn batch_proof_bundles_two_batches() {
         vec![tx1.clone().into_scheduler_tx(0), tx2.clone().into_scheduler_tx(1)],
     );
 
-    // Production runs through the bridge, which chains `lane_tip` block to block so
-    // section[i+1].prev_lane_tip == section[i].new_lane_tip. Tests bypass the bridge and
-    // construct metadata fresh from each block, so we derive the chain ourselves here using
-    // the same `lane_tip_next` the guest uses internally.
+    // Production chains the lane state (`prev_lane_tip` and `prev_lane_blue_score`) block
+    // to block via the bridge. Tests bypass the bridge and construct metadata fresh from
+    // each block, so we chain those fields manually here. The tip is derived via the same
+    // `lane_tip_next` the guest uses internally.
     let mut metadata_2 = metadata_for_block(&l1, block_hashes[1]).await;
     metadata_2.prev_lane_tip =
         compute_section_lane_tip(&metadata_1, &[(0, &tx1), (1, &tx2)], &lane_key);
+    metadata_2.prev_lane_blue_score = metadata_1.blue_score;
     let batch_2 = scheduler.schedule(
         metadata_2,
         vec![

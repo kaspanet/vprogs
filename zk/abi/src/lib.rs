@@ -6,7 +6,7 @@ mod error;
 mod read;
 
 pub mod batch_processor {
-    pub(crate) mod abi;
+    pub(crate) mod verifier;
 
     pub(crate) mod input {
         pub(crate) mod batch;
@@ -22,7 +22,6 @@ pub mod batch_processor {
         pub(crate) mod state_transition;
     }
 
-    pub use abi::Abi;
     #[cfg(feature = "host")]
     pub use input::bundle::{Bundle, BundlePart};
     pub use input::{
@@ -30,6 +29,7 @@ pub mod batch_processor {
         transaction_journals::TransactionJournals,
     };
     pub use journal::state_transition::StateTransition;
+    pub use verifier::Verifier;
 }
 
 pub mod transaction_processor {
@@ -66,7 +66,7 @@ pub mod transaction_processor {
         }
     }
 
-    pub use abi::Abi;
+    pub use abi::process_transaction;
     pub use error_code::ErrorCode;
     pub use input::{
         execution_input::ExecutionInput, inputs::Inputs, payload::Payload, resource::Resource,
