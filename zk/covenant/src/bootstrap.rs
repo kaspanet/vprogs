@@ -13,17 +13,15 @@ use kaspa_consensus_core::{
     tx::{CovenantBinding, Transaction, TransactionInput, TransactionOutpoint, TransactionOutput},
 };
 use kaspa_hashes::Hash;
-use kaspa_txscript::{standard::pay_to_script_hash_script, zk_precompiles::tags::ZkTag};
+use kaspa_txscript::standard::pay_to_script_hash_script;
 
-use crate::script::{build_redeem_script, redeem_script_len};
+use crate::script::{RedeemPins, build_redeem_script, redeem_script_len};
 
 /// Inputs describing an initial covenant UTXO bootstrap.
 pub struct BootstrapInput<'a> {
-    /// Batch processor guest image id the covenant pins against (the proof verifier).
-    pub program_id: &'a [u8; 32],
-    /// Transaction processor guest image id hardcoded into the redeem script (binds the
-    /// inner-proof verifier identity into the journal preimage).
-    pub tx_image_id: &'a [u8; 32],
+    /// Verifier-identity constants baked into the redeem script (program_id, tx_image_id,
+    /// control_id, hashfn, zk_tag).
+    pub pins: RedeemPins<'a>,
     /// Initial L2 SMT state root (typically `EMPTY_HASH`).
     pub initial_state: &'a [u8; 32],
     /// Initial lane tip embedded in the genesis covenant UTXO's redeem prefix (typically zero).
@@ -47,19 +45,12 @@ pub struct Bootstrap {
 impl Bootstrap {
     /// Builds the bootstrap transaction.
     pub fn build(input: &BootstrapInput<'_>) -> Self {
-        let redeem_len = redeem_script_len(
-            input.initial_state,
-            input.program_id,
-            input.tx_image_id,
-            ZkTag::R0Succinct,
-        );
+        let redeem_len = redeem_script_len(input.initial_state, &input.pins);
         let initial_redeem = build_redeem_script(
             input.initial_state,
             input.initial_lane_tip,
             redeem_len,
-            input.program_id,
-            input.tx_image_id,
-            ZkTag::R0Succinct,
+            &input.pins,
         );
 
         // The caller signs the input after building; the signature fills the sig_script in place.

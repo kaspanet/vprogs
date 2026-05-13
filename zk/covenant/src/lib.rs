@@ -19,8 +19,8 @@ pub mod settlement;
 
 pub use bootstrap::{Bootstrap, BootstrapInput};
 pub use script::{
-    REDEEM_PREFIX_LEN, build_dev_redeem_script, build_redeem_script, dev_redeem_script_len,
-    redeem_script_len,
+    REDEEM_PREFIX_LEN, RedeemPins, build_dev_redeem_script, build_redeem_script,
+    dev_redeem_script_len, redeem_script_len,
 };
 pub use settlement::{Settlement, SettlementDevInput, SettlementInput, SuccinctWitness};
 pub use vprogs_zk_abi::batch_processor::StateTransition;

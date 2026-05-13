@@ -19,23 +19,20 @@ use kaspa_consensus_core::{
 use kaspa_hashes::Hash;
 use kaspa_txscript::{
     EngineFlags, script_builder::ScriptBuilder, standard::pay_to_script_hash_script,
-    zk_precompiles::tags::ZkTag,
 };
 
 use crate::script::{
-    build_dev_redeem_script, build_redeem_script, dev_redeem_script_len, redeem_script_len,
+    RedeemPins, build_dev_redeem_script, build_redeem_script, dev_redeem_script_len,
+    redeem_script_len,
 };
 
 /// Inputs describing a single settlement step.
 pub struct SettlementInput<'a> {
     /// Covenant id carried forward by the continuation output.
     pub covenant_id: Hash,
-    /// Batch processor guest image id the covenant pins against (the proof verifier).
-    pub program_id: &'a [u8; 32],
-    /// Transaction processor guest image id the covenant binds in the journal preimage so
-    /// the inner-proof verifier identity is constrained on-chain. Hardcoded into the redeem
-    /// script body.
-    pub tx_image_id: &'a [u8; 32],
+    /// Verifier-identity constants baked into the redeem script (program_id, tx_image_id,
+    /// control_id, hashfn, zk_tag).
+    pub pins: RedeemPins<'a>,
     /// L2 SMT state root before this batch.
     pub prev_state: &'a [u8; 32],
     /// Lane tip embedded in the covenant UTXO's redeem prefix (carried from the previous
@@ -57,16 +54,14 @@ pub struct SettlementInput<'a> {
 }
 
 /// Serialized pieces of a risc0 succinct receipt that the covenant script consumes as the ZK
-/// witness. These correspond to `SuccinctReceipt` fields the host pushes onto the script stack.
+/// witness. These correspond to `SuccinctReceipt` fields the host pushes onto the script
+/// stack. The verifier-identity constants (`control_id`, `hashfn`, `image_id`) are NOT here;
+/// they're hardcoded into the redeem script body and supplied to `OpZkPrecompile` from there.
 pub struct SuccinctWitness<'a> {
     /// STARK seal serialized as little-endian bytes of each `u32` word.
     pub seal: &'a [u8],
     /// 32-byte receipt claim digest.
     pub claim: &'a [u8; 32],
-    /// 32-byte risc0 control id (binds the proof to a specific control root; kaspa PR #957).
-    pub control_id: &'a [u8; 32],
-    /// Hash function id (0 = blake2b, 1 = poseidon2, 2 = sha256).
-    pub hashfn: u8,
     /// Control-inclusion-proof leaf index (little-endian u32).
     pub control_index: u32,
     /// Concatenated 32-byte control-inclusion-proof path digests.
@@ -86,29 +81,12 @@ pub struct Settlement {
 impl Settlement {
     /// Builds the settlement transaction for a single batch.
     pub fn build(input: &SettlementInput<'_>) -> Self {
-        let redeem_len = redeem_script_len(
-            input.prev_state,
-            input.program_id,
-            input.tx_image_id,
-            ZkTag::R0Succinct,
-        );
+        let redeem_len = redeem_script_len(input.prev_state, &input.pins);
 
-        let prev_redeem = build_redeem_script(
-            input.prev_state,
-            input.prev_lane_tip,
-            redeem_len,
-            input.program_id,
-            input.tx_image_id,
-            ZkTag::R0Succinct,
-        );
-        let next_redeem = build_redeem_script(
-            input.new_state,
-            input.new_lane_tip,
-            redeem_len,
-            input.program_id,
-            input.tx_image_id,
-            ZkTag::R0Succinct,
-        );
+        let prev_redeem =
+            build_redeem_script(input.prev_state, input.prev_lane_tip, redeem_len, &input.pins);
+        let next_redeem =
+            build_redeem_script(input.new_state, input.new_lane_tip, redeem_len, &input.pins);
 
         let sig_script = sig_script(
             &prev_redeem,
@@ -179,8 +157,7 @@ impl Settlement {
 
         let prev_redeem =
             build_dev_redeem_script(input.prev_state, input.prev_lane_tip, redeem_len);
-        let next_redeem =
-            build_dev_redeem_script(input.new_state, input.new_lane_tip, redeem_len);
+        let next_redeem = build_dev_redeem_script(input.new_state, input.new_lane_tip, redeem_len);
 
         let sig_script = sig_script_dev(
             &prev_redeem,
@@ -245,15 +222,16 @@ fn sig_script_dev(
 /// Builds the signature script witness layout consumed by the covenant's redeem script.
 ///
 /// Push order (bottom to top):
-/// `[claim, control_index, control_digests, seal, control_id, hashfn,
-///   new_lane_tip, new_state, block_prove_to, redeem]`.
+/// `[claim, control_index, control_digests, seal, new_lane_tip, new_state, block_prove_to,
+///   redeem]`.
 ///
 /// After the P2SH check pops `redeem`, the redeem prefix pushes `prev_lane_tip` /
 /// `prev_state`, the script stashes them to alt, then consumes `block_prove_to` via
 /// `OpChainblockSeqCommit` (so `block_prove_to` must be the top-of-stack item once
 /// `prev_*` are stashed away). It then stashes `new_state` / `new_lane_tip` /
-/// `new_seq_commit` for the journal and finishes with `Op2Swap + OpZkPrecompile`
-/// consuming the remaining 8 items in the R0Succinct layout.
+/// `new_seq_commit` for the journal, builds the journal hash, pushes the script-embedded
+/// `image_id` / `control_id` / `hashfn` constants, and finishes with `OpZkPrecompile`
+/// consuming the 8 items in the R0Succinct pop order.
 fn sig_script(
     redeem: &[u8],
     block_prove_to: Hash,
@@ -274,10 +252,6 @@ fn sig_script(
         .unwrap()
         .add_data(witness.seal)
         .unwrap()
-        .add_data(witness.control_id)
-        .unwrap()
-        .add_data(&[witness.hashfn])
-        .unwrap()
         .add_data(new_lane_tip.as_slice())
         .unwrap()
         .add_data(new_state)
@@ -291,14 +265,22 @@ fn sig_script(
 
 #[cfg(test)]
 mod tests {
+    use kaspa_txscript::zk_precompiles::tags::ZkTag;
+
     use super::*;
+    use crate::script::RedeemPins;
 
     #[test]
     fn settlement_tx_has_single_covenant_output() {
         let input = SettlementInput {
             covenant_id: Hash::from_bytes([0xAA; 32]),
-            program_id: &[0xBB; 32],
-            tx_image_id: &[0xCC; 32],
+            pins: RedeemPins {
+                program_id: &[0xBB; 32],
+                tx_image_id: &[0xCC; 32],
+                control_id: &[0xDD; 32],
+                hashfn: 1,
+                zk_tag: ZkTag::R0Succinct,
+            },
             prev_state: &[0x11; 32],
             prev_lane_tip: &Hash::from_bytes([0x22; 32]),
             new_state: &[0x33; 32],
@@ -309,8 +291,6 @@ mod tests {
             witness: SuccinctWitness {
                 seal: &[0u8; 8],
                 claim: &[0u8; 32],
-                control_id: &[0u8; 32],
-                hashfn: 0,
                 control_index: 0,
                 control_digests: &[0u8; 0],
             },

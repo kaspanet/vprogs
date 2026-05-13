@@ -20,13 +20,13 @@ use vprogs_node_test_utils::L1Node;
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
-use vprogs_zk_backend_risc0_api::{Backend, OwnedSuccinctWitness};
+use vprogs_zk_backend_risc0_api::{Backend, OwnedSuccinctWitness, ScriptVerifierPins};
 use vprogs_zk_backend_risc0_test_suite::{
     L1TransactionExt, batch_processor_elf, compute_section_lane_tip, transaction_processor_elf,
 };
 use vprogs_zk_batch_prover::{Backend as _, BatchProverConfig};
 use vprogs_zk_covenant::{
-    Settlement, SettlementInput, StateTransition, SuccinctWitness, build_redeem_script,
+    RedeemPins, Settlement, SettlementInput, StateTransition, SuccinctWitness, build_redeem_script,
     redeem_script_len,
 };
 use vprogs_zk_vm::{ProvingPipeline, Vm};
@@ -125,8 +125,7 @@ async fn metadata_for_block(l1: &L1Node, block_hash: Hash) -> ChainBlockMetadata
 fn assert_settlement_structure(
     settlement: &Settlement,
     parsed: &StateTransition,
-    program_id: &[u8; 32],
-    tx_image_id: &[u8; 32],
+    pins: &RedeemPins<'_>,
     covenant_id_hash: Hash,
 ) {
     assert_eq!(settlement.transaction.inputs.len(), 1);
@@ -140,16 +139,9 @@ fn assert_settlement_structure(
         Some(CovenantBinding::new(0, covenant_id_hash)),
     );
 
-    let expected_len =
-        redeem_script_len(&parsed.prev_state, program_id, tx_image_id, ZkTag::R0Succinct);
-    let expected_prev_redeem = build_redeem_script(
-        &parsed.prev_state,
-        &parsed.prev_lane_tip,
-        expected_len,
-        program_id,
-        tx_image_id,
-        ZkTag::R0Succinct,
-    );
+    let expected_len = redeem_script_len(&parsed.prev_state, pins);
+    let expected_prev_redeem =
+        build_redeem_script(&parsed.prev_state, &parsed.prev_lane_tip, expected_len, pins);
     assert_eq!(settlement.prev_redeem, expected_prev_redeem);
     assert_eq!(settlement.prev_redeem.len(), settlement.next_redeem.len());
 }
@@ -241,10 +233,26 @@ async fn batch_proof_is_directly_settleable_single_batch() {
         "guest must echo the host-supplied tx image id into the journal",
     );
     let covenant_id_hash = Hash::from_bytes(parsed.covenant_id);
-    let settlement = Settlement::build(&SettlementInput {
-        covenant_id: covenant_id_hash,
+    // Verifier-identity pins are now part of the redeem script's identity. In dev mode the
+    // receipt isn't a real succinct variant, so we use placeholder pins (both sides of the
+    // structural equality use the same values). In prod mode (`should_verify_receipts()`),
+    // pin extraction below uses the real receipt so `OpZkPrecompile` sees the values the
+    // prover actually committed to.
+    let verifier_pins = if should_verify_receipts() {
+        OwnedSuccinctWitness::script_pins_from_receipt(&batch_receipt)
+    } else {
+        ScriptVerifierPins { control_id: [0u8; 32], hashfn: 0 }
+    };
+    let pins = RedeemPins {
         program_id: &program_id,
         tx_image_id: &tx_image_id,
+        control_id: &verifier_pins.control_id,
+        hashfn: verifier_pins.hashfn,
+        zk_tag: ZkTag::R0Succinct,
+    };
+    let settlement = Settlement::build(&SettlementInput {
+        covenant_id: covenant_id_hash,
+        pins,
         prev_state: &parsed.prev_state,
         prev_lane_tip: &parsed.prev_lane_tip,
         new_state: &parsed.new_state,
@@ -255,13 +263,11 @@ async fn batch_proof_is_directly_settleable_single_batch() {
         witness: SuccinctWitness {
             seal: &[0u8; 8],
             claim: &[0u8; 32],
-            control_id: &[0u8; 32],
-            hashfn: 0,
             control_index: 0,
             control_digests: &[],
         },
     });
-    assert_settlement_structure(&settlement, parsed, &program_id, &tx_image_id, covenant_id_hash);
+    assert_settlement_structure(&settlement, parsed, &pins, covenant_id_hash);
 
     // Run the on-chain inner-proof check. Only meaningful with real (CUDA-produced) seal
     // bytes - the placeholder witness above would never satisfy `OpZkPrecompile`. Rebuild
@@ -270,8 +276,7 @@ async fn batch_proof_is_directly_settleable_single_batch() {
         let owned = OwnedSuccinctWitness::from_receipt(&batch_receipt);
         let real_settlement = Settlement::build(&SettlementInput {
             covenant_id: covenant_id_hash,
-            program_id: &program_id,
-            tx_image_id: &tx_image_id,
+            pins,
             prev_state: &parsed.prev_state,
             prev_lane_tip: &parsed.prev_lane_tip,
             new_state: &parsed.new_state,
@@ -392,10 +397,21 @@ async fn batch_proof_bundles_two_batches() {
     let program_id = *backend.batch_image_id();
     let tx_image_id = *backend.transaction_image_id();
     let covenant_id_hash = Hash::from_bytes(parsed.covenant_id);
-    let settlement = Settlement::build(&SettlementInput {
-        covenant_id: covenant_id_hash,
+    let verifier_pins = if should_verify_receipts() {
+        OwnedSuccinctWitness::script_pins_from_receipt(&r1)
+    } else {
+        ScriptVerifierPins { control_id: [0u8; 32], hashfn: 0 }
+    };
+    let pins = RedeemPins {
         program_id: &program_id,
         tx_image_id: &tx_image_id,
+        control_id: &verifier_pins.control_id,
+        hashfn: verifier_pins.hashfn,
+        zk_tag: ZkTag::R0Succinct,
+    };
+    let settlement = Settlement::build(&SettlementInput {
+        covenant_id: covenant_id_hash,
+        pins,
         prev_state: &parsed.prev_state,
         prev_lane_tip: &parsed.prev_lane_tip,
         new_state: &parsed.new_state,
@@ -407,13 +423,11 @@ async fn batch_proof_bundles_two_batches() {
         witness: SuccinctWitness {
             seal: &[0u8; 8],
             claim: &[0u8; 32],
-            control_id: &[0u8; 32],
-            hashfn: 0,
             control_index: 0,
             control_digests: &[],
         },
     });
-    assert_settlement_structure(&settlement, parsed, &program_id, &tx_image_id, covenant_id_hash);
+    assert_settlement_structure(&settlement, parsed, &pins, covenant_id_hash);
 
     // Run the on-chain inner-proof check on the bundle receipt's real witness bytes. The
     // bundle publishes the same receipt to both batches (j1 == j2), so verifying once is
@@ -422,8 +436,7 @@ async fn batch_proof_bundles_two_batches() {
         let owned = OwnedSuccinctWitness::from_receipt(&r1);
         let real_settlement = Settlement::build(&SettlementInput {
             covenant_id: covenant_id_hash,
-            program_id: &program_id,
-            tx_image_id: &tx_image_id,
+            pins,
             prev_state: &parsed.prev_state,
             prev_lane_tip: &parsed.prev_lane_tip,
             new_state: &parsed.new_state,

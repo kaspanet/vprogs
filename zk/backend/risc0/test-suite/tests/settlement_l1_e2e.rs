@@ -71,17 +71,14 @@ async fn settlement_lands_in_real_block() {
 
     // === Step 2: mine a lane-carrier tx ===
     let carrier_payload = Vec::new().tap_mut(|p| {
-        p.write_many(
-            [&AccessMetadata::write(ResourceId::for_test(1))],
-            AccessMetadata::as_bytes,
-        );
+        p.write_many([&AccessMetadata::write(ResourceId::for_test(1))], AccessMetadata::as_bytes);
         p.write(&[1u8, 2, 3]);
     });
     let carrier_txs = l1.build_payload_transactions(vec![carrier_payload]).await;
     let carrier_tx = carrier_txs.into_iter().next().expect("carrier tx");
     let carrier_tx_id = carrier_tx.id();
 
-    let block_carrier = l1.mine_block(&[carrier_tx.clone()]).await;
+    let block_carrier = l1.mine_block(std::slice::from_ref(&carrier_tx)).await;
     let block_acc_carrier = l1.mine_blocks(1).await[0];
     eprintln!(
         "carrier tx accepted: tx_id={} block_carrier={} block_acc_carrier={}",
@@ -92,16 +89,12 @@ async fn settlement_lands_in_real_block() {
 
     // === Step 3: read the chain's seq commit and (best-effort) cross-check with the host
     // primitive that the L2 guest uses internally ===
-    let carrier_block_hdr = l1
-        .grpc_client()
-        .get_block(block_carrier, false)
-        .await
-        .expect("get_block carrier");
+    let carrier_block_hdr =
+        l1.grpc_client().get_block(block_carrier, false).await.expect("get_block carrier");
     let chain_seq_commit = carrier_block_hdr.header.accepted_id_merkle_root;
 
     let metadata: ChainBlockMetadata = (&carrier_block_hdr.header).into();
-    let guest_lane_tip =
-        compute_section_lane_tip(&metadata, &[(0, &carrier_tx)], &Hash::default());
+    let guest_lane_tip = compute_section_lane_tip(&metadata, &[(0, &carrier_tx)], &Hash::default());
     eprintln!(
         "guest_lane_tip={} chain accepted_id_merkle_root={}",
         guest_lane_tip, chain_seq_commit,
@@ -134,11 +127,8 @@ async fn settlement_lands_in_real_block() {
     // Reconstruct the bootstrap UTXO entry. The daa_score used here is informational for the
     // covenants engine (not coinbase-maturity-gated since this UTXO is from a non-coinbase
     // output); the deploy-accepting block's daa_score is a safe upper bound.
-    let block_acc_deploy_hdr = l1
-        .grpc_client()
-        .get_block(block_acc_deploy, false)
-        .await
-        .expect("get_block acc_deploy");
+    let block_acc_deploy_hdr =
+        l1.grpc_client().get_block(block_acc_deploy, false).await.expect("get_block acc_deploy");
     let bootstrap_utxo = UtxoEntry::new(
         COVENANT_VALUE,
         dev_spk.clone(),
@@ -151,11 +141,7 @@ async fn settlement_lands_in_real_block() {
     // Dev redeem has no precompile; a small per-input compute budget covers the hash + concat
     // ops the script runs (well under the 500_000-mass standard-tx cap).
     let settlement_tx = l1
-        .prepare_settlement_transaction(
-            settlement.transaction,
-            bootstrap_utxo,
-            ComputeBudget(100),
-        )
+        .prepare_settlement_transaction(settlement.transaction, bootstrap_utxo, ComputeBudget(100))
         .await;
     let settlement_tx_id = settlement_tx.id();
     eprintln!("settlement prepared: tx_id={}", settlement_tx_id);
@@ -170,14 +156,12 @@ async fn settlement_lands_in_real_block() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Inclusion: the settlement tx must appear in block_settle's transaction list.
-    let settle_block = l1
-        .grpc_client()
-        .get_block(block_settle, true)
-        .await
-        .expect("get_block settle");
-    let included = settle_block.transactions.iter().any(|t| {
-        Transaction::try_from(t.clone()).map(|tx| tx.id()).ok() == Some(settlement_tx_id)
-    });
+    let settle_block =
+        l1.grpc_client().get_block(block_settle, true).await.expect("get_block settle");
+    let included = settle_block
+        .transactions
+        .iter()
+        .any(|t| Transaction::try_from(t.clone()).map(|tx| tx.id()).ok() == Some(settlement_tx_id));
     assert!(included, "settlement tx must be in block_settle's transaction list");
 
     // Acceptance: walk the selected-parent chain from block_deploy forward and confirm the
@@ -192,8 +176,7 @@ async fn settlement_lands_in_real_block() {
     let accepting_block = chain.accepted_transaction_ids.iter().find_map(|entry| {
         entry
             .accepted_transaction_ids
-            .iter()
-            .any(|id| *id == settlement_tx_id)
+            .contains(&settlement_tx_id)
             .then_some(entry.accepting_block_hash)
     });
     assert!(

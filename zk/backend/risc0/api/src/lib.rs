@@ -22,4 +22,4 @@ pub use host::Host;
 #[cfg(feature = "guest")]
 pub use journal::Journal;
 #[cfg(feature = "host")]
-pub use witness::OwnedSuccinctWitness;
+pub use witness::{OwnedSuccinctWitness, ScriptVerifierPins};
