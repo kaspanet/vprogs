@@ -8851,10 +8851,22 @@ dependencies = [
  "vprogs-core-codec",
  "vprogs-core-macros",
  "vprogs-zk-abi",
+ "vprogs-zk-backend-risc0-covenant",
  "vprogs-zk-batch-prover",
- "vprogs-zk-covenant",
  "vprogs-zk-transaction-prover",
  "vprogs-zk-vm",
+]
+
+[[package]]
+name = "vprogs-zk-backend-risc0-covenant"
+version = "0.1.0"
+dependencies = [
+ "kaspa-addresses",
+ "kaspa-consensus-core",
+ "kaspa-hashes",
+ "kaspa-txscript",
+ "vprogs-l1-types",
+ "vprogs-zk-abi",
 ]
 
 [[package]]
@@ -8883,8 +8895,8 @@ dependencies = [
  "vprogs-storage-rocksdb-store",
  "vprogs-zk-abi",
  "vprogs-zk-backend-risc0-api",
+ "vprogs-zk-backend-risc0-covenant",
  "vprogs-zk-batch-prover",
- "vprogs-zk-covenant",
  "vprogs-zk-transaction-prover",
  "vprogs-zk-vm",
  "zerocopy",
@@ -8911,18 +8923,6 @@ dependencies = [
  "vprogs-zk-abi",
  "vprogs-zk-transaction-prover",
  "zerocopy",
-]
-
-[[package]]
-name = "vprogs-zk-covenant"
-version = "0.1.0"
-dependencies = [
- "kaspa-addresses",
- "kaspa-consensus-core",
- "kaspa-hashes",
- "kaspa-txscript",
- "vprogs-l1-types",
- "vprogs-zk-abi",
 ]
 
 [[package]]

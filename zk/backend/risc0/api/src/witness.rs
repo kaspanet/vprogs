@@ -3,8 +3,8 @@
 //! The covenant script consumes the receipt as a flat sequence of byte fields pushed onto the
 //! script stack (see `kaspa_txscript::zk_precompiles::risc0::R0SuccinctPrecompile::verify_zk`).
 //! [`OwnedSuccinctWitness::from_receipt`] pulls those fields out of a `Receipt` in the byte
-//! layout the precompile expects, so [`vprogs_zk_covenant::SuccinctWitness`] borrows of the
-//! same buffer feed `Settlement::build` directly.
+//! layout the precompile expects, so [`vprogs_zk_backend_risc0_covenant::SuccinctWitness`] borrows
+//! of the same buffer feed `Settlement::build` directly.
 //!
 //! Mapping reference (kaspa-side):
 //! - `seal`         ← LE-encoded `Vec<u32>`
@@ -20,7 +20,7 @@
 use alloc::vec::Vec;
 
 use risc0_zkvm::{Receipt, sha::Digestible};
-use vprogs_zk_covenant::SuccinctWitness;
+use vprogs_zk_backend_risc0_covenant::SuccinctWitness;
 
 /// Owned byte buffers for the stack items the R0Succinct precompile pops from sig_script.
 /// Construct via [`Self::from_receipt`] and expose [`SuccinctWitness`] borrows via
@@ -33,8 +33,8 @@ pub struct OwnedSuccinctWitness {
 }
 
 /// Script-embedded verifier-identity constants extracted from a succinct receipt. Feed these
-/// into [`vprogs_zk_covenant::SettlementInput::control_id`] / `hashfn` (and the matching
-/// fields on `BootstrapInput`) so the redeem script bakes the same values the prover used.
+/// into [`vprogs_zk_backend_risc0_covenant::SettlementInput::control_id`] / `hashfn` (and the
+/// matching fields on `BootstrapInput`) so the redeem script bakes the same values the prover used.
 pub struct ScriptVerifierPins {
     pub control_id: [u8; 32],
     pub hashfn: u8,

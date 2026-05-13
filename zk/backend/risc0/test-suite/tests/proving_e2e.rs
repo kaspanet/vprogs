@@ -17,16 +17,11 @@ use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_abi::{batch_processor::StateTransition, transaction_processor::JournalEntries};
 use vprogs_zk_backend_risc0_api::Backend;
 use vprogs_zk_backend_risc0_test_suite::{
-    L1TransactionExt, batch_processor_elf, compute_section_lane_tip, transaction_processor_elf,
+    L1TransactionExt, batch_processor_elf, compute_section_lane_tip, dev_mode_enabled,
+    transaction_processor_elf,
 };
 use vprogs_zk_batch_prover::{Backend as _, BatchProverConfig};
 use vprogs_zk_vm::{ProvingPipeline, Vm};
-
-/// Receipts are cryptographically verified unless `RISC0_DEV_MODE` is set to anything other
-/// than `0` (in dev mode, the prover emits fake receipts, so verification is meaningless).
-fn should_verify_receipts() -> bool {
-    matches!(std::env::var("RISC0_DEV_MODE").as_deref(), Err(_) | Ok("0"))
-}
 
 /// Builds a `ChainBlockMetadata` from a real simnet block. Required because the bundling
 /// prover calls `get_seq_commit_lane_proof(block_hash, lane_key)` which only resolves for
@@ -104,13 +99,13 @@ async fn batch_proof_two_transactions() {
             parsed.input_commitment.tx_id, expected,
             "committed tx_id must match kaspa's native id"
         );
-        if should_verify_receipts() {
+        if !dev_mode_enabled() {
             backend.verify_transaction_receipt(&artifact);
         }
     }
 
     let receipt = batch.artifact();
-    if should_verify_receipts() {
+    if !dev_mode_enabled() {
         backend.verify_batch_receipt(&receipt);
     }
     let journal = Backend::journal_bytes(&receipt);
@@ -165,13 +160,13 @@ async fn batch_proof_two_transactions() {
             parsed.input_commitment.tx_id, expected,
             "committed tx_id must match kaspa's native id"
         );
-        if should_verify_receipts() {
+        if !dev_mode_enabled() {
             backend.verify_transaction_receipt(&artifact);
         }
     }
 
     let receipt_2 = batch_2.artifact();
-    if should_verify_receipts() {
+    if !dev_mode_enabled() {
         backend.verify_batch_receipt(&receipt_2);
     }
     let journal_2 = Backend::journal_bytes(&receipt_2);
@@ -283,7 +278,7 @@ async fn batch_proof_bundle_of_two() {
     // Same bundle receipt published to both batches → identical journals.
     assert_eq!(journal_1, journal_2, "bundle publishes the same receipt to every batch");
 
-    if should_verify_receipts() {
+    if !dev_mode_enabled() {
         // One bundle receipt is shared by both batches; verifying once is sufficient.
         backend.verify_batch_receipt(&receipt_1);
         // Per-tx inner receipts are folded into the bundle via composition, but each is also

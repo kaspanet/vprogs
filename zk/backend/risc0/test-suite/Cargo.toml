@@ -32,7 +32,7 @@ vprogs-storage-manager.workspace       = true
 vprogs-storage-rocksdb-store.workspace = true
 vprogs-zk-abi                          = { workspace = true, features = ["host"] }
 vprogs-zk-backend-risc0-api            = { path = "../api", features = ["host"] }
+vprogs-zk-backend-risc0-covenant       = { path = "../covenant" }
 vprogs-zk-batch-prover                 = { path = "../../../batch-prover" }
-vprogs-zk-covenant                     = { path = "../../../covenant" }
 vprogs-zk-transaction-prover           = { path = "../../../transaction-prover" }
 vprogs-zk-vm                           = { path = "../../../vm" }

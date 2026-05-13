@@ -14,8 +14,8 @@ use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_txscript::{standard::pay_to_script_hash_script, zk_precompiles::tags::ZkTag};
 use vprogs_core_smt::EMPTY_HASH;
 use vprogs_node_test_utils::L1Node;
+use vprogs_zk_backend_risc0_covenant::{RedeemPins, build_redeem_script, redeem_script_len};
 use vprogs_zk_backend_risc0_test_suite::{batch_processor_elf, transaction_processor_elf};
-use vprogs_zk_covenant::{RedeemPins, build_redeem_script, redeem_script_len};
 
 const TEST_COVENANT_VALUE: u64 = 100_000_000;
 

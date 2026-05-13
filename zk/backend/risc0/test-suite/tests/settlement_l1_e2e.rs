@@ -29,10 +29,10 @@ use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId};
 use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_node_test_utils::L1Node;
-use vprogs_zk_backend_risc0_test_suite::compute_section_lane_tip;
-use vprogs_zk_covenant::{
+use vprogs_zk_backend_risc0_covenant::{
     Settlement, SettlementDevInput, build_dev_redeem_script, dev_redeem_script_len,
 };
+use vprogs_zk_backend_risc0_test_suite::compute_section_lane_tip;
 use zerocopy::IntoBytes;
 
 const COVENANT_VALUE: u64 = 100_000_000;
