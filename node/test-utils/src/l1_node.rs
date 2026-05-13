@@ -426,8 +426,7 @@ impl L1Node {
             self.params.mass_per_script_pub_key_byte,
             self.params.storage_mass_parameter,
         );
-        let populated =
-            kaspa_consensus_core::tx::PopulatedTransaction::new(tx, entries.to_vec());
+        let populated = kaspa_consensus_core::tx::PopulatedTransaction::new(tx, entries.to_vec());
         let masses = calc
             .calc_contextual_masses(&populated)
             .expect("contextual mass calculation must succeed for a populated transaction");
