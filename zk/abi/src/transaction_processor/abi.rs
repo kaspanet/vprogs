@@ -3,7 +3,7 @@ use vprogs_core_codec::Writer;
 use crate::{
     Read,
     transaction_processor::{
-        ErrorCode, InputCommitment, Inputs, OutputCommitment, Outputs, Transaction,
+        ErrorCode, ExitSink, InputCommitment, Inputs, OutputCommitment, Outputs, Transaction,
         TransactionHandler,
     },
 };
@@ -24,6 +24,10 @@ pub fn process_transaction(
 
     // Execute guest closure (if version is supported).
     let Inputs { version, tx_id, merge_idx, mut execution_input } = inputs;
+
+    // TODO:  we may have a hint from host to set capacity for exits
+
+    let mut exits = ExitSink::new();
     let result = match version {
         Transaction::V1 => 'v1: {
             let Some(exec) = execution_input.as_mut() else {
@@ -34,14 +38,14 @@ pub fn process_transaction(
                 break 'v1 Err(ErrorCode::TxIdMismatch.into());
             }
 
-            let result = f(&exec.tx, merge_idx, exec.context_hash, &mut exec.resources);
+            let result = f(&exec.tx, merge_idx, exec.context_hash, &mut exec.resources, &mut exits);
             result.map(|_| exec.resources.as_slice())
         }
         _ => Err(ErrorCode::VersionIncompatible.into()),
     };
 
-    // Commit output commitment to journal.
-    OutputCommitment::encode(journal, &result);
+    // Commit output commitment to journal. Exits are written only in the Success arm.
+    OutputCommitment::encode(journal, &result, exits.as_bytes());
 
     // Stream execution result to host.
     Outputs::encode(&result, host);

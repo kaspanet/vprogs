@@ -6,6 +6,7 @@ mod error;
 mod read;
 
 pub mod batch_processor {
+    pub(crate) mod exit;
     pub(crate) mod verifier;
 
     pub(crate) mod input {
@@ -22,6 +23,7 @@ pub mod batch_processor {
         pub(crate) mod state_transition;
     }
 
+    pub use exit::{ExitAccumulator, NoExits};
     #[cfg(feature = "host")]
     pub use input::bundle::{Bundle, BundlePart};
     pub use input::{
@@ -35,6 +37,7 @@ pub mod batch_processor {
 pub mod transaction_processor {
     pub(crate) mod abi;
     pub(crate) mod error_code;
+    pub(crate) mod exit;
     pub(crate) mod transaction_handler;
 
     pub(crate) mod input {
@@ -68,6 +71,7 @@ pub mod transaction_processor {
 
     pub use abi::process_transaction;
     pub use error_code::ErrorCode;
+    pub use exit::{ExitCommitment, ExitSink, ScriptBytes, StandardSpk};
     pub use input::{
         execution_input::ExecutionInput, inputs::Inputs, payload::Payload, resource::Resource,
         transaction::Transaction,

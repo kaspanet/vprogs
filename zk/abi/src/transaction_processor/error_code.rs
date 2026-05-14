@@ -10,6 +10,11 @@ pub enum ErrorCode {
     TxIdMismatch = 2,
     /// Version is supported but `execution_input` was not supplied.
     MissingExecutionInputs = 3,
+    /// Unknown exit destination tag in a journal exit entry.
+    InvalidExitSpkTag = 4,
+    /// `ScriptPublicKey` is not one of the supported standard variants
+    /// (Schnorr P2PK / ECDSA P2PK / P2SH).
+    InvalidExitSpk = 5,
 }
 
 impl From<ErrorCode> for Error {

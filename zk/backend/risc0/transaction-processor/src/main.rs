@@ -7,7 +7,7 @@ use vprogs_zk_backend_risc0_api::{Host, Journal};
 risc0_zkvm::guest::entry!(main);
 
 fn main() {
-    process_transaction(&mut Host, &mut Journal, |_tx, _merge_idx, _context_hash, resources| {
+    process_transaction(&mut Host, &mut Journal, |_tx, _merge_idx, _context_hash, resources, _exits| {
         // For demonstration purposes: increments the value of each resource by 1.
         for resource in resources.iter_mut() {
             // If the resource is new, allocate 4 bytes for it (enough to hold a u32).

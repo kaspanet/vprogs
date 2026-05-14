@@ -3,15 +3,17 @@
 
 use risc0_zkvm::guest::env;
 use vprogs_zk_abi::{Read, batch_processor::Verifier};
-use vprogs_zk_backend_risc0_api::{Host, Journal};
+use vprogs_zk_backend_risc0_api::{Host, Journal, PermissionTreeAccumulator};
 
 risc0_zkvm::guest::entry!(main);
 
 /// Entrypoint for the batch processor.
 fn main() {
-    // Read the bundle inputs from the host and build the verifier.
+    // Read the bundle inputs from the host and build the verifier with the default
+    // permission-tree accumulator for exits.
     let inputs = Host.read_blob();
-    let mut verifier = Verifier::new(&inputs, verify_tx_journal);
+    let mut verifier =
+        Verifier::new(&inputs, verify_tx_journal, PermissionTreeAccumulator::new());
 
     // Verify all batches and derive the post-state.
     let (lane_tip, lane_blue_score) = verifier.verify_batches();
