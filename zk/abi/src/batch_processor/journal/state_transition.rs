@@ -23,10 +23,6 @@ pub struct StateTransition {
     /// `blake2b(perm_redeem_script)` for the bundle's exit output, or `[0u8; 32]` when no
     /// exits were emitted. Non-zero values cause the on-chain settlement to add a second P2SH
     /// output for permission-tree withdrawals.
-    ///
-    /// TODO(exit-settlement): the host-side `vprogs-zk-covenant` settlement builder still emits
-    /// a single output — when this field is non-zero it must additionally emit and verify the
-    /// `pay_to_script_hash(permission_spk_hash)` exit output.
     pub permission_spk_hash: [u8; 32],
 }
 

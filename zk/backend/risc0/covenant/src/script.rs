@@ -18,21 +18,28 @@
 //!    the way through the seq-commit derivation, preventing rewinds.
 //! 4. **Proof validity**: `OpZkPrecompile` verifies the risc0 succinct receipt against the
 //!    configured image id.
-//! 5. **Permission-output binding**: settlements have exactly one or two covenant-bound outputs.
-//!    Output 0 is always the continuation (invariant 1). When the journal commits a non-zero
-//!    `permission_spk_hash`, the spend MUST include a second covenant-bound output (count == 2)
-//!    whose SPK is `permission_spk(permission_spk_hash)` and whose value equals
-//!    `pins.permission_output_value`. When the commitment is `[0; 32]`, the spend MUST have exactly
-//!    one output. Both rules are enforced inside `verify_outputs_and_append_perm_hash`.
+//! 5. **Permission-output binding**: settlements have exactly one or two covenant-bound outputs,
+//!    with `journal[permission_spk_hash] == [0; 32]` ⇔ count == 1 (no permission output) and
+//!    `journal[permission_spk_hash] != [0; 32]` ⇔ count == 2 (permission output present). Output 0
+//!    is always the continuation (invariant 1). In the count == 2 case the second covenant-bound
+//!    output's SPK is `permission_spk(permission_spk_hash)` and its value equals
+//!    `pins.permission_output_value`. The first covenant-bound output is pinned to tx-output index
+//!    0 (and the second to index 1 in the count==2 case) via `OpCovOutputIdx`, so the SPK check at
+//!    output 0 and the permission-output check at output 1 are guaranteed to land on the
+//!    covenant-bound outputs rather than non-bound siblings the host could have interleaved. The
+//!    count==2 branch also explicitly rejects an extracted permission hash of `[0; 32]` — that hash
+//!    is the guest's no-exits sentinel and would otherwise lock the operator's permission dust to
+//!    an unspendable script. All these rules are enforced inside
+//!    `verify_outputs_and_append_perm_hash`.
 
 use kaspa_hashes::Hash;
 use kaspa_txscript::{
     opcodes::codes::{
-        Op0, OpAdd, OpBlake2b, OpCat, OpChainblockSeqCommit, OpCovOutputCount, OpData32, OpDrop,
-        OpDup, OpElse, OpEndIf, OpEqual, OpEqualVerify, OpFromAltStack, OpIf, OpInputCovenantId,
-        OpNumEqual, OpNumEqualVerify, OpSHA256, OpSwap, OpToAltStack, OpTrue, OpTxInputIndex,
-        OpTxInputScriptSigLen, OpTxInputScriptSigSubstr, OpTxOutputAmount, OpTxOutputSpk,
-        OpTxOutputSpkSubstr, OpVerify, OpZkPrecompile,
+        Op0, OpAdd, OpBlake2b, OpCat, OpChainblockSeqCommit, OpCovOutputCount, OpCovOutputIdx,
+        OpData32, OpDrop, OpDup, OpElse, OpEndIf, OpEqual, OpEqualVerify, OpFromAltStack, OpIf,
+        OpInputCovenantId, OpNot, OpNumEqual, OpNumEqualVerify, OpSHA256, OpSwap, OpToAltStack,
+        OpTrue, OpTxInputIndex, OpTxInputScriptSigLen, OpTxInputScriptSigSubstr, OpTxOutputAmount,
+        OpTxOutputSpk, OpTxOutputSpkSubstr, OpVerify, OpZkPrecompile,
     },
     script_builder::ScriptBuilder,
     zk_precompiles::tags::ZkTag,
@@ -167,12 +174,15 @@ pub fn build_dev_redeem_script(
     verify_output_spk(&mut b);
     drop_stashed_prev_values(&mut b);
     verify_input_index_zero(&mut b);
-    // Dev script has no journal, no exits - the covenant always emits exactly one output.
+    // Dev script has no journal, no exits - the covenant always emits exactly one output, and
+    // it must be at tx-output index 0 (so the SPK check above lands on the covenant-bound
+    // output rather than on a host-controlled non-bound sibling).
     b.add_op(OpTxInputIndex).unwrap();
     b.add_op(OpInputCovenantId).unwrap();
     b.add_op(OpCovOutputCount).unwrap();
     b.add_i64(1).unwrap();
     b.add_op(OpEqualVerify).unwrap();
+    verify_cov_output_at_idx(&mut b, 0, 0);
     b.add_op(OpTrue).unwrap();
 
     b.drain()
@@ -311,12 +321,15 @@ fn extract_redeem_suffix_and_concat(b: &mut ScriptBuilder, redeem_script_len: i6
 
 /// Hashes the redeem script and wraps it in a version-tagged P2SH SPK.
 ///
-/// SPK layout: `version(2) | OpBlake2b(1) | OpData32(1) | hash(32) | OpEqual(1)` = 37 bytes.
+/// SPK layout: `version(2 BE) | OpBlake2b(1) | OpData32(1) | hash(32) | OpEqual(1)` = 37 bytes.
+/// Version is encoded big-endian to match `ScriptPublicKey::to_bytes()`, which is what
+/// `OpTxOutputSpk` pushes onto the stack — using little-endian here would silently work for the
+/// current `MAX_SCRIPT_PUBLIC_KEY_VERSION = 0` but break the moment that constant changes.
 fn hash_redeem_to_spk(b: &mut ScriptBuilder) {
     b.add_op(OpBlake2b).unwrap();
     let mut header = [0u8; 4];
     header[0..2].copy_from_slice(
-        &kaspa_consensus_core::constants::MAX_SCRIPT_PUBLIC_KEY_VERSION.to_le_bytes(),
+        &kaspa_consensus_core::constants::MAX_SCRIPT_PUBLIC_KEY_VERSION.to_be_bytes(),
     );
     header[2] = OpBlake2b;
     header[3] = OpData32;
@@ -403,18 +416,27 @@ fn build_and_hash_journal(b: &mut ScriptBuilder, pins: &RedeemPins<'_>) {
 /// Stack precondition: `[..., preimage224]`. Postcondition: `[..., preimage256]`.
 ///
 /// Reads `OpCovOutputCount` and branches:
-/// - `count == 2`: extracts the 32-byte P2SH script hash from `outputs[1].script_public_key`,
-///   asserts `outputs[1].value == pins.permission_output_value`, asserts the rebuilt SPK matches
-///   the actual one, and appends the extracted hash to the preimage.
-/// - `count == 1`: appends 32 zero bytes (matching how the guest encodes a no-exit batch's
-///   `permission_spk_hash`).
+/// - `count == 2`: pins the first covenant output to tx-output index 0 and the second to tx-output
+///   index 1, asserts `outputs[1].value == pins.permission_output_value`, extracts the 32-byte P2SH
+///   script hash from `outputs[1].script_public_key`, rebuilds the full SPK and asserts it matches
+///   the actual one, then appends the extracted hash to the preimage.
+/// - `count == 1`: pins the sole covenant output to tx-output index 0, then appends 32 zero bytes
+///   (matching how the guest encodes a no-exit batch's `permission_spk_hash`).
 /// - any other count: fails (`OpNumEqualVerify` in the else branch).
 ///
-/// Soundness note for the count==2 branch: an extracted hash of `[0; 32]` is not explicitly
-/// rejected here, but a no-exit batch commits `[0; 32]` in the journal, so a 2-output spend
-/// would only pass the upstream `OpZkPrecompile` if its output 1 were `permission_spk([0;32])`
-/// — a self-burn, not a soundness break. The honest host builder never takes the count==2
-/// path for a zero hash (see settlement.rs::Settlement::build).
+/// The `OpCovOutputIdx` pinning is what binds the continuation/permission SPK checks to the
+/// *covenant-bound* outputs: without it, a host could leave output 0's covenant binding off and
+/// place it on some other index, breaking the rollup chain (the SPK check at output 0 would
+/// still pass, but the covenant-bound output that actually flows forward would have a
+/// host-controlled SPK).
+///
+/// The count==2 branch also rejects an extracted hash of `[0; 32]`. `[0; 32]` is the
+/// guest's sentinel for "no exits", so a count==2 spend with that hash would commit dust to
+/// `permission_spk([0; 32])` — an unspendable script (blake2b is one-way; no preimage hashes
+/// to all zeros). Without this reject, a buggy or adversarial host could permanently burn the
+/// operator's `pins.permission_output_value` while still passing the journal binding (the
+/// journal also commits `[0; 32]` in that case, so the preimage matches). Rejecting it
+/// in-script pins the invariant `journal[permission_spk_hash] == [0; 32]` ⇔ `count == 1`.
 fn verify_outputs_and_append_perm_hash(b: &mut ScriptBuilder, pins: &RedeemPins<'_>) {
     b.add_op(OpTxInputIndex).unwrap();
     b.add_op(OpInputCovenantId).unwrap();
@@ -432,6 +454,13 @@ fn verify_outputs_and_append_perm_hash(b: &mut ScriptBuilder, pins: &RedeemPins<
         b.add_op(OpDrop).unwrap(); // discard the duped count
         // Stack: [..., preimage224]
 
+        // ---- pin both covenant-bound outputs to fixed indices ----
+        // Without this, a host could attach the covenant binding to outputs other than 0/1
+        // (breaking the rollup chain while still satisfying the SPK / hash extraction below
+        // which read outputs by absolute index).
+        verify_cov_output_at_idx(b, 0, 0);
+        verify_cov_output_at_idx(b, 1, 1);
+
         // ---- enforce output[1].value == pins.permission_output_value ----
         b.add_i64(1).unwrap();
         b.add_op(OpTxOutputAmount).unwrap();
@@ -441,7 +470,7 @@ fn verify_outputs_and_append_perm_hash(b: &mut ScriptBuilder, pins: &RedeemPins<
         // Stack: [..., preimage224]
 
         // ---- extract the 32-byte script hash from outputs[1].script_public_key ----
-        // SPK layout: version(2) | OpBlake2b(1) | OpData32(1) | hash(32) | OpEqual(1) = 37B.
+        // SPK layout: version(2 BE) | OpBlake2b(1) | OpData32(1) | hash(32) | OpEqual(1) = 37B.
         // `OpTxOutputSpkSubstr` reads the version-prefixed bytes, so [4..36] is the hash.
         b.add_i64(1).unwrap(); // output index
         b.add_i64(4).unwrap(); // start
@@ -449,13 +478,27 @@ fn verify_outputs_and_append_perm_hash(b: &mut ScriptBuilder, pins: &RedeemPins<
         b.add_op(OpTxOutputSpkSubstr).unwrap();
         // Stack: [..., preimage224, hash32]
 
+        // ---- reject hash == [0; 32] ----
+        // `[0; 32]` is the guest's no-exits sentinel and must always take the count==1 path.
+        // Reaching count==2 with a zero hash would otherwise satisfy the journal binding (the
+        // journal also commits `[0; 32]`) while paying dust to `permission_spk([0; 32])` — an
+        // unspendable script that permanently locks the operator's permission-output value.
+        b.add_op(OpDup).unwrap();
+        b.add_data(&[0u8; 32]).unwrap();
+        b.add_op(OpEqual).unwrap();
+        b.add_op(OpNot).unwrap();
+        b.add_op(OpVerify).unwrap();
+        // Stack: [..., preimage224, hash32]
+
         // ---- rebuild the full 37-byte P2SH SPK and assert it matches the actual one ----
         b.add_op(OpDup).unwrap();
         // Stack: [..., preimage224, hash32, hash32]
 
+        // Big-endian to match `ScriptPublicKey::to_bytes()` (the wire-format used by
+        // `OpTxOutputSpk`). See `hash_redeem_to_spk` for the same rationale.
         let mut header = [0u8; 4];
         header[0..2].copy_from_slice(
-            &kaspa_consensus_core::constants::MAX_SCRIPT_PUBLIC_KEY_VERSION.to_le_bytes(),
+            &kaspa_consensus_core::constants::MAX_SCRIPT_PUBLIC_KEY_VERSION.to_be_bytes(),
         );
         header[2] = OpBlake2b;
         header[3] = OpData32;
@@ -484,11 +527,31 @@ fn verify_outputs_and_append_perm_hash(b: &mut ScriptBuilder, pins: &RedeemPins<
         b.add_i64(1).unwrap();
         b.add_op(OpNumEqualVerify).unwrap();
         // Stack: [..., preimage224]
+
+        // Pin the sole covenant output to tx-output index 0 (same rationale as the count==2
+        // branch — the SPK check earlier in the script reads `outputs[0].script_public_key`
+        // by absolute index, this binds that index to the covenant-bound output).
+        verify_cov_output_at_idx(b, 0, 0);
+
         b.add_data(&[0u8; 32]).unwrap();
         b.add_op(OpCat).unwrap();
         // Stack: [..., preimage256]
     }
     b.add_op(OpEndIf).unwrap();
+}
+
+/// Asserts that the `k`-th covenant-bound output (0-indexed within the input's covenant_id
+/// group) is at transaction-output index `expected_idx`. Used to pin the continuation /
+/// permission outputs to fixed tx-output positions so the SPK and value checks elsewhere in
+/// the script (which read outputs by absolute index) land on the covenant-bound ones rather
+/// than on host-controlled non-bound siblings.
+fn verify_cov_output_at_idx(b: &mut ScriptBuilder, k: i64, expected_idx: i64) {
+    b.add_op(OpTxInputIndex).unwrap();
+    b.add_op(OpInputCovenantId).unwrap();
+    b.add_i64(k).unwrap();
+    b.add_op(OpCovOutputIdx).unwrap();
+    b.add_i64(expected_idx).unwrap();
+    b.add_op(OpEqualVerify).unwrap();
 }
 
 /// Asserts that the spending input is at index 0 (covenant always lives at input 0).
