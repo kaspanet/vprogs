@@ -8,11 +8,11 @@ default-members = [
   "storage/*",
   "transaction-runtime/*",
   "zk/abi",
-  "zk/covenant",
   "zk/transaction-prover",
   "zk/batch-prover",
   "zk/vm",
   "zk/backend/risc0/api",
+  "zk/backend/risc0/covenant",
   "zk/backend/risc0/test-suite",
 ]
 exclude = [
@@ -28,11 +28,11 @@ members = [
   "storage/*",
   "transaction-runtime/*",
   "zk/abi",
-  "zk/covenant",
   "zk/transaction-prover",
   "zk/batch-prover",
   "zk/vm",
   "zk/backend/risc0/api",
+  "zk/backend/risc0/covenant",
   "zk/backend/risc0/test-suite",
 ]
 resolver = "3"
@@ -160,7 +160,7 @@ resolver = "3"
   vprogs-transaction-runtime-transaction-effects  = { path = "transaction-runtime/transaction-effects" }
   vprogs-zk-abi                                   = { path = "zk/abi", default-features = false }
   vprogs-zk-backend-risc0-api                     = { path = "zk/backend/risc0/api", default-features = false }
+  vprogs-zk-backend-risc0-covenant                = { path = "zk/backend/risc0/covenant" }
   vprogs-zk-batch-prover                          = { path = "zk/batch-prover" }
-  vprogs-zk-covenant                              = { path = "zk/covenant" }
   vprogs-zk-transaction-prover                    = { path = "zk/transaction-prover" }
   vprogs-zk-vm                                    = { path = "zk/vm" }

@@ -1,4 +1,4 @@
-use std::num::NonZeroUsize;
+use std::{num::NonZeroUsize, time::Instant};
 
 use kaspa_consensus_core::hashing::tx::id as kaspa_tx_id;
 use kaspa_hashes::Hash;
@@ -17,7 +17,8 @@ use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_abi::{batch_processor::StateTransition, transaction_processor::JournalEntries};
 use vprogs_zk_backend_risc0_api::Backend;
 use vprogs_zk_backend_risc0_test_suite::{
-    L1TransactionExt, batch_processor_elf, compute_section_lane_tip, transaction_processor_elf,
+    L1TransactionExt, batch_processor_elf, compute_section_lane_tip, dev_mode_enabled,
+    transaction_processor_elf,
 };
 use vprogs_zk_batch_prover::{Backend as _, BatchProverConfig};
 use vprogs_zk_vm::{ProvingPipeline, Vm};
@@ -80,11 +81,16 @@ async fn batch_proof_two_transactions() {
 
     let metadata_1 = metadata_for_block(&l1, block_hashes[0]).await;
 
+    let t_batch_1 = Instant::now();
     let batch =
         scheduler.schedule(metadata_1, vec![tx1.into_scheduler_tx(0), tx2.into_scheduler_tx(1)]);
 
     batch.wait_committed_blocking();
     batch.wait_artifact_published_blocking();
+    eprintln!(
+        "[batch_proof_two_transactions] batch 1 schedule->proven wall time: {:?}",
+        t_batch_1.elapsed()
+    );
 
     for (artifact, expected) in batch.tx_artifacts().zip(expected_tx_ids.iter()) {
         let journal = Backend::journal_bytes(&artifact);
@@ -93,9 +99,15 @@ async fn batch_proof_two_transactions() {
             parsed.input_commitment.tx_id, expected,
             "committed tx_id must match kaspa's native id"
         );
+        if !dev_mode_enabled() {
+            backend.verify_transaction_receipt(&artifact);
+        }
     }
 
     let receipt = batch.artifact();
+    if !dev_mode_enabled() {
+        backend.verify_batch_receipt(&receipt);
+    }
     let journal = Backend::journal_bytes(&receipt);
 
     let state = (&mut &journal[..]).array_as::<StateTransition>("state_transition").unwrap();
@@ -130,11 +142,16 @@ async fn batch_proof_two_transactions() {
 
     let metadata_2 = metadata_for_block(&l1, block_hashes[1]).await;
 
+    let t_batch_2 = Instant::now();
     let batch_2 =
         scheduler.schedule(metadata_2, vec![tx3.into_scheduler_tx(0), tx4.into_scheduler_tx(1)]);
 
     batch_2.wait_committed_blocking();
     batch_2.wait_artifact_published_blocking();
+    eprintln!(
+        "[batch_proof_two_transactions] batch 2 schedule->proven wall time: {:?}",
+        t_batch_2.elapsed()
+    );
 
     for (artifact, expected) in batch_2.tx_artifacts().zip(expected_tx_ids_2.iter()) {
         let journal = Backend::journal_bytes(&artifact);
@@ -143,9 +160,15 @@ async fn batch_proof_two_transactions() {
             parsed.input_commitment.tx_id, expected,
             "committed tx_id must match kaspa's native id"
         );
+        if !dev_mode_enabled() {
+            backend.verify_transaction_receipt(&artifact);
+        }
     }
 
     let receipt_2 = batch_2.artifact();
+    if !dev_mode_enabled() {
+        backend.verify_batch_receipt(&receipt_2);
+    }
     let journal_2 = Backend::journal_bytes(&receipt_2);
 
     let state_2 = (&mut &journal_2[..]).array_as::<StateTransition>("state_transition").unwrap();
@@ -238,10 +261,15 @@ async fn batch_proof_bundle_of_two() {
 
     // Both batches end up in a single bundle (K=2). The same outer receipt is published to
     // both, with `prev_state` = pre-batch-1 root and `new_state` = post-batch-2 root.
+    let t_bundle = Instant::now();
     batch_1.wait_committed_blocking();
     batch_2.wait_committed_blocking();
     batch_1.wait_artifact_published_blocking();
     batch_2.wait_artifact_published_blocking();
+    eprintln!(
+        "[batch_proof_bundle_of_two] bundle (K=2) schedule->proven wall time: {:?}",
+        t_bundle.elapsed()
+    );
 
     let receipt_1 = batch_1.artifact();
     let receipt_2 = batch_2.artifact();
@@ -250,6 +278,18 @@ async fn batch_proof_bundle_of_two() {
 
     // Same bundle receipt published to both batches → identical journals.
     assert_eq!(journal_1, journal_2, "bundle publishes the same receipt to every batch");
+
+    if !dev_mode_enabled() {
+        // One bundle receipt is shared by both batches; verifying once is sufficient.
+        backend.verify_batch_receipt(&receipt_1);
+        // Per-tx inner receipts are folded into the bundle via composition, but each is also
+        // independently verifiable against the transaction image id.
+        for batch in [&batch_1, &batch_2] {
+            for artifact in batch.tx_artifacts() {
+                backend.verify_transaction_receipt(&artifact);
+            }
+        }
+    }
 
     let state = (&mut &journal_1[..]).array_as::<StateTransition>("state_transition").unwrap();
     assert_eq!(state.prev_state, EMPTY_HASH, "bundle prev_state is the bundle's start");

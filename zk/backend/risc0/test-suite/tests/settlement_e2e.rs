@@ -1,9 +1,16 @@
-use std::num::NonZeroUsize;
+use std::{collections::HashMap, num::NonZeroUsize, time::Instant};
 
-use kaspa_consensus_core::tx::{CovenantBinding, TransactionOutpoint};
+use kaspa_consensus_core::{
+    hashing::sighash::SigHashReusedValuesUnsync,
+    tx::{CovenantBinding, PopulatedTransaction, TransactionOutpoint, UtxoEntry},
+};
 use kaspa_hashes::Hash;
 use kaspa_rpc_core::api::rpc::RpcApi;
-use kaspa_txscript::{standard::pay_to_script_hash_script, zk_precompiles::tags::ZkTag};
+use kaspa_txscript::{
+    EngineFlags, TxScriptEngine, caches::Cache, covenants::CovenantsContext,
+    engine_context::EngineContext, seq_commit_accessor::SeqCommitAccessor,
+    standard::pay_to_script_hash_script, zk_precompiles::tags::ZkTag,
+};
 use tempfile::TempDir;
 use vprogs_core_codec::Reader;
 use vprogs_core_test_utils::ResourceIdExt;
@@ -13,16 +20,83 @@ use vprogs_node_test_utils::L1Node;
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
-use vprogs_zk_backend_risc0_api::Backend;
-use vprogs_zk_backend_risc0_test_suite::{
-    L1TransactionExt, batch_processor_elf, compute_section_lane_tip, transaction_processor_elf,
-};
-use vprogs_zk_batch_prover::{Backend as _, BatchProverConfig};
-use vprogs_zk_covenant::{
-    Settlement, SettlementInput, StateTransition, SuccinctWitness, build_redeem_script,
+use vprogs_zk_backend_risc0_api::{Backend, OwnedSuccinctWitness, ScriptVerifierPins};
+use vprogs_zk_backend_risc0_covenant::{
+    RedeemPins, Settlement, SettlementInput, StateTransition, SuccinctWitness, build_redeem_script,
     redeem_script_len,
 };
+use vprogs_zk_backend_risc0_test_suite::{
+    L1TransactionExt, batch_processor_elf, compute_section_lane_tip, dev_mode_enabled,
+    transaction_processor_elf,
+};
+use vprogs_zk_batch_prover::{Backend as _, BatchProverConfig};
 use vprogs_zk_vm::{ProvingPipeline, Vm};
+
+/// HashMap-backed accessor for `OpChainblockSeqCommit`. The opcode delegates the
+/// ancestor / depth checks to this trait, so a static map of `block_hash -> seq_commit`
+/// is enough to satisfy the covenant's seq-commit lookup in tests.
+///
+/// The mapped value must equal the journal's `new_seq_commit` for the anchor block: the
+/// covenant script reuses the accessor's response inside the journal preimage and that
+/// preimage's SHA-256 must reproduce the receipt's committed journal hash. On the real
+/// chain the block's `accepted_id_merkle_root` IS that `new_seq_commit` by construction,
+/// but in these tests the simnet block is empty (the scheduled L2 txs never enter the
+/// block), so the chain's value diverges from what the guest computes and we have to
+/// echo the guest's value back through the accessor.
+struct MockSeqCommitAccessor(HashMap<Hash, Hash>);
+
+impl SeqCommitAccessor for MockSeqCommitAccessor {
+    fn is_chain_ancestor_from_pov(&self, block_hash: Hash) -> Option<bool> {
+        self.0.contains_key(&block_hash).then_some(true)
+    }
+    fn seq_commitment_within_depth(&self, block_hash: Hash) -> Option<Hash> {
+        self.0.get(&block_hash).copied()
+    }
+}
+
+/// Runs the Kaspa script engine on the settlement transaction's single covenant input.
+/// Reconstructs the UTXO being spent from `settlement.prev_redeem`, builds the engine
+/// context with the supplied accessor, and asserts the redeem script verifies (P2SH ->
+/// seq-commit anchor -> journal preimage -> `OpZkPrecompile` -> covenant-output checks).
+/// Panics on failure. Only meaningful when real (CUDA-produced) proofs are in play - the
+/// caller must skip this when `dev_mode_enabled()` is true.
+fn verify_settlement_onchain(
+    settlement: &Settlement,
+    covenant_id: Hash,
+    accessor: &dyn SeqCommitAccessor,
+) {
+    let tx = &settlement.transaction;
+    // Continuation preserves the input value, so the output value mirrors the UTXO amount.
+    let utxo = UtxoEntry::new(
+        tx.outputs[0].value,
+        pay_to_script_hash_script(&settlement.prev_redeem),
+        0,
+        false,
+        Some(covenant_id),
+    );
+
+    let sig_cache = Cache::new(10_000);
+    let reused = SigHashReusedValuesUnsync::new();
+    let flags = EngineFlags { covenants_enabled: true, ..Default::default() };
+
+    let populated = PopulatedTransaction::new(tx, vec![utxo.clone()]);
+    let cov_ctx =
+        CovenantsContext::from_tx(&populated).expect("covenant continuity validation must succeed");
+    let exec_ctx = EngineContext::new(&sig_cache)
+        .with_reused(&reused)
+        .with_seq_commit_accessor(accessor)
+        .with_covenants_ctx(&cov_ctx);
+
+    let mut vm = TxScriptEngine::from_transaction_input(
+        &populated,
+        &tx.inputs[0],
+        0,
+        &utxo,
+        exec_ctx,
+        flags,
+    );
+    vm.execute().expect("settlement script engine verification failed");
+}
 
 /// Builds a `ChainBlockMetadata` from a real simnet block. Required because the bundling
 /// prover calls `get_seq_commit_lane_proof(block_hash, lane_key)` which only resolves for
@@ -46,8 +120,7 @@ async fn metadata_for_block(l1: &L1Node, block_hash: Hash) -> ChainBlockMetadata
 fn assert_settlement_structure(
     settlement: &Settlement,
     parsed: &StateTransition,
-    program_id: &[u8; 32],
-    tx_image_id: &[u8; 32],
+    pins: &RedeemPins<'_>,
     covenant_id_hash: Hash,
 ) {
     assert_eq!(settlement.transaction.inputs.len(), 1);
@@ -61,16 +134,9 @@ fn assert_settlement_structure(
         Some(CovenantBinding::new(0, covenant_id_hash)),
     );
 
-    let expected_len =
-        redeem_script_len(&parsed.prev_state, program_id, tx_image_id, ZkTag::R0Succinct);
-    let expected_prev_redeem = build_redeem_script(
-        &parsed.prev_state,
-        &parsed.prev_lane_tip,
-        expected_len,
-        program_id,
-        tx_image_id,
-        ZkTag::R0Succinct,
-    );
+    let expected_len = redeem_script_len(&parsed.prev_state, pins);
+    let expected_prev_redeem =
+        build_redeem_script(&parsed.prev_state, &parsed.prev_lane_tip, expected_len, pins);
     assert_eq!(settlement.prev_redeem, expected_prev_redeem);
     assert_eq!(settlement.prev_redeem.len(), settlement.next_redeem.len());
 }
@@ -103,6 +169,7 @@ async fn batch_proof_is_directly_settleable_single_batch() {
     );
 
     let metadata = metadata_for_block(&l1, block_hashes[0]).await;
+    let t_batch = Instant::now();
     let batch = scheduler.schedule(
         metadata,
         vec![
@@ -121,15 +188,28 @@ async fn batch_proof_is_directly_settleable_single_batch() {
 
     batch.wait_committed_blocking();
     batch.wait_artifact_published_blocking();
+    eprintln!(
+        "[batch_proof_is_directly_settleable_single_batch] schedule->proven wall time: {:?}",
+        t_batch.elapsed()
+    );
+
+    if !dev_mode_enabled() {
+        for artifact in batch.tx_artifacts() {
+            backend.verify_transaction_receipt(&artifact);
+        }
+    }
 
     let batch_receipt = (*batch.artifact()).clone();
+    if !dev_mode_enabled() {
+        backend.verify_batch_receipt(&batch_receipt);
+    }
     let journal_bytes = Backend::journal_bytes(&batch_receipt);
 
     assert_eq!(
         journal_bytes.len(),
-        vprogs_zk_covenant::JOURNAL_SIZE,
+        vprogs_zk_backend_risc0_covenant::JOURNAL_SIZE,
         "batch journal must be exactly {} bytes",
-        vprogs_zk_covenant::JOURNAL_SIZE,
+        vprogs_zk_backend_risc0_covenant::JOURNAL_SIZE,
     );
 
     let parsed = (&mut &journal_bytes[..]).array_as::<StateTransition>("state_transition").unwrap();
@@ -148,10 +228,25 @@ async fn batch_proof_is_directly_settleable_single_batch() {
         "guest must echo the host-supplied tx image id into the journal",
     );
     let covenant_id_hash = Hash::from_bytes(parsed.covenant_id);
-    let settlement = Settlement::build(&SettlementInput {
-        covenant_id: covenant_id_hash,
+    // Verifier-identity pins are now part of the redeem script's identity. In dev mode the
+    // receipt isn't a real succinct variant, so we use placeholder pins (both sides of the
+    // structural equality use the same values). Outside dev mode, pin extraction below uses
+    // the real receipt so `OpZkPrecompile` sees the values the prover actually committed to.
+    let verifier_pins = if !dev_mode_enabled() {
+        OwnedSuccinctWitness::script_pins_from_receipt(&batch_receipt)
+    } else {
+        ScriptVerifierPins { control_id: [0u8; 32], hashfn: 0 }
+    };
+    let pins = RedeemPins {
         program_id: &program_id,
         tx_image_id: &tx_image_id,
+        control_id: &verifier_pins.control_id,
+        hashfn: verifier_pins.hashfn,
+        zk_tag: ZkTag::R0Succinct,
+    };
+    let settlement = Settlement::build(&SettlementInput {
+        covenant_id: covenant_id_hash,
+        pins,
         prev_state: &parsed.prev_state,
         prev_lane_tip: &parsed.prev_lane_tip,
         new_state: &parsed.new_state,
@@ -162,13 +257,34 @@ async fn batch_proof_is_directly_settleable_single_batch() {
         witness: SuccinctWitness {
             seal: &[0u8; 8],
             claim: &[0u8; 32],
-            control_id: &[0u8; 32],
-            hashfn: 0,
             control_index: 0,
             control_digests: &[],
         },
     });
-    assert_settlement_structure(&settlement, parsed, &program_id, &tx_image_id, covenant_id_hash);
+    assert_settlement_structure(&settlement, parsed, &pins, covenant_id_hash);
+
+    // Run the on-chain inner-proof check. Only meaningful with real (CUDA-produced) seal
+    // bytes - the placeholder witness above would never satisfy `OpZkPrecompile`. Rebuild
+    // the settlement here with the actual receipt witness and feed it to the engine.
+    if !dev_mode_enabled() {
+        let owned = OwnedSuccinctWitness::from_receipt(&batch_receipt);
+        let real_settlement = Settlement::build(&SettlementInput {
+            covenant_id: covenant_id_hash,
+            pins,
+            prev_state: &parsed.prev_state,
+            prev_lane_tip: &parsed.prev_lane_tip,
+            new_state: &parsed.new_state,
+            new_lane_tip: &parsed.new_lane_tip,
+            block_prove_to: block_hashes[0],
+            prev_outpoint: TransactionOutpoint::new(Hash::from_bytes([0xCD; 32]), 0),
+            value: 100_000_000,
+            witness: owned.as_witness(),
+        });
+        let mut seq_commits = HashMap::new();
+        seq_commits.insert(block_hashes[0], parsed.new_seq_commit);
+        let accessor = MockSeqCommitAccessor(seq_commits);
+        verify_settlement_onchain(&real_settlement, covenant_id_hash, &accessor);
+    }
 
     scheduler.shutdown();
     l1.shutdown().await;
@@ -240,17 +356,34 @@ async fn batch_proof_bundles_two_batches() {
         ],
     );
 
+    let t_bundle = Instant::now();
     batch_1.wait_committed_blocking();
     batch_2.wait_committed_blocking();
     batch_1.wait_artifact_published_blocking();
     batch_2.wait_artifact_published_blocking();
+    eprintln!(
+        "[batch_proof_bundles_two_batches] bundle (K=2) schedule->proven wall time: {:?}",
+        t_bundle.elapsed()
+    );
 
     let r1 = (*batch_1.artifact()).clone();
     let r2 = (*batch_2.artifact()).clone();
     let j1 = Backend::journal_bytes(&r1);
     let j2 = Backend::journal_bytes(&r2);
     assert_eq!(j1, j2, "bundle publishes the same receipt to every batch");
-    assert_eq!(j1.len(), vprogs_zk_covenant::JOURNAL_SIZE);
+
+    if !dev_mode_enabled() {
+        // One bundle receipt is shared by both batches; verifying once is sufficient.
+        backend.verify_batch_receipt(&r1);
+        // Per-tx inner receipts are folded into the bundle via composition, but each is also
+        // independently verifiable against the transaction image id.
+        for batch in [&batch_1, &batch_2] {
+            for artifact in batch.tx_artifacts() {
+                backend.verify_transaction_receipt(&artifact);
+            }
+        }
+    }
+    assert_eq!(j1.len(), vprogs_zk_backend_risc0_covenant::JOURNAL_SIZE);
 
     let parsed = (&mut &j1[..]).array_as::<StateTransition>("state_transition").unwrap();
     assert_eq!(parsed.covenant_id, [0u8; 32]);
@@ -259,10 +392,21 @@ async fn batch_proof_bundles_two_batches() {
     let program_id = *backend.batch_image_id();
     let tx_image_id = *backend.transaction_image_id();
     let covenant_id_hash = Hash::from_bytes(parsed.covenant_id);
-    let settlement = Settlement::build(&SettlementInput {
-        covenant_id: covenant_id_hash,
+    let verifier_pins = if !dev_mode_enabled() {
+        OwnedSuccinctWitness::script_pins_from_receipt(&r1)
+    } else {
+        ScriptVerifierPins { control_id: [0u8; 32], hashfn: 0 }
+    };
+    let pins = RedeemPins {
         program_id: &program_id,
         tx_image_id: &tx_image_id,
+        control_id: &verifier_pins.control_id,
+        hashfn: verifier_pins.hashfn,
+        zk_tag: ZkTag::R0Succinct,
+    };
+    let settlement = Settlement::build(&SettlementInput {
+        covenant_id: covenant_id_hash,
+        pins,
         prev_state: &parsed.prev_state,
         prev_lane_tip: &parsed.prev_lane_tip,
         new_state: &parsed.new_state,
@@ -274,13 +418,36 @@ async fn batch_proof_bundles_two_batches() {
         witness: SuccinctWitness {
             seal: &[0u8; 8],
             claim: &[0u8; 32],
-            control_id: &[0u8; 32],
-            hashfn: 0,
             control_index: 0,
             control_digests: &[],
         },
     });
-    assert_settlement_structure(&settlement, parsed, &program_id, &tx_image_id, covenant_id_hash);
+    assert_settlement_structure(&settlement, parsed, &pins, covenant_id_hash);
+
+    // Run the on-chain inner-proof check on the bundle receipt's real witness bytes. The
+    // bundle publishes the same receipt to both batches (j1 == j2), so verifying once is
+    // enough.
+    if !dev_mode_enabled() {
+        let owned = OwnedSuccinctWitness::from_receipt(&r1);
+        let real_settlement = Settlement::build(&SettlementInput {
+            covenant_id: covenant_id_hash,
+            pins,
+            prev_state: &parsed.prev_state,
+            prev_lane_tip: &parsed.prev_lane_tip,
+            new_state: &parsed.new_state,
+            new_lane_tip: &parsed.new_lane_tip,
+            block_prove_to: block_hashes[1],
+            prev_outpoint: TransactionOutpoint::new(Hash::from_bytes([0xCD; 32]), 0),
+            value: 100_000_000,
+            witness: owned.as_witness(),
+        });
+        // Bundle anchors to the final block (block_hashes[1]); only that one needs the
+        // guest-computed seq_commit echo (see MockSeqCommitAccessor doc).
+        let mut seq_commits = HashMap::new();
+        seq_commits.insert(block_hashes[1], parsed.new_seq_commit);
+        let accessor = MockSeqCommitAccessor(seq_commits);
+        verify_settlement_onchain(&real_settlement, covenant_id_hash, &accessor);
+    }
 
     scheduler.shutdown();
     l1.shutdown().await;

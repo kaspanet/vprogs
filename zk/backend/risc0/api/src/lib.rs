@@ -29,4 +29,4 @@ pub use permission_tree::{
     perm_leaf_hash, required_depth,
 };
 #[cfg(feature = "host")]
-pub use witness::OwnedSuccinctWitness;
+pub use witness::{OwnedSuccinctWitness, ScriptVerifierPins};
