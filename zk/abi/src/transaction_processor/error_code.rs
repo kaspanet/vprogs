@@ -7,10 +7,10 @@ pub enum ErrorCode {
     /// Transaction protocol version is not supported by this prover build.
     VersionIncompatible = 1,
     /// Unknown exit destination tag in a journal exit entry.
-    InvalidExitSpkTag = 4,
+    InvalidExitSpkTag = 2,
     /// `ScriptPublicKey` is not one of the supported standard variants
     /// (Schnorr P2PK / ECDSA P2PK / P2SH).
-    InvalidExitSpk = 5,
+    InvalidExitSpk = 3,
 }
 
 impl From<ErrorCode> for Error {
