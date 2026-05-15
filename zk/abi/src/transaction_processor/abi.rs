@@ -25,15 +25,12 @@ pub fn process_transaction(
     // Execute guest closure (if version is supported).
     let Inputs { version, tx_id, merge_idx, mut execution_input } = inputs;
     let result = match version {
-        Transaction::V1 => 'v1: {
-            let Some(exec) = execution_input.as_mut() else {
-                break 'v1 Err(ErrorCode::MissingExecutionInputs.into());
-            };
+        Transaction::V1 => {
+            // Unwrap and verify host-supplied execution input.
+            let exec = execution_input.as_mut().expect("host omitted execution_input");
+            assert_eq!(tx_id.as_slice(), exec.tx.id(), "host tx_id does not match derived id");
 
-            if tx_id.as_slice() != exec.tx.id() {
-                break 'v1 Err(ErrorCode::TxIdMismatch.into());
-            }
-
+            // Run guest handler, returning the resources slice on success.
             let result = f(&exec.tx, merge_idx, exec.context_hash, &mut exec.resources);
             result.map(|_| exec.resources.as_slice())
         }
