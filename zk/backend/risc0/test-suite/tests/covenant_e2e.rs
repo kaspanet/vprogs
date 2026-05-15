@@ -14,8 +14,8 @@ use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_txscript::{standard::pay_to_script_hash_script, zk_precompiles::tags::ZkTag};
 use vprogs_core_smt::EMPTY_HASH;
 use vprogs_node_test_utils::L1Node;
+use vprogs_zk_backend_risc0_covenant::{RedeemPins, build_redeem_script, redeem_script_len};
 use vprogs_zk_backend_risc0_test_suite::{batch_processor_elf, transaction_processor_elf};
-use vprogs_zk_covenant::{build_redeem_script, redeem_script_len};
 
 const TEST_COVENANT_VALUE: u64 = 100_000_000;
 
@@ -43,16 +43,19 @@ async fn covenant_bootstrap_is_accepted_on_simnet() {
 
     let initial_state = EMPTY_HASH;
     let initial_lane_tip = Hash::default();
-    let redeem_len =
-        redeem_script_len(&initial_state, &program_id, &tx_image_id, ZkTag::R0Succinct);
-    let redeem = build_redeem_script(
-        &initial_state,
-        &initial_lane_tip,
-        redeem_len,
-        &program_id,
-        &tx_image_id,
-        ZkTag::R0Succinct,
-    );
+    // Bootstrap-only test: never spent, never proven against. The control_id/hashfn placeholders
+    // are baked into the redeem bytes and into the SPK we assert below; both sides see the same
+    // placeholders so the SPK comparison passes regardless of value.
+    let control_id = [0u8; 32];
+    let pins = RedeemPins {
+        program_id: &program_id,
+        tx_image_id: &tx_image_id,
+        control_id: &control_id,
+        hashfn: 0,
+        zk_tag: ZkTag::R0Succinct,
+    };
+    let redeem_len = redeem_script_len(&initial_state, &pins);
+    let redeem = build_redeem_script(&initial_state, &initial_lane_tip, redeem_len, &pins);
     let expected_spk = pay_to_script_hash_script(&redeem);
 
     let (bootstrap_tx, covenant_id) =
