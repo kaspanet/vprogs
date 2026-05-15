@@ -6,10 +6,6 @@ use crate::Error;
 pub enum ErrorCode {
     /// Transaction protocol version is not supported by this prover build.
     VersionIncompatible = 1,
-    /// Host-supplied `tx_id` does not match the cryptographically derived value.
-    TxIdMismatch = 2,
-    /// Version is supported but `execution_input` was not supplied.
-    MissingExecutionInputs = 3,
     /// Unknown exit destination tag in a journal exit entry.
     InvalidExitSpkTag = 4,
     /// `ScriptPublicKey` is not one of the supported standard variants

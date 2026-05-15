@@ -25,7 +25,7 @@ use crate::{
 /// Verifies a bundle and accumulates its post-state.
 pub struct Verifier<'a, V, A>
 where
-    V: Fn(&[u8; 32], &[u8]),
+    V: FnMut(&[u8; 32], &[u8]),
     A: ExitAccumulator,
 {
     /// Decoded bundle inputs.
@@ -46,7 +46,7 @@ where
 
 impl<'a, V, A> Verifier<'a, V, A>
 where
-    V: Fn(&[u8; 32], &[u8]),
+    V: FnMut(&[u8; 32], &[u8]),
     A: ExitAccumulator,
 {
     /// Builds a `Verifier` for the bundle.
@@ -209,7 +209,7 @@ where
 
     /// Decodes and verifies a tx journal (proof, shape, merge_idx).
     fn verified_journal(
-        &self,
+        &mut self,
         tx_journal: Result<&'a [u8], Error>,
         last_merge_idx: &mut Option<u32>,
     ) -> JournalEntries<'a> {
