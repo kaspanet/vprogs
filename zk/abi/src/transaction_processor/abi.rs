@@ -29,7 +29,7 @@ pub fn process_transaction(
 
     let mut exits = ExitSink::new();
     let result = match version {
-        Transaction::V1 =>  {
+        Transaction::V1 => {
             // Unwrap and verify host-supplied execution input.
             let exec = execution_input.as_mut().expect("host omitted execution_input");
             assert_eq!(tx_id.as_slice(), exec.tx.id(), "host tx_id does not match derived id");
