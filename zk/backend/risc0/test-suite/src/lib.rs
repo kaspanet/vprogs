@@ -13,6 +13,14 @@ mod l1_transaction_ext;
 
 pub use l1_transaction_ext::L1TransactionExt;
 
+/// Returns `true` when risc0 dev mode is active (env var `RISC0_DEV_MODE` is set to anything
+/// other than `0`). In dev mode the prover emits fake receipts, so any code path that
+/// cryptographically depends on the proof being real (receipt verification, on-chain script
+/// engine checks of the covenant precompile) must be gated on this returning `false`.
+pub fn dev_mode_enabled() -> bool {
+    !matches!(std::env::var("RISC0_DEV_MODE").as_deref(), Err(_) | Ok("0"))
+}
+
 /// Loads the pre-built transaction processor ELF from the repository.
 pub fn transaction_processor_elf() -> Vec<u8> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");

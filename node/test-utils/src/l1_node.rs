@@ -9,7 +9,7 @@ use kaspa_consensus_core::{
     constants::{TX_VERSION, TX_VERSION_TOCCATA},
     hashing::covenant_id::covenant_id,
     header::Header,
-    mass::units::ComputeBudget,
+    mass::{MassCalculator, units::ComputeBudget},
     merkle::calc_hash_merkle_root,
     sign::sign,
     subnets::{SUBNETWORK_ID_NATIVE, SubnetworkId},
@@ -295,13 +295,21 @@ impl L1Node {
             .collect()
     }
 
-    /// Funds and submits a settlement transaction: appends a fee input + change output, signs only
-    /// the fee input, and preserves the covenant input's witness.
-    pub async fn submit_settlement_transaction(
+    /// Funds and signs a settlement transaction without submitting it: appends a fee input +
+    /// change output, signs only the fee input, preserves the covenant input's witness, sets
+    /// the covenant input's compute budget, and commits the storage-mass field. The returned
+    /// transaction is ready to ship - either via [`Self::mine_block`] (deterministic chain
+    /// inclusion) or [`Self::submit_settlement_transaction`] (routed through the mempool).
+    ///
+    /// `covenant_compute_budget` sets the compute budget on input 0 (the covenant). The R0Succinct
+    /// precompile alone consumes ~2500 budget units; production callers pass ~10000 to leave room
+    /// for surrounding script ops. Dev-mode covenants without the precompile can pass ~100.
+    pub async fn prepare_settlement_transaction(
         &self,
         settlement_tx: Transaction,
         covenant_entry: UtxoEntry,
-    ) -> Hash {
+        covenant_compute_budget: ComputeBudget,
+    ) -> Transaction {
         // Approximate fee/mass; bump if mempool rejects.
         const FEE: u64 = 100_000;
 
@@ -320,18 +328,40 @@ impl L1Node {
             pay_to_address_script(&self.address),
         ));
 
-        let signed = sign(
-            MutableTransaction::with_entries(tx, vec![covenant_entry, fee_entry]),
-            self.keypair,
-        );
+        let entries = vec![covenant_entry, fee_entry];
+        let signed = sign(MutableTransaction::with_entries(tx, entries.clone()), self.keypair);
         let mut tx = signed.tx;
 
-        // Restore the covenant witness.
+        // Restore the covenant witness and set the covenant input's compute budget.
         tx.inputs[0].signature_script = covenant_sig_script;
-        // Precompile-laden redeem needs more headroom than the default per-input compute budget.
-        // R0Succinct alone is ~2500 budget units; 10000 leaves room for surrounding script ops.
-        tx.inputs[0].mass = ComputeBudget(10_000).into();
+        tx.inputs[0].mass = covenant_compute_budget.into();
 
+        // Toccata transactions must commit their storage mass; compute it now that all inputs and
+        // outputs are finalized.
+        self.commit_storage_mass(&tx, &entries);
+
+        // `sign` left the wrong tx id in place because the signature script changed on input 0;
+        // recompute so callers see the on-the-wire id.
+        tx.finalize();
+        tx
+    }
+
+    /// Submits a settlement transaction through the mempool via gRPC.
+    ///
+    /// Note: in Kaspa DAG consensus, a block's transactions are accepted by the next chain block
+    /// (caller must mine an additional block for acceptance). This routes through mempool
+    /// standardness checks; for deterministic chain inclusion that bypasses mempool timing,
+    /// prefer building the tx with [`Self::prepare_settlement_transaction`] and shipping it
+    /// directly via [`Self::mine_block`].
+    pub async fn submit_settlement_transaction(
+        &self,
+        settlement_tx: Transaction,
+        covenant_entry: UtxoEntry,
+        covenant_compute_budget: ComputeBudget,
+    ) -> Hash {
+        let tx = self
+            .prepare_settlement_transaction(settlement_tx, covenant_entry, covenant_compute_budget)
+            .await;
         let tx_id = tx.id();
         self.grpc_client
             .submit_transaction(RpcTransaction::from(&tx), false)
@@ -376,8 +406,31 @@ impl L1Node {
             Vec::new(),
         );
 
-        let signed = sign(MutableTransaction::with_entries(unsigned, vec![entry]), self.keypair).tx;
+        let entries = vec![entry];
+        let signed =
+            sign(MutableTransaction::with_entries(unsigned, entries.clone()), self.keypair).tx;
+
+        // Bootstrap is a Toccata-version tx; the storage-mass commitment must match what the
+        // block validator recomputes from the populated transaction.
+        self.commit_storage_mass(&signed, &entries);
+
         (signed, covenant_id)
+    }
+
+    /// Computes the storage mass (KIP-0009) for `tx` populated with `entries` and stores it
+    /// on the transaction's mass commitment field. Toccata-version transactions must commit
+    /// the correct storage mass for the block validator to accept them.
+    fn commit_storage_mass(&self, tx: &Transaction, entries: &[UtxoEntry]) {
+        let calc = MassCalculator::new(
+            self.params.mass_per_tx_byte,
+            self.params.mass_per_script_pub_key_byte,
+            self.params.storage_mass_parameter,
+        );
+        let populated = kaspa_consensus_core::tx::PopulatedTransaction::new(tx, entries.to_vec());
+        let masses = calc
+            .calc_contextual_masses(&populated)
+            .expect("contextual mass calculation must succeed for a populated transaction");
+        tx.set_mass(masses.storage_mass);
     }
 
     /// Fetches spendable UTXOs for the miner address, sorted by amount (largest first).

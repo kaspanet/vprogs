@@ -819,6 +819,7 @@ dependencies = [
 [[package]]
 name = "kaspa-hashes"
 version = "1.1.1-toc.1"
+source = "git+https://github.com/biryukovmaxim/rusty-kaspa?branch=covpp-reset2-rpc-lane-proof#52b5a793667dd40323d8914de392872b4d44345e"
 dependencies = [
  "blake2b_simd",
  "blake3",
@@ -837,6 +838,7 @@ dependencies = [
 [[package]]
 name = "kaspa-merkle"
 version = "1.1.1-toc.1"
+source = "git+https://github.com/biryukovmaxim/rusty-kaspa?branch=covpp-reset2-rpc-lane-proof#52b5a793667dd40323d8914de392872b4d44345e"
 dependencies = [
  "kaspa-hashes",
 ]
@@ -844,6 +846,7 @@ dependencies = [
 [[package]]
 name = "kaspa-seq-commit"
 version = "1.1.1-toc.1"
+source = "git+https://github.com/biryukovmaxim/rusty-kaspa?branch=covpp-reset2-rpc-lane-proof#52b5a793667dd40323d8914de392872b4d44345e"
 dependencies = [
  "kaspa-hashes",
  "kaspa-merkle",
@@ -854,6 +857,7 @@ dependencies = [
 [[package]]
 name = "kaspa-smt"
 version = "1.1.1-toc.1"
+source = "git+https://github.com/biryukovmaxim/rusty-kaspa?branch=covpp-reset2-rpc-lane-proof#52b5a793667dd40323d8914de392872b4d44345e"
 dependencies = [
  "blake3",
  "kaspa-hashes",
@@ -864,6 +868,7 @@ dependencies = [
 [[package]]
 name = "kaspa-utils"
 version = "1.1.1-toc.1"
+source = "git+https://github.com/biryukovmaxim/rusty-kaspa?branch=covpp-reset2-rpc-lane-proof#52b5a793667dd40323d8914de392872b4d44345e"
 dependencies = [
  "async-channel",
  "borsh",
