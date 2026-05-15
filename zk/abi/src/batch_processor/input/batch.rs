@@ -23,7 +23,7 @@ pub struct Batch<'a> {
     /// Lane tip entering this batch's block.
     pub prev_lane_tip: &'a Hash,
     /// Blue score at which the lane was last active before this block.
-    pub lane_blue_score: u64,
+    pub prev_lane_blue_score: u64,
     /// True when the lane re-anchors on `prev_seq_commit` instead of `prev_lane_tip`.
     pub lane_expired: bool,
     /// Maps batch-local `resource_index` to bundle-wide resource_index.
@@ -41,7 +41,7 @@ impl<'a> Batch<'a> {
             prev_timestamp: buf.le_u64("prev_timestamp")?,
             prev_seq_commit: buf.array_as::<Hash>("prev_seq_commit")?,
             prev_lane_tip: buf.array_as::<Hash>("prev_lane_tip")?,
-            lane_blue_score: buf.le_u64("lane_blue_score")?,
+            prev_lane_blue_score: buf.le_u64("prev_lane_blue_score")?,
             lane_expired: buf.bool("lane_expired")?,
             translation: <[U32]>::ref_from_bytes(buf.blob("translation")?)?,
             tx_journals: TransactionJournals::new(buf.blob("tx_journals")?),
@@ -56,7 +56,7 @@ impl<'a> Batch<'a> {
         buf.write(&metadata.prev_timestamp.to_le_bytes());
         buf.write(metadata.prev_seq_commit.as_slice());
         buf.write(metadata.prev_lane_tip.as_slice());
-        buf.write(&metadata.lane_blue_score.to_le_bytes());
+        buf.write(&metadata.prev_lane_blue_score.to_le_bytes());
         buf.write(&[metadata.lane_expired as u8]);
         buf.write_blob(translation.as_bytes());
         buf.write(&tx_journals.iter().map(|j| 4 + j.len() as u32).sum::<u32>().to_le_bytes());

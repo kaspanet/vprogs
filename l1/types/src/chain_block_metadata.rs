@@ -26,6 +26,8 @@ pub struct ChainBlockMetadata {
     /// Sequencing commitment carried by the previous block's header.
     pub prev_seq_commit: Hash,
     /// Blue score at which the lane was last active. Zero if never active.
+    pub prev_lane_blue_score: u64,
+    /// Blue score at which the lane was last active after applying this block's accepted txs.
     pub lane_blue_score: u64,
     /// Lane tip entering this block.
     pub prev_lane_tip: Hash,
