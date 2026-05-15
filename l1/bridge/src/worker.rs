@@ -388,6 +388,7 @@ impl BridgeWorker {
                 lane_key: self.lane_key.unwrap_or_default(),
                 prev_timestamp: parent_meta.timestamp,
                 prev_lane_tip: parent_meta.lane_tip,
+                prev_lane_blue_score: parent_meta.lane_blue_score,
                 lane_blue_score,
                 lane_tip,
                 lane_expired,
