@@ -1,31 +1,38 @@
 //! P2SH redeem script for the settlement covenant.
 //!
-//! The script enforces four invariants on any settlement transaction spending the covenant UTXO:
+//! The script enforces five invariants on any settlement transaction spending the covenant UTXO:
 //!
-//! 1. **State continuation**: the single covenant output's SPK is a P2SH of this script rebuilt
+//! 1. **State continuation**: the index-0 covenant output's SPK is a P2SH of this script rebuilt
 //!    with the advanced `(new_state, new_lane_tip)` pair pushed as the prefix.
 //! 2. **Journal binding**: the ZK proof's committed journal hashes to `sha256(prev_state ||
-//!    prev_lane_tip || new_state || new_lane_tip || new_seq_commit || covenant_id || tx_image_id)`.
-//!    `tx_image_id`, `control_id`, `hashfn`, and `image_id` are all hardcoded into the script body,
-//!    so the covenant SPK pins the entire verifier identity - both the batch-proof verifier circuit
-//!    and the inner transaction-processor guest the batch checked against.
+//!    prev_lane_tip || new_state || new_lane_tip || new_seq_commit || covenant_id || tx_image_id ||
+//!    permission_spk_hash)` - 256 bytes total. `tx_image_id`, `control_id`, `hashfn`, and
+//!    `image_id` are all hardcoded into the script body, so the covenant SPK pins the entire
+//!    verifier identity - both the batch-proof verifier circuit and the inner transaction-processor
+//!    guest the batch checked against. The final 32 bytes (`permission_spk_hash`) are either the
+//!    batch's L2→L1 exit commitment or `[0; 32]` for a no-exit batch (matching how the guest
+//!    encodes the field).
 //! 3. **Seq commitment freshness**: the journal's `new_seq_commit` equals
 //!    `OpChainblockSeqCommit(block_prove_to)` pushed at spend time, which itself is derived by the
 //!    guest from `new_lane_tip` - so the chain of UTXO-locked `lane_tip` values is load-bearing all
 //!    the way through the seq-commit derivation, preventing rewinds.
 //! 4. **Proof validity**: `OpZkPrecompile` verifies the risc0 succinct receipt against the
 //!    configured image id.
-//!
-//! The MVP here omits the optional permission-tree exit path - the covenant always has
-//! exactly one output.
+//! 5. **Permission-output binding**: settlements have exactly one or two covenant-bound outputs.
+//!    Output 0 is always the continuation (invariant 1). When the journal commits a non-zero
+//!    `permission_spk_hash`, the spend MUST include a second covenant-bound output (count == 2)
+//!    whose SPK is `permission_spk(permission_spk_hash)` and whose value equals
+//!    `pins.permission_output_value`. When the commitment is `[0; 32]`, the spend MUST have exactly
+//!    one output. Both rules are enforced inside `verify_outputs_and_append_perm_hash`.
 
 use kaspa_hashes::Hash;
 use kaspa_txscript::{
     opcodes::codes::{
         Op0, OpAdd, OpBlake2b, OpCat, OpChainblockSeqCommit, OpCovOutputCount, OpData32, OpDrop,
-        OpDup, OpEqual, OpEqualVerify, OpFromAltStack, OpInputCovenantId, OpSHA256, OpSwap,
-        OpToAltStack, OpTrue, OpTxInputIndex, OpTxInputScriptSigLen, OpTxInputScriptSigSubstr,
-        OpTxOutputSpk, OpVerify, OpZkPrecompile,
+        OpDup, OpElse, OpEndIf, OpEqual, OpEqualVerify, OpFromAltStack, OpIf, OpInputCovenantId,
+        OpNumEqual, OpNumEqualVerify, OpSHA256, OpSwap, OpToAltStack, OpTrue, OpTxInputIndex,
+        OpTxInputScriptSigLen, OpTxInputScriptSigSubstr, OpTxOutputAmount, OpTxOutputSpk,
+        OpTxOutputSpkSubstr, OpVerify, OpZkPrecompile,
     },
     script_builder::ScriptBuilder,
     zk_precompiles::tags::ZkTag,
@@ -58,7 +65,16 @@ pub struct RedeemPins<'a> {
     pub hashfn: u8,
     /// Proof system tag selecting which precompile variant the script terminates in.
     pub zk_tag: ZkTag,
+    /// Sompi value the script enforces on the permission-exit output (output index 1) when the
+    /// batch's `permission_spk_hash` is non-zero. Baked into the redeem script so this value is
+    /// part of the covenant SPK identity; the host builder must emit exactly this value on
+    /// output 1.
+    pub permission_output_value: u64,
 }
+
+/// Default permission-exit output value (0.5 KAS). Bundles a sane default for typical
+/// deployments; per-covenant overrides go in [`RedeemPins::permission_output_value`].
+pub const DEFAULT_PERMISSION_OUTPUT_VALUE: u64 = 50_000_000;
 
 /// Builds the settlement redeem script for a covenant carrying the given
 /// `(prev_state, prev_lane_tip)` pair. The fields of [`RedeemPins`] are all hardcoded into
@@ -83,7 +99,7 @@ pub fn build_redeem_script(
     extract_redeem_suffix_and_concat(&mut b, redeem_script_len);
     hash_redeem_to_spk(&mut b);
     verify_output_spk(&mut b);
-    build_and_hash_journal(&mut b, pins.tx_image_id);
+    build_and_hash_journal(&mut b, pins);
 
     match pins.zk_tag {
         ZkTag::R0Succinct => {
@@ -93,7 +109,6 @@ pub fn build_redeem_script(
     }
 
     verify_input_index_zero(&mut b);
-    verify_covenant_single_output(&mut b);
     b.add_op(OpTrue).unwrap();
 
     // Domain suffix flagging "state verification" to distinguish the script from unrelated
@@ -152,7 +167,12 @@ pub fn build_dev_redeem_script(
     verify_output_spk(&mut b);
     drop_stashed_prev_values(&mut b);
     verify_input_index_zero(&mut b);
-    verify_covenant_single_output(&mut b);
+    // Dev script has no journal, no exits - the covenant always emits exactly one output.
+    b.add_op(OpTxInputIndex).unwrap();
+    b.add_op(OpInputCovenantId).unwrap();
+    b.add_op(OpCovOutputCount).unwrap();
+    b.add_i64(1).unwrap();
+    b.add_op(OpEqualVerify).unwrap();
     b.add_op(OpTrue).unwrap();
 
     b.drain()
@@ -316,14 +336,19 @@ fn verify_output_spk(b: &mut ScriptBuilder) {
 
 /// Consumes the alt-stack stash
 /// `(prev_state, prev_lane_tip, new_seq_commit, new_state, new_lane_tip)`, assembles the
-/// 160-byte state preimage, appends the input's covenant id (→ 192B) and the script-embedded
-/// `tx_image_id` (→ 224B), and SHA-256s the result.
+/// 160-byte state preimage, appends the input's covenant id (→ 192B), the script-embedded
+/// `tx_image_id` (→ 224B), the 32-byte permission commitment (→ 256B) via
+/// `verify_outputs_and_append_perm_hash`, then SHA-256s the result.
 ///
 /// Alt layout going in (top→bottom):
 /// `[new_lane_tip, new_state, new_seq_commit, prev_lane_tip, prev_state]`
 ///
+/// The 256-byte preimage byte order matches `StateTransition::encode` field-for-field:
+/// `prev_state || prev_lane_tip || new_state || new_lane_tip || new_seq_commit || covenant_id ||
+///  tx_image_id || permission_spk_hash`.
+///
 /// Output: `[..., journal_hash]`
-fn build_and_hash_journal(b: &mut ScriptBuilder, tx_image_id: &[u8; 32]) {
+fn build_and_hash_journal(b: &mut ScriptBuilder, pins: &RedeemPins<'_>) {
     // Pop the three "new" values.
     b.add_op(OpFromAltStack).unwrap(); // new_lane_tip
     b.add_op(OpFromAltStack).unwrap(); // new_state
@@ -365,25 +390,111 @@ fn build_and_hash_journal(b: &mut ScriptBuilder, tx_image_id: &[u8; 32]) {
     b.add_op(OpCat).unwrap();
 
     // Append script-embedded tx_image_id → 224B preimage.
-    b.add_data(tx_image_id).unwrap();
+    b.add_data(pins.tx_image_id).unwrap();
     b.add_op(OpCat).unwrap();
 
+    // Branch on covenant output count: append permission_spk_hash (count == 2) or 32 zero
+    // bytes (count == 1) → 256B preimage matching the guest's journal encoding.
+    verify_outputs_and_append_perm_hash(b, pins);
+
     b.add_op(OpSHA256).unwrap();
+}
+
+/// Stack precondition: `[..., preimage224]`. Postcondition: `[..., preimage256]`.
+///
+/// Reads `OpCovOutputCount` and branches:
+/// - `count == 2`: extracts the 32-byte P2SH script hash from `outputs[1].script_public_key`,
+///   asserts `outputs[1].value == pins.permission_output_value`, asserts the rebuilt SPK matches
+///   the actual one, and appends the extracted hash to the preimage.
+/// - `count == 1`: appends 32 zero bytes (matching how the guest encodes a no-exit batch's
+///   `permission_spk_hash`).
+/// - any other count: fails (`OpNumEqualVerify` in the else branch).
+///
+/// Soundness note for the count==2 branch: an extracted hash of `[0; 32]` is not explicitly
+/// rejected here, but a no-exit batch commits `[0; 32]` in the journal, so a 2-output spend
+/// would only pass the upstream `OpZkPrecompile` if its output 1 were `permission_spk([0;32])`
+/// — a self-burn, not a soundness break. The honest host builder never takes the count==2
+/// path for a zero hash (see settlement.rs::Settlement::build).
+fn verify_outputs_and_append_perm_hash(b: &mut ScriptBuilder, pins: &RedeemPins<'_>) {
+    b.add_op(OpTxInputIndex).unwrap();
+    b.add_op(OpInputCovenantId).unwrap();
+    b.add_op(OpCovOutputCount).unwrap();
+    // Stack: [..., preimage224, count]
+
+    b.add_op(OpDup).unwrap();
+    b.add_i64(2).unwrap();
+    b.add_op(OpNumEqual).unwrap();
+    // Stack: [..., preimage224, count, count == 2]
+
+    b.add_op(OpIf).unwrap();
+    {
+        // count == 2 branch: permission-exit output is present at index 1.
+        b.add_op(OpDrop).unwrap(); // discard the duped count
+        // Stack: [..., preimage224]
+
+        // ---- enforce output[1].value == pins.permission_output_value ----
+        b.add_i64(1).unwrap();
+        b.add_op(OpTxOutputAmount).unwrap();
+        // Stack: [..., preimage224, out1_value]
+        b.add_i64(pins.permission_output_value as i64).unwrap();
+        b.add_op(OpEqualVerify).unwrap();
+        // Stack: [..., preimage224]
+
+        // ---- extract the 32-byte script hash from outputs[1].script_public_key ----
+        // SPK layout: version(2) | OpBlake2b(1) | OpData32(1) | hash(32) | OpEqual(1) = 37B.
+        // `OpTxOutputSpkSubstr` reads the version-prefixed bytes, so [4..36] is the hash.
+        b.add_i64(1).unwrap(); // output index
+        b.add_i64(4).unwrap(); // start
+        b.add_i64(36).unwrap(); // end (exclusive)
+        b.add_op(OpTxOutputSpkSubstr).unwrap();
+        // Stack: [..., preimage224, hash32]
+
+        // ---- rebuild the full 37-byte P2SH SPK and assert it matches the actual one ----
+        b.add_op(OpDup).unwrap();
+        // Stack: [..., preimage224, hash32, hash32]
+
+        let mut header = [0u8; 4];
+        header[0..2].copy_from_slice(
+            &kaspa_consensus_core::constants::MAX_SCRIPT_PUBLIC_KEY_VERSION.to_le_bytes(),
+        );
+        header[2] = OpBlake2b;
+        header[3] = OpData32;
+        b.add_data(&header).unwrap();
+        b.add_op(OpSwap).unwrap();
+        b.add_op(OpCat).unwrap();
+        // Stack: [..., preimage224, hash32, header4 || hash32] = 36B partial SPK
+
+        b.add_data(&[OpEqual]).unwrap();
+        b.add_op(OpCat).unwrap();
+        // Stack: [..., preimage224, hash32, header4 || hash32 || OpEqual] = full 37B P2SH SPK
+
+        b.add_i64(1).unwrap();
+        b.add_op(OpTxOutputSpk).unwrap();
+        b.add_op(OpEqualVerify).unwrap();
+        // Stack: [..., preimage224, hash32]
+
+        // ---- append the hash to the preimage → 256B ----
+        b.add_op(OpCat).unwrap();
+        // Stack: [..., preimage256]
+    }
+    b.add_op(OpElse).unwrap();
+    {
+        // count == 1 branch: no permission output; append 32 zero bytes to keep the preimage
+        // fixed at 256B (matches the guest's `permission_spk_hash = [0; 32]` encoding).
+        b.add_i64(1).unwrap();
+        b.add_op(OpNumEqualVerify).unwrap();
+        // Stack: [..., preimage224]
+        b.add_data(&[0u8; 32]).unwrap();
+        b.add_op(OpCat).unwrap();
+        // Stack: [..., preimage256]
+    }
+    b.add_op(OpEndIf).unwrap();
 }
 
 /// Asserts that the spending input is at index 0 (covenant always lives at input 0).
 fn verify_input_index_zero(b: &mut ScriptBuilder) {
     b.add_op(OpTxInputIndex).unwrap();
     b.add_i64(0).unwrap();
-    b.add_op(OpEqualVerify).unwrap();
-}
-
-/// Asserts that the covenant creates exactly one output (no permission-tree exit).
-fn verify_covenant_single_output(b: &mut ScriptBuilder) {
-    b.add_op(OpTxInputIndex).unwrap();
-    b.add_op(OpInputCovenantId).unwrap();
-    b.add_op(OpCovOutputCount).unwrap();
-    b.add_i64(1).unwrap();
     b.add_op(OpEqualVerify).unwrap();
 }
 
@@ -419,7 +530,14 @@ mod tests {
         tx_image_id: &'a [u8; 32],
         control_id: &'a [u8; 32],
     ) -> RedeemPins<'a> {
-        RedeemPins { program_id, tx_image_id, control_id, hashfn: 1, zk_tag: ZkTag::R0Succinct }
+        RedeemPins {
+            program_id,
+            tx_image_id,
+            control_id,
+            hashfn: 1,
+            zk_tag: ZkTag::R0Succinct,
+            permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
+        }
     }
 
     #[test]

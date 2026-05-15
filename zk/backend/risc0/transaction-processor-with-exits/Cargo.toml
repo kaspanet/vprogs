@@ -1,0 +1,18 @@
+[package]
+edition = "2021"
+name    = "vprogs-zk-backend-risc0-transaction-processor-with-exits"
+version = "0.1.0"
+
+# Test-only variant of the production transaction-processor. Mirrors its handler logic
+# (increment-by-1 on each resource) but additionally emits one L2→L1 exit per transaction,
+# derived deterministically from the transaction's merge_idx. The resulting batch journal
+# carries a non-zero `permission_spk_hash`, which exercises the settlement covenant's
+# `count == 2` script branch end-to-end (see `settlement_e2e.rs`).
+
+[dependencies]
+blake3 = { version = "1", default-features = false }
+risc0-zkvm = { version = "3.0", default-features = false, features = ["std"] }
+vprogs-zk-abi = { path = "../../../abi", default-features = false }
+vprogs-zk-backend-risc0-api = { path = "../api", default-features = false, features = [
+  "guest",
+] }

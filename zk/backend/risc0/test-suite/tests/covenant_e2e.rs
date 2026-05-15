@@ -14,7 +14,9 @@ use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_txscript::{standard::pay_to_script_hash_script, zk_precompiles::tags::ZkTag};
 use vprogs_core_smt::EMPTY_HASH;
 use vprogs_node_test_utils::L1Node;
-use vprogs_zk_backend_risc0_covenant::{RedeemPins, build_redeem_script, redeem_script_len};
+use vprogs_zk_backend_risc0_covenant::{
+    DEFAULT_PERMISSION_OUTPUT_VALUE, RedeemPins, build_redeem_script, redeem_script_len,
+};
 use vprogs_zk_backend_risc0_test_suite::{batch_processor_elf, transaction_processor_elf};
 
 const TEST_COVENANT_VALUE: u64 = 100_000_000;
@@ -53,6 +55,7 @@ async fn covenant_bootstrap_is_accepted_on_simnet() {
         control_id: &control_id,
         hashfn: 0,
         zk_tag: ZkTag::R0Succinct,
+        permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
     };
     let redeem_len = redeem_script_len(&initial_state, &pins);
     let redeem = build_redeem_script(&initial_state, &initial_lane_tip, redeem_len, &pins);
