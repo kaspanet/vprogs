@@ -4,6 +4,7 @@ name    = "vprogs-zk-backend-risc0-api"
 version = "0.1.0"
 
 [features]
+cuda = ["risc0-zkvm/cuda"]
 default = ["std"]
 guest = ["dep:risc0-zkvm"]
 host = [
@@ -19,7 +20,6 @@ host = [
   "dep:vprogs-zk-vm",
 ]
 std = ["vprogs-zk-abi/std"]
-cuda = ["risc0-zkvm/cuda"]
 
 [dependencies]
 vprogs-core-codec = { workspace = true }
