@@ -12,8 +12,7 @@ fn main() {
     // Read the bundle inputs from the host and build the verifier with the default
     // permission-tree accumulator for exits.
     let inputs = Host.read_blob();
-    let mut verifier =
-        Verifier::new(&inputs, verify_tx_journal, PermissionTreeAccumulator::new());
+    let mut verifier = Verifier::new(&inputs, verify_tx_journal, PermissionTreeAccumulator::new());
 
     // Verify all batches and derive the post-state.
     let (lane_tip, lane_blue_score) = verifier.verify_batches();

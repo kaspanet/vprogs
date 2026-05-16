@@ -3,35 +3,21 @@ use vprogs_core_codec::{Reader, Writer};
 use crate::{
     Error, Result,
     transaction_processor::{
-        ExitCommitment, OutputResourceCommitment, OutputResourceCommitments, Resource,
+        Effects, ExitCommitment, OutputResourceCommitment, OutputResourceCommitments,
     },
 };
 
 /// Decoded output commitment from a transaction processor journal.
 pub enum OutputCommitment<'a> {
     /// Transaction executed successfully.
-    Success(SuccessOutput<'a>),
+    Success {
+        /// Lazy iterator over emitted exits.
+        exits: ExitCommitment<'a>,
+        /// Lazy iterator over per-resource hash commitments.
+        resources: OutputResourceCommitments<'a>,
+    },
     /// Transaction execution failed.
     Error(Error),
-}
-
-/// The successful-execution payload of an [`OutputCommitment`].
-///
-/// Wire layout:
-/// ```text
-/// exit_len: u32 LE
-/// [ExitCommitment entries] — exactly exit_len bytes
-/// [OutputResourceCommitment × 0..N, streaming to EOF]
-/// ```
-///
-/// The exit section carries its own byte length so the decoder can split it from the
-/// resource section without walking variable-size resource entries; resources then run to
-/// EOF, so no resource count is needed.
-pub struct SuccessOutput<'a> {
-    /// Lazy iterator over per-resource hash commitments.
-    pub resources: OutputResourceCommitments<'a>,
-    /// Lazy iterator over emitted exits.
-    pub exits: ExitCommitment<'a>,
 }
 
 impl<'a> OutputCommitment<'a> {
@@ -43,35 +29,21 @@ impl<'a> OutputCommitment<'a> {
     /// Decodes an output commitment, advancing `buf` past the consumed bytes.
     pub fn decode(buf: &mut &'a [u8]) -> Result<Self> {
         match buf.byte("discriminant")? {
-            Self::SUCCESS => {
-                let exit_len = buf.le_u32("exit_len")? as usize;
-                if exit_len > buf.len() {
-                    return Err(Error::Decode("truncated exit section".into()));
-                }
-                let (exits_bytes, resources_bytes) = buf.split_at(exit_len);
-                *buf = &[];
-                Ok(Self::Success(SuccessOutput {
-                    resources: OutputResourceCommitments::new(resources_bytes),
-                    exits: ExitCommitment::new(exits_bytes),
-                }))
-            }
+            Self::SUCCESS => Ok(Self::Success {
+                exits: ExitCommitment::new(buf.blob("exits")?),
+                resources: OutputResourceCommitments::new(buf),
+            }),
             Self::ERROR => Ok(Self::Error(Error::decode(buf)?)),
             _ => Err(Error::Decode("invalid output commitment discriminant".into())),
         }
     }
 
     /// Encodes an output commitment payload to the journal.
-    ///
-    /// `exit_bytes` is the pre-encoded exit section (tag+payload+amount per entry) produced by
-    /// the transaction's [`ExitSink`]. Pass `&[]` when the tx emitted no exits.
-    ///
-    /// [`ExitSink`]: crate::transaction_processor::ExitSink
-    pub fn encode(w: &mut impl Writer, result: &Result<&[Resource<'_>]>, exit_bytes: &[u8]) {
+    pub fn encode(w: &mut impl Writer, result: &Result<Effects<'_>>) {
         match *result {
-            Ok(resources) => {
+            Ok(Effects { exits, resources }) => {
                 w.write(&[Self::SUCCESS]);
-                w.write(&(exit_bytes.len() as u32).to_le_bytes());
-                w.write(exit_bytes);
+                w.write_blob(exits.as_bytes());
                 for r in resources {
                     OutputResourceCommitment::encode(w, r);
                 }
@@ -94,11 +66,10 @@ mod tests {
     /// Encodes a `Success` payload directly from raw resource commitments plus an exit blob.
     /// Mirrors what `OutputCommitment::encode` does in the success arm but operates on
     /// pre-encoded resource bytes — useful for tests without a full `Resource` instance.
-    fn encode_success_raw(w: &mut Vec<u8>, resource_bytes: &[u8], exit_bytes: &[u8]) {
-        w.extend_from_slice(&[OutputCommitment::SUCCESS]);
-        w.extend_from_slice(&(exit_bytes.len() as u32).to_le_bytes());
-        w.extend_from_slice(exit_bytes);
-        w.extend_from_slice(resource_bytes);
+    fn encode_success_raw(w: &mut Vec<u8>, exit_bytes: &[u8], resource_bytes: &[u8]) {
+        w.write(&[OutputCommitment::SUCCESS]);
+        w.write_blob(exit_bytes);
+        w.write(resource_bytes);
     }
 
     #[test]
@@ -109,9 +80,9 @@ mod tests {
         let mut slice: &[u8] = &buf;
         let cmt = OutputCommitment::decode(&mut slice).unwrap();
         match cmt {
-            OutputCommitment::Success(mut out) => {
-                assert!(out.exits.is_empty());
-                assert!(out.resources.next().is_none());
+            OutputCommitment::Success { exits, mut resources } => {
+                assert!(exits.is_empty());
+                assert!(resources.next().is_none());
             }
             OutputCommitment::Error(e) => panic!("expected success, got error: {e:?}"),
         }
@@ -131,18 +102,18 @@ mod tests {
         sink.emit(StandardSpk::ScriptHash(&[0x22; 32]), 200).unwrap();
 
         let mut buf = Vec::new();
-        encode_success_raw(&mut buf, &resources, sink.as_bytes());
+        encode_success_raw(&mut buf, sink.as_bytes(), &resources);
 
         let mut slice: &[u8] = &buf;
         let cmt = OutputCommitment::decode(&mut slice).unwrap();
-        let out = match cmt {
-            OutputCommitment::Success(o) => o,
+        let (exits, resources) = match cmt {
+            OutputCommitment::Success { exits, resources } => (exits, resources),
             _ => panic!("expected success"),
         };
 
         // Consume resources.
-        let r1 = out.resources.clone().next().unwrap().unwrap();
-        let mut r_iter = out.resources;
+        let r1 = resources.clone().next().unwrap().unwrap();
+        let mut r_iter = resources;
         let _ = r_iter.next();
         let r2 = r_iter.next().unwrap().unwrap();
         match r1 {
@@ -152,7 +123,7 @@ mod tests {
         assert!(matches!(r2, OutputResourceCommitment::Unchanged));
 
         // Consume exits.
-        let entries: Vec<_> = out.exits.collect::<core::result::Result<Vec<_>, _>>().unwrap();
+        let entries: Vec<_> = exits.collect::<core::result::Result<Vec<_>, _>>().unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0], (StandardSpk::PubKey(&[0x11; 32]), 100));
         assert_eq!(entries[1], (StandardSpk::ScriptHash(&[0x22; 32]), 200));

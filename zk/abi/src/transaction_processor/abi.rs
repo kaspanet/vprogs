@@ -3,8 +3,8 @@ use vprogs_core_codec::Writer;
 use crate::{
     Read,
     transaction_processor::{
-        ErrorCode, ExitSink, InputCommitment, Inputs, OutputCommitment, Outputs, Transaction,
-        TransactionHandler,
+        Effects, ErrorCode, ExitSink, InputCommitment, Inputs, OutputCommitment, Outputs,
+        Transaction, TransactionHandler,
     },
 };
 
@@ -34,15 +34,15 @@ pub fn process_transaction(
             let exec = execution_input.as_mut().expect("host omitted execution_input");
             assert_eq!(tx_id.as_slice(), exec.tx.id(), "host tx_id does not match derived id");
 
-            // Run guest handler, returning the resources slice on success.
+            // Run guest handler, bundling exits + resources into Effects on success.
             let result = f(&exec.tx, merge_idx, exec.context_hash, &mut exec.resources, &mut exits);
-            result.map(|_| exec.resources.as_slice())
+            result.map(|_| Effects { exits: &exits, resources: exec.resources.as_slice() })
         }
         _ => Err(ErrorCode::VersionIncompatible.into()),
     };
 
     // Commit output commitment to journal. Exits are written only in the Success arm.
-    OutputCommitment::encode(journal, &result, exits.as_bytes());
+    OutputCommitment::encode(journal, &result);
 
     // Stream execution result to host.
     Outputs::encode(&result, host);

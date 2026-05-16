@@ -8,8 +8,7 @@ pub enum ErrorCode {
     VersionIncompatible = 1,
     /// Unknown exit destination tag in a journal exit entry.
     InvalidExitSpkTag = 2,
-    /// `ScriptPublicKey` is not one of the supported standard variants
-    /// (Schnorr P2PK / ECDSA P2PK / P2SH).
+    /// `ScriptPublicKey` is not one of the supported variants (Schnorr P2PK / ECDSA P2PK / P2SH).
     InvalidExitSpk = 3,
 }
 

@@ -4,7 +4,7 @@ use vprogs_core_codec::Writer;
 
 use crate::{
     Result,
-    transaction_processor::{Resource, StorageOp},
+    transaction_processor::{Effects, StorageOp},
 };
 
 /// Decoded execution result from the transaction processor guest.
@@ -49,9 +49,9 @@ impl Outputs {
     }
 
     /// Encodes the execution result to the host stream (guest-side).
-    pub fn encode(result: &Result<&[Resource<'_>]>, w: &mut impl Writer) {
+    pub fn encode(result: &Result<Effects<'_>>, w: &mut impl Writer) {
         match *result {
-            Ok(resources) => {
+            Ok(Effects { resources, .. }) => {
                 // Write Ok discriminant.
                 w.write(&[Self::OK]);
 

@@ -36,6 +36,7 @@ pub mod batch_processor {
 
 pub mod transaction_processor {
     pub(crate) mod abi;
+    pub(crate) mod effects;
     pub(crate) mod error_code;
     pub(crate) mod exit;
     pub(crate) mod transaction_handler;
@@ -70,6 +71,7 @@ pub mod transaction_processor {
     }
 
     pub use abi::process_transaction;
+    pub use effects::Effects;
     pub use error_code::ErrorCode;
     pub use exit::{ExitCommitment, ExitSink, ScriptBytes, StandardSpk};
     pub use input::{
