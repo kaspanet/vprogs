@@ -38,7 +38,6 @@ pub mod transaction_processor {
     pub(crate) mod abi;
     pub(crate) mod effects;
     pub(crate) mod error_code;
-    pub(crate) mod exit;
     pub(crate) mod transaction_handler;
 
     pub(crate) mod input {
@@ -65,15 +64,18 @@ pub mod transaction_processor {
 
         pub(crate) mod output {
             pub(crate) mod commitment;
+            pub(crate) mod exit_commitment;
+            pub(crate) mod exit_sink;
             pub(crate) mod resource_commitment;
             pub(crate) mod resource_commitments;
+            pub(crate) mod script_bytes;
+            pub(crate) mod standard_spk;
         }
     }
 
     pub use abi::process_transaction;
     pub use effects::Effects;
     pub use error_code::ErrorCode;
-    pub use exit::{ExitCommitment, ExitSink, ScriptBytes, StandardSpk};
     pub use input::{
         execution_input::ExecutionInput, inputs::Inputs, payload::Payload, resource::Resource,
         transaction::Transaction,
@@ -85,8 +87,10 @@ pub mod transaction_processor {
             resource_commitment::InputResourceCommitment,
         },
         output::{
-            commitment::OutputCommitment, resource_commitment::OutputResourceCommitment,
-            resource_commitments::OutputResourceCommitments,
+            commitment::OutputCommitment, exit_commitment::ExitCommitment, exit_sink::ExitSink,
+            resource_commitment::OutputResourceCommitment,
+            resource_commitments::OutputResourceCommitments, script_bytes::ScriptBytes,
+            standard_spk::StandardSpk,
         },
     };
     pub use output::{outputs::Outputs, storage_op::StorageOp};
