@@ -11,7 +11,7 @@ use kaspa_seq_commit::{
 use kaspa_smt::proof::OwnedSmtProof;
 use tap::Tap;
 use vprogs_core_codec::Writer;
-use vprogs_core_smt::Blake3;
+use vprogs_core_hashing::Blake3;
 
 use crate::{
     Error,

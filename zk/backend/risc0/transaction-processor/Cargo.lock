@@ -1821,12 +1821,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "vprogs-core-smt"
+name = "vprogs-core-hashing"
 version = "0.1.0"
 dependencies = [
  "blake3",
+]
+
+[[package]]
+name = "vprogs-core-smt"
+version = "0.1.0"
+dependencies = [
  "tap",
  "vprogs-core-codec",
+ "vprogs-core-hashing",
  "vprogs-core-types",
  "zerocopy",
 ]
@@ -1859,6 +1866,7 @@ dependencies = [
  "tap",
  "thiserror",
  "vprogs-core-codec",
+ "vprogs-core-hashing",
  "vprogs-core-smt",
  "vprogs-core-types",
  "vprogs-l1-utils",
