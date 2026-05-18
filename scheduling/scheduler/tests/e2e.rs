@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use tempfile::TempDir;
-use vprogs_core_smt::{Blake3, EMPTY_HASH, Tree, proving::Proof};
+use vprogs_core_hashing::Blake3;
+use vprogs_core_smt::{EMPTY_HASH, Tree, proving::Proof};
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, Checkpoint, ResourceId, SchedulerTransaction};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};

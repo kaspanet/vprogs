@@ -1,5 +1,6 @@
 use tempfile::TempDir;
-use vprogs_core_smt::{Blake3, Commitment, EMPTY_HASH, Hasher, Key, Node, Tree, proving::Proof};
+use vprogs_core_hashing::{Blake3, Hasher};
+use vprogs_core_smt::{Commitment, EMPTY_HASH, Key, Node, Tree, proving::Proof};
 use vprogs_core_types::ResourceId;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_storage_types::Store;
@@ -9,7 +10,7 @@ use vprogs_storage_types::Store;
 /// Helper: commits a set of (key, value) pairs at the given version and returns the new root.
 fn commit(store: &RocksDbStore, version: u64, entries: &[(ResourceId, [u8; 32])]) -> [u8; 32] {
     let diffs =
-        entries.iter().map(|&(key, value)| Commitment::new(key, Blake3::hash(&value))).collect();
+        entries.iter().map(|&(key, value)| Commitment::new(key, Blake3::hash(value))).collect();
 
     let mut wb = store.write_batch();
     let root = store.update(&mut wb, diffs, version);
@@ -360,8 +361,8 @@ fn duplicate_commitments_last_write_wins() {
         &store,
         1,
         vec![
-            Commitment::new(key, Blake3::hash(&value_a)),
-            Commitment::new(key, Blake3::hash(&value_b)),
+            Commitment::new(key, Blake3::hash(value_a)),
+            Commitment::new(key, Blake3::hash(value_b)),
         ],
     );
 
