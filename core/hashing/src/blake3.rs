@@ -12,8 +12,10 @@ impl Hasher for Blake3 {
         domain: &[u8; N],
         parts: impl IntoIterator<Item = impl AsRef<[u8]>>,
     ) -> [u8; 32] {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(domain);
+        const { assert!(N <= 32, "BLAKE3 keyed-mode key is 32 bytes; domain must fit") };
+        let mut key = [0u8; 32];
+        key[..N].copy_from_slice(domain);
+        let mut hasher = blake3::Hasher::new_keyed(&key);
         for part in parts {
             hasher.update(part.as_ref());
         }
