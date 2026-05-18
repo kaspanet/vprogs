@@ -6,14 +6,6 @@
 
 extern crate alloc;
 
-pub mod hashing {
-    pub(crate) mod blake3;
-    pub(crate) mod hasher;
-
-    pub use blake3::Blake3;
-    pub use hasher::{EMPTY_HASH, Hasher};
-}
-
 pub mod proving {
     pub(crate) mod leaf;
     pub(crate) mod proof;
@@ -29,6 +21,7 @@ pub mod proving {
 }
 
 pub(crate) mod commitment;
+pub(crate) mod empty_hash;
 pub(crate) mod key;
 pub(crate) mod node;
 pub(crate) mod stale_node;
@@ -37,7 +30,7 @@ pub(crate) mod updater;
 pub(crate) mod write_batch;
 
 pub use commitment::Commitment;
-pub use hashing::{Blake3, EMPTY_HASH, Hasher};
+pub use empty_hash::EMPTY_HASH;
 pub use key::Key;
 pub use node::Node;
 pub use stale_node::StaleNode;

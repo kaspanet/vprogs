@@ -1,11 +1,12 @@
 use alloc::vec::Vec;
 
 use vprogs_core_codec::Result;
+use vprogs_core_hashing::Hasher;
 use vprogs_core_types::ResourceId;
 use zerocopy::little_endian::U32;
 
 use crate::{
-    Commitment, EMPTY_HASH, Hasher, Key, Node, WriteBatch, proving::ProofBuilder, updater::Updater,
+    Commitment, EMPTY_HASH, Key, Node, WriteBatch, proving::ProofBuilder, updater::Updater,
 };
 
 /// Number of levels in the tree (256-bit keys).

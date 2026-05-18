@@ -1,9 +1,10 @@
 use alloc::vec::Vec;
 
 use vprogs_core_codec::{Bits, Reader, Result};
+use vprogs_core_hashing::Hasher;
 
 use crate::{
-    Commitment, Hasher,
+    Commitment,
     proving::{Leaf, Traversal},
 };
 

@@ -1,6 +1,7 @@
 use vprogs_core_codec::{Bits, Error, Result};
+use vprogs_core_hashing::Hasher;
 
-use crate::{EMPTY_HASH, Hasher, Node, proving::Proof};
+use crate::{EMPTY_HASH, Node, proving::Proof};
 
 /// Mutable cursor state for recursive proof tree traversal.
 pub(crate) struct Traversal<'a, F> {
