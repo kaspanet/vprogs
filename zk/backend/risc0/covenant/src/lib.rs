@@ -19,10 +19,12 @@ pub mod settlement;
 
 pub use bootstrap::{Bootstrap, BootstrapInput};
 pub use script::{
-    REDEEM_PREFIX_LEN, RedeemPins, build_dev_redeem_script, build_redeem_script,
-    dev_redeem_script_len, redeem_script_len,
+    DEFAULT_PERMISSION_OUTPUT_VALUE, REDEEM_PREFIX_LEN, RedeemPins, build_dev_redeem_script,
+    build_redeem_script, dev_redeem_script_len, redeem_script_len,
 };
-pub use settlement::{Settlement, SettlementDevInput, SettlementInput, SuccinctWitness};
+pub use settlement::{
+    Settlement, SettlementDevInput, SettlementInput, SuccinctWitness, permission_spk,
+};
 pub use vprogs_zk_abi::batch_processor::StateTransition;
 
 /// Byte length of the settlement journal committed by the batch guest.

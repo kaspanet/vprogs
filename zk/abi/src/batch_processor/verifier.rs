@@ -15,7 +15,7 @@ use vprogs_core_smt::Blake3;
 
 use crate::{
     Error,
-    batch_processor::{Batch, Inputs, StateTransition},
+    batch_processor::{Batch, ExitAccumulator, Inputs, StateTransition},
     transaction_processor::{
         ErrorCode, InputResourceCommitment, JournalEntries, OutputCommitment,
         OutputResourceCommitment,
@@ -23,7 +23,11 @@ use crate::{
 };
 
 /// Verifies a bundle and accumulates its post-state.
-pub struct Verifier<'a, V: FnMut(&[u8; 32], &[u8])> {
+pub struct Verifier<'a, V, A>
+where
+    V: FnMut(&[u8; 32], &[u8]),
+    A: ExitAccumulator,
+{
     /// Decoded bundle inputs.
     inputs: Inputs<'a>,
     /// Lane tip entering the bundle (from the first batch's `prev_lane_tip`).
@@ -36,11 +40,17 @@ pub struct Verifier<'a, V: FnMut(&[u8; 32], &[u8])> {
     bundle_idx_to_leaf_pos: Vec<u32>,
     /// Verifies a tx journal against the configured transaction-processor image.
     verify_tx_journal: V,
+    /// Accumulates exits across the bundle.
+    exits: A,
 }
 
-impl<'a, V: FnMut(&[u8; 32], &[u8])> Verifier<'a, V> {
+impl<'a, V, A> Verifier<'a, V, A>
+where
+    V: FnMut(&[u8; 32], &[u8]),
+    A: ExitAccumulator,
+{
     /// Builds a `Verifier` for the bundle.
-    pub fn new(input_bytes: &'a [u8], verify_tx_journal: V) -> Self {
+    pub fn new(input_bytes: &'a [u8], verify_tx_journal: V, exits: A) -> Self {
         // Parse inputs and snapshot the bundle's pre-state from the first batch.
         let inputs = Inputs::decode(input_bytes).expect("decode bundle inputs");
         let first_batch = inputs.batches.first().unwrap();
@@ -68,6 +78,7 @@ impl<'a, V: FnMut(&[u8; 32], &[u8])> Verifier<'a, V> {
             latest_value_hashes: value_hashes,
             bundle_idx_to_leaf_pos,
             verify_tx_journal,
+            exits,
         }
     }
 
@@ -97,19 +108,22 @@ impl<'a, V: FnMut(&[u8; 32], &[u8])> Verifier<'a, V> {
         (lane_tip, lane_blue_score)
     }
 
-    /// Commits the bundle's settlement journal.
+    /// Commits the bundle's settlement journal. The accumulator's `finalize` is invoked to
+    /// produce the `permission_spk_hash` written into the [`StateTransition`].
     pub fn commit_state_transition(
         &self,
         journal: &mut impl Writer,
         lane_tip: &Hash,
         lane_blue_score: u64,
     ) {
+        let permission_spk_hash = self.exits.finalize();
         StateTransition::encode(
             journal,
             (&self.prev_root(), self.prev_lane_tip),
             (&self.new_root(), lane_tip, &self.new_seq_commit(lane_tip, lane_blue_score)),
             self.inputs.covenant_id,
             self.inputs.image_id,
+            &permission_spk_hash,
         );
     }
 
@@ -152,11 +166,21 @@ impl<'a, V: FnMut(&[u8; 32], &[u8])> Verifier<'a, V> {
                     // Executed txs MUST match the batch's context hash.
                     assert_eq!(exec_ctx.context_hash, context_hash, "context_hash does not match");
 
-                    // Determine produced state changes.
-                    let mut output_resources = match entries.output_commitment {
-                        OutputCommitment::Success(o) => Some(o),
-                        OutputCommitment::Error(_) => None,
+                    // Split successful output into exit and resource iterators.
+                    let (output_exits, mut output_resources) = match entries.output_commitment {
+                        OutputCommitment::Success { exits, resources } => {
+                            (Some(exits), Some(resources))
+                        }
+                        OutputCommitment::Error(_) => (None, None),
                     };
+
+                    // Dispatch exits in journal order before mutating resource state.
+                    if let Some(exits) = output_exits {
+                        for exit in exits {
+                            let (dest, amount) = exit.expect("decode exit entry");
+                            self.exits.add_exit(dest, amount);
+                        }
+                    }
 
                     // Verify and track state changes of touched resources.
                     for resource in exec_ctx.resources {
