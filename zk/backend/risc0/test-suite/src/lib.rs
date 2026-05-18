@@ -33,6 +33,24 @@ pub fn transaction_processor_elf() -> Vec<u8> {
     })
 }
 
+/// Loads the pre-built transaction-processor variant that emits one L2→L1 exit per tx.
+///
+/// Use this in tests that need to exercise the settlement covenant's `count == 2` branch:
+/// the resulting batch journal carries a non-zero `permission_spk_hash`, the host
+/// `Settlement::build` emits two covenant-bound outputs, and `TxScriptEngine` runs the
+/// permission-output validation path. See `settlement_e2e.rs` for the end-to-end test.
+pub fn transaction_processor_with_exits_elf() -> Vec<u8> {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let elf_path =
+        format!("{manifest_dir}/../transaction-processor-with-exits/compiled/program.elf");
+    std::fs::read(&elf_path).unwrap_or_else(|e| {
+        panic!(
+            "transaction-processor-with-exits ELF not found at {elf_path}: {e}\n\
+             Run `./zk/backend/risc0/build-guests.sh transaction-processor-with-exits` to rebuild it."
+        )
+    })
+}
+
 /// Loads the pre-built batch processor ELF from the repository.
 pub fn batch_processor_elf() -> Vec<u8> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");

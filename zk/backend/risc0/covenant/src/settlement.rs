@@ -1,24 +1,32 @@
 //! Host-side settlement transaction builder.
 //!
 //! Builds a Kaspa transaction that spends a covenant UTXO carrying
-//! `(prev_state, prev_lane_tip)` and creates a single continuation output pinned to
-//! `(new_state, new_lane_tip)`. The input's signature script provides the ZK-proof witness,
-//! the chain block hash whose sequencing commitment anchors `new_seq_commit`, and the advanced
-//! `(new_state, new_lane_tip)` pair the covenant script reconstructs into the next redeem
-//! prefix.
+//! `(prev_state, prev_lane_tip)` and creates a continuation output pinned to
+//! `(new_state, new_lane_tip)`. When the batch's `permission_spk_hash` is non-zero, the
+//! transaction additionally carries a second covenant-bound P2SH output committing to the
+//! permission tree (the L2→L1 exit anchor). The input's signature script provides the
+//! ZK-proof witness, the chain block hash whose sequencing commitment anchors
+//! `new_seq_commit`, and the advanced `(new_state, new_lane_tip)` pair the covenant script
+//! reconstructs into the next redeem prefix.
 //!
-//! The ZK receipt supplied here must have committed the 224-byte settlement journal defined
-//! by `StateTransition` in [`vprogs_zk_abi::batch_processor`]; this builder does not recompute
-//! or verify it.
+//! The ZK receipt supplied here must have committed the 256-byte settlement journal defined
+//! by `StateTransition` in [`vprogs_zk_abi::batch_processor`] (the final 32 bytes being
+//! `permission_spk_hash`); this builder does not recompute or verify it.
 
 use kaspa_consensus_core::{
-    constants::TX_VERSION_TOCCATA,
+    constants::{MAX_SCRIPT_PUBLIC_KEY_VERSION, TX_VERSION_TOCCATA},
     subnets::SUBNETWORK_ID_NATIVE,
-    tx::{CovenantBinding, Transaction, TransactionInput, TransactionOutpoint, TransactionOutput},
+    tx::{
+        CovenantBinding, ScriptPublicKey, Transaction, TransactionInput, TransactionOutpoint,
+        TransactionOutput,
+    },
 };
 use kaspa_hashes::Hash;
 use kaspa_txscript::{
-    EngineFlags, script_builder::ScriptBuilder, standard::pay_to_script_hash_script,
+    EngineFlags,
+    opcodes::codes::{OpBlake2b, OpData32, OpEqual},
+    script_builder::ScriptBuilder,
+    standard::pay_to_script_hash_script,
 };
 
 use crate::script::{
@@ -47,10 +55,16 @@ pub struct SettlementInput<'a> {
     pub block_prove_to: Hash,
     /// UTXO outpoint of the covenant being spent.
     pub prev_outpoint: TransactionOutpoint,
-    /// Value carried on the covenant UTXO (forwarded verbatim to the continuation output).
+    /// Value carried on the covenant UTXO. Split between continuation and permission outputs
+    /// when [`Self::permission_spk_hash`] is non-zero (see [`Settlement::build`]).
     pub value: u64,
     /// Risc0 succinct receipt witness bytes (see [`SuccinctWitness`]).
     pub witness: SuccinctWitness<'a>,
+    /// `blake2b(perm_redeem_script)` from the batch journal. Non-zero → [`Settlement::build`]
+    /// emits a second covenant-bound P2SH exit output of value
+    /// `pins.permission_output_value`. `[0; 32]` → single continuation output (no exits in
+    /// this batch).
+    pub permission_spk_hash: &'a [u8; 32],
 }
 
 /// Serialized pieces of a risc0 succinct receipt that the covenant script consumes as the ZK
@@ -80,6 +94,15 @@ pub struct Settlement {
 
 impl Settlement {
     /// Builds the settlement transaction for a single batch.
+    ///
+    /// Output layout (load-bearing - the in-script `verify_outputs_and_append_perm_hash` reads
+    /// output indices directly):
+    /// - **No exits** (`permission_spk_hash == [0; 32]`): one continuation output (index 0)
+    ///   carrying the full input value.
+    /// - **Exits** (`permission_spk_hash != [0; 32]`): two covenant-bound outputs:
+    ///   - index 0: continuation, value `input.value - pins.permission_output_value`.
+    ///   - index 1: permission exit, value `pins.permission_output_value`, SPK
+    ///     `permission_spk(input.permission_spk_hash)`.
     pub fn build(input: &SettlementInput<'_>) -> Self {
         let redeem_len = redeem_script_len(input.prev_state, &input.pins);
 
@@ -97,16 +120,41 @@ impl Settlement {
         );
 
         let tx_input = TransactionInput::new(input.prev_outpoint, sig_script, 0, 1);
-        let tx_output = TransactionOutput::with_covenant(
-            input.value,
-            pay_to_script_hash_script(&next_redeem),
-            Some(CovenantBinding::new(0, input.covenant_id)),
-        );
+
+        let outputs = if input.permission_spk_hash == &[0u8; 32] {
+            // No exits: single continuation output carrying the full covenant value.
+            vec![TransactionOutput::with_covenant(
+                input.value,
+                pay_to_script_hash_script(&next_redeem),
+                Some(CovenantBinding::new(0, input.covenant_id)),
+            )]
+        } else {
+            // Exits present: split the covenant value between the continuation (output 0) and
+            // the permission exit (output 1). Order is load-bearing - the script reads output 1
+            // by index.
+            let perm_value = input.pins.permission_output_value;
+            let continuation_value = input
+                .value
+                .checked_sub(perm_value)
+                .expect("covenant value must cover the permission output");
+            vec![
+                TransactionOutput::with_covenant(
+                    continuation_value,
+                    pay_to_script_hash_script(&next_redeem),
+                    Some(CovenantBinding::new(0, input.covenant_id)),
+                ),
+                TransactionOutput::with_covenant(
+                    perm_value,
+                    permission_spk(input.permission_spk_hash),
+                    Some(CovenantBinding::new(0, input.covenant_id)),
+                ),
+            ]
+        };
 
         let tx = Transaction::new(
             TX_VERSION_TOCCATA,
             vec![tx_input],
-            vec![tx_output],
+            outputs,
             0,
             SUBNETWORK_ID_NATIVE,
             0,
@@ -115,6 +163,21 @@ impl Settlement {
 
         Self { transaction: tx, prev_redeem, next_redeem }
     }
+}
+
+/// P2SH `ScriptPublicKey` committing to `script_hash`. Script bytes:
+/// `OpBlake2b | OpData32 | <hash 32> | OpEqual` (35B); version = `MAX_SCRIPT_PUBLIC_KEY_VERSION`.
+///
+/// `to_bytes()[4..36]` is exactly `script_hash` - this locks the byte layout the in-script
+/// rebuild (`verify_outputs_and_append_perm_hash`) depends on, so any change here must be
+/// mirrored in `script.rs`.
+pub fn permission_spk(script_hash: &[u8; 32]) -> ScriptPublicKey {
+    let mut script = Vec::with_capacity(35);
+    script.push(OpBlake2b);
+    script.push(OpData32);
+    script.extend_from_slice(script_hash);
+    script.push(OpEqual);
+    ScriptPublicKey::new(MAX_SCRIPT_PUBLIC_KEY_VERSION, script.into())
 }
 
 /// Inputs describing a single dev-mode settlement step. Mirrors [`SettlementInput`] but drops
@@ -268,19 +331,33 @@ mod tests {
     use kaspa_txscript::zk_precompiles::tags::ZkTag;
 
     use super::*;
-    use crate::script::RedeemPins;
+    use crate::script::{DEFAULT_PERMISSION_OUTPUT_VALUE, RedeemPins};
+
+    fn test_pins() -> RedeemPins<'static> {
+        RedeemPins {
+            program_id: &[0xBB; 32],
+            tx_image_id: &[0xCC; 32],
+            control_id: &[0xDD; 32],
+            hashfn: 1,
+            zk_tag: ZkTag::R0Succinct,
+            permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
+        }
+    }
+
+    fn test_witness() -> SuccinctWitness<'static> {
+        SuccinctWitness {
+            seal: &[0u8; 8],
+            claim: &[0u8; 32],
+            control_index: 0,
+            control_digests: &[0u8; 0],
+        }
+    }
 
     #[test]
     fn settlement_tx_has_single_covenant_output() {
         let input = SettlementInput {
             covenant_id: Hash::from_bytes([0xAA; 32]),
-            pins: RedeemPins {
-                program_id: &[0xBB; 32],
-                tx_image_id: &[0xCC; 32],
-                control_id: &[0xDD; 32],
-                hashfn: 1,
-                zk_tag: ZkTag::R0Succinct,
-            },
+            pins: test_pins(),
             prev_state: &[0x11; 32],
             prev_lane_tip: &Hash::from_bytes([0x22; 32]),
             new_state: &[0x33; 32],
@@ -288,12 +365,8 @@ mod tests {
             block_prove_to: Hash::from_bytes([0x55; 32]),
             prev_outpoint: TransactionOutpoint::new(Hash::from_bytes([0x66; 32]), 0),
             value: 100_000_000,
-            witness: SuccinctWitness {
-                seal: &[0u8; 8],
-                claim: &[0u8; 32],
-                control_index: 0,
-                control_digests: &[0u8; 0],
-            },
+            witness: test_witness(),
+            permission_spk_hash: &[0u8; 32],
         };
 
         let settlement = Settlement::build(&input);
@@ -311,6 +384,81 @@ mod tests {
             settlement.prev_redeem, settlement.next_redeem,
             "next redeem must embed advanced state",
         );
+    }
+
+    #[test]
+    fn settlement_tx_with_permission_hash_has_two_outputs() {
+        let perm_hash = [0x77u8; 32];
+        let value = 10 * DEFAULT_PERMISSION_OUTPUT_VALUE;
+        let input = SettlementInput {
+            covenant_id: Hash::from_bytes([0xAA; 32]),
+            pins: test_pins(),
+            prev_state: &[0x11; 32],
+            prev_lane_tip: &Hash::from_bytes([0x22; 32]),
+            new_state: &[0x33; 32],
+            new_lane_tip: &Hash::from_bytes([0x44; 32]),
+            block_prove_to: Hash::from_bytes([0x55; 32]),
+            prev_outpoint: TransactionOutpoint::new(Hash::from_bytes([0x66; 32]), 0),
+            value,
+            witness: test_witness(),
+            permission_spk_hash: &perm_hash,
+        };
+
+        let settlement = Settlement::build(&input);
+
+        assert_eq!(settlement.transaction.inputs.len(), 1);
+        assert_eq!(settlement.transaction.outputs.len(), 2);
+
+        // Output 0: continuation - carries `value - PERMISSION_OUTPUT_VALUE`, P2SH of next
+        // redeem, covenant binding `(0, covenant_id)`.
+        let continuation = &settlement.transaction.outputs[0];
+        assert_eq!(continuation.value, value - DEFAULT_PERMISSION_OUTPUT_VALUE);
+        assert_eq!(
+            continuation.script_public_key,
+            pay_to_script_hash_script(&settlement.next_redeem),
+            "output 0 must be P2SH of the next redeem",
+        );
+        assert_eq!(
+            continuation.covenant,
+            Some(CovenantBinding::new(0, Hash::from_bytes([0xAA; 32]))),
+        );
+
+        // Output 1: permission exit - fixed value, P2SH of `permission_spk_hash`, covenant
+        // binding `(0, covenant_id)`. The byte layout `to_bytes()[4..36] == perm_hash` is
+        // load-bearing for the in-script `OpTxOutputSpkSubstr` extraction.
+        let exit = &settlement.transaction.outputs[1];
+        assert_eq!(exit.value, DEFAULT_PERMISSION_OUTPUT_VALUE);
+        assert_eq!(exit.covenant, Some(CovenantBinding::new(0, Hash::from_bytes([0xAA; 32]))),);
+        assert_eq!(exit.script_public_key, permission_spk(&perm_hash));
+        // Lock the script byte layout the in-script rebuild depends on:
+        //   wire SPK: version(2) | OpBlake2b | OpData32 | hash(32) | OpEqual
+        //   .script() drops the version, so script()[2..34] is the 32-byte hash.
+        let script = exit.script_public_key.script();
+        assert_eq!(script.len(), 35, "P2SH script must be exactly 35 bytes");
+        assert_eq!(script[0], OpBlake2b);
+        assert_eq!(script[1], OpData32);
+        assert_eq!(&script[2..34], &perm_hash[..], "hash bytes must be at offset 2..34");
+        assert_eq!(script[34], OpEqual);
+    }
+
+    #[test]
+    #[should_panic(expected = "covenant value must cover the permission output")]
+    fn settlement_tx_panics_when_value_below_permission_output() {
+        let input = SettlementInput {
+            covenant_id: Hash::from_bytes([0xAA; 32]),
+            pins: test_pins(),
+            prev_state: &[0x11; 32],
+            prev_lane_tip: &Hash::from_bytes([0x22; 32]),
+            new_state: &[0x33; 32],
+            new_lane_tip: &Hash::from_bytes([0x44; 32]),
+            block_prove_to: Hash::from_bytes([0x55; 32]),
+            prev_outpoint: TransactionOutpoint::new(Hash::from_bytes([0x66; 32]), 0),
+            value: DEFAULT_PERMISSION_OUTPUT_VALUE - 1,
+            witness: test_witness(),
+            permission_spk_hash: &[0x77; 32],
+        };
+
+        let _ = Settlement::build(&input);
     }
 
     #[test]

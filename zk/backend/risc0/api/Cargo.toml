@@ -4,6 +4,7 @@ name    = "vprogs-zk-backend-risc0-api"
 version = "0.1.0"
 
 [features]
+cuda = ["risc0-zkvm/cuda"]
 default = ["std"]
 guest = ["dep:risc0-zkvm"]
 host = [
@@ -19,9 +20,10 @@ host = [
   "dep:vprogs-zk-vm",
 ]
 std = ["vprogs-zk-abi/std"]
-cuda = ["risc0-zkvm/cuda"]
 
 [dependencies]
+blake2b_simd      = { workspace = true }
+sha2              = { workspace = true, default-features = false }
 vprogs-core-codec = { workspace = true }
 vprogs-zk-abi     = { path = "../../../abi", default-features = false }
 
@@ -36,3 +38,7 @@ vprogs-zk-backend-risc0-covenant = { path = "../covenant", optional = true }
 vprogs-zk-batch-prover           = { path = "../../../batch-prover", optional = true }
 vprogs-zk-transaction-prover     = { path = "../../../transaction-prover", optional = true }
 vprogs-zk-vm                     = { path = "../../../vm", optional = true }
+
+# build-only — precomputes the permission-tree empty-subtree hash table (see build.rs)
+[build-dependencies]
+sha2 = { workspace = true }

@@ -17,6 +17,7 @@ default-members = [
 ]
 exclude = [
   "zk/backend/risc0/transaction-processor",
+  "zk/backend/risc0/transaction-processor-with-exits",
   "zk/backend/risc0/batch-processor",
 ]
 members = [
@@ -83,12 +84,14 @@ resolver = "3"
   secp256k1 = { version = "0.29.1", features = ["rand-std"] }
 
   # ZK dependencies
+  blake2b_simd = { version = "1.0.2", default-features = false }
   blake3 = { version = "1", default-features = false }
   risc0-zkvm = { version = "3.0", default-features = false }
   rkyv = { version = "0.8", default-features = false, features = [
     "alloc",
     "bytecheck",
   ] }
+  sha2 = { version = "0.10", default-features = false }
 
   # Kaspa dependencies — biryukovmaxim's branch carries PR #961 (the
   # `get_seq_commit_lane_proof` RPC) which we use for on-demand settlement-context

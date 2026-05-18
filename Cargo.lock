@@ -8845,9 +8845,11 @@ dependencies = [
 name = "vprogs-zk-backend-risc0-api"
 version = "0.1.0"
 dependencies = [
+ "blake2b_simd",
  "risc0-binfmt",
  "risc0-zkos-v1compat",
  "risc0-zkvm",
+ "sha2",
  "vprogs-core-codec",
  "vprogs-core-macros",
  "vprogs-zk-abi",
