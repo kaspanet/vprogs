@@ -166,9 +166,11 @@ where
                     // Executed txs MUST match the batch's context hash.
                     assert_eq!(exec_ctx.context_hash, context_hash, "context_hash does not match");
 
-                    // Split successful output into resource and exit iterators.
-                    let (mut output_resources, output_exits) = match entries.output_commitment {
-                        OutputCommitment::Success(o) => (Some(o.resources), Some(o.exits)),
+                    // Split successful output into exit and resource iterators.
+                    let (output_exits, mut output_resources) = match entries.output_commitment {
+                        OutputCommitment::Success { exits, resources } => {
+                            (Some(exits), Some(resources))
+                        }
                         OutputCommitment::Error(_) => (None, None),
                     };
 

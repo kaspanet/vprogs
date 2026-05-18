@@ -1,8 +1,9 @@
-use alloc::vec::Vec;
-
 use vprogs_core_codec::{Reader, Writer};
 
-use crate::{Result, transaction_processor::ErrorCode};
+use crate::{
+    Result,
+    transaction_processor::{ErrorCode, ScriptBytes},
+};
 
 mod tag {
     // TODO: reuse kaspa-addresses when it becomes no-std compatible
@@ -98,114 +99,6 @@ impl<'a> StandardSpk<'a> {
     }
 }
 
-/// On-chain script bytes for a `StandardSpk`. Variants own a fixed array sized to the script kind.
-#[derive(Clone, Copy, Debug)]
-pub enum ScriptBytes {
-    /// 34-byte P2PK Schnorr script.
-    Len34([u8; 34]),
-    /// 35-byte P2PK ECDSA or P2SH script.
-    Len35([u8; 35]),
-}
-
-impl ScriptBytes {
-    /// Returns the script bytes as a slice.
-    pub fn as_slice(&self) -> &[u8] {
-        match self {
-            Self::Len34(b) => b,
-            Self::Len35(b) => b,
-        }
-    }
-}
-
-impl AsRef<[u8]> for ScriptBytes {
-    fn as_ref(&self) -> &[u8] {
-        self.as_slice()
-    }
-}
-
-/// Accumulates exit emissions inside a single transaction's execution.
-///
-/// The ABI constructs one of these per `process_transaction` invocation, passes it as `&mut` to the
-/// transaction handler, and splices the buffered bytes into the journal's [`OutputCommitment`]
-/// after the handler returns.
-///
-/// [`OutputCommitment`]: crate::transaction_processor::OutputCommitment
-pub struct ExitSink {
-    /// Pre-encoded exit entries: each is `tag(u8) | payload | amount(u64 LE)`.
-    buf: Vec<u8>,
-}
-
-impl ExitSink {
-    /// Creates an empty sink.
-    pub(crate) fn new() -> Self {
-        Self { buf: Vec::new() }
-    }
-
-    /// Emits a single exit `(destination, amount)` into the sink's scratch buffer.
-    pub fn emit(&mut self, dest: StandardSpk<'_>, amount: u64) -> Result<()> {
-        dest.encode(&mut self.buf);
-        self.buf.extend_from_slice(&amount.to_le_bytes());
-        Ok(())
-    }
-
-    /// Returns the encoded entries as a byte slice for the journal.
-    pub(crate) fn as_bytes(&self) -> &[u8] {
-        &self.buf
-    }
-
-    /// Returns the encoded byte length of the buffered exit section.
-    pub fn len(&self) -> usize {
-        self.buf.len()
-    }
-
-    /// Returns `true` if no exits have been emitted.
-    pub fn is_empty(&self) -> bool {
-        self.buf.is_empty()
-    }
-}
-
-/// Zero-copy iterator over the per-tx exit section of an [`OutputCommitment::Success`].
-///
-/// Streams to EOF — entries are read until the underlying buffer is exhausted.
-///
-/// [`OutputCommitment::Success`]: crate::transaction_processor::OutputCommitment::Success
-#[derive(Clone, Copy)]
-pub struct ExitCommitment<'a> {
-    buf: &'a [u8],
-}
-
-impl<'a> ExitCommitment<'a> {
-    /// Creates a new iterator over the remaining bytes of the exit section.
-    pub fn new(buf: &'a [u8]) -> Self {
-        Self { buf }
-    }
-
-    /// Returns the raw remaining bytes (debug / round-trip aid).
-    pub fn as_bytes(&self) -> &'a [u8] {
-        self.buf
-    }
-
-    /// Returns `true` if no entries remain.
-    pub fn is_empty(&self) -> bool {
-        self.buf.is_empty()
-    }
-}
-
-impl<'a> Iterator for ExitCommitment<'a> {
-    type Item = Result<(StandardSpk<'a>, u64)>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.buf.is_empty() {
-            return None;
-        }
-        Some((|| {
-            let dest = StandardSpk::decode(&mut self.buf)?;
-            let amount = self.buf.le_u64("exit_amount")?;
-            Ok((dest, amount))
-        })())
-    }
-}
-
 #[cfg(feature = "host")]
 mod host {
     use kaspa_consensus_core::tx::ScriptPublicKey;
@@ -243,6 +136,8 @@ mod host {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
+
     use super::*;
     use crate::Error;
 
@@ -317,24 +212,5 @@ mod tests {
         assert_eq!(slice[1], op::DATA_32);
         assert_eq!(&slice[2..34], &h);
         assert_eq!(slice[34], op::EQUAL);
-    }
-
-    #[test]
-    fn exit_sink_emits_and_tracks_byte_len() {
-        let mut sink = ExitSink::new();
-        sink.emit(StandardSpk::PubKey(&[1; 32]), 100).unwrap();
-        sink.emit(StandardSpk::ScriptHash(&[2; 32]), 200).unwrap();
-        // Two entries: PubKey = tag(1) + key(32) + amount(8), ScriptHash = tag(1) + hash(32) +
-        // amount(8).
-        assert_eq!(sink.len(), 82);
-
-        let mut iter = ExitCommitment::new(sink.as_bytes());
-        let (dest, amount) = iter.next().unwrap().unwrap();
-        assert_eq!(dest, StandardSpk::PubKey(&[1; 32]));
-        assert_eq!(amount, 100);
-        let (dest, amount) = iter.next().unwrap().unwrap();
-        assert_eq!(dest, StandardSpk::ScriptHash(&[2; 32]));
-        assert_eq!(amount, 200);
-        assert!(iter.next().is_none());
     }
 }
