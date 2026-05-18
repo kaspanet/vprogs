@@ -16,6 +16,7 @@ use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_abi::{batch_processor::StateTransition, transaction_processor::JournalEntries};
 use vprogs_zk_backend_risc0_api::Backend;
+use vprogs_zk_backend_risc0_covenant::ZkTag;
 use vprogs_zk_backend_risc0_test_suite::{
     L1TransactionExt, batch_processor_elf, compute_section_lane_tip, dev_mode_enabled,
     transaction_processor_elf,
@@ -53,7 +54,7 @@ async fn batch_proof_two_transactions() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
 
-    let backend = Backend::new(&transaction_elf, &batch_elf);
+    let backend = Backend::new(&transaction_elf, &batch_elf, ZkTag::R0Succinct);
 
     let l1 = L1Node::new(None).await;
     // Mine a couple of blocks so we have real block hashes to anchor metadata against.
@@ -204,7 +205,7 @@ async fn batch_proof_bundle_of_two() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
 
-    let backend = Backend::new(&transaction_elf, &batch_elf);
+    let backend = Backend::new(&transaction_elf, &batch_elf, ZkTag::R0Succinct);
 
     let l1 = L1Node::new(None).await;
     let block_hashes = l1.mine_blocks(2).await;

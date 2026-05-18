@@ -6,6 +6,7 @@ use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::{DefaultConfig, RocksDbStore};
 use vprogs_zk_backend_risc0_api::Backend;
+use vprogs_zk_backend_risc0_covenant::ZkTag;
 use vprogs_zk_backend_risc0_test_suite::{
     L1TransactionExt, batch_processor_elf, transaction_processor_elf,
 };
@@ -14,7 +15,8 @@ use vprogs_zk_vm::{ProvingPipeline, Vm};
 #[test]
 fn test_zk_scheduler_e2e() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
-    let backend = Backend::new(&transaction_processor_elf(), &batch_processor_elf());
+    let backend =
+        Backend::new(&transaction_processor_elf(), &batch_processor_elf(), ZkTag::R0Succinct);
     let mut scheduler = Scheduler::new(
         ExecutionConfig::default()
             .with_processor(Vm::new(backend.clone(), ProvingPipeline::transaction(backend))),

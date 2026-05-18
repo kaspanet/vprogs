@@ -6,6 +6,7 @@ use risc0_zkvm::{
     Executor, ExecutorEnv, Prover, ProverOpts, Receipt, default_executor, default_prover,
 };
 use vprogs_core_macros::smart_pointer;
+use vprogs_zk_backend_risc0_covenant::ZkTag;
 
 thread_local! {
     static EXECUTOR: Rc<dyn Executor> = default_executor();
@@ -27,6 +28,12 @@ pub struct Backend {
     batch_elf: Vec<u8>,
     /// Batch processor guest image ID - the covenant script pins against this id.
     batch_image_id: [u8; 32],
+    /// Proof system the batch prover terminates in. Selects `ProverOpts::succinct()` vs
+    /// `ProverOpts::groth16()` and is exposed to host orchestration so the matching
+    /// covenant `RedeemPins` variant can be built. Transaction proving always uses succinct
+    /// regardless — inner tx receipts are folded into the batch as succinct assumptions; only
+    /// the outer batch receipt's kind varies.
+    zk_tag: ZkTag,
 }
 
 impl Backend {
@@ -34,7 +41,10 @@ impl Backend {
     ///
     /// Always wraps the provided ELFs with the trusted v1compat kernel to ensure
     /// only sanctioned syscalls are available to guest programs.
-    pub fn new(tx_processor_elf: &[u8], batch_elf: &[u8]) -> Self {
+    ///
+    /// `zk_tag` selects which proof system [`Self::prove_batch`] terminates in. The
+    /// transaction-proving path always uses risc0 succinct.
+    pub fn new(tx_processor_elf: &[u8], batch_elf: &[u8], zk_tag: ZkTag) -> Self {
         let tx_binary = ProgramBinary::new(tx_processor_elf, V1COMPAT_ELF);
         let tx_image_id = tx_binary.compute_image_id().expect("tx image id");
 
@@ -46,6 +56,7 @@ impl Backend {
             transaction_image_id: tx_image_id.as_bytes().try_into().unwrap(),
             batch_elf: batch_binary.encode(),
             batch_image_id: batch_image_id.as_bytes().try_into().unwrap(),
+            zk_tag,
         }))
     }
 
@@ -60,6 +71,12 @@ impl Backend {
     /// inner verifier.
     pub fn transaction_image_id(&self) -> &[u8; 32] {
         &self.transaction_image_id
+    }
+
+    /// Proof system this backend produces for batch receipts. Host orchestration uses this
+    /// to pick the matching covenant `RedeemPins` / `SettlementWitness` variants.
+    pub fn zk_tag(&self) -> ZkTag {
+        self.zk_tag
     }
 
     /// Cryptographically verifies a transaction-processor receipt against the trusted image id.
@@ -136,10 +153,13 @@ impl vprogs_zk_batch_prover::Backend for Backend {
 
         let env = builder.build().expect("failed to build batch prover environment");
 
+        let opts = match self.zk_tag {
+            ZkTag::R0Succinct => ProverOpts::succinct(),
+            ZkTag::Groth16 => ProverOpts::groth16(),
+        };
+
         future::ready(PROVER.with(|p| {
-            p.prove_with_opts(env, &self.batch_elf, &ProverOpts::succinct())
-                .expect("batch proving failed")
-                .receipt
+            p.prove_with_opts(env, &self.batch_elf, &opts).expect("batch proving failed").receipt
         }))
     }
 

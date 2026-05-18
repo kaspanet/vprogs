@@ -20,10 +20,13 @@ use vprogs_node_test_utils::L1Node;
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
-use vprogs_zk_backend_risc0_api::{Backend, OwnedSuccinctWitness, ScriptVerifierPins};
+use vprogs_zk_backend_risc0_api::{
+    Backend, OwnedGroth16Witness, OwnedSuccinctWitness, ScriptVerifierPins,
+};
 use vprogs_zk_backend_risc0_covenant::{
-    DEFAULT_PERMISSION_OUTPUT_VALUE, RedeemPins, Settlement, SettlementInput, StateTransition,
-    SuccinctWitness, build_redeem_script, permission_spk, redeem_script_len,
+    CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, Groth16Pins, RedeemPins, Settlement,
+    SettlementInput, SettlementWitness, StateTransition, SuccinctPins, SuccinctWitness,
+    build_redeem_script, permission_spk, redeem_script_len,
 };
 use vprogs_zk_backend_risc0_test_suite::{
     L1TransactionExt, batch_processor_elf, compute_section_lane_tip, dev_mode_enabled,
@@ -159,7 +162,7 @@ async fn batch_proof_is_directly_settleable_single_batch() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
 
-    let backend = Backend::new(&transaction_elf, &batch_elf);
+    let backend = Backend::new(&transaction_elf, &batch_elf, ZkTag::R0Succinct);
 
     let l1 = L1Node::new(None).await;
     let block_hashes = l1.mine_blocks(1).await;
@@ -245,14 +248,15 @@ async fn batch_proof_is_directly_settleable_single_batch() {
     } else {
         ScriptVerifierPins { control_id: [0u8; 32], hashfn: 0 }
     };
-    let pins = RedeemPins {
-        program_id: &program_id,
-        tx_image_id: &tx_image_id,
+    let pins = RedeemPins::Succinct(SuccinctPins {
+        common: CommonPins {
+            program_id: &program_id,
+            tx_image_id: &tx_image_id,
+            permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
+        },
         control_id: &verifier_pins.control_id,
         hashfn: verifier_pins.hashfn,
-        zk_tag: ZkTag::R0Succinct,
-        permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
-    };
+    });
     let settlement = Settlement::build(&SettlementInput {
         covenant_id: covenant_id_hash,
         pins,
@@ -263,12 +267,12 @@ async fn batch_proof_is_directly_settleable_single_batch() {
         block_prove_to: block_hashes[0],
         prev_outpoint: TransactionOutpoint::new(Hash::from_bytes([0xCD; 32]), 0),
         value: 100_000_000,
-        witness: SuccinctWitness {
+        witness: SettlementWitness::Succinct(SuccinctWitness {
             seal: &[0u8; 8],
             claim: &[0u8; 32],
             control_index: 0,
             control_digests: &[],
-        },
+        }),
         permission_spk_hash: &parsed.permission_spk_hash,
     });
     assert_settlement_structure(&settlement, parsed, &pins, covenant_id_hash);
@@ -278,6 +282,151 @@ async fn batch_proof_is_directly_settleable_single_batch() {
     // the settlement here with the actual receipt witness and feed it to the engine.
     if !dev_mode_enabled() {
         let owned = OwnedSuccinctWitness::from_receipt(&batch_receipt);
+        let real_settlement = Settlement::build(&SettlementInput {
+            covenant_id: covenant_id_hash,
+            pins,
+            prev_state: &parsed.prev_state,
+            prev_lane_tip: &parsed.prev_lane_tip,
+            new_state: &parsed.new_state,
+            new_lane_tip: &parsed.new_lane_tip,
+            block_prove_to: block_hashes[0],
+            prev_outpoint: TransactionOutpoint::new(Hash::from_bytes([0xCD; 32]), 0),
+            value: 100_000_000,
+            witness: owned.as_witness(),
+            permission_spk_hash: &parsed.permission_spk_hash,
+        });
+        let mut seq_commits = HashMap::new();
+        seq_commits.insert(block_hashes[0], parsed.new_seq_commit);
+        let accessor = MockSeqCommitAccessor(seq_commits);
+        verify_settlement_onchain(&real_settlement, covenant_id_hash, &accessor);
+    }
+
+    scheduler.shutdown();
+    l1.shutdown().await;
+}
+
+/// Groth16 mirror of [`batch_proof_is_directly_settleable_single_batch`]: the backend proves
+/// the bundle with `ProverOpts::groth16()`, the covenant redeem script uses the Groth16
+/// `OpZkPrecompile` branch, and the sig_script carries the compressed proof bytes instead of
+/// the succinct seal + control-inclusion-proof. In dev mode the proof is fake (only the
+/// structural pipeline is validated); in cuda mode `verify_settlement_onchain` runs the Kaspa
+/// script engine against a real Groth16 seal, exercising the in-script
+/// `compute_receipt_claim` / public-inputs layout / VK push end-to-end.
+#[tokio::test(flavor = "multi_thread")]
+async fn batch_proof_groth16_is_directly_settleable_single_batch() {
+    let transaction_elf = transaction_processor_elf();
+    let batch_elf = batch_processor_elf();
+
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+
+    let backend = Backend::new(&transaction_elf, &batch_elf, ZkTag::Groth16);
+
+    let l1 = L1Node::new(None).await;
+    let block_hashes = l1.mine_blocks(1).await;
+
+    let config =
+        BatchProverConfig { bundle_size: NonZeroUsize::new(1).unwrap(), lane_key: Hash::default() };
+
+    let proving =
+        ProvingPipeline::batch(backend.clone(), storage.clone(), l1.grpc_client().clone(), config);
+    let vm = Vm::new(backend.clone(), proving);
+
+    let mut scheduler = Scheduler::new(
+        ExecutionConfig::default().with_processor(vm),
+        StorageConfig::default().with_store(storage.clone()),
+    );
+
+    let metadata = metadata_for_block(&l1, block_hashes[0]).await;
+    let t_batch = Instant::now();
+    let batch = scheduler.schedule(
+        metadata,
+        vec![
+            L1Transaction::for_l2_test(
+                &[AccessMetadata::write(ResourceId::for_test(1))],
+                &[1, 2, 3],
+            )
+            .into_scheduler_tx(0),
+            L1Transaction::for_l2_test(
+                &[AccessMetadata::write(ResourceId::for_test(2))],
+                &[4, 5, 6],
+            )
+            .into_scheduler_tx(1),
+        ],
+    );
+
+    batch.wait_committed_blocking();
+    batch.wait_artifact_published_blocking();
+    eprintln!(
+        "[batch_proof_groth16_is_directly_settleable_single_batch] schedule->proven wall time: \
+         {:?}",
+        t_batch.elapsed()
+    );
+
+    // Inner tx receipts are always succinct (composed as assumptions into the outer Groth16
+    // batch receipt) — so the same verification path applies as in the succinct test.
+    if !dev_mode_enabled() {
+        for artifact in batch.tx_artifacts() {
+            backend.verify_transaction_receipt(&artifact);
+        }
+    }
+
+    let batch_receipt = (*batch.artifact()).clone();
+    if !dev_mode_enabled() {
+        backend.verify_batch_receipt(&batch_receipt);
+    }
+    let journal_bytes = Backend::journal_bytes(&batch_receipt);
+
+    assert_eq!(
+        journal_bytes.len(),
+        vprogs_zk_backend_risc0_covenant::JOURNAL_SIZE,
+        "batch journal must be exactly {} bytes",
+        vprogs_zk_backend_risc0_covenant::JOURNAL_SIZE,
+    );
+
+    let parsed = (&mut &journal_bytes[..]).array_as::<StateTransition>("state_transition").unwrap();
+    assert_eq!(parsed.covenant_id, [0u8; 32]);
+    assert_eq!(
+        parsed.prev_lane_tip,
+        Hash::default(),
+        "first section's prev_lane_tip is bundle's start",
+    );
+
+    let program_id = *backend.batch_image_id();
+    let tx_image_id = *backend.transaction_image_id();
+    assert_eq!(
+        parsed.tx_image_id, tx_image_id,
+        "guest must echo the host-supplied tx image id into the journal",
+    );
+    let covenant_id_hash = Hash::from_bytes(parsed.covenant_id);
+    let pins = RedeemPins::Groth16(Groth16Pins {
+        common: CommonPins {
+            program_id: &program_id,
+            tx_image_id: &tx_image_id,
+            permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
+        },
+    });
+    let settlement = Settlement::build(&SettlementInput {
+        covenant_id: covenant_id_hash,
+        pins,
+        prev_state: &parsed.prev_state,
+        prev_lane_tip: &parsed.prev_lane_tip,
+        new_state: &parsed.new_state,
+        new_lane_tip: &parsed.new_lane_tip,
+        block_prove_to: block_hashes[0],
+        prev_outpoint: TransactionOutpoint::new(Hash::from_bytes([0xCD; 32]), 0),
+        value: 100_000_000,
+        witness: SettlementWitness::Groth16 { compressed_proof: &[0u8; 8] },
+        permission_spk_hash: &parsed.permission_spk_hash,
+    });
+    assert_settlement_structure(&settlement, parsed, &pins, covenant_id_hash);
+
+    // Cuda-mode end-to-end: rebuild with the real compressed proof bytes and run the script
+    // engine. This is the load-bearing check that the Groth16 redeem branch (in-script
+    // receipt-claim recomputation + public-inputs layout + VK push) actually verifies a real
+    // seal.
+    if !dev_mode_enabled() {
+        let owned = OwnedGroth16Witness::from_receipt(&batch_receipt);
         let real_settlement = Settlement::build(&SettlementInput {
             covenant_id: covenant_id_hash,
             pins,
@@ -312,7 +461,7 @@ async fn batch_proof_bundles_two_batches() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
 
-    let backend = Backend::new(&transaction_elf, &batch_elf);
+    let backend = Backend::new(&transaction_elf, &batch_elf, ZkTag::R0Succinct);
 
     let l1 = L1Node::new(None).await;
     let block_hashes = l1.mine_blocks(2).await;
@@ -408,14 +557,15 @@ async fn batch_proof_bundles_two_batches() {
     } else {
         ScriptVerifierPins { control_id: [0u8; 32], hashfn: 0 }
     };
-    let pins = RedeemPins {
-        program_id: &program_id,
-        tx_image_id: &tx_image_id,
+    let pins = RedeemPins::Succinct(SuccinctPins {
+        common: CommonPins {
+            program_id: &program_id,
+            tx_image_id: &tx_image_id,
+            permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
+        },
         control_id: &verifier_pins.control_id,
         hashfn: verifier_pins.hashfn,
-        zk_tag: ZkTag::R0Succinct,
-        permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
-    };
+    });
     let settlement = Settlement::build(&SettlementInput {
         covenant_id: covenant_id_hash,
         pins,
@@ -427,12 +577,12 @@ async fn batch_proof_bundles_two_batches() {
         block_prove_to: block_hashes[1],
         prev_outpoint: TransactionOutpoint::new(Hash::from_bytes([0xCD; 32]), 0),
         value: 100_000_000,
-        witness: SuccinctWitness {
+        witness: SettlementWitness::Succinct(SuccinctWitness {
             seal: &[0u8; 8],
             claim: &[0u8; 32],
             control_index: 0,
             control_digests: &[],
-        },
+        }),
         permission_spk_hash: &parsed.permission_spk_hash,
     });
     assert_settlement_structure(&settlement, parsed, &pins, covenant_id_hash);
@@ -490,7 +640,7 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
 
-    let backend = Backend::new(&transaction_elf, &batch_elf);
+    let backend = Backend::new(&transaction_elf, &batch_elf, ZkTag::R0Succinct);
 
     let l1 = L1Node::new(None).await;
     let block_hashes = l1.mine_blocks(2).await;
@@ -586,14 +736,15 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
     } else {
         ScriptVerifierPins { control_id: [0u8; 32], hashfn: 0 }
     };
-    let pins = RedeemPins {
-        program_id: &program_id,
-        tx_image_id: &tx_image_id,
+    let pins = RedeemPins::Succinct(SuccinctPins {
+        common: CommonPins {
+            program_id: &program_id,
+            tx_image_id: &tx_image_id,
+            permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
+        },
         control_id: &verifier_pins.control_id,
         hashfn: verifier_pins.hashfn,
-        zk_tag: ZkTag::R0Succinct,
-        permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
-    };
+    });
 
     // Pick a value large enough to cover the permission output with headroom for the
     // continuation. (10x the permission output value keeps the continuation well above dust.)
@@ -609,12 +760,12 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
         block_prove_to: block_hashes[1],
         prev_outpoint: TransactionOutpoint::new(Hash::from_bytes([0xCD; 32]), 0),
         value: covenant_value,
-        witness: SuccinctWitness {
+        witness: SettlementWitness::Succinct(SuccinctWitness {
             seal: &[0u8; 8],
             claim: &[0u8; 32],
             control_index: 0,
             control_digests: &[],
-        },
+        }),
         permission_spk_hash: &parsed.permission_spk_hash,
     });
 
