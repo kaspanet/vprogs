@@ -19,7 +19,7 @@ pub trait Hasher {
     /// distinct domains produce distinct outputs for the same payload. Implementations stream
     /// the payload through the hasher's incremental API to avoid intermediate allocation.
     ///
-    /// Use this for domain-separated hashing — e.g. distinguishing leaf hashes from internal
+    /// Use this for domain-separated hashing, e.g. distinguishing leaf hashes from internal
     /// node hashes in a Merkle tree.
     fn hash_parts_with_domain<const N: usize>(
         domain: &[u8; N],

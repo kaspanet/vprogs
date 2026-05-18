@@ -5,3 +5,4 @@ version.workspace = true
 
 [dependencies]
 blake3 = { workspace = true }
+sha2   = { workspace = true }

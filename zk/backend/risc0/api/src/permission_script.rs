@@ -1,4 +1,4 @@
-//! Permission (exit) redeem script construction — `no_std`, byte-level.
+//! Permission (exit) redeem script construction (`no_std`, byte-level).
 //!
 //! [`PermissionTreeAccumulator`] commits a bundle's exits as the P2SH script-hash of a
 //! *permission redeem script*: a Kaspa script that, when an exit holder later spends the
@@ -6,13 +6,13 @@
 //! module builds that redeem script as raw bytes and hashes it to its P2SH script-hash.
 //!
 //! The build runs in the batch-processor guest, so it cannot use the host-only
-//! `kaspa-txscript::ScriptBuilder` — the [`PermRedeemScript`] extension trait emits the opcodes
+//! `kaspa-txscript::ScriptBuilder`; the [`PermRedeemScript`] extension trait emits the opcodes
 //! directly. The bytes are a port of rusty-kaspa's `zk-covenant-rollup` `permission_script.rs` /
 //! `p2sh.rs`; they must stay byte-identical to what the on-chain script engine and the
 //! host-side settlement builder produce.
 //!
 //! TODO(no_std-kaspa): once `kaspa-txscript` is `no_std`-compatible, replace this hand-rolled
-//! emission with its `ScriptBuilder` and `pay_to_script_hash_script` — that deletes the opcode
+//! emission with its `ScriptBuilder` and `pay_to_script_hash_script`; that deletes the opcode
 //! table and the `PermRedeemScript` encoders, and stops us drifting from the canonical script
 //! construction.
 //!
@@ -25,15 +25,15 @@ use alloc::vec::Vec;
 /// A delegate input is an extra funding UTXO locked under the same covenant that tops up a
 /// withdrawal payout beyond what the permission UTXO itself holds. The script unrolls a
 /// `1..=N` loop that inspects each candidate input, so this constant directly sizes the
-/// script — and, because the script hash is the on-chain commitment, it is a protocol
+/// script, and, because the script hash is the on-chain commitment, it is a protocol
 /// constant the guest (this code) and the host-side settlement builder must agree on.
 pub const MAX_DELEGATE_INPUTS: usize = 8;
 
 /// Maximum transaction outputs the permission script permits (the `OpTxOutputCount` ceiling).
 ///
-/// The script can emit up to three output kinds: output 0 — the withdrawal payout; output 1 —
-/// the P2SH continuation re-committing the still-unclaimed exits; and a delegate-change output
-/// at `1 + CovOutCount`. Four leaves one slot of headroom.
+/// The script can emit up to three output kinds: output 0 (the withdrawal payout); output 1
+/// (the P2SH continuation re-committing the still-unclaimed exits); and a delegate-change
+/// output at `1 + CovOutCount`. Four leaves one slot of headroom.
 const MAX_OUTPUTS: i64 = 4;
 
 const OP_FALSE: u8 = 0x00;
@@ -100,7 +100,7 @@ trait PermRedeemScript {
     const VERIFY_WITHDRAWAL_LEN: usize = 13;
     /// Byte count of `emit_compute_leaf_hashes`.
     const COMPUTE_LEAF_HASHES_LEN: usize = 64;
-    /// Byte count of `emit_verify_old_root`'s fixed tail — excludes the `depth` Merkle steps.
+    /// Byte count of `emit_verify_old_root`'s fixed tail (excludes the `depth` Merkle steps).
     const VERIFY_OLD_ROOT_TAIL_LEN: usize = 12;
     /// Byte count of `emit_compute_new_unclaimed`.
     const COMPUTE_NEW_UNCLAIMED_LEN: usize = 13;
@@ -110,21 +110,21 @@ trait PermRedeemScript {
     const VERIFY_DELEGATE_BALANCE_LEN: usize = 214;
     /// Byte count of `emit_trailer`.
     const TRAILER_LEN: usize = 3;
-    /// Byte count of `emit_merkle_step` — emitted `2 * depth` times across the two Merkle walks.
+    /// Byte count of `emit_merkle_step`, emitted `2 * depth` times across the two Merkle walks.
     const MERKLE_STEP_LEN: usize = 20;
 
     /// Bytes emitted for the one self-referential `push_i64(PREFIX_LEN - total_len)` in
     /// `emit_verify_outputs`.
     ///
     /// For every `depth` in `1..=PERM_MAX_DEPTH` the total script length lands in `[488, 1728]`,
-    /// so the pushed magnitude `total_len - 42` is in `[446, 1686]` — always two little-endian
+    /// so the pushed magnitude `total_len - 42` is in `[446, 1686]`, always two little-endian
     /// bytes with the high bit clear, so `push_i64` emits 1 length-prefix byte + 2 magnitude
     /// bytes = 3, with no sign byte. `embedded_length_push_is_three_bytes` proves this for every
     /// depth; past `PERM_MAX_DEPTH ≈ 800` the magnitude would need a sign byte and this constant
     /// (and that test) would have to change.
     const EMBEDDED_LEN_PUSH: usize = 3;
 
-    /// Depth-independent byte count of the redeem script — the sum of every fixed-size phase.
+    /// Depth-independent byte count of the redeem script, the sum of every fixed-size phase.
     const FIXED_LEN: usize = Self::PREFIX_LEN
         + Self::PHASE2_STASH_LEN
         + Self::VALIDATE_AMOUNTS_LEN
@@ -395,7 +395,7 @@ impl PermRedeemScript for Vec<u8> {
 
         self.push(OP_IF);
         {
-            // All exits claimed — no continuation output needed.
+            // All exits claimed: no continuation output needed.
             self.push(OP_DROP); // drop new_uncl_8b
             self.push(OP_DROP); // drop new_root
 
@@ -408,7 +408,7 @@ impl PermRedeemScript for Vec<u8> {
         }
         self.push(OP_ELSE);
         {
-            // Unclaimed exits remain — verify continuation at output 1.
+            // Unclaimed exits remain: verify continuation at output 1.
 
             // Build unclaimed part: [0x08 || new_uncl_8b].
             self.push_i64(8);
@@ -601,14 +601,14 @@ impl PermRedeemScript for Vec<u8> {
 /// `emit_verify_old_root` and `emit_compute_new_root` each emit `depth` Merkle steps, every
 /// other phase is fixed-size, and the one self-referential `push_i64` is a constant width over
 /// the supported depth range (see `PermRedeemScript::EMBEDDED_LEN_PUSH`). So the length is
-/// `FIXED_LEN + 2 * depth * MERKLE_STEP_LEN`, computable without building the script —
+/// `FIXED_LEN + 2 * depth * MERKLE_STEP_LEN`, computable without building the script;
 /// `build_permission_redeem_script` asserts the built script matches this.
 pub const fn perm_redeem_script_len(depth: usize) -> usize {
     <Vec<u8> as PermRedeemScript>::FIXED_LEN
         + 2 * depth * <Vec<u8> as PermRedeemScript>::MERKLE_STEP_LEN
 }
 
-/// Unkeyed blake2b-256 of a redeem script — its P2SH script-hash.
+/// Unkeyed blake2b-256 of a redeem script: its P2SH script-hash.
 ///
 /// Matches the hashing in `kaspa_txscript::pay_to_script_hash_script`.
 pub fn blake2b_script_hash(redeem_script: &[u8]) -> [u8; 32] {
@@ -622,7 +622,7 @@ pub fn blake2b_script_hash(redeem_script: &[u8]) -> [u8; 32] {
 ///
 /// The script embeds its own byte length (Phase 9 slices its own sig_script by it).
 /// [`perm_redeem_script_len`] gives that length in closed form from `depth`, so the script is
-/// built exactly once — the `assert_eq!` guards against the length formula drifting from the
+/// built exactly once; the `assert_eq!` guards against the length formula drifting from the
 /// bytes the builder actually emits.
 pub fn build_permission_redeem_script(
     root: &[u8; 32],
@@ -663,7 +663,9 @@ fn build_permission_redeem_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::permission_tree::PERM_MAX_DEPTH;
+    use crate::permission_tree::PermissionTreeAccumulator;
+
+    const PERM_MAX_DEPTH: usize = PermissionTreeAccumulator::MAX_DEPTH;
 
     // The length constants live on the (private) `PermRedeemScript` trait; alias the few the
     // tests touch.
@@ -687,7 +689,7 @@ mod tests {
     #[test]
     fn const_fn_length_matches_builder_for_all_depths() {
         // The closed-form length must equal the real builder's output for every depth the
-        // accumulator can produce — and must not depend on `root` or `unclaimed_count`.
+        // accumulator can produce, and must not depend on `root` or `unclaimed_count`.
         for depth in 1..=PERM_MAX_DEPTH {
             let expected = perm_redeem_script_len(depth);
             for (root, uc) in [([0u8; 32], 0u64), ([0xFFu8; 32], u64::MAX), ([0x5Au8; 32], 1)] {
@@ -712,7 +714,7 @@ mod tests {
 
     #[test]
     fn perm_redeem_script_len_is_const_evaluable() {
-        // Proves it is genuinely a `const fn` — usable in const context, the whole point.
+        // Proves it is genuinely a `const fn` (usable in const context, the whole point).
         const AT_MIN: usize = perm_redeem_script_len(1);
         const AT_MAX: usize = perm_redeem_script_len(PERM_MAX_DEPTH);
         assert_eq!(AT_MIN, 488);
@@ -761,8 +763,8 @@ mod tests {
 
     #[test]
     fn build_permission_redeem_script_spans_depth_range() {
-        // The two depths the accumulator clamps to — min (`required_depth` floor) and
-        // `PERM_MAX_DEPTH` — must build without tripping the internal length assert.
+        // The two depths the accumulator clamps to (`required_depth` floor at min and
+        // `PERM_MAX_DEPTH` at max) must build without tripping the internal length assert.
         for depth in [1, PERM_MAX_DEPTH] {
             let script = build_permission_redeem_script(&[0u8; 32], 0, depth);
             assert_eq!(script.len(), perm_redeem_script_len(depth));

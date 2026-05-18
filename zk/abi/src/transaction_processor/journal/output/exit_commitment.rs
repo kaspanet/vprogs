@@ -4,7 +4,7 @@ use crate::{Result, transaction_processor::StandardSpk};
 
 /// Zero-copy iterator over the per-tx exit section of an [`OutputCommitment::Success`].
 ///
-/// Streams to EOF — entries are read until the underlying buffer is exhausted.
+/// Streams to EOF; entries are read until the underlying buffer is exhausted.
 ///
 /// [`OutputCommitment::Success`]: crate::transaction_processor::OutputCommitment::Success
 #[derive(Clone, Copy)]

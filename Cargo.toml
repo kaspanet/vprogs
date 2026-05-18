@@ -120,6 +120,7 @@ resolver = "3"
   vprogs-core-codec                               = { path = "core/codec" }
   vprogs-core-hashing                             = { path = "core/hashing" }
   vprogs-core-macros                              = { path = "core/macros" }
+  vprogs-core-merkle-tree                         = { path = "core/merkle-tree" }
   vprogs-core-smt                                 = { path = "core/smt" }
   vprogs-core-test-utils                          = { path = "core/test-utils" }
   vprogs-core-types                               = { path = "core/types", default-features = false }

@@ -65,7 +65,7 @@ mod tests {
 
     /// Encodes a `Success` payload directly from raw resource commitments plus an exit blob.
     /// Mirrors what `OutputCommitment::encode` does in the success arm but operates on
-    /// pre-encoded resource bytes — useful for tests without a full `Resource` instance.
+    /// pre-encoded resource bytes, useful for tests without a full `Resource` instance.
     fn encode_success_raw(w: &mut Vec<u8>, exit_bytes: &[u8], resource_bytes: &[u8]) {
         w.write(&[OutputCommitment::SUCCESS]);
         w.write_blob(exit_bytes);

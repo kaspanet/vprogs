@@ -22,10 +22,11 @@ host = [
 std = ["vprogs-zk-abi/std"]
 
 [dependencies]
-blake2b_simd      = { workspace = true }
-sha2              = { workspace = true, default-features = false }
-vprogs-core-codec = { workspace = true }
-vprogs-zk-abi     = { path = "../../../abi", default-features = false }
+blake2b_simd            = { workspace = true }
+vprogs-core-codec       = { workspace = true }
+vprogs-core-hashing     = { workspace = true }
+vprogs-core-merkle-tree = { workspace = true }
+vprogs-zk-abi           = { path = "../../../abi", default-features = false }
 
 # guest-only
 risc0-zkvm = { version = "3.0", default-features = false, optional = true }
@@ -41,4 +42,5 @@ vprogs-zk-vm                     = { path = "../../../vm", optional = true }
 
 # build-only — precomputes the permission-tree empty-subtree hash table (see build.rs)
 [build-dependencies]
-sha2 = { workspace = true }
+vprogs-core-hashing     = { workspace = true }
+vprogs-core-merkle-tree = { workspace = true }
