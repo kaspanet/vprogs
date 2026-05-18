@@ -8356,6 +8356,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-core-hashing"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+]
+
+[[package]]
 name = "vprogs-core-macros"
 version = "0.1.0"
 dependencies = [
@@ -8368,10 +8375,10 @@ dependencies = [
 name = "vprogs-core-smt"
 version = "0.1.0"
 dependencies = [
- "blake3",
  "tap",
  "tempfile",
  "vprogs-core-codec",
+ "vprogs-core-hashing",
  "vprogs-core-types",
  "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
@@ -8554,6 +8561,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "vprogs-core-atomics",
+ "vprogs-core-hashing",
  "vprogs-core-macros",
  "vprogs-core-smt",
  "vprogs-core-test-utils",
@@ -8650,6 +8658,7 @@ dependencies = [
  "rocksdb",
  "tap",
  "vprogs-core-codec",
+ "vprogs-core-hashing",
  "vprogs-core-smt",
  "vprogs-storage-types",
 ]
@@ -8831,6 +8840,7 @@ dependencies = [
  "tap",
  "thiserror 2.0.18",
  "vprogs-core-codec",
+ "vprogs-core-hashing",
  "vprogs-core-smt",
  "vprogs-core-types",
  "vprogs-l1-types",

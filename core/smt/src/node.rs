@@ -1,10 +1,15 @@
 use alloc::vec::Vec;
 
-use tap::Tap;
 use vprogs_core_codec::{Error, Reader, Result};
+use vprogs_core_hashing::Hasher;
 use vprogs_core_types::ResourceId;
 
-use crate::{EMPTY_HASH, Hasher};
+use crate::EMPTY_HASH;
+
+/// Domain-separation and wire-format tag for [`Node::Internal`].
+const INTERNAL: u8 = 0x00;
+/// Domain-separation and wire-format tag for [`Node::Leaf`].
+const LEAF: u8 = 0x01;
 
 /// Data stored at a tree position.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -36,39 +41,31 @@ impl Node {
         Node::Leaf { key, value_hash, hash: Self::hash_leaf::<H>(&key, &value_hash) }
     }
 
-    /// Domain-separated hash of two child hashes (tag `0x00`).
+    /// Domain-separated hash of two child hashes.
     ///
     /// Returns `EMPTY_HASH` if both children are empty (subtree compression).
     pub fn hash_internal<H: Hasher>(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
         match (left, right) {
             (&EMPTY_HASH, &EMPTY_HASH) => EMPTY_HASH,
-            (left, right) => H::hash(&[0u8; 65].tap_mut(|buf| {
-                buf[0] = 0x00;
-                buf[1..33].copy_from_slice(left);
-                buf[33..65].copy_from_slice(right);
-            })),
+            (left, right) => H::hash_parts_with_domain(&[INTERNAL], [left, right]),
         }
     }
 
-    /// Domain-separated hash of a key and value hash (tag `0x01`).
+    /// Domain-separated hash of a key and value hash.
     ///
     /// Returns `EMPTY_HASH` for deletions (empty value hash).
     pub fn hash_leaf<H: Hasher>(key: &[u8; 32], value_hash: &[u8; 32]) -> [u8; 32] {
         match value_hash {
             &EMPTY_HASH => EMPTY_HASH,
-            value_hash => H::hash(&[0u8; 65].tap_mut(|buf| {
-                buf[0] = 0x01;
-                buf[1..33].copy_from_slice(key);
-                buf[33..65].copy_from_slice(value_hash);
-            })),
+            value_hash => H::hash_parts_with_domain(&[LEAF], [key, value_hash]),
         }
     }
 
     /// Deserializes from bytes produced by `encode`, advancing `buf` past the consumed bytes.
     pub fn decode(buf: &mut &[u8]) -> Result<Self> {
         match buf.byte("tag")? {
-            0x00 => Ok(Node::Internal { hash: *buf.array::<32>("hash")? }),
-            0x01 => Ok(Node::Leaf {
+            INTERNAL => Ok(Node::Internal { hash: *buf.array::<32>("hash")? }),
+            LEAF => Ok(Node::Leaf {
                 key: (*buf.array::<32>("key")?).into(),
                 value_hash: *buf.array::<32>("value_hash")?,
                 hash: *buf.array::<32>("hash")?,
@@ -87,15 +84,15 @@ impl Node {
 
     /// Serializes to bytes for storage.
     ///
-    /// Wire format: `tag(1) + fields`. Tag byte matches the domain separation prefix used in
-    /// hashing (`0x00` = internal, `0x01` = leaf).
+    /// Wire format: `tag(1) + fields`. The tag byte matches the domain separation prefix used in
+    /// hashing.
     pub fn encode(&self) -> Vec<u8> {
         match self {
-            // Internal: tag(0x00) + hash(32) = 33 bytes.
-            Node::Internal { hash } => [&[0x00], &hash[..]].concat(),
-            // Leaf: tag(0x01) + key(32) + value_hash(32) + hash(32) = 97 bytes.
+            // Internal: tag(1) + hash(32) = 33 bytes.
+            Node::Internal { hash } => [&[INTERNAL], &hash[..]].concat(),
+            // Leaf: tag(1) + key(32) + value_hash(32) + hash(32) = 97 bytes.
             Node::Leaf { key, value_hash, hash } => {
-                [&[0x01], &key[..], &value_hash[..], &hash[..]].concat()
+                [&[LEAF], &key[..], &value_hash[..], &hash[..]].concat()
             }
         }
     }

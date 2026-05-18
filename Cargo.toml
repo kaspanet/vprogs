@@ -118,6 +118,7 @@ resolver = "3"
   # Internal dependencies
   vprogs-core-atomics                             = { path = "core/atomics" }
   vprogs-core-codec                               = { path = "core/codec" }
+  vprogs-core-hashing                             = { path = "core/hashing" }
   vprogs-core-macros                              = { path = "core/macros" }
   vprogs-core-smt                                 = { path = "core/smt" }
   vprogs-core-test-utils                          = { path = "core/test-utils" }
