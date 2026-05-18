@@ -11,9 +11,10 @@ use std::time::Duration;
 use kaspa_consensus_core::{config::params::ForkActivation, tx::Transaction};
 use kaspa_hashes::Hash;
 use kaspa_rpc_core::api::rpc::RpcApi;
-use kaspa_txscript::{standard::pay_to_script_hash_script, zk_precompiles::tags::ZkTag};
+use kaspa_txscript::standard::pay_to_script_hash_script;
 use vprogs_core_smt::EMPTY_HASH;
 use vprogs_node_test_utils::L1Node;
+use vprogs_zk_backend_risc0_api::ProofType;
 use vprogs_zk_backend_risc0_covenant::{
     CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, RedeemPins, SuccinctPins, build_redeem_script,
     redeem_script_len,
@@ -40,7 +41,8 @@ async fn covenant_bootstrap_is_accepted_on_simnet() {
     // directly to the batch guest since it now emits the settlement journal itself.
     let tx_elf = transaction_processor_elf();
     let batch_elf = batch_processor_elf();
-    let backend = vprogs_zk_backend_risc0_api::Backend::new(&tx_elf, &batch_elf, ZkTag::R0Succinct);
+    let backend =
+        vprogs_zk_backend_risc0_api::Backend::new(&tx_elf, &batch_elf, ProofType::Succinct);
     let program_id = *backend.batch_image_id();
     let tx_image_id = *backend.transaction_image_id();
 

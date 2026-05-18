@@ -9,7 +9,7 @@ use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_txscript::{
     EngineFlags, TxScriptEngine, caches::Cache, covenants::CovenantsContext,
     engine_context::EngineContext, seq_commit_accessor::SeqCommitAccessor,
-    standard::pay_to_script_hash_script, zk_precompiles::tags::ZkTag,
+    standard::pay_to_script_hash_script,
 };
 use tempfile::TempDir;
 use vprogs_core_codec::Reader;
@@ -21,7 +21,7 @@ use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_backend_risc0_api::{
-    Backend, OwnedGroth16Witness, OwnedSuccinctWitness, ScriptVerifierPins,
+    Backend, OwnedGroth16Witness, OwnedSuccinctWitness, ProofType, ScriptVerifierPins,
 };
 use vprogs_zk_backend_risc0_covenant::{
     CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, Groth16Pins, RedeemPins, Settlement,
@@ -162,7 +162,7 @@ async fn batch_proof_is_directly_settleable_single_batch() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
 
-    let backend = Backend::new(&transaction_elf, &batch_elf, ZkTag::R0Succinct);
+    let backend = Backend::new(&transaction_elf, &batch_elf, ProofType::Succinct);
 
     let l1 = L1Node::new(None).await;
     let block_hashes = l1.mine_blocks(1).await;
@@ -320,7 +320,7 @@ async fn batch_proof_groth16_is_directly_settleable_single_batch() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
 
-    let backend = Backend::new(&transaction_elf, &batch_elf, ZkTag::Groth16);
+    let backend = Backend::new(&transaction_elf, &batch_elf, ProofType::Groth16);
 
     let l1 = L1Node::new(None).await;
     let block_hashes = l1.mine_blocks(1).await;
@@ -461,7 +461,7 @@ async fn batch_proof_bundles_two_batches() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
 
-    let backend = Backend::new(&transaction_elf, &batch_elf, ZkTag::R0Succinct);
+    let backend = Backend::new(&transaction_elf, &batch_elf, ProofType::Succinct);
 
     let l1 = L1Node::new(None).await;
     let block_hashes = l1.mine_blocks(2).await;
@@ -640,7 +640,7 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
 
-    let backend = Backend::new(&transaction_elf, &batch_elf, ZkTag::R0Succinct);
+    let backend = Backend::new(&transaction_elf, &batch_elf, ProofType::Succinct);
 
     let l1 = L1Node::new(None).await;
     let block_hashes = l1.mine_blocks(2).await;

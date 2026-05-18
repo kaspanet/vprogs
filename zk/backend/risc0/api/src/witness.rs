@@ -51,8 +51,8 @@ impl OwnedSuccinctWitness {
     ///
     /// Panics if the receipt isn't a succinct variant (we always prove tx receipts with
     /// `ProverOpts::succinct()` and batch receipts with `ProverOpts::succinct()` when the
-    /// backend's `zk_tag` is `R0Succinct`). That condition is a programmer error at this
-    /// layer.
+    /// backend's `settlement_proof_type` is `ProofType::Succinct`). That condition is a
+    /// programmer error at this layer.
     pub fn from_receipt(receipt: &Receipt) -> Self {
         let s = receipt.inner.succinct().expect("expected succinct receipt");
 
@@ -110,8 +110,9 @@ impl OwnedGroth16Witness {
     /// then reserializes the `Proof<Bn254>` in compressed form — the byte layout the
     /// in-script Groth16 verifier consumes.
     ///
-    /// Panics if the receipt isn't a Groth16 variant. That's a host-side wire-up bug
-    /// (the backend's `zk_tag` and the receipt's actual proof system are out of sync).
+    /// Panics if the receipt isn't a Groth16 variant. That's a host-side wire-up bug (the
+    /// backend's `settlement_proof_type` and the receipt's actual proof system are out of
+    /// sync).
     pub fn from_receipt(receipt: &Receipt) -> Self {
         let seal_bytes = receipt.inner.groth16().expect("expected groth16 receipt").seal.as_slice();
         let compressed_proof = seal_to_compressed_proof(seal_bytes);

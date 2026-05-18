@@ -4,6 +4,7 @@ extern crate alloc;
 
 mod permission_script;
 mod permission_tree;
+mod proof_type;
 
 #[cfg(feature = "host")]
 mod backend;
@@ -28,5 +29,6 @@ pub use permission_tree::{
     PERM_MAX_DEPTH, PermissionTreeAccumulator, StreamingPermTreeBuilder, perm_branch_hash,
     perm_leaf_hash, required_depth,
 };
+pub use proof_type::ProofType;
 #[cfg(feature = "host")]
 pub use witness::{OwnedGroth16Witness, OwnedSuccinctWitness, ScriptVerifierPins};
