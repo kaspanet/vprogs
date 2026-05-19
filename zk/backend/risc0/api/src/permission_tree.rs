@@ -13,8 +13,6 @@
 //! exit output's SPK via `pay_to_script_hash`. The `[0u8; 32]` result for an empty bundle keeps
 //! settlement in single-output mode (no exit output needed).
 //!
-//! [`StandardSpk`]: vprogs_zk_abi::transaction_processor::StandardSpk
-//! [`ExitAccumulator`]: vprogs_zk_abi::batch_processor::ExitAccumulator
 //! [`StateTransition::permission_spk_hash`]: vprogs_zk_abi::batch_processor::StateTransition::permission_spk_hash
 
 use vprogs_zk_abi::{batch_processor::ExitAccumulator, transaction_processor::StandardSpk};

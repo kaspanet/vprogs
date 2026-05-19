@@ -1,14 +1,20 @@
 ---
-name: cleanup-comments
-description: Final-pass comment cleanup on Rust files in this repo. Applies vprogs's doc/comment conventions (concise contracts, semantic-block inline notes, no em-dashes, no implementation leaks, no cross-file usage references). Use after finishing a feature, before opening a PR, or whenever a reviewer asks for a comment sweep.
+name: code-hygiene
+description: Final-pass code hygiene on Rust files in this repo. Applies vprogs's comment and small-scale code conventions (contract-first docs, semantic-block inline notes, no em-dashes, no implementation leaks, redundant-link / derive-substitution checks). Use after finishing a feature, before opening a PR, or whenever a reviewer asks for a cleanup pass.
 ---
 
-# Comment cleanup pass
+# Code hygiene pass
 
 Sweep the named files (or, if none given, the files touched in the current
-branch via `git diff --name-only main...HEAD`) for vprogs's comment
-conventions. The goal is a clean, contract-first comment surface that
-reviewers can scan without effort.
+branch via `git diff --name-only main...HEAD`) for vprogs's comment and
+small-scale code-shape conventions. The goal is a clean, contract-first
+surface that reviewers can scan without effort.
+
+The skill skews heavily toward comment hygiene (that's where most of the
+rules are), but also covers trivial code-shape wins that surface during the
+same read-through (e.g. a manual `Default` impl that could be `#[derive]`).
+Structural surgery (splitting files, renaming types across the codebase,
+moving items between modules) is OUT of scope; flag it, don't do it.
 
 ## Core principles
 
@@ -93,6 +99,52 @@ If a function `compute_X` has the algorithm in its doc, a const `X` (which
 is just the precomputed result) doesn't need to restate the algorithm —
 link to `compute_X` and let the doc-link do the work.
 
+### Drop redundant reference-style link definitions
+
+Rustdoc resolves `[`Name`]` in a doc comment from the surrounding scope.
+Anything brought in by a `use` statement at the top of the file is already
+in scope, so `[`Name`]` auto-resolves to it via the intra-doc shortcut.
+
+Adding `//! [`Name`]: full::path::Name` at the bottom of the file for such
+an item is redundant: there are now two declarations of the same target.
+That's both noise and a small ambiguity hazard — a reader sees the explicit
+definition and wonders whether it's pointing somewhere different from the
+`use`, or why the file felt the need to override the in-scope resolution.
+
+Keep reference-style definitions only for items that are NOT in scope and
+would be ugly inline (deep paths, paths used multiple times in the prose).
+For an out-of-scope item mentioned once, prefer the inline form
+`[`Name`](full::path::Name)`.
+
+**Before**:
+```rust
+//! Uses [`StandardSpk`] and [`ExitAccumulator`] and references
+//! [`StateTransition::permission_spk_hash`].
+
+use vprogs_zk_abi::{batch_processor::ExitAccumulator, transaction_processor::StandardSpk};
+
+// ... file body ...
+
+//! [`StandardSpk`]: vprogs_zk_abi::transaction_processor::StandardSpk
+//! [`ExitAccumulator`]: vprogs_zk_abi::batch_processor::ExitAccumulator
+//! [`StateTransition::permission_spk_hash`]: vprogs_zk_abi::batch_processor::StateTransition::permission_spk_hash
+```
+
+**After**:
+```rust
+//! Uses [`StandardSpk`] and [`ExitAccumulator`] and references
+//! [`StateTransition::permission_spk_hash`].
+
+use vprogs_zk_abi::{batch_processor::ExitAccumulator, transaction_processor::StandardSpk};
+
+// ... file body ...
+
+//! [`StateTransition::permission_spk_hash`]: vprogs_zk_abi::batch_processor::StateTransition::permission_spk_hash
+```
+
+Only the out-of-scope path survives; the two in-scope ones are dropped
+because the `use` already does the job.
+
 ### Don't over-specify when the abstraction is generic
 
 If a function delegates to a generic `Hasher`, the doc shouldn't claim a
@@ -168,6 +220,35 @@ multiple paragraphs.
 /// sentence; the formatter wraps it.
 pub fn foo() { ... }
 ```
+
+### Avoid widow words at wrap points
+
+After the formatter runs, scan multi-line doc/inline comments for *widows*:
+wraps where the last line holds only one or two short words ("`were added.`",
+"`runtime.`", "`as input.`"). They look untidy and can often be eliminated
+with a small rephrase — either tightening the sentence to fit on one line,
+or restructuring so the wrap lands at a more balanced point — **but only
+when the rephrase is natural**. If reworking the sentence to dodge the
+widow makes the prose awkward, loses precision, or drops a meaningful
+qualifier, leave the widow. Readability is the goal, not a strict
+line-count rule.
+
+**Before** (widow `were added.` on line 2):
+```
+/// Returns the permission tree's P2SH script-hash, or `[0u8; 32]` when no exits
+/// were added.
+```
+
+**After** (fits on one line, no meaning lost):
+```
+/// Returns the permission tree's P2SH script-hash, or `[0u8; 32]` if empty.
+```
+
+This is NOT a contradiction with "don't manually wrap doc-comment lines".
+You still write each sentence as one long source line and let the formatter
+wrap it; you just treat the formatter's output as feedback. If it wraps
+into a widow AND a natural rephrase exists, take the rephrase. Otherwise
+the formatter's wrap stands.
 
 ### Manual impls vs derives
 
