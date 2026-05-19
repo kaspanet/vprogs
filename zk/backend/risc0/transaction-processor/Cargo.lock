@@ -1825,6 +1825,14 @@ name = "vprogs-core-hashing"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "sha2",
+]
+
+[[package]]
+name = "vprogs-core-merkle-tree"
+version = "0.1.0"
+dependencies = [
+ "vprogs-core-hashing",
 ]
 
 [[package]]
@@ -1879,8 +1887,9 @@ version = "0.1.0"
 dependencies = [
  "blake2b_simd",
  "risc0-zkvm",
- "sha2",
  "vprogs-core-codec",
+ "vprogs-core-hashing",
+ "vprogs-core-merkle-tree",
  "vprogs-zk-abi",
 ]
 
