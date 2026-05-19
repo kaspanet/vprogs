@@ -35,15 +35,26 @@
 use kaspa_hashes::Hash;
 use kaspa_txscript::{
     opcodes::codes::{
-        Op0, OpAdd, OpBlake2b, OpCat, OpChainblockSeqCommit, OpCovOutputCount, OpCovOutputIdx,
-        OpData32, OpDrop, OpDup, OpElse, OpEndIf, OpEqual, OpEqualVerify, OpFromAltStack, OpIf,
-        OpInputCovenantId, OpNot, OpNumEqual, OpNumEqualVerify, OpSHA256, OpSwap, OpToAltStack,
-        OpTrue, OpTxInputIndex, OpTxInputScriptSigLen, OpTxInputScriptSigSubstr, OpTxOutputAmount,
-        OpTxOutputSpk, OpTxOutputSpkSubstr, OpVerify, OpZkPrecompile,
+        Op0, Op2Dup, OpAdd, OpBlake2b, OpCat, OpChainblockSeqCommit, OpCovOutputCount,
+        OpCovOutputIdx, OpData32, OpDiv, OpDrop, OpDup, OpElse, OpEndIf, OpEqual, OpEqualVerify,
+        OpFromAltStack, OpIf, OpInputCovenantId, OpMul, OpNot, OpNumEqual, OpNumEqualVerify, OpRot,
+        OpSHA256, OpSize, OpSubstr, OpSwap, OpToAltStack, OpTrue, OpTxInputIndex,
+        OpTxInputScriptSigLen, OpTxInputScriptSigSubstr, OpTxOutputAmount, OpTxOutputSpk,
+        OpTxOutputSpkSubstr, OpVerify, OpZkPrecompile,
     },
     script_builder::ScriptBuilder,
     zk_precompiles::tags::ZkTag,
 };
+
+/// Groth16 verifier-identity constants (compressed VK, control-root halves,
+/// bn254 control id, risc0 receipt-claim/output/post digests) baked at build
+/// time. Cross-tests in this file re-derive each constant from
+/// `risc0-groth16`/`risc0-zkvm` at runtime and assert byte-for-byte equality
+/// — so any risc0 release that shifts these values trips the test instead of
+/// silently breaking the on-chain Groth16 precompile.
+mod groth16_consts {
+    include!(concat!(env!("OUT_DIR"), "/groth16_consts.rs"));
+}
 
 /// Redeem script prefix size in bytes.
 ///
@@ -54,24 +65,17 @@ use kaspa_txscript::{
 /// ```
 pub const REDEEM_PREFIX_LEN: i64 = 66;
 
-/// Verifier-identity constants hardcoded into the redeem script body. Constant across all
-/// generations of a given covenant family; bundling them keeps the redeem-builder signature
-/// compact and documents that these values are part of the covenant SPK identity rather than
-/// per-spend witness data.
+/// Verifier-identity constants hardcoded into the redeem script body and shared by both proof
+/// systems. `program_id` and `tx_image_id` pin the verifier and the inner-transaction guest;
+/// `permission_output_value` pins the sompi value emitted on the permission-exit output.
 #[derive(Copy, Clone)]
-pub struct RedeemPins<'a> {
+pub struct CommonPins<'a> {
     /// Batch processor guest image id (the proof verifier's image_id pushed before
     /// `OpZkPrecompile`).
     pub program_id: &'a [u8; 32],
     /// Transaction processor guest image id, cat-ed into the journal preimage so the inner
     /// proof verifier identity is constrained on-chain.
     pub tx_image_id: &'a [u8; 32],
-    /// Risc0 succinct verifier control root (kaspa PR #957) pushed before `OpZkPrecompile`.
-    pub control_id: &'a [u8; 32],
-    /// Risc0 recursion hash function id (0 = blake2b, 1 = poseidon2, 2 = sha-256).
-    pub hashfn: u8,
-    /// Proof system tag selecting which precompile variant the script terminates in.
-    pub zk_tag: ZkTag,
     /// Sompi value the script enforces on the permission-exit output (output index 1) when the
     /// batch's `permission_spk_hash` is non-zero. Baked into the redeem script so this value is
     /// part of the covenant SPK identity; the host builder must emit exactly this value on
@@ -79,8 +83,56 @@ pub struct RedeemPins<'a> {
     pub permission_output_value: u64,
 }
 
+/// R0Succinct-specific pins: the recursion control root + hash function id that the
+/// `OpZkPrecompile` succinct variant consumes.
+#[derive(Copy, Clone)]
+pub struct SuccinctPins<'a> {
+    pub common: CommonPins<'a>,
+    /// Risc0 succinct verifier control root (kaspa PR #957) pushed before `OpZkPrecompile`.
+    pub control_id: &'a [u8; 32],
+    /// Risc0 recursion hash function id (0 = blake2b, 1 = poseidon2, 2 = sha-256).
+    pub hashfn: u8,
+}
+
+/// Groth16-specific pins. Groth16 verifier constants (compressed VK, control-root halves,
+/// bn254 control id, tag digests) are baked into the script body as build-time consts; no
+/// per-spend pin data beyond [`CommonPins`] is needed.
+#[derive(Copy, Clone)]
+pub struct Groth16Pins<'a> {
+    pub common: CommonPins<'a>,
+}
+
+/// Proof-system-tagged pins fed to [`build_redeem_script`]. The variant determines which
+/// `OpZkPrecompile` branch the redeem script terminates in (and thus which witness shape the
+/// host must produce — see [`crate::settlement::SettlementWitness`]).
+#[derive(Copy, Clone)]
+pub enum RedeemPins<'a> {
+    Succinct(SuccinctPins<'a>),
+    Groth16(Groth16Pins<'a>),
+}
+
+impl<'a> RedeemPins<'a> {
+    /// Shared verifier-identity fields. Use this when the journal-building / output-checking
+    /// helpers need fields that don't depend on the proof system.
+    pub fn common(&self) -> &CommonPins<'a> {
+        match self {
+            RedeemPins::Succinct(p) => &p.common,
+            RedeemPins::Groth16(p) => &p.common,
+        }
+    }
+
+    /// Wire-tag for the redeem script's terminal `OpZkPrecompile` (used by the host to pick
+    /// the matching witness shape and prover opts).
+    pub fn zk_tag(&self) -> ZkTag {
+        match self {
+            RedeemPins::Succinct(_) => ZkTag::R0Succinct,
+            RedeemPins::Groth16(_) => ZkTag::Groth16,
+        }
+    }
+}
+
 /// Default permission-exit output value (0.5 KAS). Bundles a sane default for typical
-/// deployments; per-covenant overrides go in [`RedeemPins::permission_output_value`].
+/// deployments; per-covenant overrides go in [`CommonPins::permission_output_value`].
 pub const DEFAULT_PERMISSION_OUTPUT_VALUE: u64 = 50_000_000;
 
 /// Builds the settlement redeem script for a covenant carrying the given
@@ -108,11 +160,11 @@ pub fn build_redeem_script(
     verify_output_spk(&mut b);
     build_and_hash_journal(&mut b, pins);
 
-    match pins.zk_tag {
-        ZkTag::R0Succinct => {
-            verify_risc0_succinct(&mut b, pins.program_id, pins.control_id, pins.hashfn)
+    match pins {
+        RedeemPins::Succinct(p) => {
+            verify_risc0_succinct(&mut b, p.common.program_id, p.control_id, p.hashfn)
         }
-        ZkTag::Groth16 => panic!("groth16 settlement not wired yet"),
+        RedeemPins::Groth16(p) => verify_risc0_groth16(&mut b, p.common.program_id),
     }
 
     verify_input_index_zero(&mut b);
@@ -403,7 +455,7 @@ fn build_and_hash_journal(b: &mut ScriptBuilder, pins: &RedeemPins<'_>) {
     b.add_op(OpCat).unwrap();
 
     // Append script-embedded tx_image_id → 224B preimage.
-    b.add_data(pins.tx_image_id).unwrap();
+    b.add_data(pins.common().tx_image_id).unwrap();
     b.add_op(OpCat).unwrap();
 
     // Branch on covenant output count: append permission_spk_hash (count == 2) or 32 zero
@@ -465,7 +517,7 @@ fn verify_outputs_and_append_perm_hash(b: &mut ScriptBuilder, pins: &RedeemPins<
         b.add_i64(1).unwrap();
         b.add_op(OpTxOutputAmount).unwrap();
         // Stack: [..., preimage224, out1_value]
-        b.add_i64(pins.permission_output_value as i64).unwrap();
+        b.add_i64(pins.common().permission_output_value as i64).unwrap();
         b.add_op(OpEqualVerify).unwrap();
         // Stack: [..., preimage224]
 
@@ -584,37 +636,216 @@ fn verify_risc0_succinct(
     b.add_op(OpVerify).unwrap();
 }
 
+/// Emits the risc0 Groth16 verification.
+///
+/// Stack arriving here (bot→top):
+/// `[..., compressed_proof, journal_hash]`
+///
+/// Pushes `image_id` from the script body, recomputes the risc0 receipt-claim hash on-stack
+/// from `(journal_hash, image_id)`, lays out the 5 Groth16 public inputs in the precompile's
+/// pop order (id, claim_left_padded, claim_right_padded, control_root_a1, control_root_a0),
+/// then pushes the public-input count, the proof bytes (recovered from alt stack), the
+/// compressed verifying key, and the Groth16 tag byte before `OpZkPrecompile`.
+///
+/// The verifier-identity constants (compressed VK, control-root halves, bn254 control id, the
+/// three receipt-tag digests) are baked into the script body via build.rs. See
+/// [`groth16_consts`] and the cross-tests in this file.
+fn verify_risc0_groth16(b: &mut ScriptBuilder, image_id: &[u8; 32]) {
+    use groth16_consts::*;
+
+    // Stack: [..., compressed_proof, journal_hash]
+    b.add_data(image_id).unwrap();
+    // Stack: [..., compressed_proof, journal_hash, image_id]
+
+    // Move proof to alt stack.
+    b.add_op(OpRot).unwrap();
+    // Stack: [..., journal_hash, image_id, compressed_proof]
+    b.add_op(OpToAltStack).unwrap();
+    // Stack: [..., journal_hash, image_id]  alt: [..., compressed_proof]
+
+    // Compute receipt_claim hash from (journal_hash, image_id) on-stack.
+    compute_receipt_claim(b);
+    // Stack: [..., receipt_claim_hash]  alt: [..., compressed_proof]
+
+    // Public inputs are popped by the precompile as
+    // `[a0, a1, claim_right_padded, claim_left_padded, id_bn254_fr]`; push in reverse so the
+    // ordering is correct top→bottom.
+    b.add_op(OpToAltStack).unwrap();
+    // Stack: [...]  alt: [..., compressed_proof, receipt_claim_hash]
+
+    b.add_data(&GROTH16_BN254_CONTROL_ID).unwrap();
+    // Stack: [..., id]
+
+    b.add_op(OpFromAltStack).unwrap();
+    // Stack: [..., id, receipt_claim_hash]  alt: [..., compressed_proof]
+
+    split_at_mid(b);
+    // Stack: [..., id, claim_left, claim_right]
+
+    // Right-pad claim_right (top) to 32 bytes.
+    b.add_data(&[0u8; 16]).unwrap();
+    b.add_op(OpCat).unwrap();
+    // Stack: [..., id, claim_left, claim_right_padded]
+
+    // Pad claim_left in the same way.
+    b.add_op(OpSwap).unwrap();
+    b.add_data(&[0u8; 16]).unwrap();
+    b.add_op(OpCat).unwrap();
+    // Stack: [..., id, claim_right_padded, claim_left_padded]
+
+    // Control-root halves.
+    b.add_data(&GROTH16_CONTROL_ROOT_A1).unwrap();
+    b.add_data(&GROTH16_CONTROL_ROOT_A0).unwrap();
+    // Stack: [..., id, c1, c0, a1, a0]
+
+    // Public-input count.
+    b.add_i64(GROTH16_PUBLIC_INPUT_COUNT as i64).unwrap();
+    // Stack: [..., id, c1, c0, a1, a0, 5]
+
+    // Recover proof from alt stack.
+    b.add_op(OpFromAltStack).unwrap();
+    // Stack: [..., id, c1, c0, a1, a0, 5, compressed_proof]
+
+    // Verifying key.
+    b.add_data(GROTH16_VK_COMPRESSED).unwrap();
+    // Stack: [..., 5, compressed_proof, vk]
+
+    // ZkTag byte + precompile + verify.
+    b.add_data(&[ZkTag::Groth16 as u8]).unwrap();
+    b.add_op(OpZkPrecompile).unwrap();
+    b.add_op(OpVerify).unwrap();
+}
+
+/// Number of public inputs the risc0 Groth16 verifier consumes (id_bn254_fr,
+/// claim_left_padded, claim_right_padded, control_root_a1, control_root_a0). See
+/// `risc0-groth16` reference impl.
+const GROTH16_PUBLIC_INPUT_COUNT: usize = 5;
+
+/// Inlines the risc0 receipt-claim hash computation. Mirrors
+/// `examples/zk-covenant-common/src/groth16.rs::compute_receipt_claim` field-for-field; the
+/// preimage layout is risc0's canonical `ReceiptClaim` encoding.
+///
+/// Stack precondition: `[..., journal_hash, image_id]`
+/// Stack postcondition: `[..., receipt_claim_hash]`
+fn compute_receipt_claim(b: &mut ScriptBuilder) {
+    use groth16_consts::*;
+
+    // --- output_digest = SHA256(OUTPUT_TAG || journal_hash || zeros32 || 2u16_le) ---
+    b.add_op(OpToAltStack).unwrap();
+    // Stack: [..., journal_hash]  alt: [..., image_id]
+    b.add_data(&OUTPUT_TAG_DIGEST).unwrap();
+    b.add_op(OpSwap).unwrap();
+    b.add_op(OpCat).unwrap();
+    // Stack: [..., OUTPUT_TAG || journal_hash]  (64B)
+    b.add_data(&[0u8; 32]).unwrap();
+    b.add_op(OpCat).unwrap();
+    // Stack: [..., OUTPUT_TAG || journal_hash || zeros32]  (96B)
+    b.add_data(&2u16.to_le_bytes()).unwrap();
+    b.add_op(OpCat).unwrap();
+    // Stack: [..., 98B-preimage]
+    b.add_op(OpSHA256).unwrap();
+    // Stack: [..., output_digest]  alt: [..., image_id]
+
+    // --- receipt_claim = SHA256(RC_TAG || zeros32 || image_id || POST || output_digest ||
+    // trailer10) ---
+    b.add_data(&RECEIPT_CLAIM_TAG_DIGEST).unwrap();
+    b.add_data(&[0u8; 32]).unwrap();
+    b.add_op(OpCat).unwrap();
+    // Stack: [..., output_digest, RC_TAG || zeros32]  (64B partial)
+    b.add_op(OpFromAltStack).unwrap();
+    b.add_op(OpCat).unwrap();
+    // Stack: [..., output_digest, RC_TAG || zeros32 || image_id]  (96B)
+    b.add_data(&POST_DIGEST).unwrap();
+    b.add_op(OpCat).unwrap();
+    // Stack: [..., output_digest, RC_TAG || zeros32 || image_id || POST]  (128B)
+    b.add_op(OpSwap).unwrap();
+    b.add_op(OpCat).unwrap();
+    // Stack: [..., RC_TAG || ... || POST || output_digest]  (160B)
+    b.add_data(&[0u8, 0, 0, 0, 0, 0, 0, 0, 4, 0]).unwrap();
+    b.add_op(OpCat).unwrap();
+    // Stack: [..., 170B receipt_claim preimage]
+    b.add_op(OpSHA256).unwrap();
+    // Stack: [..., receipt_claim_hash]
+}
+
+/// Splits the top-of-stack byte array at its midpoint. Mirrors
+/// `examples/zk-covenant-common/src/script_ext.rs::split_at_mid`.
+///
+/// Stack precondition: `[..., byte_array]`
+/// Stack postcondition: `[..., first_half, second_half]`
+fn split_at_mid(b: &mut ScriptBuilder) {
+    b.add_op(OpSize).unwrap();
+    b.add_i64(2).unwrap();
+    b.add_op(OpDiv).unwrap();
+    b.add_op(Op2Dup).unwrap();
+    b.add_i64(0).unwrap();
+    b.add_op(OpSwap).unwrap();
+    b.add_op(OpSubstr).unwrap();
+    b.add_op(OpRot).unwrap();
+    b.add_op(OpRot).unwrap();
+    b.add_op(OpDup).unwrap();
+    b.add_i64(2).unwrap();
+    b.add_op(OpMul).unwrap();
+    b.add_op(OpSubstr).unwrap();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn test_pins<'a>(
-        program_id: &'a [u8; 32],
-        tx_image_id: &'a [u8; 32],
-        control_id: &'a [u8; 32],
-    ) -> RedeemPins<'a> {
-        RedeemPins {
+    fn common_pins<'a>(program_id: &'a [u8; 32], tx_image_id: &'a [u8; 32]) -> CommonPins<'a> {
+        CommonPins {
             program_id,
             tx_image_id,
-            control_id,
-            hashfn: 1,
-            zk_tag: ZkTag::R0Succinct,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         }
     }
 
+    fn succinct_pins<'a>(
+        program_id: &'a [u8; 32],
+        tx_image_id: &'a [u8; 32],
+        control_id: &'a [u8; 32],
+    ) -> RedeemPins<'a> {
+        RedeemPins::Succinct(SuccinctPins {
+            common: common_pins(program_id, tx_image_id),
+            control_id,
+            hashfn: 1,
+        })
+    }
+
+    fn groth16_pins<'a>(program_id: &'a [u8; 32], tx_image_id: &'a [u8; 32]) -> RedeemPins<'a> {
+        RedeemPins::Groth16(Groth16Pins { common: common_pins(program_id, tx_image_id) })
+    }
+
     #[test]
-    fn redeem_script_length_converges() {
+    fn redeem_script_length_converges_succinct() {
         let state = [0u8; 32];
-        let pins = test_pins(&[1u8; 32], &[2u8; 32], &[3u8; 32]);
+        let pins = succinct_pins(&[1u8; 32], &[2u8; 32], &[3u8; 32]);
         let len = redeem_script_len(&state, &pins);
         let built = build_redeem_script(&state, &Hash::default(), len, &pins);
         assert_eq!(built.len() as i64, len, "self-referential length must match");
     }
 
     #[test]
-    fn redeem_script_length_stable_across_values() {
-        let pins = test_pins(&[1u8; 32], &[2u8; 32], &[3u8; 32]);
+    fn redeem_script_length_converges_groth16() {
+        let state = [0u8; 32];
+        let pins = groth16_pins(&[1u8; 32], &[2u8; 32]);
+        let len = redeem_script_len(&state, &pins);
+        let built = build_redeem_script(&state, &Hash::default(), len, &pins);
+        assert_eq!(built.len() as i64, len, "self-referential length must match");
+    }
+
+    #[test]
+    fn redeem_script_length_stable_across_values_succinct() {
+        let pins = succinct_pins(&[1u8; 32], &[2u8; 32], &[3u8; 32]);
+        let a = redeem_script_len(&[0u8; 32], &pins);
+        let b = redeem_script_len(&[0xffu8; 32], &pins);
+        assert_eq!(a, b, "length must not depend on prev state");
+    }
+
+    #[test]
+    fn redeem_script_length_stable_across_values_groth16() {
+        let pins = groth16_pins(&[1u8; 32], &[2u8; 32]);
         let a = redeem_script_len(&[0u8; 32], &pins);
         let b = redeem_script_len(&[0xffu8; 32], &pins);
         assert_eq!(a, b, "length must not depend on prev state");
@@ -629,14 +860,122 @@ mod tests {
     }
 
     #[test]
-    fn dev_redeem_script_distinct_from_prod() {
+    fn dev_redeem_script_distinct_from_prod_succinct() {
         let state = [0u8; 32];
-        let pins = test_pins(&[1u8; 32], &[2u8; 32], &[3u8; 32]);
+        let pins = succinct_pins(&[1u8; 32], &[2u8; 32], &[3u8; 32]);
         let prod_len = redeem_script_len(&state, &pins);
         let prod = build_redeem_script(&state, &Hash::default(), prod_len, &pins);
         let dev_len = dev_redeem_script_len(&state);
         let dev = build_dev_redeem_script(&state, &Hash::default(), dev_len);
         assert_ne!(prod, dev, "dev and prod scripts must differ");
         assert!(dev.len() < prod.len(), "dev script should be shorter (no journal/zk verify)");
+    }
+
+    #[test]
+    fn dev_redeem_script_distinct_from_prod_groth16() {
+        let state = [0u8; 32];
+        let pins = groth16_pins(&[1u8; 32], &[2u8; 32]);
+        let prod_len = redeem_script_len(&state, &pins);
+        let prod = build_redeem_script(&state, &Hash::default(), prod_len, &pins);
+        let dev_len = dev_redeem_script_len(&state);
+        let dev = build_dev_redeem_script(&state, &Hash::default(), dev_len);
+        assert_ne!(prod, dev, "dev and prod scripts must differ");
+        assert!(dev.len() < prod.len(), "dev script should be shorter (no journal/zk verify)");
+    }
+
+    #[test]
+    fn succinct_and_groth16_redeem_scripts_differ() {
+        let state = [0u8; 32];
+        let s = succinct_pins(&[1u8; 32], &[2u8; 32], &[3u8; 32]);
+        let g = groth16_pins(&[1u8; 32], &[2u8; 32]);
+        let s_len = redeem_script_len(&state, &s);
+        let g_len = redeem_script_len(&state, &g);
+        let s_script = build_redeem_script(&state, &Hash::default(), s_len, &s);
+        let g_script = build_redeem_script(&state, &Hash::default(), g_len, &g);
+        assert_ne!(s_script, g_script, "succinct and groth16 redeem scripts must differ");
+    }
+
+    /// Cross-test: every constant baked into `groth16_consts` by build.rs must equal what the
+    /// live `risc0-groth16` / `risc0-zkvm` libraries produce at runtime. If risc0 rolls a new
+    /// verifying key or shifts a tag digest, this test trips before the on-chain Groth16
+    /// precompile silently breaks.
+    mod groth16_consts_cross_check {
+        use ark_bn254::Bn254;
+        use ark_groth16::VerifyingKey;
+        use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+        use risc0_zkvm::{
+            Groth16ReceiptVerifierParameters, SystemState,
+            sha::{Digest, Digestible},
+        };
+        use sha2::{Digest as _, Sha256};
+
+        use super::super::groth16_consts::*;
+
+        fn runtime_vk_compressed() -> Vec<u8> {
+            let vk_risc0 = risc0_groth16::verifying_key();
+            let vk_bytes_prefixed_with_len = bincode::serialize(&vk_risc0).unwrap();
+            let vk = VerifyingKey::<Bn254>::deserialize_uncompressed(
+                &mut &vk_bytes_prefixed_with_len[8..],
+            )
+            .unwrap();
+            let mut out = Vec::new();
+            vk.serialize_compressed(&mut out).unwrap();
+            out
+        }
+
+        fn split_digest(d: Digest) -> ([u8; 32], [u8; 32]) {
+            const MID: usize = core::mem::size_of::<Digest>() / 2;
+            let (first, second) = d.as_bytes().split_at(MID);
+            let pad = |slice: &[u8]| {
+                let mut scalar = [0u8; 32];
+                scalar[..MID].copy_from_slice(slice);
+                scalar
+            };
+            (pad(first), pad(second))
+        }
+
+        fn sha256_of(input: &[u8]) -> [u8; 32] {
+            let mut hasher = Sha256::new();
+            hasher.update(input);
+            hasher.finalize().into()
+        }
+
+        #[test]
+        fn vk_compressed_matches_risc0() {
+            assert_eq!(GROTH16_VK_COMPRESSED, runtime_vk_compressed().as_slice());
+        }
+
+        #[test]
+        fn bn254_control_id_matches_risc0() {
+            let id: [u8; 32] = Groth16ReceiptVerifierParameters::default().bn254_control_id.into();
+            assert_eq!(GROTH16_BN254_CONTROL_ID, id);
+        }
+
+        #[test]
+        fn control_root_halves_match_risc0() {
+            let (a0, a1) = split_digest(Groth16ReceiptVerifierParameters::default().control_root);
+            assert_eq!(GROTH16_CONTROL_ROOT_A0, a0);
+            assert_eq!(GROTH16_CONTROL_ROOT_A1, a1);
+        }
+
+        #[test]
+        fn receipt_claim_tag_matches_sha256() {
+            assert_eq!(RECEIPT_CLAIM_TAG_DIGEST, sha256_of(b"risc0.ReceiptClaim"));
+        }
+
+        #[test]
+        fn output_tag_matches_sha256() {
+            assert_eq!(OUTPUT_TAG_DIGEST, sha256_of(b"risc0.Output"));
+        }
+
+        #[test]
+        fn post_digest_matches_risc0() {
+            let expected: [u8; 32] = SystemState { pc: 0, merkle_root: Digest::ZERO }
+                .digest()
+                .as_bytes()
+                .try_into()
+                .unwrap();
+            assert_eq!(POST_DIGEST, expected);
+        }
     }
 }
