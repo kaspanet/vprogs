@@ -72,6 +72,12 @@ The only exception: trait `impl` methods. The trait definition documents the
 contract; impls inherit it. Implementations only need their own doc when
 they add behavior beyond the trait contract.
 
+Watch for the inverse smell too: when impl-specific commentary has migrated
+up onto the type's doc and back-references a method by name
+(`/// method_name prepends X...`), pull it down onto the impl method. The
+type doc is for what the type IS; behavior specific to one method on it
+belongs on the method. See example 8.
+
 Trivial items still get docs, but the docs can be one line
 (`/// Creates an empty accumulator.`, `/// Returns the number of leaves
 added so far.`).
@@ -433,6 +439,50 @@ non-generic; trivial win.
 a manual `Default` impl because deriving would add `H: Default + T: Default`
 bounds, constraining Hasher/NodeTags impls that have no reason to be
 `Default`.
+
+### Example 8 — impl-specific commentary parked on the type
+
+**Before**:
+```rust
+/// SHA-256 implementation of the [`Hasher`] trait.
+///
+/// `hash_parts_with_domain` prepends the domain bytes to the payload
+/// (SHA-256 has no native keyed mode). The hash is equivalent to
+/// `sha2::Sha256::new_with_prefix(domain).update(part).finalize()`
+/// byte-for-byte.
+pub struct Sha256;
+
+impl Hasher for Sha256 {
+    fn hash_parts_with_domain<const N: usize>(
+        domain: &[u8; N],
+        parts: impl IntoIterator<Item = impl AsRef<[u8]>>,
+    ) -> [u8; 32] { ... }
+}
+```
+
+**After**:
+```rust
+/// SHA-256 implementation of the [`Hasher`] trait.
+pub struct Sha256;
+
+impl Hasher for Sha256 {
+    /// Prepends the domain bytes to the payload (SHA-256 has no native
+    /// keyed mode). Equivalent to
+    /// `sha2::Sha256::new_with_prefix(domain).update(part).finalize()`
+    /// byte-for-byte.
+    fn hash_parts_with_domain<const N: usize>(
+        domain: &[u8; N],
+        parts: impl IntoIterator<Item = impl AsRef<[u8]>>,
+    ) -> [u8; 32] { ... }
+}
+```
+
+Why: rule #5 says trait impl methods inherit the trait's contract; they
+only get their own doc when they add impl-specific behavior. Here the
+domain-separation strategy IS impl-specific (SHA-256 has no keyed mode, so
+this impl chooses prepending). Putting it on the type forced the prose to
+back-reference the method by name; on the impl method it just describes
+itself, and the type doc shrinks to its one-line "what this is" role.
 
 ## How to operate
 
