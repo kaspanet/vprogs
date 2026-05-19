@@ -17,13 +17,19 @@ pub mod bootstrap;
 pub mod script;
 pub mod settlement;
 
+// Re-export the script-side proof-system tag so downstream crates (api, test-suite) can pick
+// the right `RedeemPins` / `SettlementWitness` variant without taking a direct kaspa-txscript
+// dependency.
 pub use bootstrap::{Bootstrap, BootstrapInput};
+pub use kaspa_txscript::zk_precompiles::tags::ZkTag;
 pub use script::{
-    DEFAULT_PERMISSION_OUTPUT_VALUE, REDEEM_PREFIX_LEN, RedeemPins, build_dev_redeem_script,
-    build_redeem_script, dev_redeem_script_len, redeem_script_len,
+    CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, Groth16Pins, REDEEM_PREFIX_LEN, RedeemPins,
+    SuccinctPins, build_dev_redeem_script, build_redeem_script, dev_redeem_script_len,
+    redeem_script_len,
 };
 pub use settlement::{
-    Settlement, SettlementDevInput, SettlementInput, SuccinctWitness, permission_spk,
+    Settlement, SettlementDevInput, SettlementInput, SettlementWitness, SuccinctWitness,
+    permission_spk,
 };
 pub use vprogs_zk_abi::batch_processor::StateTransition;
 

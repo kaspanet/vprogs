@@ -19,8 +19,8 @@ use crate::script::{RedeemPins, build_redeem_script, redeem_script_len};
 
 /// Inputs describing an initial covenant UTXO bootstrap.
 pub struct BootstrapInput<'a> {
-    /// Verifier-identity constants baked into the redeem script (program_id, tx_image_id,
-    /// control_id, hashfn, zk_tag).
+    /// Verifier-identity constants baked into the redeem script. The variant determines which
+    /// proof-system the redeem script will dispatch to at spend time.
     pub pins: RedeemPins<'a>,
     /// Initial L2 SMT state root (typically `EMPTY_HASH`).
     pub initial_state: &'a [u8; 32],

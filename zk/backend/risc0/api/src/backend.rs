@@ -7,6 +7,8 @@ use risc0_zkvm::{
 };
 use vprogs_core_macros::smart_pointer;
 
+use crate::ProofType;
+
 thread_local! {
     static EXECUTOR: Rc<dyn Executor> = default_executor();
     static PROVER: Rc<dyn Prover> = default_prover();
@@ -27,6 +29,9 @@ pub struct Backend {
     batch_elf: Vec<u8>,
     /// Batch processor guest image ID - the covenant script pins against this id.
     batch_image_id: [u8; 32],
+    /// Proof system [`Self::prove_batch`] terminates in. Inner per-tx receipts are always
+    /// succinct (composed into the outer batch as assumptions).
+    settlement_proof_type: ProofType,
 }
 
 impl Backend {
@@ -34,7 +39,14 @@ impl Backend {
     ///
     /// Always wraps the provided ELFs with the trusted v1compat kernel to ensure
     /// only sanctioned syscalls are available to guest programs.
-    pub fn new(tx_processor_elf: &[u8], batch_elf: &[u8]) -> Self {
+    ///
+    /// `settlement_proof_type` selects which proof system [`Self::prove_batch`] terminates
+    /// in. Transaction proving always uses risc0 succinct regardless.
+    pub fn new(
+        tx_processor_elf: &[u8],
+        batch_elf: &[u8],
+        settlement_proof_type: ProofType,
+    ) -> Self {
         let tx_binary = ProgramBinary::new(tx_processor_elf, V1COMPAT_ELF);
         let tx_image_id = tx_binary.compute_image_id().expect("tx image id");
 
@@ -46,6 +58,7 @@ impl Backend {
             transaction_image_id: tx_image_id.as_bytes().try_into().unwrap(),
             batch_elf: batch_binary.encode(),
             batch_image_id: batch_image_id.as_bytes().try_into().unwrap(),
+            settlement_proof_type,
         }))
     }
 
@@ -60,6 +73,12 @@ impl Backend {
     /// inner verifier.
     pub fn transaction_image_id(&self) -> &[u8; 32] {
         &self.transaction_image_id
+    }
+
+    /// Proof system this backend produces for batch receipts. Host orchestration uses this
+    /// to pick the matching covenant `RedeemPins` / `SettlementWitness` variants.
+    pub fn settlement_proof_type(&self) -> ProofType {
+        self.settlement_proof_type
     }
 
     /// Cryptographically verifies a transaction-processor receipt against the trusted image id.
@@ -136,10 +155,13 @@ impl vprogs_zk_batch_prover::Backend for Backend {
 
         let env = builder.build().expect("failed to build batch prover environment");
 
+        let opts = match self.settlement_proof_type {
+            ProofType::Succinct => ProverOpts::succinct(),
+            ProofType::Groth16 => ProverOpts::groth16(),
+        };
+
         future::ready(PROVER.with(|p| {
-            p.prove_with_opts(env, &self.batch_elf, &ProverOpts::succinct())
-                .expect("batch proving failed")
-                .receipt
+            p.prove_with_opts(env, &self.batch_elf, &opts).expect("batch proving failed").receipt
         }))
     }
 
