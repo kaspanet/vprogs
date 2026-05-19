@@ -211,8 +211,12 @@ on nightly) handles wrapping to the project's 100-char limit. Manually
 breaking `///` lines mid-sentence makes future edits clunky (the wrap point
 drifts) and produces diffs that fight the formatter.
 
-If a doc paragraph is currently hand-wrapped, unwrap it into one long line
-and let the formatter re-flow.
+If you're already editing a doc paragraph (changing its wording, adding a
+link, moving it across items), unwrap it to a single long line as part of
+that edit and let the formatter re-flow. Don't gratuitously reflow doc
+paragraphs you aren't otherwise touching — keep the diff to what actually
+changed. The rule is: edits trigger the unwrap; passive readthroughs
+don't.
 
 **What's still fine** (and is project convention): blank `///` lines that
 separate paragraphs. The first sentence is the summary; if you need more,
@@ -497,5 +501,9 @@ itself, and the type doc shrinks to its one-line "what this is" role.
 4. **Substantive rewrites** (restructuring docs, moving rationale across
    sites): ASK before applying.
 5. **After edits**: run `./cargo-check-all.sh` and report any failures.
-6. **Format**: keep the diff tight; don't reflow lines that don't need
-   changes.
+6. **Format**: keep the diff tight. Don't reflow code or doc paragraphs
+   you aren't otherwise touching. For doc paragraphs you *are* editing,
+   unwrap to a single line as part of the edit (the formatter handles
+   re-wrapping). Format via `./cargo-fmt-all.sh`; never invoke
+   `cargo +nightly fmt` directly — the project script covers all 8
+   workspaces.

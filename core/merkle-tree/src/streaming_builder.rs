@@ -6,20 +6,15 @@ use crate::NodeTags;
 
 /// Streaming dense Merkle tree builder. Stack of `(level, hash)` pairs, no heap allocation.
 ///
-/// Append leaves with [`add_leaf`] (or [`add_leaf_parts`] for multi-part payloads) and call
-/// [`finalize`] to extract the root at the builder's natural depth
-/// ([`required_depth`]`(leaf_count)` levels). The rightmost incomplete subtree is padded with
-/// the appropriate empty-subtree hashes (supplied to `finalize` as a precomputed table) when
-/// assembling the root.
+/// Append leaves with [`add_leaf`](Self::add_leaf) (or [`add_leaf_parts`](Self::add_leaf_parts) for
+/// multi-part payloads) and call [`finalize`](Self::finalize) to extract the root at the builder's
+/// natural depth ([`required_depth`](Self::required_depth)`(leaf_count)` levels). The rightmost
+/// incomplete subtree is padded with the appropriate empty-subtree hashes (supplied to `finalize`
+/// as a precomputed table) when assembling the root.
 ///
 /// The builder holds at most one stack entry per distinct tree level (i.e. `popcount(leaf_count)`
 /// entries), which peaks at `MAX_DEPTH` for a `u32` leaf count; the stack is sized to that
 /// bound.
-///
-/// [`add_leaf`]: StreamingBuilder::add_leaf
-/// [`add_leaf_parts`]: StreamingBuilder::add_leaf_parts
-/// [`finalize`]: StreamingBuilder::finalize
-/// [`required_depth`]: StreamingBuilder::required_depth
 pub struct StreamingBuilder<H, T, const MAX_DEPTH: usize, const TAG_N: usize>
 where
     H: Hasher,
@@ -96,15 +91,12 @@ where
 
     /// Computes the empty-subtree hash table for this builder's configuration.
     ///
-    /// - `table[0]` is [`hash_empty`].
-    /// - `table[L]` for `L > 0` is [`hash_branch`]`(table[L-1], table[L-1])`, the root of an
-    ///   all-empty subtree of height `L`.
+    /// - `table[0]` is [`hash_empty`](Self::hash_empty).
+    /// - `table[L]` for `L > 0` is [`hash_branch`](Self::hash_branch)`(table[L-1], table[L-1])`,
+    ///   the root of an all-empty subtree of height `L`.
     ///
     /// Suitable for build-time precomputation: the result can be emitted as a `const` and
     /// `include!`d to avoid recomputing at runtime.
-    ///
-    /// [`hash_empty`]: StreamingBuilder::hash_empty
-    /// [`hash_branch`]: StreamingBuilder::hash_branch
     pub fn compute_empty_hashes() -> [[u8; 32]; MAX_DEPTH] {
         let mut table = [[0u8; 32]; MAX_DEPTH];
         if MAX_DEPTH == 0 {
