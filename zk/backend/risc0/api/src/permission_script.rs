@@ -1,22 +1,20 @@
 //! Permission (exit) redeem script construction (`no_std`, byte-level).
 //!
-//! [`PermissionTreeAccumulator`] commits a bundle's exits as the P2SH script-hash of a
-//! *permission redeem script*: a Kaspa script that, when an exit holder later spends the
-//! permission UTXO, enforces a Merkle-proof withdrawal against the committed exit tree. This
-//! module builds that redeem script as raw bytes and hashes it to its P2SH script-hash.
+//! [`PermissionTreeAccumulator`](crate::PermissionTreeAccumulator) commits a bundle's exits as the
+//! P2SH script-hash of a *permission redeem script*: a Kaspa script that, when an exit holder later
+//! spends the permission UTXO, enforces a Merkle-proof withdrawal against the committed exit tree.
+//! This module builds that redeem script as raw bytes and hashes it to its P2SH script-hash.
 //!
 //! The build runs in the batch-processor guest, so it cannot use the host-only
 //! `kaspa-txscript::ScriptBuilder`; the [`PermRedeemScript`] extension trait emits the opcodes
 //! directly. The bytes are a port of rusty-kaspa's `zk-covenant-rollup` `permission_script.rs` /
-//! `p2sh.rs`; they must stay byte-identical to what the on-chain script engine and the
-//! host-side settlement builder produce.
+//! `p2sh.rs`; they must stay byte-identical to what the on-chain script engine and the host-side
+//! settlement builder produce.
 //!
 //! TODO(no_std-kaspa): once `kaspa-txscript` is `no_std`-compatible, replace this hand-rolled
-//! emission with its `ScriptBuilder` and `pay_to_script_hash_script`; that deletes the opcode
-//! table and the `PermRedeemScript` encoders, and stops us drifting from the canonical script
+//! emission with its `ScriptBuilder` and `pay_to_script_hash_script`; that deletes the opcode table
+//! and the `PermRedeemScript` encoders, and stops us drifting from the canonical script
 //! construction.
-//!
-//! [`PermissionTreeAccumulator`]: crate::PermissionTreeAccumulator
 
 use alloc::vec::Vec;
 
@@ -116,12 +114,11 @@ trait PermRedeemScript {
     /// Bytes emitted for the one self-referential `push_i64(PREFIX_LEN - total_len)` in
     /// `emit_verify_outputs`.
     ///
-    /// For every `depth` in `1..=PERM_MAX_DEPTH` the total script length lands in `[488, 1728]`,
-    /// so the pushed magnitude `total_len - 42` is in `[446, 1686]`, always two little-endian
-    /// bytes with the high bit clear, so `push_i64` emits 1 length-prefix byte + 2 magnitude
-    /// bytes = 3, with no sign byte. `embedded_length_push_is_three_bytes` proves this for every
-    /// depth; past `PERM_MAX_DEPTH ≈ 800` the magnitude would need a sign byte and this constant
-    /// (and that test) would have to change.
+    /// For every `depth` in `1..=PERM_MAX_DEPTH` the total script length lands in `[488, 1728]`, so
+    /// the pushed magnitude `total_len - 42` is in `[446, 1686]`, always two little-endian bytes
+    /// with the high bit clear, so `push_i64` emits 1 length-prefix byte + 2 magnitude bytes = 3,
+    /// with no sign byte. Past `PERM_MAX_DEPTH ≈ 800` the magnitude would need a sign byte and this
+    /// constant would have to change.
     const EMBEDDED_LEN_PUSH: usize = 3;
 
     /// Depth-independent byte count of the redeem script, the sum of every fixed-size phase.

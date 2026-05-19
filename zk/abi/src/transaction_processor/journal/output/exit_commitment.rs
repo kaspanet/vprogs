@@ -2,11 +2,10 @@ use vprogs_core_codec::Reader;
 
 use crate::{Result, transaction_processor::StandardSpk};
 
-/// Zero-copy iterator over the per-tx exit section of an [`OutputCommitment::Success`].
+/// Zero-copy iterator over the per-tx exit section of an
+/// [`OutputCommitment::Success`](crate::transaction_processor::OutputCommitment::Success).
 ///
 /// Streams to EOF; entries are read until the underlying buffer is exhausted.
-///
-/// [`OutputCommitment::Success`]: crate::transaction_processor::OutputCommitment::Success
 #[derive(Clone, Copy)]
 pub struct ExitCommitment<'a> {
     buf: &'a [u8],
