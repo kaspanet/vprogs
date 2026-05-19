@@ -8400,6 +8400,7 @@ name = "vprogs-core-hashing"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "sha2",
 ]
 
 [[package]]
@@ -8409,6 +8410,13 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "vprogs-core-merkle-tree"
+version = "0.1.0"
+dependencies = [
+ "vprogs-core-hashing",
 ]
 
 [[package]]
@@ -8902,9 +8910,10 @@ dependencies = [
  "risc0-groth16",
  "risc0-zkos-v1compat",
  "risc0-zkvm",
- "sha2",
  "vprogs-core-codec",
+ "vprogs-core-hashing",
  "vprogs-core-macros",
+ "vprogs-core-merkle-tree",
  "vprogs-zk-abi",
  "vprogs-zk-backend-risc0-covenant",
  "vprogs-zk-batch-prover",

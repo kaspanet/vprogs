@@ -27,7 +27,7 @@
 //!    0 (and the second to index 1 in the count==2 case) via `OpCovOutputIdx`, so the SPK check at
 //!    output 0 and the permission-output check at output 1 are guaranteed to land on the
 //!    covenant-bound outputs rather than non-bound siblings the host could have interleaved. The
-//!    count==2 branch also explicitly rejects an extracted permission hash of `[0; 32]` — that hash
+//!    count==2 branch also explicitly rejects an extracted permission hash of `[0; 32]`; that hash
 //!    is the guest's no-exits sentinel and would otherwise lock the operator's permission dust to
 //!    an unspendable script. All these rules are enforced inside
 //!    `verify_outputs_and_append_perm_hash`.
@@ -375,7 +375,7 @@ fn extract_redeem_suffix_and_concat(b: &mut ScriptBuilder, redeem_script_len: i6
 ///
 /// SPK layout: `version(2 BE) | OpBlake2b(1) | OpData32(1) | hash(32) | OpEqual(1)` = 37 bytes.
 /// Version is encoded big-endian to match `ScriptPublicKey::to_bytes()`, which is what
-/// `OpTxOutputSpk` pushes onto the stack — using little-endian here would silently work for the
+/// `OpTxOutputSpk` pushes onto the stack; using little-endian here would silently work for the
 /// current `MAX_SCRIPT_PUBLIC_KEY_VERSION = 0` but break the moment that constant changes.
 fn hash_redeem_to_spk(b: &mut ScriptBuilder) {
     b.add_op(OpBlake2b).unwrap();
@@ -484,7 +484,7 @@ fn build_and_hash_journal(b: &mut ScriptBuilder, pins: &RedeemPins<'_>) {
 ///
 /// The count==2 branch also rejects an extracted hash of `[0; 32]`. `[0; 32]` is the
 /// guest's sentinel for "no exits", so a count==2 spend with that hash would commit dust to
-/// `permission_spk([0; 32])` — an unspendable script (blake2b is one-way; no preimage hashes
+/// `permission_spk([0; 32])`, an unspendable script (blake2b is one-way; no preimage hashes
 /// to all zeros). Without this reject, a buggy or adversarial host could permanently burn the
 /// operator's `pins.permission_output_value` while still passing the journal binding (the
 /// journal also commits `[0; 32]` in that case, so the preimage matches). Rejecting it
@@ -533,7 +533,7 @@ fn verify_outputs_and_append_perm_hash(b: &mut ScriptBuilder, pins: &RedeemPins<
         // ---- reject hash == [0; 32] ----
         // `[0; 32]` is the guest's no-exits sentinel and must always take the count==1 path.
         // Reaching count==2 with a zero hash would otherwise satisfy the journal binding (the
-        // journal also commits `[0; 32]`) while paying dust to `permission_spk([0; 32])` — an
+        // journal also commits `[0; 32]`) while paying dust to `permission_spk([0; 32])`, an
         // unspendable script that permanently locks the operator's permission-output value.
         b.add_op(OpDup).unwrap();
         b.add_data(&[0u8; 32]).unwrap();
@@ -581,8 +581,8 @@ fn verify_outputs_and_append_perm_hash(b: &mut ScriptBuilder, pins: &RedeemPins<
         // Stack: [..., preimage224]
 
         // Pin the sole covenant output to tx-output index 0 (same rationale as the count==2
-        // branch — the SPK check earlier in the script reads `outputs[0].script_public_key`
-        // by absolute index, this binds that index to the covenant-bound output).
+        // branch: the SPK check earlier in the script reads `outputs[0].script_public_key`
+        // by absolute index, so this binds that index to the covenant-bound output).
         verify_cov_output_at_idx(b, 0, 0);
 
         b.add_data(&[0u8; 32]).unwrap();

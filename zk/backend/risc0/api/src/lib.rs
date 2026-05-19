@@ -25,10 +25,7 @@ pub use permission_script::{
     MAX_DELEGATE_INPUTS, blake2b_script_hash, build_permission_redeem_script,
     perm_redeem_script_len,
 };
-pub use permission_tree::{
-    PERM_MAX_DEPTH, PermissionTreeAccumulator, StreamingPermTreeBuilder, perm_branch_hash,
-    perm_leaf_hash, required_depth,
-};
+pub use permission_tree::PermissionTreeAccumulator;
 pub use proof_type::ProofType;
 #[cfg(feature = "host")]
 pub use witness::{OwnedGroth16Witness, OwnedSuccinctWitness, ScriptVerifierPins};

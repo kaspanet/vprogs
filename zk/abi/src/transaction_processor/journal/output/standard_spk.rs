@@ -31,12 +31,12 @@ mod op {
 /// Wire encoding: 1-byte tag implies the payload length (no separate length prefix).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StandardSpk<'a> {
-    /// Schnorr P2PK — 32-byte pubkey. On-chain script: `OpData32 | pubkey(32) | OpCheckSig`.
+    /// Schnorr P2PK: 32-byte pubkey. On-chain script: `OpData32 | pubkey(32) | OpCheckSig`.
     PubKey(&'a [u8; 32]),
-    /// ECDSA P2PK — 33-byte compressed pubkey.
+    /// ECDSA P2PK: 33-byte compressed pubkey.
     /// On-chain script: `OpData33 | pubkey(33) | OpCheckSigECDSA`.
     PubKeyEcdsa(&'a [u8; 33]),
-    /// P2SH — 32-byte redeem-script hash.
+    /// P2SH: 32-byte redeem-script hash.
     /// On-chain script: `OpBlake2b | OpData32 | hash(32) | OpEqual`.
     ScriptHash(&'a [u8; 32]),
 }
