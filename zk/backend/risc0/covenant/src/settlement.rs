@@ -38,8 +38,8 @@ use crate::script::{
 pub struct SettlementInput<'a> {
     /// Covenant id carried forward by the continuation output.
     pub covenant_id: Hash,
-    /// Verifier-identity constants baked into the redeem script (program_id, tx_image_id,
-    /// control_id, hashfn, zk_tag).
+    /// Verifier-identity constants baked into the redeem script. The variant determines which
+    /// `OpZkPrecompile` branch the script terminates in and must match `witness`.
     pub pins: RedeemPins<'a>,
     /// L2 SMT state root before this batch.
     pub prev_state: &'a [u8; 32],
@@ -58,13 +58,25 @@ pub struct SettlementInput<'a> {
     /// Value carried on the covenant UTXO. Split between continuation and permission outputs
     /// when [`Self::permission_spk_hash`] is non-zero (see [`Settlement::build`]).
     pub value: u64,
-    /// Risc0 succinct receipt witness bytes (see [`SuccinctWitness`]).
-    pub witness: SuccinctWitness<'a>,
+    /// Proof-system-tagged ZK witness bytes pushed onto the redeem-spending sig_script. Must
+    /// match the variant of `pins`.
+    pub witness: SettlementWitness<'a>,
     /// `blake2b(perm_redeem_script)` from the batch journal. Non-zero → [`Settlement::build`]
     /// emits a second covenant-bound P2SH exit output of value
-    /// `pins.permission_output_value`. `[0; 32]` → single continuation output (no exits in
-    /// this batch).
+    /// `pins.common().permission_output_value`. `[0; 32]` → single continuation output (no
+    /// exits in this batch).
     pub permission_spk_hash: &'a [u8; 32],
+}
+
+/// ZK witness produced by the host and consumed by the covenant's sig_script. The variant
+/// must match the [`RedeemPins`] variant; `Settlement::build` panics on mismatch.
+pub enum SettlementWitness<'a> {
+    /// Witness for a R0Succinct receipt: STARK seal + claim + control-inclusion proof.
+    Succinct(SuccinctWitness<'a>),
+    /// Witness for a Groth16 receipt: compressed proof bytes (the only thing the on-stack
+    /// Groth16 verifier needs from the receipt; everything else is recomputed in-script from
+    /// the journal hash + program id).
+    Groth16 { compressed_proof: &'a [u8] },
 }
 
 /// Serialized pieces of a risc0 succinct receipt that the covenant script consumes as the ZK
@@ -111,15 +123,30 @@ impl Settlement {
         let next_redeem =
             build_redeem_script(input.new_state, input.new_lane_tip, redeem_len, &input.pins);
 
-        let sig_script = sig_script(
-            &prev_redeem,
-            input.block_prove_to,
-            input.new_state,
-            input.new_lane_tip,
-            &input.witness,
-        );
+        let sig_script_bytes = match (&input.pins, &input.witness) {
+            (RedeemPins::Succinct(_), SettlementWitness::Succinct(w)) => sig_script_succinct(
+                &prev_redeem,
+                input.block_prove_to,
+                input.new_state,
+                input.new_lane_tip,
+                w,
+            ),
+            (RedeemPins::Groth16(_), SettlementWitness::Groth16 { compressed_proof }) => {
+                sig_script_groth16(
+                    &prev_redeem,
+                    input.block_prove_to,
+                    input.new_state,
+                    input.new_lane_tip,
+                    compressed_proof,
+                )
+            }
+            _ => panic!(
+                "SettlementInput::witness variant does not match pins variant; the host wired up \
+                 a Succinct witness for a Groth16 covenant (or vice versa)",
+            ),
+        };
 
-        let tx_input = TransactionInput::new(input.prev_outpoint, sig_script, 0, 1);
+        let tx_input = TransactionInput::new(input.prev_outpoint, sig_script_bytes, 0, 1);
 
         let outputs = if input.permission_spk_hash == &[0u8; 32] {
             // No exits: single continuation output carrying the full covenant value.
@@ -132,7 +159,7 @@ impl Settlement {
             // Exits present: split the covenant value between the continuation (output 0) and
             // the permission exit (output 1). Order is load-bearing - the script reads output 1
             // by index.
-            let perm_value = input.pins.permission_output_value;
+            let perm_value = input.pins.common().permission_output_value;
             let continuation_value = input
                 .value
                 .checked_sub(perm_value)
@@ -282,7 +309,8 @@ fn sig_script_dev(
         .drain()
 }
 
-/// Builds the signature script witness layout consumed by the covenant's redeem script.
+/// Builds the signature script witness layout consumed by the covenant's redeem script for
+/// the R0Succinct proof system.
 ///
 /// Push order (bottom to top):
 /// `[claim, control_index, control_digests, seal, new_lane_tip, new_state, block_prove_to,
@@ -295,7 +323,7 @@ fn sig_script_dev(
 /// `new_seq_commit` for the journal, builds the journal hash, pushes the script-embedded
 /// `image_id` / `control_id` / `hashfn` constants, and finishes with `OpZkPrecompile`
 /// consuming the 8 items in the R0Succinct pop order.
-fn sig_script(
+fn sig_script_succinct(
     redeem: &[u8],
     block_prove_to: Hash,
     new_state: &[u8; 32],
@@ -326,55 +354,113 @@ fn sig_script(
         .drain()
 }
 
+/// Builds the signature script witness layout consumed by the covenant's redeem script for
+/// the Groth16 proof system.
+///
+/// Push order (bottom to top):
+/// `[compressed_proof, new_lane_tip, new_state, block_prove_to, redeem]`.
+///
+/// The Groth16 verifier does not need a seal/claim/control inclusion proof on the stack —
+/// only the compressed proof. Everything else (receipt-claim hash, public inputs, verifying
+/// key, control-root halves) is reconstructed in-script from build-time constants and the
+/// journal hash. See `script::verify_risc0_groth16`.
+fn sig_script_groth16(
+    redeem: &[u8],
+    block_prove_to: Hash,
+    new_state: &[u8; 32],
+    new_lane_tip: &Hash,
+    compressed_proof: &[u8],
+) -> Vec<u8> {
+    ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
+        .add_data(compressed_proof)
+        .unwrap()
+        .add_data(new_lane_tip.as_slice())
+        .unwrap()
+        .add_data(new_state)
+        .unwrap()
+        .add_data(block_prove_to.as_slice())
+        .unwrap()
+        .add_data(redeem)
+        .unwrap()
+        .drain()
+}
+
 #[cfg(test)]
 mod tests {
-    use kaspa_txscript::zk_precompiles::tags::ZkTag;
-
     use super::*;
-    use crate::script::{DEFAULT_PERMISSION_OUTPUT_VALUE, RedeemPins};
+    use crate::script::{
+        CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, Groth16Pins, RedeemPins, SuccinctPins,
+    };
 
-    fn test_pins() -> RedeemPins<'static> {
-        RedeemPins {
-            program_id: &[0xBB; 32],
-            tx_image_id: &[0xCC; 32],
+    fn succinct_pins() -> RedeemPins<'static> {
+        RedeemPins::Succinct(SuccinctPins {
+            common: CommonPins {
+                program_id: &[0xBB; 32],
+                tx_image_id: &[0xCC; 32],
+                permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
+            },
             control_id: &[0xDD; 32],
             hashfn: 1,
-            zk_tag: ZkTag::R0Succinct,
-            permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
-        }
+        })
     }
 
-    fn test_witness() -> SuccinctWitness<'static> {
-        SuccinctWitness {
+    fn groth16_pins() -> RedeemPins<'static> {
+        RedeemPins::Groth16(Groth16Pins {
+            common: CommonPins {
+                program_id: &[0xBB; 32],
+                tx_image_id: &[0xCC; 32],
+                permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
+            },
+        })
+    }
+
+    fn succinct_witness() -> SettlementWitness<'static> {
+        SettlementWitness::Succinct(SuccinctWitness {
             seal: &[0u8; 8],
             claim: &[0u8; 32],
             control_index: 0,
             control_digests: &[0u8; 0],
+        })
+    }
+
+    fn groth16_witness() -> SettlementWitness<'static> {
+        SettlementWitness::Groth16 { compressed_proof: &[0u8; 8] }
+    }
+
+    const PREV_STATE: [u8; 32] = [0x11; 32];
+    const PREV_LANE_TIP: Hash = Hash::from_bytes([0x22; 32]);
+    const NEW_STATE: [u8; 32] = [0x33; 32];
+    const NEW_LANE_TIP: Hash = Hash::from_bytes([0x44; 32]);
+    const COVENANT_ID: Hash = Hash::from_bytes([0xAA; 32]);
+    const BLOCK_PROVE_TO: Hash = Hash::from_bytes([0x55; 32]);
+    const PREV_OUTPOINT_TX: Hash = Hash::from_bytes([0x66; 32]);
+
+    fn make_input<'a>(
+        pins: RedeemPins<'a>,
+        witness: SettlementWitness<'a>,
+        value: u64,
+        permission_spk_hash: &'a [u8; 32],
+    ) -> SettlementInput<'a> {
+        SettlementInput {
+            covenant_id: COVENANT_ID,
+            pins,
+            prev_state: &PREV_STATE,
+            prev_lane_tip: &PREV_LANE_TIP,
+            new_state: &NEW_STATE,
+            new_lane_tip: &NEW_LANE_TIP,
+            block_prove_to: BLOCK_PROVE_TO,
+            prev_outpoint: TransactionOutpoint::new(PREV_OUTPOINT_TX, 0),
+            value,
+            witness,
+            permission_spk_hash,
         }
     }
 
-    #[test]
-    fn settlement_tx_has_single_covenant_output() {
-        let input = SettlementInput {
-            covenant_id: Hash::from_bytes([0xAA; 32]),
-            pins: test_pins(),
-            prev_state: &[0x11; 32],
-            prev_lane_tip: &Hash::from_bytes([0x22; 32]),
-            new_state: &[0x33; 32],
-            new_lane_tip: &Hash::from_bytes([0x44; 32]),
-            block_prove_to: Hash::from_bytes([0x55; 32]),
-            prev_outpoint: TransactionOutpoint::new(Hash::from_bytes([0x66; 32]), 0),
-            value: 100_000_000,
-            witness: test_witness(),
-            permission_spk_hash: &[0u8; 32],
-        };
-
-        let settlement = Settlement::build(&input);
-
+    fn check_single_output(settlement: &Settlement, value: u64) {
         assert_eq!(settlement.transaction.inputs.len(), 1);
         assert_eq!(settlement.transaction.outputs.len(), 1);
         let output = &settlement.transaction.outputs[0];
-        assert_eq!(output.value, 100_000_000);
+        assert_eq!(output.value, value);
         assert_eq!(
             output.covenant,
             Some(CovenantBinding::new(0, Hash::from_bytes([0xAA; 32]))),
@@ -386,31 +472,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn settlement_tx_with_permission_hash_has_two_outputs() {
-        let perm_hash = [0x77u8; 32];
-        let value = 10 * DEFAULT_PERMISSION_OUTPUT_VALUE;
-        let input = SettlementInput {
-            covenant_id: Hash::from_bytes([0xAA; 32]),
-            pins: test_pins(),
-            prev_state: &[0x11; 32],
-            prev_lane_tip: &Hash::from_bytes([0x22; 32]),
-            new_state: &[0x33; 32],
-            new_lane_tip: &Hash::from_bytes([0x44; 32]),
-            block_prove_to: Hash::from_bytes([0x55; 32]),
-            prev_outpoint: TransactionOutpoint::new(Hash::from_bytes([0x66; 32]), 0),
-            value,
-            witness: test_witness(),
-            permission_spk_hash: &perm_hash,
-        };
-
-        let settlement = Settlement::build(&input);
-
+    fn check_two_outputs(settlement: &Settlement, value: u64, perm_hash: &[u8; 32]) {
         assert_eq!(settlement.transaction.inputs.len(), 1);
         assert_eq!(settlement.transaction.outputs.len(), 2);
 
-        // Output 0: continuation - carries `value - PERMISSION_OUTPUT_VALUE`, P2SH of next
-        // redeem, covenant binding `(0, covenant_id)`.
         let continuation = &settlement.transaction.outputs[0];
         assert_eq!(continuation.value, value - DEFAULT_PERMISSION_OUTPUT_VALUE);
         assert_eq!(
@@ -423,13 +488,11 @@ mod tests {
             Some(CovenantBinding::new(0, Hash::from_bytes([0xAA; 32]))),
         );
 
-        // Output 1: permission exit - fixed value, P2SH of `permission_spk_hash`, covenant
-        // binding `(0, covenant_id)`. The byte layout `to_bytes()[4..36] == perm_hash` is
-        // load-bearing for the in-script `OpTxOutputSpkSubstr` extraction.
         let exit = &settlement.transaction.outputs[1];
         assert_eq!(exit.value, DEFAULT_PERMISSION_OUTPUT_VALUE);
         assert_eq!(exit.covenant, Some(CovenantBinding::new(0, Hash::from_bytes([0xAA; 32]))),);
-        assert_eq!(exit.script_public_key, permission_spk(&perm_hash));
+        assert_eq!(exit.script_public_key, permission_spk(perm_hash));
+
         // Lock the script byte layout the in-script rebuild depends on:
         //   wire SPK: version(2) | OpBlake2b | OpData32 | hash(32) | OpEqual
         //   .script() drops the version, so script()[2..34] is the 32-byte hash.
@@ -442,22 +505,66 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "covenant value must cover the permission output")]
-    fn settlement_tx_panics_when_value_below_permission_output() {
-        let input = SettlementInput {
-            covenant_id: Hash::from_bytes([0xAA; 32]),
-            pins: test_pins(),
-            prev_state: &[0x11; 32],
-            prev_lane_tip: &Hash::from_bytes([0x22; 32]),
-            new_state: &[0x33; 32],
-            new_lane_tip: &Hash::from_bytes([0x44; 32]),
-            block_prove_to: Hash::from_bytes([0x55; 32]),
-            prev_outpoint: TransactionOutpoint::new(Hash::from_bytes([0x66; 32]), 0),
-            value: DEFAULT_PERMISSION_OUTPUT_VALUE - 1,
-            witness: test_witness(),
-            permission_spk_hash: &[0x77; 32],
-        };
+    fn settlement_tx_has_single_covenant_output_succinct() {
+        let input = make_input(succinct_pins(), succinct_witness(), 100_000_000, &[0u8; 32]);
+        let settlement = Settlement::build(&input);
+        check_single_output(&settlement, 100_000_000);
+    }
 
+    #[test]
+    fn settlement_tx_has_single_covenant_output_groth16() {
+        let input = make_input(groth16_pins(), groth16_witness(), 100_000_000, &[0u8; 32]);
+        let settlement = Settlement::build(&input);
+        check_single_output(&settlement, 100_000_000);
+    }
+
+    #[test]
+    fn settlement_tx_with_permission_hash_has_two_outputs_succinct() {
+        let perm_hash = [0x77u8; 32];
+        let value = 10 * DEFAULT_PERMISSION_OUTPUT_VALUE;
+        let input = make_input(succinct_pins(), succinct_witness(), value, &perm_hash);
+        let settlement = Settlement::build(&input);
+        check_two_outputs(&settlement, value, &perm_hash);
+    }
+
+    #[test]
+    fn settlement_tx_with_permission_hash_has_two_outputs_groth16() {
+        let perm_hash = [0x77u8; 32];
+        let value = 10 * DEFAULT_PERMISSION_OUTPUT_VALUE;
+        let input = make_input(groth16_pins(), groth16_witness(), value, &perm_hash);
+        let settlement = Settlement::build(&input);
+        check_two_outputs(&settlement, value, &perm_hash);
+    }
+
+    #[test]
+    #[should_panic(expected = "covenant value must cover the permission output")]
+    fn settlement_tx_panics_when_value_below_permission_output_succinct() {
+        let input = make_input(
+            succinct_pins(),
+            succinct_witness(),
+            DEFAULT_PERMISSION_OUTPUT_VALUE - 1,
+            &[0x77; 32],
+        );
+        let _ = Settlement::build(&input);
+    }
+
+    #[test]
+    #[should_panic(expected = "covenant value must cover the permission output")]
+    fn settlement_tx_panics_when_value_below_permission_output_groth16() {
+        let input = make_input(
+            groth16_pins(),
+            groth16_witness(),
+            DEFAULT_PERMISSION_OUTPUT_VALUE - 1,
+            &[0x77; 32],
+        );
+        let _ = Settlement::build(&input);
+    }
+
+    #[test]
+    #[should_panic(expected = "SettlementInput::witness variant does not match pins variant")]
+    fn settlement_tx_panics_on_witness_pins_mismatch() {
+        // Succinct pins + Groth16 witness — the wire-up bug the build-time match guards.
+        let input = make_input(succinct_pins(), groth16_witness(), 100_000_000, &[0u8; 32]);
         let _ = Settlement::build(&input);
     }
 

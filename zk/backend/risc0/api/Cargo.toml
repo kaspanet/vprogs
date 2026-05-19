@@ -11,7 +11,11 @@ host = [
   "std",
   "guest",
   "risc0-zkvm/prove",
+  "dep:ark-bn254",
+  "dep:ark-groth16",
+  "dep:ark-serialize",
   "dep:risc0-binfmt",
+  "dep:risc0-groth16",
   "dep:risc0-zkos-v1compat",
   "dep:vprogs-core-macros",
   "dep:vprogs-zk-backend-risc0-covenant",
@@ -32,7 +36,11 @@ vprogs-zk-abi           = { path = "../../../abi", default-features = false }
 risc0-zkvm = { version = "3.0", default-features = false, optional = true }
 
 # host-only
+ark-bn254                        = { workspace = true, optional = true }
+ark-groth16                      = { workspace = true, optional = true }
+ark-serialize                    = { workspace = true, optional = true }
 risc0-binfmt                     = { version = "3.0.4", default-features = false, optional = true }
+risc0-groth16                    = { workspace = true, optional = true }
 risc0-zkos-v1compat              = { version = "2.2.2", optional = true }
 vprogs-core-macros               = { workspace = true, optional = true }
 vprogs-zk-backend-risc0-covenant = { path = "../covenant", optional = true }

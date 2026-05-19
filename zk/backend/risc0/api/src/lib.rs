@@ -4,6 +4,7 @@ extern crate alloc;
 
 mod permission_script;
 mod permission_tree;
+mod proof_type;
 
 #[cfg(feature = "host")]
 mod backend;
@@ -25,5 +26,6 @@ pub use permission_script::{
     perm_redeem_script_len,
 };
 pub use permission_tree::PermissionTreeAccumulator;
+pub use proof_type::ProofType;
 #[cfg(feature = "host")]
-pub use witness::{OwnedSuccinctWitness, ScriptVerifierPins};
+pub use witness::{OwnedGroth16Witness, OwnedSuccinctWitness, ScriptVerifierPins};

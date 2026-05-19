@@ -11,11 +11,13 @@ use std::time::Duration;
 use kaspa_consensus_core::{config::params::ForkActivation, tx::Transaction};
 use kaspa_hashes::Hash;
 use kaspa_rpc_core::api::rpc::RpcApi;
-use kaspa_txscript::{standard::pay_to_script_hash_script, zk_precompiles::tags::ZkTag};
+use kaspa_txscript::standard::pay_to_script_hash_script;
 use vprogs_core_smt::EMPTY_HASH;
 use vprogs_node_test_utils::L1Node;
+use vprogs_zk_backend_risc0_api::ProofType;
 use vprogs_zk_backend_risc0_covenant::{
-    DEFAULT_PERMISSION_OUTPUT_VALUE, RedeemPins, build_redeem_script, redeem_script_len,
+    CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, RedeemPins, SuccinctPins, build_redeem_script,
+    redeem_script_len,
 };
 use vprogs_zk_backend_risc0_test_suite::{batch_processor_elf, transaction_processor_elf};
 
@@ -39,7 +41,8 @@ async fn covenant_bootstrap_is_accepted_on_simnet() {
     // directly to the batch guest since it now emits the settlement journal itself.
     let tx_elf = transaction_processor_elf();
     let batch_elf = batch_processor_elf();
-    let backend = vprogs_zk_backend_risc0_api::Backend::new(&tx_elf, &batch_elf);
+    let backend =
+        vprogs_zk_backend_risc0_api::Backend::new(&tx_elf, &batch_elf, ProofType::Succinct);
     let program_id = *backend.batch_image_id();
     let tx_image_id = *backend.transaction_image_id();
 
@@ -49,14 +52,15 @@ async fn covenant_bootstrap_is_accepted_on_simnet() {
     // are baked into the redeem bytes and into the SPK we assert below; both sides see the same
     // placeholders so the SPK comparison passes regardless of value.
     let control_id = [0u8; 32];
-    let pins = RedeemPins {
-        program_id: &program_id,
-        tx_image_id: &tx_image_id,
+    let pins = RedeemPins::Succinct(SuccinctPins {
+        common: CommonPins {
+            program_id: &program_id,
+            tx_image_id: &tx_image_id,
+            permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
+        },
         control_id: &control_id,
         hashfn: 0,
-        zk_tag: ZkTag::R0Succinct,
-        permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
-    };
+    });
     let redeem_len = redeem_script_len(&initial_state, &pins);
     let redeem = build_redeem_script(&initial_state, &initial_lane_tip, redeem_len, &pins);
     let expected_spk = pay_to_script_hash_script(&redeem);
