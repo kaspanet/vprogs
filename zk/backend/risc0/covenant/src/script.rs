@@ -27,9 +27,9 @@
 //!    0 (and the second to index 1 in the count==2 case) via `OpCovOutputIdx`, so the SPK check at
 //!    output 0 and the permission-output check at output 1 are guaranteed to land on the
 //!    covenant-bound outputs rather than non-bound siblings the host could have interleaved. The
-//!    count==2 branch also explicitly rejects an extracted permission hash of `[0; 32]`; that
-//!    hash is the guest's no-exits sentinel and would otherwise lock the operator's permission
-//!    dust to an unspendable script. All these rules are enforced inside
+//!    count==2 branch also explicitly rejects an extracted permission hash of `[0; 32]`; that hash
+//!    is the guest's no-exits sentinel and would otherwise lock the operator's permission dust to
+//!    an unspendable script. All these rules are enforced inside
 //!    `verify_outputs_and_append_perm_hash`.
 
 use kaspa_hashes::Hash;

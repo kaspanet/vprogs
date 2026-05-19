@@ -36,8 +36,7 @@ impl PermissionTreeAccumulator {
     pub const MAX_DEPTH: usize = Builder::MAX_DEPTH;
 
     /// The permission tree's empty-subtree hash table, precomputed at build time (see `build.rs`)
-    /// by [`Builder::compute_empty_hashes`] so the guest does no hashing work for empty subtrees
-    /// at runtime.
+    /// by [`Builder::compute_empty_hashes`] to avoid recomputing it at runtime.
     pub const EMPTY_HASHES: [[u8; 32]; Self::MAX_DEPTH] =
         include!(concat!(env!("OUT_DIR"), "/perm_empty_hashes_generated.rs"));
 
@@ -51,8 +50,7 @@ impl PermissionTreeAccumulator {
         self.builder.add_leaf_parts([dest.to_script_bytes().as_slice(), &amount.to_le_bytes()]);
     }
 
-    /// Returns the permission tree's P2SH script-hash (the value the settlement exit output's SPK
-    /// pays to) or `[0u8; 32]` when no exits were added.
+    /// Returns the permission tree's P2SH script-hash, or `[0u8; 32]` when no exits were added.
     pub fn finalize(&self) -> [u8; 32] {
         // Return early if no exits were added.
         let count = self.builder.leaf_count();

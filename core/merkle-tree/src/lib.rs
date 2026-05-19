@@ -1,10 +1,10 @@
 //! Merkle tree primitives.
 //!
 //! Provides a [`StreamingBuilder`] for dense (left-packed) Merkle trees with domain-separated
-//! hashing, generic over the [`Hasher`] implementation, a [`NodeTags`] impl for the
-//! leaf/branch/empty tag bytes, and the maximum tree depth.
+//! hashing. The builder is generic over the [`Hasher`] implementation, the [`NodeTags`] impl,
+//! the maximum tree depth, and the tag length.
 //!
-//! Pure `no_std` crate - all types are available without feature gates.
+//! Pure `no_std` crate; all types are available without feature gates.
 //!
 //! [`Hasher`]: vprogs_core_hashing::Hasher
 

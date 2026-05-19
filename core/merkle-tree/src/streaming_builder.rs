@@ -4,7 +4,7 @@ use vprogs_core_hashing::Hasher;
 
 use crate::NodeTags;
 
-/// Streaming dense Merkle tree builder - stack of `(level, hash)` pairs, no heap allocation.
+/// Streaming dense Merkle tree builder. Stack of `(level, hash)` pairs, no heap allocation.
 ///
 /// Append leaves with [`add_leaf`] (or [`add_leaf_parts`] for multi-part payloads) and call
 /// [`finalize`] to extract the root at the builder's natural depth
@@ -13,7 +13,7 @@ use crate::NodeTags;
 /// assembling the root.
 ///
 /// The builder holds at most one stack entry per distinct tree level (i.e. `popcount(leaf_count)`
-/// entries), which peaks at `MAX_DEPTH` for a `u32` leaf count - the stack is sized to that
+/// entries), which peaks at `MAX_DEPTH` for a `u32` leaf count; the stack is sized to that
 /// bound.
 ///
 /// [`add_leaf`]: StreamingBuilder::add_leaf
@@ -47,10 +47,10 @@ where
     H: Hasher,
     T: NodeTags<TAG_N>,
 {
-    /// The maximum tree depth this builder is sized for (the `MAX_DEPTH` const generic).
+    /// The maximum tree depth this builder is sized for.
     pub const MAX_DEPTH: usize = MAX_DEPTH;
 
-    /// The byte length of this builder's [`NodeTags`] (the `TAG_N` const generic).
+    /// The byte length of this builder's [`NodeTags`].
     pub const TAG_N: usize = TAG_N;
 
     /// Creates an empty builder.
@@ -100,9 +100,8 @@ where
     /// - `table[L]` for `L > 0` is [`hash_branch`]`(table[L-1], table[L-1])`, the root of an
     ///   all-empty subtree of height `L`.
     ///
-    /// Intended for use from a build script: compute the table once at build time, emit it as a
-    /// `const`, then `include!` the generated file at runtime. Avoids recomputing the table
-    /// inside the guest on every batch.
+    /// Suitable for build-time precomputation: the result can be emitted as a `const` and
+    /// `include!`d to avoid recomputing at runtime.
     ///
     /// [`hash_empty`]: StreamingBuilder::hash_empty
     /// [`hash_branch`]: StreamingBuilder::hash_branch
@@ -134,16 +133,20 @@ where
         self.leaf_count
     }
 
-    /// Finalizes the tree, padding incomplete subtrees with the empty-subtree hash table.
+    /// Returns the padded tree root, or `empty_hashes[0]` if no leaves were added.
     pub fn finalize(&self, empty_hashes: &[[u8; 32]; MAX_DEPTH]) -> [u8; 32] {
+        // Empty tree: the root is the level-0 empty-subtree hash.
         if self.leaf_count == 0 {
             return empty_hashes[0];
         }
 
+        // Single leaf: pair it with an empty sibling at depth 1.
         if self.leaf_count == 1 {
             return Self::hash_branch(&self.stack[0].1, &empty_hashes[0]);
         }
 
+        // Combine stack entries right-to-left, lifting each subtree through padding levels until
+        // it matches the next entry's level, then combining the two.
         let mut result_hash = [0u8; 32];
         let mut result_level = 0u32;
         let mut first = true;
