@@ -43,9 +43,11 @@ not a documentation gap.
 
 ### 3. Don't describe how the code is used elsewhere
 
-Comments describe what the code IS, not how callers consume it. The "how
-it's used" relationships change during refactors, leaving comments out of
-sync with their context. The same applies to:
+Comments describe what the code IS or DOES, not which callers consume it.
+For a type, that's the role it plays in the system; for a function, its
+effects, returns, and important edge cases / invariants. Caller
+relationships change during refactors, leaving comments out of sync with
+their context. The same applies to:
 
 - Naming sibling tests in doc comments ("`X_test` verifies this")
 - Listing specific upstream callers
