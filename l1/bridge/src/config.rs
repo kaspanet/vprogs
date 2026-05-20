@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use kaspa_consensus_core::{config::params::Params, subnets::SubnetworkId};
 use vprogs_core_types::Checkpoint;
-use vprogs_l1_types::{ChainBlockMetadata, ConnectStrategy, NetworkId, NetworkType};
+use vprogs_l1_types::{ChainBlockMetadata, ConnectStrategy, Hash, NetworkId, NetworkType};
 
 /// Configuration for the L1 bridge.
 #[derive(Clone, Debug)]
@@ -28,6 +28,8 @@ pub struct L1BridgeConfig {
     pub subnetwork_id: Option<SubnetworkId>,
     /// Blue-score window within which a lane stays active without new transactions.
     pub finality_depth: u64,
+    /// Covenant id tracked by [`ChainBlockMetadata::last_settlement`], or `None` to disable.
+    pub covenant_id: Option<Hash>,
 }
 
 impl Default for L1BridgeConfig {
@@ -43,6 +45,7 @@ impl Default for L1BridgeConfig {
             filter_half_life: Duration::from_secs(3600), // 1 hour.
             subnetwork_id: None,
             finality_depth: Params::from(NetworkId::new(NetworkType::Mainnet)).finality_depth(),
+            covenant_id: None,
         }
     }
 }
@@ -107,6 +110,12 @@ impl L1BridgeConfig {
     /// Sets the lane-expiration blue-score window.
     pub fn with_finality_depth(mut self, finality_depth: u64) -> Self {
         self.finality_depth = finality_depth;
+        self
+    }
+
+    /// Sets the covenant id to track settlements for. `None` disables covenant tracking.
+    pub fn with_covenant_id(mut self, covenant_id: Option<Hash>) -> Self {
+        self.covenant_id = covenant_id;
         self
     }
 }

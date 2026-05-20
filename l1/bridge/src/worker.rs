@@ -19,7 +19,7 @@ use kaspa_seq_commit::{
 use kaspa_wrpc_client::prelude::*;
 use tokio::sync::Notify;
 use vprogs_core_types::Checkpoint;
-use vprogs_l1_types::{ChainBlockMetadata, Hash, L1Transaction};
+use vprogs_l1_types::{ChainBlockMetadata, Hash, L1Transaction, L1TransactionCovenantExt};
 use workflow_core::channel::{Channel, MultiplexerChannel};
 
 use crate::{
@@ -59,6 +59,8 @@ pub(crate) struct BridgeWorker {
     lane_key: Option<Hash>,
     /// Blue-score window within which a lane stays active without new transactions.
     finality_depth: u64,
+    /// Covenant id tracked by [`ChainBlockMetadata::last_settlement`], or `None` to disable.
+    covenant_id: Option<Hash>,
 }
 
 impl BridgeWorker {
@@ -138,6 +140,7 @@ impl BridgeWorker {
             subnetwork_filter: config.subnetwork_id,
             lane_key,
             finality_depth: config.finality_depth,
+            covenant_id: config.covenant_id,
         }
         .run()
         .await;
@@ -365,6 +368,8 @@ impl BridgeWorker {
             // Selected parent on the chain stream is the current virtual-chain tip.
             let header = &chain_block.chain_block_header;
             let parent_meta = *self.virtual_chain.tip().metadata();
+            let block_hash = header.hash.expect("missing hash");
+            let mut last_settlement = parent_meta.last_settlement;
 
             // Enumerate before filtering so kept txs retain their block-wide positions.
             let accepted_transactions: Vec<(u32, L1Transaction)> = chain_block
@@ -373,6 +378,9 @@ impl BridgeWorker {
                 .enumerate()
                 .filter_map(|(idx, tx)| {
                     let tx = L1Transaction::try_from(tx.clone()).expect("missing tx fields");
+                    if let Some(id) = self.covenant_id {
+                        last_settlement = tx.settlement_info(id, block_hash).or(last_settlement);
+                    }
                     match self.subnetwork_filter.as_ref() {
                         Some(want) if tx.subnetwork_id != *want => None,
                         _ => Some((idx as u32, tx)),
@@ -392,6 +400,7 @@ impl BridgeWorker {
                 lane_blue_score,
                 lane_tip,
                 lane_expired,
+                last_settlement,
                 ..ChainBlockMetadata::try_from(header).unwrap()
             });
 
