@@ -20,6 +20,7 @@ use vprogs_node_test_utils::L1Node;
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
+use vprogs_zk_abi::batch_processor::subnetwork_id_from_lane_id;
 use vprogs_zk_backend_risc0_api::{Backend, OwnedGroth16Witness, OwnedSuccinctWitness, ProofType};
 use vprogs_zk_backend_risc0_covenant::{
     CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, Groth16Pins, RedeemPins, Settlement,
@@ -31,6 +32,10 @@ use vprogs_zk_backend_risc0_test_suite::{
     compute_section_lane_tip, dev_mode_enabled, transaction_processor_elf,
     transaction_processor_with_exits_elf,
 };
+
+/// Subnetwork id all e2e settlement fixtures bind to; must match the `LANE_ID` baked into the batch
+/// processor guest binary.
+const TEST_SUBNETWORK_ID: [u8; 20] = subnetwork_id_from_lane_id(4444);
 use vprogs_zk_batch_prover::{Backend as _, BatchProverConfig};
 use vprogs_zk_vm::{ProvingPipeline, Vm};
 
@@ -245,6 +250,7 @@ async fn batch_proof_is_directly_settleable_single_batch() {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
+            subnetwork_id: &TEST_SUBNETWORK_ID,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },
     });
@@ -397,6 +403,7 @@ async fn batch_proof_groth16_is_directly_settleable_single_batch() {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
+            subnetwork_id: &TEST_SUBNETWORK_ID,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },
     });
@@ -553,6 +560,7 @@ async fn batch_proof_bundles_two_batches() {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
+            subnetwork_id: &TEST_SUBNETWORK_ID,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },
     });
@@ -734,6 +742,7 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
+            subnetwork_id: &TEST_SUBNETWORK_ID,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },
     });

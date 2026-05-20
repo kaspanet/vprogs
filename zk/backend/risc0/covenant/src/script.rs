@@ -6,12 +6,13 @@
 //!    with the advanced `(new_state, new_lane_tip)` pair pushed as the prefix.
 //! 2. **Journal binding**: the ZK proof's committed journal hashes to `sha256(prev_state ||
 //!    prev_lane_tip || new_state || new_lane_tip || new_seq_commit || covenant_id || tx_image_id ||
-//!    permission_spk_hash)` - 256 bytes total. `tx_image_id`, `control_id`, `hashfn`, and
-//!    `image_id` are all hardcoded into the script body, so the covenant SPK pins the entire
-//!    verifier identity - both the batch-proof verifier circuit and the inner transaction-processor
-//!    guest the batch checked against. The final 32 bytes (`permission_spk_hash`) are either the
-//!    batch's L2→L1 exit commitment or `[0; 32]` for a no-exit batch (matching how the guest
-//!    encodes the field).
+//!    permission_spk_hash || subnetwork_id)` - 276 bytes total. `tx_image_id`, `control_id`,
+//!    `hashfn`, `image_id`, and `subnetwork_id` are all hardcoded into the script body, so the
+//!    covenant SPK pins the entire verifier identity plus the lane it settles - both the
+//!    batch-proof verifier circuit, the inner transaction-processor guest the batch checked
+//!    against, and the kaspa subnetwork the prover may not deviate from. The 32 bytes before the
+//!    20-byte `subnetwork_id` (`permission_spk_hash`) are either the batch's L2→L1 exit commitment
+//!    or `[0; 32]` for a no-exit batch (matching how the guest encodes the field).
 //! 3. **Seq commitment freshness**: the journal's `new_seq_commit` equals
 //!    `OpChainblockSeqCommit(block_prove_to)` pushed at spend time, which itself is derived by the
 //!    guest from `new_lane_tip` - so the chain of UTXO-locked `lane_tip` values is load-bearing all
@@ -83,16 +84,17 @@ pub mod succinct_consts {
 
 /// Redeem script prefix size in bytes.
 ///
-/// Layout (66 bytes total):
+/// Layout (87 bytes total):
 ///
 /// ```text
-/// OpData32(1) | prev_lane_tip(32) | OpData32(1) | prev_state(32)
+/// OpData20(1) | subnetwork_id(20) | OpData32(1) | prev_lane_tip(32) | OpData32(1) | prev_state(32)
 /// ```
-pub const REDEEM_PREFIX_LEN: i64 = 66;
+pub const REDEEM_PREFIX_LEN: i64 = 87;
 
 /// Verifier-identity constants hardcoded into the redeem script body and shared by both proof
 /// systems. `program_id` and `tx_image_id` pin the verifier and the inner-transaction guest;
-/// `permission_output_value` pins the sompi value emitted on the permission-exit output.
+/// `subnetwork_id` pins the lane the covenant settles for; `permission_output_value` pins the
+/// sompi value emitted on the permission-exit output.
 #[derive(Copy, Clone)]
 pub struct CommonPins<'a> {
     /// Batch processor guest image id (the proof verifier's image_id pushed before
@@ -101,6 +103,10 @@ pub struct CommonPins<'a> {
     /// Transaction processor guest image id, cat-ed into the journal preimage so the inner
     /// proof verifier identity is constrained on-chain.
     pub tx_image_id: &'a [u8; 32],
+    /// Kaspa SubnetworkId this covenant settles for. Pushed in the 87-byte redeem prefix and
+    /// re-stashed onto the journal preimage's trailing 20 bytes so any proof that names a
+    /// different lane fails the SHA-256 binding.
+    pub subnetwork_id: &'a [u8; 20],
     /// Sompi value the script enforces on the permission-exit output (output index 1) when the
     /// batch's `permission_spk_hash` is non-zero. Baked into the redeem script so this value is
     /// part of the covenant SPK identity; the host builder must emit exactly this value on
@@ -170,13 +176,17 @@ pub fn build_redeem_script(
 ) -> Vec<u8> {
     let mut b = ScriptBuilder::new();
 
-    // 66-byte data prefix (redeem-script-identifying bytes).
+    // 87-byte data prefix (redeem-script-identifying bytes). `subnetwork_id` is pushed last so it
+    // lands at the bottom of the alt stash and is popped last by `build_and_hash_journal` to land
+    // at the trailing 20 bytes of the 276-byte preimage.
     b.add_data(prev_lane_tip.as_slice()).unwrap();
     b.add_data(prev_state).unwrap();
+    b.add_data(pins.common().subnetwork_id).unwrap();
 
     stash_prev_values(&mut b);
     obtain_new_seq_commitment(&mut b);
     build_next_redeem_prefix(&mut b);
+    append_subnetwork_id_to_next_prefix(&mut b, pins.common().subnetwork_id);
     extract_redeem_suffix_and_concat(&mut b, redeem_script_len);
     hash_redeem_to_spk(&mut b);
     verify_output_spk(&mut b);
@@ -229,18 +239,24 @@ pub fn redeem_script_len(prev_state: &[u8; 32], pins: &RedeemPins<'_>) -> i64 {
 pub fn build_dev_redeem_script(
     prev_state: &[u8; 32],
     prev_lane_tip: &Hash,
+    subnetwork_id: &[u8; 20],
     redeem_script_len: i64,
 ) -> Vec<u8> {
     let mut b = ScriptBuilder::new();
 
-    // Same 66-byte prefix as the production script (OpData32||prev_lane_tip||OpData32||prev_state).
+    // Same 87-byte prefix as the production script
+    // (OpData32||prev_lane_tip||OpData32||prev_state||OpData20||subnetwork_id). Dev has no journal
+    // binding so the subnetwork_id pin is structural only — included to keep the prefix length in
+    // sync with the production script.
     b.add_data(prev_lane_tip.as_slice()).unwrap();
     b.add_data(prev_state).unwrap();
+    b.add_data(subnetwork_id).unwrap();
 
     stash_prev_values(&mut b);
     obtain_new_seq_commitment(&mut b);
     verify_claimed_seq_commit(&mut b);
     build_next_redeem_prefix_no_stash(&mut b);
+    append_subnetwork_id_to_next_prefix(&mut b, subnetwork_id);
     extract_redeem_suffix_and_concat(&mut b, redeem_script_len);
     hash_redeem_to_spk(&mut b);
     verify_output_spk(&mut b);
@@ -262,10 +278,11 @@ pub fn build_dev_redeem_script(
 
 /// Iteratively computes the dev redeem script length (the dev script also embeds its own
 /// length as an offset, so the value is computed the same way as [`redeem_script_len`]).
-pub fn dev_redeem_script_len(prev_state: &[u8; 32]) -> i64 {
+pub fn dev_redeem_script_len(prev_state: &[u8; 32], subnetwork_id: &[u8; 20]) -> i64 {
     let mut guess: i64 = 75;
     loop {
-        let len = build_dev_redeem_script(prev_state, &Hash::default(), guess).len() as i64;
+        let len = build_dev_redeem_script(prev_state, &Hash::default(), subnetwork_id, guess).len()
+            as i64;
         if len == guess {
             return len;
         }
@@ -273,9 +290,11 @@ pub fn dev_redeem_script_len(prev_state: &[u8; 32]) -> i64 {
     }
 }
 
-/// Stack: `[..., new_lane_tip, new_state, block_prove_to, prev_lane_tip, prev_state]`
-/// →      `[..., new_lane_tip, new_state, block_prove_to]`  alt: `[prev_state, prev_lane_tip]`
+/// Stack: `[..., new_lane_tip, new_state, block_prove_to, prev_lane_tip, prev_state,
+/// subnetwork_id]` →      `[..., new_lane_tip, new_state, block_prove_to]`  alt: `[subnetwork_id,
+/// prev_state, prev_lane_tip]` (bottom→top)
 fn stash_prev_values(b: &mut ScriptBuilder) {
+    b.add_op(OpToAltStack).unwrap();
     b.add_op(OpToAltStack).unwrap();
     b.add_op(OpToAltStack).unwrap();
 }
@@ -331,23 +350,38 @@ fn build_next_redeem_prefix_no_stash(b: &mut ScriptBuilder) {
     // Stack: [..., (OpData32||new_lane_tip||OpData32||new_state)] = 66B prefix
 }
 
-/// Dev-mode only. Pops and discards `prev_lane_tip` and `prev_state` from the alt stack
-/// (production consumes them inside `build_and_hash_journal`; dev has no journal).
+/// Dev-mode only. Pops and discards `prev_state`, `prev_lane_tip`, and `subnetwork_id` from the alt
+/// stack (production consumes them inside `build_and_hash_journal`; dev has no journal).
 fn drop_stashed_prev_values(b: &mut ScriptBuilder) {
+    b.add_op(OpFromAltStack).unwrap();
+    b.add_op(OpDrop).unwrap();
     b.add_op(OpFromAltStack).unwrap();
     b.add_op(OpDrop).unwrap();
     b.add_op(OpFromAltStack).unwrap();
     b.add_op(OpDrop).unwrap();
 }
 
-/// Constructs the 66-byte redeem-script prefix for the next covenant UTXO (embedding
+/// Appends the lane's 21-byte subnetwork-id prefix (`OpData20 || subnetwork_id`) to the
+/// top-of-stack 66-byte trailing prefix produced by [`build_next_redeem_prefix`], yielding the full
+/// 87-byte next-spend prefix. The lane id is the same for every spend of a given covenant (the SPK
+/// pins it), so it is pushed from the script body as a constant.
+///
+/// Stack: `[..., prefix66]` → `[..., prefix66 || (OpData20||subnetwork_id)]` = 87B
+fn append_subnetwork_id_to_next_prefix(b: &mut ScriptBuilder, subnetwork_id: &[u8; 20]) {
+    b.add_data(subnetwork_id).unwrap();
+    b.add_op(OpCat).unwrap();
+}
+
+/// Constructs the 66-byte trailing redeem-script prefix for the next covenant UTXO (embedding
 /// `new_state` and `new_lane_tip` so the next spend can verify continuity) and stashes
 /// `new_seq_commit`, `new_state`, `new_lane_tip` on the alt stack for later journal
-/// construction.
+/// construction. The leading 21-byte `OpData20 || subnetwork_id` is appended separately by
+/// [`append_subnetwork_id_to_next_prefix`] to extend the result to the full 87B prefix.
 ///
-/// Stack: `[..., new_lane_tip, new_state, new_seq_commit]` alt: `[prev_state, prev_lane_tip]`
-/// →      `[..., prefix(66)]`
-///        alt: `[prev_state, prev_lane_tip, new_seq_commit, new_state, new_lane_tip]`
+/// Stack: `[..., new_lane_tip, new_state, new_seq_commit]` alt: `[subnetwork_id, prev_state,
+/// prev_lane_tip]` →      `[..., prefix(66)]`
+///        alt: `[subnetwork_id, prev_state, prev_lane_tip, new_seq_commit, new_state,
+/// new_lane_tip]`
 fn build_next_redeem_prefix(b: &mut ScriptBuilder) {
     // Stash new_seq_commit (consumed by journal, not needed in prefix).
     b.add_op(OpToAltStack).unwrap();
@@ -419,18 +453,17 @@ fn verify_output_spk(b: &mut ScriptBuilder) {
     b.add_op(OpEqualVerify).unwrap();
 }
 
-/// Consumes the alt-stack stash
-/// `(prev_state, prev_lane_tip, new_seq_commit, new_state, new_lane_tip)`, assembles the
-/// 160-byte state preimage, appends the input's covenant id (→ 192B), the script-embedded
-/// `tx_image_id` (→ 224B), the 32-byte permission commitment (→ 256B) via
-/// `verify_outputs_and_append_perm_hash`, then SHA-256s the result.
+/// Consumes the alt-stack stash, assembles the 160-byte state preimage, appends the input's
+/// covenant id (→ 192B), the script-embedded `tx_image_id` (→ 224B), the 32-byte permission
+/// commitment (→ 256B) via `verify_outputs_and_append_perm_hash`, recovers the bottom-of-alt
+/// `subnetwork_id` and appends it (→ 276B), then SHA-256s the result.
 ///
 /// Alt layout going in (top→bottom):
-/// `[new_lane_tip, new_state, new_seq_commit, prev_lane_tip, prev_state]`
+/// `[new_lane_tip, new_state, new_seq_commit, prev_lane_tip, prev_state, subnetwork_id]`
 ///
-/// The 256-byte preimage byte order matches `StateTransition::encode` field-for-field:
+/// The 276-byte preimage byte order matches `StateTransition::encode` field-for-field:
 /// `prev_state || prev_lane_tip || new_state || new_lane_tip || new_seq_commit || covenant_id ||
-///  tx_image_id || permission_spk_hash`.
+///  tx_image_id || permission_spk_hash || subnetwork_id`.
 ///
 /// Output: `[..., journal_hash]`
 fn build_and_hash_journal(b: &mut ScriptBuilder, pins: &RedeemPins<'_>) {
@@ -481,6 +514,11 @@ fn build_and_hash_journal(b: &mut ScriptBuilder, pins: &RedeemPins<'_>) {
     // Branch on covenant output count: append permission_spk_hash (count == 2) or 32 zero
     // bytes (count == 1) → 256B preimage matching the guest's journal encoding.
     verify_outputs_and_append_perm_hash(b, pins);
+
+    // Append the lane's 20-byte subnetwork_id (recovered from the bottom of the alt stash) → 276B
+    // preimage.
+    b.add_op(OpFromAltStack).unwrap();
+    b.add_op(OpCat).unwrap();
 
     b.add_op(OpSHA256).unwrap();
 }
@@ -808,10 +846,15 @@ fn split_at_mid(b: &mut ScriptBuilder) {
 mod tests {
     use super::*;
 
+    /// Test-only stable lane id for redeem-script tests (the value doesn't matter for length /
+    /// structure assertions, only that it's the same across calls).
+    const TEST_SUBNETWORK_ID: [u8; 20] = [0xAA; 20];
+
     fn common_pins<'a>(program_id: &'a [u8; 32], tx_image_id: &'a [u8; 32]) -> CommonPins<'a> {
         CommonPins {
             program_id,
             tx_image_id,
+            subnetwork_id: &TEST_SUBNETWORK_ID,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         }
     }
@@ -861,8 +904,8 @@ mod tests {
     #[test]
     fn dev_redeem_script_length_converges() {
         let state = [0u8; 32];
-        let len = dev_redeem_script_len(&state);
-        let built = build_dev_redeem_script(&state, &Hash::default(), len);
+        let len = dev_redeem_script_len(&state, &TEST_SUBNETWORK_ID);
+        let built = build_dev_redeem_script(&state, &Hash::default(), &TEST_SUBNETWORK_ID, len);
         assert_eq!(built.len() as i64, len, "self-referential length must match");
     }
 
@@ -872,8 +915,8 @@ mod tests {
         let pins = succinct_pins(&[1u8; 32], &[2u8; 32]);
         let prod_len = redeem_script_len(&state, &pins);
         let prod = build_redeem_script(&state, &Hash::default(), prod_len, &pins);
-        let dev_len = dev_redeem_script_len(&state);
-        let dev = build_dev_redeem_script(&state, &Hash::default(), dev_len);
+        let dev_len = dev_redeem_script_len(&state, &TEST_SUBNETWORK_ID);
+        let dev = build_dev_redeem_script(&state, &Hash::default(), &TEST_SUBNETWORK_ID, dev_len);
         assert_ne!(prod, dev, "dev and prod scripts must differ");
         assert!(dev.len() < prod.len(), "dev script should be shorter (no journal/zk verify)");
     }
@@ -884,8 +927,8 @@ mod tests {
         let pins = groth16_pins(&[1u8; 32], &[2u8; 32]);
         let prod_len = redeem_script_len(&state, &pins);
         let prod = build_redeem_script(&state, &Hash::default(), prod_len, &pins);
-        let dev_len = dev_redeem_script_len(&state);
-        let dev = build_dev_redeem_script(&state, &Hash::default(), dev_len);
+        let dev_len = dev_redeem_script_len(&state, &TEST_SUBNETWORK_ID);
+        let dev = build_dev_redeem_script(&state, &Hash::default(), &TEST_SUBNETWORK_ID, dev_len);
         assert_ne!(prod, dev, "dev and prod scripts must differ");
         assert!(dev.len() < prod.len(), "dev script should be shorter (no journal/zk verify)");
     }

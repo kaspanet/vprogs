@@ -42,9 +42,14 @@ use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId};
 use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_node_test_utils::L1Node;
+use vprogs_zk_abi::batch_processor::subnetwork_id_from_lane_id;
 use zerocopy::IntoBytes;
 
 const COVENANT_VALUE: u64 = 100_000_000;
+
+/// Subnetwork id the dev / prod tests use; must match `LANE_ID` baked into the batch processor
+/// binary so journal-preimage binding matches across host and guest.
+const TEST_SUBNETWORK_ID: [u8; 20] = subnetwork_id_from_lane_id(4444);
 
 /// Custom user-lane subnetwork the real-proof tests route their L2 carrier txs onto so the
 /// NATIVE lane (which the bootstrap and settlement txs ride) stays separate from the L2's
@@ -89,6 +94,7 @@ async fn settlement_lands_in_real_block_succinct() {
                 common: CommonPins {
                     program_id,
                     tx_image_id,
+                    subnetwork_id: &TEST_SUBNETWORK_ID,
                     permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
                 },
             })
@@ -136,6 +142,7 @@ async fn settlement_lands_in_real_block_groth16() {
                 common: CommonPins {
                     program_id,
                     tx_image_id,
+                    subnetwork_id: &TEST_SUBNETWORK_ID,
                     permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
                 },
             })
@@ -189,9 +196,13 @@ async fn settlement_lands_in_real_block_dev_redeem() {
     // === Step 1: deploy the dev covenant ===
     let bootstrap_state = EMPTY_HASH;
     let bootstrap_lane_tip = Hash::default();
-    let redeem_len = dev_redeem_script_len(&bootstrap_state);
-    let bootstrap_redeem =
-        build_dev_redeem_script(&bootstrap_state, &bootstrap_lane_tip, redeem_len);
+    let redeem_len = dev_redeem_script_len(&bootstrap_state, &TEST_SUBNETWORK_ID);
+    let bootstrap_redeem = build_dev_redeem_script(
+        &bootstrap_state,
+        &bootstrap_lane_tip,
+        &TEST_SUBNETWORK_ID,
+        redeem_len,
+    );
     let bootstrap_spk = pay_to_script_hash_script(&bootstrap_redeem);
 
     let (bootstrap_tx, covenant_id) =
@@ -373,6 +384,7 @@ async fn run_one_dev_settlement(step: DevSettlementStep<'_>) -> DevSettlementOut
         covenant_id,
         prev_state: &prev_state,
         prev_lane_tip: &prev_lane_tip,
+        subnetwork_id: &TEST_SUBNETWORK_ID,
         new_state: &new_state,
         new_lane_tip: &new_lane_tip,
         block_prove_to: block_acc_carrier,

@@ -7,12 +7,17 @@ use vprogs_zk_backend_risc0_api::{Host, Journal, PermissionTreeAccumulator};
 
 risc0_zkvm::guest::entry!(main);
 
+/// Subnetwork namespace this batch processor binary is built for; the framework const-projects this
+/// `u32` to a kaspa SubnetworkId at `Verifier::new`, rejecting reserved shapes at compile time.
+const LANE_ID: u32 = 4444;
+
 /// Entrypoint for the batch processor.
 fn main() {
     // Read the bundle inputs from the host and build the verifier with the default
     // permission-tree accumulator for exits.
     let inputs = Host.read_blob();
-    let mut verifier = Verifier::new(&inputs, verify_tx_journal, PermissionTreeAccumulator::new());
+    let mut verifier =
+        Verifier::new::<LANE_ID>(&inputs, verify_tx_journal, PermissionTreeAccumulator::new());
 
     // Verify all batches and derive the post-state.
     let (lane_tip, lane_blue_score) = verifier.verify_batches();

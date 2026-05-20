@@ -1,4 +1,3 @@
-use kaspa_hashes::Hash;
 #[cfg(feature = "host")]
 use kaspa_rpc_core::GetSeqCommitLaneProofResponse;
 #[cfg(feature = "host")]
@@ -19,13 +18,16 @@ use crate::{
 };
 
 /// Decoded batch processor input.
+///
+/// The lane this bundle settles is pinned at compile time (the batch-processor binary bakes its
+/// `LANE_ID` const), so no `lane_key` host input appears here: the value the guest uses is derived
+/// from the baked const, and the covenant SPK pins the same subnetwork id in its redeem-script
+/// prefix.
 pub struct Inputs<'a> {
     /// Transaction processor guest image ID used to verify each inner tx journal.
     pub image_id: &'a [u8; 32],
     /// Covenant id this bundle settles into.
     pub covenant_id: &'a [u8; 32],
-    /// Lane key for this bundle (one lane per bundle).
-    pub lane_key: &'a Hash,
     /// SMT proof covering the union of resources touched across all batches.
     pub proof: Proof<'a>,
     /// Leaf-order permutation: `leaf_order[leaf_pos] = bundle_resource_index`.
@@ -42,7 +44,6 @@ impl<'a> Inputs<'a> {
         Ok(Self {
             image_id: buf.array::<32>("image_id")?,
             covenant_id: buf.array::<32>("covenant_id")?,
-            lane_key: buf.array_as::<Hash>("lane_key")?,
             proof: Proof::decode(buf.blob("proof")?)?,
             leaf_order: <[U32]>::ref_from_bytes(buf.blob("leaf_order")?)?,
             lane_proof: LaneProof::decode(&mut buf)?,
@@ -55,7 +56,6 @@ impl<'a> Inputs<'a> {
     pub fn encode<'b, I>(
         image_id: &[u8; 32],
         covenant_id: &[u8; 32],
-        lane_key: &Hash,
         proof_bytes: &[u8],
         leaf_order: &[U32],
         lane_proof: &GetSeqCommitLaneProofResponse,
@@ -68,7 +68,6 @@ impl<'a> Inputs<'a> {
         Vec::new().tap_mut(|buf| {
             buf.write(image_id);
             buf.write(covenant_id);
-            buf.write(lane_key.as_slice());
             buf.write_blob(proof_bytes);
             buf.write_blob(leaf_order.as_bytes());
             LaneProof::encode(buf, lane_proof);

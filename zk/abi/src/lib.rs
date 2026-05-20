@@ -7,6 +7,7 @@ mod read;
 
 pub mod batch_processor {
     pub(crate) mod exit;
+    pub(crate) mod lane;
     pub(crate) mod verifier;
 
     pub(crate) mod input {
@@ -30,7 +31,8 @@ pub mod batch_processor {
         batch::Batch, batches::Batches, inputs::Inputs, lane_proof::LaneProof,
         transaction_journals::TransactionJournals,
     };
-    pub use journal::state_transition::StateTransition;
+    pub use journal::state_transition::{JOURNAL_SIZE, StateTransition};
+    pub use lane::subnetwork_id_from_lane_id;
     pub use verifier::Verifier;
 }
 

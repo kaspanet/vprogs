@@ -222,6 +222,9 @@ pub struct SettlementDevInput<'a> {
     /// Lane tip embedded in the covenant UTXO's redeem prefix (carried from the previous
     /// settlement).
     pub prev_lane_tip: &'a Hash,
+    /// Kaspa SubnetworkId the dev covenant settles for; pinned into the redeem prefix to keep dev
+    /// and prod layouts size-compatible.
+    pub subnetwork_id: &'a [u8; 20],
     /// L2 state root after this batch.
     pub new_state: &'a [u8; 32],
     /// Lane tip after this batch (locks into the continuation UTXO's redeem prefix).
@@ -243,11 +246,20 @@ impl Settlement {
     /// variant so the test path can drive the full chain pipeline (mempool, block inclusion,
     /// acceptance) without a real ZK seal.
     pub fn build_dev(input: &SettlementDevInput<'_>) -> Self {
-        let redeem_len = dev_redeem_script_len(input.prev_state);
+        let redeem_len = dev_redeem_script_len(input.prev_state, input.subnetwork_id);
 
-        let prev_redeem =
-            build_dev_redeem_script(input.prev_state, input.prev_lane_tip, redeem_len);
-        let next_redeem = build_dev_redeem_script(input.new_state, input.new_lane_tip, redeem_len);
+        let prev_redeem = build_dev_redeem_script(
+            input.prev_state,
+            input.prev_lane_tip,
+            input.subnetwork_id,
+            redeem_len,
+        );
+        let next_redeem = build_dev_redeem_script(
+            input.new_state,
+            input.new_lane_tip,
+            input.subnetwork_id,
+            redeem_len,
+        );
 
         let sig_script = sig_script_dev(
             &prev_redeem,
@@ -397,6 +409,7 @@ mod tests {
             common: CommonPins {
                 program_id: &[0xBB; 32],
                 tx_image_id: &[0xCC; 32],
+                subnetwork_id: &[0xEE; 20],
                 permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
             },
         })
@@ -407,6 +420,7 @@ mod tests {
             common: CommonPins {
                 program_id: &[0xBB; 32],
                 tx_image_id: &[0xCC; 32],
+                subnetwork_id: &[0xEE; 20],
                 permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
             },
         })
@@ -572,6 +586,7 @@ mod tests {
             covenant_id: Hash::from_bytes([0xAA; 32]),
             prev_state: &[0x11; 32],
             prev_lane_tip: &Hash::from_bytes([0x22; 32]),
+            subnetwork_id: &[0xEE; 20],
             new_state: &[0x33; 32],
             new_lane_tip: &Hash::from_bytes([0x44; 32]),
             block_prove_to: Hash::from_bytes([0x55; 32]),

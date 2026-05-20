@@ -24,7 +24,14 @@ pub struct StateTransition {
     /// exits were emitted. Non-zero values cause the on-chain settlement to add a second P2SH
     /// output for permission-tree withdrawals.
     pub permission_spk_hash: [u8; 32],
+    /// Kaspa SubnetworkId this settlement binds to (the lane the batch processor was built for).
+    /// The covenant SPK pins the same 20 bytes in its redeem-script prefix, so any settlement
+    /// proof that names a different lane fails the SHA-256 journal-preimage check.
+    pub subnetwork_id: [u8; 20],
 }
+
+/// Serialized length of [`StateTransition`] in bytes.
+pub const JOURNAL_SIZE: usize = 32 * 8 + 20;
 
 impl StateTransition {
     /// Writes the state transition journal to `w`.
@@ -35,6 +42,7 @@ impl StateTransition {
         covenant_id: &[u8; 32],
         tx_image_id: &[u8; 32],
         permission_spk_hash: &[u8; 32],
+        subnetwork_id: &[u8; 20],
     ) {
         w.write(prev_state);
         w.write(prev_lane_tip.as_slice());
@@ -44,5 +52,27 @@ impl StateTransition {
         w.write(covenant_id);
         w.write(tx_image_id);
         w.write(permission_spk_hash);
+        w.write(subnetwork_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn journal_size_matches_encoded_length() {
+        let mut buf: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+        StateTransition::encode(
+            &mut buf,
+            (&[0u8; 32], &Hash::default()),
+            (&[0u8; 32], &Hash::default(), &Hash::default()),
+            &[0u8; 32],
+            &[0u8; 32],
+            &[0u8; 32],
+            &[0u8; 20],
+        );
+        assert_eq!(buf.len(), JOURNAL_SIZE);
+        assert_eq!(JOURNAL_SIZE, 276);
     }
 }

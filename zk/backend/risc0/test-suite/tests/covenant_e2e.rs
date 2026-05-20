@@ -14,6 +14,7 @@ use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_txscript::standard::pay_to_script_hash_script;
 use vprogs_core_smt::EMPTY_HASH;
 use vprogs_node_test_utils::L1Node;
+use vprogs_zk_abi::batch_processor::subnetwork_id_from_lane_id;
 use vprogs_zk_backend_risc0_api::ProofType;
 use vprogs_zk_backend_risc0_covenant::{
     CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, RedeemPins, SuccinctPins, build_redeem_script,
@@ -22,6 +23,10 @@ use vprogs_zk_backend_risc0_covenant::{
 use vprogs_zk_backend_risc0_test_suite::{batch_processor_elf, transaction_processor_elf};
 
 const TEST_COVENANT_VALUE: u64 = 100_000_000;
+
+/// Subnetwork id the covenant binds to; must match the `LANE_ID` const baked into the batch
+/// processor binary.
+const TEST_SUBNETWORK_ID: [u8; 20] = subnetwork_id_from_lane_id(4444);
 
 /// Boots a simnet with covenants enabled, builds an initial covenant redeem script whose
 /// `program_id` points at the real batch-processor image, submits a bootstrap transaction, mines
@@ -52,6 +57,7 @@ async fn covenant_bootstrap_is_accepted_on_simnet() {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
+            subnetwork_id: &TEST_SUBNETWORK_ID,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },
     });
