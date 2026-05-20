@@ -59,8 +59,11 @@ async fn batch_proof_two_transactions() {
     // Mine a couple of blocks so we have real block hashes to anchor metadata against.
     let block_hashes = l1.mine_blocks(2).await;
 
-    let config =
-        BatchProverConfig { bundle_size: NonZeroUsize::new(1).unwrap(), lane_key: Hash::default() };
+    let config = BatchProverConfig {
+        bundle_size: NonZeroUsize::new(1).unwrap(),
+        lane_key: Hash::default(),
+        covenant_id: None,
+    };
 
     let proving =
         ProvingPipeline::batch(backend.clone(), storage.clone(), l1.grpc_client().clone(), config);
@@ -209,8 +212,11 @@ async fn batch_proof_bundle_of_two() {
     let l1 = L1Node::new(None).await;
     let block_hashes = l1.mine_blocks(2).await;
 
-    let config =
-        BatchProverConfig { bundle_size: NonZeroUsize::new(2).unwrap(), lane_key: Hash::default() };
+    let config = BatchProverConfig {
+        bundle_size: NonZeroUsize::new(2).unwrap(),
+        lane_key: Hash::default(),
+        covenant_id: None,
+    };
 
     let proving =
         ProvingPipeline::batch(backend.clone(), storage.clone(), l1.grpc_client().clone(), config);

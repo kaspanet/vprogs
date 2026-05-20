@@ -27,5 +27,9 @@ pub use permission_script::{
 };
 pub use permission_tree::PermissionTreeAccumulator;
 pub use proof_type::ProofType;
+/// Re-exported so downstream test code can refer to the receipt type without taking a
+/// direct dep on `risc0-zkvm`.
+#[cfg(feature = "host")]
+pub use risc0_zkvm::Receipt;
 #[cfg(feature = "host")]
 pub use witness::{OwnedGroth16Witness, OwnedSuccinctWitness, ScriptVerifierPins};
