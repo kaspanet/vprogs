@@ -167,8 +167,11 @@ async fn batch_proof_is_directly_settleable_single_batch() {
     let l1 = L1Node::new(None).await;
     let block_hashes = l1.mine_blocks(1).await;
 
-    let config =
-        BatchProverConfig { bundle_size: NonZeroUsize::new(1).unwrap(), lane_key: Hash::default() };
+    let config = BatchProverConfig {
+        bundle_size: NonZeroUsize::new(1).unwrap(),
+        lane_key: Hash::default(),
+        covenant_id: None,
+    };
 
     let proving =
         ProvingPipeline::batch(backend.clone(), storage.clone(), l1.grpc_client().clone(), config);
@@ -325,8 +328,11 @@ async fn batch_proof_groth16_is_directly_settleable_single_batch() {
     let l1 = L1Node::new(None).await;
     let block_hashes = l1.mine_blocks(1).await;
 
-    let config =
-        BatchProverConfig { bundle_size: NonZeroUsize::new(1).unwrap(), lane_key: Hash::default() };
+    let config = BatchProverConfig {
+        bundle_size: NonZeroUsize::new(1).unwrap(),
+        lane_key: Hash::default(),
+        covenant_id: None,
+    };
 
     let proving =
         ProvingPipeline::batch(backend.clone(), storage.clone(), l1.grpc_client().clone(), config);
@@ -466,8 +472,11 @@ async fn batch_proof_bundles_two_batches() {
     let l1 = L1Node::new(None).await;
     let block_hashes = l1.mine_blocks(2).await;
 
-    let config =
-        BatchProverConfig { bundle_size: NonZeroUsize::new(2).unwrap(), lane_key: Hash::default() };
+    let config = BatchProverConfig {
+        bundle_size: NonZeroUsize::new(2).unwrap(),
+        lane_key: Hash::default(),
+        covenant_id: None,
+    };
 
     let proving =
         ProvingPipeline::batch(backend.clone(), storage.clone(), l1.grpc_client().clone(), config);
@@ -645,8 +654,11 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
     let l1 = L1Node::new(None).await;
     let block_hashes = l1.mine_blocks(2).await;
 
-    let config =
-        BatchProverConfig { bundle_size: NonZeroUsize::new(2).unwrap(), lane_key: Hash::default() };
+    let config = BatchProverConfig {
+        bundle_size: NonZeroUsize::new(2).unwrap(),
+        lane_key: Hash::default(),
+        covenant_id: None,
+    };
 
     let proving =
         ProvingPipeline::batch(backend.clone(), storage.clone(), l1.grpc_client().clone(), config);

@@ -131,10 +131,11 @@ where
 
         let bundle = Bundle::new(batches, translations, B::journal_bytes);
 
-        // covenant_id wiring lives at the call site that built the prover; for now we treat
-        // covenant_id as zero (non-settling) when not wired through. The backend supplies
-        // the batch-processor image id.
-        let covenant_id = [0u8; 32];
+        // Pulled from the prover config: at settle time, the on-chain script reconstructs
+        // the journal preimage with the input's `OpInputCovenantId`, so the receipt's
+        // committed `covenant_id` has to equal the deployed UTXO's id. Configs that don't
+        // anchor to a real covenant leave this `None`, committing the all-zero placeholder.
+        let covenant_id = self.config.covenant_id.map(|h| h.as_bytes()).unwrap_or_default();
         let bundle_inputs = BundleInputs::encode(
             self.backend.image_id(),
             &covenant_id,
