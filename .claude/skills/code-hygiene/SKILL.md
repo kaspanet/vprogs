@@ -273,6 +273,167 @@ when:
 Otherwise keep the manual impl — explicit bounds beat derive convenience
 when the derive would over-constrain.
 
+### Match surrounding field-doc voice
+
+Inside a struct, sibling fields establish a voice — typically one short
+sentence naming what the field IS, optionally with a one-clause qualifier.
+When adding a new field, scan the siblings and match their brevity. A
+multi-line doc dropped next to one-line siblings reads as noise even when
+each individual sentence is defensible.
+
+The rule is voice-matching, not a hard length cap: if the surrounding
+fields already carry usage details, match that. If they're terse, be terse.
+
+**Before** (5 lines next to 1-line siblings):
+```rust
+/// Lane tip after applying this block's accepted txs.
+pub lane_tip: Hash,
+/// True when the lane was silent past the finality window at this block.
+pub lane_expired: bool,
+/// Most-recent settlement of the bridge's configured covenant observed at or before this
+/// block, or `None` if none has been observed since the bridge started. Carried forward from
+/// the parent on blocks that contain no new settlement; replaced when a new one lands in this
+/// block. Compare `last_settlement.containing_block` against this block's `hash` to tell the
+/// two cases apart.
+pub last_settlement: Option<SettlementInfo>,
+```
+
+**After**:
+```rust
+/// Lane tip after applying this block's accepted txs.
+pub lane_tip: Hash,
+/// True when the lane was silent past the finality window at this block.
+pub lane_expired: bool,
+/// Most-recent settlement of the configured covenant, or `None` until one lands.
+pub last_settlement: Option<SettlementInfo>,
+```
+
+Why: the carry-forward behavior, the bridge-context, and the "compare
+against block hash" usage hint all migrate to where they actually belong —
+the field's type doc covers the data shape; callers handle their own
+comparisons. The field itself just names what it carries.
+
+### Field docs name what the field IS, not what happens when set
+
+For config / option fields, the doc should describe the field's *identity* —
+what value it carries and what that value means — not the behavior triggered
+when the value is set. The "When set, X is scanned for Y" or "If `Some`, Z
+is invoked" phrasing is a smell: that behavior lives in the consumer that
+READS the field, and its docs are the right place for it.
+
+Naming the role (often by linking to the field that consumes it) is
+shorter, truer, and stays correct when the consumer's algorithm changes.
+
+**Before**:
+```rust
+/// Covenant id this bridge tracks settlements for, or `None` to ignore covenant
+/// activity. When set, accepted transactions in each chain block are scanned
+/// for an output bound to this id; on a match, the settlement is decoded into
+/// the block's [`ChainBlockMetadata::last_settlement`].
+pub covenant_id: Option<Hash>,
+```
+
+**After**:
+```rust
+/// Covenant id surfaced through [`ChainBlockMetadata::last_settlement`], or
+/// `None` to disable.
+pub covenant_id: Option<Hash>,
+```
+
+Why: the WHAT is "the covenant id whose settlements the bridge surfaces
+into the metadata field". The "When set, accepted txs are scanned..." prose
+is implementation of how the field is used, lives in the worker, and would
+need updating if the worker's loop shape changed. The link to
+`last_settlement` does the work.
+
+### Extend existing iterations; don't split filtered loops into two passes
+
+When adding a new derived value alongside an existing iteration (filtering,
+collecting, mapping), prefer a captured accumulator updated inside the
+existing closure over a "collect everything first, iterate again" rewrite.
+Side-effects in closures are idiomatic when the closure is already doing
+similar work, and a single-pass loop preserves the original control flow
+reviewers already understand.
+
+This applies especially to **filtered** collections: building an unfiltered
+intermediate `Vec` just to satisfy a second scan doubles allocation and
+obscures the filter shape. Push the second concern into the same
+`filter_map` closure via a mutable accumulator captured from the enclosing
+scope.
+
+When the second concern is "carry the latest value forward across
+iterations, defaulting to a prior state if none observed", seed the
+accumulator from the prior state and update via `.or(accumulator)` inside
+the loop — that one expression handles both "overwrite when something new
+is found" and "preserve when nothing matches", and the variable holds the
+final answer without an extra `.or(prior_state)` at the call site.
+
+**Before** (single-pass `filter_map` ballooned into two passes to add
+settlement detection + a separate `.or(parent.last_settlement)` at the
+struct site):
+```rust
+let l1_txs: Vec<(u32, L1Transaction)> = chain_block
+    .accepted_transactions
+    .iter()
+    .enumerate()
+    .map(|(idx, tx)| (idx as u32, L1Transaction::try_from(tx.clone()).expect("missing tx fields")))
+    .collect();
+
+let new_settlement = self.covenant_id.as_ref().and_then(|cid| {
+    l1_txs.iter().find_map(|(_, tx)| detect_settlement(cid, block_hash, tx))
+});
+
+let accepted_transactions: Vec<(u32, L1Transaction)> = l1_txs
+    .into_iter()
+    .filter(|(_, tx)| match self.subnetwork_filter.as_ref() {
+        Some(want) => tx.subnetwork_id == *want,
+        None => true,
+    })
+    .collect();
+
+// ...later, at the struct construction:
+let checkpoint = self.virtual_chain.advance_tip(ChainBlockMetadata {
+    last_settlement: new_settlement.or(parent_meta.last_settlement),
+    // ...
+});
+```
+
+**After** (single pass; accumulator seeded from parent state and updated in place):
+```rust
+let mut last_settlement = parent_meta.last_settlement;
+let accepted_transactions: Vec<(u32, L1Transaction)> = chain_block
+    .accepted_transactions
+    .iter()
+    .enumerate()
+    .filter_map(|(idx, tx)| {
+        let tx = L1Transaction::try_from(tx.clone()).expect("missing tx fields");
+        if let Some(id) = &self.covenant_id {
+            last_settlement = tx.settlement_info(id, block_hash).or(last_settlement);
+        }
+        match self.subnetwork_filter.as_ref() {
+            Some(want) if tx.subnetwork_id != *want => None,
+            _ => Some((idx as u32, tx)),
+        }
+    })
+    .collect();
+
+// ...later, at the struct construction:
+let checkpoint = self.virtual_chain.advance_tip(ChainBlockMetadata {
+    last_settlement,
+    // ...
+});
+```
+
+Why: the After version preserves the original `filter_map` shape, allocates
+one Vec instead of two, and folds the carry-forward semantics into the
+accumulator's seed + the `.or(last_settlement)` accumulation. The struct
+site just uses the variable — no extra coalesce step needed.
+
+**Exception**: when the second concern needs a *complete* collection up
+front (e.g., sort then process, check uniqueness then dedupe), two passes
+are the right answer. The rule targets cases where the second concern can
+be folded into the existing closure without changing semantics.
+
 ## Concrete examples from prior cleanups
 
 ### Example 1 — algorithm restated at two levels

@@ -4,7 +4,7 @@ use clap::Args;
 use kaspa_consensus_core::subnets::SubnetworkId;
 use serde::{Deserialize, Serialize};
 use vprogs_l1_bridge::L1BridgeConfig;
-use vprogs_l1_types::NetworkId;
+use vprogs_l1_types::{Hash, NetworkId};
 
 use crate::extensions::ConnectStrategyExt;
 
@@ -37,6 +37,10 @@ pub struct L1BridgeParams {
     /// Blue-score window within which a lane stays active without new transactions.
     #[arg(long = "l1-bridge-finality-depth", default_value_t = L1BridgeConfig::default().finality_depth)]
     pub finality_depth: u64,
+    /// Covenant id (64-char hex) whose last settlement gets tracked by each chain block's
+    /// metadata. Omit to disable covenant tracking.
+    #[arg(long = "l1-bridge-covenant-id")]
+    pub covenant_id: Option<Hash>,
 }
 
 impl L1BridgeParams {
@@ -54,6 +58,7 @@ impl L1BridgeParams {
             tip: None,
             subnetwork_id: self.subnetwork_id,
             finality_depth: self.finality_depth,
+            covenant_id: self.covenant_id,
         }
     }
 }

@@ -1,7 +1,7 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use kaspa_rpc_core::{RpcHeader, RpcOptionalHeader};
 
-use crate::Hash;
+use crate::{Hash, SettlementInfo};
 
 /// Per-block metadata the bridge attaches to each L1 chain block.
 ///
@@ -35,6 +35,8 @@ pub struct ChainBlockMetadata {
     pub lane_tip: Hash,
     /// True when the lane was silent past the finality window at this block.
     pub lane_expired: bool,
+    /// Most-recent settlement of the configured covenant, or `None` until one lands.
+    pub last_settlement: Option<SettlementInfo>,
 }
 
 impl From<&RpcHeader> for ChainBlockMetadata {
