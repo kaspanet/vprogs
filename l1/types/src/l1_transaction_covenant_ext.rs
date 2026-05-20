@@ -9,6 +9,9 @@
 //! data the prover needs to know "up to which L1 block has this covenant already been settled by
 //! another prover" without inspecting on-chain UTXO state.
 
+use kaspa_consensus_core::{hashing::sighash::SigHashReusedValuesUnsync, tx::PopulatedTransaction};
+use kaspa_txscript::parse_script;
+
 use crate::{Hash, L1Transaction, SettlementInfo};
 
 /// Covenant-aware extension methods for [`L1Transaction`].
@@ -19,68 +22,46 @@ pub trait L1TransactionCovenantExt {
 
 impl L1TransactionCovenantExt for L1Transaction {
     fn settlement_info(&self, covenant_id: Hash, containing_block: Hash) -> Option<SettlementInfo> {
+        // Cheap structural gate: output 0 must bind to the configured covenant.
         if self.outputs.first()?.covenant.as_ref()?.covenant_id != covenant_id {
             return None;
         }
 
-        let input = self.inputs.first()?;
-        let tail = sig_script_tail_4(&input.signature_script)?;
-        let new_lane_tip: [u8; 32] = tail[0].try_into().ok()?;
-        let new_state: [u8; 32] = tail[1].try_into().ok()?;
-        let block_prove_to: [u8; 32] = tail[2].try_into().ok()?;
+        // Decode the three 32-byte values pushed before the redeem in input 0's sig_script.
+        let (new_lane_tip, new_state, block_prove_to) =
+            parse_settlement_tail(&self.inputs.first()?.signature_script)?;
 
         Some(SettlementInfo {
             tx_id: self.id(),
             containing_block,
-            block_prove_to: Hash::from_bytes(block_prove_to),
+            block_prove_to,
             new_state,
-            new_lane_tip: Hash::from_bytes(new_lane_tip),
+            new_lane_tip,
         })
     }
 }
 
-/// Returns the payloads of the last four data pushes in `script`, or `None` if `script` contains
-/// fewer than four pushes or any byte is a non-push opcode.
-///
-/// Kaspa data-push opcodes (mirrors `kaspa_txscript::opcodes::codes`):
-/// - `0x00`: empty push.
-/// - `0x01..=0x4b`: literal push, opcode byte is the payload length (`OpData1..OpData75`).
-/// - `0x4c`: `OpPushData1`, 1-byte length prefix.
-/// - `0x4d`: `OpPushData2`, 2-byte little-endian length prefix.
-/// - `0x4e`: `OpPushData4`, 4-byte little-endian length prefix.
-fn sig_script_tail_4(script: &[u8]) -> Option<[&[u8]; 4]> {
-    let mut tail: [&[u8]; 4] = [&[]; 4];
-    let mut count = 0usize;
-    let mut i = 0usize;
-    while i < script.len() {
-        let opcode = script[i];
-        i += 1;
-        let (len, prefix_bytes) = match opcode {
-            0x00 => (0, 0),
-            0x01..=0x4b => (opcode as usize, 0),
-            0x4c => (*script.get(i)? as usize, 1),
-            0x4d => {
-                let bytes: [u8; 2] = script.get(i..i + 2)?.try_into().ok()?;
-                (u16::from_le_bytes(bytes) as usize, 2)
-            }
-            0x4e => {
-                let bytes: [u8; 4] = script.get(i..i + 4)?.try_into().ok()?;
-                (u32::from_le_bytes(bytes) as usize, 4)
-            }
-            _ => return None,
-        };
-        i += prefix_bytes;
-        let end = i.checked_add(len)?;
-        if end > script.len() {
+/// Returns `(new_lane_tip, new_state, block_prove_to)` from the three 32-byte pushes preceding the
+/// redeem-script push, or `None` if the sig_script doesn't end in that layout.
+fn parse_settlement_tail(script: &[u8]) -> Option<(Hash, [u8; 32], Hash)> {
+    // Sliding window over the last four push payloads; only 32-byte pushes occupy a slot.
+    let mut window: [Option<[u8; 32]>; 4] = [None; 4];
+    for op in parse_script::<PopulatedTransaction<'_>, SigHashReusedValuesUnsync>(script) {
+        // Reject anything other than a clean data push.
+        let op = op.ok()?;
+        if !op.is_push_opcode() {
             return None;
         }
-        let payload = &script[i..end];
-        tail.copy_within(1..4, 0);
-        tail[3] = payload;
-        count += 1;
-        i = end;
+
+        // Slide the window left, record the new push in slot 3.
+        window[0] = window[1].take();
+        window[1] = window[2].take();
+        window[2] = window[3].take();
+        window[3] = op.get_data().try_into().ok();
     }
-    if count < 4 { None } else { Some(tail) }
+
+    // Slots 0..2 hold the three settlement values; slot 3 (the redeem) is ignored.
+    Some((Hash::from_bytes(window[0]?), window[1]?, Hash::from_bytes(window[2]?)))
 }
 
 #[cfg(test)]
@@ -226,19 +207,18 @@ mod tests {
 
     #[test]
     fn rejects_truncated_push_length_prefix() {
-        let mut script = Vec::new();
-        push(&mut script, &[0xAB; 16]);
-        push(&mut script, &[0xCD; 16]);
-        push(&mut script, &[0xEF; 16]);
+        let mut script = build_sig_script(&[]);
         script.push(0x4d); // OpPushData2 without its 2-byte length suffix
-        assert!(sig_script_tail_4(&script).is_none());
+        let tx = settlement_tx(script, COVENANT_ID);
+        assert!(tx.settlement_info(COVENANT_ID, CONTAINING_BLOCK).is_none());
     }
 
     #[test]
     fn rejects_non_push_opcode() {
         let mut script = build_sig_script(&[]);
         script.push(0x69); // OpVerify - any non-push byte.
-        assert!(sig_script_tail_4(&script).is_none());
+        let tx = settlement_tx(script, COVENANT_ID);
+        assert!(tx.settlement_info(COVENANT_ID, CONTAINING_BLOCK).is_none());
     }
 
     #[test]

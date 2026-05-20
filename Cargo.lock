@@ -8481,7 +8481,9 @@ dependencies = [
  "kaspa-consensus-core",
  "kaspa-hashes",
  "kaspa-rpc-core",
+ "kaspa-txscript",
  "kaspa-wrpc-client",
+ "zerocopy",
 ]
 
 [[package]]
