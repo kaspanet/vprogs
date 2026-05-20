@@ -59,8 +59,7 @@ pub(crate) struct BridgeWorker {
     lane_key: Option<Hash>,
     /// Blue-score window within which a lane stays active without new transactions.
     finality_depth: u64,
-    /// Covenant id whose last settlement gets tracked by `ChainBlockMetadata::last_settlement` or
-    /// `None` to disable covenant tracking.
+    /// Covenant id tracked by [`ChainBlockMetadata::last_settlement`], or `None` to disable.
     covenant_id: Option<Hash>,
 }
 
