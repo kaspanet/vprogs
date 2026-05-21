@@ -58,7 +58,7 @@ async fn settlement_lands_in_real_block_succinct() {
         // Image-id-only pins for both succinct branches: control_id / hashfn are
         // circuit-determined and live as build-time consts in covenant::succinct_consts, no
         // per-spend extraction needed.
-        build_pins: |program_id, tx_image_id| {
+        build_pins: |BuildPinsArgs { program_id, tx_image_id }| {
             RedeemPins::Succinct(SuccinctPins {
                 common: CommonPins {
                     program_id,
@@ -102,7 +102,7 @@ async fn settlement_lands_in_real_block_groth16() {
         // The Groth16 redeem branch needs no verifier pins beyond the common ones: the
         // verifier identity (control root halves, bn254 control id, VK) is baked into the
         // script at build time via `groth16_consts`.
-        build_pins: |program_id, tx_image_id| {
+        build_pins: |BuildPinsArgs { program_id, tx_image_id }| {
             RedeemPins::Groth16(Groth16Pins {
                 common: CommonPins {
                     program_id,
@@ -138,11 +138,20 @@ impl RealProofWitness {
     }
 }
 
+/// Image-id pair the `build_pins` callback receives. Carries named fields so call sites
+/// can't accidentally swap `program_id` (the batch-processor verifier) and `tx_image_id`
+/// (the transaction-processor inner guest); both are `&[u8; 32]` and a positional call
+/// would compile happily with the wrong order.
+#[derive(Copy, Clone)]
+struct BuildPinsArgs<'a> {
+    program_id: &'a [u8; 32],
+    tx_image_id: &'a [u8; 32],
+}
+
 /// Per-proof-system knobs the real-proof settlement driver needs.
 struct RealProofConfig<BuildPins, MakeWitness>
 where
-    BuildPins:
-        for<'a> Fn(&'a [u8; 32], &'a [u8; 32]) -> vprogs_zk_backend_risc0_covenant::RedeemPins<'a>,
+    BuildPins: for<'a> Fn(BuildPinsArgs<'a>) -> vprogs_zk_backend_risc0_covenant::RedeemPins<'a>,
     MakeWitness: Fn(&vprogs_zk_backend_risc0_api::Receipt) -> RealProofWitness,
 {
     proof_type: vprogs_zk_backend_risc0_api::ProofType,
@@ -171,8 +180,7 @@ where
 async fn run_real_proof_settlement<BuildPins, MakeWitness>(
     config: RealProofConfig<BuildPins, MakeWitness>,
 ) where
-    BuildPins:
-        for<'a> Fn(&'a [u8; 32], &'a [u8; 32]) -> vprogs_zk_backend_risc0_covenant::RedeemPins<'a>,
+    BuildPins: for<'a> Fn(BuildPinsArgs<'a>) -> vprogs_zk_backend_risc0_covenant::RedeemPins<'a>,
     MakeWitness: Fn(&vprogs_zk_backend_risc0_api::Receipt) -> RealProofWitness,
 {
     use std::num::NonZeroUsize;
@@ -215,7 +223,8 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
     // up-front from EMPTY_HASH / zero lane_tip.
     let bootstrap_state = EMPTY_HASH;
     let bootstrap_lane_tip = Hash::default();
-    let spend_pins = (config.build_pins)(&program_id, &tx_image_id);
+    let spend_pins =
+        (config.build_pins)(BuildPinsArgs { program_id: &program_id, tx_image_id: &tx_image_id });
     let redeem_len = redeem_script_len(&bootstrap_state, &spend_pins);
     let bootstrap_redeem =
         build_redeem_script(&bootstrap_state, &bootstrap_lane_tip, redeem_len, &spend_pins);
@@ -377,8 +386,7 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
 /// description (which resource its tx writes), and lane bookkeeping.
 struct SettlementStep<'a, BuildPins, MakeWitness>
 where
-    BuildPins:
-        for<'b> Fn(&'b [u8; 32], &'b [u8; 32]) -> vprogs_zk_backend_risc0_covenant::RedeemPins<'b>,
+    BuildPins: for<'b> Fn(BuildPinsArgs<'b>) -> vprogs_zk_backend_risc0_covenant::RedeemPins<'b>,
     MakeWitness: Fn(&vprogs_zk_backend_risc0_api::Receipt) -> RealProofWitness,
 {
     l1: &'a L1Node,
@@ -424,8 +432,7 @@ async fn run_one_settlement<BuildPins, MakeWitness>(
     step: SettlementStep<'_, BuildPins, MakeWitness>,
 ) -> SettlementOutcome
 where
-    BuildPins:
-        for<'b> Fn(&'b [u8; 32], &'b [u8; 32]) -> vprogs_zk_backend_risc0_covenant::RedeemPins<'b>,
+    BuildPins: for<'b> Fn(BuildPinsArgs<'b>) -> vprogs_zk_backend_risc0_covenant::RedeemPins<'b>,
     MakeWitness: Fn(&vprogs_zk_backend_risc0_api::Receipt) -> RealProofWitness,
 {
     use vprogs_core_codec::Reader;

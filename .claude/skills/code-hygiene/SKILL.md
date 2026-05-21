@@ -273,6 +273,83 @@ when:
 Otherwise keep the manual impl — explicit bounds beat derive convenience
 when the derive would over-constrain.
 
+### Same-typed positional arguments / returns need a struct
+
+When a function or closure has two or more positional arguments (or
+returns) of the **same type**, introduce a named struct instead. With only
+position to disambiguate, every call site has to remember which `u64` /
+`[u8; 32]` / `Hash` goes where, and a swap typo compiles silently.
+
+The rule doesn't ban tuples wholesale: `(String, u32)` is fine because the
+type itself disambiguates. The smell is *positional same-type repetition*,
+where only the slot index carries meaning.
+
+This applies in three places:
+
+- **Function returns**: `fn foo() -> (u64, u64)` → introduce a struct with
+  named fields.
+- **Function parameters**: `fn foo(a: Hash, b: Hash, c: Hash)` → group into
+  a struct (often a `*Input` / `*Step` / `*Pins` type).
+- **Closure / `Fn` trait bounds**: `Fn(&[u8; 32], &[u8; 32]) -> T` → pass a
+  small struct argument instead. The struct lifts the parameter names out
+  to the type level, so the trait bound becomes `Fn(MyArgs<'_>) -> T` and
+  every implementor's call site reads `MyArgs { foo, bar }`.
+
+**Before** (same-type return):
+```rust
+fn advance_lane(...) -> (Hash, u64, bool) { ... }
+let (tip, score, expired) = advance_lane(...);
+```
+
+**After**:
+```rust
+struct LaneAdvance {
+    tip: Hash,
+    blue_score: u64,
+    expired: bool,
+}
+fn advance_lane(...) -> LaneAdvance { ... }
+let advance = advance_lane(...);
+```
+
+(Here the three return types differ — so a tuple could technically survive
+— but ≥2 returns still gain enough from named fields at the call site
+that the struct is worth it. The rule is strictest when types repeat.)
+
+**Before** (closure `Fn` bound with two `&[u8; 32]`):
+```rust
+struct Config<BuildPins>
+where
+    BuildPins: for<'a> Fn(&'a [u8; 32], &'a [u8; 32]) -> RedeemPins<'a>,
+{
+    build_pins: BuildPins,
+}
+
+// every call site has to remember program_id is first, tx_image_id second:
+(config.build_pins)(&program_id, &tx_image_id)
+```
+
+**After**:
+```rust
+struct ImageIds<'a> {
+    program_id: &'a [u8; 32],
+    tx_image_id: &'a [u8; 32],
+}
+
+struct Config<BuildPins>
+where
+    BuildPins: for<'a> Fn(ImageIds<'a>) -> RedeemPins<'a>,
+{
+    build_pins: BuildPins,
+}
+
+(config.build_pins)(ImageIds { program_id: &program_id, tx_image_id: &tx_image_id })
+```
+
+The struct stays at the trait-bound boundary, so the closure body
+destructures it (`|ImageIds { program_id, tx_image_id }| ...`) and the
+call site can't swap the two `[u8; 32]`s.
+
 ### Match surrounding field-doc voice
 
 Inside a struct, sibling fields establish a voice — typically one short
