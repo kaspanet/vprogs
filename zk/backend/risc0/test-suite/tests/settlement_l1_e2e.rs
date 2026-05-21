@@ -8,6 +8,19 @@
 //! continuation-UTXO chain and lane-tip progression are checked across an advancing state
 //! transition rather than just a single hop. Both tests are skipped under
 //! `RISC0_DEV_MODE=1` because kaspad rejects fake receipts.
+//!
+//! A third test, [`settlement_lands_in_real_block_dev_redeem`], exercises the same two-step
+//! flow against [`Settlement::build_dev`] / [`build_dev_redeem_script`]: the redeem variant
+//! that anchors the claimed seq-commit to the chain via [`OpChainblockSeqCommit`] but bypasses
+//! `OpZkPrecompile`. It runs only under `RISC0_DEV_MODE=1` (the production tests cover the
+//! same chain-side surface under CUDA, plus the precompile) and gives a CPU-runnable diff
+//! target: if both production tests fail under CUDA but the dev test passes, the regression
+//! is in the proof/precompile path; if the dev test fails too, the regression is upstream
+//! (mining, lane tracking, acceptance bookkeeping, covenant continuity).
+//!
+//! [`Settlement::build_dev`]: vprogs_zk_backend_risc0_covenant::Settlement::build_dev
+//! [`build_dev_redeem_script`]: vprogs_zk_backend_risc0_covenant::build_dev_redeem_script
+//! [`OpChainblockSeqCommit`]: kaspa_txscript::opcodes::codes::OpChainblockSeqCommit
 
 use std::time::Duration;
 
@@ -49,7 +62,10 @@ async fn settlement_lands_in_real_block_succinct() {
     use vprogs_zk_backend_risc0_test_suite::dev_mode_enabled;
 
     if dev_mode_enabled() {
-        eprintln!("skipping: RISC0_DEV_MODE=1 - kaspad's OpZkPrecompile rejects fake receipts");
+        eprintln!(
+            "skipping: RISC0_DEV_MODE=1 - kaspad's OpZkPrecompile rejects fake receipts; \
+             see settlement_lands_in_real_block_dev_redeem for the dev-mode counterpart",
+        );
         return;
     }
 
@@ -93,7 +109,10 @@ async fn settlement_lands_in_real_block_groth16() {
     use vprogs_zk_backend_risc0_test_suite::dev_mode_enabled;
 
     if dev_mode_enabled() {
-        eprintln!("skipping: RISC0_DEV_MODE=1 - kaspad's OpZkPrecompile rejects fake receipts");
+        eprintln!(
+            "skipping: RISC0_DEV_MODE=1 - kaspad's OpZkPrecompile rejects fake receipts; \
+             see settlement_lands_in_real_block_dev_redeem for the dev-mode counterpart",
+        );
         return;
     }
 
@@ -119,6 +138,280 @@ async fn settlement_lands_in_real_block_groth16() {
         compute_budget: ComputeBudget(10_000),
     })
     .await;
+}
+
+/// Dev-mode L1 settlement: same chain-side flow as the real-proof tests (bootstrap → state1
+/// → state2 over the same covenant, output-SPK continuation, input-index pinning,
+/// single-output covenant rule, seq-commit anchor via `OpChainblockSeqCommit`) but with the
+/// ZK precompile bypassed via [`Settlement::build_dev`] / [`build_dev_redeem_script`]. Skipped
+/// unless `RISC0_DEV_MODE=1`; see module-level doc for how this test pairs with the real-proof
+/// variants as a CUDA-vs-CPU diff target.
+///
+/// L2 state values (`new_state` per step) are dummy (the dev redeem doesn't bind them to a
+/// guest journal), but they must differ between settle_1 and settle_2 so the cross-step
+/// `prev_state == new_state` invariant from the real tests still has something to assert on.
+///
+/// [`Settlement::build_dev`]: vprogs_zk_backend_risc0_covenant::Settlement::build_dev
+/// [`build_dev_redeem_script`]: vprogs_zk_backend_risc0_covenant::build_dev_redeem_script
+#[tokio::test(flavor = "multi_thread")]
+async fn settlement_lands_in_real_block_dev_redeem() {
+    use vprogs_zk_backend_risc0_covenant::{build_dev_redeem_script, dev_redeem_script_len};
+    use vprogs_zk_backend_risc0_test_suite::dev_mode_enabled;
+
+    if !dev_mode_enabled() {
+        eprintln!(
+            "skipping: RISC0_DEV_MODE!=1 - real-proof tests cover the same chain plumbing \
+             plus OpZkPrecompile under CUDA",
+        );
+        return;
+    }
+
+    // Mirror the real-proof tests' simnet config so the chain-side variables (block mass cap,
+    // coinbase maturity, covenants activation) are identical between dev and CUDA runs.
+    let l1 = L1Node::new(Some(|p| {
+        p.blockrate.coinbase_maturity = 1;
+        p.covenants_activation = ForkActivation::always();
+        p.block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+    }))
+    .await;
+    l1.mine_utxos(6).await;
+
+    // === Step 1: deploy the dev covenant ===
+    let bootstrap_state = EMPTY_HASH;
+    let bootstrap_lane_tip = Hash::default();
+    let redeem_len = dev_redeem_script_len(&bootstrap_state);
+    let bootstrap_redeem =
+        build_dev_redeem_script(&bootstrap_state, &bootstrap_lane_tip, redeem_len);
+    let bootstrap_spk = pay_to_script_hash_script(&bootstrap_redeem);
+
+    let (bootstrap_tx, covenant_id) =
+        l1.build_covenant_bootstrap_transaction(&bootstrap_redeem, COVENANT_VALUE).await;
+    let bootstrap_tx_id = bootstrap_tx.id();
+    let block_deploy = l1.mine_block(&[bootstrap_tx]).await;
+    let block_acc_deploy = l1.mine_blocks(1).await[0];
+    eprintln!(
+        "dev covenant bootstrap accepted: covenant_id={covenant_id} block_deploy={block_deploy}"
+    );
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let block_acc_deploy_hdr =
+        l1.grpc_client().get_block(block_acc_deploy, false).await.expect("get_block acc_deploy");
+    let bootstrap_utxo = UtxoEntry::new(
+        COVENANT_VALUE,
+        bootstrap_spk,
+        block_acc_deploy_hdr.header.daa_score,
+        false,
+        Some(covenant_id),
+    );
+
+    // === Step 2: dev settlement #1 ===
+    // First state advance: bootstrap → state_1. Dummy new_state value; the dev redeem doesn't
+    // verify it (no guest journal), it just locks the SPK continuation.
+    let new_state_1: [u8; 32] = [0xAB; 32];
+    let settle_1 = run_one_dev_settlement(DevSettlementStep {
+        l1: &l1,
+        covenant_id,
+        prev_outpoint: TransactionOutpoint::new(bootstrap_tx_id, 0),
+        prev_utxo: bootstrap_utxo,
+        prev_state: bootstrap_state,
+        prev_lane_tip: bootstrap_lane_tip,
+        new_state: new_state_1,
+        carrier_resource_id: ResourceId::for_test(1),
+        carrier_payload: vec![1u8, 2, 3],
+        label: "dev settlement #1",
+    })
+    .await;
+
+    // === Step 3: dev settlement #2 ===
+    // Chained: spends settle_1's continuation UTXO. Different new_state value so the
+    // cross-step `settle_1.new_state != settle_2.new_state` invariant still has bite.
+    let new_state_2: [u8; 32] = [0xCD; 32];
+    let settle_2 = run_one_dev_settlement(DevSettlementStep {
+        l1: &l1,
+        covenant_id,
+        prev_outpoint: TransactionOutpoint::new(settle_1.settlement_tx_id, 0),
+        prev_utxo: settle_1.continuation_utxo,
+        prev_state: settle_1.new_state,
+        prev_lane_tip: settle_1.new_lane_tip,
+        new_state: new_state_2,
+        carrier_resource_id: ResourceId::for_test(2),
+        carrier_payload: vec![4u8, 5, 6],
+        label: "dev settlement #2",
+    })
+    .await;
+
+    // Cross-step state advancement check: same shape as the real-proof tests. In dev mode
+    // these assertions are tautologies (we picked the new_state values ourselves), but they
+    // guard against an accidental copy-paste error in the chaining wiring above.
+    assert_eq!(
+        settle_1.new_state, settle_2.prev_state,
+        "dev settlement #2 must chain from settlement #1's new_state",
+    );
+    assert_ne!(
+        settle_1.new_state, settle_2.new_state,
+        "dev settlement #2's state must differ from settlement #1's",
+    );
+
+    let chain = l1
+        .grpc_client()
+        .get_virtual_chain_from_block(block_deploy, true, None)
+        .await
+        .expect("get_virtual_chain_from_block");
+    for (settlement_tx_id, label) in [
+        (settle_1.settlement_tx_id, "dev settlement #1"),
+        (settle_2.settlement_tx_id, "dev settlement #2"),
+    ] {
+        let accepting_block = chain.accepted_transaction_ids.iter().find_map(|entry| {
+            entry
+                .accepted_transaction_ids
+                .contains(&settlement_tx_id)
+                .then_some(entry.accepting_block_hash)
+        });
+        assert!(
+            accepting_block.is_some(),
+            "{label} tx_id {settlement_tx_id} must appear in acceptance data on the \
+             selected-parent chain walked from block_deploy={block_deploy}",
+        );
+        eprintln!(
+            "{label} accepted: tx_id={settlement_tx_id} accepting_block={}",
+            accepting_block.unwrap(),
+        );
+    }
+
+    l1.shutdown().await;
+}
+
+/// Inputs to [`run_one_dev_settlement`]. Mirrors [`SettlementStep`] but drops the
+/// scheduler/backend/witness machinery (dev redeem has no guest journal) and the lane-tracking
+/// fields (`prev_lane_blue_score`, `lane_expired`, `lane_key`) that the real test threads into
+/// the batch metadata; the dev redeem doesn't consult any of them.
+struct DevSettlementStep<'a> {
+    l1: &'a L1Node,
+    covenant_id: Hash,
+    prev_outpoint: TransactionOutpoint,
+    prev_utxo: UtxoEntry,
+    prev_state: [u8; 32],
+    prev_lane_tip: Hash,
+    new_state: [u8; 32],
+    carrier_resource_id: ResourceId,
+    carrier_payload: Vec<u8>,
+    label: &'static str,
+}
+
+/// Per-dev-settlement state threaded into the next step. Same shape as [`SettlementOutcome`]
+/// minus the journal-derived fields; the dev redeem doesn't reconstruct `prev_state` so the
+/// real test's journal-vs-prev_state cross-check has no analogue here.
+struct DevSettlementOutcome {
+    settlement_tx_id: Hash,
+    continuation_utxo: UtxoEntry,
+    prev_state: [u8; 32],
+    new_state: [u8; 32],
+    new_lane_tip: Hash,
+}
+
+/// Mines a carrier tx (so the simnet has a non-empty acceptance to commit to), reads the
+/// chain's `accepted_id_merkle_root` for the carrier's accepting block, builds a dev-redeem
+/// settlement tx that pins that seq commit as `claimed_seq_commit`, ships it through RPC,
+/// mines it, and asserts acceptance. Returns the continuation UTXO + chained state for the
+/// next step.
+async fn run_one_dev_settlement(step: DevSettlementStep<'_>) -> DevSettlementOutcome {
+    use vprogs_zk_backend_risc0_covenant::{Settlement, SettlementDevInput};
+
+    let DevSettlementStep {
+        l1,
+        covenant_id,
+        prev_outpoint,
+        prev_utxo,
+        prev_state,
+        prev_lane_tip,
+        new_state,
+        carrier_resource_id,
+        carrier_payload: payload_bytes,
+        label,
+    } = step;
+
+    // === a. mine the carrier tx ===
+    let carrier_payload = Vec::new().tap_mut(|p| {
+        p.write_many([&AccessMetadata::write(carrier_resource_id)], AccessMetadata::as_bytes);
+        p.write(&payload_bytes);
+    });
+    let carrier_txs = l1.build_payload_transactions(vec![carrier_payload]).await;
+    let carrier_tx = carrier_txs.into_iter().next().expect("carrier tx");
+    let carrier_tx_id = carrier_tx.id();
+    let block_carrier = l1.mine_block(std::slice::from_ref(&carrier_tx)).await;
+    let block_acc_carrier = l1.mine_blocks(1).await[0];
+    eprintln!(
+        "{label}: carrier accepted tx_id={carrier_tx_id} block_carrier={block_carrier} \
+         block_acc_carrier={block_acc_carrier}",
+    );
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // === b. read the chain's seq commit at block_acc_carrier ===
+    // Match the real-proof tests' convention (block_acc_carrier, not block_carrier): this is
+    // the block whose acceptance set includes the carrier tx, so its accepted_id_merkle_root
+    // is what a real L2 batch would commit to in `new_seq_commit`.
+    let anchor_block_hdr =
+        l1.grpc_client().get_block(block_acc_carrier, false).await.expect("get_block anchor");
+    let chain_seq_commit = anchor_block_hdr.header.accepted_id_merkle_root;
+
+    // === c. build the dev settlement ===
+    // The lane tip lives only in the redeem-prefix SPK check (no guest verifies it), so feed
+    // the chain's seq commit through as `new_lane_tip` to keep the value "real-ish" (it's
+    // what a future real-proof settlement spending this dev output would see).
+    let new_lane_tip = chain_seq_commit;
+    let settlement = Settlement::build_dev(&SettlementDevInput {
+        covenant_id,
+        prev_state: &prev_state,
+        prev_lane_tip: &prev_lane_tip,
+        new_state: &new_state,
+        new_lane_tip: &new_lane_tip,
+        block_prove_to: block_acc_carrier,
+        claimed_seq_commit: chain_seq_commit,
+        prev_outpoint,
+        value: COVENANT_VALUE,
+    });
+    let continuation_spk = pay_to_script_hash_script(&settlement.next_redeem);
+
+    // === d. submit, mine, verify acceptance ===
+    // Dev redeem has no precompile; the script just runs a fixed number of hash + concat +
+    // equal ops. 100 covers it with margin (the standard-tx cap is 500_000, so this is well
+    // under).
+    let settlement_tx = l1
+        .prepare_settlement_transaction(settlement.transaction, prev_utxo, ComputeBudget(100))
+        .await;
+    let settlement_tx_id = settlement_tx.id();
+    let block_settle = l1.mine_block(&[settlement_tx]).await;
+    let block_acc_settle = l1.mine_blocks(1).await[0];
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let settle_block =
+        l1.grpc_client().get_block(block_settle, true).await.expect("get_block settle");
+    let included = settle_block
+        .transactions
+        .iter()
+        .any(|t| Transaction::try_from(t.clone()).map(|tx| tx.id()).ok() == Some(settlement_tx_id));
+    assert!(
+        included,
+        "{label}: settlement tx must appear in block_settle={block_settle}'s transaction list",
+    );
+
+    let block_acc_settle_hdr =
+        l1.grpc_client().get_block(block_acc_settle, false).await.expect("get_block acc_settle");
+    let continuation_utxo = UtxoEntry::new(
+        COVENANT_VALUE,
+        continuation_spk,
+        block_acc_settle_hdr.header.daa_score,
+        false,
+        Some(covenant_id),
+    );
+
+    DevSettlementOutcome {
+        settlement_tx_id,
+        continuation_utxo,
+        prev_state,
+        new_state,
+        new_lane_tip,
+    }
 }
 
 /// Owning forms of the two settlement-witness variants. Held by the caller across the
