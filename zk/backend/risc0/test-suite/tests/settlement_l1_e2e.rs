@@ -778,7 +778,11 @@ where
     // version the L2 transaction processor executes; the dummy increment-counter guest
     // (transaction-processor/src/main.rs) handles the access pattern below cleanly.
     let carrier_txs = l1
-        .build_subnet_payload_transactions(vec![carrier_payload], L2_LANE_SUBNET, TX_VERSION_TOCCATA)
+        .build_subnet_payload_transactions(
+            vec![carrier_payload],
+            L2_LANE_SUBNET,
+            TX_VERSION_TOCCATA,
+        )
         .await;
     let carrier_tx = carrier_txs.into_iter().next().expect("carrier tx");
     let carrier_tx_id = carrier_tx.id();
