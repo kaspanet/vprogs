@@ -30,6 +30,9 @@ ark-groth16               = { workspace = true }
 ark-serialize             = { workspace = true }
 bincode                   = { workspace = true, default-features = true }
 kaspa-addresses.workspace = true
-risc0-groth16             = { workspace = true }
-risc0-zkvm                = { workspace = true, default-features = true }
-sha2                      = { workspace = true, default-features = true }
+# Cross-test for the succinct verifier-identity consts reads `POSEIDON2_CONTROL_IDS`
+# directly. Default-features off keeps proving machinery out of the test build.
+risc0-circuit-recursion = { version = "4.0", default-features = false }
+risc0-groth16           = { workspace = true }
+risc0-zkvm              = { workspace = true, default-features = true }
+sha2                    = { workspace = true, default-features = true }

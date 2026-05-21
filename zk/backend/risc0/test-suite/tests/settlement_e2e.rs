@@ -20,9 +20,7 @@ use vprogs_node_test_utils::L1Node;
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
-use vprogs_zk_backend_risc0_api::{
-    Backend, OwnedGroth16Witness, OwnedSuccinctWitness, ProofType, ScriptVerifierPins,
-};
+use vprogs_zk_backend_risc0_api::{Backend, OwnedGroth16Witness, OwnedSuccinctWitness, ProofType};
 use vprogs_zk_backend_risc0_covenant::{
     CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, Groth16Pins, RedeemPins, Settlement,
     SettlementInput, SettlementWitness, StateTransition, SuccinctPins, SuccinctWitness,
@@ -242,23 +240,12 @@ async fn batch_proof_is_directly_settleable_single_batch() {
         "guest must echo the host-supplied tx image id into the journal",
     );
     let covenant_id_hash = Hash::from_bytes(parsed.covenant_id);
-    // Verifier-identity pins are now part of the redeem script's identity. In dev mode the
-    // receipt isn't a real succinct variant, so we use placeholder pins (both sides of the
-    // structural equality use the same values). Outside dev mode, pin extraction below uses
-    // the real receipt so `OpZkPrecompile` sees the values the prover actually committed to.
-    let verifier_pins = if !dev_mode_enabled() {
-        OwnedSuccinctWitness::script_pins_from_receipt(&batch_receipt)
-    } else {
-        ScriptVerifierPins { control_id: [0u8; 32], hashfn: 0 }
-    };
     let pins = RedeemPins::Succinct(SuccinctPins {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },
-        control_id: &verifier_pins.control_id,
-        hashfn: verifier_pins.hashfn,
     });
     let settlement = Settlement::build(&SettlementInput {
         covenant_id: covenant_id_hash,
@@ -561,19 +548,12 @@ async fn batch_proof_bundles_two_batches() {
     let program_id = *backend.batch_image_id();
     let tx_image_id = *backend.transaction_image_id();
     let covenant_id_hash = Hash::from_bytes(parsed.covenant_id);
-    let verifier_pins = if !dev_mode_enabled() {
-        OwnedSuccinctWitness::script_pins_from_receipt(&r1)
-    } else {
-        ScriptVerifierPins { control_id: [0u8; 32], hashfn: 0 }
-    };
     let pins = RedeemPins::Succinct(SuccinctPins {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },
-        control_id: &verifier_pins.control_id,
-        hashfn: verifier_pins.hashfn,
     });
     let settlement = Settlement::build(&SettlementInput {
         covenant_id: covenant_id_hash,
@@ -721,6 +701,20 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
 
     if !dev_mode_enabled() {
         backend.verify_batch_receipt(&r1);
+        // Empirical check that the build-time succinct-pin consts match a real receipt for
+        // a DIFFERENT inner-tx-processor guest than `proving_e2e.rs` uses
+        // (transaction-processor-with-exits here, plain transaction-processor there); same
+        // batch-processor outer guest, so the outer receipt's control_id must still be
+        // `resolve.zkr` poseidon2 regardless of the inner guest swap.
+        let succinct =
+            r1.inner.succinct().expect("expected succinct batch receipt outside dev mode");
+        let live_control_id: [u8; 32] = succinct.control_id.into();
+        assert_eq!(
+            live_control_id,
+            vprogs_zk_backend_risc0_covenant::succinct_consts::SUCCINCT_CONTROL_ID,
+            "TPWE batch receipt control_id must match SUCCINCT_CONTROL_ID",
+        );
+        assert_eq!(succinct.hashfn, "poseidon2");
         for batch in [&batch_1, &batch_2] {
             for artifact in batch.tx_artifacts() {
                 backend.verify_transaction_receipt(&artifact);
@@ -743,19 +737,12 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
     let program_id = *backend.batch_image_id();
     let tx_image_id = *backend.transaction_image_id();
     let covenant_id_hash = Hash::from_bytes(parsed.covenant_id);
-    let verifier_pins = if !dev_mode_enabled() {
-        OwnedSuccinctWitness::script_pins_from_receipt(&r1)
-    } else {
-        ScriptVerifierPins { control_id: [0u8; 32], hashfn: 0 }
-    };
     let pins = RedeemPins::Succinct(SuccinctPins {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },
-        control_id: &verifier_pins.control_id,
-        hashfn: verifier_pins.hashfn,
     });
 
     // Pick a value large enough to cover the permission output with headroom for the
