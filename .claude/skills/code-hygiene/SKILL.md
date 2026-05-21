@@ -276,13 +276,17 @@ when the derive would over-constrain.
 ### Same-typed positional arguments / returns need a struct
 
 When a function or closure has two or more positional arguments (or
-returns) of the **same type**, introduce a named struct instead. With only
-position to disambiguate, every call site has to remember which `u64` /
-`[u8; 32]` / `Hash` goes where, and a swap typo compiles silently.
+returns) of the **same type** (or types that differ only by reference /
+mutability over the same payload, like `[u8; 32]` and `&[u8; 32]`),
+introduce a named struct instead. With only position to disambiguate,
+every call site has to remember which slot goes where, and a swap typo
+compiles silently.
 
-The rule doesn't ban tuples wholesale: `(String, u32)` is fine because the
-type itself disambiguates. The smell is *positional same-type repetition*,
-where only the slot index carries meaning.
+Tuples / positional arguments with **distinct** types are fine:
+`(String, u32)` or `fn foo(name: String, age: u32)` need no struct because
+the types themselves disambiguate. Same for `(Foo, Bar, Baz)`. The smell
+is *positional repetition over the same payload type*, where only the
+slot index carries meaning.
 
 This applies in three places:
 
@@ -295,26 +299,10 @@ This applies in three places:
   to the type level, so the trait bound becomes `Fn(MyArgs<'_>) -> T` and
   every implementor's call site reads `MyArgs { foo, bar }`.
 
-**Before** (same-type return):
-```rust
-fn advance_lane(...) -> (Hash, u64, bool) { ... }
-let (tip, score, expired) = advance_lane(...);
-```
-
-**After**:
-```rust
-struct LaneAdvance {
-    tip: Hash,
-    blue_score: u64,
-    expired: bool,
-}
-fn advance_lane(...) -> LaneAdvance { ... }
-let advance = advance_lane(...);
-```
-
-(Here the three return types differ — so a tuple could technically survive
-— but ≥2 returns still gain enough from named fields at the call site
-that the struct is worth it. The rule is strictest when types repeat.)
+Mixed value/reference of the same type counts as the smell: `fn foo(owner:
+[u8; 32], borrowed: &[u8; 32])` is just as easy to swap by accident as
+`fn foo(a: [u8; 32], b: [u8; 32])`, since the slot order is still the only
+guide. A struct dodges that.
 
 **Before** (closure `Fn` bound with two `&[u8; 32]`):
 ```rust
