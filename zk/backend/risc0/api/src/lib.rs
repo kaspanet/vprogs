@@ -32,4 +32,4 @@ pub use proof_type::ProofType;
 #[cfg(feature = "host")]
 pub use risc0_zkvm::Receipt;
 #[cfg(feature = "host")]
-pub use witness::{OwnedGroth16Witness, OwnedSuccinctWitness, ScriptVerifierPins};
+pub use witness::{OwnedGroth16Witness, OwnedSuccinctWitness};

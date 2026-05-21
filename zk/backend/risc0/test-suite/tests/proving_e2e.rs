@@ -110,6 +110,12 @@ async fn batch_proof_two_transactions() {
     let receipt = batch.artifact();
     if !dev_mode_enabled() {
         backend.verify_batch_receipt(&receipt);
+        // Empirical check that the build-time succinct consts (used by the covenant redeem
+        // script's `OpZkPrecompile` pin) match what the live succinct prover actually emits
+        // for THIS guest pair (batch-processor + transaction-processor). The companion
+        // check for the exit-emitting transaction-processor variant lives in
+        // `settlement_e2e.rs::batch_with_exits_takes_two_output_settlement_path`.
+        assert_receipt_pins_match_succinct_consts(&receipt);
     }
     let journal = Backend::journal_bytes(&receipt);
 
@@ -171,6 +177,11 @@ async fn batch_proof_two_transactions() {
     let receipt_2 = batch_2.artifact();
     if !dev_mode_enabled() {
         backend.verify_batch_receipt(&receipt_2);
+        // A second pinned-consts check from a different batch: both batches in this test
+        // use the same guest pair, but the input txs differ, so this catches anything that
+        // would make the receipt's verifier-identity values depend on the input rather
+        // than the recursion circuit.
+        assert_receipt_pins_match_succinct_consts(&receipt_2);
     }
     let journal_2 = Backend::journal_bytes(&receipt_2);
 
@@ -311,4 +322,34 @@ async fn batch_proof_bundle_of_two() {
 
     scheduler.shutdown();
     l1.shutdown().await;
+}
+
+/// Asserts that a real (CUDA-produced) batch receipt's succinct verifier-identity values
+/// match the build-time constants the covenant redeem script bakes in as `OpZkPrecompile`
+/// pins. The chain rejects any receipt whose `control_id` / `hashfn` differ from the
+/// scripted pins, so a divergence here would surface as a silent on-chain validation
+/// failure at settle time; catching it upstream is the point.
+///
+/// kaspa only supports `poseidon2` for the succinct precompile, so the hashfn check is a
+/// simple string-equality assertion (no mapping table needed).
+///
+/// Must be called only when `dev_mode_enabled()` is false: dev-mode receipts are the `Fake`
+/// variant and don't have succinct fields. See
+/// [`vprogs_zk_backend_risc0_covenant::succinct_consts`].
+fn assert_receipt_pins_match_succinct_consts(receipt: &vprogs_zk_backend_risc0_api::Receipt) {
+    use vprogs_zk_backend_risc0_covenant::succinct_consts::SUCCINCT_CONTROL_ID;
+
+    let succinct = receipt.inner.succinct().expect("expected succinct receipt outside dev mode");
+    let live_control_id: [u8; 32] = succinct.control_id.into();
+    assert_eq!(
+        live_control_id, SUCCINCT_CONTROL_ID,
+        "batch receipt control_id must match SUCCINCT_CONTROL_ID; if this fires, risc0 \
+         changed the recursion pipeline (or a different ProverOpts variant got used) and \
+         the covenant pins are now stale",
+    );
+    assert_eq!(
+        succinct.hashfn, "poseidon2",
+        "kaspa only supports poseidon2 for the succinct precompile; receipt reports `{}`",
+        succinct.hashfn,
+    );
 }
