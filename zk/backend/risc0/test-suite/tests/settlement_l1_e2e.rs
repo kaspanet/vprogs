@@ -26,8 +26,9 @@ use std::time::Duration;
 
 use kaspa_consensus_core::{
     config::params::ForkActivation,
+    constants::TX_VERSION_TOCCATA,
     mass::{BlockMassLimits, units::ComputeBudget},
-    subnets::SUBNETWORK_ID_NATIVE,
+    subnets::SubnetworkId,
     tx::{Transaction, TransactionOutpoint, UtxoEntry},
 };
 use kaspa_hashes::Hash;
@@ -44,6 +45,15 @@ use vprogs_node_test_utils::L1Node;
 use zerocopy::IntoBytes;
 
 const COVENANT_VALUE: u64 = 100_000_000;
+
+/// Custom user-lane subnetwork the real-proof tests route their L2 carrier txs onto so the
+/// NATIVE lane (which the bootstrap and settlement txs ride) stays separate from the L2's
+/// observed lane. Without this segregation the chain folds bootstrap_tx + settlement_tx_n
+/// into the L2's lane-tip chain at every chain block, but the L2 batch only proves carrier
+/// activity, so the host-derived `lane_tip` immediately diverges from what consensus has
+/// stored and the worker's pre-prove sanity check (in `zk/batch-prover/src/worker.rs`)
+/// panics on the second settlement onward.
+const L2_LANE_SUBNET: SubnetworkId = SubnetworkId::from_namespace([0xC0, 0x12, 0x34, 0x56]);
 
 /// Real-proof L1 settlement (Succinct variant): drives the full risc0-succinct path on a
 /// simnet end-to-end across TWO settlements. The L2 scheduler proves two real batches
@@ -531,11 +541,11 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
     eprintln!("covenant bootstrap accepted: covenant_id={covenant_id} block_deploy={block_deploy}");
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Consensus keys the lane SMT by `H_lane_key(subnetwork_id)`. The carriers ride the
-    // native subnetwork, so the prover must query (and the guest must reconstruct) the SMT
-    // at that exact key; `Hash::default()` would target an unrelated empty slot and the
-    // resulting lanes_root would diverge from the chain's value.
-    let lane_key = compute_lane_key(SUBNETWORK_ID_NATIVE.as_bytes());
+    // Consensus keys the lane SMT by `H_lane_key(subnetwork_id)`, and the test routes its
+    // carriers onto [`L2_LANE_SUBNET`] (see the const's doc for why we don't ride NATIVE):
+    // anything else here would target an unrelated empty slot and the resulting lanes_root
+    // would diverge from the chain's value.
+    let lane_key = compute_lane_key(L2_LANE_SUBNET.as_bytes());
 
     // Bootstrap's accepting-block daa_score is the UtxoEntry's `block_daa_score` field: the
     // value the script engine sees when it dereferences the spending input's UTXO.
@@ -601,10 +611,13 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
     .await;
 
     // === Step 3: settlement #2 ===
-    // Same flow, chained: the 2nd carrier writes a different resource so the batch state
-    // root advances (otherwise prev_state would equal new_state and the test wouldn't
-    // exercise a real transition). The 2nd settlement spends the continuation UTXO produced
-    // by settlement #1.
+    // Same flow, chained: the 2nd carrier touches the SAME resource as settle_1 (the
+    // increment-counter L2 guest just bumps it: 0→1 then 1→2). Using a fresh resource id
+    // here would leave the SMT in a state where proving `for_test(2)` at the post-settle_1
+    // version returns the shortcut leaf for `for_test(1)` instead of an empty-key entry —
+    // batch_processor's verifier compares that against the journal's zero-hash input
+    // commitment and panics on resource hash mismatch. Same resource avoids the shortcut.
+    // The state-root assertion below still verifies a non-trivial transition (0→1 vs 1→2).
     //
     // `lane_expired=false` here: the chain hasn't crossed `finality_depth` blue-score blocks
     // since carrier_1 was folded, so the lane is still alive and `prev_lane_tip` is what
@@ -621,7 +634,7 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
         prev_state: settle_1.new_state,
         prev_lane_tip: settle_1.new_lane_tip,
         prev_lane_blue_score: settle_1.lane_blue_score,
-        carrier_resource_id: ResourceId::for_test(2),
+        carrier_resource_id: ResourceId::for_test(1),
         carrier_payload: vec![4u8, 5, 6],
         lane_key,
         lane_expired: false,
@@ -760,7 +773,13 @@ where
         p.write_many([&AccessMetadata::write(carrier_resource_id)], AccessMetadata::as_bytes);
         p.write(&payload_bytes);
     });
-    let carrier_txs = l1.build_payload_transactions(vec![carrier_payload]).await;
+    // Ride [`L2_LANE_SUBNET`] (not NATIVE) so the L2's observed lane only contains carrier
+    // activity. `TX_VERSION_TOCCATA` is required for non-NATIVE subnetworks and is also the
+    // version the L2 transaction processor executes; the dummy increment-counter guest
+    // (transaction-processor/src/main.rs) handles the access pattern below cleanly.
+    let carrier_txs = l1
+        .build_subnet_payload_transactions(vec![carrier_payload], L2_LANE_SUBNET, TX_VERSION_TOCCATA)
+        .await;
     let carrier_tx = carrier_txs.into_iter().next().expect("carrier tx");
     let carrier_tx_id = carrier_tx.id();
     let block_carrier = l1.mine_block(std::slice::from_ref(&carrier_tx)).await;
