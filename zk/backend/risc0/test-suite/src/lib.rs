@@ -63,6 +63,37 @@ pub fn batch_processor_elf() -> Vec<u8> {
     })
 }
 
+/// Empirical check that the build-time succinct verifier-identity consts (used by the
+/// covenant redeem script's `OpZkPrecompile` pin) still match what the live succinct prover
+/// emits. The pin is baked into `succinct_consts::SUCCINCT_CONTROL_ID` at covenant build
+/// time; if risc0 changes the recursion pipeline (or a different ProverOpts variant gets
+/// used) the pin and the receipt would silently diverge and on-chain script validation
+/// would fail at settle time. Catching it here in the test pipeline is the point.
+///
+/// kaspa only supports `poseidon2` for the succinct precompile, so the hashfn check is a
+/// simple string-equality assertion (no mapping table needed).
+///
+/// Must be called only when [`dev_mode_enabled`] is false: dev-mode receipts are the `Fake`
+/// variant and don't have succinct fields. See
+/// [`vprogs_zk_backend_risc0_covenant::succinct_consts`].
+pub fn assert_receipt_pins_match_succinct_consts(receipt: &vprogs_zk_backend_risc0_api::Receipt) {
+    use vprogs_zk_backend_risc0_covenant::succinct_consts::SUCCINCT_CONTROL_ID;
+
+    let succinct = receipt.inner.succinct().expect("expected succinct receipt outside dev mode");
+    let live_control_id: [u8; 32] = succinct.control_id.into();
+    assert_eq!(
+        live_control_id, SUCCINCT_CONTROL_ID,
+        "batch receipt control_id must match SUCCINCT_CONTROL_ID; if this fires, risc0 \
+         changed the recursion pipeline (or a different ProverOpts variant got used) and \
+         the covenant pins are now stale",
+    );
+    assert_eq!(
+        succinct.hashfn, "poseidon2",
+        "kaspa only supports poseidon2 for the succinct precompile; receipt reports `{}`",
+        succinct.hashfn,
+    );
+}
+
 /// Computes `lane_tip_next` for a single batch's worth of activity.
 pub fn compute_section_lane_tip(
     metadata: &ChainBlockMetadata,

@@ -681,8 +681,6 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
         );
     }
 
-    let _ = (block_acc_deploy, settle_2.settlement_tx_id);
-
     scheduler.shutdown();
     l1.shutdown().await;
 }
