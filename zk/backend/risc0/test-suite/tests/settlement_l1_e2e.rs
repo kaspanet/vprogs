@@ -51,14 +51,16 @@ const COVENANT_VALUE: u64 = 100_000_000;
 /// binary so journal-preimage binding matches across host and guest.
 const TEST_SUBNETWORK_ID: [u8; 20] = subnetwork_id_from_lane_id(4444);
 
-/// Custom user-lane subnetwork the real-proof tests route their L2 carrier txs onto so the
-/// NATIVE lane (which the bootstrap and settlement txs ride) stays separate from the L2's
-/// observed lane. Without this segregation the chain folds bootstrap_tx + settlement_tx_n
-/// into the L2's lane-tip chain at every chain block, but the L2 batch only proves carrier
-/// activity, so the host-derived `lane_tip` immediately diverges from what consensus has
-/// stored and the worker's pre-prove sanity check (in `zk/batch-prover/src/worker.rs`)
-/// panics on the second settlement onward.
-const L2_LANE_SUBNET: SubnetworkId = SubnetworkId::from_namespace([0xC0, 0x12, 0x34, 0x56]);
+/// User-lane subnetwork the real-proof tests route their L2 carrier txs onto. Same
+/// 20-byte payload as [`TEST_SUBNETWORK_ID`] (which the guest derives lane_key from at
+/// build time) so the chain's lane-key bucket and the guest's committed lane_key match;
+/// any other namespace would point the host metadata at a different consensus bucket
+/// than the one the journal is bound to, and `new_seq_commit` would diverge from the
+/// chain's `accepted_id_merkle_root`. Kept off NATIVE so the lane only contains carrier
+/// activity (bootstrap and settlement txs ride NATIVE), otherwise the chain folds them
+/// into the L2's lane chain at every block and host-side `lane_tip` diverges from
+/// consensus on the second settlement onward.
+const L2_LANE_SUBNET: SubnetworkId = SubnetworkId::from_bytes(TEST_SUBNETWORK_ID);
 
 /// Real-proof L1 settlement (Succinct variant): drives the full risc0-succinct path on a
 /// simnet end-to-end across TWO settlements. The L2 scheduler proves two real batches
