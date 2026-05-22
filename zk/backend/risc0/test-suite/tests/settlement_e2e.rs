@@ -27,8 +27,9 @@ use vprogs_zk_backend_risc0_covenant::{
     build_redeem_script, permission_spk, redeem_script_len,
 };
 use vprogs_zk_backend_risc0_test_suite::{
-    L1TransactionExt, batch_processor_elf, compute_section_lane_tip, dev_mode_enabled,
-    transaction_processor_elf, transaction_processor_with_exits_elf,
+    L1TransactionExt, assert_receipt_pins_match_succinct_consts, batch_processor_elf,
+    compute_section_lane_tip, dev_mode_enabled, transaction_processor_elf,
+    transaction_processor_with_exits_elf,
 };
 use vprogs_zk_batch_prover::{Backend as _, BatchProverConfig};
 use vprogs_zk_vm::{ProvingPipeline, Vm};
@@ -701,20 +702,12 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
 
     if !dev_mode_enabled() {
         backend.verify_batch_receipt(&r1);
-        // Empirical check that the build-time succinct-pin consts match a real receipt for
-        // a DIFFERENT inner-tx-processor guest than `proving_e2e.rs` uses
-        // (transaction-processor-with-exits here, plain transaction-processor there); same
-        // batch-processor outer guest, so the outer receipt's control_id must still be
-        // `resolve.zkr` poseidon2 regardless of the inner guest swap.
-        let succinct =
-            r1.inner.succinct().expect("expected succinct batch receipt outside dev mode");
-        let live_control_id: [u8; 32] = succinct.control_id.into();
-        assert_eq!(
-            live_control_id,
-            vprogs_zk_backend_risc0_covenant::succinct_consts::SUCCINCT_CONTROL_ID,
-            "TPWE batch receipt control_id must match SUCCINCT_CONTROL_ID",
-        );
-        assert_eq!(succinct.hashfn, "poseidon2");
+        // Same pin check as `proving_e2e.rs::batch_proof_two_transactions`, but for a
+        // DIFFERENT inner-tx-processor guest (transaction-processor-with-exits here, plain
+        // transaction-processor there). The outer batch-processor guest is the same, so the
+        // outer receipt's control_id must still be `resolve.zkr` poseidon2 regardless of
+        // the inner guest swap.
+        assert_receipt_pins_match_succinct_consts(&r1);
         for batch in [&batch_1, &batch_2] {
             for artifact in batch.tx_artifacts() {
                 backend.verify_transaction_receipt(&artifact);

@@ -17,8 +17,8 @@ use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_abi::{batch_processor::StateTransition, transaction_processor::JournalEntries};
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_test_suite::{
-    L1TransactionExt, batch_processor_elf, compute_section_lane_tip, dev_mode_enabled,
-    transaction_processor_elf,
+    L1TransactionExt, assert_receipt_pins_match_succinct_consts, batch_processor_elf,
+    compute_section_lane_tip, dev_mode_enabled, transaction_processor_elf,
 };
 use vprogs_zk_batch_prover::{Backend as _, BatchProverConfig};
 use vprogs_zk_vm::{ProvingPipeline, Vm};
@@ -322,34 +322,4 @@ async fn batch_proof_bundle_of_two() {
 
     scheduler.shutdown();
     l1.shutdown().await;
-}
-
-/// Asserts that a real (CUDA-produced) batch receipt's succinct verifier-identity values
-/// match the build-time constants the covenant redeem script bakes in as `OpZkPrecompile`
-/// pins. The chain rejects any receipt whose `control_id` / `hashfn` differ from the
-/// scripted pins, so a divergence here would surface as a silent on-chain validation
-/// failure at settle time; catching it upstream is the point.
-///
-/// kaspa only supports `poseidon2` for the succinct precompile, so the hashfn check is a
-/// simple string-equality assertion (no mapping table needed).
-///
-/// Must be called only when `dev_mode_enabled()` is false: dev-mode receipts are the `Fake`
-/// variant and don't have succinct fields. See
-/// [`vprogs_zk_backend_risc0_covenant::succinct_consts`].
-fn assert_receipt_pins_match_succinct_consts(receipt: &vprogs_zk_backend_risc0_api::Receipt) {
-    use vprogs_zk_backend_risc0_covenant::succinct_consts::SUCCINCT_CONTROL_ID;
-
-    let succinct = receipt.inner.succinct().expect("expected succinct receipt outside dev mode");
-    let live_control_id: [u8; 32] = succinct.control_id.into();
-    assert_eq!(
-        live_control_id, SUCCINCT_CONTROL_ID,
-        "batch receipt control_id must match SUCCINCT_CONTROL_ID; if this fires, risc0 \
-         changed the recursion pipeline (or a different ProverOpts variant got used) and \
-         the covenant pins are now stale",
-    );
-    assert_eq!(
-        succinct.hashfn, "poseidon2",
-        "kaspa only supports poseidon2 for the succinct precompile; receipt reports `{}`",
-        succinct.hashfn,
-    );
 }
