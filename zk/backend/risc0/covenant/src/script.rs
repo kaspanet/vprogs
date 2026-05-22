@@ -37,11 +37,11 @@ use kaspa_hashes::Hash;
 use kaspa_txscript::{
     opcodes::codes::{
         Op0, Op2Dup, OpAdd, OpBlake2b, OpCat, OpChainblockSeqCommit, OpCovOutputCount,
-        OpCovOutputIdx, OpData32, OpDiv, OpDrop, OpDup, OpElse, OpEndIf, OpEqual, OpEqualVerify,
-        OpFromAltStack, OpIf, OpInputCovenantId, OpMul, OpNot, OpNumEqual, OpNumEqualVerify, OpRot,
-        OpSHA256, OpSize, OpSubstr, OpSwap, OpToAltStack, OpTrue, OpTxInputIndex,
-        OpTxInputScriptSigLen, OpTxInputScriptSigSubstr, OpTxOutputAmount, OpTxOutputSpk,
-        OpTxOutputSpkSubstr, OpVerify, OpZkPrecompile,
+        OpCovOutputIdx, OpData20, OpData32, OpDiv, OpDrop, OpDup, OpElse, OpEndIf, OpEqual,
+        OpEqualVerify, OpFromAltStack, OpIf, OpInputCovenantId, OpMul, OpNot, OpNumEqual,
+        OpNumEqualVerify, OpRot, OpSHA256, OpSize, OpSubstr, OpSwap, OpToAltStack, OpTrue,
+        OpTxInputIndex, OpTxInputScriptSigLen, OpTxInputScriptSigSubstr, OpTxOutputAmount,
+        OpTxOutputSpk, OpTxOutputSpkSubstr, OpVerify, OpZkPrecompile,
     },
     script_builder::ScriptBuilder,
     zk_precompiles::tags::ZkTag,
@@ -368,6 +368,8 @@ fn drop_stashed_prev_values(b: &mut ScriptBuilder) {
 ///
 /// Stack: `[..., prefix66]` → `[..., prefix66 || (OpData20||subnetwork_id)]` = 87B
 fn append_subnetwork_id_to_next_prefix(b: &mut ScriptBuilder, subnetwork_id: &[u8; 20]) {
+    b.add_data(&[OpData20]).unwrap();
+    b.add_op(OpCat).unwrap();
     b.add_data(subnetwork_id).unwrap();
     b.add_op(OpCat).unwrap();
 }

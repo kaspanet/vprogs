@@ -6,6 +6,7 @@ use kaspa_consensus_core::{
 };
 use kaspa_hashes::Hash;
 use kaspa_rpc_core::api::rpc::RpcApi;
+use kaspa_seq_commit::hashing::lane_key as compute_lane_key;
 use kaspa_txscript::{
     EngineFlags, TxScriptEngine, caches::Cache, covenants::CovenantsContext,
     engine_context::EngineContext, seq_commit_accessor::SeqCommitAccessor,
@@ -173,7 +174,7 @@ async fn batch_proof_is_directly_settleable_single_batch() {
 
     let config = BatchProverConfig {
         bundle_size: NonZeroUsize::new(1).unwrap(),
-        lane_key: Hash::default(),
+        lane_key: compute_lane_key(&TEST_SUBNETWORK_ID),
         covenant_id: None,
     };
 
@@ -324,7 +325,7 @@ async fn batch_proof_groth16_is_directly_settleable_single_batch() {
 
     let config = BatchProverConfig {
         bundle_size: NonZeroUsize::new(1).unwrap(),
-        lane_key: Hash::default(),
+        lane_key: compute_lane_key(&TEST_SUBNETWORK_ID),
         covenant_id: None,
     };
 
@@ -469,7 +470,7 @@ async fn batch_proof_bundles_two_batches() {
 
     let config = BatchProverConfig {
         bundle_size: NonZeroUsize::new(2).unwrap(),
-        lane_key: Hash::default(),
+        lane_key: compute_lane_key(&TEST_SUBNETWORK_ID),
         covenant_id: None,
     };
 
@@ -489,7 +490,7 @@ async fn batch_proof_bundles_two_batches() {
     let tx2 =
         L1Transaction::for_l2_test(&[AccessMetadata::write(ResourceId::for_test(2))], &[4, 5, 6]);
 
-    let lane_key = Hash::default();
+    let lane_key = compute_lane_key(&TEST_SUBNETWORK_ID);
     let metadata_1 = metadata_for_block(&l1, block_hashes[0]).await;
     let batch_1 = scheduler.schedule(
         metadata_1,
@@ -645,7 +646,7 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
 
     let config = BatchProverConfig {
         bundle_size: NonZeroUsize::new(2).unwrap(),
-        lane_key: Hash::default(),
+        lane_key: compute_lane_key(&TEST_SUBNETWORK_ID),
         covenant_id: None,
     };
 
@@ -664,7 +665,7 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
     let tx2 =
         L1Transaction::for_l2_test(&[AccessMetadata::write(ResourceId::for_test(2))], &[4, 5, 6]);
 
-    let lane_key = Hash::default();
+    let lane_key = compute_lane_key(&TEST_SUBNETWORK_ID);
     let metadata_1 = metadata_for_block(&l1, block_hashes[0]).await;
     let batch_1 = scheduler.schedule(
         metadata_1,
