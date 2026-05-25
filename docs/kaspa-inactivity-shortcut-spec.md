@@ -624,7 +624,7 @@ The union of:
 
 together covers every **in-domain** selected-parent-chain block strictly between L and R — equivalently, every in-domain chain block in the selected-parent interval `(L, parent(R)]`. Each walked window includes `W_i.blue_score - F(W_i)` as its lower bound (the bottom of W_i's window). Under this proof format's scope (§8), L itself must be in-domain; pre-activation last-activity claims are not supported by this verifier.
 
-So every chain block during inactivity falls inside some walked window or is structurally absent from the chain. There is no chain-block position where activity could hide unobserved.
+So every in-domain chain block during inactivity falls inside some walked window or is structurally absent from the in-domain selected-parent chain. There is no in-domain chain-block position where activity could hide unobserved.
 
 ### 5.5 Putting it together
 
@@ -634,7 +634,7 @@ Combining hop bounding, no overshoot, structurally empty inter-walk gaps, and co
 
 For any honest reset claim, the host can construct an accepting walk. Three structural facts combine to guarantee this:
 
-- For the **canonical (all-Shortcut) walk**, §5.1 gives a per-step decrease of at least `F(W_i) + 1` blue_scores (where `F(W_i)` is the effective threshold at the anchor taking the hop), so the hop count is finite. For constant F, this is `O((R.blue_score - L.blue_score) / F)`. For dynamic non-increasing F (§2.2), walking backward from R visits anchors with `F(W_i) ≥ F(R)` — since F is non-increasing forward in time, the latest anchor R carries the smallest F. The minimum F along the walk is therefore `F(R)`, and the hop count is bounded by `O((R.blue_score - L.blue_score) / F(R))` cleanly, without an F_min caveat. The big-O bound describes the canonical all-Shortcut walk; Walk-mode variants may add explicit header steps (each at most one chain block back) but remain bounded by the no-past-shortcut rule, so they always terminate — they just incur more intermediate hops than the canonical form.
+- For the **canonical (all-Shortcut) walk**, every non-sentinel Shortcut hop moves backward by at least `F(W_i) + 1` blue_scores (where `F(W_i)` is the effective threshold at the anchor taking the hop), so the non-sentinel portion of the hop count is finite. For constant F, this is `O((R.blue_score - L.blue_score) / F)`. For dynamic non-increasing F (§2.2), walking backward from R visits anchors with `F(W_i) ≥ F(R)` — since F is non-increasing forward in time, the latest anchor R carries the smallest F. The minimum F along the walk is therefore `F(R)`, and the hop count is bounded by `O((R.blue_score - L.blue_score) / F(R))` cleanly, without an F_min caveat. The big-O bound describes the canonical all-Shortcut walk; Walk-mode variants may add explicit header steps (each at most one chain block back) but remain bounded by the no-past-shortcut rule, so they always terminate — they just incur more intermediate hops than the canonical form. If the all-Shortcut walk reaches `ZERO_HASH` before a terminator anchor would normally fire, the proof can only complete if the terminator was already reached at the current full anchor (see the activation-prefix note below).
 - By §5.2, the walk never overshoots L — every walked block's blue_score stays at or above `L.lane_blue_score`.
 - By §5.3, gaps between walked blocks are structurally empty of chain blocks. Since L itself is a chain block, L cannot sit in a gap.
 
