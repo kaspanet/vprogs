@@ -1,7 +1,7 @@
 # Structural Commitment to Lane Eviction via `inactivity_shortcut`
 
 **Status:** Draft proposal
-**Affects:** `kaspa-seq-commit` context_hash composition, chain-block processing metadata, RPC witness sourcing, hard-fork activation, and L2 guest witness formats.
+**Affects:** `kaspa-seq-commit` seq_state_root composition (new `activity_root` level), chain-block processing metadata, RPC witness sourcing, hard-fork activation, and L2 guest witness formats.
 
 ## 1. Motivation
 
@@ -54,7 +54,7 @@ A clean solution requires the L1 parameter to be **committed on-chain in a way t
 
 ### 1.4 Structural commitment instead of parameter exposure
 
-The naive solution is to commit `F` as part of the existing per-block commitments — for example, add `finality_depth` as a field in `MergesetContext`. The guest would then read `F` from the witnessed inputs at each block, bound by the seq_commit chain. This is correct but has two drawbacks:
+The naive solution is to commit `F` as a field somewhere in the existing per-block commitments. The guest would then read `F` from the witnessed inputs at each block, bound by the seq_commit chain. This is correct but has two drawbacks:
 
 1. **Inefficient walking**: knowing `F` lets the guest compute the staleness window size, but it still has to walk via `parent_seq_commit` one chain block at a time and verify a lane proof at each step just to identify the boundary block. That's `O(F)` chain steps per staleness window of inactivity, and `O(N)` overall for an inactivity span of `N` blue_scores.
 
@@ -70,34 +70,33 @@ This solves both drawbacks:
 
 The parameter `F` is therefore committed implicitly per block, via the structural property of where the back-link lands. Different parameter values can produce different back-link targets. The guest can verify that the witnessed target is the one committed by L1 into the block's `seq_commit` (commitment consistency); L1 consensus enforces that the target was computed from the effective parameter (semantic correctness).
 
-A note on what the back-link is: at the hashing level — i.e., what's bound into `mergeset_context_hash` — the field is the **seq_commit** of the target block, not its block hash. This keeps the guest's verification surface to seq_commit-recompose checks only (no header hashing). L1's metadata storage and RPC layer maintain the block-hash ↔ seq_commit correspondence so the host can resolve seq_commits back to blocks when sourcing witnesses.
+A note on what the back-link is: at the hashing level — i.e., what's bound into the block's `activity_root` (§2.1) — the field is the **seq_commit** of the target block, not its block hash. This keeps the guest's verification surface to seq_commit-recompose checks only (no header hashing). L1's metadata storage and RPC layer maintain the block-hash ↔ seq_commit correspondence so the host can resolve seq_commits back to blocks when sourcing witnesses.
 
 ## 2. Specification
 
-### 2.1 `MergesetContext` extension
+### 2.1 `activity_root` level
 
-Add one field:
+The single change to the commitment composition: the `seq_state_root` input that holds the `lanes_root` is replaced by an `activity_root`, which hashes the `inactivity_shortcut` together with the `lanes_root`. Everything else — `mergeset_context_hash`, `payload_and_context_digest`, and `seq_commit` — is unchanged.
 
 ```rust
-pub struct MergesetContext {
-    pub timestamp:           u64,
-    pub daa_score:           u64,
-    pub blue_score:          u64,
-    pub inactivity_shortcut: Hash,   // NEW
+/// activity_root = H_SeqCommitActivityRoot(inactivity_shortcut || lanes_root).
+pub fn activity_root_hash(inactivity_shortcut: &Hash, lanes_root: &Hash) -> Hash {
+    let mut hasher = SeqCommitActivityRoot::new();
+    hasher.update(inactivity_shortcut).update(lanes_root).finalize()
 }
 
-pub fn mergeset_context_hash(ctx: &MergesetContext) -> Hash {
-    let mut hasher = SeqCommitMergesetContext::new();
-    hasher
-        .update(ctx.timestamp.to_le_bytes())
-        .update(ctx.daa_score.to_le_bytes())
-        .update(ctx.blue_score.to_le_bytes())
-        .update(ctx.inactivity_shortcut)
-        .finalize()
+pub struct SeqState<'a> {
+    pub activity_root:          &'a Hash,   // lanes_root pre-activation; activity_root_hash(..) post-activation
+    pub payload_and_ctx_digest: &'a Hash,
+}
+
+pub fn seq_state_root(state: &SeqState) -> Hash {
+    let mut hasher = SeqCommitMerkleBranch::new();
+    hasher.update(state.activity_root).update(state.payload_and_ctx_digest).finalize()
 }
 ```
 
-The rest of the seq_commit composition (`payload_and_context_digest`, `seq_state_root`, `seq_commit`) is unchanged. The new field folds through naturally.
+The `activity_root` fed to `seq_state_root` is `lanes_root` directly pre-activation (no wrap), and `activity_root_hash(inactivity_shortcut, lanes_root)` post-activation.
 
 ### 2.2 `inactivity_shortcut` definition
 
@@ -127,7 +126,7 @@ satisfying both:
 
 Guest verifiers treat `ZERO_HASH` as the walk-termination marker uniformly; they don't distinguish the two sentinel cases and don't need to know `H_daa`. This sentinel use relies on Kaspa's existing invariant that no valid `seq_commit` equals `ZERO_HASH` (a chain-wide property of how `seq_commit` is used as a content-addressable identifier, not specific to this proposal).
 
-**Commitment vs internal block reference**: the consensus-visible `MergesetContext.inactivity_shortcut` field is the *committed shortcut value* defined above. L1 implementations may also maintain a separate internal "shortcut block" pointer (a real block hash, never `ZERO_HASH`) as a search seed to compute future shortcut values efficiently. During the activation prefix, that internal pointer may be set to `genesis.hash` as a stand-in so the cascade seed always satisfies `bs ≤ target_bs` for subsequent forward walks. The folding rule above is then applied to the internal pointer to produce the committed value: a `genesis.hash` pointer folds to `ZERO_HASH` via the explicit genesis exclusion; a pre-hardening pointer folds via the in-domain check. Guests verify only the committed field.
+**Commitment vs internal block reference**: the consensus-visible `inactivity_shortcut` value (the input to `activity_root_hash`, §2.1) is the *committed shortcut value* defined above. L1 implementations may also maintain a separate internal "shortcut block" pointer (a real block hash, never `ZERO_HASH`) as a search seed to compute future shortcut values efficiently. During the activation prefix, that internal pointer may be set to `genesis.hash` as a stand-in so the cascade seed always satisfies `bs ≤ target_bs` for subsequent forward walks. The folding rule above is then applied to the internal pointer to produce the committed value: a `genesis.hash` pointer folds to `ZERO_HASH` via the explicit genesis exclusion; a pre-hardening pointer folds via the in-domain check. Guests verify only the committed field.
 
 **F rotation (informative)**: `F` may rotate across consensus upgrades in either direction. The `min(F(A), F(B))` predicate handles both:
 
@@ -135,7 +134,7 @@ Guest verifiers treat `ZERO_HASH` as the walk-termination marker uniformly; they
 
 - *F-increase* (`F_old < F_new`): for `B` post-change, a pre-change candidate `A` has `F(A) = F_old`, and `min(F_old, F_new) = F_old` binds, so the predicate reduces to `A.bs + F_old < B.bs`. The latest qualifying candidate during the transition window is then a pre-change `A`, sized by `F_old` — keeping walks dense enough that activities evicted under `F_old` are caught by an anchor whose presence window covers them. Once `B.bs` is far enough past the change that post-change candidates qualify, shortcuts transition to `F_new`-sized hops.
 
-*Implementation cost*: computing `inactivity_shortcut(B)` requires access to `F(A)` at candidate ancestors. For Kaspa today (constant `F`), this is just the constant. If `F` ever rotates, the implementation must record `F` per block (e.g., in `MergesetContext`) or maintain a daa_score → F schedule.
+*Implementation cost*: computing `inactivity_shortcut(B)` requires access to `F(A)` at candidate ancestors. For Kaspa today (constant `F`), this is just the constant. If `F` ever rotates, the implementation must record `F` per block (e.g., in uncommitted block metadata) or maintain a daa_score → F schedule.
 
 L1 materializes this field per chain block at processing time and serves it via RPC. The implementation strategy for computing it efficiently (forward-walk from the parent's anchor, shortcuts via existing per-block metadata, etc.) is L1-internal and out of scope for this spec.
 
@@ -154,11 +153,11 @@ When `F` is constant this operational invariant yields the equivalence used thro
 
 Because this binding is consensus-enforced, *verifying that B's emitted lane_tip was computed with `B.parent_seq_commit` as `parent_ref` cryptographically proves that L1 treated `lk` as absent at the moment B's activity was applied*. This is the load-bearing invariant for the first hop from R (§4.3).
 
-**I3 (back-link binding)**: `inactivity_shortcut(B)` commits to the `seq_commit` of the latest selected-parent-chain proper non-genesis ancestor A of B that is *in-domain* (`A.daa_score ≥ H_daa`, where `H_daa` is the activation daa_score of this commitment rule, §2.2) and satisfies `A.blue_score + min(F(A), F(B)) < B.blue_score`. If no such ancestor exists (the activation-prefix or near-genesis sentinel cases of §2.2), the commitment is `ZERO_HASH`. This is bound transitively into `B.seq_commit` via the new `context_hash` field.
+**I3 (back-link binding)**: `inactivity_shortcut(B)` commits to the `seq_commit` of the latest selected-parent-chain proper non-genesis ancestor A of B that is *in-domain* (`A.daa_score ≥ H_daa`, where `H_daa` is the activation daa_score of this commitment rule, §2.2) and satisfies `A.blue_score + min(F(A), F(B)) < B.blue_score`. If no such ancestor exists (the activation-prefix or near-genesis sentinel cases of §2.2), the commitment is `ZERO_HASH`. This is bound transitively into `B.seq_commit` via the `activity_root` level (§2.1).
 
 **I4 (chain linkage)**: `B.parent_seq_commit` commits to B's selected-parent's seq_commit. Provides single-step chain navigation.
 
-**Trust boundary (L1 vs guest)**: the guest cryptographically verifies *which form* was committed — reset or continuation — by recomputing the emitted `lane_tip` (§4.3). What the guest does *not* independently verify is whether L1 was semantically *justified* in choosing that form, nor whether the shortcut target is the latest satisfying ancestor under §2.2's predicate (the guest doesn't know `F` at any block). L1 consensus is responsible for that semantic correctness; valid chain blocks are produced only when I1–I3 hold. The guest verifies only that the *committed values* used in the proof (the shortcut target, the lane_tip, the lanes_root) are the values L1 actually bound into the block's `seq_commit` via `mergeset_context_hash`. This division is what lets the guest stay free of `F` (and other consensus parameters) entirely.
+**Trust boundary (L1 vs guest)**: the guest cryptographically verifies *which form* was committed — reset or continuation — by recomputing the emitted `lane_tip` (§4.3). What the guest does *not* independently verify is whether L1 was semantically *justified* in choosing that form, nor whether the shortcut target is the latest satisfying ancestor under §2.2's predicate (the guest doesn't know `F` at any block). L1 consensus is responsible for that semantic correctness; valid chain blocks are produced only when I1–I3 hold. The guest verifies only that the *committed values* used in the proof (the shortcut target, the lane_tip, the lanes_root) are the values L1 actually bound into the block's `seq_commit` (via `activity_root` and `seq_state_root`, §2.1). This division is what lets the guest stay free of `F` (and other consensus parameters) entirely.
 
 These four invariants plus the trust boundary are sufficient for a guest to verify lane inactivity over arbitrary post-activation spans under the proof scope described in §5 and §8, **without knowing the value of `F`**. The guest verifies each step cryptographically against the structural commitments.
 
@@ -178,81 +177,43 @@ The guest verifies:
 **Primitives used below** (all standard L1 functions from `kaspa-seq-commit::hashing`):
 
 - `seq_commit(parent_seq_commit, state_root) → Hash` — the final seq_commit composition.
-- `seq_state_root(lanes_root, payload_and_ctx_digest) → Hash`.
+- `seq_state_root(activity_root, payload_and_ctx_digest) → Hash`.
+- `activity_root_hash(inactivity_shortcut, lanes_root) → Hash` — wraps the lanes_root with the shortcut (§2.1). Post-activation only; pre-activation `activity_root = lanes_root`.
 - `payload_and_context_digest(context_hash, payload_root) → Hash`.
-- `mergeset_context_hash(MergesetContext) → Hash` — extended in this proposal to include `inactivity_shortcut` (§2.1).
-- `lane_tip_next(parent_ref, lane_key, activity_digest, context_hash) → Hash` — computes a lane_tip update.
-- `activity_digest_lane(leaves) → Hash` — hashes the canonically-ordered activity leaves for a lane in a block's mergeset; witnesses must supply leaves in the same canonical order L1 uses.
+- `mergeset_context_hash(MergesetContext) → Hash`.
+- `lane_tip_next(parent_ref, lane_key, activity_digest, context_hash) → Hash` — computes a lane_tip update. `activity_digest` is L1's `activity_digest_lane` over the lane's activity; the guest takes it as a witness input (§4.3) and doesn't recompute it.
 - `smt_leaf_hash(lane_tip, blue_score) → Hash` — leaf hash in `active_lanes_root`. The leaf's `blue_score` is the blue_score of the chain block where the activity was committed — **not** the chain block currently observing the SMT.
 
-**Lane SMT proof types**:
+**Lane proofs** (from `kaspa-smt`): the lane state at an anchor is an `OwnedSmtProof` keyed at `lane_key` (SMT node hasher `SeqCommitActiveNode`). `OwnedSmtProof::compute_root::<SeqCommitActiveNode>(lane_key, Option<leaf>) → Result<Hash>` reconstructs the `lanes_root` a proof implies for `lane_key` — `Some(leaf)` for a present lane, `None` for an absent one. The `lanes_root` is *derived* this way, so there is no standalone inclusion check: it is folded into the anchor's `seq_commit` (§2.1) and bound by the requirement that it equals the anchor's expected `seq_commit`. A wrong leaf, or a false absence claim, yields a different `lanes_root` and fails that equality.
 
 ```rust
-struct LaneSmtInclusionProof {
-    /// Lane tip hash committed in the leaf. Witness-supplied; verifier combines
-    /// it with the leaf's blue_score (see below) to recompute the leaf hash and
-    /// check SMT inclusion at `lane_key`.
-    lane_tip: Hash,
-    /// SMT path proving the computed leaf is at `lane_key` in `lanes_root`.
-    smt_path: SmtPath,
+enum LaneProof {
+    /// Lane present: leaf `smt_leaf_hash(lane_tip, lane_blue_score)` at `lane_key`.
+    Present { lane_tip: Hash, lane_blue_score: u64, proof: OwnedSmtProof },
+    /// Lane absent at `lane_key`.
+    Absent { proof: OwnedSmtProof },
 }
 
-enum LaneSmtProof {
-    /// Lane was active (most recently) at some chain block whose blue_score is
-    /// `lane_blue_score`. The leaf `H(lane_tip, lane_blue_score)` must be present
-    /// at `lane_key` in `lanes_root`.
-    Inclusion {
-        lane_tip:        Hash,
-        lane_blue_score: u64,
-        smt_path:        SmtPath,
-    },
-    /// Lane is absent from `lanes_root` at `lane_key` (no leaf for this lane).
-    NonInclusion {
-        smt_path: SmtNonInclusionPath,
-    },
-}
-
-/// Verifier helpers.
-fn verify_lane_inclusion_at_r(
-    lanes_root: &Hash,
-    lane_key:   Hash,
-    expected_lane_tip: Hash,    // = result of lane_tip_next(parent_seq_commit, ...)
-    r_blue_score:      u64,     // = R.blue_score (the leaf's blue_score for R's activity update)
-    proof:             &LaneSmtInclusionProof,
-) -> Result<(), Error> {
-    // The witness's lane_tip must match what we just recomputed.
-    if proof.lane_tip != expected_lane_tip {
-        return Err(Error::ResetNotEmitted);
-    }
-    let leaf = smt_leaf_hash(&SmtLeafInput { lane_tip: &proof.lane_tip, blue_score: r_blue_score });
-    verify_smt_inclusion(lanes_root, lane_key, leaf, &proof.smt_path)
-}
-
-fn verify_lane_proof(
-    lanes_root: &Hash,
-    lane_key:   Hash,
-    proof:      &LaneSmtProof,
-) -> Result<LaneSmtOutcome, Error> {
-    match proof {
-        LaneSmtProof::Inclusion { lane_tip, lane_blue_score, smt_path } => {
-            let leaf = smt_leaf_hash(&SmtLeafInput { lane_tip, blue_score: *lane_blue_score });
-            verify_smt_inclusion(lanes_root, lane_key, leaf, smt_path)?;
-            Ok(LaneSmtOutcome::Inclusion(*lane_blue_score))
-        }
-        LaneSmtProof::NonInclusion { smt_path } => {
-            verify_smt_non_inclusion(lanes_root, lane_key, smt_path)?;
-            Ok(LaneSmtOutcome::NonInclusion)
+impl LaneProof {
+    /// Derive the `lanes_root` implied by the proof, plus the lane's last-activity
+    /// score (`Some` if present, `None` if absent).
+    fn resolve(&self, lane_key: Hash) -> Result<(Hash, Option<u64>), Error> {
+        match self {
+            LaneProof::Present { lane_tip, lane_blue_score, proof } => {
+                let leaf = smt_leaf_hash(&SmtLeafInput { lane_tip, blue_score: *lane_blue_score });
+                let root = proof.compute_root::<SeqCommitActiveNode>(&lane_key, Some(leaf))?;
+                Ok((root, Some(*lane_blue_score)))
+            }
+            LaneProof::Absent { proof } => {
+                let root = proof.compute_root::<SeqCommitActiveNode>(&lane_key, None)?;
+                Ok((root, None))
+            }
         }
     }
-}
-
-enum LaneSmtOutcome {
-    Inclusion(u64),  // lane_blue_score from the verified leaf
-    NonInclusion,
 }
 ```
 
-Note on leaf `blue_score` semantics: at R (where new activity arrives), the leaf's `blue_score` is `R.blue_score`. At inactivity walked blocks observing Inclusion (= the terminator), the leaf was *inherited* from a prior activity at chain block L, so its `blue_score` is `L.lane_blue_score` (not the walked block's blue_score). This is why `R`'s inclusion check uses `R.blue_score` directly while the terminator's check returns the leaf's `lane_blue_score` for comparison with the claim.
+Note on leaf `blue_score` semantics: at R (where new activity arrives) the leaf's `blue_score` is `R.blue_score`; at the terminator the leaf was *inherited* from the prior activity at chain block L, so its `blue_score` is `L.lane_blue_score` (not the walked block's blue_score). The terminator's `Some(lane_blue_score)` is compared against the claim, while R derives its leaf from the recomputed reset tip and `R.blue_score` (§4.3).
 
 ### 4.2 `NextAnchorPath` — the per-anchor walk decision
 
@@ -267,7 +228,7 @@ The presence (or absence) of header references on the witness determines which m
 /// Minimal cryptographic witness for one chain block in a header walk: just
 /// enough to recompute the block's seq_commit and chain to its parent. We
 /// don't need lane state at header blocks (only at anchors), so the deeper
-/// composition (lanes_root, context_hash inputs, payload_root) isn't needed.
+/// composition (activity_root inputs, payload_and_ctx_digest) isn't needed.
 struct HeaderStep {
     /// The block's parent's seq_commit. Used (a) to recompute this block's
     /// seq_commit, and (b) as the next step's current value.
@@ -338,7 +299,7 @@ impl NextAnchorPath {
 
 **Soundness of the Walk mode bound** (constant-F intuition; dynamic-F handled in §5.7): this anchor's lane proof — combined with I1 (§3) — establishes the lane's status for chain blocks in `[self.blue_score - F, self.blue_score]`. By §5.3, that window extends downward to its `inactivity_shortcut` target T (when one exists), with `(T.blue_score, self.blue_score - F)` being structurally empty of chain blocks. So chain blocks up to and including T are covered by this anchor — header walks through them are safe (the lane state for any such block is fixed by what this anchor's SMT shows). **Past T**, chain blocks exist but are **not** covered by this anchor; a walk reaching there could hide activity behind unchecked headers. The `current == shortcut_target` check at each iteration forbids stepping from T to T's parent.
 
-**When `self.inactivity_shortcut == ZERO_HASH`** (activation-prefix or near-genesis case, §2.2), there is no concrete shortcut target block; the `current == shortcut_target` check never fires because no valid `seq_commit` equals `ZERO_HASH`. In this case the active-domain shortcut rule guarantees that *no in-domain proper non-genesis ancestor of `self` satisfies the shortcut predicate* (otherwise it would have been the target). In the constant-F regime, this means every such ancestor sits inside `self`'s staleness window `[self.blue_score - F, self.blue_score]` and is covered by `self`'s lane proof; under dynamic F the coverage argument is the predicate-defined one in §5.7. Either way, Walk-mode bridging through these ancestors is safe. `HeaderStep`s themselves don't distinguish pre- from post-activation: they only verify the outer `seq_commit(parent_seq_commit, state_root)` linkage, treating both as opaque hashes, so a header walk can in principle traverse legacy `seq_commit` links opaquely. **Activation is enforced at the next full anchor, not at HeaderStep boundaries**: the next `InactivityWitness` recomposes `mergeset_context_hash` using the post-activation field set (including `inactivity_shortcut`), so a pre-activation block supplied as a full witness fails `SeqCommitMismatch`. Walks that try to terminate at a pre-activation full anchor therefore fail at full-anchor recomposition.
+**When `self.inactivity_shortcut == ZERO_HASH`** (activation-prefix or near-genesis case, §2.2), there is no concrete shortcut target block; the `current == shortcut_target` check never fires because no valid `seq_commit` equals `ZERO_HASH`. In this case the active-domain shortcut rule guarantees that *no in-domain proper non-genesis ancestor of `self` satisfies the shortcut predicate* (otherwise it would have been the target). In the constant-F regime, this means every such ancestor sits inside `self`'s staleness window `[self.blue_score - F, self.blue_score]` and is covered by `self`'s lane proof; under dynamic F the coverage argument is the predicate-defined one in §5.7. Either way, Walk-mode bridging through these ancestors is safe. `HeaderStep`s themselves don't distinguish pre- from post-activation: they only verify the outer `seq_commit(parent_seq_commit, state_root)` linkage, treating both as opaque hashes, so a header walk can in principle traverse legacy `seq_commit` links opaquely. **Activation is enforced at the next full anchor, not at HeaderStep boundaries**: the next `InactivityWitness` recomputes its `activity_root` via the post-activation wrap `activity_root_hash(inactivity_shortcut, lanes_root)`, whereas a pre-activation block's `activity_root` is the identity `lanes_root`. A pre-activation block supplied as a full witness therefore fails `SeqCommitMismatch`, so walks that try to terminate at a pre-activation full anchor fail at full-anchor recomposition.
 
 ### 4.3 `ResetEmissionWitness`
 
@@ -347,17 +308,13 @@ Witness for the reset block R: enables proving L1 emitted a reset at R for the l
 ```rust
 struct ResetEmissionWitness {
     parent_seq_commit:    Hash,                  // = R.parent_seq_commit
-    timestamp:            u64,
-    daa_score:            u64,
-    blue_score:           u64,
+    mergeset_context:     MergesetContext,       // R's timestamp, daa_score, blue_score
     inactivity_shortcut:  Hash,                  // = inactivity_shortcut(R)
     payload_root:         Hash,
-    lanes_root:           Hash,                  // = R.active_lanes_root
 
-    lane_inclusion_proof: LaneSmtInclusionProof, // proves lane_tip ∈ lanes_root
-    activity_leaves:      Vec<Hash>,             // canonical activity-digest leaves for the lane at R
-                                                 // (guest verifies digest binding via lane_tip_next,
-                                                 //  not transaction-level lane membership)
+    lane_proof:           OwnedSmtProof,         // inclusion proof at lane_key; lanes_root derived
+    activity_digest:      Hash,                  // = activity_digest_lane(R's lane activity); bound via
+                                                 //   the reset-tip recompute below, not decomposed
 
     /// Path from R to the first inactivity anchor:
     ///   Shortcut: first anchor is R.inactivity_shortcut.
@@ -367,20 +324,14 @@ struct ResetEmissionWitness {
 }
 
 impl ResetEmissionWitness {
-    /// Recomputes R's seq_commit from this witness's fields. Composition matches
-    /// L1's `seq_commit ∘ seq_state_root ∘ payload_and_context_digest ∘ mergeset_context_hash`.
-    fn seq_commit(&self) -> Hash {
-        let context_hash = mergeset_context_hash(&MergesetContext {
-            timestamp:           self.timestamp,
-            daa_score:           self.daa_score,
-            blue_score:          self.blue_score,
-            inactivity_shortcut: self.inactivity_shortcut,
-        });
-        let pd = payload_and_context_digest(&context_hash, &self.payload_root);
-        let state_root = seq_state_root(&SeqState {
-            lanes_root:             &self.lanes_root,
-            payload_and_ctx_digest: &pd,
-        });
+    /// Recomputes R's seq_commit from the proof-derived `lanes_root` and
+    /// `context_hash`: the payload digest from `context_hash` and R's
+    /// `payload_root`, and the `activity_root` from `inactivity_shortcut` and
+    /// `lanes_root`.
+    fn seq_commit(&self, lanes_root: &Hash, context_hash: &Hash) -> Hash {
+        let pd = payload_and_context_digest(context_hash, &self.payload_root);
+        let activity_root = activity_root_hash(&self.inactivity_shortcut, lanes_root);
+        let state_root = seq_state_root(&SeqState { activity_root: &activity_root, payload_and_ctx_digest: &pd });
         seq_commit(&SeqCommitInput {
             parent_seq_commit: &self.parent_seq_commit,
             state_root:        &state_root,
@@ -388,66 +339,43 @@ impl ResetEmissionWitness {
     }
 
     /// Verifies that:
-    ///   (a) this witness reconstructs R's seq_commit (binds witness to chain),
-    ///   (b) R's lane_tip in active_lanes_root was committed with parent_ref =
-    ///       parent_seq_commit — i.e., L1 emitted the reset form. By I2 (§3),
-    ///       this attests that the lane was absent from R's effective pre-update
-    ///       lane state (the consensus-side basis for §5.0's reset-anchor
-    ///       coverage). This implicitly requires R to have lane activity
-    ///       (otherwise the inclusion proof fails), then
-    ///   (c) resolves the first inactivity anchor's expected seq_commit
+    ///   (a) recomputing R's reset-form lane_tip, deriving `lanes_root` from
+    ///       `lane_proof`, and folding up to `seq_commit` reproduces R's expected
+    ///       seq_commit. This single equality both binds the witness to the chain
+    ///       AND proves L1 emitted the reset form: a continuation-form tip — or a
+    ///       forged `activity_digest`, or an empty-activity claim (L1 emits a
+    ///       lane_tip only for non-empty activity) — yields a different leaf →
+    ///       different `lanes_root` → seq_commit mismatch. By I2 (§3) it attests the
+    ///       lane was absent from R's effective pre-update lane state (the
+    ///       consensus-side basis for §5.0's reset-anchor coverage), then
+    ///   (b) resolves the first inactivity anchor's expected seq_commit
     ///       (via Shortcut or Walk per `next_anchor`).
     fn verify_reset_emission(
         &self,
         lane_key:              Hash,
         expected_r_seq_commit: Hash,
     ) -> Result<Hash, Error> {
-        // (a) chain binding.
-        if self.seq_commit() != expected_r_seq_commit {
-            return Err(Error::SeqCommitMismatch);
-        }
-
-        // A reset is only valid if L1 actually processed lane activity at R —
-        // i.e., L1 invoked `lane_tip_next` for `lane_key` with some non-empty
-        // activity set. Forbid empty `activity_leaves` so the witness cannot
-        // pose as a reset by pretending to have activity it didn't have.
-        if self.activity_leaves.is_empty() {
-            return Err(Error::EmptyResetActivity);
-        }
-
-        // (b) recompute the lane_tip L1 should have stored for the reset path
-        //     and verify that R's lanes_root holds the leaf
-        //     `H(expected_tip, R.blue_score)` at lane_key. The verifier helper
-        //     fails if the witnessed lane_tip differs from `expected_tip`, OR
-        //     if the leaf isn't at lane_key in lanes_root.
-        //
-        // `activity_digest_lane` MUST be length-binding and computed over the
-        // canonical activity leaves for this lane in the same order L1 uses.
-        // The lane binding is provided by `lane_tip_next` (which takes
-        // `lane_key`) and by the SMT inclusion proof at key `lane_key`; the
-        // guest does not reorder leaves.
-        let context_hash = mergeset_context_hash(&MergesetContext {
-            timestamp:           self.timestamp,
-            daa_score:           self.daa_score,
-            blue_score:          self.blue_score,
-            inactivity_shortcut: self.inactivity_shortcut,
-        });
-        let activity_digest = activity_digest_lane(self.activity_leaves.iter().copied());
+        // (a) recompute the reset-form lane_tip and derive lanes_root from the
+        //     proof with leaf `H(expected_tip, R.blue_score)` at lane_key, then
+        //     fold to seq_commit. The witnessed `activity_digest` is bound by this
+        //     fold (a wrong digest yields a wrong tip → leaf not in lanes_root →
+        //     mismatch); lane binding comes from `lane_tip_next` (takes `lane_key`)
+        //     and the proof at `lane_key`.
+        let context_hash = mergeset_context_hash(&self.mergeset_context);
         let expected_tip = lane_tip_next(&LaneTipInput {
             parent_ref:      &self.parent_seq_commit,
             lane_key:        &lane_key,
-            activity_digest: &activity_digest,
+            activity_digest: &self.activity_digest,
             context_hash:    &context_hash,
         });
-        verify_lane_inclusion_at_r(
-            &self.lanes_root,
-            lane_key,
-            expected_tip,
-            self.blue_score,
-            &self.lane_inclusion_proof,
-        )?;
+        let leaf = smt_leaf_hash(&SmtLeafInput { lane_tip: &expected_tip, blue_score: self.mergeset_context.blue_score });
+        let lanes_root = self.lane_proof.compute_root::<SeqCommitActiveNode>(&lane_key, Some(leaf))?;
 
-        // (c) Resolve next anchor.
+        if self.seq_commit(&lanes_root, &context_hash) != expected_r_seq_commit {
+            return Err(Error::ResetNotEmitted);
+        }
+
+        // (b) Resolve next anchor.
         self.next_anchor.resolve(self.parent_seq_commit, self.inactivity_shortcut)
     }
 }
@@ -459,39 +387,24 @@ Witness for each walked anchor (the terminator is whichever anchor's lane proof 
 
 ```rust
 struct InactivityWitness {
-    parent_seq_commit:   Hash,
-    timestamp:           u64,
-    daa_score:           u64,
-    blue_score:          u64,
-    inactivity_shortcut: Hash,
-    payload_root:        Hash,
-    lanes_root:          Hash,
-    lane_proof:          LaneSmtProof,           // Inclusion(score) | NonInclusion
+    parent_seq_commit:      Hash,
+    inactivity_shortcut:    Hash,
+    payload_and_ctx_digest: Hash,                // opaque: the guest does not decompose it
+    lane_proof:             LaneProof,           // Present { .. } | Absent { .. }; lanes_root derived
 
     /// Path from this anchor to the next anchor — same dual-mode shape as
     /// `ResetEmissionWitness.next_anchor`.
     next_anchor: NextAnchorPath,
 }
 
-enum WalkStepOutcome {
-    Inclusion(u64),                       // lane_blue_score from the leaf at this anchor
-    NonInclusion { next_expected: Hash }, // next anchor's expected seq_commit
-}
-
 impl InactivityWitness {
-    /// Recomputes this anchor's seq_commit from its fields. Same composition
-    /// as `ResetEmissionWitness::seq_commit`.
-    fn seq_commit(&self) -> Hash {
-        let context_hash = mergeset_context_hash(&MergesetContext {
-            timestamp:           self.timestamp,
-            daa_score:           self.daa_score,
-            blue_score:          self.blue_score,
-            inactivity_shortcut: self.inactivity_shortcut,
-        });
-        let pd = payload_and_context_digest(&context_hash, &self.payload_root);
+    /// Recomputes this anchor's seq_commit from the proof-derived `lanes_root`.
+    /// The payload/context side enters as the opaque `payload_and_ctx_digest`.
+    fn seq_commit(&self, lanes_root: &Hash) -> Hash {
+        let activity_root = activity_root_hash(&self.inactivity_shortcut, lanes_root);
         let state_root = seq_state_root(&SeqState {
-            lanes_root:             &self.lanes_root,
-            payload_and_ctx_digest: &pd,
+            activity_root:          &activity_root,
+            payload_and_ctx_digest: &self.payload_and_ctx_digest,
         });
         seq_commit(&SeqCommitInput {
             parent_seq_commit: &self.parent_seq_commit,
@@ -500,33 +413,33 @@ impl InactivityWitness {
     }
 
     /// Verifies that:
-    ///   (a) this witness's seq_commit equals `expected_seq_commit`,
-    ///   (b) verifies the lane proof (Inclusion or NonInclusion) against
-    ///       `self.lanes_root` at `lane_key`, and
-    ///   (c) when NonInclusion, resolves the next anchor's expected seq_commit
-    ///       via `next_anchor`.
+    ///   (a) this anchor's seq_commit (over the `lanes_root` derived from
+    ///       `lane_proof`, §4.1) equals `expected_seq_commit` — a wrong leaf or
+    ///       false absence claim yields a different `lanes_root` and fails it — and
+    ///   (b) when the lane is absent, resolves the next anchor's expected seq_commit.
     fn verify_walk_step(
         &self,
         lane_key:            Hash,
         expected_seq_commit: Hash,
     ) -> Result<WalkStepOutcome, Error> {
-        if self.seq_commit() != expected_seq_commit {
+        let (lanes_root, inclusion) = self.lane_proof.resolve(lane_key)?;
+        if self.seq_commit(&lanes_root) != expected_seq_commit {
             return Err(Error::SeqCommitMismatch);
         }
 
-        match verify_lane_proof(&self.lanes_root, lane_key, &self.lane_proof)? {
-            LaneSmtOutcome::Inclusion(lane_blue_score) => {
-                Ok(WalkStepOutcome::Inclusion(lane_blue_score))
-            }
-            LaneSmtOutcome::NonInclusion => {
-                let next_expected = self.next_anchor.resolve(
-                    self.parent_seq_commit,
-                    self.inactivity_shortcut,
-                )?;
+        match inclusion {
+            Some(lane_blue_score) => Ok(WalkStepOutcome::Inclusion(lane_blue_score)),
+            None => {
+                let next_expected = self.next_anchor.resolve(self.parent_seq_commit, self.inactivity_shortcut)?;
                 Ok(WalkStepOutcome::NonInclusion { next_expected })
             }
         }
     }
+}
+
+enum WalkStepOutcome {
+    Inclusion(u64),                       // lane_blue_score from the leaf at this anchor
+    NonInclusion { next_expected: Hash }, // next anchor's expected seq_commit
 }
 ```
 
@@ -543,7 +456,7 @@ fn verify_reset(
 
     // Sanity check: the claimed last-activity score must be strictly below R's.
     // Otherwise the claim is internally inconsistent (L cannot be at or after R).
-    if l_lane_blue_score >= r_witness.blue_score {
+    if l_lane_blue_score >= r_witness.mergeset_context.blue_score {
         return Err(Error::ClaimedActivityAtOrAfterR);
     }
 
@@ -591,15 +504,15 @@ fn verify_reset(
 
 ## 5. Soundness
 
-Let **W_0, W_1, ..., W_n** denote the sequence of walked anchors in order from R-1 (or wherever the reset witness's `next_anchor` lands) backward toward L. W_n is the terminator — the anchor at which `verify_lane_proof` returns `Inclusion(L.lane_blue_score)`.
+Let **W_0, W_1, ..., W_n** denote the sequence of walked anchors in order from R-1 (or wherever the reset witness's `next_anchor` lands) backward toward L. W_n is the terminator — the anchor at which `verify_walk_step` returns `Inclusion(L.lane_blue_score)`.
 
 §§5.0–5.6 prove soundness and completeness for the **constant-F regime** (`F(B) = F` for all `B`), which is Kaspa's current configuration. Under constant `F` the §2.2 predicate `A.bs + min(F(A), F(B)) < B.bs` collapses to `A.bs + F < B.bs`, and references to `F` in these subsections mean that constant value. §5.7 extends the argument to dynamic `F` under the full `min(F(A), F(B))` predicate.
 
 ### 5.0 Reset-anchor coverage
 
-The reset block R is the *first* coverage anchor, and its coverage is structured differently from ordinary inactivity anchors. R contains the reactivation activity, so its lane proof is an *inclusion* proof for the new lane_tip (§4.3 step b) — it is **not** a NonInclusion proof for the pre-R lane state.
+The reset block R is the *first* coverage anchor, and its coverage is structured differently from ordinary inactivity anchors. R contains the reactivation activity, so its lane proof is an *inclusion* proof for the new lane_tip (§4.3 step a) — it is **not** a NonInclusion proof for the pre-R lane state.
 
-Coverage of the lane state immediately before R comes instead from the **reset-choice invariant (I2)**: reset-form lane-tip emission is consensus-valid only if `lk` was absent from R's *effective pre-update lane state*. Verifying that R's lane_tip was committed with `parent_ref = R.parent_seq_commit` therefore attests — via L1 consensus — to absence at the moment R's activity was applied. The absence may be because `lk` was already missing from `parent(R).active_lanes_root`, or because it was still present there but became stale under R's eviction rule before R's activity was processed (same-block eviction + reactivation). The reset-form attestation does *not* by itself prove that R is the lane's first reactivation: an intermediate activity between L and R, followed by another eviction, would also leave R in the absent pre-update state. Ruling out such intermediate activity is the job of the backward inactivity walk (§5.1–§5.6).
+Coverage of the lane state immediately before R comes instead from the **reset-choice invariant (I2)**: reset-form lane-tip emission is consensus-valid only if `lk` was absent from R's *effective pre-update lane state*. Verifying that R's lane_tip was committed with `parent_ref = R.parent_seq_commit` therefore attests — via L1 consensus — to absence at the moment R's activity was applied. By I1, that absence implies `lk` had no activity in R's window `[R.blue_score - F, R.blue_score)` — any such activity would leave `lk` present (un-evicted) in R's pre-update state — so this activity-free window is R's coverage tile in §5.4's tiling. The absence may be because `lk` was already missing from `parent(R).active_lanes_root`, or because it was still present there but became stale under R's eviction rule before R's activity was processed (same-block eviction + reactivation). The reset-form attestation does *not* by itself prove that R is the lane's first reactivation: an intermediate activity between L and R, followed by another eviction, would also leave R in the absent pre-update state. Ruling out such intermediate activity is the job of the backward inactivity walk (§5.1–§5.6).
 
 The backward walk proceeds from R's selected-parent chain via `r_witness.next_anchor` to the first ordinary inactivity anchor; each ordinary anchor's coverage comes from its NonInclusion proof (or, at the terminator, its Inclusion proof matching the claimed L).
 
@@ -671,7 +584,7 @@ Coverage and completeness under dynamic `F` rest on the operational lane-members
 
 ## 6. Why this is the right shape
 
-**Minimal L1 footprint**: one new field in `MergesetContext`. No changes to lane-update logic, eviction logic, or pruning policy are required — the proposal adds a structural commitment to a value already derivable from L1's per-block state. The §2.2 `min(F(A), F(B))` shortcut predicate is designed to support `finality_depth` rotations in either direction: the constant-`F` proof (§5.0–§5.6) applies directly, and the single-rotation increase/decrease cases are covered by §5.7. A fully formal proof for arbitrary rotation schedules is deferred.
+**Minimal L1 footprint**: one new `activity_root` level in the seq_commit composition (the `inactivity_shortcut` hashed with `lanes_root`, §2.1). No changes to lane-update logic, eviction logic, or pruning policy are required — the proposal adds a structural commitment to a value already derivable from L1's per-block state. The §2.2 `min(F(A), F(B))` shortcut predicate is designed to support `finality_depth` rotations in either direction: the constant-`F` proof (§5.0–§5.6) applies directly, and the single-rotation increase/decrease cases are covered by §5.7. A fully formal proof for arbitrary rotation schedules is deferred.
 
 **Guest is config-free and forward-compatible**: the `verify_reset` algorithm doesn't reference `F` (or any other L1 parameter). The guest only verifies cryptographic hash relationships and SMT inclusion/non-inclusion proofs. For rotations covered by the §2.2 rule and the §5.7 argument, the `inactivity_shortcut` field automatically encodes whichever shortcut target L1 computed and guests continue to verify proofs without modification. The implementation cost of rotation is L1-side bookkeeping (per-block `F` lookup, e.g., via a daa_score → F schedule); the guest-side surface is unchanged.
 
@@ -687,7 +600,7 @@ The natural strategy for a continuously-online L2 node, retaining anchors *forwa
 
 1. **Detect staleness**: when the L2 detects or is notified (e.g., via SMT diff over RPC, dedicated event stream, or local replay) that the lane first leaves `active_lanes_root` at some chain block X, retain X's witness. X is the *earliest* candidate for a future walk's terminator-adjacent region — note that X is not guaranteed to lie on any particular future R's canonical shortcut chain (shortcut placement depends on `F` and R's blue_score), so the L2's retention must keep enough surrounding anchors that the eventual walk's `next_anchor` references can all be resolved to retained witnesses or to header-walk bridges whose `parent_seq_commit` chain is still retrievable.
 2. **Extend the canonical chain upward**: as new chain blocks arrive during inactivity, retain block B's witness whenever `B.inactivity_shortcut` targets a block at or above the L2's deepest retained anchor — i.e., when B is structurally positioned to land on retention via the canonical (all-Shortcut) walk. This keeps the retained set aligned with the chain a future R would traverse via shortcuts.
-3. **Source witnesses**: fetch each newly identified anchor's `InactivityWitness` (lanes_root, lane proof, mergeset fields, etc.) from L1 RPC while the block is still within the pruning window.
+3. **Source witnesses**: fetch each newly identified anchor's `InactivityWitness` fields (inactivity_shortcut, payload_and_ctx_digest, parent_seq_commit, and the lane SMT proof at `lane_key`) from L1 RPC while the block is still within the pruning window.
 4. **Fill header gaps as needed**: if the L2's first retained anchor below R isn't exactly at `R.inactivity_shortcut`'s target (e.g., the L2 prefers a custom anchor one or two steps closer), populate `next_anchor: Walk(Vec<HeaderStep>)` for the affected hop by fetching the relevant `parent_seq_commit` chain via RPC.
 5. **Repeat** until the lane reactivates; at reset time, splice the retained anchor chain into a `verify_reset` input.
 
@@ -699,7 +612,7 @@ Kaspa's `finality_depth` (`F`) and the pruning depth are separate parameters: a 
 
 ### 7.3 Content-addressable witnesses for offline-node recovery
 
-The guest accepts any walk that satisfies the verification rules of §4 — it doesn't require participants to follow any specific anchor selection rule. But because `inactivity_shortcut` is a deterministic L1-side function (§2.2), L2 implementations can *agree* on a canonical walk shape (e.g., "always Shortcut, no Walk-mode bridging") and the resulting anchor sequence is the same for every honest observer of the same L1 chain. Adopting this kind of rule as a best practice across L2 nodes turns retained witnesses into content-addressable artifacts keyed by `(lane_key, anchor_seq_commit)`: any peer that was online during the inactivity period and followed the same convention can serve a recovering peer the same anchor, with full confidence the response matches what verification will accept. If the L2 *additionally* standardizes canonical serialization for SMT proofs, activity-leaf ordering, witness envelopes, and trailing-entry handling, these artifacts can also be made bit-identical — but the verification-equivalence property holds even without bit-identical encoding.
+The guest accepts any walk that satisfies the verification rules of §4 — it doesn't require participants to follow any specific anchor selection rule. But because `inactivity_shortcut` is a deterministic L1-side function (§2.2), L2 implementations can *agree* on a canonical walk shape (e.g., "always Shortcut, no Walk-mode bridging") and the resulting anchor sequence is the same for every honest observer of the same L1 chain. Adopting this kind of rule as a best practice across L2 nodes turns retained witnesses into content-addressable artifacts keyed by `(lane_key, anchor_seq_commit)`: any peer that was online during the inactivity period and followed the same convention can serve a recovering peer the same anchor, with full confidence the response matches what verification will accept. If the L2 *additionally* standardizes canonical serialization for SMT proofs, witness envelopes, and trailing-entry handling, these artifacts can also be made bit-identical — but the verification-equivalence property holds even without bit-identical encoding.
 
 The convention lives entirely at the L2 layer — L1 doesn't enforce it, and a guest will still verify any soundness-preserving walk a prover happens to produce. The point is that *coordinating* on a fixed walk shape unlocks straightforward content-addressing without needing a guest-level constraint.
 
@@ -713,15 +626,15 @@ The L2's combination of strategies depends on its operational model (always-onli
 
 ## 8. Migration
 
-The change alters `mergeset_context_hash` and thus the downstream `seq_commit` value carried by every chain block; any consensus commitments that depend on `seq_commit` (and the block hash, if `seq_commit` is included in the header pre-image) change accordingly. Consensus-critical; must activate at a hard-fork point identified by **`H_daa`** (the activation daa_score threshold).
+The change alters `seq_state_root` — which now consumes `activity_root` in place of the raw `lanes_root` — and thus the downstream `seq_commit` value carried by every chain block; any consensus commitments that depend on `seq_commit` (and the block hash, if `seq_commit` is included in the header pre-image) change accordingly. Consensus-critical; must activate at a hard-fork point identified by **`H_daa`** (the activation daa_score threshold).
 
-**Activation rule**: chain blocks with `daa_score < H_daa` keep the legacy `mergeset_context_hash` composition (no `inactivity_shortcut` field). Chain blocks with `daa_score ≥ H_daa` use the new composition. Pre-activation blocks' `seq_commit`s cannot be retroactively recomputed under the new rule — their committed values are fixed by the chain's recorded history. (The choice of daa_score for the activation predicate matches standard Kaspa hardfork gating: daa_score is monotone in real time and consistent across DAG branches, whereas blue_score can vary between branches.)
+**Activation rule**: chain blocks with `daa_score < H_daa` use `activity_root = lanes_root` (identity, no shortcut wrap). Chain blocks with `daa_score ≥ H_daa` use `activity_root = activity_root_hash(inactivity_shortcut, lanes_root)`. Pre-activation blocks' `seq_commit`s cannot be retroactively recomputed under the new rule — their committed values are fixed by the chain's recorded history. (The choice of daa_score for the activation predicate matches standard Kaspa hardfork gating: daa_score is monotone in real time and consistent across DAG branches, whereas blue_score can vary between branches.)
 
 **Active shortcut-commitment domain**: pre-activation blocks are *out of domain* for this proof format and are not candidate targets for the post-activation `inactivity_shortcut` field (§2.2); genesis is additionally excluded by the rule. For early post-activation blocks `B`, all chain blocks reachable as candidates may be pre-activation, in which case no in-domain non-genesis ancestor satisfies the shortcut predicate and the committed `inactivity_shortcut(B)` is `ZERO_HASH`. Once enough post-activation history has accumulated that some non-genesis ancestor `A` has `A.daa_score ≥ H_daa` AND `A.blue_score + min(F(A), F(B)) < B.blue_score`, the normal rule applies and the field commits to that ancestor's `seq_commit`. Activation therefore behaves like a "fresh genesis" for the new shortcut-commitment rule.
 
 The implementation may use internal shortcut-block metadata (e.g., a `genesis.hash` stand-in clamped during the activation prefix, or other search seeds) to compute future shortcut values efficiently — see §2.2's commitment-vs-internal-block note. The guest sees only the committed `ZERO_HASH` value during this prefix.
 
-**Recommended scope**: this proposal's `verify_reset` format is valid only for resets whose **full anchor witnesses** (the reset block R's `ResetEmissionWitness` and every `InactivityWitness`) are at `daa_score ≥ H_daa` — these witnesses recompose `mergeset_context_hash` internally using the post-activation field set (including `inactivity_shortcut`) and therefore depend on the post-activation composition rule. `HeaderStep` instances don't recompose `mergeset_context_hash`; they only verify the outer `seq_commit(parent_seq_commit, state_root)` linkage and treat both inputs as opaque hashes. A header walk can therefore traverse legacy `seq_commit` links opaquely. **The proof format simply rejects pre-activation full anchors**: a pre-activation block supplied as an `InactivityWitness` would fail `SeqCommitMismatch`, because the witness's `seq_commit()` recomposes using the new context format while the chain recorded the legacy value. So activation is enforced at full-anchor boundaries, not at every `HeaderStep`. Inactivity periods whose terminator (or any other anchor) lies pre-activation are either handled by a legacy proof format (out of scope for this spec) or unsupported until enough post-activation history has accumulated that the chosen walk's anchors lie entirely at `daa_score ≥ H_daa`. In the constant-F case, reset proofs whose claimed last activity already lies in the post-activation region become possible after roughly one F-sized post-activation window; longer inactivity spans require correspondingly more post-activation history.
+**Recommended scope**: this proposal's `verify_reset` format is valid only for resets whose **full anchor witnesses** (the reset block R's `ResetEmissionWitness` and every `InactivityWitness`) are at `daa_score ≥ H_daa` — these witnesses recompose `activity_root` internally via the post-activation wrap and therefore depend on the post-activation composition rule. `HeaderStep` instances don't recompose `activity_root`; they only verify the outer `seq_commit(parent_seq_commit, state_root)` linkage and treat both inputs as opaque hashes. A header walk can therefore traverse legacy `seq_commit` links opaquely. **The proof format simply rejects pre-activation full anchors**: a pre-activation block supplied as an `InactivityWitness` would fail `SeqCommitMismatch`, because `verify_walk_step` recomposes seq_commit via the activity_root wrap while the chain recorded the identity (`activity_root = lanes_root`). So activation is enforced at full-anchor boundaries, not at every `HeaderStep`. Inactivity periods whose terminator (or any other anchor) lies pre-activation are either handled by a legacy proof format (out of scope for this spec) or unsupported until enough post-activation history has accumulated that the chosen walk's anchors lie entirely at `daa_score ≥ H_daa`. In the constant-F case, reset proofs whose claimed last activity already lies in the post-activation region become possible after roughly one F-sized post-activation window; longer inactivity spans require correspondingly more post-activation history.
 
 **L2 impact**: `verify_reset` implementations gain `inactivity_shortcut` as a witnessed input on activation; they don't need recompilation or parameter discovery — only awareness of the activation-height scoping rule above when constructing proofs.
 
