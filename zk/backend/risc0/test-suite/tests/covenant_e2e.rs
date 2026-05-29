@@ -30,7 +30,8 @@ const TEST_COVENANT_VALUE: u64 = 100_000_000;
 async fn covenant_bootstrap_is_accepted_on_simnet() {
     let l1 = L1Node::new(Some(|p| {
         p.blockrate.coinbase_maturity = 1;
-        p.covenants_activation = ForkActivation::always();
+        p.toccata_activation = ForkActivation::always();
+        p.zk_hardening_activation = ForkActivation::always();
     }))
     .await;
 
