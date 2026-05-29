@@ -25,7 +25,7 @@ pub use kaspa_txscript::zk_precompiles::tags::ZkTag;
 pub use script::{
     CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, Groth16Pins, REDEEM_PREFIX_LEN, RedeemPins,
     SuccinctPins, build_dev_redeem_script, build_redeem_script, dev_redeem_script_len,
-    redeem_script_len,
+    redeem_script_len, succinct_consts,
 };
 pub use settlement::{
     Settlement, SettlementDevInput, SettlementInput, SettlementWitness, SuccinctWitness,

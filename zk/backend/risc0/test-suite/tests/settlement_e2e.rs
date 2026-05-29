@@ -20,17 +20,16 @@ use vprogs_node_test_utils::L1Node;
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
-use vprogs_zk_backend_risc0_api::{
-    Backend, OwnedGroth16Witness, OwnedSuccinctWitness, ProofType, ScriptVerifierPins,
-};
+use vprogs_zk_backend_risc0_api::{Backend, OwnedGroth16Witness, OwnedSuccinctWitness, ProofType};
 use vprogs_zk_backend_risc0_covenant::{
     CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, Groth16Pins, RedeemPins, Settlement,
     SettlementInput, SettlementWitness, StateTransition, SuccinctPins, SuccinctWitness,
     build_redeem_script, permission_spk, redeem_script_len,
 };
 use vprogs_zk_backend_risc0_test_suite::{
-    L1TransactionExt, batch_processor_elf, compute_section_lane_tip, dev_mode_enabled,
-    transaction_processor_elf, transaction_processor_with_exits_elf,
+    L1TransactionExt, assert_receipt_pins_match_succinct_consts, batch_processor_elf,
+    compute_section_lane_tip, dev_mode_enabled, transaction_processor_elf,
+    transaction_processor_with_exits_elf,
 };
 use vprogs_zk_batch_prover::{Backend as _, BatchProverConfig};
 use vprogs_zk_vm::{ProvingPipeline, Vm};
@@ -167,8 +166,11 @@ async fn batch_proof_is_directly_settleable_single_batch() {
     let l1 = L1Node::new(None).await;
     let block_hashes = l1.mine_blocks(1).await;
 
-    let config =
-        BatchProverConfig { bundle_size: NonZeroUsize::new(1).unwrap(), lane_key: Hash::default() };
+    let config = BatchProverConfig {
+        bundle_size: NonZeroUsize::new(1).unwrap(),
+        lane_key: Hash::default(),
+        covenant_id: None,
+    };
 
     let proving =
         ProvingPipeline::batch(backend.clone(), storage.clone(), l1.grpc_client().clone(), config);
@@ -239,23 +241,12 @@ async fn batch_proof_is_directly_settleable_single_batch() {
         "guest must echo the host-supplied tx image id into the journal",
     );
     let covenant_id_hash = Hash::from_bytes(parsed.covenant_id);
-    // Verifier-identity pins are now part of the redeem script's identity. In dev mode the
-    // receipt isn't a real succinct variant, so we use placeholder pins (both sides of the
-    // structural equality use the same values). Outside dev mode, pin extraction below uses
-    // the real receipt so `OpZkPrecompile` sees the values the prover actually committed to.
-    let verifier_pins = if !dev_mode_enabled() {
-        OwnedSuccinctWitness::script_pins_from_receipt(&batch_receipt)
-    } else {
-        ScriptVerifierPins { control_id: [0u8; 32], hashfn: 0 }
-    };
     let pins = RedeemPins::Succinct(SuccinctPins {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },
-        control_id: &verifier_pins.control_id,
-        hashfn: verifier_pins.hashfn,
     });
     let settlement = Settlement::build(&SettlementInput {
         covenant_id: covenant_id_hash,
@@ -325,8 +316,11 @@ async fn batch_proof_groth16_is_directly_settleable_single_batch() {
     let l1 = L1Node::new(None).await;
     let block_hashes = l1.mine_blocks(1).await;
 
-    let config =
-        BatchProverConfig { bundle_size: NonZeroUsize::new(1).unwrap(), lane_key: Hash::default() };
+    let config = BatchProverConfig {
+        bundle_size: NonZeroUsize::new(1).unwrap(),
+        lane_key: Hash::default(),
+        covenant_id: None,
+    };
 
     let proving =
         ProvingPipeline::batch(backend.clone(), storage.clone(), l1.grpc_client().clone(), config);
@@ -466,8 +460,11 @@ async fn batch_proof_bundles_two_batches() {
     let l1 = L1Node::new(None).await;
     let block_hashes = l1.mine_blocks(2).await;
 
-    let config =
-        BatchProverConfig { bundle_size: NonZeroUsize::new(2).unwrap(), lane_key: Hash::default() };
+    let config = BatchProverConfig {
+        bundle_size: NonZeroUsize::new(2).unwrap(),
+        lane_key: Hash::default(),
+        covenant_id: None,
+    };
 
     let proving =
         ProvingPipeline::batch(backend.clone(), storage.clone(), l1.grpc_client().clone(), config);
@@ -552,19 +549,12 @@ async fn batch_proof_bundles_two_batches() {
     let program_id = *backend.batch_image_id();
     let tx_image_id = *backend.transaction_image_id();
     let covenant_id_hash = Hash::from_bytes(parsed.covenant_id);
-    let verifier_pins = if !dev_mode_enabled() {
-        OwnedSuccinctWitness::script_pins_from_receipt(&r1)
-    } else {
-        ScriptVerifierPins { control_id: [0u8; 32], hashfn: 0 }
-    };
     let pins = RedeemPins::Succinct(SuccinctPins {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },
-        control_id: &verifier_pins.control_id,
-        hashfn: verifier_pins.hashfn,
     });
     let settlement = Settlement::build(&SettlementInput {
         covenant_id: covenant_id_hash,
@@ -645,8 +635,11 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
     let l1 = L1Node::new(None).await;
     let block_hashes = l1.mine_blocks(2).await;
 
-    let config =
-        BatchProverConfig { bundle_size: NonZeroUsize::new(2).unwrap(), lane_key: Hash::default() };
+    let config = BatchProverConfig {
+        bundle_size: NonZeroUsize::new(2).unwrap(),
+        lane_key: Hash::default(),
+        covenant_id: None,
+    };
 
     let proving =
         ProvingPipeline::batch(backend.clone(), storage.clone(), l1.grpc_client().clone(), config);
@@ -709,6 +702,12 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
 
     if !dev_mode_enabled() {
         backend.verify_batch_receipt(&r1);
+        // Same pin check as `proving_e2e.rs::batch_proof_two_transactions`, but for a
+        // DIFFERENT inner-tx-processor guest (transaction-processor-with-exits here, plain
+        // transaction-processor there). The outer batch-processor guest is the same, so the
+        // outer receipt's control_id must still be `resolve.zkr` poseidon2 regardless of
+        // the inner guest swap.
+        assert_receipt_pins_match_succinct_consts(&r1);
         for batch in [&batch_1, &batch_2] {
             for artifact in batch.tx_artifacts() {
                 backend.verify_transaction_receipt(&artifact);
@@ -731,19 +730,12 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
     let program_id = *backend.batch_image_id();
     let tx_image_id = *backend.transaction_image_id();
     let covenant_id_hash = Hash::from_bytes(parsed.covenant_id);
-    let verifier_pins = if !dev_mode_enabled() {
-        OwnedSuccinctWitness::script_pins_from_receipt(&r1)
-    } else {
-        ScriptVerifierPins { control_id: [0u8; 32], hashfn: 0 }
-    };
     let pins = RedeemPins::Succinct(SuccinctPins {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },
-        control_id: &verifier_pins.control_id,
-        hashfn: verifier_pins.hashfn,
     });
 
     // Pick a value large enough to cover the permission output with headroom for the

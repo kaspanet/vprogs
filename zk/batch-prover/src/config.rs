@@ -15,4 +15,9 @@ pub struct BatchProverConfig {
     pub bundle_size: NonZeroUsize,
     /// Our lane key. Bundle-wide (one lane per prover instance).
     pub lane_key: Hash,
+    /// Covenant id the produced batch journal binds to. The on-chain settlement script
+    /// reconstructs the journal preimage with the input's `OpInputCovenantId`, so the
+    /// receipt's committed `covenant_id` must equal the deployed covenant UTXO's id.
+    /// `None` for non-settling / mock-outpoint paths commits the all-zero placeholder.
+    pub covenant_id: Option<Hash>,
 }
