@@ -8935,6 +8935,7 @@ dependencies = [
  "kaspa-consensus-core",
  "kaspa-hashes",
  "kaspa-txscript",
+ "risc0-circuit-recursion",
  "risc0-groth16",
  "risc0-zkvm",
  "sha2",

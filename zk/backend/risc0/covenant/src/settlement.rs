@@ -399,8 +399,6 @@ mod tests {
                 tx_image_id: &[0xCC; 32],
                 permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
             },
-            control_id: &[0xDD; 32],
-            hashfn: 1,
         })
     }
 

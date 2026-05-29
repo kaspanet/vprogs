@@ -56,6 +56,31 @@ mod groth16_consts {
     include!(concat!(env!("OUT_DIR"), "/groth16_consts.rs"));
 }
 
+/// Risc0 succinct verifier-identity constants the on-chain `OpZkPrecompile`
+/// (R0Succinct branch) consumes alongside the per-spend witness.
+///
+/// Circuit-determined (the final recursion ZKR + recursion hash, not the user guest), so
+/// they live as build-time consts here instead of being extracted from each receipt. Cross-checked
+/// against the live `risc0_circuit_recursion::POSEIDON2_CONTROL_IDS` so any upstream rotation
+/// trips at test time rather than silently breaking the on-chain Succinct precompile.
+pub mod succinct_consts {
+    /// `resolve.zkr` poseidon2 control id.
+    ///
+    /// Every `ProverOpts::succinct()` proof with at least one assumption (every real batch
+    /// composes its per-tx receipts as assumptions) ends with a `resolve.zkr` step, so the
+    /// outer receipt's `control_id` is the poseidon2 control id for `resolve.zkr` published
+    /// in `risc0_circuit_recursion::control_id::POSEIDON2_CONTROL_IDS`.
+    pub const SUCCINCT_CONTROL_ID: [u8; 32] = [
+        0x53, 0xa7, 0xb2, 0x3d, 0x07, 0xf9, 0x9e, 0x5d, 0x56, 0x85, 0xe8, 0x58, 0x74, 0xf5, 0x18,
+        0x1e, 0x84, 0x86, 0xaa, 0x26, 0x7a, 0x0a, 0xe6, 0x07, 0xff, 0xe9, 0xba, 0x47, 0xc8, 0xbd,
+        0xda, 0x4a,
+    ];
+
+    /// kaspa `OpZkPrecompile` hashfn tag for risc0 `poseidon2`, the only recursion hash kaspa
+    /// supports for succinct receipts.
+    pub const SUCCINCT_HASHFN: u8 = 1;
+}
+
 /// Redeem script prefix size in bytes.
 ///
 /// Layout (66 bytes total):
@@ -83,15 +108,12 @@ pub struct CommonPins<'a> {
     pub permission_output_value: u64,
 }
 
-/// R0Succinct-specific pins: the recursion control root + hash function id that the
-/// `OpZkPrecompile` succinct variant consumes.
+/// R0Succinct-specific pins. The risc0 succinct verifier-identity constants (`control_id`,
+/// `hashfn`) are circuit-determined and live as build-time consts in [`succinct_consts`]; no
+/// per-spend pin data beyond [`CommonPins`] is needed.
 #[derive(Copy, Clone)]
 pub struct SuccinctPins<'a> {
     pub common: CommonPins<'a>,
-    /// Risc0 succinct verifier control root (kaspa PR #957) pushed before `OpZkPrecompile`.
-    pub control_id: &'a [u8; 32],
-    /// Risc0 recursion hash function id (0 = blake2b, 1 = poseidon2, 2 = sha-256).
-    pub hashfn: u8,
 }
 
 /// Groth16-specific pins. Groth16 verifier constants (compressed VK, control-root halves,
@@ -161,9 +183,7 @@ pub fn build_redeem_script(
     build_and_hash_journal(&mut b, pins);
 
     match pins {
-        RedeemPins::Succinct(p) => {
-            verify_risc0_succinct(&mut b, p.common.program_id, p.control_id, p.hashfn)
-        }
+        RedeemPins::Succinct(p) => verify_risc0_succinct(&mut b, p.common.program_id),
         RedeemPins::Groth16(p) => verify_risc0_groth16(&mut b, p.common.program_id),
     }
 
@@ -618,19 +638,14 @@ fn verify_input_index_zero(b: &mut ScriptBuilder) {
 /// Stack arriving here (bot→top):
 /// `[..., claim, control_index, control_digests, seal, journal_hash]`
 ///
-/// Pushes `image_id`, `control_id`, `hashfn` from the script body in the natural pop order
-/// of R0Succinct (top→bottom:
+/// Pushes `image_id` from the host pin and `control_id` / `hashfn` from the build-time
+/// [`succinct_consts`] in the natural pop order of R0Succinct (top→bottom:
 /// `hashfn, control_id, image_id, journal, seal, control_digests, control_index, claim`),
 /// then the `ZkTag` byte and `OpZkPrecompile`.
-fn verify_risc0_succinct(
-    b: &mut ScriptBuilder,
-    image_id: &[u8; 32],
-    control_id: &[u8; 32],
-    hashfn: u8,
-) {
+fn verify_risc0_succinct(b: &mut ScriptBuilder, image_id: &[u8; 32]) {
     b.add_data(image_id).unwrap();
-    b.add_data(control_id).unwrap();
-    b.add_data(&[hashfn]).unwrap();
+    b.add_data(&succinct_consts::SUCCINCT_CONTROL_ID).unwrap();
+    b.add_data(&[succinct_consts::SUCCINCT_HASHFN]).unwrap();
     b.add_data(&[ZkTag::R0Succinct as u8]).unwrap();
     b.add_op(OpZkPrecompile).unwrap();
     b.add_op(OpVerify).unwrap();
@@ -801,16 +816,8 @@ mod tests {
         }
     }
 
-    fn succinct_pins<'a>(
-        program_id: &'a [u8; 32],
-        tx_image_id: &'a [u8; 32],
-        control_id: &'a [u8; 32],
-    ) -> RedeemPins<'a> {
-        RedeemPins::Succinct(SuccinctPins {
-            common: common_pins(program_id, tx_image_id),
-            control_id,
-            hashfn: 1,
-        })
+    fn succinct_pins<'a>(program_id: &'a [u8; 32], tx_image_id: &'a [u8; 32]) -> RedeemPins<'a> {
+        RedeemPins::Succinct(SuccinctPins { common: common_pins(program_id, tx_image_id) })
     }
 
     fn groth16_pins<'a>(program_id: &'a [u8; 32], tx_image_id: &'a [u8; 32]) -> RedeemPins<'a> {
@@ -820,7 +827,7 @@ mod tests {
     #[test]
     fn redeem_script_length_converges_succinct() {
         let state = [0u8; 32];
-        let pins = succinct_pins(&[1u8; 32], &[2u8; 32], &[3u8; 32]);
+        let pins = succinct_pins(&[1u8; 32], &[2u8; 32]);
         let len = redeem_script_len(&state, &pins);
         let built = build_redeem_script(&state, &Hash::default(), len, &pins);
         assert_eq!(built.len() as i64, len, "self-referential length must match");
@@ -837,7 +844,7 @@ mod tests {
 
     #[test]
     fn redeem_script_length_stable_across_values_succinct() {
-        let pins = succinct_pins(&[1u8; 32], &[2u8; 32], &[3u8; 32]);
+        let pins = succinct_pins(&[1u8; 32], &[2u8; 32]);
         let a = redeem_script_len(&[0u8; 32], &pins);
         let b = redeem_script_len(&[0xffu8; 32], &pins);
         assert_eq!(a, b, "length must not depend on prev state");
@@ -862,7 +869,7 @@ mod tests {
     #[test]
     fn dev_redeem_script_distinct_from_prod_succinct() {
         let state = [0u8; 32];
-        let pins = succinct_pins(&[1u8; 32], &[2u8; 32], &[3u8; 32]);
+        let pins = succinct_pins(&[1u8; 32], &[2u8; 32]);
         let prod_len = redeem_script_len(&state, &pins);
         let prod = build_redeem_script(&state, &Hash::default(), prod_len, &pins);
         let dev_len = dev_redeem_script_len(&state);
@@ -886,7 +893,7 @@ mod tests {
     #[test]
     fn succinct_and_groth16_redeem_scripts_differ() {
         let state = [0u8; 32];
-        let s = succinct_pins(&[1u8; 32], &[2u8; 32], &[3u8; 32]);
+        let s = succinct_pins(&[1u8; 32], &[2u8; 32]);
         let g = groth16_pins(&[1u8; 32], &[2u8; 32]);
         let s_len = redeem_script_len(&state, &s);
         let g_len = redeem_script_len(&state, &g);
@@ -976,6 +983,31 @@ mod tests {
                 .try_into()
                 .unwrap();
             assert_eq!(POST_DIGEST, expected);
+        }
+    }
+
+    /// Cross-test: the hardcoded succinct verifier-identity constants must equal the live
+    /// values risc0 produces. Any risc0 release that rotates `resolve.zkr`'s poseidon2
+    /// control id (e.g. a new recursion-circuit version) trips this test rather than
+    /// silently breaking on-chain succinct verification.
+    mod succinct_consts_cross_check {
+        use risc0_circuit_recursion::control_id::POSEIDON2_CONTROL_IDS;
+
+        use super::super::succinct_consts::*;
+
+        #[test]
+        fn succinct_control_id_matches_resolve_zkr_poseidon2() {
+            let live: [u8; 32] = POSEIDON2_CONTROL_IDS
+                .iter()
+                .find_map(|(name, digest)| (*name == "resolve.zkr").then_some(*digest))
+                .expect("resolve.zkr present in POSEIDON2_CONTROL_IDS")
+                .as_bytes()
+                .try_into()
+                .expect("digest is 32 bytes");
+            assert_eq!(
+                SUCCINCT_CONTROL_ID, live,
+                "SUCCINCT_CONTROL_ID must match the live resolve.zkr poseidon2 control id",
+            );
         }
     }
 }
