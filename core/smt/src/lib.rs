@@ -8,12 +8,16 @@ extern crate alloc;
 
 pub mod proving {
     pub(crate) mod leaf;
+    pub(crate) mod member;
+    pub(crate) mod membership;
     pub(crate) mod proof;
     pub(crate) mod proof_builder;
     pub(crate) mod topology;
     pub(crate) mod traversal;
 
     pub use leaf::Leaf;
+    pub use member::Member;
+    pub use membership::Membership;
     pub use proof::Proof;
     pub(crate) use proof_builder::ProofBuilder;
     pub(crate) use topology::Topology;

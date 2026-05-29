@@ -7,19 +7,19 @@ use crate::{EMPTY_HASH, Node, proving::Proof};
 pub(crate) struct Traversal<'a, F> {
     /// The decoded proof being traversed.
     proof: &'a Proof<'a>,
-    /// Returns the value hash for the leaf at the given index.
-    value_hash_fn: F,
+    /// Returns the leaf hash for the leaf at the given index.
+    leaf_hash_fn: F,
     /// Next sibling to consume (advances sequentially).
     sibling_idx: usize,
     /// Next topology bit to consume (advances sequentially).
     topo_bit: usize,
 }
 
-impl<'a, 'v, F: Fn(usize) -> &'v [u8; 32]> Traversal<'a, F> {
+impl<'a, F: FnMut(usize) -> Result<[u8; 32]>> Traversal<'a, F> {
     /// Computes the root hash by traversing the proof tree.
     pub(crate) fn compute_root<H: Hasher>(
         proof: &'a Proof<'a>,
-        value_hash_fn: F,
+        leaf_hash_fn: F,
     ) -> Result<[u8; 32]> {
         // Empty proof - no leaves to traverse.
         if proof.leaves.is_empty() {
@@ -27,7 +27,7 @@ impl<'a, 'v, F: Fn(usize) -> &'v [u8; 32]> Traversal<'a, F> {
         }
 
         // Initialize traversal cursor and walk the proof tree from the root.
-        let mut ctx = Self { proof, value_hash_fn, sibling_idx: 0, topo_bit: 0 };
+        let mut ctx = Self { proof, leaf_hash_fn, sibling_idx: 0, topo_bit: 0 };
         ctx.traverse::<H>(0, proof.leaves.len(), 0)
     }
 
@@ -45,7 +45,7 @@ impl<'a, 'v, F: Fn(usize) -> &'v [u8; 32]> Traversal<'a, F> {
             if level > depth {
                 return Err(Error::Decode("malformed proof"));
             } else if level == depth {
-                return Ok(Node::hash_leaf::<H>(&leaf.key, (self.value_hash_fn)(start)));
+                return (self.leaf_hash_fn)(start);
             }
         }
 
@@ -62,13 +62,14 @@ impl<'a, 'v, F: Fn(usize) -> &'v [u8; 32]> Traversal<'a, F> {
         if bit_val {
             // Topology bit = 1: both children have proof leaves - find the split point and
             // recurse both sides.
-            let mid = self.proof.split_point(start, end, level);
+            let mid = self.split_point(start, end, level);
             let left = self.traverse::<H>(start, mid, level + 1)?;
             let right = self.traverse::<H>(mid, end, level + 1)?;
             Ok(Node::hash_internal::<H>(&left, &right))
         } else {
             // Topology bit = 0: only one side has proof leaves - use a sibling hash for the other.
-            let goes_left = !self.proof.leaves[start].key.get_msb(level as usize);
+            let leaf_key = &self.proof.keys[self.proof.leaves[start].key_idx.get() as usize];
+            let goes_left = !leaf_key.get_msb(level as usize);
             let sibling = self
                 .proof
                 .siblings
@@ -83,5 +84,13 @@ impl<'a, 'v, F: Fn(usize) -> &'v [u8; 32]> Traversal<'a, F> {
                 Ok(Node::hash_internal::<H>(sibling, &child))
             }
         }
+    }
+
+    /// Partition point where leaf keys switch from bit=0 (left) to bit=1 (right) at `level`.
+    fn split_point(&self, start: usize, end: usize, level: u16) -> usize {
+        start
+            + self.proof.leaves[start..end].partition_point(|leaf| {
+                !self.proof.keys[leaf.key_idx.get() as usize].get_msb(level as usize)
+            })
     }
 }

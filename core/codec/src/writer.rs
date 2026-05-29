@@ -1,5 +1,7 @@
 use alloc::vec::Vec;
 
+use zerocopy::{Immutable, IntoBytes};
+
 /// Infallible byte writer for wire-format encoding. Mirror of [`Reader`](crate::Reader).
 ///
 /// Panics on write failure rather than returning errors, since write failures in the zkVM guest
@@ -12,6 +14,12 @@ pub trait Writer {
     fn write_blob(&mut self, blob: &[u8]) {
         self.write(&(blob.len() as u32).to_le_bytes());
         self.write(blob);
+    }
+
+    /// Writes a u32 LE element count followed by the slice's bytes. Mirror of `Reader::slice_as`.
+    fn write_slice<T: IntoBytes + Immutable>(&mut self, slice: &[T]) {
+        self.write(&(slice.len() as u32).to_le_bytes());
+        self.write(slice.as_bytes());
     }
 
     /// Writes a u32 LE length prefix followed by each item's bytes (produced by `to_bytes`).

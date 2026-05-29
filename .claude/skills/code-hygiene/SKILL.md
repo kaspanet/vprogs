@@ -68,7 +68,12 @@ If a fact applies to the whole module ("this file is the permission tree's
 on-chain commitment wiring"), put it once at the top — don't repeat it on
 every item.
 
-### 5. Every public function and field gets a doc comment
+### 5. Every function and field gets a doc comment
+
+This includes private fns, `pub(crate)` items, and trivial accessors —
+not just the public API surface. The cost of a one-line `///` is
+trivial; the cost of inconsistency ("why does this private fn have a
+doc but its sibling doesn't?") is a real review-time tax.
 
 The only exception: trait `impl` methods. The trait definition documents the
 contract; impls inherit it. Implementations only need their own doc when
@@ -82,7 +87,13 @@ belongs on the method. See example 8.
 
 Trivial items still get docs, but the docs can be one line
 (`/// Creates an empty accumulator.`, `/// Returns the number of leaves
-added so far.`).
+added so far.`, `/// Bounds-checked access to `keys[idx]`.`).
+
+When sweeping a file, watch for the *partial-coverage* smell: most items
+documented, one or two skipped because they "felt obvious." That's the
+inconsistency tax above — either document them in the same one-line voice
+as the siblings, or remove the existing private-fn docs from the rest of
+the file. Mixed coverage is the wrong answer.
 
 ## Specific rules
 

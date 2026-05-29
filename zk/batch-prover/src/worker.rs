@@ -109,8 +109,7 @@ where
 
         // ONE SMT walk for the whole bundle, at the version preceding the first batch.
         let prev_version = batches[0].checkpoint().index().saturating_sub(1);
-        let (proof_bytes, leaf_order) =
-            self.store.prove(&bundle_resources, prev_version).expect("proof");
+        let proof_bytes = self.store.prove(&bundle_resources, prev_version).expect("proof");
 
         // Fetch the lane proof for the bundle's FINAL block.
         let last_block_hash = batches.last().unwrap().checkpoint().metadata().hash;
@@ -140,7 +139,6 @@ where
             &covenant_id,
             &self.config.lane_key,
             &proof_bytes,
-            &leaf_order,
             &resp,
             bundle.parts(),
         );
