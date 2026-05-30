@@ -98,10 +98,18 @@ where
         lane_blue_score: u64,
     ) {
         let permission_spk_hash = self.exits.finalize();
+
+        // One walk yields both roots; unchanged subtrees reuse the pre-state hash.
+        let (prev_root, new_root) = self
+            .inputs
+            .proof
+            .compute_roots::<Blake3>(|q| self.latest_value_hashes[q])
+            .expect("compute_roots");
+
         StateTransition::encode(
             journal,
-            (&self.prev_root(), self.prev_lane_tip),
-            (&self.new_root(), lane_tip, &self.new_seq_commit(lane_tip, lane_blue_score)),
+            (&prev_root, self.prev_lane_tip),
+            (&new_root, lane_tip, &self.new_seq_commit(lane_tip, lane_blue_score)),
             self.inputs.covenant_id,
             self.inputs.image_id,
             &permission_spk_hash,
@@ -232,16 +240,6 @@ where
         assert_eq!(&*r.resource_id, member.key, "resource_id mismatch");
 
         bundle_idx
-    }
-
-    /// Returns the bundle's pre-state SMT root.
-    fn prev_root(&self) -> [u8; 32] {
-        self.inputs.proof.root::<Blake3>().expect("prev_root")
-    }
-
-    /// Returns the bundle's post-state SMT root after batch processing.
-    fn new_root(&self) -> [u8; 32] {
-        self.inputs.proof.new_root::<Blake3>(|q| self.latest_value_hashes[q]).expect("new_root")
     }
 
     /// Derives the bundle's final-block `seq_commit`.

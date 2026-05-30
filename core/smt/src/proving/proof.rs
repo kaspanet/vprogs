@@ -1,4 +1,4 @@
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 
 use tap::Tap;
 use vprogs_core_codec::{Bits, Error, Reader, Result, Writer};
@@ -6,7 +6,7 @@ use vprogs_core_hashing::Hasher;
 
 use crate::{
     EMPTY_HASH, Node,
-    proving::{Leaf, Member, Membership, Traversal},
+    proving::{Leaf, Member, MembersByLeaf, Membership, Traversal},
 };
 
 /// Zero-copy view of a multi-proof.
@@ -50,13 +50,37 @@ impl<'a> Proof<'a> {
 
     /// Pre-state root from the proof's own leaf value hashes.
     pub fn root<H: Hasher>(&self) -> Result<[u8; 32]> {
-        Traversal::compute_root::<H>(self, |i| self.leaf_hash::<H>(i))
+        Traversal::new(self, |i| self.leaf_hash::<H>(i)).traverse::<H>(0, self.leaves.len(), 0)
     }
 
     /// Post-state root with each member's new value supplied by `value(member_idx)`.
     pub fn new_root<H: Hasher>(&self, value: impl Fn(usize) -> &'a [u8; 32]) -> Result<[u8; 32]> {
+        Ok(self.compute_roots::<H>(value)?.1)
+    }
+
+    /// Both roots in one walk; unchanged subtrees reuse the pre-state hash.
+    pub fn compute_roots<H: Hasher>(
+        &self,
+        new_value: impl Fn(usize) -> &'a [u8; 32],
+    ) -> Result<([u8; 32], [u8; 32])> {
+        let (members_by_leaf, touched, values) = self.post_state_index(new_value);
+
         let mut buf = Vec::new();
-        Traversal::compute_root::<H>(self, |i| self.new_subtree_hash::<H>(i, &value, &mut buf))
+        Traversal::new(self, |leaf_pos| {
+            let prev = self.leaf_hash::<H>(leaf_pos)?;
+            let post = if !touched[leaf_pos] {
+                prev
+            } else {
+                self.new_subtree_hash::<H>(
+                    leaf_pos,
+                    members_by_leaf.at(leaf_pos),
+                    &values,
+                    &mut buf,
+                )?
+            };
+            Ok((prev, post))
+        })
+        .traverse_pair::<H>(0, self.leaves.len(), 0)
     }
 
     /// Encodes the proof into the wire format.
@@ -84,7 +108,7 @@ impl<'a> Proof<'a> {
         Ok(Member { key, leaf, absent: false })
     }
 
-    /// Resolves an `Absent` claim into a [`Member`].
+    /// Resolves an `Absent` claim into a [`Member`], or errs if the leaf doesn't witness absence.
     fn member_absent(&self, idx: usize, leaf_idx: usize) -> Result<Member<'a>> {
         // Resolve the queried key, the wire-claimed witness leaf, and the leaf's own key.
         let key = self.key(idx)?;
@@ -105,56 +129,111 @@ impl<'a> Proof<'a> {
     }
 
     /// Pre-state hash at proof-leaf position `i`: the existing leaf's `hash_leaf(key, value_hash)`.
+    #[inline]
     fn leaf_hash<H: Hasher>(&self, i: usize) -> Result<[u8; 32]> {
         let leaf = self.leaf(i)?;
         Ok(Node::hash_leaf::<H>(self.leaf_key(leaf)?, &leaf.value_hash))
     }
 
-    /// Post-state hash at proof-leaf position `leaf_pos`, synthesized from members landing there.
-    fn new_subtree_hash<H: Hasher>(
+    /// Builds `(members_by_leaf, touched, cached values)`.
+    fn post_state_index(
         &self,
-        leaf_pos: usize,
         new_value: impl Fn(usize) -> &'a [u8; 32],
-        buffer: &mut Vec<(&'a [u8; 32], &'a [u8; 32])>,
-    ) -> Result<[u8; 32]> {
-        buffer.clear();
-        let witness_covered = self.members_at_leaf(leaf_pos, &new_value, buffer)?;
+    ) -> (MembersByLeaf, Vec<bool>, Vec<&'a [u8; 32]>) {
+        let leaves_len = self.leaves.len();
+        let mut offsets = vec![0u32; leaves_len + 1];
+        let mut touched = vec![false; leaves_len];
+        let mut values: Vec<&'a [u8; 32]> = Vec::with_capacity(self.memberships.len());
 
-        // Include the witness key if no Present member covers it, and it still has a value.
-        let leaf = self.leaf(leaf_pos)?;
-        if !witness_covered && leaf.value_hash != EMPTY_HASH {
-            buffer.push((self.leaf_key(leaf)?, &leaf.value_hash));
-        }
-
-        buffer.sort_by(|a, b| a.0.cmp(b.0));
-        Ok(Self::subtree_hash::<H>(buffer.as_slice(), leaf.depth.get()))
-    }
-
-    /// Gathers members at `leaf_pos` into `buffer`; returns whether a `Present` member covers it.
-    fn members_at_leaf(
-        &self,
-        leaf_pos: usize,
-        new_value: impl Fn(usize) -> &'a [u8; 32],
-        buffer: &mut Vec<(&'a [u8; 32], &'a [u8; 32])>,
-    ) -> Result<bool> {
-        let mut witness_covered = false;
+        // Pass 1: cache values, count members per leaf into `offsets[leaf_pos + 1]`, mark touched.
         for (i, m) in self.memberships.iter().enumerate() {
-            let (is_present, m_leaf_pos) = match *m {
+            let v = new_value(i);
+            values.push(v);
+            let (is_present, leaf_pos) = match *m {
                 Membership::Present(p) => (true, p.get() as usize),
                 Membership::Absent(p) => (false, p.get() as usize),
             };
+            if leaf_pos >= leaves_len {
+                continue; // malformed wire; surfaces downstream as a decode error
+            }
+            offsets[leaf_pos + 1] += 1;
 
-            if m_leaf_pos == leaf_pos {
-                if is_present {
-                    witness_covered = true;
-                }
-                let v = new_value(i);
-                if v != &EMPTY_HASH {
-                    buffer.push((self.key(i)?, v));
-                }
+            // Touched if Present writes a different value or Absent writes non-empty.
+            let changed =
+                if is_present { v != &self.leaves[leaf_pos].value_hash } else { v != &EMPTY_HASH };
+            if changed {
+                touched[leaf_pos] = true;
             }
         }
-        Ok(witness_covered)
+
+        // Prefix sum: offsets[i] = start of leaf i's range in `indices`.
+        for i in 1..=leaves_len {
+            offsets[i] += offsets[i - 1];
+        }
+
+        // Pass 2: fill `indices`, using `offsets[leaf_pos]` as a write cursor; shift right after.
+        let mut indices = vec![0u32; offsets[leaves_len] as usize];
+        for (i, m) in self.memberships.iter().enumerate() {
+            let leaf_pos = match *m {
+                Membership::Present(p) | Membership::Absent(p) => p.get() as usize,
+            };
+            if leaf_pos >= leaves_len {
+                continue;
+            }
+            indices[offsets[leaf_pos] as usize] = i as u32;
+            offsets[leaf_pos] += 1;
+        }
+        for i in (1..=leaves_len).rev() {
+            offsets[i] = offsets[i - 1];
+        }
+        offsets[0] = 0;
+
+        (MembersByLeaf { offsets, indices }, touched, values)
+    }
+
+    /// Post-state hash at a touched proof-leaf, given its members and cached values.
+    fn new_subtree_hash<H: Hasher>(
+        &self,
+        leaf_pos: usize,
+        member_indices: &[u32],
+        values: &[&'a [u8; 32]],
+        buffer: &mut Vec<(&'a [u8; 32], &'a [u8; 32])>,
+    ) -> Result<[u8; 32]> {
+        let leaf = self.leaf(leaf_pos)?;
+
+        // Single pass over members AT this leaf: detect structure change, gather entries.
+        buffer.clear();
+        let mut new_witness_value: Option<&'a [u8; 32]> = None;
+        let mut needs_synthesis = false;
+        for &i in member_indices {
+            let m = self.memberships[i as usize];
+            let v = values[i as usize];
+            if matches!(m, Membership::Present(_)) {
+                new_witness_value = Some(v);
+            } else if v != &EMPTY_HASH {
+                needs_synthesis = true;
+            }
+            if v != &EMPTY_HASH {
+                buffer.push((self.key(i as usize)?, v));
+            }
+        }
+
+        // Slow path: foreign-create. Synthesize the new subtree.
+        if needs_synthesis {
+            if new_witness_value.is_none() && leaf.value_hash != EMPTY_HASH {
+                buffer.push((self.leaf_key(leaf)?, &leaf.value_hash));
+            }
+            buffer.sort_by(|a, b| a.0.cmp(b.0));
+            return Ok(Self::subtree_hash::<H>(buffer.as_slice(), leaf.depth.get()));
+        }
+
+        // Fast path: leaf stays single-key. Use the new value if Present wrote, else pre-state.
+        let value = new_witness_value.unwrap_or(&leaf.value_hash);
+        if value == &EMPTY_HASH {
+            Ok(EMPTY_HASH)
+        } else {
+            Ok(Node::hash_leaf::<H>(self.leaf_key(leaf)?, value))
+        }
     }
 
     /// Hashes the subtree rooted at `depth` containing `entries` sorted by key sharing a prefix.
@@ -189,16 +268,19 @@ impl<'a> Proof<'a> {
     }
 
     /// Bounds-checked access to `keys[idx]`.
+    #[inline]
     fn key(&self, idx: usize) -> Result<&'a [u8; 32]> {
         self.keys.get(idx).ok_or(Error::Decode("key out of range"))
     }
 
     /// Bounds-checked access to `leaves[idx]`.
+    #[inline]
     fn leaf(&self, idx: usize) -> Result<&'a Leaf> {
         self.leaves.get(idx).ok_or(Error::Decode("leaf out of range"))
     }
 
     /// Bounds-checked access to the leaf's own key (i.e. `keys[leaf.key_idx]`).
+    #[inline]
     fn leaf_key(&self, leaf: &Leaf) -> Result<&'a [u8; 32]> {
         self.key(leaf.key_idx.get() as usize)
     }
