@@ -1,13 +1,13 @@
 use vprogs_core_codec::{Bits, Error, Result};
 use vprogs_core_hashing::Hasher;
 
-use crate::{EMPTY_HASH, Node, proving::Proof};
+use crate::{HashedNode, proving::Proof};
 
 /// Mutable cursor state for recursive proof tree traversal.
 pub(crate) struct Traversal<'a, F> {
     /// The decoded proof being traversed.
     proof: &'a Proof<'a>,
-    /// Returns the leaf hash(es) at the given index.
+    /// Returns the [`HashedNode`] summaries at the given proof-leaf index.
     leaf_hash_fn: F,
     /// Next sibling to consume (advances sequentially).
     sibling_idx: usize,
@@ -85,80 +85,97 @@ impl<'a, F> Traversal<'a, F> {
         !self.proof.keys[self.proof.leaves[start].key_idx.get() as usize].get_msb(level as usize)
     }
 
-    /// Consumes the next off-path sibling hash, or errs if the wire ran out.
-    fn next_sibling(&mut self) -> Result<&'a [u8; 32]> {
+    /// Consumes the next off-path sibling summary, or errs if the wire ran out.
+    fn next_sibling(&mut self) -> Result<&'a HashedNode> {
         let sibling =
             self.proof.siblings.get(self.sibling_idx).ok_or(Error::Decode("malformed proof"))?;
         self.sibling_idx += 1;
         Ok(sibling)
     }
 
-    /// Combines a child hash with its off-path sibling, ordering by which side the child lies on.
+    /// Combines a child with its off-path sibling, ordering by which side the child lies on.
     fn combine_with_sibling<H: Hasher>(
-        child: &[u8; 32],
-        sibling: &[u8; 32],
+        child: &HashedNode,
+        sibling: &HashedNode,
         child_goes_left: bool,
-    ) -> [u8; 32] {
+    ) -> HashedNode {
         if child_goes_left {
-            Node::hash_internal::<H>(child, sibling)
+            HashedNode::combine::<H>(child, sibling)
         } else {
-            Node::hash_internal::<H>(sibling, child)
+            HashedNode::combine::<H>(sibling, child)
         }
     }
 }
 
-impl<'a, F: FnMut(usize) -> Result<[u8; 32]>> Traversal<'a, F> {
-    /// Recursive traversal over the `start..end` range of proof leaf indices.
+impl<'a, F: FnMut(usize) -> Result<HashedNode>> Traversal<'a, F> {
+    /// Computes the root hash over the `start..end` range of proof leaf indices.
     pub(crate) fn traverse<H: Hasher>(
         &mut self,
         start: usize,
         end: usize,
         level: u16,
     ) -> Result<[u8; 32]> {
-        if let Some(value) = self.terminal_value(start, end, level, EMPTY_HASH)? {
+        Ok(self.walk::<H>(start, end, level)?.hash)
+    }
+
+    /// Recursive worker returning the kinded summary at each level (needed for promotion).
+    fn walk<H: Hasher>(&mut self, start: usize, end: usize, level: u16) -> Result<HashedNode> {
+        if let Some(value) = self.terminal_value(start, end, level, HashedNode::EMPTY)? {
             return Ok(value);
         }
 
         if self.next_topology_bit() {
             // Both children have proof leaves - split and recurse both sides.
             let mid = self.split_point(start, end, level);
-            let left = self.traverse::<H>(start, mid, level + 1)?;
-            let right = self.traverse::<H>(mid, end, level + 1)?;
+            let left = self.walk::<H>(start, mid, level + 1)?;
+            let right = self.walk::<H>(mid, end, level + 1)?;
 
-            Ok(Node::hash_internal::<H>(&left, &right))
+            Ok(HashedNode::combine::<H>(&left, &right))
         } else {
-            // One side has proof leaves, the other is summarized by a sibling hash.
+            // One side has proof leaves, the other is summarized by a sibling.
             let goes_left = self.leaf_goes_left(start, level);
             let sibling = self.next_sibling()?;
-            let child = self.traverse::<H>(start, end, level + 1)?;
+            let child = self.walk::<H>(start, end, level + 1)?;
 
             Ok(Self::combine_with_sibling::<H>(&child, sibling, goes_left))
         }
     }
 }
 
-impl<'a, F: FnMut(usize) -> Result<([u8; 32], [u8; 32])>> Traversal<'a, F> {
-    /// Paired walk returning `(prev, post)` per node; reuses prev when children are unchanged.
+impl<'a, F: FnMut(usize) -> Result<(HashedNode, HashedNode)>> Traversal<'a, F> {
+    /// Paired walk returning `(prev_root, post_root)`; unchanged subtrees reuse the pre-state hash.
     pub(crate) fn traverse_pair<H: Hasher>(
         &mut self,
         start: usize,
         end: usize,
         level: u16,
     ) -> Result<([u8; 32], [u8; 32])> {
-        if let Some(value) = self.terminal_value(start, end, level, (EMPTY_HASH, EMPTY_HASH))? {
+        let (prev, post) = self.walk_pair::<H>(start, end, level)?;
+        Ok((prev.hash, post.hash))
+    }
+
+    /// Recursive worker returning the kinded `(prev, post)` summaries at each level.
+    fn walk_pair<H: Hasher>(
+        &mut self,
+        start: usize,
+        end: usize,
+        level: u16,
+    ) -> Result<(HashedNode, HashedNode)> {
+        let empty = (HashedNode::EMPTY, HashedNode::EMPTY);
+        if let Some(value) = self.terminal_value(start, end, level, empty)? {
             return Ok(value);
         }
 
         if self.next_topology_bit() {
             // Both children have proof leaves.
             let mid = self.split_point(start, end, level);
-            let (prev_left, post_left) = self.traverse_pair::<H>(start, mid, level + 1)?;
-            let (prev_right, post_right) = self.traverse_pair::<H>(mid, end, level + 1)?;
-            let prev = Node::hash_internal::<H>(&prev_left, &prev_right);
+            let (prev_left, post_left) = self.walk_pair::<H>(start, mid, level + 1)?;
+            let (prev_right, post_right) = self.walk_pair::<H>(mid, end, level + 1)?;
+            let prev = HashedNode::combine::<H>(&prev_left, &prev_right);
             let post = if prev_left == post_left && prev_right == post_right {
                 prev
             } else {
-                Node::hash_internal::<H>(&post_left, &post_right)
+                HashedNode::combine::<H>(&post_left, &post_right)
             };
 
             Ok((prev, post))
@@ -166,7 +183,7 @@ impl<'a, F: FnMut(usize) -> Result<([u8; 32], [u8; 32])>> Traversal<'a, F> {
             // One side has proof leaves, the other is an off-path sibling (unchanged pre/post).
             let goes_left = self.leaf_goes_left(start, level);
             let sibling = self.next_sibling()?;
-            let (prev_child, post_child) = self.traverse_pair::<H>(start, end, level + 1)?;
+            let (prev_child, post_child) = self.walk_pair::<H>(start, end, level + 1)?;
             let prev = Self::combine_with_sibling::<H>(&prev_child, sibling, goes_left);
             let post = if prev_child == post_child {
                 prev

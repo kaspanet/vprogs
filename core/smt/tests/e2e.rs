@@ -1,6 +1,8 @@
 use tempfile::TempDir;
 use vprogs_core_hashing::{Blake3, Hasher};
-use vprogs_core_smt::{Commitment, EMPTY_HASH, Key, Node, Tree, proving::Proof};
+use vprogs_core_smt::{
+    Commitment, EMPTY_HASH, HashedNode, INTERNAL, Key, LEAF, Node, Tree, proving::Proof,
+};
 use vprogs_core_types::ResourceId;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_storage_types::Store;
@@ -47,14 +49,14 @@ fn domain_separation_produces_different_hashes() {
     // Same payload but different domain tags should produce different hashes.
     let a = [1u8; 32];
     let b = [2u8; 32];
-    let internal = Node::internal::<Blake3>(&a, &b);
+    let internal = Node::internal::<Blake3>(&HashedNode::new(LEAF, a), &HashedNode::new(LEAF, b));
     let leaf = Node::leaf::<Blake3>(ResourceId::from(a), b);
     assert_ne!(internal.hash(), leaf.hash());
 }
 
 #[test]
 fn empty_compression_internal() {
-    let node = Node::internal::<Blake3>(&EMPTY_HASH, &EMPTY_HASH);
+    let node = Node::internal::<Blake3>(&HashedNode::EMPTY, &HashedNode::EMPTY);
     assert_eq!(*node.hash(), EMPTY_HASH);
 }
 
@@ -68,7 +70,7 @@ fn empty_compression_leaf() {
 #[test]
 fn non_empty_internal_is_not_empty() {
     let a = [1u8; 32];
-    let node = Node::internal::<Blake3>(&a, &EMPTY_HASH);
+    let node = Node::internal::<Blake3>(&HashedNode::new(INTERNAL, a), &HashedNode::EMPTY);
     assert_ne!(*node.hash(), EMPTY_HASH);
 }
 
@@ -84,7 +86,10 @@ fn non_empty_leaf_is_not_empty() {
 
 #[test]
 fn internal_roundtrip() {
-    let node = Node::internal::<Blake3>(&[1u8; 32], &[2u8; 32]);
+    let node = Node::internal::<Blake3>(
+        &HashedNode::new(LEAF, [1u8; 32]),
+        &HashedNode::new(LEAF, [2u8; 32]),
+    );
     let bytes = node.encode();
     assert_eq!(bytes.len(), 33);
     assert_eq!(Node::decode(&mut bytes.as_slice()).unwrap(), node);

@@ -6,7 +6,7 @@ use vprogs_core_types::ResourceId;
 use zerocopy::little_endian::{U16, U32};
 
 use crate::{
-    EMPTY_HASH, Key, Node, Tree,
+    EMPTY_HASH, HashedNode, Key, Node, Tree,
     proving::{Leaf, Membership, Proof, Topology},
 };
 
@@ -22,8 +22,8 @@ pub(crate) struct ProofBuilder<'a, S> {
     key_to_idx: BTreeMap<[u8; 32], u32>,
     /// Collected witness leaves (each references its key by index into `keys`).
     leaves: Vec<Leaf>,
-    /// Collected sibling hashes for one-sided subtrees.
-    siblings: Vec<[u8; 32]>,
+    /// Collected sibling summaries (kind + hash) for one-sided subtrees.
+    siblings: Vec<HashedNode>,
     /// Packed topology bitfield (LSB-first).
     topology: Topology,
     /// Per sorted-input position, the index of the witness leaf that answers it.
@@ -113,9 +113,9 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
             self.collect_empty(&input_keys[..mid], level + 1, offset);
             self.collect_empty(&input_keys[mid..], level + 1, offset + mid);
         } else {
-            // All absent keys on one side - emit sibling (EMPTY_HASH) for the empty side.
+            // All absent keys on one side - emit an empty sibling for the empty side.
             self.topology.push(false);
-            self.siblings.push(EMPTY_HASH);
+            self.siblings.push(HashedNode::EMPTY);
             self.collect_empty(input_keys, level + 1, offset);
         }
     }
@@ -137,16 +137,16 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
                 self.collect(&left_child, left_keys, offset);
                 self.collect(&right_child, right_keys, offset + mid);
             }
-            // Input keys are on the right - left subtree hash becomes a sibling.
+            // Input keys are on the right - left subtree becomes a sibling.
             (true, false) => {
                 self.topology.push(false);
-                self.siblings.push(self.node_hash(&left_child));
+                self.siblings.push(self.child_summary(&left_child));
                 self.collect(&right_child, right_keys, offset);
             }
-            // Input keys are on the left - right subtree hash becomes a sibling.
+            // Input keys are on the left - right subtree becomes a sibling.
             (false, true) => {
                 self.topology.push(false);
-                self.siblings.push(self.node_hash(&right_child));
+                self.siblings.push(self.child_summary(&right_child));
                 self.collect(&left_child, left_keys, offset);
             }
             // Caller's early-return on empty `input_keys` guarantees at least one is non-empty.
@@ -194,8 +194,11 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
         idx
     }
 
-    /// Returns the hash of the node at the given key, or `EMPTY_HASH` if absent.
-    fn node_hash(&self, node_key: &Key) -> [u8; 32] {
-        self.tree.node(node_key, self.version).map(|(_, data)| *data.hash()).unwrap_or(EMPTY_HASH)
+    /// Returns the [`HashedNode`] summary of the node at `node_key`, or [`HashedNode::EMPTY`].
+    fn child_summary(&self, node_key: &Key) -> HashedNode {
+        self.tree
+            .node(node_key, self.version)
+            .map(|(_, d)| HashedNode::from(&d))
+            .unwrap_or(HashedNode::EMPTY)
     }
 }

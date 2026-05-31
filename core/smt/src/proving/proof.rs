@@ -5,7 +5,7 @@ use vprogs_core_codec::{Bits, Error, Reader, Result, Writer};
 use vprogs_core_hashing::Hasher;
 
 use crate::{
-    EMPTY_HASH, Node,
+    EMPTY_HASH, HashedNode,
     proving::{Leaf, Member, MembersByLeaf, Membership, Traversal},
 };
 
@@ -15,8 +15,8 @@ pub struct Proof<'a> {
     pub keys: &'a [[u8; 32]],
     /// Witness leaves.
     pub leaves: &'a [Leaf],
-    /// Off-path sibling hashes for the proof tree.
-    pub siblings: &'a [[u8; 32]],
+    /// Off-path sibling summaries (kind + hash) for the proof tree.
+    pub siblings: &'a [HashedNode],
     /// Bit-packed proof-tree topology.
     pub topology: &'a [u8],
     /// One [`Membership`] per caller-input key, in input order.
@@ -29,7 +29,7 @@ impl<'a> Proof<'a> {
         Ok(Self {
             keys: buf.slice_as::<[u8; 32]>("keys")?,
             leaves: buf.slice_as::<Leaf>("leaves")?,
-            siblings: buf.slice_as::<[u8; 32]>("siblings")?,
+            siblings: buf.slice_as::<HashedNode>("siblings")?,
             topology: buf.slice_as::<u8>("topology")?,
             memberships: buf.slice_as::<Membership>("memberships")?,
         })
@@ -128,11 +128,11 @@ impl<'a> Proof<'a> {
         Ok(Member { key, leaf, absent: true })
     }
 
-    /// Pre-state hash at proof-leaf position `i`: the existing leaf's `hash_leaf(key, value_hash)`.
+    /// Pre-state at leaf position `i`: the existing leaf's `HashedNode::leaf(key, value_hash)`.
     #[inline]
-    fn leaf_hash<H: Hasher>(&self, i: usize) -> Result<[u8; 32]> {
+    fn leaf_hash<H: Hasher>(&self, i: usize) -> Result<HashedNode> {
         let leaf = self.leaf(i)?;
-        Ok(Node::hash_leaf::<H>(self.leaf_key(leaf)?, &leaf.value_hash))
+        Ok(HashedNode::leaf::<H>(self.leaf_key(leaf)?, &leaf.value_hash))
     }
 
     /// Builds `(members_by_leaf, touched, cached values)`.
@@ -191,14 +191,14 @@ impl<'a> Proof<'a> {
         (MembersByLeaf { offsets, indices }, touched, values)
     }
 
-    /// Post-state hash at a touched proof-leaf, given its members and cached values.
+    /// Post-state summary at a touched proof-leaf, given its members and cached values.
     fn new_subtree_hash<H: Hasher>(
         &self,
         leaf_pos: usize,
         member_indices: &[u32],
         values: &[&'a [u8; 32]],
         buffer: &mut Vec<(&'a [u8; 32], &'a [u8; 32])>,
-    ) -> Result<[u8; 32]> {
+    ) -> Result<HashedNode> {
         let leaf = self.leaf(leaf_pos)?;
 
         // Single pass over members AT this leaf: detect structure change, gather entries.
@@ -229,30 +229,26 @@ impl<'a> Proof<'a> {
 
         // Fast path: leaf stays single-key. Use the new value if Present wrote, else pre-state.
         let value = new_witness_value.unwrap_or(&leaf.value_hash);
-        if value == &EMPTY_HASH {
-            Ok(EMPTY_HASH)
-        } else {
-            Ok(Node::hash_leaf::<H>(self.leaf_key(leaf)?, value))
-        }
+        Ok(HashedNode::leaf::<H>(self.leaf_key(leaf)?, value))
     }
 
     /// Hashes the subtree rooted at `depth` containing `entries` sorted by key sharing a prefix.
-    fn subtree_hash<H: Hasher>(entries: &[(&[u8; 32], &[u8; 32])], depth: u16) -> [u8; 32] {
-        // Empty subtree - the universal EMPTY_HASH.
+    fn subtree_hash<H: Hasher>(entries: &[(&[u8; 32], &[u8; 32])], depth: u16) -> HashedNode {
+        // Empty subtree - the universal empty summary.
         if entries.is_empty() {
-            return EMPTY_HASH;
+            return HashedNode::EMPTY;
         }
 
         // Single entry - emit as a shortcut leaf at this depth.
         if entries.len() == 1 {
-            return Node::hash_leaf::<H>(entries[0].0, entries[0].1);
+            return HashedNode::leaf::<H>(entries[0].0, entries[0].1);
         }
 
-        // Multiple entries - split by the bit at `depth` and combine the halves.
+        // Multiple entries - split by the bit at `depth` and combine the halves (with promotion).
         let mid = entries.partition_point(|(k, _)| !k.get_msb(depth as usize));
         let (left, right) = entries.split_at(mid);
 
-        Node::hash_internal::<H>(
+        HashedNode::combine::<H>(
             &Self::subtree_hash::<H>(left, depth + 1),
             &Self::subtree_hash::<H>(right, depth + 1),
         )

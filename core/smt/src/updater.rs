@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use vprogs_core_codec::Bits;
 use vprogs_core_types::ResourceId;
 
-use crate::{Commitment, DEPTH, EMPTY_HASH, Key, Node, StaleNode, Tree, WriteBatch};
+use crate::{Commitment, DEPTH, EMPTY_HASH, HashedNode, Key, Node, StaleNode, Tree, WriteBatch};
 
 /// Applies leaf mutations to the tree and writes resulting nodes into a `WriteBatch`.
 pub(crate) struct Updater<'a, S, W> {
@@ -162,22 +162,20 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
 
             // Otherwise (both non-empty, or at least one Internal) - write children to the tree
             // and create an Internal node.
-            _ => {
-                let left_hash = self.write_child(&left_result, &left_child);
-                let right_hash = self.write_child(&right_result, &right_child);
-                Some(Node::internal::<S::Hasher>(&left_hash, &right_hash))
-            }
+            _ => Some(Node::internal::<S::Hasher>(
+                &self.write_child(&left_result, &left_child),
+                &self.write_child(&right_result, &right_child),
+            )),
         }
     }
 
-    /// Writes a child node to the tree and returns its hash, or `EMPTY_HASH` for `None`.
-    fn write_child(&mut self, child: &Option<Node>, key: &Key) -> [u8; 32] {
+    /// Writes a child node to the tree and returns its [`HashedNode`] summary.
+    fn write_child(&mut self, child: &Option<Node>, key: &Key) -> HashedNode {
         match child {
-            None => EMPTY_HASH,
+            None => HashedNode::EMPTY,
             Some(node) => {
-                let hash = *node.hash();
                 self.wb.put_node(key, self.version, node);
-                hash
+                HashedNode::from(node)
             }
         }
     }

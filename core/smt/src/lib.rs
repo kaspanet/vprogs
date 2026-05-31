@@ -28,6 +28,7 @@ pub mod proving {
 
 pub(crate) mod commitment;
 pub(crate) mod empty_hash;
+pub(crate) mod hashed_node;
 pub(crate) mod key;
 pub(crate) mod node;
 pub(crate) mod stale_node;
@@ -37,6 +38,7 @@ pub(crate) mod write_batch;
 
 pub use commitment::Commitment;
 pub use empty_hash::EMPTY_HASH;
+pub use hashed_node::{EMPTY, HashedNode, INTERNAL, LEAF};
 pub use key::Key;
 pub use node::Node;
 pub use stale_node::StaleNode;
