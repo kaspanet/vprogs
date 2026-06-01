@@ -1,10 +1,7 @@
 use kaspa_consensus_core::hashing::tx::id as kaspa_tx_id;
 use kaspa_hashes::Hash;
 use kaspa_seq_commit::{
-    hashing::{
-        ActivityDigestBuilder, activity_leaf, lane_tip_next, mergeset_context_hash,
-        seq_commit_timestamp,
-    },
+    hashing::{ActivityDigestBuilder, activity_leaf, lane_tip_next, mergeset_context_hash},
     types::{LaneTipInput, MergesetContext},
 };
 use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
@@ -101,7 +98,7 @@ pub fn compute_section_lane_tip(
     lane_key: &Hash,
 ) -> Hash {
     let context_hash = mergeset_context_hash(&MergesetContext {
-        timestamp: seq_commit_timestamp(metadata.prev_timestamp),
+        timestamp: metadata.prev_timestamp,
         daa_score: metadata.daa_score,
         blue_score: metadata.blue_score,
     });
