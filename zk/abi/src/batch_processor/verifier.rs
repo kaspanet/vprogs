@@ -3,8 +3,8 @@ use alloc::vec::Vec;
 use kaspa_hashes::{Hash, SeqCommitActiveNode};
 use kaspa_seq_commit::{
     hashing::{
-        ActivityDigestBuilder, activity_leaf, lane_tip_next, mergeset_context_hash, seq_commit,
-        seq_commit_timestamp, seq_state_root, smt_leaf_hash,
+        ActivityDigestBuilder, activity_leaf, activity_root_hash, lane_tip_next,
+        mergeset_context_hash, seq_commit, seq_state_root, smt_leaf_hash,
     },
     types::{LaneTipInput, MergesetContext, SeqCommitInput, SeqState, SmtLeafInput},
 };
@@ -120,7 +120,7 @@ where
     fn verify_activity(&mut self, batch: &Batch<'a>) -> Hash {
         // Determine expected context hash.
         let context_hash = mergeset_context_hash(&MergesetContext {
-            timestamp: seq_commit_timestamp(batch.prev_timestamp),
+            timestamp: batch.prev_timestamp,
             daa_score: batch.daa_score,
             blue_score: batch.blue_score,
         });
@@ -256,9 +256,13 @@ where
             .compute_root::<SeqCommitActiveNode>(self.inputs.lane_key, Some(new_lane_leaf))
             .expect("lane_smt_proof compute_root");
 
+        // Wrap the lanes root into the activity root (post-hardening).
+        let activity_root =
+            activity_root_hash(self.inputs.lane_proof.inactivity_shortcut, &new_lanes_root);
+
         // Calculate state root.
         let state_root_seq = seq_state_root(&SeqState {
-            lanes_root: &new_lanes_root,
+            activity_root: &activity_root,
             payload_and_ctx_digest: self.inputs.lane_proof.payload_and_ctx_digest,
         });
 

@@ -17,8 +17,8 @@ use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_abi::{batch_processor::StateTransition, transaction_processor::JournalEntries};
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_test_suite::{
-    L1TransactionExt, batch_processor_elf, compute_section_lane_tip, dev_mode_enabled,
-    transaction_processor_elf,
+    L1TransactionExt, assert_receipt_pins_match_succinct_consts, batch_processor_elf,
+    compute_section_lane_tip, dev_mode_enabled, transaction_processor_elf,
 };
 use vprogs_zk_batch_prover::{Backend as _, BatchProverConfig};
 use vprogs_zk_vm::{ProvingPipeline, Vm};
@@ -59,8 +59,11 @@ async fn batch_proof_two_transactions() {
     // Mine a couple of blocks so we have real block hashes to anchor metadata against.
     let block_hashes = l1.mine_blocks(2).await;
 
-    let config =
-        BatchProverConfig { bundle_size: NonZeroUsize::new(1).unwrap(), lane_key: Hash::default() };
+    let config = BatchProverConfig {
+        bundle_size: NonZeroUsize::new(1).unwrap(),
+        lane_key: Hash::default(),
+        covenant_id: None,
+    };
 
     let proving =
         ProvingPipeline::batch(backend.clone(), storage.clone(), l1.grpc_client().clone(), config);
@@ -107,6 +110,12 @@ async fn batch_proof_two_transactions() {
     let receipt = batch.artifact();
     if !dev_mode_enabled() {
         backend.verify_batch_receipt(&receipt);
+        // Empirical check that the build-time succinct consts (used by the covenant redeem
+        // script's `OpZkPrecompile` pin) match what the live succinct prover actually emits
+        // for THIS guest pair (batch-processor + transaction-processor). The companion
+        // check for the exit-emitting transaction-processor variant lives in
+        // `settlement_e2e.rs::batch_with_exits_takes_two_output_settlement_path`.
+        assert_receipt_pins_match_succinct_consts(&receipt);
     }
     let journal = Backend::journal_bytes(&receipt);
 
@@ -168,6 +177,11 @@ async fn batch_proof_two_transactions() {
     let receipt_2 = batch_2.artifact();
     if !dev_mode_enabled() {
         backend.verify_batch_receipt(&receipt_2);
+        // A second pinned-consts check from a different batch: both batches in this test
+        // use the same guest pair, but the input txs differ, so this catches anything that
+        // would make the receipt's verifier-identity values depend on the input rather
+        // than the recursion circuit.
+        assert_receipt_pins_match_succinct_consts(&receipt_2);
     }
     let journal_2 = Backend::journal_bytes(&receipt_2);
 
@@ -209,8 +223,11 @@ async fn batch_proof_bundle_of_two() {
     let l1 = L1Node::new(None).await;
     let block_hashes = l1.mine_blocks(2).await;
 
-    let config =
-        BatchProverConfig { bundle_size: NonZeroUsize::new(2).unwrap(), lane_key: Hash::default() };
+    let config = BatchProverConfig {
+        bundle_size: NonZeroUsize::new(2).unwrap(),
+        lane_key: Hash::default(),
+        covenant_id: None,
+    };
 
     let proving =
         ProvingPipeline::batch(backend.clone(), storage.clone(), l1.grpc_client().clone(), config);

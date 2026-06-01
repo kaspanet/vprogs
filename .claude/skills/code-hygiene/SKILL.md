@@ -284,6 +284,71 @@ when:
 Otherwise keep the manual impl — explicit bounds beat derive convenience
 when the derive would over-constrain.
 
+### Same-typed positional arguments / returns need a struct
+
+When a function or closure has two or more positional arguments (or
+returns) of the **same type** (or types that differ only by reference /
+mutability over the same payload, like `[u8; 32]` and `&[u8; 32]`),
+introduce a named struct instead. With only position to disambiguate,
+every call site has to remember which slot goes where, and a swap typo
+compiles silently.
+
+Tuples / positional arguments with **distinct** types are fine:
+`(String, u32)` or `fn foo(name: String, age: u32)` need no struct because
+the types themselves disambiguate. Same for `(Foo, Bar, Baz)`. The smell
+is *positional repetition over the same payload type*, where only the
+slot index carries meaning.
+
+This applies in three places:
+
+- **Function returns**: `fn foo() -> (u64, u64)` → introduce a struct with
+  named fields.
+- **Function parameters**: `fn foo(a: Hash, b: Hash, c: Hash)` → group into
+  a struct (often a `*Input` / `*Step` / `*Pins` type).
+- **Closure / `Fn` trait bounds**: `Fn(&[u8; 32], &[u8; 32]) -> T` → pass a
+  small struct argument instead. The struct lifts the parameter names out
+  to the type level, so the trait bound becomes `Fn(MyArgs<'_>) -> T` and
+  every implementor's call site reads `MyArgs { foo, bar }`.
+
+Mixed value/reference of the same type counts as the smell: `fn foo(owner:
+[u8; 32], borrowed: &[u8; 32])` is just as easy to swap by accident as
+`fn foo(a: [u8; 32], b: [u8; 32])`, since the slot order is still the only
+guide. A struct dodges that.
+
+**Before** (closure `Fn` bound with two `&[u8; 32]`):
+```rust
+struct Config<BuildPins>
+where
+    BuildPins: for<'a> Fn(&'a [u8; 32], &'a [u8; 32]) -> RedeemPins<'a>,
+{
+    build_pins: BuildPins,
+}
+
+// every call site has to remember program_id is first, tx_image_id second:
+(config.build_pins)(&program_id, &tx_image_id)
+```
+
+**After**:
+```rust
+struct ImageIds<'a> {
+    program_id: &'a [u8; 32],
+    tx_image_id: &'a [u8; 32],
+}
+
+struct Config<BuildPins>
+where
+    BuildPins: for<'a> Fn(ImageIds<'a>) -> RedeemPins<'a>,
+{
+    build_pins: BuildPins,
+}
+
+(config.build_pins)(ImageIds { program_id: &program_id, tx_image_id: &tx_image_id })
+```
+
+The struct stays at the trait-bound boundary, so the closure body
+destructures it (`|ImageIds { program_id, tx_image_id }| ...`) and the
+call site can't swap the two `[u8; 32]`s.
+
 ### Match surrounding field-doc voice
 
 Inside a struct, sibling fields establish a voice — typically one short

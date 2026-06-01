@@ -30,7 +30,8 @@ const TEST_COVENANT_VALUE: u64 = 100_000_000;
 async fn covenant_bootstrap_is_accepted_on_simnet() {
     let l1 = L1Node::new(Some(|p| {
         p.blockrate.coinbase_maturity = 1;
-        p.covenants_activation = ForkActivation::always();
+        p.toccata_activation = ForkActivation::always();
+        p.zk_hardening_activation = ForkActivation::always();
     }))
     .await;
 
@@ -48,18 +49,12 @@ async fn covenant_bootstrap_is_accepted_on_simnet() {
 
     let initial_state = EMPTY_HASH;
     let initial_lane_tip = Hash::default();
-    // Bootstrap-only test: never spent, never proven against. The control_id/hashfn placeholders
-    // are baked into the redeem bytes and into the SPK we assert below; both sides see the same
-    // placeholders so the SPK comparison passes regardless of value.
-    let control_id = [0u8; 32];
     let pins = RedeemPins::Succinct(SuccinctPins {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },
-        control_id: &control_id,
-        hashfn: 0,
     });
     let redeem_len = redeem_script_len(&initial_state, &pins);
     let redeem = build_redeem_script(&initial_state, &initial_lane_tip, redeem_len, &pins);
