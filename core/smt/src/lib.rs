@@ -8,6 +8,7 @@ extern crate alloc;
 
 pub mod proving {
     pub(crate) mod leaf;
+    pub(crate) mod leaf_update;
     pub(crate) mod member;
     pub(crate) mod members_by_leaf;
     pub(crate) mod membership;
@@ -17,6 +18,7 @@ pub mod proving {
     pub(crate) mod traversal;
 
     pub use leaf::Leaf;
+    pub(crate) use leaf_update::LeafUpdate;
     pub use member::Member;
     pub(crate) use members_by_leaf::MembersByLeaf;
     pub use membership::Membership;
