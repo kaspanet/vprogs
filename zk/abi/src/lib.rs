@@ -50,7 +50,6 @@ pub mod transaction_processor {
 
     pub(crate) mod output {
         pub(crate) mod outputs;
-        pub(crate) mod storage_op;
     }
 
     pub(crate) mod journal {
@@ -93,7 +92,7 @@ pub mod transaction_processor {
             standard_spk::StandardSpk,
         },
     };
-    pub use output::{outputs::Outputs, storage_op::StorageOp};
+    pub use output::outputs::Outputs;
     pub use transaction_handler::TransactionHandler;
 }
 

@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
+use tap::Tap;
 use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch, TransactionContext};
 use vprogs_storage_types::Store;
 use vprogs_zk_abi::{
     Error, Result,
-    transaction_processor::{Inputs, Outputs, StorageOp},
+    transaction_processor::{Inputs, Outputs},
 };
 
 use crate::{Backend, ProvingPipeline};
@@ -40,15 +41,11 @@ impl<B: Backend, S: Store> Processor<S> for Vm<B, S> {
         // Decode and apply storage operations.
         Outputs::decode(&output_bytes).map(|output| {
             for (i, op) in output.storage_ops().iter().enumerate() {
-                if let Some(op) = op {
-                    let data = ctx.resources_mut()[i].data_mut();
-                    match op {
-                        StorageOp::Create(new_data) | StorageOp::Update(new_data) => {
-                            data.clear();
-                            data.extend_from_slice(new_data);
-                        }
-                        StorageOp::Delete => data.clear(),
-                    }
+                if let Some(new_data) = op {
+                    ctx.resources_mut()[i].data_mut().tap_mut(|data| {
+                        data.clear();
+                        data.extend_from_slice(new_data);
+                    });
                 }
             }
         })

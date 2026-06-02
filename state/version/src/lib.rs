@@ -25,9 +25,10 @@ impl StateVersion {
     {
         match StatePtrLatest::get(store, &id) {
             None => Self::empty(id),
-            Some(version) => match Self::get(store, version, &id) {
-                None => panic!("missing data for resource_{:?}@v{:?}", id, version),
-                Some(data) => Self { resource_id: id, version, data },
+            Some(version) => Self {
+                resource_id: id,
+                version,
+                data: Self::get(store, version, &id).unwrap_or_default(),
             },
         }
     }
@@ -48,7 +49,9 @@ impl StateVersion {
     where
         W: WriteBatch,
     {
-        Self::put(wb, self.version, &self.resource_id, &self.data);
+        if !self.data.is_empty() {
+            Self::put(wb, self.version, &self.resource_id, &self.data);
+        }
     }
 
     pub fn write_latest_ptr<W>(&self, wb: &mut W)

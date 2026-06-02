@@ -28,14 +28,15 @@ impl<'a> OutputResourceCommitment<'a> {
 
     /// Encodes a resource's output commitment to the journal.
     pub fn encode(w: &mut impl Writer, r: &Resource<'_>) {
-        if r.is_deleted() {
-            w.write(&[Self::CHANGED]);
-            w.write(&EMPTY_HASH);
-        } else if r.is_dirty() {
-            w.write(&[Self::CHANGED]);
-            w.write(blake3::hash(r.data()).as_bytes());
-        } else {
-            w.write(&[Self::UNCHANGED]);
+        match r.is_dirty() {
+            true => {
+                w.write(&[Self::CHANGED]);
+                match r.data() {
+                    [] => w.write(&EMPTY_HASH),
+                    data => w.write(blake3::hash(data).as_bytes()),
+                }
+            }
+            false => w.write(&[Self::UNCHANGED]),
         }
     }
 }

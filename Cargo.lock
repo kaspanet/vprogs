@@ -8703,6 +8703,7 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "tap",
+ "vprogs-core-smt",
  "vprogs-core-types",
  "vprogs-state-ptr-latest",
  "vprogs-state-ptr-rollback",
@@ -9036,6 +9037,7 @@ name = "vprogs-zk-vm"
 version = "0.1.0"
 dependencies = [
  "kaspa-grpc-client",
+ "tap",
  "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
  "vprogs-storage-types",

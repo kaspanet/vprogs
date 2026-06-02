@@ -30,8 +30,6 @@ pub struct Resource<'a> {
     is_new: bool,
     /// Whether the resource data has been modified.
     dirty: bool,
-    /// Whether the resource has been marked for deletion.
-    deleted: bool,
 }
 
 impl<'a> Resource<'a> {
@@ -101,20 +99,9 @@ impl<'a> Resource<'a> {
         self.dirty = true;
     }
 
-    /// Marks this resource for deletion.
-    pub fn mark_deleted(&mut self) {
-        self.deleted = true;
-        self.dirty = true;
-    }
-
     /// Returns `true` if the resource data has been modified.
     pub fn is_dirty(&self) -> bool {
         self.dirty
-    }
-
-    /// Returns `true` if the resource has been marked for deletion.
-    pub fn is_deleted(&self) -> bool {
-        self.deleted
     }
 
     /// Decodes a resource, splitting off its backing from `buf`.
@@ -126,7 +113,6 @@ impl<'a> Resource<'a> {
             backing: buf.blob_mut("data")?,
             promoted: None,
             dirty: false,
-            deleted: false,
         })
     }
 

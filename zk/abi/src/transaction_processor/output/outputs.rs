@@ -2,15 +2,12 @@ use alloc::vec::Vec;
 
 use vprogs_core_codec::Writer;
 
-use crate::{
-    Result,
-    transaction_processor::{Effects, StorageOp},
-};
+use crate::{Result, transaction_processor::Effects};
 
 /// Decoded execution result from the transaction processor guest.
 pub struct Outputs {
     /// Per-resource storage mutations; `None` for unchanged resources.
-    pub storage_ops: Vec<Option<StorageOp>>,
+    pub storage_ops: Vec<Option<Vec<u8>>>,
 }
 
 impl Outputs {
@@ -20,7 +17,7 @@ impl Outputs {
     pub const ERR: u8 = 0x01;
 
     /// Returns the storage operations.
-    pub fn storage_ops(&self) -> &[Option<StorageOp>] {
+    pub fn storage_ops(&self) -> &[Option<Vec<u8>>] {
         &self.storage_ops
     }
 
@@ -38,7 +35,10 @@ impl Outputs {
                 let count = buf.le_u32("count")? as usize;
                 let mut storage_ops = Vec::with_capacity(count);
                 for _ in 0..count {
-                    storage_ops.push(StorageOp::decode(&mut buf)?);
+                    storage_ops.push(match buf.bool("dirty_flag")? {
+                        true => Some(buf.blob("data")?.to_vec()),
+                        false => None,
+                    });
                 }
 
                 Ok(Self { storage_ops })
@@ -58,7 +58,13 @@ impl Outputs {
                 // Write length-prefixed list of storage operations.
                 w.write(&(resources.len() as u32).to_le_bytes());
                 for resource in resources {
-                    StorageOp::encode(w, resource);
+                    match resource.is_dirty() {
+                        true => {
+                            w.write(&[1]);
+                            w.write_blob(resource.data());
+                        }
+                        false => w.write(&[0]),
+                    }
                 }
             }
             Err(ref err) => {
