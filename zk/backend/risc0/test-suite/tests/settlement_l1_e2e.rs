@@ -189,8 +189,9 @@ async fn settlement_lands_in_real_block_dev_redeem() {
     // coinbase maturity, covenants activation) are identical between dev and CUDA runs.
     let l1 = L1Node::new(Some(|p| {
         p.blockrate.coinbase_maturity = 1;
-        p.covenants_activation = ForkActivation::always();
-        p.block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+        p.toccata_activation = ForkActivation::always();
+        p.zk_hardening_activation = ForkActivation::always();
+        p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
     }))
     .await;
     l1.mine_utxos(6).await;
@@ -519,8 +520,9 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
     // `L1Node::new` expects.
     let l1 = L1Node::new(Some(|p| {
         p.blockrate.coinbase_maturity = 1;
-        p.covenants_activation = ForkActivation::always();
-        p.block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+        p.toccata_activation = ForkActivation::always();
+        p.zk_hardening_activation = ForkActivation::always();
+        p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
     }))
     .await;
 

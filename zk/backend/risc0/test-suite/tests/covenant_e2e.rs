@@ -35,7 +35,8 @@ const TEST_SUBNETWORK_ID: [u8; 20] = subnetwork_id_from_lane_id(4444);
 async fn covenant_bootstrap_is_accepted_on_simnet() {
     let l1 = L1Node::new(Some(|p| {
         p.blockrate.coinbase_maturity = 1;
-        p.covenants_activation = ForkActivation::always();
+        p.toccata_activation = ForkActivation::always();
+        p.zk_hardening_activation = ForkActivation::always();
     }))
     .await;
 
