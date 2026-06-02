@@ -2,6 +2,7 @@ use std::{collections::HashMap, num::NonZeroUsize, time::Instant};
 
 use kaspa_consensus_core::{
     hashing::sighash::SigHashReusedValuesUnsync,
+    subnets::SubnetworkId,
     tx::{CovenantBinding, PopulatedTransaction, TransactionOutpoint, UtxoEntry},
 };
 use kaspa_hashes::Hash;
@@ -174,7 +175,7 @@ async fn batch_proof_is_directly_settleable_single_batch() {
 
     let config = BatchProverConfig {
         bundle_size: NonZeroUsize::new(1).unwrap(),
-        lane_key: compute_lane_key(&TEST_SUBNETWORK_ID),
+        subnetwork_id: SubnetworkId::from_bytes(TEST_SUBNETWORK_ID),
         covenant_id: None,
     };
 
@@ -325,7 +326,7 @@ async fn batch_proof_groth16_is_directly_settleable_single_batch() {
 
     let config = BatchProverConfig {
         bundle_size: NonZeroUsize::new(1).unwrap(),
-        lane_key: compute_lane_key(&TEST_SUBNETWORK_ID),
+        subnetwork_id: SubnetworkId::from_bytes(TEST_SUBNETWORK_ID),
         covenant_id: None,
     };
 
@@ -470,7 +471,7 @@ async fn batch_proof_bundles_two_batches() {
 
     let config = BatchProverConfig {
         bundle_size: NonZeroUsize::new(2).unwrap(),
-        lane_key: compute_lane_key(&TEST_SUBNETWORK_ID),
+        subnetwork_id: SubnetworkId::from_bytes(TEST_SUBNETWORK_ID),
         covenant_id: None,
     };
 
@@ -646,7 +647,7 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
 
     let config = BatchProverConfig {
         bundle_size: NonZeroUsize::new(2).unwrap(),
-        lane_key: compute_lane_key(&TEST_SUBNETWORK_ID),
+        subnetwork_id: SubnetworkId::from_bytes(TEST_SUBNETWORK_ID),
         covenant_id: None,
     };
 

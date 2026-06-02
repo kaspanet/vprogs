@@ -1,10 +1,11 @@
 //! Lane-identity helpers.
 //!
-//! The batch processor identifies the lane it settles by a compile-time `u32 LANE_ID`. This module
-//! exposes the projection from that `u32` into the 20-byte kaspa SubnetworkId shape `[namespace(4),
-//! 0x00 * 16]` and applies the same shape constraint enforced on L1 by
-//! `check_transaction_subnetwork`: the reserved `[x, 0x00 * 19]` patterns are rejected at
-//! const-eval, so a user program that names a reserved id fails to build.
+//! A lane can be named by a compact `u32`; this module projects that `u32` into the 20-byte kaspa
+//! SubnetworkId shape `[namespace(4), 0x00 * 16]` the rest of the system uses (the value the host
+//! feeds the batch processor as a public input, the journal commits, and the covenant SPK pins). It
+//! applies the same shape constraint enforced on L1 by `check_transaction_subnetwork`: the reserved
+//! `[x, 0x00 * 19]` patterns are rejected at const-eval, so a caller naming a reserved id in a
+//! const context fails to build.
 
 /// Projects a `u32` lane id into the 20-byte kaspa SubnetworkId shape `[namespace(4), 0x00 * 16]`.
 /// Const-evaluates: ids that collide with the reserved `[x, 0x00 * 19]` patterns fail to compile.
@@ -14,7 +15,7 @@ pub const fn subnetwork_id_from_lane_id(lane_id: u32) -> [u8; 20] {
     // Reject reserved shapes (NATIVE / COINBASE / future-reserved).
     assert!(
         ns[1] != 0 || ns[2] != 0 || ns[3] != 0,
-        "LANE_ID collides with reserved [x, 0x00 * 19] subnetwork shape"
+        "lane id collides with reserved [x, 0x00 * 19] subnetwork shape"
     );
 
     let mut out = [0u8; 20];
@@ -43,8 +44,8 @@ mod tests {
         assert_eq!(&id[..4], &[0, 0, 0, 1]);
     }
 
-    /// Reserved shape `[x, 0×19]` must reject; a build using such a `LANE_ID` would not compile.
-    /// We can't test the compile-time panic directly here, so re-exercise the predicate.
+    /// Reserved shape `[x, 0×19]` must reject; projecting such an id in a const context would not
+    /// compile. We can't test the compile-time panic directly here, so re-exercise the predicate.
     #[test]
     fn predicate_rejects_reserved_shape() {
         let reserved = 0xAB_00_00_00u32.to_be_bytes();

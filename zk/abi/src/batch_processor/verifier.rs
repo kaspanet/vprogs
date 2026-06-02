@@ -3,9 +3,8 @@ use alloc::{vec, vec::Vec};
 use kaspa_hashes::{Hash, SeqCommitActiveNode};
 use kaspa_seq_commit::{
     hashing::{
-        ActivityDigestBuilder, activity_leaf, lane_key, activity_root_hash, lane_tip_next,
-        mergeset_context_hash,
-        seq_commit, seq_state_root, smt_leaf_hash,
+        ActivityDigestBuilder, activity_leaf, activity_root_hash, lane_key, lane_tip_next,
+        mergeset_context_hash, seq_commit, seq_state_root, smt_leaf_hash,
     },
     types::{LaneTipInput, MergesetContext, SeqCommitInput, SeqState, SmtLeafInput},
 };
@@ -16,9 +15,7 @@ use vprogs_core_hashing::Blake3;
 
 use crate::{
     Error,
-    batch_processor::{
-        Batch, ExitAccumulator, Inputs, StateTransition, lane::subnetwork_id_from_lane_id,
-    },
+    batch_processor::{Batch, ExitAccumulator, Inputs, StateTransition},
     transaction_processor::{
         ErrorCode, InputResourceCommitment, JournalEntries, OutputCommitment,
         OutputResourceCommitment,
@@ -27,9 +24,10 @@ use crate::{
 
 /// Verifies a bundle and accumulates its post-state.
 ///
-/// The lane identity (`subnetwork_id`, `lane_key`) is derived at construction time from the
-/// const-generic `LANE_ID`, so the lane every batch settles into is fixed at the batch-processor
-/// binary's build time and is not a host input.
+/// The lane (`subnetwork_id`) arrives as a host-supplied public input on [`Inputs`]; the runtime
+/// `lane_key` is hashed from it once at construction. The lane is committed to the settlement
+/// journal and pinned by the covenant SPK on-chain, so a single batch-processor image serves every
+/// lane rather than baking the lane into the circuit.
 pub struct Verifier<'a, V, A>
 where
     V: FnMut(&[u8; 32], &[u8]),
@@ -37,11 +35,8 @@ where
 {
     /// Decoded bundle inputs.
     inputs: Inputs<'a>,
-    /// 20-byte kaspa SubnetworkId projected from the build-time `LANE_ID`. Pinned into the
-    /// settlement journal so the covenant SPK can bind to exactly one lane.
-    subnetwork_id: [u8; 20],
-    /// Hash of `subnetwork_id` used as the SMT key for this lane in L1's `lanes_root`, and as the
-    /// lane domain in `lane_tip_next`.
+    /// Hash of the input `subnetwork_id` used as the SMT key for this lane in L1's `lanes_root`,
+    /// and as the lane domain in `lane_tip_next`.
     lane_key: Hash,
     /// Lane tip entering the bundle (from the first batch's `prev_lane_tip`).
     prev_lane_tip: &'a Hash,
@@ -62,20 +57,13 @@ where
     V: FnMut(&[u8; 32], &[u8]),
     A: ExitAccumulator,
 {
-    /// Builds a `Verifier` for the bundle. `LANE_ID` const-projects to the lane's 20-byte
-    /// SubnetworkId (rejecting reserved shapes at compile time, see
-    /// [`subnetwork_id_from_lane_id`]); the runtime `lane_key` is hashed once from that projection.
-    pub fn new<const LANE_ID: u32>(input_bytes: &'a [u8], verify_tx_journal: V, exits: A) -> Self {
-        // Const-project the lane id into a kaspa SubnetworkId. The const context here is what
-        // triggers `subnetwork_id_from_lane_id`'s shape assertion at compile time.
-        const fn project<const ID: u32>() -> [u8; 20] {
-            subnetwork_id_from_lane_id(ID)
-        }
-        let subnetwork_id = project::<LANE_ID>();
-        let lane_key = lane_key(&subnetwork_id);
-
+    /// Builds a `Verifier` for the bundle. The lane's `lane_key` is hashed once from the
+    /// host-supplied `subnetwork_id` input; the lane bytes are committed to the journal and pinned
+    /// by the covenant SPK, so a prover that names the wrong lane fails the on-chain journal check.
+    pub fn new(input_bytes: &'a [u8], verify_tx_journal: V, exits: A) -> Self {
         // Parse inputs and snapshot the bundle's pre-state from the first batch.
         let inputs = Inputs::decode(input_bytes).expect("decode bundle inputs");
+        let lane_key = lane_key(inputs.subnetwork_id);
         let first_batch = inputs.batches.first().unwrap();
 
         // Assert bounds before scattering resources.
@@ -96,7 +84,6 @@ where
 
         Self {
             inputs,
-            subnetwork_id,
             lane_key,
             prev_lane_tip: first_batch.prev_lane_tip,
             prev_lane_blue_score: first_batch.prev_lane_blue_score,
@@ -149,7 +136,7 @@ where
             self.inputs.covenant_id,
             self.inputs.image_id,
             &permission_spk_hash,
-            &self.subnetwork_id,
+            self.inputs.subnetwork_id,
         );
     }
 

@@ -1,6 +1,6 @@
 use std::{num::NonZeroUsize, time::Instant};
 
-use kaspa_consensus_core::hashing::tx::id as kaspa_tx_id;
+use kaspa_consensus_core::{hashing::tx::id as kaspa_tx_id, subnets::SubnetworkId};
 use kaspa_hashes::Hash;
 use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_seq_commit::hashing::lane_key as compute_lane_key;
@@ -69,7 +69,7 @@ async fn batch_proof_two_transactions() {
 
     let config = BatchProverConfig {
         bundle_size: NonZeroUsize::new(1).unwrap(),
-        lane_key: compute_lane_key(&TEST_SUBNETWORK_ID),
+        subnetwork_id: SubnetworkId::from_bytes(TEST_SUBNETWORK_ID),
         covenant_id: None,
     };
 
@@ -233,7 +233,7 @@ async fn batch_proof_bundle_of_two() {
 
     let config = BatchProverConfig {
         bundle_size: NonZeroUsize::new(2).unwrap(),
-        lane_key: compute_lane_key(&TEST_SUBNETWORK_ID),
+        subnetwork_id: SubnetworkId::from_bytes(TEST_SUBNETWORK_ID),
         covenant_id: None,
     };
 
