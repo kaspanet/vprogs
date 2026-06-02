@@ -8703,7 +8703,6 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "tap",
- "vprogs-core-smt",
  "vprogs-core-types",
  "vprogs-state-ptr-latest",
  "vprogs-state-ptr-rollback",

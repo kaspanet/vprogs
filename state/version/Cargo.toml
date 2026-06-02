@@ -11,6 +11,3 @@ vprogs-state-ptr-latest.workspace   = true
 vprogs-state-ptr-rollback.workspace = true
 vprogs-storage-manager.workspace    = true
 vprogs-storage-types.workspace      = true
-
-[dev-dependencies]
-vprogs-core-smt.workspace = true
