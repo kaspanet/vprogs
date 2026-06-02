@@ -43,7 +43,11 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
         // Recursively apply commitments starting from the root. `update_subtree` marks the existing
         // root stale internally, so no separate `mark_stale` call is needed here.
         match &ctx.update_subtree(&Key::ROOT, &commitments) {
-            None => EMPTY_HASH,
+            // Tree drained: write a tombstone so reads don't fall back to the stale prior root.
+            None => {
+                ctx.wb.put_node(&Key::ROOT, ctx.version, &Node::Empty);
+                EMPTY_HASH
+            }
             Some(node) => {
                 ctx.wb.put_node(&Key::ROOT, ctx.version, node);
                 *node.hash()
@@ -59,13 +63,21 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
     fn update_subtree(&mut self, key: &Key, commitments: &[Commitment]) -> Option<Node> {
         // No commitments for this subtree - return existing node unchanged.
         if commitments.is_empty() {
-            return self.tree.node(key, self.prev_version).map(|(_, data)| data);
+            // An `Empty` tombstone collapses to `None` so callers can treat both as "no subtree".
+            let exists = |node: &Node| !matches!(node, Node::Empty);
+            return self.tree.node(key, self.prev_version).map(|(_, data)| data).filter(exists);
         }
 
         // Look up existing node at this position to determine the update strategy.
         match self.tree.node(key, self.prev_version).map(|(_, data)| data) {
             // Empty subtree: resolve commitments into leaves directly.
             None => self.resolve_leaves(key, commitments),
+
+            // Tombstone: mark stale and resolve commitments into leaves directly.
+            Some(Node::Empty) => {
+                self.mark_stale(key);
+                self.resolve_leaves(key, commitments)
+            }
 
             // Existing shortcut leaf: may need to split if keys differ.
             Some(Node::Leaf { key: existing_key, value_hash: existing_vh, .. }) => {
