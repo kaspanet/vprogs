@@ -19,12 +19,12 @@ vprogs-zk-backend-risc0-covenant = { path = "../covenant" }
 zerocopy.workspace               = true
 
 [dev-dependencies]
-blake3.workspace                       = true
 kaspa-grpc-client.workspace            = true
 kaspa-rpc-core.workspace               = true
 kaspa-txscript.workspace               = true
 tempfile.workspace                     = true
 tokio                                  = { workspace = true, features = ["rt-multi-thread"] }
+vprogs-core-hashing.workspace          = true
 vprogs-core-smt.workspace              = true
 vprogs-core-test-utils.workspace       = true
 vprogs-node-test-utils.workspace       = true

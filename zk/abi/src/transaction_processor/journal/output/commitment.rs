@@ -1,4 +1,5 @@
 use vprogs_core_codec::{Reader, Writer};
+use vprogs_core_hashing::Hasher;
 
 use crate::{
     Error, Result,
@@ -38,14 +39,14 @@ impl<'a> OutputCommitment<'a> {
         }
     }
 
-    /// Encodes an output commitment payload to the journal.
-    pub fn encode(w: &mut impl Writer, result: &Result<Effects<'_>>) {
+    /// Encodes an output commitment payload to the journal, hashing resource data with `H`.
+    pub fn encode<H: Hasher>(w: &mut impl Writer, result: &Result<Effects<'_>>) {
         match *result {
             Ok(Effects { exits, resources }) => {
                 w.write(&[Self::SUCCESS]);
                 w.write_blob(exits.as_bytes());
                 for r in resources {
-                    OutputResourceCommitment::encode(w, r);
+                    OutputResourceCommitment::encode::<H>(w, r);
                 }
             }
             Err(ref err) => {

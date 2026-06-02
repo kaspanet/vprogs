@@ -5,6 +5,7 @@ use kaspa_hashes::Hash;
 use kaspa_rpc_core::api::rpc::RpcApi;
 use tempfile::TempDir;
 use vprogs_core_codec::Reader;
+use vprogs_core_hashing::{Hasher, Sha256};
 use vprogs_core_smt::{EMPTY_HASH, Tree as _};
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId};
@@ -131,7 +132,7 @@ async fn batch_proof_two_transactions() {
     assert_eq!(u32::from_le_bytes(r1_data.as_slice().try_into().unwrap()), 1);
     assert_eq!(u32::from_le_bytes(r2_data.as_slice().try_into().unwrap()), 1);
 
-    let expected_hash = *blake3::hash(&1u32.to_le_bytes()).as_bytes();
+    let expected_hash = Sha256::hash(1u32.to_le_bytes());
     for resource_id in [ResourceId::for_test(1), ResourceId::for_test(2)] {
         let proof_bytes = storage.prove(&[resource_id], 1).unwrap();
         let smt_proof = vprogs_core_smt::proving::Proof::decode(&proof_bytes).unwrap();
@@ -196,7 +197,7 @@ async fn batch_proof_two_transactions() {
     assert_eq!(u32::from_le_bytes(r1_v2.as_slice().try_into().unwrap()), 2);
     assert_eq!(u32::from_le_bytes(r2_v2.as_slice().try_into().unwrap()), 2);
 
-    let expected_hash_v2 = *blake3::hash(&2u32.to_le_bytes()).as_bytes();
+    let expected_hash_v2 = Sha256::hash(2u32.to_le_bytes());
     for resource_id in [ResourceId::for_test(1), ResourceId::for_test(2)] {
         let proof_bytes = storage.prove(&[resource_id], 2).unwrap();
         let smt_proof = vprogs_core_smt::proving::Proof::decode(&proof_bytes).unwrap();

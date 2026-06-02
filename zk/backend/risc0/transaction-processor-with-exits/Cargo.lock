@@ -1801,7 +1801,6 @@ dependencies = [
 name = "vprogs-zk-abi"
 version = "0.1.0"
 dependencies = [
- "blake3",
  "kaspa-hashes",
  "kaspa-seq-commit",
  "kaspa-smt",
@@ -1831,7 +1830,6 @@ dependencies = [
 name = "vprogs-zk-backend-risc0-transaction-processor-with-exits"
 version = "0.1.0"
 dependencies = [
- "blake3",
  "risc0-zkvm",
  "vprogs-zk-abi",
  "vprogs-zk-backend-risc0-api",

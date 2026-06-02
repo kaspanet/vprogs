@@ -100,8 +100,9 @@ impl ExitAccumulator for PermissionTreeAccumulator {
 /// All the type-level wiring that configures the permission tree's streaming builder: hasher
 /// choice, `NodeTags` impl, max depth, and tag length.
 mod config {
-    use vprogs_core_hashing::Sha256;
     use vprogs_core_merkle_tree::{NodeTags, StreamingBuilder};
+
+    use crate::Sha256;
 
     /// Concrete [`StreamingBuilder`] instantiation for the permission tree: SHA-256 hasher,
     /// [`Tags`], 32-level depth bound, 1-byte tags.

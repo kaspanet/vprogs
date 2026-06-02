@@ -11,7 +11,7 @@ use kaspa_seq_commit::{
 use kaspa_smt::proof::OwnedSmtProof;
 use tap::Tap;
 use vprogs_core_codec::Writer;
-use vprogs_core_hashing::Blake3;
+use vprogs_core_hashing::Hasher;
 
 use crate::{
     Error,
@@ -91,7 +91,7 @@ where
 
     /// Commits the bundle's settlement journal. The accumulator's `finalize` is invoked to
     /// produce the `permission_spk_hash` written into the [`StateTransition`].
-    pub fn commit_state_transition(
+    pub fn commit_state_transition<H: Hasher>(
         &self,
         journal: &mut impl Writer,
         lane_tip: &Hash,
@@ -103,7 +103,7 @@ where
         let (prev_root, new_root) = self
             .inputs
             .proof
-            .compute_roots::<Blake3>(|q| self.latest_value_hashes[q])
+            .compute_roots::<H>(|q| self.latest_value_hashes[q])
             .expect("compute_roots");
 
         StateTransition::encode(

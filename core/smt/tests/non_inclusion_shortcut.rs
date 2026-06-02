@@ -2,7 +2,7 @@
 //! multi-key deduplication of shared witnesses, and `subtree_hash` post-state synthesis.
 
 use tempfile::TempDir;
-use vprogs_core_hashing::Blake3;
+use vprogs_core_hashing::Sha256;
 use vprogs_core_smt::{
     Commitment, EMPTY_HASH, Tree,
     proving::{Membership, Proof},
@@ -59,7 +59,7 @@ fn shortcut_leaf_non_inclusion_resolves_to_absent() {
     assert_eq!(m.key, &*key_absent);
 
     // Still a sound proof: it recomputes the stored root from the existing leaf.
-    assert_eq!(proof.root::<Blake3>().unwrap(), store.root(1));
+    assert_eq!(proof.root::<Sha256>().unwrap(), store.root(1));
 }
 
 /// Multiple absent keys sharing one shortcut leaf - the case that previously broke the
@@ -86,7 +86,7 @@ fn multiple_absent_keys_share_one_shortcut_leaf() {
 
     assert!(proof.member(0).unwrap().absent);
     assert!(proof.member(1).unwrap().absent);
-    assert_eq!(proof.root::<Blake3>().unwrap(), store.root(1));
+    assert_eq!(proof.root::<Sha256>().unwrap(), store.root(1));
 }
 
 /// Inclusion: querying the existing key resolves to a present member carrying its stored value.
@@ -164,7 +164,7 @@ fn new_root_matches_post_state_after_foreign_create() {
 
     // `new_root` over the proof, supplying each member's post-state value, must match.
     let computed = proof
-        .new_root::<Blake3>(|i| match i {
+        .new_root::<Sha256>(|i| match i {
             0 => &v_prime,
             1 => &v_new,
             _ => unreachable!(),

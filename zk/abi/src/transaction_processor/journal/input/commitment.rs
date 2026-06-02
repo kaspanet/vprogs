@@ -1,5 +1,6 @@
 use kaspa_hashes::Hash;
 use vprogs_core_codec::{Reader, Writer};
+use vprogs_core_hashing::Hasher;
 
 use crate::{
     Result,
@@ -34,13 +35,13 @@ impl<'a> InputCommitment<'a> {
         })
     }
 
-    /// Encodes an input commitment to the journal.
-    pub fn encode(w: &mut impl Writer, inputs: &Inputs<'_>) {
+    /// Encodes an input commitment to the journal, hashing resource data with `H`.
+    pub fn encode<H: Hasher>(w: &mut impl Writer, inputs: &Inputs<'_>) {
         w.write(&inputs.version.to_le_bytes());
         w.write(inputs.tx_id.as_slice());
         w.write(&inputs.merge_idx.to_le_bytes());
         if let Some(execution_input) = &inputs.execution_input {
-            ExecutionContext::encode(w, execution_input);
+            ExecutionContext::encode::<H>(w, execution_input);
         }
     }
 }

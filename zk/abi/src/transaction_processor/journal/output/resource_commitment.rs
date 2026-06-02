@@ -1,4 +1,5 @@
 use vprogs_core_codec::{Reader, Writer};
+use vprogs_core_hashing::Hasher;
 use vprogs_core_smt::EMPTY_HASH;
 
 use crate::{Error, Result, transaction_processor::Resource};
@@ -26,14 +27,14 @@ impl<'a> OutputResourceCommitment<'a> {
         }
     }
 
-    /// Encodes a resource's output commitment to the journal.
-    pub fn encode(w: &mut impl Writer, r: &Resource<'_>) {
+    /// Encodes a resource's output commitment to the journal, hashing the data with `H`.
+    pub fn encode<H: Hasher>(w: &mut impl Writer, r: &Resource<'_>) {
         match r.is_dirty() {
             true => {
                 w.write(&[Self::CHANGED]);
                 match r.data() {
                     [] => w.write(&EMPTY_HASH),
-                    data => w.write(blake3::hash(data).as_bytes()),
+                    data => w.write(&H::hash(data)),
                 }
             }
             false => w.write(&[Self::UNCHANGED]),

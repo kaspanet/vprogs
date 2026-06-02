@@ -17,7 +17,6 @@ host = [
 std = []
 
 [dependencies]
-blake3                      = { workspace = true }
 borsh                       = { workspace = true, default-features = false, optional = true }
 kaspa-consensus-core        = { workspace = true, optional = true }
 kaspa-hashes                = { workspace = true }
@@ -37,5 +36,4 @@ vprogs-storage-types        = { workspace = true, optional = true }
 zerocopy                    = { workspace = true }
 
 [dev-dependencies]
-blake3          = "1"
 vprogs-core-smt = { workspace = true }
