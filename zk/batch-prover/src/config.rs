@@ -14,9 +14,7 @@ pub struct BatchProverConfig {
     /// amortize settlement cost; smaller bundles bound the worst-case wasted compute on a
     /// reorg-induced retry.
     pub bundle_size: NonZeroUsize,
-    /// The lane this prover settles (bundle-wide, one lane per prover instance). Supplied to the
-    /// guest as a public input and pinned in the covenant SPK; `lane_key` is derived from it for
-    /// the L1 lane-proof lookup.
+    /// The lane this prover settles; bundle-wide (one lane per prover instance).
     pub subnetwork_id: SubnetworkId,
     /// Covenant id the produced batch journal binds to. The on-chain settlement script
     /// reconstructs the journal preimage with the input's `OpInputCovenantId`, so the

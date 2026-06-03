@@ -24,9 +24,7 @@ pub struct StateTransition {
     /// exits were emitted. Non-zero values cause the on-chain settlement to add a second P2SH
     /// output for permission-tree withdrawals.
     pub permission_spk_hash: [u8; 32],
-    /// Kaspa SubnetworkId this settlement binds to (the lane the batch processor was built for).
-    /// The covenant SPK pins the same 20 bytes in its redeem-script prefix, so any settlement
-    /// proof that names a different lane fails the SHA-256 journal-preimage check.
+    /// Kaspa SubnetworkId of the lane this settlement binds to.
     pub subnetwork_id: [u8; 20],
 }
 

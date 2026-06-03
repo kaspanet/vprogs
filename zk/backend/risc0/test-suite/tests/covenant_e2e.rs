@@ -24,8 +24,7 @@ use vprogs_zk_backend_risc0_test_suite::{batch_processor_elf, transaction_proces
 
 const TEST_COVENANT_VALUE: u64 = 100_000_000;
 
-/// Subnetwork id the covenant binds to; must match the `LANE_ID` const baked into the batch
-/// processor binary.
+/// Subnetwork id the covenant binds to (the lane the proof settles).
 const TEST_SUBNETWORK_ID: [u8; 20] = subnetwork_id_from_lane_id(4444);
 
 /// Boots a simnet with covenants enabled, builds an initial covenant redeem script whose

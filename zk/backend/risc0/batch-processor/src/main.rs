@@ -10,8 +10,7 @@ risc0_zkvm::guest::entry!(main);
 /// Entrypoint for the batch processor.
 fn main() {
     // Read the bundle inputs from the host and build the verifier with the default
-    // permission-tree accumulator for exits. The lane the bundle settles arrives as a public
-    // input (`inputs.subnetwork_id`), so this one image serves every lane.
+    // permission-tree accumulator for exits.
     let inputs = Host.read_blob();
     let mut verifier = Verifier::new(&inputs, verify_tx_journal, PermissionTreeAccumulator::new());
 

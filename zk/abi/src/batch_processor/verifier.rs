@@ -23,11 +23,6 @@ use crate::{
 };
 
 /// Verifies a bundle and accumulates its post-state.
-///
-/// The lane (`subnetwork_id`) arrives as a host-supplied public input on [`Inputs`]; the runtime
-/// `lane_key` is hashed from it once at construction. The lane is committed to the settlement
-/// journal and pinned by the covenant SPK on-chain, so a single batch-processor image serves every
-/// lane rather than baking the lane into the circuit.
 pub struct Verifier<'a, V, A>
 where
     V: FnMut(&[u8; 32], &[u8]),
@@ -57,9 +52,7 @@ where
     V: FnMut(&[u8; 32], &[u8]),
     A: ExitAccumulator,
 {
-    /// Builds a `Verifier` for the bundle. The lane's `lane_key` is hashed once from the
-    /// host-supplied `subnetwork_id` input; the lane bytes are committed to the journal and pinned
-    /// by the covenant SPK, so a prover that names the wrong lane fails the on-chain journal check.
+    /// Builds a `Verifier` for the bundle.
     pub fn new(input_bytes: &'a [u8], verify_tx_journal: V, exits: A) -> Self {
         // Parse inputs and snapshot the bundle's pre-state from the first batch.
         let inputs = Inputs::decode(input_bytes).expect("decode bundle inputs");

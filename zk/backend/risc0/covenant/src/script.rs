@@ -246,7 +246,7 @@ pub fn build_dev_redeem_script(
 
     // Same 87-byte prefix as the production script
     // (OpData32||prev_lane_tip||OpData32||prev_state||OpData20||subnetwork_id). Dev has no journal
-    // binding so the subnetwork_id pin is structural only — included to keep the prefix length in
+    // binding so the subnetwork_id pin is structural only, included to keep the prefix length in
     // sync with the production script.
     b.add_data(prev_lane_tip.as_slice()).unwrap();
     b.add_data(prev_state).unwrap();

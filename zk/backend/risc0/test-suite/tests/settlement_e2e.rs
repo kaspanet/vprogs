@@ -34,12 +34,11 @@ use vprogs_zk_backend_risc0_test_suite::{
     compute_section_lane_tip, dev_mode_enabled, transaction_processor_elf,
     transaction_processor_with_exits_elf,
 };
-
-/// Subnetwork id all e2e settlement fixtures bind to; must match the `LANE_ID` baked into the batch
-/// processor guest binary.
-const TEST_SUBNETWORK_ID: [u8; 20] = subnetwork_id_from_lane_id(4444);
 use vprogs_zk_batch_prover::{Backend as _, BatchProverConfig};
 use vprogs_zk_vm::{ProvingPipeline, Vm};
+
+/// Subnetwork id all e2e settlement fixtures bind to (the lane the batch proves and settles).
+const TEST_SUBNETWORK_ID: [u8; 20] = subnetwork_id_from_lane_id(4444);
 
 /// HashMap-backed accessor for `OpChainblockSeqCommit`. The opcode delegates the
 /// ancestor / depth checks to this trait, so a static map of `block_hash -> seq_commit`

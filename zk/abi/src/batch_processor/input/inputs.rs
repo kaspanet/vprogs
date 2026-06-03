@@ -18,20 +18,12 @@ use crate::{
 };
 
 /// Decoded batch processor input.
-///
-/// The lane this bundle settles (`subnetwork_id`) and the `covenant_id` are both host-supplied
-/// public inputs that the guest commits to the settlement journal. Neither is trusted on its own:
-/// the covenant SPK reconstructs the journal preimage on-chain (the lane from the redeem-script
-/// prefix, the covenant id via `OpInputCovenantId`), so a proof naming a different lane or covenant
-/// fails the SHA-256 binding. Keeping them as inputs lets a single batch-processor image serve
-/// every lane instead of baking the lane into the circuit.
 pub struct Inputs<'a> {
     /// Transaction processor guest image ID used to verify each inner tx journal.
     pub image_id: &'a [u8; 32],
     /// Covenant id this bundle settles into.
     pub covenant_id: &'a [u8; 32],
-    /// Kaspa SubnetworkId of the lane this bundle settles. Committed to the journal and re-derived
-    /// into `lane_key`; the covenant SPK pins the same 20 bytes in its redeem-script prefix.
+    /// Kaspa SubnetworkId of the lane this bundle settles.
     pub subnetwork_id: &'a [u8; 20],
     /// SMT proof covering the union of resources touched across all batches.
     pub proof: Proof<'a>,

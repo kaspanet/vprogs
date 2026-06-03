@@ -47,13 +47,12 @@ use zerocopy::IntoBytes;
 
 const COVENANT_VALUE: u64 = 100_000_000;
 
-/// Subnetwork id the dev / prod tests use; must match `LANE_ID` baked into the batch processor
-/// binary so journal-preimage binding matches across host and guest.
+/// Subnetwork id the dev / prod tests use (the lane the batch proves and settles).
 const TEST_SUBNETWORK_ID: [u8; 20] = subnetwork_id_from_lane_id(4444);
 
 /// User-lane subnetwork the real-proof tests route their L2 carrier txs onto. Same
-/// 20-byte payload as [`TEST_SUBNETWORK_ID`] (which the guest derives lane_key from at
-/// build time) so the chain's lane-key bucket and the guest's committed lane_key match;
+/// 20-byte payload as [`TEST_SUBNETWORK_ID`] (which the guest derives lane_key from) so
+/// the chain's lane-key bucket and the guest's committed lane_key match;
 /// any other namespace would point the host metadata at a different consensus bucket
 /// than the one the journal is bound to, and `new_seq_commit` would diverge from the
 /// chain's `accepted_id_merkle_root`. Kept off NATIVE so the lane only contains carrier

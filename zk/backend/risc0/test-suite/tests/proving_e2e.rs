@@ -27,8 +27,7 @@ use vprogs_zk_backend_risc0_test_suite::{
 use vprogs_zk_batch_prover::{Backend as _, BatchProverConfig};
 use vprogs_zk_vm::{ProvingPipeline, Vm};
 
-/// Subnetwork id all proving fixtures bind to; must match the `LANE_ID` baked into the batch
-/// processor guest binary so the host-derived lane_key matches the guest-derived one.
+/// Subnetwork id all proving fixtures bind to (the lane the batch proves and settles).
 const TEST_SUBNETWORK_ID: [u8; 20] = subnetwork_id_from_lane_id(4444);
 
 /// Builds a `ChainBlockMetadata` from a real simnet block. Required because the bundling
