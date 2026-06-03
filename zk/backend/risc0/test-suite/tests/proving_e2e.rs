@@ -1,9 +1,8 @@
 use std::{num::NonZeroUsize, time::Instant};
 
-use kaspa_consensus_core::{hashing::tx::id as kaspa_tx_id, subnets::SubnetworkId};
+use kaspa_consensus_core::hashing::tx::id as kaspa_tx_id;
 use kaspa_hashes::Hash;
 use kaspa_rpc_core::api::rpc::RpcApi;
-use kaspa_seq_commit::hashing::lane_key as compute_lane_key;
 use tempfile::TempDir;
 use vprogs_core_codec::Reader;
 use vprogs_core_smt::{EMPTY_HASH, Tree as _};
@@ -15,20 +14,15 @@ use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_state_version::StateVersion;
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
-use vprogs_zk_abi::{
-    batch_processor::{StateTransition, subnetwork_id_from_lane_id},
-    transaction_processor::JournalEntries,
-};
+use vprogs_zk_abi::{batch_processor::StateTransition, transaction_processor::JournalEntries};
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_test_suite::{
-    L1TransactionExt, assert_receipt_pins_match_succinct_consts, batch_processor_elf,
-    compute_section_lane_tip, dev_mode_enabled, transaction_processor_elf,
+    L1TransactionExt, TEST_SUBNETWORK_ID, assert_receipt_pins_match_succinct_consts,
+    batch_processor_elf, compute_section_lane_tip, dev_mode_enabled, test_lane_key,
+    transaction_processor_elf,
 };
 use vprogs_zk_batch_prover::{Backend as _, BatchProverConfig};
 use vprogs_zk_vm::{ProvingPipeline, Vm};
-
-/// Subnetwork id all proving fixtures bind to (the lane the batch proves and settles).
-const TEST_SUBNETWORK_ID: [u8; 20] = subnetwork_id_from_lane_id(4444);
 
 /// Builds a `ChainBlockMetadata` from a real simnet block. Required because the bundling
 /// prover calls `get_seq_commit_lane_proof(block_hash, lane_key)` which only resolves for
@@ -68,7 +62,7 @@ async fn batch_proof_two_transactions() {
 
     let config = BatchProverConfig {
         bundle_size: NonZeroUsize::new(1).unwrap(),
-        subnetwork_id: SubnetworkId::from_bytes(TEST_SUBNETWORK_ID),
+        subnetwork_id: TEST_SUBNETWORK_ID,
         covenant_id: None,
     };
 
@@ -232,7 +226,7 @@ async fn batch_proof_bundle_of_two() {
 
     let config = BatchProverConfig {
         bundle_size: NonZeroUsize::new(2).unwrap(),
-        subnetwork_id: SubnetworkId::from_bytes(TEST_SUBNETWORK_ID),
+        subnetwork_id: TEST_SUBNETWORK_ID,
         covenant_id: None,
     };
 
@@ -252,7 +246,7 @@ async fn batch_proof_bundle_of_two() {
     let tx2 =
         L1Transaction::for_l2_test(&[AccessMetadata::write(ResourceId::for_test(2))], &[4, 5, 6]);
 
-    let lane_key = compute_lane_key(&TEST_SUBNETWORK_ID);
+    let lane_key = test_lane_key();
     let metadata_1 = metadata_for_block(&l1, block_hashes[0]).await;
     let batch_1 = scheduler.schedule(
         metadata_1,

@@ -113,14 +113,13 @@ where
         let (proof_bytes, leaf_order) =
             self.store.prove(&bundle_resources, prev_version).expect("proof");
 
-        // Fetch the lane proof for the bundle's FINAL block. The lane key for the L1 lookup is
-        // derived from the configured subnetwork id (the same value the guest commits and the
-        // covenant SPK pins).
-        let subnetwork_id: &[u8; 20] = self.config.subnetwork_id.as_ref();
+        // Fetch the lane proof for the bundle's FINAL block. The lane key (the value the guest
+        // commits and the covenant SPK pins) is derived from the configured subnetwork id.
+        let lane_key = lane_key(self.config.subnetwork_id.as_ref());
         let last_block_hash = batches.last().unwrap().checkpoint().metadata().hash;
         let resp = self
             .grpc_client
-            .get_seq_commit_lane_proof(last_block_hash, lane_key(subnetwork_id))
+            .get_seq_commit_lane_proof(last_block_hash, lane_key)
             .await
             .expect("get_seq_commit_lane_proof");
 
@@ -143,7 +142,7 @@ where
         let bundle_inputs = BundleInputs::encode(
             self.backend.image_id(),
             &covenant_id,
-            subnetwork_id,
+            &lane_key,
             &proof_bytes,
             &leaf_order,
             &resp,

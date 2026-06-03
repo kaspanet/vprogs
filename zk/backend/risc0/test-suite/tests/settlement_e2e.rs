@@ -2,12 +2,10 @@ use std::{collections::HashMap, num::NonZeroUsize, time::Instant};
 
 use kaspa_consensus_core::{
     hashing::sighash::SigHashReusedValuesUnsync,
-    subnets::SubnetworkId,
     tx::{CovenantBinding, PopulatedTransaction, TransactionOutpoint, UtxoEntry},
 };
 use kaspa_hashes::Hash;
 use kaspa_rpc_core::api::rpc::RpcApi;
-use kaspa_seq_commit::hashing::lane_key as compute_lane_key;
 use kaspa_txscript::{
     EngineFlags, TxScriptEngine, caches::Cache, covenants::CovenantsContext,
     engine_context::EngineContext, seq_commit_accessor::SeqCommitAccessor,
@@ -22,7 +20,6 @@ use vprogs_node_test_utils::L1Node;
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
-use vprogs_zk_abi::batch_processor::subnetwork_id_from_lane_id;
 use vprogs_zk_backend_risc0_api::{Backend, OwnedGroth16Witness, OwnedSuccinctWitness, ProofType};
 use vprogs_zk_backend_risc0_covenant::{
     CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, Groth16Pins, RedeemPins, Settlement,
@@ -30,15 +27,12 @@ use vprogs_zk_backend_risc0_covenant::{
     build_redeem_script, permission_spk, redeem_script_len,
 };
 use vprogs_zk_backend_risc0_test_suite::{
-    L1TransactionExt, assert_receipt_pins_match_succinct_consts, batch_processor_elf,
-    compute_section_lane_tip, dev_mode_enabled, transaction_processor_elf,
-    transaction_processor_with_exits_elf,
+    L1TransactionExt, TEST_SUBNETWORK_ID, assert_receipt_pins_match_succinct_consts,
+    batch_processor_elf, compute_section_lane_tip, dev_mode_enabled, test_lane_key,
+    transaction_processor_elf, transaction_processor_with_exits_elf,
 };
 use vprogs_zk_batch_prover::{Backend as _, BatchProverConfig};
 use vprogs_zk_vm::{ProvingPipeline, Vm};
-
-/// Subnetwork id all e2e settlement fixtures bind to (the lane the batch proves and settles).
-const TEST_SUBNETWORK_ID: [u8; 20] = subnetwork_id_from_lane_id(4444);
 
 /// HashMap-backed accessor for `OpChainblockSeqCommit`. The opcode delegates the
 /// ancestor / depth checks to this trait, so a static map of `block_hash -> seq_commit`
@@ -174,7 +168,7 @@ async fn batch_proof_is_directly_settleable_single_batch() {
 
     let config = BatchProverConfig {
         bundle_size: NonZeroUsize::new(1).unwrap(),
-        subnetwork_id: SubnetworkId::from_bytes(TEST_SUBNETWORK_ID),
+        subnetwork_id: TEST_SUBNETWORK_ID,
         covenant_id: None,
     };
 
@@ -247,11 +241,12 @@ async fn batch_proof_is_directly_settleable_single_batch() {
         "guest must echo the host-supplied tx image id into the journal",
     );
     let covenant_id_hash = Hash::from_bytes(parsed.covenant_id);
+    let lane_key = test_lane_key();
     let pins = RedeemPins::Succinct(SuccinctPins {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
-            subnetwork_id: &TEST_SUBNETWORK_ID,
+            lane_key: &lane_key,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },
     });
@@ -325,7 +320,7 @@ async fn batch_proof_groth16_is_directly_settleable_single_batch() {
 
     let config = BatchProverConfig {
         bundle_size: NonZeroUsize::new(1).unwrap(),
-        subnetwork_id: SubnetworkId::from_bytes(TEST_SUBNETWORK_ID),
+        subnetwork_id: TEST_SUBNETWORK_ID,
         covenant_id: None,
     };
 
@@ -400,11 +395,12 @@ async fn batch_proof_groth16_is_directly_settleable_single_batch() {
         "guest must echo the host-supplied tx image id into the journal",
     );
     let covenant_id_hash = Hash::from_bytes(parsed.covenant_id);
+    let lane_key = test_lane_key();
     let pins = RedeemPins::Groth16(Groth16Pins {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
-            subnetwork_id: &TEST_SUBNETWORK_ID,
+            lane_key: &lane_key,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },
     });
@@ -470,7 +466,7 @@ async fn batch_proof_bundles_two_batches() {
 
     let config = BatchProverConfig {
         bundle_size: NonZeroUsize::new(2).unwrap(),
-        subnetwork_id: SubnetworkId::from_bytes(TEST_SUBNETWORK_ID),
+        subnetwork_id: TEST_SUBNETWORK_ID,
         covenant_id: None,
     };
 
@@ -490,7 +486,7 @@ async fn batch_proof_bundles_two_batches() {
     let tx2 =
         L1Transaction::for_l2_test(&[AccessMetadata::write(ResourceId::for_test(2))], &[4, 5, 6]);
 
-    let lane_key = compute_lane_key(&TEST_SUBNETWORK_ID);
+    let lane_key = test_lane_key();
     let metadata_1 = metadata_for_block(&l1, block_hashes[0]).await;
     let batch_1 = scheduler.schedule(
         metadata_1,
@@ -561,7 +557,7 @@ async fn batch_proof_bundles_two_batches() {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
-            subnetwork_id: &TEST_SUBNETWORK_ID,
+            lane_key: &lane_key,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },
     });
@@ -646,7 +642,7 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
 
     let config = BatchProverConfig {
         bundle_size: NonZeroUsize::new(2).unwrap(),
-        subnetwork_id: SubnetworkId::from_bytes(TEST_SUBNETWORK_ID),
+        subnetwork_id: TEST_SUBNETWORK_ID,
         covenant_id: None,
     };
 
@@ -665,7 +661,7 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
     let tx2 =
         L1Transaction::for_l2_test(&[AccessMetadata::write(ResourceId::for_test(2))], &[4, 5, 6]);
 
-    let lane_key = compute_lane_key(&TEST_SUBNETWORK_ID);
+    let lane_key = test_lane_key();
     let metadata_1 = metadata_for_block(&l1, block_hashes[0]).await;
     let batch_1 = scheduler.schedule(
         metadata_1,
@@ -743,7 +739,7 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
-            subnetwork_id: &TEST_SUBNETWORK_ID,
+            lane_key: &lane_key,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },
     });

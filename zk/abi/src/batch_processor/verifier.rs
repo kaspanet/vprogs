@@ -3,7 +3,7 @@ use alloc::{vec, vec::Vec};
 use kaspa_hashes::{Hash, SeqCommitActiveNode};
 use kaspa_seq_commit::{
     hashing::{
-        ActivityDigestBuilder, activity_leaf, activity_root_hash, lane_key, lane_tip_next,
+        ActivityDigestBuilder, activity_leaf, activity_root_hash, lane_tip_next,
         mergeset_context_hash, seq_commit, seq_state_root, smt_leaf_hash,
     },
     types::{LaneTipInput, MergesetContext, SeqCommitInput, SeqState, SmtLeafInput},
@@ -30,8 +30,8 @@ where
 {
     /// Decoded bundle inputs.
     inputs: Inputs<'a>,
-    /// Hash of the input `subnetwork_id` used as the SMT key for this lane in L1's `lanes_root`,
-    /// and as the lane domain in `lane_tip_next`.
+    /// Lane key for this bundle: the SMT key for this lane in L1's `lanes_root` and the lane
+    /// domain in `lane_tip_next`.
     lane_key: Hash,
     /// Lane tip entering the bundle (from the first batch's `prev_lane_tip`).
     prev_lane_tip: &'a Hash,
@@ -56,7 +56,7 @@ where
     pub fn new(input_bytes: &'a [u8], verify_tx_journal: V, exits: A) -> Self {
         // Parse inputs and snapshot the bundle's pre-state from the first batch.
         let inputs = Inputs::decode(input_bytes).expect("decode bundle inputs");
-        let lane_key = lane_key(inputs.subnetwork_id);
+        let lane_key = *inputs.lane_key;
         let first_batch = inputs.batches.first().unwrap();
 
         // Assert bounds before scattering resources.
@@ -129,7 +129,7 @@ where
             self.inputs.covenant_id,
             self.inputs.image_id,
             &permission_spk_hash,
-            self.inputs.subnetwork_id,
+            &self.lane_key,
         );
     }
 

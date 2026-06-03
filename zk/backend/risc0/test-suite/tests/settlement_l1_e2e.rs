@@ -33,7 +33,6 @@ use kaspa_consensus_core::{
 };
 use kaspa_hashes::Hash;
 use kaspa_rpc_core::api::rpc::RpcApi;
-use kaspa_seq_commit::hashing::lane_key as compute_lane_key;
 use kaspa_txscript::standard::pay_to_script_hash_script;
 use tap::Tap;
 use vprogs_core_codec::Writer;
@@ -42,24 +41,20 @@ use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId};
 use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_node_test_utils::L1Node;
-use vprogs_zk_abi::batch_processor::subnetwork_id_from_lane_id;
+use vprogs_zk_backend_risc0_test_suite::{TEST_SUBNETWORK_ID, test_lane_key};
 use zerocopy::IntoBytes;
 
 const COVENANT_VALUE: u64 = 100_000_000;
 
-/// Subnetwork id the dev / prod tests use (the lane the batch proves and settles).
-const TEST_SUBNETWORK_ID: [u8; 20] = subnetwork_id_from_lane_id(4444);
-
-/// User-lane subnetwork the real-proof tests route their L2 carrier txs onto. Same
-/// 20-byte payload as [`TEST_SUBNETWORK_ID`] (which the guest derives lane_key from) so
-/// the chain's lane-key bucket and the guest's committed lane_key match;
-/// any other namespace would point the host metadata at a different consensus bucket
-/// than the one the journal is bound to, and `new_seq_commit` would diverge from the
-/// chain's `accepted_id_merkle_root`. Kept off NATIVE so the lane only contains carrier
-/// activity (bootstrap and settlement txs ride NATIVE), otherwise the chain folds them
-/// into the L2's lane chain at every block and host-side `lane_tip` diverges from
-/// consensus on the second settlement onward.
-const L2_LANE_SUBNET: SubnetworkId = SubnetworkId::from_bytes(TEST_SUBNETWORK_ID);
+/// User-lane subnetwork the real-proof tests route their L2 carrier txs onto: the shared
+/// [`TEST_SUBNETWORK_ID`] (which the guest derives lane_key from), so the chain's lane-key bucket
+/// and the guest's committed lane_key match; any other namespace would point the host metadata at a
+/// different consensus bucket than the one the journal is bound to, and `new_seq_commit` would
+/// diverge from the chain's `accepted_id_merkle_root`. Kept off NATIVE so the lane only contains
+/// carrier activity (bootstrap and settlement txs ride NATIVE), otherwise the chain folds them into
+/// the L2's lane chain at every block and host-side `lane_tip` diverges from consensus on the
+/// second settlement onward.
+const L2_LANE_SUBNET: SubnetworkId = TEST_SUBNETWORK_ID;
 
 /// Real-proof L1 settlement (Succinct variant): drives the full risc0-succinct path on a
 /// simnet end-to-end across TWO settlements. The L2 scheduler proves two real batches
@@ -90,12 +85,12 @@ async fn settlement_lands_in_real_block_succinct() {
         // Image-id-only pins for both succinct branches: control_id / hashfn are
         // circuit-determined and live as build-time consts in covenant::succinct_consts, no
         // per-spend extraction needed.
-        build_pins: |BuildPinsArgs { program_id, tx_image_id }| {
+        build_pins: |BuildPinsArgs { program_id, tx_image_id, lane_key }| {
             RedeemPins::Succinct(SuccinctPins {
                 common: CommonPins {
                     program_id,
                     tx_image_id,
-                    subnetwork_id: &TEST_SUBNETWORK_ID,
+                    lane_key,
                     permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
                 },
             })
@@ -138,12 +133,12 @@ async fn settlement_lands_in_real_block_groth16() {
         // The Groth16 redeem branch needs no verifier pins beyond the common ones: the
         // verifier identity (control root halves, bn254 control id, VK) is baked into the
         // script at build time via `groth16_consts`.
-        build_pins: |BuildPinsArgs { program_id, tx_image_id }| {
+        build_pins: |BuildPinsArgs { program_id, tx_image_id, lane_key }| {
             RedeemPins::Groth16(Groth16Pins {
                 common: CommonPins {
                     program_id,
                     tx_image_id,
-                    subnetwork_id: &TEST_SUBNETWORK_ID,
+                    lane_key,
                     permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
                 },
             })
@@ -198,13 +193,10 @@ async fn settlement_lands_in_real_block_dev_redeem() {
     // === Step 1: deploy the dev covenant ===
     let bootstrap_state = EMPTY_HASH;
     let bootstrap_lane_tip = Hash::default();
-    let redeem_len = dev_redeem_script_len(&bootstrap_state, &TEST_SUBNETWORK_ID);
-    let bootstrap_redeem = build_dev_redeem_script(
-        &bootstrap_state,
-        &bootstrap_lane_tip,
-        &TEST_SUBNETWORK_ID,
-        redeem_len,
-    );
+    let lane_key = test_lane_key();
+    let redeem_len = dev_redeem_script_len(&bootstrap_state, &lane_key);
+    let bootstrap_redeem =
+        build_dev_redeem_script(&bootstrap_state, &bootstrap_lane_tip, &lane_key, redeem_len);
     let bootstrap_spk = pay_to_script_hash_script(&bootstrap_redeem);
 
     let (bootstrap_tx, covenant_id) =
@@ -382,11 +374,12 @@ async fn run_one_dev_settlement(step: DevSettlementStep<'_>) -> DevSettlementOut
     // the chain's seq commit through as `new_lane_tip` to keep the value "real-ish" (it's
     // what a future real-proof settlement spending this dev output would see).
     let new_lane_tip = chain_seq_commit;
+    let lane_key = test_lane_key();
     let settlement = Settlement::build_dev(&SettlementDevInput {
         covenant_id,
         prev_state: &prev_state,
         prev_lane_tip: &prev_lane_tip,
-        subnetwork_id: &TEST_SUBNETWORK_ID,
+        lane_key: &lane_key,
         new_state: &new_state,
         new_lane_tip: &new_lane_tip,
         block_prove_to: block_acc_carrier,
@@ -463,6 +456,7 @@ impl RealProofWitness {
 struct BuildPinsArgs<'a> {
     program_id: &'a [u8; 32],
     tx_image_id: &'a [u8; 32],
+    lane_key: &'a Hash,
 }
 
 /// Per-proof-system knobs the real-proof settlement driver needs.
@@ -535,14 +529,23 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
     let program_id = *backend.batch_image_id();
     let tx_image_id = *backend.transaction_image_id();
 
+    // Consensus keys the lane SMT by `H_lane_key(subnetwork_id)`, and the test routes its carriers
+    // onto [`L2_LANE_SUBNET`] (see the const's doc for why we don't ride NATIVE): the lane_key
+    // pinned into the covenant and committed by the guest must hash that same lane, or the
+    // resulting lanes_root would diverge from the chain's value.
+    let lane_key = test_lane_key();
+
     // === Step 1: deploy the covenant ===
     // No discovery phase: the redeem script's identity is fully determined by `program_id`,
     // `tx_image_id`, and (for succinct) the build-time `succinct_consts`. We can compute it
     // up-front from EMPTY_HASH / zero lane_tip.
     let bootstrap_state = EMPTY_HASH;
     let bootstrap_lane_tip = Hash::default();
-    let spend_pins =
-        (config.build_pins)(BuildPinsArgs { program_id: &program_id, tx_image_id: &tx_image_id });
+    let spend_pins = (config.build_pins)(BuildPinsArgs {
+        program_id: &program_id,
+        tx_image_id: &tx_image_id,
+        lane_key: &lane_key,
+    });
     let redeem_len = redeem_script_len(&bootstrap_state, &spend_pins);
     let bootstrap_redeem =
         build_redeem_script(&bootstrap_state, &bootstrap_lane_tip, redeem_len, &spend_pins);
@@ -555,12 +558,6 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
     let block_acc_deploy = l1.mine_blocks(1).await[0];
     eprintln!("covenant bootstrap accepted: covenant_id={covenant_id} block_deploy={block_deploy}");
     tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // Consensus keys the lane SMT by `H_lane_key(subnetwork_id)`, and the test routes its
-    // carriers onto [`L2_LANE_SUBNET`] (see the const's doc for why we don't ride NATIVE):
-    // anything else here would target an unrelated empty slot and the resulting lanes_root
-    // would diverge from the chain's value.
-    let lane_key = compute_lane_key(L2_LANE_SUBNET.as_bytes());
 
     // Bootstrap's accepting-block daa_score is the UtxoEntry's `block_daa_score` field: the
     // value the script engine sees when it dereferences the spending input's UTXO.

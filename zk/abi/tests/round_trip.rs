@@ -16,7 +16,7 @@ fn state_transition_round_trip() {
     let covenant_id = [0x66; 32];
     let tx_image_id = [0x77; 32];
     let permission_spk_hash = [0x88; 32];
-    let subnetwork_id = [0x99; 20];
+    let lane_key = Hash::from_bytes([0x99; 32]);
 
     let mut buf = Vec::new();
     StateTransition::encode(
@@ -26,7 +26,7 @@ fn state_transition_round_trip() {
         &covenant_id,
         &tx_image_id,
         &permission_spk_hash,
-        &subnetwork_id,
+        &lane_key,
     );
     assert_eq!(buf.len(), size_of::<StateTransition>());
 
@@ -39,24 +39,23 @@ fn state_transition_round_trip() {
     assert_eq!(decoded.covenant_id, covenant_id);
     assert_eq!(decoded.tx_image_id, tx_image_id);
     assert_eq!(decoded.permission_spk_hash, permission_spk_hash);
-    assert_eq!(decoded.subnetwork_id, subnetwork_id);
+    assert_eq!(decoded.lane_key, lane_key);
 }
 
 #[test]
 fn state_transition_zero_permission_hash_when_no_exits() {
     // When the bundle's accumulator returns [0; 32], the on-chain settlement keeps single-output.
     let zero = [0u8; 32];
-    let zero_subnetwork = [0u8; 20];
 
     let mut buf = Vec::new();
     StateTransition::encode(
         &mut buf,
-        (&zero, &kaspa_hashes::Hash::from_bytes(zero)),
-        (&zero, &kaspa_hashes::Hash::from_bytes(zero), &kaspa_hashes::Hash::from_bytes(zero)),
+        (&zero, &Hash::from_bytes(zero)),
+        (&zero, &Hash::from_bytes(zero), &Hash::from_bytes(zero)),
         &zero,
         &zero,
         &zero,
-        &zero_subnetwork,
+        &Hash::from_bytes(zero),
     );
 
     let decoded = (&mut &buf[..]).array_as::<StateTransition>("state_transition").unwrap();

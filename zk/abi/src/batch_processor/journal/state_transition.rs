@@ -24,12 +24,15 @@ pub struct StateTransition {
     /// exits were emitted. Non-zero values cause the on-chain settlement to add a second P2SH
     /// output for permission-tree withdrawals.
     pub permission_spk_hash: [u8; 32],
-    /// Kaspa SubnetworkId of the lane this settlement binds to.
-    pub subnetwork_id: [u8; 20],
+    /// Lane key of the lane this settlement binds to.
+    pub lane_key: Hash,
 }
 
 /// Serialized length of [`StateTransition`] in bytes.
-pub const JOURNAL_SIZE: usize = 32 * 8 + 20;
+///
+/// `StateTransition` derives `Unaligned` (alignment 1, no padding), so its in-memory size equals
+/// the wire-encoded length.
+pub const JOURNAL_SIZE: usize = core::mem::size_of::<StateTransition>();
 
 impl StateTransition {
     /// Writes the state transition journal to `w`.
@@ -40,7 +43,7 @@ impl StateTransition {
         covenant_id: &[u8; 32],
         tx_image_id: &[u8; 32],
         permission_spk_hash: &[u8; 32],
-        subnetwork_id: &[u8; 20],
+        lane_key: &Hash,
     ) {
         w.write(prev_state);
         w.write(prev_lane_tip.as_slice());
@@ -50,7 +53,7 @@ impl StateTransition {
         w.write(covenant_id);
         w.write(tx_image_id);
         w.write(permission_spk_hash);
-        w.write(subnetwork_id);
+        w.write(lane_key.as_slice());
     }
 }
 
@@ -68,9 +71,9 @@ mod tests {
             &[0u8; 32],
             &[0u8; 32],
             &[0u8; 32],
-            &[0u8; 20],
+            &Hash::default(),
         );
         assert_eq!(buf.len(), JOURNAL_SIZE);
-        assert_eq!(JOURNAL_SIZE, 276);
+        assert_eq!(JOURNAL_SIZE, 288);
     }
 }
