@@ -1,4 +1,3 @@
-use kaspa_grpc_client::GrpcClient;
 use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch, ScheduledTransaction};
 use vprogs_storage_types::Store;
@@ -24,12 +23,7 @@ impl<S: Store, P: Processor<S>> ProvingPipeline<S, P> {
     }
 
     /// Creates a full batch proving pipeline.
-    pub fn batch<B: Backend>(
-        backend: B,
-        store: S,
-        grpc_client: GrpcClient,
-        config: BatchProverConfig,
-    ) -> Self
+    pub fn batch<B: Backend>(backend: B, store: S, config: BatchProverConfig) -> Self
     where
         P: Processor<
                 S,
@@ -40,7 +34,7 @@ impl<S: Store, P: Processor<S>> ProvingPipeline<S, P> {
     {
         Self::Batch(
             TransactionProver::new(backend.clone()),
-            BatchProver::new(backend, store, grpc_client, config),
+            BatchProver::new(backend, store, config),
         )
     }
 

@@ -11,10 +11,10 @@ use crate::transaction_processor::StandardSpk;
 /// Return [`[0u8; 32]`] from `finalize` when no exits were emitted so settlement stays in
 /// single-output mode.
 ///
-/// [`Verifier`]: crate::batch_processor::Verifier
+/// [`Verifier`]: crate::batch_aggregator::Verifier
 /// [`add_exit`]: ExitAccumulator::add_exit
 /// [`finalize`]: ExitAccumulator::finalize
-/// [`StateTransition`]: crate::batch_processor::StateTransition
+/// [`StateTransition`]: crate::batch_aggregator::StateTransition
 pub trait ExitAccumulator {
     /// Records a single exit `(destination, amount)`.
     fn add_exit(&mut self, dest: StandardSpk<'_>, amount: u64);

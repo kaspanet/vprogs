@@ -4,7 +4,7 @@
 
 use kaspa_hashes::Hash;
 use vprogs_core_codec::Reader;
-use vprogs_zk_abi::batch_processor::StateTransition;
+use vprogs_zk_abi::batch_aggregator::StateTransition;
 
 #[test]
 fn state_transition_round_trip() {

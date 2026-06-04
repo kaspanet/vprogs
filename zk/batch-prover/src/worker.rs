@@ -1,19 +1,18 @@
-use std::{collections::VecDeque, thread::spawn};
+use std::thread::spawn;
 
-use kaspa_grpc_client::GrpcClient;
-use kaspa_rpc_core::api::rpc::RpcApi;
 use tokio::runtime::Builder;
-use vprogs_core_types::ResourceId;
 use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
-use vprogs_zk_abi::batch_processor::{Bundle, Inputs as BundleInputs};
-use zerocopy::little_endian::U32;
+use vprogs_zk_abi::batch_processor::Inputs as BatchInputs;
 
 use crate::{Backend, BatchProver, BatchProverConfig, command::Command};
 
-/// Background worker that buffers `bundle_size` batches, builds a single bundle witness,
-/// and proves it as one ZK receipt that settles in one on-chain transaction.
+/// Background worker that drains the prover inbox and produces one ZK receipt per scheduled
+/// batch. Each receipt commits a per-batch [`BatchTransition`] that the (out-of-band)
+/// aggregator chains into a bundle settlement.
+///
+/// [`BatchTransition`]: vprogs_zk_abi::batch_processor::BatchTransition
 pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend> {
     /// Shared prover state (inbox, shutdown).
     prover: BatchProver<S, P>,
@@ -21,12 +20,7 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend> {
     backend: B,
     /// Store for reading SMT state proofs.
     store: S,
-    /// Batches waiting to be proved, in scheduling order.
-    pending: VecDeque<ScheduledBatch<S, P>>,
-    /// Connected kaspa gRPC client. Used to fetch the bundle's final-block lane proof
-    /// via `get_seq_commit_lane_proof`.
-    grpc_client: GrpcClient,
-    /// Static config (bundle size, lane key).
+    /// Static config (lane key, covenant id).
     config: BatchProverConfig,
 }
 
@@ -44,153 +38,77 @@ where
         prover: BatchProver<S, P>,
         backend: B,
         store: S,
-        grpc_client: GrpcClient,
         config: BatchProverConfig,
     ) {
-        let this = Self { prover, backend, store, pending: VecDeque::new(), grpc_client, config };
+        let this = Self { prover, backend, store, config };
         let runtime = Builder::new_current_thread().enable_all().build().expect("runtime");
         spawn(move || runtime.block_on(this.run()));
     }
 
-    /// Main loop: drain commands, fill bundles up to `bundle_size`, prove each bundle, and
-    /// flush a partial bundle on shutdown.
+    /// Main loop: drain commands and prove each scheduled batch in arrival order.
     async fn run(mut self) {
-        let bundle_size = self.config.bundle_size.get();
         loop {
             // Apply commands from the inbox to local state.
             while let Some(cmd) = self.prover.inbox.pop() {
                 match cmd {
-                    Command::Batch(batch) => self.pending.push_back(batch),
-                    Command::Rollback(target) => {
-                        self.pending.retain(|b| b.checkpoint().index() <= target);
+                    Command::Batch(batch) => self.process_batch(batch).await,
+                    Command::Rollback(_target) => {
+                        // Per-batch proofs aren't held in a pending queue, so a rollback has
+                        // nothing local to discard here. In-flight receipts that arrive for
+                        // canceled batches are published anyway: the scheduler's `canceled`
+                        // flag prevents them from being consumed downstream.
                     }
                 }
             }
 
-            let inbox_updated = self.prover.inbox.notified();
-
-            if self.pending.len() >= bundle_size {
-                drop(inbox_updated);
-                let bundle: Vec<_> =
-                    (0..bundle_size).map(|_| self.pending.pop_front().unwrap()).collect();
-                self.process_bundle(bundle).await;
-            } else if self.prover.shutdown.is_open() && !self.pending.is_empty() {
-                // Flush a partial bundle on shutdown so in-flight batches don't hang.
-                drop(inbox_updated);
-                let bundle: Vec<_> = self.pending.drain(..).collect();
-                self.process_bundle(bundle).await;
-                break;
-            } else {
-                tokio::select! {
-                    biased;
-                    () = self.prover.shutdown.wait() => {
-                        if self.pending.is_empty() {
-                            break;
-                        }
-                    }
-                    () = inbox_updated => {}
-                }
+            tokio::select! {
+                biased;
+                () = self.prover.shutdown.wait() => break,
+                () = self.prover.inbox.notified() => {}
             }
         }
     }
 
-    /// Proves a bundle of K batches as a single ZK receipt and settles it as one tx.
-    async fn process_bundle(&mut self, batches: Vec<ScheduledBatch<S, P>>) {
-        // Wait for tx artifacts on every batch in the bundle.
-        for batch in &batches {
-            batch.wait_tx_artifacts_published().await;
-            if batch.canceled() {
-                return;
-            }
+    /// Proves one scheduled batch and publishes the receipt as the batch's artifact.
+    async fn process_batch(&mut self, batch: ScheduledBatch<S, P>) {
+        // Wait for tx artifacts on the batch before proving (composition needs them).
+        batch.wait_tx_artifacts_published().await;
+        if batch.canceled() {
+            return;
         }
 
-        // Build bundle-wide resource union and per-batch translations.
-        let (bundle_resources, translations) = build_bundle_union::<S, P>(&batches);
+        // The per-batch SMT proof is scoped to exactly this batch's resources, so the proof's
+        // member indices line up 1:1 with the per-batch `resource_index` the tx-processor
+        // commits -- no translation table needed.
+        let batch_resources = batch.resource_ids();
 
-        // ONE SMT walk for the whole bundle, at the version preceding the first batch.
-        let prev_version = batches[0].checkpoint().index().saturating_sub(1);
-        let proof_bytes = self.store.prove(&bundle_resources, prev_version).expect("proof");
+        // ONE SMT walk per batch, at the version preceding the batch's checkpoint.
+        let prev_version = batch.checkpoint().index().saturating_sub(1);
+        let proof_bytes = self.store.prove(&batch_resources, prev_version).expect("proof");
 
-        // Fetch the lane proof for the bundle's FINAL block. The lane key is the value the guest
-        // commits and the covenant SPK pins.
-        let lane_key = self.config.lane_key;
-        let last_block_hash = batches.last().unwrap().checkpoint().metadata().hash;
-        let resp = self
-            .grpc_client
-            .get_seq_commit_lane_proof(last_block_hash, lane_key)
-            .await
-            .expect("get_seq_commit_lane_proof");
+        // Collect per-tx journal bytes from the batch's tx artifacts.
+        let tx_journals: Vec<Vec<u8>> =
+            batch.tx_artifacts().map(|a| B::journal_bytes(&a)).collect();
 
-        // Pre-prove sanity: derive new_lane_tip locally and compare against consensus
-        // before paying for proving (Maxim's demo pattern).
-        let derived_tip = batches.last().expect("empty bundle").checkpoint().metadata().lane_tip;
-        if let Some(consensus_tip) = resp.lane_tip {
-            if consensus_tip != derived_tip {
-                panic!("lane_tip mismatch: derived {derived_tip} != consensus {consensus_tip}");
-            }
-        }
-
-        let bundle = Bundle::new(batches, translations, B::journal_bytes);
-
-        // Pulled from the prover config: at settle time, the on-chain script reconstructs
-        // the journal preimage with the input's `OpInputCovenantId`, so the receipt's
-        // committed `covenant_id` has to equal the deployed UTXO's id. Configs that don't
-        // anchor to a real covenant leave this `None`, committing the all-zero placeholder.
+        // Pulled from the prover config: the covenant id this batch's journal binds to. Every
+        // batch in a bundle MUST share the same covenant id (the aggregator asserts it).
+        // Configs that don't anchor to a real covenant leave this `None`, committing the
+        // all-zero placeholder.
         let covenant_id = self.config.covenant_id.map(|h| h.as_bytes()).unwrap_or_default();
-        let bundle_inputs = BundleInputs::encode(
-            self.backend.image_id(),
-            &covenant_id,
-            &lane_key,
+
+        let input_bytes = BatchInputs::encode(
+            (self.backend.image_id(), &covenant_id, &self.config.lane_key),
             &proof_bytes,
-            &resp,
-            bundle.parts(),
+            batch.checkpoint().metadata(),
+            &tx_journals,
         );
 
-        let receipt = self.backend.prove_batch(&bundle_inputs, bundle.tx_receipts()).await;
+        // Compose against this batch's tx receipts.
+        let tx_receipts: Vec<_> = batch.tx_artifacts().map(|a| (*a).clone()).collect();
+        let receipt = self.backend.prove_batch(&input_bytes, tx_receipts).await;
 
-        // Publish the same bundle receipt to every batch in the bundle. Settlement layer /
-        // tests can read it from any of them; the LAST batch's checkpoint anchors the
-        // bundle's covenant transition on chain.
-        for batch in bundle.batches() {
-            batch.publish_artifact(Some(receipt.clone()));
-        }
-
-        // Wait for the bundle's final commit before pulling the next bundle.
-        for batch in bundle.batches() {
-            batch.wait_committed().await;
-        }
+        // Publish the receipt as the batch's artifact. Reuses the existing scheduler slot:
+        // settlement / aggregation reads the per-batch receipts from there.
+        batch.publish_artifact(Some(receipt));
     }
-}
-
-/// Walks each batch's `resource_ids()` in scheduling order, building the bundle-wide
-/// resource list (union, deduped) and per-batch translation tables.
-fn build_bundle_union<S, P>(batches: &[ScheduledBatch<S, P>]) -> (Vec<ResourceId>, Vec<Vec<U32>>)
-where
-    S: Store,
-    P: Processor<S>,
-{
-    use std::collections::HashMap;
-
-    let mut bundle_resources: Vec<ResourceId> = Vec::new();
-    let mut id_to_idx: HashMap<ResourceId, u32> = HashMap::new();
-    let mut translations: Vec<Vec<U32>> = Vec::with_capacity(batches.len());
-
-    for batch in batches {
-        let mut t = Vec::new();
-        for rid in batch.resource_ids() {
-            let idx = match id_to_idx.get(&rid) {
-                Some(&i) => i,
-                None => {
-                    let i = bundle_resources.len() as u32;
-                    bundle_resources.push(rid);
-                    id_to_idx.insert(rid, i);
-                    i
-                }
-            };
-            t.push(U32::new(idx));
-        }
-        translations.push(t);
-    }
-
-    (bundle_resources, translations)
 }

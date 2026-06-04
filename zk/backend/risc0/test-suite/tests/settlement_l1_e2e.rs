@@ -494,8 +494,6 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
     BuildPins: for<'a> Fn(BuildPinsArgs<'a>) -> vprogs_zk_backend_risc0_covenant::RedeemPins<'a>,
     MakeWitness: Fn(&vprogs_zk_backend_risc0_api::Receipt) -> RealProofWitness,
 {
-    use std::num::NonZeroUsize;
-
     use tempfile::TempDir;
     use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
     use vprogs_storage_manager::StorageConfig;
@@ -576,17 +574,8 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
     // scheduler advances per committed batch.
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-    let proving_config = BatchProverConfig {
-        bundle_size: NonZeroUsize::new(1).unwrap(),
-        lane_key,
-        covenant_id: Some(covenant_id),
-    };
-    let proving = ProvingPipeline::batch(
-        backend.clone(),
-        storage.clone(),
-        l1.grpc_client().clone(),
-        proving_config,
-    );
+    let proving_config = BatchProverConfig { lane_key, covenant_id: Some(covenant_id) };
+    let proving = ProvingPipeline::batch(backend.clone(), storage.clone(), proving_config);
     let vm = Vm::new(backend.clone(), proving);
     let mut scheduler = Scheduler::new(
         ExecutionConfig::default().with_processor(vm),
@@ -752,7 +741,7 @@ where
     MakeWitness: Fn(&vprogs_zk_backend_risc0_api::Receipt) -> RealProofWitness,
 {
     use vprogs_core_codec::Reader;
-    use vprogs_zk_abi::batch_processor::StateTransition;
+    use vprogs_zk_abi::batch_aggregator::StateTransition;
     use vprogs_zk_backend_risc0_api::Backend;
     use vprogs_zk_backend_risc0_covenant::{Settlement, SettlementInput};
     use vprogs_zk_backend_risc0_test_suite::L1TransactionExt;

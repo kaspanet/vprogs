@@ -1,4 +1,4 @@
-use std::{num::NonZeroUsize, time::Instant};
+use std::time::Instant;
 
 use kaspa_consensus_core::hashing::tx::id as kaspa_tx_id;
 use kaspa_hashes::Hash;
@@ -15,7 +15,7 @@ use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_state_version::StateVersion;
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
-use vprogs_zk_abi::{batch_processor::StateTransition, transaction_processor::JournalEntries};
+use vprogs_zk_abi::{batch_aggregator::StateTransition, transaction_processor::JournalEntries};
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_test_suite::{
     L1TransactionExt, assert_receipt_pins_match_succinct_consts, batch_processor_elf,
@@ -60,14 +60,9 @@ async fn batch_proof_two_transactions() {
     // Mine a couple of blocks so we have real block hashes to anchor metadata against.
     let block_hashes = l1.mine_blocks(2).await;
 
-    let config = BatchProverConfig {
-        bundle_size: NonZeroUsize::new(1).unwrap(),
-        lane_key: test_lane_key(),
-        covenant_id: None,
-    };
+    let config = BatchProverConfig { lane_key: test_lane_key(), covenant_id: None };
 
-    let proving =
-        ProvingPipeline::batch(backend.clone(), storage.clone(), l1.grpc_client().clone(), config);
+    let proving = ProvingPipeline::batch(backend.clone(), storage.clone(), config);
     let vm = Vm::new(backend.clone(), proving);
 
     let mut scheduler = Scheduler::new(
@@ -224,14 +219,9 @@ async fn batch_proof_bundle_of_two() {
     let l1 = L1Node::new(None).await;
     let block_hashes = l1.mine_blocks(2).await;
 
-    let config = BatchProverConfig {
-        bundle_size: NonZeroUsize::new(2).unwrap(),
-        lane_key: test_lane_key(),
-        covenant_id: None,
-    };
+    let config = BatchProverConfig { lane_key: test_lane_key(), covenant_id: None };
 
-    let proving =
-        ProvingPipeline::batch(backend.clone(), storage.clone(), l1.grpc_client().clone(), config);
+    let proving = ProvingPipeline::batch(backend.clone(), storage.clone(), config);
     let vm = Vm::new(backend.clone(), proving);
 
     let mut scheduler = Scheduler::new(

@@ -6,17 +6,31 @@ mod error;
 mod read;
 
 pub mod batch_processor {
-    pub(crate) mod exit;
     pub(crate) mod verifier;
 
     pub(crate) mod input {
         pub(crate) mod batch;
-        pub(crate) mod batches;
-        #[cfg(feature = "host")]
-        pub(crate) mod bundle;
+        pub(crate) mod inputs;
+        pub(crate) mod transaction_journals;
+    }
+
+    pub(crate) mod journal {
+        pub(crate) mod batch_transition;
+    }
+
+    pub use input::{batch::Batch, inputs::Inputs, transaction_journals::TransactionJournals};
+    pub use journal::batch_transition::BatchTransition;
+    pub use verifier::Verifier;
+}
+
+pub mod batch_aggregator {
+    pub(crate) mod exit;
+    pub(crate) mod verifier;
+
+    pub(crate) mod input {
+        pub(crate) mod batch_transitions;
         pub(crate) mod inputs;
         pub(crate) mod lane_proof;
-        pub(crate) mod transaction_journals;
     }
 
     pub(crate) mod journal {
@@ -24,14 +38,9 @@ pub mod batch_processor {
     }
 
     pub use exit::{ExitAccumulator, NoExits};
-    #[cfg(feature = "host")]
-    pub use input::bundle::{Bundle, BundlePart};
-    pub use input::{
-        batch::Batch, batches::Batches, inputs::Inputs, lane_proof::LaneProof,
-        transaction_journals::TransactionJournals,
-    };
+    pub use input::{batch_transitions::BatchTransitions, inputs::Inputs, lane_proof::LaneProof};
     pub use journal::state_transition::{JOURNAL_SIZE, StateTransition};
-    pub use verifier::Verifier;
+    pub use verifier::{BundleExtremes, Verifier};
 }
 
 pub mod transaction_processor {
