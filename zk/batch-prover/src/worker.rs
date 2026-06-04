@@ -111,11 +111,13 @@ where
         let prev_version = batches[0].checkpoint().index().saturating_sub(1);
         let proof_bytes = self.store.prove(&bundle_resources, prev_version).expect("proof");
 
-        // Fetch the lane proof for the bundle's FINAL block.
+        // Fetch the lane proof for the bundle's FINAL block. The lane key is the value the guest
+        // commits and the covenant SPK pins.
+        let lane_key = self.config.lane_key;
         let last_block_hash = batches.last().unwrap().checkpoint().metadata().hash;
         let resp = self
             .grpc_client
-            .get_seq_commit_lane_proof(last_block_hash, self.config.lane_key)
+            .get_seq_commit_lane_proof(last_block_hash, lane_key)
             .await
             .expect("get_seq_commit_lane_proof");
 
@@ -138,7 +140,7 @@ where
         let bundle_inputs = BundleInputs::encode(
             self.backend.image_id(),
             &covenant_id,
-            &self.config.lane_key,
+            &lane_key,
             &proof_bytes,
             &resp,
             bundle.parts(),
