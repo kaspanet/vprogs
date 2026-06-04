@@ -416,3 +416,34 @@ fn version_zero_panics() {
 
     commit(&store, 0, &[(test_key(1), test_value(1))]);
 }
+
+/// After a delete that empties the tree, `store.root(v)` returns `EMPTY_HASH` (not the stale prior
+/// root) and a subsequent insert does not resurrect the deleted key.
+#[test]
+fn delete_then_insert_does_not_resurrect() {
+    let dir = TempDir::new().unwrap();
+    let store = RocksDbStore::open(dir.path());
+
+    let k_old = test_key(1);
+    let k_new = test_key(2);
+
+    // v=1: insert k_old.
+    let root1 = commit(&store, 1, &[(k_old, test_value(1))]);
+    assert_ne!(root1, EMPTY_HASH);
+
+    // v=2: delete k_old. Tree becomes empty.
+    let root2 = commit_raw(&store, 2, vec![Commitment::new(k_old, EMPTY_HASH)]);
+    assert_eq!(root2, EMPTY_HASH);
+    assert_eq!(store.root(2), EMPTY_HASH, "store.root(2) must reflect the empty state");
+
+    // v=3: insert k_new. The tree must contain only k_new - k_old must not be resurrected.
+    let _root3 = commit(&store, 3, &[(k_new, test_value(2))]);
+
+    let proof_bytes = store.prove(&[k_old, k_new], 3).unwrap();
+    let proof = Proof::decode(&proof_bytes).unwrap();
+    let m_old = proof.member(0).unwrap();
+    let m_new = proof.member(1).unwrap();
+    assert!(m_old.absent, "previously-deleted key must not be resurrected");
+    assert!(!m_new.absent, "newly inserted key must be present");
+    assert_eq!(m_new.leaf.value_hash, Blake3::hash(test_value(2)));
+}
