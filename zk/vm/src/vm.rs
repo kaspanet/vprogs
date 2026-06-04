@@ -38,7 +38,7 @@ impl<B: Backend, S: Store> Processor<S> for Vm<B, S> {
         self.proving_pipeline.submit_transaction(ctx.scheduled_tx(), input_bytes);
 
         // Decode and apply storage operations.
-        Outputs::decode(&output_bytes).map(|output| {
+        Outputs::decode(&output_bytes, ctx.resources().len()).map(|output| {
             for (resource, op) in ctx.resources_mut().iter_mut().zip(output.storage_ops) {
                 if let Some(new_data) = op {
                     resource.set_data(new_data);
