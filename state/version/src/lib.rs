@@ -45,6 +45,16 @@ impl StateVersion {
         &mut Arc::make_mut(self).tap_mut(|s| s.version += 1).data
     }
 
+    pub fn set_data(self: &mut Arc<Self>, data: Vec<u8>) {
+        if let Some(s) = Arc::get_mut(self) {
+            s.version += 1;
+            s.data = data;
+        } else {
+            *self =
+                Arc::new(Self { resource_id: self.resource_id, version: self.version + 1, data });
+        }
+    }
+
     pub fn write_data<W>(&self, wb: &mut W)
     where
         W: WriteBatch,

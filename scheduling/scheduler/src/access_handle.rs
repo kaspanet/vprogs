@@ -45,6 +45,12 @@ impl<'a, S: Store, P: Processor<S>> AccessHandle<'a, S, P> {
         self.state_version.data_mut()
     }
 
+    /// Replaces the serialized resource data, bumping the version.
+    #[inline]
+    pub fn set_data(&mut self, data: Vec<u8>) {
+        self.state_version.set_data(data)
+    }
+
     /// Returns true if this resource was created by the current transaction (version 0).
     #[inline]
     pub fn is_new(&self) -> bool {

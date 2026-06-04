@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use tap::Tap;
 use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch, TransactionContext};
 use vprogs_storage_types::Store;
@@ -40,14 +39,17 @@ impl<B: Backend, S: Store> Processor<S> for Vm<B, S> {
 
         // Decode and apply storage operations.
         Outputs::decode(&output_bytes).map(|output| {
-            for (i, op) in output.storage_ops().iter().enumerate() {
-                if let Some(new_data) = op {
-                    ctx.resources_mut()[i].data_mut().tap_mut(|data| {
-                        data.clear();
-                        data.extend_from_slice(new_data);
-                    });
-                }
-            }
+            output
+                .storage_ops
+                .into_iter()
+                .zip(ctx.resources_mut())
+                .filter_map(|(new_data, resource)| new_data.map(|new_data| (new_data, resource)))
+                // TODO: is this fine to skip rewriting?
+                .filter(|(new_data, resource)| resource.data() != new_data)
+
+                .for_each(|(new_data, resource)| {
+                    resource.set_data(new_data);
+                });
         })
     }
 
