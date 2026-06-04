@@ -19,7 +19,9 @@ use vprogs_zk_backend_risc0_covenant::{
     CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, RedeemPins, SuccinctPins, build_redeem_script,
     redeem_script_len,
 };
-use vprogs_zk_backend_risc0_test_suite::{batch_processor_elf, transaction_processor_elf};
+use vprogs_zk_backend_risc0_test_suite::{
+    batch_processor_elf, test_lane_key, transaction_processor_elf,
+};
 
 const TEST_COVENANT_VALUE: u64 = 100_000_000;
 
@@ -49,10 +51,12 @@ async fn covenant_bootstrap_is_accepted_on_simnet() {
 
     let initial_state = EMPTY_HASH;
     let initial_lane_tip = Hash::default();
+    let lane_key = test_lane_key();
     let pins = RedeemPins::Succinct(SuccinctPins {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
+            lane_key: &lane_key,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },
     });

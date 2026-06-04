@@ -28,7 +28,7 @@ use vprogs_zk_backend_risc0_covenant::{
 };
 use vprogs_zk_backend_risc0_test_suite::{
     L1TransactionExt, assert_receipt_pins_match_succinct_consts, batch_processor_elf,
-    compute_section_lane_tip, dev_mode_enabled, transaction_processor_elf,
+    compute_section_lane_tip, dev_mode_enabled, test_lane_key, transaction_processor_elf,
     transaction_processor_with_exits_elf,
 };
 use vprogs_zk_batch_prover::{Backend as _, BatchProverConfig};
@@ -168,7 +168,7 @@ async fn batch_proof_is_directly_settleable_single_batch() {
 
     let config = BatchProverConfig {
         bundle_size: NonZeroUsize::new(1).unwrap(),
-        lane_key: Hash::default(),
+        lane_key: test_lane_key(),
         covenant_id: None,
     };
 
@@ -241,10 +241,12 @@ async fn batch_proof_is_directly_settleable_single_batch() {
         "guest must echo the host-supplied tx image id into the journal",
     );
     let covenant_id_hash = Hash::from_bytes(parsed.covenant_id);
+    let lane_key = test_lane_key();
     let pins = RedeemPins::Succinct(SuccinctPins {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
+            lane_key: &lane_key,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },
     });
@@ -318,7 +320,7 @@ async fn batch_proof_groth16_is_directly_settleable_single_batch() {
 
     let config = BatchProverConfig {
         bundle_size: NonZeroUsize::new(1).unwrap(),
-        lane_key: Hash::default(),
+        lane_key: test_lane_key(),
         covenant_id: None,
     };
 
@@ -393,10 +395,12 @@ async fn batch_proof_groth16_is_directly_settleable_single_batch() {
         "guest must echo the host-supplied tx image id into the journal",
     );
     let covenant_id_hash = Hash::from_bytes(parsed.covenant_id);
+    let lane_key = test_lane_key();
     let pins = RedeemPins::Groth16(Groth16Pins {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
+            lane_key: &lane_key,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },
     });
@@ -462,7 +466,7 @@ async fn batch_proof_bundles_two_batches() {
 
     let config = BatchProverConfig {
         bundle_size: NonZeroUsize::new(2).unwrap(),
-        lane_key: Hash::default(),
+        lane_key: test_lane_key(),
         covenant_id: None,
     };
 
@@ -482,7 +486,7 @@ async fn batch_proof_bundles_two_batches() {
     let tx2 =
         L1Transaction::for_l2_test(&[AccessMetadata::write(ResourceId::for_test(2))], &[4, 5, 6]);
 
-    let lane_key = Hash::default();
+    let lane_key = test_lane_key();
     let metadata_1 = metadata_for_block(&l1, block_hashes[0]).await;
     let batch_1 = scheduler.schedule(
         metadata_1,
@@ -553,6 +557,7 @@ async fn batch_proof_bundles_two_batches() {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
+            lane_key: &lane_key,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },
     });
@@ -637,7 +642,7 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
 
     let config = BatchProverConfig {
         bundle_size: NonZeroUsize::new(2).unwrap(),
-        lane_key: Hash::default(),
+        lane_key: test_lane_key(),
         covenant_id: None,
     };
 
@@ -656,7 +661,7 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
     let tx2 =
         L1Transaction::for_l2_test(&[AccessMetadata::write(ResourceId::for_test(2))], &[4, 5, 6]);
 
-    let lane_key = Hash::default();
+    let lane_key = test_lane_key();
     let metadata_1 = metadata_for_block(&l1, block_hashes[0]).await;
     let batch_1 = scheduler.schedule(
         metadata_1,
@@ -734,6 +739,7 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
+            lane_key: &lane_key,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },
     });
