@@ -44,10 +44,8 @@ impl<B: Backend, S: Store> Processor<S> for Vm<B, S> {
                 .into_iter()
                 .zip(ctx.resources_mut())
                 .filter_map(|(new_data, resource)| new_data.map(|new_data| (new_data, resource)))
-
                 // TODO: is this fine to skip rewriting?
                 .filter(|(new_data, resource)| resource.data() != new_data)
-
                 .for_each(|(new_data, resource)| resource.set_data(new_data));
         })
     }
