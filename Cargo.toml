@@ -35,6 +35,7 @@ members = [
   "zk/backend/risc0/api",
   "zk/backend/risc0/covenant",
   "zk/backend/risc0/test-suite",
+  "examples/tn10-flow",
 ]
 resolver = "3"
 
@@ -133,6 +134,7 @@ resolver = "3"
   vprogs-l1-bridge                                = { path = "l1/bridge" }
   vprogs-l1-types                                 = { path = "l1/types" }
   vprogs-l1-utils                                 = { path = "l1/utils" }
+  vprogs-l1-wallet                                = { path = "l1/wallet" }
   vprogs-node-cli                                 = { path = "node/cli" }
   vprogs-node-framework                           = { path = "node/framework" }
   vprogs-node-test-utils                          = { path = "node/test-utils" }

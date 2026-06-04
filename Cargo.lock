@@ -8471,6 +8471,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-example-tn10-flow"
+version = "0.1.0"
+dependencies = [
+ "fastrand",
+ "kaspa-addresses",
+ "kaspa-consensus-core",
+ "kaspa-core",
+ "kaspa-hashes",
+ "kaspa-rpc-core",
+ "kaspa-seq-commit",
+ "kaspa-wrpc-client",
+ "log",
+ "secp256k1",
+ "serde",
+ "serde_json",
+ "tokio",
+ "vprogs-core-smt",
+ "vprogs-core-types",
+ "vprogs-l1-bridge",
+ "vprogs-l1-wallet",
+ "vprogs-scheduling-scheduler",
+ "vprogs-state-version",
+ "vprogs-storage-manager",
+ "vprogs-storage-rocksdb-store",
+ "vprogs-storage-types",
+ "vprogs-zk-backend-risc0-api",
+ "vprogs-zk-backend-risc0-covenant",
+ "vprogs-zk-vm",
+]
+
+[[package]]
 name = "vprogs-l1-bridge"
 version = "0.1.0"
 dependencies = [
@@ -8513,6 +8544,21 @@ dependencies = [
  "blake3",
  "kaspa-consensus-core",
  "kaspa-hashes",
+]
+
+[[package]]
+name = "vprogs-l1-wallet"
+version = "0.1.0"
+dependencies = [
+ "kaspa-addresses",
+ "kaspa-consensus-core",
+ "kaspa-hashes",
+ "kaspa-rpc-core",
+ "kaspa-txscript",
+ "secp256k1",
+ "tap",
+ "vprogs-core-codec",
+ "vprogs-core-types",
 ]
 
 [[package]]
@@ -8583,6 +8629,7 @@ dependencies = [
  "vprogs-core-types",
  "vprogs-l1-bridge",
  "vprogs-l1-types",
+ "vprogs-l1-wallet",
  "vprogs-node-framework",
  "vprogs-scheduling-scheduler",
  "vprogs-state-metadata",

@@ -1,0 +1,46 @@
+[package]
+edition = "2021"
+name    = "vprogs-example-tn10-flow"
+publish = false
+version = "0.1.0"
+
+[[bin]]
+name = "tn10-flow"
+path = "src/main.rs"
+
+[features]
+# Reserved for the next feature (prover mode). Real proving needs a GPU; the exec-only POC
+# never enables it. Wiring `ProvingPipeline::batch` + settlement lands behind this flag.
+cuda = ["vprogs-zk-backend-risc0-api/cuda"]
+
+[dependencies]
+# vprogs internal
+vprogs-core-smt                  = { workspace = true }
+vprogs-core-types                = { workspace = true }
+vprogs-l1-bridge                 = { workspace = true }
+vprogs-l1-wallet                 = { workspace = true }
+vprogs-scheduling-scheduler      = { workspace = true }
+vprogs-state-version             = { workspace = true }
+vprogs-storage-manager           = { workspace = true }
+vprogs-storage-rocksdb-store     = { workspace = true }
+vprogs-storage-types             = { workspace = true }
+vprogs-zk-backend-risc0-api      = { workspace = true, features = ["host"] }
+vprogs-zk-backend-risc0-covenant = { workspace = true }
+vprogs-zk-vm                     = { workspace = true }
+
+# kaspa (same fork pins as the rest of the workspace)
+kaspa-addresses      = { workspace = true }
+kaspa-consensus-core = { workspace = true }
+kaspa-core           = { workspace = true }
+kaspa-hashes         = { workspace = true }
+kaspa-rpc-core       = { workspace = true }
+kaspa-seq-commit     = { workspace = true }
+kaspa-wrpc-client    = { workspace = true }
+
+# external
+fastrand   = { workspace = true }
+log        = { workspace = true }
+secp256k1  = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+tokio      = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

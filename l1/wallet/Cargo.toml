@@ -1,0 +1,15 @@
+[package]
+edition.workspace = true
+name              = "vprogs-l1-wallet"
+version.workspace = true
+
+[dependencies]
+kaspa-addresses.workspace      = true
+kaspa-consensus-core.workspace = true
+kaspa-hashes.workspace         = true
+kaspa-rpc-core.workspace       = true
+kaspa-txscript.workspace       = true
+secp256k1.workspace            = true
+tap.workspace                  = true
+vprogs-core-codec.workspace    = true
+vprogs-core-types.workspace    = true

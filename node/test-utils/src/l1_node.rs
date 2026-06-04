@@ -1,31 +1,24 @@
 //! A single Kaspa L1 node for testing.
 
-use std::{cmp, io::Write, time::Duration};
+use std::{io::Write, time::Duration};
 
-use kaspa_addresses::Address;
+use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus_core::{
     Hash,
     config::params::{OverrideParams, Params, SIMNET_PARAMS},
-    constants::{TX_VERSION, TX_VERSION_TOCCATA},
-    hashing::covenant_id::covenant_id,
     header::Header,
-    mass::{MassCalculator, units::ComputeBudget},
+    mass::units::ComputeBudget,
     merkle::calc_hash_merkle_root,
-    sign::sign,
-    subnets::{SUBNETWORK_ID_NATIVE, SubnetworkId},
-    tx::{
-        CovenantBinding, MutableTransaction, Transaction, TransactionInput, TransactionOutpoint,
-        TransactionOutput, UtxoEntry,
-    },
+    subnets::SubnetworkId,
+    tx::{Transaction, UtxoEntry},
 };
 use kaspa_grpc_client::GrpcClient;
 use kaspa_rpc_core::{RpcTransaction, api::rpc::RpcApi};
 use kaspa_testing_integration::common::daemon::Daemon;
-use kaspa_txscript::{pay_to_address_script, standard::pay_to_script_hash_script};
 use kaspa_wrpc_server::address::WrpcNetAddress;
 use kaspad_lib::args::Args;
 use secp256k1::Keypair;
-use tap::Tap;
+use vprogs_l1_wallet::Wallet;
 
 /// An in-process Kaspa simnet node for integration tests.
 ///
@@ -66,11 +59,7 @@ impl L1Node {
         // Generate a real keypair for signing transactions.
         let keypair = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
         let (xonly, _parity) = keypair.x_only_public_key();
-        let address = Address::new(
-            kaspa_addresses::Prefix::Simnet,
-            kaspa_addresses::Version::PubKey,
-            &xonly.serialize(),
-        );
+        let address = Address::new(Prefix::Simnet, Version::PubKey, &xonly.serialize());
 
         // Start from the default simnet params and let the caller customize them.
         let mut params = SIMNET_PARAMS;
@@ -216,11 +205,16 @@ impl L1Node {
         self.grpc_client.disconnect().await.unwrap()
     }
 
+    /// A [`Wallet`] view over this node's client, params, and key (simnet address).
+    fn wallet(&self) -> Wallet<'_, GrpcClient> {
+        Wallet::new(&self.grpc_client, &self.params, self.keypair, Prefix::Simnet)
+    }
+
     /// Builds signed L1 transactions, each carrying the given payload.
     ///
     /// Requires enough spendable UTXOs (call [`mine_utxos`](Self::mine_utxos) first).
     pub async fn build_payload_transactions(&self, payloads: Vec<Vec<u8>>) -> Vec<Transaction> {
-        self.build_subnet_payload_transactions(payloads, SUBNETWORK_ID_NATIVE, TX_VERSION).await
+        self.wallet().build_payload_transactions(payloads).await
     }
 
     /// Builds signed transactions tagged with the given `subnetwork_id` and `tx_version`. For
@@ -231,225 +225,45 @@ impl L1Node {
         subnetwork_id: SubnetworkId,
         tx_version: u16,
     ) -> Vec<Transaction> {
-        // User-lane subnetwork shape: 4-byte namespace followed by 16 zero bytes.
-        debug_assert!(
-            subnetwork_id == SUBNETWORK_ID_NATIVE
-                || subnetwork_id.as_bytes()[4..].iter().all(|&b| b == 0),
-            "non-native subnetwork id must have 16 zero bytes after the 4-byte namespace",
-        );
-        // Non-native subnetworks require post-covenant tx version.
-        debug_assert!(
-            subnetwork_id == SUBNETWORK_ID_NATIVE || tx_version >= TX_VERSION_TOCCATA,
-            "non-native subnetwork requires tx_version >= TX_VERSION_TOCCATA",
-        );
-
-        let utxos = self.fetch_spendable_utxos().await;
-        assert!(
-            utxos.len() >= payloads.len(),
-            "not enough spendable UTXOs: found {} but need {}",
-            utxos.len(),
-            payloads.len(),
-        );
-
-        let script_public_key = pay_to_address_script(&self.address);
-
-        payloads
-            .into_iter()
-            .zip(utxos)
-            .map(|(payload, (outpoint, entry))| {
-                // Approx tx mass × per-byte multiplier. Kaspa-mempool-friendly heuristic:
-                //   10 × (input_size(~200) + output_size(~34) + base_overhead(1000) + payload).
-                const FEE_PER_BYTE: u64 = 10;
-                const INPUT_SIZE: u64 = 200;
-                const OUTPUT_SIZE: u64 = 34;
-                const BASE_OVERHEAD: u64 = 1000;
-                let fee = FEE_PER_BYTE
-                    * (INPUT_SIZE + OUTPUT_SIZE + BASE_OVERHEAD + payload.len() as u64);
-                assert!(
-                    entry.amount > fee,
-                    "UTXO amount {} too small for fee {}",
-                    entry.amount,
-                    fee
-                );
-
-                let input = TransactionInput::new(outpoint, vec![], 0, 1);
-                let output = TransactionOutput::new(entry.amount - fee, script_public_key.clone());
-
-                sign(
-                    MutableTransaction::with_entries(
-                        Transaction::new(
-                            tx_version,
-                            vec![input],
-                            vec![output],
-                            0,
-                            subnetwork_id,
-                            0,
-                            payload,
-                        ),
-                        vec![entry],
-                    ),
-                    self.keypair,
-                )
-                .tx
-            })
-            .collect()
+        self.wallet().build_subnet_payload_transactions(payloads, subnetwork_id, tx_version).await
     }
 
-    /// Funds and signs a settlement transaction without submitting it: appends a fee input +
-    /// change output, signs only the fee input, preserves the covenant input's witness, sets
-    /// the covenant input's compute budget, and commits the storage-mass field. The returned
-    /// transaction is ready to ship - either via [`Self::mine_block`] (deterministic chain
-    /// inclusion) or [`Self::submit_settlement_transaction`] (routed through the mempool).
-    ///
-    /// `covenant_compute_budget` sets the compute budget on input 0 (the covenant). The R0Succinct
-    /// precompile alone consumes ~2500 budget units; production callers pass ~10000 to leave room
-    /// for surrounding script ops. Dev-mode covenants without the precompile can pass ~100.
+    /// Funds and signs a settlement transaction without submitting it. The returned tx is ready to
+    /// ship via [`Self::mine_block`] (deterministic) or [`Self::submit_settlement_transaction`]
+    /// (mempool). See [`Wallet::prepare_settlement_transaction`].
     pub async fn prepare_settlement_transaction(
         &self,
         settlement_tx: Transaction,
         covenant_entry: UtxoEntry,
         covenant_compute_budget: ComputeBudget,
     ) -> Transaction {
-        // Approximate fee/mass; bump if mempool rejects.
-        const FEE: u64 = 100_000;
-
-        // Snapshot the covenant witness before signing - `sign` overwrites all signature scripts.
-        let covenant_sig_script = settlement_tx.inputs[0].signature_script.clone();
-
-        let utxos = self.fetch_spendable_utxos().await;
-        let (fee_outpoint, fee_entry) =
-            utxos.into_iter().next().expect("no spendable UTXO for fee");
-        assert!(fee_entry.amount > FEE, "fee UTXO amount {} ≤ fee {FEE}", fee_entry.amount);
-
-        let mut tx = settlement_tx;
-        tx.inputs.push(TransactionInput::new(fee_outpoint, vec![], 0, 1));
-        tx.outputs.push(TransactionOutput::new(
-            fee_entry.amount - FEE,
-            pay_to_address_script(&self.address),
-        ));
-
-        let entries = vec![covenant_entry, fee_entry];
-        let signed = sign(MutableTransaction::with_entries(tx, entries.clone()), self.keypair);
-        let mut tx = signed.tx;
-
-        // Restore the covenant witness and set the covenant input's compute budget.
-        tx.inputs[0].signature_script = covenant_sig_script;
-        tx.inputs[0].mass = covenant_compute_budget.into();
-
-        // Toccata transactions must commit their storage mass; compute it now that all inputs and
-        // outputs are finalized.
-        self.commit_storage_mass(&tx, &entries);
-
-        // `sign` left the wrong tx id in place because the signature script changed on input 0;
-        // recompute so callers see the on-the-wire id.
-        tx.finalize();
-        tx
+        self.wallet()
+            .prepare_settlement_transaction(settlement_tx, covenant_entry, covenant_compute_budget)
+            .await
     }
 
-    /// Submits a settlement transaction through the mempool via gRPC.
-    ///
-    /// Note: in Kaspa DAG consensus, a block's transactions are accepted by the next chain block
-    /// (caller must mine an additional block for acceptance). This routes through mempool
-    /// standardness checks; for deterministic chain inclusion that bypasses mempool timing,
-    /// prefer building the tx with [`Self::prepare_settlement_transaction`] and shipping it
-    /// directly via [`Self::mine_block`].
+    /// Funds, signs, and submits a settlement transaction through the mempool. Returns its id.
     pub async fn submit_settlement_transaction(
         &self,
         settlement_tx: Transaction,
         covenant_entry: UtxoEntry,
         covenant_compute_budget: ComputeBudget,
     ) -> Hash {
-        let tx = self
+        let wallet = self.wallet();
+        let tx = wallet
             .prepare_settlement_transaction(settlement_tx, covenant_entry, covenant_compute_budget)
             .await;
-        let tx_id = tx.id();
-        self.grpc_client
-            .submit_transaction(RpcTransaction::from(&tx), false)
-            .await
-            .expect("settlement tx submission failed");
-        tx_id
+        wallet.submit_transaction(&tx).await.expect("settlement tx submission failed")
     }
 
-    /// Builds a signed transaction whose single output is pay-to-script-hash of `redeem_script`,
-    /// annotated with a genesis covenant binding.
-    ///
-    /// Returns the signed transaction and the covenant id that the consensus validator will
-    /// recompute from the input outpoint + output.
+    /// Builds a signed bootstrap transaction whose single output is P2SH(`redeem_script`) with a
+    /// genesis covenant binding. Returns the tx and the covenant id consensus recomputes. See
+    /// [`Wallet::build_covenant_bootstrap_transaction`].
     pub async fn build_covenant_bootstrap_transaction(
         &self,
         redeem_script: &[u8],
         value: u64,
     ) -> (Transaction, Hash) {
-        let utxos = self.fetch_spendable_utxos().await;
-        let (outpoint, entry) = utxos.into_iter().next().expect("no spendable UTXO");
-
-        let covenant_spk = pay_to_script_hash_script(redeem_script);
-        let covenant_id = {
-            let provisional = TransactionOutput::new(value, covenant_spk.clone());
-            covenant_id(outpoint, std::iter::once((0u32, &provisional)))
-        };
-
-        let tx_input = TransactionInput::new(outpoint, Vec::new(), 0, 1);
-        let tx_output = TransactionOutput::with_covenant(
-            value,
-            covenant_spk,
-            Some(CovenantBinding::new(0, covenant_id)),
-        );
-
-        let unsigned = Transaction::new(
-            TX_VERSION_TOCCATA,
-            vec![tx_input],
-            vec![tx_output],
-            0,
-            SUBNETWORK_ID_NATIVE,
-            0,
-            Vec::new(),
-        );
-
-        let entries = vec![entry];
-        let signed =
-            sign(MutableTransaction::with_entries(unsigned, entries.clone()), self.keypair).tx;
-
-        // Bootstrap is a Toccata-version tx; the storage-mass commitment must match what the
-        // block validator recomputes from the populated transaction.
-        self.commit_storage_mass(&signed, &entries);
-
-        (signed, covenant_id)
-    }
-
-    /// Computes the storage mass (KIP-0009) for `tx` populated with `entries` and stores it
-    /// on the transaction's mass commitment field. Toccata-version transactions must commit
-    /// the correct storage mass for the block validator to accept them.
-    fn commit_storage_mass(&self, tx: &Transaction, entries: &[UtxoEntry]) {
-        let calc = MassCalculator::new(
-            self.params.mass_per_tx_byte,
-            self.params.mass_per_script_pub_key_byte,
-            self.params.storage_mass_parameter,
-        );
-        let populated = kaspa_consensus_core::tx::PopulatedTransaction::new(tx, entries.to_vec());
-        let masses = calc
-            .calc_contextual_masses(&populated)
-            .expect("contextual mass calculation must succeed for a populated transaction");
-        tx.set_mass(masses.storage_mass);
-    }
-
-    /// Fetches spendable UTXOs for the miner address, sorted by amount (largest first).
-    async fn fetch_spendable_utxos(&self) -> Vec<(TransactionOutpoint, UtxoEntry)> {
-        let virtual_daa_score = self.grpc_client.get_server_info().await.unwrap().virtual_daa_score;
-
-        self.grpc_client
-            .get_utxos_by_addresses(vec![self.address.clone()])
-            .await
-            .unwrap()
-            .into_iter()
-            .filter(|e| {
-                // Coinbase UTXOs require `coinbase_maturity` confirmations before spending
-                !e.utxo_entry.is_coinbase
-                    || e.utxo_entry.block_daa_score + self.params.blockrate.coinbase_maturity
-                        <= virtual_daa_score
-            })
-            .map(|e| (TransactionOutpoint::from(e.outpoint), UtxoEntry::from(e.utxo_entry)))
-            .collect::<Vec<_>>()
-            .tap_mut(|utxos| utxos.sort_by_key(|b| cmp::Reverse(b.1.amount)))
+        self.wallet().build_covenant_bootstrap_transaction(redeem_script, value).await
     }
 }
