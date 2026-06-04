@@ -24,7 +24,7 @@ pub struct Inputs<'a> {
     pub image_id: &'a [u8; 32],
     /// Covenant id this bundle settles into.
     pub covenant_id: &'a [u8; 32],
-    /// Lane key for this bundle (one lane per bundle).
+    /// Lane key of the lane this bundle settles.
     pub lane_key: &'a Hash,
     /// SMT proof covering the union of resources touched across all batches.
     pub proof: Proof<'a>,

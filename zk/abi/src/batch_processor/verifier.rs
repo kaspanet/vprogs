@@ -124,6 +124,7 @@ where
             self.inputs.covenant_id,
             self.inputs.image_id,
             &permission_spk_hash,
+            self.inputs.lane_key,
         );
     }
 
