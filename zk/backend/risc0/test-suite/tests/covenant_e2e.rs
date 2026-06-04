@@ -14,7 +14,7 @@ use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_txscript::standard::pay_to_script_hash_script;
 use vprogs_core_smt::EMPTY_HASH;
 use vprogs_node_test_utils::L1Node;
-use vprogs_zk_backend_risc0_api::ProofType;
+use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_covenant::{
     CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, RedeemPins, SuccinctPins, build_redeem_script,
     redeem_script_len,
@@ -45,12 +45,7 @@ async fn covenant_bootstrap_is_accepted_on_simnet() {
     let tx_elf = transaction_processor_elf();
     let batch_elf = batch_processor_elf();
     let aggregator_elf = batch_aggregator_elf();
-    let backend = vprogs_zk_backend_risc0_api::Backend::new(
-        &tx_elf,
-        &batch_elf,
-        &aggregator_elf,
-        ProofType::Succinct,
-    );
+    let backend = Backend::new(&tx_elf, &batch_elf, &aggregator_elf, ProofType::Succinct);
     let program_id = *backend.aggregator_image_id();
     let tx_image_id = *backend.transaction_image_id();
 
