@@ -37,19 +37,18 @@ impl<B: Backend, S: Store> Processor<S> for Vm<B, S> {
         // Submit to proving pipeline (no-op if ProvingPipeline::None).
         self.proving_pipeline.submit_transaction(ctx.scheduled_tx(), input_bytes);
 
-        // Decode and apply storage operations.
-        Outputs::decode(&output_bytes).map(|output| {
+        // Decode and apply storage operations, one per accessed resource.
+        Outputs::decode(&output_bytes, ctx.resources().len()).map(|output| {
             output
                 .storage_ops
                 .into_iter()
                 .zip(ctx.resources_mut())
                 .filter_map(|(new_data, resource)| new_data.map(|new_data| (new_data, resource)))
+
                 // TODO: is this fine to skip rewriting?
                 .filter(|(new_data, resource)| resource.data() != new_data)
 
-                .for_each(|(new_data, resource)| {
-                    resource.set_data(new_data);
-                });
+                .for_each(|(new_data, resource)| resource.set_data(new_data));
         })
     }
 
