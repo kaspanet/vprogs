@@ -1,6 +1,5 @@
 use std::num::NonZeroUsize;
 
-use kaspa_consensus_core::subnets::SubnetworkId;
 use kaspa_hashes::Hash;
 
 /// Static configuration for the batch prover.
@@ -14,8 +13,9 @@ pub struct BatchProverConfig {
     /// amortize settlement cost; smaller bundles bound the worst-case wasted compute on a
     /// reorg-induced retry.
     pub bundle_size: NonZeroUsize,
-    /// The lane this prover settles; bundle-wide (one lane per prover instance).
-    pub subnetwork_id: SubnetworkId,
+    /// The lane this prover settles, as the 32-byte SMT lane key the guest commits and the
+    /// covenant SPK pins; bundle-wide (one lane per prover instance).
+    pub lane_key: Hash,
     /// Covenant id the produced batch journal binds to. The on-chain settlement script
     /// reconstructs the journal preimage with the input's `OpInputCovenantId`, so the
     /// receipt's committed `covenant_id` must equal the deployed covenant UTXO's id.

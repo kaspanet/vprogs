@@ -2,7 +2,6 @@ use std::{collections::VecDeque, thread::spawn};
 
 use kaspa_grpc_client::GrpcClient;
 use kaspa_rpc_core::api::rpc::RpcApi;
-use kaspa_seq_commit::hashing::lane_key;
 use tokio::runtime::Builder;
 use vprogs_core_types::ResourceId;
 use vprogs_l1_types::ChainBlockMetadata;
@@ -113,9 +112,9 @@ where
         let (proof_bytes, leaf_order) =
             self.store.prove(&bundle_resources, prev_version).expect("proof");
 
-        // Fetch the lane proof for the bundle's FINAL block. The lane key (the value the guest
-        // commits and the covenant SPK pins) is derived from the configured subnetwork id.
-        let lane_key = lane_key(self.config.subnetwork_id.as_ref());
+        // Fetch the lane proof for the bundle's FINAL block. The lane key is the value the guest
+        // commits and the covenant SPK pins.
+        let lane_key = self.config.lane_key;
         let last_block_hash = batches.last().unwrap().checkpoint().metadata().hash;
         let resp = self
             .grpc_client

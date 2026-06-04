@@ -578,7 +578,7 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
     let proving_config = BatchProverConfig {
         bundle_size: NonZeroUsize::new(1).unwrap(),
-        subnetwork_id: L2_LANE_SUBNET,
+        lane_key,
         covenant_id: Some(covenant_id),
     };
     let proving = ProvingPipeline::batch(

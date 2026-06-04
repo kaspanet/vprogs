@@ -27,9 +27,9 @@ use vprogs_zk_backend_risc0_covenant::{
     build_redeem_script, permission_spk, redeem_script_len,
 };
 use vprogs_zk_backend_risc0_test_suite::{
-    L1TransactionExt, TEST_SUBNETWORK_ID, assert_receipt_pins_match_succinct_consts,
-    batch_processor_elf, compute_section_lane_tip, dev_mode_enabled, test_lane_key,
-    transaction_processor_elf, transaction_processor_with_exits_elf,
+    L1TransactionExt, assert_receipt_pins_match_succinct_consts, batch_processor_elf,
+    compute_section_lane_tip, dev_mode_enabled, test_lane_key, transaction_processor_elf,
+    transaction_processor_with_exits_elf,
 };
 use vprogs_zk_batch_prover::{Backend as _, BatchProverConfig};
 use vprogs_zk_vm::{ProvingPipeline, Vm};
@@ -168,7 +168,7 @@ async fn batch_proof_is_directly_settleable_single_batch() {
 
     let config = BatchProverConfig {
         bundle_size: NonZeroUsize::new(1).unwrap(),
-        subnetwork_id: TEST_SUBNETWORK_ID,
+        lane_key: test_lane_key(),
         covenant_id: None,
     };
 
@@ -320,7 +320,7 @@ async fn batch_proof_groth16_is_directly_settleable_single_batch() {
 
     let config = BatchProverConfig {
         bundle_size: NonZeroUsize::new(1).unwrap(),
-        subnetwork_id: TEST_SUBNETWORK_ID,
+        lane_key: test_lane_key(),
         covenant_id: None,
     };
 
@@ -466,7 +466,7 @@ async fn batch_proof_bundles_two_batches() {
 
     let config = BatchProverConfig {
         bundle_size: NonZeroUsize::new(2).unwrap(),
-        subnetwork_id: TEST_SUBNETWORK_ID,
+        lane_key: test_lane_key(),
         covenant_id: None,
     };
 
@@ -642,7 +642,7 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
 
     let config = BatchProverConfig {
         bundle_size: NonZeroUsize::new(2).unwrap(),
-        subnetwork_id: TEST_SUBNETWORK_ID,
+        lane_key: test_lane_key(),
         covenant_id: None,
     };
 

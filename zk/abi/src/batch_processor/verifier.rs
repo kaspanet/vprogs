@@ -30,9 +30,6 @@ where
 {
     /// Decoded bundle inputs.
     inputs: Inputs<'a>,
-    /// Lane key for this bundle: the SMT key for this lane in L1's `lanes_root` and the lane
-    /// domain in `lane_tip_next`.
-    lane_key: Hash,
     /// Lane tip entering the bundle (from the first batch's `prev_lane_tip`).
     prev_lane_tip: &'a Hash,
     /// Blue score at which the lane was last active before the bundle.
@@ -56,7 +53,6 @@ where
     pub fn new(input_bytes: &'a [u8], verify_tx_journal: V, exits: A) -> Self {
         // Parse inputs and snapshot the bundle's pre-state from the first batch.
         let inputs = Inputs::decode(input_bytes).expect("decode bundle inputs");
-        let lane_key = *inputs.lane_key;
         let first_batch = inputs.batches.first().unwrap();
 
         // Assert bounds before scattering resources.
@@ -77,7 +73,6 @@ where
 
         Self {
             inputs,
-            lane_key,
             prev_lane_tip: first_batch.prev_lane_tip,
             prev_lane_blue_score: first_batch.prev_lane_blue_score,
             latest_value_hashes: value_hashes,
@@ -129,7 +124,7 @@ where
             self.inputs.covenant_id,
             self.inputs.image_id,
             &permission_spk_hash,
-            &self.lane_key,
+            self.inputs.lane_key,
         );
     }
 
@@ -152,7 +147,7 @@ where
             } else {
                 batch.prev_lane_tip
             },
-            lane_key: &self.lane_key,
+            lane_key: self.inputs.lane_key,
             activity_digest: &activity_digest,
             context_hash: &context_hash,
         })
@@ -285,7 +280,7 @@ where
 
         // Calculate new lanes root.
         let new_lanes_root = lanes_smt_proof
-            .compute_root::<SeqCommitActiveNode>(&self.lane_key, Some(new_lane_leaf))
+            .compute_root::<SeqCommitActiveNode>(self.inputs.lane_key, Some(new_lane_leaf))
             .expect("lane_smt_proof compute_root");
 
         // Wrap the lanes root into the activity root (post-hardening).

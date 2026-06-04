@@ -17,9 +17,8 @@ use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_abi::{batch_processor::StateTransition, transaction_processor::JournalEntries};
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_test_suite::{
-    L1TransactionExt, TEST_SUBNETWORK_ID, assert_receipt_pins_match_succinct_consts,
-    batch_processor_elf, compute_section_lane_tip, dev_mode_enabled, test_lane_key,
-    transaction_processor_elf,
+    L1TransactionExt, assert_receipt_pins_match_succinct_consts, batch_processor_elf,
+    compute_section_lane_tip, dev_mode_enabled, test_lane_key, transaction_processor_elf,
 };
 use vprogs_zk_batch_prover::{Backend as _, BatchProverConfig};
 use vprogs_zk_vm::{ProvingPipeline, Vm};
@@ -62,7 +61,7 @@ async fn batch_proof_two_transactions() {
 
     let config = BatchProverConfig {
         bundle_size: NonZeroUsize::new(1).unwrap(),
-        subnetwork_id: TEST_SUBNETWORK_ID,
+        lane_key: test_lane_key(),
         covenant_id: None,
     };
 
@@ -226,7 +225,7 @@ async fn batch_proof_bundle_of_two() {
 
     let config = BatchProverConfig {
         bundle_size: NonZeroUsize::new(2).unwrap(),
-        subnetwork_id: TEST_SUBNETWORK_ID,
+        lane_key: test_lane_key(),
         covenant_id: None,
     };
 
