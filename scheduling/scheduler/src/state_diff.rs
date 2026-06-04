@@ -55,6 +55,11 @@ impl<S: Store, P: Processor<S>> StateDiff<S, P> {
         self.index
     }
 
+    /// Returns `true` when the batch's execution advanced this resource's version.
+    pub fn data_updated(&self) -> bool {
+        self.written_state().version() > self.read_state().version()
+    }
+
     pub(crate) fn new(batch: ScheduledBatchRef<S, P>, resource_id: ResourceId, index: u32) -> Self {
         Self(Arc::new(StateDiffData {
             batch,
@@ -95,7 +100,7 @@ impl<S: Store, P: Processor<S>> StateDiff<S, P> {
             panic!("written_state must be known at write time");
         };
 
-        if !batch.canceled() {
+        if !batch.canceled() && written_state.version() > read_state.version() {
             written_state.write_data(wb);
             read_state.write_rollback_ptr(wb, batch.checkpoint().index());
         }
