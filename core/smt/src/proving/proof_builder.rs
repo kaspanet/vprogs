@@ -84,8 +84,8 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
 
         // Dispatch based on the node type at this position.
         match self.tree.node(key, self.version) {
-            // Empty subtree - all input keys are absent.
-            None => self.collect_empty(input_keys, key.level, offset),
+            // Empty subtree (no node or explicit tombstone) - all input keys are absent.
+            None | Some((_, Node::Empty)) => self.collect_empty(input_keys, key.level, offset),
 
             // Shortcut leaf - witnesses every input key routed into this subtree.
             Some((_, Node::Leaf { key: leaf_key, value_hash, .. })) => {

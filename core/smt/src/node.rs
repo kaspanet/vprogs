@@ -1,14 +1,16 @@
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 
 use vprogs_core_codec::{Error, Reader, Result};
 use vprogs_core_hashing::Hasher;
 use vprogs_core_types::ResourceId;
 
-use crate::{HashedNode, INTERNAL, LEAF};
+use crate::{EMPTY, EMPTY_HASH, HashedNode, INTERNAL, LEAF};
 
 /// Data stored at a tree position.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Node {
+    /// Empty-subtree tombstone written at `Key::ROOT` to mark a drained tree.
+    Empty,
     /// Two-child node storing only the combined hash.
     Internal {
         /// Domain-separated hash of the two child summaries.
@@ -39,6 +41,7 @@ impl Node {
     /// Deserializes from bytes produced by `encode`, advancing `buf` past the consumed bytes.
     pub fn decode(buf: &mut &[u8]) -> Result<Self> {
         match buf.byte("tag")? {
+            EMPTY => Ok(Node::Empty),
             INTERNAL => Ok(Node::Internal { hash: *buf.array::<32>("hash")? }),
             LEAF => Ok(Node::Leaf {
                 key: (*buf.array::<32>("key")?).into(),
@@ -49,9 +52,10 @@ impl Node {
         }
     }
 
-    /// Returns the hash of this node (internal hash or leaf hash).
+    /// Returns the hash of this node (empty hash, internal hash or leaf hash).
     pub fn hash(&self) -> &[u8; 32] {
         match self {
+            Node::Empty => &EMPTY_HASH,
             Node::Internal { hash } => hash,
             Node::Leaf { hash, .. } => hash,
         }
@@ -60,6 +64,8 @@ impl Node {
     /// Serializes to bytes for storage.
     pub fn encode(&self) -> Vec<u8> {
         match self {
+            // Empty: tag(1) = 1 byte.
+            Node::Empty => vec![EMPTY],
             // Internal: tag(1) + hash(32) = 33 bytes.
             Node::Internal { hash } => [&[INTERNAL], &hash[..]].concat(),
             // Leaf: tag(1) + key(32) + value_hash(32) + hash(32) = 97 bytes.
@@ -74,6 +80,7 @@ impl From<&Node> for HashedNode {
     /// Projects a stored [`Node`] to its kinded summary.
     fn from(node: &Node) -> Self {
         match node {
+            Node::Empty => HashedNode::EMPTY,
             Node::Internal { hash } => HashedNode::new(INTERNAL, *hash),
             Node::Leaf { hash, .. } => HashedNode::new(LEAF, *hash),
         }
