@@ -21,9 +21,9 @@ impl Outputs {
         &self.storage_ops
     }
 
-    /// Decodes the execution result from the guest (host-side).
+    /// Decodes the execution result with `count` resources from the guest (host-side).
     #[cfg(feature = "host")]
-    pub fn decode(mut buf: &[u8]) -> Result<Self> {
+    pub fn decode(mut buf: &[u8], count: usize) -> Result<Self> {
         use vprogs_core_codec::Reader;
 
         use crate::Error;
@@ -31,8 +31,7 @@ impl Outputs {
         // Dispatch based on discriminant.
         match buf.byte("discriminant")? {
             Self::OK => {
-                // Decode length-prefixed storage operations.
-                let count = buf.le_u32("count")? as usize;
+                // Decode one storage op per accessed resource.
                 let mut storage_ops = Vec::with_capacity(count);
                 for _ in 0..count {
                     storage_ops.push(match buf.bool("dirty_flag")? {
@@ -55,8 +54,7 @@ impl Outputs {
                 // Write Ok discriminant.
                 w.write(&[Self::OK]);
 
-                // Write length-prefixed list of storage operations.
-                w.write(&(resources.len() as u32).to_le_bytes());
+                // Write one storage op per resource.
                 for resource in resources {
                     match resource.is_dirty() {
                         true => {
