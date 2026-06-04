@@ -500,7 +500,9 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
     use vprogs_storage_rocksdb_store::RocksDbStore;
     use vprogs_zk_backend_risc0_api::Backend;
     use vprogs_zk_backend_risc0_covenant::{build_redeem_script, redeem_script_len};
-    use vprogs_zk_backend_risc0_test_suite::{batch_processor_elf, transaction_processor_elf};
+    use vprogs_zk_backend_risc0_test_suite::{
+        batch_aggregator_elf, batch_processor_elf, transaction_processor_elf,
+    };
     use vprogs_zk_batch_prover::BatchProverConfig;
     use vprogs_zk_vm::{ProvingPipeline, Vm};
 
@@ -523,8 +525,9 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
 
     let tx_elf = transaction_processor_elf();
     let batch_elf = batch_processor_elf();
-    let backend = Backend::new(&tx_elf, &batch_elf, config.proof_type);
-    let program_id = *backend.batch_image_id();
+    let aggregator_elf = batch_aggregator_elf();
+    let backend = Backend::new(&tx_elf, &batch_elf, &aggregator_elf, config.proof_type);
+    let program_id = *backend.aggregator_image_id();
     let tx_image_id = *backend.transaction_image_id();
 
     // Consensus keys the lane SMT by `H_lane_key(subnetwork_id)`, and the test routes its carriers
@@ -841,7 +844,19 @@ where
 
     let batch_receipt = (*batch.artifact()).clone();
     backend.verify_batch_receipt(&batch_receipt);
-    let journal_bytes = Backend::journal_bytes(&batch_receipt);
+
+    // Aggregate the per-batch receipt into the settlement-level receipt the on-chain covenant
+    // verifies. K=1 so the aggregator chains a single `BatchTransition` into the `StateTransition`.
+    let settlement_receipt = vprogs_zk_backend_risc0_test_suite::aggregate_batches(
+        backend,
+        l1.grpc_client(),
+        &lane_key,
+        block_acc_carrier,
+        vec![batch_receipt.clone()],
+    )
+    .await;
+    backend.verify_aggregator_receipt(&settlement_receipt);
+    let journal_bytes = Backend::journal_bytes(&settlement_receipt);
     let parsed = (&mut &journal_bytes[..]).array_as::<StateTransition>("state_transition").unwrap();
     eprintln!(
         "{label}: journal.new_seq_commit={} chain.accepted_id_merkle_root={}",
@@ -867,7 +882,7 @@ where
     );
 
     // === c. build production settlement with the real witness ===
-    let owned_witness = (config.make_witness)(&batch_receipt);
+    let owned_witness = (config.make_witness)(&settlement_receipt);
     let settlement = Settlement::build(&SettlementInput {
         covenant_id,
         pins: spend_pins,

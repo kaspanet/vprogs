@@ -139,6 +139,7 @@ where
             &extremes.covenant_id,
             &extremes.tx_image_id,
             &permission_spk_hash,
+            &extremes.lane_key,
         );
     }
 

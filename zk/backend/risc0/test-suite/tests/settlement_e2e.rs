@@ -27,9 +27,9 @@ use vprogs_zk_backend_risc0_covenant::{
     build_redeem_script, permission_spk, redeem_script_len,
 };
 use vprogs_zk_backend_risc0_test_suite::{
-    L1TransactionExt, assert_receipt_pins_match_succinct_consts, batch_processor_elf,
-    compute_section_lane_tip, dev_mode_enabled, test_lane_key, transaction_processor_elf,
-    transaction_processor_with_exits_elf,
+    L1TransactionExt, assert_receipt_pins_match_succinct_consts, batch_aggregator_elf,
+    batch_processor_elf, compute_section_lane_tip, dev_mode_enabled, test_lane_key,
+    transaction_processor_elf, transaction_processor_with_exits_elf,
 };
 use vprogs_zk_batch_prover::{Backend as _, BatchProverConfig};
 use vprogs_zk_vm::{ProvingPipeline, Vm};
@@ -157,11 +157,12 @@ fn assert_settlement_structure(
 async fn batch_proof_is_directly_settleable_single_batch() {
     let transaction_elf = transaction_processor_elf();
     let batch_elf = batch_processor_elf();
+    let aggregator_elf = batch_aggregator_elf();
 
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
 
-    let backend = Backend::new(&transaction_elf, &batch_elf, ProofType::Succinct);
+    let backend = Backend::new(&transaction_elf, &batch_elf, &aggregator_elf, ProofType::Succinct);
 
     let l1 = L1Node::new(None).await;
     let block_hashes = l1.mine_blocks(1).await;
@@ -211,12 +212,27 @@ async fn batch_proof_is_directly_settleable_single_batch() {
     if !dev_mode_enabled() {
         backend.verify_batch_receipt(&batch_receipt);
     }
-    let journal_bytes = Backend::journal_bytes(&batch_receipt);
+
+    // Aggregate the per-batch receipt into a bundle receipt: this is the receipt the on-chain
+    // settlement covenant verifies via `OpZkPrecompile`, and its journal carries the
+    // `StateTransition` the redeem script reconstructs.
+    let settlement_receipt = vprogs_zk_backend_risc0_test_suite::aggregate_batches(
+        &backend,
+        l1.grpc_client(),
+        &test_lane_key(),
+        block_hashes[0],
+        vec![batch_receipt.clone()],
+    )
+    .await;
+    if !dev_mode_enabled() {
+        backend.verify_aggregator_receipt(&settlement_receipt);
+    }
+    let journal_bytes = Backend::journal_bytes(&settlement_receipt);
 
     assert_eq!(
         journal_bytes.len(),
         vprogs_zk_backend_risc0_covenant::JOURNAL_SIZE,
-        "batch journal must be exactly {} bytes",
+        "settlement journal must be exactly {} bytes",
         vprogs_zk_backend_risc0_covenant::JOURNAL_SIZE,
     );
 
@@ -229,19 +245,18 @@ async fn batch_proof_is_directly_settleable_single_batch() {
         "first section's prev_lane_tip is bundle's start"
     );
 
-    let program_id = *backend.batch_image_id();
+    let program_id = *backend.aggregator_image_id();
     let tx_image_id = *backend.transaction_image_id();
     assert_eq!(
         parsed.tx_image_id, tx_image_id,
         "guest must echo the host-supplied tx image id into the journal",
     );
     let covenant_id_hash = Hash::from_bytes(parsed.covenant_id);
-    let lane_key = test_lane_key();
     let pins = RedeemPins::Succinct(SuccinctPins {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
-            lane_key: &lane_key,
+            lane_key: &parsed.lane_key,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },
     });
@@ -269,7 +284,7 @@ async fn batch_proof_is_directly_settleable_single_batch() {
     // bytes - the placeholder witness above would never satisfy `OpZkPrecompile`. Rebuild
     // the settlement here with the actual receipt witness and feed it to the engine.
     if !dev_mode_enabled() {
-        let owned = OwnedSuccinctWitness::from_receipt(&batch_receipt);
+        let owned = OwnedSuccinctWitness::from_receipt(&settlement_receipt);
         let real_settlement = Settlement::build(&SettlementInput {
             covenant_id: covenant_id_hash,
             pins,
@@ -304,11 +319,12 @@ async fn batch_proof_is_directly_settleable_single_batch() {
 async fn batch_proof_groth16_is_directly_settleable_single_batch() {
     let transaction_elf = transaction_processor_elf();
     let batch_elf = batch_processor_elf();
+    let aggregator_elf = batch_aggregator_elf();
 
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
 
-    let backend = Backend::new(&transaction_elf, &batch_elf, ProofType::Groth16);
+    let backend = Backend::new(&transaction_elf, &batch_elf, &aggregator_elf, ProofType::Groth16);
 
     let l1 = L1Node::new(None).await;
     let block_hashes = l1.mine_blocks(1).await;
@@ -361,12 +377,27 @@ async fn batch_proof_groth16_is_directly_settleable_single_batch() {
     if !dev_mode_enabled() {
         backend.verify_batch_receipt(&batch_receipt);
     }
-    let journal_bytes = Backend::journal_bytes(&batch_receipt);
+
+    // Aggregate the per-batch receipt into a bundle receipt: this is the receipt the on-chain
+    // settlement covenant verifies via `OpZkPrecompile`, and its journal carries the
+    // `StateTransition` the redeem script reconstructs.
+    let settlement_receipt = vprogs_zk_backend_risc0_test_suite::aggregate_batches(
+        &backend,
+        l1.grpc_client(),
+        &test_lane_key(),
+        block_hashes[0],
+        vec![batch_receipt.clone()],
+    )
+    .await;
+    if !dev_mode_enabled() {
+        backend.verify_aggregator_receipt(&settlement_receipt);
+    }
+    let journal_bytes = Backend::journal_bytes(&settlement_receipt);
 
     assert_eq!(
         journal_bytes.len(),
         vprogs_zk_backend_risc0_covenant::JOURNAL_SIZE,
-        "batch journal must be exactly {} bytes",
+        "settlement journal must be exactly {} bytes",
         vprogs_zk_backend_risc0_covenant::JOURNAL_SIZE,
     );
 
@@ -378,19 +409,18 @@ async fn batch_proof_groth16_is_directly_settleable_single_batch() {
         "first section's prev_lane_tip is bundle's start",
     );
 
-    let program_id = *backend.batch_image_id();
+    let program_id = *backend.aggregator_image_id();
     let tx_image_id = *backend.transaction_image_id();
     assert_eq!(
         parsed.tx_image_id, tx_image_id,
         "guest must echo the host-supplied tx image id into the journal",
     );
     let covenant_id_hash = Hash::from_bytes(parsed.covenant_id);
-    let lane_key = test_lane_key();
     let pins = RedeemPins::Groth16(Groth16Pins {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
-            lane_key: &lane_key,
+            lane_key: &parsed.lane_key,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },
     });
@@ -414,7 +444,7 @@ async fn batch_proof_groth16_is_directly_settleable_single_batch() {
     // receipt-claim recomputation + public-inputs layout + VK push) actually verifies a real
     // seal.
     if !dev_mode_enabled() {
-        let owned = OwnedGroth16Witness::from_receipt(&batch_receipt);
+        let owned = OwnedGroth16Witness::from_receipt(&settlement_receipt);
         let real_settlement = Settlement::build(&SettlementInput {
             covenant_id: covenant_id_hash,
             pins,
@@ -445,11 +475,12 @@ async fn batch_proof_groth16_is_directly_settleable_single_batch() {
 async fn batch_proof_bundles_two_batches() {
     let transaction_elf = transaction_processor_elf();
     let batch_elf = batch_processor_elf();
+    let aggregator_elf = batch_aggregator_elf();
 
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
 
-    let backend = Backend::new(&transaction_elf, &batch_elf, ProofType::Succinct);
+    let backend = Backend::new(&transaction_elf, &batch_elf, &aggregator_elf, ProofType::Succinct);
 
     let l1 = L1Node::new(None).await;
     let block_hashes = l1.mine_blocks(2).await;
@@ -514,35 +545,48 @@ async fn batch_proof_bundles_two_batches() {
 
     let r1 = (*batch_1.artifact()).clone();
     let r2 = (*batch_2.artifact()).clone();
-    let j1 = Backend::journal_bytes(&r1);
-    let j2 = Backend::journal_bytes(&r2);
-    assert_eq!(j1, j2, "bundle publishes the same receipt to every batch");
 
     if !dev_mode_enabled() {
-        // One bundle receipt is shared by both batches; verifying once is sufficient.
         backend.verify_batch_receipt(&r1);
-        // Per-tx inner receipts are folded into the bundle via composition, but each is also
-        // independently verifiable against the transaction image id.
+        backend.verify_batch_receipt(&r2);
+        // Per-tx inner receipts are folded into the per-batch receipt via composition, but
+        // each is also independently verifiable against the transaction image id.
         for batch in [&batch_1, &batch_2] {
             for artifact in batch.tx_artifacts() {
                 backend.verify_transaction_receipt(&artifact);
             }
         }
     }
+
+    // Aggregate the two per-batch receipts into a bundle receipt. The aggregator chains
+    // their `BatchTransition` journals into a single `StateTransition`, which is what the
+    // on-chain covenant verifies via `OpZkPrecompile`.
+    let settlement_receipt = vprogs_zk_backend_risc0_test_suite::aggregate_batches(
+        &backend,
+        l1.grpc_client(),
+        &lane_key,
+        block_hashes[1],
+        vec![r1.clone(), r2.clone()],
+    )
+    .await;
+    if !dev_mode_enabled() {
+        backend.verify_aggregator_receipt(&settlement_receipt);
+    }
+    let j1 = Backend::journal_bytes(&settlement_receipt);
     assert_eq!(j1.len(), vprogs_zk_backend_risc0_covenant::JOURNAL_SIZE);
 
     let parsed = (&mut &j1[..]).array_as::<StateTransition>("state_transition").unwrap();
     assert_eq!(parsed.covenant_id, [0u8; 32]);
     assert_eq!(parsed.prev_lane_tip, Hash::default(), "bundle prev_lane_tip is bundle's start");
 
-    let program_id = *backend.batch_image_id();
+    let program_id = *backend.aggregator_image_id();
     let tx_image_id = *backend.transaction_image_id();
     let covenant_id_hash = Hash::from_bytes(parsed.covenant_id);
     let pins = RedeemPins::Succinct(SuccinctPins {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
-            lane_key: &lane_key,
+            lane_key: &parsed.lane_key,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },
     });
@@ -567,11 +611,10 @@ async fn batch_proof_bundles_two_batches() {
     });
     assert_settlement_structure(&settlement, parsed, &pins, covenant_id_hash);
 
-    // Run the on-chain inner-proof check on the bundle receipt's real witness bytes. The
-    // bundle publishes the same receipt to both batches (j1 == j2), so verifying once is
-    // enough.
+    // Run the on-chain inner-proof check on the aggregated settlement receipt's real witness
+    // bytes.
     if !dev_mode_enabled() {
-        let owned = OwnedSuccinctWitness::from_receipt(&r1);
+        let owned = OwnedSuccinctWitness::from_receipt(&settlement_receipt);
         let real_settlement = Settlement::build(&SettlementInput {
             covenant_id: covenant_id_hash,
             pins,
@@ -616,11 +659,12 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
     // Use the test variant that emits one exit per tx.
     let transaction_elf = transaction_processor_with_exits_elf();
     let batch_elf = batch_processor_elf();
+    let aggregator_elf = batch_aggregator_elf();
 
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
 
-    let backend = Backend::new(&transaction_elf, &batch_elf, ProofType::Succinct);
+    let backend = Backend::new(&transaction_elf, &batch_elf, &aggregator_elf, ProofType::Succinct);
 
     let l1 = L1Node::new(None).await;
     let block_hashes = l1.mine_blocks(2).await;
@@ -681,24 +725,36 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
 
     let r1 = (*batch_1.artifact()).clone();
     let r2 = (*batch_2.artifact()).clone();
-    let j1 = Backend::journal_bytes(&r1);
-    let j2 = Backend::journal_bytes(&r2);
-    assert_eq!(j1, j2, "bundle publishes the same receipt to every batch");
 
     if !dev_mode_enabled() {
         backend.verify_batch_receipt(&r1);
-        // Same pin check as `proving_e2e.rs::batch_proof_two_transactions`, but for a
-        // DIFFERENT inner-tx-processor guest (transaction-processor-with-exits here, plain
-        // transaction-processor there). The outer batch-processor guest is the same, so the
-        // outer receipt's control_id must still be `resolve.zkr` poseidon2 regardless of
-        // the inner guest swap.
-        assert_receipt_pins_match_succinct_consts(&r1);
+        backend.verify_batch_receipt(&r2);
         for batch in [&batch_1, &batch_2] {
             for artifact in batch.tx_artifacts() {
                 backend.verify_transaction_receipt(&artifact);
             }
         }
     }
+
+    // Aggregate the two per-batch receipts into the settlement receipt.
+    let settlement_receipt = vprogs_zk_backend_risc0_test_suite::aggregate_batches(
+        &backend,
+        l1.grpc_client(),
+        &lane_key,
+        block_hashes[1],
+        vec![r1.clone(), r2.clone()],
+    )
+    .await;
+    if !dev_mode_enabled() {
+        backend.verify_aggregator_receipt(&settlement_receipt);
+        // Same pin check as `proving_e2e.rs::batch_proof_two_transactions`, but for a
+        // DIFFERENT inner-tx-processor guest (transaction-processor-with-exits here, plain
+        // transaction-processor there). The outer aggregator guest is the same, so the
+        // outer receipt's control_id must still be `resolve.zkr` poseidon2 regardless of
+        // the inner guest swap.
+        assert_receipt_pins_match_succinct_consts(&settlement_receipt);
+    }
+    let j1 = Backend::journal_bytes(&settlement_receipt);
     assert_eq!(j1.len(), vprogs_zk_backend_risc0_covenant::JOURNAL_SIZE);
 
     let parsed = (&mut &j1[..]).array_as::<StateTransition>("state_transition").unwrap();
@@ -712,14 +768,14 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
         "exit-emitting handler must produce a non-zero permission_spk_hash",
     );
 
-    let program_id = *backend.batch_image_id();
+    let program_id = *backend.aggregator_image_id();
     let tx_image_id = *backend.transaction_image_id();
     let covenant_id_hash = Hash::from_bytes(parsed.covenant_id);
     let pins = RedeemPins::Succinct(SuccinctPins {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
-            lane_key: &lane_key,
+            lane_key: &parsed.lane_key,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },
     });
@@ -777,7 +833,7 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
 
     // ---- cuda-mode end-to-end: run the Kaspa script engine on the count==2 settlement ----
     if !dev_mode_enabled() {
-        let owned = OwnedSuccinctWitness::from_receipt(&r1);
+        let owned = OwnedSuccinctWitness::from_receipt(&settlement_receipt);
         let real_settlement = Settlement::build(&SettlementInput {
             covenant_id: covenant_id_hash,
             pins,

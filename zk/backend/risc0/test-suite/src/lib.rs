@@ -1,5 +1,7 @@
 use kaspa_consensus_core::{hashing::tx::id as kaspa_tx_id, subnets::SubnetworkId};
+use kaspa_grpc_client::GrpcClient;
 use kaspa_hashes::Hash;
+use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_seq_commit::{
     hashing::{
         ActivityDigestBuilder, activity_leaf, lane_key, lane_tip_next, mergeset_context_hash,
@@ -7,6 +9,8 @@ use kaspa_seq_commit::{
     types::{LaneTipInput, MergesetContext},
 };
 use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
+use vprogs_zk_abi::batch_aggregator::Inputs as AggregatorInputs;
+use vprogs_zk_backend_risc0_api::{Backend, Receipt};
 
 mod l1_transaction_ext;
 
@@ -19,6 +23,38 @@ pub const TEST_SUBNETWORK_ID: SubnetworkId = SubnetworkId::from_namespace(4444u3
 /// Lane key for [`TEST_SUBNETWORK_ID`]: the value the guest commits and the covenant SPK pins.
 pub fn test_lane_key() -> Hash {
     lane_key(TEST_SUBNETWORK_ID.as_bytes())
+}
+
+/// Runs the aggregator on a sequence of per-batch receipts and returns the resulting bundle
+/// receipt. Mirrors what the (still-unbuilt) aggregator orchestrator would do once it lands:
+///
+/// 1. Fetch the lane proof for the bundle's final block from L1.
+/// 2. Encode the aggregator inputs over the per-batch journal bytes.
+/// 3. Invoke `Backend::prove_aggregator` with the per-batch receipts as composition assumptions.
+///
+/// The returned receipt's journal is a `vprogs_zk_abi::batch_aggregator::StateTransition`, ready
+/// for the settlement covenant.
+pub async fn aggregate_batches(
+    backend: &Backend,
+    grpc_client: &GrpcClient,
+    lane_key: &Hash,
+    last_block_hash: Hash,
+    batch_receipts: Vec<Receipt>,
+) -> Receipt {
+    let lane_proof = grpc_client
+        .get_seq_commit_lane_proof(last_block_hash, *lane_key)
+        .await
+        .expect("get_seq_commit_lane_proof");
+
+    let journals: Vec<Vec<u8>> = batch_receipts.iter().map(|r| r.journal.bytes.clone()).collect();
+
+    let inputs = AggregatorInputs::encode(
+        backend.batch_image_id(),
+        &lane_proof,
+        journals.iter().map(|j| j.as_slice()),
+    );
+
+    backend.prove_aggregator(&inputs, batch_receipts).await
 }
 
 /// Returns `true` when risc0 dev mode is active (env var `RISC0_DEV_MODE` is set to anything
@@ -67,6 +103,18 @@ pub fn batch_processor_elf() -> Vec<u8> {
         panic!(
             "batch processor ELF not found at {elf_path}: {e}\n\
              Run `./zk/backend/risc0/build-guests.sh batch-processor` to rebuild it."
+        )
+    })
+}
+
+/// Loads the pre-built batch aggregator ELF from the repository.
+pub fn batch_aggregator_elf() -> Vec<u8> {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let elf_path = format!("{manifest_dir}/../batch-aggregator/compiled/program.elf");
+    std::fs::read(&elf_path).unwrap_or_else(|e| {
+        panic!(
+            "batch aggregator ELF not found at {elf_path}: {e}\n\
+             Run `./zk/backend/risc0/build-guests.sh batch-aggregator` to rebuild it."
         )
     })
 }

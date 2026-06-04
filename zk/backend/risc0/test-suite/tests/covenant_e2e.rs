@@ -20,7 +20,7 @@ use vprogs_zk_backend_risc0_covenant::{
     redeem_script_len,
 };
 use vprogs_zk_backend_risc0_test_suite::{
-    batch_processor_elf, test_lane_key, transaction_processor_elf,
+    batch_aggregator_elf, batch_processor_elf, test_lane_key, transaction_processor_elf,
 };
 
 const TEST_COVENANT_VALUE: u64 = 100_000_000;
@@ -44,9 +44,14 @@ async fn covenant_bootstrap_is_accepted_on_simnet() {
     // directly to the batch guest since it now emits the settlement journal itself.
     let tx_elf = transaction_processor_elf();
     let batch_elf = batch_processor_elf();
-    let backend =
-        vprogs_zk_backend_risc0_api::Backend::new(&tx_elf, &batch_elf, ProofType::Succinct);
-    let program_id = *backend.batch_image_id();
+    let aggregator_elf = batch_aggregator_elf();
+    let backend = vprogs_zk_backend_risc0_api::Backend::new(
+        &tx_elf,
+        &batch_elf,
+        &aggregator_elf,
+        ProofType::Succinct,
+    );
+    let program_id = *backend.aggregator_image_id();
     let tx_image_id = *backend.transaction_image_id();
 
     let initial_state = EMPTY_HASH;

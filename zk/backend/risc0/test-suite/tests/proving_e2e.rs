@@ -4,7 +4,6 @@ use kaspa_consensus_core::hashing::tx::id as kaspa_tx_id;
 use kaspa_hashes::Hash;
 use kaspa_rpc_core::api::rpc::RpcApi;
 use tempfile::TempDir;
-use vprogs_core_codec::Reader;
 use vprogs_core_hashing::{Hasher, Sha256};
 use vprogs_core_smt::{EMPTY_HASH, Tree as _};
 use vprogs_core_test_utils::ResourceIdExt;
@@ -15,14 +14,16 @@ use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_state_version::StateVersion;
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
-use vprogs_zk_abi::{batch_aggregator::StateTransition, transaction_processor::JournalEntries};
+use vprogs_zk_abi::{batch_processor::BatchTransition, transaction_processor::JournalEntries};
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_test_suite::{
-    L1TransactionExt, assert_receipt_pins_match_succinct_consts, batch_processor_elf,
-    compute_section_lane_tip, dev_mode_enabled, test_lane_key, transaction_processor_elf,
+    L1TransactionExt, assert_receipt_pins_match_succinct_consts, batch_aggregator_elf,
+    batch_processor_elf, compute_section_lane_tip, dev_mode_enabled, test_lane_key,
+    transaction_processor_elf,
 };
 use vprogs_zk_batch_prover::{Backend as _, BatchProverConfig};
 use vprogs_zk_vm::{ProvingPipeline, Vm};
+use zerocopy::FromBytes;
 
 /// Builds a `ChainBlockMetadata` from a real simnet block. Required because the bundling
 /// prover calls `get_seq_commit_lane_proof(block_hash, lane_key)` which only resolves for
@@ -50,11 +51,12 @@ async fn metadata_for_block(l1: &L1Node, block_hash: Hash) -> ChainBlockMetadata
 async fn batch_proof_two_transactions() {
     let transaction_elf = transaction_processor_elf();
     let batch_elf = batch_processor_elf();
+    let aggregator_elf = batch_aggregator_elf();
 
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
 
-    let backend = Backend::new(&transaction_elf, &batch_elf, ProofType::Succinct);
+    let backend = Backend::new(&transaction_elf, &batch_elf, &aggregator_elf, ProofType::Succinct);
 
     let l1 = L1Node::new(None).await;
     // Mine a couple of blocks so we have real block hashes to anchor metadata against.
@@ -115,7 +117,8 @@ async fn batch_proof_two_transactions() {
     }
     let journal = Backend::journal_bytes(&receipt);
 
-    let state = (&mut &journal[..]).array_as::<StateTransition>("state_transition").unwrap();
+    let (state, _) =
+        BatchTransition::ref_from_prefix(&journal).expect("decode BatchTransition header");
     assert_ne!(state.prev_state, state.new_state, "state should change after counter increment");
     assert_eq!(state.prev_state, EMPTY_HASH, "prev_state should be empty (no prior state)");
     assert_eq!(state.new_state, storage.root(1), "new_state should match store's version 1");
@@ -181,7 +184,8 @@ async fn batch_proof_two_transactions() {
     }
     let journal_2 = Backend::journal_bytes(&receipt_2);
 
-    let state_2 = (&mut &journal_2[..]).array_as::<StateTransition>("state_transition").unwrap();
+    let (state_2, _) =
+        BatchTransition::ref_from_prefix(&journal_2).expect("decode BatchTransition header");
     assert_eq!(state_2.prev_state, storage.root(1), "batch 2 prev_state should chain from batch 1");
     assert_ne!(state_2.prev_state, state_2.new_state, "state should change again");
 
@@ -203,18 +207,20 @@ async fn batch_proof_two_transactions() {
     l1.shutdown().await;
 }
 
-/// Bundles K=2 batches into a single proof. Two scheduled batches share one outer receipt
-/// covering both state transitions; the bundle's `prev_state` is the pre-batch-1 root and
-/// its `new_state` is the post-batch-2 root.
+/// Proves two consecutive batches and verifies each produces its own [`BatchTransition`] that
+/// chains correctly: batch 1's `new_state` equals batch 2's `prev_state`. Per-batch proving
+/// means each batch publishes its own receipt; there is no shared bundle receipt anymore --
+/// the aggregator (out of band) is what would later chain them into a settlement.
 #[tokio::test(flavor = "multi_thread")]
-async fn batch_proof_bundle_of_two() {
+async fn batch_proofs_chain_across_batches() {
     let transaction_elf = transaction_processor_elf();
     let batch_elf = batch_processor_elf();
+    let aggregator_elf = batch_aggregator_elf();
 
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
 
-    let backend = Backend::new(&transaction_elf, &batch_elf, ProofType::Succinct);
+    let backend = Backend::new(&transaction_elf, &batch_elf, &aggregator_elf, ProofType::Succinct);
 
     let l1 = L1Node::new(None).await;
     let block_hashes = l1.mine_blocks(2).await;
@@ -267,16 +273,16 @@ async fn batch_proof_bundle_of_two() {
         ],
     );
 
-    // Both batches end up in a single bundle (K=2). The same outer receipt is published to
-    // both, with `prev_state` = pre-batch-1 root and `new_state` = post-batch-2 root.
-    let t_bundle = Instant::now();
+    // Each batch is proved independently; assert both reach `artifact_published` and that the
+    // resulting receipts chain via their `BatchTransition` journals.
+    let t = Instant::now();
     batch_1.wait_committed_blocking();
     batch_2.wait_committed_blocking();
     batch_1.wait_artifact_published_blocking();
     batch_2.wait_artifact_published_blocking();
     eprintln!(
-        "[batch_proof_bundle_of_two] bundle (K=2) schedule->proven wall time: {:?}",
-        t_bundle.elapsed()
+        "[batch_proofs_chain_across_batches] both batches schedule->proven wall time: {:?}",
+        t.elapsed()
     );
 
     let receipt_1 = batch_1.artifact();
@@ -284,14 +290,9 @@ async fn batch_proof_bundle_of_two() {
     let journal_1 = Backend::journal_bytes(&receipt_1);
     let journal_2 = Backend::journal_bytes(&receipt_2);
 
-    // Same bundle receipt published to both batches → identical journals.
-    assert_eq!(journal_1, journal_2, "bundle publishes the same receipt to every batch");
-
     if !dev_mode_enabled() {
-        // One bundle receipt is shared by both batches; verifying once is sufficient.
         backend.verify_batch_receipt(&receipt_1);
-        // Per-tx inner receipts are folded into the bundle via composition, but each is also
-        // independently verifiable against the transaction image id.
+        backend.verify_batch_receipt(&receipt_2);
         for batch in [&batch_1, &batch_2] {
             for artifact in batch.tx_artifacts() {
                 backend.verify_transaction_receipt(&artifact);
@@ -299,11 +300,24 @@ async fn batch_proof_bundle_of_two() {
         }
     }
 
-    let state = (&mut &journal_1[..]).array_as::<StateTransition>("state_transition").unwrap();
-    assert_eq!(state.prev_state, EMPTY_HASH, "bundle prev_state is the bundle's start");
-    assert_eq!(state.new_state, storage.root(2), "bundle new_state is post-batch-2 root");
+    let (state_1, _) =
+        BatchTransition::ref_from_prefix(&journal_1).expect("decode batch 1 BatchTransition");
+    let (state_2, _) =
+        BatchTransition::ref_from_prefix(&journal_2).expect("decode batch 2 BatchTransition");
 
-    // Per-resource state: counter incremented twice (1 → 2) by the two batches in the bundle.
+    // Batch 1: empty → version 1 SMT root.
+    assert_eq!(state_1.prev_state, EMPTY_HASH, "batch 1 prev_state is the chain's start");
+    assert_eq!(state_1.new_state, storage.root(1), "batch 1 new_state is post-batch-1 root");
+
+    // Batch 2 chains directly: its prev_state must match batch 1's new_state, and its new_state
+    // is the post-batch-2 root the aggregator would later settle.
+    assert_eq!(
+        state_2.prev_state, state_1.new_state,
+        "batch 2 chains its prev_state from batch 1's new_state",
+    );
+    assert_eq!(state_2.new_state, storage.root(2), "batch 2 new_state is post-batch-2 root");
+
+    // Per-resource state: counter incremented twice (1 → 2) across the two batches.
     let r1_v2 = StateVersion::get(&storage, 2, &ResourceId::for_test(1))
         .expect("resource 1 should have v2 data");
     let r2_v2 = StateVersion::get(&storage, 2, &ResourceId::for_test(2))
