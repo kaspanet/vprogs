@@ -8621,7 +8621,6 @@ name = "vprogs-scheduling-scheduler"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
- "blake3",
  "borsh",
  "crossbeam-deque",
  "crossbeam-queue",
@@ -8900,7 +8899,6 @@ version = "0.1.0"
 name = "vprogs-zk-abi"
 version = "0.1.0"
 dependencies = [
- "blake3",
  "borsh",
  "kaspa-consensus-core",
  "kaspa-hashes",
@@ -8967,7 +8965,6 @@ dependencies = [
 name = "vprogs-zk-backend-risc0-test-suite"
 version = "0.1.0"
 dependencies = [
- "blake3",
  "kaspa-consensus-core",
  "kaspa-grpc-client",
  "kaspa-hashes",
@@ -8978,6 +8975,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "vprogs-core-codec",
+ "vprogs-core-hashing",
  "vprogs-core-smt",
  "vprogs-core-test-utils",
  "vprogs-core-types",

@@ -10,7 +10,6 @@ version = "0.1.0"
 # `count == 2` script branch end-to-end (see `settlement_e2e.rs`).
 
 [dependencies]
-blake3 = { version = "1", default-features = false }
 risc0-zkvm = { version = "3.0", default-features = false, features = ["std"] }
 vprogs-zk-abi = { path = "../../../abi", default-features = false }
 vprogs-zk-backend-risc0-api = { path = "../api", default-features = false, features = [

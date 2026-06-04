@@ -7,7 +7,7 @@
 //! [`Tree::update`] + [`Tree::root`].
 
 use tempfile::TempDir;
-use vprogs_core_hashing::Blake3;
+use vprogs_core_hashing::Sha256;
 use vprogs_core_smt::{Commitment, EMPTY_HASH, Tree, proving::Proof};
 use vprogs_core_types::ResourceId;
 use vprogs_storage_rocksdb_store::RocksDbStore;
@@ -56,7 +56,7 @@ fn delete_promotes_to_root() {
 
     // The verifier-side `new_root` must match.
     let computed = proof
-        .new_root::<Blake3>(|i| match i {
+        .new_root::<Sha256>(|i| match i {
             0 => &EMPTY_HASH, // k_drop deleted
             1 => &v_keep,     // k_keep unchanged
             _ => unreachable!(),
@@ -91,7 +91,7 @@ fn delete_promotes_partially_then_stops_at_leaf_sibling() {
     let smt_root = store.root(2);
 
     let computed = proof
-        .new_root::<Blake3>(|i| match i {
+        .new_root::<Sha256>(|i| match i {
             0 => &EMPTY_HASH,
             1 => &v_keep,
             _ => unreachable!(),
@@ -131,7 +131,7 @@ fn delete_with_subtree_sibling_does_not_promote_across_subtree() {
     let smt_root = store.root(2);
 
     let computed = proof
-        .new_root::<Blake3>(|i| match i {
+        .new_root::<Sha256>(|i| match i {
             0 => &EMPTY_HASH,
             1 => &v_keep,
             _ => unreachable!(),
@@ -161,7 +161,7 @@ fn delete_only_key_yields_empty_root() {
     store.commit(wb);
 
     assert_eq!(smt_root, EMPTY_HASH);
-    let computed = proof.new_root::<Blake3>(|_| &EMPTY_HASH).unwrap();
+    let computed = proof.new_root::<Sha256>(|_| &EMPTY_HASH).unwrap();
     assert_eq!(computed, EMPTY_HASH);
     assert_eq!(computed, smt_root);
 }

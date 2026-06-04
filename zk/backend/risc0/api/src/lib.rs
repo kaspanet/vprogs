@@ -12,6 +12,7 @@ mod backend;
 mod host;
 #[cfg(feature = "guest")]
 mod journal;
+mod sha256;
 #[cfg(feature = "host")]
 mod witness;
 
@@ -31,5 +32,6 @@ pub use proof_type::ProofType;
 /// direct dep on `risc0-zkvm`.
 #[cfg(feature = "host")]
 pub use risc0_zkvm::Receipt;
+pub use sha256::Sha256;
 #[cfg(feature = "host")]
 pub use witness::{OwnedGroth16Witness, OwnedSuccinctWitness};

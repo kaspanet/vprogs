@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use tempfile::TempDir;
-use vprogs_core_hashing::Blake3;
+use vprogs_core_hashing::Sha256;
 use vprogs_core_smt::{EMPTY_HASH, Tree, proving::Proof};
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, Checkpoint, ResourceId, SchedulerTransaction};
@@ -1831,12 +1831,12 @@ pub fn test_smt_multi_proof_verify() {
         let proof = Proof::decode(&proof_bytes).expect("valid proof");
 
         assert_eq!(
-            proof.root::<Blake3>().unwrap(),
+            proof.root::<Sha256>().unwrap(),
             root,
             "proof should verify against the correct root",
         );
         assert_ne!(
-            proof.root::<Blake3>().unwrap(),
+            proof.root::<Sha256>().unwrap(),
             [0xFFu8; 32],
             "proof should reject an incorrect root",
         );
@@ -1875,12 +1875,12 @@ pub fn test_smt_multi_proof_absent_key() {
         let proof = Proof::decode(&proof_bytes).expect("valid proof");
 
         assert_eq!(
-            proof.root::<Blake3>().unwrap(),
+            proof.root::<Sha256>().unwrap(),
             root,
             "proof for an absent key should verify against the root",
         );
         assert_ne!(
-            proof.root::<Blake3>().unwrap(),
+            proof.root::<Sha256>().unwrap(),
             [0xFFu8; 32],
             "proof should reject an incorrect root",
         );
@@ -1932,7 +1932,7 @@ pub fn test_smt_multi_proof_mixed_keys() {
         let proof = Proof::decode(&proof_bytes).expect("valid proof");
 
         assert_eq!(
-            proof.root::<Blake3>().unwrap(),
+            proof.root::<Sha256>().unwrap(),
             root,
             "mixed proof should verify against the correct root",
         );
