@@ -1,4 +1,5 @@
 use vprogs_core_codec::Writer;
+use vprogs_core_hashing::Hasher;
 
 use crate::{
     Read,
@@ -10,7 +11,7 @@ use crate::{
 
 /// Processes a single transaction inside the guest, committing input/output to `journal` and
 /// streaming results back to `host`.
-pub fn process_transaction(
+pub fn process_transaction<H: Hasher>(
     host: &mut (impl Read + Writer),
     journal: &mut impl Writer,
     f: impl TransactionHandler,
@@ -20,7 +21,7 @@ pub fn process_transaction(
     let inputs = Inputs::decode(inputs_buf.as_mut_slice()).expect("malformed host input");
 
     // Commit input commitment to journal.
-    InputCommitment::encode(journal, &inputs);
+    InputCommitment::encode::<H>(journal, &inputs);
 
     // Execute guest closure (if version is supported).
     let Inputs { version, tx_id, merge_idx, mut execution_input } = inputs;
@@ -42,7 +43,7 @@ pub fn process_transaction(
     };
 
     // Commit output commitment to journal. Exits are written only in the Success arm.
-    OutputCommitment::encode(journal, &result);
+    OutputCommitment::encode::<H>(journal, &result);
 
     // Stream execution result to host.
     Outputs::encode(&result, host);

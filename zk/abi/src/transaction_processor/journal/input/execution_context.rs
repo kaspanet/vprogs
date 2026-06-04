@@ -1,5 +1,6 @@
 use kaspa_hashes::Hash;
 use vprogs_core_codec::{Reader, Writer};
+use vprogs_core_hashing::Hasher;
 
 use crate::{
     Result,
@@ -23,9 +24,9 @@ impl<'a> ExecutionContext<'a> {
         })
     }
 
-    /// Encodes an execution context segment to the journal.
-    pub fn encode(w: &mut impl Writer, exec: &ExecutionInput<'_>) {
+    /// Encodes an execution context segment to the journal, hashing resource data with `H`.
+    pub fn encode<H: Hasher>(w: &mut impl Writer, exec: &ExecutionInput<'_>) {
         w.write(exec.context_hash.as_slice());
-        w.encode_many(&exec.resources, InputResourceCommitment::encode);
+        w.encode_many(&exec.resources, InputResourceCommitment::encode::<H>);
     }
 }

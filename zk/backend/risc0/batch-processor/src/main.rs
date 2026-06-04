@@ -3,7 +3,7 @@
 
 use risc0_zkvm::guest::env;
 use vprogs_zk_abi::{Read, batch_processor::Verifier};
-use vprogs_zk_backend_risc0_api::{Host, Journal, PermissionTreeAccumulator};
+use vprogs_zk_backend_risc0_api::{Host, Journal, PermissionTreeAccumulator, Sha256};
 
 risc0_zkvm::guest::entry!(main);
 
@@ -18,7 +18,7 @@ fn main() {
     let (lane_tip, lane_blue_score) = verifier.verify_batches();
 
     // Commit the resulting state transition to the journal.
-    verifier.commit_state_transition(&mut Journal, &lane_tip, lane_blue_score);
+    verifier.commit_state_transition::<Sha256>(&mut Journal, &lane_tip, lane_blue_score);
 }
 
 /// Verifies a single transaction journal.
