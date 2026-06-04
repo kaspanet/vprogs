@@ -1,7 +1,9 @@
-use kaspa_consensus_core::hashing::tx::id as kaspa_tx_id;
+use kaspa_consensus_core::{hashing::tx::id as kaspa_tx_id, subnets::SubnetworkId};
 use kaspa_hashes::Hash;
 use kaspa_seq_commit::{
-    hashing::{ActivityDigestBuilder, activity_leaf, lane_tip_next, mergeset_context_hash},
+    hashing::{
+        ActivityDigestBuilder, activity_leaf, lane_key, lane_tip_next, mergeset_context_hash,
+    },
     types::{LaneTipInput, MergesetContext},
 };
 use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
@@ -9,6 +11,15 @@ use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
 mod l1_transaction_ext;
 
 pub use l1_transaction_ext::L1TransactionExt;
+
+/// Subnetwork id the e2e fixtures bind to (the lane the batch proves and settles). Built from a
+/// non-reserved namespace so it passes L1's subnetwork-shape check.
+pub const TEST_SUBNETWORK_ID: SubnetworkId = SubnetworkId::from_namespace(4444u32.to_be_bytes());
+
+/// Lane key for [`TEST_SUBNETWORK_ID`]: the value the guest commits and the covenant SPK pins.
+pub fn test_lane_key() -> Hash {
+    lane_key(TEST_SUBNETWORK_ID.as_bytes())
+}
 
 /// Returns `true` when risc0 dev mode is active (env var `RISC0_DEV_MODE` is set to anything
 /// other than `0`). In dev mode the prover emits fake receipts, so any code path that
