@@ -4,19 +4,14 @@ use vprogs_core_codec::{Error, Reader, Result};
 use vprogs_core_hashing::Hasher;
 use vprogs_core_types::ResourceId;
 
-use crate::EMPTY_HASH;
-
-/// Domain-separation and wire-format tag for [`Node::Internal`].
-const INTERNAL: u8 = 0x00;
-/// Domain-separation and wire-format tag for [`Node::Leaf`].
-const LEAF: u8 = 0x01;
+use crate::{HashedNode, INTERNAL, LEAF};
 
 /// Data stored at a tree position.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Node {
     /// Two-child node storing only the combined hash.
     Internal {
-        /// Domain-separated hash of the two child hashes.
+        /// Domain-separated hash of the two child summaries.
         hash: [u8; 32],
     },
     /// Shortcut leaf - can sit at any depth, avoiding 256-deep paths for isolated keys.
@@ -31,34 +26,14 @@ pub enum Node {
 }
 
 impl Node {
-    /// Creates an internal node from its two child hashes.
-    pub fn internal<H: Hasher>(left: &[u8; 32], right: &[u8; 32]) -> Self {
-        Node::Internal { hash: Self::hash_internal::<H>(left, right) }
+    /// Creates an internal node from its two child summaries.
+    pub fn internal<H: Hasher>(left: &HashedNode, right: &HashedNode) -> Self {
+        Node::Internal { hash: HashedNode::internal::<H>(left, right).hash }
     }
 
     /// Creates a shortcut leaf node from a resource ID and value hash.
     pub fn leaf<H: Hasher>(key: ResourceId, value_hash: [u8; 32]) -> Self {
-        Node::Leaf { key, value_hash, hash: Self::hash_leaf::<H>(&key, &value_hash) }
-    }
-
-    /// Domain-separated hash of two child hashes.
-    ///
-    /// Returns `EMPTY_HASH` if both children are empty (subtree compression).
-    pub fn hash_internal<H: Hasher>(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
-        match (left, right) {
-            (&EMPTY_HASH, &EMPTY_HASH) => EMPTY_HASH,
-            (left, right) => H::hash_parts_with_domain(&[INTERNAL], [left, right]),
-        }
-    }
-
-    /// Domain-separated hash of a key and value hash.
-    ///
-    /// Returns `EMPTY_HASH` for deletions (empty value hash).
-    pub fn hash_leaf<H: Hasher>(key: &[u8; 32], value_hash: &[u8; 32]) -> [u8; 32] {
-        match value_hash {
-            &EMPTY_HASH => EMPTY_HASH,
-            value_hash => H::hash_parts_with_domain(&[LEAF], [key, value_hash]),
-        }
+        Node::Leaf { key, value_hash, hash: HashedNode::leaf::<H>(&key, &value_hash).hash }
     }
 
     /// Deserializes from bytes produced by `encode`, advancing `buf` past the consumed bytes.
@@ -83,9 +58,6 @@ impl Node {
     }
 
     /// Serializes to bytes for storage.
-    ///
-    /// Wire format: `tag(1) + fields`. The tag byte matches the domain separation prefix used in
-    /// hashing.
     pub fn encode(&self) -> Vec<u8> {
         match self {
             // Internal: tag(1) + hash(32) = 33 bytes.
@@ -94,6 +66,16 @@ impl Node {
             Node::Leaf { key, value_hash, hash } => {
                 [&[LEAF], &key[..], &value_hash[..], &hash[..]].concat()
             }
+        }
+    }
+}
+
+impl From<&Node> for HashedNode {
+    /// Projects a stored [`Node`] to its kinded summary.
+    fn from(node: &Node) -> Self {
+        match node {
+            Node::Internal { hash } => HashedNode::new(INTERNAL, *hash),
+            Node::Leaf { hash, .. } => HashedNode::new(LEAF, *hash),
         }
     }
 }

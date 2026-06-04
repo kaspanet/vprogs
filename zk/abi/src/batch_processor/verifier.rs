@@ -1,4 +1,4 @@
-use alloc::{vec, vec::Vec};
+use alloc::vec::Vec;
 
 use kaspa_hashes::{Hash, SeqCommitActiveNode};
 use kaspa_seq_commit::{
@@ -36,8 +36,6 @@ where
     prev_lane_blue_score: u64,
     /// Latest L2 value hashes indexed by bundle-wide resource_index.
     latest_value_hashes: Vec<&'a [u8; 32]>,
-    /// Inverse of `leaf_order`: `bundle_idx_to_leaf_pos[bundle_idx] = leaf_pos`.
-    bundle_idx_to_leaf_pos: Vec<u32>,
     /// Verifies a tx journal against the configured transaction-processor image.
     verify_tx_journal: V,
     /// Accumulates exits across the bundle.
@@ -55,28 +53,11 @@ where
         let inputs = Inputs::decode(input_bytes).expect("decode bundle inputs");
         let first_batch = inputs.batches.first().unwrap();
 
-        // Assert bounds before scattering resources.
-        assert_eq!(inputs.leaf_order.len(), inputs.proof.leaves.len(), "invalid leaf_order length");
-
-        // Scatter the loaded values and their resource indexes into their correct position.
-        let mut value_hashes = vec![&[0; 32]; inputs.proof.leaves.len()];
-        let mut bundle_idx_to_leaf_pos = vec![u32::MAX; inputs.proof.leaves.len()];
-        for (leaf_pos, &res_idx) in inputs.leaf_order.iter().enumerate() {
-            // Check if the resource index is within bounds.
-            let res_idx = res_idx.get() as usize;
-            assert!(res_idx < inputs.proof.leaves.len(), "res_index out of range");
-
-            // Scatter values and mapping.
-            value_hashes[res_idx] = &inputs.proof.leaves[leaf_pos].value_hash;
-            bundle_idx_to_leaf_pos[res_idx] = leaf_pos as u32;
-        }
-
         Self {
-            inputs,
             prev_lane_tip: first_batch.prev_lane_tip,
             prev_lane_blue_score: first_batch.prev_lane_blue_score,
-            latest_value_hashes: value_hashes,
-            bundle_idx_to_leaf_pos,
+            latest_value_hashes: inputs.proof.members().map(|m| m.unwrap().value_hash()).collect(),
+            inputs,
             verify_tx_journal,
             exits,
         }
@@ -117,10 +98,18 @@ where
         lane_blue_score: u64,
     ) {
         let permission_spk_hash = self.exits.finalize();
+
+        // One walk yields both roots; unchanged subtrees reuse the pre-state hash.
+        let (prev_root, new_root) = self
+            .inputs
+            .proof
+            .compute_roots::<Blake3>(|q| self.latest_value_hashes[q])
+            .expect("compute_roots");
+
         StateTransition::encode(
             journal,
-            (&self.prev_root(), self.prev_lane_tip),
-            (&self.new_root(), lane_tip, &self.new_seq_commit(lane_tip, lane_blue_score)),
+            (&prev_root, self.prev_lane_tip),
+            (&new_root, lane_tip, &self.new_seq_commit(lane_tip, lane_blue_score)),
             self.inputs.covenant_id,
             self.inputs.image_id,
             &permission_spk_hash,
@@ -248,25 +237,10 @@ where
         assert_eq!(&r.hash, self.latest_value_hashes[bundle_idx], "resource hash mismatch");
 
         // Check resource id matches.
-        let leaf_pos = self.bundle_idx_to_leaf_pos[bundle_idx] as usize;
-        assert_eq!(*r.resource_id, self.inputs.proof.leaves[leaf_pos].key, "resource_id mismatch");
+        let member = self.inputs.proof.member(bundle_idx).expect("member");
+        assert_eq!(&*r.resource_id, member.key, "resource_id mismatch");
 
         bundle_idx
-    }
-
-    /// Returns the bundle's pre-state SMT root.
-    fn prev_root(&self) -> [u8; 32] {
-        self.inputs.proof.root::<Blake3>().expect("prev_root")
-    }
-
-    /// Returns the bundle's post-state SMT root after batch processing.
-    fn new_root(&self) -> [u8; 32] {
-        self.inputs.proof.compute_root::<Blake3>(|i| self.latest_value_hash(i)).expect("new_root")
-    }
-
-    /// Returns the latest value hash for a proof leaf position.
-    fn latest_value_hash(&self, leaf_pos: usize) -> &'a [u8; 32] {
-        self.latest_value_hashes[self.inputs.leaf_order[leaf_pos].get() as usize]
     }
 
     /// Derives the bundle's final-block `seq_commit`.

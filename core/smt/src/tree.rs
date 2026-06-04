@@ -3,7 +3,6 @@ use alloc::vec::Vec;
 use vprogs_core_codec::Result;
 use vprogs_core_hashing::Hasher;
 use vprogs_core_types::ResourceId;
-use zerocopy::little_endian::U32;
 
 use crate::{
     Commitment, EMPTY_HASH, Key, Node, WriteBatch, proving::ProofBuilder, updater::Updater,
@@ -71,10 +70,8 @@ pub trait Tree: Sized {
 
     /// Proves the state of the given keys at a specific version.
     ///
-    /// Returns the wire-encoded proof (decode with `Proof::decode()`) and a leaf order mapping
-    /// where `leaf_order[leaf_pos]` is the original input index of that leaf. The version must
-    /// not have been pruned. Returns an error if keys contain duplicates.
-    fn prove(&self, keys: &[ResourceId], version: u64) -> Result<(Vec<u8>, Vec<U32>)> {
+    /// Returns the wire-encoded proof (see `Proof::decode()`) or an error for duplicates keys.
+    fn prove(&self, keys: &[ResourceId], version: u64) -> Result<Vec<u8>> {
         ProofBuilder::build(self, version, keys)
     }
 }

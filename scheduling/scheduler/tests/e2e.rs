@@ -1827,7 +1827,7 @@ pub fn test_smt_multi_proof_verify() {
         let root = store.root(1);
 
         // Generate a proof for resource 1's key and verify it.
-        let (proof_bytes, _) = store.prove(&[ResourceId::for_test(1)], 1).unwrap();
+        let proof_bytes = store.prove(&[ResourceId::for_test(1)], 1).unwrap();
         let proof = Proof::decode(&proof_bytes).expect("valid proof");
 
         assert_eq!(
@@ -1871,7 +1871,7 @@ pub fn test_smt_multi_proof_absent_key() {
         let root = store.root(1);
 
         // Generate a proof for resource 99 (absent) - should still verify against the root.
-        let (proof_bytes, _) = store.prove(&[ResourceId::for_test(99)], 1).unwrap();
+        let proof_bytes = store.prove(&[ResourceId::for_test(99)], 1).unwrap();
         let proof = Proof::decode(&proof_bytes).expect("valid proof");
 
         assert_eq!(
@@ -1928,7 +1928,7 @@ pub fn test_smt_multi_proof_mixed_keys() {
 
         // Proof for existing key 1, existing key 3, and absent key 99.
         let keys = [ResourceId::for_test(1), ResourceId::for_test(3), ResourceId::for_test(99)];
-        let (proof_bytes, _) = store.prove(&keys, 1).unwrap();
+        let proof_bytes = store.prove(&keys, 1).unwrap();
         let proof = Proof::decode(&proof_bytes).expect("valid proof");
 
         assert_eq!(
