@@ -1,0 +1,51 @@
+[package]
+edition = "2021"
+name    = "vprogs-sim"
+publish = false
+version = "0.1.0"
+
+[features]
+# Real RISC0 proving needs a GPU; the default (non-cuda) sim uses dev settlements on CPU. The
+# cuda mode (ProvingPipeline::batch + real proofs) lands behind this flag and runs on the GPU box.
+cuda = ["vprogs-zk-backend-risc0-api/cuda"]
+
+[dependencies]
+# Simulation substrate, reused from the rusty-kaspa fork (same pins as the rest of the workspace).
+# We drive the discrete-event engine and consensus ourselves and reuse simpa's `Miner` for the
+# filler miners; the L2 miner/producer is implemented here in vprogs.
+kaspa-addresses        = { workspace = true }
+kaspa-consensus        = { workspace = true }
+kaspa-consensus-core   = { workspace = true }
+kaspa-consensus-notify = { workspace = true }
+kaspa-core             = { workspace = true }
+kaspa-database         = { workspace = true }
+kaspa-hashes           = { workspace = true }
+kaspa-seq-commit       = { workspace = true }
+kaspa-txscript         = { workspace = true }
+kaspa-utils            = { workspace = true }
+simpa                  = { workspace = true }
+
+# vprogs L2 stack: the same Vm/scheduler/covenant/wallet pieces the settlement-l1 tests use.
+vprogs-core-smt                    = { workspace = true }
+vprogs-core-test-utils             = { workspace = true }
+vprogs-core-types                  = { workspace = true }
+vprogs-l1-types                    = { workspace = true }
+vprogs-l1-wallet                   = { workspace = true }
+vprogs-scheduling-scheduler        = { workspace = true }
+vprogs-storage-manager             = { workspace = true }
+vprogs-storage-rocksdb-store       = { workspace = true }
+vprogs-storage-types               = { workspace = true }
+vprogs-zk-backend-risc0-api        = { workspace = true, features = ["host"] }
+vprogs-zk-backend-risc0-covenant   = { workspace = true }
+vprogs-zk-backend-risc0-test-suite = { workspace = true }
+vprogs-zk-vm                       = { workspace = true }
+
+# external
+futures    = { workspace = true }
+indexmap   = { workspace = true }
+log        = { workspace = true }
+rand       = { workspace = true }
+rand_distr = { workspace = true }
+secp256k1  = { workspace = true }
+tap        = { workspace = true }
+tempfile   = { workspace = true }

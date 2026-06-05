@@ -7311,6 +7311,41 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
+name = "simpa"
+version = "1.2.1-toc.3"
+source = "git+https://github.com/biryukovmaxim/rusty-kaspa?branch=covpp-reset2-rpc-lane-proof#1ef95693623c5322e575983445b8982c5aea2bfc"
+dependencies = [
+ "async-channel 2.5.0",
+ "cfg-if",
+ "clap",
+ "faster-hex",
+ "flate2",
+ "futures",
+ "futures-util",
+ "indexmap 2.14.0",
+ "itertools 0.13.0",
+ "kaspa-alloc",
+ "kaspa-consensus",
+ "kaspa-consensus-core",
+ "kaspa-consensus-notify",
+ "kaspa-core",
+ "kaspa-database",
+ "kaspa-hashes",
+ "kaspa-perf-monitor",
+ "kaspa-testing-integration",
+ "kaspa-utils",
+ "log",
+ "num_cpus",
+ "rand 0.8.5",
+ "rand_distr",
+ "rayon",
+ "secp256k1",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8700,6 +8735,44 @@ dependencies = [
  "vprogs-state-version",
  "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
+]
+
+[[package]]
+name = "vprogs-sim"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "indexmap 2.14.0",
+ "kaspa-addresses",
+ "kaspa-consensus",
+ "kaspa-consensus-core",
+ "kaspa-consensus-notify",
+ "kaspa-core",
+ "kaspa-database",
+ "kaspa-hashes",
+ "kaspa-seq-commit",
+ "kaspa-txscript",
+ "kaspa-utils",
+ "log",
+ "rand 0.8.5",
+ "rand_distr",
+ "secp256k1",
+ "simpa",
+ "tap",
+ "tempfile",
+ "vprogs-core-smt",
+ "vprogs-core-test-utils",
+ "vprogs-core-types",
+ "vprogs-l1-types",
+ "vprogs-l1-wallet",
+ "vprogs-scheduling-scheduler",
+ "vprogs-storage-manager",
+ "vprogs-storage-rocksdb-store",
+ "vprogs-storage-types",
+ "vprogs-zk-backend-risc0-api",
+ "vprogs-zk-backend-risc0-covenant",
+ "vprogs-zk-backend-risc0-test-suite",
+ "vprogs-zk-vm",
 ]
 
 [[package]]

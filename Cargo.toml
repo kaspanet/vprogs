@@ -36,6 +36,7 @@ members = [
   "zk/backend/risc0/covenant",
   "zk/backend/risc0/test-suite",
   "examples/tn10-flow",
+  "sim",
 ]
 resolver = "3"
 
@@ -57,11 +58,14 @@ resolver = "3"
   fastrand = "2.3.0"
   figment = { version = "0.10", features = ["toml", "env"] }
   futures = "0.3.31"
+  indexmap = "2"
   intrusive-collections = "0.9.7"
   log = "0.4"
   num_cpus = "1.17.0"
   proc-macro2 = "1.0.103"
   quote = "1.0.42"
+  rand = "0.8"
+  rand_distr = "0.4"
   rocksdb = { version = "0.24.0", default-features = false, features = [
     "lz4",
     "zstd",
@@ -106,8 +110,11 @@ resolver = "3"
   # fetch. Replaces the previous `hmoog/rusty-kaspa#lane-data-in-v2-response` fork
   # whose per-block lane_data extension is no longer needed under bundling.
   kaspa-addresses = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
+  kaspa-consensus = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
   kaspa-consensus-core = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
+  kaspa-consensus-notify = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
   kaspa-core = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
+  kaspa-database = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
   kaspa-grpc-client = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
   kaspa-hashes = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof", default-features = false, features = [
     "zerocopy",
@@ -119,9 +126,11 @@ resolver = "3"
   kaspa-smt = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof", default-features = false }
   kaspa-testing-integration = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
   kaspa-txscript = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
+  kaspa-utils = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
   kaspa-wrpc-client = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
   kaspa-wrpc-server = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
   kaspad = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
+  simpa = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
 
   # Internal dependencies
   vprogs-core-atomics                             = { path = "core/atomics" }

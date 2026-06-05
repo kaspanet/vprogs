@@ -4,6 +4,11 @@
 //! bootstrap, lane activity, settlement funding). They depend only on `kaspa-consensus-core`
 //! (signing, mass) and RPC, with no consensus internals, so they work against any node, in-process
 //! or remote.
+//!
+//! The actual tx construction (sign, fee, storage mass, covenant binding, witness restore) lives in
+//! [`build`] as pure functions over an already-chosen `(outpoint, entry)`. [`Wallet`] is the thin
+//! RPC layer that fetches spendable UTXOs and submits; a caller that already holds its spendable
+//! set (e.g. an in-process simulation) reuses [`build`] directly without any RPC.
 
 use std::cmp;
 
@@ -11,22 +16,18 @@ use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus_core::{
     config::params::Params,
     constants::{TX_VERSION, TX_VERSION_TOCCATA},
-    hashing::covenant_id::covenant_id,
-    mass::{MassCalculator, units::ComputeBudget},
-    sign::sign,
+    mass::units::ComputeBudget,
     subnets::{SUBNETWORK_ID_NATIVE, SubnetworkId},
-    tx::{
-        CovenantBinding, MutableTransaction, PopulatedTransaction, Transaction, TransactionInput,
-        TransactionOutpoint, TransactionOutput, UtxoEntry,
-    },
+    tx::{Transaction, TransactionOutpoint, UtxoEntry},
 };
 use kaspa_hashes::Hash;
 use kaspa_rpc_core::{RpcError, RpcTransaction, api::rpc::RpcApi};
-use kaspa_txscript::{pay_to_address_script, standard::pay_to_script_hash_script};
 use secp256k1::Keypair;
 use tap::Tap;
 use vprogs_core_codec::Writer;
 use vprogs_core_types::AccessMetadata;
+
+pub mod build;
 
 /// A keypair-backed transaction issuer bound to an L1 node.
 pub struct Wallet<'a, C: RpcApi + ?Sized> {
@@ -88,45 +89,19 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
             payloads.len(),
         );
 
-        let script_public_key = pay_to_address_script(&self.address);
-
         payloads
             .into_iter()
             .zip(utxos)
             .map(|(payload, (outpoint, entry))| {
-                // Kaspa-mempool-friendly heuristic: 10 × (input + output + base + payload).
-                const FEE_PER_BYTE: u64 = 10;
-                const INPUT_SIZE: u64 = 200;
-                const OUTPUT_SIZE: u64 = 34;
-                const BASE_OVERHEAD: u64 = 1000;
-                let fee = FEE_PER_BYTE
-                    * (INPUT_SIZE + OUTPUT_SIZE + BASE_OVERHEAD + payload.len() as u64);
-                assert!(
-                    entry.amount > fee,
-                    "UTXO amount {} too small for fee {}",
-                    entry.amount,
-                    fee
-                );
-
-                let input = TransactionInput::new(outpoint, vec![], 0, 1);
-                let output = TransactionOutput::new(entry.amount - fee, script_public_key.clone());
-
-                sign(
-                    MutableTransaction::with_entries(
-                        Transaction::new(
-                            tx_version,
-                            vec![input],
-                            vec![output],
-                            0,
-                            subnetwork_id,
-                            0,
-                            payload,
-                        ),
-                        vec![entry],
-                    ),
-                    self.keypair,
-                )
-                .tx
+                build::activity_transaction(build::ActivityTx {
+                    payload,
+                    outpoint,
+                    entry,
+                    keypair: self.keypair,
+                    address: &self.address,
+                    subnetwork_id,
+                    tx_version,
+                })
             })
             .collect()
     }
@@ -140,36 +115,14 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
     ) -> (Transaction, Hash) {
         let utxos = self.fetch_spendable_utxos().await;
         let (outpoint, entry) = utxos.into_iter().next().expect("no spendable UTXO for bootstrap");
-
-        let covenant_spk = pay_to_script_hash_script(redeem_script);
-        let covenant_id = {
-            let provisional = TransactionOutput::new(value, covenant_spk.clone());
-            covenant_id(outpoint, std::iter::once((0u32, &provisional)))
-        };
-
-        let tx_input = TransactionInput::new(outpoint, Vec::new(), 0, 1);
-        let tx_output = TransactionOutput::with_covenant(
+        build::covenant_bootstrap_transaction(
+            redeem_script,
             value,
-            covenant_spk,
-            Some(CovenantBinding::new(0, covenant_id)),
-        );
-
-        let unsigned = Transaction::new(
-            TX_VERSION_TOCCATA,
-            vec![tx_input],
-            vec![tx_output],
-            0,
-            SUBNETWORK_ID_NATIVE,
-            0,
-            Vec::new(),
-        );
-
-        let entries = vec![entry];
-        let signed =
-            sign(MutableTransaction::with_entries(unsigned, entries.clone()), self.keypair).tx;
-        self.commit_storage_mass(&signed, &entries);
-
-        (signed, covenant_id)
+            outpoint,
+            entry,
+            self.keypair,
+            self.params,
+        )
     }
 
     /// Funds and signs a settlement transaction without submitting it: appends a fee input + change
@@ -181,37 +134,19 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
         covenant_entry: UtxoEntry,
         covenant_compute_budget: ComputeBudget,
     ) -> Transaction {
-        const FEE: u64 = 100_000;
-
-        // Snapshot the covenant witness before signing - `sign` overwrites all signature scripts.
-        let covenant_sig_script = settlement_tx.inputs[0].signature_script.clone();
-
         let utxos = self.fetch_spendable_utxos().await;
         let (fee_outpoint, fee_entry) =
             utxos.into_iter().next().expect("no spendable UTXO for fee");
-        assert!(fee_entry.amount > FEE, "fee UTXO amount {} ≤ fee {FEE}", fee_entry.amount);
-
-        let mut tx = settlement_tx;
-        tx.inputs.push(TransactionInput::new(fee_outpoint, vec![], 0, 1));
-        tx.outputs.push(TransactionOutput::new(
-            fee_entry.amount - FEE,
-            pay_to_address_script(&self.address),
-        ));
-
-        let entries = vec![covenant_entry, fee_entry];
-        let signed = sign(MutableTransaction::with_entries(tx, entries.clone()), self.keypair);
-        let mut tx = signed.tx;
-
-        // Restore the covenant witness and set the covenant input's compute budget.
-        tx.inputs[0].signature_script = covenant_sig_script;
-        tx.inputs[0].mass = covenant_compute_budget.into();
-
-        // Toccata txs must commit storage mass; compute it now that inputs and outputs are final.
-        self.commit_storage_mass(&tx, &entries);
-
-        // The signature script on input 0 changed, so recompute the on-the-wire id.
-        tx.finalize();
-        tx
+        build::settlement_transaction(build::SettlementTx {
+            settlement_tx,
+            covenant_entry,
+            covenant_compute_budget,
+            fee_outpoint,
+            fee_entry,
+            keypair: self.keypair,
+            address: &self.address,
+            params: self.params,
+        })
     }
 
     /// Submits `tx` through the node's mempool, returning its id (or the RPC error).
@@ -223,21 +158,6 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
     /// Number of currently spendable UTXOs for the issuer address.
     pub async fn spendable_utxo_count(&self) -> usize {
         self.fetch_spendable_utxos().await.len()
-    }
-
-    /// Commits KIP-0009 storage mass on `tx` (Toccata txs must carry it for the node to accept
-    /// them).
-    fn commit_storage_mass(&self, tx: &Transaction, entries: &[UtxoEntry]) {
-        let calc = MassCalculator::new(
-            self.params.mass_per_tx_byte,
-            self.params.mass_per_script_pub_key_byte,
-            self.params.storage_mass_parameter,
-        );
-        let populated = PopulatedTransaction::new(tx, entries.to_vec());
-        let masses = calc
-            .calc_contextual_masses(&populated)
-            .expect("contextual mass calculation must succeed for a populated transaction");
-        tx.set_mass(masses.storage_mass);
     }
 
     /// Spendable UTXOs for the issuer address (matured coinbases only), largest first. Requires the
