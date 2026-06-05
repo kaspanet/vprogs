@@ -5,21 +5,22 @@
 //! existing [`L1Bridge`], executes the lane's transactions through the same VM the settlement-l1
 //! tests use, and prints the decoded state counter, reorgs, and settlements.
 //!
+//! The covenant bootstrap, fork toggle, scheduler construction, ELF loading, and state-read are all
+//! reused from the settlement test-suite (`vprogs_zk_backend_risc0_test_suite`); this binary only
+//! adds the remote-connection, persistence, issuer, and daemon-loop glue.
+//!
 //! Prover mode is the next feature and will live behind the `cuda` feature; nothing here needs it.
 //!
 //! Required env: `TN10_WRPC_URL`, `TN10_PRIVATE_KEY`. See `config.rs` for the full surface.
 
-mod bootstrap;
 mod config;
 mod daemon;
-mod params;
 mod persistence;
-mod state_read;
 
 use std::time::Duration;
 
-use kaspa_addresses::Prefix;
 use kaspa_consensus_core::{
+    config::params::Params,
     constants::TX_VERSION_TOCCATA,
     network::{NetworkId, NetworkType},
     subnets::SubnetworkId,
@@ -27,21 +28,35 @@ use kaspa_consensus_core::{
 use kaspa_seq_commit::hashing::lane_key;
 use kaspa_wrpc_client::prelude::*;
 use secp256k1::Keypair;
-use vprogs_core_types::AccessMetadata;
+use vprogs_core_test_utils::ResourceIdExt;
+use vprogs_core_types::{AccessMetadata, ResourceId};
 use vprogs_l1_wallet::{Wallet, encode_activity_payload};
-
-use crate::{
-    bootstrap::bootstrap_covenant, config::Config, daemon::BridgeParams, params::tn10_params,
-    persistence::PersistedState, state_read::tracked_resource,
+use vprogs_zk_backend_risc0_test_suite::{
+    batch_processor_elf, bootstrap_dev_covenant, force_covenant_forks, transaction_processor_elf,
 };
+
+use crate::{config::Config, daemon::BridgeParams, persistence::PersistedState};
+
+/// Value locked in the covenant UTXO at bootstrap (1 TKAS), matching the e2e tests.
+const COVENANT_VALUE: u64 = 100_000_000;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
-    kaspa_core::log::try_init_logger("info,tn10_flow=info");
+    // The framework worker traces per-block processing (`vprogs_node_framework`) and the zk Vm
+    // traces post-execution L2 state (`vprogs_zk_vm`); enable both at trace so the POC surfaces the
+    // found txs / reorgs / settlements / decoded counter without a hand-rolled loop.
+    kaspa_core::log::try_init_logger(
+        "info,tn10_flow=info,vprogs_node_framework=trace,vprogs_zk_vm=trace",
+    );
 
     let cfg = Config::from_env();
-    let params = tn10_params();
     let network_id = NetworkId::with_suffix(NetworkType::Testnet, 10);
+
+    // testnet-10 params with the covenant forks forced active (the user's fork node forces them
+    // on); used off-chain for mass calculation and lane-key derivation, never pushed to the
+    // node.
+    let mut params = Params::from(network_id);
+    force_covenant_forks(&mut params);
 
     let client = connect_wrpc(&cfg.wrpc_url, network_id).await;
     log::info!("connected to {}", cfg.wrpc_url);
@@ -63,9 +78,9 @@ async fn main() {
             c
         }
         None => {
-            let wallet = Wallet::new(&client, &params, keypair, Prefix::Testnet);
+            let wallet = Wallet::new(&client, &params, keypair);
             log::info!("bootstrapping covenant; issuer address {}", wallet.address());
-            let booted = bootstrap_covenant(&wallet, &lane_key).await;
+            let booted = bootstrap_dev_covenant(&wallet, &lane_key, COVENANT_VALUE).await;
             persisted.covenant_id = Some(booted.covenant_id.to_string());
             persisted.bootstrap_txid = Some(booted.bootstrap_txid.to_string());
             log::info!(
@@ -78,13 +93,22 @@ async fn main() {
     };
     persisted.save(&cfg.data_dir);
 
-    // --- VM + scheduler (execution only) ---
-    let tx_elf = std::fs::read(&cfg.tx_elf_path)
-        .unwrap_or_else(|e| panic!("read tx-processor ELF {:?}: {e}", cfg.tx_elf_path));
-    let batch_elf = std::fs::read(&cfg.batch_elf_path)
-        .unwrap_or_else(|e| panic!("read batch-processor ELF {:?}: {e}", cfg.batch_elf_path));
+    // --- build the execution-only node; the framework Node owns the bridge + scheduler + loop ---
+    let tx_elf = transaction_processor_elf();
+    let batch_elf = batch_processor_elf();
     let store = daemon::Store::open(cfg.data_dir.join("db"));
-    let scheduler = daemon::build_scheduler(&tx_elf, &batch_elf, store.clone());
+    let _node = daemon::build_node(
+        &tx_elf,
+        &batch_elf,
+        store,
+        BridgeParams {
+            url: cfg.wrpc_url.clone(),
+            network_id,
+            lane_subnet,
+            covenant_id,
+            finality_depth: params.finality_depth(),
+        },
+    );
 
     // --- activity issuer (background) ---
     {
@@ -94,7 +118,7 @@ async fn main() {
         let count = cfg.activity_count;
         let tracked = tracked_resource(lane_id);
         tokio::spawn(async move {
-            let wallet = Wallet::new(&client, &params, keypair, Prefix::Testnet);
+            let wallet = Wallet::new(&client, &params, keypair);
             let mut issued = 0u64;
             loop {
                 tokio::time::sleep(Duration::from_millis(interval)).await;
@@ -129,16 +153,21 @@ async fn main() {
         });
     }
 
-    // --- run the execution daemon (forever) ---
+    // The node processes the chain on its own thread (dropping `_node` would shut it down). Park
+    // here forever; the worker and Vm traces report blocks and decoded state as they arrive.
     println!("== tn10-flow exec daemon: lane={lane_id} covenant={covenant_id} ==");
-    let bridge_params = BridgeParams {
-        url: cfg.wrpc_url,
-        network_id,
-        lane_subnet,
-        covenant_id,
-        finality_depth: params.finality_depth(),
-    };
-    daemon::run(scheduler, store, bridge_params, tracked_resource(lane_id)).await;
+    println!(
+        "watch RUST_LOG trace for vprogs_node_framework (blocks/reorgs/settlements) and \
+         vprogs_zk_vm (decoded state)"
+    );
+    std::future::pending::<()>().await;
+}
+
+/// The single resource every activity transaction on `lane_id` writes to. Derived from the lane id
+/// via [`ResourceIdExt::for_test`] so the counter is stable across restarts and shared with the
+/// reader.
+fn tracked_resource(lane_id: u32) -> ResourceId {
+    ResourceId::for_test(lane_id as usize)
 }
 
 /// Connects a Borsh wRPC client to `url`, mirroring the bridge's own client construction.

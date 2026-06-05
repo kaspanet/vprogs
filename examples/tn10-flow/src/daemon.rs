@@ -1,31 +1,27 @@
-//! The execution-only daemon loop, driven by the existing [`L1Bridge`].
+//! Builds the framework [`Node`] for the execution-only flow.
 //!
-//! The bridge does the chain-following, reorg handling, and seq_commit / lane_tip derivation (it is
-//! the same code the prover cross-checks against consensus). We just consume its events, schedule
-//! each block's lane transactions through the same VM the settlement-l1 tests use
-//! (`Vm::new(backend, ProvingPipeline::None)` + `Scheduler`), and print the decoded state counter,
-//! reorgs, and settlements.
+//! The framework's [`Node`] owns the entire loop (bridge to scheduler, reorgs, pruning, shutdown,
+//! resume from store); this binary only chooses the processor (a zk `Vm` with
+//! [`ProvingPipeline::None`]), the store, and the bridge connection. Per-block observability comes
+//! from the framework worker's and the Vm's `trace` logs (enable `vprogs_node_framework=trace` and
+//! `vprogs_zk_vm=trace`), so there is no hand-rolled event loop here.
 
 use kaspa_consensus_core::{network::NetworkId, subnets::SubnetworkId};
 use kaspa_hashes::Hash;
-use vprogs_core_types::{AccessMetadata, ResourceId, SchedulerTransaction};
-use vprogs_l1_bridge::{L1Bridge, L1BridgeConfig, L1Event};
-use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
+use vprogs_l1_bridge::L1BridgeConfig;
+use vprogs_node_framework::{Node, NodeConfig};
+use vprogs_scheduling_scheduler::ExecutionConfig;
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_vm::{ProvingPipeline, Vm};
 
-use crate::state_read::read_resource_u32;
-
 /// On-disk RocksDB store backing the scheduler.
 pub type Store = RocksDbStore;
-/// RISC0 backend (runs the guest in the executor for exec mode).
-pub type Be = Backend;
-/// ZK VM processor over [`Be`] and [`Store`].
-pub type V = Vm<Be, Store>;
-/// Scheduler specialized to the POC's store and processor.
-pub type Sched = Scheduler<Store, V>;
+/// ZK VM processor over the RISC0 backend and [`Store`].
+pub type V = Vm<Backend, Store>;
+/// The framework node specialized to the POC's store and processor.
+pub type FlowNode = Node<Store, V>;
 
 /// Everything the bridge needs to follow our lane on the remote node.
 pub struct BridgeParams {
@@ -41,87 +37,24 @@ pub struct BridgeParams {
     pub finality_depth: u64,
 }
 
-/// Builds the execution-only VM + scheduler (no proving). The batch ELF is loaded only so the
+/// Builds and starts an execution-only [`FlowNode`]: a zk `Vm` with no proving, the given store,
+/// and a bridge pointed at the remote node's lane + covenant. [`Node::new`] immediately starts the
+/// bridge, scheduler, and event loop on a dedicated thread. The batch ELF is loaded only so the
 /// backend can pin its image id; it is never executed in exec mode.
-pub fn build_scheduler(tx_elf: &[u8], batch_elf: &[u8], store: Store) -> Sched {
+pub fn build_node(tx_elf: &[u8], batch_elf: &[u8], store: Store, params: BridgeParams) -> FlowNode {
     let backend = Backend::new(tx_elf, batch_elf, ProofType::Succinct);
     let vm = Vm::new(backend, ProvingPipeline::None);
-    Scheduler::new(
-        ExecutionConfig::default().with_processor(vm),
-        StorageConfig::default().with_store(store),
+    Node::new(
+        NodeConfig::default()
+            .with_execution_config(ExecutionConfig::default().with_processor(vm))
+            .with_storage_config(StorageConfig::default().with_store(store))
+            .with_l1_bridge_config(
+                L1BridgeConfig::default()
+                    .with_url(Some(params.url))
+                    .with_network_id(params.network_id)
+                    .with_subnetwork_id(Some(params.lane_subnet))
+                    .with_covenant_id(Some(params.covenant_id))
+                    .with_finality_depth(params.finality_depth),
+            ),
     )
-}
-
-/// Runs the bridge-event → schedule → decode → print loop forever.
-pub async fn run(mut scheduler: Sched, store: Store, params: BridgeParams, tracked: ResourceId) {
-    let bridge = L1Bridge::new(
-        L1BridgeConfig::default()
-            .with_url(Some(params.url))
-            .with_network_id(params.network_id)
-            .with_subnetwork_id(Some(params.lane_subnet))
-            .with_covenant_id(Some(params.covenant_id))
-            .with_finality_depth(params.finality_depth),
-    );
-
-    loop {
-        match bridge.wait_and_pop().await {
-            L1Event::Connected => println!("connected"),
-            L1Event::Disconnected => println!("disconnected"),
-
-            L1Event::ChainBlockAdded { checkpoint, accepted_transactions, .. } => {
-                let found = accepted_transactions.len();
-                let metadata = *checkpoint.metadata();
-
-                let txs: Vec<SchedulerTransaction<_>> = accepted_transactions
-                    .into_iter()
-                    .map(|(idx, tx)| {
-                        let meta = AccessMetadata::decode_vec(&mut tx.payload.as_slice())
-                            .unwrap_or_default();
-                        SchedulerTransaction::new(idx, meta, tx)
-                    })
-                    .collect();
-
-                let batch = scheduler.schedule(metadata, txs);
-                batch.wait_committed_blocking();
-
-                let state = read_resource_u32(&store, tracked);
-
-                if found > 0 || metadata.last_settlement.is_some() {
-                    let settlement = metadata
-                        .last_settlement
-                        .map(|s| s.tx_id.to_string())
-                        .unwrap_or_else(|| "none".to_string());
-                    println!(
-                        "block  idx={} hash={} found_txs={found} state={state} lane_tip={} settlement={settlement}",
-                        checkpoint.index(),
-                        metadata.hash,
-                        metadata.lane_tip,
-                    );
-                } else {
-                    log::debug!(
-                        "block idx={} hash={} (no lane activity)",
-                        checkpoint.index(),
-                        metadata.hash
-                    );
-                }
-            }
-
-            L1Event::Rollback { checkpoint, blue_score_depth } => {
-                match scheduler.rollback_to(checkpoint.index()) {
-                    Ok(_) => println!(
-                        "REORG  -> rolled back to idx={} (blue_score_depth={blue_score_depth})",
-                        checkpoint.index()
-                    ),
-                    Err(e) => log::error!("rollback to {} failed: {e}", checkpoint.index()),
-                }
-            }
-
-            L1Event::Finalized(cp) => scheduler.pruning().set_threshold(cp.index()),
-
-            L1Event::Fatal { reason } => {
-                eprintln!("bridge fatal: {reason}");
-                break;
-            }
-        }
-    }
 }

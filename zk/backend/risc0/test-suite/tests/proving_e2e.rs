@@ -1,6 +1,9 @@
 use std::{num::NonZeroUsize, time::Instant};
 
-use kaspa_consensus_core::hashing::tx::id as kaspa_tx_id;
+use kaspa_consensus_core::{
+    hashing::tx::id as kaspa_tx_id,
+    network::{NetworkId, NetworkType},
+};
 use kaspa_hashes::Hash;
 use kaspa_rpc_core::api::rpc::RpcApi;
 use tempfile::TempDir;
@@ -56,7 +59,7 @@ async fn batch_proof_two_transactions() {
 
     let backend = Backend::new(&transaction_elf, &batch_elf, ProofType::Succinct);
 
-    let l1 = L1Node::new(None).await;
+    let l1 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
     // Mine a couple of blocks so we have real block hashes to anchor metadata against.
     let block_hashes = l1.mine_blocks(2).await;
 
@@ -221,7 +224,7 @@ async fn batch_proof_bundle_of_two() {
 
     let backend = Backend::new(&transaction_elf, &batch_elf, ProofType::Succinct);
 
-    let l1 = L1Node::new(None).await;
+    let l1 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
     let block_hashes = l1.mine_blocks(2).await;
 
     let config = BatchProverConfig {

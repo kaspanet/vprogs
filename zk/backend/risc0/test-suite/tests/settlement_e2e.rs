@@ -2,6 +2,7 @@ use std::{collections::HashMap, num::NonZeroUsize, time::Instant};
 
 use kaspa_consensus_core::{
     hashing::sighash::SigHashReusedValuesUnsync,
+    network::{NetworkId, NetworkType},
     tx::{CovenantBinding, PopulatedTransaction, TransactionOutpoint, UtxoEntry},
 };
 use kaspa_hashes::Hash;
@@ -163,7 +164,7 @@ async fn batch_proof_is_directly_settleable_single_batch() {
 
     let backend = Backend::new(&transaction_elf, &batch_elf, ProofType::Succinct);
 
-    let l1 = L1Node::new(None).await;
+    let l1 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
     let block_hashes = l1.mine_blocks(1).await;
 
     let config = BatchProverConfig {
@@ -315,7 +316,7 @@ async fn batch_proof_groth16_is_directly_settleable_single_batch() {
 
     let backend = Backend::new(&transaction_elf, &batch_elf, ProofType::Groth16);
 
-    let l1 = L1Node::new(None).await;
+    let l1 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
     let block_hashes = l1.mine_blocks(1).await;
 
     let config = BatchProverConfig {
@@ -461,7 +462,7 @@ async fn batch_proof_bundles_two_batches() {
 
     let backend = Backend::new(&transaction_elf, &batch_elf, ProofType::Succinct);
 
-    let l1 = L1Node::new(None).await;
+    let l1 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
     let block_hashes = l1.mine_blocks(2).await;
 
     let config = BatchProverConfig {
@@ -637,7 +638,7 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
 
     let backend = Backend::new(&transaction_elf, &batch_elf, ProofType::Succinct);
 
-    let l1 = L1Node::new(None).await;
+    let l1 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
     let block_hashes = l1.mine_blocks(2).await;
 
     let config = BatchProverConfig {

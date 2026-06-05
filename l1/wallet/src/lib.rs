@@ -36,14 +36,16 @@ pub struct Wallet<'a, C: RpcApi + ?Sized> {
     params: &'a Params,
     /// Key that signs and funds every issued transaction.
     keypair: Keypair,
-    /// P2PK address derived from `keypair` under the configured network prefix.
+    /// P2PK address derived from `keypair`, prefixed for the network in `params`.
     address: Address,
 }
 
 impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
-    /// Builds a wallet whose address is the `prefix` P2PK address of `keypair`.
-    pub fn new(client: &'a C, params: &'a Params, keypair: Keypair, prefix: Prefix) -> Self {
+    /// Builds a wallet whose address is the `keypair`'s P2PK address under the network prefix
+    /// implied by `params` (so the prefix can never disagree with the consensus params).
+    pub fn new(client: &'a C, params: &'a Params, keypair: Keypair) -> Self {
         let (xonly, _parity) = keypair.x_only_public_key();
+        let prefix = Prefix::from(params.net.network_type());
         let address = Address::new(prefix, Version::PubKey, &xonly.serialize());
         Self { client, params, keypair, address }
     }

@@ -5,10 +5,11 @@ use std::{io::Write, time::Duration};
 use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus_core::{
     Hash,
-    config::params::{OverrideParams, Params, SIMNET_PARAMS},
+    config::params::{OverrideParams, Params},
     header::Header,
     mass::units::ComputeBudget,
     merkle::calc_hash_merkle_root,
+    network::{NetworkId, NetworkType},
     subnets::SubnetworkId,
     tx::{Transaction, UtxoEntry},
 };
@@ -38,31 +39,36 @@ pub struct L1Node {
 }
 
 impl L1Node {
-    /// Creates and starts a new isolated simnet node.
+    /// Creates and starts a new isolated node on `network`.
     ///
     /// Pass a customization closure to override consensus parameters. The closure receives the
-    /// default simnet [`Params`] to mutate. Pass `None` for vanilla simnet defaults.
+    /// network's default [`Params`] to mutate. Pass `None` for vanilla defaults. The node's mining
+    /// address and the [`Wallet`] view both take their prefix from `network`.
     ///
     /// ```no_run
     /// # use vprogs_node_test_utils::L1Node;
+    /// # use kaspa_consensus_core::network::{NetworkId, NetworkType};
     /// # async fn example() {
+    /// let simnet = NetworkId::new(NetworkType::Simnet);
+    ///
     /// // Vanilla simnet defaults:
-    /// let node = L1Node::new(None).await;
+    /// let node = L1Node::new(simnet, None).await;
     ///
     /// // Fast coinbase maturity for UTXO tests:
-    /// let node = L1Node::new(Some(|p| p.blockrate.coinbase_maturity = 10)).await;
+    /// let node = L1Node::new(simnet, Some(|p| p.blockrate.coinbase_maturity = 10)).await;
     /// # }
     /// ```
-    pub async fn new(customize: Option<fn(&mut Params)>) -> Self {
+    pub async fn new(network: NetworkId, customize: Option<fn(&mut Params)>) -> Self {
         kaspa_core::log::try_init_logger("INFO");
 
         // Generate a real keypair for signing transactions.
         let keypair = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
         let (xonly, _parity) = keypair.x_only_public_key();
-        let address = Address::new(Prefix::Simnet, Version::PubKey, &xonly.serialize());
+        let address =
+            Address::new(Prefix::from(network.network_type()), Version::PubKey, &xonly.serialize());
 
-        // Start from the default simnet params and let the caller customize them.
-        let mut params = SIMNET_PARAMS;
+        // Start from the network's default params and let the caller customize them.
+        let mut params = Params::from(network);
         if let Some(f) = customize {
             f(&mut params);
         }
@@ -80,22 +86,29 @@ impl L1Node {
         )
         .expect("failed to write override-params tempfile");
 
-        // Spawn a simnet daemon with unsafe RPC, unsynced mining, and UTXO index enabled
-        // so we can mine blocks without waiting for IBD and query UTXOs by address.
-        let mut daemon = Daemon::new_random_with_args(
-            Args {
-                simnet: true,
-                unsafe_rpc: true,
-                enable_unsynced_mining: true,
-                disable_upnp: true,
-                utxoindex: true,
-                override_params_file: Some(
-                    params_file.path().to_str().expect("tempfile path must be utf-8").to_string(),
-                ),
-                ..Default::default()
-            },
-            10, // fd budget
-        );
+        // Spawn the daemon with unsafe RPC, unsynced mining, and UTXO index enabled so we can mine
+        // blocks without waiting for IBD and query UTXOs by address. The network flags pick which
+        // genesis / consensus the daemon boots.
+        let mut args = Args {
+            unsafe_rpc: true,
+            enable_unsynced_mining: true,
+            disable_upnp: true,
+            utxoindex: true,
+            override_params_file: Some(
+                params_file.path().to_str().expect("tempfile path must be utf-8").to_string(),
+            ),
+            ..Default::default()
+        };
+        match network.network_type() {
+            NetworkType::Simnet => args.simnet = true,
+            NetworkType::Testnet => {
+                args.testnet = true;
+                args.testnet_suffix = network.suffix.unwrap_or(0);
+            }
+            NetworkType::Devnet => args.devnet = true,
+            NetworkType::Mainnet => {}
+        }
+        let mut daemon = Daemon::new_random_with_args(args, 10 /* fd budget */);
         let grpc_client = daemon.start().await;
 
         Self { daemon, grpc_client, address, keypair, params }
@@ -205,9 +218,10 @@ impl L1Node {
         self.grpc_client.disconnect().await.unwrap()
     }
 
-    /// A [`Wallet`] view over this node's client, params, and key (simnet address).
+    /// A [`Wallet`] view over this node's client, params, and key. The wallet derives its address
+    /// prefix from `params`, matching this node's network.
     fn wallet(&self) -> Wallet<'_, GrpcClient> {
-        Wallet::new(&self.grpc_client, &self.params, self.keypair, Prefix::Simnet)
+        Wallet::new(&self.grpc_client, &self.params, self.keypair)
     }
 
     /// Builds signed L1 transactions, each carrying the given payload.

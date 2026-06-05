@@ -25,9 +25,9 @@
 use std::time::Duration;
 
 use kaspa_consensus_core::{
-    config::params::ForkActivation,
     constants::TX_VERSION_TOCCATA,
     mass::{BlockMassLimits, units::ComputeBudget},
+    network::{NetworkId, NetworkType},
     subnets::SubnetworkId,
     tx::{Transaction, TransactionOutpoint, UtxoEntry},
 };
@@ -41,7 +41,7 @@ use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId};
 use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_node_test_utils::L1Node;
-use vprogs_zk_backend_risc0_test_suite::{TEST_SUBNETWORK_ID, test_lane_key};
+use vprogs_zk_backend_risc0_test_suite::{TEST_SUBNETWORK_ID, force_covenant_forks, test_lane_key};
 use zerocopy::IntoBytes;
 
 const COVENANT_VALUE: u64 = 100_000_000;
@@ -181,12 +181,14 @@ async fn settlement_lands_in_real_block_dev_redeem() {
 
     // Mirror the real-proof tests' simnet config so the chain-side variables (block mass cap,
     // coinbase maturity, covenants activation) are identical between dev and CUDA runs.
-    let l1 = L1Node::new(Some(|p| {
-        p.blockrate.coinbase_maturity = 1;
-        p.toccata_activation = ForkActivation::always();
-        p.zk_hardening_activation = ForkActivation::always();
-        p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
-    }))
+    let l1 = L1Node::new(
+        NetworkId::new(NetworkType::Simnet),
+        Some(|p| {
+            p.blockrate.coinbase_maturity = 1;
+            force_covenant_forks(p);
+            p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+        }),
+    )
     .await;
     l1.mine_utxos(6).await;
 
@@ -497,12 +499,12 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
     use std::num::NonZeroUsize;
 
     use tempfile::TempDir;
-    use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
-    use vprogs_storage_manager::StorageConfig;
     use vprogs_storage_rocksdb_store::RocksDbStore;
     use vprogs_zk_backend_risc0_api::Backend;
     use vprogs_zk_backend_risc0_covenant::{build_redeem_script, redeem_script_len};
-    use vprogs_zk_backend_risc0_test_suite::{batch_processor_elf, transaction_processor_elf};
+    use vprogs_zk_backend_risc0_test_suite::{
+        batch_processor_elf, build_scheduler, transaction_processor_elf,
+    };
     use vprogs_zk_batch_prover::BatchProverConfig;
     use vprogs_zk_vm::{ProvingPipeline, Vm};
 
@@ -511,12 +513,14 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
     // far smaller and would fit under the default, but uniformly bumping the cap for both
     // proof systems lets the helper take a plain `fn` (no captures), which is what
     // `L1Node::new` expects.
-    let l1 = L1Node::new(Some(|p| {
-        p.blockrate.coinbase_maturity = 1;
-        p.toccata_activation = ForkActivation::always();
-        p.zk_hardening_activation = ForkActivation::always();
-        p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
-    }))
+    let l1 = L1Node::new(
+        NetworkId::new(NetworkType::Simnet),
+        Some(|p| {
+            p.blockrate.coinbase_maturity = 1;
+            force_covenant_forks(p);
+            p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+        }),
+    )
     .await;
 
     // 2x bootstrap fee margin + 2x settlement fee + slack. The bootstrap and each settlement
@@ -588,10 +592,7 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
         proving_config,
     );
     let vm = Vm::new(backend.clone(), proving);
-    let mut scheduler = Scheduler::new(
-        ExecutionConfig::default().with_processor(vm),
-        StorageConfig::default().with_store(storage.clone()),
-    );
+    let mut scheduler = build_scheduler(vm, storage.clone());
 
     // === Step 2: settlement #1 ===
     // Carrier_1 writes resource(1). Mine it, mine its acceptance block, prove the batch,
@@ -626,7 +627,7 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
     // Same flow, chained: the 2nd carrier touches the SAME resource as settle_1 (the
     // increment-counter L2 guest just bumps it: 0→1 then 1→2). Using a fresh resource id
     // here would leave the SMT in a state where proving `for_test(2)` at the post-settle_1
-    // version returns the shortcut leaf for `for_test(1)` instead of an empty-key entry —
+    // version returns the shortcut leaf for `for_test(1)` instead of an empty-key entry;
     // batch_processor's verifier compares that against the journal's zero-hash input
     // commitment and panics on resource hash mismatch. Same resource avoids the shortcut.
     // The state-root assertion below still verifies a non-trivial transition (0→1 vs 1→2).

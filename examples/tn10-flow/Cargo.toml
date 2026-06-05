@@ -14,26 +14,24 @@ path = "src/main.rs"
 cuda = ["vprogs-zk-backend-risc0-api/cuda"]
 
 [dependencies]
-# vprogs internal
-vprogs-core-smt                  = { workspace = true }
-vprogs-core-types                = { workspace = true }
-vprogs-l1-bridge                 = { workspace = true }
-vprogs-l1-wallet                 = { workspace = true }
-vprogs-scheduling-scheduler      = { workspace = true }
-vprogs-state-version             = { workspace = true }
-vprogs-storage-manager           = { workspace = true }
-vprogs-storage-rocksdb-store     = { workspace = true }
-vprogs-storage-types             = { workspace = true }
-vprogs-zk-backend-risc0-api      = { workspace = true, features = ["host"] }
-vprogs-zk-backend-risc0-covenant = { workspace = true }
-vprogs-zk-vm                     = { workspace = true }
+# vprogs internal. The scheduler/Vm construction, covenant bootstrap, fork toggle, state-read, and
+# ELF loaders are reused from the settlement test-suite rather than reimplemented here.
+vprogs-core-test-utils             = { workspace = true }
+vprogs-core-types                  = { workspace = true }
+vprogs-l1-bridge                   = { workspace = true }
+vprogs-l1-wallet                   = { workspace = true }
+vprogs-node-framework              = { workspace = true }
+vprogs-scheduling-scheduler        = { workspace = true }
+vprogs-storage-manager             = { workspace = true }
+vprogs-storage-rocksdb-store       = { workspace = true }
+vprogs-zk-backend-risc0-api        = { workspace = true, features = ["host"] }
+vprogs-zk-backend-risc0-test-suite = { workspace = true }
+vprogs-zk-vm                       = { workspace = true }
 
 # kaspa (same fork pins as the rest of the workspace)
-kaspa-addresses      = { workspace = true }
 kaspa-consensus-core = { workspace = true }
 kaspa-core           = { workspace = true }
 kaspa-hashes         = { workspace = true }
-kaspa-rpc-core       = { workspace = true }
 kaspa-seq-commit     = { workspace = true }
 kaspa-wrpc-client    = { workspace = true }
 

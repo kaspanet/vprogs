@@ -53,6 +53,7 @@ resolver = "3"
   crossbeam-utils = "0.8.21"
   ctrlc = { version = "3", features = ["termination"] }
   env_logger = "0.11"
+  faster-hex = "0.9"
   fastrand = "2.3.0"
   figment = { version = "0.10", features = ["toml", "env"] }
   futures = "0.3.31"
@@ -172,6 +173,7 @@ resolver = "3"
   vprogs-zk-abi                                   = { path = "zk/abi", default-features = false }
   vprogs-zk-backend-risc0-api                     = { path = "zk/backend/risc0/api", default-features = false }
   vprogs-zk-backend-risc0-covenant                = { path = "zk/backend/risc0/covenant" }
+  vprogs-zk-backend-risc0-test-suite              = { path = "zk/backend/risc0/test-suite" }
   vprogs-zk-batch-prover                          = { path = "zk/batch-prover" }
   vprogs-zk-transaction-prover                    = { path = "zk/transaction-prover" }
   vprogs-zk-vm                                    = { path = "zk/vm" }

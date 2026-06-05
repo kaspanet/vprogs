@@ -23,10 +23,6 @@ pub struct Config {
     pub activity_interval_ms: u64,
     /// Total activity transactions to issue (0 = unbounded).
     pub activity_count: u64,
-    /// Override path for the transaction-processor ELF.
-    pub tx_elf_path: PathBuf,
-    /// Override path for the batch-processor ELF.
-    pub batch_elf_path: PathBuf,
 }
 
 impl Config {
@@ -48,14 +44,6 @@ impl Config {
 
         let data_dir = PathBuf::from(opt("TN10_DATA_DIR").unwrap_or_else(|| "./tn10-data".into()));
 
-        let manifest = env!("CARGO_MANIFEST_DIR");
-        let tx_elf_path = PathBuf::from(opt("TN10_TX_ELF").unwrap_or_else(|| {
-            format!("{manifest}/../../zk/backend/risc0/transaction-processor/compiled/program.elf")
-        }));
-        let batch_elf_path = PathBuf::from(opt("TN10_BATCH_ELF").unwrap_or_else(|| {
-            format!("{manifest}/../../zk/backend/risc0/batch-processor/compiled/program.elf")
-        }));
-
         Self {
             wrpc_url,
             private_key,
@@ -64,8 +52,6 @@ impl Config {
             data_dir,
             activity_interval_ms: opt_u64("TN10_ACTIVITY_INTERVAL_MS", 5_000),
             activity_count: opt_u64("TN10_ACTIVITY_COUNT", 0),
-            tx_elf_path,
-            batch_elf_path,
         }
     }
 }

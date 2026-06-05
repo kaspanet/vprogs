@@ -8475,11 +8475,9 @@ name = "vprogs-example-tn10-flow"
 version = "0.1.0"
 dependencies = [
  "fastrand",
- "kaspa-addresses",
  "kaspa-consensus-core",
  "kaspa-core",
  "kaspa-hashes",
- "kaspa-rpc-core",
  "kaspa-seq-commit",
  "kaspa-wrpc-client",
  "log",
@@ -8487,17 +8485,16 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "vprogs-core-smt",
+ "vprogs-core-test-utils",
  "vprogs-core-types",
  "vprogs-l1-bridge",
  "vprogs-l1-wallet",
+ "vprogs-node-framework",
  "vprogs-scheduling-scheduler",
- "vprogs-state-version",
  "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
- "vprogs-storage-types",
  "vprogs-zk-backend-risc0-api",
- "vprogs-zk-backend-risc0-covenant",
+ "vprogs-zk-backend-risc0-test-suite",
  "vprogs-zk-vm",
 ]
 
@@ -9027,11 +9024,13 @@ dependencies = [
  "vprogs-core-test-utils",
  "vprogs-core-types",
  "vprogs-l1-types",
+ "vprogs-l1-wallet",
  "vprogs-node-test-utils",
  "vprogs-scheduling-scheduler",
  "vprogs-state-version",
  "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
+ "vprogs-storage-types",
  "vprogs-zk-abi",
  "vprogs-zk-backend-risc0-api",
  "vprogs-zk-backend-risc0-covenant",
@@ -9080,8 +9079,9 @@ dependencies = [
 name = "vprogs-zk-vm"
 version = "0.1.0"
 dependencies = [
+ "faster-hex",
  "kaspa-grpc-client",
- "tap",
+ "log",
  "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
  "vprogs-storage-types",
