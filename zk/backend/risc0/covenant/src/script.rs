@@ -6,12 +6,13 @@
 //!    with the advanced `(new_state, new_lane_tip)` pair pushed as the prefix.
 //! 2. **Journal binding**: the ZK proof's committed journal hashes to `sha256(prev_state ||
 //!    prev_lane_tip || new_state || new_lane_tip || new_seq_commit || covenant_id || tx_image_id ||
-//!    permission_spk_hash || lane_key)` - 288 bytes total. `tx_image_id`, `control_id`, `hashfn`,
-//!    `image_id`, and `lane_key` are all hardcoded into the script body, so the covenant SPK pins
-//!    the entire verifier identity plus the lane it settles - both the batch-proof verifier
-//!    circuit, the inner transaction-processor guest the batch checked against, and the lane the
+//!    batch_image_id || permission_spk_hash || lane_key)` - 320 bytes total. `tx_image_id`,
+//!    `batch_image_id`, `control_id`, `hashfn`, `image_id`, and `lane_key` are all hardcoded into
+//!    the script body, so the covenant SPK pins the entire verifier identity plus the lane it
+//!    settles - the aggregator's verifier circuit, the batch-processor identity it composes
+//!    against, the inner transaction-processor guest each batch checked against, and the lane the
 //!    prover may not deviate from. The 32 bytes before the `lane_key` (`permission_spk_hash`) are
-//!    either the batch's L2→L1 exit commitment or `[0; 32]` for a no-exit batch (matching how the
+//!    either the bundle's L2→L1 exit commitment or `[0; 32]` for a no-exit bundle (matching how the
 //!    guest encodes the field).
 //! 3. **Seq commitment freshness**: the journal's `new_seq_commit` equals
 //!    `OpChainblockSeqCommit(block_prove_to)` pushed at spend time, which itself is derived by the
@@ -103,6 +104,11 @@ pub struct CommonPins<'a> {
     /// Transaction processor guest image id, cat-ed into the journal preimage so the inner
     /// proof verifier identity is constrained on-chain.
     pub tx_image_id: &'a [u8; 32],
+    /// Batch processor guest image id, cat-ed into the journal preimage so the batch-verifier
+    /// identity the aggregator used is constrained on-chain. Without this pin, an aggregator
+    /// could be fed `batch_image_id` pointing at a malicious batch processor that accepts
+    /// arbitrary state transitions, and the covenant could not detect it.
+    pub batch_image_id: &'a [u8; 32],
     /// Lane key this covenant settles for. Pushed in the 99-byte redeem prefix and re-stashed
     /// onto the journal preimage's trailing 32 bytes so any proof that names a different lane
     /// fails the SHA-256 binding.
@@ -456,16 +462,17 @@ fn verify_output_spk(b: &mut ScriptBuilder) {
 }
 
 /// Consumes the alt-stack stash, assembles the 160-byte state preimage, appends the input's
-/// covenant id (→ 192B), the script-embedded `tx_image_id` (→ 224B), the 32-byte permission
-/// commitment (→ 256B) via `verify_outputs_and_append_perm_hash`, recovers the bottom-of-alt
-/// `lane_key` and appends it (→ 288B), then SHA-256s the result.
+/// covenant id (→ 192B), the script-embedded `tx_image_id` (→ 224B), the script-embedded
+/// `batch_image_id` (→ 256B), the 32-byte permission commitment (→ 288B) via
+/// `verify_outputs_and_append_perm_hash`, recovers the bottom-of-alt `lane_key` and appends it
+/// (→ 320B), then SHA-256s the result.
 ///
 /// Alt layout going in (top→bottom):
 /// `[new_lane_tip, new_state, new_seq_commit, prev_lane_tip, prev_state, lane_key]`
 ///
-/// The 288-byte preimage byte order matches `StateTransition::encode` field-for-field:
+/// The 320-byte preimage byte order matches `StateTransition::encode` field-for-field:
 /// `prev_state || prev_lane_tip || new_state || new_lane_tip || new_seq_commit || covenant_id ||
-///  tx_image_id || permission_spk_hash || lane_key`.
+///  tx_image_id || batch_image_id || permission_spk_hash || lane_key`.
 ///
 /// Output: `[..., journal_hash]`
 fn build_and_hash_journal(b: &mut ScriptBuilder, pins: &RedeemPins<'_>) {
@@ -513,11 +520,15 @@ fn build_and_hash_journal(b: &mut ScriptBuilder, pins: &RedeemPins<'_>) {
     b.add_data(pins.common().tx_image_id).unwrap();
     b.add_op(OpCat).unwrap();
 
+    // Append script-embedded batch_image_id → 256B preimage.
+    b.add_data(pins.common().batch_image_id).unwrap();
+    b.add_op(OpCat).unwrap();
+
     // Branch on covenant output count: append permission_spk_hash (count == 2) or 32 zero
-    // bytes (count == 1) → 256B preimage matching the guest's journal encoding.
+    // bytes (count == 1) → 288B preimage matching the guest's journal encoding.
     verify_outputs_and_append_perm_hash(b, pins);
 
-    // Append the lane's 32-byte lane_key (recovered from the bottom of the alt stash) → 288B
+    // Append the lane's 32-byte lane_key (recovered from the bottom of the alt stash) → 320B
     // preimage.
     b.add_op(OpFromAltStack).unwrap();
     b.add_op(OpCat).unwrap();
@@ -525,7 +536,7 @@ fn build_and_hash_journal(b: &mut ScriptBuilder, pins: &RedeemPins<'_>) {
     b.add_op(OpSHA256).unwrap();
 }
 
-/// Stack precondition: `[..., preimage224]`. Postcondition: `[..., preimage256]`.
+/// Stack precondition: `[..., preimage256]`. Postcondition: `[..., preimage288]`.
 ///
 /// Reads `OpCovOutputCount` and branches:
 /// - `count == 2`: pins the first covenant output to tx-output index 0 and the second to tx-output
@@ -553,18 +564,18 @@ fn verify_outputs_and_append_perm_hash(b: &mut ScriptBuilder, pins: &RedeemPins<
     b.add_op(OpTxInputIndex).unwrap();
     b.add_op(OpInputCovenantId).unwrap();
     b.add_op(OpCovOutputCount).unwrap();
-    // Stack: [..., preimage224, count]
+    // Stack: [..., preimage256, count]
 
     b.add_op(OpDup).unwrap();
     b.add_i64(2).unwrap();
     b.add_op(OpNumEqual).unwrap();
-    // Stack: [..., preimage224, count, count == 2]
+    // Stack: [..., preimage256, count, count == 2]
 
     b.add_op(OpIf).unwrap();
     {
         // count == 2 branch: permission-exit output is present at index 1.
         b.add_op(OpDrop).unwrap(); // discard the duped count
-        // Stack: [..., preimage224]
+        // Stack: [..., preimage288]
 
         // ---- pin both covenant-bound outputs to fixed indices ----
         // Without this, a host could attach the covenant binding to outputs other than 0/1
@@ -576,10 +587,10 @@ fn verify_outputs_and_append_perm_hash(b: &mut ScriptBuilder, pins: &RedeemPins<
         // ---- enforce output[1].value == pins.permission_output_value ----
         b.add_i64(1).unwrap();
         b.add_op(OpTxOutputAmount).unwrap();
-        // Stack: [..., preimage224, out1_value]
+        // Stack: [..., preimage256, out1_value]
         b.add_i64(pins.common().permission_output_value as i64).unwrap();
         b.add_op(OpEqualVerify).unwrap();
-        // Stack: [..., preimage224]
+        // Stack: [..., preimage288]
 
         // ---- extract the 32-byte script hash from outputs[1].script_public_key ----
         // SPK layout: version(2 BE) | OpBlake2b(1) | OpData32(1) | hash(32) | OpEqual(1) = 37B.
@@ -588,7 +599,7 @@ fn verify_outputs_and_append_perm_hash(b: &mut ScriptBuilder, pins: &RedeemPins<
         b.add_i64(4).unwrap(); // start
         b.add_i64(36).unwrap(); // end (exclusive)
         b.add_op(OpTxOutputSpkSubstr).unwrap();
-        // Stack: [..., preimage224, hash32]
+        // Stack: [..., preimage256, hash32]
 
         // ---- reject hash == [0; 32] ----
         // `[0; 32]` is the guest's no-exits sentinel and must always take the count==1 path.
@@ -600,11 +611,11 @@ fn verify_outputs_and_append_perm_hash(b: &mut ScriptBuilder, pins: &RedeemPins<
         b.add_op(OpEqual).unwrap();
         b.add_op(OpNot).unwrap();
         b.add_op(OpVerify).unwrap();
-        // Stack: [..., preimage224, hash32]
+        // Stack: [..., preimage256, hash32]
 
         // ---- rebuild the full 37-byte P2SH SPK and assert it matches the actual one ----
         b.add_op(OpDup).unwrap();
-        // Stack: [..., preimage224, hash32, hash32]
+        // Stack: [..., preimage256, hash32, hash32]
 
         // Big-endian to match `ScriptPublicKey::to_bytes()` (the wire-format used by
         // `OpTxOutputSpk`). See `hash_redeem_to_spk` for the same rationale.
@@ -617,20 +628,20 @@ fn verify_outputs_and_append_perm_hash(b: &mut ScriptBuilder, pins: &RedeemPins<
         b.add_data(&header).unwrap();
         b.add_op(OpSwap).unwrap();
         b.add_op(OpCat).unwrap();
-        // Stack: [..., preimage224, hash32, header4 || hash32] = 36B partial SPK
+        // Stack: [..., preimage256, hash32, header4 || hash32] = 36B partial SPK
 
         b.add_data(&[OpEqual]).unwrap();
         b.add_op(OpCat).unwrap();
-        // Stack: [..., preimage224, hash32, header4 || hash32 || OpEqual] = full 37B P2SH SPK
+        // Stack: [..., preimage256, hash32, header4 || hash32 || OpEqual] = full 37B P2SH SPK
 
         b.add_i64(1).unwrap();
         b.add_op(OpTxOutputSpk).unwrap();
         b.add_op(OpEqualVerify).unwrap();
-        // Stack: [..., preimage224, hash32]
+        // Stack: [..., preimage256, hash32]
 
         // ---- append the hash to the preimage → 256B ----
         b.add_op(OpCat).unwrap();
-        // Stack: [..., preimage256]
+        // Stack: [..., preimage288]
     }
     b.add_op(OpElse).unwrap();
     {
@@ -638,7 +649,7 @@ fn verify_outputs_and_append_perm_hash(b: &mut ScriptBuilder, pins: &RedeemPins<
         // fixed at 256B (matches the guest's `permission_spk_hash = [0; 32]` encoding).
         b.add_i64(1).unwrap();
         b.add_op(OpNumEqualVerify).unwrap();
-        // Stack: [..., preimage224]
+        // Stack: [..., preimage288]
 
         // Pin the sole covenant output to tx-output index 0 (same rationale as the count==2
         // branch: the SPK check earlier in the script reads `outputs[0].script_public_key`
@@ -647,7 +658,7 @@ fn verify_outputs_and_append_perm_hash(b: &mut ScriptBuilder, pins: &RedeemPins<
 
         b.add_data(&[0u8; 32]).unwrap();
         b.add_op(OpCat).unwrap();
-        // Stack: [..., preimage256]
+        // Stack: [..., preimage288]
     }
     b.add_op(OpEndIf).unwrap();
 }
@@ -852,10 +863,14 @@ mod tests {
     /// structure assertions, only that it's the same across calls).
     const TEST_LANE_KEY: Hash = Hash::from_bytes([0xAA; 32]);
 
+    /// Stable test batch_image_id; structural for length / SPK assertions only.
+    const TEST_BATCH_IMAGE_ID: [u8; 32] = [0xBB; 32];
+
     fn common_pins<'a>(program_id: &'a [u8; 32], tx_image_id: &'a [u8; 32]) -> CommonPins<'a> {
         CommonPins {
             program_id,
             tx_image_id,
+            batch_image_id: &TEST_BATCH_IMAGE_ID,
             lane_key: &TEST_LANE_KEY,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         }

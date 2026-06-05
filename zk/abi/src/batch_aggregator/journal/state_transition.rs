@@ -20,6 +20,8 @@ pub struct StateTransition {
     pub covenant_id: [u8; 32],
     /// Transaction-processor image id this settlement binds to.
     pub tx_image_id: [u8; 32],
+    /// Batch-processor image id this settlement binds to.
+    pub batch_image_id: [u8; 32],
     /// `blake2b(perm_redeem_script)` for the bundle's exit output, or `[0u8; 32]` when no
     /// exits were emitted. Non-zero values cause the on-chain settlement to add a second P2SH
     /// output for permission-tree withdrawals.
@@ -41,7 +43,7 @@ impl StateTransition {
         (prev_state, prev_lane_tip): (&[u8; 32], &Hash),
         (new_state, new_lane_tip, new_seq_commit): (&[u8; 32], &Hash, &Hash),
         covenant_id: &[u8; 32],
-        tx_image_id: &[u8; 32],
+        (tx_image_id, batch_image_id): (&[u8; 32], &[u8; 32]),
         permission_spk_hash: &[u8; 32],
         lane_key: &Hash,
     ) {
@@ -52,6 +54,7 @@ impl StateTransition {
         w.write(new_seq_commit.as_slice());
         w.write(covenant_id);
         w.write(tx_image_id);
+        w.write(batch_image_id);
         w.write(permission_spk_hash);
         w.write(lane_key.as_slice());
     }
@@ -69,11 +72,11 @@ mod tests {
             (&[0u8; 32], &Hash::default()),
             (&[0u8; 32], &Hash::default(), &Hash::default()),
             &[0u8; 32],
-            &[0u8; 32],
+            (&[0u8; 32], &[0u8; 32]),
             &[0u8; 32],
             &Hash::default(),
         );
         assert_eq!(buf.len(), JOURNAL_SIZE);
-        assert_eq!(JOURNAL_SIZE, 288);
+        assert_eq!(JOURNAL_SIZE, 320);
     }
 }

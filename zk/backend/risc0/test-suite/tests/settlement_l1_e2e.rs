@@ -85,11 +85,12 @@ async fn settlement_lands_in_real_block_succinct() {
         // Image-id-only pins for both succinct branches: control_id / hashfn are
         // circuit-determined and live as build-time consts in covenant::succinct_consts, no
         // per-spend extraction needed.
-        build_pins: |BuildPinsArgs { program_id, tx_image_id, lane_key }| {
+        build_pins: |BuildPinsArgs { program_id, tx_image_id, batch_image_id, lane_key }| {
             RedeemPins::Succinct(SuccinctPins {
                 common: CommonPins {
                     program_id,
                     tx_image_id,
+                    batch_image_id,
                     lane_key,
                     permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
                 },
@@ -133,11 +134,12 @@ async fn settlement_lands_in_real_block_groth16() {
         // The Groth16 redeem branch needs no verifier pins beyond the common ones: the
         // verifier identity (control root halves, bn254 control id, VK) is baked into the
         // script at build time via `groth16_consts`.
-        build_pins: |BuildPinsArgs { program_id, tx_image_id, lane_key }| {
+        build_pins: |BuildPinsArgs { program_id, tx_image_id, batch_image_id, lane_key }| {
             RedeemPins::Groth16(Groth16Pins {
                 common: CommonPins {
                     program_id,
                     tx_image_id,
+                    batch_image_id,
                     lane_key,
                     permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
                 },
@@ -456,6 +458,7 @@ impl RealProofWitness {
 struct BuildPinsArgs<'a> {
     program_id: &'a [u8; 32],
     tx_image_id: &'a [u8; 32],
+    batch_image_id: &'a [u8; 32],
     lane_key: &'a Hash,
 }
 
@@ -529,6 +532,7 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
     let backend = Backend::new(&tx_elf, &batch_elf, &aggregator_elf, config.proof_type);
     let program_id = *backend.aggregator_image_id();
     let tx_image_id = *backend.transaction_image_id();
+    let batch_image_id = *backend.batch_image_id();
 
     // Consensus keys the lane SMT by `H_lane_key(subnetwork_id)`, and the test routes its carriers
     // onto [`L2_LANE_SUBNET`] (see the const's doc for why we don't ride NATIVE): the lane_key
@@ -545,6 +549,7 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
     let spend_pins = (config.build_pins)(BuildPinsArgs {
         program_id: &program_id,
         tx_image_id: &tx_image_id,
+        batch_image_id: &batch_image_id,
         lane_key: &lane_key,
     });
     let redeem_len = redeem_script_len(&bootstrap_state, &spend_pins);

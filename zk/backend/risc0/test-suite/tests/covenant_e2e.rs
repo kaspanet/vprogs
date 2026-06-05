@@ -48,6 +48,7 @@ async fn covenant_bootstrap_is_accepted_on_simnet() {
     let backend = Backend::new(&tx_elf, &batch_elf, &aggregator_elf, ProofType::Succinct);
     let program_id = *backend.aggregator_image_id();
     let tx_image_id = *backend.transaction_image_id();
+    let batch_image_id = *backend.batch_image_id();
 
     let initial_state = EMPTY_HASH;
     let initial_lane_tip = Hash::default();
@@ -56,6 +57,7 @@ async fn covenant_bootstrap_is_accepted_on_simnet() {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
+            batch_image_id: &batch_image_id,
             lane_key: &lane_key,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },

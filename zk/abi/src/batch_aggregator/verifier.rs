@@ -58,7 +58,7 @@ where
         // per-bundle invariants (same lane_key, covenant_id, tx_image_id).
         let first_bytes = iter.next().expect("empty bundle").expect("decode first journal");
         (self.verify_batch_journal)(self.inputs.batch_image_id, first_bytes);
-        let first = decode_header(first_bytes).expect("decode BatchTransition header");
+        let first = BatchTransition::ref_from_bytes(first_bytes).expect("decode BatchTransition");
 
         let lane_key = first.lane_key;
         let covenant_id = first.covenant_id;
@@ -70,7 +70,7 @@ where
         // Stream the first batch's exits before mutating state, mirroring the per-tx canonical
         // order the monolithic verifier used (exits before resource updates within a tx; tx
         // order within a batch; batch order within the bundle).
-        self.stream_exits(first_bytes);
+        self.stream_exits(first);
 
         let mut new_state = first.new_state;
         let mut new_lane_tip = first.new_lane_tip;
@@ -80,7 +80,7 @@ where
         for entry in iter {
             let bytes = entry.expect("decode batch journal");
             (self.verify_batch_journal)(self.inputs.batch_image_id, bytes);
-            let cur = decode_header(bytes).expect("decode BatchTransition header");
+            let cur = BatchTransition::ref_from_bytes(bytes).expect("decode BatchTransition");
 
             // Per-bundle invariants: lane, covenant, tx image must match across every batch.
             assert_eq!(cur.lane_key, lane_key, "lane_key mismatch across bundle");
@@ -99,7 +99,7 @@ where
             );
 
             // Stream this batch's exits in journal order.
-            self.stream_exits(bytes);
+            self.stream_exits(cur);
 
             new_state = cur.new_state;
             new_lane_tip = cur.new_lane_tip;
@@ -137,7 +137,7 @@ where
                 ),
             ),
             &extremes.covenant_id,
-            &extremes.tx_image_id,
+            (&extremes.tx_image_id, self.inputs.batch_image_id),
             &permission_spk_hash,
             &extremes.lane_key,
         );
@@ -145,9 +145,8 @@ where
 
     /// Streams the trailing exits of a verified batch journal into the accumulator in journal
     /// order. Mirrors the dispatch the monolithic verifier did inline per-tx.
-    fn stream_exits(&mut self, journal_bytes: &'a [u8]) {
-        let exits = BatchTransition::exits(journal_bytes).expect("decode exits suffix");
-        for exit in exits {
+    fn stream_exits(&mut self, batch: &BatchTransition) {
+        for exit in batch.exits_iter() {
             let (dest, amount) = exit.expect("decode exit entry");
             self.exits.add_exit(dest, amount);
         }
@@ -208,9 +207,3 @@ pub struct BundleExtremes {
     pub tx_image_id: [u8; 32],
 }
 
-/// Decodes a [`BatchTransition`] fixed header from the prefix of a journal byte slice.
-///
-/// [`BatchTransition`]: crate::batch_processor::BatchTransition
-fn decode_header(journal_bytes: &[u8]) -> Option<&BatchTransition> {
-    BatchTransition::ref_from_prefix(journal_bytes).ok().map(|(h, _rest)| h)
-}

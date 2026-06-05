@@ -256,6 +256,7 @@ async fn batch_proof_is_directly_settleable_single_batch() {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
+            batch_image_id: &parsed.batch_image_id,
             lane_key: &parsed.lane_key,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },
@@ -420,6 +421,7 @@ async fn batch_proof_groth16_is_directly_settleable_single_batch() {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
+            batch_image_id: &parsed.batch_image_id,
             lane_key: &parsed.lane_key,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },
@@ -586,6 +588,7 @@ async fn batch_proof_bundles_two_batches() {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
+            batch_image_id: &parsed.batch_image_id,
             lane_key: &parsed.lane_key,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },
@@ -775,6 +778,7 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
+            batch_image_id: &parsed.batch_image_id,
             lane_key: &parsed.lane_key,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },

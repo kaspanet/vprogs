@@ -9,9 +9,11 @@ use crate::transaction_processor::ExitCommitment;
 /// (each batch's `new_*` must equal the next batch's `prev_*`), streams the trailing exits into
 /// the permission tree, and folds the chained extremes into the bundle's [`StateTransition`].
 ///
-/// The journal is laid out as a fixed zerocopy header followed by a length-prefixed exits blob:
-/// the header carries the chain anchors the aggregator asserts on, the exits blob carries the
-/// per-tx emissions the aggregator streams into the permission tree.
+/// `BatchTransition` is a zerocopy DST: the fixed header fields are followed by the raw exits
+/// blob as the trailing slice. The outer aggregator framing length-prefixes each per-batch
+/// journal, so no internal length prefix is needed - the slice's length comes from the surrounding
+/// frame. Parse with [`FromBytes::ref_from_bytes`]; access exits as `&self.exits` and iterate via
+/// [`exits_iter`](Self::exits_iter).
 ///
 /// [`Verifier`]: crate::batch_processor::Verifier
 /// [`AggregatorVerifier`]: crate::batch_aggregator::AggregatorVerifier
@@ -43,21 +45,18 @@ pub struct BatchTransition {
     /// `1` when the lane re-anchored on the chain block's `prev_seq_commit` instead of
     /// `prev_lane_tip` (aggregator skips the `lane_tip` chain check across this boundary).
     pub lane_expired: u8,
+    /// Per-tx exit emissions, concatenated in journal order. Iterated via
+    /// [`exits_iter`](Self::exits_iter).
+    pub exits: [u8],
 }
 
-/// Serialized length of the fixed [`BatchTransition`] header, in bytes. The exits blob follows
-/// the header and is read separately via [`exits`](BatchTransition::exits).
-pub const HEADER_SIZE: usize = core::mem::size_of::<BatchTransition>();
-
 impl BatchTransition {
-    /// Writes a batch transition journal: fixed header followed by a length-prefixed exits blob.
-    /// The aggregator parses the header zero-copy and walks the trailing exits the same way the
-    /// tx-processor's [`OutputCommitment`] does.
+    /// Writes a batch transition journal: fixed header followed by the raw exits blob. The
+    /// surrounding framing (e.g. the aggregator's `BatchTransitions` list) length-prefixes each
+    /// journal, so no inner length prefix is needed.
     ///
     /// The third tuple groups the per-bundle invariants the aggregator asserts every batch
     /// shares: `(lane_key, covenant_id, tx_image_id)`.
-    ///
-    /// [`OutputCommitment`]: crate::transaction_processor::OutputCommitment
     pub fn encode(
         w: &mut impl Writer,
         (prev_state, prev_lane_tip, prev_lane_blue_score): (&[u8; 32], &Hash, u64),
@@ -78,16 +77,12 @@ impl BatchTransition {
         w.write(tx_image_id);
         w.write(&[lane_expired as u8]);
 
-        // Length-prefixed exits blob (same format as `OutputCommitment`'s exits arm).
-        w.write_blob(exits);
+        // Trailing exits, raw bytes (slice length is implied by the outer journal framing).
+        w.write(exits);
     }
 
-    /// Returns the trailing exits blob given the full journal bytes.
-    pub fn exits(journal_bytes: &[u8]) -> crate::Result<ExitCommitment<'_>> {
-        use vprogs_core_codec::Reader;
-        let mut buf = journal_bytes
-            .get(HEADER_SIZE..)
-            .ok_or(crate::Error::Decode("journal shorter than BatchTransition header".into()))?;
-        Ok(ExitCommitment::new(buf.blob("exits")?))
+    /// Iterates the trailing per-tx exits in journal order.
+    pub fn exits_iter(&self) -> ExitCommitment<'_> {
+        ExitCommitment::new(&self.exits)
     }
 }
