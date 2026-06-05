@@ -76,8 +76,13 @@ pub struct DriverStats {
     pub reorgs: u64,
     /// Deepest reorg (blocks rolled back in one event).
     pub max_reorg_depth: u64,
+    /// Covenant settlement transactions issued (each emission, including a re-issue of an orphaned
+    /// settlement, counts).
+    pub settlements_issued: u64,
     /// Covenant settlements that landed and chained successfully.
     pub settlements_accepted: u64,
+    /// Covenant txs re-issued after their block was orphaned by a reorg (0 on a clean chain).
+    pub reissues: u64,
 }
 
 /// One selected-chain block the driver has scheduled, kept so reorgs can roll back exactly.
@@ -99,19 +104,36 @@ struct Covenant {
     daa_score: u64,
 }
 
-/// Where the covenant flow is. A pending phase carries the txid we are waiting to see accepted.
-enum CovenantPhase {
-    /// Settlements are off for this run.
-    Disabled,
-    /// No covenant yet; the next block issues the bootstrap.
-    NotBootstrapped,
-    /// Bootstrap issued; waiting for `txid` to be accepted, after which the covenant is active.
-    PendingBootstrap { txid: Hash, covenant: Covenant },
-    /// Covenant is live and idle; a settlement may be issued.
-    Active(Covenant),
-    /// Settlement `txid` issued; on acceptance the covenant becomes `next`.
-    PendingSettlement { txid: Hash, next: Covenant },
+/// A covenant state seen accepted on the current selected chain, tagged with the chain length right
+/// after the block that confirmed it. A reorg that rolls the chain back below `marker` pops this
+/// entry, so the covenant history always matches the live chain. `confirmed[0]` is the bootstrap.
+struct ConfirmedCovenant {
+    marker: usize,
+    covenant: Covenant,
 }
+
+/// A covenant transaction issued into a block but not yet seen accepted on the selected chain.
+///
+/// If its block loses the chain race (orphaned), the tx never lands; after [`REISSUE_DEADLINE`]
+/// mined blocks the driver re-issues from the live confirmed tip. `basis_outpoint` is the covenant
+/// UTXO this tx spends (None for the coinbase-funded bootstrap) — when a reorg pops that basis off
+/// `confirmed`, the pending tx is abandoned immediately rather than waiting for the deadline.
+struct PendingCovenant {
+    txid: Hash,
+    basis_outpoint: Option<TransactionOutpoint>,
+    issued_block_index: u64,
+    next: Covenant,
+    is_bootstrap: bool,
+}
+
+/// Mined blocks a pending covenant tx may stay unconfirmed before the driver assumes its block was
+/// orphaned and re-issues. Set well above the expected reorg depth so a re-issue only fires once
+/// the orphaned branch is too deep to return (which would otherwise double-spend the basis).
+const REISSUE_DEADLINE: u64 = 30;
+
+/// If a covenant tx is re-issued this many times without any settlement landing, the covenant can
+/// never make progress — a liveness failure. Panics with the seed so it is reproducible.
+const MAX_REISSUES_WITHOUT_PROGRESS: u64 = 200;
 
 /// The L2 driver. Owns the scheduler + store and tracks the selected chain it has scheduled.
 pub struct L2Driver {
@@ -131,8 +153,14 @@ pub struct L2Driver {
     chain: Vec<BlockRec>,
     expected_counter: u32,
 
-    covenant: CovenantPhase,
-    settle_count: u64,
+    settlements_enabled: bool,
+    /// Covenant states confirmed on the live chain (`confirmed[0]` = bootstrap); empty until the
+    /// bootstrap lands. Popped on reorg, so the tip is always the live covenant.
+    confirmed: Vec<ConfirmedCovenant>,
+    /// The in-flight covenant tx awaiting acceptance, if any.
+    pending: Option<PendingCovenant>,
+    /// Re-issues since the last settlement landed; reset on progress, bounds liveness.
+    reissues_since_progress: u64,
 
     stats: Arc<Mutex<DriverStats>>,
 }
@@ -164,12 +192,10 @@ impl L2Driver {
             seed_meta: ChainBlockMetadata::default(),
             chain: Vec::new(),
             expected_counter: 0,
-            covenant: if config.enable_settlements {
-                CovenantPhase::NotBootstrapped
-            } else {
-                CovenantPhase::Disabled
-            },
-            settle_count: 0,
+            settlements_enabled: config.enable_settlements,
+            confirmed: Vec::new(),
+            pending: None,
+            reissues_since_progress: 0,
             stats: stats.clone(),
         };
         (driver, stats)
@@ -198,6 +224,7 @@ impl L2Driver {
                 self.expected_counter -= b.lane_tx_count;
             }
             self.scheduler.rollback_to(keep as u64).expect("rollback");
+            self.rollback_covenant(keep);
             let mut s = self.stats.lock().unwrap();
             s.reorgs += 1;
             s.max_reorg_depth = s.max_reorg_depth.max(depth);
@@ -217,8 +244,6 @@ impl L2Driver {
                     unreachable!("requested Transaction")
                 }
             };
-
-            self.observe_covenant(hash, hdr.daa_score, &accepted);
 
             let lane_txs: Vec<(u32, Transaction)> = accepted
                 .iter()
@@ -261,34 +286,49 @@ impl L2Driver {
                 self.expected_counter, actual,
             );
 
+            // Confirm any covenant tx that landed in this block. Marker = the chain length right
+            // after the push, so a later reorg rolling the chain back below it pops the
+            // confirmation.
+            self.observe_covenant(self.chain.len(), hdr.daa_score, &accepted);
+
             let mut s = self.stats.lock().unwrap();
             s.blocks_processed += 1;
             s.activity_executed = self.expected_counter as u64;
         }
     }
 
-    /// Watches an accepted block for the covenant bootstrap / settlement we are waiting on,
-    /// advancing the covenant phase (and asserting the settlement chained) when it lands.
-    fn observe_covenant(&mut self, block: Hash, daa_score: u64, accepted: &[Transaction]) {
-        let landed = |txid: Hash| accepted.iter().any(|tx| tx.id() == txid);
-        match &self.covenant {
-            CovenantPhase::PendingBootstrap { txid, covenant } if landed(*txid) => {
-                let mut covenant = covenant.clone();
-                covenant.daa_score = daa_score;
-                self.covenant = CovenantPhase::Active(covenant);
+    /// If the pending covenant tx is accepted in this block, records it as confirmed at `marker`
+    /// (the chain length after the block) and clears the pending slot. A settlement reaching here
+    /// passed the L1 script engine (anchor + state chaining), so acceptance is itself the proof.
+    fn observe_covenant(&mut self, marker: usize, daa_score: u64, accepted: &[Transaction]) {
+        let Some(pending) = &self.pending else { return };
+        if !accepted.iter().any(|tx| tx.id() == pending.txid) {
+            return;
+        }
+        let mut covenant = pending.next.clone();
+        covenant.daa_score = daa_score;
+        let is_bootstrap = pending.is_bootstrap;
+        self.confirmed.push(ConfirmedCovenant { marker, covenant });
+        self.pending = None;
+        self.reissues_since_progress = 0;
+        if !is_bootstrap {
+            self.stats.lock().unwrap().settlements_accepted += 1;
+        }
+    }
+
+    /// Reconciles covenant state with a reorg that kept only `keep` chain blocks: pops every
+    /// confirmation made in a rolled-back block, and abandons a pending tx whose basis (the
+    /// covenant UTXO it spends) was popped — that tx can never land, so the next block
+    /// re-issues from the new live tip.
+    fn rollback_covenant(&mut self, keep: usize) {
+        while self.confirmed.last().is_some_and(|c| c.marker > keep) {
+            self.confirmed.pop();
+        }
+        if let Some(pending) = &self.pending {
+            let live_tip = self.confirmed.last().map(|c| c.covenant.outpoint);
+            if pending.basis_outpoint != live_tip {
+                self.pending = None;
             }
-            CovenantPhase::PendingSettlement { txid, next, .. } if landed(*txid) => {
-                let mut next = next.clone();
-                next.daa_score = daa_score;
-                // The settlement passed the L1 script engine (anchor + chaining), so reaching here
-                // is the acceptance proof; record it and continue from the
-                // continuation UTXO.
-                let _ = block;
-                self.covenant = CovenantPhase::Active(next);
-                self.settle_count += 1;
-                self.stats.lock().unwrap().settlements_accepted += 1;
-            }
-            _ => {}
         }
     }
 
@@ -301,20 +341,39 @@ impl L2Driver {
     }
 
     /// Issues a covenant bootstrap or settlement when one is due. Returns at most one transaction.
+    ///
+    /// While a tx is pending the slot stays occupied (no double-spend of the basis). If a pending
+    /// tx stays unconfirmed past [`REISSUE_DEADLINE`] its block was orphaned, so it is dropped
+    /// and the next due tx is re-issued from the live confirmed tip; persistent re-issues
+    /// without progress trip the liveness guard.
     fn issue_covenant(&mut self, ctx: &ProduceCtx<'_>) -> Vec<Transaction> {
-        match &self.covenant {
-            CovenantPhase::Disabled
-            | CovenantPhase::PendingBootstrap { .. }
-            | CovenantPhase::PendingSettlement { .. } => Vec::new(),
-            CovenantPhase::NotBootstrapped => self.bootstrap(ctx),
-            CovenantPhase::Active(_) => {
-                // Settle on a seeded cadence once there is a chain tip to anchor to.
-                if self.chain.is_empty() || !ctx.block_index.is_multiple_of(self.settle_every) {
-                    return Vec::new();
-                }
-                self.settle(ctx)
-            }
+        if !self.settlements_enabled {
+            return Vec::new();
         }
+
+        if let Some(pending) = &self.pending {
+            if ctx.block_index.saturating_sub(pending.issued_block_index) < REISSUE_DEADLINE {
+                return Vec::new();
+            }
+            // The pending tx's block was orphaned; abandon it and re-issue below.
+            self.pending = None;
+            self.reissues_since_progress += 1;
+            self.stats.lock().unwrap().reissues += 1;
+            assert!(
+                self.reissues_since_progress <= MAX_REISSUES_WITHOUT_PROGRESS,
+                "covenant liveness failure: re-issued {} times with no settlement landing",
+                self.reissues_since_progress,
+            );
+        }
+
+        if self.confirmed.is_empty() {
+            return self.bootstrap(ctx);
+        }
+        // Settle on a seeded cadence once there is a chain tip to anchor to.
+        if self.chain.is_empty() || !ctx.block_index.is_multiple_of(self.settle_every) {
+            return Vec::new();
+        }
+        self.settle(ctx)
     }
 
     /// Builds the covenant bootstrap transaction funded from the largest spendable coinbase, sizing
@@ -337,9 +396,12 @@ impl L2Driver {
             ctx.params,
         );
         let txid = tx.id();
-        self.covenant = CovenantPhase::PendingBootstrap {
+        self.pending = Some(PendingCovenant {
             txid,
-            covenant: Covenant {
+            basis_outpoint: None,
+            issued_block_index: ctx.block_index,
+            is_bootstrap: true,
+            next: Covenant {
                 covenant_id,
                 state,
                 lane_tip,
@@ -348,22 +410,25 @@ impl L2Driver {
                 value,
                 daa_score: 0,
             },
-        };
+        });
         vec![tx]
     }
 
-    /// Builds a dev settlement spending the active covenant, anchored to the current chain tip,
-    /// with a fresh deterministic state. Funds the fee from a spendable coinbase.
+    /// Builds a dev settlement spending the live confirmed covenant, anchored to the current chain
+    /// tip, with a fresh deterministic state. Funds the fee from a spendable coinbase.
     fn settle(&mut self, ctx: &ProduceCtx<'_>) -> Vec<Transaction> {
-        let CovenantPhase::Active(cov) = &self.covenant else { return Vec::new() };
+        let Some(confirmed) = self.confirmed.last() else { return Vec::new() };
         let Some((fee_outpoint, fee_entry)) = ctx.spendable.first() else { return Vec::new() };
-        let cov = cov.clone();
+        let cov = confirmed.covenant.clone();
 
         let tip = self.chain.last().expect("chain tip");
         let block_prove_to = tip.hash;
         let claimed_seq_commit = tip.meta.seq_commit;
         let new_lane_tip = claimed_seq_commit;
-        let new_state = state_for(self.settle_count + 1);
+        // Index the next state by the number of confirmed covenant states, so a re-issue of an
+        // orphaned settlement reproduces the same state (the confirmed count is unchanged) and a
+        // landed one advances it — keeping prev_state == the live tip's state.
+        let new_state = state_for(self.confirmed.len() as u64);
 
         let settlement = Settlement::build_dev(&SettlementDevInput {
             covenant_id: cov.covenant_id,
@@ -399,8 +464,11 @@ impl L2Driver {
         });
         let txid = tx.id();
 
-        self.covenant = CovenantPhase::PendingSettlement {
+        self.pending = Some(PendingCovenant {
             txid,
+            basis_outpoint: Some(cov.outpoint),
+            issued_block_index: ctx.block_index,
+            is_bootstrap: false,
             next: Covenant {
                 covenant_id: cov.covenant_id,
                 state: new_state,
@@ -410,7 +478,8 @@ impl L2Driver {
                 value: cov.value,
                 daa_score: 0,
             },
-        };
+        });
+        self.stats.lock().unwrap().settlements_issued += 1;
         vec![tx]
     }
 

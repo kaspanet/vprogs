@@ -158,4 +158,38 @@ fn l2_flow_settlements_seed_2() {
     println!("settlements: {s:?}");
     assert!(s.activity_executed > 0, "expected some lane activity to be executed");
     assert!(s.settlements_accepted > 0, "expected covenant settlements to land and chain");
+    // A clean single-miner chain never orphans a tx, so no settlement is ever re-issued, and every
+    // issued settlement lands.
+    assert_eq!(s.reissues, 0, "single miner: no reorgs, so no re-issues expected");
+    assert_eq!(
+        s.settlements_issued, s.settlements_accepted,
+        "single miner: every issued settlement must land",
+    );
+}
+
+#[test]
+fn l2_flow_settlements_reorgs_seed_5() {
+    kaspa_core::log::try_init_logger("warn");
+    // Settlements under a real reorging DAG: the covenant tx whose block is orphaned must be rolled
+    // back off the confirmed history (or abandoned while pending) and re-issued from the live tip,
+    // so the covenant keeps chaining and still makes progress. The run completing without the
+    // script engine rejecting a settlement (which would panic block insertion) is the proof the
+    // reorg handling kept the covenant consistent with the selected chain.
+    let s = run_sim(SimParams {
+        seed: 5,
+        num_miners: 2,
+        target_blocks: 400,
+        bps: 2.0,
+        delay: 1.0,
+        enable_settlements: true,
+    });
+    println!("settlements+reorgs: {s:?}");
+    assert!(s.reorgs > 0, "two miners with delay should produce reorgs");
+    assert!(
+        s.settlements_accepted > 0,
+        "covenant must still settle and chain through reorgs (got {s:?})",
+    );
+    // Acceptance can only advance one confirmed state at a time, so issued >= accepted always; the
+    // liveness guard inside the driver (MAX_REISSUES_WITHOUT_PROGRESS) panics if it ever wedges.
+    assert!(s.settlements_issued >= s.settlements_accepted);
 }
