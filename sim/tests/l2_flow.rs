@@ -6,7 +6,7 @@ use rand::{RngCore, SeedableRng, rngs::StdRng};
 use secp256k1::{Keypair, Secp256k1};
 use simpa::simulator::miner::{Miner, MinerOptions, NativeLaneProducer};
 use vprogs_sim::{
-    config::sim_config,
+    config::sim_config_with_maturity,
     driver::{DriverStats, L2Config, L2Driver},
     l2_miner::L2Miner,
     network::SimNetwork,
@@ -20,13 +20,29 @@ struct SimParams {
     bps: f64,
     delay: f64,
     enable_settlements: bool,
+    /// Drive the real batch prover off the sim consensus (GPU proofs under `--features cuda`; the
+    /// full proving path still runs under `RISC0_DEV_MODE=1` with stub receipts).
+    enable_proving: bool,
+    /// Override `coinbase_maturity` (blocks). `None` uses the default delay-scaled maturity
+    /// (~200); a small value makes matured coinbase — hence lane activity — appear early,
+    /// keeping a real-proof run short.
+    coinbase_maturity: Option<u64>,
 }
 
 /// Drives a seeded simulation: miner 0 runs the L2 driver, miners 1.. are plain filler miners (DAG
 /// width + reorgs). Returns the driver's running totals.
 fn run_sim(p: SimParams) -> DriverStats {
-    let SimParams { seed, num_miners, target_blocks, bps, delay, enable_settlements } = p;
-    let config = sim_config(bps, delay);
+    let SimParams {
+        seed,
+        num_miners,
+        target_blocks,
+        bps,
+        delay,
+        enable_settlements,
+        enable_proving,
+        coinbase_maturity,
+    } = p;
+    let config = sim_config_with_maturity(bps, delay, coinbase_maturity);
     let mut net = SimNetwork::new((delay * 1000.0) as u64, config.genesis.timestamp);
 
     let secp = Secp256k1::new();
@@ -41,13 +57,18 @@ fn run_sim(p: SimParams) -> DriverStats {
         let hashrate = 1.0 / num_miners as f64;
 
         if i == 0 {
-            let (driver, handle) = L2Driver::new(L2Config {
-                lane_id,
-                seed: seed ^ 0xA5A5,
-                activity_per_block: 3,
-                enable_settlements,
-                settle_every: 15,
-            });
+            let (driver, handle) = L2Driver::new(
+                L2Config {
+                    lane_id,
+                    seed: seed ^ 0xA5A5,
+                    activity_per_block: 3,
+                    enable_settlements,
+                    settle_every: 15,
+                    enable_proving,
+                    bundle_size: 1,
+                },
+                &consensus,
+            );
             stats = Some(handle);
             let miner = L2Miner::new(
                 i,
@@ -100,6 +121,8 @@ fn l2_flow_single_miner_seed_1() {
         bps: 1.0,
         delay: 0.1,
         enable_settlements: false,
+        enable_proving: false,
+        coinbase_maturity: None,
     });
     println!("single-miner: {s:?}");
     assert!(s.blocks_processed > 0, "expected the driver to process blocks");
@@ -116,6 +139,8 @@ fn l2_flow_is_deterministic() {
         bps: 1.0,
         delay: 0.1,
         enable_settlements: true,
+        enable_proving: false,
+        coinbase_maturity: None,
     };
     let a = run_sim(p());
     let b = run_sim(p());
@@ -134,6 +159,8 @@ fn l2_flow_two_miners_reorgs_seed_3() {
         bps: 2.0,
         delay: 1.0,
         enable_settlements: false,
+        enable_proving: false,
+        coinbase_maturity: None,
     });
     println!("two-miner: {s:?}");
     assert!(s.blocks_processed > 0, "expected the driver to process blocks");
@@ -154,6 +181,8 @@ fn l2_flow_settlements_seed_2() {
         bps: 1.0,
         delay: 0.1,
         enable_settlements: true,
+        enable_proving: false,
+        coinbase_maturity: None,
     });
     println!("settlements: {s:?}");
     assert!(s.activity_executed > 0, "expected some lane activity to be executed");
@@ -182,6 +211,8 @@ fn l2_flow_settlements_reorgs_seed_5() {
         bps: 2.0,
         delay: 1.0,
         enable_settlements: true,
+        enable_proving: false,
+        coinbase_maturity: None,
     });
     println!("settlements+reorgs: {s:?}");
     assert!(s.reorgs > 0, "two miners with delay should produce reorgs");
@@ -192,4 +223,37 @@ fn l2_flow_settlements_reorgs_seed_5() {
     // Acceptance can only advance one confirmed state at a time, so issued >= accepted always; the
     // liveness guard inside the driver (MAX_REISSUES_WITHOUT_PROGRESS) panics if it ever wedges.
     assert!(s.settlements_issued >= s.settlements_accepted);
+}
+
+#[test]
+fn l2_flow_proving_seed_1() {
+    kaspa_core::log::try_init_logger("warn");
+    // Drives the real batch prover (`ProvingPipeline::batch`) off the in-process consensus: the
+    // scheduler submits each block's batch to the prover worker, which fetches that block's lane
+    // proof through `ConsensusLaneSource` and proves a bundle. Under `RISC0_DEV_MODE=1` the proofs
+    // are dev stubs (no GPU) but the entire wiring runs — `ConsensusLaneSource`, the worker's
+    // derived-vs-consensus `lane_tip` sanity check, and the `Weak<Consensus>` teardown discipline
+    // (no `DbLifetime` "DB has N strong references" panic on shutdown). On the GPU box the same
+    // test built `--features cuda` and run *without* `RISC0_DEV_MODE` produces real proofs.
+    //
+    // Single miner so the chain is clean: a reorg would orphan a block whose batch the async worker
+    // might already be proving, and the lane-proof fetch for a no-longer-selected block would fail.
+    // Low coinbase maturity so spendable coinbase — hence lane activity — appears within a few
+    // dozen blocks, keeping the real-proof run short (each bundle is a full proof on the GPU).
+    let s = run_sim(SimParams {
+        seed: 1,
+        num_miners: 1,
+        target_blocks: 80,
+        bps: 1.0,
+        delay: 0.1,
+        enable_settlements: false,
+        enable_proving: true,
+        coinbase_maturity: Some(20),
+    });
+    println!("proving: {s:?}");
+    assert!(s.blocks_processed > 0, "expected the driver to process blocks");
+    // Real lane txs are scheduled and bundled through the prover (not just empty blocks): the
+    // worker fetched each block's lane proof, the derived-vs-consensus lane_tip check passed,
+    // and the run tore down without a DbLifetime panic.
+    assert!(s.activity_executed > 0, "expected lane activity to be executed and proved");
 }

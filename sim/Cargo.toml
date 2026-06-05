@@ -20,6 +20,7 @@ kaspa-consensus-notify = { workspace = true }
 kaspa-core             = { workspace = true }
 kaspa-database         = { workspace = true }
 kaspa-hashes           = { workspace = true }
+kaspa-rpc-core         = { workspace = true }
 kaspa-seq-commit       = { workspace = true }
 kaspa-txscript         = { workspace = true }
 kaspa-utils            = { workspace = true }
@@ -38,6 +39,7 @@ vprogs-storage-types               = { workspace = true }
 vprogs-zk-backend-risc0-api        = { workspace = true, features = ["host"] }
 vprogs-zk-backend-risc0-covenant   = { workspace = true }
 vprogs-zk-backend-risc0-test-suite = { workspace = true }
+vprogs-zk-batch-prover             = { workspace = true }
 vprogs-zk-vm                       = { workspace = true }
 
 # external

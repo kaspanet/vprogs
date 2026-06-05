@@ -23,8 +23,19 @@ pub const PRUNING_DEPTH: u64 = 200 * 2 + 50;
 /// Builds the simulation consensus config for `bps`/`delay`, with Toccata + zk-hardening (and
 /// crescendo) forced active.
 pub fn sim_config(bps: f64, delay: f64) -> Arc<Config> {
+    sim_config_with_maturity(bps, delay, None)
+}
+
+/// Like [`sim_config`] but pins `coinbase_maturity` to `coinbase_maturity` blocks when `Some`. A
+/// low value lets matured coinbase (hence lane activity) appear within a few dozen blocks, which
+/// keeps the real-proof (cuda) run short; `None` uses the default delay-scaled maturity.
+pub fn sim_config_with_maturity(
+    bps: f64,
+    delay: f64,
+    coinbase_maturity: Option<u64>,
+) -> Arc<Config> {
     let mut params = DEVNET_PARAMS;
-    apply_sim_params(&mut params, bps, delay);
+    apply_sim_params(&mut params, bps, delay, coinbase_maturity);
     force_covenant_forks(&mut params);
     Arc::new(
         ConfigBuilder::new(params)
@@ -38,7 +49,7 @@ pub fn sim_config(bps: f64, delay: f64) -> Arc<Config> {
 
 /// Tunes consensus params for a fast, small-finality simulation (mirrors `smt_repro`'s
 /// `apply_pruning_repro_params`, minus the toccata toggle which the caller forces).
-fn apply_sim_params(params: &mut Params, bps: f64, delay: f64) {
+fn apply_sim_params(params: &mut Params, bps: f64, delay: f64, coinbase_maturity: Option<u64>) {
     params.coinbase_maturity = 200;
 
     let max_delay = delay.max(NETWORK_DELAY_BOUND as f64);
@@ -61,8 +72,9 @@ fn apply_sim_params(params: &mut Params, bps: f64, delay: f64) {
     params.mergeset_size_limit = 32 * 2;
     params.max_block_parents = u8::max((0.66 * params.ghostdag_k as f64) as u8, 10);
     params.pruning_depth = PRUNING_DEPTH;
-    params.coinbase_maturity =
-        (params.coinbase_maturity as f64 * f64::max(1.0, bps * delay * 0.25)) as u64;
+    params.coinbase_maturity = coinbase_maturity.unwrap_or_else(|| {
+        (params.coinbase_maturity as f64 * f64::max(1.0, bps * delay * 0.25)) as u64
+    });
 
     params.storage_mass_parameter = 10_000;
 }

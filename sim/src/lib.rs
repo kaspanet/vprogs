@@ -9,4 +9,5 @@
 pub mod config;
 pub mod driver;
 pub mod l2_miner;
+pub mod lane_source;
 pub mod network;

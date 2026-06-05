@@ -8,9 +8,13 @@
 //! counter equals the number of lane-activity transactions executed on the current selected chain;
 //! a failing invariant panics with the block hash, so a fixed seed pinpoints the bug.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    num::NonZeroUsize,
+    sync::{Arc, Mutex},
+};
 
 use kaspa_addresses::{Address, Prefix, Version};
+use kaspa_consensus::consensus::Consensus;
 use kaspa_consensus_core::{
     api::ConsensusApi,
     constants::TX_VERSION_TOCCATA,
@@ -31,7 +35,7 @@ use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId, SchedulerTransaction};
 use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_l1_wallet::{build, encode_activity_payload};
-use vprogs_scheduling_scheduler::Scheduler;
+use vprogs_scheduling_scheduler::{Processor, Scheduler};
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_covenant::{
@@ -40,9 +44,13 @@ use vprogs_zk_backend_risc0_covenant::{
 use vprogs_zk_backend_risc0_test_suite::{
     batch_processor_elf, build_scheduler, read_resource_u32, transaction_processor_elf,
 };
+use vprogs_zk_batch_prover::BatchProverConfig;
 use vprogs_zk_vm::{ProvingPipeline, Vm};
 
-use crate::l2_miner::{ProduceCtx, Producer};
+use crate::{
+    l2_miner::{ProduceCtx, Producer},
+    lane_source::ConsensusLaneSource,
+};
 
 type Store = RocksDbStore;
 type V = Vm<Backend, Store>;
@@ -63,6 +71,14 @@ pub struct L2Config {
     /// Issue a settlement roughly every this-many blocks once the covenant is active (ignored when
     /// settlements are disabled).
     pub settle_every: u64,
+    /// Drive the real batch prover (`ProvingPipeline::batch`) off the simulation's consensus
+    /// instead of running execution-only. With the crate's `cuda` feature the proofs are real
+    /// GPU proofs; without it (or under `RISC0_DEV_MODE=1`) the proving machinery still runs
+    /// end to end with the CPU/dev executor, which is what makes the wiring testable without a
+    /// GPU.
+    pub enable_proving: bool,
+    /// Batches bundled per proof when `enable_proving` is set (clamped to at least 1).
+    pub bundle_size: usize,
 }
 
 /// Running totals the driver maintains, readable after a run for end-of-test assertions.
@@ -147,6 +163,11 @@ pub struct L2Driver {
     scheduler: Scheduler<Store, V>,
     store: Store,
     _db: TempDir,
+    /// A clone of the processor (shares the proving pipeline) kept only so [`Drop`] can signal the
+    /// batch-prover worker to shut down — the simulation drops the scheduler without calling
+    /// `Scheduler::shutdown`, so the worker would otherwise loop forever. No-op when proving is
+    /// off.
+    proc_handle: V,
 
     seeded: bool,
     seed_meta: ChainBlockMetadata,
@@ -166,21 +187,42 @@ pub struct L2Driver {
 }
 
 impl L2Driver {
-    /// Builds a driver with a fresh temp-backed store and an execution-only zk `Vm`. Returns the
-    /// driver and a shared stats handle the test can read after the run.
-    pub fn new(config: L2Config) -> (Self, Arc<Mutex<DriverStats>>) {
+    /// Builds a driver with a fresh temp-backed store and a zk `Vm`. When `config.enable_proving`
+    /// is set the `Vm` drives the real batch prover, reading lane proofs from `consensus` (the
+    /// node this driver's miner runs); otherwise it is execution-only. Returns the driver and a
+    /// shared stats handle the test can read after the run.
+    pub fn new(config: L2Config, consensus: &Arc<Consensus>) -> (Self, Arc<Mutex<DriverStats>>) {
         let db = tempfile::tempdir().expect("temp db dir");
         let store = RocksDbStore::open(db.path().join("l2"));
         let backend =
             Backend::new(&transaction_processor_elf(), &batch_processor_elf(), ProofType::Succinct);
-        let vm = Vm::new(backend, ProvingPipeline::None);
-        let scheduler = build_scheduler(vm, store.clone());
 
         let lane_subnet = SubnetworkId::from_namespace(config.lane_id.to_be_bytes());
+        let lane = lane_key(lane_subnet.as_bytes());
+        let pipeline = if config.enable_proving {
+            ProvingPipeline::batch(
+                backend.clone(),
+                store.clone(),
+                ConsensusLaneSource::new(consensus),
+                BatchProverConfig {
+                    bundle_size: NonZeroUsize::new(config.bundle_size.max(1)).expect("nonzero"),
+                    lane_key: lane,
+                    // No on-chain settlement consumes these receipts yet (dev settlements still go
+                    // through the script engine), so the journal binds the zero placeholder.
+                    covenant_id: None,
+                },
+            )
+        } else {
+            ProvingPipeline::None
+        };
+        let vm = Vm::new(backend, pipeline);
+        let proc_handle = vm.clone();
+        let scheduler = build_scheduler(vm, store.clone());
+
         let stats = Arc::new(Mutex::new(DriverStats::default()));
         let driver = Self {
             lane_subnet,
-            lane_key: lane_key(lane_subnet.as_bytes()),
+            lane_key: lane,
             tracked: ResourceId::for_test(config.lane_id as usize),
             activity_per_block: config.activity_per_block,
             settle_every: config.settle_every.max(1),
@@ -188,6 +230,7 @@ impl L2Driver {
             scheduler,
             store,
             _db: db,
+            proc_handle,
             seeded: false,
             seed_meta: ChainBlockMetadata::default(),
             chain: Vec::new(),
@@ -516,6 +559,15 @@ impl L2Driver {
                 })
             })
             .collect()
+    }
+}
+
+impl Drop for L2Driver {
+    fn drop(&mut self) {
+        // The simulation drops the scheduler without calling `Scheduler::shutdown`, so signal the
+        // batch-prover worker directly (via the shared pipeline) to flush and exit; otherwise it
+        // would loop forever holding this driver's store. No-op for the execution-only pipeline.
+        self.proc_handle.on_shutdown();
     }
 }
 
