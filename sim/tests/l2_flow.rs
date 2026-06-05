@@ -27,6 +27,9 @@ struct SimParams {
     /// (~200); a small value makes matured coinbase — hence lane activity — appear early,
     /// keeping a real-proof run short.
     coinbase_maturity: Option<u64>,
+    /// Batches bundled per proof when `enable_proving` is set (also the real-proof settlement
+    /// cadence: one settlement per completed bundle).
+    bundle_size: usize,
 }
 
 /// Drives a seeded simulation: miner 0 runs the L2 driver, miners 1.. are plain filler miners (DAG
@@ -41,6 +44,7 @@ fn run_sim(p: SimParams) -> DriverStats {
         enable_settlements,
         enable_proving,
         coinbase_maturity,
+        bundle_size,
     } = p;
     let config = sim_config_with_maturity(bps, delay, coinbase_maturity);
     let mut net = SimNetwork::new((delay * 1000.0) as u64, config.genesis.timestamp);
@@ -65,7 +69,7 @@ fn run_sim(p: SimParams) -> DriverStats {
                     enable_settlements,
                     settle_every: 15,
                     enable_proving,
-                    bundle_size: 1,
+                    bundle_size,
                 },
                 &consensus,
             );
@@ -123,6 +127,7 @@ fn l2_flow_single_miner_seed_1() {
         enable_settlements: false,
         enable_proving: false,
         coinbase_maturity: None,
+        bundle_size: 1,
     });
     println!("single-miner: {s:?}");
     assert!(s.blocks_processed > 0, "expected the driver to process blocks");
@@ -141,6 +146,7 @@ fn l2_flow_is_deterministic() {
         enable_settlements: true,
         enable_proving: false,
         coinbase_maturity: None,
+        bundle_size: 1,
     };
     let a = run_sim(p());
     let b = run_sim(p());
@@ -161,6 +167,7 @@ fn l2_flow_two_miners_reorgs_seed_3() {
         enable_settlements: false,
         enable_proving: false,
         coinbase_maturity: None,
+        bundle_size: 1,
     });
     println!("two-miner: {s:?}");
     assert!(s.blocks_processed > 0, "expected the driver to process blocks");
@@ -183,6 +190,7 @@ fn l2_flow_settlements_seed_2() {
         enable_settlements: true,
         enable_proving: false,
         coinbase_maturity: None,
+        bundle_size: 1,
     });
     println!("settlements: {s:?}");
     assert!(s.activity_executed > 0, "expected some lane activity to be executed");
@@ -213,6 +221,7 @@ fn l2_flow_settlements_reorgs_seed_5() {
         enable_settlements: true,
         enable_proving: false,
         coinbase_maturity: None,
+        bundle_size: 1,
     });
     println!("settlements+reorgs: {s:?}");
     assert!(s.reorgs > 0, "two miners with delay should produce reorgs");
@@ -249,11 +258,68 @@ fn l2_flow_proving_seed_1() {
         enable_settlements: false,
         enable_proving: true,
         coinbase_maturity: Some(20),
+        bundle_size: 1,
     });
     println!("proving: {s:?}");
     assert!(s.blocks_processed > 0, "expected the driver to process blocks");
     // Real lane txs are scheduled and bundled through the prover (not just empty blocks): the
     // worker fetched each block's lane proof, the derived-vs-consensus lane_tip check passed,
     // and the run tore down without a DbLifetime panic.
+    assert!(s.activity_executed > 0, "expected lane activity to be executed and proved");
+}
+
+#[test]
+fn l2_flow_real_proof_settlement_chain() {
+    use vprogs_zk_backend_risc0_test_suite::dev_mode_enabled;
+
+    // The end-to-end target: real proofs *and* real on-chain settlements. The driver bootstraps a
+    // production covenant, the batch prover proves each bundle into a real receipt, and the driver
+    // builds a production `Settlement::build` whose `OpZkPrecompile` the sim's script engine
+    // validates against the real receipt before the settlement lands. The covenant advances
+    // bootstrap → s1 → s2 → …, each settlement spending the previous continuation UTXO and chaining
+    // `prev_state`/`prev_lane_tip` from the bundle journal.
+    //
+    // Real settlements require real receipts: `OpZkPrecompile` rejects dev stubs, so this test only
+    // matters built `--features cuda --release` and run *without* `RISC0_DEV_MODE` on the GPU box.
+    // It is skipped under dev mode (where the dev-settlement tests above cover the chain-side
+    // chaining invariants without the precompile).
+    if dev_mode_enabled() {
+        eprintln!(
+            "skipping l2_flow_real_proof_settlement_chain: RISC0_DEV_MODE=1 (needs real receipts)"
+        );
+        return;
+    }
+    kaspa_core::log::try_init_logger("warn");
+
+    // Single miner so the chain is clean: the async prover never has a bundle's block orphaned out
+    // from under it, and every issued settlement lands (issued == accepted, no re-issues). Low
+    // coinbase maturity so activity — hence bundles — start within a few dozen blocks.
+    // `bundle_size` throttles GPU cost (one proof per `bundle_size` blocks) and the settlement
+    // cadence.
+    let s = run_sim(SimParams {
+        seed: 11,
+        num_miners: 1,
+        target_blocks: 160,
+        bps: 1.0,
+        delay: 0.1,
+        enable_settlements: true,
+        enable_proving: true,
+        coinbase_maturity: Some(20),
+        bundle_size: 10,
+    });
+    println!("real-proof e2e: {s:?}");
+    // Bootstrap → at least three chained real settlements, each validated on chain by the
+    // precompile against a real receipt and spending the prior continuation UTXO.
+    assert!(
+        s.settlements_accepted >= 3,
+        "must chain bootstrap → s1 → s2 → s3 with real proofs (got {})",
+        s.settlements_accepted,
+    );
+    // Clean single miner: no orphans, so no re-issues and every issued settlement lands.
+    assert_eq!(s.reissues, 0, "single miner: no reorgs, so no re-issues expected");
+    assert_eq!(
+        s.settlements_issued, s.settlements_accepted,
+        "single miner: every issued settlement must land",
+    );
     assert!(s.activity_executed > 0, "expected lane activity to be executed and proved");
 }

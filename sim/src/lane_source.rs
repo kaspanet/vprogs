@@ -1,7 +1,7 @@
 //! A [`LaneProofSource`] backed by an in-process consensus, for driving the batch prover from the
 //! simulation instead of a live gRPC node.
 
-use std::sync::{Arc, Weak};
+use std::sync::Weak;
 
 use kaspa_consensus::consensus::Consensus;
 use kaspa_consensus_core::api::ConsensusApi;
@@ -17,18 +17,19 @@ use vprogs_zk_batch_prover::LaneProofSource;
 /// whose db lifetime is asserted ("DB has N strong references") when the node is torn down. The
 /// batch-prover worker runs on a detached thread that outlives the run, so a strong
 /// `Arc<Consensus>` captured here could keep the db alive past teardown and trip that assert. A
-/// `Weak` never extends the consensus lifetime; once the node is gone `upgrade` fails and we return
-/// a placeholder — only reachable while shutting down, after the last real bundle, where the
-/// receipt is discarded anyway.
+/// `Weak` never extends the consensus lifetime; once the node is gone `upgrade` fails and the
+/// fetch parks forever (the worker is mid-teardown, its receipt would be discarded anyway) — this
+/// is only reachable while shutting down, and parking lets the detached worker's runtime drop
+/// silently instead of feeding the guest an undecodable empty SMT proof.
 pub struct ConsensusLaneSource {
     consensus: Weak<Consensus>,
 }
 
 impl ConsensusLaneSource {
-    /// Borrows the node's consensus weakly. Pass the same clone `add_node` returned; this does not
-    /// retain a strong reference.
-    pub fn new(consensus: &Arc<Consensus>) -> Self {
-        Self { consensus: Arc::downgrade(consensus) }
+    /// Builds the source from a weak handle on the node's consensus (the driver keeps a [`Weak`] so
+    /// the source never extends the consensus lifetime; pass `Arc::downgrade(&consensus)`).
+    pub fn from_weak(consensus: Weak<Consensus>) -> Self {
+        Self { consensus }
     }
 }
 

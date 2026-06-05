@@ -27,6 +27,7 @@ kaspa-utils            = { workspace = true }
 simpa                  = { workspace = true }
 
 # vprogs L2 stack: the same Vm/scheduler/covenant/wallet pieces the settlement-l1 tests use.
+vprogs-core-codec                  = { workspace = true }
 vprogs-core-smt                    = { workspace = true }
 vprogs-core-test-utils             = { workspace = true }
 vprogs-core-types                  = { workspace = true }
@@ -36,6 +37,7 @@ vprogs-scheduling-scheduler        = { workspace = true }
 vprogs-storage-manager             = { workspace = true }
 vprogs-storage-rocksdb-store       = { workspace = true }
 vprogs-storage-types               = { workspace = true }
+vprogs-zk-abi                      = { workspace = true, features = ["host"] }
 vprogs-zk-backend-risc0-api        = { workspace = true, features = ["host"] }
 vprogs-zk-backend-risc0-covenant   = { workspace = true }
 vprogs-zk-backend-risc0-test-suite = { workspace = true }
