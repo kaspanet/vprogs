@@ -1,7 +1,5 @@
 use std::{collections::VecDeque, thread::spawn};
 
-use kaspa_grpc_client::GrpcClient;
-use kaspa_rpc_core::api::rpc::RpcApi;
 use tokio::runtime::Builder;
 use vprogs_core_types::ResourceId;
 use vprogs_l1_types::ChainBlockMetadata;
@@ -10,11 +8,11 @@ use vprogs_storage_types::Store;
 use vprogs_zk_abi::batch_processor::{Bundle, Inputs as BundleInputs};
 use zerocopy::little_endian::U32;
 
-use crate::{Backend, BatchProver, BatchProverConfig, command::Command};
+use crate::{Backend, BatchProver, BatchProverConfig, LaneProofSource, command::Command};
 
 /// Background worker that buffers `bundle_size` batches, builds a single bundle witness,
 /// and proves it as one ZK receipt that settles in one on-chain transaction.
-pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend> {
+pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend, L: LaneProofSource> {
     /// Shared prover state (inbox, shutdown).
     prover: BatchProver<S, P>,
     /// Backend used for proving.
@@ -23,14 +21,13 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend> {
     store: S,
     /// Batches waiting to be proved, in scheduling order.
     pending: VecDeque<ScheduledBatch<S, P>>,
-    /// Connected kaspa gRPC client. Used to fetch the bundle's final-block lane proof
-    /// via `get_seq_commit_lane_proof`.
-    grpc_client: GrpcClient,
+    /// Source of the bundle's final-block lane proof (production: a kaspa gRPC client).
+    lane_source: L,
     /// Static config (bundle size, lane key).
     config: BatchProverConfig,
 }
 
-impl<S: Store, P, B: Backend> Worker<S, P, B>
+impl<S: Store, P, B: Backend, L: LaneProofSource> Worker<S, P, B, L>
 where
     P: Processor<
             S,
@@ -44,10 +41,10 @@ where
         prover: BatchProver<S, P>,
         backend: B,
         store: S,
-        grpc_client: GrpcClient,
+        lane_source: L,
         config: BatchProverConfig,
     ) {
-        let this = Self { prover, backend, store, pending: VecDeque::new(), grpc_client, config };
+        let this = Self { prover, backend, store, pending: VecDeque::new(), lane_source, config };
         let runtime = Builder::new_current_thread().enable_all().build().expect("runtime");
         spawn(move || runtime.block_on(this.run()));
     }
@@ -115,11 +112,7 @@ where
         // commits and the covenant SPK pins.
         let lane_key = self.config.lane_key;
         let last_block_hash = batches.last().unwrap().checkpoint().metadata().hash;
-        let resp = self
-            .grpc_client
-            .get_seq_commit_lane_proof(last_block_hash, lane_key)
-            .await
-            .expect("get_seq_commit_lane_proof");
+        let resp = self.lane_source.fetch_lane_proof(last_block_hash, lane_key).await;
 
         // Pre-prove sanity: derive new_lane_tip locally and compare against consensus
         // before paying for proving (Maxim's demo pattern).
