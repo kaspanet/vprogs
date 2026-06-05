@@ -710,9 +710,8 @@ impl L2Driver {
         // batch in the prospective bundle instead: the prover publishes the bundle receipt to
         // every batch (empties included), so once any non-empty batch's latch opens, every batch
         // in the bundle has its slot set.
-        let last_nonempty = (0..self.bundle_size)
-            .rev()
-            .find(|&i| !self.unproved[i].txs().is_empty());
+        let last_nonempty =
+            (0..self.bundle_size).rev().find(|&i| !self.unproved[i].txs().is_empty());
         let Some(nonempty_idx) = last_nonempty else {
             // All batches in this bundle are empty → no L2 state advance → no settlement to
             // build. Drop them so the next bundle can settle. The prover still proves a no-op
