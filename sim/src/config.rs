@@ -12,7 +12,7 @@ use kaspa_consensus::{
     model::stores::ghostdag::KType,
     params::{DEVNET_PARAMS, ForkActivation, NETWORK_DELAY_BOUND, Params},
 };
-use kaspa_consensus_core::config::bps::calculate_ghostdag_k;
+use kaspa_consensus_core::{config::bps::calculate_ghostdag_k, mass::BlockMassLimits};
 use vprogs_zk_backend_risc0_test_suite::force_covenant_forks;
 
 /// Finality depth used by the sim (also drives lane expiry).
@@ -77,6 +77,13 @@ fn apply_sim_params(params: &mut Params, bps: f64, delay: f64, coinbase_maturity
     });
 
     params.storage_mass_parameter = 10_000;
+
+    // Real-proof settlements drive `OpZkPrecompile` for the succinct branch, which the chain
+    // reports at ~1.2M compute mass; the default 500k block cap rejects the whole block. Bump
+    // shared limits to 2M so a settlement plus its activity payload fits with headroom. Same
+    // value `settlement_l1_e2e.rs` uses for its real-proof simnet. No effect on the dev /
+    // execution-only modes (their txs are much smaller).
+    params.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
 }
 
 /// Two worker threads each for block and virtual processing, matching `smt_repro`.

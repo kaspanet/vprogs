@@ -395,6 +395,16 @@ impl L2Driver {
 
             // Use the consensus's own lane tip (authoritative) when the lane saw activity.
             if !lane_txs.is_empty() {
+                // First activation on this chain: nothing has ever been folded into the lane, so
+                // consensus's lane-update resolver falls back to `prev_seq_commit`. The guest's
+                // `verify_activity` picks `prev_seq_commit` over `prev_lane_tip` only when the
+                // batch is marked `lane_expired`, so mirror consensus's first-activation path
+                // here. After the first batch lands, `prev_lane_blue_score > 0` and subsequent
+                // batches chain on `prev_lane_tip` normally. Same workaround as
+                // `settlement_l1_e2e::settle_1`.
+                if meta.prev_lane_blue_score == 0 {
+                    meta.lane_expired = true;
+                }
                 if let Ok(proof) = c.get_seq_commit_lane_proof(hash, self.lane_key) {
                     if let Some(tip) = proof.lane_tip {
                         meta.lane_tip = tip;
@@ -684,19 +694,46 @@ impl L2Driver {
     /// front `bundle_size` of `unproved` is exactly the prover's next bundle (both consume batches
     /// in scheduling order), so the receipt on the last batch is this bundle's.
     fn settle_real(&mut self, ctx: &ProduceCtx<'_>) -> Vec<Transaction> {
-        // A full bundle's worth of batches must be queued and its receipt published. The prover
-        // publishes the bundle receipt to every batch in the bundle, so the last one carries it.
-        if self.unproved.len() < self.bundle_size
-            || !self.unproved[self.bundle_size - 1].artifact_published()
-        {
+        // A full bundle's worth of batches must be queued before a bundle can settle. Once we
+        // have them, block on the prover: the simulated clock would otherwise outpace real GPU
+        // proving (the prover is a detached thread, sim events advance in wall-time-free logical
+        // ticks), so a non-blocking poll returns false on every block and we'd never settle.
+        // Blocking the miner here pauses block production until the receipt publishes, which is
+        // exactly the back-pressure we want for a single-miner run.
+        if self.unproved.len() < self.bundle_size {
             return Vec::new();
         }
+        // Empty batches auto-open their `artifact_published` latch at construction (the framework
+        // shortcut for "nothing to prove" execution-only mode) — the slot stays `None` until the
+        // prover publishes. So blocking on an empty batch's latch returns instantly while the
+        // receipt isn't ready, and `artifact()` panics on `None`. Wait on the *last non-empty*
+        // batch in the prospective bundle instead: the prover publishes the bundle receipt to
+        // every batch (empties included), so once any non-empty batch's latch opens, every batch
+        // in the bundle has its slot set.
+        let last_nonempty = (0..self.bundle_size)
+            .rev()
+            .find(|&i| !self.unproved[i].txs().is_empty());
+        let Some(nonempty_idx) = last_nonempty else {
+            // All batches in this bundle are empty → no L2 state advance → no settlement to
+            // build. Drop them so the next bundle can settle. The prover still proves a no-op
+            // bundle (and the receipt is discarded), which is wasted GPU but harmless.
+            for _ in 0..self.bundle_size {
+                self.unproved.pop_front();
+            }
+            return Vec::new();
+        };
+        self.unproved[nonempty_idx].wait_artifact_published_blocking();
         let bundle: Vec<_> =
             (0..self.bundle_size).map(|_| self.unproved.pop_front().unwrap()).collect();
         let last = bundle.last().unwrap();
         let block_prove_to = last.checkpoint().metadata().hash;
         let claimed_seq_commit = last.checkpoint().metadata().seq_commit;
-        let receipt = (*last.artifact()).clone();
+        // Read the receipt from the batch we waited on, not from `last`: the prover publishes by
+        // iterating `bundle.batches()` and filling slot-then-opening-latch per batch, so any
+        // batch *after* `nonempty_idx` (including `last` when it's empty) may not have its slot
+        // populated at the moment our wait unblocks. The same bundle receipt is published to
+        // every batch, so the source choice doesn't change correctness — only safety.
+        let receipt = (*bundle[nonempty_idx].artifact()).clone();
 
         let journal = Backend::journal_bytes(&receipt);
         let parsed =
