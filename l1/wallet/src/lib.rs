@@ -81,7 +81,7 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
             "non-native subnetwork requires tx_version >= TX_VERSION_TOCCATA",
         );
 
-        let utxos = self.fetch_spendable_utxos().await;
+        let utxos = self.fetch_spendable_utxos().await.expect("fetch spendable utxos");
         assert!(
             utxos.len() >= payloads.len(),
             "not enough spendable UTXOs: found {} but need {}",
@@ -114,7 +114,7 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
         redeem_script: &[u8],
         value: u64,
     ) -> (Transaction, Hash) {
-        let utxos = self.fetch_spendable_utxos().await;
+        let utxos = self.fetch_spendable_utxos().await.expect("fetch spendable utxos");
         let (outpoint, entry) = utxos.into_iter().next().expect("no spendable UTXO for bootstrap");
         build::covenant_bootstrap_transaction(
             redeem_script,
@@ -135,7 +135,7 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
         covenant_entry: UtxoEntry,
         covenant_compute_budget: ComputeBudget,
     ) -> Transaction {
-        let utxos = self.fetch_spendable_utxos().await;
+        let utxos = self.fetch_spendable_utxos().await.expect("fetch spendable utxos");
         let (fee_outpoint, fee_entry) =
             utxos.into_iter().next().expect("no spendable UTXO for fee");
         build::settlement_transaction(build::SettlementTx {
@@ -156,14 +156,10 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
         Ok(tx.id())
     }
 
-    /// Number of currently spendable UTXOs for the issuer address.
-    pub async fn spendable_utxo_count(&self) -> usize {
-        self.fetch_spendable_utxos().await.len()
-    }
-
     /// Builds one signed `subnetwork_id` activity tx spending the largest spendable UTXO **not** in
-    /// `in_flight`, returning the tx and the outpoint it spends. Returns `None` when every
-    /// spendable UTXO is in flight.
+    /// `in_flight`, returning the tx and the outpoint it spends. Returns `Ok(None)` when every
+    /// spendable UTXO is in flight, and the RPC error if the spendable-set fetch fails (so a
+    /// long-running issuer can log and retry instead of crashing).
     ///
     /// `get_utxos_by_addresses` reports the confirmed UTXO set, which still includes a UTXO already
     /// spent by an unconfirmed mempool transaction (its change output stays invisible until mined).
@@ -179,12 +175,15 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
         subnetwork_id: SubnetworkId,
         tx_version: u16,
         in_flight: &mut std::collections::HashSet<TransactionOutpoint>,
-    ) -> Option<(Transaction, TransactionOutpoint)> {
-        let utxos = self.fetch_spendable_utxos().await;
+    ) -> Result<Option<(Transaction, TransactionOutpoint)>, RpcError> {
+        let utxos = self.fetch_spendable_utxos().await?;
         let present: std::collections::HashSet<TransactionOutpoint> =
             utxos.iter().map(|(o, _)| *o).collect();
         in_flight.retain(|o| present.contains(o));
-        let (outpoint, entry) = utxos.into_iter().find(|(o, _)| !in_flight.contains(o))?;
+        let Some((outpoint, entry)) = utxos.into_iter().find(|(o, _)| !in_flight.contains(o))
+        else {
+            return Ok(None);
+        };
         let tx = build::activity_transaction(build::ActivityTx {
             payload,
             outpoint,
@@ -195,18 +194,24 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
             tx_version,
             params: self.params,
         });
-        Some((tx, outpoint))
+        Ok(Some((tx, outpoint)))
     }
 
     /// Spendable UTXOs for the issuer address (matured coinbases only), largest first. Requires the
     /// node to run with `--utxoindex`.
-    pub async fn fetch_spendable_utxos(&self) -> Vec<(TransactionOutpoint, UtxoEntry)> {
-        let virtual_daa_score = self.client.get_server_info().await.unwrap().virtual_daa_score;
+    ///
+    /// Propagates the RPC error rather than unwrapping: a long-running issuer must survive a
+    /// transient node hiccup (log it and retry next tick), not crash the process. One-shot
+    /// startup callers (bootstrap) `.expect()` it, where a failure should abort.
+    pub async fn fetch_spendable_utxos(
+        &self,
+    ) -> Result<Vec<(TransactionOutpoint, UtxoEntry)>, RpcError> {
+        let virtual_daa_score = self.client.get_server_info().await?.virtual_daa_score;
 
-        self.client
+        Ok(self
+            .client
             .get_utxos_by_addresses(vec![self.address.clone()])
-            .await
-            .unwrap()
+            .await?
             .into_iter()
             .filter(|e| {
                 !e.utxo_entry.is_coinbase
@@ -215,7 +220,7 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
             })
             .map(|e| (TransactionOutpoint::from(e.outpoint), UtxoEntry::from(e.utxo_entry)))
             .collect::<Vec<_>>()
-            .tap_mut(|utxos| utxos.sort_by_key(|b| cmp::Reverse(b.1.amount)))
+            .tap_mut(|utxos| utxos.sort_by_key(|b| cmp::Reverse(b.1.amount))))
     }
 }
 

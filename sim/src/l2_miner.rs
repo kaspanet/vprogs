@@ -256,8 +256,12 @@ impl TemplateTransactionSelector for OnetimeTxSelector {
         self.txs.take().unwrap()
     }
 
-    fn reject_selection(&mut self, _tx_id: TransactionId) {
-        unimplemented!()
+    fn reject_selection(&mut self, tx_id: TransactionId) {
+        // Standard template building rejects a selected tx only if it fails block-template
+        // validation. The producer is expected to emit txs valid against the current virtual
+        // state, so a rejection is a producer bug; surface which tx so the seeded run is debuggable
+        // rather than panicking opaquely.
+        panic!("producer emitted a tx the block template rejected: {tx_id}");
     }
 
     fn is_successful(&self) -> bool {

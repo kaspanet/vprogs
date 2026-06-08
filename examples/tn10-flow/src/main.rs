@@ -92,11 +92,12 @@ async fn main() {
     let tx_elf = transaction_processor_elf();
     let batch_elf = batch_processor_elf();
 
-    // Build the node (kept alive until we park; dropping it shuts the flow down). Settlement mode
-    // additionally bootstraps a real-pins covenant and spawns the settler, which drains the batch
-    // sink the node forwards to it.
-    let _node: FlowNode = if cfg.enable_settlements {
-        start_settlement(
+    // Build the node (kept alive until we return; dropping it shuts the flow down). Settlement mode
+    // additionally bootstraps a real-pins covenant and spawns the settler (whose handle we keep),
+    // which drains the batch sink the node forwards to it.
+    let (_node, settler): (FlowNode, Option<tokio::task::JoinHandle<()>>) = if cfg.enable_settlements
+    {
+        let (node, settler) = start_settlement(
             &cfg,
             &client,
             &params,
@@ -108,9 +109,10 @@ async fn main() {
             network_id,
             &mut persisted,
         )
-        .await
+        .await;
+        (node, Some(settler))
     } else {
-        start_exec(
+        let node = start_exec(
             &cfg,
             &client,
             &params,
@@ -122,7 +124,8 @@ async fn main() {
             network_id,
             &mut persisted,
         )
-        .await
+        .await;
+        (node, None)
     };
 
     // --- activity issuer (background, both modes) ---
@@ -134,7 +137,21 @@ async fn main() {
         "watch RUST_LOG trace for vprogs_node_framework (blocks/reorgs/settlements) and \
          vprogs_zk_vm (decoded state)"
     );
-    std::future::pending::<()>().await;
+
+    match settler {
+        // Settlement mode: the settler is the daemon's reason to live. Awaiting its handle means a
+        // panic inside it (rejected settlement, confirmation timeout) surfaces here and exits the
+        // process non-zero, instead of being swallowed while the daemon parks looking healthy.
+        Some(handle) => match handle.await {
+            Ok(()) => log::info!("settler finished (sink closed); shutting down"),
+            Err(e) => {
+                log::error!("settler task terminated abnormally: {e}");
+                std::process::exit(1);
+            }
+        },
+        // Exec-only mode: nothing settles, so park until killed (the node runs on its own thread).
+        None => std::future::pending::<()>().await,
+    }
 }
 
 /// Builds the execution-only node: reuse or dev-bootstrap a covenant, then a [`Node`] with no
@@ -188,6 +205,11 @@ async fn start_exec(
 /// prover over the remote node, and spawn the [`settler`] on the node's batch sink. Always
 /// bootstraps fresh (the prover's store starts at the empty SMT, which the bootstrap's initial
 /// state matches), so the data dir should be clean for a settlement run.
+///
+/// Returns the node and the settler's [`JoinHandle`](tokio::task::JoinHandle) so `main` can await
+/// it: the settler panics loudly on a rejected settlement or a confirmation timeout, and awaiting
+/// the handle is what turns that into a visible process exit instead of a task that dies silently
+/// while the daemon keeps parking.
 #[allow(clippy::too_many_arguments)]
 async fn start_settlement(
     cfg: &Config,
@@ -200,9 +222,17 @@ async fn start_settlement(
     batch_elf: &[u8],
     network_id: NetworkId,
     persisted: &mut PersistedState,
-) -> FlowNode {
+) -> (FlowNode, tokio::task::JoinHandle<()>) {
     let backend = Backend::new(tx_elf, batch_elf, ProofType::Succinct);
     let wallet = Wallet::new(client, params, keypair);
+    // A settlement run reuses no prior covenant (the prover's store starts at the empty SMT), so
+    // warn if the data dir already carries one — it is about to be overwritten by a fresh bootstrap.
+    if let Some(prior) = persisted.covenant_id.as_deref() {
+        log::warn!(
+            "settlement mode bootstraps a fresh covenant; overwriting stored covenant {prior} \
+             (use a clean TN10_DATA_DIR for a settlement run)",
+        );
+    }
     log::info!(
         "settlement mode: bootstrapping real-pins covenant; issuer address {}",
         wallet.address()
@@ -231,9 +261,9 @@ async fn start_settlement(
         },
     );
 
-    // The settler runs until the node drops (closing the sink). A detached task: its JoinHandle is
-    // dropped, which does not cancel it.
-    tokio::spawn(settler::run(
+    // The settler runs until the node drops (closing the sink) or it hits a fatal error. `main`
+    // owns the returned handle and awaits it, so neither outcome is swallowed.
+    let settler = tokio::spawn(settler::run(
         sink_rx,
         SettlerConfig {
             client: client.clone(),
@@ -246,7 +276,7 @@ async fn start_settlement(
         },
         covenant,
     ));
-    node
+    (node, settler)
 }
 
 /// The bridge wiring for either mode, pointed at the remote node's lane + covenant.
@@ -297,17 +327,26 @@ fn spawn_issuer(
                 break;
             }
             let payload = encode_activity_payload(&[AccessMetadata::write(tracked)], &[1, 2, 3]);
-            let Some((tx, outpoint)) = wallet
+            let (tx, outpoint) = match wallet
                 .build_activity_excluding(payload, lane_subnet, TX_VERSION_TOCCATA, &mut in_flight)
                 .await
-            else {
-                log::warn!(
-                    "issuer: no free spendable UTXOs for {} ({} in flight); fund it or wait for \
-                     change to confirm",
-                    wallet.address(),
-                    in_flight.len(),
-                );
-                continue;
+            {
+                Ok(Some(built)) => built,
+                Ok(None) => {
+                    log::warn!(
+                        "issuer: no free spendable UTXOs for {} ({} in flight); fund it or wait \
+                         for change to confirm",
+                        wallet.address(),
+                        in_flight.len(),
+                    );
+                    continue;
+                }
+                // A transient RPC failure (node restart, dropped connection): log and retry next
+                // tick rather than taking the daemon down.
+                Err(e) => {
+                    log::warn!("issuer: spendable-utxo fetch failed (retrying next tick): {e}");
+                    continue;
+                }
             };
             match wallet.submit_transaction(&tx).await {
                 Ok(id) => {

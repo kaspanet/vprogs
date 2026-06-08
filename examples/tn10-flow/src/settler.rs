@@ -13,7 +13,7 @@
 //! single-in-flight covenant and is **single-miner / low-reorg only**: a reorg that orphans a block
 //! whose batch is mid-prove desyncs our `unproved` queue from the prover's stream. The worker
 //! forwards rollbacks so we can drop orphaned batches, but cancelling an in-flight bundle proof is
-//! a framework-side TODO (see `sim/HANDOFF.md` §6); run this against a clean/fork node.
+//! still a framework-side gap, so run this against a clean/fork node.
 
 use std::{collections::VecDeque, time::Duration};
 
