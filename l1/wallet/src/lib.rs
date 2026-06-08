@@ -101,6 +101,7 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
                     address: &self.address,
                     subnetwork_id,
                     tx_version,
+                    params: self.params,
                 })
             })
             .collect()

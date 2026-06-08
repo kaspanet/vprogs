@@ -94,19 +94,23 @@ impl<S: Store, P: Processor<S>> NodeWorker<S, P> {
 
             L1Event::ChainBlockAdded { checkpoint, accepted_transactions, .. } => {
                 // Per-block trace so hosts can observe processing without owning the loop: enable
-                // `vprogs_node_framework=trace`. The decoded L2 state is host-specific and read
-                // separately through the API.
+                // `vprogs_node_framework=trace`. Only blocks that carry lane txs or a settlement
+                // are logged — empty blocks (e.g. the whole genesis backfill) would
+                // otherwise flood the log. The decoded L2 state is host-specific
+                // and read separately through the API.
                 let meta = checkpoint.metadata();
-                log::trace!(
-                    "block idx={} hash={} found_txs={} lane_tip={} settlement={}",
-                    checkpoint.index(),
-                    meta.hash,
-                    accepted_transactions.len(),
-                    meta.lane_tip,
-                    meta.last_settlement
-                        .as_ref()
-                        .map_or_else(|| "none".to_string(), |s| s.tx_id.to_string()),
-                );
+                if !accepted_transactions.is_empty() || meta.last_settlement.is_some() {
+                    log::trace!(
+                        "block idx={} hash={} found_txs={} lane_tip={} settlement={}",
+                        checkpoint.index(),
+                        meta.hash,
+                        accepted_transactions.len(),
+                        meta.lane_tip,
+                        meta.last_settlement
+                            .as_ref()
+                            .map_or_else(|| "none".to_string(), |s| s.tx_id.to_string()),
+                    );
+                }
 
                 let txs = accepted_transactions
                     .into_iter()

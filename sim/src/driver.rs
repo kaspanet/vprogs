@@ -856,6 +856,7 @@ impl L2Driver {
                     address: &address,
                     subnetwork_id: self.lane_subnet,
                     tx_version: TX_VERSION_TOCCATA,
+                    params: ctx.params,
                 })
             })
             .collect()

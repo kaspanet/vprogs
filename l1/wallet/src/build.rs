@@ -22,6 +22,28 @@ use kaspa_hashes::Hash;
 use kaspa_txscript::{pay_to_address_script, standard::pay_to_script_hash_script};
 use secp256k1::Keypair;
 
+/// testnet-10's mempool floor: a transaction's fee must be at least this many sompi per mass gram.
+const MIN_FEERATE_PER_GRAM: u64 = 100;
+
+/// The minimum sompi fee the node's mempool requires for `tx`: [`MIN_FEERATE_PER_GRAM`] times the
+/// binding mass — the larger of the tx's compute mass and its KIP-0009 storage mass.
+///
+/// Call this on the *final, signed* tx so the signature scripts are counted (an unsigned tx has
+/// empty sig scripts and undercounts compute mass). The fee value itself doesn't change the byte
+/// layout, so a zero-fee probe yields the same compute mass; storage mass is ~0 for the simple
+/// shapes here, so it stays compute-dominated.
+fn min_fee(params: &Params, tx: &Transaction, entries: &[UtxoEntry]) -> u64 {
+    let calc = MassCalculator::new(
+        params.mass_per_tx_byte,
+        params.mass_per_script_pub_key_byte,
+        params.storage_mass_parameter,
+    );
+    let compute = calc.calc_non_contextual_masses(tx).compute_mass;
+    let populated = PopulatedTransaction::new(tx, entries.to_vec());
+    let storage = calc.calc_contextual_masses(&populated).map_or(0, |m| m.storage_mass);
+    MIN_FEERATE_PER_GRAM * compute.max(storage)
+}
+
 /// Commits KIP-0009 storage mass on `tx` (Toccata txs must carry it for the node to accept them).
 pub fn commit_storage_mass(params: &Params, tx: &Transaction, entries: &[UtxoEntry]) {
     let calc = MassCalculator::new(
@@ -52,39 +74,40 @@ pub struct ActivityTx<'a> {
     pub subnetwork_id: SubnetworkId,
     /// Transaction version; [`TX_VERSION_TOCCATA`] or newer for non-native subnetworks.
     pub tx_version: u16,
+    /// Consensus params, for the mass-based fee.
+    pub params: &'a Params,
 }
 
-/// Builds one signed activity transaction spending `args.outpoint`, paying the remainder (after a
-/// mempool-friendly fee) back to `args.address`, carrying `args.payload` on `args.subnetwork_id`.
+/// Builds one signed activity transaction spending `args.outpoint`, paying the remainder (after the
+/// node's minimum mass-based fee) back to `args.address`, carrying `args.payload` on
+/// `args.subnetwork_id`.
 pub fn activity_transaction(args: ActivityTx<'_>) -> Transaction {
-    // Kaspa-mempool-friendly heuristic: 10 × (input + output + base + payload).
-    const FEE_PER_BYTE: u64 = 10;
-    const INPUT_SIZE: u64 = 200;
-    const OUTPUT_SIZE: u64 = 34;
-    const BASE_OVERHEAD: u64 = 1000;
-    let fee = FEE_PER_BYTE * (INPUT_SIZE + OUTPUT_SIZE + BASE_OVERHEAD + args.payload.len() as u64);
-    assert!(args.entry.amount > fee, "UTXO amount {} too small for fee {}", args.entry.amount, fee);
-
     let input = TransactionInput::new(args.outpoint, vec![], 0, 1);
-    let output =
-        TransactionOutput::new(args.entry.amount - fee, pay_to_address_script(args.address));
+    let spk = pay_to_address_script(args.address);
+    let entries = vec![args.entry.clone()];
+    let build = |out_amount: u64| {
+        Transaction::new(
+            args.tx_version,
+            vec![input.clone()],
+            vec![TransactionOutput::new(out_amount, spk.clone())],
+            0,
+            args.subnetwork_id,
+            0,
+            args.payload.clone(),
+        )
+    };
 
-    sign(
-        MutableTransaction::with_entries(
-            Transaction::new(
-                args.tx_version,
-                vec![input],
-                vec![output],
-                0,
-                args.subnetwork_id,
-                0,
-                args.payload,
-            ),
-            vec![args.entry],
-        ),
+    // Sign a zero-fee probe to learn the signed tx's mass (the fee amount doesn't change the byte
+    // layout), price it at the node's floor, then re-sign with the funded output.
+    let probe = sign(
+        MutableTransaction::with_entries(build(args.entry.amount), entries.clone()),
         args.keypair,
     )
-    .tx
+    .tx;
+    let fee = min_fee(args.params, &probe, &entries);
+    assert!(args.entry.amount > fee, "UTXO amount {} too small for fee {}", args.entry.amount, fee);
+
+    sign(MutableTransaction::with_entries(build(args.entry.amount - fee), entries), args.keypair).tx
 }
 
 /// Builds a signed bootstrap transaction whose single output is P2SH(`redeem_script`) with a
@@ -152,31 +175,31 @@ pub struct SettlementTx<'a> {
 /// output, signs only the fee input, preserves the covenant input's witness, sets the covenant
 /// input's compute budget, and commits the storage-mass field. The result is ready to submit.
 pub fn settlement_transaction(args: SettlementTx<'_>) -> Transaction {
-    const FEE: u64 = 100_000;
-
     // Snapshot the covenant witness before signing - `sign` overwrites all signature scripts.
     let covenant_sig_script = args.settlement_tx.inputs[0].signature_script.clone();
-    assert!(args.fee_entry.amount > FEE, "fee UTXO amount {} ≤ fee {FEE}", args.fee_entry.amount);
+    let change_spk = pay_to_address_script(args.address);
+    let entries = vec![args.covenant_entry.clone(), args.fee_entry.clone()];
 
-    let mut tx = args.settlement_tx;
-    tx.inputs.push(TransactionInput::new(args.fee_outpoint, vec![], 0, 1));
-    tx.outputs.push(TransactionOutput::new(
-        args.fee_entry.amount - FEE,
-        pay_to_address_script(args.address),
-    ));
+    // Build the fully-funded, signed tx for a given fee: append the fee input + change output, sign
+    // only the fee input, restore the covenant witness, set its compute budget, and commit storage
+    // mass. The succinct witness makes this tx large, so its fee is mass-dominated — well past the
+    // old flat 100_000.
+    let build = |fee: u64| {
+        let mut tx = args.settlement_tx.clone();
+        tx.inputs.push(TransactionInput::new(args.fee_outpoint, vec![], 0, 1));
+        tx.outputs.push(TransactionOutput::new(args.fee_entry.amount - fee, change_spk.clone()));
+        let mut tx = sign(MutableTransaction::with_entries(tx, entries.clone()), args.keypair).tx;
+        tx.inputs[0].signature_script = covenant_sig_script.clone();
+        tx.inputs[0].mass = args.covenant_compute_budget.into();
+        commit_storage_mass(args.params, &tx, &entries);
+        // The signature script on input 0 changed, so recompute the on-the-wire id.
+        tx.finalize();
+        tx
+    };
 
-    let entries = vec![args.covenant_entry, args.fee_entry];
-    let signed = sign(MutableTransaction::with_entries(tx, entries.clone()), args.keypair);
-    let mut tx = signed.tx;
-
-    // Restore the covenant witness and set the covenant input's compute budget.
-    tx.inputs[0].signature_script = covenant_sig_script;
-    tx.inputs[0].mass = args.covenant_compute_budget.into();
-
-    // Toccata txs must commit storage mass; compute it now that inputs and outputs are final.
-    commit_storage_mass(args.params, &tx, &entries);
-
-    // The signature script on input 0 changed, so recompute the on-the-wire id.
-    tx.finalize();
-    tx
+    // Probe at fee 0 to learn the mass, price it at the node's floor, then rebuild funded.
+    let probe = build(0);
+    let fee = min_fee(args.params, &probe, &entries);
+    assert!(args.fee_entry.amount > fee, "fee UTXO amount {} ≤ fee {fee}", args.fee_entry.amount);
+    build(fee)
 }
