@@ -28,7 +28,7 @@ mod daemon;
 mod persistence;
 mod settler;
 
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 use kaspa_consensus_core::{
     config::params::Params,
@@ -286,29 +286,44 @@ fn spawn_issuer(
     tokio::spawn(async move {
         let wallet = Wallet::new(&client, &params, keypair);
         let mut issued = 0u64;
+        // Outpoints we have already spent this session. The node keeps reporting a mempool-spent
+        // UTXO until it is mined (its change output stays invisible meanwhile), so without this we
+        // would keep re-selecting the same largest UTXO and get rejected as a double spend. The
+        // wallet prunes mined-away entries on each call.
+        let mut in_flight = HashSet::new();
         loop {
             tokio::time::sleep(Duration::from_millis(interval)).await;
             if count != 0 && issued >= count {
                 break;
             }
-            if wallet.spendable_utxo_count().await == 0 {
+            let payload = encode_activity_payload(&[AccessMetadata::write(tracked)], &[1, 2, 3]);
+            let Some((tx, outpoint)) = wallet
+                .build_activity_excluding(payload, lane_subnet, TX_VERSION_TOCCATA, &mut in_flight)
+                .await
+            else {
                 log::warn!(
-                    "issuer: no spendable UTXOs for {}; fund it to issue activity",
-                    wallet.address()
+                    "issuer: no free spendable UTXOs for {} ({} in flight); fund it or wait for \
+                     change to confirm",
+                    wallet.address(),
+                    in_flight.len(),
                 );
                 continue;
-            }
-            let payload = encode_activity_payload(&[AccessMetadata::write(tracked)], &[1, 2, 3]);
-            let built = wallet
-                .build_subnet_payload_transactions(vec![payload], lane_subnet, TX_VERSION_TOCCATA)
-                .await;
-            for tx in &built {
-                match wallet.submit_transaction(tx).await {
-                    Ok(id) => log::info!("issued activity tx {id} on lane {lane_id}"),
-                    Err(e) => log::warn!("activity submit failed: {e}"),
+            };
+            match wallet.submit_transaction(&tx).await {
+                Ok(id) => {
+                    // Don't respend this UTXO until its change confirms.
+                    in_flight.insert(outpoint);
+                    log::info!("issued activity tx {id} on lane {lane_id}");
+                    issued += 1;
+                }
+                Err(e) => {
+                    // Mark it spent regardless: a double-spend rejection means it is already gone,
+                    // and any other failure is more likely to recur on the same UTXO than a fresh
+                    // one. The next iteration picks the next-largest free UTXO.
+                    in_flight.insert(outpoint);
+                    log::warn!("activity submit failed (retrying with another UTXO): {e}");
                 }
             }
-            issued += 1;
         }
         log::info!("issuer finished after {issued} activity txs");
     });

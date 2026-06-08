@@ -161,9 +161,46 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
         self.fetch_spendable_utxos().await.len()
     }
 
+    /// Builds one signed `subnetwork_id` activity tx spending the largest spendable UTXO **not** in
+    /// `in_flight`, returning the tx and the outpoint it spends. Returns `None` when every
+    /// spendable UTXO is in flight.
+    ///
+    /// `get_utxos_by_addresses` reports the confirmed UTXO set, which still includes a UTXO already
+    /// spent by an unconfirmed mempool transaction (its change output stays invisible until mined).
+    /// A tight issuer loop therefore keeps re-selecting the same largest UTXO and the node rejects
+    /// the double spend. The caller threads the set of outpoints it has spent this session through
+    /// `in_flight`: this method first prunes that set to the outpoints the node still reports (so a
+    /// UTXO that has since been mined away, and replaced by a fresh change outpoint, becomes
+    /// selectable again), then skips the rest to pick the next-largest free UTXO. The caller
+    /// inserts the returned outpoint on a successful (or double-spend-rejected) submit.
+    pub async fn build_activity_excluding(
+        &self,
+        payload: Vec<u8>,
+        subnetwork_id: SubnetworkId,
+        tx_version: u16,
+        in_flight: &mut std::collections::HashSet<TransactionOutpoint>,
+    ) -> Option<(Transaction, TransactionOutpoint)> {
+        let utxos = self.fetch_spendable_utxos().await;
+        let present: std::collections::HashSet<TransactionOutpoint> =
+            utxos.iter().map(|(o, _)| *o).collect();
+        in_flight.retain(|o| present.contains(o));
+        let (outpoint, entry) = utxos.into_iter().find(|(o, _)| !in_flight.contains(o))?;
+        let tx = build::activity_transaction(build::ActivityTx {
+            payload,
+            outpoint,
+            entry,
+            keypair: self.keypair,
+            address: &self.address,
+            subnetwork_id,
+            tx_version,
+            params: self.params,
+        });
+        Some((tx, outpoint))
+    }
+
     /// Spendable UTXOs for the issuer address (matured coinbases only), largest first. Requires the
     /// node to run with `--utxoindex`.
-    async fn fetch_spendable_utxos(&self) -> Vec<(TransactionOutpoint, UtxoEntry)> {
+    pub async fn fetch_spendable_utxos(&self) -> Vec<(TransactionOutpoint, UtxoEntry)> {
         let virtual_daa_score = self.client.get_server_info().await.unwrap().virtual_daa_score;
 
         self.client
