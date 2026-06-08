@@ -95,38 +95,38 @@ async fn main() {
     // Build the node (kept alive until we return; dropping it shuts the flow down). Settlement mode
     // additionally bootstraps a real-pins covenant and spawns the settler (whose handle we keep),
     // which drains the batch sink the node forwards to it.
-    let (_node, settler): (FlowNode, Option<tokio::task::JoinHandle<()>>) = if cfg.enable_settlements
-    {
-        let (node, settler) = start_settlement(
-            &cfg,
-            &client,
-            &params,
-            keypair,
-            lane_subnet,
-            lane_key,
-            &tx_elf,
-            &batch_elf,
-            network_id,
-            &mut persisted,
-        )
-        .await;
-        (node, Some(settler))
-    } else {
-        let node = start_exec(
-            &cfg,
-            &client,
-            &params,
-            keypair,
-            lane_subnet,
-            lane_key,
-            &tx_elf,
-            &batch_elf,
-            network_id,
-            &mut persisted,
-        )
-        .await;
-        (node, None)
-    };
+    let (_node, settler): (FlowNode, Option<tokio::task::JoinHandle<()>>) =
+        if cfg.enable_settlements {
+            let (node, settler) = start_settlement(
+                &cfg,
+                &client,
+                &params,
+                keypair,
+                lane_subnet,
+                lane_key,
+                &tx_elf,
+                &batch_elf,
+                network_id,
+                &mut persisted,
+            )
+            .await;
+            (node, Some(settler))
+        } else {
+            let node = start_exec(
+                &cfg,
+                &client,
+                &params,
+                keypair,
+                lane_subnet,
+                lane_key,
+                &tx_elf,
+                &batch_elf,
+                network_id,
+                &mut persisted,
+            )
+            .await;
+            (node, None)
+        };
 
     // --- activity issuer (background, both modes) ---
     spawn_issuer(client.clone(), params.clone(), keypair, lane_subnet, lane_id, &cfg);
@@ -226,7 +226,8 @@ async fn start_settlement(
     let backend = Backend::new(tx_elf, batch_elf, ProofType::Succinct);
     let wallet = Wallet::new(client, params, keypair);
     // A settlement run reuses no prior covenant (the prover's store starts at the empty SMT), so
-    // warn if the data dir already carries one — it is about to be overwritten by a fresh bootstrap.
+    // warn if the data dir already carries one — it is about to be overwritten by a fresh
+    // bootstrap.
     if let Some(prior) = persisted.covenant_id.as_deref() {
         log::warn!(
             "settlement mode bootstraps a fresh covenant; overwriting stored covenant {prior} \
