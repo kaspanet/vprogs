@@ -5,9 +5,8 @@ publish = false
 version = "0.1.0"
 
 [[bin]]
-name              = "tn10-flow"
-path              = "src/main.rs"
-required-features = ["cuda"]
+name = "tn10-flow"
+path = "src/main.rs"
 
 [features]
 # `cuda` swaps the RISC0 prover for the GPU one. The proving + settlement path compiles and runs

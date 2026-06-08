@@ -20,7 +20,6 @@ use std::{collections::VecDeque, time::Duration};
 use kaspa_addresses::Prefix;
 use kaspa_consensus_core::{
     config::params::Params,
-    mass::units::ComputeBudget,
     tx::{ScriptPublicKey, TransactionOutpoint, UtxoEntry},
 };
 use kaspa_hashes::Hash;
@@ -39,16 +38,12 @@ use vprogs_zk_abi::batch_processor::StateTransition;
 // `Backend::journal_bytes`.
 use vprogs_zk_backend_risc0_api::{Backend, OwnedSuccinctWitness, ProofType};
 use vprogs_zk_backend_risc0_covenant::{
-    CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, RedeemPins, Settlement, SettlementInput,
-    SuccinctPins, build_redeem_script, redeem_script_len,
+    CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, RedeemPins, SeqCommitAccessor, Settlement,
+    SettlementInput, SuccinctPins, build_redeem_script, redeem_script_len,
 };
 use vprogs_zk_batch_prover::Backend as _;
 
 use crate::daemon::{FlowBatchEvent, Store, V};
-
-/// Compute budget for a real-proof covenant input. `OpZkPrecompile` for the succinct branch burns
-/// ~1.2M mass; ship headroom (mirrors `settlement_l1_e2e` / the sim's `REAL_COVENANT_BUDGET`).
-const REAL_COVENANT_BUDGET: ComputeBudget = ComputeBudget(10_000);
 
 /// Poll cadence and ceiling for waiting on a covenant UTXO to confirm on chain.
 const CONFIRM_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -212,16 +207,23 @@ async fn settle_bundle(
     });
     let continuation_spk = pay_to_script_hash_script(&settlement.next_redeem);
 
+    // Size the covenant input's committed compute budget from the script units it actually
+    // consumes, rather than a fixed guess: the script engine anchors `new_seq_commit` to
+    // `block_prove_to`, so feed it the journal's value (which we asserted equals the chain's
+    // above). An oversized budget inflates the tx's compute mass past the per-tx limit and the
+    // node rejects it; this yields the minimal sufficient value.
+    let accessor = AnchorSeqCommit { block: block_prove_to, seq_commit: claimed_seq_commit };
+    let budget = settlement.covenant_compute_budget(cov.covenant_id, &accessor);
+    log::info!(
+        "settler: covenant input compute budget {} for settlement at block {block_prove_to}",
+        budget.value(),
+    );
+
     let covenant_entry =
         UtxoEntry::new(cov.value, cov.spk.clone(), cov.daa_score, false, Some(cov.covenant_id));
     let wallet = Wallet::new(&cfg.client, &cfg.params, cfg.keypair);
-    let tx = wallet
-        .prepare_settlement_transaction(
-            settlement.transaction,
-            covenant_entry,
-            REAL_COVENANT_BUDGET,
-        )
-        .await;
+    let tx =
+        wallet.prepare_settlement_transaction(settlement.transaction, covenant_entry, budget).await;
     let txid = match wallet.submit_transaction(&tx).await {
         Ok(id) => id,
         // A rejection here is the on-chain script (incl. `OpZkPrecompile`) refusing the settlement:
@@ -290,6 +292,25 @@ fn redeem_pins<'a>(backend: &'a Backend, lane_key: &'a Hash) -> RedeemPins<'a> {
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },
     })
+}
+
+/// Single-block [`SeqCommitAccessor`] for sizing the covenant input's compute budget off chain:
+/// resolves the proven block to the journal's `new_seq_commit` (and treats it as an in-depth chain
+/// ancestor). On chain the node answers `OpChainblockSeqCommit` from the real DAG; for the local
+/// script-engine dry run we only need the one anchor block the redeem script looks up.
+struct AnchorSeqCommit {
+    block: Hash,
+    seq_commit: Hash,
+}
+
+impl SeqCommitAccessor for AnchorSeqCommit {
+    fn is_chain_ancestor_from_pov(&self, block_hash: Hash) -> Option<bool> {
+        (block_hash == self.block).then_some(true)
+    }
+
+    fn seq_commitment_within_depth(&self, block_hash: Hash) -> Option<Hash> {
+        (block_hash == self.block).then_some(self.seq_commit)
+    }
 }
 
 /// Polls the node until `outpoint` appears at `spk`'s P2SH address, returning its block DAA score.
