@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use vprogs_zk_abi::transaction_processor::{StandardSpk, process_transaction};
+use vprogs_zk_abi::{transaction_processor::process_transaction, withdrawal::StandardSpk};
 use vprogs_zk_backend_risc0_api::{Host, Journal, Sha256};
 
 risc0_zkvm::guest::entry!(main);

@@ -2,7 +2,7 @@ use vprogs_core_codec::{Reader, Writer};
 
 use crate::{
     Result,
-    transaction_processor::{ErrorCode, ScriptBytes},
+    withdrawal::{ErrorCode, ScriptBytes},
 };
 
 mod tag {

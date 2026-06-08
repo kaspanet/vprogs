@@ -8,8 +8,9 @@ use vprogs_core_codec::Writer;
 use zerocopy::FromBytes;
 
 use crate::{
-    batch_aggregator::{ExitAccumulator, Inputs, StateTransition},
+    batch_aggregator::{Inputs, StateTransition},
     batch_processor::BatchTransition,
+    withdrawal::ExitAccumulator,
 };
 
 /// Aggregates a sequence of per-batch [`BatchTransition`] journals into a bundle's
@@ -146,7 +147,7 @@ where
     /// Streams the trailing exits of a verified batch journal into the accumulator in journal
     /// order. Mirrors the dispatch the monolithic verifier did inline per-tx.
     fn stream_exits(&mut self, batch: &BatchTransition) {
-        for exit in batch.exits_iter() {
+        for exit in &batch.exits {
             let (dest, amount) = exit.expect("decode exit entry");
             self.exits.add_exit(dest, amount);
         }
@@ -206,4 +207,3 @@ pub struct BundleExtremes {
     /// Transaction-processor image id shared by every batch in the bundle.
     pub tx_image_id: [u8; 32],
 }
-

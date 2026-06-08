@@ -10,9 +10,9 @@
 
 use kaspa_hashes::Hash;
 use vprogs_zk_abi::{
-    batch_aggregator::{ExitAccumulator, Verifier},
+    batch_aggregator::Verifier,
     batch_processor::BatchTransition,
-    transaction_processor::StandardSpk,
+    withdrawal::{ExitAccumulator, StandardSpk},
 };
 
 /// No-op `verify_batch_journal` closure: skips the `env::verify` step so tests can run host-side.

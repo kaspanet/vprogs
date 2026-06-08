@@ -90,6 +90,14 @@ pub trait Reader<'a> {
         self.bytes(len, field)
     }
 
+    /// Reads a length-prefixed byte blob (`len(4 LE) + bytes(len)`) and casts it to a `&T`.
+    fn blob_as<T: ?Sized + TryFromBytes + KnownLayout + Immutable>(
+        &mut self,
+        field: &'static str,
+    ) -> Result<&'a T> {
+        Ok(T::try_ref_from_bytes(self.blob(field)?)?)
+    }
+
     /// Reads a length-prefixed UTF-8 string: `len(4 LE) + bytes(len)`.
     fn string(&mut self, field: &'static str) -> Result<&'a str> {
         from_utf8(self.blob(field)?).map_err(|_| Error::Decode(field))

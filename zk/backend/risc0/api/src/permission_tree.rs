@@ -15,7 +15,7 @@
 //!
 //! [`StateTransition::permission_spk_hash`]: vprogs_zk_abi::batch_aggregator::StateTransition::permission_spk_hash
 
-use vprogs_zk_abi::{batch_aggregator::ExitAccumulator, transaction_processor::StandardSpk};
+use vprogs_zk_abi::withdrawal::{ExitAccumulator, StandardSpk};
 
 use crate::{
     permission_script::{blake2b_script_hash, build_permission_redeem_script},

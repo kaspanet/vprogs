@@ -117,8 +117,7 @@ async fn batch_proof_two_transactions() {
     }
     let journal = Backend::journal_bytes(&receipt);
 
-    let state =
-        BatchTransition::ref_from_bytes(&journal).expect("decode BatchTransition");
+    let state = BatchTransition::ref_from_bytes(&journal).expect("decode BatchTransition");
     assert_ne!(state.prev_state, state.new_state, "state should change after counter increment");
     assert_eq!(state.prev_state, EMPTY_HASH, "prev_state should be empty (no prior state)");
     assert_eq!(state.new_state, storage.root(1), "new_state should match store's version 1");
@@ -184,8 +183,7 @@ async fn batch_proof_two_transactions() {
     }
     let journal_2 = Backend::journal_bytes(&receipt_2);
 
-    let state_2 =
-        BatchTransition::ref_from_bytes(&journal_2).expect("decode BatchTransition");
+    let state_2 = BatchTransition::ref_from_bytes(&journal_2).expect("decode BatchTransition");
     assert_eq!(state_2.prev_state, storage.root(1), "batch 2 prev_state should chain from batch 1");
     assert_ne!(state_2.prev_state, state_2.new_state, "state should change again");
 

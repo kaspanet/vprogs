@@ -13,9 +13,10 @@ use crate::{
     Error,
     batch_processor::{BatchTransition, Inputs},
     transaction_processor::{
-        ErrorCode, ExitSink, InputResourceCommitment, JournalEntries, OutputCommitment,
+        ErrorCode, InputResourceCommitment, JournalEntries, OutputCommitment,
         OutputResourceCommitment,
     },
+    withdrawal::ExitSink,
 };
 
 /// Verifies one batch and emits a [`BatchTransition`] settlement journal scoped to that batch.
@@ -72,22 +73,21 @@ where
             daa_score: self.inputs.batch.daa_score,
             blue_score: self.inputs.batch.blue_score,
         });
-        let lane_expired = self.inputs.batch.lane_expired;
-        let prev_seq_commit: &'a Hash = self.inputs.batch.prev_seq_commit;
-        let prev_lane_tip: &'a Hash = self.inputs.batch.prev_lane_tip;
-        let new_lane_blue_score = self.inputs.batch.blue_score;
-        let lane_key: &'a Hash = self.inputs.lane_key;
 
         let activity_digest = self.verified_activity_digest(&context_hash);
 
         let new_lane_tip = lane_tip_next(&LaneTipInput {
-            parent_ref: if lane_expired { prev_seq_commit } else { prev_lane_tip },
-            lane_key,
+            parent_ref: if self.inputs.batch.lane_expired {
+                self.inputs.batch.prev_seq_commit
+            } else {
+                self.inputs.batch.prev_lane_tip
+            },
+            lane_key: self.inputs.lane_key,
             activity_digest: &activity_digest,
             context_hash: &context_hash,
         });
 
-        (new_lane_tip, new_lane_blue_score)
+        (new_lane_tip, self.inputs.batch.blue_score)
     }
 
     /// Commits the batch's [`BatchTransition`] journal: chain anchors, the chained extremes, and

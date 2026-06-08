@@ -3,17 +3,16 @@ use vprogs_core_hashing::Hasher;
 
 use crate::{
     Error, Result,
-    transaction_processor::{
-        Effects, ExitCommitment, OutputResourceCommitment, OutputResourceCommitments,
-    },
+    transaction_processor::{Effects, OutputResourceCommitment, OutputResourceCommitments},
+    withdrawal::Exits,
 };
 
 /// Decoded output commitment from a transaction processor journal.
 pub enum OutputCommitment<'a> {
     /// Transaction executed successfully.
     Success {
-        /// Lazy iterator over emitted exits.
-        exits: ExitCommitment<'a>,
+        /// Zero-copy view over the emitted exits.
+        exits: &'a Exits,
         /// Lazy iterator over per-resource hash commitments.
         resources: OutputResourceCommitments<'a>,
     },
@@ -31,7 +30,7 @@ impl<'a> OutputCommitment<'a> {
     pub fn decode(buf: &mut &'a [u8]) -> Result<Self> {
         match buf.byte("discriminant")? {
             Self::SUCCESS => Ok(Self::Success {
-                exits: ExitCommitment::new(buf.blob("exits")?),
+                exits: buf.blob_as("exits")?,
                 resources: OutputResourceCommitments::new(buf),
             }),
             Self::ERROR => Ok(Self::Error(Error::decode(buf)?)),
@@ -62,7 +61,7 @@ mod tests {
     use alloc::vec::Vec;
 
     use super::*;
-    use crate::transaction_processor::{ExitSink, StandardSpk};
+    use crate::withdrawal::{ExitSink, StandardSpk};
 
     /// Encodes a `Success` payload directly from raw resource commitments plus an exit blob.
     /// Mirrors what `OutputCommitment::encode` does in the success arm but operates on
@@ -124,7 +123,7 @@ mod tests {
         assert!(matches!(r2, OutputResourceCommitment::Unchanged));
 
         // Consume exits.
-        let entries: Vec<_> = exits.collect::<core::result::Result<Vec<_>, _>>().unwrap();
+        let entries: Vec<_> = exits.iter().collect::<core::result::Result<Vec<_>, _>>().unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0], (StandardSpk::PubKey(&[0x11; 32]), 100));
         assert_eq!(entries[1], (StandardSpk::ScriptHash(&[0x22; 32]), 200));

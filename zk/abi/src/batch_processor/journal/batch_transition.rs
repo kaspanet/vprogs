@@ -2,18 +2,18 @@ use kaspa_hashes::Hash;
 use vprogs_core_codec::Writer;
 use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
-use crate::transaction_processor::ExitCommitment;
+use crate::withdrawal::Exits;
 
 /// Per-batch state-transition journal. The single-batch [`Verifier`] commits one of these per
 /// batch; the [`AggregatorVerifier`] verifies a sequence of them via `env::verify`, chains them
 /// (each batch's `new_*` must equal the next batch's `prev_*`), streams the trailing exits into
 /// the permission tree, and folds the chained extremes into the bundle's [`StateTransition`].
 ///
-/// `BatchTransition` is a zerocopy DST: the fixed header fields are followed by the raw exits
-/// blob as the trailing slice. The outer aggregator framing length-prefixes each per-batch
-/// journal, so no internal length prefix is needed - the slice's length comes from the surrounding
-/// frame. Parse with [`FromBytes::ref_from_bytes`]; access exits as `&self.exits` and iterate via
-/// [`exits_iter`](Self::exits_iter).
+/// `BatchTransition` is a zerocopy DST: the fixed header fields are followed by an
+/// [`Exits`] section as the trailing slice. The outer aggregator framing length-prefixes each
+/// per-batch journal, so no internal length prefix is needed - the exits-slice length comes from
+/// the surrounding frame. Parse with [`FromBytes::ref_from_bytes`]; iterate exits via
+/// `for exit in &batch.exits`.
 ///
 /// [`Verifier`]: crate::batch_processor::Verifier
 /// [`AggregatorVerifier`]: crate::batch_aggregator::AggregatorVerifier
@@ -45,9 +45,8 @@ pub struct BatchTransition {
     /// `1` when the lane re-anchored on the chain block's `prev_seq_commit` instead of
     /// `prev_lane_tip` (aggregator skips the `lane_tip` chain check across this boundary).
     pub lane_expired: u8,
-    /// Per-tx exit emissions, concatenated in journal order. Iterated via
-    /// [`exits_iter`](Self::exits_iter).
-    pub exits: [u8],
+    /// Per-tx exit emissions, concatenated in journal order.
+    pub exits: Exits,
 }
 
 impl BatchTransition {
@@ -65,7 +64,6 @@ impl BatchTransition {
         lane_expired: bool,
         exits: &[u8],
     ) {
-        // Fixed header.
         w.write(prev_state);
         w.write(new_state);
         w.write(prev_lane_tip.as_slice());
@@ -76,13 +74,6 @@ impl BatchTransition {
         w.write(covenant_id);
         w.write(tx_image_id);
         w.write(&[lane_expired as u8]);
-
-        // Trailing exits, raw bytes (slice length is implied by the outer journal framing).
         w.write(exits);
-    }
-
-    /// Iterates the trailing per-tx exits in journal order.
-    pub fn exits_iter(&self) -> ExitCommitment<'_> {
-        ExitCommitment::new(&self.exits)
     }
 }
