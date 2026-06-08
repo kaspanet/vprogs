@@ -1,13 +1,25 @@
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::{self, UnboundedSender};
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_types::{AccessMetadata, SchedulerTransaction};
 use vprogs_l1_bridge::{L1Bridge, L1Event};
-use vprogs_scheduling_scheduler::Scheduler;
+use vprogs_scheduling_scheduler::{ScheduledBatch, Scheduler};
 use vprogs_storage_types::Store;
 
 use crate::{Processor, api::ApiRequest};
+
+/// A batch lifecycle event the worker forwards to an optional host sink (see
+/// [`NodeConfig::with_batch_sink`](crate::NodeConfig::with_batch_sink)). The host owns the handed
+/// batch handle, which keeps the bundle receipt reachable for settlement after the worker moves on.
+pub enum BatchEvent<S: Store, P: Processor<S>> {
+    /// A block's batch was scheduled. Carries the live handle (the prover publishes the bundle
+    /// receipt to it) so the host can await the artifact and settle.
+    Scheduled(ScheduledBatch<S, P>),
+    /// A reorg rolled committed state back to (and including) this batch index; every batch above
+    /// it the host received via [`Scheduled`](Self::Scheduled) is now orphaned.
+    RolledBack(u64),
+}
 
 /// Owns the scheduler and bridge, processing L1 events through the L2 scheduler.
 ///
@@ -20,6 +32,8 @@ pub(crate) struct NodeWorker<S: Store, P: Processor<S>> {
     scheduler: Scheduler<S, P>,
     /// Incoming [`NodeApi`](crate::NodeApi) requests.
     api_requests: mpsc::Receiver<ApiRequest<S, P>>,
+    /// Optional host sink for scheduled-batch / rollback events.
+    batch_sink: Option<UnboundedSender<BatchEvent<S, P>>>,
     /// Signal to stop the event loop.
     shutdown: Arc<AtomicAsyncLatch>,
 }
@@ -31,9 +45,10 @@ impl<S: Store, P: Processor<S>> NodeWorker<S, P> {
         bridge: L1Bridge,
         scheduler: Scheduler<S, P>,
         api_requests: mpsc::Receiver<ApiRequest<S, P>>,
+        batch_sink: Option<UnboundedSender<BatchEvent<S, P>>>,
         shutdown: Arc<AtomicAsyncLatch>,
     ) {
-        Self { bridge, scheduler, api_requests, shutdown }.run().await;
+        Self { bridge, scheduler, api_requests, batch_sink, shutdown }.run().await;
     }
 
     /// Priority-based event loop: shutdown > API request > bridge event.
@@ -105,7 +120,13 @@ impl<S: Store, P: Processor<S>> NodeWorker<S, P> {
                         )
                     })
                     .collect();
-                self.scheduler.schedule(*checkpoint.metadata(), txs);
+                let batch = self.scheduler.schedule(*checkpoint.metadata(), txs);
+                // Hand the live batch handle to the host sink, if any: the prover publishes the
+                // bundle receipt to it, so this is the host's only route to settle. Dropping it
+                // here (the no-sink case) is the execution-only path.
+                if let Some(sink) = &self.batch_sink {
+                    let _ = sink.send(BatchEvent::Scheduled(batch));
+                }
             }
 
             L1Event::Rollback { checkpoint, blue_score_depth } => {
@@ -113,6 +134,9 @@ impl<S: Store, P: Processor<S>> NodeWorker<S, P> {
                 if let Err(e) = self.scheduler.rollback_to(checkpoint.index()) {
                     log::error!("rollback to {} failed: {e}", checkpoint.index());
                     return false;
+                }
+                if let Some(sink) = &self.batch_sink {
+                    let _ = sink.send(BatchEvent::RolledBack(checkpoint.index()));
                 }
                 log::trace!(
                     "reorg: rolled back to idx={} (blue_score_depth={blue_score_depth})",

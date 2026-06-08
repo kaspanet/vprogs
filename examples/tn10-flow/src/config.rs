@@ -23,6 +23,12 @@ pub struct Config {
     pub activity_interval_ms: u64,
     /// Total activity transactions to issue (0 = unbounded).
     pub activity_count: u64,
+    /// Run the proving + settlement path (`TN10_SETTLE=1`): bootstrap a real-pins covenant, prove
+    /// each bundle, and settle it on chain. Needs real proofs (the `cuda` build without
+    /// `RISC0_DEV_MODE`); the default is the execution-only daemon. See `main.rs`.
+    pub enable_settlements: bool,
+    /// Batches bundled per proof / settlement when settling (`TN10_BUNDLE_SIZE`, default 10).
+    pub bundle_size: usize,
 }
 
 impl Config {
@@ -52,6 +58,8 @@ impl Config {
             data_dir,
             activity_interval_ms: opt_u64("TN10_ACTIVITY_INTERVAL_MS", 5_000),
             activity_count: opt_u64("TN10_ACTIVITY_COUNT", 0),
+            enable_settlements: opt("TN10_SETTLE").is_some_and(|s| s != "0"),
+            bundle_size: opt_u64("TN10_BUNDLE_SIZE", 10) as usize,
         }
     }
 }
