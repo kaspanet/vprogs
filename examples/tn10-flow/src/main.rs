@@ -62,8 +62,10 @@ async fn main() {
     // The framework worker traces per-block processing (`vprogs_node_framework`) and the zk Vm
     // traces post-execution L2 state (`vprogs_zk_vm`); enable both at trace so the POC surfaces the
     // found txs / reorgs / settlements / decoded counter without a hand-rolled loop.
+    // `risc0_zkvm=warn` silences the executor's per-execution `execution time: …` info line, which
+    // fires for every guest run (including every bundle proof) and otherwise floods the log.
     kaspa_core::log::try_init_logger(
-        "info,tn10_flow=info,vprogs_node_framework=trace,vprogs_zk_vm=trace",
+        "info,tn10_flow=info,vprogs_node_framework=trace,vprogs_zk_vm=trace,risc0_zkvm=warn",
     );
 
     let cfg = Config::from_env();
