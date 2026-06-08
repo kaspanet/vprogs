@@ -214,10 +214,6 @@ async fn settle_bundle(
     // node rejects it; this yields the minimal sufficient value.
     let accessor = AnchorSeqCommit { block: block_prove_to, seq_commit: claimed_seq_commit };
     let budget = settlement.covenant_compute_budget(cov.covenant_id, &accessor);
-    log::info!(
-        "settler: covenant input compute budget {} for settlement at block {block_prove_to}",
-        budget.value(),
-    );
 
     let covenant_entry =
         UtxoEntry::new(cov.value, cov.spk.clone(), cov.daa_score, false, Some(cov.covenant_id));
