@@ -22,10 +22,9 @@ mod settler;
 
 use std::{collections::HashSet, time::Duration};
 
-use kaspa_consensus_core::constants::SOMPI_PER_KASPA;
 use kaspa_consensus_core::{
     config::params::Params,
-    constants::TX_VERSION_TOCCATA,
+    constants::{SOMPI_PER_KASPA, TX_VERSION_TOCCATA},
     network::{NetworkId, NetworkType},
     subnets::SubnetworkId,
 };
