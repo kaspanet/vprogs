@@ -61,13 +61,6 @@ where
         (self.verify_batch_journal)(self.inputs.batch_image_id, first_bytes);
         let first = BatchTransition::ref_from_bytes(first_bytes).expect("decode BatchTransition");
 
-        let lane_key = first.lane_key;
-        let covenant_id = first.covenant_id;
-        let tx_image_id = first.tx_image_id;
-        let prev_state = first.prev_state;
-        let prev_lane_tip = first.prev_lane_tip;
-        let prev_lane_blue_score = first.prev_lane_blue_score.get();
-
         // Stream the first batch's exits before mutating state, mirroring the per-tx canonical
         // order the monolithic verifier used (exits before resource updates within a tx; tx
         // order within a batch; batch order within the bundle).
@@ -84,9 +77,9 @@ where
             let cur = BatchTransition::ref_from_bytes(bytes).expect("decode BatchTransition");
 
             // Per-bundle invariants: lane, covenant, tx image must match across every batch.
-            assert_eq!(cur.lane_key, lane_key, "lane_key mismatch across bundle");
-            assert_eq!(cur.covenant_id, covenant_id, "covenant_id mismatch across bundle");
-            assert_eq!(cur.tx_image_id, tx_image_id, "tx_image_id mismatch across bundle");
+            assert_eq!(cur.lane_key, first.lane_key, "lane_key mismatch across bundle");
+            assert_eq!(cur.covenant_id, first.covenant_id, "covenant_id mismatch across bundle");
+            assert_eq!(cur.tx_image_id, first.tx_image_id, "tx_image_id mismatch across bundle");
 
             // Chain conditions: prev_* of this batch must equal the carry-forward.
             assert_eq!(cur.prev_state, new_state, "prev_state mismatch");
@@ -108,15 +101,15 @@ where
         }
 
         BundleExtremes {
-            prev_state,
-            prev_lane_tip,
-            prev_lane_blue_score,
+            prev_state: first.prev_state,
+            prev_lane_tip: first.prev_lane_tip,
+            prev_lane_blue_score: first.prev_lane_blue_score.get(),
             new_state,
             new_lane_tip,
             new_lane_blue_score,
-            lane_key,
-            covenant_id,
-            tx_image_id,
+            lane_key: first.lane_key,
+            covenant_id: first.covenant_id,
+            tx_image_id: first.tx_image_id,
         }
     }
 
