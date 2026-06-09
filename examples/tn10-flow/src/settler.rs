@@ -104,11 +104,20 @@ pub async fn run(
             BatchEvent::RolledBack(index) => {
                 // Single-miner assumption: drop any orphaned batches above the rollback point. A
                 // bundle proof already in flight for an orphaned block is the documented hazard.
+                let prev_tip = unproved.back().map(|b| b.checkpoint().index());
                 let before = unproved.len();
                 unproved.retain(|b| b.checkpoint().index() <= index);
                 let dropped = before - unproved.len();
                 if dropped > 0 {
-                    log::warn!("settler: reorg to idx={index} dropped {dropped} unproved batches");
+                    // `index` is the surviving L2 batch the chain rolled back *to*; the dropped
+                    // batches are the orphaned forward progress above it (idx+1..=prev_tip).
+                    log::warn!(
+                        "settler: reorg rolled the L2 tip back to batch idx={index}; dropped \
+                         {dropped} orphaned batches above it ({}..={}), {} still queued",
+                        index + 1,
+                        prev_tip.unwrap_or(index),
+                        unproved.len(),
+                    );
                 }
             }
         }
