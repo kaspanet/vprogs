@@ -10,16 +10,8 @@
 //!   Per-block observability is the framework worker's and the Vm's `trace` logs.
 //! - **Proving + settlement** (`TN10_SETTLE=1`): the node drives the real batch prover and forwards
 //!   each scheduled batch to the [`settler`], which proves every bundle and settles it on chain
-//!   with a production [`Settlement::build`](vprogs_zk_backend_risc0_covenant::Settlement) — the
-//!   same end-to-end shape the `vprogs-sim` `l2_flow_real_proof_settlement_chain` test exercises
-//!   against a simulated DAG, here against a live node. Real proofs need a GPU (the `cuda` feature,
-//!   without `RISC0_DEV_MODE`); the wiring compiles and runs with stub proofs otherwise, but the
-//!   on-chain `OpZkPrecompile` only accepts real receipts.
-//!
-//! The covenant bootstrap, fork toggle, scheduler construction, and ELF loading are reused from the
-//! settlement test-suite (`vprogs_zk_backend_risc0_test_suite`); the settlement build/chain logic
-//! mirrors `sim::driver::settle_real`. This binary adds the remote-connection, persistence, issuer,
-//! and node/settler glue.
+//!   with a production [`Settlement::build`](vprogs_zk_backend_risc0_covenant::Settlement). Real
+//!   proofs need a GPU (the `cuda` feature, without `RISC0_DEV_MODE`).
 //!
 //! Required env: `TN10_WRPC_URL`, `TN10_PRIVATE_KEY`. See `config.rs` for the full surface.
 
@@ -30,6 +22,7 @@ mod settler;
 
 use std::{collections::HashSet, time::Duration};
 
+use kaspa_consensus_core::constants::SOMPI_PER_KASPA;
 use kaspa_consensus_core::{
     config::params::Params,
     constants::TX_VERSION_TOCCATA,
@@ -44,7 +37,7 @@ use vprogs_core_types::{AccessMetadata, ResourceId};
 use vprogs_l1_wallet::{Wallet, encode_activity_payload};
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_test_suite::{
-    batch_processor_elf, bootstrap_dev_covenant, force_covenant_forks, transaction_processor_elf,
+    batch_processor_elf, bootstrap_dev_covenant, transaction_processor_elf,
 };
 
 use crate::{
@@ -55,15 +48,10 @@ use crate::{
 };
 
 /// Value locked in the covenant UTXO at bootstrap (1 TKAS), matching the e2e tests.
-const COVENANT_VALUE: u64 = 100_000_000;
+const COVENANT_VALUE: u64 = SOMPI_PER_KASPA;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
-    // The framework worker traces per-block processing (`vprogs_node_framework`) and the zk Vm
-    // traces post-execution L2 state (`vprogs_zk_vm`); enable both at trace so the POC surfaces the
-    // found txs / reorgs / settlements / decoded counter without a hand-rolled loop.
-    // `risc0_zkvm=warn` silences the executor's per-execution `execution time: …` info line, which
-    // fires for every guest run (including every bundle proof) and otherwise floods the log.
     kaspa_core::log::try_init_logger(
         "info,tn10_flow=info,vprogs_node_framework=trace,vprogs_zk_vm=trace,risc0_zkvm=warn",
     );
@@ -71,12 +59,10 @@ async fn main() {
     let cfg = Config::from_env();
     let network_id = NetworkId::with_suffix(NetworkType::Testnet, 10);
 
-    // testnet-10 params with the covenant forks forced active (the user's fork node forces them
-    // on); used off-chain for mass calculation and lane-key derivation, never pushed to the
-    // node.
-    let mut params = Params::from(network_id);
-    force_covenant_forks(&mut params);
-
+    // testnet-10 params, used off-chain only for mass calculation and lane-key derivation; never
+    // pushed to the node (the remote fork node runs its own params, with the covenant forks
+    // active).
+    let params = Params::from(network_id);
     let client = connect_wrpc(&cfg.wrpc_url, network_id).await;
     log::info!("connected to {}", cfg.wrpc_url);
 
@@ -149,7 +135,7 @@ async fn main() {
                 std::process::exit(1);
             }
         },
-        // Exec-only mode: nothing settles, so park until killed (the node runs on its own thread).
+        // Exec-only mode: nothing settles, so park until killed
         None => std::future::pending::<()>().await,
     }
 }

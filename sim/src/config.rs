@@ -1,8 +1,4 @@
 //! Consensus configuration for the L2 simulation.
-//!
-//! Modeled on simpa's `--test-pruning` profile (the same one `smt_repro` uses), with the covenant
-//! forks forced active so settlement scripts validate. Finality and pruning are kept small so a run
-//! reaches a steady state (and starts pruning) within a few thousand blocks.
 
 use std::sync::Arc;
 

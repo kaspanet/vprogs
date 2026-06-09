@@ -42,9 +42,6 @@ impl<B: Backend, S: Store> Processor<S> for Vm<B, S> {
             for (resource, op) in ctx.resources_mut().iter_mut().zip(output.storage_ops) {
                 if let Some(new_data) = op {
                     resource.set_data(new_data);
-                    // Post-execution state, so hosts can watch L2 progress at `vprogs_zk_vm=trace`
-                    // without owning the loop. The layout is program-defined, so the trace stays
-                    // agnostic and hex-dumps the raw bytes; the encode only runs when trace is on.
                     log::trace!(
                         "executed: resource_index={} version={} data={}",
                         resource.resource_index(),

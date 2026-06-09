@@ -4,8 +4,8 @@
 //! resume from store); this binary only chooses the processor and the bridge connection.
 //!
 //! - **Execution-only** ([`build_node`]): a zk `Vm` with [`ProvingPipeline::None`]. Per-block
-//!   observability comes from the framework worker's and the Vm's `trace` logs (enable
-//!   `vprogs_node_framework=trace` and `vprogs_zk_vm=trace`); there is no hand-rolled event loop.
+//!   observability comes from the framework's and the Vm's `trace` logs (enable
+//!   `vprogs_node_framework=trace` and `vprogs_zk_vm=trace`).
 //! - **Proving + settlement** ([`build_proving_node`]): a zk `Vm` driving the real batch prover
 //!   ([`ProvingPipeline::batch`]) over a [`RemoteLaneSource`], plus a [`batch_sink`] the framework
 //!   hands every scheduled batch to so the [`crate::settler`] can settle proven bundles. Real

@@ -22,21 +22,21 @@ exclude = [
 ]
 members = [
   "core/*",
+  "examples/tn10-flow",
   "l1/*",
   "node/*",
   "scheduling/*",
+  "sim",
   "state/*",
   "storage/*",
   "transaction-runtime/*",
   "zk/abi",
-  "zk/transaction-prover",
-  "zk/batch-prover",
-  "zk/vm",
   "zk/backend/risc0/api",
   "zk/backend/risc0/covenant",
   "zk/backend/risc0/test-suite",
-  "examples/tn10-flow",
-  "sim",
+  "zk/batch-prover",
+  "zk/transaction-prover",
+  "zk/vm",
 ]
 resolver = "3"
 

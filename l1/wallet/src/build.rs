@@ -22,7 +22,7 @@ use kaspa_hashes::Hash;
 use kaspa_txscript::{pay_to_address_script, standard::pay_to_script_hash_script};
 use secp256k1::Keypair;
 
-/// testnet-10's mempool floor: a transaction's fee must be at least this many sompi per mass gram.
+/// mempool floor: a transaction's fee must be at least this many sompi per mass gram.
 const MIN_FEERATE_PER_GRAM: u64 = 100;
 
 /// The minimum sompi fee the node's mempool requires for `tx`: [`MIN_FEERATE_PER_GRAM`] times the
