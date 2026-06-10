@@ -25,6 +25,7 @@ vprogs-storage-types.workspace        = true
 vprogs-zk-abi                         = { workspace = true, features = ["host"] }
 vprogs-zk-backend-risc0-api           = { path = "../api", features = ["host"] }
 vprogs-zk-backend-risc0-covenant      = { path = "../covenant" }
+vprogs-zk-batch-prover.workspace      = true
 zerocopy.workspace                    = true
 
 [dev-dependencies]
@@ -35,6 +36,5 @@ vprogs-core-hashing.workspace          = true
 vprogs-core-test-utils.workspace       = true
 vprogs-node-test-utils.workspace       = true
 vprogs-storage-rocksdb-store.workspace = true
-vprogs-zk-batch-prover                 = { path = "../../../batch-prover" }
 vprogs-zk-transaction-prover           = { path = "../../../transaction-prover" }
 vprogs-zk-vm                           = { path = "../../../vm" }

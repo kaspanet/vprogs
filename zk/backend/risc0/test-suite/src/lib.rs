@@ -3,7 +3,6 @@ use kaspa_consensus_core::{
     hashing::tx::id as kaspa_tx_id,
     subnets::SubnetworkId,
 };
-use kaspa_grpc_client::GrpcClient;
 use kaspa_hashes::Hash;
 use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_seq_commit::{
@@ -23,6 +22,7 @@ use vprogs_storage_types::{ReadStore, Store};
 use vprogs_zk_abi::batch_aggregator::Inputs as AggregatorInputs;
 use vprogs_zk_backend_risc0_api::{Backend, Receipt};
 use vprogs_zk_backend_risc0_covenant::{build_dev_redeem_script, dev_redeem_script_len};
+use vprogs_zk_batch_prover::LaneProofSource;
 
 mod l1_transaction_ext;
 
@@ -38,25 +38,23 @@ pub fn test_lane_key() -> Hash {
 }
 
 /// Runs the aggregator on a sequence of per-batch receipts and returns the resulting bundle
-/// receipt. Mirrors what the (still-unbuilt) aggregator orchestrator would do once it lands:
+/// receipt. The aggregation step the settler and the sim driver run, factored here so the tests and
+/// the in-process drivers share one implementation:
 ///
-/// 1. Fetch the lane proof for the bundle's final block from L1.
+/// 1. Fetch the lane proof for the bundle's final block via `lane_source`.
 /// 2. Encode the aggregator inputs over the per-batch journal bytes.
 /// 3. Invoke `Backend::prove_aggregator` with the per-batch receipts as composition assumptions.
 ///
 /// The returned receipt's journal is a `vprogs_zk_abi::batch_aggregator::StateTransition`, ready
 /// for the settlement covenant.
-pub async fn aggregate_batches(
+pub async fn aggregate_batches<L: LaneProofSource>(
     backend: &Backend,
-    grpc_client: &GrpcClient,
+    lane_source: &L,
     lane_key: &Hash,
     last_block_hash: Hash,
     batch_receipts: Vec<Receipt>,
 ) -> Receipt {
-    let lane_proof = grpc_client
-        .get_seq_commit_lane_proof(last_block_hash, *lane_key)
-        .await
-        .expect("get_seq_commit_lane_proof");
+    let lane_proof = lane_source.fetch_lane_proof(last_block_hash, *lane_key).await;
 
     let journals: Vec<Vec<u8>> = batch_receipts.iter().map(|r| r.journal.bytes.clone()).collect();
 

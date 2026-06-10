@@ -53,3 +53,4 @@ rand_distr = { workspace = true }
 secp256k1  = { workspace = true }
 tap        = { workspace = true }
 tempfile   = { workspace = true }
+tokio      = { workspace = true, features = ["rt"] }

@@ -36,12 +36,12 @@ use vprogs_core_types::{AccessMetadata, ResourceId};
 use vprogs_l1_wallet::{Wallet, encode_activity_payload};
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_test_suite::{
-    batch_processor_elf, bootstrap_dev_covenant, transaction_processor_elf,
+    batch_aggregator_elf, batch_processor_elf, bootstrap_dev_covenant, transaction_processor_elf,
 };
 
 use crate::{
     config::Config,
-    daemon::{BridgeParams, FlowNode, ProvingParams, RemoteLaneSource},
+    daemon::{BridgeParams, FlowNode, ProvingParams},
     persistence::PersistedState,
     settler::SettlerConfig,
 };
@@ -76,6 +76,7 @@ async fn main() {
     let keypair = Keypair::from_secret_key(secp256k1::SECP256K1, &cfg.private_key);
     let tx_elf = transaction_processor_elf();
     let batch_elf = batch_processor_elf();
+    let aggregator_elf = batch_aggregator_elf();
 
     // Build the node (kept alive until we return; dropping it shuts the flow down). Settlement mode
     // additionally bootstraps a real-pins covenant and spawns the settler (whose handle we keep),
@@ -91,6 +92,7 @@ async fn main() {
                 lane_key,
                 &tx_elf,
                 &batch_elf,
+                &aggregator_elf,
                 network_id,
                 &mut persisted,
             )
@@ -106,6 +108,7 @@ async fn main() {
                 lane_key,
                 &tx_elf,
                 &batch_elf,
+                &aggregator_elf,
                 network_id,
                 &mut persisted,
             )
@@ -151,6 +154,7 @@ async fn start_exec(
     lane_key: kaspa_hashes::Hash,
     tx_elf: &[u8],
     batch_elf: &[u8],
+    aggregator_elf: &[u8],
     network_id: NetworkId,
     persisted: &mut PersistedState,
 ) -> FlowNode {
@@ -181,6 +185,7 @@ async fn start_exec(
     daemon::build_node(
         tx_elf,
         batch_elf,
+        aggregator_elf,
         store,
         bridge_params(cfg, network_id, lane_subnet, covenant_id, params),
     )
@@ -205,10 +210,11 @@ async fn start_settlement(
     lane_key: kaspa_hashes::Hash,
     tx_elf: &[u8],
     batch_elf: &[u8],
+    aggregator_elf: &[u8],
     network_id: NetworkId,
     persisted: &mut PersistedState,
 ) -> (FlowNode, tokio::task::JoinHandle<()>) {
-    let backend = Backend::new(tx_elf, batch_elf, ProofType::Succinct);
+    let backend = Backend::new(tx_elf, batch_elf, aggregator_elf, ProofType::Succinct);
     let wallet = Wallet::new(client, params, keypair);
     // A settlement run reuses no prior covenant (the prover's store starts at the empty SMT), so
     // warn if the data dir already carries one — it is about to be overwritten by a fresh
@@ -236,15 +242,10 @@ async fn start_settlement(
     let node = daemon::build_proving_node(
         tx_elf,
         batch_elf,
+        aggregator_elf,
         store,
         bridge_params(cfg, network_id, lane_subnet, covenant_id, params),
-        ProvingParams {
-            lane_source: RemoteLaneSource::new(client.clone()),
-            covenant_id,
-            lane_key,
-            bundle_size: cfg.bundle_size,
-            sink: sink_tx,
-        },
+        ProvingParams { covenant_id, lane_key, sink: sink_tx },
     );
 
     // The settler runs until the node drops (closing the sink) or it hits a fatal error. `main`
@@ -259,6 +260,7 @@ async fn start_settlement(
             bundle_size: cfg.bundle_size,
             tx_elf: tx_elf.to_vec(),
             batch_elf: batch_elf.to_vec(),
+            aggregator_elf: aggregator_elf.to_vec(),
         },
         covenant,
     ));

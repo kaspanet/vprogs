@@ -1,12 +1,13 @@
 //! Settles proven bundles against the remote node.
 //!
 //! The framework [`Node`](vprogs_node_framework::Node) follows the chain and proves each block's
-//! batch, but it cannot settle: the bundle receipt lives only on the [`ScheduledBatch`] handle the
-//! worker hands us through the batch sink. This task owns those handles, and once a bundle's
-//! receipt publishes it builds a production [`Settlement::build`] (real receipt → on-chain
-//! `OpZkPrecompile`) that spends the live covenant and chains to the journal's `new_state` /
-//! `new_lane_tip`, exactly as `sim::driver::settle_real` and `settlement_l1_e2e` do — submitting it
-//! over the same wRPC client the rest of the binary uses.
+//! batch, but it cannot settle: the per-batch receipts live only on the [`ScheduledBatch`] handles
+//! the worker hands us through the batch sink. This task owns those handles, and once a bundle's
+//! batches are proved it aggregates their receipts into the bundle receipt and builds a production
+//! [`Settlement::build`] (real receipt → on-chain `OpZkPrecompile`) that spends the live covenant
+//! and chains to the journal's `new_state` / `new_lane_tip`, exactly as `sim::driver::settle_real`
+//! and `settlement_l1_e2e` do — submitting it over the same wRPC client the rest of the binary
+//! uses.
 //!
 //! Settlements are serialized: one in flight, the next built only after the previous one's
 //! continuation UTXO is confirmed on chain (so it can be spent). This mirrors the simulation's
@@ -33,7 +34,7 @@ use vprogs_core_smt::EMPTY_HASH;
 use vprogs_l1_wallet::Wallet;
 use vprogs_node_framework::BatchEvent;
 use vprogs_scheduling_scheduler::ScheduledBatch;
-use vprogs_zk_abi::batch_processor::StateTransition;
+use vprogs_zk_abi::batch_aggregator::StateTransition;
 // `Backend as _` brings the batch-prover `Backend` trait into scope for
 // `Backend::journal_bytes`.
 use vprogs_zk_backend_risc0_api::{Backend, OwnedSuccinctWitness, ProofType};
@@ -41,9 +42,10 @@ use vprogs_zk_backend_risc0_covenant::{
     CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, RedeemPins, SeqCommitAccessor, Settlement,
     SettlementInput, SuccinctPins, build_redeem_script, redeem_script_len,
 };
+use vprogs_zk_backend_risc0_test_suite::aggregate_batches;
 use vprogs_zk_batch_prover::Backend as _;
 
-use crate::daemon::{FlowBatchEvent, Store, V};
+use crate::daemon::{FlowBatchEvent, RemoteLaneSource, Store, V};
 
 /// Poll cadence and ceiling for waiting on a covenant UTXO to confirm on chain.
 const CONFIRM_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -72,23 +74,30 @@ pub struct SettlerConfig {
     pub keypair: Keypair,
     /// Lane key the guest commits and the covenant SPK pins.
     pub lane_key: Hash,
-    /// Batches per bundle / settlement (matches the prover's `bundle_size`).
+    /// Per-batch receipts aggregated into one bundle settlement (the settlement cadence).
     pub bundle_size: usize,
     /// Transaction-processor ELF, for the backend's image ids / journal decode.
     pub tx_elf: Vec<u8>,
     /// Batch-processor ELF, for the backend's image ids / journal decode.
     pub batch_elf: Vec<u8>,
+    /// Batch-aggregator ELF, for the backend's aggregator image id and `prove_aggregator`.
+    pub aggregator_elf: Vec<u8>,
 }
 
 /// Drives the settlement loop until the batch sink closes (node shutdown). Accumulates the
-/// scheduled batches the framework forwards, and once a full bundle's receipt publishes, settles it
-/// and advances `covenant` (the freshly bootstrapped covenant this run settles against).
+/// scheduled batches the framework forwards, and once a full bundle's batches are proved,
+/// aggregates and settles it, advancing `covenant` (the freshly bootstrapped covenant this run
+/// settles against).
 pub async fn run(
     mut rx: UnboundedReceiver<FlowBatchEvent>,
     cfg: SettlerConfig,
     covenant: CovenantState,
 ) {
-    let backend = Backend::new(&cfg.tx_elf, &cfg.batch_elf, ProofType::Succinct);
+    let backend =
+        Backend::new(&cfg.tx_elf, &cfg.batch_elf, &cfg.aggregator_elf, ProofType::Succinct);
+    // The settler aggregates the per-batch receipts itself, so it owns the lane-proof source the
+    // aggregator needs (the bundle's final-block lane proof), over the same node's wRPC client.
+    let lane_source = RemoteLaneSource::new(cfg.client.clone());
     let bundle_size = cfg.bundle_size.max(1);
     let mut unproved: VecDeque<ScheduledBatch<Store, V>> = VecDeque::new();
     let mut cov = covenant;
@@ -126,7 +135,7 @@ pub async fn run(
         // consumes `bundle_size` batches whether it settled or was a no-op).
         while unproved.len() >= bundle_size {
             if let Some(next) =
-                settle_bundle(&cfg, &backend, &cov, &mut unproved, bundle_size).await
+                settle_bundle(&cfg, &backend, &lane_source, &cov, &mut unproved, bundle_size).await
             {
                 cov = next;
             }
@@ -135,20 +144,22 @@ pub async fn run(
     log::info!("settler: batch sink closed; stopping");
 }
 
-/// Awaits the front bundle's receipt and, if the bundle advanced the L2 state, settles it: builds a
-/// production `Settlement::build` from the receipt, submits it, and waits for its continuation UTXO
-/// to confirm. Returns the advanced covenant, or `None` for a no-op / empty bundle (still
-/// consumed).
+/// Awaits the front bundle's per-batch receipts, aggregates them into the bundle receipt, and — if
+/// the bundle advanced the L2 state — settles it: builds a production `Settlement::build` from the
+/// aggregated receipt, submits it, and waits for its continuation UTXO to confirm. Returns the
+/// advanced covenant, or `None` for a no-op / empty bundle (still consumed).
 async fn settle_bundle(
     cfg: &SettlerConfig,
     backend: &Backend,
+    lane_source: &RemoteLaneSource,
     cov: &CovenantState,
     unproved: &mut VecDeque<ScheduledBatch<Store, V>>,
     bundle_size: usize,
 ) -> Option<CovenantState> {
-    // Empty batches auto-open their `artifact_published` latch (the execution-only shortcut), so
-    // wait on the last *non-empty* batch: the prover publishes the bundle receipt to every batch,
-    // so once it opens, every batch in the bundle has its slot set. (Same reasoning as the sim.)
+    // Each batch publishes its own per-batch receipt; empty batches produce none (their
+    // `artifact_published` latch auto-opens with no receipt). The worker proves in scheduling
+    // order, so waiting on the last *non-empty* batch guarantees every earlier non-empty batch's
+    // receipt is published too.
     let last_nonempty = (0..bundle_size).rev().find(|&i| !unproved[i].txs().is_empty());
     let Some(nonempty_idx) = last_nonempty else {
         // All-empty bundle: no L2 advance, nothing to settle. Drop it so the next bundle can.
@@ -163,9 +174,15 @@ async fn settle_bundle(
     let last = bundle.last().unwrap();
     let block_prove_to = last.checkpoint().metadata().hash;
     let claimed_seq_commit = last.checkpoint().metadata().seq_commit;
-    // Read from the batch we waited on, not `last`: a batch after `nonempty_idx` may not have its
-    // slot populated yet. The same bundle receipt is on every batch.
-    let receipt = (*bundle[nonempty_idx].artifact()).clone();
+
+    // Aggregate the bundle's per-batch receipts (only the non-empty batches produce one) into the
+    // settlement-level receipt the covenant verifies; the aggregator fetches the bundle's
+    // final-block lane proof to derive `new_seq_commit`.
+    let batch_receipts: Vec<_> =
+        bundle.iter().filter(|b| !b.txs().is_empty()).map(|b| (*b.artifact()).clone()).collect();
+    let receipt =
+        aggregate_batches(backend, lane_source, &cfg.lane_key, block_prove_to, batch_receipts)
+            .await;
 
     let journal = Backend::journal_bytes(&receipt);
     let parsed =
@@ -291,8 +308,9 @@ pub async fn bootstrap_real_covenant<C: kaspa_rpc_core::api::rpc::RpcApi + ?Size
 fn redeem_pins<'a>(backend: &'a Backend, lane_key: &'a Hash) -> RedeemPins<'a> {
     RedeemPins::Succinct(SuccinctPins {
         common: CommonPins {
-            program_id: backend.batch_image_id(),
+            program_id: backend.aggregator_image_id(),
             tx_image_id: backend.transaction_image_id(),
+            batch_image_id: backend.batch_image_id(),
             lane_key,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },

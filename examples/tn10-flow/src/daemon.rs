@@ -7,11 +7,9 @@
 //!   observability comes from the framework's and the Vm's `trace` logs (enable
 //!   `vprogs_node_framework=trace` and `vprogs_zk_vm=trace`).
 //! - **Proving + settlement** ([`build_proving_node`]): a zk `Vm` driving the real batch prover
-//!   ([`ProvingPipeline::batch`]) over a [`RemoteLaneSource`], plus a [`batch_sink`] the framework
-//!   hands every scheduled batch to so the [`crate::settler`] can settle proven bundles. Real
-//!   proofs need a GPU (the `cuda` feature); see `main.rs`.
-
-use std::num::NonZeroUsize;
+//!   ([`ProvingPipeline::batch`], one receipt per batch), plus a [`batch_sink`] the framework hands
+//!   every scheduled batch to so the [`crate::settler`] can aggregate and settle proven bundles.
+//!   Real proofs need a GPU (the `cuda` feature); see `main.rs`.
 
 use kaspa_consensus_core::{network::NetworkId, subnets::SubnetworkId};
 use kaspa_hashes::Hash;
@@ -52,16 +50,13 @@ pub struct BridgeParams {
 
 /// Extra wiring the proving + settlement node needs on top of [`BridgeParams`].
 pub struct ProvingParams {
-    /// Lane proof source for the batch prover: the same remote node, over its wRPC client.
-    pub lane_source: RemoteLaneSource,
-    /// Live covenant id bound into every bundle journal (the on-chain script rejects the zero
+    /// Live covenant id bound into every per-batch journal (the on-chain script rejects the zero
     /// placeholder).
     pub covenant_id: Hash,
     /// Lane key the guest commits and the covenant SPK pins.
     pub lane_key: Hash,
-    /// Batches bundled per proof / settlement.
-    pub bundle_size: usize,
-    /// Sink the framework forwards every scheduled batch (and rollback) to; the settler drains it.
+    /// Sink the framework forwards every scheduled batch (and rollback) to; the settler drains it
+    /// to aggregate the per-batch receipts into bundle settlements.
     pub sink: UnboundedSender<FlowBatchEvent>,
 }
 
@@ -69,35 +64,36 @@ pub struct ProvingParams {
 /// and a bridge pointed at the remote node's lane + covenant. [`Node::new`] immediately starts the
 /// bridge, scheduler, and event loop on a dedicated thread. The batch ELF is loaded only so the
 /// backend can pin its image id; it is never executed in exec mode.
-pub fn build_node(tx_elf: &[u8], batch_elf: &[u8], store: Store, params: BridgeParams) -> FlowNode {
-    let backend = Backend::new(tx_elf, batch_elf, ProofType::Succinct);
+pub fn build_node(
+    tx_elf: &[u8],
+    batch_elf: &[u8],
+    aggregator_elf: &[u8],
+    store: Store,
+    params: BridgeParams,
+) -> FlowNode {
+    let backend = Backend::new(tx_elf, batch_elf, aggregator_elf, ProofType::Succinct);
     let vm = Vm::new(backend, ProvingPipeline::None);
     Node::new(base_config(vm, store, params))
 }
 
-/// Builds and starts a proving [`FlowNode`]: a zk `Vm` driving the real batch prover over
-/// `proving.lane_source`, binding `proving.covenant_id` into every journal, and forwarding each
-/// scheduled batch to `proving.sink` so the settler can build settlements from the bundle receipts.
-/// Real proofs need a GPU; without it (or under `RISC0_DEV_MODE=1`) the wiring still runs end to
-/// end with stub proofs, but the on-chain `OpZkPrecompile` only accepts real receipts.
+/// Builds and starts a proving [`FlowNode`]: a zk `Vm` driving the real batch prover (one receipt
+/// per batch), binding `proving.covenant_id` into every journal, and forwarding each scheduled
+/// batch to `proving.sink` so the settler can aggregate the per-batch receipts into bundle
+/// settlements. Real proofs need a GPU; without it (or under `RISC0_DEV_MODE=1`) the wiring still
+/// runs end to end with stub proofs, but the on-chain `OpZkPrecompile` only accepts real receipts.
 pub fn build_proving_node(
     tx_elf: &[u8],
     batch_elf: &[u8],
+    aggregator_elf: &[u8],
     store: Store,
     bridge: BridgeParams,
     proving: ProvingParams,
 ) -> FlowNode {
-    let backend = Backend::new(tx_elf, batch_elf, ProofType::Succinct);
+    let backend = Backend::new(tx_elf, batch_elf, aggregator_elf, ProofType::Succinct);
     let pipeline = ProvingPipeline::batch(
         backend.clone(),
         store.clone(),
-        proving.lane_source,
-        BatchProverConfig {
-            bundle_size: NonZeroUsize::new(proving.bundle_size.max(1))
-                .expect("nonzero bundle size"),
-            lane_key: proving.lane_key,
-            covenant_id: Some(proving.covenant_id),
-        },
+        BatchProverConfig { lane_key: proving.lane_key, covenant_id: Some(proving.covenant_id) },
     );
     let vm = Vm::new(backend, pipeline);
     Node::new(base_config(vm, store, bridge).with_batch_sink(proving.sink))
@@ -123,10 +119,10 @@ fn base_config(vm: V, store: Store, params: BridgeParams) -> NodeConfig<Store, V
         )
 }
 
-/// A [`LaneProofSource`] backed by the remote node's wRPC client. The batch prover calls this for
-/// the bundle's final-block lane proof; it just forwards to the node's `get_seq_commit_lane_proof`
-/// RPC. Mirrors the in-process `ConsensusLaneSource` the simulation uses, but over RPC instead of a
-/// direct consensus handle.
+/// A [`LaneProofSource`] backed by the remote node's wRPC client. The settler calls this while
+/// aggregating a bundle, for the bundle's final-block lane proof; it just forwards to the node's
+/// `get_seq_commit_lane_proof` RPC. Mirrors the in-process `ConsensusLaneSource` the simulation
+/// uses, but over RPC instead of a direct consensus handle.
 pub struct RemoteLaneSource {
     client: KaspaRpcClient,
 }

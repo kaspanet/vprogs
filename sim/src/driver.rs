@@ -10,7 +10,6 @@
 
 use std::{
     collections::VecDeque,
-    num::NonZeroUsize,
     sync::{Arc, Mutex, Weak},
 };
 
@@ -39,7 +38,7 @@ use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_l1_wallet::{build, encode_activity_payload};
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch, Scheduler};
 use vprogs_storage_rocksdb_store::RocksDbStore;
-use vprogs_zk_abi::batch_processor::StateTransition;
+use vprogs_zk_abi::batch_aggregator::StateTransition;
 // `Backend as _` brings the batch-prover `Backend` trait into scope for
 // `Backend::journal_bytes`.
 use vprogs_zk_backend_risc0_api::{Backend, OwnedSuccinctWitness, ProofType};
@@ -49,7 +48,8 @@ use vprogs_zk_backend_risc0_covenant::{
     dev_redeem_script_len, redeem_script_len,
 };
 use vprogs_zk_backend_risc0_test_suite::{
-    batch_processor_elf, build_scheduler, read_resource_u32, transaction_processor_elf,
+    aggregate_batches, batch_aggregator_elf, batch_processor_elf, build_scheduler,
+    read_resource_u32, transaction_processor_elf,
 };
 use vprogs_zk_batch_prover::{Backend as _, BatchProverConfig};
 use vprogs_zk_vm::{ProvingPipeline, Vm};
@@ -229,26 +229,14 @@ pub struct L2Driver {
 /// Builds a fresh execution stack (temp store + zk `Vm` scheduler). When `proving` is set the `Vm`
 /// drives the real batch prover, reading lane proofs from `consensus` and binding `covenant_id`
 /// into every journal; otherwise it is execution-only.
-fn build_exec(
-    backend: &Backend,
-    lane: Hash,
-    bundle_size: usize,
-    proving: bool,
-    covenant_id: Option<Hash>,
-    consensus: Weak<Consensus>,
-) -> Exec {
+fn build_exec(backend: &Backend, lane: Hash, proving: bool, covenant_id: Option<Hash>) -> Exec {
     let db = tempfile::tempdir().expect("temp db dir");
     let store = RocksDbStore::open(db.path().join("l2"));
     let pipeline = if proving {
         ProvingPipeline::batch(
             backend.clone(),
             store.clone(),
-            ConsensusLaneSource::from_weak(consensus),
-            BatchProverConfig {
-                bundle_size: NonZeroUsize::new(bundle_size.max(1)).expect("nonzero"),
-                lane_key: lane,
-                covenant_id,
-            },
+            BatchProverConfig { lane_key: lane, covenant_id },
         )
     } else {
         ProvingPipeline::None
@@ -265,8 +253,12 @@ impl L2Driver {
     /// node this driver's miner runs); otherwise it is execution-only. Returns the driver and a
     /// shared stats handle the test can read after the run.
     pub fn new(config: L2Config, consensus: &Arc<Consensus>) -> (Self, Arc<Mutex<DriverStats>>) {
-        let backend =
-            Backend::new(&transaction_processor_elf(), &batch_processor_elf(), ProofType::Succinct);
+        let backend = Backend::new(
+            &transaction_processor_elf(),
+            &batch_processor_elf(),
+            &batch_aggregator_elf(),
+            ProofType::Succinct,
+        );
 
         let lane_subnet = SubnetworkId::from_namespace(config.lane_id.to_be_bytes());
         let lane = lane_key(lane_subnet.as_bytes());
@@ -278,7 +270,7 @@ impl L2Driver {
         // zero placeholder covenant id since no on-chain settlement consumes those receipts.
         let real_e2e = config.enable_proving && config.enable_settlements;
         let prove_only = config.enable_proving && !config.enable_settlements;
-        let exec = build_exec(&backend, lane, config.bundle_size, prove_only, None, weak.clone());
+        let exec = build_exec(&backend, lane, prove_only, None);
 
         let stats = Arc::new(Mutex::new(DriverStats::default()));
         let driver = Self {
@@ -317,14 +309,7 @@ impl L2Driver {
     /// fresh from the current sink (only post-bootstrap activity is proved + settled).
     fn init_proving(&mut self) {
         let covenant_id = self.confirmed[0].covenant.covenant_id;
-        self.exec = build_exec(
-            &self.backend,
-            self.lane_key,
-            self.bundle_size,
-            true,
-            Some(covenant_id),
-            self.consensus.clone(),
-        );
+        self.exec = build_exec(&self.backend, self.lane_key, true, Some(covenant_id));
         self.proving_ready = true;
         self.seeded = false;
         self.seed_meta = ChainBlockMetadata::default();
@@ -671,8 +656,9 @@ impl L2Driver {
     fn redeem_pins(&self) -> RedeemPins<'_> {
         RedeemPins::Succinct(SuccinctPins {
             common: CommonPins {
-                program_id: self.backend.batch_image_id(),
+                program_id: self.backend.aggregator_image_id(),
                 tx_image_id: self.backend.transaction_image_id(),
+                batch_image_id: self.backend.batch_image_id(),
                 lane_key: &self.lane_key,
                 permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
             },
@@ -680,19 +666,19 @@ impl L2Driver {
     }
 
     /// Settles the next proven bundle with a production `Settlement::build`, driven by the bundle's
-    /// real receipt. Returns at most one transaction.
+    /// aggregated receipt. Returns at most one transaction.
     ///
-    /// Consumes the front `bundle_size` committed batches once their bundle receipt has published,
-    /// parses the bundle journal, and — if the bundle advanced the L2 state — builds a settlement
-    /// that spends the live covenant and chains to the journal's `new_state` / `new_lane_tip`. The
-    /// on-chain `OpZkPrecompile` validates the receipt, so acceptance (observed in
-    /// [`Self::observe_covenant`]) proves the real proof verified against the covenant. A no-op
-    /// bundle (state unchanged) is dropped without settling.
+    /// Consumes the front `bundle_size` committed batches once their per-batch receipts have
+    /// published, aggregates them into the bundle receipt, parses its journal, and — if the bundle
+    /// advanced the L2 state — builds a settlement that spends the live covenant and chains to the
+    /// journal's `new_state` / `new_lane_tip`. The on-chain `OpZkPrecompile` validates the receipt,
+    /// so acceptance (observed in [`Self::observe_covenant`]) proves the real proof verified
+    /// against the covenant. A no-op bundle (state unchanged) is dropped without settling.
     ///
     /// Reached only when no covenant tx is pending (see [`Self::issue_covenant`]), so settlements
     /// are serialized: at most one in flight, the next built after the previous one confirms. The
     /// front `bundle_size` of `unproved` is exactly the prover's next bundle (both consume batches
-    /// in scheduling order), so the receipt on the last batch is this bundle's.
+    /// in scheduling order).
     fn settle_real(&mut self, ctx: &ProduceCtx<'_>) -> Vec<Transaction> {
         // A full bundle's worth of batches must be queued before a bundle can settle. Once we
         // have them, block on the prover: the simulated clock would otherwise outpace real GPU
@@ -703,19 +689,15 @@ impl L2Driver {
         if self.unproved.len() < self.bundle_size {
             return Vec::new();
         }
-        // Empty batches auto-open their `artifact_published` latch at construction (the framework
-        // shortcut for "nothing to prove" execution-only mode) — the slot stays `None` until the
-        // prover publishes. So blocking on an empty batch's latch returns instantly while the
-        // receipt isn't ready, and `artifact()` panics on `None`. Wait on the *last non-empty*
-        // batch in the prospective bundle instead: the prover publishes the bundle receipt to
-        // every batch (empties included), so once any non-empty batch's latch opens, every batch
-        // in the bundle has its slot set.
+        // Each batch publishes its own per-batch receipt; empty batches produce none (their
+        // `artifact_published` latch auto-opens with no receipt, so `artifact()` would panic on
+        // `None`). The worker proves in scheduling order, so wait on the *last non-empty* batch:
+        // once its receipt publishes, every earlier non-empty batch in the bundle has too.
         let last_nonempty =
             (0..self.bundle_size).rev().find(|&i| !self.unproved[i].txs().is_empty());
         let Some(nonempty_idx) = last_nonempty else {
-            // All batches in this bundle are empty → no L2 state advance → no settlement to
-            // build. Drop them so the next bundle can settle. The prover still proves a no-op
-            // bundle (and the receipt is discarded), which is wasted GPU but harmless.
+            // All batches in this bundle are empty → no per-batch receipts, no L2 state advance,
+            // nothing to settle. Drop them so the next bundle can settle.
             for _ in 0..self.bundle_size {
                 self.unproved.pop_front();
             }
@@ -727,12 +709,27 @@ impl L2Driver {
         let last = bundle.last().unwrap();
         let block_prove_to = last.checkpoint().metadata().hash;
         let claimed_seq_commit = last.checkpoint().metadata().seq_commit;
-        // Read the receipt from the batch we waited on, not from `last`: the prover publishes by
-        // iterating `bundle.batches()` and filling slot-then-opening-latch per batch, so any
-        // batch *after* `nonempty_idx` (including `last` when it's empty) may not have its slot
-        // populated at the moment our wait unblocks. The same bundle receipt is published to
-        // every batch, so the source choice doesn't change correctness — only safety.
-        let receipt = (*bundle[nonempty_idx].artifact()).clone();
+        // Aggregate the bundle's per-batch receipts (only the non-empty batches produce one) into
+        // the settlement-level receipt the covenant verifies. settle_real runs in the (sync) miner
+        // thread, so block on a local runtime: the aggregator reads the bundle's final-block lane
+        // proof from the sim's consensus and proves the bundle `StateTransition`.
+        let batch_receipts: Vec<_> = bundle
+            .iter()
+            .filter(|b| !b.txs().is_empty())
+            .map(|b| (*b.artifact()).clone())
+            .collect();
+        let lane_source = ConsensusLaneSource::from_weak(self.consensus.clone());
+        let receipt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("aggregator runtime")
+            .block_on(aggregate_batches(
+                &self.backend,
+                &lane_source,
+                &self.lane_key,
+                block_prove_to,
+                batch_receipts,
+            ));
 
         let journal = Backend::journal_bytes(&receipt);
         let parsed =

@@ -8769,6 +8769,7 @@ dependencies = [
  "simpa",
  "tap",
  "tempfile",
+ "tokio",
  "vprogs-core-codec",
  "vprogs-core-smt",
  "vprogs-core-test-utils",
