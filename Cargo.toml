@@ -1,9 +1,11 @@
 [workspace]
 default-members = [
   "core/*",
+  "examples/tn10-flow",
   "l1/*",
   "node/*",
   "scheduling/*",
+  "sim",
   "state/*",
   "storage/*",
   "transaction-runtime/*",

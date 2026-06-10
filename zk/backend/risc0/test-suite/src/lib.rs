@@ -20,9 +20,9 @@ use vprogs_scheduling_scheduler::{ExecutionConfig, Processor, Scheduler};
 use vprogs_state_version::StateVersion;
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_types::{ReadStore, Store};
-use vprogs_zk_backend_risc0_covenant::{build_dev_redeem_script, dev_redeem_script_len};
 use vprogs_zk_abi::batch_aggregator::Inputs as AggregatorInputs;
 use vprogs_zk_backend_risc0_api::{Backend, Receipt};
+use vprogs_zk_backend_risc0_covenant::{build_dev_redeem_script, dev_redeem_script_len};
 
 mod l1_transaction_ext;
 
