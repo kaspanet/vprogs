@@ -10,11 +10,10 @@ use vprogs_core_codec::Writer;
 use vprogs_core_hashing::Hasher;
 
 use crate::{
-    Error,
+    Error, ErrorCode,
     batch_processor::{BatchTransition, Inputs},
     transaction_processor::{
-        ErrorCode, InputResourceCommitment, JournalEntries, OutputCommitment,
-        OutputResourceCommitment,
+        InputResourceCommitment, JournalEntries, OutputCommitment, OutputResourceCommitment,
     },
     withdrawal::ExitSink,
 };

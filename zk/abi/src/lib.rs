@@ -3,6 +3,7 @@
 extern crate alloc;
 
 mod error;
+mod error_code;
 mod journals;
 mod read;
 
@@ -11,7 +12,6 @@ mod read;
 /// serialized [`Exits`] section, and folded into the bundle's permission commitment by the
 /// aggregator ([`ExitAccumulator`]).
 pub mod withdrawal {
-    pub(crate) mod error_code;
     pub(crate) mod exit_accumulator;
     pub(crate) mod exit_sink;
     pub(crate) mod exits;
@@ -20,7 +20,6 @@ pub mod withdrawal {
     pub(crate) mod script_bytes;
     pub(crate) mod standard_spk;
 
-    pub use error_code::ErrorCode;
     pub use exit_accumulator::ExitAccumulator;
     pub use exit_sink::ExitSink;
     pub use exits::Exits;
@@ -67,7 +66,6 @@ pub mod batch_aggregator {
 pub mod transaction_processor {
     pub(crate) mod abi;
     pub(crate) mod effects;
-    pub(crate) mod error_code;
     pub(crate) mod transaction_handler;
 
     pub(crate) mod input {
@@ -100,7 +98,6 @@ pub mod transaction_processor {
 
     pub use abi::process_transaction;
     pub use effects::Effects;
-    pub use error_code::ErrorCode;
     pub use input::{
         execution_input::ExecutionInput, inputs::Inputs, payload::Payload, resource::Resource,
         transaction::Transaction,
@@ -121,5 +118,6 @@ pub mod transaction_processor {
 }
 
 pub use error::{Error, Result};
+pub use error_code::ErrorCode;
 pub use journals::Journals;
 pub use read::Read;
