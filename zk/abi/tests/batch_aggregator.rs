@@ -73,13 +73,17 @@ fn aggregator_inputs(batch_image_id: &[u8; 32], journals: &[&[u8]]) -> Vec<u8> {
     buf.extend_from_slice(batch_image_id);
 
     // LaneProof: payload_and_ctx_digest (32) + parent_seq_commit (32) + inactivity_shortcut (32)
-    //         + length-prefixed smt_proof. We zero them out: the aggregator only touches these
-    // in `commit_state_transition`, which this test doesn't call.
+    // + length-prefixed smt_proof. The three hashes are only read in `commit_state_transition`
+    // (not called here) so they're zeroed; the smt_proof is parsed at decode, so it must be
+    // structurally valid -- here an empty proof: a 32-byte all-set bitmap (every sibling elided)
+    // plus the `Full` terminal tag and no siblings.
     buf.extend_from_slice(&[0u8; 32]); // payload_and_ctx_digest
     buf.extend_from_slice(&[0u8; 32]); // parent_seq_commit
     buf.extend_from_slice(&[0u8; 32]); // inactivity_shortcut
-    buf.extend_from_slice(&0u32.to_le_bytes()); // smt_proof length = 0
-    // (no smt_proof bytes)
+    let mut smt_proof = [0xFFu8; 33];
+    smt_proof[32] = 0; // Full terminal tag
+    buf.extend_from_slice(&(smt_proof.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&smt_proof);
 
     // Trailing list: each journal as length-prefixed bytes.
     for journal in journals {

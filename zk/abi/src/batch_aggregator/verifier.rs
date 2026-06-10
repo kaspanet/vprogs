@@ -3,7 +3,6 @@ use kaspa_seq_commit::{
     hashing::{activity_root_hash, seq_commit, seq_state_root, smt_leaf_hash},
     types::{SeqCommitInput, SeqState, SmtLeafInput},
 };
-use kaspa_smt::proof::OwnedSmtProof;
 use tap::Tap;
 use vprogs_core_codec::Writer;
 use zerocopy::FromBytes;
@@ -135,12 +134,10 @@ where
         // Determine new lane leaf.
         let new_lane_leaf = smt_leaf_hash(&SmtLeafInput { lane_tip, blue_score });
 
-        // Parse L1 SMT lane proof.
-        let lanes_smt_proof =
-            OwnedSmtProof::from_bytes(self.lane_proof.lane_smt_proof).expect("lane_smt_proof");
-
-        // Calculate new lanes root.
-        let new_lanes_root = lanes_smt_proof
+        // Calculate new lanes root from the decoded lane SMT proof.
+        let new_lanes_root = self
+            .lane_proof
+            .lane_smt_proof
             .compute_root::<SeqCommitActiveNode>(lane_key, Some(new_lane_leaf))
             .expect("lane_smt_proof compute_root");
 

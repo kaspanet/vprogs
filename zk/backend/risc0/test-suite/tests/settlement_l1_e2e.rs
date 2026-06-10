@@ -186,7 +186,6 @@ async fn settlement_lands_in_real_block_dev_redeem() {
     let l1 = L1Node::new(Some(|p| {
         p.blockrate.coinbase_maturity = 1;
         p.toccata_activation = ForkActivation::always();
-        p.zk_hardening_activation = ForkActivation::always();
         p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
     }))
     .await;
@@ -517,7 +516,6 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
     let l1 = L1Node::new(Some(|p| {
         p.blockrate.coinbase_maturity = 1;
         p.toccata_activation = ForkActivation::always();
-        p.zk_hardening_activation = ForkActivation::always();
         p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
     }))
     .await;
