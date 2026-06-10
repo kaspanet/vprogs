@@ -1,6 +1,6 @@
 //! Host-side aggregator tests.
 //!
-//! Exercises the [`batch_aggregator::Verifier`]'s chain conditions and bundle-extreme derivation
+//! Exercises the [`batch_aggregator::Verifier`]'s chain conditions and new-lane-state derivation
 //! against a sequence of hand-built [`BatchTransition`] journals. No proving / `env::verify`
 //! involved: we pass a no-op closure for `verify_batch_journal` so the test focuses on the
 //! aggregator's own logic (per-batch chain asserts, lane/covenant/tx-image-id invariants, exit
@@ -121,21 +121,15 @@ fn chains_two_consecutive_batches() {
 
     let inputs = aggregator_inputs(&image_id, &[&batch_1, &batch_2]);
     let mut verifier = Verifier::new(&inputs, skip_verify, RecordedExits::new());
-    let extremes = verifier.verify_batches();
+    let last = verifier.verify_batches();
 
-    assert_eq!(extremes.prev_state, state_0);
-    assert_eq!(extremes.new_state, state_2);
-    assert_eq!(extremes.prev_lane_tip, lane_tip_0);
-    assert_eq!(extremes.new_lane_tip, lane_tip_2);
-    assert_eq!(extremes.prev_lane_blue_score, 100);
-    assert_eq!(extremes.new_lane_blue_score, 300);
-    assert_eq!(extremes.lane_key, lane_key);
-    assert_eq!(extremes.covenant_id, covenant_id);
-    assert_eq!(extremes.tx_image_id, tx_image_id);
+    assert_eq!(last.new_state, state_2);
+    assert_eq!(last.new_lane_tip, lane_tip_2);
+    assert_eq!(last.new_lane_blue_score.get(), 300);
 }
 
 #[test]
-#[should_panic(expected = "prev_state mismatch")]
+#[should_panic(expected = "prev_state")]
 fn rejects_broken_state_chain() {
     let image_id = [0xAA; 32];
     let lane_key = Hash::from_bytes([0xBB; 32]);
@@ -171,7 +165,7 @@ fn rejects_broken_state_chain() {
 }
 
 #[test]
-#[should_panic(expected = "lane_key mismatch across bundle")]
+#[should_panic(expected = "lane_key")]
 fn rejects_lane_key_change_across_bundle() {
     let image_id = [0xAA; 32];
     let lane_a = Hash::from_bytes([0xBB; 32]);
@@ -225,7 +219,7 @@ fn skips_lane_tip_check_when_lane_expired() {
 
     let inputs = aggregator_inputs(&image_id, &[&batch_1, &batch_2]);
     let mut verifier = Verifier::new(&inputs, skip_verify, RecordedExits::new());
-    let extremes = verifier.verify_batches();
+    let last = verifier.verify_batches();
 
-    assert_eq!(extremes.new_lane_tip, Hash::from_bytes([0x70; 32]));
+    assert_eq!(last.new_lane_tip, Hash::from_bytes([0x70; 32]));
 }

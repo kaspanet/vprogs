@@ -61,7 +61,7 @@ pub mod batch_aggregator {
 
     pub use input::{inputs::Inputs, lane_proof::LaneProof};
     pub use journal::state_transition::{JOURNAL_SIZE, StateTransition};
-    pub use verifier::{BundleExtremes, Verifier};
+    pub use verifier::Verifier;
 }
 
 pub mod transaction_processor {
