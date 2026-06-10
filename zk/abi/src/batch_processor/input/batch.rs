@@ -5,7 +5,7 @@ use vprogs_core_codec::{Reader, Result};
 #[cfg(feature = "host")]
 use vprogs_l1_types::ChainBlockMetadata;
 
-use crate::batch_processor::TransactionJournals;
+use crate::Journals;
 
 /// One batch of a bundle: per-block context plus the lane txs in that block.
 pub struct Batch<'a> {
@@ -23,8 +23,8 @@ pub struct Batch<'a> {
     pub prev_lane_blue_score: u64,
     /// True when the lane re-anchors on `prev_seq_commit` instead of `prev_lane_tip`.
     pub lane_expired: bool,
-    /// Per-tx journal entries.
-    pub tx_journals: TransactionJournals<'a>,
+    /// Per-tx journal entries (length-prefixed) in execution order.
+    pub tx_journals: Journals<'a>,
 }
 
 impl<'a> Batch<'a> {
@@ -38,7 +38,7 @@ impl<'a> Batch<'a> {
             prev_lane_tip: buf.array_as::<Hash>("prev_lane_tip")?,
             prev_lane_blue_score: buf.le_u64("prev_lane_blue_score")?,
             lane_expired: buf.bool("lane_expired")?,
-            tx_journals: TransactionJournals::new(buf.blob("tx_journals")?),
+            tx_journals: Journals::new(buf.blob("tx_journals")?),
         })
     }
 

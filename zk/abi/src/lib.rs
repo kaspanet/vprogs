@@ -3,6 +3,7 @@
 extern crate alloc;
 
 mod error;
+mod journals;
 mod read;
 
 /// Guest-independent withdrawal vocabulary: the L2->L1 exit types shared across every guest.
@@ -35,14 +36,13 @@ pub mod batch_processor {
     pub(crate) mod input {
         pub(crate) mod batch;
         pub(crate) mod inputs;
-        pub(crate) mod transaction_journals;
     }
 
     pub(crate) mod journal {
         pub(crate) mod batch_transition;
     }
 
-    pub use input::{batch::Batch, inputs::Inputs, transaction_journals::TransactionJournals};
+    pub use input::{batch::Batch, inputs::Inputs};
     pub use journal::batch_transition::BatchTransition;
     pub use verifier::Verifier;
 }
@@ -51,7 +51,6 @@ pub mod batch_aggregator {
     pub(crate) mod verifier;
 
     pub(crate) mod input {
-        pub(crate) mod batch_transitions;
         pub(crate) mod inputs;
         pub(crate) mod lane_proof;
     }
@@ -60,7 +59,7 @@ pub mod batch_aggregator {
         pub(crate) mod state_transition;
     }
 
-    pub use input::{batch_transitions::BatchTransitions, inputs::Inputs, lane_proof::LaneProof};
+    pub use input::{inputs::Inputs, lane_proof::LaneProof};
     pub use journal::state_transition::{JOURNAL_SIZE, StateTransition};
     pub use verifier::{BundleExtremes, Verifier};
 }
@@ -122,4 +121,5 @@ pub mod transaction_processor {
 }
 
 pub use error::{Error, Result};
+pub use journals::Journals;
 pub use read::Read;

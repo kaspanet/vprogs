@@ -6,10 +6,7 @@ use vprogs_core_codec::Reader;
 #[cfg(feature = "host")]
 use vprogs_core_codec::Writer;
 
-use crate::{
-    Result,
-    batch_aggregator::{BatchTransitions, LaneProof},
-};
+use crate::{Journals, Result, batch_aggregator::LaneProof};
 
 /// Decoded batch aggregator input.
 pub struct Inputs<'a> {
@@ -18,7 +15,7 @@ pub struct Inputs<'a> {
     /// Lane proof for the bundle's final block.
     pub lane_proof: LaneProof<'a>,
     /// Per-batch journals (length-prefixed) in scheduling order.
-    pub batch_journals: BatchTransitions<'a>,
+    pub batch_journals: Journals<'a>,
 }
 
 impl<'a> Inputs<'a> {
@@ -27,7 +24,7 @@ impl<'a> Inputs<'a> {
         Ok(Self {
             batch_image_id: buf.array::<32>("batch_image_id")?,
             lane_proof: LaneProof::decode(&mut buf)?,
-            batch_journals: BatchTransitions::new(buf),
+            batch_journals: Journals::new(buf),
         })
     }
 

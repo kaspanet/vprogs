@@ -51,7 +51,7 @@ pub struct BatchTransition {
 
 impl BatchTransition {
     /// Writes a batch transition journal: fixed header followed by the raw exits blob. The
-    /// surrounding framing (e.g. the aggregator's `BatchTransitions` list) length-prefixes each
+    /// surrounding framing (e.g. the aggregator's `batch_journals` list) length-prefixes each
     /// journal, so no inner length prefix is needed.
     ///
     /// The third tuple groups the per-bundle invariants the aggregator asserts every batch
