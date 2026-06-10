@@ -1,4 +1,4 @@
-use std::thread::spawn;
+use std::thread::{JoinHandle, spawn};
 
 use tokio::runtime::Builder;
 use vprogs_l1_types::ChainBlockMetadata;
@@ -33,16 +33,18 @@ where
             BatchMetadata = ChainBlockMetadata,
         >,
 {
-    /// Spawns the worker on a new thread with a single-threaded tokio runtime.
+    /// Spawns the worker on a new thread with a single-threaded tokio runtime and returns its join
+    /// handle. The prover joins this on shutdown so the worker's GPU prover is torn down (its risc0
+    /// CUDA context released) before the process exits.
     pub(crate) fn spawn(
         prover: BatchProver<S, P>,
         backend: B,
         store: S,
         config: BatchProverConfig,
-    ) {
+    ) -> JoinHandle<()> {
         let this = Self { prover, backend, store, config };
         let runtime = Builder::new_current_thread().enable_all().build().expect("runtime");
-        spawn(move || runtime.block_on(this.run()));
+        spawn(move || runtime.block_on(this.run()))
     }
 
     /// Main loop: drain commands and prove each scheduled batch in arrival order.
@@ -58,6 +60,13 @@ where
                         // canceled batches are published anyway: the scheduler's `canceled`
                         // flag prevents them from being consumed downstream.
                     }
+                }
+                // Bail promptly once shutdown is signaled rather than draining the whole backlog:
+                // a producer that runs ahead of the GPU leaves many queued batches the consumer no
+                // longer needs, and proving them all would make teardown take minutes. The current
+                // proof is awaited inline above, so this never cancels one mid-flight.
+                if self.prover.shutdown.is_open() {
+                    return;
                 }
             }
 

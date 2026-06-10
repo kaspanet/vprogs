@@ -1,4 +1,4 @@
-use std::thread::spawn;
+use std::thread::{JoinHandle, spawn};
 
 use tokio::runtime::Builder;
 use vprogs_scheduling_scheduler::Processor;
@@ -15,10 +15,12 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend> {
 }
 
 impl<S: Store, P: Processor<S, TransactionArtifact = B::Receipt>, B: Backend> Worker<S, P, B> {
-    /// Spawns the worker on a new thread with a single-threaded tokio runtime.
-    pub(crate) fn spawn(prover: TransactionProver<S, P>, backend: B) {
+    /// Spawns the worker on a new thread with a single-threaded tokio runtime and returns its join
+    /// handle. The prover joins this on shutdown so the worker's GPU prover is torn down (its risc0
+    /// CUDA context released) before the process exits.
+    pub(crate) fn spawn(prover: TransactionProver<S, P>, backend: B) -> JoinHandle<()> {
         let runtime = Builder::new_current_thread().enable_all().build().expect("runtime");
-        spawn(move || runtime.block_on(Self { prover, backend }.run()));
+        spawn(move || runtime.block_on(Self { prover, backend }.run()))
     }
 
     /// Main loop: drains the inbox, dispatches proofs, and waits for new work or shutdown.
