@@ -27,16 +27,11 @@ pub struct Backend {
     transaction_image_id: [u8; 32],
     /// Wrapped ELF binary for single-batch state-transition proving.
     batch_elf: Vec<u8>,
-    /// Batch processor guest image ID. The aggregator's `Inputs.batch_image_id` pins this so
-    /// `env::verify` accepts only receipts produced from this exact image.
+    /// Batch processor guest image ID.
     batch_image_id: [u8; 32],
     /// Wrapped ELF binary for bundle aggregation proving.
     aggregator_elf: Vec<u8>,
-    /// Aggregator guest image ID. The covenant script's on-chain `OpZkPrecompile` pins
-    /// against this id, since the aggregator is what produces the [`StateTransition`] receipt
-    /// that hits L1.
-    ///
-    /// [`StateTransition`]: vprogs_zk_abi::batch_aggregator::StateTransition
+    /// Aggregator guest image ID - the covenant script pins against this id.
     aggregator_image_id: [u8; 32],
     /// Proof system [`Self::prove_aggregator`] terminates in. Inner per-batch and per-tx
     /// receipts are always succinct (composed via assumptions).

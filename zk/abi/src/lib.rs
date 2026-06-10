@@ -7,10 +7,6 @@ mod error_code;
 mod journals;
 mod read;
 
-/// Guest-independent withdrawal vocabulary: the L2->L1 exit types shared across every guest.
-/// Exits are emitted by the transaction processor ([`ExitSink`]), carried between guests as a
-/// serialized [`Exits`] section, and folded into the bundle's permission commitment by the
-/// aggregator ([`ExitAccumulator`]).
 pub mod withdrawal {
     pub(crate) mod exit_accumulator;
     pub(crate) mod exit_sink;
