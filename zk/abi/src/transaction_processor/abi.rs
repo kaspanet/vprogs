@@ -4,9 +4,10 @@ use vprogs_core_hashing::Hasher;
 use crate::{
     Read,
     transaction_processor::{
-        Effects, ErrorCode, ExitSink, InputCommitment, Inputs, OutputCommitment, Outputs,
-        Transaction, TransactionHandler,
+        Effects, ErrorCode, InputCommitment, Inputs, OutputCommitment, Outputs, Transaction,
+        TransactionHandler,
     },
+    withdrawal::ExitSink,
 };
 
 /// Processes a single transaction inside the guest, committing input/output to `journal` and

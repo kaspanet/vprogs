@@ -1,7 +1,7 @@
 use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch, ScheduledTransaction};
 use vprogs_storage_types::Store;
-use vprogs_zk_batch_prover::{BatchProver, BatchProverConfig, LaneProofSource};
+use vprogs_zk_batch_prover::{BatchProver, BatchProverConfig};
 use vprogs_zk_transaction_prover::TransactionProver;
 
 use crate::Backend;
@@ -22,14 +22,8 @@ impl<S: Store, P: Processor<S>> ProvingPipeline<S, P> {
         Self::Transaction(TransactionProver::new(backend))
     }
 
-    /// Creates a full batch proving pipeline. `lane_source` supplies the per-bundle lane proof
-    /// (production: a kaspa gRPC client; in-process drivers can supply a consensus-backed source).
-    pub fn batch<B: Backend, L: LaneProofSource>(
-        backend: B,
-        store: S,
-        lane_source: L,
-        config: BatchProverConfig,
-    ) -> Self
+    /// Creates a full batch proving pipeline.
+    pub fn batch<B: Backend>(backend: B, store: S, config: BatchProverConfig) -> Self
     where
         P: Processor<
                 S,
@@ -40,7 +34,7 @@ impl<S: Store, P: Processor<S>> ProvingPipeline<S, P> {
     {
         Self::Batch(
             TransactionProver::new(backend.clone()),
-            BatchProver::new(backend, store, lane_source, config),
+            BatchProver::new(backend, store, config),
         )
     }
 

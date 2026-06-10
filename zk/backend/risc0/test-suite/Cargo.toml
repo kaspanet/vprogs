@@ -8,6 +8,7 @@ cuda = ["vprogs-zk-backend-risc0-api/cuda"]
 
 [dependencies]
 kaspa-consensus-core.workspace        = true
+kaspa-grpc-client.workspace           = true
 kaspa-hashes.workspace                = true
 kaspa-rpc-core.workspace              = true
 kaspa-seq-commit.workspace            = true
@@ -21,20 +22,19 @@ vprogs-scheduling-scheduler.workspace = true
 vprogs-state-version.workspace        = true
 vprogs-storage-manager.workspace      = true
 vprogs-storage-types.workspace        = true
+zerocopy.workspace                    = true
+vprogs-zk-abi                    = { workspace = true, features = ["host"] }
 vprogs-zk-backend-risc0-api           = { path = "../api", features = ["host"] }
 vprogs-zk-backend-risc0-covenant      = { path = "../covenant" }
-zerocopy.workspace                    = true
 
 [dev-dependencies]
-kaspa-grpc-client.workspace            = true
 kaspa-txscript.workspace               = true
 tempfile.workspace                     = true
-tokio                                  = { workspace = true, features = ["rt-multi-thread"] }
 vprogs-core-hashing.workspace          = true
 vprogs-core-test-utils.workspace       = true
 vprogs-node-test-utils.workspace       = true
 vprogs-storage-rocksdb-store.workspace = true
-vprogs-zk-abi                          = { workspace = true, features = ["host"] }
+tokio                                  = { workspace = true, features = ["rt-multi-thread"] }
 vprogs-zk-batch-prover                 = { path = "../../../batch-prover" }
 vprogs-zk-transaction-prover           = { path = "../../../transaction-prover" }
 vprogs-zk-vm                           = { path = "../../../vm" }

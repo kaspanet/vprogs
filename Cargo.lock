@@ -9129,17 +9129,13 @@ dependencies = [
 name = "vprogs-zk-batch-prover"
 version = "0.1.0"
 dependencies = [
- "kaspa-consensus-core",
  "kaspa-grpc-client",
  "kaspa-hashes",
  "kaspa-rpc-core",
- "kaspa-seq-commit",
- "log",
  "tap",
  "tokio",
  "vprogs-core-atomics",
  "vprogs-core-macros",
- "vprogs-core-types",
  "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
  "vprogs-storage-types",
@@ -9165,7 +9161,6 @@ name = "vprogs-zk-vm"
 version = "0.1.0"
 dependencies = [
  "faster-hex",
- "kaspa-grpc-client",
  "log",
  "vprogs-l1-types",
  "vprogs-scheduling-scheduler",

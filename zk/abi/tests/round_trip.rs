@@ -4,7 +4,7 @@
 
 use kaspa_hashes::Hash;
 use vprogs_core_codec::Reader;
-use vprogs_zk_abi::batch_processor::StateTransition;
+use vprogs_zk_abi::batch_aggregator::StateTransition;
 
 #[test]
 fn state_transition_round_trip() {
@@ -15,6 +15,7 @@ fn state_transition_round_trip() {
     let new_seq_commit = Hash::from_bytes([0x55; 32]);
     let covenant_id = [0x66; 32];
     let tx_image_id = [0x77; 32];
+    let batch_image_id = [0xAA; 32];
     let permission_spk_hash = [0x88; 32];
     let lane_key = Hash::from_bytes([0x99; 32]);
 
@@ -24,7 +25,7 @@ fn state_transition_round_trip() {
         (&prev_state, &prev_lane_tip),
         (&new_state, &new_lane_tip, &new_seq_commit),
         &covenant_id,
-        &tx_image_id,
+        (&tx_image_id, &batch_image_id),
         &permission_spk_hash,
         &lane_key,
     );
@@ -38,6 +39,7 @@ fn state_transition_round_trip() {
     assert_eq!(decoded.new_seq_commit, new_seq_commit);
     assert_eq!(decoded.covenant_id, covenant_id);
     assert_eq!(decoded.tx_image_id, tx_image_id);
+    assert_eq!(decoded.batch_image_id, batch_image_id);
     assert_eq!(decoded.permission_spk_hash, permission_spk_hash);
     assert_eq!(decoded.lane_key, lane_key);
 }
@@ -53,7 +55,7 @@ fn state_transition_zero_permission_hash_when_no_exits() {
         (&zero, &Hash::from_bytes(zero)),
         (&zero, &Hash::from_bytes(zero), &Hash::from_bytes(zero)),
         &zero,
-        &zero,
+        (&zero, &zero),
         &zero,
         &Hash::from_bytes(zero),
     );

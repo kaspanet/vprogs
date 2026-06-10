@@ -491,6 +491,7 @@ mod tests {
             common: CommonPins {
                 program_id: &[0xBB; 32],
                 tx_image_id: &[0xCC; 32],
+                batch_image_id: &[0xDD; 32],
                 lane_key: &TEST_LANE_KEY,
                 permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
             },
@@ -502,6 +503,7 @@ mod tests {
             common: CommonPins {
                 program_id: &[0xBB; 32],
                 tx_image_id: &[0xCC; 32],
+                batch_image_id: &[0xDD; 32],
                 lane_key: &TEST_LANE_KEY,
                 permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
             },

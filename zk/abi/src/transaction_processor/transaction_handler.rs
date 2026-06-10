@@ -1,6 +1,9 @@
 use kaspa_hashes::Hash;
 
-use crate::transaction_processor::{ExitSink, Resource, Transaction};
+use crate::{
+    transaction_processor::{Resource, Transaction},
+    withdrawal::ExitSink,
+};
 
 /// Developer-provided transaction execution logic.
 ///

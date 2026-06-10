@@ -19,6 +19,7 @@ exclude = [
   "zk/backend/risc0/transaction-processor",
   "zk/backend/risc0/transaction-processor-with-exits",
   "zk/backend/risc0/batch-processor",
+  "zk/backend/risc0/batch-aggregator",
 ]
 members = [
   "core/*",

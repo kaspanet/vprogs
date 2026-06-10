@@ -1,4 +1,4 @@
-use crate::transaction_processor::{ExitSink, Resource};
+use crate::{transaction_processor::Resource, withdrawal::ExitSink};
 
 /// Container for the side effects produced by a successful transaction handler invocation.
 pub struct Effects<'a> {

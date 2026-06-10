@@ -31,7 +31,7 @@ pub use settlement::{
     Settlement, SettlementDevInput, SettlementInput, SettlementWitness, SuccinctWitness,
     permission_spk,
 };
-pub use vprogs_zk_abi::batch_processor::StateTransition;
+pub use vprogs_zk_abi::batch_aggregator::StateTransition;
 
 /// Byte length of the settlement journal committed by the batch guest.
 pub const JOURNAL_SIZE: usize = size_of::<StateTransition>();

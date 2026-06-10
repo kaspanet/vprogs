@@ -7,10 +7,9 @@ use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
 
-use crate::{Backend, BatchProverConfig, LaneProofSource, command::Command, worker::Worker};
+use crate::{Backend, BatchProverConfig, command::Command, worker::Worker};
 
-/// Batch prover that assembles bundle witnesses from N consecutive batches and dispatches
-/// proofs to a background worker.
+/// Batch prover that produces one ZK receipt per scheduled batch.
 #[smart_pointer]
 pub struct BatchProver<S: Store, P: Processor<S>> {
     /// Commands awaiting processing by the worker.
@@ -21,16 +20,7 @@ pub struct BatchProver<S: Store, P: Processor<S>> {
 
 impl<S: Store, P: Processor<S>> BatchProver<S, P> {
     /// Creates a new batch prover and spawns its worker thread.
-    ///
-    /// `lane_source` is used by the worker to fetch settlement context (the final-block lane proof)
-    /// once per bundle; in production this is a kaspa gRPC client. `config.bundle_size` controls
-    /// how many batches are bundled per proof.
-    pub fn new<B: Backend, L: LaneProofSource>(
-        backend: B,
-        store: S,
-        lane_source: L,
-        config: BatchProverConfig,
-    ) -> Self
+    pub fn new<B: Backend>(backend: B, store: S, config: BatchProverConfig) -> Self
     where
         P: Processor<
                 S,
@@ -43,7 +33,7 @@ impl<S: Store, P: Processor<S>> BatchProver<S, P> {
             inbox: AsyncQueue::new(),
             shutdown: AtomicAsyncLatch::new(),
         }))
-        .tap(|p| Worker::spawn(p.clone(), backend, store, lane_source, config))
+        .tap(|p| Worker::spawn(p.clone(), backend, store, config))
     }
 
     /// Enqueues a batch for proving.

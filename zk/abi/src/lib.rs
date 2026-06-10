@@ -3,35 +3,65 @@
 extern crate alloc;
 
 mod error;
+mod journals;
 mod read;
 
+/// Guest-independent withdrawal vocabulary: the L2->L1 exit types shared across every guest.
+/// Exits are emitted by the transaction processor ([`ExitSink`]), carried between guests as a
+/// serialized [`Exits`] section, and folded into the bundle's permission commitment by the
+/// aggregator ([`ExitAccumulator`]).
+pub mod withdrawal {
+    pub(crate) mod error_code;
+    pub(crate) mod exit_accumulator;
+    pub(crate) mod exit_sink;
+    pub(crate) mod exits;
+    pub(crate) mod exits_iter;
+    pub(crate) mod no_exits;
+    pub(crate) mod script_bytes;
+    pub(crate) mod standard_spk;
+
+    pub use error_code::ErrorCode;
+    pub use exit_accumulator::ExitAccumulator;
+    pub use exit_sink::ExitSink;
+    pub use exits::Exits;
+    pub use exits_iter::ExitsIter;
+    pub use no_exits::NoExits;
+    pub use script_bytes::ScriptBytes;
+    pub use standard_spk::StandardSpk;
+}
+
 pub mod batch_processor {
-    pub(crate) mod exit;
     pub(crate) mod verifier;
 
     pub(crate) mod input {
         pub(crate) mod batch;
-        pub(crate) mod batches;
-        #[cfg(feature = "host")]
-        pub(crate) mod bundle;
+        pub(crate) mod inputs;
+    }
+
+    pub(crate) mod journal {
+        pub(crate) mod batch_transition;
+    }
+
+    pub use input::{batch::Batch, inputs::Inputs};
+    pub use journal::batch_transition::BatchTransition;
+    pub use verifier::Verifier;
+}
+
+pub mod batch_aggregator {
+    pub(crate) mod verifier;
+
+    pub(crate) mod input {
         pub(crate) mod inputs;
         pub(crate) mod lane_proof;
-        pub(crate) mod transaction_journals;
     }
 
     pub(crate) mod journal {
         pub(crate) mod state_transition;
     }
 
-    pub use exit::{ExitAccumulator, NoExits};
-    #[cfg(feature = "host")]
-    pub use input::bundle::{Bundle, BundlePart};
-    pub use input::{
-        batch::Batch, batches::Batches, inputs::Inputs, lane_proof::LaneProof,
-        transaction_journals::TransactionJournals,
-    };
+    pub use input::{inputs::Inputs, lane_proof::LaneProof};
     pub use journal::state_transition::{JOURNAL_SIZE, StateTransition};
-    pub use verifier::Verifier;
+    pub use verifier::{BundleExtremes, Verifier};
 }
 
 pub mod transaction_processor {
@@ -63,12 +93,8 @@ pub mod transaction_processor {
 
         pub(crate) mod output {
             pub(crate) mod commitment;
-            pub(crate) mod exit_commitment;
-            pub(crate) mod exit_sink;
             pub(crate) mod resource_commitment;
             pub(crate) mod resource_commitments;
-            pub(crate) mod script_bytes;
-            pub(crate) mod standard_spk;
         }
     }
 
@@ -86,10 +112,8 @@ pub mod transaction_processor {
             resource_commitment::InputResourceCommitment,
         },
         output::{
-            commitment::OutputCommitment, exit_commitment::ExitCommitment, exit_sink::ExitSink,
-            resource_commitment::OutputResourceCommitment,
-            resource_commitments::OutputResourceCommitments, script_bytes::ScriptBytes,
-            standard_spk::StandardSpk,
+            commitment::OutputCommitment, resource_commitment::OutputResourceCommitment,
+            resource_commitments::OutputResourceCommitments,
         },
     };
     pub use output::outputs::Outputs;
@@ -97,4 +121,5 @@ pub mod transaction_processor {
 }
 
 pub use error::{Error, Result};
+pub use journals::Journals;
 pub use read::Read;
