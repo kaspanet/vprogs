@@ -20,10 +20,7 @@ use crate::{
 };
 
 /// Verifies one batch and emits a [`BatchTransition`] settlement journal scoped to that batch.
-pub struct Verifier<'a, V>
-where
-    V: FnMut(&[u8; 32], &[u8]),
-{
+pub struct Verifier<'a, V> {
     /// Decoded batch inputs.
     inputs: Inputs<'a>,
     /// Latest L2 value hashes indexed by batch-local resource_index.
@@ -34,13 +31,9 @@ where
     exits: ExitSink,
 }
 
-impl<'a, V> Verifier<'a, V>
-where
-    V: FnMut(&[u8; 32], &[u8]),
-{
+impl<'a, V: FnMut(&[u8; 32], &[u8])> Verifier<'a, V> {
     /// Builds a `Verifier` for one batch.
     pub fn new(input_bytes: &'a [u8], verify_tx_journal: V) -> Self {
-        // Parse inputs and snapshot the batch's pre-state from the per-batch SMT proof.
         let inputs = Inputs::decode(input_bytes).expect("decode batch inputs");
 
         Self {
@@ -58,18 +51,17 @@ where
             return (*self.inputs.batch.prev_lane_tip, self.inputs.batch.prev_lane_blue_score);
         }
 
-        // Snapshot the per-block context + lane anchors before the `&mut self` call to
-        // `verified_activity_digest` -- the `'a` references and `Copy` fields are independent
-        // of the `&self.inputs.batch` borrow, so caching them locally lets the borrow drop
-        // before we re-enter self mutably.
+        // Derive context hash used for tx and activity verification.
         let context_hash = mergeset_context_hash(&MergesetContext {
             timestamp: self.inputs.batch.prev_timestamp,
             daa_score: self.inputs.batch.daa_score,
             blue_score: self.inputs.batch.blue_score,
         });
 
+        // Compute resulting activity digest while verifying each tx journal and accumulating exits.
         let activity_digest = self.verified_activity_digest(&context_hash);
 
+        // Calculate the resulting lane tip.
         let new_lane_tip = lane_tip_next(&LaneTipInput {
             parent_ref: if self.inputs.batch.lane_expired {
                 self.inputs.batch.prev_seq_commit
@@ -91,8 +83,6 @@ where
         new_lane_tip: &Hash,
         new_lane_blue_score: u64,
     ) {
-        let batch = &self.inputs.batch;
-
         // One walk yields both roots; unchanged subtrees reuse the pre-state hash.
         let (prev_root, new_root) = self
             .inputs
@@ -102,10 +92,10 @@ where
 
         BatchTransition::encode(
             journal,
-            (&prev_root, batch.prev_lane_tip, batch.prev_lane_blue_score),
+            (&prev_root, self.inputs.batch.prev_lane_tip, self.inputs.batch.prev_lane_blue_score),
             (&new_root, new_lane_tip, new_lane_blue_score),
             (self.inputs.lane_key, self.inputs.covenant_id, self.inputs.tx_image_id),
-            batch.lane_expired,
+            self.inputs.batch.lane_expired,
             self.exits.as_bytes(),
         );
     }
