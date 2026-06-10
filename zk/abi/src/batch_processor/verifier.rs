@@ -20,11 +20,6 @@ use crate::{
 };
 
 /// Verifies one batch and emits a [`BatchTransition`] settlement journal scoped to that batch.
-///
-/// The chain anchors (`prev_lane_tip`, `prev_lane_blue_score`) come from the batch's own per-block
-/// context fields; the [`AggregatorVerifier`] is what chains a sequence of these into a bundle.
-///
-/// [`AggregatorVerifier`]: crate::batch_aggregator::AggregatorVerifier
 pub struct Verifier<'a, V>
 where
     V: FnMut(&[u8; 32], &[u8]),
@@ -35,8 +30,7 @@ where
     latest_value_hashes: Vec<&'a [u8; 32]>,
     /// Verifies a tx journal against the configured transaction-processor image.
     verify_tx_journal: V,
-    /// Exits emitted by this batch, in journal order. Streamed into the aggregator's permission
-    /// tree on the other side of the env::verify boundary.
+    /// Accumulates exits across the batch.
     exits: ExitSink,
 }
 
@@ -90,8 +84,7 @@ where
         (new_lane_tip, self.inputs.batch.blue_score)
     }
 
-    /// Commits the batch's [`BatchTransition`] journal: chain anchors, the chained extremes, and
-    /// the trailing exits blob the aggregator will stream into its permission tree.
+    /// Commits the batch's [`BatchTransition`] journal.
     pub fn commit_batch_transition<H: Hasher>(
         &self,
         journal: &mut impl Writer,
@@ -206,10 +199,6 @@ where
     }
 
     /// Verifies a resource against the SMT proof and returns its batch-local index.
-    ///
-    /// The per-batch SMT proof is scoped to exactly this batch's resources, so the
-    /// `resource_index` the tx-processor committed maps 1:1 to the proof's member index -- no
-    /// translation table needed.
     fn verified_batch_idx(&self, r: &InputResourceCommitment) -> usize {
         let batch_idx = r.resource_index.get() as usize;
 
