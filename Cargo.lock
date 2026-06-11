@@ -8808,6 +8808,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-state-proof-receipt"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "tempfile",
+ "vprogs-storage-rocksdb-store",
+ "vprogs-storage-types",
+ "zerocopy",
+]
+
+[[package]]
 name = "vprogs-state-ptr-latest"
 version = "0.1.0"
 dependencies = [
@@ -8859,6 +8870,7 @@ dependencies = [
  "vprogs-core-codec",
  "vprogs-core-hashing",
  "vprogs-core-smt",
+ "vprogs-state-proof-receipt",
  "vprogs-storage-types",
 ]
 

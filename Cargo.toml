@@ -158,6 +158,7 @@ resolver = "3"
   vprogs-state-batch-metadata                     = { path = "state/batch-metadata" }
   vprogs-state-metadata                           = { path = "state/metadata" }
   vprogs-state-ptr-latest                         = { path = "state/ptr-latest" }
+  vprogs-state-proof-receipt                      = { path = "state/proof-receipt" }
   vprogs-state-ptr-rollback                       = { path = "state/ptr-rollback" }
   vprogs-state-version                            = { path = "state/version" }
   vprogs-storage-manager                          = { path = "storage/manager" }

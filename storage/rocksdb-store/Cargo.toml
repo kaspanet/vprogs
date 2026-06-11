@@ -4,10 +4,11 @@ name              = "vprogs-storage-rocksdb-store"
 version.workspace = true
 
 [dependencies]
-num_cpus.workspace             = true
-rocksdb.workspace              = true
-tap.workspace                  = true
-vprogs-core-codec.workspace    = true
-vprogs-core-hashing.workspace  = true
-vprogs-core-smt.workspace      = true
-vprogs-storage-types.workspace = true
+num_cpus.workspace                   = true
+rocksdb.workspace                    = true
+tap.workspace                        = true
+vprogs-core-codec.workspace          = true
+vprogs-core-hashing.workspace        = true
+vprogs-core-smt.workspace            = true
+vprogs-state-proof-receipt.workspace = true
+vprogs-storage-types.workspace       = true

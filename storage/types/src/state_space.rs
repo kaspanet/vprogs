@@ -6,4 +6,5 @@ pub enum StateSpace {
     Metadata,
     SmtNode,
     SmtStale,
+    ProofReceipt,
 }

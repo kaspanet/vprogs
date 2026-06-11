@@ -1,0 +1,13 @@
+[package]
+edition.workspace = true
+name              = "vprogs-state-proof-receipt"
+version.workspace = true
+
+[dependencies]
+borsh.workspace                = true
+vprogs-storage-types.workspace = true
+zerocopy                       = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+tempfile.workspace                  = true
+vprogs-storage-rocksdb-store.workspace = true

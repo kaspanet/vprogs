@@ -1,5 +1,6 @@
 use rocksdb::{Options, SliceTransform, WriteOptions};
 use tap::Tap;
+use vprogs_state_proof_receipt::Prefix as ProofReceiptPrefix;
 
 /// Prefix length for keys that start with a u64 (batch_index or version).
 const U64_PREFIX_LEN: usize = size_of::<u64>();
@@ -91,6 +92,17 @@ pub trait Config: Send + Sync + 'static {
             // SmtStale keys are: stale_since_version(8 BE) || path(32) || level(2 BE)
             // 8-byte prefix groups all stale markers for the same version.
             o.set_prefix_extractor(SliceTransform::create_fixed_prefix(8));
+        })
+    }
+
+    fn cf_proof_receipt_opts() -> Options {
+        Options::default().tap_mut(|o| {
+            // ProofReceipt keys all start with the checkpoint_index, grouping every program's
+            // receipts for one checkpoint so the reorg orchestrator can prune a reverted
+            // checkpoint with a single prefix scan.
+            o.set_prefix_extractor(SliceTransform::create_fixed_prefix(size_of::<
+                ProofReceiptPrefix,
+            >()));
         })
     }
 }
