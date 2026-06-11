@@ -656,9 +656,9 @@ impl L2Driver {
     fn redeem_pins(&self) -> RedeemPins<'_> {
         RedeemPins::Succinct(SuccinctPins {
             common: CommonPins {
-                program_id: self.backend.aggregator_image_id(),
-                tx_image_id: self.backend.transaction_image_id(),
-                batch_image_id: self.backend.batch_image_id(),
+                program_id: &self.backend.aggregator.id,
+                tx_image_id: &self.backend.transaction_processor.id,
+                batch_image_id: &self.backend.batch_processor.id,
                 lane_key: &self.lane_key,
                 permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
             },

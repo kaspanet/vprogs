@@ -2,9 +2,9 @@ use vprogs_core_codec::Writer;
 use vprogs_core_hashing::Hasher;
 
 use crate::{
-    Read,
+    ErrorCode, Read,
     transaction_processor::{
-        Effects, ErrorCode, InputCommitment, Inputs, OutputCommitment, Outputs, Transaction,
+        Effects, InputCommitment, Inputs, OutputCommitment, Outputs, Transaction,
         TransactionHandler,
     },
     withdrawal::ExitSink,

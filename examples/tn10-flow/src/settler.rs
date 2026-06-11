@@ -308,9 +308,9 @@ pub async fn bootstrap_real_covenant<C: kaspa_rpc_core::api::rpc::RpcApi + ?Size
 fn redeem_pins<'a>(backend: &'a Backend, lane_key: &'a Hash) -> RedeemPins<'a> {
     RedeemPins::Succinct(SuccinctPins {
         common: CommonPins {
-            program_id: backend.aggregator_image_id(),
-            tx_image_id: backend.transaction_image_id(),
-            batch_image_id: backend.batch_image_id(),
+            program_id: &backend.aggregator.id,
+            tx_image_id: &backend.transaction_processor.id,
+            batch_image_id: &backend.batch_processor.id,
             lane_key,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },

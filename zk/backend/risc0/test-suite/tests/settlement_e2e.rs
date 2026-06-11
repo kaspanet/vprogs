@@ -31,14 +31,14 @@ use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_backend_risc0_api::{Backend, OwnedGroth16Witness, OwnedSuccinctWitness, ProofType};
 use vprogs_zk_backend_risc0_covenant::{
-    CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, Groth16Pins, RedeemPins, Settlement,
+    CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, Groth16Pins, JOURNAL_SIZE, RedeemPins, Settlement,
     SettlementInput, SettlementWitness, StateTransition, SuccinctPins, SuccinctWitness,
     build_redeem_script, permission_spk, redeem_script_len,
 };
 use vprogs_zk_backend_risc0_test_suite::{
-    L1TransactionExt, assert_receipt_pins_match_succinct_consts, batch_aggregator_elf,
-    batch_processor_elf, compute_section_lane_tip, dev_mode_enabled, test_lane_key,
-    transaction_processor_elf, transaction_processor_with_exits_elf,
+    L1TransactionExt, aggregate_batches, assert_receipt_pins_match_succinct_consts,
+    batch_aggregator_elf, batch_processor_elf, compute_section_lane_tip, dev_mode_enabled,
+    test_lane_key, transaction_processor_elf, transaction_processor_with_exits_elf,
 };
 use vprogs_zk_batch_prover::{Backend as _, BatchProverConfig};
 use vprogs_zk_vm::{ProvingPipeline, Vm};
@@ -286,7 +286,7 @@ async fn batch_proof_is_directly_settleable_single_batch() {
     // Aggregate the per-batch receipt into a bundle receipt: this is the receipt the on-chain
     // settlement covenant verifies via `OpZkPrecompile`, and its journal carries the
     // `StateTransition` the redeem script reconstructs.
-    let settlement_receipt = vprogs_zk_backend_risc0_test_suite::aggregate_batches(
+    let settlement_receipt = aggregate_batches(
         &backend,
         l1.grpc_client(),
         &test_lane_key(),
@@ -301,9 +301,9 @@ async fn batch_proof_is_directly_settleable_single_batch() {
 
     assert_eq!(
         journal_bytes.len(),
-        vprogs_zk_backend_risc0_covenant::JOURNAL_SIZE,
+        JOURNAL_SIZE,
         "settlement journal must be exactly {} bytes",
-        vprogs_zk_backend_risc0_covenant::JOURNAL_SIZE,
+        JOURNAL_SIZE,
     );
 
     let parsed = (&mut &journal_bytes[..]).array_as::<StateTransition>("state_transition").unwrap();
@@ -315,8 +315,8 @@ async fn batch_proof_is_directly_settleable_single_batch() {
         "first section's prev_lane_tip is bundle's start"
     );
 
-    let program_id = *backend.aggregator_image_id();
-    let tx_image_id = *backend.transaction_image_id();
+    let program_id = backend.aggregator.id;
+    let tx_image_id = backend.transaction_processor.id;
     assert_eq!(
         parsed.tx_image_id, tx_image_id,
         "guest must echo the host-supplied tx image id into the journal",
@@ -462,7 +462,7 @@ async fn batch_proof_groth16_is_directly_settleable_single_batch() {
     // Aggregate the per-batch receipt into a bundle receipt: this is the receipt the on-chain
     // settlement covenant verifies via `OpZkPrecompile`, and its journal carries the
     // `StateTransition` the redeem script reconstructs.
-    let settlement_receipt = vprogs_zk_backend_risc0_test_suite::aggregate_batches(
+    let settlement_receipt = aggregate_batches(
         &backend,
         l1.grpc_client(),
         &test_lane_key(),
@@ -477,9 +477,9 @@ async fn batch_proof_groth16_is_directly_settleable_single_batch() {
 
     assert_eq!(
         journal_bytes.len(),
-        vprogs_zk_backend_risc0_covenant::JOURNAL_SIZE,
+        JOURNAL_SIZE,
         "settlement journal must be exactly {} bytes",
-        vprogs_zk_backend_risc0_covenant::JOURNAL_SIZE,
+        JOURNAL_SIZE,
     );
 
     let parsed = (&mut &journal_bytes[..]).array_as::<StateTransition>("state_transition").unwrap();
@@ -490,8 +490,8 @@ async fn batch_proof_groth16_is_directly_settleable_single_batch() {
         "first section's prev_lane_tip is bundle's start",
     );
 
-    let program_id = *backend.aggregator_image_id();
-    let tx_image_id = *backend.transaction_image_id();
+    let program_id = backend.aggregator.id;
+    let tx_image_id = backend.transaction_processor.id;
     assert_eq!(
         parsed.tx_image_id, tx_image_id,
         "guest must echo the host-supplied tx image id into the journal",
@@ -643,7 +643,7 @@ async fn batch_proof_bundles_two_batches() {
     // Aggregate the two per-batch receipts into a bundle receipt. The aggregator chains
     // their `BatchTransition` journals into a single `StateTransition`, which is what the
     // on-chain covenant verifies via `OpZkPrecompile`.
-    let settlement_receipt = vprogs_zk_backend_risc0_test_suite::aggregate_batches(
+    let settlement_receipt = aggregate_batches(
         &backend,
         l1.grpc_client(),
         &lane_key,
@@ -655,14 +655,14 @@ async fn batch_proof_bundles_two_batches() {
         backend.verify_aggregator_receipt(&settlement_receipt);
     }
     let j1 = Backend::journal_bytes(&settlement_receipt);
-    assert_eq!(j1.len(), vprogs_zk_backend_risc0_covenant::JOURNAL_SIZE);
+    assert_eq!(j1.len(), JOURNAL_SIZE);
 
     let parsed = (&mut &j1[..]).array_as::<StateTransition>("state_transition").unwrap();
     assert_eq!(parsed.covenant_id, [0u8; 32]);
     assert_eq!(parsed.prev_lane_tip, Hash::default(), "bundle prev_lane_tip is bundle's start");
 
-    let program_id = *backend.aggregator_image_id();
-    let tx_image_id = *backend.transaction_image_id();
+    let program_id = backend.aggregator.id;
+    let tx_image_id = backend.transaction_processor.id;
     let covenant_id_hash = Hash::from_bytes(parsed.covenant_id);
     let pins = RedeemPins::Succinct(SuccinctPins {
         common: CommonPins {
@@ -820,7 +820,7 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
     }
 
     // Aggregate the two per-batch receipts into the settlement receipt.
-    let settlement_receipt = vprogs_zk_backend_risc0_test_suite::aggregate_batches(
+    let settlement_receipt = aggregate_batches(
         &backend,
         l1.grpc_client(),
         &lane_key,
@@ -838,7 +838,7 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
         assert_receipt_pins_match_succinct_consts(&settlement_receipt);
     }
     let j1 = Backend::journal_bytes(&settlement_receipt);
-    assert_eq!(j1.len(), vprogs_zk_backend_risc0_covenant::JOURNAL_SIZE);
+    assert_eq!(j1.len(), JOURNAL_SIZE);
 
     let parsed = (&mut &j1[..]).array_as::<StateTransition>("state_transition").unwrap();
     assert_eq!(parsed.covenant_id, [0u8; 32]);
@@ -851,8 +851,8 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
         "exit-emitting handler must produce a non-zero permission_spk_hash",
     );
 
-    let program_id = *backend.aggregator_image_id();
-    let tx_image_id = *backend.transaction_image_id();
+    let program_id = backend.aggregator.id;
+    let tx_image_id = backend.transaction_processor.id;
     let covenant_id_hash = Hash::from_bytes(parsed.covenant_id);
     let pins = RedeemPins::Succinct(SuccinctPins {
         common: CommonPins {

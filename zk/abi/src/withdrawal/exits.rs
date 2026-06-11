@@ -5,17 +5,7 @@ use crate::{
     withdrawal::{ExitsIter, StandardSpk},
 };
 
-/// Zero-copy view over a serialized exit section: the exits emitted by a
-/// [`OutputCommitment::Success`](crate::transaction_processor::OutputCommitment::Success), carried
-/// forward as the trailing-DST field of a
-/// [`BatchTransition`](crate::batch_processor::BatchTransition).
-///
-/// Not a hash commitment -- it is how exits are communicated between guests; the aggregator folds
-/// them into the bundle's permission commitment.
-///
-/// `#[repr(transparent)]` over `[u8]` so it parses zero-copy with [`FromBytes::ref_from_bytes`] and
-/// can sit as the trailing slice of an outer DST. Iterate by reference -- `for exit in &exits` --
-/// or explicitly via [`iter`](Self::iter).
+/// Zero-copy view over a serialized run of `(destination, amount)` exit entries.
 #[repr(C)]
 #[derive(FromBytes, Immutable, KnownLayout, Unaligned)]
 pub struct Exits {

@@ -10,26 +10,15 @@ use vprogs_l1_types::ChainBlockMetadata;
 
 use crate::{Result, batch_processor::Batch};
 
-/// Decoded single-batch processor input.
-///
-/// One of these is produced per scheduled batch; the [`Verifier`] proves the state transition for
-/// that batch in isolation, and the [`AggregatorVerifier`] chains a sequence of resulting
-/// [`BatchTransition`] journals into a bundle settlement.
-///
-/// [`Verifier`]: crate::batch_processor::Verifier
-/// [`AggregatorVerifier`]: crate::batch_aggregator::AggregatorVerifier
-/// [`BatchTransition`]: crate::batch_processor::BatchTransition
+/// Decoded batch processor input.
 pub struct Inputs<'a> {
     /// Transaction processor guest image ID used to verify each inner tx journal.
     pub tx_image_id: &'a [u8; 32],
-    /// Covenant id this batch settles into (carried through to the [`BatchTransition`] so the
-    /// aggregator asserts every batch shares it).
+    /// Covenant id this bundle settles into.
     pub covenant_id: &'a [u8; 32],
-    /// Lane key for this batch's lane (carried through to the [`BatchTransition`] for the
-    /// aggregator's same-lane assert and the seq_commit derivation).
+    /// Lane key of the lane this bundle settles.
     pub lane_key: &'a Hash,
-    /// SMT proof scoped to the resources this batch touches (one proof per batch, smaller than
-    /// the bundle-wide proof the monolithic guest used to take).
+    /// SMT proof covering the resources touched in this batch.
     pub proof: Proof<'a>,
     /// The batch's per-block context and tx journals.
     pub batch: Batch<'a>,
@@ -47,12 +36,7 @@ impl<'a> Inputs<'a> {
         })
     }
 
-    /// Encodes a single-batch input to bytes.
-    ///
-    /// The first tuple groups the per-batch invariants that the [`BatchTransition`] header
-    /// carries through to the aggregator: `(tx_image_id, covenant_id, lane_key)`.
-    ///
-    /// [`BatchTransition`]: crate::batch_processor::BatchTransition
+    /// Encodes a batch processor input to bytes.
     #[cfg(feature = "host")]
     pub fn encode(
         (tx_image_id, covenant_id, lane_key): (&[u8; 32], &[u8; 32], &Hash),

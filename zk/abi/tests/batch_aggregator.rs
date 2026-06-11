@@ -1,6 +1,6 @@
 //! Host-side aggregator tests.
 //!
-//! Exercises the [`batch_aggregator::Verifier`]'s chain conditions and bundle-extreme derivation
+//! Exercises the [`batch_aggregator::Verifier`]'s chain conditions and new-lane-state derivation
 //! against a sequence of hand-built [`BatchTransition`] journals. No proving / `env::verify`
 //! involved: we pass a no-op closure for `verify_batch_journal` so the test focuses on the
 //! aggregator's own logic (per-batch chain asserts, lane/covenant/tx-image-id invariants, exit
@@ -73,13 +73,17 @@ fn aggregator_inputs(batch_image_id: &[u8; 32], journals: &[&[u8]]) -> Vec<u8> {
     buf.extend_from_slice(batch_image_id);
 
     // LaneProof: payload_and_ctx_digest (32) + parent_seq_commit (32) + inactivity_shortcut (32)
-    //         + length-prefixed smt_proof. We zero them out: the aggregator only touches these
-    // in `commit_state_transition`, which this test doesn't call.
+    // + length-prefixed smt_proof. The three hashes are only read in `commit_state_transition`
+    // (not called here) so they're zeroed; the smt_proof is parsed at decode, so it must be
+    // structurally valid -- here an empty proof: a 32-byte all-set bitmap (every sibling elided)
+    // plus the `Full` terminal tag and no siblings.
     buf.extend_from_slice(&[0u8; 32]); // payload_and_ctx_digest
     buf.extend_from_slice(&[0u8; 32]); // parent_seq_commit
     buf.extend_from_slice(&[0u8; 32]); // inactivity_shortcut
-    buf.extend_from_slice(&0u32.to_le_bytes()); // smt_proof length = 0
-    // (no smt_proof bytes)
+    let mut smt_proof = [0xFFu8; 33];
+    smt_proof[32] = 0; // Full terminal tag
+    buf.extend_from_slice(&(smt_proof.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&smt_proof);
 
     // Trailing list: each journal as length-prefixed bytes.
     for journal in journals {
@@ -121,21 +125,15 @@ fn chains_two_consecutive_batches() {
 
     let inputs = aggregator_inputs(&image_id, &[&batch_1, &batch_2]);
     let mut verifier = Verifier::new(&inputs, skip_verify, RecordedExits::new());
-    let extremes = verifier.verify_batches();
+    let last = verifier.verify_batches();
 
-    assert_eq!(extremes.prev_state, state_0);
-    assert_eq!(extremes.new_state, state_2);
-    assert_eq!(extremes.prev_lane_tip, lane_tip_0);
-    assert_eq!(extremes.new_lane_tip, lane_tip_2);
-    assert_eq!(extremes.prev_lane_blue_score, 100);
-    assert_eq!(extremes.new_lane_blue_score, 300);
-    assert_eq!(extremes.lane_key, lane_key);
-    assert_eq!(extremes.covenant_id, covenant_id);
-    assert_eq!(extremes.tx_image_id, tx_image_id);
+    assert_eq!(last.new_state, state_2);
+    assert_eq!(last.new_lane_tip, lane_tip_2);
+    assert_eq!(last.new_lane_blue_score.get(), 300);
 }
 
 #[test]
-#[should_panic(expected = "prev_state mismatch")]
+#[should_panic(expected = "prev_state")]
 fn rejects_broken_state_chain() {
     let image_id = [0xAA; 32];
     let lane_key = Hash::from_bytes([0xBB; 32]);
@@ -171,7 +169,7 @@ fn rejects_broken_state_chain() {
 }
 
 #[test]
-#[should_panic(expected = "lane_key mismatch across bundle")]
+#[should_panic(expected = "lane_key")]
 fn rejects_lane_key_change_across_bundle() {
     let image_id = [0xAA; 32];
     let lane_a = Hash::from_bytes([0xBB; 32]);
@@ -225,7 +223,7 @@ fn skips_lane_tip_check_when_lane_expired() {
 
     let inputs = aggregator_inputs(&image_id, &[&batch_1, &batch_2]);
     let mut verifier = Verifier::new(&inputs, skip_verify, RecordedExits::new());
-    let extremes = verifier.verify_batches();
+    let last = verifier.verify_batches();
 
-    assert_eq!(extremes.new_lane_tip, Hash::from_bytes([0x70; 32]));
+    assert_eq!(last.new_lane_tip, Hash::from_bytes([0x70; 32]));
 }

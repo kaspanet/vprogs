@@ -1,8 +1,6 @@
 use crate::withdrawal::{ExitAccumulator, StandardSpk};
 
-/// No-op accumulator that drops exits and finalizes to `[0u8; 32]`.
-///
-/// Used by batch processors that don't support exit outputs yet.
+/// No-op [`ExitAccumulator`] that drops exits and finalizes to `[0u8; 32]`.
 pub struct NoExits;
 
 impl ExitAccumulator for NoExits {
