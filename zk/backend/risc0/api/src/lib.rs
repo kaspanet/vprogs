@@ -8,6 +8,8 @@ mod proof_type;
 
 #[cfg(feature = "host")]
 mod backend;
+#[cfg(feature = "host")]
+mod elf_binary;
 #[cfg(feature = "guest")]
 mod host;
 #[cfg(feature = "guest")]
@@ -20,6 +22,8 @@ mod witness;
 
 #[cfg(feature = "host")]
 pub use backend::Backend;
+#[cfg(feature = "host")]
+pub use elf_binary::ElfBinary;
 #[cfg(feature = "guest")]
 pub use host::Host;
 #[cfg(feature = "guest")]

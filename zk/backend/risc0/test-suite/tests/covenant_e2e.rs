@@ -45,9 +45,9 @@ async fn covenant_bootstrap_is_accepted_on_simnet() {
     let batch_elf = batch_processor_elf();
     let aggregator_elf = batch_aggregator_elf();
     let backend = Backend::new(&tx_elf, &batch_elf, &aggregator_elf, ProofType::Succinct);
-    let program_id = *backend.aggregator_image_id();
-    let tx_image_id = *backend.transaction_image_id();
-    let batch_image_id = *backend.batch_image_id();
+    let program_id = backend.aggregator.id;
+    let tx_image_id = backend.transaction_processor.id;
+    let batch_image_id = backend.batch_processor.id;
 
     let initial_state = EMPTY_HASH;
     let initial_lane_tip = Hash::default();

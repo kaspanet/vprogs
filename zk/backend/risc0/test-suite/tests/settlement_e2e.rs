@@ -245,8 +245,8 @@ async fn batch_proof_is_directly_settleable_single_batch() {
         "first section's prev_lane_tip is bundle's start"
     );
 
-    let program_id = *backend.aggregator_image_id();
-    let tx_image_id = *backend.transaction_image_id();
+    let program_id = backend.aggregator.id;
+    let tx_image_id = backend.transaction_processor.id;
     assert_eq!(
         parsed.tx_image_id, tx_image_id,
         "guest must echo the host-supplied tx image id into the journal",
@@ -410,8 +410,8 @@ async fn batch_proof_groth16_is_directly_settleable_single_batch() {
         "first section's prev_lane_tip is bundle's start",
     );
 
-    let program_id = *backend.aggregator_image_id();
-    let tx_image_id = *backend.transaction_image_id();
+    let program_id = backend.aggregator.id;
+    let tx_image_id = backend.transaction_processor.id;
     assert_eq!(
         parsed.tx_image_id, tx_image_id,
         "guest must echo the host-supplied tx image id into the journal",
@@ -581,8 +581,8 @@ async fn batch_proof_bundles_two_batches() {
     assert_eq!(parsed.covenant_id, [0u8; 32]);
     assert_eq!(parsed.prev_lane_tip, Hash::default(), "bundle prev_lane_tip is bundle's start");
 
-    let program_id = *backend.aggregator_image_id();
-    let tx_image_id = *backend.transaction_image_id();
+    let program_id = backend.aggregator.id;
+    let tx_image_id = backend.transaction_processor.id;
     let covenant_id_hash = Hash::from_bytes(parsed.covenant_id);
     let pins = RedeemPins::Succinct(SuccinctPins {
         common: CommonPins {
@@ -771,8 +771,8 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
         "exit-emitting handler must produce a non-zero permission_spk_hash",
     );
 
-    let program_id = *backend.aggregator_image_id();
-    let tx_image_id = *backend.transaction_image_id();
+    let program_id = backend.aggregator.id;
+    let tx_image_id = backend.transaction_processor.id;
     let covenant_id_hash = Hash::from_bytes(parsed.covenant_id);
     let pins = RedeemPins::Succinct(SuccinctPins {
         common: CommonPins {

@@ -43,7 +43,7 @@ pub async fn aggregate_batches(
     // Encode the aggregator inputs over the per-batch journal bytes.
     let journals: Vec<Vec<u8>> = batch_receipts.iter().map(|r| r.journal.bytes.clone()).collect();
     let inputs = AggregatorInputs::encode(
-        backend.batch_image_id(),
+        &backend.batch_processor.id,
         &lane_proof,
         journals.iter().map(|j| j.as_slice()),
     );

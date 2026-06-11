@@ -532,9 +532,9 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
     let batch_elf = batch_processor_elf();
     let aggregator_elf = batch_aggregator_elf();
     let backend = Backend::new(&tx_elf, &batch_elf, &aggregator_elf, config.proof_type);
-    let program_id = *backend.aggregator_image_id();
-    let tx_image_id = *backend.transaction_image_id();
-    let batch_image_id = *backend.batch_image_id();
+    let program_id = backend.aggregator.id;
+    let tx_image_id = backend.transaction_processor.id;
+    let batch_image_id = backend.batch_processor.id;
 
     // Consensus keys the lane SMT by `H_lane_key(subnetwork_id)`, and the test routes its carriers
     // onto [`L2_LANE_SUBNET`] (see the const's doc for why we don't ride NATIVE): the lane_key
