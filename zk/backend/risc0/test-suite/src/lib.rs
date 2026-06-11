@@ -25,15 +25,8 @@ pub fn test_lane_key() -> Hash {
     lane_key(TEST_SUBNETWORK_ID.as_bytes())
 }
 
-/// Runs the aggregator on a sequence of per-batch receipts and returns the resulting bundle
-/// receipt. Mirrors what the (still-unbuilt) aggregator orchestrator would do once it lands:
-///
-/// 1. Fetch the lane proof for the bundle's final block from L1.
-/// 2. Encode the aggregator inputs over the per-batch journal bytes.
-/// 3. Invoke `Backend::prove_aggregator` with the per-batch receipts as composition assumptions.
-///
-/// The returned receipt's journal is a `vprogs_zk_abi::batch_aggregator::StateTransition`, ready
-/// for the settlement covenant.
+/// Runs the aggregator over per-batch receipts and returns the bundle receipt, whose journal is a
+/// `vprogs_zk_abi::batch_aggregator::StateTransition`.
 pub async fn aggregate_batches(
     backend: &Backend,
     grpc_client: &GrpcClient,
@@ -41,19 +34,21 @@ pub async fn aggregate_batches(
     last_block_hash: Hash,
     batch_receipts: Vec<Receipt>,
 ) -> Receipt {
+    // Fetch the lane proof for the bundle's final block from L1.
     let lane_proof = grpc_client
         .get_seq_commit_lane_proof(last_block_hash, *lane_key)
         .await
         .expect("get_seq_commit_lane_proof");
 
+    // Encode the aggregator inputs over the per-batch journal bytes.
     let journals: Vec<Vec<u8>> = batch_receipts.iter().map(|r| r.journal.bytes.clone()).collect();
-
     let inputs = AggregatorInputs::encode(
         backend.batch_image_id(),
         &lane_proof,
         journals.iter().map(|j| j.as_slice()),
     );
 
+    // Prove the aggregator with the per-batch receipts as composition assumptions.
     backend.prove_aggregator(&inputs, batch_receipts).await
 }
 
@@ -132,7 +127,7 @@ pub fn batch_aggregator_elf() -> Vec<u8> {
 /// Must be called only when [`dev_mode_enabled`] is false: dev-mode receipts are the `Fake`
 /// variant and don't have succinct fields. See
 /// [`vprogs_zk_backend_risc0_covenant::succinct_consts`].
-pub fn assert_receipt_pins_match_succinct_consts(receipt: &vprogs_zk_backend_risc0_api::Receipt) {
+pub fn assert_receipt_pins_match_succinct_consts(receipt: &Receipt) {
     use vprogs_zk_backend_risc0_covenant::succinct_consts::SUCCINCT_CONTROL_ID;
 
     let succinct = receipt.inner.succinct().expect("expected succinct receipt outside dev mode");
