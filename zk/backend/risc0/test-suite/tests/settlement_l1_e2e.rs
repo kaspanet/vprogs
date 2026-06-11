@@ -41,11 +41,14 @@ use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId};
 use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_node_test_utils::L1Node;
+use vprogs_scheduling_scheduler::Scheduler;
+use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_backend_risc0_api::{OwnedGroth16Witness, OwnedSuccinctWitness, ProofType, Receipt};
 use vprogs_zk_backend_risc0_covenant::{RedeemPins, SettlementWitness};
 use vprogs_zk_backend_risc0_test_suite::{
     TEST_SUBNETWORK_ID, aggregate_batches, compute_section_lane_tip, test_lane_key,
 };
+use vprogs_zk_vm::Vm;
 use zerocopy::IntoBytes;
 
 const COVENANT_VALUE: u64 = 100_000_000;
@@ -499,16 +502,15 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
     MakeWitness: Fn(&Receipt) -> RealProofWitness,
 {
     use tempfile::TempDir;
-    use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
+    use vprogs_scheduling_scheduler::ExecutionConfig;
     use vprogs_storage_manager::StorageConfig;
-    use vprogs_storage_rocksdb_store::RocksDbStore;
     use vprogs_zk_backend_risc0_api::Backend;
     use vprogs_zk_backend_risc0_covenant::{build_redeem_script, redeem_script_len};
     use vprogs_zk_backend_risc0_test_suite::{
         batch_aggregator_elf, batch_processor_elf, transaction_processor_elf,
     };
     use vprogs_zk_batch_prover::BatchProverConfig;
-    use vprogs_zk_vm::{ProvingPipeline, Vm};
+    use vprogs_zk_vm::ProvingPipeline;
 
     // Succinct settlement carries a full STARK seal; the chain reports ~1.2M compute mass
     // when `OpZkPrecompile` runs it, well above simnet's default 500k block cap. Groth16 is
@@ -703,13 +705,8 @@ where
     MakeWitness: Fn(&Receipt) -> RealProofWitness,
 {
     l1: &'a L1Node,
-    scheduler: &'a mut vprogs_scheduling_scheduler::Scheduler<
-        vprogs_storage_rocksdb_store::RocksDbStore,
-        vprogs_zk_vm::Vm<
-            vprogs_zk_backend_risc0_api::Backend,
-            vprogs_storage_rocksdb_store::RocksDbStore,
-        >,
-    >,
+    scheduler:
+        &'a mut Scheduler<RocksDbStore, Vm<vprogs_zk_backend_risc0_api::Backend, RocksDbStore>>,
     backend: &'a vprogs_zk_backend_risc0_api::Backend,
     config: &'a RealProofConfig<BuildPins, MakeWitness>,
     spend_pins: RedeemPins<'a>,
