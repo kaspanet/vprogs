@@ -12,7 +12,6 @@ mod prune;
 
 pub use key::{AggregatorKey, BatchKey, HasPrefix, Prefix, ReceiptKey, TxKey};
 pub use prune::invalidate_checkpoint;
-
 use vprogs_storage_types::{StateSpace, Store, WriteBatch};
 
 /// Returns the cached receipt at `key`, or `None` on a cache miss.

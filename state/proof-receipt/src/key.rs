@@ -1,4 +1,7 @@
-use zerocopy::{Immutable, IntoBytes, Unaligned, byteorder::big_endian::{U32, U64}, FromBytes, KnownLayout};
+use zerocopy::{
+    FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned,
+    byteorder::big_endian::{U32, U64},
+};
 
 /// The column family's prefix-extractor unit and the granularity [`invalidate_checkpoint`]
 /// prunes by: the checkpoint index alone. Every receipt key begins with it, so one prefix scan

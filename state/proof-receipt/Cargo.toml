@@ -9,5 +9,5 @@ vprogs-storage-types.workspace = true
 zerocopy                       = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
-tempfile.workspace                  = true
+tempfile.workspace                     = true
 vprogs-storage-rocksdb-store.workspace = true
