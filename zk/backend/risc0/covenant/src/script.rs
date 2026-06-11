@@ -93,13 +93,12 @@ pub mod succinct_consts {
 pub const REDEEM_PREFIX_LEN: i64 = 99;
 
 /// Verifier-identity constants hardcoded into the redeem script body and shared by both proof
-/// systems. `program_id` and `tx_image_id` pin the verifier and the inner-transaction guest;
-/// `lane_key` pins the lane the covenant settles for; `permission_output_value` pins the
+/// systems. `program_id` and `tx_image_id` pin the aggregator verifier and the inner-transaction
+/// guest; `lane_key` pins the lane the covenant settles for; `permission_output_value` pins the
 /// sompi value emitted on the permission-exit output.
 #[derive(Copy, Clone)]
 pub struct CommonPins<'a> {
-    /// Batch processor guest image id (the proof verifier's image_id pushed before
-    /// `OpZkPrecompile`).
+    /// Aggregator guest image id (the proof verifier's image_id pushed before `OpZkPrecompile`).
     pub program_id: &'a [u8; 32],
     /// Transaction processor guest image id, cat-ed into the journal preimage so the inner
     /// proof verifier identity is constrained on-chain.
