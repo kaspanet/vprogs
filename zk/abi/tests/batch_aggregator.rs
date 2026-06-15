@@ -11,7 +11,7 @@
 use kaspa_hashes::Hash;
 use vprogs_zk_abi::{
     batch_aggregator::Verifier,
-    batch_processor::BatchTransition,
+    batch_processor::{BatchTransition, BatchTransitionArgs},
     withdrawal::{ExitAccumulator, StandardSpk},
 };
 
@@ -56,11 +56,19 @@ fn batch_journal(
     let mut buf = Vec::new();
     BatchTransition::encode(
         &mut buf,
-        (&prev_state, &prev_lane_tip, prev_lane_blue_score),
-        (&new_state, &new_lane_tip, new_lane_blue_score),
-        (&lane_key, &covenant_id, &tx_image_id),
-        lane_expired,
-        exits,
+        BatchTransitionArgs {
+            prev_state: &prev_state,
+            prev_lane_tip: &prev_lane_tip,
+            prev_lane_blue_score,
+            new_state: &new_state,
+            new_lane_tip: &new_lane_tip,
+            new_lane_blue_score,
+            lane_key: &lane_key,
+            covenant_id: &covenant_id,
+            tx_image_id: &tx_image_id,
+            lane_expired,
+            exits,
+        },
     );
     buf
 }

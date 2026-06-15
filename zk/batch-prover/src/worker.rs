@@ -92,5 +92,8 @@ where
 
         // Publish the receipt as the batch's artifact.
         batch.publish_artifact(Some(receipt));
+
+        // Wait for this batch's commit so the next batch has access to the committed prev_state.
+        batch.wait_committed().await;
     }
 }

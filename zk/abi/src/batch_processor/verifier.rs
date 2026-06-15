@@ -11,7 +11,7 @@ use vprogs_core_hashing::Hasher;
 
 use crate::{
     Error, ErrorCode,
-    batch_processor::{BatchTransition, Inputs},
+    batch_processor::{BatchTransition, BatchTransitionArgs, Inputs},
     transaction_processor::{
         InputResourceCommitment, JournalEntries, OutputCommitment, OutputResourceCommitment,
     },
@@ -91,11 +91,19 @@ impl<'a, V: FnMut(&[u8; 32], &[u8])> Verifier<'a, V> {
 
         BatchTransition::encode(
             journal,
-            (&prev_root, self.inputs.batch.prev_lane_tip, self.inputs.batch.prev_lane_blue_score),
-            (&new_root, new_lane_tip, new_lane_blue_score),
-            (self.inputs.lane_key, self.inputs.covenant_id, self.inputs.tx_image_id),
-            self.inputs.batch.lane_expired,
-            self.exits.as_bytes(),
+            BatchTransitionArgs {
+                prev_state: &prev_root,
+                prev_lane_tip: self.inputs.batch.prev_lane_tip,
+                prev_lane_blue_score: self.inputs.batch.prev_lane_blue_score,
+                new_state: &new_root,
+                new_lane_tip,
+                new_lane_blue_score,
+                lane_key: self.inputs.lane_key,
+                covenant_id: self.inputs.covenant_id,
+                tx_image_id: self.inputs.tx_image_id,
+                lane_expired: self.inputs.batch.lane_expired,
+                exits: self.exits.as_bytes(),
+            },
         );
     }
 

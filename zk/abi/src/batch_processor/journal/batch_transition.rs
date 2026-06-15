@@ -10,14 +10,14 @@ use crate::withdrawal::Exits;
 pub struct BatchTransition {
     /// L2 SMT state root before this batch.
     pub prev_state: [u8; 32],
-    /// L2 SMT state root after this batch.
-    pub new_state: [u8; 32],
     /// Lane tip entering this batch's block.
     pub prev_lane_tip: Hash,
-    /// Lane tip after this batch.
-    pub new_lane_tip: Hash,
     /// Blue score at which the lane was last active before this batch.
     pub prev_lane_blue_score: zerocopy::little_endian::U64,
+    /// L2 SMT state root after this batch.
+    pub new_state: [u8; 32],
+    /// Lane tip after this batch.
+    pub new_lane_tip: Hash,
     /// Blue score at which the lane was last active after this batch.
     pub new_lane_blue_score: zerocopy::little_endian::U64,
     /// Lane subnetwork-id hash; constant across the bundle.
@@ -33,25 +33,44 @@ pub struct BatchTransition {
 }
 
 impl BatchTransition {
-    /// Writes the fixed header followed by the raw exits blob.
-    pub fn encode(
-        w: &mut impl Writer,
-        (prev_state, prev_lane_tip, prev_lane_blue_score): (&[u8; 32], &Hash, u64),
-        (new_state, new_lane_tip, new_lane_blue_score): (&[u8; 32], &Hash, u64),
-        (lane_key, covenant_id, tx_image_id): (&Hash, &[u8; 32], &[u8; 32]),
-        lane_expired: bool,
-        exits: &[u8],
-    ) {
-        w.write(prev_state);
-        w.write(new_state);
-        w.write(prev_lane_tip.as_slice());
-        w.write(new_lane_tip.as_slice());
-        w.write(&prev_lane_blue_score.to_le_bytes());
-        w.write(&new_lane_blue_score.to_le_bytes());
-        w.write(lane_key.as_slice());
-        w.write(covenant_id);
-        w.write(tx_image_id);
-        w.write(&[lane_expired as u8]);
-        w.write(exits);
+    /// Writes the fixed header followed by the raw exits blob, in struct field order.
+    pub fn encode(w: &mut impl Writer, args: BatchTransitionArgs) {
+        w.write(args.prev_state);
+        w.write(args.prev_lane_tip.as_slice());
+        w.write(&args.prev_lane_blue_score.to_le_bytes());
+        w.write(args.new_state);
+        w.write(args.new_lane_tip.as_slice());
+        w.write(&args.new_lane_blue_score.to_le_bytes());
+        w.write(args.lane_key.as_slice());
+        w.write(args.covenant_id);
+        w.write(args.tx_image_id);
+        w.write(&[args.lane_expired as u8]);
+        w.write(args.exits);
     }
+}
+
+/// Borrowed, named input for [`BatchTransition::encode`].
+pub struct BatchTransitionArgs<'a> {
+    /// See [`BatchTransition::prev_state`].
+    pub prev_state: &'a [u8; 32],
+    /// See [`BatchTransition::prev_lane_tip`].
+    pub prev_lane_tip: &'a Hash,
+    /// See [`BatchTransition::prev_lane_blue_score`].
+    pub prev_lane_blue_score: u64,
+    /// See [`BatchTransition::new_state`].
+    pub new_state: &'a [u8; 32],
+    /// See [`BatchTransition::new_lane_tip`].
+    pub new_lane_tip: &'a Hash,
+    /// See [`BatchTransition::new_lane_blue_score`].
+    pub new_lane_blue_score: u64,
+    /// See [`BatchTransition::lane_key`].
+    pub lane_key: &'a Hash,
+    /// See [`BatchTransition::covenant_id`].
+    pub covenant_id: &'a [u8; 32],
+    /// See [`BatchTransition::tx_image_id`].
+    pub tx_image_id: &'a [u8; 32],
+    /// See [`BatchTransition::lane_expired`].
+    pub lane_expired: bool,
+    /// Encoded [`BatchTransition::exits`] blob.
+    pub exits: &'a [u8],
 }

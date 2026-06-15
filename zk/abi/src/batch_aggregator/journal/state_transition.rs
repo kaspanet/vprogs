@@ -30,34 +30,47 @@ pub struct StateTransition {
     pub lane_key: Hash,
 }
 
-/// Serialized length of [`StateTransition`] in bytes.
-///
-/// `StateTransition` derives `Unaligned` (alignment 1, no padding), so its in-memory size equals
-/// the wire-encoded length.
-pub const JOURNAL_SIZE: usize = core::mem::size_of::<StateTransition>();
-
 impl StateTransition {
-    /// Writes the state transition journal to `w`.
-    pub fn encode(
-        w: &mut impl Writer,
-        (prev_state, prev_lane_tip): (&[u8; 32], &Hash),
-        (new_state, new_lane_tip, new_seq_commit): (&[u8; 32], &Hash, &Hash),
-        covenant_id: &[u8; 32],
-        (tx_image_id, batch_image_id): (&[u8; 32], &[u8; 32]),
-        permission_spk_hash: &[u8; 32],
-        lane_key: &Hash,
-    ) {
-        w.write(prev_state);
-        w.write(prev_lane_tip.as_slice());
-        w.write(new_state);
-        w.write(new_lane_tip.as_slice());
-        w.write(new_seq_commit.as_slice());
-        w.write(covenant_id);
-        w.write(tx_image_id);
-        w.write(batch_image_id);
-        w.write(permission_spk_hash);
-        w.write(lane_key.as_slice());
+    /// Serialized length of the journal in bytes.
+    pub const WIRE_SIZE: usize = size_of::<Self>();
+
+    /// Writes the state transition journal to `w` from `args`, in struct field order.
+    pub fn encode(w: &mut impl Writer, args: StateTransitionArgs) {
+        w.write(args.prev_state);
+        w.write(args.prev_lane_tip.as_slice());
+        w.write(args.new_state);
+        w.write(args.new_lane_tip.as_slice());
+        w.write(args.new_seq_commit.as_slice());
+        w.write(args.covenant_id);
+        w.write(args.tx_image_id);
+        w.write(args.batch_image_id);
+        w.write(args.permission_spk_hash);
+        w.write(args.lane_key.as_slice());
     }
+}
+
+/// Borrowed, named input for [`StateTransition::encode`], passed by reference to avoid copies.
+pub struct StateTransitionArgs<'a> {
+    /// See [`StateTransition::prev_state`].
+    pub prev_state: &'a [u8; 32],
+    /// See [`StateTransition::prev_lane_tip`].
+    pub prev_lane_tip: &'a Hash,
+    /// See [`StateTransition::new_state`].
+    pub new_state: &'a [u8; 32],
+    /// See [`StateTransition::new_lane_tip`].
+    pub new_lane_tip: &'a Hash,
+    /// See [`StateTransition::new_seq_commit`].
+    pub new_seq_commit: &'a Hash,
+    /// See [`StateTransition::covenant_id`].
+    pub covenant_id: &'a [u8; 32],
+    /// See [`StateTransition::tx_image_id`].
+    pub tx_image_id: &'a [u8; 32],
+    /// See [`StateTransition::batch_image_id`].
+    pub batch_image_id: &'a [u8; 32],
+    /// See [`StateTransition::permission_spk_hash`].
+    pub permission_spk_hash: &'a [u8; 32],
+    /// See [`StateTransition::lane_key`].
+    pub lane_key: &'a Hash,
 }
 
 #[cfg(test)]
@@ -66,17 +79,23 @@ mod tests {
 
     #[test]
     fn journal_size_matches_encoded_length() {
-        let mut buf: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+        let mut buf = Vec::new();
         StateTransition::encode(
             &mut buf,
-            (&[0u8; 32], &Hash::default()),
-            (&[0u8; 32], &Hash::default(), &Hash::default()),
-            &[0u8; 32],
-            (&[0u8; 32], &[0u8; 32]),
-            &[0u8; 32],
-            &Hash::default(),
+            StateTransitionArgs {
+                prev_state: &[0u8; 32],
+                prev_lane_tip: &Hash::default(),
+                new_state: &[0u8; 32],
+                new_lane_tip: &Hash::default(),
+                new_seq_commit: &Hash::default(),
+                covenant_id: &[0u8; 32],
+                tx_image_id: &[0u8; 32],
+                batch_image_id: &[0u8; 32],
+                permission_spk_hash: &[0u8; 32],
+                lane_key: &Hash::default(),
+            },
         );
-        assert_eq!(buf.len(), JOURNAL_SIZE);
-        assert_eq!(JOURNAL_SIZE, 320);
+        assert_eq!(buf.len(), StateTransition::WIRE_SIZE);
+        assert_eq!(StateTransition::WIRE_SIZE, 320);
     }
 }
