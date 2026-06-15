@@ -9,7 +9,7 @@ use zerocopy::FromBytes;
 
 use crate::{
     Journals,
-    batch_aggregator::{Inputs, LaneProof, StateTransition},
+    batch_aggregator::{Inputs, LaneProof, StateTransition, StateTransitionArgs},
     batch_processor::BatchTransition,
     withdrawal::ExitAccumulator,
 };
@@ -94,20 +94,22 @@ where
     pub fn commit_state_transition(&self, journal: &mut impl Writer, last: &BatchTransition) {
         StateTransition::encode(
             journal,
-            (&self.first_batch.prev_state, &self.first_batch.prev_lane_tip),
-            (
-                &last.new_state,
-                &last.new_lane_tip,
-                &self.new_seq_commit(
+            StateTransitionArgs {
+                prev_state: &self.first_batch.prev_state,
+                prev_lane_tip: &self.first_batch.prev_lane_tip,
+                new_state: &last.new_state,
+                new_lane_tip: &last.new_lane_tip,
+                new_seq_commit: &self.new_seq_commit(
                     &self.first_batch.lane_key,
                     &last.new_lane_tip,
                     last.new_lane_blue_score.get(),
                 ),
-            ),
-            &self.first_batch.covenant_id,
-            (&self.first_batch.tx_image_id, self.batch_image_id),
-            &self.exits.finalize(),
-            &self.first_batch.lane_key,
+                covenant_id: &self.first_batch.covenant_id,
+                tx_image_id: &self.first_batch.tx_image_id,
+                batch_image_id: self.batch_image_id,
+                permission_spk_hash: &self.exits.finalize(),
+                lane_key: &self.first_batch.lane_key,
+            },
         );
     }
 

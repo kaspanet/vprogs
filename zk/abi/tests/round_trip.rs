@@ -4,7 +4,7 @@
 
 use kaspa_hashes::Hash;
 use vprogs_core_codec::Reader;
-use vprogs_zk_abi::batch_aggregator::StateTransition;
+use vprogs_zk_abi::batch_aggregator::{StateTransition, StateTransitionArgs};
 
 #[test]
 fn state_transition_round_trip() {
@@ -22,14 +22,20 @@ fn state_transition_round_trip() {
     let mut buf = Vec::new();
     StateTransition::encode(
         &mut buf,
-        (&prev_state, &prev_lane_tip),
-        (&new_state, &new_lane_tip, &new_seq_commit),
-        &covenant_id,
-        (&tx_image_id, &batch_image_id),
-        &permission_spk_hash,
-        &lane_key,
+        StateTransitionArgs {
+            prev_state: &prev_state,
+            prev_lane_tip: &prev_lane_tip,
+            new_state: &new_state,
+            new_lane_tip: &new_lane_tip,
+            new_seq_commit: &new_seq_commit,
+            covenant_id: &covenant_id,
+            tx_image_id: &tx_image_id,
+            batch_image_id: &batch_image_id,
+            permission_spk_hash: &permission_spk_hash,
+            lane_key: &lane_key,
+        },
     );
-    assert_eq!(buf.len(), size_of::<StateTransition>());
+    assert_eq!(buf.len(), StateTransition::WIRE_SIZE);
 
     let decoded = (&mut &buf[..]).array_as::<StateTransition>("state_transition").unwrap();
     assert_eq!(decoded.prev_state, prev_state);
@@ -52,12 +58,18 @@ fn state_transition_zero_permission_hash_when_no_exits() {
     let mut buf = Vec::new();
     StateTransition::encode(
         &mut buf,
-        (&zero, &Hash::from_bytes(zero)),
-        (&zero, &Hash::from_bytes(zero), &Hash::from_bytes(zero)),
-        &zero,
-        (&zero, &zero),
-        &zero,
-        &Hash::from_bytes(zero),
+        StateTransitionArgs {
+            prev_state: &zero,
+            prev_lane_tip: &Hash::from_bytes(zero),
+            new_state: &zero,
+            new_lane_tip: &Hash::from_bytes(zero),
+            new_seq_commit: &Hash::from_bytes(zero),
+            covenant_id: &zero,
+            tx_image_id: &zero,
+            batch_image_id: &zero,
+            permission_spk_hash: &zero,
+            lane_key: &Hash::from_bytes(zero),
+        },
     );
 
     let decoded = (&mut &buf[..]).array_as::<StateTransition>("state_transition").unwrap();

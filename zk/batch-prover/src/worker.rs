@@ -83,8 +83,9 @@ where
         let prev_version = batch.checkpoint().index().saturating_sub(1);
         let proof_bytes = self.store.prove(&batch.resource_ids(), prev_version).expect("proof");
 
-        // Collect per-tx journal bytes from the batch's tx artifacts.
-        let tx_journals: Vec<_> = batch.tx_artifacts().map(|a| B::journal_bytes(&a)).collect();
+        // One pass: per-tx journal bytes (inputs) + receipt clones (proof composition).
+        let (journals, receipts): (Vec<_>, Vec<_>) =
+            batch.tx_artifacts().map(|a| (B::journal_bytes(&a), (*a).clone())).unzip();
 
         // Encode the inputs for the proof.
         let covenant_id = self.config.covenant_id.map(|h| h.as_bytes()).unwrap_or_default();
@@ -92,14 +93,16 @@ where
             (self.backend.image_id(), &covenant_id, &self.config.lane_key),
             &proof_bytes,
             batch.checkpoint().metadata(),
-            &tx_journals,
+            &journals,
         );
 
-        // Compose against this batch's tx receipts.
-        let tx_receipts: Vec<_> = batch.tx_artifacts().map(|a| (*a).clone()).collect();
-        let receipt = self.backend.prove_batch(&input_bytes, tx_receipts).await;
+        // Compose the batch proof against those tx receipts.
+        let receipt = self.backend.prove_batch(&input_bytes, receipts).await;
 
         // Publish the receipt as the batch's artifact.
         batch.publish_artifact(Some(receipt));
+
+        // Wait for this batch's commit so the next batch has access to the committed prev_state.
+        batch.wait_committed().await;
     }
 }

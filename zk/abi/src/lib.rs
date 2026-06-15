@@ -38,7 +38,7 @@ pub mod batch_processor {
     }
 
     pub use input::{batch::Batch, inputs::Inputs};
-    pub use journal::batch_transition::BatchTransition;
+    pub use journal::batch_transition::{BatchTransition, BatchTransitionArgs};
     pub use verifier::Verifier;
 }
 
@@ -55,7 +55,7 @@ pub mod batch_aggregator {
     }
 
     pub use input::{inputs::Inputs, lane_proof::LaneProof};
-    pub use journal::state_transition::{JOURNAL_SIZE, StateTransition};
+    pub use journal::state_transition::{StateTransition, StateTransitionArgs};
     pub use verifier::Verifier;
 }
 
