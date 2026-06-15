@@ -8,16 +8,22 @@ mod proof_type;
 
 #[cfg(feature = "host")]
 mod backend;
+#[cfg(feature = "host")]
+mod elf_binary;
 #[cfg(feature = "guest")]
 mod host;
 #[cfg(feature = "guest")]
 mod journal;
 mod sha256;
+#[cfg(feature = "guest")]
+mod verify_journal;
 #[cfg(feature = "host")]
 mod witness;
 
 #[cfg(feature = "host")]
 pub use backend::Backend;
+#[cfg(feature = "host")]
+pub use elf_binary::ElfBinary;
 #[cfg(feature = "guest")]
 pub use host::Host;
 #[cfg(feature = "guest")]
@@ -33,5 +39,7 @@ pub use proof_type::ProofType;
 #[cfg(feature = "host")]
 pub use risc0_zkvm::Receipt;
 pub use sha256::Sha256;
+#[cfg(feature = "guest")]
+pub use verify_journal::verify_journal;
 #[cfg(feature = "host")]
 pub use witness::{OwnedGroth16Witness, OwnedSuccinctWitness};

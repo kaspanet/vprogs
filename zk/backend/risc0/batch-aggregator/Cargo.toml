@@ -3,11 +3,6 @@ edition = "2021"
 name    = "vprogs-zk-backend-risc0-batch-aggregator"
 version = "0.1.0"
 
-# Single guest binary: aggregates a sequence of per-batch BatchTransition receipts into a bundle
-# settlement journal. Verifies each batch journal via `env::verify` against the configured
-# batch-processor image id, asserts the chain conditions across the sequence, streams the trailing
-# exits into the permission tree, and derives the final seq_commit + StateTransition.
-
 [dependencies]
 risc0-zkvm = { version = "3.0", default-features = false, features = ["std"] }
 vprogs-zk-abi = { path = "../../../abi", default-features = false }

@@ -10,43 +10,29 @@ use vprogs_core_codec::Writer;
 use vprogs_core_hashing::Hasher;
 
 use crate::{
-    Error,
-    batch_processor::{BatchTransition, Inputs},
+    Error, ErrorCode,
+    batch_processor::{BatchTransition, BatchTransitionArgs, Inputs},
     transaction_processor::{
-        ErrorCode, InputResourceCommitment, JournalEntries, OutputCommitment,
-        OutputResourceCommitment,
+        InputResourceCommitment, JournalEntries, OutputCommitment, OutputResourceCommitment,
     },
     withdrawal::ExitSink,
 };
 
 /// Verifies one batch and emits a [`BatchTransition`] settlement journal scoped to that batch.
-///
-/// The chain anchors (`prev_lane_tip`, `prev_lane_blue_score`) come from the batch's own per-block
-/// context fields; the [`AggregatorVerifier`] is what chains a sequence of these into a bundle.
-///
-/// [`AggregatorVerifier`]: crate::batch_aggregator::AggregatorVerifier
-pub struct Verifier<'a, V>
-where
-    V: FnMut(&[u8; 32], &[u8]),
-{
+pub struct Verifier<'a, V> {
     /// Decoded batch inputs.
     inputs: Inputs<'a>,
     /// Latest L2 value hashes indexed by batch-local resource_index.
     latest_value_hashes: Vec<&'a [u8; 32]>,
     /// Verifies a tx journal against the configured transaction-processor image.
     verify_tx_journal: V,
-    /// Exits emitted by this batch, in journal order. Streamed into the aggregator's permission
-    /// tree on the other side of the env::verify boundary.
+    /// Accumulates exits across the batch.
     exits: ExitSink,
 }
 
-impl<'a, V> Verifier<'a, V>
-where
-    V: FnMut(&[u8; 32], &[u8]),
-{
+impl<'a, V: FnMut(&[u8; 32], &[u8])> Verifier<'a, V> {
     /// Builds a `Verifier` for one batch.
     pub fn new(input_bytes: &'a [u8], verify_tx_journal: V) -> Self {
-        // Parse inputs and snapshot the batch's pre-state from the per-batch SMT proof.
         let inputs = Inputs::decode(input_bytes).expect("decode batch inputs");
 
         Self {
@@ -64,18 +50,17 @@ where
             return (*self.inputs.batch.prev_lane_tip, self.inputs.batch.prev_lane_blue_score);
         }
 
-        // Snapshot the per-block context + lane anchors before the `&mut self` call to
-        // `verified_activity_digest` -- the `'a` references and `Copy` fields are independent
-        // of the `&self.inputs.batch` borrow, so caching them locally lets the borrow drop
-        // before we re-enter self mutably.
+        // Derive context hash used for tx and activity verification.
         let context_hash = mergeset_context_hash(&MergesetContext {
             timestamp: self.inputs.batch.prev_timestamp,
             daa_score: self.inputs.batch.daa_score,
             blue_score: self.inputs.batch.blue_score,
         });
 
+        // Compute resulting activity digest while verifying each tx journal and accumulating exits.
         let activity_digest = self.verified_activity_digest(&context_hash);
 
+        // Calculate the resulting lane tip.
         let new_lane_tip = lane_tip_next(&LaneTipInput {
             parent_ref: if self.inputs.batch.lane_expired {
                 self.inputs.batch.prev_seq_commit
@@ -90,16 +75,13 @@ where
         (new_lane_tip, self.inputs.batch.blue_score)
     }
 
-    /// Commits the batch's [`BatchTransition`] journal: chain anchors, the chained extremes, and
-    /// the trailing exits blob the aggregator will stream into its permission tree.
+    /// Commits the batch's [`BatchTransition`] journal.
     pub fn commit_batch_transition<H: Hasher>(
         &self,
         journal: &mut impl Writer,
         new_lane_tip: &Hash,
         new_lane_blue_score: u64,
     ) {
-        let batch = &self.inputs.batch;
-
         // One walk yields both roots; unchanged subtrees reuse the pre-state hash.
         let (prev_root, new_root) = self
             .inputs
@@ -109,11 +91,19 @@ where
 
         BatchTransition::encode(
             journal,
-            (&prev_root, batch.prev_lane_tip, batch.prev_lane_blue_score),
-            (&new_root, new_lane_tip, new_lane_blue_score),
-            (self.inputs.lane_key, self.inputs.covenant_id, self.inputs.tx_image_id),
-            batch.lane_expired,
-            self.exits.as_bytes(),
+            BatchTransitionArgs {
+                prev_state: &prev_root,
+                prev_lane_tip: self.inputs.batch.prev_lane_tip,
+                prev_lane_blue_score: self.inputs.batch.prev_lane_blue_score,
+                new_state: &new_root,
+                new_lane_tip,
+                new_lane_blue_score,
+                lane_key: self.inputs.lane_key,
+                covenant_id: self.inputs.covenant_id,
+                tx_image_id: self.inputs.tx_image_id,
+                lane_expired: self.inputs.batch.lane_expired,
+                exits: self.exits.as_bytes(),
+            },
         );
     }
 
@@ -206,10 +196,6 @@ where
     }
 
     /// Verifies a resource against the SMT proof and returns its batch-local index.
-    ///
-    /// The per-batch SMT proof is scoped to exactly this batch's resources, so the
-    /// `resource_index` the tx-processor committed maps 1:1 to the proof's member index -- no
-    /// translation table needed.
     fn verified_batch_idx(&self, r: &InputResourceCommitment) -> usize {
         let batch_idx = r.resource_index.get() as usize;
 

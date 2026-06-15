@@ -3,15 +3,11 @@
 extern crate alloc;
 
 mod error;
+mod error_code;
 mod journals;
 mod read;
 
-/// Guest-independent withdrawal vocabulary: the L2->L1 exit types shared across every guest.
-/// Exits are emitted by the transaction processor ([`ExitSink`]), carried between guests as a
-/// serialized [`Exits`] section, and folded into the bundle's permission commitment by the
-/// aggregator ([`ExitAccumulator`]).
 pub mod withdrawal {
-    pub(crate) mod error_code;
     pub(crate) mod exit_accumulator;
     pub(crate) mod exit_sink;
     pub(crate) mod exits;
@@ -20,7 +16,6 @@ pub mod withdrawal {
     pub(crate) mod script_bytes;
     pub(crate) mod standard_spk;
 
-    pub use error_code::ErrorCode;
     pub use exit_accumulator::ExitAccumulator;
     pub use exit_sink::ExitSink;
     pub use exits::Exits;
@@ -43,7 +38,7 @@ pub mod batch_processor {
     }
 
     pub use input::{batch::Batch, inputs::Inputs};
-    pub use journal::batch_transition::BatchTransition;
+    pub use journal::batch_transition::{BatchTransition, BatchTransitionArgs};
     pub use verifier::Verifier;
 }
 
@@ -60,14 +55,13 @@ pub mod batch_aggregator {
     }
 
     pub use input::{inputs::Inputs, lane_proof::LaneProof};
-    pub use journal::state_transition::{JOURNAL_SIZE, StateTransition};
-    pub use verifier::{BundleExtremes, Verifier};
+    pub use journal::state_transition::{StateTransition, StateTransitionArgs};
+    pub use verifier::Verifier;
 }
 
 pub mod transaction_processor {
     pub(crate) mod abi;
     pub(crate) mod effects;
-    pub(crate) mod error_code;
     pub(crate) mod transaction_handler;
 
     pub(crate) mod input {
@@ -100,7 +94,6 @@ pub mod transaction_processor {
 
     pub use abi::process_transaction;
     pub use effects::Effects;
-    pub use error_code::ErrorCode;
     pub use input::{
         execution_input::ExecutionInput, inputs::Inputs, payload::Payload, resource::Resource,
         transaction::Transaction,
@@ -121,5 +114,6 @@ pub mod transaction_processor {
 }
 
 pub use error::{Error, Result};
+pub use error_code::ErrorCode;
 pub use journals::Journals;
 pub use read::Read;
