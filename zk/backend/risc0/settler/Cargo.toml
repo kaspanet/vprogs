@@ -1,0 +1,20 @@
+[package]
+edition.workspace = true
+name              = "vprogs-zk-backend-risc0-settler"
+version.workspace = true
+
+[dependencies]
+kaspa-addresses.workspace                  = true
+kaspa-consensus-core.workspace             = true
+kaspa-hashes.workspace                     = true
+kaspa-rpc-core.workspace                   = true
+kaspa-txscript.workspace                   = true
+kaspa-wrpc-client.workspace                = true
+log.workspace                              = true
+secp256k1.workspace                        = true
+tokio                                      = { workspace = true, features = ["sync", "time"] }
+vprogs-core-smt.workspace                  = true
+vprogs-l1-wallet.workspace                 = true
+vprogs-zk-aggregate-prover.workspace       = true
+vprogs-zk-backend-risc0-api                = { workspace = true, features = ["host"] }
+vprogs-zk-backend-risc0-covenant.workspace = true

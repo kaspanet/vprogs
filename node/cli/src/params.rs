@@ -61,7 +61,6 @@ impl NodeParams {
             execution_config: self.execution.into_config(vm),
             storage_config: self.storage.into_config(store),
             l1_bridge_config: self.l1_bridge.into_config(),
-            batch_sink: None,
         }
     }
 }

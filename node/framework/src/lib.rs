@@ -37,4 +37,3 @@ pub use config::NodeConfig;
 pub use error::{NodeError, NodeResult};
 pub use node::Node;
 pub use processor::Processor;
-pub use worker::BatchEvent;

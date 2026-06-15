@@ -12,9 +12,11 @@ default-members = [
   "zk/abi",
   "zk/transaction-prover",
   "zk/batch-prover",
+  "zk/aggregate-prover",
   "zk/vm",
   "zk/backend/risc0/api",
   "zk/backend/risc0/covenant",
+  "zk/backend/risc0/settler",
   "zk/backend/risc0/test-suite",
 ]
 exclude = [
@@ -36,7 +38,9 @@ members = [
   "zk/abi",
   "zk/backend/risc0/api",
   "zk/backend/risc0/covenant",
+  "zk/backend/risc0/settler",
   "zk/backend/risc0/test-suite",
+  "zk/aggregate-prover",
   "zk/batch-prover",
   "zk/transaction-prover",
   "zk/vm",
@@ -184,8 +188,10 @@ resolver = "3"
   vprogs-transaction-runtime-transaction          = { path = "transaction-runtime/transaction" }
   vprogs-transaction-runtime-transaction-effects  = { path = "transaction-runtime/transaction-effects" }
   vprogs-zk-abi                                   = { path = "zk/abi", default-features = false }
+  vprogs-zk-aggregate-prover                      = { path = "zk/aggregate-prover" }
   vprogs-zk-backend-risc0-api                     = { path = "zk/backend/risc0/api", default-features = false }
   vprogs-zk-backend-risc0-covenant                = { path = "zk/backend/risc0/covenant" }
+  vprogs-zk-backend-risc0-settler                 = { path = "zk/backend/risc0/settler" }
   vprogs-zk-backend-risc0-test-suite              = { path = "zk/backend/risc0/test-suite" }
   vprogs-zk-batch-prover                          = { path = "zk/batch-prover" }
   vprogs-zk-transaction-prover                    = { path = "zk/transaction-prover" }

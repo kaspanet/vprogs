@@ -237,9 +237,10 @@ fn l2_flow_settlements_reorgs_seed_5() {
 #[test]
 fn l2_flow_proving_seed_1() {
     kaspa_core::log::try_init_logger("warn");
-    // Drives the real batch prover (`ProvingPipeline::batch`) off the in-process consensus: the
-    // scheduler submits each block's batch to the prover worker, which fetches that block's lane
-    // proof through `ConsensusLaneSource` and proves a bundle. Under `RISC0_DEV_MODE=1` the proofs
+    // Drives the full proving stack (`ProvingPipeline::aggregate`) off the in-process consensus:
+    // the scheduler submits each block's batch to the prover workers, the aggregate prover
+    // fetches each bundle's lane proof through `ConsensusLaneSource` and proves it. Under
+    // `RISC0_DEV_MODE=1` the proofs
     // are dev stubs (no GPU) but the entire wiring runs — `ConsensusLaneSource`, the worker's
     // derived-vs-consensus `lane_tip` sanity check, and the `Weak<Consensus>` teardown discipline
     // (no `DbLifetime` "DB has N strong references" panic on shutdown). On the GPU box the same

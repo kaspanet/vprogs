@@ -8,17 +8,17 @@
 //! - **Execution-only** (default): a [`Node`](vprogs_node_framework::Node) with
 //!   [`ProvingPipeline::None`] that just tracks the decoded state counter, reorgs, and settlements.
 //!   Per-block observability is the framework worker's and the Vm's `trace` logs.
-//! - **Proving + settlement** (`TN10_SETTLE=1`): the node drives the real batch prover and forwards
-//!   each scheduled batch to the [`settler`], which proves every bundle and settles it on chain
-//!   with a production [`Settlement::build`](vprogs_zk_backend_risc0_covenant::Settlement). Real
-//!   proofs need a GPU (the `cuda` feature, without `RISC0_DEV_MODE`).
+//! - **Proving + settlement** (`TN10_SETTLE=1`): the node drives the full proving stack
+//!   ([`ProvingPipeline::aggregate`]: transaction + batch + aggregate provers), and the in-process
+//!   aggregate prover hands each proved bundle to the [`settlement
+//!   worker`](vprogs_zk_backend_risc0_settler), which settles it on chain. Real proofs need a GPU
+//!   (the `cuda` feature, without `RISC0_DEV_MODE`).
 //!
 //! Required env: `TN10_WRPC_URL`, `TN10_PRIVATE_KEY`. See `config.rs` for the full surface.
 
 mod config;
 mod daemon;
 mod persistence;
-mod settler;
 
 use std::{collections::HashSet, time::Duration};
 
@@ -35,6 +35,9 @@ use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId};
 use vprogs_l1_wallet::{Wallet, encode_activity_payload};
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
+use vprogs_zk_backend_risc0_settler::{
+    SettlementWorkerConfig, bootstrap_real_covenant, run as run_settlement_worker,
+};
 use vprogs_zk_backend_risc0_test_suite::{
     batch_aggregator_elf, batch_processor_elf, bootstrap_dev_covenant, transaction_processor_elf,
 };
@@ -43,7 +46,6 @@ use crate::{
     config::Config,
     daemon::{BridgeParams, FlowNode, ProvingParams},
     persistence::PersistedState,
-    settler::SettlerConfig,
 };
 
 /// Value locked in the covenant UTXO at bootstrap (1 TKAS), matching the e2e tests.
@@ -230,13 +232,15 @@ async fn start_settlement(
         wallet.address()
     );
     let (covenant, bootstrap_txid) =
-        settler::bootstrap_real_covenant(&wallet, &backend, lane_key, COVENANT_VALUE).await;
+        bootstrap_real_covenant(&wallet, &backend, lane_key, COVENANT_VALUE).await;
     let covenant_id = covenant.covenant_id;
     persisted.covenant_id = Some(covenant_id.to_string());
     persisted.bootstrap_txid = Some(bootstrap_txid.to_string());
     persisted.save(&cfg.data_dir);
     log::info!("covenant {covenant_id} bootstrapped (tx {bootstrap_txid})");
 
+    // The in-process aggregate prover hands each proved bundle to this sink; the settlement worker
+    // drains it and settles on chain.
     let (sink_tx, sink_rx) = tokio::sync::mpsc::unbounded_channel();
     let store = daemon::Store::open(cfg.data_dir.join("db"));
     let node = daemon::build_proving_node(
@@ -245,22 +249,19 @@ async fn start_settlement(
         aggregator_elf,
         store,
         bridge_params(cfg, network_id, lane_subnet, covenant_id, params),
-        ProvingParams { covenant_id, lane_key, sink: sink_tx },
+        ProvingParams { covenant_id, lane_key, client: client.clone(), sink: sink_tx },
     );
 
-    // The settler runs until the node drops (closing the sink) or it hits a fatal error. `main`
-    // owns the returned handle and awaits it, so neither outcome is swallowed.
-    let settler = tokio::spawn(settler::run(
+    // The settlement worker runs until the node drops (closing the sink) or it hits a fatal error.
+    // `main` owns the returned handle and awaits it, so neither outcome is swallowed.
+    let settler = tokio::spawn(run_settlement_worker(
         sink_rx,
-        SettlerConfig {
+        SettlementWorkerConfig {
             client: client.clone(),
             params: params.clone(),
             keypair,
             lane_key,
-            bundle_size: cfg.bundle_size,
-            tx_elf: tx_elf.to_vec(),
-            batch_elf: batch_elf.to_vec(),
-            aggregator_elf: aggregator_elf.to_vec(),
+            backend,
         },
         covenant,
     ));

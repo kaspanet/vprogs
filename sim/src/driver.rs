@@ -8,10 +8,7 @@
 //! counter equals the number of lane-activity transactions executed on the current selected chain;
 //! a failing invariant panics with the block hash, so a fixed seed pinpoints the bug.
 
-use std::{
-    collections::VecDeque,
-    sync::{Arc, Mutex, Weak},
-};
+use std::sync::{Arc, Mutex, Weak};
 
 use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus::consensus::Consensus;
@@ -30,28 +27,26 @@ use kaspa_seq_commit::hashing::lane_key;
 use kaspa_txscript::standard::pay_to_script_hash_script;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use tempfile::TempDir;
-use vprogs_core_codec::Reader;
+use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use vprogs_core_smt::EMPTY_HASH;
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId, SchedulerTransaction};
 use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_l1_wallet::{build, encode_activity_payload};
-use vprogs_scheduling_scheduler::{Processor, ScheduledBatch, Scheduler};
+use vprogs_scheduling_scheduler::{Processor, Scheduler};
 use vprogs_storage_rocksdb_store::RocksDbStore;
-use vprogs_zk_abi::batch_aggregator::StateTransition;
-// `Backend as _` brings the batch-prover `Backend` trait into scope for
-// `Backend::journal_bytes`.
-use vprogs_zk_backend_risc0_api::{Backend, OwnedSuccinctWitness, ProofType};
+use vprogs_zk_aggregate_prover::{AggregateProverConfig, BundleOutcome, SettlementArtifact};
+use vprogs_zk_backend_risc0_api::{Backend, OwnedSuccinctWitness, ProofType, Receipt};
 use vprogs_zk_backend_risc0_covenant::{
     CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, RedeemPins, Settlement, SettlementDevInput,
     SettlementInput, SuccinctPins, build_dev_redeem_script, build_redeem_script,
     dev_redeem_script_len, redeem_script_len,
 };
 use vprogs_zk_backend_risc0_test_suite::{
-    aggregate_batches, batch_aggregator_elf, batch_processor_elf, build_scheduler,
-    read_resource_u32, transaction_processor_elf,
+    batch_aggregator_elf, batch_processor_elf, build_scheduler, read_resource_u32,
+    transaction_processor_elf,
 };
-use vprogs_zk_batch_prover::{Backend as _, BatchProverConfig};
+use vprogs_zk_batch_prover::BatchProverConfig;
 use vprogs_zk_vm::{ProvingPipeline, Vm};
 
 use crate::{
@@ -82,7 +77,7 @@ pub struct L2Config {
     /// Issue a settlement roughly every this-many blocks once the covenant is active (ignored when
     /// settlements are disabled).
     pub settle_every: u64,
-    /// Drive the real batch prover (`ProvingPipeline::batch`) off the simulation's consensus
+    /// Drive the full proving stack (`ProvingPipeline::aggregate`) off the simulation's consensus
     /// instead of running execution-only. With the crate's `cuda` feature the proofs are real
     /// GPU proofs; without it (or under `RISC0_DEV_MODE=1`) the proving machinery still runs
     /// end to end with the CPU/dev executor, which is what makes the wiring testable without a
@@ -210,10 +205,14 @@ pub struct L2Driver {
     /// Set when the bootstrap confirms in `real_e2e`; the next `produce` rebuilds the proving
     /// stack.
     init_proving_pending: bool,
-    /// Committed batches awaiting bundle proof + settlement, in scheduling order (real_e2e only).
-    /// The front `bundle_size` form the prover's next bundle; once their receipt publishes the
-    /// driver settles it. Empty in the other modes.
-    unproved: VecDeque<ScheduledBatch<Store, V>>,
+    /// Receiver the in-process aggregate prover hands each bundle outcome to (real_e2e only). The
+    /// driver drains it to settle proved bundles. `None` in the other modes and before the proving
+    /// stack is built.
+    settlement_rx: Option<UnboundedReceiver<BundleOutcome<Receipt>>>,
+    /// Batches submitted to the aggregate prover but not yet accounted by a bundle outcome
+    /// (real_e2e only). Gates the settlement back-pressure and is reconciled by each outcome's
+    /// `batches`.
+    outstanding_batches: usize,
 
     /// Covenant states confirmed on the live chain (`confirmed[0]` = bootstrap); empty until the
     /// bootstrap lands. Popped on reorg, so the tip is always the live covenant.
@@ -227,24 +226,40 @@ pub struct L2Driver {
 }
 
 /// Builds a fresh execution stack (temp store + zk `Vm` scheduler). When `proving` is set the `Vm`
-/// drives the real batch prover, reading lane proofs from `consensus` and binding `covenant_id`
-/// into every journal; otherwise it is execution-only.
-fn build_exec(backend: &Backend, lane: Hash, proving: bool, covenant_id: Option<Hash>) -> Exec {
+/// drives the full proving stack (transaction + batch + aggregate provers), reading lane proofs
+/// from `consensus` and binding `covenant_id` into every journal, and returns the receiver the
+/// aggregate prover hands each bundle outcome to; otherwise it is execution-only and returns
+/// `None`.
+fn build_exec(
+    backend: &Backend,
+    lane: Hash,
+    proving: bool,
+    covenant_id: Option<Hash>,
+    consensus: Weak<Consensus>,
+) -> (Exec, Option<UnboundedReceiver<BundleOutcome<Receipt>>>) {
     let db = tempfile::tempdir().expect("temp db dir");
     let store = RocksDbStore::open(db.path().join("l2"));
-    let pipeline = if proving {
-        ProvingPipeline::batch(
+    let (pipeline, settlement_rx) = if proving {
+        let (tx, rx) = unbounded_channel();
+        let pipeline = ProvingPipeline::aggregate(
             backend.clone(),
             store.clone(),
             BatchProverConfig { lane_key: lane, covenant_id },
-        )
+            AggregateProverConfig {
+                lane_key: lane,
+                covenant_id,
+                lane_source: ConsensusLaneSource::from_weak(consensus),
+                settlement_sink: Some(tx),
+            },
+        );
+        (pipeline, Some(rx))
     } else {
-        ProvingPipeline::None
+        (ProvingPipeline::None, None)
     };
     let vm = Vm::new(backend.clone(), pipeline);
     let proc_handle = vm.clone();
     let scheduler = build_scheduler(vm, store.clone());
-    Exec { scheduler, store, _db: db, proc_handle }
+    (Exec { scheduler, store, _db: db, proc_handle }, settlement_rx)
 }
 
 impl L2Driver {
@@ -270,7 +285,7 @@ impl L2Driver {
         // zero placeholder covenant id since no on-chain settlement consumes those receipts.
         let real_e2e = config.enable_proving && config.enable_settlements;
         let prove_only = config.enable_proving && !config.enable_settlements;
-        let exec = build_exec(&backend, lane, prove_only, None);
+        let (exec, settlement_rx) = build_exec(&backend, lane, prove_only, None, weak.clone());
 
         let stats = Arc::new(Mutex::new(DriverStats::default()));
         let driver = Self {
@@ -292,7 +307,8 @@ impl L2Driver {
             real_e2e,
             proving_ready: !real_e2e,
             init_proving_pending: false,
-            unproved: VecDeque::new(),
+            settlement_rx,
+            outstanding_batches: 0,
             confirmed: Vec::new(),
             pending: None,
             reissues_since_progress: 0,
@@ -309,13 +325,21 @@ impl L2Driver {
     /// fresh from the current sink (only post-bootstrap activity is proved + settled).
     fn init_proving(&mut self) {
         let covenant_id = self.confirmed[0].covenant.covenant_id;
-        self.exec = build_exec(&self.backend, self.lane_key, true, Some(covenant_id));
+        let (exec, settlement_rx) = build_exec(
+            &self.backend,
+            self.lane_key,
+            true,
+            Some(covenant_id),
+            self.consensus.clone(),
+        );
+        self.exec = exec;
+        self.settlement_rx = settlement_rx;
         self.proving_ready = true;
         self.seeded = false;
         self.seed_meta = ChainBlockMetadata::default();
         self.chain.clear();
         self.expected_counter = 0;
-        self.unproved.clear();
+        self.outstanding_batches = 0;
     }
 
     /// Follows the node's selected chain from the driver's cursor: rolls back on reorg, then
@@ -336,10 +360,10 @@ impl L2Driver {
 
         if !path.removed.is_empty() {
             // Real-proof mode is single-miner only: a reorg would orphan a block whose batch the
-            // async prover may already be bundling, desyncing `unproved` from the prover's stream
-            // (which independently drops rolled-back batches). Fail loudly rather than settle a
-            // bundle proved against a dead chain. See the test / TODO for the framework-side fix
-            // (cancellation in `process_bundle`).
+            // async aggregate prover may already be bundling, desyncing `outstanding_batches` from
+            // the prover's stream (which independently drops rolled-back batches). Fail loudly
+            // rather than settle a bundle proved against a dead chain. See the aggregate prover's
+            // rollback TODO for the framework-side fix (cancelling an in-flight bundle proof).
             assert!(
                 !(self.real_e2e && self.proving_ready),
                 "real-proof settlement requires a single miner; got a reorg",
@@ -412,11 +436,12 @@ impl L2Driver {
             let count = lane_txs.len() as u32;
             let batch = self.exec.scheduler.schedule(meta, sched_txs);
             batch.wait_committed_blocking();
-            // In real-proof mode hold the committed batch so its bundle receipt can drive a
-            // settlement once the prover publishes it; other modes drop it (no settlement consumes
-            // the receipt).
+            // In real-proof mode the batch was submitted to the aggregate prover (via the
+            // scheduler); count it as outstanding so the settlement loop knows a bundle
+            // outcome is coming. Other modes drop the batch (no settlement consumes the
+            // receipt).
             if self.real_e2e && self.proving_ready {
-                self.unproved.push_back(batch);
+                self.outstanding_batches += 1;
             }
             self.expected_counter += count;
             self.chain.push(BlockRec { hash, meta, lane_tx_count: count });
@@ -665,117 +690,95 @@ impl L2Driver {
         })
     }
 
-    /// Settles the next proven bundle with a production `Settlement::build`, driven by the bundle's
-    /// aggregated receipt. Returns at most one transaction.
+    /// Settles the next proven bundle the in-process aggregate prover reports, driven by the
+    /// bundle's settlement artifact. Returns at most one transaction.
     ///
-    /// Consumes the front `bundle_size` committed batches once their per-batch receipts have
-    /// published, aggregates them into the bundle receipt, parses its journal, and — if the bundle
-    /// advanced the L2 state — builds a settlement that spends the live covenant and chains to the
-    /// journal's `new_state` / `new_lane_tip`. The on-chain `OpZkPrecompile` validates the receipt,
-    /// so acceptance (observed in [`Self::observe_covenant`]) proves the real proof verified
-    /// against the covenant. A no-op bundle (state unchanged) is dropped without settling.
+    /// Blocks for bundle outcomes only once a full `bundle_size` worth of batches has been
+    /// submitted to the prover, giving the back-pressure that keeps the simulated clock
+    /// (wall-time-free logical ticks) from outpacing the detached prover thread. Every
+    /// submitted batch is accounted by exactly one outcome's `batches`, so the blocking recv
+    /// never deadlocks: an outstanding batch guarantees a forthcoming outcome. No-op bundles
+    /// carry no settlement and are skipped; a state-advancing one is built into a settlement
+    /// that spends the live covenant and chains to the journal's `new_state` / `new_lane_tip`.
+    /// The on-chain `OpZkPrecompile` validates the receipt, so acceptance (observed in
+    /// [`Self::observe_covenant`]) proves the real proof verified.
     ///
     /// Reached only when no covenant tx is pending (see [`Self::issue_covenant`]), so settlements
-    /// are serialized: at most one in flight, the next built after the previous one confirms. The
-    /// front `bundle_size` of `unproved` is exactly the prover's next bundle (both consume batches
-    /// in scheduling order).
+    /// are serialized: at most one in flight, the next built after the previous one confirms.
     fn settle_real(&mut self, ctx: &ProduceCtx<'_>) -> Vec<Transaction> {
-        // A full bundle's worth of batches must be queued before a bundle can settle. Once we
-        // have them, block on the prover: the simulated clock would otherwise outpace real GPU
-        // proving (the prover is a detached thread, sim events advance in wall-time-free logical
-        // ticks), so a non-blocking poll returns false on every block and we'd never settle.
-        // Blocking the miner here pauses block production until the receipt publishes, which is
-        // exactly the back-pressure we want for a single-miner run.
-        if self.unproved.len() < self.bundle_size {
+        // Wait until a full bundle's worth of batches has been submitted before pulling
+        // settlements, mirroring the previous bundle cadence and bounding how far the miner
+        // runs ahead of proving.
+        if self.outstanding_batches < self.bundle_size {
             return Vec::new();
         }
-        // Each batch publishes its own per-batch receipt; empty batches produce none (their
-        // `artifact_published` latch auto-opens with no receipt, so `artifact()` would panic on
-        // `None`). The worker proves in scheduling order, so wait on the *last non-empty* batch:
-        // once its receipt publishes, every earlier non-empty batch in the bundle has too.
-        let last_nonempty =
-            (0..self.bundle_size).rev().find(|&i| !self.unproved[i].txs().is_empty());
-        let Some(nonempty_idx) = last_nonempty else {
-            // All batches in this bundle are empty → no per-batch receipts, no L2 state advance,
-            // nothing to settle. Drop them so the next bundle can settle.
-            for _ in 0..self.bundle_size {
-                self.unproved.pop_front();
+        // A fee output funds the settlement; if none is free this block, retry next block without
+        // consuming an outcome.
+        if ctx.spendable.is_empty() {
+            return Vec::new();
+        }
+
+        loop {
+            // An outstanding batch guarantees the prover will report a covering outcome, so this
+            // block on the (sync) miner thread cannot hang — it is exactly the proving
+            // back-pressure.
+            let outcome = self
+                .settlement_rx
+                .as_mut()
+                .expect("aggregate prover sink")
+                .blocking_recv()
+                .expect("aggregate prover outcome channel closed");
+            self.outstanding_batches = self.outstanding_batches.saturating_sub(outcome.batches);
+            if let Some(artifact) = outcome.settlement {
+                return self.build_settlement_tx(ctx, artifact);
             }
-            return Vec::new();
-        };
-        self.unproved[nonempty_idx].wait_artifact_published_blocking();
-        let bundle: Vec<_> =
-            (0..self.bundle_size).map(|_| self.unproved.pop_front().unwrap()).collect();
-        let last = bundle.last().unwrap();
-        let block_prove_to = last.checkpoint().metadata().hash;
-        let claimed_seq_commit = last.checkpoint().metadata().seq_commit;
-        // Aggregate the bundle's per-batch receipts (only the non-empty batches produce one) into
-        // the settlement-level receipt the covenant verifies. settle_real runs in the (sync) miner
-        // thread, so block on a local runtime: the aggregator reads the bundle's final-block lane
-        // proof from the sim's consensus and proves the bundle `StateTransition`.
-        let batch_receipts: Vec<_> = bundle
-            .iter()
-            .filter(|b| !b.txs().is_empty())
-            .map(|b| (*b.artifact()).clone())
-            .collect();
-        let lane_source = ConsensusLaneSource::from_weak(self.consensus.clone());
-        let receipt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("aggregator runtime")
-            .block_on(aggregate_batches(
-                &self.backend,
-                &lane_source,
-                &self.lane_key,
-                block_prove_to,
-                batch_receipts,
-            ));
-
-        let journal = Backend::journal_bytes(&receipt);
-        let parsed =
-            (&mut &journal[..]).array_as::<StateTransition>("state_transition").expect("journal");
-
-        // A no-op bundle (no lane activity landed in its blocks) leaves the state unchanged; there
-        // is nothing to settle and the next bundle still chains from the live covenant.
-        if parsed.new_state == parsed.prev_state {
-            return Vec::new();
+            // No-op bundle: nothing to settle. Stop once the backlog drains below a full bundle.
+            if self.outstanding_batches < self.bundle_size {
+                return Vec::new();
+            }
         }
+    }
 
-        let Some((fee_outpoint, fee_entry)) = ctx.spendable.first() else { return Vec::new() };
+    /// Builds a real-proof settlement transaction from a proved bundle's artifact: spends the live
+    /// confirmed covenant, chains to the artifact's `new_state` / `new_lane_tip`, funds the fee
+    /// from a spendable coinbase, and records it pending. Returns the single settlement
+    /// transaction.
+    fn build_settlement_tx(
+        &mut self,
+        ctx: &ProduceCtx<'_>,
+        artifact: SettlementArtifact<Receipt>,
+    ) -> Vec<Transaction> {
+        let (fee_outpoint, fee_entry) = ctx.spendable.first().expect("fee output");
         let cov = self.confirmed.last().expect("covenant").covenant.clone();
         assert_eq!(
-            parsed.prev_state, cov.state,
+            artifact.prev_state, cov.state,
             "settlement prev_state must chain from the live covenant state",
         );
         assert_eq!(
-            parsed.prev_lane_tip, cov.lane_tip,
+            artifact.prev_lane_tip, cov.lane_tip,
             "settlement prev_lane_tip must match the spent covenant's redeem prefix",
         );
         assert_eq!(
-            parsed.new_seq_commit, claimed_seq_commit,
-            "journal new_seq_commit must equal block_prove_to's seq_commit",
-        );
-        assert_eq!(
-            Hash::from_bytes(parsed.covenant_id),
+            Hash::from_bytes(artifact.covenant_id),
             cov.covenant_id,
-            "journal covenant_id must match the live covenant (prover seeded with wrong id)",
+            "settlement covenant_id must match the live covenant (prover seeded with wrong id)",
         );
 
-        let new_state = parsed.new_state;
-        let new_lane_tip = parsed.new_lane_tip;
-        let owned_witness = OwnedSuccinctWitness::from_receipt(&receipt);
+        let new_state = artifact.new_state;
+        let new_lane_tip = artifact.new_lane_tip;
+        let owned_witness = OwnedSuccinctWitness::from_receipt(&artifact.receipt);
         let settlement = Settlement::build(&SettlementInput {
             covenant_id: cov.covenant_id,
             pins: self.redeem_pins(),
-            prev_state: &parsed.prev_state,
-            prev_lane_tip: &parsed.prev_lane_tip,
+            prev_state: &artifact.prev_state,
+            prev_lane_tip: &artifact.prev_lane_tip,
             new_state: &new_state,
             new_lane_tip: &new_lane_tip,
-            block_prove_to,
+            block_prove_to: artifact.block_prove_to,
             prev_outpoint: cov.outpoint,
             value: cov.value,
             witness: owned_witness.as_witness(),
-            permission_spk_hash: &parsed.permission_spk_hash,
+            permission_spk_hash: &artifact.permission_spk_hash,
         });
         let continuation_spk = pay_to_script_hash_script(&settlement.next_redeem);
 

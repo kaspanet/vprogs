@@ -8534,8 +8534,9 @@ dependencies = [
  "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
  "vprogs-zk-abi",
+ "vprogs-zk-aggregate-prover",
  "vprogs-zk-backend-risc0-api",
- "vprogs-zk-backend-risc0-covenant",
+ "vprogs-zk-backend-risc0-settler",
  "vprogs-zk-backend-risc0-test-suite",
  "vprogs-zk-batch-prover",
  "vprogs-zk-vm",
@@ -8781,6 +8782,7 @@ dependencies = [
  "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
  "vprogs-zk-abi",
+ "vprogs-zk-aggregate-prover",
  "vprogs-zk-backend-risc0-api",
  "vprogs-zk-backend-risc0-covenant",
  "vprogs-zk-backend-risc0-test-suite",
@@ -9061,6 +9063,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-zk-aggregate-prover"
+version = "0.1.0"
+dependencies = [
+ "kaspa-hashes",
+ "kaspa-rpc-core",
+ "log",
+ "tokio",
+ "vprogs-core-atomics",
+ "vprogs-core-codec",
+ "vprogs-core-macros",
+ "vprogs-core-smt",
+ "vprogs-l1-types",
+ "vprogs-scheduling-scheduler",
+ "vprogs-storage-types",
+ "vprogs-zk-abi",
+ "vprogs-zk-batch-prover",
+ "vprogs-zk-transaction-prover",
+]
+
+[[package]]
 name = "vprogs-zk-backend-risc0-api"
 version = "0.1.0"
 dependencies = [
@@ -9077,6 +9099,7 @@ dependencies = [
  "vprogs-core-macros",
  "vprogs-core-merkle-tree",
  "vprogs-zk-abi",
+ "vprogs-zk-aggregate-prover",
  "vprogs-zk-backend-risc0-covenant",
  "vprogs-zk-batch-prover",
  "vprogs-zk-transaction-prover",
@@ -9101,6 +9124,26 @@ dependencies = [
  "sha2",
  "vprogs-l1-types",
  "vprogs-zk-abi",
+]
+
+[[package]]
+name = "vprogs-zk-backend-risc0-settler"
+version = "0.1.0"
+dependencies = [
+ "kaspa-addresses",
+ "kaspa-consensus-core",
+ "kaspa-hashes",
+ "kaspa-rpc-core",
+ "kaspa-txscript",
+ "kaspa-wrpc-client",
+ "log",
+ "secp256k1",
+ "tokio",
+ "vprogs-core-smt",
+ "vprogs-l1-wallet",
+ "vprogs-zk-aggregate-prover",
+ "vprogs-zk-backend-risc0-api",
+ "vprogs-zk-backend-risc0-covenant",
 ]
 
 [[package]]
@@ -9179,6 +9222,7 @@ dependencies = [
  "vprogs-scheduling-scheduler",
  "vprogs-storage-types",
  "vprogs-zk-abi",
+ "vprogs-zk-aggregate-prover",
  "vprogs-zk-batch-prover",
  "vprogs-zk-transaction-prover",
 ]
