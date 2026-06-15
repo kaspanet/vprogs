@@ -502,6 +502,7 @@ impl BridgeWorker {
 
     /// Advances the root to the L1 pruning point and emits a `Finalized` event.
     async fn handle_finalization(&mut self) -> Result<()> {
+        // TODO: we can get this from any chain block if root != pruning_point_hash
         let pruning_hash = self.client.get_block_dag_info().await?.pruning_point_hash;
 
         if let Some(new_root) = self.virtual_chain.advance_root(&pruning_hash)? {
