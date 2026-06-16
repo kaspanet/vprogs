@@ -25,6 +25,7 @@ use kaspa_utils::sim::{Environment, Process, Resumption, Suspension};
 use rand::rngs::StdRng;
 use rand_distr::{Distribution, Exp};
 use secp256k1::Keypair;
+use vprogs_core_atomics::AtomicAsyncLatch;
 
 /// What a [`Producer`] receives for one block. Spendable outpoints are snapshotted and the virtual
 /// read guard released before this is built, so the producer may freely call read-only
@@ -44,6 +45,10 @@ pub struct ProduceCtx<'a> {
     pub consensus: &'a dyn ConsensusApi,
     /// Consensus params.
     pub params: &'a Params,
+    /// True once the miner has reached its block target and is only mining to drain in-flight work
+    /// (a settlement awaiting confirmation); the producer should issue no new work and just let
+    /// `catch_up` confirm what is already pending.
+    pub draining: bool,
 }
 
 /// Produces the transactions a miner includes in one block (already signed, mass committed).
@@ -51,6 +56,10 @@ pub trait Producer: Send {
     /// Returns the transactions for this block. They are inserted as-is.
     fn produce(&mut self, ctx: ProduceCtx<'_>) -> Vec<Transaction>;
 }
+
+/// Hard cap on drain blocks mined past the target while the producer still reports in-flight work,
+/// so a settlement that never confirms fails the run's assertion instead of mining forever.
+const MAX_DRAIN_BLOCKS: u64 = 50;
 
 /// A miner whose block contents come from a [`Producer`].
 pub struct L2Miner {
@@ -68,6 +77,10 @@ pub struct L2Miner {
     max_spendable_snapshot: usize,
     max_cached_outpoints: usize,
     producer: Box<dyn Producer>,
+    /// Opened by the producer once it is drained (no settlement in flight). Past `target_blocks`
+    /// the miner keeps mining drain blocks until it opens (bounded by [`MAX_DRAIN_BLOCKS`]),
+    /// so a settlement issued in a final block confirms before the run halts.
+    drained: AtomicAsyncLatch,
 }
 
 impl L2Miner {
@@ -86,6 +99,7 @@ impl L2Miner {
         target_blocks: Option<u64>,
         max_spendable_snapshot: usize,
         producer: Box<dyn Producer>,
+        drained: AtomicAsyncLatch,
     ) -> Self {
         let (schnorr_public_key, _) = keypair.public_key().x_only_public_key();
         // Standard p2pk script: push-32, the x-only pubkey, OP_CHECKSIG. Matches simpa's miner so a
@@ -109,6 +123,7 @@ impl L2Miner {
             max_spendable_snapshot,
             max_cached_outpoints: 10_000,
             producer,
+            drained,
         }
     }
 
@@ -144,6 +159,9 @@ impl L2Miner {
                 .collect()
         };
 
+        // Past the block target the run winds down: tell the producer to stop issuing new work so
+        // only the final settlement remains to confirm.
+        let draining = self.target_blocks.is_some_and(|t| self.num_blocks >= t);
         let txs = self.producer.produce(ProduceCtx {
             miner_id: self.id,
             sim_time: self.sim_time,
@@ -152,6 +170,7 @@ impl L2Miner {
             spendable,
             consensus: self.consensus.as_ref(),
             params: &self.params,
+            draining,
         });
 
         for outpoint in txs.iter().flat_map(|t| t.inputs.iter().map(|i| i.previous_outpoint)) {
@@ -219,7 +238,15 @@ impl L2Miner {
     fn report_progress(&mut self) -> bool {
         self.num_blocks += 1;
         self.sim_time = self.sim_time.max(self.num_blocks);
-        matches!(self.target_blocks, Some(t) if self.num_blocks > t)
+        let Some(target) = self.target_blocks else { return false };
+        if self.num_blocks <= target {
+            return false;
+        }
+        // Past the target: keep mining until the producer signals it is drained (no settlement in
+        // flight), so a settlement issued in a final block confirms (observed by the driver's next
+        // `catch_up`) before halting. Bounded so a never-confirming settlement fails an assertion,
+        // not hangs.
+        self.drained.is_open() || self.num_blocks > target + MAX_DRAIN_BLOCKS
     }
 }
 

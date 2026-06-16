@@ -27,6 +27,7 @@ kaspa-utils            = { workspace = true }
 simpa                  = { workspace = true }
 
 # vprogs L2 stack: the same Vm/scheduler/covenant/wallet pieces the settlement-l1 tests use.
+vprogs-core-atomics                = { workspace = true }
 vprogs-core-codec                  = { workspace = true }
 vprogs-core-smt                    = { workspace = true }
 vprogs-core-test-utils             = { workspace = true }

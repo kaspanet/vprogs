@@ -1,6 +1,6 @@
 use tokio_util::sync::CancellationToken;
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct AtomicAsyncLatch(CancellationToken);
 
 impl AtomicAsyncLatch {

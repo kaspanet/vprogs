@@ -28,6 +28,7 @@ use kaspa_txscript::standard::pay_to_script_hash_script;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use tempfile::TempDir;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_smt::EMPTY_HASH;
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId, SchedulerTransaction};
@@ -222,6 +223,12 @@ pub struct L2Driver {
     /// Re-issues since the last settlement landed; reset on progress, bounds liveness.
     reissues_since_progress: u64,
 
+    /// Opened once the run is winding down (past the miner's block target) and the last settlement
+    /// has confirmed, i.e. no settlement is left in flight. The miner watches it to stop mining
+    /// drain blocks, so none is issued-but-unobserved when the run halts. One-shot: while draining
+    /// the driver issues no new work, so `pending` only ever clears once.
+    drained: AtomicAsyncLatch,
+
     stats: Arc<Mutex<DriverStats>>,
 }
 
@@ -267,7 +274,10 @@ impl L2Driver {
     /// is set the `Vm` drives the real batch prover, reading lane proofs from `consensus` (the
     /// node this driver's miner runs); otherwise it is execution-only. Returns the driver and a
     /// shared stats handle the test can read after the run.
-    pub fn new(config: L2Config, consensus: &Arc<Consensus>) -> (Self, Arc<Mutex<DriverStats>>) {
+    pub fn new(
+        config: L2Config,
+        consensus: &Arc<Consensus>,
+    ) -> (Self, Arc<Mutex<DriverStats>>, AtomicAsyncLatch) {
         let backend = Backend::new(
             &transaction_processor_elf(),
             &batch_processor_elf(),
@@ -288,6 +298,7 @@ impl L2Driver {
         let (exec, settlement_rx) = build_exec(&backend, lane, prove_only, None, weak.clone());
 
         let stats = Arc::new(Mutex::new(DriverStats::default()));
+        let drained = AtomicAsyncLatch::new();
         let driver = Self {
             lane_subnet,
             lane_key: lane,
@@ -312,9 +323,10 @@ impl L2Driver {
             confirmed: Vec::new(),
             pending: None,
             reissues_since_progress: 0,
+            drained: drained.clone(),
             stats: stats.clone(),
         };
-        (driver, stats)
+        (driver, stats, drained)
     }
 
     /// Rebuilds the execution stack with the real batch prover bound to the live covenant id, over
@@ -881,6 +893,15 @@ impl Producer for L2Driver {
             self.init_proving();
         }
         self.catch_up(ctx.consensus);
+        if ctx.draining {
+            // Winding down past the block target: issue no new work, and once the final settlement
+            // has confirmed (observed by the `catch_up` above) open the latch so the miner stops
+            // mining drain blocks. `pending` only clears once here, since no new work is issued.
+            if self.pending.is_none() {
+                self.drained.open();
+            }
+            return Vec::new();
+        }
         self.produce_txs(&ctx)
     }
 }

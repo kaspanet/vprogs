@@ -61,7 +61,7 @@ fn run_sim(p: SimParams) -> DriverStats {
         let hashrate = 1.0 / num_miners as f64;
 
         if i == 0 {
-            let (driver, handle) = L2Driver::new(
+            let (driver, handle, drained) = L2Driver::new(
                 L2Config {
                     lane_id,
                     seed: seed ^ 0xA5A5,
@@ -85,6 +85,7 @@ fn run_sim(p: SimParams) -> DriverStats {
                 Some(target_blocks),
                 16,
                 Box::new(driver),
+                drained,
             );
             net.register(i, Box::new(miner));
         } else {
