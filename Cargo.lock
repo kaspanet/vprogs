@@ -8523,6 +8523,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "vprogs-core-atomics",
  "vprogs-core-codec",
  "vprogs-core-smt",
  "vprogs-core-test-utils",
@@ -9067,6 +9068,7 @@ dependencies = [
 name = "vprogs-zk-aggregate-prover"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "kaspa-hashes",
  "kaspa-rpc-core",
  "log",
@@ -9140,6 +9142,7 @@ dependencies = [
  "log",
  "secp256k1",
  "tokio",
+ "vprogs-core-atomics",
  "vprogs-core-smt",
  "vprogs-l1-wallet",
  "vprogs-zk-aggregate-prover",

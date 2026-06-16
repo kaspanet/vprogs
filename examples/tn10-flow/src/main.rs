@@ -133,7 +133,7 @@ async fn main() {
         // panic inside it (rejected settlement, confirmation timeout) surfaces here and exits the
         // process non-zero, instead of being swallowed while the daemon parks looking healthy.
         Some(handle) => match handle.await {
-            Ok(()) => log::info!("settler finished (sink closed); shutting down"),
+            Ok(()) => log::info!("settler finished; shutting down"),
             Err(e) => {
                 log::error!("settler task terminated abnormally: {e}");
                 std::process::exit(1);
@@ -239,9 +239,9 @@ async fn start_settlement(
     persisted.save(&cfg.data_dir);
     log::info!("covenant {covenant_id} bootstrapped (tx {bootstrap_txid})");
 
-    // The in-process aggregate prover hands each proved bundle to this sink; the settlement worker
-    // drains it and settles on chain.
-    let (sink_tx, sink_rx) = tokio::sync::mpsc::unbounded_channel();
+    // The in-process aggregate prover publishes each proved bundle handle onto this queue; the
+    // settlement worker pops from it and settles on chain.
+    let queue: daemon::FlowSettlementQueue = daemon::FlowSettlementQueue::new();
     let store = daemon::Store::open(cfg.data_dir.join("db"));
     let node = daemon::build_proving_node(
         tx_elf,
@@ -249,13 +249,14 @@ async fn start_settlement(
         aggregator_elf,
         store,
         bridge_params(cfg, network_id, lane_subnet, covenant_id, params),
-        ProvingParams { covenant_id, lane_key, client: client.clone(), sink: sink_tx },
+        ProvingParams { covenant_id, lane_key, client: client.clone(), sink: queue.clone() },
     );
 
-    // The settlement worker runs until the node drops (closing the sink) or it hits a fatal error.
-    // `main` owns the returned handle and awaits it, so neither outcome is swallowed.
+    // The settlement worker loops forever, popping bundle handles off the queue, until it hits a
+    // fatal error (a rejected settlement or a confirmation timeout). `main` owns the returned
+    // handle and awaits it, so that failure is not swallowed.
     let settler = tokio::spawn(run_settlement_worker(
-        sink_rx,
+        queue,
         SettlementWorkerConfig {
             client: client.clone(),
             params: params.clone(),

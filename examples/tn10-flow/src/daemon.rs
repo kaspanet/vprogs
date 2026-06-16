@@ -16,13 +16,13 @@ use kaspa_consensus_core::{network::NetworkId, subnets::SubnetworkId};
 use kaspa_hashes::Hash;
 use kaspa_rpc_core::{GetSeqCommitLaneProofResponse, api::rpc::RpcApi};
 use kaspa_wrpc_client::prelude::KaspaRpcClient;
-use tokio::sync::mpsc::UnboundedSender;
+use vprogs_core_atomics::AsyncQueue;
 use vprogs_l1_bridge::L1BridgeConfig;
 use vprogs_node_framework::{Node, NodeConfig};
 use vprogs_scheduling_scheduler::ExecutionConfig;
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
-use vprogs_zk_aggregate_prover::{AggregateProverConfig, BundleOutcome};
+use vprogs_zk_aggregate_prover::{AggregateProverConfig, ScheduledBundle};
 use vprogs_zk_backend_risc0_api::{Backend, ProofType, Receipt};
 use vprogs_zk_batch_prover::{BatchProverConfig, LaneProofSource};
 use vprogs_zk_vm::{ProvingPipeline, Vm};
@@ -33,8 +33,9 @@ pub type Store = RocksDbStore;
 pub type V = Vm<Backend, Store>;
 /// The framework node specialized to the POC's store and processor.
 pub type FlowNode = Node<Store, V>;
-/// Bundle outcomes the aggregate prover hands the settlement worker (one per formed bundle).
-pub type FlowBundleOutcome = BundleOutcome<Receipt>;
+/// Queue of bundle handles the aggregate prover publishes to the settlement worker (one per formed
+/// bundle).
+pub type FlowSettlementQueue = AsyncQueue<ScheduledBundle<Receipt>>;
 
 /// Everything the bridge needs to follow our lane on the remote node.
 pub struct BridgeParams {
@@ -60,9 +61,10 @@ pub struct ProvingParams {
     /// wRPC client the aggregate prover's lane source fetches each bundle's final-block lane proof
     /// over.
     pub client: KaspaRpcClient,
-    /// Sink the in-process aggregate prover hands each bundle outcome to; the settlement worker
-    /// drains it to build and submit the on-chain settlement.
-    pub sink: UnboundedSender<FlowBundleOutcome>,
+    /// Queue the in-process aggregate prover publishes each bundle handle onto; the settlement
+    /// worker pops from it and awaits each bundle's artifact to build and submit the on-chain
+    /// settlement.
+    pub sink: FlowSettlementQueue,
 }
 
 /// Builds and starts an execution-only [`FlowNode`]: a zk `Vm` with no proving, the given store,
@@ -104,7 +106,7 @@ pub fn build_proving_node(
             lane_key: proving.lane_key,
             covenant_id: Some(proving.covenant_id),
             lane_source: RemoteLaneSource::new(proving.client),
-            settlement_sink: Some(proving.sink),
+            settlement_queue: Some(proving.sink),
         },
     );
     let vm = Vm::new(backend, pipeline);

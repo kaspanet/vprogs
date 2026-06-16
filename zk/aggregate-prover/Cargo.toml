@@ -4,6 +4,7 @@ name              = "vprogs-zk-aggregate-prover"
 version.workspace = true
 
 [dependencies]
+arc-swap.workspace                     = true
 kaspa-hashes.workspace                 = true
 kaspa-rpc-core.workspace               = true
 log.workspace                          = true

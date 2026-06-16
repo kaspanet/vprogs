@@ -13,6 +13,7 @@ kaspa-wrpc-client.workspace                = true
 log.workspace                              = true
 secp256k1.workspace                        = true
 tokio                                      = { workspace = true, features = ["sync", "time"] }
+vprogs-core-atomics.workspace              = true
 vprogs-core-smt.workspace                  = true
 vprogs-l1-wallet.workspace                 = true
 vprogs-zk-aggregate-prover.workspace       = true

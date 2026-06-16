@@ -10,9 +10,9 @@ use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_txscript::standard::{extract_script_pub_key_address, pay_to_script_hash_script};
 use kaspa_wrpc_client::prelude::KaspaRpcClient;
 use secp256k1::Keypair;
-use tokio::sync::mpsc::UnboundedReceiver;
+use vprogs_core_atomics::AsyncQueue;
 use vprogs_l1_wallet::Wallet;
-use vprogs_zk_aggregate_prover::{BundleOutcome, SettlementArtifact};
+use vprogs_zk_aggregate_prover::{ScheduledBundle, SettlementArtifact};
 use vprogs_zk_backend_risc0_api::{Backend, OwnedSuccinctWitness, Receipt};
 use vprogs_zk_backend_risc0_covenant::{Settlement, SettlementInput};
 
@@ -36,14 +36,19 @@ pub struct SettlementWorkerConfig {
     pub backend: Backend,
 }
 
-/// Drives the settlement loop until the outcome channel closes (aggregate prover / node shutdown).
+/// Drives the settlement loop, popping each bundle the aggregate prover publishes onto `queue`.
 ///
-/// The aggregate prover reports every bundle as a [`BundleOutcome`]; the ones that carry a
-/// settlement are submitted: build a production [`Settlement`], submit it, and wait for its
-/// continuation UTXO to confirm before taking the next. No-op outcomes are skipped. The channel is
-/// processed one item at a time, so settlements are serialized.
+/// The aggregate prover publishes every formed bundle as a [`ScheduledBundle`] handle; the worker
+/// pops one, awaits its proved artifact, and (when it carries a settlement) builds a production
+/// [`Settlement`], submits it, and waits for its continuation UTXO to confirm before taking the
+/// next. No-op bundles (resolved with no artifact) are skipped. Handles are processed one at a
+/// time, so settlements are serialized.
+///
+/// The loop is infinite: `AsyncQueue` has no close, and in production the node holds the prover for
+/// its whole lifetime so the queue is never drained-then-closed. The worker exits only by panicking
+/// on a rejected settlement or a confirmation timeout (propagated through its `JoinHandle`).
 pub async fn run(
-    mut rx: UnboundedReceiver<BundleOutcome<Receipt>>,
+    queue: AsyncQueue<ScheduledBundle<Receipt>>,
     cfg: SettlementWorkerConfig,
     covenant: CovenantState,
 ) {
@@ -58,20 +63,22 @@ pub async fn run(
         cov.daa_score,
     );
 
-    while let Some(outcome) = rx.recv().await {
-        // TODO: track which settlements are done vs pending and persist that (a no-op outcome marks
+    loop {
+        // TODO: track which settlements are done vs pending and persist that (a no-op bundle marks
         // a proved-but-not-settled range), so a restart can resume mid-chain instead of
         // re-bootstrapping.
         // TODO: fee-bump a settlement that does not confirm within a deadline, rather than polling
         // `confirm_outpoint` indefinitely.
         // TODO: handle reorgs that orphan `artifact.block_prove_to` (single-miner / low-reorg
         // only).
-        let Some(artifact) = outcome.settlement else {
+        let bundle = queue.wait_and_pop().await;
+        // The handle is published before its proof exists; await the artifact before reading it.
+        bundle.wait_artifact_published().await;
+        let Some(artifact) = bundle.artifact() else {
             continue;
         };
-        cov = settle_one(&cfg, cov, artifact).await;
+        cov = settle_one(&cfg, cov, &artifact).await;
     }
-    log::info!("settlement-worker: outcome channel closed; stopping");
 }
 
 /// Builds the settlement for one proven bundle, submits it, waits for the continuation UTXO, and
@@ -79,7 +86,7 @@ pub async fn run(
 async fn settle_one(
     cfg: &SettlementWorkerConfig,
     cov: CovenantState,
-    artifact: SettlementArtifact<Receipt>,
+    artifact: &SettlementArtifact<Receipt>,
 ) -> CovenantState {
     // The bundle's bounds are authoritative for the on-chain script; assert the live covenant
     // agrees before paying to submit, so a mismatch fails loudly and locally.

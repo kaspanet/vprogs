@@ -18,6 +18,7 @@ cuda = ["vprogs-zk-backend-risc0-api/cuda"]
 # vprogs internal. The scheduler/Vm construction, covenant bootstrap, fork toggle, state-read, and
 # ELF loaders are reused from the settlement test-suite rather than reimplemented here; the
 # settlement path reuses the covenant/prover/codec crates the settlement-l1 test and the sim use.
+vprogs-core-atomics                = { workspace = true }
 vprogs-core-codec                  = { workspace = true }
 vprogs-core-smt                    = { workspace = true }
 vprogs-core-test-utils             = { workspace = true }

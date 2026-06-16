@@ -4,7 +4,8 @@ use std::{
 };
 
 use kaspa_hashes::Hash;
-use tokio::{runtime::Builder, sync::mpsc::UnboundedSender};
+use tokio::runtime::Builder;
+use vprogs_core_atomics::AsyncQueue;
 use vprogs_core_codec::Reader;
 use vprogs_core_smt::EMPTY_HASH;
 use vprogs_l1_types::{ChainBlockMetadata, SettlementInfo};
@@ -14,7 +15,7 @@ use vprogs_zk_abi::batch_aggregator::{Inputs as AggregatorInputs, StateTransitio
 use vprogs_zk_batch_prover::LaneProofSource;
 
 use crate::{
-    AggregateProver, AggregateProverConfig, Backend, BundleOutcome, SettlementArtifact,
+    AggregateProver, AggregateProverConfig, Backend, ScheduledBundle, SettlementArtifact,
     command::Command,
 };
 
@@ -31,9 +32,9 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend, L: LaneProofSour
     covenant_id: Option<Hash>,
     /// Source of each bundle's final-block lane proof.
     lane_source: L,
-    /// Sink each formed bundle's [`BundleOutcome`] is handed to for on-chain settlement, or `None`
-    /// to run without settling.
-    settlement_sink: Option<UnboundedSender<BundleOutcome<B::Receipt>>>,
+    /// Queue each formed bundle's [`ScheduledBundle`] handle is published onto for on-chain
+    /// settlement, or `None` to run without settling.
+    settlement_queue: Option<AsyncQueue<ScheduledBundle<B::Receipt>>>,
     /// Batches accumulated but not yet bundled, in scheduling order.
     queued: VecDeque<ScheduledBatch<S, P>>,
     /// Last settled L1 block (the lower bound a new bundle chains from). `None` at genesis.
@@ -62,14 +63,14 @@ where
         backend: B,
         config: AggregateProverConfig<L, B::Receipt>,
     ) -> JoinHandle<()> {
-        let AggregateProverConfig { lane_key, covenant_id, lane_source, settlement_sink } = config;
+        let AggregateProverConfig { lane_key, covenant_id, lane_source, settlement_queue } = config;
         let this = Self {
             prover,
             backend,
             lane_key,
             covenant_id,
             lane_source,
-            settlement_sink,
+            settlement_queue,
             queued: VecDeque::new(),
             from_block: None,
             from_state: EMPTY_HASH,
@@ -151,6 +152,9 @@ where
         let bundle: Vec<ScheduledBatch<S, P>> =
             (0..take).map(|_| self.queued.pop_front().unwrap()).collect();
 
+        let last_metadata = *bundle.last().unwrap().checkpoint().metadata();
+        let block_prove_to = last_metadata.hash;
+
         // Empty batches publish no receipt; the aggregator composes only the non-empty ones.
         let receipts: Vec<B::Receipt> = bundle
             .iter()
@@ -159,14 +163,19 @@ where
             .collect();
 
         // An all-empty prefix advances no state: consume it without proving (there are no receipts
-        // to compose). Report it as a no-op so a paced consumer accounts for these batches.
+        // to compose). Publish a resolved no-op handle so a paced consumer accounts for these
+        // batches.
         if receipts.is_empty() {
-            self.emit(BundleOutcome { batches: take, settlement: None });
+            self.emit(ScheduledBundle::resolved_noop(take, block_prove_to));
             return true;
         }
 
-        let last_metadata = *bundle.last().unwrap().checkpoint().metadata();
-        let block_prove_to = last_metadata.hash;
+        // Publish the (still unproven) bundle handle before proving, mirroring how the scheduler
+        // publishes a `ScheduledBatch` before the batch prover fills its receipt: the settlement
+        // worker can pop the handle and reconcile pacing now, then await the artifact. The retained
+        // `handle` is filled below once proving completes.
+        let handle = ScheduledBundle::new(take, block_prove_to);
+        self.emit(handle.clone());
 
         // Aggregate the bundle: fetch the final block's lane proof, encode the aggregator inputs
         // over the per-batch journals, and prove with the per-batch receipts as composition
@@ -180,6 +189,10 @@ where
         );
         let receipt = self.backend.prove_aggregator(&inputs, receipts).await;
         if self.prover.shutdown.is_open() {
+            // Shutting down: resolve the published handle as a no-op so a consumer awaiting its
+            // artifact is released rather than blocked on a latch that never opens, and drop the
+            // proved bundle (the same discard-on-shutdown behavior as before).
+            handle.publish_artifact(None);
             return true;
         }
 
@@ -190,9 +203,10 @@ where
             .expect("aggregator journal");
 
         // A no-op bundle (no lane activity in its blocks) leaves the state unchanged: nothing to
-        // settle. Report it as a no-op so a paced consumer accounts for these batches.
+        // settle. Resolve the published handle as a no-op so a paced consumer accounts for these
+        // batches.
         if st.new_state == st.prev_state {
-            self.emit(BundleOutcome { batches: take, settlement: None });
+            handle.publish_artifact(None);
             return true;
         }
 
@@ -220,8 +234,9 @@ where
         self.from_block = Some(block_prove_to);
         self.from_state = st.new_state;
 
-        // Hand the proved bundle to the settlement worker. With no sink wired the bundle is proved
-        // but not settled (exec/test paths).
+        // Fill the published handle with the proved settlement; the settlement worker awaiting it
+        // is then released. With no queue wired the bundle is proved but not settled (exec/test
+        // paths).
         log::info!("aggregate-prover: proved bundle through {block_prove_to} (size {take})");
         let artifact = SettlementArtifact {
             receipt,
@@ -234,15 +249,15 @@ where
             permission_spk_hash: st.permission_spk_hash,
             covenant_id: st.covenant_id,
         };
-        self.emit(BundleOutcome { batches: take, settlement: Some(artifact) });
+        handle.publish_artifact(Some(artifact));
         true
     }
 
-    /// Sends a formed bundle's outcome to the settlement sink, if one is wired. A closed receiver
-    /// means the settlement worker is gone (shutdown); the send is dropped.
-    fn emit(&self, outcome: BundleOutcome<B::Receipt>) {
-        if let Some(sink) = &self.settlement_sink {
-            let _ = sink.send(outcome);
+    /// Publishes a formed bundle's handle onto the settlement queue, if one is wired. With no queue
+    /// the prover runs without settling and the handle is dropped.
+    fn emit(&self, bundle: ScheduledBundle<B::Receipt>) {
+        if let Some(queue) = &self.settlement_queue {
+            queue.push(bundle);
         }
     }
 
