@@ -21,5 +21,8 @@
 mod covenant;
 mod worker;
 
-pub use covenant::{CovenantState, bootstrap_real_covenant};
+pub use covenant::{
+    BuiltSettlement, CovenantAdvance, CovenantState, bootstrap_real_covenant, bootstrap_redeem,
+    build_settlement,
+};
 pub use worker::{SettlementWorkerConfig, run};

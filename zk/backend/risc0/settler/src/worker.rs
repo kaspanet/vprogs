@@ -7,16 +7,15 @@ use kaspa_consensus_core::{
 };
 use kaspa_hashes::Hash;
 use kaspa_rpc_core::api::rpc::RpcApi;
-use kaspa_txscript::standard::{extract_script_pub_key_address, pay_to_script_hash_script};
+use kaspa_txscript::standard::extract_script_pub_key_address;
 use kaspa_wrpc_client::prelude::KaspaRpcClient;
 use secp256k1::Keypair;
 use vprogs_core_atomics::AsyncQueue;
 use vprogs_l1_wallet::Wallet;
 use vprogs_zk_aggregate_prover::{ScheduledBundle, SettlementArtifact};
-use vprogs_zk_backend_risc0_api::{Backend, OwnedSuccinctWitness, Receipt};
-use vprogs_zk_backend_risc0_covenant::{Settlement, SettlementInput};
+use vprogs_zk_backend_risc0_api::{Backend, Receipt};
 
-use crate::covenant::{AnchorSeqCommit, CovenantState, redeem_pins};
+use crate::covenant::{CovenantState, build_settlement};
 
 /// Poll cadence and ceiling for waiting on a covenant UTXO to confirm on chain.
 const CONFIRM_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -88,55 +87,20 @@ async fn settle_one(
     cov: CovenantState,
     artifact: &SettlementArtifact<Receipt>,
 ) -> CovenantState {
-    // The bundle's bounds are authoritative for the on-chain script; assert the live covenant
-    // agrees before paying to submit, so a mismatch fails loudly and locally.
-    assert_eq!(
-        artifact.prev_state, cov.state,
-        "settlement prev_state must chain from the live covenant state",
-    );
-    assert_eq!(
-        artifact.prev_lane_tip, cov.lane_tip,
-        "settlement prev_lane_tip must match the spent covenant's redeem prefix",
-    );
-    assert_eq!(
-        Hash::from_bytes(artifact.covenant_id),
-        cov.covenant_id,
-        "settlement covenant_id must match the live covenant",
-    );
-
-    let owned_witness = OwnedSuccinctWitness::from_receipt(&artifact.receipt);
-    let settlement = Settlement::build(&SettlementInput {
-        covenant_id: cov.covenant_id,
-        pins: redeem_pins(&cfg.backend, &cfg.lane_key),
-        prev_state: &artifact.prev_state,
-        prev_lane_tip: &artifact.prev_lane_tip,
-        new_state: &artifact.new_state,
-        new_lane_tip: &artifact.new_lane_tip,
-        block_prove_to: artifact.block_prove_to,
-        prev_outpoint: cov.outpoint,
-        value: cov.value,
-        witness: owned_witness.as_witness(),
-        permission_spk_hash: &artifact.permission_spk_hash,
-    });
-    let continuation_spk = pay_to_script_hash_script(&settlement.next_redeem);
-
-    // Size the covenant input's committed compute budget from the script units it actually
-    // consumes: the script engine anchors `new_seq_commit` to `block_prove_to`, so feed it the
-    // bundle's value. An oversized budget inflates the tx's compute mass past the per-tx limit
-    // and the node rejects it; this yields the minimal sufficient value.
-    let accessor =
-        AnchorSeqCommit { block: artifact.block_prove_to, seq_commit: artifact.new_seq_commit };
-    let budget = settlement.covenant_compute_budget(cov.covenant_id, &accessor);
+    // Build the settlement and its covenant compute budget from the bundle's authoritative bounds
+    // (shared with the sim driver). Asserts the live covenant agrees before we pay to submit.
+    let built = build_settlement(&cfg.backend, &cfg.lane_key, &cov, artifact);
 
     let covenant_entry =
         UtxoEntry::new(cov.value, cov.spk.clone(), cov.daa_score, false, Some(cov.covenant_id));
     let wallet = Wallet::new(&cfg.client, &cfg.params, cfg.keypair);
-    let tx =
-        wallet.prepare_settlement_transaction(settlement.transaction, covenant_entry, budget).await;
+    let tx = wallet
+        .prepare_settlement_transaction(built.transaction, covenant_entry, built.compute_budget)
+        .await;
     let txid = match wallet.submit_transaction(&tx).await {
         Ok(id) => id,
-        // A rejection here is the on-chain script (incl. `OpZkPrecompile`) refusing the settlement:
-        // surface it loudly — that is exactly the end-to-end check this path exists to make.
+        // A rejection here is the on-chain script (incl. `OpZkPrecompile`) refusing the settlement;
+        // surface it loudly, as that is exactly the end-to-end check this path exists to make.
         Err(e) => panic!("settlement submit rejected by node: {e}"),
     };
     log::info!(
@@ -145,19 +109,16 @@ async fn settle_one(
     );
 
     let continuation_outpoint = TransactionOutpoint::new(txid, 0);
-    let daa_score =
-        confirm_outpoint(&cfg.client, &cfg.params, &continuation_spk, continuation_outpoint).await;
+    let daa_score = confirm_outpoint(
+        &cfg.client,
+        &cfg.params,
+        built.advance.continuation_spk(),
+        continuation_outpoint,
+    )
+    .await;
     log::info!("settlement-worker: settlement {txid} confirmed (daa {daa_score})");
 
-    CovenantState {
-        covenant_id: cov.covenant_id,
-        state: artifact.new_state,
-        lane_tip: artifact.new_lane_tip,
-        outpoint: continuation_outpoint,
-        spk: continuation_spk,
-        value: cov.value,
-        daa_score,
-    }
+    built.advance.apply(txid, daa_score)
 }
 
 /// Polls the node until `outpoint` appears at `spk`'s P2SH address, returning its block DAA score.

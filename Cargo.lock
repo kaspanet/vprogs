@@ -8787,6 +8787,7 @@ dependencies = [
  "vprogs-zk-aggregate-prover",
  "vprogs-zk-backend-risc0-api",
  "vprogs-zk-backend-risc0-covenant",
+ "vprogs-zk-backend-risc0-settler",
  "vprogs-zk-backend-risc0-test-suite",
  "vprogs-zk-batch-prover",
  "vprogs-zk-vm",

@@ -17,10 +17,7 @@ use kaspa_consensus_core::{
     constants::TX_VERSION_TOCCATA,
     mass::units::ComputeBudget,
     subnets::SubnetworkId,
-    tx::{
-        ScriptPublicKey, Transaction, TransactionOutpoint, TransactionQueryResult, TransactionType,
-        UtxoEntry,
-    },
+    tx::{Transaction, TransactionOutpoint, TransactionQueryResult, TransactionType, UtxoEntry},
 };
 use kaspa_hashes::Hash;
 use kaspa_seq_commit::hashing::lane_key;
@@ -36,12 +33,11 @@ use vprogs_l1_wallet::{build, encode_activity_payload};
 use vprogs_scheduling_scheduler::{Processor, Scheduler};
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_aggregate_prover::{AggregateProverConfig, ScheduledBundle, SettlementArtifact};
-use vprogs_zk_backend_risc0_api::{Backend, OwnedSuccinctWitness, ProofType, Receipt};
+use vprogs_zk_backend_risc0_api::{Backend, ProofType, Receipt};
 use vprogs_zk_backend_risc0_covenant::{
-    CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, RedeemPins, Settlement, SettlementDevInput,
-    SettlementInput, SuccinctPins, build_dev_redeem_script, build_redeem_script,
-    dev_redeem_script_len, redeem_script_len,
+    Settlement, SettlementDevInput, build_dev_redeem_script, dev_redeem_script_len,
 };
+use vprogs_zk_backend_risc0_settler::{CovenantState, bootstrap_redeem, build_settlement};
 use vprogs_zk_backend_risc0_test_suite::{
     batch_aggregator_elf, batch_processor_elf, build_scheduler, read_resource_u32,
     transaction_processor_elf,
@@ -59,10 +55,6 @@ type V = Vm<Backend, Store>;
 
 /// Compute budget for the dev covenant input (dev redeem has no precompile; 100 covers it).
 const DEV_COVENANT_BUDGET: ComputeBudget = ComputeBudget(100);
-
-/// Compute budget for a real-proof covenant input. `OpZkPrecompile` for the succinct branch burns
-/// ~2500 units; ship headroom (mirrors `settlement_l1_e2e`).
-const REAL_COVENANT_BUDGET: ComputeBudget = ComputeBudget(10_000);
 
 /// Construction parameters for the driver.
 pub struct L2Config {
@@ -114,24 +106,12 @@ struct BlockRec {
     lane_tx_count: u32,
 }
 
-/// The on-chain covenant: its identity and current committed state, plus the UTXO that carries it.
-#[derive(Clone)]
-struct Covenant {
-    covenant_id: Hash,
-    state: [u8; 32],
-    lane_tip: Hash,
-    outpoint: TransactionOutpoint,
-    spk: ScriptPublicKey,
-    value: u64,
-    daa_score: u64,
-}
-
 /// A covenant state seen accepted on the current selected chain, tagged with the chain length right
 /// after the block that confirmed it. A reorg that rolls the chain back below `marker` pops this
 /// entry, so the covenant history always matches the live chain. `confirmed[0]` is the bootstrap.
 struct ConfirmedCovenant {
     marker: usize,
-    covenant: Covenant,
+    covenant: CovenantState,
 }
 
 /// A covenant transaction issued into a block but not yet seen accepted on the selected chain.
@@ -144,7 +124,7 @@ struct PendingCovenant {
     txid: Hash,
     basis_outpoint: Option<TransactionOutpoint>,
     issued_block_index: u64,
-    next: Covenant,
+    next: CovenantState,
     is_bootstrap: bool,
 }
 
@@ -581,16 +561,16 @@ impl L2Driver {
         let lane_tip = Hash::default();
         // Real-proof mode deploys the production redeem script (terminates in `OpZkPrecompile`) so
         // the first settlement's reconstructed prev redeem matches this UTXO's SPK; dev mode uses
-        // the dev redeem (chain-anchored, no precompile).
-        let redeem = if self.real_e2e {
-            let pins = self.redeem_pins();
-            let redeem_len = redeem_script_len(&state, &pins);
-            build_redeem_script(&state, &lane_tip, redeem_len, &pins)
+        // the dev redeem (chain-anchored, no precompile). The real path shares
+        // `bootstrap_redeem` with the production settler so both build the covenant identically.
+        let (redeem, spk) = if self.real_e2e {
+            bootstrap_redeem(&self.backend, &self.lane_key)
         } else {
             let redeem_len = dev_redeem_script_len(&state, &self.lane_key);
-            build_dev_redeem_script(&state, &lane_tip, &self.lane_key, redeem_len)
+            let redeem = build_dev_redeem_script(&state, &lane_tip, &self.lane_key, redeem_len);
+            let spk = pay_to_script_hash_script(&redeem);
+            (redeem, spk)
         };
-        let spk = pay_to_script_hash_script(&redeem);
 
         let (tx, covenant_id) = build::covenant_bootstrap_transaction(
             &redeem,
@@ -606,7 +586,7 @@ impl L2Driver {
             basis_outpoint: None,
             issued_block_index: ctx.block_index,
             is_bootstrap: true,
-            next: Covenant {
+            next: CovenantState {
                 covenant_id,
                 state,
                 lane_tip,
@@ -674,7 +654,7 @@ impl L2Driver {
             basis_outpoint: Some(cov.outpoint),
             issued_block_index: ctx.block_index,
             is_bootstrap: false,
-            next: Covenant {
+            next: CovenantState {
                 covenant_id: cov.covenant_id,
                 state: new_state,
                 lane_tip: new_lane_tip,
@@ -686,21 +666,6 @@ impl L2Driver {
         });
         self.stats.lock().unwrap().settlements_issued += 1;
         vec![tx]
-    }
-
-    /// The production redeem pins for this covenant: the batch + transaction guest image ids, the
-    /// lane key, and the default permission-output value. Stable across the run (image ids are
-    /// fixed), so bootstrap and every settlement share them.
-    fn redeem_pins(&self) -> RedeemPins<'_> {
-        RedeemPins::Succinct(SuccinctPins {
-            common: CommonPins {
-                program_id: &self.backend.aggregator.id,
-                tx_image_id: &self.backend.transaction_processor.id,
-                batch_image_id: &self.backend.batch_processor.id,
-                lane_key: &self.lane_key,
-                permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
-            },
-        })
     }
 
     /// Settles the next proven bundle the in-process aggregate prover publishes, driven by the
@@ -763,37 +728,11 @@ impl L2Driver {
     ) -> Vec<Transaction> {
         let (fee_outpoint, fee_entry) = ctx.spendable.first().expect("fee output");
         let cov = self.confirmed.last().expect("covenant").covenant.clone();
-        assert_eq!(
-            artifact.prev_state, cov.state,
-            "settlement prev_state must chain from the live covenant state",
-        );
-        assert_eq!(
-            artifact.prev_lane_tip, cov.lane_tip,
-            "settlement prev_lane_tip must match the spent covenant's redeem prefix",
-        );
-        assert_eq!(
-            Hash::from_bytes(artifact.covenant_id),
-            cov.covenant_id,
-            "settlement covenant_id must match the live covenant (prover seeded with wrong id)",
-        );
 
-        let new_state = artifact.new_state;
-        let new_lane_tip = artifact.new_lane_tip;
-        let owned_witness = OwnedSuccinctWitness::from_receipt(&artifact.receipt);
-        let settlement = Settlement::build(&SettlementInput {
-            covenant_id: cov.covenant_id,
-            pins: self.redeem_pins(),
-            prev_state: &artifact.prev_state,
-            prev_lane_tip: &artifact.prev_lane_tip,
-            new_state: &new_state,
-            new_lane_tip: &new_lane_tip,
-            block_prove_to: artifact.block_prove_to,
-            prev_outpoint: cov.outpoint,
-            value: cov.value,
-            witness: owned_witness.as_witness(),
-            permission_spk_hash: &artifact.permission_spk_hash,
-        });
-        let continuation_spk = pay_to_script_hash_script(&settlement.next_redeem);
+        // Build the settlement and its precise covenant compute budget the same way the production
+        // settler does (shared `build_settlement`); the sim only differs in how it funds the fee
+        // and submits the tx (mined by its miner, not the wallet's wRPC client).
+        let built = build_settlement(&self.backend, &self.lane_key, &cov, artifact);
 
         let covenant_entry =
             UtxoEntry::new(cov.value, cov.spk.clone(), cov.daa_score, false, Some(cov.covenant_id));
@@ -804,9 +743,9 @@ impl L2Driver {
             &xonly.serialize(),
         );
         let tx = build::settlement_transaction(build::SettlementTx {
-            settlement_tx: settlement.transaction,
+            settlement_tx: built.transaction,
             covenant_entry,
-            covenant_compute_budget: REAL_COVENANT_BUDGET,
+            covenant_compute_budget: built.compute_budget,
             fee_outpoint: *fee_outpoint,
             fee_entry: fee_entry.clone(),
             keypair: ctx.keypair,
@@ -820,15 +759,8 @@ impl L2Driver {
             basis_outpoint: Some(cov.outpoint),
             issued_block_index: ctx.block_index,
             is_bootstrap: false,
-            next: Covenant {
-                covenant_id: cov.covenant_id,
-                state: new_state,
-                lane_tip: new_lane_tip,
-                outpoint: TransactionOutpoint::new(txid, 0),
-                spk: continuation_spk,
-                value: cov.value,
-                daa_score: 0,
-            },
+            // daa_score stamped on acceptance in `observe_covenant`.
+            next: built.advance.apply(txid, 0),
         });
         self.stats.lock().unwrap().settlements_issued += 1;
         vec![tx]
