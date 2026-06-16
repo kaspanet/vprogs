@@ -155,6 +155,15 @@ where
         let last_metadata = *bundle.last().unwrap().checkpoint().metadata();
         let block_prove_to = last_metadata.hash;
 
+        // Bundle-start coordinate (first batch's index + block) keys the aggregator receipt in the
+        // proof-receipt store; `latest_settlement` is the newest on-chain covenant settlement as of
+        // the final block, letting the settler skip a bundle an external settlement already
+        // covered.
+        let first_checkpoint = bundle.first().unwrap().checkpoint();
+        let checkpoint_index = first_checkpoint.index();
+        let from_block = first_checkpoint.metadata().hash;
+        let latest_settlement = last_metadata.last_settlement;
+
         // Empty batches publish no receipt; the aggregator composes only the non-empty ones.
         let receipts: Vec<B::Receipt> = bundle
             .iter()
@@ -166,7 +175,13 @@ where
         // to compose). Publish a resolved no-op handle so a paced consumer accounts for these
         // batches.
         if receipts.is_empty() {
-            self.emit(ScheduledBundle::resolved_noop(take, block_prove_to));
+            self.emit(ScheduledBundle::resolved_noop(
+                take,
+                checkpoint_index,
+                from_block,
+                block_prove_to,
+                latest_settlement,
+            ));
             return true;
         }
 
@@ -174,7 +189,13 @@ where
         // publishes a `ScheduledBatch` before the batch prover fills its receipt: the settlement
         // worker can pop the handle and reconcile pacing now, then await the artifact. The retained
         // `handle` is filled below once proving completes.
-        let handle = ScheduledBundle::new(take, block_prove_to);
+        let handle = ScheduledBundle::new(
+            take,
+            checkpoint_index,
+            from_block,
+            block_prove_to,
+            latest_settlement,
+        );
         self.emit(handle.clone());
 
         // Aggregate the bundle: fetch the final block's lane proof, encode the aggregator inputs

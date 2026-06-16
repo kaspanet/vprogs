@@ -4,6 +4,7 @@ use arc_swap::ArcSwapOption;
 use kaspa_hashes::Hash;
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_macros::smart_pointer;
+use vprogs_l1_types::SettlementInfo;
 
 use crate::SettlementArtifact;
 
@@ -24,8 +25,20 @@ pub struct ScheduledBundle<R> {
     /// Number of scheduled batches this bundle consumed (including empty batches in the ready
     /// prefix). Readable immediately, before the artifact is published.
     batches: usize,
+    /// The bundle's first checkpoint index (bundle-start). With `from_block` it is the
+    /// bundle-start coordinate that keys the aggregator receipt's prefix in the proof-receipt
+    /// store. Immediate.
+    checkpoint_index: u64,
+    /// L1 block at the bundle's first checkpoint (the block it proves *from*), pairing with
+    /// `block_prove_to`. Together with `checkpoint_index` it keys the aggregator receipt and keeps
+    /// bundles that began on competing forks distinct. Immediate.
+    from_block: Hash,
     /// L1 block the bundle proves through (its final block). Immediate, for logging / pacing.
     block_prove_to: Hash,
+    /// Most-recent covenant settlement visible on chain as of the bundle's final block, or `None`
+    /// until one lands. Lets the settler skip a bundle an external settlement already covered --
+    /// the same redundancy the aggregate prover applies when forming bundles. Immediate.
+    latest_settlement: Option<SettlementInfo>,
     /// The proved settlement, filled via [`publish_artifact`](Self::publish_artifact). `None` for
     /// a no-op bundle that advanced no state.
     settlement: ArcSwapOption<SettlementArtifact<R>>,
@@ -36,10 +49,19 @@ pub struct ScheduledBundle<R> {
 impl<R> ScheduledBundle<R> {
     /// Creates an unresolved bundle handle: its metadata is readable immediately, the settlement
     /// artifact is filled later via [`publish_artifact`](Self::publish_artifact).
-    pub fn new(batches: usize, block_prove_to: Hash) -> Self {
+    pub fn new(
+        batches: usize,
+        checkpoint_index: u64,
+        from_block: Hash,
+        block_prove_to: Hash,
+        latest_settlement: Option<SettlementInfo>,
+    ) -> Self {
         Self(Arc::new(ScheduledBundleData {
             batches,
+            checkpoint_index,
+            from_block,
             block_prove_to,
+            latest_settlement,
             settlement: ArcSwapOption::empty(),
             artifact_published: AtomicAsyncLatch::new(),
         }))
@@ -47,12 +69,21 @@ impl<R> ScheduledBundle<R> {
 
     /// Creates an immediately-resolved no-op bundle: it advanced no state, so it carries no
     /// settlement and its artifact latch is already open.
-    pub fn resolved_noop(batches: usize, block_prove_to: Hash) -> Self {
+    pub fn resolved_noop(
+        batches: usize,
+        checkpoint_index: u64,
+        from_block: Hash,
+        block_prove_to: Hash,
+        latest_settlement: Option<SettlementInfo>,
+    ) -> Self {
         let artifact_published = AtomicAsyncLatch::new();
         artifact_published.open();
         Self(Arc::new(ScheduledBundleData {
             batches,
+            checkpoint_index,
+            from_block,
             block_prove_to,
+            latest_settlement,
             settlement: ArcSwapOption::empty(),
             artifact_published,
         }))
@@ -63,9 +94,25 @@ impl<R> ScheduledBundle<R> {
         self.batches
     }
 
+    /// The bundle's first checkpoint index (bundle-start), keying the aggregator receipt's prefix.
+    pub fn checkpoint_index(&self) -> u64 {
+        self.checkpoint_index
+    }
+
+    /// L1 block at the bundle's first checkpoint (the block it proves *from*).
+    pub fn from_block(&self) -> Hash {
+        self.from_block
+    }
+
     /// L1 block the bundle proves through (its final block).
     pub fn block_prove_to(&self) -> Hash {
         self.block_prove_to
+    }
+
+    /// Most-recent covenant settlement visible on chain as of the bundle's final block, or `None`
+    /// until one lands.
+    pub fn latest_settlement(&self) -> Option<SettlementInfo> {
+        self.latest_settlement
     }
 
     /// Publishes the bundle's settlement artifact and opens the `artifact_published` latch. A
