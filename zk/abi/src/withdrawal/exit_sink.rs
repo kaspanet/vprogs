@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use crate::{Result, transaction_processor::StandardSpk};
+use crate::{Result, withdrawal::StandardSpk};
 
 /// Accumulates exit emissions inside a single transaction's execution.
 ///
@@ -45,8 +45,10 @@ impl ExitSink {
 
 #[cfg(test)]
 mod tests {
+    use zerocopy::FromBytes;
+
     use super::*;
-    use crate::transaction_processor::ExitCommitment;
+    use crate::withdrawal::Exits;
 
     #[test]
     fn exit_sink_emits_and_tracks_byte_len() {
@@ -57,7 +59,7 @@ mod tests {
         // amount(8).
         assert_eq!(sink.len(), 82);
 
-        let mut iter = ExitCommitment::new(sink.as_bytes());
+        let mut iter = Exits::ref_from_bytes(sink.as_bytes()).unwrap().iter();
         let (dest, amount) = iter.next().unwrap().unwrap();
         assert_eq!(dest, StandardSpk::PubKey(&[1; 32]));
         assert_eq!(amount, 100);

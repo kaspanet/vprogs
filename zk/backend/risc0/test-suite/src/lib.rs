@@ -1,5 +1,7 @@
 use kaspa_consensus_core::{hashing::tx::id as kaspa_tx_id, subnets::SubnetworkId};
+use kaspa_grpc_client::GrpcClient;
 use kaspa_hashes::Hash;
+use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_seq_commit::{
     hashing::{
         ActivityDigestBuilder, activity_leaf, lane_key, lane_tip_next, mergeset_context_hash,
@@ -7,6 +9,8 @@ use kaspa_seq_commit::{
     types::{LaneTipInput, MergesetContext},
 };
 use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
+use vprogs_zk_abi::batch_aggregator::Inputs as AggregatorInputs;
+use vprogs_zk_backend_risc0_api::{Backend, Receipt};
 
 mod l1_transaction_ext;
 
@@ -19,6 +23,33 @@ pub const TEST_SUBNETWORK_ID: SubnetworkId = SubnetworkId::from_namespace(4444u3
 /// Lane key for [`TEST_SUBNETWORK_ID`]: the value the guest commits and the covenant SPK pins.
 pub fn test_lane_key() -> Hash {
     lane_key(TEST_SUBNETWORK_ID.as_bytes())
+}
+
+/// Runs the aggregator over per-batch receipts and returns the bundle receipt, whose journal is a
+/// `vprogs_zk_abi::batch_aggregator::StateTransition`.
+pub async fn aggregate_batches(
+    backend: &Backend,
+    grpc_client: &GrpcClient,
+    lane_key: &Hash,
+    last_block_hash: Hash,
+    batch_receipts: Vec<Receipt>,
+) -> Receipt {
+    // Fetch the lane proof for the bundle's final block from L1.
+    let lane_proof = grpc_client
+        .get_seq_commit_lane_proof(last_block_hash, *lane_key)
+        .await
+        .expect("get_seq_commit_lane_proof");
+
+    // Encode the aggregator inputs over the per-batch journal bytes.
+    let journals: Vec<Vec<u8>> = batch_receipts.iter().map(|r| r.journal.bytes.clone()).collect();
+    let inputs = AggregatorInputs::encode(
+        &backend.batch_processor.id,
+        &lane_proof,
+        journals.iter().map(|j| j.as_slice()),
+    );
+
+    // Prove the aggregator with the per-batch receipts as composition assumptions.
+    backend.prove_aggregator(&inputs, batch_receipts).await
 }
 
 /// Returns `true` when risc0 dev mode is active (env var `RISC0_DEV_MODE` is set to anything
@@ -71,6 +102,18 @@ pub fn batch_processor_elf() -> Vec<u8> {
     })
 }
 
+/// Loads the pre-built batch aggregator ELF from the repository.
+pub fn batch_aggregator_elf() -> Vec<u8> {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let elf_path = format!("{manifest_dir}/../batch-aggregator/compiled/program.elf");
+    std::fs::read(&elf_path).unwrap_or_else(|e| {
+        panic!(
+            "batch aggregator ELF not found at {elf_path}: {e}\n\
+             Run `./zk/backend/risc0/build-guests.sh batch-aggregator` to rebuild it."
+        )
+    })
+}
+
 /// Empirical check that the build-time succinct verifier-identity consts (used by the
 /// covenant redeem script's `OpZkPrecompile` pin) still match what the live succinct prover
 /// emits. The pin is baked into `succinct_consts::SUCCINCT_CONTROL_ID` at covenant build
@@ -84,7 +127,7 @@ pub fn batch_processor_elf() -> Vec<u8> {
 /// Must be called only when [`dev_mode_enabled`] is false: dev-mode receipts are the `Fake`
 /// variant and don't have succinct fields. See
 /// [`vprogs_zk_backend_risc0_covenant::succinct_consts`].
-pub fn assert_receipt_pins_match_succinct_consts(receipt: &vprogs_zk_backend_risc0_api::Receipt) {
+pub fn assert_receipt_pins_match_succinct_consts(receipt: &Receipt) {
     use vprogs_zk_backend_risc0_covenant::succinct_consts::SUCCINCT_CONTROL_ID;
 
     let succinct = receipt.inner.succinct().expect("expected succinct receipt outside dev mode");

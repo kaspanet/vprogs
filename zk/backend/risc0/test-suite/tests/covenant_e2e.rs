@@ -14,13 +14,13 @@ use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_txscript::standard::pay_to_script_hash_script;
 use vprogs_core_smt::EMPTY_HASH;
 use vprogs_node_test_utils::L1Node;
-use vprogs_zk_backend_risc0_api::ProofType;
+use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_covenant::{
     CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, RedeemPins, SuccinctPins, build_redeem_script,
     redeem_script_len,
 };
 use vprogs_zk_backend_risc0_test_suite::{
-    batch_processor_elf, test_lane_key, transaction_processor_elf,
+    batch_aggregator_elf, batch_processor_elf, test_lane_key, transaction_processor_elf,
 };
 
 const TEST_COVENANT_VALUE: u64 = 100_000_000;
@@ -33,7 +33,6 @@ async fn covenant_bootstrap_is_accepted_on_simnet() {
     let l1 = L1Node::new(Some(|p| {
         p.blockrate.coinbase_maturity = 1;
         p.toccata_activation = ForkActivation::always();
-        p.zk_hardening_activation = ForkActivation::always();
     }))
     .await;
 
@@ -44,10 +43,11 @@ async fn covenant_bootstrap_is_accepted_on_simnet() {
     // directly to the batch guest since it now emits the settlement journal itself.
     let tx_elf = transaction_processor_elf();
     let batch_elf = batch_processor_elf();
-    let backend =
-        vprogs_zk_backend_risc0_api::Backend::new(&tx_elf, &batch_elf, ProofType::Succinct);
-    let program_id = *backend.batch_image_id();
-    let tx_image_id = *backend.transaction_image_id();
+    let aggregator_elf = batch_aggregator_elf();
+    let backend = Backend::new(&tx_elf, &batch_elf, &aggregator_elf, ProofType::Succinct);
+    let program_id = backend.aggregator.id;
+    let tx_image_id = backend.transaction_processor.id;
+    let batch_image_id = backend.batch_processor.id;
 
     let initial_state = EMPTY_HASH;
     let initial_lane_tip = Hash::default();
@@ -56,6 +56,7 @@ async fn covenant_bootstrap_is_accepted_on_simnet() {
         common: CommonPins {
             program_id: &program_id,
             tx_image_id: &tx_image_id,
+            batch_image_id: &batch_image_id,
             lane_key: &lane_key,
             permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         },

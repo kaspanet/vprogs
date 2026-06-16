@@ -1,6 +1,6 @@
 use crate::Error;
 
-/// Transaction processor error codes.
+/// Guest error codes carried by [`Error::Guest`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum ErrorCode {

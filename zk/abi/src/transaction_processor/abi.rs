@@ -2,11 +2,12 @@ use vprogs_core_codec::Writer;
 use vprogs_core_hashing::Hasher;
 
 use crate::{
-    Read,
+    ErrorCode, Read,
     transaction_processor::{
-        Effects, ErrorCode, ExitSink, InputCommitment, Inputs, OutputCommitment, Outputs,
-        Transaction, TransactionHandler,
+        Effects, InputCommitment, Inputs, OutputCommitment, Outputs, Transaction,
+        TransactionHandler,
     },
+    withdrawal::ExitSink,
 };
 
 /// Processes a single transaction inside the guest, committing input/output to `journal` and
