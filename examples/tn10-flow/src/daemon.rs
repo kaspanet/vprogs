@@ -12,6 +12,8 @@
 //!   settlement worker drains to settle proven bundles on chain. Real proofs need a GPU (the `cuda`
 //!   feature); see `main.rs`.
 
+use std::sync::{Arc, atomic::AtomicU64};
+
 use kaspa_consensus_core::{network::NetworkId, subnets::SubnetworkId};
 use kaspa_hashes::Hash;
 use kaspa_rpc_core::{GetSeqCommitLaneProofResponse, api::rpc::RpcApi};
@@ -49,6 +51,9 @@ pub struct BridgeParams {
     pub covenant_id: Hash,
     /// Blue-score window within which a silent lane stays active.
     pub finality_depth: u64,
+    /// Observer the bridge publishes its latest chain-block DAA score into, for the sync-progress
+    /// reporter. `None` disables publishing.
+    pub tip_daa: Option<Arc<AtomicU64>>,
 }
 
 /// Extra wiring the proving + settlement node needs on top of [`BridgeParams`].
@@ -125,7 +130,8 @@ fn base_config(vm: V, store: Store, params: BridgeParams) -> NodeConfig<Store, V
                 .with_network_id(params.network_id)
                 .with_subnetwork_id(Some(params.lane_subnet))
                 .with_covenant_id(Some(params.covenant_id))
-                .with_finality_depth(params.finality_depth),
+                .with_finality_depth(params.finality_depth)
+                .with_tip_daa_observer(params.tip_daa),
         )
 }
 

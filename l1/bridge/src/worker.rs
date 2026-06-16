@@ -1,4 +1,10 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 
 use crossbeam_queue::SegQueue;
 use futures::{FutureExt, select_biased};
@@ -61,6 +67,9 @@ pub(crate) struct BridgeWorker {
     finality_depth: u64,
     /// Covenant id tracked by [`ChainBlockMetadata::last_settlement`], or `None` to disable.
     covenant_id: Option<Hash>,
+    /// Optional observer the latest chain-block DAA score is published to, for external progress
+    /// reporting during catch-up.
+    tip_daa: Option<Arc<AtomicU64>>,
 }
 
 impl BridgeWorker {
@@ -141,6 +150,7 @@ impl BridgeWorker {
             lane_key,
             finality_depth: config.finality_depth,
             covenant_id: config.covenant_id,
+            tip_daa: config.tip_daa.clone(),
         }
         .run()
         .await;
@@ -243,10 +253,20 @@ impl BridgeWorker {
             return;
         }
 
-        // Step 3: Notify consumer and sync to current chain state.
+        // Step 3: Notify consumer and sync to current chain state. Publish the seeded tip first, so
+        // a progress reporter has a baseline before the first (potentially large) batch lands.
+        self.publish_tip_daa();
         self.push_event(L1Event::Connected);
         let result = self.fetch_chain_updates().await;
         self.handle_sync_result(result);
+    }
+
+    /// Publishes the current tip's DAA score to the optional observer, so an external progress
+    /// reporter can gauge catch-up without polling the bridge.
+    fn publish_tip_daa(&self) {
+        if let Some(observer) = &self.tip_daa {
+            observer.store(self.virtual_chain.tip().metadata().daa_score, Ordering::Relaxed);
+        }
     }
 
     /// Fetches the L1 pruning-point header and installs it as the virtual chain's root/tip at
@@ -410,6 +430,9 @@ impl BridgeWorker {
                 accepted_transactions,
             });
         }
+
+        // Publish the batch's new tip so the progress reporter advances as catch-up proceeds.
+        self.publish_tip_daa();
 
         Ok(())
     }
