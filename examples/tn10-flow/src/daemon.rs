@@ -51,6 +51,8 @@ pub struct BridgeParams {
     pub covenant_id: Hash,
     /// Blue-score window within which a silent lane stays active.
     pub finality_depth: u64,
+    /// Chain-block head-room the bridge seeds below the sink, so the lane starts near the tip.
+    pub seed_depth: u64,
     /// Observer the bridge publishes its latest chain-block DAA score into, for the sync-progress
     /// reporter. `None` disables publishing.
     pub tip_daa: Option<Arc<AtomicU64>>,
@@ -131,6 +133,7 @@ fn base_config(vm: V, store: Store, params: BridgeParams) -> NodeConfig<Store, V
                 .with_subnetwork_id(Some(params.lane_subnet))
                 .with_covenant_id(Some(params.covenant_id))
                 .with_finality_depth(params.finality_depth)
+                .with_seed_depth(Some(params.seed_depth))
                 .with_tip_daa_observer(params.tip_daa),
         )
 }

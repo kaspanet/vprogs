@@ -309,6 +309,7 @@ fn bridge_params(
         lane_subnet,
         covenant_id,
         finality_depth: params.finality_depth(),
+        seed_depth: cfg.seed_depth,
         tip_daa,
     }
 }

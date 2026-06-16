@@ -27,6 +27,10 @@ pub struct Config {
     /// each bundle, and settle it on chain. Needs real proofs (the `cuda` build without
     /// `RISC0_DEV_MODE`); the default is the execution-only daemon. See `main.rs`.
     pub enable_settlements: bool,
+    /// Chain-block head-room the bridge seeds below the sink, so a freshly bootstrapped lane
+    /// starts near the tip instead of replaying the whole pruning window. Must exceed the
+    /// deepest reorg the node produces, or the bridge panics rolling back past its root.
+    pub seed_depth: u64,
 }
 
 impl Config {
@@ -57,6 +61,7 @@ impl Config {
             activity_interval_ms: opt_u64("TN10_ACTIVITY_INTERVAL_MS", 5_000),
             activity_count: opt_u64("TN10_ACTIVITY_COUNT", 0),
             enable_settlements: opt("TN10_SETTLE").is_some_and(|s| s != "0"),
+            seed_depth: opt_u64("TN10_SEED_DEPTH", 100),
         }
     }
 }

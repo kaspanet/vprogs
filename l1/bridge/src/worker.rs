@@ -67,6 +67,9 @@ pub(crate) struct BridgeWorker {
     finality_depth: u64,
     /// Covenant id tracked by [`ChainBlockMetadata::last_settlement`], or `None` to disable.
     covenant_id: Option<Hash>,
+    /// On a fresh chain, seed the root this many chain-blocks below the sink instead of the
+    /// pruning point. `None` seeds from the pruning point.
+    seed_depth: Option<u64>,
     /// Optional observer the latest chain-block DAA score is published to, for external progress
     /// reporting during catch-up.
     tip_daa: Option<Arc<AtomicU64>>,
@@ -150,6 +153,7 @@ impl BridgeWorker {
             lane_key,
             finality_depth: config.finality_depth,
             covenant_id: config.covenant_id,
+            seed_depth: config.seed_depth,
             tip_daa: config.tip_daa.clone(),
         }
         .run()
@@ -244,7 +248,10 @@ impl BridgeWorker {
         let init_result = if let Some(target) = self.backfill_target.take() {
             self.backfill_chain(&target).await
         } else if self.virtual_chain.tip().index() == 0 {
-            self.seed_from_pruning_point().await
+            match self.seed_depth {
+                Some(depth) => self.seed_from_recent(depth).await,
+                None => self.seed_from_pruning_point().await,
+            }
         } else {
             Ok(())
         };
@@ -278,6 +285,42 @@ impl BridgeWorker {
             .await?;
 
         self.virtual_chain = VirtualChain::new(Checkpoint::new(0, (&pruning_point.header).into()));
+
+        Ok(())
+    }
+
+    /// Seeds the virtual chain `depth` chain-blocks below the current sink (instead of from the
+    /// pruning point), so the bridge starts near the tip rather than replaying the whole pruning
+    /// window. Walks the selected-parent chain back `depth` blocks from the sink and installs the
+    /// block it lands on as the root/tip at index 0.
+    ///
+    /// `depth` is the reorg head-room: a reorg shallower than it never rolls back past this root. A
+    /// deeper reorg does, and the bridge panics in `rollback` - which means `depth` is configured
+    /// too small for the network. The walk stops early if it reaches the chain's base (a block
+    /// whose selected parent is itself) before `depth`, seeding from there.
+    async fn seed_from_recent(&mut self, depth: u64) -> Result<()> {
+        let sink = self.client.get_block_dag_info().await?.sink;
+
+        // Lowest verbosity (no transactions): we only need each block's selected parent, then the
+        // header of the block we land on.
+        let mut hash = sink;
+        for _ in 0..depth {
+            let parent = self
+                .client
+                .get_block(hash, false)
+                .await?
+                .verbose_data
+                .expect("get_block returns verbose data")
+                .selected_parent_hash;
+            if parent == hash {
+                break;
+            }
+            hash = parent;
+        }
+
+        let root = self.client.get_block(hash, false).await?;
+        self.virtual_chain = VirtualChain::new(Checkpoint::new(0, (&root.header).into()));
+        log::info!("L1 bridge: seeding {depth} blocks below sink {sink} (root {hash})");
 
         Ok(())
     }
