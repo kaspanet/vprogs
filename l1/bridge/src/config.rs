@@ -30,11 +30,6 @@ pub struct L1BridgeConfig {
     pub finality_depth: u64,
     /// Covenant id tracked by [`ChainBlockMetadata::last_settlement`], or `None` to disable.
     pub covenant_id: Option<Hash>,
-    /// On a fresh chain (no `root`/`tip`), seed from the current virtual sink instead of the
-    /// pruning point, so the bridge follows forward from "now" rather than replaying the whole
-    /// pruning window. Use this for a freshly bootstrapped lane whose activity is all in the
-    /// future; the default replays from the pruning point.
-    pub seed_from_sink: bool,
 }
 
 impl Default for L1BridgeConfig {
@@ -51,7 +46,6 @@ impl Default for L1BridgeConfig {
             subnetwork_id: None,
             finality_depth: Params::from(NetworkId::new(NetworkType::Mainnet)).finality_depth(),
             covenant_id: None,
-            seed_from_sink: false, // Replay from the pruning point by default.
         }
     }
 }
@@ -122,12 +116,6 @@ impl L1BridgeConfig {
     /// Sets the covenant id to track settlements for. `None` disables covenant tracking.
     pub fn with_covenant_id(mut self, covenant_id: Option<Hash>) -> Self {
         self.covenant_id = covenant_id;
-        self
-    }
-
-    /// On a fresh chain, seed from the current virtual sink instead of the pruning point.
-    pub fn with_seed_from_sink(mut self, seed_from_sink: bool) -> Self {
-        self.seed_from_sink = seed_from_sink;
         self
     }
 }

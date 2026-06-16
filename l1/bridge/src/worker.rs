@@ -61,8 +61,6 @@ pub(crate) struct BridgeWorker {
     finality_depth: u64,
     /// Covenant id tracked by [`ChainBlockMetadata::last_settlement`], or `None` to disable.
     covenant_id: Option<Hash>,
-    /// On a fresh chain, seed from the virtual sink instead of the pruning point.
-    seed_from_sink: bool,
 }
 
 impl BridgeWorker {
@@ -143,7 +141,6 @@ impl BridgeWorker {
             lane_key,
             finality_depth: config.finality_depth,
             covenant_id: config.covenant_id,
-            seed_from_sink: config.seed_from_sink,
         }
         .run()
         .await;
@@ -237,11 +234,7 @@ impl BridgeWorker {
         let init_result = if let Some(target) = self.backfill_target.take() {
             self.backfill_chain(&target).await
         } else if self.virtual_chain.tip().index() == 0 {
-            if self.seed_from_sink {
-                self.seed_from_sink().await
-            } else {
-                self.seed_from_pruning_point().await
-            }
+            self.seed_from_pruning_point().await
         } else {
             Ok(())
         };
@@ -265,22 +258,6 @@ impl BridgeWorker {
             .await?;
 
         self.virtual_chain = VirtualChain::new(Checkpoint::new(0, (&pruning_point.header).into()));
-
-        Ok(())
-    }
-
-    /// Fetches the current virtual sink header and installs it as the virtual chain's root/tip at
-    /// index 0, so the bridge follows forward from the present tip instead of replaying the pruning
-    /// window. For a freshly bootstrapped lane whose activity is all in the future.
-    async fn seed_from_sink(&mut self) -> Result<()> {
-        let sink =
-            self.client.get_block(self.client.get_block_dag_info().await?.sink, false).await?;
-
-        self.virtual_chain = VirtualChain::new(Checkpoint::new(0, (&sink.header).into()));
-        log::info!(
-            "L1 bridge: seeding from sink {} (skipping pruning-window backfill)",
-            sink.header.hash
-        );
 
         Ok(())
     }

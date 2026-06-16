@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 use kaspa_addresses::Prefix;
 use kaspa_consensus_core::{
@@ -6,7 +6,7 @@ use kaspa_consensus_core::{
     tx::{ScriptPublicKey, TransactionOutpoint, UtxoEntry},
 };
 use kaspa_hashes::Hash;
-use kaspa_rpc_core::api::rpc::RpcApi;
+use kaspa_rpc_core::{RpcError, api::rpc::RpcApi};
 use kaspa_txscript::standard::extract_script_pub_key_address;
 use kaspa_wrpc_client::prelude::KaspaRpcClient;
 use secp256k1::Keypair;
@@ -119,14 +119,37 @@ async fn settle_one(
     let covenant_entry =
         UtxoEntry::new(cov.value, cov.spk.clone(), cov.daa_score, false, Some(cov.covenant_id));
     let wallet = Wallet::new(&cfg.client, &cfg.params, cfg.keypair);
-    let tx = wallet
-        .prepare_settlement_transaction(built.transaction, covenant_entry, built.compute_budget)
-        .await;
-    let txid = match wallet.submit_transaction(&tx).await {
-        Ok(id) => id,
-        // A rejection here is the on-chain script (incl. `OpZkPrecompile`) refusing the settlement;
-        // surface it loudly, as that is exactly the end-to-end check this path exists to make.
-        Err(e) => panic!("settlement submit rejected by node: {e}"),
+
+    // The node can reject a settlement as an orphan when its fee input references an output it has
+    // not yet accepted into its DAG. Re-fund the fee from a different settled UTXO, excluding each
+    // one that produced an orphan, until one is accepted or every spendable UTXO is exhausted.
+    let mut excluded = HashSet::new();
+    let txid = loop {
+        let Some((tx, fee_outpoint)) = wallet
+            .prepare_settlement_excluding(
+                built.transaction.clone(),
+                covenant_entry.clone(),
+                built.compute_budget,
+                &excluded,
+            )
+            .await
+        else {
+            panic!("settlement submit failed: every spendable fee UTXO was rejected as an orphan");
+        };
+        match wallet.submit_transaction(&tx).await {
+            Ok(id) => break id,
+            Err(e) if is_orphan_rejection(&e) => {
+                log::warn!(
+                    "settlement-worker: fee UTXO {fee_outpoint} rejected as orphan, \
+                     retrying with another UTXO: {e}"
+                );
+                excluded.insert(fee_outpoint);
+            }
+            // Any other rejection is the on-chain script (incl. `OpZkPrecompile`) refusing the
+            // settlement; surface it loudly, as that is exactly the end-to-end check this path
+            // exists to make.
+            Err(e) => panic!("settlement submit rejected by node: {e}"),
+        }
     };
     log::info!(
         "settlement-worker: submitted settlement {txid} (block {})",
@@ -145,6 +168,13 @@ async fn settle_one(
     log::info!("settlement-worker: settlement {txid} confirmed (daa {daa_score})");
 
     Some(built.advance.apply(txid, daa_score))
+}
+
+/// Whether a submit error is the node refusing a transaction because an input references an output
+/// it has not accepted ("orphan where orphan is disallowed"). Matched on the message text because
+/// the wRPC layer does not expose structured rejection reasons.
+fn is_orphan_rejection(e: &RpcError) -> bool {
+    e.to_string().to_lowercase().contains("orphan")
 }
 
 /// Polls the node until `outpoint` appears at `spk`'s P2SH address, returning its block DAA score.

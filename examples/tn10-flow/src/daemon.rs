@@ -125,11 +125,7 @@ fn base_config(vm: V, store: Store, params: BridgeParams) -> NodeConfig<Store, V
                 .with_network_id(params.network_id)
                 .with_subnetwork_id(Some(params.lane_subnet))
                 .with_covenant_id(Some(params.covenant_id))
-                .with_finality_depth(params.finality_depth)
-                // The lane is freshly bootstrapped, so all its activity is in the future: start
-                // following from the current sink instead of replaying the pruning window (which a
-                // real prover may never catch up on).
-                .with_seed_from_sink(true),
+                .with_finality_depth(params.finality_depth),
         )
 }
 
