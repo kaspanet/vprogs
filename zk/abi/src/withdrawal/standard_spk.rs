@@ -1,9 +1,6 @@
 use vprogs_core_codec::{Reader, Writer};
 
-use crate::{
-    Result,
-    transaction_processor::{ErrorCode, ScriptBytes},
-};
+use crate::{ErrorCode, Result, withdrawal::ScriptBytes};
 
 mod tag {
     // TODO: reuse kaspa-addresses when it becomes no-std compatible

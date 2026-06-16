@@ -9,7 +9,8 @@
 #   ./zk/backend/risc0/build-guests.sh                                  # build all programs
 #   ./zk/backend/risc0/build-guests.sh transaction-processor             # production transaction processor
 #   ./zk/backend/risc0/build-guests.sh transaction-processor-with-exits  # test variant emitting one exit per tx
-#   ./zk/backend/risc0/build-guests.sh batch-processor                   # batch processor
+#   ./zk/backend/risc0/build-guests.sh batch-processor                   # single-batch processor
+#   ./zk/backend/risc0/build-guests.sh batch-aggregator                  # batch aggregator
 set -euo pipefail
 
 DOCKER_TAG="r0.1.91.1"
@@ -17,7 +18,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 if [ $# -eq 0 ]; then
-  PROGRAMS=(transaction-processor transaction-processor-with-exits batch-processor)
+  PROGRAMS=(transaction-processor transaction-processor-with-exits batch-processor batch-aggregator)
 else
   PROGRAMS=("$@")
 fi

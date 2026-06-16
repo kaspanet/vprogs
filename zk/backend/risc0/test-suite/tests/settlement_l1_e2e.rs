@@ -41,7 +41,14 @@ use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId};
 use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_node_test_utils::L1Node;
-use vprogs_zk_backend_risc0_test_suite::{TEST_SUBNETWORK_ID, test_lane_key};
+use vprogs_scheduling_scheduler::Scheduler;
+use vprogs_storage_rocksdb_store::RocksDbStore;
+use vprogs_zk_backend_risc0_api::{OwnedGroth16Witness, OwnedSuccinctWitness, ProofType, Receipt};
+use vprogs_zk_backend_risc0_covenant::{RedeemPins, SettlementWitness};
+use vprogs_zk_backend_risc0_test_suite::{
+    TEST_SUBNETWORK_ID, aggregate_batches, compute_section_lane_tip, test_lane_key,
+};
+use vprogs_zk_vm::Vm;
 use zerocopy::IntoBytes;
 
 const COVENANT_VALUE: u64 = 100_000_000;
@@ -66,9 +73,8 @@ const L2_LANE_SUBNET: SubnetworkId = TEST_SUBNETWORK_ID;
 /// dev mode); only runs on CUDA-equipped builds.
 #[tokio::test(flavor = "multi_thread")]
 async fn settlement_lands_in_real_block_succinct() {
-    use vprogs_zk_backend_risc0_api::{OwnedSuccinctWitness, ProofType};
     use vprogs_zk_backend_risc0_covenant::{
-        CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, RedeemPins, SuccinctPins,
+        CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, SuccinctPins,
     };
     use vprogs_zk_backend_risc0_test_suite::dev_mode_enabled;
 
@@ -85,11 +91,12 @@ async fn settlement_lands_in_real_block_succinct() {
         // Image-id-only pins for both succinct branches: control_id / hashfn are
         // circuit-determined and live as build-time consts in covenant::succinct_consts, no
         // per-spend extraction needed.
-        build_pins: |BuildPinsArgs { program_id, tx_image_id, lane_key }| {
+        build_pins: |BuildPinsArgs { program_id, tx_image_id, batch_image_id, lane_key }| {
             RedeemPins::Succinct(SuccinctPins {
                 common: CommonPins {
                     program_id,
                     tx_image_id,
+                    batch_image_id,
                     lane_key,
                     permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
                 },
@@ -114,9 +121,8 @@ async fn settlement_lands_in_real_block_succinct() {
 /// Same skip/CUDA gating as the succinct variant.
 #[tokio::test(flavor = "multi_thread")]
 async fn settlement_lands_in_real_block_groth16() {
-    use vprogs_zk_backend_risc0_api::{OwnedGroth16Witness, ProofType};
     use vprogs_zk_backend_risc0_covenant::{
-        CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, Groth16Pins, RedeemPins,
+        CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, Groth16Pins,
     };
     use vprogs_zk_backend_risc0_test_suite::dev_mode_enabled;
 
@@ -133,11 +139,12 @@ async fn settlement_lands_in_real_block_groth16() {
         // The Groth16 redeem branch needs no verifier pins beyond the common ones: the
         // verifier identity (control root halves, bn254 control id, VK) is baked into the
         // script at build time via `groth16_consts`.
-        build_pins: |BuildPinsArgs { program_id, tx_image_id, lane_key }| {
+        build_pins: |BuildPinsArgs { program_id, tx_image_id, batch_image_id, lane_key }| {
             RedeemPins::Groth16(Groth16Pins {
                 common: CommonPins {
                     program_id,
                     tx_image_id,
+                    batch_image_id,
                     lane_key,
                     permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
                 },
@@ -184,7 +191,6 @@ async fn settlement_lands_in_real_block_dev_redeem() {
     let l1 = L1Node::new(Some(|p| {
         p.blockrate.coinbase_maturity = 1;
         p.toccata_activation = ForkActivation::always();
-        p.zk_hardening_activation = ForkActivation::always();
         p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
     }))
     .await;
@@ -435,12 +441,12 @@ async fn run_one_dev_settlement(step: DevSettlementStep<'_>) -> DevSettlementOut
 /// `Settlement::build` call so the borrowed `SettlementWitness<'a>` it returns lives for
 /// the right scope.
 enum RealProofWitness {
-    Succinct(vprogs_zk_backend_risc0_api::OwnedSuccinctWitness),
-    Groth16(vprogs_zk_backend_risc0_api::OwnedGroth16Witness),
+    Succinct(OwnedSuccinctWitness),
+    Groth16(OwnedGroth16Witness),
 }
 
 impl RealProofWitness {
-    fn as_witness(&self) -> vprogs_zk_backend_risc0_covenant::SettlementWitness<'_> {
+    fn as_witness(&self) -> SettlementWitness<'_> {
         match self {
             Self::Succinct(w) => w.as_witness(),
             Self::Groth16(w) => w.as_witness(),
@@ -456,16 +462,17 @@ impl RealProofWitness {
 struct BuildPinsArgs<'a> {
     program_id: &'a [u8; 32],
     tx_image_id: &'a [u8; 32],
+    batch_image_id: &'a [u8; 32],
     lane_key: &'a Hash,
 }
 
 /// Per-proof-system knobs the real-proof settlement driver needs.
 struct RealProofConfig<BuildPins, MakeWitness>
 where
-    BuildPins: for<'a> Fn(BuildPinsArgs<'a>) -> vprogs_zk_backend_risc0_covenant::RedeemPins<'a>,
-    MakeWitness: Fn(&vprogs_zk_backend_risc0_api::Receipt) -> RealProofWitness,
+    BuildPins: for<'a> Fn(BuildPinsArgs<'a>) -> RedeemPins<'a>,
+    MakeWitness: Fn(&Receipt) -> RealProofWitness,
 {
-    proof_type: vprogs_zk_backend_risc0_api::ProofType,
+    proof_type: ProofType,
     build_pins: BuildPins,
     make_witness: MakeWitness,
     compute_budget: ComputeBudget,
@@ -491,20 +498,19 @@ where
 async fn run_real_proof_settlement<BuildPins, MakeWitness>(
     config: RealProofConfig<BuildPins, MakeWitness>,
 ) where
-    BuildPins: for<'a> Fn(BuildPinsArgs<'a>) -> vprogs_zk_backend_risc0_covenant::RedeemPins<'a>,
-    MakeWitness: Fn(&vprogs_zk_backend_risc0_api::Receipt) -> RealProofWitness,
+    BuildPins: for<'a> Fn(BuildPinsArgs<'a>) -> RedeemPins<'a>,
+    MakeWitness: Fn(&Receipt) -> RealProofWitness,
 {
-    use std::num::NonZeroUsize;
-
     use tempfile::TempDir;
-    use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
+    use vprogs_scheduling_scheduler::ExecutionConfig;
     use vprogs_storage_manager::StorageConfig;
-    use vprogs_storage_rocksdb_store::RocksDbStore;
     use vprogs_zk_backend_risc0_api::Backend;
     use vprogs_zk_backend_risc0_covenant::{build_redeem_script, redeem_script_len};
-    use vprogs_zk_backend_risc0_test_suite::{batch_processor_elf, transaction_processor_elf};
+    use vprogs_zk_backend_risc0_test_suite::{
+        batch_aggregator_elf, batch_processor_elf, transaction_processor_elf,
+    };
     use vprogs_zk_batch_prover::BatchProverConfig;
-    use vprogs_zk_vm::{ProvingPipeline, Vm};
+    use vprogs_zk_vm::ProvingPipeline;
 
     // Succinct settlement carries a full STARK seal; the chain reports ~1.2M compute mass
     // when `OpZkPrecompile` runs it, well above simnet's default 500k block cap. Groth16 is
@@ -514,7 +520,6 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
     let l1 = L1Node::new(Some(|p| {
         p.blockrate.coinbase_maturity = 1;
         p.toccata_activation = ForkActivation::always();
-        p.zk_hardening_activation = ForkActivation::always();
         p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
     }))
     .await;
@@ -525,9 +530,11 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
 
     let tx_elf = transaction_processor_elf();
     let batch_elf = batch_processor_elf();
-    let backend = Backend::new(&tx_elf, &batch_elf, config.proof_type);
-    let program_id = *backend.batch_image_id();
-    let tx_image_id = *backend.transaction_image_id();
+    let aggregator_elf = batch_aggregator_elf();
+    let backend = Backend::new(&tx_elf, &batch_elf, &aggregator_elf, config.proof_type);
+    let program_id = backend.aggregator.id;
+    let tx_image_id = backend.transaction_processor.id;
+    let batch_image_id = backend.batch_processor.id;
 
     // Consensus keys the lane SMT by `H_lane_key(subnetwork_id)`, and the test routes its carriers
     // onto [`L2_LANE_SUBNET`] (see the const's doc for why we don't ride NATIVE): the lane_key
@@ -544,6 +551,7 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
     let spend_pins = (config.build_pins)(BuildPinsArgs {
         program_id: &program_id,
         tx_image_id: &tx_image_id,
+        batch_image_id: &batch_image_id,
         lane_key: &lane_key,
     });
     let redeem_len = redeem_script_len(&bootstrap_state, &spend_pins);
@@ -576,17 +584,8 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
     // scheduler advances per committed batch.
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-    let proving_config = BatchProverConfig {
-        bundle_size: NonZeroUsize::new(1).unwrap(),
-        lane_key,
-        covenant_id: Some(covenant_id),
-    };
-    let proving = ProvingPipeline::batch(
-        backend.clone(),
-        storage.clone(),
-        l1.grpc_client().clone(),
-        proving_config,
-    );
+    let proving_config = BatchProverConfig { lane_key, covenant_id: Some(covenant_id) };
+    let proving = ProvingPipeline::batch(backend.clone(), storage.clone(), proving_config);
     let vm = Vm::new(backend.clone(), proving);
     let mut scheduler = Scheduler::new(
         ExecutionConfig::default().with_processor(vm),
@@ -702,20 +701,15 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
 /// description (which resource its tx writes), and lane bookkeeping.
 struct SettlementStep<'a, BuildPins, MakeWitness>
 where
-    BuildPins: for<'b> Fn(BuildPinsArgs<'b>) -> vprogs_zk_backend_risc0_covenant::RedeemPins<'b>,
-    MakeWitness: Fn(&vprogs_zk_backend_risc0_api::Receipt) -> RealProofWitness,
+    BuildPins: for<'b> Fn(BuildPinsArgs<'b>) -> RedeemPins<'b>,
+    MakeWitness: Fn(&Receipt) -> RealProofWitness,
 {
     l1: &'a L1Node,
-    scheduler: &'a mut vprogs_scheduling_scheduler::Scheduler<
-        vprogs_storage_rocksdb_store::RocksDbStore,
-        vprogs_zk_vm::Vm<
-            vprogs_zk_backend_risc0_api::Backend,
-            vprogs_storage_rocksdb_store::RocksDbStore,
-        >,
-    >,
+    scheduler:
+        &'a mut Scheduler<RocksDbStore, Vm<vprogs_zk_backend_risc0_api::Backend, RocksDbStore>>,
     backend: &'a vprogs_zk_backend_risc0_api::Backend,
     config: &'a RealProofConfig<BuildPins, MakeWitness>,
-    spend_pins: vprogs_zk_backend_risc0_covenant::RedeemPins<'a>,
+    spend_pins: RedeemPins<'a>,
     covenant_id: Hash,
     prev_outpoint: TransactionOutpoint,
     prev_utxo: UtxoEntry,
@@ -748,11 +742,11 @@ async fn run_one_settlement<BuildPins, MakeWitness>(
     step: SettlementStep<'_, BuildPins, MakeWitness>,
 ) -> SettlementOutcome
 where
-    BuildPins: for<'b> Fn(BuildPinsArgs<'b>) -> vprogs_zk_backend_risc0_covenant::RedeemPins<'b>,
-    MakeWitness: Fn(&vprogs_zk_backend_risc0_api::Receipt) -> RealProofWitness,
+    BuildPins: for<'b> Fn(BuildPinsArgs<'b>) -> RedeemPins<'b>,
+    MakeWitness: Fn(&Receipt) -> RealProofWitness,
 {
     use vprogs_core_codec::Reader;
-    use vprogs_zk_abi::batch_processor::StateTransition;
+    use vprogs_zk_abi::batch_aggregator::StateTransition;
     use vprogs_zk_backend_risc0_api::Backend;
     use vprogs_zk_backend_risc0_covenant::{Settlement, SettlementInput};
     use vprogs_zk_backend_risc0_test_suite::L1TransactionExt;
@@ -833,11 +827,8 @@ where
         // chain returns from `get_seq_commit_lane_proof` before paying for proving, so we
         // derive it locally using the same primitive the guest uses internally so the two
         // sides agree.
-        metadata.lane_tip = vprogs_zk_backend_risc0_test_suite::compute_section_lane_tip(
-            &metadata,
-            &[(carrier_merge_idx, &carrier_tx)],
-            &lane_key,
-        );
+        metadata.lane_tip =
+            compute_section_lane_tip(&metadata, &[(carrier_merge_idx, &carrier_tx)], &lane_key);
         metadata
     };
     let lane_blue_score = metadata.blue_score;
@@ -852,7 +843,19 @@ where
 
     let batch_receipt = (*batch.artifact()).clone();
     backend.verify_batch_receipt(&batch_receipt);
-    let journal_bytes = Backend::journal_bytes(&batch_receipt);
+
+    // Aggregate the per-batch receipt into the settlement-level receipt the on-chain covenant
+    // verifies. K=1 so the aggregator chains a single `BatchTransition` into the `StateTransition`.
+    let settlement_receipt = aggregate_batches(
+        backend,
+        l1.grpc_client(),
+        &lane_key,
+        block_acc_carrier,
+        vec![batch_receipt.clone()],
+    )
+    .await;
+    backend.verify_aggregator_receipt(&settlement_receipt);
+    let journal_bytes = Backend::journal_bytes(&settlement_receipt);
     let parsed = (&mut &journal_bytes[..]).array_as::<StateTransition>("state_transition").unwrap();
     eprintln!(
         "{label}: journal.new_seq_commit={} chain.accepted_id_merkle_root={}",
@@ -878,7 +881,7 @@ where
     );
 
     // === c. build production settlement with the real witness ===
-    let owned_witness = (config.make_witness)(&batch_receipt);
+    let owned_witness = (config.make_witness)(&settlement_receipt);
     let settlement = Settlement::build(&SettlementInput {
         covenant_id,
         pins: spend_pins,

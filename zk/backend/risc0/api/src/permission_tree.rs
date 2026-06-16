@@ -13,9 +13,9 @@
 //! exit output's SPK via `pay_to_script_hash`. The `[0u8; 32]` result for an empty bundle keeps
 //! settlement in single-output mode (no exit output needed).
 //!
-//! [`StateTransition::permission_spk_hash`]: vprogs_zk_abi::batch_processor::StateTransition::permission_spk_hash
+//! [`StateTransition::permission_spk_hash`]: vprogs_zk_abi::batch_aggregator::StateTransition::permission_spk_hash
 
-use vprogs_zk_abi::{batch_processor::ExitAccumulator, transaction_processor::StandardSpk};
+use vprogs_zk_abi::withdrawal::{ExitAccumulator, StandardSpk};
 
 use crate::{
     permission_script::{blake2b_script_hash, build_permission_redeem_script},
