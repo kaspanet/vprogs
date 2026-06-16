@@ -98,8 +98,8 @@ pub trait Config: Send + Sync + 'static {
     fn cf_proof_receipt_opts() -> Options {
         Options::default().tap_mut(|o| {
             // ProofReceipt keys all start with the checkpoint_index, grouping every program's
-            // receipts for one checkpoint so the reorg orchestrator can prune a reverted
-            // checkpoint with a single prefix scan.
+            // receipts for one checkpoint -- across image ids and block hashes alike -- so the
+            // reorg orchestrator can prune a reverted checkpoint with a single prefix scan.
             o.set_prefix_extractor(SliceTransform::create_fixed_prefix(size_of::<
                 ProofReceiptPrefix,
             >()));
