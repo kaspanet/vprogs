@@ -1,4 +1,10 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 
 use crossbeam_queue::SegQueue;
 use futures::{FutureExt, select_biased};
@@ -61,8 +67,12 @@ pub(crate) struct BridgeWorker {
     finality_depth: u64,
     /// Covenant id tracked by [`ChainBlockMetadata::last_settlement`], or `None` to disable.
     covenant_id: Option<Hash>,
-    /// On a fresh chain, seed from the virtual sink instead of the pruning point.
-    seed_from_sink: bool,
+    /// On a fresh chain, seed the root this many chain-blocks below the sink instead of the
+    /// pruning point. `None` seeds from the pruning point.
+    seed_depth: Option<u64>,
+    /// Optional observer the latest chain-block DAA score is published to, for external progress
+    /// reporting during catch-up.
+    tip_daa: Option<Arc<AtomicU64>>,
 }
 
 impl BridgeWorker {
@@ -143,7 +153,8 @@ impl BridgeWorker {
             lane_key,
             finality_depth: config.finality_depth,
             covenant_id: config.covenant_id,
-            seed_from_sink: config.seed_from_sink,
+            seed_depth: config.seed_depth,
+            tip_daa: config.tip_daa.clone(),
         }
         .run()
         .await;
@@ -237,10 +248,9 @@ impl BridgeWorker {
         let init_result = if let Some(target) = self.backfill_target.take() {
             self.backfill_chain(&target).await
         } else if self.virtual_chain.tip().index() == 0 {
-            if self.seed_from_sink {
-                self.seed_from_sink().await
-            } else {
-                self.seed_from_pruning_point().await
+            match self.seed_depth {
+                Some(depth) => self.seed_from_recent(depth).await,
+                None => self.seed_from_pruning_point().await,
             }
         } else {
             Ok(())
@@ -250,10 +260,20 @@ impl BridgeWorker {
             return;
         }
 
-        // Step 3: Notify consumer and sync to current chain state.
+        // Step 3: Notify consumer and sync to current chain state. Publish the seeded tip first, so
+        // a progress reporter has a baseline before the first (potentially large) batch lands.
+        self.publish_tip_daa();
         self.push_event(L1Event::Connected);
         let result = self.fetch_chain_updates().await;
         self.handle_sync_result(result);
+    }
+
+    /// Publishes the current tip's DAA score to the optional observer, so an external progress
+    /// reporter can gauge catch-up without polling the bridge.
+    fn publish_tip_daa(&self) {
+        if let Some(observer) = &self.tip_daa {
+            observer.store(self.virtual_chain.tip().metadata().daa_score, Ordering::Relaxed);
+        }
     }
 
     /// Fetches the L1 pruning-point header and installs it as the virtual chain's root/tip at
@@ -269,18 +289,38 @@ impl BridgeWorker {
         Ok(())
     }
 
-    /// Fetches the current virtual sink header and installs it as the virtual chain's root/tip at
-    /// index 0, so the bridge follows forward from the present tip instead of replaying the pruning
-    /// window. For a freshly bootstrapped lane whose activity is all in the future.
-    async fn seed_from_sink(&mut self) -> Result<()> {
-        let sink =
-            self.client.get_block(self.client.get_block_dag_info().await?.sink, false).await?;
+    /// Seeds the virtual chain `depth` chain-blocks below the current sink (instead of from the
+    /// pruning point), so the bridge starts near the tip rather than replaying the whole pruning
+    /// window. Walks the selected-parent chain back `depth` blocks from the sink and installs the
+    /// block it lands on as the root/tip at index 0.
+    ///
+    /// `depth` is the reorg head-room: a reorg shallower than it never rolls back past this root. A
+    /// deeper reorg does, and the bridge panics in `rollback` - which means `depth` is configured
+    /// too small for the network. The walk stops early if it reaches the chain's base (a block
+    /// whose selected parent is itself) before `depth`, seeding from there.
+    async fn seed_from_recent(&mut self, depth: u64) -> Result<()> {
+        let sink = self.client.get_block_dag_info().await?.sink;
 
-        self.virtual_chain = VirtualChain::new(Checkpoint::new(0, (&sink.header).into()));
-        log::info!(
-            "L1 bridge: seeding from sink {} (skipping pruning-window backfill)",
-            sink.header.hash
-        );
+        // Lowest verbosity (no transactions): we only need each block's selected parent, then the
+        // header of the block we land on.
+        let mut hash = sink;
+        for _ in 0..depth {
+            let parent = self
+                .client
+                .get_block(hash, false)
+                .await?
+                .verbose_data
+                .expect("get_block returns verbose data")
+                .selected_parent_hash;
+            if parent == hash {
+                break;
+            }
+            hash = parent;
+        }
+
+        let root = self.client.get_block(hash, false).await?;
+        self.virtual_chain = VirtualChain::new(Checkpoint::new(0, (&root.header).into()));
+        log::info!("L1 bridge: seeding {depth} blocks below sink {sink} (root {hash})");
 
         Ok(())
     }
@@ -433,6 +473,9 @@ impl BridgeWorker {
                 accepted_transactions,
             });
         }
+
+        // Publish the batch's new tip so the progress reporter advances as catch-up proceeds.
+        self.publish_tip_daa();
 
         Ok(())
     }

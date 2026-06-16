@@ -1,4 +1,7 @@
-use std::time::Duration;
+use std::{
+    sync::{Arc, atomic::AtomicU64},
+    time::Duration,
+};
 
 use kaspa_consensus_core::{config::params::Params, subnets::SubnetworkId};
 use vprogs_core_types::Checkpoint;
@@ -30,11 +33,17 @@ pub struct L1BridgeConfig {
     pub finality_depth: u64,
     /// Covenant id tracked by [`ChainBlockMetadata::last_settlement`], or `None` to disable.
     pub covenant_id: Option<Hash>,
-    /// On a fresh chain (no `root`/`tip`), seed from the current virtual sink instead of the
-    /// pruning point, so the bridge follows forward from "now" rather than replaying the whole
-    /// pruning window. Use this for a freshly bootstrapped lane whose activity is all in the
-    /// future; the default replays from the pruning point.
-    pub seed_from_sink: bool,
+    /// On a fresh chain (no `root`/`tip`), seed the root `seed_depth` chain-blocks below the
+    /// current sink instead of from the pruning point, so the bridge starts near the tip
+    /// rather than replaying the whole pruning window. The depth is the reorg head-room: a
+    /// reorg shallower than it never rolls back past the root; a deeper one does, and the
+    /// bridge panics (the depth is configured too small for this network). `None` seeds from
+    /// the pruning point.
+    pub seed_depth: Option<u64>,
+    /// Optional observer the bridge stores its latest chain-block DAA score into. Lets an external
+    /// progress reporter gauge how far the chain has replayed toward the node's virtual tip
+    /// without polling the bridge directly. `None` disables publishing.
+    pub tip_daa: Option<Arc<AtomicU64>>,
 }
 
 impl Default for L1BridgeConfig {
@@ -51,7 +60,8 @@ impl Default for L1BridgeConfig {
             subnetwork_id: None,
             finality_depth: Params::from(NetworkId::new(NetworkType::Mainnet)).finality_depth(),
             covenant_id: None,
-            seed_from_sink: false, // Replay from the pruning point by default.
+            seed_depth: None, // Replay from the pruning point by default.
+            tip_daa: None,
         }
     }
 }
@@ -125,9 +135,17 @@ impl L1BridgeConfig {
         self
     }
 
-    /// On a fresh chain, seed from the current virtual sink instead of the pruning point.
-    pub fn with_seed_from_sink(mut self, seed_from_sink: bool) -> Self {
-        self.seed_from_sink = seed_from_sink;
+    /// On a fresh chain, seed the root `seed_depth` chain-blocks below the sink instead of from the
+    /// pruning point. `None` seeds from the pruning point.
+    pub fn with_seed_depth(mut self, seed_depth: Option<u64>) -> Self {
+        self.seed_depth = seed_depth;
+        self
+    }
+
+    /// Sets the observer the bridge publishes its latest chain-block DAA score into. `None`
+    /// disables publishing.
+    pub fn with_tip_daa_observer(mut self, tip_daa: Option<Arc<AtomicU64>>) -> Self {
+        self.tip_daa = tip_daa;
         self
     }
 }

@@ -139,10 +139,34 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
         covenant_entry: UtxoEntry,
         covenant_compute_budget: ComputeBudget,
     ) -> Transaction {
+        self.prepare_settlement_excluding(
+            settlement_tx,
+            covenant_entry,
+            covenant_compute_budget,
+            &std::collections::HashSet::new(),
+        )
+        .await
+        .expect("no spendable UTXO for fee")
+        .0
+    }
+
+    /// Like [`Wallet::prepare_settlement_transaction`], but funds the fee from the largest
+    /// spendable UTXO **not** in `excluded`, and also returns the fee outpoint it spent.
+    /// Returns `None` when every spendable UTXO is excluded.
+    ///
+    /// The node can reject a settlement as an orphan when its fee input references an output it has
+    /// not yet accepted into its DAG. The caller re-prepares with that outpoint added to `excluded`
+    /// so the retry funds from a different, settled UTXO.
+    pub async fn prepare_settlement_excluding(
+        &self,
+        settlement_tx: Transaction,
+        covenant_entry: UtxoEntry,
+        covenant_compute_budget: ComputeBudget,
+        excluded: &std::collections::HashSet<TransactionOutpoint>,
+    ) -> Option<(Transaction, TransactionOutpoint)> {
         let utxos = self.fetch_spendable_utxos().await.expect("fetch spendable utxos");
-        let (fee_outpoint, fee_entry) =
-            utxos.into_iter().next().expect("no spendable UTXO for fee");
-        build::settlement_transaction(build::SettlementTx {
+        let (fee_outpoint, fee_entry) = utxos.into_iter().find(|(o, _)| !excluded.contains(o))?;
+        let tx = build::settlement_transaction(build::SettlementTx {
             settlement_tx,
             covenant_entry,
             covenant_compute_budget,
@@ -151,7 +175,8 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
             keypair: self.keypair,
             address: &self.address,
             params: self.params,
-        })
+        });
+        Some((tx, fee_outpoint))
     }
 
     /// Submits `tx` through the node's mempool, returning its id (or the RPC error).
