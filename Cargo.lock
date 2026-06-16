@@ -8509,6 +8509,7 @@ dependencies = [
 name = "vprogs-example-tn10-flow"
 version = "0.1.0"
 dependencies = [
+ "ctrlc",
  "fastrand",
  "kaspa-addresses",
  "kaspa-consensus-core",

@@ -12,7 +12,7 @@ kaspa-txscript.workspace                   = true
 kaspa-wrpc-client.workspace                = true
 log.workspace                              = true
 secp256k1.workspace                        = true
-tokio                                      = { workspace = true, features = ["sync", "time"] }
+tokio                                      = { workspace = true, features = ["macros", "sync", "time"] }
 vprogs-core-atomics.workspace              = true
 vprogs-core-smt.workspace                  = true
 vprogs-l1-wallet.workspace                 = true

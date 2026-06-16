@@ -31,6 +31,7 @@ use kaspa_consensus_core::{
 use kaspa_seq_commit::hashing::lane_key;
 use kaspa_wrpc_client::prelude::*;
 use secp256k1::Keypair;
+use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId};
 use vprogs_l1_wallet::{Wallet, encode_activity_payload};
@@ -83,9 +84,9 @@ async fn main() {
     // Build the node (kept alive until we return; dropping it shuts the flow down). Settlement mode
     // additionally bootstraps a real-pins covenant and spawns the settler (whose handle we keep),
     // which drains the batch sink the node forwards to it.
-    let (_node, settler): (FlowNode, Option<tokio::task::JoinHandle<()>>) =
+    let (_node, settler): (FlowNode, Option<(tokio::task::JoinHandle<()>, AtomicAsyncLatch)>) =
         if cfg.enable_settlements {
-            let (node, settler) = start_settlement(
+            let (node, settler, shutdown) = start_settlement(
                 &cfg,
                 &client,
                 &params,
@@ -99,7 +100,7 @@ async fn main() {
                 &mut persisted,
             )
             .await;
-            (node, Some(settler))
+            (node, Some((settler, shutdown)))
         } else {
             let node = start_exec(
                 &cfg,
@@ -132,13 +133,18 @@ async fn main() {
         // Settlement mode: the settler is the daemon's reason to live. Awaiting its handle means a
         // panic inside it (rejected settlement, confirmation timeout) surfaces here and exits the
         // process non-zero, instead of being swallowed while the daemon parks looking healthy.
-        Some(handle) => match handle.await {
-            Ok(()) => log::info!("settler finished; shutting down"),
-            Err(e) => {
-                log::error!("settler task terminated abnormally: {e}");
-                std::process::exit(1);
+        Some((handle, shutdown)) => {
+            // Ctrl-C / SIGTERM opens the settler's shutdown latch, so it tears down gracefully
+            // (returning from its loop) instead of being killed mid-settlement.
+            ctrlc::set_handler(move || shutdown.open()).expect("set signal handler");
+            match handle.await {
+                Ok(()) => log::info!("settler finished; shutting down"),
+                Err(e) => {
+                    log::error!("settler task terminated abnormally: {e}");
+                    std::process::exit(1);
+                }
             }
-        },
+        }
         // Exec-only mode: nothing settles, so park until killed
         None => std::future::pending::<()>().await,
     }
@@ -198,10 +204,11 @@ async fn start_exec(
 /// bootstraps fresh (the prover's store starts at the empty SMT, which the bootstrap's initial
 /// state matches), so the data dir should be clean for a settlement run.
 ///
-/// Returns the node and the settler's [`JoinHandle`](tokio::task::JoinHandle) so `main` can await
-/// it: the settler panics loudly on a rejected settlement or a confirmation timeout, and awaiting
-/// the handle is what turns that into a visible process exit instead of a task that dies silently
-/// while the daemon keeps parking.
+/// Returns the node, the settler's [`JoinHandle`](tokio::task::JoinHandle) so `main` can await it
+/// (the settler panics loudly on a rejected settlement or a confirmation timeout, and awaiting the
+/// handle is what turns that into a visible process exit instead of a task that dies silently while
+/// the daemon keeps parking), and the settler's shutdown latch so `main` can tear it down on a
+/// signal.
 #[allow(clippy::too_many_arguments)]
 async fn start_settlement(
     cfg: &Config,
@@ -215,7 +222,7 @@ async fn start_settlement(
     aggregator_elf: &[u8],
     network_id: NetworkId,
     persisted: &mut PersistedState,
-) -> (FlowNode, tokio::task::JoinHandle<()>) {
+) -> (FlowNode, tokio::task::JoinHandle<()>, AtomicAsyncLatch) {
     let backend = Backend::new(tx_elf, batch_elf, aggregator_elf, ProofType::Succinct);
     let wallet = Wallet::new(client, params, keypair);
     // A settlement run reuses no prior covenant (the prover's store starts at the empty SMT), so
@@ -252,9 +259,10 @@ async fn start_settlement(
         ProvingParams { covenant_id, lane_key, client: client.clone(), sink: queue.clone() },
     );
 
-    // The settlement worker loops forever, popping bundle handles off the queue, until it hits a
-    // fatal error (a rejected settlement or a confirmation timeout). `main` owns the returned
-    // handle and awaits it, so that failure is not swallowed.
+    // The settlement worker drains bundle handles off the queue until `main` opens this latch on a
+    // signal, or it hits a fatal error (a rejected settlement or a confirmation timeout). `main`
+    // owns the returned handle and awaits it, so that failure is not swallowed.
+    let shutdown = AtomicAsyncLatch::new();
     let settler = tokio::spawn(run_settlement_worker(
         queue,
         SettlementWorkerConfig {
@@ -265,8 +273,9 @@ async fn start_settlement(
             backend,
         },
         covenant,
+        shutdown.clone(),
     ));
-    (node, settler)
+    (node, settler, shutdown)
 }
 
 /// The bridge wiring for either mode, pointed at the remote node's lane + covenant.

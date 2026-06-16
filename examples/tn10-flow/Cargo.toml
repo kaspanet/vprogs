@@ -48,6 +48,7 @@ kaspa-txscript       = { workspace = true }
 kaspa-wrpc-client    = { workspace = true }
 
 # external
+ctrlc      = { workspace = true }
 fastrand   = { workspace = true }
 log        = { workspace = true }
 secp256k1  = { workspace = true }
