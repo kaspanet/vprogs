@@ -1,13 +1,3 @@
-//! The L2 driver: a [`Producer`] that runs the full L2 stack against the simulated chain.
-//!
-//! Attached to one miner, it (1) follows that node's selected chain, scheduling each block's
-//! lane-activity transactions through the zk `Vm` and handling reorgs via `rollback_to`; (2) issues
-//! new seeded lane-activity transactions funded from the miner's coinbase; (3) optionally
-//! bootstraps a covenant and periodically settles it (dev settlements, validated by the sim's real
-//! script engine); and (4) asserts invariants every block. The strongest is that the decoded L2
-//! counter equals the number of lane-activity transactions executed on the current selected chain;
-//! a failing invariant panics with the block hash, so a fixed seed pinpoints the bug.
-
 use std::sync::{Arc, Mutex, Weak};
 
 use kaspa_addresses::{Address, Prefix, Version};
@@ -45,6 +35,7 @@ use vprogs_zk_backend_risc0_test_suite::{
 use vprogs_zk_batch_prover::BatchProverConfig;
 use vprogs_zk_vm::{ProvingPipeline, Vm};
 
+use super::{DriverStats, L2Config};
 use crate::{
     l2_miner::{ProduceCtx, Producer},
     lane_source::ConsensusLaneSource,
@@ -55,49 +46,6 @@ type V = Vm<Backend, Store>;
 
 /// Compute budget for the dev covenant input (dev redeem has no precompile; 100 covers it).
 const DEV_COVENANT_BUDGET: ComputeBudget = ComputeBudget(100);
-
-/// Construction parameters for the driver.
-pub struct L2Config {
-    /// Lane id; selects the lane subnetwork, lane key, and the tracked resource.
-    pub lane_id: u32,
-    /// Seed for the activity / settlement RNG.
-    pub seed: u64,
-    /// Max activity transactions issued per block (the actual count is seeded `0..=this`).
-    pub activity_per_block: u64,
-    /// Bootstrap a covenant and settle it. When false the driver only does activity + execution.
-    pub enable_settlements: bool,
-    /// Issue a settlement roughly every this-many blocks once the covenant is active (ignored when
-    /// settlements are disabled).
-    pub settle_every: u64,
-    /// Drive the full proving stack (`ProvingPipeline::aggregate`) off the simulation's consensus
-    /// instead of running execution-only. With the crate's `cuda` feature the proofs are real
-    /// GPU proofs; without it (or under `RISC0_DEV_MODE=1`) the proving machinery still runs
-    /// end to end with the CPU/dev executor, which is what makes the wiring testable without a
-    /// GPU.
-    pub enable_proving: bool,
-    /// Batches bundled per proof when `enable_proving` is set (clamped to at least 1).
-    pub bundle_size: usize,
-}
-
-/// Running totals the driver maintains, readable after a run for end-of-test assertions.
-#[derive(Default, Clone, Debug, PartialEq, Eq)]
-pub struct DriverStats {
-    /// Selected-chain blocks scheduled (net of rollbacks).
-    pub blocks_processed: u64,
-    /// Lane-activity transactions executed on the current selected chain.
-    pub activity_executed: u64,
-    /// Reorgs observed (non-empty removed sets).
-    pub reorgs: u64,
-    /// Deepest reorg (blocks rolled back in one event).
-    pub max_reorg_depth: u64,
-    /// Covenant settlement transactions issued (each emission, including a re-issue of an orphaned
-    /// settlement, counts).
-    pub settlements_issued: u64,
-    /// Covenant settlements that landed and chained successfully.
-    pub settlements_accepted: u64,
-    /// Covenant txs re-issued after their block was orphaned by a reorg (0 on a clean chain).
-    pub reissues: u64,
-}
 
 /// One selected-chain block the driver has scheduled, kept so reorgs can roll back exactly.
 struct BlockRec {

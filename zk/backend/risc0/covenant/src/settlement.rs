@@ -13,6 +13,11 @@
 //! by `StateTransition` in [`vprogs_zk_abi::batch_processor`] (the final 32 bytes being
 //! `permission_spk_hash`); this builder does not recompute or verify it.
 
+mod settlement_dev_input;
+mod settlement_input;
+mod settlement_witness;
+mod succinct_witness;
+
 use kaspa_consensus_core::{
     constants::{MAX_SCRIPT_PUBLIC_KEY_VERSION, TX_VERSION_TOCCATA},
     hashing::sighash::SigHashReusedValuesUnsync,
@@ -20,7 +25,7 @@ use kaspa_consensus_core::{
     subnets::SUBNETWORK_ID_NATIVE,
     tx::{
         CovenantBinding, PopulatedTransaction, ScriptPublicKey, Transaction, TransactionInput,
-        TransactionOutpoint, TransactionOutput, UtxoEntry,
+        TransactionOutput, UtxoEntry,
     },
 };
 use kaspa_hashes::Hash;
@@ -34,71 +39,15 @@ use kaspa_txscript::{
     seq_commit_accessor::SeqCommitAccessor,
     standard::pay_to_script_hash_script,
 };
+pub use settlement_dev_input::SettlementDevInput;
+pub use settlement_input::SettlementInput;
+pub use settlement_witness::SettlementWitness;
+pub use succinct_witness::SuccinctWitness;
 
 use crate::script::{
     RedeemPins, build_dev_redeem_script, build_redeem_script, dev_redeem_script_len,
     redeem_script_len,
 };
-
-/// Inputs describing a single settlement step.
-pub struct SettlementInput<'a> {
-    /// Covenant id carried forward by the continuation output.
-    pub covenant_id: Hash,
-    /// Verifier-identity constants baked into the redeem script. The variant determines which
-    /// `OpZkPrecompile` branch the script terminates in and must match `witness`.
-    pub pins: RedeemPins<'a>,
-    /// L2 SMT state root before this batch.
-    pub prev_state: &'a [u8; 32],
-    /// Lane tip embedded in the covenant UTXO's redeem prefix (carried from the previous
-    /// settlement).
-    pub prev_lane_tip: &'a Hash,
-    /// L2 SMT state root after this batch.
-    pub new_state: &'a [u8; 32],
-    /// Lane tip after this batch (locks into the continuation UTXO's redeem prefix and feeds
-    /// into the guest's `seq_commit` derivation - rewind-resistant).
-    pub new_lane_tip: &'a Hash,
-    /// L1 chain block whose seq commitment the covenant script anchors `new_seq_commit` to.
-    pub block_prove_to: Hash,
-    /// UTXO outpoint of the covenant being spent.
-    pub prev_outpoint: TransactionOutpoint,
-    /// Value carried on the covenant UTXO. Split between continuation and permission outputs
-    /// when [`Self::permission_spk_hash`] is non-zero (see [`Settlement::build`]).
-    pub value: u64,
-    /// Proof-system-tagged ZK witness bytes pushed onto the redeem-spending sig_script. Must
-    /// match the variant of `pins`.
-    pub witness: SettlementWitness<'a>,
-    /// `blake2b(perm_redeem_script)` from the batch journal. Non-zero → [`Settlement::build`]
-    /// emits a second covenant-bound P2SH exit output of value
-    /// `pins.common().permission_output_value`. `[0; 32]` → single continuation output (no
-    /// exits in this batch).
-    pub permission_spk_hash: &'a [u8; 32],
-}
-
-/// ZK witness produced by the host and consumed by the covenant's sig_script. The variant
-/// must match the [`RedeemPins`] variant; `Settlement::build` panics on mismatch.
-pub enum SettlementWitness<'a> {
-    /// Witness for a R0Succinct receipt: STARK seal + claim + control-inclusion proof.
-    Succinct(SuccinctWitness<'a>),
-    /// Witness for a Groth16 receipt: compressed proof bytes (the only thing the on-stack
-    /// Groth16 verifier needs from the receipt; everything else is recomputed in-script from
-    /// the journal hash + program id).
-    Groth16 { compressed_proof: &'a [u8] },
-}
-
-/// Serialized pieces of a risc0 succinct receipt that the covenant script consumes as the ZK
-/// witness. These correspond to `SuccinctReceipt` fields the host pushes onto the script
-/// stack. The verifier-identity constants (`control_id`, `hashfn`, `image_id`) are NOT here;
-/// they're hardcoded into the redeem script body and supplied to `OpZkPrecompile` from there.
-pub struct SuccinctWitness<'a> {
-    /// STARK seal serialized as little-endian bytes of each `u32` word.
-    pub seal: &'a [u8],
-    /// 32-byte receipt claim digest.
-    pub claim: &'a [u8; 32],
-    /// Control-inclusion-proof leaf index (little-endian u32).
-    pub control_index: u32,
-    /// Concatenated 32-byte control-inclusion-proof path digests.
-    pub control_digests: &'a [u8],
-}
 
 /// A built settlement transaction and the redeem script it spends.
 pub struct Settlement {
@@ -269,58 +218,7 @@ impl Settlement {
         )
         .expect("covenant script units must fit within a u16 compute budget")
     }
-}
 
-/// P2SH `ScriptPublicKey` committing to `script_hash`. Script bytes:
-/// `OpBlake2b | OpData32 | <hash 32> | OpEqual` (35B); version = `MAX_SCRIPT_PUBLIC_KEY_VERSION`.
-///
-/// `to_bytes()[4..36]` is exactly `script_hash` - this locks the byte layout the in-script
-/// rebuild (`verify_outputs_and_append_perm_hash`) depends on, so any change here must be
-/// mirrored in `script.rs`.
-pub fn permission_spk(script_hash: &[u8; 32]) -> ScriptPublicKey {
-    let mut script = Vec::with_capacity(35);
-    script.push(OpBlake2b);
-    script.push(OpData32);
-    script.extend_from_slice(script_hash);
-    script.push(OpEqual);
-    ScriptPublicKey::new(MAX_SCRIPT_PUBLIC_KEY_VERSION, script.into())
-}
-
-/// Inputs describing a single dev-mode settlement step. Mirrors [`SettlementInput`] but drops
-/// `program_id` / `tx_image_id` / `witness` (the dev redeem script has no journal binding and
-/// no ZK precompile) and adds `claimed_seq_commit` - the sig-script-supplied seq commitment
-/// the dev script will [`OpEqualVerify`] against [`OpChainblockSeqCommit(block_prove_to)`].
-///
-/// [`OpEqualVerify`]: kaspa_txscript::opcodes::codes::OpEqualVerify
-/// [`OpChainblockSeqCommit(block_prove_to)`]: kaspa_txscript::opcodes::codes::OpChainblockSeqCommit
-pub struct SettlementDevInput<'a> {
-    /// Covenant id carried forward by the continuation output.
-    pub covenant_id: Hash,
-    /// L2 state root before this batch.
-    pub prev_state: &'a [u8; 32],
-    /// Lane tip embedded in the covenant UTXO's redeem prefix (carried from the previous
-    /// settlement).
-    pub prev_lane_tip: &'a Hash,
-    /// Lane key the dev covenant settles for; pinned into the redeem prefix to keep dev and prod
-    /// layouts size-compatible.
-    pub lane_key: &'a Hash,
-    /// L2 state root after this batch.
-    pub new_state: &'a [u8; 32],
-    /// Lane tip after this batch (locks into the continuation UTXO's redeem prefix).
-    pub new_lane_tip: &'a Hash,
-    /// L1 chain block whose seq commitment the dev script anchors `claimed_seq_commit` to.
-    pub block_prove_to: Hash,
-    /// Seq commitment the host claims for `block_prove_to`. The dev script enforces this
-    /// equals the chain's value via `OpEqualVerify` - any divergence between off-chain and
-    /// chain-derived seq commits will fail script execution.
-    pub claimed_seq_commit: Hash,
-    /// UTXO outpoint of the covenant being spent.
-    pub prev_outpoint: TransactionOutpoint,
-    /// Value carried on the covenant UTXO (forwarded verbatim to the continuation output).
-    pub value: u64,
-}
-
-impl Settlement {
     /// Builds a dev-mode settlement transaction. Uses the [`build_dev_redeem_script`] redeem
     /// variant so the test path can drive the full chain pipeline (mempool, block inclusion,
     /// acceptance) without a real ZK seal.
@@ -367,6 +265,21 @@ impl Settlement {
 
         Self { transaction: tx, prev_redeem, next_redeem }
     }
+}
+
+/// P2SH `ScriptPublicKey` committing to `script_hash`. Script bytes:
+/// `OpBlake2b | OpData32 | <hash 32> | OpEqual` (35B); version = `MAX_SCRIPT_PUBLIC_KEY_VERSION`.
+///
+/// `to_bytes()[4..36]` is exactly `script_hash` - this locks the byte layout the in-script
+/// rebuild (`verify_outputs_and_append_perm_hash`) depends on, so any change here must be
+/// mirrored in `script.rs`.
+pub fn permission_spk(script_hash: &[u8; 32]) -> ScriptPublicKey {
+    let mut script = Vec::with_capacity(35);
+    script.push(OpBlake2b);
+    script.push(OpData32);
+    script.extend_from_slice(script_hash);
+    script.push(OpEqual);
+    ScriptPublicKey::new(MAX_SCRIPT_PUBLIC_KEY_VERSION, script.into())
 }
 
 /// Dev-mode sig script. Push order (bottom to top):
@@ -478,6 +391,8 @@ fn sig_script_groth16(
 
 #[cfg(test)]
 mod tests {
+    use kaspa_consensus_core::tx::TransactionOutpoint;
+
     use super::*;
     use crate::script::{
         CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, Groth16Pins, RedeemPins, SuccinctPins,

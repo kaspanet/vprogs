@@ -1,7 +1,4 @@
-use kaspa_consensus_core::{
-    mass::units::ComputeBudget,
-    tx::{ScriptPublicKey, Transaction, TransactionOutpoint},
-};
+use kaspa_consensus_core::tx::{ScriptPublicKey, TransactionOutpoint};
 use kaspa_hashes::Hash;
 use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_txscript::standard::pay_to_script_hash_script;
@@ -14,25 +11,7 @@ use vprogs_zk_backend_risc0_covenant::{
     SettlementInput, SuccinctPins, build_redeem_script, redeem_script_len,
 };
 
-/// The live on-chain covenant: identity, committed state, and the UTXO that carries it. Advanced by
-/// each confirmed settlement.
-#[derive(Clone)]
-pub struct CovenantState {
-    /// Consensus covenant id this UTXO is bound to.
-    pub covenant_id: Hash,
-    /// L2 SMT state root committed by the covenant's redeem prefix.
-    pub state: [u8; 32],
-    /// Lane tip committed by the covenant's redeem prefix.
-    pub lane_tip: Hash,
-    /// Outpoint of the UTXO carrying the covenant.
-    pub outpoint: TransactionOutpoint,
-    /// P2SH SPK of the carrying UTXO (its redeem script's hash).
-    pub spk: ScriptPublicKey,
-    /// Sompi locked in the carrying UTXO.
-    pub value: u64,
-    /// DAA score of the carrying UTXO, filled in once it confirms (needed to spend it next).
-    pub daa_score: u64,
-}
+use super::{BuiltSettlement, CovenantAdvance, CovenantState};
 
 /// Bootstraps a fresh production-pins covenant (terminates in `OpZkPrecompile`, so the first
 /// settlement's reconstructed prev redeem matches this UTXO's SPK) bound to `lane_key`, locking
@@ -75,56 +54,6 @@ pub fn bootstrap_redeem(backend: &Backend, lane_key: &Hash) -> (Vec<u8>, ScriptP
     let redeem = build_redeem_script(&state, &lane_tip, redeem_len, &pins);
     let spk = pay_to_script_hash_script(&redeem);
     (redeem, spk)
-}
-
-/// A production settlement built for one proven bundle: the transaction ready for fee/mass
-/// finalization, its minimal sufficient covenant compute budget, and how to advance the covenant
-/// once the finalized tx confirms. Built by [`build_settlement`]; the caller owns submission and
-/// confirmation.
-pub struct BuiltSettlement {
-    /// The settlement transaction, ready to fund a fee and finalize mass before submission.
-    pub transaction: Transaction,
-    /// Minimal sufficient covenant-input compute budget, sized off the artifact's seq-commit
-    /// anchor (an oversized budget inflates the tx's compute mass past the per-tx limit and
-    /// the node rejects it).
-    pub compute_budget: ComputeBudget,
-    /// The covenant state this settlement advances to, pending the finalized tx's txid and
-    /// confirmation DAA score.
-    pub advance: CovenantAdvance,
-}
-
-/// The covenant state a built settlement advances to, deferred until the settlement's finalized tx
-/// id and the DAA score of its continuation UTXO are known (those depend on caller-specific fee
-/// funding and confirmation, which [`build_settlement`] does not do).
-pub struct CovenantAdvance {
-    covenant_id: Hash,
-    new_state: [u8; 32],
-    new_lane_tip: Hash,
-    continuation_spk: ScriptPublicKey,
-    value: u64,
-}
-
-impl CovenantAdvance {
-    /// P2SH SPK of the continuation output: the next covenant UTXO's script, used to locate it on
-    /// chain while confirming.
-    pub fn continuation_spk(&self) -> &ScriptPublicKey {
-        &self.continuation_spk
-    }
-
-    /// The covenant advanced past this settlement, given the finalized tx's `txid` (the
-    /// continuation UTXO is its output 0) and the DAA score that UTXO confirmed at. Pass
-    /// `daa_score` 0 when the confirmation score is not yet known (stamp it on confirmation).
-    pub fn apply(self, txid: Hash, daa_score: u64) -> CovenantState {
-        CovenantState {
-            covenant_id: self.covenant_id,
-            state: self.new_state,
-            lane_tip: self.new_lane_tip,
-            outpoint: TransactionOutpoint::new(txid, 0),
-            spk: self.continuation_spk,
-            value: self.value,
-            daa_score,
-        }
-    }
 }
 
 /// Builds the production settlement for one proven bundle against the live covenant `cov`.
@@ -191,7 +120,7 @@ pub fn build_settlement(
 
 /// The production redeem pins for this covenant: the batch + transaction guest image ids, the lane
 /// key, and the default permission-output value. Stable across the run.
-pub(crate) fn redeem_pins<'a>(backend: &'a Backend, lane_key: &'a Hash) -> RedeemPins<'a> {
+fn redeem_pins<'a>(backend: &'a Backend, lane_key: &'a Hash) -> RedeemPins<'a> {
     RedeemPins::Succinct(SuccinctPins {
         common: CommonPins {
             program_id: &backend.aggregator.id,
@@ -207,9 +136,9 @@ pub(crate) fn redeem_pins<'a>(backend: &'a Backend, lane_key: &'a Hash) -> Redee
 /// resolves the proven block to the journal's `new_seq_commit` (and treats it as an in-depth chain
 /// ancestor). On chain the node answers `OpChainblockSeqCommit` from the real DAG; for the local
 /// script-engine dry run we only need the one anchor block the redeem script looks up.
-pub(crate) struct AnchorSeqCommit {
-    pub(crate) block: Hash,
-    pub(crate) seq_commit: Hash,
+struct AnchorSeqCommit {
+    block: Hash,
+    seq_commit: Hash,
 }
 
 impl SeqCommitAccessor for AnchorSeqCommit {

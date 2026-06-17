@@ -9178,6 +9178,7 @@ dependencies = [
  "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
  "vprogs-zk-abi",
+ "vprogs-zk-aggregate-prover",
  "vprogs-zk-backend-risc0-api",
  "vprogs-zk-backend-risc0-covenant",
  "vprogs-zk-batch-prover",

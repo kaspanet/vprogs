@@ -23,6 +23,7 @@ vprogs-state-version.workspace        = true
 vprogs-storage-manager.workspace      = true
 vprogs-storage-types.workspace        = true
 vprogs-zk-abi                         = { workspace = true, features = ["host"] }
+vprogs-zk-aggregate-prover.workspace  = true
 vprogs-zk-backend-risc0-api           = { path = "../api", features = ["host"] }
 vprogs-zk-backend-risc0-covenant      = { path = "../covenant" }
 vprogs-zk-batch-prover.workspace      = true
