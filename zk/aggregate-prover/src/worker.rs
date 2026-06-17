@@ -51,6 +51,7 @@ where
             S,
             TransactionArtifact = B::Receipt,
             BatchArtifact = B::Receipt,
+            AggregatorArtifact = B::Receipt,
             BatchMetadata = ChainBlockMetadata,
         >,
 {
@@ -195,27 +196,48 @@ where
         );
         self.emit(handle.clone());
 
-        // Aggregate the bundle: fetch the final block's lane proof, encode the aggregator inputs
-        // over the per-batch journals, and prove with the per-batch receipts as composition
-        // assumptions.
-        let lane_proof = self
-            .lane_source
-            .fetch_lane_proof(LaneProofRequest { block: block_prove_to, lane_key: self.lane_key })
-            .await;
-        let journals: Vec<Vec<u8>> = receipts.iter().map(|r| B::journal_bytes(r)).collect();
-        let inputs = AggregatorInputs::encode(
-            self.backend.batch_image_id(),
-            &lane_proof,
-            journals.iter().map(|j| j.as_slice()),
-        );
-        let receipt = self.backend.prove_aggregator(&inputs, receipts).await;
-        if self.prover.shutdown.is_open() {
-            // Shutting down: resolve the published handle as a no-op so a consumer awaiting its
-            // artifact is released rather than blocked on a latch that never opens, and drop the
-            // proved bundle (the same discard-on-shutdown behavior as before).
-            handle.publish_artifact(None);
-            return true;
-        }
+        // The bundle's `from -> to` coordinate (its start checkpoint + block, claimed tip
+        // commitment) proves to the same settlement receipt, so a replay (including a flip reorg
+        // back onto this fork) reuses the cached one instead of re-fetching the lane proof and
+        // re-proving. The bundle keys the receipt off its own start coordinate and the claimed tip
+        // `seq_commit`; its first batch is the storage gateway (the aggregate prover holds no store
+        // of its own) and supplies the aggregator image id.
+        let seq_commit = last_metadata.seq_commit.as_bytes();
+        let first_batch = bundle.first().unwrap();
+        let receipt = match handle.read_agg_receipt(first_batch, seq_commit).resolve().await {
+            Some(receipt) => receipt,
+            None => {
+                // Aggregate the bundle: fetch the final block's lane proof, encode the aggregator
+                // inputs over the per-batch journals, and prove with the per-batch receipts as
+                // composition assumptions.
+                let lane_proof = self
+                    .lane_source
+                    .fetch_lane_proof(LaneProofRequest {
+                        block: block_prove_to,
+                        lane_key: self.lane_key,
+                    })
+                    .await;
+                let journals: Vec<Vec<u8>> = receipts.iter().map(|r| B::journal_bytes(r)).collect();
+                let inputs = AggregatorInputs::encode(
+                    self.backend.batch_image_id(),
+                    &lane_proof,
+                    journals.iter().map(|j| j.as_slice()),
+                );
+                let receipt = self.backend.prove_aggregator(&inputs, receipts).await;
+                if self.prover.shutdown.is_open() {
+                    // Shutting down: resolve the published handle as a no-op so a consumer awaiting
+                    // its artifact is released rather than blocked on a latch that never opens, and
+                    // drop the proved bundle (the same discard-on-shutdown behavior as before).
+                    handle.publish_artifact(None);
+                    return true;
+                }
+
+                // Wait for the receipt to be durable before publishing the artifact, so a crash
+                // never leaves a consumed-but-uncached settlement receipt.
+                handle.write_agg_receipt(first_batch, seq_commit, receipt.clone()).wait().await;
+                receipt
+            }
+        };
 
         // Parse the settlement journal.
         let journal = B::journal_bytes(&receipt);

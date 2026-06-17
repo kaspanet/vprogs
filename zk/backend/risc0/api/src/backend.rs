@@ -132,6 +132,10 @@ impl vprogs_zk_batch_prover::Backend for Backend {
     fn journal_bytes(receipt: &Receipt) -> Vec<u8> {
         receipt.journal.bytes.clone()
     }
+
+    fn batch_image_id(&self) -> &[u8; 32] {
+        &self.batch_processor.id
+    }
 }
 
 impl vprogs_zk_aggregate_prover::Backend for Backend {
@@ -163,7 +167,7 @@ impl vprogs_zk_aggregate_prover::Backend for Backend {
         }))
     }
 
-    fn batch_image_id(&self) -> &[u8; 32] {
-        &self.batch_processor.id
+    fn aggregator_image_id(&self) -> &[u8; 32] {
+        &self.aggregator.id
     }
 }

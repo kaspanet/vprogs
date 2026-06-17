@@ -8,3 +8,7 @@ borsh             = { workspace = true, default-features = false }
 rkyv              = { workspace = true, default-features = false }
 vprogs-core-codec = { workspace = true }
 zerocopy          = { workspace = true, features = ["derive"] }
+
+[features]
+# Stand-in trait impls for tests only (e.g. `BatchMetadata for u64`); never enabled by the node.
+test-utils = []

@@ -1,5 +1,6 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use kaspa_rpc_core::{RpcHeader, RpcOptionalHeader};
+use vprogs_core_types::BatchMetadata;
 
 use crate::{Hash, SettlementInfo};
 
@@ -37,6 +38,12 @@ pub struct ChainBlockMetadata {
     pub lane_expired: bool,
     /// Most-recent settlement of the configured covenant, or `None` until one lands.
     pub last_settlement: Option<SettlementInfo>,
+}
+
+impl BatchMetadata for ChainBlockMetadata {
+    fn block_hash(&self) -> [u8; 32] {
+        self.hash.as_bytes()
+    }
 }
 
 impl From<&RpcHeader> for ChainBlockMetadata {

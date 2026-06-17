@@ -20,9 +20,24 @@ impl<S: Store> vprogs_scheduling_scheduler::Processor<S> for Processor {
         Ok(())
     }
 
+    // This processor never proves, so its image ids only need to be stable for receipt-cache
+    // round-trips, not match any real program.
+    fn tx_image_id(&self) -> [u8; 32] {
+        [0u8; 32]
+    }
+
+    fn batch_image_id(&self) -> [u8; 32] {
+        [1u8; 32]
+    }
+
+    fn aggregator_image_id(&self) -> [u8; 32] {
+        [2u8; 32]
+    }
+
     type Transaction = usize;
-    type TransactionArtifact = ();
-    type BatchArtifact = ();
+    type TransactionArtifact = Vec<u8>;
+    type BatchArtifact = Vec<u8>;
+    type AggregatorArtifact = Vec<u8>;
     type BatchMetadata = u64;
     type Error = ();
 }

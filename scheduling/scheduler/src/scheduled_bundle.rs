@@ -5,6 +5,10 @@ use kaspa_hashes::Hash;
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_macros::smart_pointer;
 use vprogs_l1_types::SettlementInfo;
+use vprogs_state_proof_receipt::{AggregatorKey, Prefix};
+use vprogs_storage_types::Store;
+
+use crate::{ReceiptRead, ScheduledBatch, processor::Processor};
 
 /// The L1 block span a bundle proves over.
 #[derive(Clone, Copy)]
@@ -118,6 +122,45 @@ impl<A> ScheduledBundle<A> {
     /// until one lands.
     pub fn latest_settlement(&self) -> Option<SettlementInfo> {
         self.latest_settlement
+    }
+
+    /// Looks up this bundle's cached aggregate (settlement) receipt, returning a handle that
+    /// resolves to the deserialized receipt, or `None` on a cache miss. `gateway` is any batch in
+    /// the bundle: the aggregate prover holds no store of its own, so it reaches the receipt cache
+    /// through a batch's storage handle.
+    pub fn read_agg_receipt<S: Store, P: Processor<S>>(
+        &self,
+        gateway: &ScheduledBatch<S, P>,
+        seq_commit: [u8; 32],
+    ) -> ReceiptRead<S, P, P::AggregatorArtifact> {
+        gateway.submit_read_receipt(self.agg_key(gateway, seq_commit))
+    }
+
+    /// Stores this bundle's aggregate (settlement) receipt through the write worker, returning a
+    /// latch that opens once it commits. `gateway` supplies the storage handle, as for
+    /// [`read_agg_receipt`](Self::read_agg_receipt).
+    pub fn write_agg_receipt<S: Store, P: Processor<S>>(
+        &self,
+        gateway: &ScheduledBatch<S, P>,
+        seq_commit: [u8; 32],
+        receipt: P::AggregatorArtifact,
+    ) -> AtomicAsyncLatch {
+        gateway.submit_store_receipt(self.agg_key(gateway, seq_commit), receipt)
+    }
+
+    /// The aggregate receipt key at this bundle's start coordinate (first checkpoint index + block)
+    /// and claimed tip `seq_commit`; `gateway` supplies the aggregator image id.
+    fn agg_key<S: Store, P: Processor<S>>(
+        &self,
+        gateway: &ScheduledBatch<S, P>,
+        seq_commit: [u8; 32],
+    ) -> AggregatorKey {
+        AggregatorKey {
+            prefix: Prefix { checkpoint_index: self.checkpoint_index.into() },
+            block_hash: self.from_block.as_bytes(),
+            image_id: gateway.aggregator_image_id(),
+            seq_commit,
+        }
     }
 
     /// Publishes the bundle's artifact and opens the `artifact_published` latch. A `None` artifact

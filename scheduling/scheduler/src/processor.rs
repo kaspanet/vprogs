@@ -1,3 +1,4 @@
+use borsh::{BorshDeserialize, BorshSerialize};
 use vprogs_core_types::BatchMetadata;
 use vprogs_storage_types::Store;
 
@@ -24,13 +25,29 @@ pub trait Processor<S: Store>: Clone + Sized + Send + Sync + 'static {
         // Default implementation does nothing (override if needed).
     }
 
+    /// Program identifier keying a per-transaction receipt in the proof-receipt store.
+    fn tx_image_id(&self) -> [u8; 32];
+
+    /// Program identifier keying a per-batch receipt in the proof-receipt store.
+    fn batch_image_id(&self) -> [u8; 32];
+
+    /// Program identifier keying an aggregated-bundle (settlement) receipt in the proof-receipt
+    /// store.
+    fn aggregator_image_id(&self) -> [u8; 32];
+
     /// The transaction payload type (e.g. kaspa `L1Transaction`, `usize` in tests).
     /// The scheduler wraps it in `SchedulerTransaction<Self::Transaction>`.
     type Transaction: Send + Sync + 'static;
     /// Artifact produced by a processed transaction ([`ScheduledTransaction::publish_artifact`]).
-    type TransactionArtifact: Send + Sync + 'static;
-    /// Artifact produced by a processed batch ([`ScheduledBatch::publish_artifact`]).
-    type BatchArtifact: Send + Sync + 'static;
+    /// The `Borsh` bounds let the scheduler cache it in (and restore it from) the proof-receipt
+    /// store; `Clone` lets a served lookup hand the cached value back out of its shared slot.
+    type TransactionArtifact: Clone + BorshSerialize + BorshDeserialize + Send + Sync + 'static;
+    /// Artifact produced by a processed batch ([`ScheduledBatch::publish_artifact`]). Bounded for
+    /// the same proof-receipt caching as [`TransactionArtifact`](Self::TransactionArtifact).
+    type BatchArtifact: Clone + BorshSerialize + BorshDeserialize + Send + Sync + 'static;
+    /// Receipt produced by aggregating a bundle of per-batch receipts into one settlement receipt.
+    /// Bounded for the same proof-receipt caching as the other artifacts.
+    type AggregatorArtifact: Clone + BorshSerialize + BorshDeserialize + Send + Sync + 'static;
     /// Opaque metadata attached to each batch for persistence.
     type BatchMetadata: BatchMetadata;
     /// Error type returned when transaction processing fails.

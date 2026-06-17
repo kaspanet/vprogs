@@ -22,7 +22,10 @@ pub enum ProvingPipeline<S: Store, P: Processor<S>> {
 
 impl<S: Store, P: Processor<S>> ProvingPipeline<S, P> {
     /// Creates a transaction-only proving pipeline.
-    pub fn transaction<B: Backend<Receipt = P::TransactionArtifact>>(backend: B) -> Self {
+    pub fn transaction<B: Backend<Receipt = P::TransactionArtifact>>(backend: B) -> Self
+    where
+        P: Processor<S, BatchMetadata = ChainBlockMetadata>,
+    {
         Self::Transaction(TransactionProver::new(backend))
     }
 
@@ -59,6 +62,7 @@ impl<S: Store, P: Processor<S>> ProvingPipeline<S, P> {
                 S,
                 TransactionArtifact = B::Receipt,
                 BatchArtifact = B::Receipt,
+                AggregatorArtifact = B::Receipt,
                 BatchMetadata = ChainBlockMetadata,
             >,
     {

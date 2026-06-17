@@ -4,7 +4,7 @@ name              = "vprogs-scheduling-test-utils"
 version.workspace = true
 
 [dependencies]
-vprogs-core-types.workspace            = true
+vprogs-core-types                      = { workspace = true, features = ["test-utils"] }
 vprogs-scheduling-scheduler.workspace  = true
 vprogs-state-version.workspace         = true
 vprogs-storage-rocksdb-store.workspace = true

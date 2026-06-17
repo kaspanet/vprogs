@@ -13,7 +13,9 @@ pub trait Backend: vprogs_zk_batch_prover::Backend {
         batch_receipts: Vec<Self::Receipt>,
     ) -> impl Future<Output = Self::Receipt> + Send + 'static;
 
-    /// Trusted per-batch (batch-processor) image id, written into the aggregator inputs so the
-    /// guest can verify each composed batch journal.
-    fn batch_image_id(&self) -> &[u8; 32];
+    /// Aggregator image id: the program identifier that keys a settlement (bundle) receipt in the
+    /// proof-receipt store. The trusted batch image the aggregator verifies its composed batch
+    /// journals against is [`batch_image_id`](vprogs_zk_batch_prover::Backend::batch_image_id),
+    /// inherited from the per-batch backend.
+    fn aggregator_image_id(&self) -> &[u8; 32];
 }

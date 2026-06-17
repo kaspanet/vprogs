@@ -65,9 +65,22 @@ impl<B: Backend, S: Store> Processor<S> for Vm<B, S> {
         self.proving_pipeline.shutdown();
     }
 
+    fn tx_image_id(&self) -> [u8; 32] {
+        *self.backend.image_id()
+    }
+
+    fn batch_image_id(&self) -> [u8; 32] {
+        *self.backend.batch_image_id()
+    }
+
+    fn aggregator_image_id(&self) -> [u8; 32] {
+        *self.backend.aggregator_image_id()
+    }
+
     type Transaction = L1Transaction;
     type TransactionArtifact = B::Receipt;
     type BatchArtifact = B::Receipt;
+    type AggregatorArtifact = B::Receipt;
     type BatchMetadata = ChainBlockMetadata;
     type Error = Error;
 }

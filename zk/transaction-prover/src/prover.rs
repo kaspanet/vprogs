@@ -5,6 +5,7 @@ use std::{
 
 use vprogs_core_atomics::{AsyncQueue, AtomicAsyncLatch};
 use vprogs_core_macros::smart_pointer;
+use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, ScheduledTransaction};
 use vprogs_storage_types::Store;
 
@@ -23,7 +24,10 @@ pub struct TransactionProver<S: Store, P: Processor<S>> {
 
 impl<S: Store, P: Processor<S>> TransactionProver<S, P> {
     /// Creates a new transaction prover and spawns its worker thread.
-    pub fn new<B: Backend<Receipt = P::TransactionArtifact>>(backend: B) -> Self {
+    pub fn new<B: Backend<Receipt = P::TransactionArtifact>>(backend: B) -> Self
+    where
+        P: Processor<S, BatchMetadata = ChainBlockMetadata>,
+    {
         let prover = Self(Arc::new(TransactionProverData {
             inbox: AsyncQueue::new(),
             shutdown: AtomicAsyncLatch::new(),

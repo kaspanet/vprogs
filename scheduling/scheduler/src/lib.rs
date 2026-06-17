@@ -34,5 +34,5 @@ pub(crate) use scheduled_transaction::ScheduledTransactionRef;
 pub use scheduler::Scheduler;
 pub use state::SchedulerState;
 pub use state_diff::{StateDiff, StateDiffRef};
-pub use storage_cmd::{Read, Write};
+pub use storage_cmd::{Read, ReadReceipt, ReceiptRead, ReceiptValue, StoreReceipt, Write};
 pub use transaction_context::TransactionContext;
