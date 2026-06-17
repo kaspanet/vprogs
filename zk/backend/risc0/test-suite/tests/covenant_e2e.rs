@@ -8,7 +8,10 @@
 
 use std::time::Duration;
 
-use kaspa_consensus_core::{config::params::ForkActivation, tx::Transaction};
+use kaspa_consensus_core::{
+    network::{NetworkId, NetworkType},
+    tx::Transaction,
+};
 use kaspa_hashes::Hash;
 use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_txscript::standard::pay_to_script_hash_script;
@@ -20,7 +23,8 @@ use vprogs_zk_backend_risc0_covenant::{
     redeem_script_len,
 };
 use vprogs_zk_backend_risc0_test_suite::{
-    batch_aggregator_elf, batch_processor_elf, test_lane_key, transaction_processor_elf,
+    batch_aggregator_elf, batch_processor_elf, force_covenant_forks, test_lane_key,
+    transaction_processor_elf,
 };
 
 const TEST_COVENANT_VALUE: u64 = 100_000_000;
@@ -30,10 +34,13 @@ const TEST_COVENANT_VALUE: u64 = 100_000_000;
 /// it, and asserts that the resulting UTXO carries the covenant id the builder computed.
 #[tokio::test(flavor = "multi_thread")]
 async fn covenant_bootstrap_is_accepted_on_simnet() {
-    let l1 = L1Node::new(Some(|p| {
-        p.blockrate.coinbase_maturity = 1;
-        p.toccata_activation = ForkActivation::always();
-    }))
+    let l1 = L1Node::new(
+        NetworkId::new(NetworkType::Simnet),
+        Some(|p| {
+            p.blockrate.coinbase_maturity = 1;
+            force_covenant_forks(p);
+        }),
+    )
     .await;
 
     // Mine enough blocks so at least one coinbase UTXO matures.

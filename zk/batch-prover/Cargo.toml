@@ -4,7 +4,9 @@ name              = "vprogs-zk-batch-prover"
 version.workspace = true
 
 [dependencies]
+kaspa-grpc-client.workspace            = true
 kaspa-hashes.workspace                 = true
+kaspa-rpc-core.workspace               = true
 tap.workspace                          = true
 tokio                                  = { workspace = true, features = ["rt"] }
 vprogs-core-atomics.workspace          = true

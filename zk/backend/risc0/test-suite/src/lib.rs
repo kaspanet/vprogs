@@ -1,5 +1,8 @@
-use kaspa_consensus_core::{hashing::tx::id as kaspa_tx_id, subnets::SubnetworkId};
-use kaspa_grpc_client::GrpcClient;
+use kaspa_consensus_core::{
+    config::params::{ForkActivation, Params},
+    hashing::tx::id as kaspa_tx_id,
+    subnets::SubnetworkId,
+};
 use kaspa_hashes::Hash;
 use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_seq_commit::{
@@ -8,9 +11,19 @@ use kaspa_seq_commit::{
     },
     types::{LaneTipInput, MergesetContext},
 };
+use vprogs_core_smt::EMPTY_HASH;
+use vprogs_core_types::ResourceId;
 use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
+use vprogs_l1_wallet::Wallet;
+use vprogs_scheduling_scheduler::{ExecutionConfig, Processor, Scheduler};
+use vprogs_state_version::StateVersion;
+use vprogs_storage_manager::StorageConfig;
+use vprogs_storage_types::{ReadStore, Store};
 use vprogs_zk_abi::batch_aggregator::Inputs as AggregatorInputs;
+use vprogs_zk_aggregate_prover::Backend as AggregateBackend;
 use vprogs_zk_backend_risc0_api::{Backend, Receipt};
+use vprogs_zk_backend_risc0_covenant::{build_dev_redeem_script, dev_redeem_script_len};
+use vprogs_zk_batch_prover::{LaneProofRequest, LaneProofSource};
 
 mod l1_transaction_ext;
 
@@ -25,20 +38,22 @@ pub fn test_lane_key() -> Hash {
     lane_key(TEST_SUBNETWORK_ID.as_bytes())
 }
 
-/// Runs the aggregator over per-batch receipts and returns the bundle receipt, whose journal is a
-/// `vprogs_zk_abi::batch_aggregator::StateTransition`.
-pub async fn aggregate_batches(
+/// Runs the aggregator on a sequence of per-batch receipts and returns the resulting bundle
+/// receipt.
+///
+/// The returned receipt's journal is a `vprogs_zk_abi::batch_aggregator::StateTransition`, ready
+/// for the settlement covenant.
+pub async fn aggregate_batches<L: LaneProofSource>(
     backend: &Backend,
-    grpc_client: &GrpcClient,
+    lane_source: &L,
     lane_key: &Hash,
     last_block_hash: Hash,
     batch_receipts: Vec<Receipt>,
 ) -> Receipt {
     // Fetch the lane proof for the bundle's final block from L1.
-    let lane_proof = grpc_client
-        .get_seq_commit_lane_proof(last_block_hash, *lane_key)
-        .await
-        .expect("get_seq_commit_lane_proof");
+    let lane_proof = lane_source
+        .fetch_lane_proof(LaneProofRequest { block: last_block_hash, lane_key: *lane_key })
+        .await;
 
     // Encode the aggregator inputs over the per-batch journal bytes.
     let journals: Vec<Vec<u8>> = batch_receipts.iter().map(|r| r.journal.bytes.clone()).collect();
@@ -172,4 +187,60 @@ pub fn compute_section_lane_tip(
         activity_digest: &activity.finalize(),
         context_hash: &context_hash,
     })
+}
+
+/// Forces the Toccata fork active on `params`. The covenant flow is only valid where Toccata is
+/// live.
+pub fn force_covenant_forks(params: &mut Params) {
+    params.toccata_activation = ForkActivation::always();
+}
+
+/// Builds a scheduler over `processor` and `store` with default execution and storage config: the
+/// construction the settlement-l1 test and the tn10 example share. They differ only in the
+/// processor's proving pipeline, which is baked into `processor`.
+pub fn build_scheduler<S: Store, P: Processor<S>>(processor: P, store: S) -> Scheduler<S, P> {
+    Scheduler::new(
+        ExecutionConfig::default().with_processor(processor),
+        StorageConfig::default().with_store(store),
+    )
+}
+
+/// Reads a resource's latest bytes and decodes the leading four as a little-endian u32 counter,
+/// returning 0 when the resource has never been written. The transaction-processor guest stores
+/// each accessed resource as a u32 it bumps once per tx, so this is the lane's state as a number.
+/// Call only after the batch has committed.
+pub fn read_resource_u32<S: ReadStore>(store: &S, id: ResourceId) -> u32 {
+    let version = StateVersion::from_latest_data(store, id);
+    let data = version.data();
+    if data.len() >= 4 { u32::from_le_bytes(data[..4].try_into().expect("4 bytes")) } else { 0 }
+}
+
+/// A freshly bootstrapped covenant and the transaction that created it.
+pub struct Bootstrapped {
+    /// Covenant id consensus recomputed from the bootstrap input and output.
+    pub covenant_id: Hash,
+    /// Bootstrap transaction id; the covenant UTXO's outpoint is `(this, 0)`.
+    pub bootstrap_txid: Hash,
+}
+
+/// Builds and submits a dev covenant (no `OpZkPrecompile` pin) bound to `lane_key`, locking `value`
+/// sompi in its UTXO. Dev covenants are what an execution-only or dev-mode flow settles against;
+/// the real-pins path is only needed once proving is enabled.
+pub async fn bootstrap_dev_covenant<C: RpcApi + ?Sized>(
+    wallet: &Wallet<'_, C>,
+    lane_key: &Hash,
+    value: u64,
+) -> Bootstrapped {
+    let bootstrap_state = EMPTY_HASH;
+    let bootstrap_lane_tip = Hash::default();
+
+    let redeem_len = dev_redeem_script_len(&bootstrap_state, lane_key);
+    let redeem =
+        build_dev_redeem_script(&bootstrap_state, &bootstrap_lane_tip, lane_key, redeem_len);
+
+    let (tx, covenant_id) = wallet.build_covenant_bootstrap_transaction(&redeem, value).await;
+    let bootstrap_txid =
+        wallet.submit_transaction(&tx).await.expect("bootstrap tx submission failed");
+
+    Bootstrapped { covenant_id, bootstrap_txid }
 }

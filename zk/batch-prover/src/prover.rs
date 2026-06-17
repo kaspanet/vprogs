@@ -1,6 +1,8 @@
-use std::sync::Arc;
+use std::{
+    sync::{Arc, Mutex},
+    thread::JoinHandle,
+};
 
-use tap::Tap;
 use vprogs_core_atomics::{AsyncQueue, AtomicAsyncLatch};
 use vprogs_core_macros::smart_pointer;
 use vprogs_l1_types::ChainBlockMetadata;
@@ -16,6 +18,8 @@ pub struct BatchProver<S: Store, P: Processor<S>> {
     pub(crate) inbox: AsyncQueue<Command<S, P>>,
     /// Opened to signal worker shutdown.
     pub(crate) shutdown: AtomicAsyncLatch,
+    /// Worker thread handle, joined on shutdown so its GPU prover tears down before process exit.
+    pub(crate) worker: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl<S: Store, P: Processor<S>> BatchProver<S, P> {
@@ -29,11 +33,14 @@ impl<S: Store, P: Processor<S>> BatchProver<S, P> {
                 BatchMetadata = ChainBlockMetadata,
             >,
     {
-        Self(Arc::new(BatchProverData {
+        let prover = Self(Arc::new(BatchProverData {
             inbox: AsyncQueue::new(),
             shutdown: AtomicAsyncLatch::new(),
-        }))
-        .tap(|p| Worker::spawn(p.clone(), backend, store, config))
+            worker: Mutex::new(None),
+        }));
+        let handle = Worker::spawn(prover.clone(), backend, store, config);
+        *prover.worker.lock().expect("worker mutex") = Some(handle);
+        prover
     }
 
     /// Enqueues a batch for proving.
@@ -46,8 +53,15 @@ impl<S: Store, P: Processor<S>> BatchProver<S, P> {
         self.inbox.push(Command::Rollback(target_index));
     }
 
-    /// Signals the worker to shut down.
+    /// Signals the worker to shut down and joins its thread, so the worker's GPU prover (and its
+    /// tokio runtime) is torn down while the CUDA context is still alive. Without the join the
+    /// detached worker races the process's CUDA atexit teardown and aborts ("driver shutting
+    /// down").
     pub fn shutdown(&self) {
         self.shutdown.open();
+        let handle = self.worker.lock().expect("worker mutex").take();
+        if let Some(handle) = handle {
+            let _ = handle.join();
+        }
     }
 }

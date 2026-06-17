@@ -1,8 +1,17 @@
 use std::{collections::HashMap, time::Instant};
 
 use kaspa_consensus_core::{
+    config::params::Params,
     hashing::sighash::SigHashReusedValuesUnsync,
-    tx::{CovenantBinding, PopulatedTransaction, TransactionOutpoint, UtxoEntry},
+    mass::{
+        MassCalculator,
+        units::{ComputeBudget, ScriptUnits},
+    },
+    network::{NetworkId, NetworkType},
+    tx::{
+        CovenantBinding, PopulatedTransaction, TransactionInput, TransactionOutpoint,
+        TransactionOutput, UtxoEntry,
+    },
 };
 use kaspa_hashes::Hash;
 use kaspa_rpc_core::api::rpc::RpcApi;
@@ -60,13 +69,14 @@ impl SeqCommitAccessor for MockSeqCommitAccessor {
 /// Reconstructs the UTXO being spent from `settlement.prev_redeem`, builds the engine
 /// context with the supplied accessor, and asserts the redeem script verifies (P2SH ->
 /// seq-commit anchor -> journal preimage -> `OpZkPrecompile` -> covenant-output checks).
+/// Returns the script units the input consumed (the basis for sizing its compute budget).
 /// Panics on failure. Only meaningful when real (CUDA-produced) proofs are in play - the
 /// caller must skip this when `dev_mode_enabled()` is true.
 fn verify_settlement_onchain(
     settlement: &Settlement,
     covenant_id: Hash,
     accessor: &dyn SeqCommitAccessor,
-) {
+) -> ScriptUnits {
     let tx = &settlement.transaction;
     // The covenant UTXO being spent supplies the value distributed across all outputs:
     // count==1 → continuation carries the full input.value; count==2 → continuation +
@@ -102,6 +112,66 @@ fn verify_settlement_onchain(
         flags,
     );
     vm.execute().expect("settlement script engine verification failed");
+    vm.used_script_units()
+}
+
+/// Computes the funded settlement transaction's compute mass and asserts it fits under the
+/// per-transaction limit, printing the breakdown so the sizing is visible. This is the check
+/// the node's mempool applies: `compute_mass = byte_mass + spk_mass + committed_budget * 100`,
+/// and a single transaction may not exceed the block compute mass limit (500,000 on testnet-10).
+///
+/// `used_script_units` is what the covenant input actually consumed (from
+/// [`verify_settlement_onchain`]); the budget is the smallest one covering it. A representative
+/// schnorr-signed fee input and change output are appended so the measured mass matches the
+/// transaction the wallet actually submits, not the bare two-output settlement.
+fn assert_settlement_compute_mass_within_limit(
+    settlement: &Settlement,
+    used_script_units: ScriptUnits,
+) {
+    let params = Params::from(NetworkId::with_suffix(NetworkType::Testnet, 10));
+    let budget = ComputeBudget::checked_covering_script_units(used_script_units)
+        .expect("covenant script units must fit within a u16 compute budget");
+
+    // Mirror `Wallet::prepare_settlement_transaction`: set the covenant input's committed
+    // budget, then append a funding input (~64-byte schnorr sig script) and a change output.
+    let mut tx = settlement.transaction.clone();
+    tx.inputs[0].mass = budget.into();
+    tx.inputs.push(TransactionInput::new(
+        TransactionOutpoint::new(Hash::from_bytes([0xEE; 32]), 0),
+        vec![0u8; 65],
+        0,
+        1,
+    ));
+    // A v1 (Toccata) tx requires every input to commit a compute budget. The real wallet path gets
+    // this from `sign()`; this helper hand-builds the funding input, so set it explicitly. A
+    // standard schnorr P2PK fits the per-input free allowance, so its committed budget is 0 -- the
+    // same value `sign()` commits for it.
+    tx.inputs[1].mass = ComputeBudget(0).into();
+    tx.outputs.push(TransactionOutput::new(
+        50_000_000,
+        pay_to_script_hash_script(&[kaspa_txscript::opcodes::codes::OpTrue]),
+    ));
+
+    let calc = MassCalculator::new_with_consensus_params(&params);
+    let compute_mass = calc.calc_non_contextual_masses(&tx).compute_mass;
+    let budget_mass = u64::from(budget.value()) * 100;
+    let limit = params.block_mass_limits().after().compute;
+
+    eprintln!(
+        "[settlement mass] used_script_units={} -> compute_budget={} (budget mass={}), \
+         total compute_mass={} / limit={}",
+        u64::from(used_script_units),
+        budget.value(),
+        budget_mass,
+        compute_mass,
+        limit,
+    );
+    assert!(
+        compute_mass < limit,
+        "funded settlement compute mass {compute_mass} must stay under the per-tx limit {limit} \
+         (committed budget {} contributes {budget_mass} mass)",
+        budget.value(),
+    );
 }
 
 /// Builds a `ChainBlockMetadata` from a real simnet block. Required because the bundling
@@ -164,7 +234,7 @@ async fn batch_proof_is_directly_settleable_single_batch() {
 
     let backend = Backend::new(&transaction_elf, &batch_elf, &aggregator_elf, ProofType::Succinct);
 
-    let l1 = L1Node::new(None).await;
+    let l1 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
     let block_hashes = l1.mine_blocks(1).await;
 
     let config = BatchProverConfig { lane_key: test_lane_key(), covenant_id: None };
@@ -302,7 +372,17 @@ async fn batch_proof_is_directly_settleable_single_batch() {
         let mut seq_commits = HashMap::new();
         seq_commits.insert(block_hashes[0], parsed.new_seq_commit);
         let accessor = MockSeqCommitAccessor(seq_commits);
-        verify_settlement_onchain(&real_settlement, covenant_id_hash, &accessor);
+        let used = verify_settlement_onchain(&real_settlement, covenant_id_hash, &accessor);
+
+        // The covenant input's committed budget must be sized from `used`, not guessed: prove the
+        // resulting funded transaction's compute mass stays under the per-tx limit (the check the
+        // node applies, which a fixed oversized budget fails).
+        assert_settlement_compute_mass_within_limit(&real_settlement, used);
+        // The same budget the wallet computes via `Settlement::covenant_compute_budget`.
+        assert_eq!(
+            real_settlement.covenant_compute_budget(covenant_id_hash, &accessor),
+            ComputeBudget::checked_covering_script_units(used).unwrap(),
+        );
     }
 
     scheduler.shutdown();
@@ -327,7 +407,7 @@ async fn batch_proof_groth16_is_directly_settleable_single_batch() {
 
     let backend = Backend::new(&transaction_elf, &batch_elf, &aggregator_elf, ProofType::Groth16);
 
-    let l1 = L1Node::new(None).await;
+    let l1 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
     let block_hashes = l1.mine_blocks(1).await;
 
     let config = BatchProverConfig { lane_key: test_lane_key(), covenant_id: None };
@@ -367,7 +447,7 @@ async fn batch_proof_groth16_is_directly_settleable_single_batch() {
     );
 
     // Inner tx receipts are always succinct (composed as assumptions into the outer Groth16
-    // batch receipt) — so the same verification path applies as in the succinct test.
+    // batch receipt), so the same verification path applies as in the succinct test.
     if !dev_mode_enabled() {
         for artifact in batch.tx_artifacts() {
             backend.verify_transaction_receipt(&artifact);
@@ -484,7 +564,7 @@ async fn batch_proof_bundles_two_batches() {
 
     let backend = Backend::new(&transaction_elf, &batch_elf, &aggregator_elf, ProofType::Succinct);
 
-    let l1 = L1Node::new(None).await;
+    let l1 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
     let block_hashes = l1.mine_blocks(2).await;
 
     let config = BatchProverConfig { lane_key: test_lane_key(), covenant_id: None };
@@ -669,7 +749,7 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
 
     let backend = Backend::new(&transaction_elf, &batch_elf, &aggregator_elf, ProofType::Succinct);
 
-    let l1 = L1Node::new(None).await;
+    let l1 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
     let block_hashes = l1.mine_blocks(2).await;
 
     let config = BatchProverConfig { lane_key: test_lane_key(), covenant_id: None };

@@ -59,6 +59,8 @@ impl L1BridgeParams {
             subnetwork_id: self.subnetwork_id,
             finality_depth: self.finality_depth,
             covenant_id: self.covenant_id,
+            seed_depth: None,
+            tip_daa: None,
         }
     }
 }

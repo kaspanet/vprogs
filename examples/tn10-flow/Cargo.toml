@@ -1,0 +1,57 @@
+[package]
+edition = "2021"
+name    = "vprogs-example-tn10-flow"
+publish = false
+version = "0.1.0"
+
+[[bin]]
+name = "tn10-flow"
+path = "src/main.rs"
+
+[features]
+# `cuda` swaps the RISC0 prover for the GPU one. The proving + settlement path compiles and runs
+# end to end without it (CPU/dev stub proofs), but the on-chain `OpZkPrecompile` only accepts real
+# receipts, so meaningful settlements happen only under `cuda` without `RISC0_DEV_MODE`.
+cuda = ["vprogs-zk-backend-risc0-api/cuda"]
+
+[dependencies]
+# vprogs internal. The scheduler/Vm construction, covenant bootstrap, fork toggle, state-read, and
+# ELF loaders are reused from the settlement test-suite rather than reimplemented here; the
+# settlement path reuses the covenant/prover/codec crates the settlement-l1 test and the sim use.
+vprogs-core-atomics                = { workspace = true }
+vprogs-core-codec                  = { workspace = true }
+vprogs-core-smt                    = { workspace = true }
+vprogs-core-test-utils             = { workspace = true }
+vprogs-core-types                  = { workspace = true }
+vprogs-l1-bridge                   = { workspace = true }
+vprogs-l1-wallet                   = { workspace = true }
+vprogs-node-framework              = { workspace = true }
+vprogs-scheduling-scheduler        = { workspace = true }
+vprogs-storage-manager             = { workspace = true }
+vprogs-storage-rocksdb-store       = { workspace = true }
+vprogs-zk-abi                      = { workspace = true, features = ["host"] }
+vprogs-zk-aggregate-prover         = { workspace = true }
+vprogs-zk-backend-risc0-api        = { workspace = true, features = ["host"] }
+vprogs-zk-backend-risc0-settler    = { workspace = true }
+vprogs-zk-backend-risc0-test-suite = { workspace = true }
+vprogs-zk-batch-prover             = { workspace = true }
+vprogs-zk-vm                       = { workspace = true }
+
+# kaspa (same fork pins as the rest of the workspace)
+kaspa-addresses      = { workspace = true }
+kaspa-consensus-core = { workspace = true }
+kaspa-core           = { workspace = true }
+kaspa-hashes         = { workspace = true }
+kaspa-rpc-core       = { workspace = true }
+kaspa-seq-commit     = { workspace = true }
+kaspa-txscript       = { workspace = true }
+kaspa-wrpc-client    = { workspace = true }
+
+# external
+ctrlc      = { workspace = true }
+fastrand   = { workspace = true }
+log        = { workspace = true }
+secp256k1  = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+tokio      = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

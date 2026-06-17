@@ -28,6 +28,7 @@ use kaspa_consensus_core::{
     config::params::ForkActivation,
     constants::TX_VERSION_TOCCATA,
     mass::{BlockMassLimits, units::ComputeBudget},
+    network::{NetworkId, NetworkType},
     subnets::SubnetworkId,
     tx::{Transaction, TransactionOutpoint, UtxoEntry},
 };
@@ -188,11 +189,14 @@ async fn settlement_lands_in_real_block_dev_redeem() {
 
     // Mirror the real-proof tests' simnet config so the chain-side variables (block mass cap,
     // coinbase maturity, covenants activation) are identical between dev and CUDA runs.
-    let l1 = L1Node::new(Some(|p| {
-        p.blockrate.coinbase_maturity = 1;
-        p.toccata_activation = ForkActivation::always();
-        p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
-    }))
+    let l1 = L1Node::new(
+        NetworkId::new(NetworkType::Simnet),
+        Some(|p| {
+            p.blockrate.coinbase_maturity = 1;
+            p.toccata_activation = ForkActivation::always();
+            p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+        }),
+    )
     .await;
     l1.mine_utxos(6).await;
 
@@ -517,11 +521,14 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
     // far smaller and would fit under the default, but uniformly bumping the cap for both
     // proof systems lets the helper take a plain `fn` (no captures), which is what
     // `L1Node::new` expects.
-    let l1 = L1Node::new(Some(|p| {
-        p.blockrate.coinbase_maturity = 1;
-        p.toccata_activation = ForkActivation::always();
-        p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
-    }))
+    let l1 = L1Node::new(
+        NetworkId::new(NetworkType::Simnet),
+        Some(|p| {
+            p.blockrate.coinbase_maturity = 1;
+            p.toccata_activation = ForkActivation::always();
+            p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+        }),
+    )
     .await;
 
     // 2x bootstrap fee margin + 2x settlement fee + slack. The bootstrap and each settlement
@@ -625,7 +632,7 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
     // Same flow, chained: the 2nd carrier touches the SAME resource as settle_1 (the
     // increment-counter L2 guest just bumps it: 0→1 then 1→2). Using a fresh resource id
     // here would leave the SMT in a state where proving `for_test(2)` at the post-settle_1
-    // version returns the shortcut leaf for `for_test(1)` instead of an empty-key entry —
+    // version returns the shortcut leaf for `for_test(1)` instead of an empty-key entry;
     // batch_processor's verifier compares that against the journal's zero-hash input
     // commitment and panics on resource hash mismatch. Same resource avoids the shortcut.
     // The state-root assertion below still verifies a non-trivial transition (0→1 vs 1→2).

@@ -42,6 +42,12 @@ impl<B: Backend, S: Store> Processor<S> for Vm<B, S> {
             for (resource, op) in ctx.resources_mut().iter_mut().zip(output.storage_ops) {
                 if let Some(new_data) = op {
                     resource.set_data(new_data);
+                    log::trace!(
+                        "executed: resource_index={} version={} data={}",
+                        resource.resource_index(),
+                        resource.version(),
+                        faster_hex::hex_string(resource.data()),
+                    );
                 }
             }
         })

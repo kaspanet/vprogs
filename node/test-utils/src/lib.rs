@@ -10,12 +10,12 @@
 //! use std::time::Duration;
 //!
 //! use vprogs_l1_bridge::{L1Bridge, L1BridgeConfig, L1Event};
-//! use vprogs_l1_types::NetworkType;
+//! use vprogs_l1_types::{NetworkId, NetworkType};
 //! use vprogs_node_test_utils::{L1BridgeExt, L1Node};
 //!
 //! # async fn example() {
 //! // Start an isolated simnet node.
-//! let node = L1Node::new(None).await;
+//! let node = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
 //!
 //! // Connect a bridge to it.
 //! let bridge = L1Bridge::new(

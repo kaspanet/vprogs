@@ -134,9 +134,9 @@ impl vprogs_zk_batch_prover::Backend for Backend {
     }
 }
 
-impl Backend {
+impl vprogs_zk_aggregate_prover::Backend for Backend {
     /// Proves the aggregator over per-batch receipts in the configured `settlement_proof_type`.
-    pub fn prove_aggregator(
+    fn prove_aggregator(
         &self,
         inputs: &[u8],
         batch_receipts: Vec<Receipt>,
@@ -161,5 +161,9 @@ impl Backend {
             .expect("aggregator proving failed")
             .receipt
         }))
+    }
+
+    fn batch_image_id(&self) -> &[u8; 32] {
+        &self.batch_processor.id
     }
 }
