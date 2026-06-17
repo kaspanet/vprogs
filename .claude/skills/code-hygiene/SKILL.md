@@ -112,6 +112,18 @@ substitution — different em-dashes want different replacements:
 For multi-line em-dashes (em-dash at end of line continuing on the next),
 read both lines to choose the right repair.
 
+### No `mod.rs`; name the file after the module
+
+Use the modern path convention: a module `foo` with submodules lives in
+`foo.rs` (alongside a `foo/` directory holding the children), never in
+`foo/mod.rs`. A landed `mod.rs` is a hygiene miss — rename it to
+`<dir>.rs` one level up (`git mv foo/mod.rs foo.rs`). Rust resolves both
+forms identically, so the rename needs no other code change.
+
+This is a mechanical fix: apply it directly. (It's the one structural
+exception to the "flag, don't do" rule, since the rename is a pure
+file-move with no edits to the contents.)
+
 ### Don't restate algorithms across levels
 
 If a function `compute_X` has the algorithm in its doc, a const `X` (which
