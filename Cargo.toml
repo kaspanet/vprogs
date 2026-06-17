@@ -112,32 +112,33 @@ resolver = "3"
   ] }
   sha2 = { version = "0.10", default-features = false }
 
-  # Kaspa dependencies — biryukovmaxim's branch carries PR #961 (the
-  # `get_seq_commit_lane_proof` RPC) which we use for on-demand settlement-context
-  # fetch. Replaces the previous `hmoog/rusty-kaspa#lane-data-in-v2-response` fork
-  # whose per-block lane_data extension is no longer needed under bundling.
-  kaspa-addresses = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
-  kaspa-consensus = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
-  kaspa-consensus-core = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
-  kaspa-consensus-notify = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
-  kaspa-core = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
-  kaspa-database = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
-  kaspa-grpc-client = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
-  kaspa-hashes = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof", default-features = false, features = [
+  # Kaspa dependencies — pinned to `biryukovmaxim/rusty-kaspa#fix-covenant-binding` (v2.0.x): a
+  # master-based branch that fixes the wRPC v2 accepted-transactions convert path to populate the
+  # per-output covenant binding (`RpcTransactionOutput.covenant`), which the prior
+  # `covpp-reset2-rpc-lane-proof` branch dropped, starving the L2 bridge's settlement detection.
+  # Newer API revision than the old covpp pin, so the vprogs side carries a v2.0 API-drift port.
+  kaspa-addresses = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
+  kaspa-consensus = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
+  kaspa-consensus-core = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
+  kaspa-consensus-notify = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
+  kaspa-core = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
+  kaspa-database = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
+  kaspa-grpc-client = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
+  kaspa-hashes = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding", default-features = false, features = [
     "zerocopy",
   ] }
-  kaspa-merkle = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
-  kaspa-notify = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
-  kaspa-rpc-core = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
-  kaspa-seq-commit = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof", default-features = false }
-  kaspa-smt = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof", default-features = false }
-  kaspa-testing-integration = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
-  kaspa-txscript = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
-  kaspa-utils = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
-  kaspa-wrpc-client = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
-  kaspa-wrpc-server = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
-  kaspad = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
-  simpa = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
+  kaspa-merkle = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
+  kaspa-notify = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
+  kaspa-rpc-core = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
+  kaspa-seq-commit = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding", default-features = false }
+  kaspa-smt = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding", default-features = false }
+  kaspa-testing-integration = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
+  kaspa-txscript = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
+  kaspa-utils = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
+  kaspa-wrpc-client = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
+  kaspa-wrpc-server = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
+  kaspad = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
+  simpa = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
 
   # Internal dependencies
   vprogs-core-atomics                             = { path = "core/atomics" }
