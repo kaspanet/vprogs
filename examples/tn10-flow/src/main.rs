@@ -11,8 +11,11 @@
 //! - **Proving + settlement** (`TN10_SETTLE=1`): the node drives the full proving stack
 //!   ([`ProvingPipeline::aggregate`]: transaction + batch + aggregate provers), and the in-process
 //!   aggregate prover hands each proved bundle to the [`settlement
-//!   worker`](vprogs_zk_backend_risc0_settler), which settles it on chain. Real proofs need a GPU
-//!   (the `cuda` feature, without `RISC0_DEV_MODE`).
+//!   worker`](vprogs_zk_backend_risc0_settler), which settles it on chain. Under `RISC0_DEV_MODE`
+//!   the prover emits stub receipts and the worker settles against the dev redeem (chain-anchored
+//!   seq commit, no `OpZkPrecompile`), so the whole flow runs without a GPU; a real-proof run needs
+//!   a GPU (the `cuda` feature, without `RISC0_DEV_MODE`) and settles against the production
+//!   redeem.
 //!
 //! Required env: `TN10_WRPC_URL`, `TN10_PRIVATE_KEY`. See `config.rs` for the full surface.
 
@@ -44,10 +47,11 @@ use vprogs_core_types::{AccessMetadata, ResourceId};
 use vprogs_l1_wallet::{Wallet, encode_activity_payload};
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_settler::{
-    SettlementWorkerConfig, bootstrap_real_covenant, run as run_settlement_worker,
+    SettlementMode, SettlementWorkerConfig, bootstrap_dev_covenant, bootstrap_real_covenant,
+    run as run_settlement_worker,
 };
 use vprogs_zk_backend_risc0_test_suite::{
-    batch_aggregator_elf, batch_processor_elf, bootstrap_dev_covenant, transaction_processor_elf,
+    batch_aggregator_elf, batch_processor_elf, dev_mode_enabled, transaction_processor_elf,
 };
 
 use crate::{
@@ -182,14 +186,11 @@ async fn start_exec(
         None => {
             let wallet = Wallet::new(client, params, keypair);
             log::info!("bootstrapping dev covenant; issuer address {}", wallet.address());
-            let booted = bootstrap_dev_covenant(&wallet, &lane_key, COVENANT_VALUE).await;
-            persisted.bootstrap_txid = Some(booted.bootstrap_txid.to_string());
-            log::info!(
-                "covenant {} bootstrapped (tx {})",
-                booted.covenant_id,
-                booted.bootstrap_txid
-            );
-            booted.covenant_id
+            let (covenant, bootstrap_txid) =
+                bootstrap_dev_covenant(&wallet, lane_key, COVENANT_VALUE).await;
+            persisted.bootstrap_txid = Some(bootstrap_txid.to_string());
+            log::info!("covenant {} bootstrapped (tx {})", covenant.covenant_id, bootstrap_txid);
+            covenant.covenant_id
         }
     };
     // Persist the resolved id so an env-supplied covenant survives a restart without re-bootstrap.
@@ -207,10 +208,11 @@ async fn start_exec(
     )
 }
 
-/// Builds the proving + settlement node: bootstrap a fresh real-pins covenant, wire the batch
-/// prover over the remote node, and spawn the [`settler`] on the node's batch sink. Always
-/// bootstraps fresh (the prover's store starts at the empty SMT, which the bootstrap's initial
-/// state matches), so the data dir should be clean for a settlement run.
+/// Builds the proving + settlement node: bootstrap a fresh covenant (dev-pins under
+/// `RISC0_DEV_MODE`, real-pins otherwise), wire the batch prover over the remote node, and spawn
+/// the [`settler`] on the node's batch sink. Always bootstraps fresh (the prover's store starts at
+/// the empty SMT, which the bootstrap's initial state matches), so the data dir should be clean for
+/// a settlement run.
 ///
 /// Returns the node, the settler's [`JoinHandle`](tokio::task::JoinHandle) so `main` can await it
 /// (the settler panics loudly on a rejected settlement or a confirmation timeout, and awaiting the
@@ -242,12 +244,25 @@ async fn start_settlement(
              (use a clean TN10_DATA_DIR for a settlement run)",
         );
     }
-    log::info!(
-        "settlement mode: bootstrapping real-pins covenant; issuer address {}",
-        wallet.address()
-    );
-    let (covenant, bootstrap_txid) =
-        bootstrap_real_covenant(&wallet, &backend, lane_key, COVENANT_VALUE).await;
+    // Under `RISC0_DEV_MODE` the prover emits stub receipts the production `OpZkPrecompile` would
+    // reject, so settle against the dev redeem (chain-anchored seq commit, no precompile); a real
+    // (CUDA, non-dev) run settles against the production redeem. Same operating contract the tests
+    // gate on.
+    let dev = dev_mode_enabled();
+    let mode = if dev { SettlementMode::Dev } else { SettlementMode::Production };
+    let (covenant, bootstrap_txid) = if dev {
+        log::info!(
+            "settlement mode (dev): bootstrapping dev-pins covenant; issuer address {}",
+            wallet.address()
+        );
+        bootstrap_dev_covenant(&wallet, lane_key, COVENANT_VALUE).await
+    } else {
+        log::info!(
+            "settlement mode: bootstrapping real-pins covenant; issuer address {}",
+            wallet.address()
+        );
+        bootstrap_real_covenant(&wallet, &backend, lane_key, COVENANT_VALUE).await
+    };
     let covenant_id = covenant.covenant_id;
     persisted.covenant_id = Some(covenant_id.to_string());
     persisted.bootstrap_txid = Some(bootstrap_txid.to_string());
@@ -287,6 +302,7 @@ async fn start_settlement(
             keypair,
             lane_key,
             backend,
+            mode,
         },
         covenant,
         shutdown.clone(),

@@ -3,9 +3,12 @@
 //! The [`AggregateProver`](vprogs_zk_aggregate_prover::AggregateProver) proves each bundle and
 //! hands off a [`SettlementArtifact`](vprogs_zk_aggregate_prover::SettlementArtifact) (the
 //! aggregate receipt plus its decoded state-transition bounds). This worker owns the on-chain side:
-//! it builds a production [`Settlement`](vprogs_zk_backend_risc0_covenant::Settlement) that spends
-//! the live covenant, submits it over wRPC, waits for the continuation UTXO to confirm, and
-//! advances the covenant so the next settlement can spend it.
+//! it builds a [`Settlement`](vprogs_zk_backend_risc0_covenant::Settlement) that spends the live
+//! covenant, submits it over wRPC, waits for the continuation UTXO to confirm, and advances the
+//! covenant so the next settlement can spend it. The redeem variant is chosen by the configured
+//! [`SettlementMode`](worker::SettlementMode): production (on-chain `OpZkPrecompile` over a real
+//! receipt) or dev (chain-anchored seq commit, no precompile, for `RISC0_DEV_MODE` stub-receipt
+//! runs).
 //!
 //! Settlements are serialized: the artifact channel is processed one at a time, and the next
 //! settlement is built only after the previous continuation UTXO confirms (so it is spendable).
@@ -22,7 +25,8 @@ mod covenant;
 mod worker;
 
 pub use covenant::{
-    BuiltSettlement, CovenantAdvance, CovenantState, bootstrap_real_covenant, bootstrap_redeem,
-    build_settlement,
+    BuiltSettlement, CovenantAdvance, CovenantState, DEV_COVENANT_BUDGET, bootstrap_dev_covenant,
+    bootstrap_real_covenant, bootstrap_redeem, build_dev_settlement, build_settlement,
+    dev_bootstrap_redeem,
 };
-pub use worker::{SettlementWorkerConfig, run};
+pub use worker::{SettlementMode, SettlementWorkerConfig, run};

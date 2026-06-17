@@ -274,32 +274,24 @@ fn l2_flow_proving_seed_1() {
 }
 
 #[test]
-fn l2_flow_real_proof_settlement_chain() {
-    use vprogs_zk_backend_risc0_test_suite::dev_mode_enabled;
-
-    // The end-to-end target: real proofs *and* real on-chain settlements. The driver bootstraps a
-    // production covenant, the batch prover proves each bundle into a real receipt, and the driver
-    // builds a production `Settlement::build` whose `OpZkPrecompile` the sim's script engine
-    // validates against the real receipt before the settlement lands. The covenant advances
-    // bootstrap → s1 → s2 → …, each settlement spending the previous continuation UTXO and chaining
-    // `prev_state`/`prev_lane_tip` from the bundle journal.
+fn l2_flow_proof_settlement_chain() {
+    // The end-to-end target: proving *and* on-chain settlements. The driver runs the full proving
+    // stack and settles each proved bundle through the shared settler builders the tn10 daemon
+    // uses. The covenant advances bootstrap → s1 → s2 → …, each settlement spending the previous
+    // continuation UTXO and chaining `prev_state`/`prev_lane_tip` from the bundle journal, and the
+    // sim's script engine validates each settlement on chain before it lands.
     //
-    // Real settlements require real receipts: `OpZkPrecompile` rejects dev stubs, so this test only
-    // matters built `--features cuda --release` and run *without* `RISC0_DEV_MODE` on the GPU box.
-    // It is skipped under dev mode (where the dev-settlement tests above cover the chain-side
-    // chaining invariants without the precompile).
-    if dev_mode_enabled() {
-        eprintln!(
-            "skipping l2_flow_real_proof_settlement_chain: RISC0_DEV_MODE=1 (needs real receipts)"
-        );
-        return;
-    }
+    // Runs in both modes off the same operating contract the driver gates on. Under
+    // `RISC0_DEV_MODE` the prover emits stub receipts and the driver settles via the dev redeem
+    // (chain-anchored seq commit, no precompile), so the whole flow runs on CPU. Built
+    // `--features cuda --release` without `RISC0_DEV_MODE` it proves real receipts and settles via
+    // the production redeem, exercising `OpZkPrecompile` end to end on the GPU box.
     kaspa_core::log::try_init_logger("warn");
 
     // Single miner so the chain is clean: the async prover never has a bundle's block orphaned out
     // from under it, and every issued settlement lands (issued == accepted, no re-issues). Low
     // coinbase maturity so activity (hence bundles) start within a few dozen blocks.
-    // `bundle_size` throttles GPU cost (one proof per `bundle_size` blocks) and the settlement
+    // `bundle_size` throttles proving cost (one proof per `bundle_size` blocks) and the settlement
     // cadence.
     let s = run_sim(SimParams {
         seed: 11,
@@ -312,12 +304,12 @@ fn l2_flow_real_proof_settlement_chain() {
         coinbase_maturity: Some(20),
         bundle_size: 10,
     });
-    println!("real-proof e2e: {s:?}");
-    // Bootstrap → at least three chained real settlements, each validated on chain by the
-    // precompile against a real receipt and spending the prior continuation UTXO.
+    println!("proof-settlement e2e: {s:?}");
+    // Bootstrap → at least three chained settlements, each validated on chain by the script engine
+    // and spending the prior continuation UTXO.
     assert!(
         s.settlements_accepted >= 3,
-        "must chain bootstrap → s1 → s2 → s3 with real proofs (got {})",
+        "must chain bootstrap → s1 → s2 → s3 (got {})",
         s.settlements_accepted,
     );
     // Clean single miner: no orphans, so no re-issues and every issued settlement lands.

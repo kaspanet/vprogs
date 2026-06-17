@@ -24,13 +24,13 @@ use vprogs_scheduling_scheduler::{Processor, Scheduler};
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_aggregate_prover::{AggregateProverConfig, ScheduledBundle, SettlementArtifact};
 use vprogs_zk_backend_risc0_api::{Backend, ProofType, Receipt};
-use vprogs_zk_backend_risc0_covenant::{
-    Settlement, SettlementDevInput, build_dev_redeem_script, dev_redeem_script_len,
+use vprogs_zk_backend_risc0_covenant::{Settlement, SettlementDevInput};
+use vprogs_zk_backend_risc0_settler::{
+    CovenantState, bootstrap_redeem, build_dev_settlement, build_settlement, dev_bootstrap_redeem,
 };
-use vprogs_zk_backend_risc0_settler::{CovenantState, bootstrap_redeem, build_settlement};
 use vprogs_zk_backend_risc0_test_suite::{
-    batch_aggregator_elf, batch_processor_elf, build_scheduler, read_resource_u32,
-    transaction_processor_elf,
+    batch_aggregator_elf, batch_processor_elf, build_scheduler, dev_mode_enabled,
+    read_resource_u32, transaction_processor_elf,
 };
 use vprogs_zk_batch_prover::BatchProverConfig;
 use vprogs_zk_vm::{ProvingPipeline, Vm};
@@ -150,10 +150,12 @@ pub struct L2Driver {
 
     /// Whether the driver issues settlement transactions.
     settlements_enabled: bool,
-    /// Real-proof end-to-end mode: prove each bundle and settle it with a production
-    /// `Settlement::build` (real receipt → `OpZkPrecompile`), instead of dev settlements. Implied
-    /// by `enable_proving && enable_settlements`. Single-miner only (a reorg can orphan a block
-    /// whose batch the async worker is proving).
+    /// Proving-driven settlement mode: prove each bundle and settle it from the bundle's artifact,
+    /// instead of the inline (no-prover) dev settlements. Implied by `enable_proving &&
+    /// enable_settlements`. With real (CUDA) receipts each bundle settles via the production
+    /// `Settlement::build` (`OpZkPrecompile`); under `RISC0_DEV_MODE` the receipts are stubs the
+    /// precompile would reject, so it settles via the dev redeem (`build_dev_settlement`) instead.
+    /// Single-miner only (a reorg can orphan a block whose batch the async worker is proving).
     real_e2e: bool,
     /// In `real_e2e`, false until the proving stack has been rebuilt with the live covenant id
     /// (after the bootstrap confirms); gates activity + settlement so nothing is proved against
@@ -536,17 +538,17 @@ impl L2Driver {
         let value = entry.amount / 2;
         let state = EMPTY_HASH;
         let lane_tip = Hash::default();
-        // Real-proof mode deploys the production redeem script (terminates in `OpZkPrecompile`) so
-        // the first settlement's reconstructed prev redeem matches this UTXO's SPK; dev mode uses
-        // the dev redeem (chain-anchored, no precompile). The real path shares
-        // `bootstrap_redeem` with the production settler so both build the covenant identically.
-        let (redeem, spk) = if self.real_e2e {
+        // The production redeem (terminates in `OpZkPrecompile`) is deployed only for a real-proof
+        // run: proving-driven settlement with real (CUDA) receipts. Every other case deploys the
+        // dev redeem (chain-anchored seq commit, no precompile): the inline dev settlements, and
+        // proving-driven settlement under `RISC0_DEV_MODE` (stub receipts the precompile would
+        // reject). Both branches share their construction with the production settler
+        // (`bootstrap_redeem` / `dev_bootstrap_redeem`) so the first settlement's reconstructed
+        // prev redeem matches this UTXO's SPK.
+        let (redeem, spk) = if self.real_e2e && !dev_mode_enabled() {
             bootstrap_redeem(&self.backend, &self.lane_key)
         } else {
-            let redeem_len = dev_redeem_script_len(&state, &self.lane_key);
-            let redeem = build_dev_redeem_script(&state, &lane_tip, &self.lane_key, redeem_len);
-            let spk = pay_to_script_hash_script(&redeem);
-            (redeem, spk)
+            dev_bootstrap_redeem(&self.lane_key)
         };
 
         let (tx, covenant_id) = build::covenant_bootstrap_transaction(
@@ -706,10 +708,16 @@ impl L2Driver {
         let (fee_outpoint, fee_entry) = ctx.spendable.first().expect("fee output");
         let cov = self.confirmed.last().expect("covenant").covenant.clone();
 
-        // Build the settlement and its precise covenant compute budget the same way the production
-        // settler does (shared `build_settlement`); the sim only differs in how it funds the fee
-        // and submits the tx (mined by its miner, not the wallet's wRPC client).
-        let built = build_settlement(&self.backend, &self.lane_key, &cov, artifact);
+        // Build the settlement and its covenant compute budget the same way the production settler
+        // does; the sim only differs in how it funds the fee and submits the tx (mined by its
+        // miner, not the wallet's wRPC client). Under `RISC0_DEV_MODE` the receipt is a stub the
+        // production `OpZkPrecompile` would reject, so settle against the dev redeem (shared
+        // `build_dev_settlement`); a real (CUDA) run settles the production receipt.
+        let built = if dev_mode_enabled() {
+            build_dev_settlement(&self.lane_key, &cov, artifact)
+        } else {
+            build_settlement(&self.backend, &self.lane_key, &cov, artifact)
+        };
 
         let covenant_entry =
             UtxoEntry::new(cov.value, cov.spk.clone(), cov.daa_score, false, Some(cov.covenant_id));

@@ -15,11 +15,23 @@ use vprogs_l1_wallet::Wallet;
 use vprogs_zk_aggregate_prover::{ScheduledBundle, SettlementArtifact};
 use vprogs_zk_backend_risc0_api::{Backend, Receipt};
 
-use crate::covenant::{CovenantState, build_settlement};
+use crate::covenant::{CovenantState, build_dev_settlement, build_settlement};
 
 /// Poll cadence and ceiling for waiting on a covenant UTXO to confirm on chain.
 const CONFIRM_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const CONFIRM_MAX_POLLS: u32 = 300;
+
+/// Which redeem variant the worker settles against. The caller picks it; the operating contract is
+/// to settle in [`Production`](SettlementMode::Production) only when real (CUDA) proofs are in play
+/// and in [`Dev`](SettlementMode::Dev) under `RISC0_DEV_MODE`, where the prover emits stub receipts
+/// the production `OpZkPrecompile` would reject.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SettlementMode {
+    /// Production redeem: the on-chain `OpZkPrecompile` verifies the bundle's real receipt.
+    Production,
+    /// Dev redeem: the chain anchors the claimed seq commit; no proof is verified on chain.
+    Dev,
+}
 
 /// Everything the settlement worker needs that isn't carried per bundle.
 pub struct SettlementWorkerConfig {
@@ -31,17 +43,20 @@ pub struct SettlementWorkerConfig {
     pub keypair: Keypair,
     /// Lane key the covenant SPK pins.
     pub lane_key: Hash,
-    /// Backend, for the covenant's redeem pins (guest image ids).
+    /// Backend, for the covenant's redeem pins (guest image ids). Unused in
+    /// [`SettlementMode::Dev`] (the dev redeem pins no image ids).
     pub backend: Backend,
+    /// Whether to settle against the production or dev redeem variant.
+    pub mode: SettlementMode,
 }
 
 /// Drives the settlement loop, popping each bundle the aggregate prover publishes onto `queue`.
 ///
 /// The aggregate prover publishes every formed bundle as a [`ScheduledBundle`] handle; the worker
-/// pops one, awaits its proved artifact, and (when it carries a settlement) builds a production
-/// [`Settlement`], submits it, and waits for its continuation UTXO to confirm before taking the
-/// next. No-op bundles (resolved with no artifact) are skipped. Handles are processed one at a
-/// time, so settlements are serialized.
+/// pops one, awaits its proved artifact, and (when it carries a settlement) builds a
+/// [`Settlement`] in the configured [`mode`](SettlementMode), submits it, and waits for its
+/// continuation UTXO to confirm before taking the next. No-op bundles (resolved with no artifact)
+/// are skipped. Handles are processed one at a time, so settlements are serialized.
 ///
 /// Runs until `shutdown` opens: every park and poll (the queue pop, the artifact wait, the
 /// confirmation polling) is a biased `select!` that checks `shutdown` first, so a teardown request
@@ -114,7 +129,10 @@ async fn settle_one(
 ) -> Option<CovenantState> {
     // Build the settlement and its covenant compute budget from the bundle's authoritative bounds
     // (shared with the sim driver). Asserts the live covenant agrees before we pay to submit.
-    let built = build_settlement(&cfg.backend, &cfg.lane_key, &cov, artifact);
+    let built = match cfg.mode {
+        SettlementMode::Production => build_settlement(&cfg.backend, &cfg.lane_key, &cov, artifact),
+        SettlementMode::Dev => build_dev_settlement(&cfg.lane_key, &cov, artifact),
+    };
 
     let covenant_entry =
         UtxoEntry::new(cov.value, cov.spk.clone(), cov.daa_score, false, Some(cov.covenant_id));
@@ -146,9 +164,9 @@ async fn settle_one(
                 );
                 excluded.insert(fee_outpoint);
             }
-            // Any other rejection is the on-chain script (incl. `OpZkPrecompile`) refusing the
-            // settlement; surface it loudly, as that is exactly the end-to-end check this path
-            // exists to make.
+            // Any other rejection is the on-chain script refusing the settlement (`OpZkPrecompile`
+            // in production, the seq-commit anchor in dev); surface it loudly, as that is exactly
+            // the end-to-end check this path exists to make.
             Err(e) => panic!("settlement submit rejected by node: {e}"),
         }
     };

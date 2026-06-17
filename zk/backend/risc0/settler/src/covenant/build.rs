@@ -1,4 +1,7 @@
-use kaspa_consensus_core::tx::{ScriptPublicKey, TransactionOutpoint};
+use kaspa_consensus_core::{
+    mass::units::ComputeBudget,
+    tx::{ScriptPublicKey, TransactionOutpoint},
+};
 use kaspa_hashes::Hash;
 use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_txscript::standard::pay_to_script_hash_script;
@@ -8,8 +11,14 @@ use vprogs_zk_aggregate_prover::SettlementArtifact;
 use vprogs_zk_backend_risc0_api::{Backend, OwnedSuccinctWitness, Receipt};
 use vprogs_zk_backend_risc0_covenant::{
     CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, RedeemPins, SeqCommitAccessor, Settlement,
-    SettlementInput, SuccinctPins, build_redeem_script, redeem_script_len,
+    SettlementDevInput, SettlementInput, SuccinctPins, build_dev_redeem_script,
+    build_redeem_script, dev_redeem_script_len, redeem_script_len,
 };
+
+/// Covenant-input compute budget for a dev settlement: the dev redeem has no `OpZkPrecompile`, so a
+/// small fixed budget covers its hash + concat + equality ops. Production settlements size their
+/// budget off the receipt instead.
+pub const DEV_COVENANT_BUDGET: ComputeBudget = ComputeBudget(100);
 
 use super::{BuiltSettlement, CovenantAdvance, CovenantState};
 
@@ -52,6 +61,48 @@ pub fn bootstrap_redeem(backend: &Backend, lane_key: &Hash) -> (Vec<u8>, ScriptP
     let pins = redeem_pins(backend, lane_key);
     let redeem_len = redeem_script_len(&state, &pins);
     let redeem = build_redeem_script(&state, &lane_tip, redeem_len, &pins);
+    let spk = pay_to_script_hash_script(&redeem);
+    (redeem, spk)
+}
+
+/// Bootstraps a fresh dev-pins covenant (the [`build_dev_redeem_script`] variant: chain-anchored
+/// seq-commit check, no `OpZkPrecompile`) bound to `lane_key`, locking `value` sompi. Submits it
+/// and returns the initial [`CovenantState`] plus the bootstrap txid. The dev counterpart of
+/// [`bootstrap_real_covenant`], for `RISC0_DEV_MODE` runs where the prover emits stub receipts the
+/// production precompile would reject. Like the real bootstrap, the initial state is the empty SMT,
+/// so the first proved bundle chains from here; the returned state's `daa_score` is 0 until the
+/// UTXO confirms.
+pub async fn bootstrap_dev_covenant<C: RpcApi + ?Sized>(
+    wallet: &Wallet<'_, C>,
+    lane_key: Hash,
+    value: u64,
+) -> (CovenantState, Hash) {
+    let (redeem, spk) = dev_bootstrap_redeem(&lane_key);
+
+    let (tx, covenant_id) = wallet.build_covenant_bootstrap_transaction(&redeem, value).await;
+    let txid = wallet.submit_transaction(&tx).await.expect("dev bootstrap submission failed");
+
+    let covenant = CovenantState {
+        covenant_id,
+        state: EMPTY_HASH,
+        lane_tip: Hash::default(),
+        outpoint: TransactionOutpoint::new(txid, 0),
+        spk,
+        value,
+        daa_score: 0,
+    };
+    (covenant, txid)
+}
+
+/// The dev redeem script and its P2SH `ScriptPublicKey` for a fresh covenant: empty initial state,
+/// empty lane tip, `lane_key` pinned. The dev counterpart of [`bootstrap_redeem`]; the first dev
+/// settlement's reconstructed prev redeem must match this UTXO's SPK, so bootstrap and settlement
+/// build it identically. Returns `(redeem_script, p2sh_spk)`.
+pub fn dev_bootstrap_redeem(lane_key: &Hash) -> (Vec<u8>, ScriptPublicKey) {
+    let state = EMPTY_HASH;
+    let lane_tip = Hash::default();
+    let redeem_len = dev_redeem_script_len(&state, lane_key);
+    let redeem = build_dev_redeem_script(&state, &lane_tip, lane_key, redeem_len);
     let spk = pay_to_script_hash_script(&redeem);
     (redeem, spk)
 }
@@ -108,6 +159,67 @@ pub fn build_settlement(
     BuiltSettlement {
         transaction: settlement.transaction,
         compute_budget,
+        advance: CovenantAdvance {
+            covenant_id: cov.covenant_id,
+            new_state: artifact.new_state,
+            new_lane_tip: artifact.new_lane_tip,
+            continuation_spk,
+            value: cov.value,
+        },
+    }
+}
+
+/// Builds a dev settlement for one proven bundle against the live dev covenant `cov`.
+///
+/// The dev counterpart of [`build_settlement`]: same authoritative bounds from `artifact` and the
+/// same chaining asserts, but the [`build_dev_redeem_script`] variant (no `OpZkPrecompile`; the
+/// chain anchors the claimed seq commit instead). The journal's `new_seq_commit` is fed through as
+/// the `claimed_seq_commit` the dev script `OpEqualVerify`s against `OpChainblockSeqCommit`, so the
+/// guest-committed value and the chain's value must agree exactly. The covenant compute budget is
+/// the fixed [`DEV_COVENANT_BUDGET`] (no precompile to size for).
+///
+/// The dev redeem only handles the single-output (no-exit) path, so a bundle carrying L2→L1 exits
+/// (non-zero `permission_spk_hash`) is rejected here rather than silently dropping them.
+pub fn build_dev_settlement(
+    lane_key: &Hash,
+    cov: &CovenantState,
+    artifact: &SettlementArtifact<Receipt>,
+) -> BuiltSettlement {
+    assert_eq!(
+        artifact.prev_state, cov.state,
+        "dev settlement prev_state must chain from the live covenant state",
+    );
+    assert_eq!(
+        artifact.prev_lane_tip, cov.lane_tip,
+        "dev settlement prev_lane_tip must match the spent covenant's redeem prefix",
+    );
+    assert_eq!(
+        Hash::from_bytes(artifact.covenant_id),
+        cov.covenant_id,
+        "dev settlement covenant_id must match the live covenant",
+    );
+    assert_eq!(
+        artifact.permission_spk_hash, [0u8; 32],
+        "dev settlement does not support permission exits (the dev redeem pins output count to 1)",
+    );
+
+    let settlement = Settlement::build_dev(&SettlementDevInput {
+        covenant_id: cov.covenant_id,
+        prev_state: &artifact.prev_state,
+        prev_lane_tip: &artifact.prev_lane_tip,
+        lane_key,
+        new_state: &artifact.new_state,
+        new_lane_tip: &artifact.new_lane_tip,
+        block_prove_to: artifact.block_prove_to,
+        claimed_seq_commit: artifact.new_seq_commit,
+        prev_outpoint: cov.outpoint,
+        value: cov.value,
+    });
+    let continuation_spk = pay_to_script_hash_script(&settlement.next_redeem);
+
+    BuiltSettlement {
+        transaction: settlement.transaction,
+        compute_budget: DEV_COVENANT_BUDGET,
         advance: CovenantAdvance {
             covenant_id: cov.covenant_id,
             new_state: artifact.new_state,

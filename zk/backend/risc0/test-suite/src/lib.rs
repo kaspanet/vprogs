@@ -4,17 +4,14 @@ use kaspa_consensus_core::{
     subnets::SubnetworkId,
 };
 use kaspa_hashes::Hash;
-use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_seq_commit::{
     hashing::{
         ActivityDigestBuilder, activity_leaf, lane_key, lane_tip_next, mergeset_context_hash,
     },
     types::{LaneTipInput, MergesetContext},
 };
-use vprogs_core_smt::EMPTY_HASH;
 use vprogs_core_types::ResourceId;
 use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
-use vprogs_l1_wallet::Wallet;
 use vprogs_scheduling_scheduler::{ExecutionConfig, Processor, Scheduler};
 use vprogs_state_version::StateVersion;
 use vprogs_storage_manager::StorageConfig;
@@ -22,7 +19,6 @@ use vprogs_storage_types::{ReadStore, Store};
 use vprogs_zk_abi::batch_aggregator::Inputs as AggregatorInputs;
 use vprogs_zk_aggregate_prover::Backend as AggregateBackend;
 use vprogs_zk_backend_risc0_api::{Backend, Receipt};
-use vprogs_zk_backend_risc0_covenant::{build_dev_redeem_script, dev_redeem_script_len};
 use vprogs_zk_batch_prover::{LaneProofRequest, LaneProofSource};
 
 mod l1_transaction_ext;
@@ -213,34 +209,4 @@ pub fn read_resource_u32<S: ReadStore>(store: &S, id: ResourceId) -> u32 {
     let version = StateVersion::from_latest_data(store, id);
     let data = version.data();
     if data.len() >= 4 { u32::from_le_bytes(data[..4].try_into().expect("4 bytes")) } else { 0 }
-}
-
-/// A freshly bootstrapped covenant and the transaction that created it.
-pub struct Bootstrapped {
-    /// Covenant id consensus recomputed from the bootstrap input and output.
-    pub covenant_id: Hash,
-    /// Bootstrap transaction id; the covenant UTXO's outpoint is `(this, 0)`.
-    pub bootstrap_txid: Hash,
-}
-
-/// Builds and submits a dev covenant (no `OpZkPrecompile` pin) bound to `lane_key`, locking `value`
-/// sompi in its UTXO. Dev covenants are what an execution-only or dev-mode flow settles against;
-/// the real-pins path is only needed once proving is enabled.
-pub async fn bootstrap_dev_covenant<C: RpcApi + ?Sized>(
-    wallet: &Wallet<'_, C>,
-    lane_key: &Hash,
-    value: u64,
-) -> Bootstrapped {
-    let bootstrap_state = EMPTY_HASH;
-    let bootstrap_lane_tip = Hash::default();
-
-    let redeem_len = dev_redeem_script_len(&bootstrap_state, lane_key);
-    let redeem =
-        build_dev_redeem_script(&bootstrap_state, &bootstrap_lane_tip, lane_key, redeem_len);
-
-    let (tx, covenant_id) = wallet.build_covenant_bootstrap_transaction(&redeem, value).await;
-    let bootstrap_txid =
-        wallet.submit_transaction(&tx).await.expect("bootstrap tx submission failed");
-
-    Bootstrapped { covenant_id, bootstrap_txid }
 }
