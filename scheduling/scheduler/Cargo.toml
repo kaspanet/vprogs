@@ -8,7 +8,6 @@ arc-swap.workspace                            = true
 borsh.workspace                               = true
 crossbeam-deque.workspace                     = true
 crossbeam-queue.workspace                     = true
-kaspa-hashes.workspace                        = true
 num_cpus.workspace                            = true
 tap.workspace                                 = true
 thiserror.workspace                           = true
@@ -18,7 +17,6 @@ vprogs-core-hashing.workspace                 = true
 vprogs-core-macros.workspace                  = true
 vprogs-core-smt.workspace                     = true
 vprogs-core-types.workspace                   = true
-vprogs-l1-types.workspace                     = true
 vprogs-scheduling-execution-workers.workspace = true
 vprogs-state-batch-metadata.workspace         = true
 vprogs-state-metadata.workspace               = true
@@ -31,7 +29,6 @@ vprogs-storage-types.workspace                = true
 zerocopy.workspace                            = true
 
 [dev-dependencies]
-kaspa-hashes.workspace                 = true
 tempfile.workspace                     = true
 vprogs-core-test-utils.workspace       = true
 vprogs-core-types.workspace            = true

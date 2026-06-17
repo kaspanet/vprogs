@@ -5,10 +5,8 @@ use kaspa_hashes::Hash;
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_macros::smart_pointer;
 use vprogs_l1_types::SettlementInfo;
-use vprogs_state_proof_receipt::{AggregatorKey, Prefix};
+use vprogs_scheduling_scheduler::{Processor, ReceiptRead, ScheduledBatch};
 use vprogs_storage_types::Store;
-
-use crate::{ReceiptRead, ScheduledBatch, processor::Processor};
 
 /// The L1 block span a bundle proves over.
 #[derive(Clone, Copy)]
@@ -22,9 +20,9 @@ pub struct BundleBlocks {
 /// A formed bundle of proved batches, published to a settlement consumer before its artifact
 /// exists.
 ///
-/// Mirrors [`ScheduledBatch`](crate::ScheduledBatch)'s artifact mechanism: the handle is published
-/// *before* its artifact exists, so a consumer can pop it, read the immediate metadata (e.g.
-/// reconcile pacing against `batches`), and then await the proved artifact `A`, filled via
+/// Mirrors [`ScheduledBatch`]'s artifact mechanism: the handle is published *before* its artifact
+/// exists, so a consumer can pop it, read the immediate metadata (e.g. reconcile pacing against
+/// `batches`), and then await the proved artifact `A`, filled via
 /// [`publish_artifact`](Self::publish_artifact) once proving completes.
 ///
 /// A no-op bundle (all-empty prefix, or one that advanced no state) carries no artifact: it is
@@ -126,14 +124,13 @@ impl<A> ScheduledBundle<A> {
 
     /// Looks up this bundle's cached aggregate (settlement) receipt, returning a handle that
     /// resolves to the deserialized receipt, or `None` on a cache miss. `gateway` is any batch in
-    /// the bundle: the aggregate prover holds no store of its own, so it reaches the receipt cache
-    /// through a batch's storage handle.
+    /// the bundle, supplying the storage handle the aggregate prover reaches the cache through.
     pub fn read_agg_receipt<S: Store, P: Processor<S>>(
         &self,
         gateway: &ScheduledBatch<S, P>,
         seq_commit: [u8; 32],
     ) -> ReceiptRead<S, P, P::AggregatorArtifact> {
-        gateway.submit_read_receipt(self.agg_key(gateway, seq_commit))
+        gateway.read_agg_receipt(self.checkpoint_index, self.from_block.as_bytes(), seq_commit)
     }
 
     /// Stores this bundle's aggregate (settlement) receipt through the write worker, returning a
@@ -145,22 +142,12 @@ impl<A> ScheduledBundle<A> {
         seq_commit: [u8; 32],
         receipt: P::AggregatorArtifact,
     ) -> AtomicAsyncLatch {
-        gateway.submit_store_receipt(self.agg_key(gateway, seq_commit), receipt)
-    }
-
-    /// The aggregate receipt key at this bundle's start coordinate (first checkpoint index + block)
-    /// and claimed tip `seq_commit`; `gateway` supplies the aggregator image id.
-    fn agg_key<S: Store, P: Processor<S>>(
-        &self,
-        gateway: &ScheduledBatch<S, P>,
-        seq_commit: [u8; 32],
-    ) -> AggregatorKey {
-        AggregatorKey {
-            prefix: Prefix { checkpoint_index: self.checkpoint_index.into() },
-            block_hash: self.from_block.as_bytes(),
-            image_id: gateway.aggregator_image_id(),
+        gateway.write_agg_receipt(
+            self.checkpoint_index,
+            self.from_block.as_bytes(),
             seq_commit,
-        }
+            receipt,
+        )
     }
 
     /// Publishes the bundle's artifact and opens the `artifact_published` latch. A `None` artifact

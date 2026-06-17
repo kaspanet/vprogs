@@ -6,10 +6,11 @@
 use kaspa_hashes::Hash;
 use tempfile::TempDir;
 use vprogs_core_types::BatchMetadata;
-use vprogs_scheduling_scheduler::{BundleBlocks, ExecutionConfig, ScheduledBundle, Scheduler};
+use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_scheduling_test_utils::Processor;
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
+use vprogs_zk_aggregate_prover::{BundleBlocks, ScheduledBundle};
 
 #[test]
 fn proof_receipt_round_trips_through_storage_workers() {

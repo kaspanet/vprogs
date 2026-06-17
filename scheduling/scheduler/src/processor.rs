@@ -31,8 +31,7 @@ pub trait Processor<S: Store>: Clone + Sized + Send + Sync + 'static {
     /// Program identifier keying a per-batch receipt in the proof-receipt store.
     fn batch_image_id(&self) -> [u8; 32];
 
-    /// Program identifier keying an aggregated-bundle (settlement) receipt in the proof-receipt
-    /// store.
+    /// Program identifier keying an aggregate (settlement) receipt in the proof-receipt store.
     fn aggregator_image_id(&self) -> [u8; 32];
 
     /// The transaction payload type (e.g. kaspa `L1Transaction`, `usize` in tests).
@@ -45,7 +44,7 @@ pub trait Processor<S: Store>: Clone + Sized + Send + Sync + 'static {
     /// Artifact produced by a processed batch ([`ScheduledBatch::publish_artifact`]). Bounded for
     /// the same proof-receipt caching as [`TransactionArtifact`](Self::TransactionArtifact).
     type BatchArtifact: Clone + BorshSerialize + BorshDeserialize + Send + Sync + 'static;
-    /// Receipt produced by aggregating a bundle of per-batch receipts into one settlement receipt.
+    /// Receipt produced by aggregating a run of per-batch receipts into one settlement receipt.
     /// Bounded for the same proof-receipt caching as the other artifacts.
     type AggregatorArtifact: Clone + BorshSerialize + BorshDeserialize + Send + Sync + 'static;
     /// Opaque metadata attached to each batch for persistence.

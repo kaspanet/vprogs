@@ -20,3 +20,10 @@ vprogs-storage-types.workspace         = true
 vprogs-zk-abi                          = { workspace = true, features = ["host"] }
 vprogs-zk-batch-prover.workspace       = true
 vprogs-zk-transaction-prover.workspace = true
+
+[dev-dependencies]
+tempfile.workspace                     = true
+vprogs-core-types.workspace            = true
+vprogs-scheduling-test-utils.workspace = true
+vprogs-storage-manager.workspace       = true
+vprogs-storage-rocksdb-store.workspace = true

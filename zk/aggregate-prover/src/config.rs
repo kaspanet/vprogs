@@ -1,9 +1,8 @@
 use kaspa_hashes::Hash;
 use vprogs_core_atomics::AsyncQueue;
-use vprogs_scheduling_scheduler::ScheduledBundle;
 use vprogs_zk_batch_prover::LaneProofSource;
 
-use crate::SettlementArtifact;
+use crate::{ScheduledBundle, SettlementArtifact};
 
 /// Static configuration for the aggregate prover.
 ///

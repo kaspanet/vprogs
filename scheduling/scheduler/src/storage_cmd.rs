@@ -20,7 +20,7 @@ pub(crate) enum Key {
     Tx(TxKey),
     /// A per-batch receipt key.
     Batch(BatchKey),
-    /// An aggregated-bundle (settlement) receipt key.
+    /// An aggregate (settlement) receipt key.
     Agg(AggregatorKey),
 }
 
@@ -46,7 +46,7 @@ pub enum ReceiptValue<S: Store, P: Processor<S>> {
     Tx(P::TransactionArtifact),
     /// A per-batch receipt.
     Batch(P::BatchArtifact),
-    /// An aggregated-bundle (settlement) receipt.
+    /// An aggregate (settlement) receipt.
     Agg(P::AggregatorArtifact),
 }
 
@@ -88,7 +88,7 @@ impl<S: Store, P: Processor<S>> ReceiptValue<S, P> {
         }
     }
 
-    /// Moves out the aggregated-bundle receipt. Panics if the value is not an [`Agg`](Self::Agg).
+    /// Moves out the aggregate receipt. Panics if the value is not an [`Agg`](Self::Agg).
     pub(crate) fn into_agg(self) -> P::AggregatorArtifact {
         match self {
             ReceiptValue::Agg(receipt) => receipt,

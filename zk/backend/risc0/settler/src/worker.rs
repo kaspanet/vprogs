@@ -12,8 +12,7 @@ use kaspa_wrpc_client::prelude::KaspaRpcClient;
 use secp256k1::Keypair;
 use vprogs_core_atomics::{AsyncQueue, AtomicAsyncLatch};
 use vprogs_l1_wallet::Wallet;
-use vprogs_scheduling_scheduler::ScheduledBundle;
-use vprogs_zk_aggregate_prover::SettlementArtifact;
+use vprogs_zk_aggregate_prover::{ScheduledBundle, SettlementArtifact};
 use vprogs_zk_backend_risc0_api::{Backend, Receipt};
 
 use crate::covenant::{CovenantState, build_settlement};

@@ -9,13 +9,14 @@ use vprogs_core_atomics::AsyncQueue;
 use vprogs_core_codec::Reader;
 use vprogs_core_smt::EMPTY_HASH;
 use vprogs_l1_types::{ChainBlockMetadata, SettlementInfo};
-use vprogs_scheduling_scheduler::{BundleBlocks, Processor, ScheduledBatch, ScheduledBundle};
+use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
 use vprogs_zk_abi::batch_aggregator::{Inputs as AggregatorInputs, StateTransition};
 use vprogs_zk_batch_prover::{LaneProofRequest, LaneProofSource};
 
 use crate::{
-    AggregateProver, AggregateProverConfig, Backend, SettlementArtifact, command::Command,
+    AggregateProver, AggregateProverConfig, Backend, BundleBlocks, ScheduledBundle,
+    SettlementArtifact, command::Command,
 };
 
 /// Background worker that accumulates scheduled batches, forms bundles from the consecutively-ready
