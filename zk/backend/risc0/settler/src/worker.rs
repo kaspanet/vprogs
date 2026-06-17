@@ -120,11 +120,10 @@ async fn settle_one(
         UtxoEntry::new(cov.value, cov.spk.clone(), cov.daa_score, false, Some(cov.covenant_id));
     let wallet = Wallet::new(&cfg.client, &cfg.params, cfg.keypair);
 
-    // The node can reject a settlement for a reason a different fee UTXO resolves: an orphan (the
-    // fee input references an output it has not yet accepted into its DAG) or a double spend (the
-    // confirmed UTXO set still reports a fee UTXO that an unconfirmed mempool transaction already
-    // spent). Re-fund the fee from a different settled UTXO, excluding each one that was rejected,
-    // until one is accepted or every spendable UTXO is exhausted.
+    // The node can reject a settlement for a transient reason that funding the fee from a
+    // different UTXO resolves (see [`is_retriable_fee_rejection`]). Re-fund from another settled
+    // UTXO, excluding each rejected one, until one is accepted or every spendable UTXO is
+    // exhausted.
     let mut excluded = HashSet::new();
     let txid = loop {
         let Some((tx, fee_outpoint)) = wallet
