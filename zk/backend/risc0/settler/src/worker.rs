@@ -120,9 +120,11 @@ async fn settle_one(
         UtxoEntry::new(cov.value, cov.spk.clone(), cov.daa_score, false, Some(cov.covenant_id));
     let wallet = Wallet::new(&cfg.client, &cfg.params, cfg.keypair);
 
-    // The node can reject a settlement as an orphan when its fee input references an output it has
-    // not yet accepted into its DAG. Re-fund the fee from a different settled UTXO, excluding each
-    // one that produced an orphan, until one is accepted or every spendable UTXO is exhausted.
+    // The node can reject a settlement for a reason a different fee UTXO resolves: an orphan (the
+    // fee input references an output it has not yet accepted into its DAG) or a double spend (the
+    // confirmed UTXO set still reports a fee UTXO that an unconfirmed mempool transaction already
+    // spent). Re-fund the fee from a different settled UTXO, excluding each one that was rejected,
+    // until one is accepted or every spendable UTXO is exhausted.
     let mut excluded = HashSet::new();
     let txid = loop {
         let Some((tx, fee_outpoint)) = wallet
@@ -134,13 +136,13 @@ async fn settle_one(
             )
             .await
         else {
-            panic!("settlement submit failed: every spendable fee UTXO was rejected as an orphan");
+            panic!("settlement submit failed: every spendable fee UTXO was rejected");
         };
         match wallet.submit_transaction(&tx).await {
             Ok(id) => break id,
-            Err(e) if is_orphan_rejection(&e) => {
+            Err(e) if is_retriable_fee_rejection(&e) => {
                 log::warn!(
-                    "settlement-worker: fee UTXO {fee_outpoint} rejected as orphan, \
+                    "settlement-worker: fee UTXO {fee_outpoint} rejected, \
                      retrying with another UTXO: {e}"
                 );
                 excluded.insert(fee_outpoint);
@@ -170,11 +172,14 @@ async fn settle_one(
     Some(built.advance.apply(txid, daa_score))
 }
 
-/// Whether a submit error is the node refusing a transaction because an input references an output
-/// it has not accepted ("orphan where orphan is disallowed"). Matched on the message text because
-/// the wRPC layer does not expose structured rejection reasons.
-fn is_orphan_rejection(e: &RpcError) -> bool {
-    e.to_string().to_lowercase().contains("orphan")
+/// Whether a submit error is the node refusing a transaction for a reason a different fee UTXO
+/// resolves: an orphan (an input references an output it has not accepted, "orphan where orphan is
+/// disallowed") or a double spend (a fee UTXO the confirmed set still reports was already spent by
+/// an unconfirmed mempool transaction). Matched on the message text because the wRPC layer does not
+/// expose structured rejection reasons.
+fn is_retriable_fee_rejection(e: &RpcError) -> bool {
+    let msg = e.to_string().to_lowercase();
+    msg.contains("orphan") || msg.contains("already spent")
 }
 
 /// Polls the node until `outpoint` appears at `spk`'s P2SH address, returning its block DAA score.
