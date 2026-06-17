@@ -18,11 +18,17 @@ use vprogs_zk_backend_risc0_covenant::{
 /// each confirmed settlement.
 #[derive(Clone)]
 pub struct CovenantState {
+    /// Consensus covenant id this UTXO is bound to.
     pub covenant_id: Hash,
+    /// L2 SMT state root committed by the covenant's redeem prefix.
     pub state: [u8; 32],
+    /// Lane tip committed by the covenant's redeem prefix.
     pub lane_tip: Hash,
+    /// Outpoint of the UTXO carrying the covenant.
     pub outpoint: TransactionOutpoint,
+    /// P2SH SPK of the carrying UTXO (its redeem script's hash).
     pub spk: ScriptPublicKey,
+    /// Sompi locked in the carrying UTXO.
     pub value: u64,
     /// DAA score of the carrying UTXO, filled in once it confirms (needed to spend it next).
     pub daa_score: u64,

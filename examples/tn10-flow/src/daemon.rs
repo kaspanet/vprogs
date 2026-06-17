@@ -26,7 +26,7 @@ use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_aggregate_prover::{AggregateProverConfig, ScheduledBundle};
 use vprogs_zk_backend_risc0_api::{Backend, ProofType, Receipt};
-use vprogs_zk_batch_prover::{BatchProverConfig, LaneProofSource};
+use vprogs_zk_batch_prover::{BatchProverConfig, LaneProofRequest, LaneProofSource};
 use vprogs_zk_vm::{ProvingPipeline, Vm};
 
 /// On-disk RocksDB store backing the scheduler.
@@ -121,7 +121,7 @@ pub fn build_proving_node(
 }
 
 /// The bridge + execution + storage config shared by both node modes; the proving mode supplies a
-/// `Vm` whose pipeline carries the settlement sink, this config is otherwise identical.
+/// `Vm` whose pipeline carries the settlement sink; this config is otherwise identical.
 fn base_config(vm: V, store: Store, params: BridgeParams) -> NodeConfig<Store, V> {
     NodeConfig::default()
         .with_execution_config(ExecutionConfig::default().with_processor(vm))
@@ -138,10 +138,9 @@ fn base_config(vm: V, store: Store, params: BridgeParams) -> NodeConfig<Store, V
         )
 }
 
-/// A [`LaneProofSource`] backed by the remote node's wRPC client. The settler calls this while
-/// aggregating a bundle, for the bundle's final-block lane proof; it just forwards to the node's
-/// `get_seq_commit_lane_proof` RPC. Mirrors the in-process `ConsensusLaneSource` the simulation
-/// uses, but over RPC instead of a direct consensus handle.
+/// A [`LaneProofSource`] backed by the remote node's wRPC client: forwards each fetch to the node's
+/// `get_seq_commit_lane_proof` RPC. The in-process analogue is `ConsensusLaneSource`, which reads a
+/// direct consensus handle instead of going over RPC.
 pub struct RemoteLaneSource {
     client: KaspaRpcClient,
 }
@@ -154,9 +153,9 @@ impl RemoteLaneSource {
 }
 
 impl LaneProofSource for RemoteLaneSource {
-    async fn fetch_lane_proof(&self, block: Hash, lane_key: Hash) -> GetSeqCommitLaneProofResponse {
+    async fn fetch_lane_proof(&self, req: LaneProofRequest) -> GetSeqCommitLaneProofResponse {
         self.client
-            .get_seq_commit_lane_proof(block, lane_key)
+            .get_seq_commit_lane_proof(req.block, req.lane_key)
             .await
             .expect("get_seq_commit_lane_proof")
     }

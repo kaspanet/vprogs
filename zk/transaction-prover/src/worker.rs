@@ -35,7 +35,7 @@ impl<S: Store, P: Processor<S, TransactionArtifact = B::Receipt>, B: Backend> Wo
                     let receipt = self.backend.prove_transaction(tx_inputs);
                     tokio::spawn(async move { tx.publish_artifact(Some(receipt.await)) });
                 } else {
-                    // Canceled or dropped batch - advance the counter without proving.
+                    // Canceled or dropped batch: advance the counter without proving.
                     tx.publish_artifact(None);
                 }
             }

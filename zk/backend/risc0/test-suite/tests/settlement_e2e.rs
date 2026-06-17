@@ -447,7 +447,7 @@ async fn batch_proof_groth16_is_directly_settleable_single_batch() {
     );
 
     // Inner tx receipts are always succinct (composed as assumptions into the outer Groth16
-    // batch receipt) — so the same verification path applies as in the succinct test.
+    // batch receipt), so the same verification path applies as in the succinct test.
     if !dev_mode_enabled() {
         for artifact in batch.tx_artifacts() {
             backend.verify_transaction_receipt(&artifact);

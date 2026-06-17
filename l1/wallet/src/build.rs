@@ -26,7 +26,7 @@ use secp256k1::Keypair;
 const MIN_FEERATE_PER_GRAM: u64 = 100;
 
 /// The minimum sompi fee the node's mempool requires for `tx`: [`MIN_FEERATE_PER_GRAM`] times the
-/// binding mass — the larger of the tx's compute mass and its KIP-0009 storage mass.
+/// binding mass: the larger of the tx's compute mass and its KIP-0009 storage mass.
 ///
 /// Call this on the *final, signed* tx so the signature scripts are counted (an unsigned tx has
 /// empty sig scripts and undercounts compute mass). The fee value itself doesn't change the byte
@@ -182,7 +182,7 @@ pub fn settlement_transaction(args: SettlementTx<'_>) -> Transaction {
 
     // Build the fully-funded, signed tx for a given fee: append the fee input + change output, sign
     // only the fee input, restore the covenant witness, set its compute budget, and commit storage
-    // mass. The succinct witness makes this tx large, so its fee is mass-dominated — well past the
+    // mass. The succinct witness makes this tx large, so its fee is mass-dominated; well past the
     // old flat 100_000.
     let build = |fee: u64| {
         let mut tx = args.settlement_tx.clone();

@@ -80,7 +80,7 @@ impl<S: Store, P: Processor<S>> NodeWorker<S, P> {
             L1Event::ChainBlockAdded { checkpoint, accepted_transactions, .. } => {
                 // Per-block trace so hosts can observe processing without owning the loop: enable
                 // `vprogs_node_framework=trace`. Only blocks that carry lane txs or a settlement
-                // are logged — empty blocks (e.g. the whole genesis backfill) would
+                // are logged; empty blocks (e.g. the whole genesis backfill) would
                 // otherwise flood the log. The decoded L2 state is host-specific
                 // and read separately through the API.
                 let meta = checkpoint.metadata();

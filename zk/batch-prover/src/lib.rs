@@ -7,5 +7,5 @@ mod worker;
 
 pub use backend::Backend;
 pub use config::BatchProverConfig;
-pub use lane_source::LaneProofSource;
+pub use lane_source::{LaneProofRequest, LaneProofSource};
 pub use prover::BatchProver;

@@ -18,11 +18,12 @@ pub struct Prefix {
 /// `repr(C)` field and lend it out here, which also guarantees
 /// `size_of::<Self>() >= size_of::<Prefix>()`.
 pub trait HasPrefix {
+    /// The shared [`Prefix`] embedded at the key's front.
     fn prefix(&self) -> &Prefix;
 }
 
 /// A proof-receipt cache key: `as_bytes()` yields the key bytes, which start with the shared
-/// [`Prefix`]. Blanket-implemented for every [`HasPrefix`] key -- the blanket is the only
+/// [`Prefix`]. Blanket-implemented for every [`HasPrefix`] key: the blanket is the only
 /// impl, so a key cannot opt out of the prefix.
 pub trait ReceiptKey: IntoBytes + Immutable + HasPrefix {
     /// The checkpoint index the receipt belongs to ([`AggregatorKey`]'s bundle-start index).

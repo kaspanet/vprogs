@@ -101,8 +101,11 @@ pub struct DriverStats {
 
 /// One selected-chain block the driver has scheduled, kept so reorgs can roll back exactly.
 struct BlockRec {
+    /// Block hash.
     hash: Hash,
+    /// Chain-block metadata recorded for this block.
     meta: ChainBlockMetadata,
+    /// Number of lane transactions the driver scheduled into this block.
     lane_tx_count: u32,
 }
 
@@ -110,7 +113,9 @@ struct BlockRec {
 /// after the block that confirmed it. A reorg that rolls the chain back below `marker` pops this
 /// entry, so the covenant history always matches the live chain. `confirmed[0]` is the bootstrap.
 struct ConfirmedCovenant {
+    /// Chain length right after the block that confirmed this covenant.
     marker: usize,
+    /// The confirmed covenant state.
     covenant: CovenantState,
 }
 
@@ -118,13 +123,18 @@ struct ConfirmedCovenant {
 ///
 /// If its block loses the chain race (orphaned), the tx never lands; after [`REISSUE_DEADLINE`]
 /// mined blocks the driver re-issues from the live confirmed tip. `basis_outpoint` is the covenant
-/// UTXO this tx spends (None for the coinbase-funded bootstrap) — when a reorg pops that basis off
+/// UTXO this tx spends (None for the coinbase-funded bootstrap); when a reorg pops that basis off
 /// `confirmed`, the pending tx is abandoned immediately rather than waiting for the deadline.
 struct PendingCovenant {
+    /// Id of the issued-but-unconfirmed covenant transaction.
     txid: Hash,
+    /// Covenant UTXO this tx spends, or `None` for the coinbase-funded bootstrap.
     basis_outpoint: Option<TransactionOutpoint>,
+    /// Chain index of the block this tx was issued into.
     issued_block_index: u64,
+    /// Covenant state this tx advances to once confirmed.
     next: CovenantState,
+    /// Whether this is the bootstrap (covenant-creating) transaction.
     is_bootstrap: bool,
 }
 
@@ -134,18 +144,21 @@ struct PendingCovenant {
 const REISSUE_DEADLINE: u64 = 30;
 
 /// If a covenant tx is re-issued this many times without any settlement landing, the covenant can
-/// never make progress — a liveness failure. Panics with the seed so it is reproducible.
+/// never make progress: a liveness failure. Panics with the seed so it is reproducible.
 const MAX_REISSUES_WITHOUT_PROGRESS: u64 = 200;
 
 /// The L2 execution stack: the zk `Vm`-backed scheduler over a temp-backed store. Held as a unit
 /// so the real-proof mode can rebuild it once the covenant id is known (the batch prover binds the
 /// covenant id into every journal, and it isn't known until the bootstrap is mined).
 struct Exec {
+    /// The zk `Vm`-backed scheduler.
     scheduler: Scheduler<Store, V>,
+    /// Temp-backed state store the scheduler runs over.
     store: Store,
+    /// Temp directory backing the store, kept alive for the store's lifetime.
     _db: TempDir,
     /// A clone of the processor (shares the proving pipeline) kept only so [`Drop`] can signal the
-    /// batch-prover worker to shut down — the simulation drops the scheduler without calling
+    /// batch-prover worker to shut down; the simulation drops the scheduler without calling
     /// `Scheduler::shutdown`, so the worker would otherwise loop forever. No-op when proving is
     /// off.
     proc_handle: V,
@@ -153,25 +166,39 @@ struct Exec {
 
 /// The L2 driver. Owns the execution stack + store and tracks the selected chain it has scheduled.
 pub struct L2Driver {
+    /// Subnetwork id the driver's lane activity transactions carry.
     lane_subnet: SubnetworkId,
+    /// SMT lane key the driver's activity and settlements commit to.
     lane_key: Hash,
+    /// Resource id whose per-block counter the driver tracks and asserts.
     tracked: ResourceId,
+    /// Number of lane activity transactions issued per block.
     activity_per_block: u64,
+    /// Blocks between settlement transactions.
     settle_every: u64,
+    /// Number of batches the aggregate prover bundles per proof.
     bundle_size: usize,
+    /// Seeded RNG driving deterministic activity and settlement choices.
     rng: StdRng,
 
+    /// Proving backend shared with the execution stack.
     backend: Backend,
+    /// The L2 execution stack (scheduler + store).
     exec: Exec,
     /// Weak handle to the node's consensus, used to (re)build the batch prover's lane source after
     /// bootstrap. Weak so it never extends the consensus lifetime (see [`ConsensusLaneSource`]).
     consensus: Weak<Consensus>,
 
+    /// Whether the genesis/seed state has been installed yet.
     seeded: bool,
+    /// Chain-block metadata the driver seeds its first block from.
     seed_meta: ChainBlockMetadata,
+    /// Selected-chain blocks scheduled so far, kept for exact reorg rollback.
     chain: Vec<BlockRec>,
+    /// Expected value of the tracked resource's counter, checked each block.
     expected_counter: u32,
 
+    /// Whether the driver issues settlement transactions.
     settlements_enabled: bool,
     /// Real-proof end-to-end mode: prove each bundle and settle it with a production
     /// `Settlement::build` (real receipt → `OpZkPrecompile`), instead of dev settlements. Implied
@@ -208,6 +235,7 @@ pub struct L2Driver {
     /// the driver issues no new work, so `pending` only ever clears once.
     drained: AtomicAsyncLatch,
 
+    /// Shared run statistics handed back to the caller.
     stats: Arc<Mutex<DriverStats>>,
 }
 
@@ -484,7 +512,7 @@ impl L2Driver {
 
     /// Reconciles covenant state with a reorg that kept only `keep` chain blocks: pops every
     /// confirmation made in a rolled-back block, and abandons a pending tx whose basis (the
-    /// covenant UTXO it spends) was popped — that tx can never land, so the next block
+    /// covenant UTXO it spends) was popped; that tx can never land, so the next block
     /// re-issues from the new live tip.
     fn rollback_covenant(&mut self, keep: usize) {
         while self.confirmed.last().is_some_and(|c| c.marker > keep) {
@@ -612,7 +640,7 @@ impl L2Driver {
         let new_lane_tip = claimed_seq_commit;
         // Index the next state by the number of confirmed covenant states, so a re-issue of an
         // orphaned settlement reproduces the same state (the confirmed count is unchanged) and a
-        // landed one advances it — keeping prev_state == the live tip's state.
+        // landed one advances it, keeping prev_state == the live tip's state.
         let new_state = state_for(self.confirmed.len() as u64);
 
         let settlement = Settlement::build_dev(&SettlementDevInput {
@@ -702,7 +730,7 @@ impl L2Driver {
         let queue = self.settlement_queue.clone().expect("aggregate prover queue");
         loop {
             // An outstanding batch guarantees the prover will publish a covering bundle, so this
-            // await cannot hang — it is exactly the proving back-pressure. The `batches` count is
+            // await cannot hang; it is exactly the proving back-pressure. The `batches` count is
             // immediate (set before proving), so reconcile it on pop before awaiting the artifact.
             let bundle = queue.wait_and_pop().await;
             self.outstanding_batches = self.outstanding_batches.saturating_sub(bundle.batches());

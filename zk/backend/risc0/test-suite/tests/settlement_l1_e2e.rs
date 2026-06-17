@@ -632,7 +632,7 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
     // Same flow, chained: the 2nd carrier touches the SAME resource as settle_1 (the
     // increment-counter L2 guest just bumps it: 0→1 then 1→2). Using a fresh resource id
     // here would leave the SMT in a state where proving `for_test(2)` at the post-settle_1
-    // version returns the shortcut leaf for `for_test(1)` instead of an empty-key entry —
+    // version returns the shortcut leaf for `for_test(1)` instead of an empty-key entry;
     // batch_processor's verifier compares that against the journal's zero-hash input
     // commitment and panics on resource hash mismatch. Same resource avoids the shortcut.
     // The state-root assertion below still verifies a non-trivial transition (0→1 vs 1→2).

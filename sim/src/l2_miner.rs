@@ -3,7 +3,7 @@
 //! Mechanically this mirrors simpa's `Miner` (mine on a Poisson timer, broadcast, insert received
 //! blocks, track its own matured coinbase outpoints). The one difference is tx generation: instead
 //! of simpa's fixed coinbase-splitting, each block delegates to a [`Producer`] that returns
-//! already-signed transactions — letting the L2 driver issue covenant, activity, and settlement txs
+//! already-signed transactions, letting the L2 driver issue covenant, activity, and settlement txs
 //! funded from this miner's coinbase. simpa's `Miner` is reused as-is for the filler miners; this
 //! type exists only because a `LaneProducer` cannot inject arbitrary txs.
 
@@ -63,19 +63,33 @@ const MAX_DRAIN_BLOCKS: u64 = 50;
 
 /// A miner whose block contents come from a [`Producer`].
 pub struct L2Miner {
+    /// Miner id; also used as the block nonce so each miner's blocks are distinct.
     id: u64,
+    /// Consensus this miner builds and submits blocks against.
     consensus: Arc<Consensus>,
+    /// Consensus params, cloned for block construction.
     params: Params,
+    /// Coinbase payout data (this miner's p2pk script).
     miner_data: MinerData,
+    /// Keypair whose p2pk script receives this miner's coinbase.
     keypair: Keypair,
+    /// Matured coinbase outpoints this miner may still spend.
     possible_unspent_outpoints: IndexSet<TransactionOutpoint>,
+    /// Exponential distribution for the Poisson mining timer.
     dist: Exp<f64>,
+    /// Seeded RNG for mining intervals and tx selection.
     rng: StdRng,
+    /// Blocks mined so far.
     num_blocks: u64,
+    /// Current simulation time (ms).
     sim_time: u64,
+    /// Block count after which the miner stops (draining first), or unbounded.
     target_blocks: Option<u64>,
+    /// Cap on matured outpoints handed to the producer per block.
     max_spendable_snapshot: usize,
+    /// Cap on retained spendable outpoints.
     max_cached_outpoints: usize,
+    /// Source of each block's transactions.
     producer: Box<dyn Producer>,
     /// Opened by the producer once it is drained (no settlement in flight). Past `target_blocks`
     /// the miner keeps mining drain blocks until it opens (bounded by [`MAX_DRAIN_BLOCKS`]),
@@ -269,6 +283,7 @@ impl Process<Block> for L2Miner {
 
 /// A one-shot transaction selector that hands the consensus template builder a fixed tx list.
 struct OnetimeTxSelector {
+    /// The fixed tx list, taken once when the template builder requests it.
     txs: Option<Vec<Transaction>>,
 }
 

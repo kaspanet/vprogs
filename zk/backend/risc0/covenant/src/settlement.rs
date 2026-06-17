@@ -451,7 +451,7 @@ fn sig_script_succinct(
 /// Push order (bottom to top):
 /// `[compressed_proof, new_lane_tip, new_state, block_prove_to, redeem]`.
 ///
-/// The Groth16 verifier does not need a seal/claim/control inclusion proof on the stack —
+/// The Groth16 verifier does not need a seal/claim/control inclusion proof on the stack;
 /// only the compressed proof. Everything else (receipt-claim hash, public inputs, verifying
 /// key, control-root halves) is reconstructed in-script from build-time constants and the
 /// journal hash. See `script::verify_risc0_groth16`.
@@ -659,7 +659,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "SettlementInput::witness variant does not match pins variant")]
     fn settlement_tx_panics_on_witness_pins_mismatch() {
-        // Succinct pins + Groth16 witness — the wire-up bug the build-time match guards.
+        // Succinct pins + Groth16 witness: the wire-up bug the build-time match guards.
         let input = make_input(succinct_pins(), groth16_witness(), 100_000_000, &[0u8; 32]);
         let _ = Settlement::build(&input);
     }

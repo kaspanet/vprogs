@@ -12,11 +12,11 @@ use vprogs_l1_types::{ChainBlockMetadata, SettlementInfo};
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
 use vprogs_zk_abi::batch_aggregator::{Inputs as AggregatorInputs, StateTransition};
-use vprogs_zk_batch_prover::LaneProofSource;
+use vprogs_zk_batch_prover::{LaneProofRequest, LaneProofSource};
 
 use crate::{
-    AggregateProver, AggregateProverConfig, Backend, ScheduledBundle, SettlementArtifact,
-    command::Command,
+    AggregateProver, AggregateProverConfig, Backend, BundleBlocks, ScheduledBundle,
+    SettlementArtifact, command::Command,
 };
 
 /// Background worker that accumulates scheduled batches, forms bundles from the consecutively-ready
@@ -178,8 +178,7 @@ where
             self.emit(ScheduledBundle::resolved_noop(
                 take,
                 checkpoint_index,
-                from_block,
-                block_prove_to,
+                BundleBlocks { from_block, block_prove_to },
                 latest_settlement,
             ));
             return true;
@@ -192,8 +191,7 @@ where
         let handle = ScheduledBundle::new(
             take,
             checkpoint_index,
-            from_block,
-            block_prove_to,
+            BundleBlocks { from_block, block_prove_to },
             latest_settlement,
         );
         self.emit(handle.clone());
@@ -201,7 +199,10 @@ where
         // Aggregate the bundle: fetch the final block's lane proof, encode the aggregator inputs
         // over the per-batch journals, and prove with the per-batch receipts as composition
         // assumptions.
-        let lane_proof = self.lane_source.fetch_lane_proof(block_prove_to, self.lane_key).await;
+        let lane_proof = self
+            .lane_source
+            .fetch_lane_proof(LaneProofRequest { block: block_prove_to, lane_key: self.lane_key })
+            .await;
         let journals: Vec<Vec<u8>> = receipts.iter().map(|r| B::journal_bytes(r)).collect();
         let inputs = AggregatorInputs::encode(
             self.backend.batch_image_id(),

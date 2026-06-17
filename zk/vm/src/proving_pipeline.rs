@@ -9,7 +9,7 @@ use crate::Backend;
 
 /// Proving strategy for the [`Vm`](crate::Vm). Backend implementations are the extension point.
 pub enum ProvingPipeline<S: Store, P: Processor<S>> {
-    /// No proving -- execution only.
+    /// No proving: execution only.
     None,
     /// Transaction-only proving.
     Transaction(TransactionProver<S, P>),

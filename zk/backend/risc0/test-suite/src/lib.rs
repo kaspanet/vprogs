@@ -22,7 +22,7 @@ use vprogs_storage_types::{ReadStore, Store};
 use vprogs_zk_abi::batch_aggregator::Inputs as AggregatorInputs;
 use vprogs_zk_backend_risc0_api::{Backend, Receipt};
 use vprogs_zk_backend_risc0_covenant::{build_dev_redeem_script, dev_redeem_script_len};
-use vprogs_zk_batch_prover::LaneProofSource;
+use vprogs_zk_batch_prover::{LaneProofRequest, LaneProofSource};
 
 mod l1_transaction_ext;
 
@@ -38,12 +38,7 @@ pub fn test_lane_key() -> Hash {
 }
 
 /// Runs the aggregator on a sequence of per-batch receipts and returns the resulting bundle
-/// receipt. The aggregation step the settler and the sim driver run, factored here so the tests and
-/// the in-process drivers share one implementation:
-///
-/// 1. Fetch the lane proof for the bundle's final block via `lane_source`.
-/// 2. Encode the aggregator inputs over the per-batch journal bytes.
-/// 3. Invoke `Backend::prove_aggregator` with the per-batch receipts as composition assumptions.
+/// receipt.
 ///
 /// The returned receipt's journal is a `vprogs_zk_abi::batch_aggregator::StateTransition`, ready
 /// for the settlement covenant.
@@ -55,7 +50,9 @@ pub async fn aggregate_batches<L: LaneProofSource>(
     batch_receipts: Vec<Receipt>,
 ) -> Receipt {
     // Fetch the lane proof for the bundle's final block from L1.
-    let lane_proof = lane_source.fetch_lane_proof(last_block_hash, *lane_key).await;
+    let lane_proof = lane_source
+        .fetch_lane_proof(LaneProofRequest { block: last_block_hash, lane_key: *lane_key })
+        .await;
 
     // Encode the aggregator inputs over the per-batch journal bytes.
     let journals: Vec<Vec<u8>> = batch_receipts.iter().map(|r| r.journal.bytes.clone()).collect();
@@ -191,9 +188,8 @@ pub fn compute_section_lane_tip(
     })
 }
 
-/// Forces the Toccata and zk-hardening forks active on `params`. The covenant flow is only valid
-/// where both are live, so the covenant tests (simnet) and the tn10 example (testnet) toggle them
-/// the same way.
+/// Forces the Toccata fork active on `params`. The covenant flow is only valid where Toccata is
+/// live.
 pub fn force_covenant_forks(params: &mut Params) {
     params.toccata_activation = ForkActivation::always();
 }

@@ -3,7 +3,7 @@
 //! Each node is a real [`Consensus`] (via [`TestConsensus`], which handles db + notification
 //! wiring) running its own processors; nodes exchange blocks through the engine's broadcast, so a
 //! run with two or more miners produces a real DAG whose selected chain reorgs naturally. The miner
-//! processes are supplied by the caller — simpa's [`Miner`](simpa::simulator::miner::Miner) for
+//! processes are supplied by the caller: simpa's [`Miner`](simpa::simulator::miner::Miner) for
 //! filler traffic, and the vprogs L2 miner for the lane/covenant flow.
 
 use std::{sync::Arc, thread::JoinHandle};
@@ -33,10 +33,19 @@ pub struct SimNetwork {
     nodes: Vec<SimNode>,
 }
 
+/// Timing for a [`SimNetwork`]: broadcast delay and the engine clock's start.
+#[derive(Clone, Copy)]
+pub struct SimTiming {
+    /// Broadcast delay in milliseconds.
+    pub delay_ms: u64,
+    /// Engine clock start, so block timestamps line up with the genesis the config carries.
+    pub genesis_timestamp: u64,
+}
+
 impl SimNetwork {
-    /// Creates an empty network whose broadcast delay is `delay_ms` and whose clock starts at
-    /// `genesis_timestamp` (so block timestamps line up with the genesis the config carries).
-    pub fn new(delay_ms: u64, genesis_timestamp: u64) -> Self {
+    /// Creates an empty network with the given broadcast delay and clock start.
+    pub fn new(timing: SimTiming) -> Self {
+        let SimTiming { delay_ms, genesis_timestamp } = timing;
         Self {
             simulation: Simulation::with_start_time(delay_ms, genesis_timestamp),
             nodes: Vec::new(),

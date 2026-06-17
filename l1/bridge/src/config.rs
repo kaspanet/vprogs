@@ -33,12 +33,9 @@ pub struct L1BridgeConfig {
     pub finality_depth: u64,
     /// Covenant id tracked by [`ChainBlockMetadata::last_settlement`], or `None` to disable.
     pub covenant_id: Option<Hash>,
-    /// On a fresh chain (no `root`/`tip`), seed the root `seed_depth` chain-blocks below the
-    /// current sink instead of from the pruning point, so the bridge starts near the tip
-    /// rather than replaying the whole pruning window. The depth is the reorg head-room: a
-    /// reorg shallower than it never rolls back past the root; a deeper one does, and the
-    /// bridge panics (the depth is configured too small for this network). `None` seeds from
-    /// the pruning point.
+    /// On a fresh chain (no `root`/`tip`), seed the root this many chain-blocks below the sink
+    /// instead of from the pruning point, so the bridge starts near the tip. `None` seeds from the
+    /// pruning point.
     pub seed_depth: Option<u64>,
     /// Optional observer the bridge stores its latest chain-block DAA score into. Lets an external
     /// progress reporter gauge how far the chain has replayed toward the node's virtual tip

@@ -234,7 +234,7 @@ async fn start_settlement(
     let backend = Backend::new(tx_elf, batch_elf, aggregator_elf, ProofType::Succinct);
     let wallet = Wallet::new(client, params, keypair);
     // A settlement run reuses no prior covenant (the prover's store starts at the empty SMT), so
-    // warn if the data dir already carries one — it is about to be overwritten by a fresh
+    // warn if the data dir already carries one: it is about to be overwritten by a fresh
     // bootstrap.
     if let Some(prior) = persisted.covenant_id.as_deref() {
         log::warn!(
@@ -318,7 +318,7 @@ fn bridge_params(
 /// pruning point toward the present. `target_daa` is the node's virtual DAA captured once right
 /// after the bootstrap tx was sent (≈ the block the bootstrap lands in); the task polls the
 /// bridge's published `tip_daa` every few seconds and logs a percentage until the tip reaches it.
-/// The loop does no RPC — it only reads the atomic.
+/// The loop does no RPC; it only reads the atomic.
 fn spawn_sync_reporter(tip_daa: Arc<AtomicU64>, target_daa: u64) {
     const POLL: Duration = Duration::from_secs(5);
     tokio::spawn(async move {

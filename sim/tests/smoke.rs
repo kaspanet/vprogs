@@ -4,7 +4,10 @@
 use rand::{RngCore, SeedableRng, rngs::StdRng};
 use secp256k1::Secp256k1;
 use simpa::simulator::miner::{Miner, MinerOptions, NativeLaneProducer};
-use vprogs_sim::{config::sim_config, network::SimNetwork};
+use vprogs_sim::{
+    config::{SimRate, sim_config},
+    network::{SimNetwork, SimTiming},
+};
 
 #[test]
 fn sim_network_produces_blocks() {
@@ -16,8 +19,11 @@ fn sim_network_produces_blocks() {
     let num_miners = 2u64;
     let target_blocks = 300u64;
 
-    let config = sim_config(bps, delay);
-    let mut net = SimNetwork::new((delay * 1000.0) as u64, config.genesis.timestamp);
+    let config = sim_config(SimRate { bps, delay });
+    let mut net = SimNetwork::new(SimTiming {
+        delay_ms: (delay * 1000.0) as u64,
+        genesis_timestamp: config.genesis.timestamp,
+    });
 
     let secp = Secp256k1::new();
     let mut rng = StdRng::seed_from_u64(seed);

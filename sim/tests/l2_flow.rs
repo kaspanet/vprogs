@@ -6,10 +6,10 @@ use rand::{RngCore, SeedableRng, rngs::StdRng};
 use secp256k1::{Keypair, Secp256k1};
 use simpa::simulator::miner::{Miner, MinerOptions, NativeLaneProducer};
 use vprogs_sim::{
-    config::sim_config_with_maturity,
+    config::{SimRate, sim_config_with_maturity},
     driver::{DriverStats, L2Config, L2Driver},
     l2_miner::L2Miner,
-    network::SimNetwork,
+    network::{SimNetwork, SimTiming},
 };
 
 /// Parameters for a simulation run.
@@ -24,7 +24,7 @@ struct SimParams {
     /// full proving path still runs under `RISC0_DEV_MODE=1` with stub receipts).
     enable_proving: bool,
     /// Override `coinbase_maturity` (blocks). `None` uses the default delay-scaled maturity
-    /// (~200); a small value makes matured coinbase — hence lane activity — appear early,
+    /// (~200); a small value makes matured coinbase (hence lane activity) appear early,
     /// keeping a real-proof run short.
     coinbase_maturity: Option<u64>,
     /// Batches bundled per proof when `enable_proving` is set (also the real-proof settlement
@@ -46,8 +46,11 @@ fn run_sim(p: SimParams) -> DriverStats {
         coinbase_maturity,
         bundle_size,
     } = p;
-    let config = sim_config_with_maturity(bps, delay, coinbase_maturity);
-    let mut net = SimNetwork::new((delay * 1000.0) as u64, config.genesis.timestamp);
+    let config = sim_config_with_maturity(SimRate { bps, delay }, coinbase_maturity);
+    let mut net = SimNetwork::new(SimTiming {
+        delay_ms: (delay * 1000.0) as u64,
+        genesis_timestamp: config.genesis.timestamp,
+    });
 
     let secp = Secp256k1::new();
     let mut rng = StdRng::seed_from_u64(seed);
@@ -242,14 +245,14 @@ fn l2_flow_proving_seed_1() {
     // the scheduler submits each block's batch to the prover workers, the aggregate prover
     // fetches each bundle's lane proof through `ConsensusLaneSource` and proves it. Under
     // `RISC0_DEV_MODE=1` the proofs
-    // are dev stubs (no GPU) but the entire wiring runs — `ConsensusLaneSource`, the worker's
+    // are dev stubs (no GPU) but the entire wiring runs: `ConsensusLaneSource`, the worker's
     // derived-vs-consensus `lane_tip` sanity check, and the `Weak<Consensus>` teardown discipline
     // (no `DbLifetime` "DB has N strong references" panic on shutdown). On the GPU box the same
     // test built `--features cuda` and run *without* `RISC0_DEV_MODE` produces real proofs.
     //
     // Single miner so the chain is clean: a reorg would orphan a block whose batch the async worker
     // might already be proving, and the lane-proof fetch for a no-longer-selected block would fail.
-    // Low coinbase maturity so spendable coinbase — hence lane activity — appears within a few
+    // Low coinbase maturity so spendable coinbase (hence lane activity) appears within a few
     // dozen blocks, keeping the real-proof run short (each bundle is a full proof on the GPU).
     let s = run_sim(SimParams {
         seed: 1,
@@ -295,7 +298,7 @@ fn l2_flow_real_proof_settlement_chain() {
 
     // Single miner so the chain is clean: the async prover never has a bundle's block orphaned out
     // from under it, and every issued settlement lands (issued == accepted, no re-issues). Low
-    // coinbase maturity so activity — hence bundles — start within a few dozen blocks.
+    // coinbase maturity so activity (hence bundles) start within a few dozen blocks.
     // `bundle_size` throttles GPU cost (one proof per `bundle_size` blocks) and the settlement
     // cadence.
     let s = run_sim(SimParams {

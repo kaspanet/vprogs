@@ -8,6 +8,15 @@ use vprogs_l1_types::SettlementInfo;
 
 use crate::SettlementArtifact;
 
+/// The L1 block span a bundle proves over.
+#[derive(Clone, Copy)]
+pub struct BundleBlocks {
+    /// L1 block at the bundle's first checkpoint (the block it proves *from*).
+    pub from_block: Hash,
+    /// L1 block the bundle proves through (its final block).
+    pub block_prove_to: Hash,
+}
+
 /// A bundle the aggregate prover has formed and published to the settlement queue.
 ///
 /// Mirrors [`ScheduledBatch`](vprogs_scheduling_scheduler::ScheduledBatch)'s artifact mechanism:
@@ -36,8 +45,8 @@ pub struct ScheduledBundle<R> {
     /// L1 block the bundle proves through (its final block). Immediate, for logging / pacing.
     block_prove_to: Hash,
     /// Most-recent covenant settlement visible on chain as of the bundle's final block, or `None`
-    /// until one lands. Lets the settler skip a bundle an external settlement already covered --
-    /// the same redundancy the aggregate prover applies when forming bundles. Immediate.
+    /// until one lands. Lets the settler skip a bundle an external settlement already covered: the
+    /// same redundancy the aggregate prover applies when forming bundles. Immediate.
     latest_settlement: Option<SettlementInfo>,
     /// The proved settlement, filled via [`publish_artifact`](Self::publish_artifact). `None` for
     /// a no-op bundle that advanced no state.
@@ -52,10 +61,10 @@ impl<R> ScheduledBundle<R> {
     pub fn new(
         batches: usize,
         checkpoint_index: u64,
-        from_block: Hash,
-        block_prove_to: Hash,
+        blocks: BundleBlocks,
         latest_settlement: Option<SettlementInfo>,
     ) -> Self {
+        let BundleBlocks { from_block, block_prove_to } = blocks;
         Self(Arc::new(ScheduledBundleData {
             batches,
             checkpoint_index,
@@ -72,10 +81,10 @@ impl<R> ScheduledBundle<R> {
     pub fn resolved_noop(
         batches: usize,
         checkpoint_index: u64,
-        from_block: Hash,
-        block_prove_to: Hash,
+        blocks: BundleBlocks,
         latest_settlement: Option<SettlementInfo>,
     ) -> Self {
+        let BundleBlocks { from_block, block_prove_to } = blocks;
         let artifact_published = AtomicAsyncLatch::new();
         artifact_published.open();
         Self(Arc::new(ScheduledBundleData {

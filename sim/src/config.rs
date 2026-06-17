@@ -16,22 +16,26 @@ pub const FINALITY_DEPTH: u64 = 200;
 /// Pruning depth; a few finality windows so pruning actually runs over a long simulation.
 pub const PRUNING_DEPTH: u64 = 200 * 2 + 50;
 
-/// Builds the simulation consensus config for `bps`/`delay`, with Toccata + zk-hardening (and
-/// crescendo) forced active.
-pub fn sim_config(bps: f64, delay: f64) -> Arc<Config> {
-    sim_config_with_maturity(bps, delay, None)
+/// Block-production rate and network delay for the simulation consensus config.
+#[derive(Clone, Copy)]
+pub struct SimRate {
+    /// Target blocks per second.
+    pub bps: f64,
+    /// Broadcast delay in seconds.
+    pub delay: f64,
+}
+
+/// Builds the simulation consensus config for `rate`, with Toccata and crescendo forced active.
+pub fn sim_config(rate: SimRate) -> Arc<Config> {
+    sim_config_with_maturity(rate, None)
 }
 
 /// Like [`sim_config`] but pins `coinbase_maturity` to `coinbase_maturity` blocks when `Some`. A
 /// low value lets matured coinbase (hence lane activity) appear within a few dozen blocks, which
 /// keeps the real-proof (cuda) run short; `None` uses the default delay-scaled maturity.
-pub fn sim_config_with_maturity(
-    bps: f64,
-    delay: f64,
-    coinbase_maturity: Option<u64>,
-) -> Arc<Config> {
+pub fn sim_config_with_maturity(rate: SimRate, coinbase_maturity: Option<u64>) -> Arc<Config> {
     let mut params = DEVNET_PARAMS;
-    apply_sim_params(&mut params, bps, delay, coinbase_maturity);
+    apply_sim_params(&mut params, rate, coinbase_maturity);
     force_covenant_forks(&mut params);
     Arc::new(
         ConfigBuilder::new(params)
@@ -45,7 +49,8 @@ pub fn sim_config_with_maturity(
 
 /// Tunes consensus params for a fast, small-finality simulation (mirrors `smt_repro`'s
 /// `apply_pruning_repro_params`, minus the toccata toggle which the caller forces).
-fn apply_sim_params(params: &mut Params, bps: f64, delay: f64, coinbase_maturity: Option<u64>) {
+fn apply_sim_params(params: &mut Params, rate: SimRate, coinbase_maturity: Option<u64>) {
+    let SimRate { bps, delay } = rate;
     params.coinbase_maturity = 200;
 
     let max_delay = delay.max(NETWORK_DELAY_BOUND as f64);
