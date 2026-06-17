@@ -21,6 +21,16 @@ use crate::{
     state::SchedulerState, storage_cmd::ReceiptLookup,
 };
 
+/// The bundle-start coordinate and claimed tip that key an aggregate (settlement) receipt.
+pub struct AggReceiptCoord {
+    /// Bundle-start checkpoint index.
+    pub checkpoint_index: u64,
+    /// L1 block at the bundle's first checkpoint (the block it proves from).
+    pub from_block: [u8; 32],
+    /// Commitment to the bundle's claimed tip.
+    pub seq_commit: [u8; 32],
+}
+
 /// A batch of transactions progressing through the scheduler's lifecycle.
 ///
 /// Each batch moves through three stages: processed (all transactions executed), persisted (all
@@ -251,45 +261,34 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         }
     }
 
-    /// Looks up the aggregate (settlement) receipt at the start coordinate (`checkpoint_index` /
-    /// `from_block`) and claimed tip `seq_commit`, with this batch as the storage gateway: the
-    /// aggregate prover holds no store of its own, so it reaches the receipt cache through a batch's
-    /// storage handle. Resolves to the receipt, or `None` on a miss.
+    /// Looks up the aggregate (settlement) receipt at `coord`, with this batch as the storage
+    /// gateway: the aggregate prover holds no store of its own, so it reaches the receipt cache
+    /// through a batch's storage handle. Resolves to the receipt, or `None` on a miss.
     pub fn read_agg_receipt(
         &self,
-        checkpoint_index: u64,
-        from_block: [u8; 32],
-        seq_commit: [u8; 32],
+        coord: AggReceiptCoord,
     ) -> ReceiptRead<S, P, P::AggregatorArtifact> {
-        self.submit_read_receipt(self.agg_key(checkpoint_index, from_block, seq_commit))
+        self.submit_read_receipt(self.agg_key(coord))
     }
 
-    /// Stores the aggregate (settlement) receipt at the start coordinate through the write worker,
-    /// returning a latch that opens once it commits. This batch is the storage gateway, as for
+    /// Stores the aggregate (settlement) receipt at `coord` through the write worker, returning a
+    /// latch that opens once it commits. This batch is the storage gateway, as for
     /// [`read_agg_receipt`](Self::read_agg_receipt).
     pub fn write_agg_receipt(
         &self,
-        checkpoint_index: u64,
-        from_block: [u8; 32],
-        seq_commit: [u8; 32],
+        coord: AggReceiptCoord,
         receipt: P::AggregatorArtifact,
     ) -> AtomicAsyncLatch {
-        self.submit_store_receipt(self.agg_key(checkpoint_index, from_block, seq_commit), receipt)
+        self.submit_store_receipt(self.agg_key(coord), receipt)
     }
 
-    /// The aggregate receipt key at the start coordinate (`checkpoint_index` + `from_block`) and
-    /// claimed tip `seq_commit`; this batch supplies the aggregator image id.
-    fn agg_key(
-        &self,
-        checkpoint_index: u64,
-        from_block: [u8; 32],
-        seq_commit: [u8; 32],
-    ) -> AggregatorKey {
+    /// The aggregate receipt key at `coord`; this batch supplies the aggregator image id.
+    fn agg_key(&self, coord: AggReceiptCoord) -> AggregatorKey {
         AggregatorKey {
-            prefix: Prefix { checkpoint_index: checkpoint_index.into() },
-            block_hash: from_block,
+            prefix: Prefix { checkpoint_index: coord.checkpoint_index.into() },
+            block_hash: coord.from_block,
             image_id: self.processor.aggregator_image_id(),
-            seq_commit,
+            seq_commit: coord.seq_commit,
         }
     }
 

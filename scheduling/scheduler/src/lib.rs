@@ -26,7 +26,7 @@ pub use processor::Processor;
 pub use pruning_worker::PruningWorker;
 pub(crate) use resource::Resource;
 pub(crate) use resource_access::ResourceAccess;
-pub use scheduled_batch::{ScheduledBatch, ScheduledBatchRef};
+pub use scheduled_batch::{AggReceiptCoord, ScheduledBatch, ScheduledBatchRef};
 pub use scheduled_transaction::ScheduledTransaction;
 pub(crate) use scheduled_transaction::ScheduledTransactionRef;
 pub use scheduler::Scheduler;

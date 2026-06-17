@@ -5,7 +5,7 @@ use kaspa_hashes::Hash;
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_macros::smart_pointer;
 use vprogs_l1_types::SettlementInfo;
-use vprogs_scheduling_scheduler::{Processor, ReceiptRead, ScheduledBatch};
+use vprogs_scheduling_scheduler::{AggReceiptCoord, Processor, ReceiptRead, ScheduledBatch};
 use vprogs_storage_types::Store;
 
 /// The L1 block span a bundle proves over.
@@ -130,7 +130,11 @@ impl<A> ScheduledBundle<A> {
         gateway: &ScheduledBatch<S, P>,
         seq_commit: [u8; 32],
     ) -> ReceiptRead<S, P, P::AggregatorArtifact> {
-        gateway.read_agg_receipt(self.checkpoint_index, self.from_block.as_bytes(), seq_commit)
+        gateway.read_agg_receipt(AggReceiptCoord {
+            checkpoint_index: self.checkpoint_index,
+            from_block: self.from_block.as_bytes(),
+            seq_commit,
+        })
     }
 
     /// Stores this bundle's aggregate (settlement) receipt through the write worker, returning a
@@ -143,9 +147,11 @@ impl<A> ScheduledBundle<A> {
         receipt: P::AggregatorArtifact,
     ) -> AtomicAsyncLatch {
         gateway.write_agg_receipt(
-            self.checkpoint_index,
-            self.from_block.as_bytes(),
-            seq_commit,
+            AggReceiptCoord {
+                checkpoint_index: self.checkpoint_index,
+                from_block: self.from_block.as_bytes(),
+                seq_commit,
+            },
             receipt,
         )
     }
