@@ -21,10 +21,10 @@ use kaspa_wrpc_client::prelude::KaspaRpcClient;
 use vprogs_core_atomics::AsyncQueue;
 use vprogs_l1_bridge::L1BridgeConfig;
 use vprogs_node_framework::{Node, NodeConfig};
-use vprogs_scheduling_scheduler::ExecutionConfig;
+use vprogs_scheduling_scheduler::{ExecutionConfig, ScheduledBundle};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
-use vprogs_zk_aggregate_prover::{AggregateProverConfig, ScheduledBundle};
+use vprogs_zk_aggregate_prover::{AggregateProverConfig, SettlementArtifact};
 use vprogs_zk_backend_risc0_api::{Backend, ProofType, Receipt};
 use vprogs_zk_batch_prover::{BatchProverConfig, LaneProofRequest, LaneProofSource};
 use vprogs_zk_vm::{ProvingPipeline, Vm};
@@ -37,7 +37,7 @@ pub type V = Vm<Backend, Store>;
 pub type FlowNode = Node<Store, V>;
 /// Queue of bundle handles the aggregate prover publishes to the settlement worker (one per formed
 /// bundle).
-pub type FlowSettlementQueue = AsyncQueue<ScheduledBundle<Receipt>>;
+pub type FlowSettlementQueue = AsyncQueue<ScheduledBundle<SettlementArtifact<Receipt>>>;
 
 /// Everything the bridge needs to follow our lane on the remote node.
 pub struct BridgeParams {

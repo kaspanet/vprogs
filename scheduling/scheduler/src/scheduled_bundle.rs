@@ -6,8 +6,6 @@ use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_macros::smart_pointer;
 use vprogs_l1_types::SettlementInfo;
 
-use crate::SettlementArtifact;
-
 /// The L1 block span a bundle proves over.
 #[derive(Clone, Copy)]
 pub struct BundleBlocks {
@@ -17,12 +15,12 @@ pub struct BundleBlocks {
     pub block_prove_to: Hash,
 }
 
-/// A bundle the aggregate prover has formed and published to the settlement queue.
+/// A formed bundle of proved batches, published to a settlement consumer before its artifact
+/// exists.
 ///
-/// Mirrors [`ScheduledBatch`](vprogs_scheduling_scheduler::ScheduledBatch)'s artifact mechanism:
-/// the handle is pushed onto the settlement queue *before* its proof exists, so a consumer can pop
-/// it, read the immediate metadata (e.g. reconcile pacing against `batches`), and then await the
-/// proved [`SettlementArtifact`]. The aggregate worker fills the artifact via
+/// Mirrors [`ScheduledBatch`](crate::ScheduledBatch)'s artifact mechanism: the handle is published
+/// *before* its artifact exists, so a consumer can pop it, read the immediate metadata (e.g.
+/// reconcile pacing against `batches`), and then await the proved artifact `A`, filled via
 /// [`publish_artifact`](Self::publish_artifact) once proving completes.
 ///
 /// A no-op bundle (all-empty prefix, or one that advanced no state) carries no artifact: it is
@@ -30,13 +28,12 @@ pub struct BundleBlocks {
 /// formed bundle still produces exactly one handle, so a consumer that paces itself against proving
 /// can account for all submitted batches by summing each handle's `batches`.
 #[smart_pointer]
-pub struct ScheduledBundle<R> {
+pub struct ScheduledBundle<A> {
     /// Number of scheduled batches this bundle consumed (including empty batches in the ready
     /// prefix). Readable immediately, before the artifact is published.
     batches: usize,
-    /// The bundle's first checkpoint index (bundle-start). With `from_block` it is the
-    /// bundle-start coordinate that keys the aggregator receipt's prefix in the proof-receipt
-    /// store. Immediate.
+    /// The bundle's first checkpoint index (bundle-start). With `from_block`, the coordinate that
+    /// keys the bundle's aggregate receipt. Immediate.
     checkpoint_index: u64,
     /// L1 block at the bundle's first checkpoint (the block it proves *from*), pairing with
     /// `block_prove_to`. Together with `checkpoint_index` it keys the aggregator receipt and keeps
@@ -45,19 +42,18 @@ pub struct ScheduledBundle<R> {
     /// L1 block the bundle proves through (its final block). Immediate, for logging / pacing.
     block_prove_to: Hash,
     /// Most-recent covenant settlement visible on chain as of the bundle's final block, or `None`
-    /// until one lands. Lets the settler skip a bundle an external settlement already covered: the
-    /// same redundancy the aggregate prover applies when forming bundles. Immediate.
+    /// until one lands. Immediate.
     latest_settlement: Option<SettlementInfo>,
-    /// The proved settlement, filled via [`publish_artifact`](Self::publish_artifact). `None` for
-    /// a no-op bundle that advanced no state.
-    settlement: ArcSwapOption<SettlementArtifact<R>>,
+    /// The proved artifact, filled via [`publish_artifact`](Self::publish_artifact). `None` for a
+    /// no-op bundle that advanced no state.
+    artifact: ArcSwapOption<A>,
     /// Opens when the artifact has been published (or resolved as a no-op).
     artifact_published: AtomicAsyncLatch,
 }
 
-impl<R> ScheduledBundle<R> {
-    /// Creates an unresolved bundle handle: its metadata is readable immediately, the settlement
-    /// artifact is filled later via [`publish_artifact`](Self::publish_artifact).
+impl<A> ScheduledBundle<A> {
+    /// Creates an unresolved bundle handle: its metadata is readable immediately, the artifact is
+    /// filled later via [`publish_artifact`](Self::publish_artifact).
     pub fn new(
         batches: usize,
         checkpoint_index: u64,
@@ -71,13 +67,13 @@ impl<R> ScheduledBundle<R> {
             from_block,
             block_prove_to,
             latest_settlement,
-            settlement: ArcSwapOption::empty(),
+            artifact: ArcSwapOption::empty(),
             artifact_published: AtomicAsyncLatch::new(),
         }))
     }
 
     /// Creates an immediately-resolved no-op bundle: it advanced no state, so it carries no
-    /// settlement and its artifact latch is already open.
+    /// artifact and its artifact latch is already open.
     pub fn resolved_noop(
         batches: usize,
         checkpoint_index: u64,
@@ -93,7 +89,7 @@ impl<R> ScheduledBundle<R> {
             from_block,
             block_prove_to,
             latest_settlement,
-            settlement: ArcSwapOption::empty(),
+            artifact: ArcSwapOption::empty(),
             artifact_published,
         }))
     }
@@ -124,22 +120,22 @@ impl<R> ScheduledBundle<R> {
         self.latest_settlement
     }
 
-    /// Publishes the bundle's settlement artifact and opens the `artifact_published` latch. A
-    /// `None` artifact resolves the handle as a no-op (the consumer skips it).
-    pub fn publish_artifact(&self, artifact: Option<SettlementArtifact<R>>) {
+    /// Publishes the bundle's artifact and opens the `artifact_published` latch. A `None` artifact
+    /// resolves the handle as a no-op (the consumer skips it).
+    pub fn publish_artifact(&self, artifact: Option<A>) {
         if let Some(artifact) = artifact {
-            self.settlement.store(Some(Arc::new(artifact)));
+            self.artifact.store(Some(Arc::new(artifact)));
         }
         self.artifact_published.open();
     }
 
-    /// Returns the published settlement artifact, or `None` if the bundle resolved as a no-op.
+    /// Returns the published artifact, or `None` if the bundle resolved as a no-op.
     ///
     /// Must be called after [`wait_artifact_published`](Self::wait_artifact_published): the handle
     /// is visible to consumers before its artifact exists, so an early call returns `None` for an
     /// unresolved bundle rather than panicking.
-    pub fn artifact(&self) -> Option<Arc<SettlementArtifact<R>>> {
-        self.settlement.load_full()
+    pub fn artifact(&self) -> Option<Arc<A>> {
+        self.artifact.load_full()
     }
 
     /// Waits until the bundle's artifact has been published (or resolved as a no-op).

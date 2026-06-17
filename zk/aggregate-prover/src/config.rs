@@ -1,8 +1,9 @@
 use kaspa_hashes::Hash;
 use vprogs_core_atomics::AsyncQueue;
+use vprogs_scheduling_scheduler::ScheduledBundle;
 use vprogs_zk_batch_prover::LaneProofSource;
 
-use crate::ScheduledBundle;
+use crate::SettlementArtifact;
 
 /// Static configuration for the aggregate prover.
 ///
@@ -22,5 +23,5 @@ pub struct AggregateProverConfig<L: LaneProofSource, R: Send + Sync + 'static> {
     /// before its proof exists; the consumer awaits the artifact), for a settlement worker to act
     /// on. `None` runs the prover without settling (e.g. exec/test paths); proved bundles are
     /// then only logged.
-    pub settlement_queue: Option<AsyncQueue<ScheduledBundle<R>>>,
+    pub settlement_queue: Option<AsyncQueue<ScheduledBundle<SettlementArtifact<R>>>>,
 }

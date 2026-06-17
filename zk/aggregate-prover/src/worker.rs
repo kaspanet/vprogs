@@ -9,14 +9,13 @@ use vprogs_core_atomics::AsyncQueue;
 use vprogs_core_codec::Reader;
 use vprogs_core_smt::EMPTY_HASH;
 use vprogs_l1_types::{ChainBlockMetadata, SettlementInfo};
-use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
+use vprogs_scheduling_scheduler::{BundleBlocks, Processor, ScheduledBatch, ScheduledBundle};
 use vprogs_storage_types::Store;
 use vprogs_zk_abi::batch_aggregator::{Inputs as AggregatorInputs, StateTransition};
 use vprogs_zk_batch_prover::{LaneProofRequest, LaneProofSource};
 
 use crate::{
-    AggregateProver, AggregateProverConfig, Backend, BundleBlocks, ScheduledBundle,
-    SettlementArtifact, command::Command,
+    AggregateProver, AggregateProverConfig, Backend, SettlementArtifact, command::Command,
 };
 
 /// Background worker that accumulates scheduled batches, forms bundles from the consecutively-ready
@@ -34,7 +33,7 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend, L: LaneProofSour
     lane_source: L,
     /// Queue each formed bundle's [`ScheduledBundle`] handle is published onto for on-chain
     /// settlement, or `None` to run without settling.
-    settlement_queue: Option<AsyncQueue<ScheduledBundle<B::Receipt>>>,
+    settlement_queue: Option<AsyncQueue<ScheduledBundle<SettlementArtifact<B::Receipt>>>>,
     /// Batches accumulated but not yet bundled, in scheduling order.
     queued: VecDeque<ScheduledBatch<S, P>>,
     /// Last settled L1 block (the lower bound a new bundle chains from). `None` at genesis.
@@ -277,7 +276,7 @@ where
 
     /// Publishes a formed bundle's handle onto the settlement queue, if one is wired. With no queue
     /// the prover runs without settling and the handle is dropped.
-    fn emit(&self, bundle: ScheduledBundle<B::Receipt>) {
+    fn emit(&self, bundle: ScheduledBundle<SettlementArtifact<B::Receipt>>) {
         if let Some(queue) = &self.settlement_queue {
             queue.push(bundle);
         }

@@ -16,6 +16,7 @@ tokio                                      = { workspace = true, features = ["ma
 vprogs-core-atomics.workspace              = true
 vprogs-core-smt.workspace                  = true
 vprogs-l1-wallet.workspace                 = true
+vprogs-scheduling-scheduler.workspace      = true
 vprogs-zk-aggregate-prover.workspace       = true
 vprogs-zk-backend-risc0-api                = { workspace = true, features = ["host"] }
 vprogs-zk-backend-risc0-covenant.workspace = true
