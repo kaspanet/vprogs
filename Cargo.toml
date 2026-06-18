@@ -57,13 +57,14 @@ resolver = "3"
   num_cpus = "1.17.0"
   proc-macro2 = "1.0.103"
   quote = "1.0.42"
+  # jemalloc is intentionally omitted here: it does not build on Windows, so it is enabled
+  # per-target in storage/rocksdb-store and propagated to the build via Cargo feature unification.
   rocksdb = { version = "0.24.0", default-features = false, features = [
     "lz4",
     "zstd",
     "snappy",
     "zlib",
     "bzip2",
-    "jemalloc",
     "mt_static",
   ] }
   serde = { version = "1", features = ["derive"] }
