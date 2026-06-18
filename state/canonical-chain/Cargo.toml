@@ -1,0 +1,7 @@
+[package]
+edition.workspace = true
+name              = "vprogs-state-canonical-chain"
+version.workspace = true
+
+[dependencies]
+vprogs-storage-types.workspace = true

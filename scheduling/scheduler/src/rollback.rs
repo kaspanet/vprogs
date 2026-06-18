@@ -65,8 +65,11 @@ impl<S: Store, P: Processor<S>> Rollback<S, P> {
 
         // Commit all deletions atomically.
         store.commit(store.write_batch().tap_mut(|wb| {
+            // Determine rollback range.
+            let rollback_range = self.target.index() + 1..=self.upper_bound;
+
             // Walk batches from newest to oldest.
-            for index in (self.target.index() + 1..=self.upper_bound).rev() {
+            for index in rollback_range.clone().rev() {
                 // Apply all rollback pointers associated with this batch.
                 for (resource_id, old_version) in StatePtrRollback::iter_batch(store, index) {
                     let resource_id: ResourceId =
@@ -77,6 +80,9 @@ impl<S: Store, P: Processor<S>> Rollback<S, P> {
                 // Delete batch metadata entries for this batch.
                 StoredBatchMetadata::delete(wb, index);
             }
+
+            // Clear the reverted canonical entries on disk (in-memory rollback already happened).
+            self.state.canonical_chain().delete_from_disk(wb, rollback_range.clone());
 
             // Only update `last_committed` on disk if the target is already committed. If the
             // target batch hasn't committed yet, its `commit_done()` will advance `last_committed`.
@@ -92,7 +98,7 @@ impl<S: Store, P: Processor<S>> Rollback<S, P> {
             // Delete SMT nodes and stale markers for each rolled-back version. Without this,
             // orphaned nodes from the old versions would be found by `node` after re-commit,
             // corrupting the tree.
-            for index in (self.target.index() + 1..=self.upper_bound).rev() {
+            for index in rollback_range.rev() {
                 store.rollback(wb, index);
             }
 

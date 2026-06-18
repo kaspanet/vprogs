@@ -8435,6 +8435,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "vprogs-core-atomics"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "crossbeam-queue",
  "futures",
  "tokio",
@@ -8577,6 +8578,7 @@ dependencies = [
  "kaspa-rpc-core",
  "kaspa-txscript",
  "kaspa-wrpc-client",
+ "vprogs-core-types",
  "zerocopy",
 ]
 
@@ -8693,6 +8695,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-scheduling-canonical-chain"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "vprogs-core-atomics",
+ "vprogs-core-macros",
+ "vprogs-core-types",
+ "vprogs-state-canonical-chain",
+ "vprogs-storage-rocksdb-store",
+ "vprogs-storage-types",
+]
+
+[[package]]
 name = "vprogs-scheduling-execution-workers"
 version = "0.1.0"
 dependencies = [
@@ -8725,6 +8740,7 @@ dependencies = [
  "vprogs-core-smt",
  "vprogs-core-test-utils",
  "vprogs-core-types",
+ "vprogs-scheduling-canonical-chain",
  "vprogs-scheduling-execution-workers",
  "vprogs-scheduling-test-utils",
  "vprogs-state-batch-metadata",
@@ -8804,6 +8820,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-state-canonical-chain"
+version = "0.1.0"
+dependencies = [
+ "vprogs-storage-types",
+]
+
+[[package]]
 name = "vprogs-state-metadata"
 version = "0.1.0"
 dependencies = [
@@ -8876,6 +8899,7 @@ dependencies = [
  "vprogs-core-codec",
  "vprogs-core-hashing",
  "vprogs-core-smt",
+ "vprogs-core-types",
  "vprogs-storage-types",
 ]
 

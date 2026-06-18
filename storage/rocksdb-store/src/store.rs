@@ -69,6 +69,13 @@ impl<C: Config> Store for RocksDbStore<C> {
     fn prefix_iter(&self, state_space: StateSpace, prefix: &[u8]) -> PrefixIterator<'_> {
         let cf = self.cf(&state_space);
 
+        // An empty prefix matches every key: full scan (the prefix-seek path mishandles empty).
+        if prefix.is_empty() {
+            return Box::new(RocksDbPrefixIter {
+                inner: self.db.iterator_cf(cf, IteratorMode::Start),
+            });
+        }
+
         let mut read_opts = rocksdb::ReadOptions::default();
         // Ensure iteration stops when keys no longer share the prefix.
         read_opts.set_prefix_same_as_start(true);

@@ -201,6 +201,9 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
         // Advance root in memory before deleting so no observer sees root pointing to pruned data.
         state.set_root(new_root.clone());
 
+        // Retract the live canonical chain's finalized prefix; the disk deletes are staged below.
+        state.canonical_chain().prune_below(upper_bound + 1);
+
         // Commit all deletions and root update atomically.
         store.commit(store.write_batch().tap_mut(|wb| {
             // Walk batches from oldest to newest (order doesn't matter for pruning).
@@ -228,6 +231,9 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
                 // Prune stale SMT nodes for this version.
                 store.prune(wb, index);
             }
+
+            // Clear the pruned canonical entries on disk.
+            state.canonical_chain().delete_from_disk(wb, lower_bound..=upper_bound);
 
             // Advance root on disk.
             StateMetadata::set_root(wb, &new_root);

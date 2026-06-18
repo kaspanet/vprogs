@@ -4,6 +4,7 @@ name              = "vprogs-core-atomics"
 version.workspace = true
 
 [dependencies]
+arc-swap.workspace           = true
 crossbeam-queue.workspace    = true
 futures.workspace            = true
 tokio                        = { workspace = true, features = ["sync"] }

@@ -4,6 +4,7 @@ use arc_swap::ArcSwap;
 use crossbeam_queue::SegQueue;
 use vprogs_core_macros::smart_pointer;
 use vprogs_core_types::{Checkpoint, ResourceId};
+use vprogs_scheduling_canonical_chain::LockFreeCanonicalChain;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_storage_manager::{StorageConfig, StorageManager};
 use vprogs_storage_types::Store;
@@ -24,6 +25,8 @@ pub struct SchedulerState<S: Store, P: Processor<S>> {
     /// Most recently scheduled batch. Advanced by `next_checkpoint`, reset on rollback. Only
     /// mutated from `&mut Scheduler`.
     last_processed: ArcSwap<Checkpoint<P::BatchMetadata>>,
+    /// Maps each committed batch index to its canonical block hash. Persisted on commit.
+    canonical_chain: LockFreeCanonicalChain,
 }
 
 impl<S: Store, P: Processor<S>> SchedulerState<S, P> {
@@ -36,6 +39,8 @@ impl<S: Store, P: Processor<S>> SchedulerState<S, P> {
         let root: Checkpoint<P::BatchMetadata> = StateMetadata::root(storage.store().as_ref());
         let last_committed: Checkpoint<P::BatchMetadata> =
             StateMetadata::last_committed(storage.store().as_ref());
+        let canonical_chain =
+            LockFreeCanonicalChain::restore(storage.store().as_ref(), last_committed.index() + 1);
 
         Self(Arc::new(SchedulerStateData {
             storage,
@@ -43,6 +48,7 @@ impl<S: Store, P: Processor<S>> SchedulerState<S, P> {
             root: ArcSwap::from_pointee(root),
             last_committed: ArcSwap::from_pointee(last_committed.clone()),
             last_processed: ArcSwap::from_pointee(last_committed),
+            canonical_chain,
         }))
     }
 
@@ -69,6 +75,11 @@ impl<S: Store, P: Processor<S>> SchedulerState<S, P> {
     /// Returns the most recently processed (scheduled) checkpoint.
     pub fn last_processed(&self) -> Arc<Checkpoint<P::BatchMetadata>> {
         self.last_processed.load_full()
+    }
+
+    /// Returns the canonical chain.
+    pub fn canonical_chain(&self) -> &LockFreeCanonicalChain {
+        &self.canonical_chain
     }
 
     /// Sets the root checkpoint.

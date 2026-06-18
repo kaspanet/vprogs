@@ -231,6 +231,9 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
         self.state.set_last_processed(Arc::new(checkpoint.clone()));
         self.pending_batches.push_back(checkpoint.clone());
 
+        // Append to the live canonical chain; the durable write is deferred to commit().
+        self.state.canonical_chain().append(&checkpoint);
+
         // Initialize root when the first batch is scheduled. On a fresh database or after
         // rollback-to-genesis, root is default (index 0). The disk write is deferred to
         // commit() for crash-fault tolerance.
@@ -252,6 +255,9 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
         // Update last_processed. last_committed is corrected by Rollback::execute() on the
         // write worker, which sees the true committed state without races.
         self.state.set_last_processed(Arc::new(target.clone()));
+
+        // Retract the live canonical chain; disk deletes are deferred to Rollback::execute().
+        self.state.canonical_chain().rollback_to(target_index + 1);
 
         // Pop canceled entries from the tip. Must happen after lookup_checkpoint (which
         // searches the pending queue) but before returning.
