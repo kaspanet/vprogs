@@ -2,7 +2,7 @@ use alloc::{collections::BTreeMap, vec, vec::Vec};
 use core::ops::Range;
 
 use vprogs_core_codec::{Bits, Result, SortUnique};
-use vprogs_core_types::ResourceId;
+use vprogs_core_types::{CanonicalChain, ResourceId};
 use zerocopy::little_endian::{U16, U32};
 
 use crate::{
@@ -11,9 +11,11 @@ use crate::{
 };
 
 /// Walks the tree top-down to collect witness leaves, siblings, and one membership per input key.
-pub(crate) struct ProofBuilder<'a, S> {
+pub(crate) struct ProofBuilder<'a, S, C> {
     /// Read-only access to existing tree nodes.
     tree: &'a S,
+    /// Oracle that filters node reads to the canonical fork.
+    canonical: &'a C,
     /// Tree version to generate the proof for.
     version: u64,
     /// Deduplicated keys table. Indices `0..keys_input.len()` are input keys in caller order.
@@ -30,14 +32,19 @@ pub(crate) struct ProofBuilder<'a, S> {
     sorted_to_leaf: Vec<u32>,
 }
 
-impl<'a, S: Tree> ProofBuilder<'a, S> {
+impl<'a, S: Tree, C: CanonicalChain> ProofBuilder<'a, S, C> {
     /// Generates a multi-proof for the given keys at `version`.
-    pub(crate) fn build(tree: &'a S, version: u64, keys_input: &[ResourceId]) -> Result<Vec<u8>> {
+    pub(crate) fn build(
+        tree: &'a S,
+        version: u64,
+        keys_input: &[ResourceId],
+        canonical: &'a C,
+    ) -> Result<Vec<u8>> {
         // Sort keys into canonical leaf order and capture the input -> sorted permutation.
         let (sorted_keys, sort_order) = keys_input.sort_unique()?;
 
         // Construct the builder, walk the tree, and classify each member.
-        let mut this = Self::new(tree, version, keys_input);
+        let mut this = Self::new(tree, version, keys_input, canonical);
         this.collect(&Key::ROOT, &sorted_keys, 0);
         let memberships = this.classify_memberships(&sort_order);
 
@@ -54,9 +61,10 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
 
     /// Constructs a builder with pre-allocated collections and seeds the keys table from
     /// `keys_input`.
-    fn new(tree: &'a S, version: u64, keys_input: &[ResourceId]) -> Self {
+    fn new(tree: &'a S, version: u64, keys_input: &[ResourceId], canonical: &'a C) -> Self {
         let mut this = Self {
             tree,
+            canonical,
             version,
             keys: Vec::with_capacity(keys_input.len()),
             key_to_idx: BTreeMap::new(),
@@ -83,17 +91,17 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
         }
 
         // Dispatch based on the node type at this position.
-        match self.tree.node(key, self.version) {
+        match self.tree.node(key, self.version, self.canonical) {
             // Empty subtree (no node or explicit tombstone) - all input keys are absent.
-            None | Some((_, Node::Empty)) => self.collect_empty(input_keys, key.level, offset),
+            None | Some((_, _, Node::Empty)) => self.collect_empty(input_keys, key.level, offset),
 
             // Shortcut leaf - witnesses every input key routed into this subtree.
-            Some((_, Node::Leaf { key: leaf_key, value_hash, .. })) => {
+            Some((_, _, Node::Leaf { key: leaf_key, value_hash, .. })) => {
                 self.emit_leaf(*leaf_key, value_hash, key.level, offset..offset + input_keys.len());
             }
 
             // Internal node - split proof keys and recurse into children.
-            Some((_, Node::Internal { .. })) => self.collect_internal(key, input_keys, offset),
+            Some((_, _, Node::Internal { .. })) => self.collect_internal(key, input_keys, offset),
         }
     }
 
@@ -197,8 +205,8 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
     /// Returns the [`HashedNode`] summary of the node at `node_key`, or [`HashedNode::EMPTY`].
     fn child_summary(&self, node_key: &Key) -> HashedNode {
         self.tree
-            .node(node_key, self.version)
-            .map(|(_, d)| HashedNode::from(&d))
+            .node(node_key, self.version, self.canonical)
+            .map(|(_, _, d)| HashedNode::from(&d))
             .unwrap_or(HashedNode::EMPTY)
     }
 }

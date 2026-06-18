@@ -1,12 +1,12 @@
 use alloc::vec::Vec;
 
 use vprogs_core_codec::Bits;
-use vprogs_core_types::ResourceId;
+use vprogs_core_types::{CanonicalChain, ResourceId};
 
 use crate::{Commitment, DEPTH, EMPTY_HASH, HashedNode, Key, Node, StaleNode, Tree, WriteBatch};
 
 /// Applies leaf mutations to the tree and writes resulting nodes into a `WriteBatch`.
-pub(crate) struct Updater<'a, S, W> {
+pub(crate) struct Updater<'a, S, W, C> {
     /// Read-only access to existing tree nodes.
     tree: &'a S,
     /// Accumulates new/deleted nodes for atomic commit.
@@ -15,18 +15,24 @@ pub(crate) struct Updater<'a, S, W> {
     prev_version: u64,
     /// Version being written.
     version: u64,
+    /// Block_hash of the fork this update belongs to; tags every node written here.
+    block_hash: [u8; 32],
+    /// Oracle that filters prior-state reads to the canonical fork.
+    canonical: &'a C,
 }
 
-impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
-    /// Applies `diffs` as leaf mutations at `version` and returns the new root hash.
+impl<'a, S: Tree, W: WriteBatch, C: CanonicalChain> Updater<'a, S, W, C> {
+    /// Applies `diffs` as leaf mutations at `version` under `block_hash`, returning the new root.
     pub(crate) fn apply(
         tree: &'a S,
         wb: &'a mut W,
         version: u64,
+        block_hash: [u8; 32],
         mut commitments: Vec<Commitment>,
+        canonical: &'a C,
     ) -> [u8; 32] {
         // Initialize the update context. Version > 0 is guaranteed by `Tree::update`.
-        let mut ctx = Self { tree, wb, prev_version: version - 1, version };
+        let mut ctx = Self { tree, wb, prev_version: version - 1, version, block_hash, canonical };
 
         // Sort and deduplicate by key. On duplicate keys, last-write-wins: `dedup_by` removes `a`
         // (later element) and keeps `b`, so we copy `a`'s value_hash into `b` first.
@@ -45,11 +51,11 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
         match &ctx.update_subtree(&Key::ROOT, &commitments) {
             // Tree drained: write a tombstone so reads don't fall back to the stale prior root.
             None => {
-                ctx.wb.put_node(&Key::ROOT, ctx.version, &Node::Empty);
+                ctx.wb.put_node(&Key::ROOT, ctx.version, &ctx.block_hash, &Node::Empty);
                 EMPTY_HASH
             }
             Some(node) => {
-                ctx.wb.put_node(&Key::ROOT, ctx.version, node);
+                ctx.wb.put_node(&Key::ROOT, ctx.version, &ctx.block_hash, node);
                 *node.hash()
             }
         }
@@ -65,11 +71,15 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
         if commitments.is_empty() {
             // An `Empty` tombstone collapses to `None` so callers can treat both as "no subtree".
             let exists = |node: &Node| !matches!(node, Node::Empty);
-            return self.tree.node(key, self.prev_version).map(|(_, data)| data).filter(exists);
+            return self
+                .tree
+                .node(key, self.prev_version, self.canonical)
+                .map(|(_, _, data)| data)
+                .filter(exists);
         }
 
         // Look up existing node at this position to determine the update strategy.
-        match self.tree.node(key, self.prev_version).map(|(_, data)| data) {
+        match self.tree.node(key, self.prev_version, self.canonical).map(|(_, _, data)| data) {
             // Empty subtree: resolve commitments into leaves directly.
             None => self.resolve_leaves(key, commitments),
 
@@ -186,15 +196,21 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
         match child {
             None => {
                 // Tombstone an emptied position so a later read can't resurface the deleted node.
-                let exists = |(_, node)| !matches!(node, Node::Empty);
-                if self.tree.node(key, self.prev_version).is_some_and(exists) {
-                    self.wb.put_node(key, self.version, &Node::Empty);
-                    self.wb.put_stale_node(&StaleNode::new(self.version, *key, self.version));
+                let exists = |(_, _, node)| !matches!(node, Node::Empty);
+                if self.tree.node(key, self.prev_version, self.canonical).is_some_and(exists) {
+                    self.wb.put_node(key, self.version, &self.block_hash, &Node::Empty);
+                    self.wb.put_stale_node(&StaleNode::new(
+                        self.version,
+                        self.block_hash,
+                        *key,
+                        self.version,
+                        self.block_hash,
+                    ));
                 }
                 HashedNode::EMPTY
             }
             Some(node) => {
-                self.wb.put_node(key, self.version, node);
+                self.wb.put_node(key, self.version, &self.block_hash, node);
                 HashedNode::from(node)
             }
         }
@@ -202,8 +218,16 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
 
     /// Marks an existing node at the given position as stale (if it exists).
     fn mark_stale(&mut self, node_key: &Key) {
-        if let Some((old_version, _)) = self.tree.node(node_key, self.prev_version) {
-            self.wb.put_stale_node(&StaleNode::new(self.version, *node_key, old_version));
+        if let Some((old_version, old_block_hash, _)) =
+            self.tree.node(node_key, self.prev_version, self.canonical)
+        {
+            self.wb.put_stale_node(&StaleNode::new(
+                self.version,
+                self.block_hash,
+                *node_key,
+                old_version,
+                old_block_hash,
+            ));
         }
     }
 }

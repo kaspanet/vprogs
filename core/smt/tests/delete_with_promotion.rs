@@ -9,7 +9,7 @@
 use tempfile::TempDir;
 use vprogs_core_hashing::Sha256;
 use vprogs_core_smt::{Commitment, EMPTY_HASH, Tree, proving::Proof};
-use vprogs_core_types::ResourceId;
+use vprogs_core_types::{NoOpCanonicalChain, ResourceId};
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_storage_types::Store;
 
@@ -27,7 +27,7 @@ fn store_with(commitments: Vec<Commitment>) -> (TempDir, RocksDbStore) {
     let dir = TempDir::new().unwrap();
     let store: RocksDbStore = RocksDbStore::open(dir.path());
     let mut wb = store.write_batch();
-    store.update(&mut wb, commitments, 1);
+    store.update(&mut wb, commitments, 1, [0u8; 32], &NoOpCanonicalChain);
     store.commit(wb);
     (dir, store)
 }
@@ -45,14 +45,20 @@ fn delete_promotes_to_root() {
         store_with(vec![Commitment::new(k_keep, v_keep), Commitment::new(k_drop, v_drop)]);
 
     // Pre-state proof covering both keys.
-    let proof_bytes = store.prove(&[k_drop, k_keep], 1).unwrap();
+    let proof_bytes = store.prove(&[k_drop, k_keep], 1, &NoOpCanonicalChain).unwrap();
     let proof = Proof::decode(&proof_bytes).unwrap();
 
     // Apply the delete in the SMT and capture the actual post-state root.
     let mut wb = store.write_batch();
-    store.update(&mut wb, vec![Commitment::new(k_drop, EMPTY_HASH)], 2);
+    store.update(
+        &mut wb,
+        vec![Commitment::new(k_drop, EMPTY_HASH)],
+        2,
+        [0u8; 32],
+        &NoOpCanonicalChain,
+    );
     store.commit(wb);
-    let smt_root = store.root(2);
+    let smt_root = store.root(2, &NoOpCanonicalChain);
 
     // The verifier-side `new_root` must match.
     let computed = proof
@@ -82,13 +88,19 @@ fn delete_promotes_partially_then_stops_at_leaf_sibling() {
         Commitment::new(k_other, v_other),
     ]);
 
-    let proof_bytes = store.prove(&[k_drop, k_keep], 1).unwrap();
+    let proof_bytes = store.prove(&[k_drop, k_keep], 1, &NoOpCanonicalChain).unwrap();
     let proof = Proof::decode(&proof_bytes).unwrap();
 
     let mut wb = store.write_batch();
-    store.update(&mut wb, vec![Commitment::new(k_drop, EMPTY_HASH)], 2);
+    store.update(
+        &mut wb,
+        vec![Commitment::new(k_drop, EMPTY_HASH)],
+        2,
+        [0u8; 32],
+        &NoOpCanonicalChain,
+    );
     store.commit(wb);
-    let smt_root = store.root(2);
+    let smt_root = store.root(2, &NoOpCanonicalChain);
 
     let computed = proof
         .new_root::<Sha256>(|i| match i {
@@ -122,13 +134,19 @@ fn delete_with_subtree_sibling_does_not_promote_across_subtree() {
         Commitment::new(k_sub_b, v_sub_b),
     ]);
 
-    let proof_bytes = store.prove(&[k_drop, k_keep], 1).unwrap();
+    let proof_bytes = store.prove(&[k_drop, k_keep], 1, &NoOpCanonicalChain).unwrap();
     let proof = Proof::decode(&proof_bytes).unwrap();
 
     let mut wb = store.write_batch();
-    store.update(&mut wb, vec![Commitment::new(k_drop, EMPTY_HASH)], 2);
+    store.update(
+        &mut wb,
+        vec![Commitment::new(k_drop, EMPTY_HASH)],
+        2,
+        [0u8; 32],
+        &NoOpCanonicalChain,
+    );
     store.commit(wb);
-    let smt_root = store.root(2);
+    let smt_root = store.root(2, &NoOpCanonicalChain);
 
     let computed = proof
         .new_root::<Sha256>(|i| match i {
@@ -153,11 +171,17 @@ fn delete_only_key_yields_empty_root() {
     let v = [0xBB; 32];
     let (_dir, store) = store_with(vec![Commitment::new(k, v)]);
 
-    let proof_bytes = store.prove(&[k], 1).unwrap();
+    let proof_bytes = store.prove(&[k], 1, &NoOpCanonicalChain).unwrap();
     let proof = Proof::decode(&proof_bytes).unwrap();
 
     let mut wb = store.write_batch();
-    let smt_root = store.update(&mut wb, vec![Commitment::new(k, EMPTY_HASH)], 2);
+    let smt_root = store.update(
+        &mut wb,
+        vec![Commitment::new(k, EMPTY_HASH)],
+        2,
+        [0u8; 32],
+        &NoOpCanonicalChain,
+    );
     store.commit(wb);
 
     assert_eq!(smt_root, EMPTY_HASH);
@@ -187,6 +211,8 @@ fn store_with_leaf_opposite_subtree() -> (TempDir, RocksDbStore, ResourceId, Res
             Commitment::new(k_sub_b, [0x44; 32]),
         ],
         1,
+        [0u8; 32],
+        &NoOpCanonicalChain,
     );
     store.commit(wb);
     (dir, store, k_drop, k_sub_a, k_sub_b)
@@ -202,12 +228,18 @@ fn delete_with_internal_sibling_does_not_resurrect_at_same_version() {
 
     // Delete k_drop at v=2; its position is abandoned with no tombstone written.
     let mut wb = store.write_batch();
-    store.update(&mut wb, vec![Commitment::new(k_drop, EMPTY_HASH)], 2);
+    store.update(
+        &mut wb,
+        vec![Commitment::new(k_drop, EMPTY_HASH)],
+        2,
+        [0u8; 32],
+        &NoOpCanonicalChain,
+    );
     store.commit(wb);
 
     // Prove k_drop AT v=2 (after the delete). It must witness as empty, and the proof's pre-state
     // root must match the committed root - both fail if the stale leaf is resurfaced.
-    let proof_bytes = store.prove(&[k_drop], 2).unwrap();
+    let proof_bytes = store.prove(&[k_drop], 2, &NoOpCanonicalChain).unwrap();
     let proof = Proof::decode(&proof_bytes).unwrap();
     assert_eq!(
         proof.member(0).unwrap().value_hash(),
@@ -216,7 +248,7 @@ fn delete_with_internal_sibling_does_not_resurrect_at_same_version() {
     );
     assert_eq!(
         proof.root::<Sha256>().unwrap(),
-        store.root(2),
+        store.root(2, &NoOpCanonicalChain),
         "proof's pre-state root must match the committed root after deletion",
     );
 }
@@ -231,16 +263,28 @@ fn delete_with_internal_sibling_does_not_resurrect_at_later_version() {
 
     // v=2: delete k_drop.
     let mut wb = store.write_batch();
-    store.update(&mut wb, vec![Commitment::new(k_drop, EMPTY_HASH)], 2);
+    store.update(
+        &mut wb,
+        vec![Commitment::new(k_drop, EMPTY_HASH)],
+        2,
+        [0u8; 32],
+        &NoOpCanonicalChain,
+    );
     store.commit(wb);
 
     // v=3: touch only the sibling subtree. The root is rebuilt reading v=2, where k_drop's
     // abandoned position still holds its stale leaf - it must not be carried into v=3.
     let mut wb = store.write_batch();
-    store.update(&mut wb, vec![Commitment::new(k_sub_a, [0x55; 32])], 3);
+    store.update(
+        &mut wb,
+        vec![Commitment::new(k_sub_a, [0x55; 32])],
+        3,
+        [0u8; 32],
+        &NoOpCanonicalChain,
+    );
     store.commit(wb);
 
-    let proof_bytes = store.prove(&[k_drop], 3).unwrap();
+    let proof_bytes = store.prove(&[k_drop], 3, &NoOpCanonicalChain).unwrap();
     let proof = Proof::decode(&proof_bytes).unwrap();
     assert_eq!(
         proof.member(0).unwrap().value_hash(),

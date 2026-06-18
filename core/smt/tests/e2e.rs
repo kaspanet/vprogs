@@ -1,9 +1,11 @@
+use std::collections::HashMap;
+
 use tempfile::TempDir;
 use vprogs_core_hashing::{Hasher, Sha256};
 use vprogs_core_smt::{
     Commitment, EMPTY_HASH, HashedNode, INTERNAL, Key, LEAF, Node, Tree, proving::Proof,
 };
-use vprogs_core_types::ResourceId;
+use vprogs_core_types::{CanonicalChain, NoOpCanonicalChain, ResourceId};
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_storage_types::Store;
 
@@ -15,7 +17,7 @@ fn commit(store: &RocksDbStore, version: u64, entries: &[(ResourceId, [u8; 32])]
         entries.iter().map(|&(key, value)| Commitment::new(key, Sha256::hash(value))).collect();
 
     let mut wb = store.write_batch();
-    let root = store.update(&mut wb, diffs, version);
+    let root = store.update(&mut wb, diffs, version, [0u8; 32], &NoOpCanonicalChain);
     store.commit(wb);
     root
 }
@@ -23,7 +25,7 @@ fn commit(store: &RocksDbStore, version: u64, entries: &[(ResourceId, [u8; 32])]
 /// Helper: commits raw commitments (including deletions) at the given version.
 fn commit_raw(store: &RocksDbStore, version: u64, diffs: Vec<Commitment>) -> [u8; 32] {
     let mut wb = store.write_batch();
-    let root = store.update(&mut wb, diffs, version);
+    let root = store.update(&mut wb, diffs, version, [0u8; 32], &NoOpCanonicalChain);
     store.commit(wb);
     root
 }
@@ -40,6 +42,25 @@ fn test_value(id: u64) -> [u8; 32] {
     let mut val = [0xFFu8; 32];
     val[24..32].copy_from_slice(&id.to_be_bytes());
     val
+}
+
+/// Controllable canonical-chain oracle for fork-aware read tests: maps each version to its
+/// canonical block hash.
+#[derive(Clone, Default)]
+struct StubChain(HashMap<u64, [u8; 32]>);
+
+impl StubChain {
+    /// Records `block_hash` as canonical at `index`.
+    fn with(mut self, index: u64, block_hash: [u8; 32]) -> Self {
+        self.0.insert(index, block_hash);
+        self
+    }
+}
+
+impl CanonicalChain for StubChain {
+    fn block(&self, index: u64) -> Option<[u8; 32]> {
+        self.0.get(&index).copied()
+    }
 }
 
 // -- Node hashing --
@@ -137,15 +158,15 @@ fn multi_version_commit_and_prove() {
     assert_ne!(root3, root2, "root should change after third commit");
 
     // Per-version roots must be independently retrievable (exercises decode_version).
-    assert_eq!(store.root(1), root1, "root(1) should return version 1 root");
-    assert_eq!(store.root(2), root2, "root(2) should return version 2 root");
-    assert_eq!(store.root(3), root3, "root(3) should return version 3 root");
+    assert_eq!(store.root(1, &NoOpCanonicalChain), root1, "root(1) should return version 1 root");
+    assert_eq!(store.root(2, &NoOpCanonicalChain), root2, "root(2) should return version 2 root");
+    assert_eq!(store.root(3, &NoOpCanonicalChain), root3, "root(3) should return version 3 root");
 
     // Generate and verify proofs at each version.
     let keys = [test_key(1), test_key(2), test_key(3), test_key(4), test_key(5)];
 
     for (version, expected_root) in [(1, root1), (2, root2), (3, root3)] {
-        let proof_bytes = store.prove(&keys, version).unwrap();
+        let proof_bytes = store.prove(&keys, version, &NoOpCanonicalChain).unwrap();
         let proof = Proof::decode(&proof_bytes).expect("proof should decode");
         assert_eq!(
             proof.root::<Sha256>().unwrap(),
@@ -179,10 +200,10 @@ fn historical_version_read_after_overwrite() {
     assert_ne!(root1, root2);
 
     // Reading root at version 1 should still return the original root, not version 2's.
-    assert_eq!(store.root(1), root1, "historical root should be preserved");
+    assert_eq!(store.root(1, &NoOpCanonicalChain), root1, "historical root should be preserved");
 
     // Proof at version 1 should verify against version 1's root.
-    let proof_bytes = store.prove(&[key], 1).unwrap();
+    let proof_bytes = store.prove(&[key], 1, &NoOpCanonicalChain).unwrap();
     let proof = Proof::decode(&proof_bytes).unwrap();
     assert_eq!(
         proof.root::<Sha256>().unwrap(),
@@ -212,22 +233,25 @@ fn node_returns_correct_version() {
     commit(&store, 1, &[(key, test_value(1))]);
 
     // The root node written at version 1 should report version = 1.
-    let (version, _node) = store.node(&Key::ROOT, 1).expect("root should exist at v1");
+    let (version, _, _node) =
+        store.node(&Key::ROOT, 1, &NoOpCanonicalChain).expect("root should exist at v1");
     assert_eq!(version, 1, "node should return version 1, not a byte-swapped value");
 
     // Version 2: update same key.
     commit(&store, 2, &[(key, test_value(2))]);
 
     // Root at max_version=2 should report version 2.
-    let (version, _node) = store.node(&Key::ROOT, 2).expect("root should exist at v2");
+    let (version, _, _node) =
+        store.node(&Key::ROOT, 2, &NoOpCanonicalChain).expect("root should exist at v2");
     assert_eq!(version, 2, "node should return version 2");
 
     // Root at max_version=1 should still report version 1 (historical read).
-    let (version, _node) = store.node(&Key::ROOT, 1).expect("root should exist at v1");
+    let (version, _, _node) =
+        store.node(&Key::ROOT, 1, &NoOpCanonicalChain).expect("root should exist at v1");
     assert_eq!(version, 1, "historical node should return version 1");
 }
 
-// -- Pruning and rollback --
+// -- Pruning and fork-aware reads --
 
 /// Verifies that pruning correctly removes stale nodes without corrupting the tree.
 ///
@@ -250,17 +274,18 @@ fn prune_preserves_tree_integrity() {
     let root2 = commit(&store, 2, &[(test_key(1), test_value(10))]);
     assert_ne!(root1, root2);
 
-    // Prune version 2's stale markers (nodes that were superseded when v2 was committed).
+    // Prune version 2's stale markers (nodes that were superseded when v2 was committed). Pruning
+    // is canonical-aware; with the no-op oracle every entry counts as canonical.
     let mut wb = store.write_batch();
-    store.prune(&mut wb, 2);
+    store.prune(&mut wb, 2, &NoOpCanonicalChain);
     store.commit(wb);
 
     // The current tree (version 2) should still be intact after pruning.
-    assert_eq!(store.root(2), root2, "root at v2 should survive pruning");
+    assert_eq!(store.root(2, &NoOpCanonicalChain), root2, "root at v2 should survive pruning");
 
     // Proof at version 2 should still verify.
     let keys = [test_key(1), test_key(2), test_key(3)];
-    let proof_bytes = store.prove(&keys, 2).unwrap();
+    let proof_bytes = store.prove(&keys, 2, &NoOpCanonicalChain).unwrap();
     let proof = Proof::decode(&proof_bytes).expect("proof should decode");
     assert_eq!(
         proof.root::<Sha256>().unwrap(),
@@ -269,31 +294,68 @@ fn prune_preserves_tree_integrity() {
     );
 }
 
-/// Rollback undoes a committed version: the previous root is restored and proofs verify.
+/// Reads return the node written by the fork the oracle deems canonical, and switching the oracle
+/// switches which fork's state is visible. This is the fork-aware replacement for eager rollback:
+/// competing forks coexist on disk and the canonical chain selects between them at read time.
 #[test]
-fn rollback_restores_previous_state() {
+fn fork_aware_reads_select_canonical_fork() {
     let dir = TempDir::new().unwrap();
-    let store = RocksDbStore::open(dir.path());
+    let store: RocksDbStore = RocksDbStore::open(dir.path());
 
-    // Version 1: insert key.
-    let root1 = commit(&store, 1, &[(test_key(1), test_value(1))]);
+    let key = test_key(1);
+    let hash_genesis = [0x11u8; 32];
+    let hash_a = [0xAAu8; 32];
+    let hash_b = [0xBBu8; 32];
 
-    // Version 2: update key.
-    let root2 = commit(&store, 2, &[(test_key(1), test_value(2))]);
-    assert_ne!(root1, root2);
-
-    // Rollback version 2.
+    // Version 1: shared history under the genesis fork.
+    let oracle_genesis = StubChain::default().with(1, hash_genesis);
     let mut wb = store.write_batch();
-    store.rollback(&mut wb, 2);
+    store.update(
+        &mut wb,
+        vec![Commitment::new(key, Sha256::hash(test_value(1)))],
+        1,
+        hash_genesis,
+        &oracle_genesis,
+    );
     store.commit(wb);
 
-    // Root at version 1 should still be intact.
-    assert_eq!(store.root(1), root1);
+    // Two competing forks both write version 2 with different values and block hashes. Each builds
+    // on the shared version-1 state via an oracle that includes the genesis fork.
+    let oracle_a = StubChain::default().with(1, hash_genesis).with(2, hash_a);
+    let mut wb = store.write_batch();
+    let root_a = store.update(
+        &mut wb,
+        vec![Commitment::new(key, Sha256::hash(test_value(10)))],
+        2,
+        hash_a,
+        &oracle_a,
+    );
+    store.commit(wb);
 
-    // Proof at version 1 should verify.
-    let proof_bytes = store.prove(&[test_key(1)], 1).unwrap();
-    let proof = Proof::decode(&proof_bytes).unwrap();
-    assert_eq!(proof.root::<Sha256>().unwrap(), root1);
+    let oracle_b = StubChain::default().with(1, hash_genesis).with(2, hash_b);
+    let mut wb = store.write_batch();
+    let root_b = store.update(
+        &mut wb,
+        vec![Commitment::new(key, Sha256::hash(test_value(20)))],
+        2,
+        hash_b,
+        &oracle_b,
+    );
+    store.commit(wb);
+
+    assert_ne!(root_a, root_b, "the two forks must produce different roots");
+
+    // Both forks' nodes coexist on disk; the oracle selects which one a read sees.
+    assert_eq!(store.root(2, &oracle_a), root_a, "oracle A must see fork A's state");
+    assert_eq!(store.root(2, &oracle_b), root_b, "oracle B must see fork B's state");
+
+    // Proofs follow the canonical fork too.
+    let proof_a_bytes = store.prove(&[key], 2, &oracle_a).unwrap();
+    let proof_a = Proof::decode(&proof_a_bytes).unwrap();
+    assert_eq!(proof_a.root::<Sha256>().unwrap(), root_a);
+    let proof_b_bytes = store.prove(&[key], 2, &oracle_b).unwrap();
+    let proof_b = Proof::decode(&proof_b_bytes).unwrap();
+    assert_eq!(proof_b.root::<Sha256>().unwrap(), root_b);
 }
 
 // -- Edge cases --
@@ -311,7 +373,7 @@ fn single_key_lifecycle() {
     assert_ne!(root1, EMPTY_HASH);
 
     // Proof for the single key should verify.
-    let proof_bytes = store.prove(&[key], 1).unwrap();
+    let proof_bytes = store.prove(&[key], 1, &NoOpCanonicalChain).unwrap();
     let proof = Proof::decode(&proof_bytes).unwrap();
     assert_eq!(proof.root::<Sha256>().unwrap(), root1);
     assert_eq!(proof.leaves.len(), 1);
@@ -348,7 +410,7 @@ fn delete_all_keys() {
     assert_eq!(root2, EMPTY_HASH, "tree should be empty after deleting all keys");
 
     // Historical root should still be accessible.
-    assert_eq!(store.root(1), root1);
+    assert_eq!(store.root(1, &NoOpCanonicalChain), root1);
 }
 
 /// Duplicate keys in a single batch: last-write-wins semantics.
@@ -387,7 +449,7 @@ fn proof_verify_wrong_root_returns_false() {
 
     commit(&store, 1, &[(test_key(1), test_value(1))]);
 
-    let proof_bytes = store.prove(&[test_key(1)], 1).unwrap();
+    let proof_bytes = store.prove(&[test_key(1)], 1, &NoOpCanonicalChain).unwrap();
     let proof = Proof::decode(&proof_bytes).unwrap();
 
     // Wrong root should not match.
@@ -434,12 +496,16 @@ fn delete_then_insert_does_not_resurrect() {
     // v=2: delete k_old. Tree becomes empty.
     let root2 = commit_raw(&store, 2, vec![Commitment::new(k_old, EMPTY_HASH)]);
     assert_eq!(root2, EMPTY_HASH);
-    assert_eq!(store.root(2), EMPTY_HASH, "store.root(2) must reflect the empty state");
+    assert_eq!(
+        store.root(2, &NoOpCanonicalChain),
+        EMPTY_HASH,
+        "store.root(2) must reflect the empty state"
+    );
 
     // v=3: insert k_new. The tree must contain only k_new - k_old must not be resurrected.
     let _root3 = commit(&store, 3, &[(k_new, test_value(2))]);
 
-    let proof_bytes = store.prove(&[k_old, k_new], 3).unwrap();
+    let proof_bytes = store.prove(&[k_old, k_new], 3, &NoOpCanonicalChain).unwrap();
     let proof = Proof::decode(&proof_bytes).unwrap();
     let m_old = proof.member(0).unwrap();
     let m_new = proof.member(1).unwrap();

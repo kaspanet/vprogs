@@ -10,7 +10,7 @@ use tempfile::TempDir;
 use vprogs_core_hashing::{Hasher, Sha256};
 use vprogs_core_smt::{EMPTY_HASH, Tree as _};
 use vprogs_core_test_utils::ResourceIdExt;
-use vprogs_core_types::{AccessMetadata, ResourceId};
+use vprogs_core_types::{AccessMetadata, NoOpCanonicalChain, ResourceId};
 use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
 use vprogs_node_test_utils::L1Node;
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
@@ -123,7 +123,11 @@ async fn batch_proof_two_transactions() {
     let state = BatchTransition::ref_from_bytes(&journal).expect("decode BatchTransition");
     assert_ne!(state.prev_state, state.new_state, "state should change after counter increment");
     assert_eq!(state.prev_state, EMPTY_HASH, "prev_state should be empty (no prior state)");
-    assert_eq!(state.new_state, storage.root(1), "new_state should match store's version 1");
+    assert_eq!(
+        state.new_state,
+        storage.root(1, &NoOpCanonicalChain),
+        "new_state should match store's version 1"
+    );
 
     let r1_data = StateVersion::get(&storage, 1, &ResourceId::for_test(1))
         .expect("resource 1 should have committed data");
@@ -134,7 +138,7 @@ async fn batch_proof_two_transactions() {
 
     let expected_hash = Sha256::hash(1u32.to_le_bytes());
     for resource_id in [ResourceId::for_test(1), ResourceId::for_test(2)] {
-        let proof_bytes = storage.prove(&[resource_id], 1).unwrap();
+        let proof_bytes = storage.prove(&[resource_id], 1, &NoOpCanonicalChain).unwrap();
         let smt_proof = vprogs_core_smt::proving::Proof::decode(&proof_bytes).unwrap();
         assert_eq!(smt_proof.leaves[0].value_hash, expected_hash);
     }
@@ -187,7 +191,11 @@ async fn batch_proof_two_transactions() {
     let journal_2 = Backend::journal_bytes(&receipt_2);
 
     let state_2 = BatchTransition::ref_from_bytes(&journal_2).expect("decode BatchTransition");
-    assert_eq!(state_2.prev_state, storage.root(1), "batch 2 prev_state should chain from batch 1");
+    assert_eq!(
+        state_2.prev_state,
+        storage.root(1, &NoOpCanonicalChain),
+        "batch 2 prev_state should chain from batch 1"
+    );
     assert_ne!(state_2.prev_state, state_2.new_state, "state should change again");
 
     let r1_v2 = StateVersion::get(&storage, 2, &ResourceId::for_test(1))
@@ -199,7 +207,7 @@ async fn batch_proof_two_transactions() {
 
     let expected_hash_v2 = Sha256::hash(2u32.to_le_bytes());
     for resource_id in [ResourceId::for_test(1), ResourceId::for_test(2)] {
-        let proof_bytes = storage.prove(&[resource_id], 2).unwrap();
+        let proof_bytes = storage.prove(&[resource_id], 2, &NoOpCanonicalChain).unwrap();
         let smt_proof = vprogs_core_smt::proving::Proof::decode(&proof_bytes).unwrap();
         assert_eq!(smt_proof.leaves[0].value_hash, expected_hash_v2);
     }
@@ -308,7 +316,11 @@ async fn batch_proofs_chain_across_batches() {
 
     // Batch 1: empty → version 1 SMT root.
     assert_eq!(state_1.prev_state, EMPTY_HASH, "batch 1 prev_state is the chain's start");
-    assert_eq!(state_1.new_state, storage.root(1), "batch 1 new_state is post-batch-1 root");
+    assert_eq!(
+        state_1.new_state,
+        storage.root(1, &NoOpCanonicalChain),
+        "batch 1 new_state is post-batch-1 root"
+    );
 
     // Batch 2 chains directly: its prev_state must match batch 1's new_state, and its new_state
     // is the post-batch-2 root the aggregator would later settle.
@@ -316,7 +328,11 @@ async fn batch_proofs_chain_across_batches() {
         state_2.prev_state, state_1.new_state,
         "batch 2 chains its prev_state from batch 1's new_state",
     );
-    assert_eq!(state_2.new_state, storage.root(2), "batch 2 new_state is post-batch-2 root");
+    assert_eq!(
+        state_2.new_state,
+        storage.root(2, &NoOpCanonicalChain),
+        "batch 2 new_state is post-batch-2 root"
+    );
 
     // Per-resource state: counter incremented twice (1 → 2) across the two batches.
     let r1_v2 = StateVersion::get(&storage, 2, &ResourceId::for_test(1))

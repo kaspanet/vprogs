@@ -1606,7 +1606,7 @@ pub fn test_smt_state_root_after_commits() {
         // The tree's per-version root should match the metadata root for the latest version.
         let store = scheduler.state().storage().store();
         assert_eq!(
-            store.root(3),
+            store.root(3, scheduler.state().canonical_chain()),
             root3,
             "smt::Tree::root should match the persisted metadata root"
         );
@@ -1788,7 +1788,7 @@ pub fn test_smt_multi_resource_single_batch() {
         assert_ne!(root, EMPTY_HASH, "multi-resource batch should produce non-empty root");
 
         // Tree version root should agree with metadata.
-        assert_eq!(store.root(1), root);
+        assert_eq!(store.root(1, scheduler.state().canonical_chain()), root);
 
         scheduler.shutdown();
     }
@@ -1824,10 +1824,12 @@ pub fn test_smt_multi_proof_verify() {
         batch.wait_committed_blocking();
 
         let store = scheduler.state().storage().store();
-        let root = store.root(1);
+        let root = store.root(1, scheduler.state().canonical_chain());
 
         // Generate a proof for resource 1's key and verify it.
-        let proof_bytes = store.prove(&[ResourceId::for_test(1)], 1).unwrap();
+        let proof_bytes = store
+            .prove(&[ResourceId::for_test(1)], 1, scheduler.state().canonical_chain())
+            .unwrap();
         let proof = Proof::decode(&proof_bytes).expect("valid proof");
 
         assert_eq!(
@@ -1868,10 +1870,12 @@ pub fn test_smt_multi_proof_absent_key() {
         batch.wait_committed_blocking();
 
         let store = scheduler.state().storage().store();
-        let root = store.root(1);
+        let root = store.root(1, scheduler.state().canonical_chain());
 
         // Generate a proof for resource 99 (absent) - should still verify against the root.
-        let proof_bytes = store.prove(&[ResourceId::for_test(99)], 1).unwrap();
+        let proof_bytes = store
+            .prove(&[ResourceId::for_test(99)], 1, scheduler.state().canonical_chain())
+            .unwrap();
         let proof = Proof::decode(&proof_bytes).expect("valid proof");
 
         assert_eq!(
@@ -1924,11 +1928,11 @@ pub fn test_smt_multi_proof_mixed_keys() {
         batch.wait_committed_blocking();
 
         let store = scheduler.state().storage().store();
-        let root = store.root(1);
+        let root = store.root(1, scheduler.state().canonical_chain());
 
         // Proof for existing key 1, existing key 3, and absent key 99.
         let keys = [ResourceId::for_test(1), ResourceId::for_test(3), ResourceId::for_test(99)];
-        let proof_bytes = store.prove(&keys, 1).unwrap();
+        let proof_bytes = store.prove(&keys, 1, scheduler.state().canonical_chain()).unwrap();
         let proof = Proof::decode(&proof_bytes).expect("valid proof");
 
         assert_eq!(

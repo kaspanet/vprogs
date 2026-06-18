@@ -7,7 +7,7 @@ use vprogs_core_smt::{
     Commitment, EMPTY_HASH, Tree,
     proving::{Membership, Proof},
 };
-use vprogs_core_types::ResourceId;
+use vprogs_core_types::{NoOpCanonicalChain, ResourceId};
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_storage_types::Store;
 use zerocopy::little_endian::U32;
@@ -25,7 +25,13 @@ fn store_with_one_key(key: ResourceId, value_hash: [u8; 32]) -> (TempDir, RocksD
     let dir = TempDir::new().unwrap();
     let store: RocksDbStore = RocksDbStore::open(dir.path());
     let mut wb = store.write_batch();
-    store.update(&mut wb, vec![Commitment::new(key, value_hash)], 1);
+    store.update(
+        &mut wb,
+        vec![Commitment::new(key, value_hash)],
+        1,
+        [0u8; 32],
+        &NoOpCanonicalChain,
+    );
     store.commit(wb);
     (dir, store)
 }
@@ -41,7 +47,7 @@ fn shortcut_leaf_non_inclusion_resolves_to_absent() {
     // `for_test(1)` and `for_test(2)` share their first 31 bytes, so the absent key lands in the
     // existing key's root-level shortcut subtree.
     let key_absent = test_key(2);
-    let proof_bytes = store.prove(&[key_absent], 1).unwrap();
+    let proof_bytes = store.prove(&[key_absent], 1, &NoOpCanonicalChain).unwrap();
     let proof = Proof::decode(&proof_bytes).unwrap();
 
     // One query, one witness leaf - but the leaf is the existing key, not the query. The keys
@@ -59,7 +65,7 @@ fn shortcut_leaf_non_inclusion_resolves_to_absent() {
     assert_eq!(m.key, &*key_absent);
 
     // Still a sound proof: it recomputes the stored root from the existing leaf.
-    assert_eq!(proof.root::<Sha256>().unwrap(), store.root(1));
+    assert_eq!(proof.root::<Sha256>().unwrap(), store.root(1, &NoOpCanonicalChain));
 }
 
 /// Multiple absent keys sharing one shortcut leaf - the case that previously broke the
@@ -71,7 +77,7 @@ fn multiple_absent_keys_share_one_shortcut_leaf() {
 
     let absent_a = test_key(2);
     let absent_b = test_key(3);
-    let proof_bytes = store.prove(&[absent_a, absent_b], 1).unwrap();
+    let proof_bytes = store.prove(&[absent_a, absent_b], 1, &NoOpCanonicalChain).unwrap();
     let proof = Proof::decode(&proof_bytes).unwrap();
 
     // One witness leaf, but two memberships - both Absent, both pointing at the same shortcut.
@@ -86,7 +92,7 @@ fn multiple_absent_keys_share_one_shortcut_leaf() {
 
     assert!(proof.member(0).unwrap().absent);
     assert!(proof.member(1).unwrap().absent);
-    assert_eq!(proof.root::<Sha256>().unwrap(), store.root(1));
+    assert_eq!(proof.root::<Sha256>().unwrap(), store.root(1, &NoOpCanonicalChain));
 }
 
 /// Inclusion: querying the existing key resolves to a present member carrying its stored value.
@@ -96,7 +102,7 @@ fn inclusion_resolves_to_present() {
     let value_hash_present = [0xAB; 32];
     let (_dir, store) = store_with_one_key(key_present, value_hash_present);
 
-    let proof_bytes = store.prove(&[key_present], 1).unwrap();
+    let proof_bytes = store.prove(&[key_present], 1, &NoOpCanonicalChain).unwrap();
     let proof = Proof::decode(&proof_bytes).unwrap();
 
     assert!(matches!(proof.memberships[0], Membership::Present(_)));
@@ -128,12 +134,14 @@ fn empty_subtree_non_inclusion_resolves_to_present_empty() {
             Commitment::new(ResourceId::from(bytes_b), [0xEF; 32]),
         ],
         1,
+        [0u8; 32],
+        &NoOpCanonicalChain,
     );
     store.commit(wb);
 
     // Query a key with msb=0: it lands on the empty left child of the root.
     let key_absent = test_key(1);
-    let proof_bytes = store.prove(&[key_absent], 1).unwrap();
+    let proof_bytes = store.prove(&[key_absent], 1, &NoOpCanonicalChain).unwrap();
     let proof = Proof::decode(&proof_bytes).unwrap();
 
     let m = proof.member(0).unwrap();
@@ -153,14 +161,14 @@ fn new_root_matches_post_state_after_foreign_create() {
     // Prove against the pre-state, covering both the existing key and the new key.
     let k_new = test_key(2);
     let v_new = [0xCD; 32];
-    let proof_bytes = store.prove(&[k_prime, k_new], 1).unwrap();
+    let proof_bytes = store.prove(&[k_prime, k_new], 1, &NoOpCanonicalChain).unwrap();
     let proof = Proof::decode(&proof_bytes).unwrap();
 
     // Apply the foreign-create in the SMT and capture the resulting root.
     let mut wb = store.write_batch();
-    store.update(&mut wb, vec![Commitment::new(k_new, v_new)], 2);
+    store.update(&mut wb, vec![Commitment::new(k_new, v_new)], 2, [0u8; 32], &NoOpCanonicalChain);
     store.commit(wb);
-    let smt_root = store.root(2);
+    let smt_root = store.root(2, &NoOpCanonicalChain);
 
     // `new_root` over the proof, supplying each member's post-state value, must match.
     let computed = proof

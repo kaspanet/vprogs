@@ -42,16 +42,17 @@ impl<C: Config> vprogs_storage_types::WriteBatch for WriteBatch<C> {
 }
 
 impl<C: Config> SmtWriteBatch for WriteBatch<C> {
-    fn put_node(&mut self, node_key: &Key, version: u64, data: &Node) {
-        self.put(StateSpace::SmtNode, &node_key.encode_with_version(version), &data.encode());
+    fn put_node(&mut self, node_key: &Key, version: u64, block_hash: &[u8; 32], data: &Node) {
+        let key = node_key.encode_with_version(version, block_hash);
+        self.put(StateSpace::SmtNode, &key, &data.encode());
     }
 
     fn put_stale_node(&mut self, stale: &StaleNode) {
         self.put(StateSpace::SmtStale, &stale.encode_key(), &stale.encode_value());
     }
 
-    fn delete_node(&mut self, node_key: &Key, version: u64) {
-        self.delete(StateSpace::SmtNode, &node_key.encode_with_version(version));
+    fn delete_node(&mut self, node_key: &Key, version: u64, block_hash: &[u8; 32]) {
+        self.delete(StateSpace::SmtNode, &node_key.encode_with_version(version, block_hash));
     }
 
     fn delete_stale_node(&mut self, stale: &StaleNode) {

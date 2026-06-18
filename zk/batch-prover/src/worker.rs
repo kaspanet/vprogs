@@ -81,7 +81,10 @@ where
 
         // Collect SMT proof at the version preceding the batch's checkpoint.
         let prev_version = batch.checkpoint().index().saturating_sub(1);
-        let proof_bytes = self.store.prove(&batch.resource_ids(), prev_version).expect("proof");
+        let proof_bytes = self
+            .store
+            .prove(&batch.resource_ids(), prev_version, batch.canonical_chain())
+            .expect("proof");
 
         // One pass: per-tx journal bytes (inputs) + receipt clones (proof composition).
         let (journals, receipts): (Vec<_>, Vec<_>) =

@@ -8,7 +8,8 @@ use crossbeam_deque::{Injector, Steal, Worker};
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_macros::smart_pointer;
 use vprogs_core_smt::Commitment;
-use vprogs_core_types::{Checkpoint, ResourceId, SchedulerTransaction};
+use vprogs_core_types::{BatchMetadata, Checkpoint, ResourceId, SchedulerTransaction};
+use vprogs_scheduling_canonical_chain::LockFreeCanonicalChain;
 use vprogs_scheduling_execution_workers::Batch;
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
@@ -66,6 +67,11 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
     /// Returns the checkpoint (index + metadata) identifying this batch.
     pub fn checkpoint(&self) -> &Checkpoint<P::BatchMetadata> {
         &self.checkpoint
+    }
+
+    /// Returns the canonical chain oracle, for fork-aware SMT reads (e.g. proof generation).
+    pub fn canonical_chain(&self) -> &LockFreeCanonicalChain {
+        self.state.canonical_chain()
     }
 
     /// Returns the transactions in this batch.
@@ -354,11 +360,14 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
                 state_diff.written_state().write_latest_ptr(wb);
             }
 
-            // Update the authenticated state tree with all resource state diffs from this batch.
+            // Update the authenticated state tree with all resource state diffs from this batch,
+            // tagging nodes with this batch's block_hash so competing forks stay distinguishable.
             let new_root = store.update(
                 wb,
                 updated.into_iter().map(Commitment::from).collect(),
                 self.checkpoint.index(),
+                self.checkpoint.metadata().block_hash(),
+                self.state.canonical_chain(),
             );
 
             StateMetadata::set_state_root(wb, &new_root);

@@ -85,6 +85,12 @@ impl CanonicalChain for LockFreeCanonicalChain {
     fn block(&self, index: u64) -> Option<[u8; 32]> {
         self.ring.get(index)
     }
+
+    fn is_canonical(&self, index: u64, block_hash: &[u8; 32]) -> bool {
+        // Below the live base the entry is finalized: only the canonical fork survived pruning, so
+        // trust the stored node rather than the ring (which no longer tracks that index).
+        index < self.ring.base() || self.block(index).as_ref() == Some(block_hash)
+    }
 }
 
 #[cfg(test)]

@@ -2,6 +2,7 @@ use std::{marker::PhantomData, path::Path, sync::Arc};
 
 use rocksdb::{DB, DBIteratorWithThreadMode, Direction, IteratorMode};
 use vprogs_core_smt::{Key, Node, StaleNode, Tree, WriteBatch as SmtWriteBatch};
+use vprogs_core_types::CanonicalChain;
 use vprogs_storage_types::{PrefixIterator, StateSpace, Store};
 
 use crate::{
@@ -89,44 +90,71 @@ impl<C: Config> Store for RocksDbStore<C> {
 impl<C: Config> Tree for RocksDbStore<C> {
     type Hasher = vprogs_core_hashing::Sha256;
 
-    fn node(&self, key: &Key, max_version: u64) -> Option<(u64, Node)> {
-        let mut iter = self.prefix_iter(StateSpace::SmtNode, &key.encode_with_version(max_version));
-        let (raw_key, raw_value) = iter.next()?;
-        let version = Key::decode_version(&raw_key).expect("corrupted smt node key");
-        let node = Node::decode(&mut raw_value.as_ref()).expect("corrupted smt node");
-        Some((version, node))
+    fn node(
+        &self,
+        key: &Key,
+        max_version: u64,
+        canonical: &impl CanonicalChain,
+    ) -> Option<(u64, [u8; 32], Node)> {
+        // Scan this node's entries newest-first from `max_version`, skipping forks the oracle deems
+        // non-canonical, and return the first surviving entry.
+        for (raw_key, raw_value) in
+            self.prefix_iter(StateSpace::SmtNode, &key.encode_seek_prefix(max_version))
+        {
+            let version = Key::decode_version(&raw_key).expect("corrupted smt node key");
+            let block_hash = Key::decode_block_hash(&raw_key).expect("corrupted smt node key");
+            if !canonical.is_canonical(version, &block_hash) {
+                continue;
+            }
+
+            let node = Node::decode(&mut raw_value.as_ref()).expect("corrupted smt node");
+            return Some((version, block_hash, node));
+        }
+        None
     }
 
-    fn prune(&self, wb: &mut impl SmtWriteBatch, version: u64) {
+    fn prune(&self, wb: &mut impl SmtWriteBatch, version: u64, canonical: &impl CanonicalChain) {
+        // Drop every stale marker at this version; delete the superseded node only for markers
+        // written by the canonical fork, so a dead fork can't remove still-canonical history.
+        // `NoOpCanonicalChain` deems every fork canonical, so this prunes normally when disabled.
         for (raw_key, raw_value) in self.prefix_iter(StateSpace::SmtStale, &version.to_be_bytes()) {
+            let superseded_by =
+                StaleNode::decode_superseded_by(&raw_key).expect("corrupted stale key");
             let node_key = StaleNode::decode_key(&raw_key).expect("corrupted stale key");
-            let node_version = StaleNode::decode_value(&raw_value).expect("corrupted stale value");
+            let (node_version, node_hash) =
+                StaleNode::decode_value(&raw_value).expect("corrupted stale value");
 
-            wb.delete_node(&node_key, node_version);
-            wb.delete_stale_node(&StaleNode::new(version, node_key, node_version));
-        }
-    }
-
-    fn rollback(&self, wb: &mut impl SmtWriteBatch, version: u64) {
-        // Delete all stale markers recorded at this version. These markers reference nodes that
-        // were superseded when this version was committed - removing them "un-supersedes" those
-        // nodes so they become current again.
-        for (raw_key, raw_value) in self.prefix_iter(StateSpace::SmtStale, &version.to_be_bytes()) {
-            let node_key = StaleNode::decode_key(&raw_key).expect("corrupted stale key");
-            let node_version = StaleNode::decode_value(&raw_value).expect("corrupted stale value");
-            wb.delete_stale_node(&StaleNode::new(version, node_key, node_version));
+            if canonical.is_canonical(version, &superseded_by) {
+                wb.delete_node(&node_key, node_version, &node_hash);
+            }
+            wb.delete_stale_node(&StaleNode::new(
+                version,
+                superseded_by,
+                node_key,
+                node_version,
+                node_hash,
+            ));
         }
 
-        // Delete all nodes written at this version. Requires a full CF scan since version is a
-        // key suffix, not a prefix. Rollback is rare, so the scan cost is acceptable.
+        // Reclaim abandoned forks: once finalized, only the canonical fork survives, so delete
+        // every node written at this version under a different block hash. Skipped when the
+        // oracle exposes no canonical hash (e.g. `NoOpCanonicalChain`), where no fork is
+        // ever abandoned. Requires a full CF scan since version is a key suffix, not a
+        // prefix (the unoptimized reclaim path).
+        let Some(canonical_hash) = canonical.block(version) else {
+            return;
+        };
         let cf = self.cf(&StateSpace::SmtNode);
-        let iter = self.db.iterator_cf(cf, IteratorMode::Start);
-        for entry in iter {
+        for entry in self.db.iterator_cf(cf, IteratorMode::Start) {
             let (raw_key, _) = entry.expect("rocksdb iteration failed");
-            let node_version = Key::decode_version(&raw_key).expect("corrupted smt node key");
-            if node_version == version {
+            if Key::decode_version(&raw_key).expect("corrupted smt node key") != version {
+                continue;
+            }
+
+            let block_hash = Key::decode_block_hash(&raw_key).expect("corrupted smt node key");
+            if block_hash != canonical_hash {
                 let node_key = Key::decode(&mut &raw_key[..34]).expect("corrupted smt node key");
-                wb.delete_node(&node_key, version);
+                wb.delete_node(&node_key, version, &block_hash);
             }
         }
     }
