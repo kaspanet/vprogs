@@ -3,6 +3,7 @@
 
 use std::{path::PathBuf, str::FromStr};
 
+use kaspa_consensus_core::network::{NetworkId, NetworkType};
 use kaspa_hashes::Hash;
 use secp256k1::SecretKey;
 
@@ -31,6 +32,8 @@ pub struct Config {
     /// starts near the tip instead of replaying the whole pruning window. Must exceed the
     /// deepest reorg the node produces, or the bridge panics rolling back past its root.
     pub seed_depth: u64,
+    /// Kaspa network to connect to.
+    pub network_id: NetworkId,
 }
 
 impl Config {
@@ -62,6 +65,32 @@ impl Config {
             activity_count: opt_u64("TN10_ACTIVITY_COUNT", 0),
             enable_settlements: opt("TN10_SETTLE").is_some_and(|s| s != "0"),
             seed_depth: opt_u64("TN10_SEED_DEPTH", 100),
+            network_id: opt("TN10_NETWORK").map(|s| parse_network(&s)).unwrap_or(TESTNET_10),
+        }
+    }
+}
+
+/// Default network when `TN10_NETWORK` is unset.
+const TESTNET_10: NetworkId = NetworkId::with_suffix(NetworkType::Testnet, 10);
+
+/// Parses `TN10_NETWORK`, panicking on an unrecognized value. Accepts (case-insensitive, trimmed):
+/// `testnet-10`/`testnet10`/`tn10`, `testnet-N` (any suffix), `devnet`, `simnet`, `mainnet`.
+fn parse_network(raw: &str) -> NetworkId {
+    let v = raw.trim().to_lowercase();
+    match v.as_str() {
+        "testnet-10" | "testnet10" | "tn10" => TESTNET_10,
+        "devnet" => NetworkId::new(NetworkType::Devnet),
+        "simnet" => NetworkId::new(NetworkType::Simnet),
+        "mainnet" => NetworkId::new(NetworkType::Mainnet),
+        _ => {
+            let suffix = v.strip_prefix("testnet-").and_then(|n| n.parse::<u32>().ok());
+            match suffix {
+                Some(n) => NetworkId::with_suffix(NetworkType::Testnet, n),
+                None => panic!(
+                    "TN10_NETWORK={raw:?} unrecognized; expected one of: \
+                     testnet-10|testnet10|tn10, testnet-N, devnet, simnet, mainnet"
+                ),
+            }
         }
     }
 }

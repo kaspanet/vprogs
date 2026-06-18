@@ -35,7 +35,7 @@ use std::{
 use kaspa_consensus_core::{
     config::params::Params,
     constants::{SOMPI_PER_KASPA, TX_VERSION_TOCCATA},
-    network::{NetworkId, NetworkType},
+    network::NetworkId,
     subnets::SubnetworkId,
 };
 use kaspa_seq_commit::hashing::lane_key;
@@ -70,9 +70,9 @@ async fn main() {
     );
 
     let cfg = Config::from_env();
-    let network_id = NetworkId::with_suffix(NetworkType::Testnet, 10);
+    let network_id = cfg.network_id;
 
-    // testnet-10 params, used off-chain only for mass calculation and lane-key derivation; never
+    // Network params, used off-chain only for mass calculation and lane-key derivation; never
     // pushed to the node (the remote fork node runs its own params, with the covenant forks
     // active).
     let params = Params::from(network_id);
