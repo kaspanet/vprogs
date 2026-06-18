@@ -11,7 +11,7 @@ impl<S: Store> vprogs_scheduling_scheduler::Processor<S> for Processor {
         &self,
         ctx: &mut TransactionContext<S, Self>,
     ) -> Result<(), Self::Error> {
-        let tx_id = *ctx.tx();
+        let tx_id = ctx.scheduler_tx().tx;
         for resource in ctx.resources_mut() {
             if resource.access_metadata().access_type == AccessType::Write {
                 resource.data_mut().extend_from_slice(&tx_id.to_be_bytes());

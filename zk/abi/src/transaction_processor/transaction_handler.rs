@@ -1,16 +1,33 @@
-use crate::transaction_processor::{BatchMetadata, Resource};
+use kaspa_hashes::Hash;
+
+use crate::{
+    transaction_processor::{Resource, Transaction},
+    withdrawal::ExitSink,
+};
 
 /// Developer-provided transaction execution logic.
 ///
-/// Receives the raw transaction bytes, batch position, metadata, and mutable access to the
-/// transaction's resources. Returns `Ok(())` on success or an error that gets committed to the
-/// journal.
+/// Receives the full parsed transaction, its merge_idx, context hash, mutable access to the
+/// transaction's resources, and an [`ExitSink`] to emit L2→L1 withdrawals.
+/// Returns `Ok(())` on success or an error that gets committed to the journal.
 pub trait TransactionHandler:
-    for<'a> FnOnce(&'a [u8], u32, &BatchMetadata<'a>, &mut [Resource<'a>]) -> crate::Result<()>
+    for<'a> FnOnce(
+    &Transaction<'a>,
+    u32,
+    &'a Hash,
+    &mut [Resource<'a>],
+    &mut ExitSink,
+) -> crate::Result<()>
 {
 }
 
 impl<F> TransactionHandler for F where
-    F: for<'a> FnOnce(&'a [u8], u32, &BatchMetadata<'a>, &mut [Resource<'a>]) -> crate::Result<()>
+    F: for<'a> FnOnce(
+        &Transaction<'a>,
+        u32,
+        &'a Hash,
+        &mut [Resource<'a>],
+        &mut ExitSink,
+    ) -> crate::Result<()>
 {
 }

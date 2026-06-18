@@ -5,7 +5,7 @@ use vprogs_scheduling_scheduler::{Processor, ScheduledBatch, TransactionContext}
 use vprogs_storage_types::Store;
 use vprogs_zk_abi::{
     Error, Result,
-    transaction_processor::{Inputs, Outputs, StorageOp},
+    transaction_processor::{Inputs, Outputs},
 };
 
 use crate::{Backend, ProvingPipeline};
@@ -38,17 +38,16 @@ impl<B: Backend, S: Store> Processor<S> for Vm<B, S> {
         self.proving_pipeline.submit_transaction(ctx.scheduled_tx(), input_bytes);
 
         // Decode and apply storage operations.
-        Outputs::decode(&output_bytes).map(|output| {
-            for (i, op) in output.storage_ops().iter().enumerate() {
-                if let Some(op) = op {
-                    let data = ctx.resources_mut()[i].data_mut();
-                    match op {
-                        StorageOp::Create(new_data) | StorageOp::Update(new_data) => {
-                            data.clear();
-                            data.extend_from_slice(new_data);
-                        }
-                        StorageOp::Delete => data.clear(),
-                    }
+        Outputs::decode(&output_bytes, ctx.resources().len()).map(|output| {
+            for (resource, op) in ctx.resources_mut().iter_mut().zip(output.storage_ops) {
+                if let Some(new_data) = op {
+                    resource.set_data(new_data);
+                    log::trace!(
+                        "executed: resource_index={} version={} data={}",
+                        resource.resource_index(),
+                        resource.version(),
+                        faster_hex::hex_string(resource.data()),
+                    );
                 }
             }
         })

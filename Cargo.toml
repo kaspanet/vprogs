@@ -1,37 +1,49 @@
 [workspace]
 default-members = [
   "core/*",
+  "examples/tn10-flow",
   "l1/*",
   "node/*",
   "scheduling/*",
+  "sim",
   "state/*",
   "storage/*",
   "transaction-runtime/*",
   "zk/abi",
   "zk/transaction-prover",
   "zk/batch-prover",
+  "zk/aggregate-prover",
   "zk/vm",
   "zk/backend/risc0/api",
+  "zk/backend/risc0/covenant",
+  "zk/backend/risc0/settler",
   "zk/backend/risc0/test-suite",
 ]
 exclude = [
   "zk/backend/risc0/transaction-processor",
+  "zk/backend/risc0/transaction-processor-with-exits",
   "zk/backend/risc0/batch-processor",
+  "zk/backend/risc0/batch-aggregator",
 ]
 members = [
   "core/*",
+  "examples/tn10-flow",
   "l1/*",
   "node/*",
   "scheduling/*",
+  "sim",
   "state/*",
   "storage/*",
   "transaction-runtime/*",
   "zk/abi",
-  "zk/transaction-prover",
-  "zk/batch-prover",
-  "zk/vm",
   "zk/backend/risc0/api",
+  "zk/backend/risc0/covenant",
+  "zk/backend/risc0/settler",
   "zk/backend/risc0/test-suite",
+  "zk/aggregate-prover",
+  "zk/batch-prover",
+  "zk/transaction-prover",
+  "zk/vm",
 ]
 resolver = "3"
 
@@ -49,14 +61,18 @@ resolver = "3"
   crossbeam-utils = "0.8.21"
   ctrlc = { version = "3", features = ["termination"] }
   env_logger = "0.11"
+  faster-hex = "0.9"
   fastrand = "2.3.0"
   figment = { version = "0.10", features = ["toml", "env"] }
   futures = "0.3.31"
+  indexmap = "2"
   intrusive-collections = "0.9.7"
   log = "0.4"
   num_cpus = "1.17.0"
   proc-macro2 = "1.0.103"
   quote = "1.0.42"
+  rand = "0.8"
+  rand_distr = "0.4"
   rocksdb = { version = "0.24.0", default-features = false, features = [
     "lz4",
     "zstd",
@@ -76,40 +92,66 @@ resolver = "3"
   tokio-util = "0.7.17"
   toml = "0.8"
   workflow-core = "0.18.0"
+  zerocopy = { version = "0.8", default-features = false }
 
   secp256k1 = { version = "0.29.1", features = ["rand-std"] }
 
   # ZK dependencies
+  ark-bn254 = "0.6.0"
+  ark-groth16 = "0.6.0"
+  ark-serialize = "0.6.0"
+  bincode = { version = "1.3.3", default-features = false }
+  blake2b_simd = { version = "1.0.2", default-features = false }
   blake3 = { version = "1", default-features = false }
+  risc0-circuit-recursion = { version = "4.0", default-features = false }
+  risc0-groth16 = "3.0.3"
   risc0-zkvm = { version = "3.0", default-features = false }
   rkyv = { version = "0.8", default-features = false, features = [
     "alloc",
     "bytecheck",
   ] }
+  sha2 = { version = "0.10", default-features = false }
 
-  # Kaspa dependencies
-  kaspa-addresses           = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-  kaspa-consensus-core      = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-  kaspa-core                = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-  kaspa-grpc-client         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-  kaspa-hashes              = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-  kaspa-notify              = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-  kaspa-rpc-core            = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-  kaspa-testing-integration = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-  kaspa-txscript            = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-  kaspa-wrpc-client         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-  kaspa-wrpc-server         = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
-  kaspad                    = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+  # Kaspa dependencies — biryukovmaxim's branch carries PR #961 (the
+  # `get_seq_commit_lane_proof` RPC) which we use for on-demand settlement-context
+  # fetch. Replaces the previous `hmoog/rusty-kaspa#lane-data-in-v2-response` fork
+  # whose per-block lane_data extension is no longer needed under bundling.
+  kaspa-addresses = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
+  kaspa-consensus = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
+  kaspa-consensus-core = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
+  kaspa-consensus-notify = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
+  kaspa-core = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
+  kaspa-database = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
+  kaspa-grpc-client = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
+  kaspa-hashes = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof", default-features = false, features = [
+    "zerocopy",
+  ] }
+  kaspa-merkle = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
+  kaspa-notify = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
+  kaspa-rpc-core = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
+  kaspa-seq-commit = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof", default-features = false }
+  kaspa-smt = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof", default-features = false }
+  kaspa-testing-integration = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
+  kaspa-txscript = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
+  kaspa-utils = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
+  kaspa-wrpc-client = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
+  kaspa-wrpc-server = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
+  kaspad = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
+  simpa = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "covpp-reset2-rpc-lane-proof" }
 
   # Internal dependencies
   vprogs-core-atomics                             = { path = "core/atomics" }
   vprogs-core-codec                               = { path = "core/codec" }
+  vprogs-core-hashing                             = { path = "core/hashing" }
   vprogs-core-macros                              = { path = "core/macros" }
+  vprogs-core-merkle-tree                         = { path = "core/merkle-tree" }
   vprogs-core-smt                                 = { path = "core/smt" }
   vprogs-core-test-utils                          = { path = "core/test-utils" }
   vprogs-core-types                               = { path = "core/types", default-features = false }
   vprogs-l1-bridge                                = { path = "l1/bridge" }
   vprogs-l1-types                                 = { path = "l1/types" }
+  vprogs-l1-utils                                 = { path = "l1/utils" }
+  vprogs-l1-wallet                                = { path = "l1/wallet" }
   vprogs-node-cli                                 = { path = "node/cli" }
   vprogs-node-framework                           = { path = "node/framework" }
   vprogs-node-test-utils                          = { path = "node/test-utils" }
@@ -119,6 +161,7 @@ resolver = "3"
   vprogs-scheduling-test-utils                    = { path = "scheduling/test-utils" }
   vprogs-state-batch-metadata                     = { path = "state/batch-metadata" }
   vprogs-state-metadata                           = { path = "state/metadata" }
+  vprogs-state-proof-receipt                      = { path = "state/proof-receipt" }
   vprogs-state-ptr-latest                         = { path = "state/ptr-latest" }
   vprogs-state-ptr-rollback                       = { path = "state/ptr-rollback" }
   vprogs-state-version                            = { path = "state/version" }
@@ -145,11 +188,11 @@ resolver = "3"
   vprogs-transaction-runtime-transaction          = { path = "transaction-runtime/transaction" }
   vprogs-transaction-runtime-transaction-effects  = { path = "transaction-runtime/transaction-effects" }
   vprogs-zk-abi                                   = { path = "zk/abi", default-features = false }
+  vprogs-zk-aggregate-prover                      = { path = "zk/aggregate-prover" }
   vprogs-zk-backend-risc0-api                     = { path = "zk/backend/risc0/api", default-features = false }
+  vprogs-zk-backend-risc0-covenant                = { path = "zk/backend/risc0/covenant" }
+  vprogs-zk-backend-risc0-settler                 = { path = "zk/backend/risc0/settler" }
+  vprogs-zk-backend-risc0-test-suite              = { path = "zk/backend/risc0/test-suite" }
   vprogs-zk-batch-prover                          = { path = "zk/batch-prover" }
   vprogs-zk-transaction-prover                    = { path = "zk/transaction-prover" }
   vprogs-zk-vm                                    = { path = "zk/vm" }
-
-[patch.'https://github.com/kaspanet/rusty-kaspa']
-kaspa-math  = { git = "https://github.com/hmoog/rusty-kaspa", branch = "feat/kaspa-math-32bit" }
-kaspa-utils = { git = "https://github.com/hmoog/rusty-kaspa", branch = "feat/kaspa-math-32bit" }

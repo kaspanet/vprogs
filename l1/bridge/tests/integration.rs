@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use kaspa_consensus_core::network::NetworkId;
 use vprogs_core_types::Checkpoint;
 use vprogs_l1_bridge::{L1Bridge, L1BridgeConfig, L1Event, RpcOptionalHeader};
 use vprogs_l1_types::{ChainBlockMetadata, ConnectStrategy, L1Transaction, NetworkType};
@@ -81,7 +82,7 @@ async fn test_bridge_block_contains_transactions() {
 /// from the given starting point.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_bridge_syncs_from_specific_block() {
-    let node = L1Node::new(None).await;
+    let node = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
 
     // Mine initial blocks that the bridge will skip over.
     let initial_hashes = node.mine_blocks(3).await;
@@ -93,7 +94,10 @@ async fn test_bridge_syncs_from_specific_block() {
         .with_network_type(NetworkType::Simnet)
         .with_connect_strategy(ConnectStrategy::Fallback)
         .with_filter_half_life(Duration::ZERO)
-        .with_tip(Some(Checkpoint::new(3, ChainBlockMetadata::new(start_from, 0))));
+        .with_tip(Some(Checkpoint::new(
+            3,
+            ChainBlockMetadata { hash: start_from, ..Default::default() },
+        )));
 
     let bridge = L1Bridge::new(config);
 
@@ -127,7 +131,7 @@ async fn test_bridge_syncs_from_specific_block() {
 /// while no bridge was running.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_bridge_catches_up_after_reconnection() {
-    let node = L1Node::new(None).await;
+    let node = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
 
     // Phase 1: First bridge receives some blocks.
     let config = L1BridgeConfig::default()
@@ -153,8 +157,10 @@ async fn test_bridge_catches_up_after_reconnection() {
 
     // Save the last processed position as a checkpoint.
     let (last_index, last_header, _) = &blocks[2];
-    let checkpoint =
-        Checkpoint::new(*last_index, ChainBlockMetadata::new(last_header.hash.unwrap(), 0));
+    let checkpoint = Checkpoint::new(
+        *last_index,
+        ChainBlockMetadata { hash: last_header.hash.unwrap(), ..Default::default() },
+    );
     assert_eq!(*last_index, 3);
 
     // Phase 2: Shutdown the bridge, mine blocks while it's down.
@@ -290,8 +296,8 @@ async fn test_reorg_filter_causes_lag() {
     const EXTRA_BLOCKS: usize = 15;
 
     // Create two isolated nodes with bridges.
-    let node1 = L1Node::new(None).await;
-    let node2 = L1Node::new(None).await;
+    let node1 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
+    let node2 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
 
     // Two bridges to node1: one with reorg filter (1h period), one without.
     let filtered = L1Bridge::new(
@@ -404,7 +410,7 @@ async fn setup_node_with_bridge(
     strategy: ConnectStrategy,
     tip: Option<Checkpoint<ChainBlockMetadata>>,
 ) -> (L1Node, L1Bridge) {
-    let node = L1Node::new(None).await;
+    let node = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
 
     let config = L1BridgeConfig::default()
         .with_url(Some(node.wrpc_borsh_url()))
@@ -429,9 +435,11 @@ fn unwrap_chain_blocks(
     events
         .into_iter()
         .map(|e| match e {
-            L1Event::ChainBlockAdded { checkpoint, header, accepted_transactions } => {
-                (checkpoint.index(), header, accepted_transactions)
-            }
+            L1Event::ChainBlockAdded { checkpoint, header, accepted_transactions } => (
+                checkpoint.index(),
+                header,
+                accepted_transactions.into_iter().map(|(_, tx)| tx).collect(),
+            ),
             other => panic!("expected ChainBlockAdded, got {:?}", other),
         })
         .collect()

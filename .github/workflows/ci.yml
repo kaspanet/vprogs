@@ -20,8 +20,11 @@ jobs:
           toolchain: nightly
           components: rustfmt
 
+      - name: Install taplo
+        run: cargo install --locked taplo-cli
+
       - name: Format check
-        run: cargo +nightly fmt -- --check
+        run: ./cargo-fmt-all.sh --check
 
   clippy:
     name: Clippy
@@ -44,7 +47,7 @@ jobs:
           shared-key: "rust-cache"
 
       - name: Clippy
-        run: cargo clippy --tests -- -D warnings
+        run: ./cargo-check-all.sh
 
   test:
     name: Tests

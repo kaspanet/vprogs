@@ -1,36 +1,51 @@
+use vprogs_core_codec::Writer;
+use vprogs_core_hashing::Hasher;
+
 use crate::{
-    Read, Write,
+    ErrorCode, Read,
     transaction_processor::{
-        InputCommitment, Inputs, OutputCommitment, Outputs, TransactionHandler,
+        Effects, InputCommitment, Inputs, OutputCommitment, Outputs, Transaction,
+        TransactionHandler,
     },
+    withdrawal::ExitSink,
 };
 
-/// Transaction processor API for use inside zkVM guests.
-pub struct Abi;
+/// Processes a single transaction inside the guest, committing input/output to `journal` and
+/// streaming results back to `host`.
+pub fn process_transaction<H: Hasher>(
+    host: &mut (impl Read + Writer),
+    journal: &mut impl Writer,
+    f: impl TransactionHandler,
+) {
+    // Read and decode inputs from host.
+    let mut inputs_buf = host.read_blob();
+    let inputs = Inputs::decode(inputs_buf.as_mut_slice()).expect("malformed host input");
 
-impl Abi {
-    /// Processes a single transaction inside the guest, committing input/output to `journal` and
-    /// streaming results back to `host`.
-    pub fn process_transaction(
-        host: &mut (impl Read + Write),
-        journal: &mut impl Write,
-        f: impl TransactionHandler,
-    ) {
-        // Read and decode inputs from host.
-        let mut inputs_buf = host.read_blob();
-        let inputs = Inputs::decode(inputs_buf.as_mut_slice()).expect("malformed host input");
+    // Commit input commitment to journal.
+    InputCommitment::encode::<H>(journal, &inputs);
 
-        // Commit input commitment to journal.
-        InputCommitment::encode(journal, &inputs);
+    // Execute guest closure (if version is supported).
+    let Inputs { version, tx_id, merge_idx, mut execution_input } = inputs;
 
-        // Execute guest closure.
-        let Inputs { tx, tx_index, batch_metadata, mut resources } = inputs;
-        let output = f(tx, tx_index, &batch_metadata, &mut resources).map(|_| resources.as_slice());
+    // TODO:  we may have a hint from host to set capacity for exits
 
-        // Commit output commitment to journal.
-        OutputCommitment::encode(journal, &output);
+    let mut exits = ExitSink::new();
+    let result = match version {
+        Transaction::V1 => {
+            // Unwrap and verify host-supplied execution input.
+            let exec = execution_input.as_mut().expect("host omitted execution_input");
+            assert_eq!(tx_id.as_slice(), exec.tx.id(), "host tx_id does not match derived id");
 
-        // Stream execution result to host.
-        Outputs::encode(&output, host);
-    }
+            // Run guest handler, bundling exits + resources into Effects on success.
+            let result = f(&exec.tx, merge_idx, exec.context_hash, &mut exec.resources, &mut exits);
+            result.map(|_| Effects { exits: &exits, resources: exec.resources.as_slice() })
+        }
+        _ => Err(ErrorCode::VersionIncompatible.into()),
+    };
+
+    // Commit output commitment to journal. Exits are written only in the Success arm.
+    OutputCommitment::encode::<H>(journal, &result);
+
+    // Stream execution result to host.
+    Outputs::encode(&result, host);
 }

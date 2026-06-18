@@ -1,0 +1,38 @@
+[package]
+edition.workspace = true
+name              = "vprogs-zk-backend-risc0-covenant"
+version.workspace = true
+
+[dependencies]
+kaspa-consensus-core.workspace = true
+kaspa-hashes.workspace         = true
+kaspa-txscript.workspace       = true
+vprogs-l1-types.workspace      = true
+vprogs-zk-abi                  = { workspace = true, features = ["host"] }
+
+# build.rs precomputes the Groth16 verifier identity constants (compressed VK,
+# control-root halves, bn254 control id, risc0 receipt tag digests) and emits a
+# Rust module included by `script.rs`. Default-featured risc0-zkvm is needed
+# because Groth16ReceiptVerifierParameters / SystemState::digest are gated
+# behind the default features.
+[build-dependencies]
+ark-bn254     = { workspace = true }
+ark-groth16   = { workspace = true }
+ark-serialize = { workspace = true }
+bincode       = { workspace = true, default-features = true }
+risc0-groth16 = { workspace = true }
+risc0-zkvm    = { workspace = true, default-features = true }
+sha2          = { workspace = true, default-features = true }
+
+[dev-dependencies]
+ark-bn254                 = { workspace = true }
+ark-groth16               = { workspace = true }
+ark-serialize             = { workspace = true }
+bincode                   = { workspace = true, default-features = true }
+kaspa-addresses.workspace = true
+# Cross-test for the succinct verifier-identity consts reads `POSEIDON2_CONTROL_IDS`
+# directly. Default-features off keeps proving machinery out of the test build.
+risc0-circuit-recursion = { workspace = true }
+risc0-groth16           = { workspace = true }
+risc0-zkvm              = { workspace = true, default-features = true }
+sha2                    = { workspace = true, default-features = true }

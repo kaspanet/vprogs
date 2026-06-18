@@ -1,81 +1,55 @@
-use alloc::vec::Vec;
-
+use kaspa_hashes::Hash;
+#[cfg(feature = "host")]
+use tap::Tap;
 use vprogs_core_codec::Reader;
+#[cfg(feature = "host")]
+use vprogs_core_codec::Writer;
 use vprogs_core_smt::proving::Proof;
+#[cfg(feature = "host")]
+use vprogs_l1_types::ChainBlockMetadata;
 
-use crate::{Result, batch_processor::TransactionJournals};
+use crate::{Result, batch_processor::Batch};
 
-/// Decoded batch processor input (zero-copy).
-///
-/// Wire layout: `image_id(32) | proof (length-prefixed) | leaf_order | tx_journals`
+/// Decoded batch processor input.
 pub struct Inputs<'a> {
-    /// Transaction processor guest image ID.
-    pub image_id: &'a [u8; 32],
-    /// Sparse Merkle tree proof (leaves carry pre-batch key + value_hash per resource).
+    /// Transaction processor guest image ID used to verify each inner tx journal.
+    pub tx_image_id: &'a [u8; 32],
+    /// Covenant id this bundle settles into.
+    pub covenant_id: &'a [u8; 32],
+    /// Lane key of the lane this bundle settles.
+    pub lane_key: &'a Hash,
+    /// SMT proof covering the resources touched in this batch.
     pub proof: Proof<'a>,
-    /// Leaf order mapping: `leaf_order[leaf_pos] = resource_index` (materialized for O(1) access).
-    pub leaf_order: Vec<u32>,
-    /// Iterator over per-transaction journal entries.
-    pub tx_journals: TransactionJournals<'a>,
+    /// The batch's per-block context and tx journals.
+    pub batch: Batch<'a>,
 }
 
 impl<'a> Inputs<'a> {
-    /// Decodes the batch processor input from a raw byte buffer into zero-copy views.
+    /// Decodes the batch input from a raw byte buffer into zero-copy views.
     pub fn decode(mut buf: &'a [u8]) -> Result<Self> {
-        // Image ID (32 bytes).
-        let image_id = buf.array::<32>("image_id")?;
-
-        // Decode length-prefixed proof (comes before leaf_order so we know the leaf count).
-        let proof_length = buf.le_u32("proof_length")? as usize;
-        let proof = Proof::decode(buf.bytes(proof_length, "proof")?)?;
-
-        // Decode leaf_order (one u32 per leaf, count derived from proof).
-        let n_resources = proof.leaves.len();
-        let mut leaf_order = Vec::with_capacity(n_resources);
-        for _ in 0..n_resources {
-            leaf_order.push(buf.le_u32("leaf_order")?);
-        }
-
-        // Remaining bytes are per-transaction journal entries.
-        let tx_journals = TransactionJournals::new(buf);
-
-        Ok(Self { image_id, proof, leaf_order, tx_journals })
+        Ok(Self {
+            tx_image_id: buf.array::<32>("tx_image_id")?,
+            covenant_id: buf.array::<32>("covenant_id")?,
+            lane_key: buf.array_as::<Hash>("lane_key")?,
+            proof: Proof::decode(buf.blob("proof")?)?,
+            batch: Batch::decode(&mut buf)?,
+        })
     }
 
-    /// Encodes the batch processor input into bytes (host-side).
-    ///
-    /// Wire layout: `image_id(32) | proof (length-prefixed) | leaf_order | tx_journals`
+    /// Encodes a batch processor input to bytes.
     #[cfg(feature = "host")]
     pub fn encode(
-        image_id: &[u8; 32],
+        (tx_image_id, covenant_id, lane_key): (&[u8; 32], &[u8; 32], &Hash),
         proof_bytes: &[u8],
-        leaf_order: &[u32],
+        metadata: &ChainBlockMetadata,
         tx_journals: &[Vec<u8>],
     ) -> Vec<u8> {
-        use crate::Write;
-
-        let journals_size: usize = tx_journals.iter().map(|j| 4 + j.len()).sum();
-        let total = 32 + 4 + proof_bytes.len() + leaf_order.len() * 4 + journals_size;
-        let mut buf = Vec::with_capacity(total);
-
-        // Image ID.
-        buf.write(image_id);
-
-        // Proof (length-prefixed raw bytes).
-        buf.extend_from_slice(&(proof_bytes.len() as u32).to_le_bytes());
-        buf.extend_from_slice(proof_bytes);
-
-        // Leaf order mapping (one u32 per leaf).
-        for &idx in leaf_order {
-            buf.extend_from_slice(&idx.to_le_bytes());
-        }
-
-        // Transaction journals (each length-prefixed).
-        for journal in tx_journals {
-            buf.extend_from_slice(&(journal.len() as u32).to_le_bytes());
-            buf.extend_from_slice(journal);
-        }
-
-        buf
+        Vec::new().tap_mut(|buf| {
+            buf.write(tx_image_id);
+            buf.write(covenant_id);
+            buf.write(lane_key.as_slice());
+            buf.write_blob(proof_bytes);
+            Batch::encode(buf, metadata, tx_journals);
+        })
     }
 }

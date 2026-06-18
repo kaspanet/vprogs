@@ -5,9 +5,11 @@ version.workspace = true
 
 [dependencies]
 log.workspace                         = true
+tap.workspace                         = true
 thiserror.workspace                   = true
 tokio.workspace                       = true
 vprogs-core-atomics.workspace         = true
+vprogs-core-codec.workspace           = true
 vprogs-core-macros.workspace          = true
 vprogs-core-types.workspace           = true
 vprogs-l1-bridge.workspace            = true
@@ -17,10 +19,10 @@ vprogs-storage-manager.workspace      = true
 vprogs-storage-types.workspace        = true
 
 [dev-dependencies]
-borsh.workspace                        = true
 tempfile.workspace                     = true
 tokio                                  = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 vprogs-core-test-utils.workspace       = true
 vprogs-node-test-utils.workspace       = true
 vprogs-state-metadata.workspace        = true
 vprogs-storage-rocksdb-store.workspace = true
+zerocopy.workspace                     = true

@@ -1,5 +1,8 @@
 use tempfile::TempDir;
-use vprogs_core_smt::{Blake3, Commitment, EMPTY_HASH, Hasher, Key, Node, Tree, proving::Proof};
+use vprogs_core_hashing::{Hasher, Sha256};
+use vprogs_core_smt::{
+    Commitment, EMPTY_HASH, HashedNode, INTERNAL, Key, LEAF, Node, Tree, proving::Proof,
+};
 use vprogs_core_types::ResourceId;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_storage_types::Store;
@@ -9,7 +12,7 @@ use vprogs_storage_types::Store;
 /// Helper: commits a set of (key, value) pairs at the given version and returns the new root.
 fn commit(store: &RocksDbStore, version: u64, entries: &[(ResourceId, [u8; 32])]) -> [u8; 32] {
     let diffs =
-        entries.iter().map(|&(key, value)| Commitment::new(key, Blake3::hash(&value))).collect();
+        entries.iter().map(|&(key, value)| Commitment::new(key, Sha256::hash(value))).collect();
 
     let mut wb = store.write_batch();
     let root = store.update(&mut wb, diffs, version);
@@ -46,28 +49,28 @@ fn domain_separation_produces_different_hashes() {
     // Same payload but different domain tags should produce different hashes.
     let a = [1u8; 32];
     let b = [2u8; 32];
-    let internal = Node::internal::<Blake3>(&a, &b);
-    let leaf = Node::leaf::<Blake3>(ResourceId::from(a), b);
+    let internal = Node::internal::<Sha256>(&HashedNode::new(LEAF, a), &HashedNode::new(LEAF, b));
+    let leaf = Node::leaf::<Sha256>(ResourceId::from(a), b);
     assert_ne!(internal.hash(), leaf.hash());
 }
 
 #[test]
 fn empty_compression_internal() {
-    let node = Node::internal::<Blake3>(&EMPTY_HASH, &EMPTY_HASH);
+    let node = Node::internal::<Sha256>(&HashedNode::EMPTY, &HashedNode::EMPTY);
     assert_eq!(*node.hash(), EMPTY_HASH);
 }
 
 #[test]
 fn empty_compression_leaf() {
     let key = ResourceId::from([0xABu8; 32]);
-    let node = Node::leaf::<Blake3>(key, EMPTY_HASH);
+    let node = Node::leaf::<Sha256>(key, EMPTY_HASH);
     assert_eq!(*node.hash(), EMPTY_HASH);
 }
 
 #[test]
 fn non_empty_internal_is_not_empty() {
     let a = [1u8; 32];
-    let node = Node::internal::<Blake3>(&a, &EMPTY_HASH);
+    let node = Node::internal::<Sha256>(&HashedNode::new(INTERNAL, a), &HashedNode::EMPTY);
     assert_ne!(*node.hash(), EMPTY_HASH);
 }
 
@@ -75,7 +78,7 @@ fn non_empty_internal_is_not_empty() {
 fn non_empty_leaf_is_not_empty() {
     let key = ResourceId::from([1u8; 32]);
     let value = [2u8; 32];
-    let node = Node::leaf::<Blake3>(key, value);
+    let node = Node::leaf::<Sha256>(key, value);
     assert_ne!(*node.hash(), EMPTY_HASH);
 }
 
@@ -83,7 +86,10 @@ fn non_empty_leaf_is_not_empty() {
 
 #[test]
 fn internal_roundtrip() {
-    let node = Node::internal::<Blake3>(&[1u8; 32], &[2u8; 32]);
+    let node = Node::internal::<Sha256>(
+        &HashedNode::new(LEAF, [1u8; 32]),
+        &HashedNode::new(LEAF, [2u8; 32]),
+    );
     let bytes = node.encode();
     assert_eq!(bytes.len(), 33);
     assert_eq!(Node::decode(&mut bytes.as_slice()).unwrap(), node);
@@ -91,7 +97,7 @@ fn internal_roundtrip() {
 
 #[test]
 fn leaf_roundtrip() {
-    let node = Node::leaf::<Blake3>(ResourceId::from([1u8; 32]), [2u8; 32]);
+    let node = Node::leaf::<Sha256>(ResourceId::from([1u8; 32]), [2u8; 32]);
     let bytes = node.encode();
     assert_eq!(bytes.len(), 97);
     assert_eq!(Node::decode(&mut bytes.as_slice()).unwrap(), node);
@@ -139,15 +145,15 @@ fn multi_version_commit_and_prove() {
     let keys = [test_key(1), test_key(2), test_key(3), test_key(4), test_key(5)];
 
     for (version, expected_root) in [(1, root1), (2, root2), (3, root3)] {
-        let (proof_bytes, _) = store.prove(&keys, version).unwrap();
+        let proof_bytes = store.prove(&keys, version).unwrap();
         let proof = Proof::decode(&proof_bytes).expect("proof should decode");
         assert_eq!(
-            proof.root::<Blake3>().unwrap(),
+            proof.root::<Sha256>().unwrap(),
             expected_root,
             "proof at version {version} should verify against its root"
         );
         assert_ne!(
-            proof.root::<Blake3>().unwrap(),
+            proof.root::<Sha256>().unwrap(),
             [0xFFu8; 32],
             "proof at version {version} should reject a wrong root"
         );
@@ -176,15 +182,15 @@ fn historical_version_read_after_overwrite() {
     assert_eq!(store.root(1), root1, "historical root should be preserved");
 
     // Proof at version 1 should verify against version 1's root.
-    let (proof_bytes, _) = store.prove(&[key], 1).unwrap();
+    let proof_bytes = store.prove(&[key], 1).unwrap();
     let proof = Proof::decode(&proof_bytes).unwrap();
     assert_eq!(
-        proof.root::<Blake3>().unwrap(),
+        proof.root::<Sha256>().unwrap(),
         root1,
         "proof at version 1 should verify after version 2 overwrites the same key"
     );
     assert_ne!(
-        proof.root::<Blake3>().unwrap(),
+        proof.root::<Sha256>().unwrap(),
         root2,
         "proof at version 1 should NOT verify against version 2's root"
     );
@@ -254,10 +260,10 @@ fn prune_preserves_tree_integrity() {
 
     // Proof at version 2 should still verify.
     let keys = [test_key(1), test_key(2), test_key(3)];
-    let (proof_bytes, _) = store.prove(&keys, 2).unwrap();
+    let proof_bytes = store.prove(&keys, 2).unwrap();
     let proof = Proof::decode(&proof_bytes).expect("proof should decode");
     assert_eq!(
-        proof.root::<Blake3>().unwrap(),
+        proof.root::<Sha256>().unwrap(),
         root2,
         "proof at v2 should verify after pruning v2's stale nodes"
     );
@@ -285,9 +291,9 @@ fn rollback_restores_previous_state() {
     assert_eq!(store.root(1), root1);
 
     // Proof at version 1 should verify.
-    let (proof_bytes, _) = store.prove(&[test_key(1)], 1).unwrap();
+    let proof_bytes = store.prove(&[test_key(1)], 1).unwrap();
     let proof = Proof::decode(&proof_bytes).unwrap();
-    assert_eq!(proof.root::<Blake3>().unwrap(), root1);
+    assert_eq!(proof.root::<Sha256>().unwrap(), root1);
 }
 
 // -- Edge cases --
@@ -305,9 +311,9 @@ fn single_key_lifecycle() {
     assert_ne!(root1, EMPTY_HASH);
 
     // Proof for the single key should verify.
-    let (proof_bytes, _) = store.prove(&[key], 1).unwrap();
+    let proof_bytes = store.prove(&[key], 1).unwrap();
     let proof = Proof::decode(&proof_bytes).unwrap();
-    assert_eq!(proof.root::<Blake3>().unwrap(), root1);
+    assert_eq!(proof.root::<Sha256>().unwrap(), root1);
     assert_eq!(proof.leaves.len(), 1);
 
     // Version 2: delete the key.
@@ -360,8 +366,8 @@ fn duplicate_commitments_last_write_wins() {
         &store,
         1,
         vec![
-            Commitment::new(key, Blake3::hash(&value_a)),
-            Commitment::new(key, Blake3::hash(&value_b)),
+            Commitment::new(key, Sha256::hash(value_a)),
+            Commitment::new(key, Sha256::hash(value_b)),
         ],
     );
 
@@ -381,11 +387,11 @@ fn proof_verify_wrong_root_returns_false() {
 
     commit(&store, 1, &[(test_key(1), test_value(1))]);
 
-    let (proof_bytes, _) = store.prove(&[test_key(1)], 1).unwrap();
+    let proof_bytes = store.prove(&[test_key(1)], 1).unwrap();
     let proof = Proof::decode(&proof_bytes).unwrap();
 
     // Wrong root should not match.
-    assert_ne!(proof.root::<Blake3>().unwrap(), [0xAB; 32]);
+    assert_ne!(proof.root::<Sha256>().unwrap(), [0xAB; 32]);
 }
 
 /// Empty commitments are a no-op - root carries forward from the previous version.
@@ -409,4 +415,35 @@ fn version_zero_panics() {
     let store = RocksDbStore::open(dir.path());
 
     commit(&store, 0, &[(test_key(1), test_value(1))]);
+}
+
+/// After a delete that empties the tree, `store.root(v)` returns `EMPTY_HASH` (not the stale prior
+/// root) and a subsequent insert does not resurrect the deleted key.
+#[test]
+fn delete_then_insert_does_not_resurrect() {
+    let dir = TempDir::new().unwrap();
+    let store = RocksDbStore::open(dir.path());
+
+    let k_old = test_key(1);
+    let k_new = test_key(2);
+
+    // v=1: insert k_old.
+    let root1 = commit(&store, 1, &[(k_old, test_value(1))]);
+    assert_ne!(root1, EMPTY_HASH);
+
+    // v=2: delete k_old. Tree becomes empty.
+    let root2 = commit_raw(&store, 2, vec![Commitment::new(k_old, EMPTY_HASH)]);
+    assert_eq!(root2, EMPTY_HASH);
+    assert_eq!(store.root(2), EMPTY_HASH, "store.root(2) must reflect the empty state");
+
+    // v=3: insert k_new. The tree must contain only k_new - k_old must not be resurrected.
+    let _root3 = commit(&store, 3, &[(k_new, test_value(2))]);
+
+    let proof_bytes = store.prove(&[k_old, k_new], 3).unwrap();
+    let proof = Proof::decode(&proof_bytes).unwrap();
+    let m_old = proof.member(0).unwrap();
+    let m_new = proof.member(1).unwrap();
+    assert!(m_old.absent, "previously-deleted key must not be resurrected");
+    assert!(!m_new.absent, "newly inserted key must be present");
+    assert_eq!(m_new.leaf.value_hash, Sha256::hash(test_value(2)));
 }

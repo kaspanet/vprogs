@@ -1,16 +1,19 @@
 use std::time::Duration;
 
+use tap::Tap;
 use tempfile::TempDir;
+use vprogs_core_codec::Writer;
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId};
 use vprogs_l1_bridge::L1BridgeConfig;
-use vprogs_l1_types::{Hash, NetworkType};
+use vprogs_l1_types::{Hash, NetworkId, NetworkType};
 use vprogs_node_framework::{Node, NodeConfig};
 use vprogs_node_test_utils::{L1Node, NodeExt, TestNodeVm};
 use vprogs_scheduling_scheduler::ExecutionConfig;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
+use zerocopy::IntoBytes;
 
 const TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -36,10 +39,16 @@ fn create_node(l1: &L1Node, temp_dir: &TempDir) -> Node<RocksDbStore, TestNodeVm
 async fn mine_payload_blocks(l1: &L1Node, count: usize) -> Vec<Hash> {
     let mut tx_hashes = Vec::with_capacity(count);
     for i in 1..=count {
-        let payload = borsh::to_vec(&vec![AccessMetadata::write(ResourceId::for_test(i))]).unwrap();
-        let txs = l1.build_payload_transactions(vec![payload]).await;
+        let txs = l1
+            .build_payload_transactions(vec![Vec::new().tap_mut(|p| {
+                p.write_many(
+                    [&AccessMetadata::write(ResourceId::for_test(i))],
+                    AccessMetadata::as_bytes,
+                );
+            })])
+            .await;
         tx_hashes.push(txs[0].id());
-        l1.mine_block(Some(&txs)).await;
+        l1.mine_block(&txs).await;
     }
     // In Kaspa DAG consensus, a block's transactions are accepted by the next chain
     // block. Mine one more so the last payload gets accepted.
@@ -57,7 +66,11 @@ fn assert_state(node: &Node<RocksDbStore, TestNodeVm>, tx_hashes: &[Hash]) {
 /// Mine blocks with L2 payloads before creating the Node, then verify they are all processed.
 #[tokio::test]
 async fn test_basic_block_processing() {
-    let l1 = L1Node::new(Some(|p| p.blockrate.coinbase_maturity = 1)).await;
+    let l1 = L1Node::new(
+        NetworkId::new(NetworkType::Simnet),
+        Some(|p| p.blockrate.coinbase_maturity = 1),
+    )
+    .await;
 
     let maturity = l1.mine_utxos(3).await.len() as u64;
     let tx_hashes = mine_payload_blocks(&l1, 3).await;
@@ -75,7 +88,11 @@ async fn test_basic_block_processing() {
 /// Create the node first, then mine blocks with L2 payloads - verify real-time processing.
 #[tokio::test]
 async fn test_processes_blocks_mined_after_connect() {
-    let l1 = L1Node::new(Some(|p| p.blockrate.coinbase_maturity = 1)).await;
+    let l1 = L1Node::new(
+        NetworkId::new(NetworkType::Simnet),
+        Some(|p| p.blockrate.coinbase_maturity = 1),
+    )
+    .await;
 
     let temp_dir = TempDir::new().unwrap();
     let node = create_node(&l1, &temp_dir);
@@ -100,7 +117,11 @@ async fn test_processes_blocks_mined_after_connect() {
 /// processes it. L2 state written after the prune point must survive.
 #[tokio::test]
 async fn test_pruning_via_threshold() {
-    let l1 = L1Node::new(Some(|p| p.blockrate.coinbase_maturity = 1)).await;
+    let l1 = L1Node::new(
+        NetworkId::new(NetworkType::Simnet),
+        Some(|p| p.blockrate.coinbase_maturity = 1),
+    )
+    .await;
     let temp_dir = TempDir::new().unwrap();
     let node = create_node(&l1, &temp_dir);
 
@@ -131,7 +152,11 @@ async fn test_pruning_via_threshold() {
 /// Verify the node shuts down cleanly without panics after processing L2 state.
 #[tokio::test]
 async fn test_clean_shutdown() {
-    let l1 = L1Node::new(Some(|p| p.blockrate.coinbase_maturity = 1)).await;
+    let l1 = L1Node::new(
+        NetworkId::new(NetworkType::Simnet),
+        Some(|p| p.blockrate.coinbase_maturity = 1),
+    )
+    .await;
     let temp_dir = TempDir::new().unwrap();
     let node = create_node(&l1, &temp_dir);
 
@@ -149,7 +174,11 @@ async fn test_clean_shutdown() {
 /// Process blocks with L2 state, shutdown, reopen from checkpoint, mine more, verify continuity.
 #[tokio::test]
 async fn test_resume_from_checkpoint() {
-    let l1 = L1Node::new(Some(|p| p.blockrate.coinbase_maturity = 1)).await;
+    let l1 = L1Node::new(
+        NetworkId::new(NetworkType::Simnet),
+        Some(|p| p.blockrate.coinbase_maturity = 1),
+    )
+    .await;
     let temp_dir = TempDir::new().unwrap();
 
     // Phase 1: Process transactions, then shutdown.
@@ -201,7 +230,11 @@ async fn test_resume_from_checkpoint() {
 #[tokio::test]
 async fn test_transactions_via_l1_payload() {
     // Reduce coinbase maturity so mine_utxos doesn't need to mine 1000+ blocks.
-    let l1 = L1Node::new(Some(|p| p.blockrate.coinbase_maturity = 1)).await;
+    let l1 = L1Node::new(
+        NetworkId::new(NetworkType::Simnet),
+        Some(|p| p.blockrate.coinbase_maturity = 1),
+    )
+    .await;
     let temp_dir = TempDir::new().unwrap();
     let node = create_node(&l1, &temp_dir);
 
@@ -211,10 +244,16 @@ async fn test_transactions_via_l1_payload() {
     node.api().wait_committed(maturity_blocks, Duration::from_secs(120));
 
     // Submit a transaction via L1 payload (only the access metadata is serialized).
-    let payload = borsh::to_vec(&vec![AccessMetadata::write(ResourceId::for_test(42))]).unwrap();
-    let txs = l1.build_payload_transactions(vec![payload]).await;
+    let txs = l1
+        .build_payload_transactions(vec![Vec::new().tap_mut(|p| {
+            p.write_many(
+                [&AccessMetadata::write(ResourceId::for_test(42))],
+                AccessMetadata::as_bytes,
+            );
+        })])
+        .await;
     let tx_hash = txs[0].id();
-    l1.mine_block(Some(&txs)).await;
+    l1.mine_block(&txs).await;
 
     // In Kaspa DAG consensus, a block's transactions are accepted by the next chain
     // block. Mine one more block so the payload transactions get accepted.

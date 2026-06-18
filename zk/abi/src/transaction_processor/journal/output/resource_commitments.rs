@@ -1,6 +1,7 @@
 use crate::{Result, transaction_processor::OutputResourceCommitment};
 
 /// Zero-copy iterator over per-resource output hash commitments.
+#[derive(Clone, Copy)]
 pub struct OutputResourceCommitments<'a> {
     /// Remaining unconsumed bytes of the commitment entries.
     buf: &'a [u8],

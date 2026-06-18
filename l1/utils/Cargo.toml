@@ -1,0 +1,11 @@
+[package]
+edition.workspace = true
+name              = "vprogs-l1-utils"
+version.workspace = true
+
+[dependencies]
+blake3 = { workspace = true }
+
+[dev-dependencies]
+kaspa-consensus-core.workspace = true
+kaspa-hashes.workspace         = true

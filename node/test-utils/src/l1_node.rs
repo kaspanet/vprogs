@@ -2,28 +2,24 @@
 
 use std::{io::Write, time::Duration};
 
-use kaspa_addresses::Address;
+use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus_core::{
     Hash,
-    config::params::{OverrideParams, Params, SIMNET_PARAMS},
-    constants::TX_VERSION,
+    config::params::{OverrideParams, Params},
     header::Header,
+    mass::units::ComputeBudget,
     merkle::calc_hash_merkle_root,
-    sign::sign,
-    subnets::SUBNETWORK_ID_NATIVE,
-    tx::{
-        MutableTransaction, Transaction, TransactionInput, TransactionOutpoint, TransactionOutput,
-        UtxoEntry,
-    },
+    network::{NetworkId, NetworkType},
+    subnets::SubnetworkId,
+    tx::{Transaction, UtxoEntry},
 };
 use kaspa_grpc_client::GrpcClient;
 use kaspa_rpc_core::{RpcTransaction, api::rpc::RpcApi};
 use kaspa_testing_integration::common::daemon::Daemon;
-use kaspa_txscript::pay_to_address_script;
 use kaspa_wrpc_server::address::WrpcNetAddress;
 use kaspad_lib::args::Args;
 use secp256k1::Keypair;
-use tap::Tap;
+use vprogs_l1_wallet::Wallet;
 
 /// An in-process Kaspa simnet node for integration tests.
 ///
@@ -43,58 +39,76 @@ pub struct L1Node {
 }
 
 impl L1Node {
-    /// Creates and starts a new isolated simnet node.
+    /// Creates and starts a new isolated node on `network`.
     ///
     /// Pass a customization closure to override consensus parameters. The closure receives the
-    /// default simnet [`Params`] to mutate. Pass `None` for vanilla simnet defaults.
+    /// network's default [`Params`] to mutate. Pass `None` for vanilla defaults. The node's mining
+    /// address and the [`Wallet`] view both take their prefix from `network`.
     ///
     /// ```no_run
     /// # use vprogs_node_test_utils::L1Node;
+    /// # use kaspa_consensus_core::network::{NetworkId, NetworkType};
     /// # async fn example() {
+    /// let simnet = NetworkId::new(NetworkType::Simnet);
+    ///
     /// // Vanilla simnet defaults:
-    /// let node = L1Node::new(None).await;
+    /// let node = L1Node::new(simnet, None).await;
     ///
     /// // Fast coinbase maturity for UTXO tests:
-    /// let node = L1Node::new(Some(|p| p.blockrate.coinbase_maturity = 10)).await;
+    /// let node = L1Node::new(simnet, Some(|p| p.blockrate.coinbase_maturity = 10)).await;
     /// # }
     /// ```
-    pub async fn new(customize: Option<fn(&mut Params)>) -> Self {
+    pub async fn new(network: NetworkId, customize: Option<fn(&mut Params)>) -> Self {
         kaspa_core::log::try_init_logger("INFO");
 
         // Generate a real keypair for signing transactions.
         let keypair = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
         let (xonly, _parity) = keypair.x_only_public_key();
-        let address = Address::new(
-            kaspa_addresses::Prefix::Simnet,
-            kaspa_addresses::Version::PubKey,
-            &xonly.serialize(),
-        );
+        let address =
+            Address::new(Prefix::from(network.network_type()), Version::PubKey, &xonly.serialize());
 
-        // Start from the default simnet params and let the caller customize them.
-        let mut params = SIMNET_PARAMS;
+        // Start from the network's default params and let the caller customize them.
+        let mut params = Params::from(network);
         if let Some(f) = customize {
             f(&mut params);
         }
 
-        // Serialize the params to a temp file that the daemon reads on startup.
+        // Serialize the params to a temp file the daemon reads on startup. The file's lifetime is
+        // tied to this scope - if the daemon ever re-reads `override_params_file` post-startup,
+        // it'll find nothing.
         let overrides = OverrideParams::from(params.clone());
-        let mut params_file = tempfile::NamedTempFile::new().unwrap();
-        write!(params_file, "{}", serde_json::to_string(&overrides).unwrap()).unwrap();
+        let mut params_file =
+            tempfile::NamedTempFile::new().expect("failed to create override-params tempfile");
+        write!(
+            params_file,
+            "{}",
+            serde_json::to_string(&overrides).expect("OverrideParams must serialize"),
+        )
+        .expect("failed to write override-params tempfile");
 
-        // Spawn a simnet daemon with unsafe RPC, unsynced mining, and UTXO index enabled
-        // so we can mine blocks without waiting for IBD and query UTXOs by address.
-        let mut daemon = Daemon::new_random_with_args(
-            Args {
-                simnet: true,
-                unsafe_rpc: true,
-                enable_unsynced_mining: true,
-                disable_upnp: true,
-                utxoindex: true,
-                override_params_file: Some(params_file.path().to_str().unwrap().to_string()),
-                ..Default::default()
-            },
-            10,
-        );
+        // Spawn the daemon with unsafe RPC, unsynced mining, and UTXO index enabled so we can mine
+        // blocks without waiting for IBD and query UTXOs by address. The network flags pick which
+        // genesis / consensus the daemon boots.
+        let mut args = Args {
+            unsafe_rpc: true,
+            enable_unsynced_mining: true,
+            disable_upnp: true,
+            utxoindex: true,
+            override_params_file: Some(
+                params_file.path().to_str().expect("tempfile path must be utf-8").to_string(),
+            ),
+            ..Default::default()
+        };
+        match network.network_type() {
+            NetworkType::Simnet => args.simnet = true,
+            NetworkType::Testnet => {
+                args.testnet = true;
+                args.testnet_suffix = network.suffix.unwrap_or(0);
+            }
+            NetworkType::Devnet => args.devnet = true,
+            NetworkType::Mainnet => {}
+        }
+        let mut daemon = Daemon::new_random_with_args(args, 10 /* fd budget */);
         let grpc_client = daemon.start().await;
 
         Self { daemon, grpc_client, address, keypair, params }
@@ -108,6 +122,11 @@ impl L1Node {
     /// Returns a reference to the underlying daemon.
     pub fn daemon(&self) -> &Daemon {
         &self.daemon
+    }
+
+    /// Returns a reference to the gRPC client for direct RPC calls (block lookup, UTXO queries).
+    pub fn grpc_client(&self) -> &GrpcClient {
+        &self.grpc_client
     }
 
     /// Returns the wRPC Borsh URL for connecting to this node.
@@ -146,16 +165,15 @@ impl L1Node {
         }
     }
 
-    /// Mines a single block, optionally injecting pre-built L1 transactions into the block
-    /// template.
+    /// Mines a single block, injecting any pre-built L1 transactions into the block template.
     ///
     /// Note: in Kaspa DAG consensus, a block's transactions are accepted by the next chain block.
     /// The caller must mine an additional block for the transactions to be accepted.
-    pub async fn mine_block(&self, txs: Option<&[Transaction]>) -> Hash {
+    pub async fn mine_block(&self, txs: &[Transaction]) -> Hash {
         let mut template =
             self.grpc_client.get_block_template(self.address.clone(), vec![]).await.unwrap();
 
-        if let Some(txs) = txs {
+        if !txs.is_empty() {
             for tx in txs {
                 template.block.transactions.push(RpcTransaction::from(tx));
             }
@@ -180,7 +198,7 @@ impl L1Node {
     pub async fn mine_blocks(&self, count: usize) -> Vec<Hash> {
         let mut hashes = Vec::with_capacity(count);
         for _ in 0..count {
-            hashes.push(self.mine_block(None).await);
+            hashes.push(self.mine_block(&[]).await);
         }
         hashes
     }
@@ -200,72 +218,66 @@ impl L1Node {
         self.grpc_client.disconnect().await.unwrap()
     }
 
+    /// A [`Wallet`] view over this node's client, params, and key. The wallet derives its address
+    /// prefix from `params`, matching this node's network.
+    fn wallet(&self) -> Wallet<'_, GrpcClient> {
+        Wallet::new(&self.grpc_client, &self.params, self.keypair)
+    }
+
     /// Builds signed L1 transactions, each carrying the given payload.
     ///
     /// Requires enough spendable UTXOs (call [`mine_utxos`](Self::mine_utxos) first).
     pub async fn build_payload_transactions(&self, payloads: Vec<Vec<u8>>) -> Vec<Transaction> {
-        let utxos = self.fetch_spendable_utxos().await;
-        assert!(
-            utxos.len() >= payloads.len(),
-            "not enough spendable UTXOs: found {} but need {}",
-            utxos.len(),
-            payloads.len(),
-        );
-
-        let script_public_key = pay_to_address_script(&self.address);
-
-        payloads
-            .into_iter()
-            .zip(utxos)
-            .map(|(payload, (outpoint, entry))| {
-                let fee = 10 * (200 + 34 + 1000 + payload.len() as u64);
-                assert!(
-                    entry.amount > fee,
-                    "UTXO amount {} too small for fee {}",
-                    entry.amount,
-                    fee
-                );
-
-                let input = TransactionInput::new(outpoint, vec![], 0, 1);
-                let output = TransactionOutput::new(entry.amount - fee, script_public_key.clone());
-
-                sign(
-                    MutableTransaction::with_entries(
-                        Transaction::new(
-                            TX_VERSION,
-                            vec![input],
-                            vec![output],
-                            0,
-                            SUBNETWORK_ID_NATIVE, // TODO: Discuss if necessary to identify
-                            0,
-                            payload,
-                        ),
-                        vec![entry],
-                    ),
-                    self.keypair,
-                )
-                .tx
-            })
-            .collect()
+        self.wallet().build_payload_transactions(payloads).await
     }
 
-    /// Fetches spendable UTXOs for the miner address, sorted by amount (largest first).
-    async fn fetch_spendable_utxos(&self) -> Vec<(TransactionOutpoint, UtxoEntry)> {
-        let virtual_daa_score = self.grpc_client.get_server_info().await.unwrap().virtual_daa_score;
+    /// Builds signed transactions tagged with the given `subnetwork_id` and `tx_version`. For
+    /// native-subnetwork txs prefer [`Self::build_payload_transactions`].
+    pub async fn build_subnet_payload_transactions(
+        &self,
+        payloads: Vec<Vec<u8>>,
+        subnetwork_id: SubnetworkId,
+        tx_version: u16,
+    ) -> Vec<Transaction> {
+        self.wallet().build_subnet_payload_transactions(payloads, subnetwork_id, tx_version).await
+    }
 
-        self.grpc_client
-            .get_utxos_by_addresses(vec![self.address.clone()])
+    /// Funds and signs a settlement transaction without submitting it. The returned tx is ready to
+    /// ship via [`Self::mine_block`] (deterministic) or [`Self::submit_settlement_transaction`]
+    /// (mempool). See [`Wallet::prepare_settlement_transaction`].
+    pub async fn prepare_settlement_transaction(
+        &self,
+        settlement_tx: Transaction,
+        covenant_entry: UtxoEntry,
+        covenant_compute_budget: ComputeBudget,
+    ) -> Transaction {
+        self.wallet()
+            .prepare_settlement_transaction(settlement_tx, covenant_entry, covenant_compute_budget)
             .await
-            .unwrap()
-            .into_iter()
-            .filter(|e| {
-                // Coinbase UTXOs require `coinbase_maturity` confirmations before spending
-                !e.utxo_entry.is_coinbase
-                    || e.utxo_entry.block_daa_score + self.params.blockrate.coinbase_maturity
-                        <= virtual_daa_score
-            })
-            .map(|e| (TransactionOutpoint::from(e.outpoint), UtxoEntry::from(e.utxo_entry)))
-            .collect::<Vec<_>>()
-            .tap_mut(|utxos| utxos.sort_by(|a, b| b.1.amount.cmp(&a.1.amount)))
+    }
+
+    /// Funds, signs, and submits a settlement transaction through the mempool. Returns its id.
+    pub async fn submit_settlement_transaction(
+        &self,
+        settlement_tx: Transaction,
+        covenant_entry: UtxoEntry,
+        covenant_compute_budget: ComputeBudget,
+    ) -> Hash {
+        let wallet = self.wallet();
+        let tx = wallet
+            .prepare_settlement_transaction(settlement_tx, covenant_entry, covenant_compute_budget)
+            .await;
+        wallet.submit_transaction(&tx).await.expect("settlement tx submission failed")
+    }
+
+    /// Builds a signed bootstrap transaction whose single output is P2SH(`redeem_script`) with a
+    /// genesis covenant binding. Returns the tx and the covenant id consensus recomputes. See
+    /// [`Wallet::build_covenant_bootstrap_transaction`].
+    pub async fn build_covenant_bootstrap_transaction(
+        &self,
+        redeem_script: &[u8],
+        value: u64,
+    ) -> (Transaction, Hash) {
+        self.wallet().build_covenant_bootstrap_transaction(redeem_script, value).await
     }
 }

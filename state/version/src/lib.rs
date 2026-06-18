@@ -25,9 +25,10 @@ impl StateVersion {
     {
         match StatePtrLatest::get(store, &id) {
             None => Self::empty(id),
-            Some(version) => match Self::get(store, version, &id) {
-                None => panic!("missing data for resource_{:?}@v{:?}", id, version),
-                Some(data) => Self { resource_id: id, version, data },
+            Some(version) => Self {
+                resource_id: id,
+                version,
+                data: Self::get(store, version, &id).unwrap_or_default(),
             },
         }
     }
@@ -44,11 +45,25 @@ impl StateVersion {
         &mut Arc::make_mut(self).tap_mut(|s| s.version += 1).data
     }
 
+    pub fn set_data(self: &mut Arc<Self>, data: Vec<u8>) {
+        if self.data != data {
+            if let Some(s) = Arc::get_mut(self) {
+                s.version += 1;
+                s.data = data;
+            } else {
+                let this = Self { resource_id: self.resource_id, version: self.version + 1, data };
+                *self = Arc::new(this);
+            }
+        }
+    }
+
     pub fn write_data<W>(&self, wb: &mut W)
     where
         W: WriteBatch,
     {
-        Self::put(wb, self.version, &self.resource_id, &self.data);
+        if !self.data.is_empty() {
+            Self::put(wb, self.version, &self.resource_id, &self.data);
+        }
     }
 
     pub fn write_latest_ptr<W>(&self, wb: &mut W)
