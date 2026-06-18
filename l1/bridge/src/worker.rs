@@ -2,16 +2,24 @@ use std::{sync::Arc, time::Duration};
 
 use crossbeam_queue::SegQueue;
 use futures::{FutureExt, select_biased};
+use kaspa_consensus_core::subnets::SubnetworkId;
 use kaspa_notify::scope::{PruningPointUtxoSetOverrideScope, Scope, VirtualChainChangedScope};
 use kaspa_rpc_core::{
     GetVirtualChainFromBlockV2Response, Notification,
-    RpcDataVerbosityLevel::{Full, Low},
+    RpcDataVerbosityLevel::Full,
+    RpcOptionalHeader,
     api::{ctl::RpcState, rpc::RpcApi},
+};
+use kaspa_seq_commit::{
+    hashing::{
+        ActivityDigestBuilder, activity_leaf, lane_key, lane_tip_next, mergeset_context_hash,
+    },
+    types::{LaneTipInput, MergesetContext},
 };
 use kaspa_wrpc_client::prelude::*;
 use tokio::sync::Notify;
 use vprogs_core_types::Checkpoint;
-use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
+use vprogs_l1_types::{ChainBlockMetadata, Hash, L1Transaction};
 use workflow_core::channel::{Channel, MultiplexerChannel};
 
 use crate::{
@@ -38,13 +46,19 @@ pub(crate) struct BridgeWorker {
     notification_channel: Channel<Notification>,
     /// Receives RPC connection state changes.
     rpc_ctl_channel: MultiplexerChannel<RpcState>,
-    /// Set to `true` on fatal errors to break out of the event loop.
-    fatal: bool,
+    /// Set on fatal error or disconnect to break out of the event loop on the next iteration.
+    stopping: bool,
     /// When resuming with both root and tip set, holds the tip checkpoint until the chain between
     /// root and tip is backfilled on first connect.
     backfill_target: Option<Checkpoint<ChainBlockMetadata>>,
     /// Filters shallow reorgs based on accumulated depth.
     reorg_filter: ReorgFilter,
+    /// If `Some`, filter emitted transactions to this subnetwork.
+    subnetwork_filter: Option<SubnetworkId>,
+    /// Lane key used when chaining lane tips. `None` disables lane-tip tracking.
+    lane_key: Option<Hash>,
+    /// Blue-score window within which a lane stays active without new transactions.
+    finality_depth: u64,
 }
 
 impl BridgeWorker {
@@ -60,13 +74,12 @@ impl BridgeWorker {
         // Prefer root, fall back to tip, or default to a sentinel at index 0.
         let root_checkpoint = config.root.clone().or(config.tip.clone()).unwrap_or_default();
         let virtual_chain = VirtualChain::new(root_checkpoint);
+        let lane_key = config.subnetwork_id.as_ref().map(|id| lane_key(id.as_bytes()));
 
         // If both root and tip are provided and differ, we need to backfill the chain between them
-        // on first connect (lightweight, non-verbose sync).
+        // on first connect.
         let backfill_target = match (&config.root, &config.tip) {
-            (Some(root), Some(tip))
-                if root.metadata().block_hash() != tip.metadata().block_hash() =>
-            {
+            (Some(root), Some(tip)) if root.metadata().hash != tip.metadata().hash => {
                 Some(tip.clone())
             }
             _ => None,
@@ -119,9 +132,12 @@ impl BridgeWorker {
             shutdown,
             notification_channel: Channel::unbounded(),
             rpc_ctl_channel,
-            fatal: false,
+            stopping: false,
             backfill_target,
             reorg_filter: ReorgFilter::new(config.filter_half_life),
+            subnetwork_filter: config.subnetwork_id,
+            lane_key,
+            finality_depth: config.finality_depth,
         }
         .run()
         .await;
@@ -129,17 +145,12 @@ impl BridgeWorker {
 
     /// Priority-based event loop: shutdown > RPC state > chain notifications.
     async fn run(mut self) {
-        loop {
-            if self.fatal {
-                log::error!("L1 bridge: stopping due to fatal error");
-                break;
-            }
-
+        while !self.stopping {
             // Priority: shutdown > connection state > chain notifications.
             select_biased! {
                 _ = self.shutdown.notified().fuse() => {
                     log::info!("L1 bridge shutdown requested");
-                    break;
+                    self.stopping = true;
                 }
 
                 msg = self.rpc_ctl_channel.receiver.recv().fuse() => {
@@ -160,7 +171,10 @@ impl BridgeWorker {
                         Ok(Notification::PruningPointUtxoSetOverride(_)) => {
                             self.handle_finalization().await
                         }
-                        Ok(_) => Ok(()),
+                        Ok(other) => {
+                            log::warn!("L1 bridge: ignoring unexpected notification: {:?}", other);
+                            Ok(())
+                        }
                         Err(e) => Err(Error::ChannelClosed(e.to_string())),
                     };
 
@@ -184,11 +198,11 @@ impl BridgeWorker {
         self.event_signal.notify_one();
     }
 
-    /// Pushes a fatal event and flags the worker for shutdown.
+    /// Pushes a fatal event and flags the worker to stop.
     fn fatal_error(&mut self, reason: String) {
         log::error!("L1 bridge fatal error: {}", reason);
         self.push_event(L1Event::Fatal { reason });
-        self.fatal = true;
+        self.stopping = true;
     }
 
     /// Logs or escalates a sync result depending on whether the error is fatal.
@@ -197,13 +211,12 @@ impl BridgeWorker {
             if e.is_fatal() {
                 self.fatal_error(e.to_string());
             } else {
-                log::warn!("L1 bridge: sync failed, will retry on reconnect: {}", e);
+                log::warn!("L1 bridge: sync failed, will retry on next notification: {}", e);
             }
         }
     }
 
-    /// Called on RPC connect: subscribes to notifications, backfills the chain if resuming, then
-    /// syncs to the current chain state.
+    /// Called on RPC connect: subscribes to notifications, initializes and syncs the chain.
     async fn handle_connected(&mut self) {
         log::info!("L1 bridge connected to {}", self.client.url().unwrap_or_default());
 
@@ -213,27 +226,44 @@ impl BridgeWorker {
             return;
         }
 
-        // Step 2: If resuming, backfill the chain between root and tip.
-        if let Some(target) = self.backfill_target.take() {
-            let result = self.backfill_chain(&target).await;
-            self.handle_sync_result(result);
-            if self.fatal {
-                return;
-            }
+        // Step 2: Prepare the virtual chain (backfill or init from pruning point). These are
+        // one-shot prerequisites with no retry trigger - any failure is fatal for the worker.
+        let init_result = if let Some(target) = self.backfill_target.take() {
+            self.backfill_chain(&target).await
+        } else if self.virtual_chain.tip().index() == 0 {
+            self.seed_from_pruning_point().await
+        } else {
+            Ok(())
+        };
+        if let Err(e) = init_result {
+            self.fatal_error(format!("chain init failed: {}", e));
+            return;
         }
 
-        // Notify consumer only after backfill succeeds.
+        // Step 3: Notify consumer and sync to current chain state.
         self.push_event(L1Event::Connected);
-
-        // Step 3: Sync to the current chain state.
         let result = self.fetch_chain_updates().await;
         self.handle_sync_result(result);
     }
 
-    /// Notifies the consumer that the connection was lost.
+    /// Fetches the L1 pruning-point header and installs it as the virtual chain's root/tip at
+    /// index 0 so the first emitted block lands at index 1 and always has a real parent.
+    async fn seed_from_pruning_point(&mut self) -> Result<()> {
+        let pruning_point = self
+            .client
+            .get_block(self.client.get_block_dag_info().await?.pruning_point_hash, false)
+            .await?;
+
+        self.virtual_chain = VirtualChain::new(Checkpoint::new(0, (&pruning_point.header).into()));
+
+        Ok(())
+    }
+
+    /// Notifies the consumer that the connection was lost and tears the worker down.
     fn handle_disconnected(&mut self) {
         log::info!("L1 bridge disconnected");
         self.push_event(L1Event::Disconnected);
+        self.stopping = true;
     }
 
     /// Registers a notification listener for VirtualChainChanged (used as a "something changed"
@@ -263,57 +293,59 @@ impl BridgeWorker {
     /// with a saved root/tip pair.
     async fn backfill_chain(&mut self, target: &Checkpoint<ChainBlockMetadata>) -> Result<()> {
         let start = self.virtual_chain.root();
-
         log::info!(
             "L1 bridge: backfilling chain from index {} to index {}",
             start.index(),
             target.index(),
         );
 
-        // Fetch with Low verbosity - sufficient for hash and blue_score needed for chain blocks.
-        let response = self
-            .client
-            .get_virtual_chain_from_block_v2(start.metadata().block_hash(), Some(Low), None)
-            .await?;
+        let target_hash = target.metadata().hash;
+        loop {
+            // Fetch with Full verbosity so backfilled entries carry complete header fields.
+            let response = self
+                .client
+                .get_virtual_chain_from_block_v2(
+                    self.virtual_chain.tip().metadata().hash,
+                    Some(Full),
+                    None,
+                )
+                .await?;
 
-        // Walk the chain block accepted transactions to get both hash and blue_score.
-        let target_hash = target.metadata().block_hash();
-        let mut found = false;
+            // An empty batch means the server has nothing more to return - target is unreachable.
+            if response.chain_block_accepted_transactions.is_empty() {
+                return Err(Error::BackfillTargetNotFound(target_hash));
+            }
 
-        for chain_block in response.chain_block_accepted_transactions.iter() {
-            let hash = chain_block.chain_block_header.hash.unwrap_or_default();
-            let blue_score = chain_block.chain_block_header.blue_score.unwrap_or(0);
-            self.virtual_chain.advance_tip(ChainBlockMetadata::new(hash, blue_score));
-            if hash == target_hash {
-                found = true;
-                break;
+            // Advance the chain through this batch, returning early when the target is consumed.
+            for block in response.chain_block_accepted_transactions.iter() {
+                let metadata = ChainBlockMetadata::try_from(&block.chain_block_header).unwrap();
+                if metadata.hash != target_hash {
+                    self.virtual_chain.advance_tip(metadata);
+                } else {
+                    self.virtual_chain.advance_tip(*target.metadata());
+
+                    log::info!(
+                        "L1 bridge: backfill complete up to index {}",
+                        self.virtual_chain.tip().index()
+                    );
+
+                    return Ok(());
+                }
             }
         }
-
-        if !found {
-            return Err(Error::BackfillTargetNotFound(target_hash));
-        }
-
-        log::info!("L1 bridge: backfill complete up to index {}", self.virtual_chain.tip().index());
-        Ok(())
     }
 
-    /// Fetches chain updates from the current tip (or the L1 pruning point on first sync). Handles
-    /// reorgs and emits `ChainBlockAdded` events.
+    /// Fetches chain updates from the current tip. Handles reorgs and emits `ChainBlockAdded`
+    /// events. Assumes the virtual chain has been initialized by `handle_connected`.
     async fn fetch_chain_updates(&mut self) -> Result<()> {
-        let tip = self.virtual_chain.tip();
-
-        // Index 0 is the sentinel - no blocks processed yet, start from the L1 pruning point.
-        let start_hash = if tip.index() == 0 {
-            self.client.get_block_dag_info().await?.pruning_point_hash
-        } else {
-            tip.metadata().block_hash()
-        };
-
         // Fetch with Full verbosity to get complete headers and accepted transactions.
         let response = self
             .client
-            .get_virtual_chain_from_block_v2(start_hash, Some(Full), self.reorg_filter.threshold())
+            .get_virtual_chain_from_block_v2(
+                self.virtual_chain.tip().metadata().hash,
+                Some(Full),
+                self.reorg_filter.threshold(),
+            )
             .await?;
 
         // Removed hashes indicate a reorg - roll back before processing additions.
@@ -321,30 +353,98 @@ impl BridgeWorker {
             self.handle_reorg(&response)?;
         }
 
-        log::info!(
-            "L1 bridge: processing {} new chain blocks",
-            response.chain_block_accepted_transactions.len()
-        );
+        if !response.chain_block_accepted_transactions.is_empty() {
+            log::info!(
+                "L1 bridge: processing {} new chain blocks",
+                response.chain_block_accepted_transactions.len()
+            );
+        }
 
         // Extend the virtual chain and emit an event for each new block.
         for chain_block in response.chain_block_accepted_transactions.iter() {
-            let hash = chain_block.chain_block_header.hash.expect("missing hash");
-            let blue_score = chain_block.chain_block_header.blue_score.expect("missing blue_score");
-            let metadata = ChainBlockMetadata::new(hash, blue_score);
-            let checkpoint = self.virtual_chain.advance_tip(metadata);
-            let accepted_transactions: Vec<L1Transaction> = chain_block
+            // Selected parent on the chain stream is the current virtual-chain tip.
+            let header = &chain_block.chain_block_header;
+            let parent_meta = *self.virtual_chain.tip().metadata();
+
+            // Enumerate before filtering so kept txs retain their block-wide positions.
+            let accepted_transactions: Vec<(u32, L1Transaction)> = chain_block
                 .accepted_transactions
                 .iter()
-                .map(|tx| L1Transaction::try_from(tx.clone()).expect("missing transaction fields"))
+                .enumerate()
+                .filter_map(|(idx, tx)| {
+                    let tx = L1Transaction::try_from(tx.clone()).expect("missing tx fields");
+                    match self.subnetwork_filter.as_ref() {
+                        Some(want) if tx.subnetwork_id != *want => None,
+                        _ => Some((idx as u32, tx)),
+                    }
+                })
                 .collect();
+
+            let (lane_tip, lane_blue_score, lane_expired) =
+                self.advance_lane(&parent_meta, &accepted_transactions, header);
+
+            let checkpoint = self.virtual_chain.advance_tip(ChainBlockMetadata {
+                prev_seq_commit: parent_meta.seq_commit,
+                lane_key: self.lane_key.unwrap_or_default(),
+                prev_timestamp: parent_meta.timestamp,
+                prev_lane_tip: parent_meta.lane_tip,
+                lane_blue_score,
+                lane_tip,
+                lane_expired,
+                ..ChainBlockMetadata::try_from(header).unwrap()
+            });
+
             self.push_event(L1Event::ChainBlockAdded {
                 checkpoint,
-                header: Box::new(chain_block.chain_block_header.clone()),
+                header: Box::new(header.clone()),
                 accepted_transactions,
             });
         }
 
         Ok(())
+    }
+
+    /// Returns the next `(lane_tip, lane_blue_score, lane_expired)` for this block.
+    fn advance_lane(
+        &self,
+        parent: &ChainBlockMetadata,
+        accepted_transactions: &[(u32, L1Transaction)],
+        header: &RpcOptionalHeader,
+    ) -> (Hash, u64, bool) {
+        // Check whether the lane has gone silent past the finality window and needs to reset.
+        let blue_score = header.blue_score.expect("missing blue_score");
+        let lane_expired = blue_score.saturating_sub(parent.lane_blue_score) > self.finality_depth;
+
+        // No lane configured or no activity this block -> carry parent state forward unchanged.
+        let Some(lane_key) = self.lane_key.as_ref().filter(|_| !accepted_transactions.is_empty())
+        else {
+            return (parent.lane_tip, parent.lane_blue_score, lane_expired);
+        };
+
+        let parent_ref = if lane_expired { parent.seq_commit } else { parent.lane_tip };
+
+        // Merkle root over this block's activity leaves.
+        let mut activity = ActivityDigestBuilder::new();
+        for (merge_idx, tx) in accepted_transactions {
+            activity.add_leaf(activity_leaf(&tx.id(), tx.version, *merge_idx));
+        }
+
+        // Context hash of the current chain block.
+        let context_hash = mergeset_context_hash(&MergesetContext {
+            timestamp: parent.timestamp,
+            daa_score: header.daa_score.expect("missing daa_score"),
+            blue_score,
+        });
+
+        // Construct the new lane tip.
+        let tip = lane_tip_next(&LaneTipInput {
+            lane_key,
+            parent_ref: &parent_ref,
+            activity_digest: &activity.finalize(),
+            context_hash: &context_hash,
+        });
+
+        (tip, blue_score, lane_expired)
     }
 
     /// Rolls back the virtual chain, updates the reorg filter, and emits a `Rollback` event.
@@ -361,7 +461,9 @@ impl BridgeWorker {
             blue_score_depth,
             self.reorg_filter.threshold(),
         );
+
         self.push_event(L1Event::Rollback { checkpoint, blue_score_depth });
+
         Ok(())
     }
 

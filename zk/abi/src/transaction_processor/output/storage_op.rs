@@ -1,5 +1,7 @@
 use alloc::vec::Vec;
 
+use vprogs_core_codec::Writer;
+
 use crate::transaction_processor::Resource;
 
 /// A storage mutation produced by executing a transaction, addressed by resource index.
@@ -50,7 +52,7 @@ impl StorageOp {
 
     /// Encodes a resource as `Option<StorageOp>`, translating dirty/deleted/new flags into the
     /// corresponding variant.
-    pub fn encode(w: &mut impl crate::Write, resource: &Resource<'_>) {
+    pub fn encode(w: &mut impl Writer, resource: &Resource<'_>) {
         // Write unchanged (non-dirty) resources as a single 0 byte.
         if !resource.is_dirty() {
             w.write(&[0]);

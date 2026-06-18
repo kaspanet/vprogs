@@ -2,9 +2,8 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 use vprogs_core_atomics::AtomicAsyncLatch;
-use vprogs_core_types::SchedulerTransaction;
+use vprogs_core_types::{AccessMetadata, SchedulerTransaction};
 use vprogs_l1_bridge::{L1Bridge, L1Event};
-use vprogs_l1_types::L1Transaction;
 use vprogs_scheduling_scheduler::Scheduler;
 use vprogs_storage_types::Store;
 
@@ -81,10 +80,14 @@ impl<S: Store, P: Processor<S>> NodeWorker<S, P> {
             L1Event::ChainBlockAdded { checkpoint, accepted_transactions, .. } => {
                 let txs = accepted_transactions
                     .into_iter()
-                    .map(|tx| {
-                        let (resources, l2_payload) =
-                            SchedulerTransaction::<L1Transaction>::extract_payload(&tx.payload);
-                        SchedulerTransaction { tx, resources, l2_payload }
+                    .map(|(idx, tx)| {
+                        // Malformed access metadata = no dependencies; prover attests invalidity.
+                        SchedulerTransaction::new(
+                            idx,
+                            AccessMetadata::decode_vec(&mut tx.payload.as_slice())
+                                .unwrap_or_default(),
+                            tx,
+                        )
                     })
                     .collect();
                 self.scheduler.schedule(*checkpoint.metadata(), txs);

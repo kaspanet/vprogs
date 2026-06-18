@@ -93,7 +93,10 @@ async fn test_bridge_syncs_from_specific_block() {
         .with_network_type(NetworkType::Simnet)
         .with_connect_strategy(ConnectStrategy::Fallback)
         .with_filter_half_life(Duration::ZERO)
-        .with_tip(Some(Checkpoint::new(3, ChainBlockMetadata::new(start_from, 0))));
+        .with_tip(Some(Checkpoint::new(
+            3,
+            ChainBlockMetadata { hash: start_from, ..Default::default() },
+        )));
 
     let bridge = L1Bridge::new(config);
 
@@ -153,8 +156,10 @@ async fn test_bridge_catches_up_after_reconnection() {
 
     // Save the last processed position as a checkpoint.
     let (last_index, last_header, _) = &blocks[2];
-    let checkpoint =
-        Checkpoint::new(*last_index, ChainBlockMetadata::new(last_header.hash.unwrap(), 0));
+    let checkpoint = Checkpoint::new(
+        *last_index,
+        ChainBlockMetadata { hash: last_header.hash.unwrap(), ..Default::default() },
+    );
     assert_eq!(*last_index, 3);
 
     // Phase 2: Shutdown the bridge, mine blocks while it's down.
@@ -429,9 +434,11 @@ fn unwrap_chain_blocks(
     events
         .into_iter()
         .map(|e| match e {
-            L1Event::ChainBlockAdded { checkpoint, header, accepted_transactions } => {
-                (checkpoint.index(), header, accepted_transactions)
-            }
+            L1Event::ChainBlockAdded { checkpoint, header, accepted_transactions } => (
+                checkpoint.index(),
+                header,
+                accepted_transactions.into_iter().map(|(_, tx)| tx).collect(),
+            ),
             other => panic!("expected ChainBlockAdded, got {:?}", other),
         })
         .collect()

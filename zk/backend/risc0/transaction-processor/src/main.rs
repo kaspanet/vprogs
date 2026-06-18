@@ -6,7 +6,7 @@ use vprogs_zk_backend_risc0_api::Guest;
 risc0_zkvm::guest::entry!(main);
 
 fn main() {
-    Guest::process_transaction(|_tx, _tx_index, _batch_metadata, resources| {
+    Guest::process_transaction(|_tx, _merge_idx, _context_hash, resources| {
         // For demonstration purposes: increments the value of each resource by 1.
         for resource in resources.iter_mut() {
             // If the resource is new, allocate 4 bytes for it (enough to hold a u32).

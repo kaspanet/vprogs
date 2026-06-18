@@ -30,7 +30,7 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
 
         // Sort and deduplicate by key. On duplicate keys, last-write-wins: `dedup_by` removes `a`
         // (later element) and keeps `b`, so we copy `a`'s value_hash into `b` first.
-        commitments.sort_by(|a, b| a.key.cmp(&b.key));
+        commitments.sort_by_key(|a| a.key);
         commitments.dedup_by(|a, b| {
             if a.key == b.key {
                 b.value_hash = a.value_hash;

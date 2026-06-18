@@ -3,6 +3,7 @@ use vprogs_core_codec::Reader;
 use crate::Result;
 
 /// Iterator over per-transaction journal slices in a batch witness.
+#[derive(Clone, Copy)]
 pub struct TransactionJournals<'a> {
     /// Remaining unconsumed bytes of the journal entries.
     buf: &'a [u8],
@@ -29,6 +30,13 @@ impl<'a> Iterator for TransactionJournals<'a> {
             return None;
         }
 
-        Some(self.decode_entry())
+        match self.decode_entry() {
+            Ok(entry) => Some(Ok(entry)),
+            Err(e) => {
+                // Fuse on error: a bad length prefix corrupts every following entry.
+                self.buf = &[];
+                Some(Err(e))
+            }
+        }
     }
 }

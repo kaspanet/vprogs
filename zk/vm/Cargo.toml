@@ -4,6 +4,7 @@ name              = "vprogs-zk-vm"
 version.workspace = true
 
 [dependencies]
+kaspa-grpc-client.workspace            = true
 vprogs-l1-types.workspace              = true
 vprogs-scheduling-scheduler.workspace  = true
 vprogs-storage-types.workspace         = true

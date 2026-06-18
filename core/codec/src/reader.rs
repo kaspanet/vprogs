@@ -1,5 +1,7 @@
 use alloc::vec::Vec;
 
+use zerocopy::{Immutable, KnownLayout, TryFromBytes};
+
 use crate::{Error, Result};
 
 /// Self-advancing decoder for wire format fields.
@@ -39,6 +41,12 @@ pub trait Reader<'a> {
 
     /// Reads a fixed-size array reference.
     fn array<const N: usize>(&mut self, field: &'static str) -> Result<&'a [u8; N]>;
+
+    /// Reads `size_of::<T>` bytes and casts them to a `&T`.
+    fn array_as<T: TryFromBytes + KnownLayout + Immutable>(
+        &mut self,
+        field: &'static str,
+    ) -> Result<&'a T>;
 
     /// Reads a length-prefixed byte blob: `len(4 LE) + bytes(len)`.
     fn blob(&mut self, field: &'static str) -> Result<&'a [u8]>;
@@ -112,6 +120,13 @@ impl<'a> Reader<'a> for &'a [u8] {
     fn array<const N: usize>(&mut self, field: &'static str) -> Result<&'a [u8; N]> {
         let bytes = self.bytes(N, field)?;
         bytes.try_into().map_err(|_| Error::Decode(field))
+    }
+
+    fn array_as<T: TryFromBytes + KnownLayout + Immutable>(
+        &mut self,
+        field: &'static str,
+    ) -> Result<&'a T> {
+        Ok(T::try_ref_from_bytes(self.bytes(size_of::<T>(), field)?)?)
     }
 
     fn blob(&mut self, field: &'static str) -> Result<&'a [u8]> {

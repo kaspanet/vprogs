@@ -2,6 +2,7 @@ use alloc::vec::Vec;
 
 use vprogs_core_codec::{Bits, Result, SortUnique};
 use vprogs_core_types::ResourceId;
+use zerocopy::little_endian::U32;
 
 use crate::{
     Commitment, EMPTY_HASH, Key, Node, Tree,
@@ -31,7 +32,7 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
         tree: &'a S,
         version: u64,
         keys: &[ResourceId],
-    ) -> Result<(Vec<u8>, Vec<u32>)> {
+    ) -> Result<(Vec<u8>, Vec<U32>)> {
         // Sort keys into canonical leaf order and get the input -> leaf permutation.
         let (sorted_keys, leaf_order) = keys.sort_unique()?;
 

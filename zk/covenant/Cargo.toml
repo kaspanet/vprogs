@@ -1,0 +1,14 @@
+[package]
+edition.workspace = true
+name              = "vprogs-zk-covenant"
+version.workspace = true
+
+[dependencies]
+kaspa-consensus-core.workspace = true
+kaspa-hashes.workspace         = true
+kaspa-txscript.workspace       = true
+vprogs-l1-types.workspace      = true
+vprogs-zk-abi                  = { workspace = true, features = ["host"] }
+
+[dev-dependencies]
+kaspa-addresses.workspace = true

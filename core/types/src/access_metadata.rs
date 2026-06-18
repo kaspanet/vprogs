@@ -1,22 +1,51 @@
-use borsh::{BorshDeserialize, BorshSerialize};
-use rkyv::{Archive, Deserialize, Serialize};
+use alloc::vec::Vec;
+use core::mem::size_of;
+
+use vprogs_core_codec::{Error, Reader, Result};
+use zerocopy::{Immutable, IntoBytes, KnownLayout, TryFromBytes};
 
 use crate::{AccessType, ResourceId};
 
+/// A transaction's declared access to a single resource.
+#[repr(C)]
 #[derive(Clone, Copy, Debug)]
-#[derive(Archive, Serialize, Deserialize)] // rkyv serialization
-#[derive(BorshSerialize, BorshDeserialize)] // borsh serialization
+#[derive(TryFromBytes, IntoBytes, Immutable, KnownLayout)]
 pub struct AccessMetadata {
     pub resource_id: ResourceId,
     pub access_type: AccessType,
 }
 
 impl AccessMetadata {
+    pub const WIRE_SIZE: usize = size_of::<Self>();
+
+    /// Constructs a read access entry for `resource_id`.
     pub fn read(resource_id: ResourceId) -> Self {
         Self { resource_id, access_type: AccessType::Read }
     }
 
+    /// Constructs a write access entry for `resource_id`.
     pub fn write(resource_id: ResourceId) -> Self {
         Self { resource_id, access_type: AccessType::Write }
+    }
+
+    /// Decodes a length-prefixed list zero-copy, verifying strict-ascending order by
+    /// `resource_id`.
+    pub fn decode_slice<'a>(buf: &mut &'a [u8]) -> Result<&'a [Self]> {
+        let count = buf.le_u32("access_metadata_count")? as usize;
+        let bytes = buf.bytes(count * Self::WIRE_SIZE, "access_metadata_entries")?;
+
+        let view = <[Self]>::try_ref_from_bytes(bytes)?;
+        for w in view.windows(2) {
+            if w[0].resource_id >= w[1].resource_id {
+                return Err(Error::Decode("access metadata not strictly ascending"));
+            }
+        }
+
+        Ok(view)
+    }
+
+    /// Owned variant of [`Self::decode_slice`].
+    pub fn decode_vec(buf: &mut &[u8]) -> Result<Vec<Self>> {
+        Ok(Self::decode_slice(buf)?.to_vec())
     }
 }

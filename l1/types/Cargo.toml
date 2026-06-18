@@ -7,4 +7,5 @@ version.workspace = true
 borsh.workspace                = true
 kaspa-consensus-core.workspace = true
 kaspa-hashes.workspace         = true
+kaspa-rpc-core.workspace       = true
 kaspa-wrpc-client.workspace    = true

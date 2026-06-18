@@ -1,8 +1,7 @@
-use alloc::string::String;
+use alloc::{format, string::String};
+use core::fmt::Display;
 
-use vprogs_core_codec::Reader;
-
-use crate::Write;
+use vprogs_core_codec::{Reader, Writer};
 
 /// Errors from ZK ABI operations.
 #[derive(Clone, Debug, thiserror::Error)]
@@ -42,7 +41,7 @@ impl Error {
     }
 
     /// Encodes the error to the given writer.
-    pub fn encode(&self, w: &mut impl Write) {
+    pub fn encode(&self, w: &mut impl Writer) {
         match self {
             Self::Guest(code) => {
                 // Write discriminant and code.
@@ -63,7 +62,14 @@ impl From<vprogs_core_codec::Error> for Error {
     fn from(e: vprogs_core_codec::Error) -> Self {
         match e {
             vprogs_core_codec::Error::Decode(field) => Self::Decode(field.into()),
+            vprogs_core_codec::Error::ZeroCopy(msg) => Self::Decode(msg),
         }
+    }
+}
+
+impl<A: Display, S: Display, V: Display> From<zerocopy::ConvertError<A, S, V>> for Error {
+    fn from(e: zerocopy::ConvertError<A, S, V>) -> Self {
+        Self::Decode(format!("zerocopy: {e}"))
     }
 }
 

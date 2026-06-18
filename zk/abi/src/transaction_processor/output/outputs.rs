@@ -1,7 +1,9 @@
 use alloc::vec::Vec;
 
+use vprogs_core_codec::Writer;
+
 use crate::{
-    Result, Write,
+    Result,
     transaction_processor::{Resource, StorageOp},
 };
 
@@ -47,7 +49,7 @@ impl Outputs {
     }
 
     /// Encodes the execution result to the host stream (guest-side).
-    pub fn encode(result: &Result<&[Resource<'_>]>, w: &mut impl Write) {
+    pub fn encode(result: &Result<&[Resource<'_>]>, w: &mut impl Writer) {
         match *result {
             Ok(resources) => {
                 // Write Ok discriminant.

@@ -1,5 +1,7 @@
+use vprogs_core_codec::Writer;
+
 use crate::{
-    Read, Write,
+    Read,
     transaction_processor::{
         InputCommitment, Inputs, OutputCommitment, Outputs, TransactionHandler,
     },
@@ -12,8 +14,8 @@ impl Abi {
     /// Processes a single transaction inside the guest, committing input/output to `journal` and
     /// streaming results back to `host`.
     pub fn process_transaction(
-        host: &mut (impl Read + Write),
-        journal: &mut impl Write,
+        host: &mut (impl Read + Writer),
+        journal: &mut impl Writer,
         f: impl TransactionHandler,
     ) {
         // Read and decode inputs from host.
@@ -24,13 +26,14 @@ impl Abi {
         InputCommitment::encode(journal, &inputs);
 
         // Execute guest closure.
-        let Inputs { tx, tx_index, batch_metadata, mut resources } = inputs;
-        let output = f(tx, tx_index, &batch_metadata, &mut resources).map(|_| resources.as_slice());
+        let Inputs { tx, merge_idx, context_hash, mut resources } = inputs;
+        let output = f(&tx, merge_idx, context_hash, &mut resources);
+        let result = output.map(|_| resources.as_slice());
 
         // Commit output commitment to journal.
-        OutputCommitment::encode(journal, &output);
+        OutputCommitment::encode(journal, &result);
 
         // Stream execution result to host.
-        Outputs::encode(&output, host);
+        Outputs::encode(&result, host);
     }
 }

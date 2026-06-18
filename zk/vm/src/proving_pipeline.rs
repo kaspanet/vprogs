@@ -1,6 +1,8 @@
+use kaspa_grpc_client::GrpcClient;
+use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch, ScheduledTransaction};
 use vprogs_storage_types::Store;
-use vprogs_zk_batch_prover::BatchProver;
+use vprogs_zk_batch_prover::{BatchProver, BatchProverConfig};
 use vprogs_zk_transaction_prover::TransactionProver;
 
 use crate::Backend;
@@ -22,11 +24,24 @@ impl<S: Store, P: Processor<S>> ProvingPipeline<S, P> {
     }
 
     /// Creates a full batch proving pipeline.
-    pub fn batch<B: Backend>(backend: B, store: S) -> Self
+    pub fn batch<B: Backend>(
+        backend: B,
+        store: S,
+        grpc_client: GrpcClient,
+        config: BatchProverConfig,
+    ) -> Self
     where
-        P: Processor<S, TransactionArtifact = B::Receipt, BatchArtifact = B::Receipt>,
+        P: Processor<
+                S,
+                TransactionArtifact = B::Receipt,
+                BatchArtifact = B::Receipt,
+                BatchMetadata = ChainBlockMetadata,
+            >,
     {
-        Self::Batch(TransactionProver::new(backend.clone()), BatchProver::new(backend, store))
+        Self::Batch(
+            TransactionProver::new(backend.clone()),
+            BatchProver::new(backend, store, grpc_client, config),
+        )
     }
 
     /// Submits a transaction for proving. No-op for `None`.

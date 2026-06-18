@@ -4,5 +4,8 @@ name              = "vprogs-core-types"
 version.workspace = true
 
 [dependencies]
-borsh = { workspace = true, default-features = false }
-rkyv  = { workspace = true, default-features = false }
+borsh             = { workspace = true, default-features = false }
+rkyv              = { workspace = true, default-features = false }
+tap.workspace     = true
+vprogs-core-codec = { workspace = true }
+zerocopy          = { workspace = true }

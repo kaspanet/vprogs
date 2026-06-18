@@ -14,13 +14,15 @@ host = [
   "dep:risc0-zkos-v1compat",
   "dep:vprogs-core-macros",
   "dep:vprogs-zk-batch-prover",
+  "dep:vprogs-zk-covenant",
   "dep:vprogs-zk-transaction-prover",
   "dep:vprogs-zk-vm",
 ]
 std = ["vprogs-zk-abi/std"]
 
 [dependencies]
-vprogs-zk-abi = { path = "../../../abi", default-features = false }
+vprogs-core-codec = { workspace = true }
+vprogs-zk-abi     = { path = "../../../abi", default-features = false }
 
 # guest-only
 risc0-zkvm = { version = "3.0", default-features = false, optional = true }
@@ -30,5 +32,6 @@ risc0-binfmt                 = { version = "3.0.4", default-features = false, op
 risc0-zkos-v1compat          = { version = "2.2.2", optional = true }
 vprogs-core-macros           = { workspace = true, optional = true }
 vprogs-zk-batch-prover       = { path = "../../../batch-prover", optional = true }
+vprogs-zk-covenant           = { path = "../../../covenant", optional = true }
 vprogs-zk-transaction-prover = { path = "../../../transaction-prover", optional = true }
 vprogs-zk-vm                 = { path = "../../../vm", optional = true }

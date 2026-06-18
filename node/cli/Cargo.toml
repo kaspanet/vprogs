@@ -12,6 +12,7 @@ clap.workspace                         = true
 ctrlc.workspace                        = true
 env_logger.workspace                   = true
 figment.workspace                      = true
+kaspa-consensus-core.workspace         = true
 log.workspace                          = true
 serde.workspace                        = true
 tap.workspace                          = true
