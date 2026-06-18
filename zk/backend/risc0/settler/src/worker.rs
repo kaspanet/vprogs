@@ -1,4 +1,9 @@
-use std::{collections::HashSet, ops::Range, time::Duration};
+use std::{
+    collections::HashSet,
+    ops::Range,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use kaspa_addresses::Prefix;
 use kaspa_consensus_core::{
@@ -63,6 +68,51 @@ pub struct SettlementWorkerConfig {
     /// range. A small random pre-submit delay models real relay-timing variance so the winner
     /// alternates.
     pub submit_jitter: Option<Range<u64>>,
+    /// Test-only alternation: `(this settler's id, pacer shared with the competitor)`. When set, a
+    /// settler that landed the previous settlement waits until a different settler lands one
+    /// before settling again, so competing provers strictly alternate instead of one sweeping
+    /// every range (and each settles at half rate, so its recycled fee-change UTXO confirms
+    /// before reuse). `None` in production, where settlers race freely.
+    pub alternation: Option<(u8, Arc<AlternationPacer>)>,
+}
+
+/// Forces two competing settlers to alternate, used only by the contention test. Holds the id of
+/// whoever settled last; a settler that finds itself there waits on `bell` until the other reports.
+/// A short poll fallback re-checks the turn so a missed notification can never wedge the wait.
+pub struct AlternationPacer {
+    last: Mutex<Option<u8>>,
+    bell: tokio::sync::Notify,
+}
+
+impl AlternationPacer {
+    pub fn new() -> Self {
+        Self { last: Mutex::new(None), bell: tokio::sync::Notify::new() }
+    }
+
+    /// Blocks until it is not `me`'s turn to defer (a different settler reported since `me`, or
+    /// none has yet). Returns early when `shutdown` opens so teardown is not held up.
+    async fn await_turn(&self, me: u8, shutdown: &AtomicAsyncLatch) {
+        while *self.last.lock().unwrap() == Some(me) {
+            tokio::select! {
+                biased;
+                () = shutdown.wait() => return,
+                () = self.bell.notified() => {}
+                () = tokio::time::sleep(Duration::from_millis(25)) => {}
+            }
+        }
+    }
+
+    /// Records that `me` just settled and wakes a settler waiting for its turn.
+    fn mark_settled(&self, me: u8) {
+        *self.last.lock().unwrap() = Some(me);
+        self.bell.notify_waiters();
+    }
+}
+
+impl Default for AlternationPacer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Drives the settlement loop, popping each bundle the aggregate prover publishes onto `queue`.
@@ -88,8 +138,8 @@ pub async fn run(
 
     // Confirm the bootstrap UTXO before chaining, so the first settlement can spend it and we know
     // its DAA score.
-    let Some(daa_score) =
-        confirm_outpoint(&cfg.client, &cfg.params, &cov.spk, cov.outpoint, &shutdown).await
+    let target = OutpointAt { spk: &cov.spk, outpoint: cov.outpoint };
+    let Some(daa_score) = confirm_outpoint(&cfg.client, &cfg.params, target, &shutdown).await
     else {
         log::info!("settlement-worker: shutdown before bootstrap confirmed");
         return;
@@ -143,11 +193,11 @@ pub async fn run(
                 if s.new_state != cov.state {
                     let adopted =
                         covenant_from_settlement(cfg.mode, &cfg.backend, &cfg.lane_key, &cov, &s);
+                    let target = OutpointAt { spk: &adopted.spk, outpoint: adopted.outpoint };
                     match poll_outpoint(
                         &cfg.client,
                         &cfg.params,
-                        &adopted.spk,
-                        adopted.outpoint,
+                        target,
                         &shutdown,
                         ADOPT_MAX_POLLS,
                     )
@@ -186,8 +236,21 @@ pub async fn run(
 
         // A shutdown during confirmation aborts the chain: the settlement is already on chain, but
         // we stop advancing rather than poll through teardown (a restart re-bootstraps).
+        // Test-only: wait our turn so competing settlers alternate rather than one sweeping the
+        // ranges. Production leaves this `None` and settles as soon as a bundle is ready.
+        if let Some((me, pacer)) = &cfg.alternation {
+            pacer.await_turn(*me, &shutdown).await;
+            if shutdown.is_open() {
+                break;
+            }
+        }
         match settle_one(&cfg, &cov, &artifact, &shutdown).await {
-            SettleOutcome::Advanced(next) => cov = next,
+            SettleOutcome::Advanced(next) => {
+                cov = next;
+                if let Some((me, pacer)) = &cfg.alternation {
+                    pacer.mark_settled(*me);
+                }
+            }
             // A competitor's settlement is already in the mempool spending this covenant outpoint,
             // so ours can never land. Hold `cov` and drop the bundle: once that
             // settlement confirms, the bridge surfaces it as `latest_settlement` and
@@ -239,6 +302,11 @@ async fn settle_one(
     // exhausted.
     let mut excluded = HashSet::new();
     let txid = loop {
+        // Re-funding from another UTXO each rejection is the one unbounded wait in this worker;
+        // bail on shutdown so teardown is not held up retrying a doomed submission to exhaustion.
+        if shutdown.is_open() {
+            return SettleOutcome::Shutdown;
+        }
         let Some((tx, fee_outpoint)) = wallet
             .prepare_settlement_excluding(
                 built.transaction.clone(),
@@ -261,16 +329,40 @@ async fn settle_one(
         match wallet.submit_transaction(&tx).await {
             Ok(id) => break id,
             Err(e) => match classify_rejection(&e, cov.outpoint) {
-                // The fee (collateral) UTXO orphaned or double-spent: a different fee UTXO resolves
-                // it, so exclude this one and retry. The covenant input is a confirmed on-chain
-                // UTXO the worker already waited on, so it can never be the orphan
-                // cause.
-                RejectionClass::Retry => {
+                // The fee (collateral) UTXO double-spent: a different fee UTXO resolves it, so
+                // exclude this one and retry.
+                RejectionClass::FeeRetry => {
                     log::warn!(
                         "settlement-worker: fee UTXO {fee_outpoint} rejected, \
                          retrying with another UTXO: {e}"
                     );
                     excluded.insert(fee_outpoint);
+                }
+                // An orphan names no input, so the fee UTXO and the covenant input are both
+                // candidates. The fee UTXO orphans transiently (a different one resolves it), but a
+                // covenant outpoint a competitor already confirmed-spent orphans every submission
+                // no matter the fee UTXO. Re-poll the covenant to tell them apart:
+                // gone means a competitor landed first and the bundle is
+                // superseded; still live means a fee orphan to retry.
+                RejectionClass::Orphan => {
+                    match covenant_liveness(&cfg.client, &cfg.params, cov, shutdown).await {
+                        CovenantLiveness::Unspent => {
+                            log::warn!(
+                                "settlement-worker: fee UTXO {fee_outpoint} orphaned, \
+                                 retrying with another UTXO: {e}"
+                            );
+                            excluded.insert(fee_outpoint);
+                        }
+                        CovenantLiveness::Spent => {
+                            log::info!(
+                                "settlement-worker: covenant outpoint {} spent by a competitor; \
+                                 skipping superseded bundle",
+                                cov.outpoint,
+                            );
+                            return SettleOutcome::Superseded;
+                        }
+                        CovenantLiveness::Shutdown => return SettleOutcome::Shutdown,
+                    }
                 }
                 // A competitor's settlement already spends our covenant (state) outpoint in the
                 // mempool: no fee UTXO can rescue this submission, so abandon the bundle. The
@@ -297,15 +389,11 @@ async fn settle_one(
         artifact.block_prove_to
     );
 
-    let continuation_outpoint = TransactionOutpoint::new(txid, 0);
-    let Some(daa_score) = confirm_outpoint(
-        &cfg.client,
-        &cfg.params,
-        built.advance.continuation_spk(),
-        continuation_outpoint,
-        shutdown,
-    )
-    .await
+    let continuation = OutpointAt {
+        spk: built.advance.continuation_spk(),
+        outpoint: TransactionOutpoint::new(txid, 0),
+    };
+    let Some(daa_score) = confirm_outpoint(&cfg.client, &cfg.params, continuation, shutdown).await
     else {
         return SettleOutcome::Shutdown;
     };
@@ -316,8 +404,12 @@ async fn settle_one(
 
 /// How a submit rejection should be handled, keyed on which input the node is rejecting.
 enum RejectionClass {
-    /// The fee (collateral) input is the problem; refunding from a different UTXO can resolve it.
-    Retry,
+    /// The fee (collateral) input double-spent; refunding from a different UTXO resolves it.
+    FeeRetry,
+    /// The node orphaned the settlement: an input is missing, but the message names neither. The
+    /// caller re-polls the covenant to tell a transient fee orphan (retry) from a competitor-spent
+    /// covenant (superseded).
+    Orphan,
     /// The covenant (state) input is already spent by a competitor's mempool settlement; this
     /// bundle is superseded and no fee UTXO can rescue it.
     Superseded,
@@ -331,23 +423,55 @@ enum RejectionClass {
 /// the mempool`, citing the conflicting input as the outpoint's [`Display`] form. When that input
 /// is our `covenant_outpoint`, a competitor's settlement landed first and this bundle is
 /// [`Superseded`](RejectionClass::Superseded); when it is any other input, the fee UTXO clashed
-/// with an unconfirmed spend and a different one resolves it ([`Retry`](RejectionClass::Retry)).
+/// with an unconfirmed spend and a different one resolves it
+/// ([`FeeRetry`](RejectionClass::FeeRetry)).
 ///
 /// An orphan rejection (`transaction ... is an orphan where orphan is disallowed`) names only the
-/// tx id, not the input, but the covenant input is a confirmed on-chain UTXO the worker already
-/// waited on, so only the fee input can orphan: an orphan is always
-/// [`Retry`](RejectionClass::Retry).
+/// tx id, not the missing input. Both the fee UTXO (orphaned transiently) and the covenant input (a
+/// competitor confirmed-spent it) can be the cause, so it maps to
+/// [`Orphan`](RejectionClass::Orphan) for the caller to disambiguate by re-polling covenant
+/// liveness.
 ///
 /// Matched on message text because the wRPC layer exposes no structured rejection reason.
 fn classify_rejection(e: &RpcError, covenant_outpoint: TransactionOutpoint) -> RejectionClass {
     let msg = e.to_string().to_lowercase();
     let cites_covenant_input = msg.contains(&format!("{covenant_outpoint}").to_lowercase());
     if msg.contains("already spent") {
-        if cites_covenant_input { RejectionClass::Superseded } else { RejectionClass::Retry }
+        if cites_covenant_input { RejectionClass::Superseded } else { RejectionClass::FeeRetry }
     } else if msg.contains("orphan") {
-        RejectionClass::Retry
+        RejectionClass::Orphan
     } else {
         RejectionClass::Fatal
+    }
+}
+
+/// Whether the covenant (state) outpoint is still spendable, the disambiguator for an orphan
+/// rejection (which names no input).
+enum CovenantLiveness {
+    /// Still an unspent UTXO: the orphan is a transient fee-UTXO problem, retry with another.
+    Unspent,
+    /// Gone from the UTXO set: a competitor confirmed-spent it, so the bundle is superseded.
+    Spent,
+    /// `shutdown` opened while polling; abandon the settlement.
+    Shutdown,
+}
+
+/// Polls whether the covenant (state) outpoint is still an unspent UTXO on chain, to disambiguate
+/// an orphan rejection: a settlement orphans on a missing input, and the covenant outpoint goes
+/// missing exactly when a competitor confirmed-spent it (a superseded bundle), whereas a transient
+/// fee orphan leaves the covenant live (a fee UTXO to swap). A single poll suffices: the covenant
+/// was confirmed before we built against it, so its absence now is a spend, not a confirmation lag.
+async fn covenant_liveness(
+    client: &KaspaRpcClient,
+    params: &Params,
+    cov: &CovenantState,
+    shutdown: &AtomicAsyncLatch,
+) -> CovenantLiveness {
+    let target = OutpointAt { spk: &cov.spk, outpoint: cov.outpoint };
+    match poll_outpoint(client, params, target, shutdown, 1).await {
+        ConfirmOutcome::Confirmed(_) => CovenantLiveness::Unspent,
+        ConfirmOutcome::Timeout => CovenantLiveness::Spent,
+        ConfirmOutcome::Shutdown => CovenantLiveness::Shutdown,
     }
 }
 
@@ -361,20 +485,30 @@ enum ConfirmOutcome {
     Timeout,
 }
 
-/// Polls the node up to `max_polls` times for `outpoint` at `spk`'s P2SH address, returning its
-/// block DAA score on success. Covenant UTXOs are P2SH, so the node's utxoindex tracks them by
-/// their script address. Resolves to [`Shutdown`](ConfirmOutcome::Shutdown) if `shutdown` opens
-/// mid-poll, or [`Timeout`](ConfirmOutcome::Timeout) if the outpoint never appears.
+/// A specific outpoint at a covenant's P2SH SPK. Covenant UTXOs are P2SH, so the node's utxoindex
+/// tracks them by their script address; confirming one means finding `outpoint` among the unspent
+/// UTXOs the node reports for `spk`'s address.
+#[derive(Clone, Copy)]
+struct OutpointAt<'a> {
+    /// The covenant UTXO's P2SH SPK, whose address the utxoindex is queried by.
+    spk: &'a ScriptPublicKey,
+    /// The outpoint being awaited at that SPK.
+    outpoint: TransactionOutpoint,
+}
+
+/// Polls the node up to `max_polls` times for `target`'s outpoint at its P2SH address, returning
+/// its block DAA score on success. Resolves to [`Shutdown`](ConfirmOutcome::Shutdown) if `shutdown`
+/// opens mid-poll, or [`Timeout`](ConfirmOutcome::Timeout) if the outpoint never appears.
 async fn poll_outpoint(
     client: &KaspaRpcClient,
     params: &Params,
-    spk: &ScriptPublicKey,
-    outpoint: TransactionOutpoint,
+    target: OutpointAt<'_>,
     shutdown: &AtomicAsyncLatch,
     max_polls: u32,
 ) -> ConfirmOutcome {
     let prefix = Prefix::from(params.net.network_type());
-    let address = extract_script_pub_key_address(spk, prefix).expect("covenant P2SH address");
+    let address =
+        extract_script_pub_key_address(target.spk, prefix).expect("covenant P2SH address");
     for _ in 0..max_polls {
         if shutdown.is_open() {
             return ConfirmOutcome::Shutdown;
@@ -384,7 +518,7 @@ async fn poll_outpoint(
             .await
             .expect("get_utxos_by_addresses");
         if let Some(entry) =
-            utxos.into_iter().find(|e| TransactionOutpoint::from(e.outpoint) == outpoint)
+            utxos.into_iter().find(|e| TransactionOutpoint::from(e.outpoint) == target.outpoint)
         {
             return ConfirmOutcome::Confirmed(entry.utxo_entry.block_daa_score);
         }
@@ -398,23 +532,22 @@ async fn poll_outpoint(
     ConfirmOutcome::Timeout
 }
 
-/// Polls the node until `outpoint` appears at `spk`'s P2SH address, returning its block DAA score.
-/// Returns `None` if `shutdown` opens while polling. Panics on timeout: a UTXO this worker
+/// Polls the node until `target`'s outpoint appears at its P2SH address, returning its block DAA
+/// score. Returns `None` if `shutdown` opens while polling. Panics on timeout: a UTXO this worker
 /// bootstrapped or settled itself must confirm, so its absence is a liveness failure worth
 /// surfacing. The adoption path uses [`poll_outpoint`] directly instead, where a non-confirming
 /// outpoint is competitor-derived (a stale snapshot) and recovered by skipping, not a panic.
 async fn confirm_outpoint(
     client: &KaspaRpcClient,
     params: &Params,
-    spk: &ScriptPublicKey,
-    outpoint: TransactionOutpoint,
+    target: OutpointAt<'_>,
     shutdown: &AtomicAsyncLatch,
 ) -> Option<u64> {
-    match poll_outpoint(client, params, spk, outpoint, shutdown, CONFIRM_MAX_POLLS).await {
+    match poll_outpoint(client, params, target, shutdown, CONFIRM_MAX_POLLS).await {
         ConfirmOutcome::Confirmed(daa_score) => Some(daa_score),
         ConfirmOutcome::Shutdown => None,
         ConfirmOutcome::Timeout => {
-            panic!("covenant outpoint {outpoint} not confirmed within timeout")
+            panic!("covenant outpoint {} not confirmed within timeout", target.outpoint)
         }
     }
 }

@@ -56,7 +56,7 @@ use vprogs_zk_backend_risc0_test_suite::{
 
 use crate::{
     config::Config,
-    daemon::{BridgeParams, FlowNode, ProvingParams},
+    daemon::{BridgeParams, Elfs, FlowNode, ProvingParams},
     persistence::PersistedState,
 };
 
@@ -91,6 +91,7 @@ async fn main() {
     let tx_elf = transaction_processor_elf();
     let batch_elf = batch_processor_elf();
     let aggregator_elf = batch_aggregator_elf();
+    let elfs = Elfs { transaction: &tx_elf, batch: &batch_elf, aggregator: &aggregator_elf };
 
     // Build the node (kept alive until we return; dropping it shuts the flow down). Settlement mode
     // additionally bootstraps a real-pins covenant and spawns the settler (whose handle we keep),
@@ -104,9 +105,7 @@ async fn main() {
                 keypair,
                 lane_subnet,
                 lane_key,
-                &tx_elf,
-                &batch_elf,
-                &aggregator_elf,
+                elfs,
                 network_id,
                 &mut persisted,
             )
@@ -120,9 +119,7 @@ async fn main() {
                 keypair,
                 lane_subnet,
                 lane_key,
-                &tx_elf,
-                &batch_elf,
-                &aggregator_elf,
+                elfs,
                 network_id,
                 &mut persisted,
             )
@@ -171,9 +168,7 @@ async fn start_exec(
     keypair: Keypair,
     lane_subnet: SubnetworkId,
     lane_key: kaspa_hashes::Hash,
-    tx_elf: &[u8],
-    batch_elf: &[u8],
-    aggregator_elf: &[u8],
+    elfs: Elfs<'_>,
     network_id: NetworkId,
     persisted: &mut PersistedState,
 ) -> FlowNode {
@@ -199,9 +194,7 @@ async fn start_exec(
 
     let store = daemon::Store::open(cfg.data_dir.join("db"));
     daemon::build_node(
-        tx_elf,
-        batch_elf,
-        aggregator_elf,
+        elfs,
         store,
         // Exec-only mode does not run the sync-progress reporter, so no DAA observer.
         bridge_params(cfg, network_id, lane_subnet, covenant_id, params, None),
@@ -227,13 +220,11 @@ async fn start_settlement(
     keypair: Keypair,
     lane_subnet: SubnetworkId,
     lane_key: kaspa_hashes::Hash,
-    tx_elf: &[u8],
-    batch_elf: &[u8],
-    aggregator_elf: &[u8],
+    elfs: Elfs<'_>,
     network_id: NetworkId,
     persisted: &mut PersistedState,
 ) -> (FlowNode, tokio::task::JoinHandle<()>, AtomicAsyncLatch) {
-    let backend = Backend::new(tx_elf, batch_elf, aggregator_elf, ProofType::Succinct);
+    let backend = Backend::new(elfs.transaction, elfs.batch, elfs.aggregator, ProofType::Succinct);
     let wallet = Wallet::new(client, params, keypair);
     // A settlement run reuses no prior covenant (the prover's store starts at the empty SMT), so
     // warn if the data dir already carries one: it is about to be overwritten by a fresh
@@ -277,9 +268,7 @@ async fn start_settlement(
     // polls it against the bootstrap's DAA to log how far the catch-up has progressed.
     let tip_daa = Arc::new(AtomicU64::new(0));
     let node = daemon::build_proving_node(
-        tx_elf,
-        batch_elf,
-        aggregator_elf,
+        elfs,
         store,
         bridge_params(cfg, network_id, lane_subnet, covenant_id, params, Some(tip_daa.clone())),
         ProvingParams {
@@ -310,6 +299,7 @@ async fn start_settlement(
             backend,
             mode,
             submit_jitter: None,
+            alternation: None,
         },
         covenant,
         shutdown.clone(),

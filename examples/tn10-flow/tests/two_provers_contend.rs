@@ -9,7 +9,7 @@
 //! Runs only under `RISC0_DEV_MODE=1` (dev stub proofs + dev redeem; no GPU). The production /
 //! CUDA path is covered by `zk/backend/risc0/test-suite/tests/settlement_l1_e2e.rs`.
 
-use std::{collections::HashMap, ops::RangeInclusive, time::Duration};
+use std::{collections::HashMap, ops::RangeInclusive, sync::Arc, time::Duration};
 
 use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus_core::{
@@ -21,21 +21,22 @@ use kaspa_consensus_core::{
     tx::{Transaction, TransactionOutpoint},
 };
 use kaspa_hashes::Hash;
-use kaspa_rpc_core::{RpcDataVerbosityLevel, api::rpc::RpcApi};
+use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_txscript::pay_to_address_script;
 use kaspa_wrpc_client::prelude::*;
 use secp256k1::Keypair;
+use tempfile::TempDir;
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_smt::EMPTY_HASH;
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId};
-use vprogs_example_tn10_flow::daemon::{self, BridgeParams, FlowNode, ProvingParams};
+use vprogs_example_tn10_flow::daemon::{self, BridgeParams, Elfs, FlowNode, ProvingParams};
 use vprogs_l1_types::L1TransactionCovenantExt;
 use vprogs_l1_wallet::encode_activity_payload;
 use vprogs_node_test_utils::L1Node;
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_settler::{
-    CovenantState, SettlementMode, SettlementWorkerConfig, dev_bootstrap_redeem,
+    AlternationPacer, CovenantState, SettlementMode, SettlementWorkerConfig, dev_bootstrap_redeem,
     run as run_settlement_worker,
 };
 use vprogs_zk_backend_risc0_test_suite::{
@@ -73,12 +74,16 @@ const FUND_COUNT: usize = 6;
 /// Per-prover wiring kept alive for the duration of the run. Dropping the [`FlowNode`] tears the
 /// prover's bridge and pipeline down, so the test holds both for the whole driver loop.
 struct Prover {
-    /// The proving node (bridge + pipeline). Kept alive; dropping it shuts the prover down.
-    _node: FlowNode,
+    /// The proving node (bridge + pipeline). Explicitly shut down at teardown so its worker, and
+    /// the RocksDB store it holds, is released before `_db_dir` is reclaimed.
+    node: FlowNode,
     /// The settler task. Awaited at the end; `Ok(())` proves it did not panic on a competitor.
     settler: tokio::task::JoinHandle<()>,
     /// Latch the test opens to tear the settler down gracefully.
     shutdown: AtomicAsyncLatch,
+    /// Scratch dir backing the prover's RocksDB store. Held for the run, then reclaimed on drop
+    /// after the node is shut down so the store has already closed its files.
+    _db_dir: TempDir,
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -147,15 +152,19 @@ async fn two_provers_contend() {
     eprintln!("funded prover B address {addr_b}");
 
     // === Step 3: spin up both provers ===
-    // Both bundle over the same size range, so neither structurally always forms a bundle first:
-    // the winner of each uncovered range is decided by proving/submit jitter. The loser finds
-    // its covenant outpoint already spent (its bundle superseded), skips it, and reconciles to
-    // the winner's advance before racing for the next range -- so over many ranges both land
-    // settlements.
+    // Both bundle over the same size range, so neither structurally forms a bundle first. The
+    // settlers share an `AlternationPacer`: whoever lands a settlement waits for the other to land
+    // the next, so they strictly alternate. The deferring prover finds its covenant outpoint
+    // already spent (its bundle superseded), skips it, and reconciles to the other's advance before
+    // settling the following range. This keeps the spend-chain a single contiguous chain that both
+    // provers advance, and makes the both-provers-settled outcome deterministic instead of a
+    // per-range coin flip that can starve one prover.
     let tx_elf = transaction_processor_elf();
     let batch_elf = batch_processor_elf();
     let aggregator_elf = batch_aggregator_elf();
+    let elfs = Elfs { transaction: &tx_elf, batch: &batch_elf, aggregator: &aggregator_elf };
     let params = Params::from(network_id);
+    let pacer = Arc::new(AlternationPacer::new());
 
     let prover_a = spawn_prover(
         &l1,
@@ -168,9 +177,8 @@ async fn two_provers_contend() {
         lane_key,
         covenant_id,
         initial_covenant.clone(),
-        &tx_elf,
-        &batch_elf,
-        &aggregator_elf,
+        elfs,
+        (0, pacer.clone()),
     )
     .await;
     let prover_b = spawn_prover(
@@ -184,9 +192,8 @@ async fn two_provers_contend() {
         lane_key,
         covenant_id,
         initial_covenant.clone(),
-        &tx_elf,
-        &batch_elf,
-        &aggregator_elf,
+        elfs,
+        (1, pacer.clone()),
     )
     .await;
 
@@ -239,35 +246,45 @@ async fn two_provers_contend() {
         }
     }
 
-    // === Step 5: let in-flight settlements confirm, then tear the settlers down ===
-    // Keep mining acceptance blocks so settlements still in the mempool land and confirm. Poll the
-    // covenant continuation chain until it stops growing (or a bounded ceiling), so we capture the
-    // settlements that raced in at the tail of the driver loop.
+    // === Step 5: drain in-flight settlements, then tear the settlers down ===
+    // Keep mining acceptance blocks so settlements still in the mempool land and confirm, using the
+    // SAME one-block-at-a-time pacing as the driver loop's acceptance phase: mine one block, then
+    // pause long enough for the trailing prover to adopt the advance before the next block lands.
+    // Mining several blocks back-to-back here would let whichever prover is ahead settle the whole
+    // backlog before the other adopts, starving it and making the both-provers-settled assertion
+    // flaky. Poll the covenant chain and stop once it stops growing for a few rounds (or a bounded
+    // ceiling), so the tail settlements are captured with the race still alternating.
     let mut prev_len = 0usize;
-    for round in 0..30 {
-        l1.mine_blocks(2).await;
-        tokio::time::sleep(Duration::from_millis(500)).await;
+    let mut stable_rounds = 0;
+    for round in 0..40 {
+        l1.mine_blocks(1).await;
+        tokio::time::sleep(Duration::from_millis(800)).await;
         let len = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
-        if len == prev_len && len >= 3 {
-            break;
+        if len == prev_len {
+            stable_rounds += 1;
+        } else {
+            stable_rounds = 0;
         }
         prev_len = len;
+        if stable_rounds >= 3 && len >= 3 {
+            break;
+        }
         if round % 5 == 0 {
             eprintln!("drain: round {round}, covenant chain length {len}");
         }
     }
 
-    // === EXPERIMENT (part 2a): direct getBlock side-by-side covenant-binding readback ===
-    // Pick the first mined settlement and report output 0's covenant binding as seen over BOTH the
-    // gRPC `get_block(hash,true)` path AND the wRPC `get_virtual_chain_from_block_v2(.., Full)`
-    // path the bridge actually consumes. This is the crux: "does kaspanet master surface the
-    // on-chain covenant binding over wRPC, or drop it like the fork did?"
-    probe_covenant_binding(&l1, block_deploy, bootstrap_outpoint, covenant_id, network_id).await;
-
     prover_a.shutdown.open();
     prover_b.shutdown.open();
     let join_a = prover_a.settler.await;
     let join_b = prover_b.settler.await;
+
+    // Tear the proving nodes down before their scratch dirs are reclaimed: `shutdown` joins each
+    // node's worker, releasing the RocksDB store, so the held `TempDir` is removed only after the
+    // store has closed its files. Done before the assertions below so a failing assertion still
+    // unwinds cleanly rather than racing the directory removal at drop.
+    prover_a.node.shutdown();
+    prover_b.node.shutdown();
 
     // === Assertion 1: no panic (the resilience claim) ===
     // A settler that hit the old panic-on-competitor-advance returns Err (the task panicked).
@@ -275,7 +292,6 @@ async fn two_provers_contend() {
     // timeout.
     assert!(join_a.is_ok(), "prover A settler panicked: {join_a:?}");
     assert!(join_b.is_ok(), "prover B settler panicked: {join_b:?}");
-    eprintln!("both settlers joined Ok (no panic under contention)");
 
     // === Assertion 2 + 3: contiguous chain + both provers settled ===
     let chain = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await;
@@ -333,125 +349,6 @@ async fn two_provers_contend() {
     l1.shutdown().await;
 }
 
-/// EXPERIMENT (part 2a): for the first mined settlement, print whether output 0's covenant binding
-/// survives on the gRPC `get_block(hash,true)` path vs the wRPC
-/// `get_virtual_chain_from_block_v2(.., Full)` path the bridge consumes. The two RPCs surface
-/// different tx sets (gRPC returns a block's *contained* txs; the v2 chain stream returns
-/// *accepted* txs an accepting chain block merged), so we match the SAME settlement txid across
-/// both and compare its output-0 covenant binding.
-async fn probe_covenant_binding(
-    l1: &L1Node,
-    block_deploy: Hash,
-    bootstrap_outpoint: TransactionOutpoint,
-    covenant_id: Hash,
-    network_id: NetworkId,
-) {
-    // 1) gRPC: walk selected parents, find the FIRST settlement (the bootstrap-spend), and read its
-    //    output-0 covenant straight off the RpcTransaction `get_block(hash,true)` returns.
-    let tip = l1.grpc_client().get_block_dag_info().await.expect("dag info").sink;
-    let mut cursor = tip;
-    let mut target_txid: Option<Hash> = None;
-    let mut grpc_binding: Option<Option<Hash>> = None;
-    loop {
-        let block = l1.grpc_client().get_block(cursor, true).await.expect("get_block");
-        for rpc_tx in &block.transactions {
-            let tx = match Transaction::try_from(rpc_tx.clone()) {
-                Ok(tx) => tx,
-                Err(_) => continue,
-            };
-            if tx.inputs.first().map(|i| i.previous_outpoint) != Some(bootstrap_outpoint) {
-                continue;
-            }
-            if tx.settlement_info(covenant_id, cursor).is_none() {
-                continue;
-            }
-            // gRPC RpcTransactionOutput carries `covenant: Option<RpcCovenantBinding>` directly.
-            let on_wire =
-                rpc_tx.outputs.first().and_then(|o| o.covenant.as_ref()).map(|c| c.0.covenant_id);
-            target_txid = Some(tx.id());
-            grpc_binding = Some(on_wire);
-            break;
-        }
-        if grpc_binding.is_some() || cursor == block_deploy {
-            break;
-        }
-        cursor = block.verbose_data.as_ref().expect("verbose data").selected_parent_hash;
-    }
-
-    let Some(target_txid) = target_txid else {
-        eprintln!(
-            "PROBE: no settlement found spending the bootstrap outpoint; cannot compare paths"
-        );
-        return;
-    };
-
-    // 2) wRPC: the exact API the bridge uses. The v2 stream returns *accepted* txs (an accepting
-    //    chain block merged them), a different set than gRPC's *contained* txs, so we scan the
-    //    whole stream for ANY settlement of this covenant and report its output-0 covenant binding
-    //    (a) off the RpcOptionalTransactionOutput on the wire, and (b) after the bridge's
-    //    `Transaction::try_from` conversion (what `settlement_info` actually sees). We also try to
-    //    match `target_txid`.
-    let client = connect_wrpc(&l1.wrpc_borsh_url(), network_id).await;
-    let response = client
-        .get_virtual_chain_from_block_v2(block_deploy, Some(RpcDataVerbosityLevel::Full), None)
-        .await
-        .expect("get_virtual_chain_from_block_v2");
-    let mut wrpc_on_wire: Option<Option<Hash>> = None;
-    let mut wrpc_after_convert: Option<Option<Hash>> = None;
-    let mut probed_txid = target_txid;
-    let mut accepted_total = 0usize;
-    'outer: for chain_block in response.chain_block_accepted_transactions.iter() {
-        let accepting = chain_block.chain_block_header.hash;
-        for opt_tx in chain_block.accepted_transactions.iter() {
-            accepted_total += 1;
-            let on_wire = opt_tx
-                .outputs
-                .first()
-                .and_then(|o| o.covenant.as_ref())
-                .and_then(|c| c.0)
-                .map(|b| b.0.covenant_id);
-            let converted = match Transaction::try_from(opt_tx.clone()) {
-                Ok(t) => t,
-                Err(_) => continue,
-            };
-            let is_target = converted.id() == target_txid;
-            // settlement_info needs the accepting/containing block hash; use this chain block's.
-            let is_settlement = accepting
-                .map(|h| converted.settlement_info(covenant_id, h).is_some())
-                .unwrap_or(false);
-            if is_target || is_settlement {
-                probed_txid = converted.id();
-                wrpc_on_wire = Some(on_wire);
-                wrpc_after_convert =
-                    Some(converted.outputs.first().and_then(|o| o.covenant).map(|b| b.covenant_id));
-                break 'outer;
-            }
-        }
-    }
-    eprintln!("PROBE wRPC v2 accepted-tx count scanned                 = {accepted_total}");
-    let target_txid = probed_txid;
-
-    let fmt = |b: &Option<Option<Hash>>| match b {
-        Some(Some(id)) => format!("Some({id})"),
-        Some(None) => "None".to_string(),
-        None => "<settlement not found on this path>".to_string(),
-    };
-    client.disconnect().await.ok();
-    eprintln!(
-        "==================== COVENANT BINDING PROBE (settlement {target_txid}, output 0) ===================="
-    );
-    eprintln!("PROBE expected covenant_id                              = {covenant_id}");
-    eprintln!("PROBE gRPC  get_block(hash,true) RpcTransactionOutput   = {}", fmt(&grpc_binding));
-    eprintln!("PROBE wRPC  v2 RpcOptionalTransactionOutput (on wire)   = {}", fmt(&wrpc_on_wire));
-    eprintln!(
-        "PROBE wRPC  v2 -> Transaction::try_from (bridge sees)   = {}",
-        fmt(&wrpc_after_convert)
-    );
-    eprintln!(
-        "====================================================================================================="
-    );
-}
-
 /// One link in the covenant continuation chain: a settlement tx, the covenant outpoint its input 0
 /// spends, and the SPKs of all its outputs (so attribution can match a prover's change SPK).
 struct CovenantLink {
@@ -482,27 +379,20 @@ async fn spawn_prover(
     lane_key: Hash,
     covenant_id: Hash,
     covenant: CovenantState,
-    tx_elf: &[u8],
-    batch_elf: &[u8],
-    aggregator_elf: &[u8],
+    elfs: Elfs<'_>,
+    turn: (u8, Arc<AlternationPacer>),
 ) -> Prover {
     let wrpc_url = l1.wrpc_borsh_url();
     // Separate wRPC clients for the lane source and the settler so they own independent handles.
     let client_for_lane = connect_wrpc(&wrpc_url, network_id).await;
     let client_for_settler = connect_wrpc(&wrpc_url, network_id).await;
 
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let store = daemon::Store::open(dir.path());
-    // Hold the TempDir for the run by leaking it: the store keeps the dir's files open and the test
-    // process is short-lived, so reclaiming the scratch space on drop is not worth threading the
-    // guard through `Prover`.
-    std::mem::forget(dir);
+    let db_dir = TempDir::new().expect("temp dir");
+    let store = daemon::Store::open(db_dir.path());
 
     let queue = daemon::FlowSettlementQueue::new();
     let node = daemon::build_proving_node(
-        tx_elf,
-        batch_elf,
-        aggregator_elf,
+        elfs,
         store,
         BridgeParams {
             url: wrpc_url,
@@ -524,7 +414,7 @@ async fn spawn_prover(
 
     // Backend is required by the settler config; in Dev mode it pins no image ids but the type is
     // still threaded through.
-    let backend = Backend::new(tx_elf, batch_elf, aggregator_elf, ProofType::Succinct);
+    let backend = Backend::new(elfs.transaction, elfs.batch, elfs.aggregator, ProofType::Succinct);
     let shutdown = AtomicAsyncLatch::new();
     let settler = tokio::spawn(run_settlement_worker(
         queue,
@@ -540,13 +430,18 @@ async fn spawn_prover(
             // is wide relative to the dev proving time so the per-range winner is a
             // genuine coin flip.
             submit_jitter: Some(0..40),
+            // Strictly alternate with the competing prover: after one lands a settlement it waits
+            // for the other to land the next, so neither sweeps every range (and each settles at
+            // half rate, letting its recycled fee-change UTXO confirm before reuse). This makes the
+            // both-provers-settled assertion deterministic rather than a coin flip per range.
+            alternation: Some(turn),
         },
         covenant,
         shutdown.clone(),
     ));
 
     eprintln!("prover {label} started (addr {address})");
-    Prover { _node: node, settler, shutdown }
+    Prover { node, settler, shutdown, _db_dir: db_dir }
 }
 
 /// Walks the selected-parent chain from the virtual tip down to `block_deploy`, collecting the

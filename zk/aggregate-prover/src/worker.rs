@@ -20,6 +20,33 @@ use crate::{
     SettlementArtifact, command::Command,
 };
 
+/// Settled lower bound a new bundle chains from. The three fields move together: `block` and
+/// `index` are the last settled L1 block and its scheduling index, and `state` is the L2 SMT state
+/// after that settlement.
+struct SettledBound {
+    /// Last settled L1 block. `None` at genesis.
+    block: Option<Hash>,
+    /// Scheduling index of `block`, used to keep external-settlement absorption forward-only so a
+    /// competitor's older settlement never regresses the settled lower bound. `None` at genesis.
+    index: Option<u64>,
+    /// Last settled L2 SMT state. The empty SMT at genesis.
+    state: [u8; 32],
+}
+
+impl SettledBound {
+    /// The genesis bound: nothing settled, the empty SMT state.
+    fn genesis() -> Self {
+        Self { block: None, index: None, state: EMPTY_HASH }
+    }
+
+    /// Advances the bound to a newly settled block, index, and state.
+    fn advance(&mut self, block: Hash, index: u64, state: [u8; 32]) {
+        self.block = Some(block);
+        self.index = Some(index);
+        self.state = state;
+    }
+}
+
 /// Background worker that accumulates scheduled batches, forms bundles from the consecutively-ready
 /// prefix of their per-batch receipts, and proves one settlement-level receipt per bundle.
 pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend, L: LaneProofSource> {
@@ -41,14 +68,8 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend, L: LaneProofSour
     bundle_size: RangeInclusive<usize>,
     /// Batches accumulated but not yet bundled, in scheduling order.
     queued: VecDeque<ScheduledBatch<S, P>>,
-    /// Last settled L1 block (the lower bound a new bundle chains from). `None` at genesis.
-    from_block: Option<Hash>,
-    /// Scheduling index of [`from_block`], used to keep external-settlement absorption
-    /// forward-only (a competitor's older settlement must never regress our settled lower
-    /// bound). `None` at genesis.
-    from_index: Option<u64>,
-    /// Last settled L2 SMT state. The empty SMT at genesis.
-    from_state: [u8; 32],
+    /// Settled lower bound a new bundle chains from.
+    settled: SettledBound,
 }
 
 impl<S, P, B, L> Worker<S, P, B, L>
@@ -79,6 +100,13 @@ where
             settlement_queue,
             bundle_size,
         } = config;
+        // Bundle formation parks while `take` is below the range start and caps `take` at the range
+        // end, so an empty range (start > end) would never form a bundle. Reject it up front rather
+        // than stall silently.
+        assert!(
+            !bundle_size.is_empty(),
+            "bundle_size must be a non-empty range (start <= end); got {bundle_size:?}",
+        );
         let this = Self {
             prover,
             backend,
@@ -88,9 +116,7 @@ where
             settlement_queue,
             bundle_size,
             queued: VecDeque::new(),
-            from_block: None,
-            from_index: None,
-            from_state: EMPTY_HASH,
+            settled: SettledBound::genesis(),
         };
         let runtime = Builder::new_current_thread().enable_all().build().expect("runtime");
         spawn(move || runtime.block_on(this.run()))
@@ -169,12 +195,13 @@ where
         {
             take += 1;
         }
-        // Park until at least the configured minimum are consecutively ready, unless we already hit
-        // the maximum cap (then `take` is as large as it will get). Returning false leaves
-        // the batches queued; the run loop re-tries when more arrive. With the default
-        // `1..`, `take >= 1 == *start()` always, so this never fires and behavior is
-        // identical to greedy-from-1.
-        if take < *self.bundle_size.start() && take < *self.bundle_size.end() {
+        // Park until at least the configured minimum are consecutively ready. Returning false
+        // leaves the batches queued; the run loop re-tries when more arrive. The extend
+        // loop above caps `take` at the maximum, so a `take` short of the minimum is
+        // genuinely short of ready batches, not the cap. With the default `1..`, `take >= 1
+        // == *start()` always, so this never fires and behavior is identical to
+        // greedy-from-1.
+        if take < *self.bundle_size.start() {
             return false;
         }
         let bundle: Vec<ScheduledBatch<S, P>> =
@@ -283,13 +310,13 @@ where
             return true;
         }
 
-        // Under contention a competitor's settlement (absorbed into `from_state`) can advance the
-        // covenant past this bundle's base while it was forming. The bundle then no longer chains
-        // from the settled state, so it is superseded: publish a no-op and skip it rather than
-        // settling a stale advance (mirrors the settler's "skipping superseded bundle"). The next
-        // bundle self-derives its `prev_state` from the lane proof and chains from the absorbed
-        // state.
-        if st.prev_state != self.from_state {
+        // Under contention a competitor's settlement (absorbed into `settled.state`) can advance
+        // the covenant past this bundle's base while it was forming. The bundle then no
+        // longer chains from the settled state, so it is superseded: publish a no-op and
+        // skip it rather than settling a stale advance (mirrors the settler's "skipping
+        // superseded bundle"). The next bundle self-derives its `prev_state` from the lane
+        // proof and chains from the absorbed state.
+        if st.prev_state != self.settled.state {
             log::info!(
                 "aggregate-prover: skipping superseded bundle through {block_prove_to} \
                  (a competitor advanced the covenant past its base)"
@@ -312,9 +339,7 @@ where
         // Advance the settled lower bound to this bundle. The next bundle's aggregator self-derives
         // its own prev_state from the lane proof and journals, so this is bookkeeping only: it lets
         // us drop already-settled batches and detect redundant external settlements.
-        self.from_block = Some(block_prove_to);
-        self.from_index = Some(last_index);
-        self.from_state = st.new_state;
+        self.settled.advance(block_prove_to, last_index, st.new_state);
 
         // Fill the published handle with the proved settlement; the settlement worker awaiting it
         // is then released. With no queue wired the bundle is proved but not settled (exec/test
@@ -350,20 +375,20 @@ where
     /// Absorption is forward-only: a competitor's settlement is adopted only when its
     /// `block_prove_to` maps to a queued batch strictly ahead of our settled lower bound. This
     /// prevents a settlement we already advanced past (e.g. one this prover won the race on) from
-    /// regressing `from_state` and starving every subsequent bundle as superseded.
+    /// regressing `settled.state` and starving every subsequent bundle as superseded.
     fn absorb_external_settlements(&mut self) {
         let newest: Option<SettlementInfo> = self
             .queued
             .iter()
             .filter_map(|b| b.checkpoint().metadata().last_settlement)
-            .rfind(|s| s.new_state != self.from_state);
+            .rfind(|s| s.new_state != self.settled.state);
         let Some(s) = newest else {
             return;
         };
 
         // Locate the settlement's prove-to block among the queued batches to order it against our
         // settled lower bound. A settlement whose block is not (or no longer) queued, or that is
-        // not strictly ahead of `from_index`, is already covered: ignore it rather than
+        // not strictly ahead of `settled.index`, is already covered: ignore it rather than
         // regress.
         let Some(settled_index) = self
             .queued
@@ -373,13 +398,11 @@ where
         else {
             return;
         };
-        if self.from_index.is_some_and(|from| settled_index <= from) {
+        if self.settled.index.is_some_and(|from| settled_index <= from) {
             return;
         }
 
-        self.from_block = Some(s.block_prove_to);
-        self.from_index = Some(settled_index);
-        self.from_state = s.new_state;
+        self.settled.advance(s.block_prove_to, settled_index, s.new_state);
         self.drop_settled_prefix();
 
         // TODO: cancel an in-flight aggregator proof made redundant by this settlement. A running
@@ -393,7 +416,7 @@ where
     /// `block_prove_to` equals some queued batch's block hash; everything up to and including
     /// it is already settled.
     fn drop_settled_prefix(&mut self) {
-        let Some(from_block) = self.from_block else {
+        let Some(from_block) = self.settled.block else {
             return;
         };
         let cut = self

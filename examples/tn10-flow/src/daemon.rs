@@ -42,6 +42,18 @@ pub type FlowNode = Node<Store, V>;
 /// bundle).
 pub type FlowSettlementQueue = AsyncQueue<ScheduledBundle<SettlementArtifact<Receipt>>>;
 
+/// The three guest ELF images the backend pins. Exec mode runs only `transaction`; proving mode
+/// runs all three.
+#[derive(Clone, Copy)]
+pub struct Elfs<'a> {
+    /// Transaction-processor guest (per-tx execution).
+    pub transaction: &'a [u8],
+    /// Batch-processor guest (per-batch proving).
+    pub batch: &'a [u8],
+    /// Batch-aggregator guest (bundle aggregation).
+    pub aggregator: &'a [u8],
+}
+
 /// Everything the bridge needs to follow our lane on the remote node.
 pub struct BridgeParams {
     /// wRPC URL of the node, e.g. `ws://host:17210`.
@@ -82,16 +94,10 @@ pub struct ProvingParams {
 
 /// Builds and starts an execution-only [`FlowNode`]: a zk `Vm` with no proving, the given store,
 /// and a bridge pointed at the remote node's lane + covenant. [`Node::new`] immediately starts the
-/// bridge, scheduler, and event loop on a dedicated thread. The batch ELF is loaded only so the
-/// backend can pin its image id; it is never executed in exec mode.
-pub fn build_node(
-    tx_elf: &[u8],
-    batch_elf: &[u8],
-    aggregator_elf: &[u8],
-    store: Store,
-    params: BridgeParams,
-) -> FlowNode {
-    let backend = Backend::new(tx_elf, batch_elf, aggregator_elf, ProofType::Succinct);
+/// bridge, scheduler, and event loop on a dedicated thread. The batch and aggregator ELFs are
+/// loaded only so the backend can pin their image ids; they are never executed in exec mode.
+pub fn build_node(elfs: Elfs, store: Store, params: BridgeParams) -> FlowNode {
+    let backend = Backend::new(elfs.transaction, elfs.batch, elfs.aggregator, ProofType::Succinct);
     let vm = Vm::new(backend, ProvingPipeline::None);
     Node::new(base_config(vm, store, params))
 }
@@ -103,14 +109,12 @@ pub fn build_node(
 /// under `RISC0_DEV_MODE=1`) the wiring still runs end to end with stub proofs, but the on-chain
 /// `OpZkPrecompile` only accepts real receipts.
 pub fn build_proving_node(
-    tx_elf: &[u8],
-    batch_elf: &[u8],
-    aggregator_elf: &[u8],
+    elfs: Elfs,
     store: Store,
     bridge: BridgeParams,
     proving: ProvingParams,
 ) -> FlowNode {
-    let backend = Backend::new(tx_elf, batch_elf, aggregator_elf, ProofType::Succinct);
+    let backend = Backend::new(elfs.transaction, elfs.batch, elfs.aggregator, ProofType::Succinct);
     let pipeline = ProvingPipeline::aggregate(
         backend.clone(),
         store.clone(),
