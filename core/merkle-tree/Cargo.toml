@@ -1,0 +1,7 @@
+[package]
+edition.workspace = true
+name              = "vprogs-core-merkle-tree"
+version.workspace = true
+
+[dependencies]
+vprogs-core-hashing = { workspace = true }

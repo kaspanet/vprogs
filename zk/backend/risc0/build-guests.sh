@@ -6,28 +6,31 @@
 # changes recompile in ~30 seconds.
 #
 # Usage:
-#   ./zk/backend/risc0/build-guests.sh                        # build all programs
-#   ./zk/backend/risc0/build-guests.sh transaction-processor   # build only the transaction processor
-#   ./zk/backend/risc0/build-guests.sh batch-processor         # build only the batch processor
+#   ./zk/backend/risc0/build-guests.sh                                  # build all programs
+#   ./zk/backend/risc0/build-guests.sh transaction-processor             # production transaction processor
+#   ./zk/backend/risc0/build-guests.sh transaction-processor-with-exits  # test variant emitting one exit per tx
+#   ./zk/backend/risc0/build-guests.sh batch-processor                   # single-batch processor
+#   ./zk/backend/risc0/build-guests.sh batch-aggregator                  # batch aggregator
 set -euo pipefail
 
-DOCKER_TAG="r0.1.88.0"
+DOCKER_TAG="r0.1.91.1"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 if [ $# -eq 0 ]; then
-  PROGRAMS=(transaction-processor batch-processor)
+  PROGRAMS=(transaction-processor transaction-processor-with-exits batch-processor batch-aggregator)
 else
   PROGRAMS=("$@")
 fi
 
-# Write a temporary .dockerignore to avoid sending target/ and .git/ as build context.
+# Write a temporary .dockerignore to avoid sending unnecessary context.
 DOCKERIGNORE="$REPO_ROOT/.dockerignore"
 CLEANUP_DOCKERIGNORE=false
 if [ ! -f "$DOCKERIGNORE" ]; then
   CLEANUP_DOCKERIGNORE=true
   cat > "$DOCKERIGNORE" <<'IGNORE'
-target/
+**/target/
+**/target-idea/
 .git/
 .claude/
 node_modules/
@@ -94,3 +97,9 @@ EOF
   cp "$out_dir/${bin_name}" "$elf_dest"
   echo "Done: ${program} → ${elf_dest}"
 done
+
+# NOTE: Each `--output=` build orphans its `COPY . .` layer (no tagged image
+# references it), so build cache grows unboundedly over time. Run
+# `docker builder prune` manually when disk fills up. Do NOT add it here:
+# the prune also evicts the cached base image layers for the next build,
+# forcing a multi-GB re-pull and a large rebuild context transfer.

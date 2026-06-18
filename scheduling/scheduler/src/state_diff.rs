@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwapOption;
+use vprogs_core_hashing::Hasher;
 use vprogs_core_macros::smart_pointer;
-use vprogs_core_smt::{Commitment, EMPTY_HASH};
+use vprogs_core_smt::{Commitment, EMPTY_HASH, Tree};
 use vprogs_core_types::ResourceId;
 use vprogs_state_version::StateVersion;
 use vprogs_storage_types::{Store, WriteBatch};
@@ -55,6 +56,11 @@ impl<S: Store, P: Processor<S>> StateDiff<S, P> {
         self.index
     }
 
+    /// Returns `true` when the batch's execution advanced this resource's version.
+    pub fn data_updated(&self) -> bool {
+        self.written_state().version() > self.read_state().version()
+    }
+
     pub(crate) fn new(batch: ScheduledBatchRef<S, P>, resource_id: ResourceId, index: u32) -> Self {
         Self(Arc::new(StateDiffData {
             batch,
@@ -95,7 +101,7 @@ impl<S: Store, P: Processor<S>> StateDiff<S, P> {
             panic!("written_state must be known at write time");
         };
 
-        if !batch.canceled() {
+        if !batch.canceled() && written_state.version() > read_state.version() {
             written_state.write_data(wb);
             read_state.write_rollback_ptr(wb, batch.checkpoint().index());
         }
@@ -111,11 +117,13 @@ impl<S: Store, P: Processor<S>> StateDiff<S, P> {
 impl<S: Store, P: Processor<S>> From<&StateDiff<S, P>> for Commitment {
     fn from(diff: &StateDiff<S, P>) -> Self {
         let written_state = diff.written_state();
-        let data = written_state.data();
 
         Self::new(
             diff.resource_id,
-            if data.is_empty() { EMPTY_HASH } else { *blake3::hash(data).as_bytes() },
+            match written_state.data().as_slice() {
+                [] => EMPTY_HASH,
+                data => <S as Tree>::Hasher::hash(data),
+            },
         )
     }
 }

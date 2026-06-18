@@ -1,13 +1,14 @@
-use std::{collections::VecDeque, thread::spawn};
+use std::thread::{JoinHandle, spawn};
 
 use tokio::runtime::Builder;
+use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
 use vprogs_zk_abi::batch_processor::Inputs as BatchInputs;
 
-use crate::{Backend, BatchProver, command::Command};
+use crate::{Backend, BatchProver, BatchProverConfig, command::Command};
 
-/// Background worker that assembles batch witnesses and proves them.
+/// Background worker that drains the prover inbox and produces one ZK receipt per scheduled batch.
 pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend> {
     /// Shared prover state (inbox, shutdown).
     prover: BatchProver<S, P>,
@@ -15,84 +16,93 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend> {
     backend: B,
     /// Store for reading SMT state proofs.
     store: S,
-    /// Batches waiting to be proved, in scheduling order.
-    pending: VecDeque<ScheduledBatch<S, P>>,
+    /// Static config (lane key, covenant id).
+    config: BatchProverConfig,
 }
 
 impl<S: Store, P, B: Backend> Worker<S, P, B>
 where
-    P: Processor<S, TransactionArtifact = B::Receipt, BatchArtifact = B::Receipt>,
+    P: Processor<
+            S,
+            TransactionArtifact = B::Receipt,
+            BatchArtifact = B::Receipt,
+            BatchMetadata = ChainBlockMetadata,
+        >,
 {
-    /// Spawns the worker on a new thread with a single-threaded tokio runtime.
-    pub(crate) fn spawn(prover: BatchProver<S, P>, backend: B, store: S) {
-        let this = Self { prover, backend, store, pending: VecDeque::new() };
+    /// Spawns the worker on a new thread with a single-threaded tokio runtime and returns its join
+    /// handle. The prover joins this on shutdown so the worker's GPU prover is torn down (its risc0
+    /// CUDA context released) before the process exits.
+    pub(crate) fn spawn(
+        prover: BatchProver<S, P>,
+        backend: B,
+        store: S,
+        config: BatchProverConfig,
+    ) -> JoinHandle<()> {
+        let this = Self { prover, backend, store, config };
         let runtime = Builder::new_current_thread().enable_all().build().expect("runtime");
-        spawn(move || runtime.block_on(this.run()));
+        spawn(move || runtime.block_on(this.run()))
     }
 
-    /// Main loop: drains commands from the inbox, processes pending batches, and waits for new
-    /// work or shutdown.
+    /// Main loop: drain commands and prove each scheduled batch in arrival order.
     async fn run(mut self) {
         loop {
             // Apply commands from the inbox to local state.
             while let Some(cmd) = self.prover.inbox.pop() {
                 match cmd {
-                    Command::Batch(batch) => self.pending.push_back(batch),
-                    Command::Rollback(target) => {
-                        self.pending.retain(|b| b.checkpoint().index() <= target);
+                    Command::Batch(batch) => self.process_batch(batch).await,
+                    Command::Rollback(_target) => {
+                        // TODO: add cancellation of in-flight proof requests
                     }
+                }
+                // Bail promptly once shutdown is signaled rather than draining the whole backlog:
+                // a producer that runs ahead of the GPU leaves many queued batches the consumer no
+                // longer needs, and proving them all would make teardown take minutes. The current
+                // proof is awaited inline above, so this never cancels one mid-flight.
+                if self.prover.shutdown.is_open() {
+                    return;
                 }
             }
 
-            // Register notification before popping so we don't race with new commands arriving.
-            let inbox_updated = self.prover.inbox.notified();
-
-            // Process the next batch or wait for a new command / shutdown.
-            match self.pending.pop_front() {
-                Some(batch) => {
-                    // Release the inbox borrow so `process_batch` can take `&mut self`.
-                    drop(inbox_updated);
-
-                    // Process the next batch in the schedule.
-                    self.process_batch(batch).await;
-                }
-                None => tokio::select! {
-                    biased;
-                    () = self.prover.shutdown.wait() => break,
-                    () = inbox_updated => {}
-                },
+            tokio::select! {
+                biased;
+                () = self.prover.shutdown.wait() => break,
+                () = self.prover.inbox.notified() => {}
             }
         }
     }
 
-    /// Processes a single batch through the proving pipeline.
+    /// Proves one scheduled batch and publishes the receipt as the batch's artifact.
     async fn process_batch(&mut self, batch: ScheduledBatch<S, P>) {
-        // Wait for all transaction artifacts to be published.
+        // Wait for tx artifacts on the batch before proving (composition needs them).
         batch.wait_tx_artifacts_published().await;
         if batch.canceled() {
             return;
         }
 
-        // Build the witness and prove.
-        let receipts: Vec<_> = batch.tx_artifacts().map(|a| (*a).clone()).collect();
-        let inputs = self.build_inputs(&batch, &receipts);
-        let receipt = self.backend.prove_batch(&inputs, receipts).await;
+        // Collect SMT proof at the version preceding the batch's checkpoint.
+        let prev_version = batch.checkpoint().index().saturating_sub(1);
+        let proof_bytes = self.store.prove(&batch.resource_ids(), prev_version).expect("proof");
 
-        // Publish the batch proof as the batch artifact.
+        // One pass: per-tx journal bytes (inputs) + receipt clones (proof composition).
+        let (journals, receipts): (Vec<_>, Vec<_>) =
+            batch.tx_artifacts().map(|a| (B::journal_bytes(&a), (*a).clone())).unzip();
+
+        // Encode the inputs for the proof.
+        let covenant_id = self.config.covenant_id.map(|h| h.as_bytes()).unwrap_or_default();
+        let input_bytes = BatchInputs::encode(
+            (self.backend.image_id(), &covenant_id, &self.config.lane_key),
+            &proof_bytes,
+            batch.checkpoint().metadata(),
+            &journals,
+        );
+
+        // Compose the batch proof against those tx receipts.
+        let receipt = self.backend.prove_batch(&input_bytes, receipts).await;
+
+        // Publish the receipt as the batch's artifact.
         batch.publish_artifact(Some(receipt));
 
-        // Wait for this batch to commit before returning to the main loop. This guarantees the
-        // next batch sees committed SMT state when it reads proofs.
+        // Wait for this batch's commit so the next batch has access to the committed prev_state.
         batch.wait_committed().await;
-    }
-
-    /// Assembles the batch witness from transaction receipts and SMT state proofs.
-    fn build_inputs(&self, batch: &ScheduledBatch<S, P>, receipts: &[B::Receipt]) -> Vec<u8> {
-        let prev_version = batch.checkpoint().index().saturating_sub(1);
-        let resources = batch.resource_ids();
-        let (proof, leaf_order) = self.store.prove(&resources, prev_version).expect("proof");
-        let journals: Vec<_> = receipts.iter().map(B::journal_bytes).collect();
-
-        BatchInputs::encode(self.backend.image_id(), &proof, &leaf_order, &journals)
     }
 }

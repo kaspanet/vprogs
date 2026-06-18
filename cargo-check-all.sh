@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Runs cargo clippy --tests on the workspace and all excluded crates.
-# Excluded crates are detected automatically from the root Cargo.toml.
+# Runs cargo clippy --tests on the workspace and all excluded crates, treating warnings as errors
+# (matches CI policy). Excluded crates are detected automatically from the root Cargo.toml.
 #
 set -euo pipefail
 
@@ -9,7 +9,7 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 
 # --- Workspace ---
 echo ":: checking workspace"
-cargo clippy --tests
+cargo clippy --tests -- -D warnings
 
 # --- Excluded crates ---
 excluded=$(python3 -c "
@@ -26,7 +26,7 @@ for crate_dir in $excluded; do
   abs="$ROOT/$crate_dir"
   if [ -d "$abs" ]; then
     echo ":: checking excluded crate: $crate_dir"
-    cargo clippy --tests --manifest-path "$abs/Cargo.toml"
+    cargo clippy --tests --manifest-path "$abs/Cargo.toml" -- -D warnings
   fi
 done
 

@@ -78,6 +78,11 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         &self.state_diffs
     }
 
+    /// Returns the state diffs whose written version advanced past the read version.
+    pub fn updated_state_diffs(&self) -> Vec<&StateDiff<S, P>> {
+        self.state_diffs.iter().filter(|d| d.data_updated()).collect()
+    }
+
     /// Returns the resource IDs touched by this batch.
     pub fn resource_ids(&self) -> Vec<ResourceId> {
         self.state_diffs.iter().map(|d| *d.resource_id()).collect()
@@ -343,21 +348,20 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
 
     pub(crate) fn commit<ST: Store>(&self, store: &ST, wb: &mut ST::WriteBatch) {
         if !self.canceled() {
-            for state_diff in self.state_diffs() {
+            // Write the latest ptr entries for all updated resources.
+            let updated = self.updated_state_diffs();
+            for state_diff in &updated {
                 state_diff.written_state().write_latest_ptr(wb);
             }
 
             // Update the authenticated state tree with all resource state diffs from this batch.
-            if !self.state_diffs().is_empty() {
-                let new_root = store.update(
-                    wb,
-                    self.state_diffs().iter().map(Commitment::from).collect(),
-                    self.checkpoint.index(),
-                );
+            let new_root = store.update(
+                wb,
+                updated.into_iter().map(Commitment::from).collect(),
+                self.checkpoint.index(),
+            );
 
-                StateMetadata::set_state_root(wb, &new_root);
-            }
-
+            StateMetadata::set_state_root(wb, &new_root);
             StoredBatchMetadata::set(wb, self.checkpoint.index(), self.checkpoint.metadata());
             StateMetadata::set_last_committed(wb, &self.checkpoint);
 

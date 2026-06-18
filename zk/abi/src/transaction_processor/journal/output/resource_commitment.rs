@@ -1,6 +1,8 @@
-use vprogs_core_codec::Reader;
+use vprogs_core_codec::{Reader, Writer};
+use vprogs_core_hashing::Hasher;
+use vprogs_core_smt::EMPTY_HASH;
 
-use crate::{Error, Result};
+use crate::{Error, Result, transaction_processor::Resource};
 
 /// A single resource's output commitment.
 pub enum OutputResourceCommitment<'a> {
@@ -22,6 +24,20 @@ impl<'a> OutputResourceCommitment<'a> {
             Self::CHANGED => Ok(Self::Changed(buf.array::<32>("hash")?)),
             Self::UNCHANGED => Ok(Self::Unchanged),
             _ => Err(Error::Decode("invalid resource output flag".into())),
+        }
+    }
+
+    /// Encodes a resource's output commitment to the journal, hashing the data with `H`.
+    pub fn encode<H: Hasher>(w: &mut impl Writer, r: &Resource<'_>) {
+        match r.is_dirty() {
+            true => {
+                w.write(&[Self::CHANGED]);
+                match r.data() {
+                    [] => w.write(&EMPTY_HASH),
+                    data => w.write(&H::hash(data)),
+                }
+            }
+            false => w.write(&[Self::UNCHANGED]),
         }
     }
 }

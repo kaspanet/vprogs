@@ -80,7 +80,7 @@ impl<C: Config> Store for RocksDbStore<C> {
 }
 
 impl<C: Config> Tree for RocksDbStore<C> {
-    type Hasher = vprogs_core_smt::Blake3;
+    type Hasher = vprogs_core_hashing::Sha256;
 
     fn node(&self, key: &Key, max_version: u64) -> Option<(u64, Node)> {
         let mut iter = self.prefix_iter(StateSpace::SmtNode, &key.encode_with_version(max_version));

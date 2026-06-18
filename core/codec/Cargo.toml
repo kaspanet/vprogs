@@ -5,3 +5,4 @@ version.workspace = true
 
 [dependencies]
 thiserror = { workspace = true, default-features = false }
+zerocopy  = { workspace = true, default-features = false }

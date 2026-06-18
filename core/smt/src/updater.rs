@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use vprogs_core_codec::Bits;
 use vprogs_core_types::ResourceId;
 
-use crate::{Commitment, DEPTH, EMPTY_HASH, Key, Node, StaleNode, Tree, WriteBatch};
+use crate::{Commitment, DEPTH, EMPTY_HASH, HashedNode, Key, Node, StaleNode, Tree, WriteBatch};
 
 /// Applies leaf mutations to the tree and writes resulting nodes into a `WriteBatch`.
 pub(crate) struct Updater<'a, S, W> {
@@ -30,7 +30,7 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
 
         // Sort and deduplicate by key. On duplicate keys, last-write-wins: `dedup_by` removes `a`
         // (later element) and keeps `b`, so we copy `a`'s value_hash into `b` first.
-        commitments.sort_by(|a, b| a.key.cmp(&b.key));
+        commitments.sort_by_key(|a| a.key);
         commitments.dedup_by(|a, b| {
             if a.key == b.key {
                 b.value_hash = a.value_hash;
@@ -43,7 +43,11 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
         // Recursively apply commitments starting from the root. `update_subtree` marks the existing
         // root stale internally, so no separate `mark_stale` call is needed here.
         match &ctx.update_subtree(&Key::ROOT, &commitments) {
-            None => EMPTY_HASH,
+            // Tree drained: write a tombstone so reads don't fall back to the stale prior root.
+            None => {
+                ctx.wb.put_node(&Key::ROOT, ctx.version, &Node::Empty);
+                EMPTY_HASH
+            }
             Some(node) => {
                 ctx.wb.put_node(&Key::ROOT, ctx.version, node);
                 *node.hash()
@@ -59,13 +63,21 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
     fn update_subtree(&mut self, key: &Key, commitments: &[Commitment]) -> Option<Node> {
         // No commitments for this subtree - return existing node unchanged.
         if commitments.is_empty() {
-            return self.tree.node(key, self.prev_version).map(|(_, data)| data);
+            // An `Empty` tombstone collapses to `None` so callers can treat both as "no subtree".
+            let exists = |node: &Node| !matches!(node, Node::Empty);
+            return self.tree.node(key, self.prev_version).map(|(_, data)| data).filter(exists);
         }
 
         // Look up existing node at this position to determine the update strategy.
         match self.tree.node(key, self.prev_version).map(|(_, data)| data) {
             // Empty subtree: resolve commitments into leaves directly.
             None => self.resolve_leaves(key, commitments),
+
+            // Tombstone: mark stale and resolve commitments into leaves directly.
+            Some(Node::Empty) => {
+                self.mark_stale(key);
+                self.resolve_leaves(key, commitments)
+            }
 
             // Existing shortcut leaf: may need to split if keys differ.
             Some(Node::Leaf { key: existing_key, value_hash: existing_vh, .. }) => {
@@ -162,22 +174,20 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
 
             // Otherwise (both non-empty, or at least one Internal) - write children to the tree
             // and create an Internal node.
-            _ => {
-                let left_hash = self.write_child(&left_result, &left_child);
-                let right_hash = self.write_child(&right_result, &right_child);
-                Some(Node::internal::<S::Hasher>(&left_hash, &right_hash))
-            }
+            _ => Some(Node::internal::<S::Hasher>(
+                &self.write_child(&left_result, &left_child),
+                &self.write_child(&right_result, &right_child),
+            )),
         }
     }
 
-    /// Writes a child node to the tree and returns its hash, or `EMPTY_HASH` for `None`.
-    fn write_child(&mut self, child: &Option<Node>, key: &Key) -> [u8; 32] {
+    /// Writes a child node to the tree and returns its [`HashedNode`] summary.
+    fn write_child(&mut self, child: &Option<Node>, key: &Key) -> HashedNode {
         match child {
-            None => EMPTY_HASH,
+            None => HashedNode::EMPTY,
             Some(node) => {
-                let hash = *node.hash();
                 self.wb.put_node(key, self.version, node);
-                hash
+                HashedNode::from(node)
             }
         }
     }

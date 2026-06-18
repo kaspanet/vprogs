@@ -1,3 +1,80 @@
+use kaspa_consensus_core::{
+    config::params::{ForkActivation, Params},
+    hashing::tx::id as kaspa_tx_id,
+    subnets::SubnetworkId,
+};
+use kaspa_hashes::Hash;
+use kaspa_rpc_core::api::rpc::RpcApi;
+use kaspa_seq_commit::{
+    hashing::{
+        ActivityDigestBuilder, activity_leaf, lane_key, lane_tip_next, mergeset_context_hash,
+    },
+    types::{LaneTipInput, MergesetContext},
+};
+use vprogs_core_smt::EMPTY_HASH;
+use vprogs_core_types::ResourceId;
+use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
+use vprogs_l1_wallet::Wallet;
+use vprogs_scheduling_scheduler::{ExecutionConfig, Processor, Scheduler};
+use vprogs_state_version::StateVersion;
+use vprogs_storage_manager::StorageConfig;
+use vprogs_storage_types::{ReadStore, Store};
+use vprogs_zk_abi::batch_aggregator::Inputs as AggregatorInputs;
+use vprogs_zk_aggregate_prover::Backend as AggregateBackend;
+use vprogs_zk_backend_risc0_api::{Backend, Receipt};
+use vprogs_zk_backend_risc0_covenant::{build_dev_redeem_script, dev_redeem_script_len};
+use vprogs_zk_batch_prover::{LaneProofRequest, LaneProofSource};
+
+mod l1_transaction_ext;
+
+pub use l1_transaction_ext::L1TransactionExt;
+
+/// Subnetwork id the e2e fixtures bind to (the lane the batch proves and settles). Built from a
+/// non-reserved namespace so it passes L1's subnetwork-shape check.
+pub const TEST_SUBNETWORK_ID: SubnetworkId = SubnetworkId::from_namespace(4444u32.to_be_bytes());
+
+/// Lane key for [`TEST_SUBNETWORK_ID`]: the value the guest commits and the covenant SPK pins.
+pub fn test_lane_key() -> Hash {
+    lane_key(TEST_SUBNETWORK_ID.as_bytes())
+}
+
+/// Runs the aggregator on a sequence of per-batch receipts and returns the resulting bundle
+/// receipt.
+///
+/// The returned receipt's journal is a `vprogs_zk_abi::batch_aggregator::StateTransition`, ready
+/// for the settlement covenant.
+pub async fn aggregate_batches<L: LaneProofSource>(
+    backend: &Backend,
+    lane_source: &L,
+    lane_key: &Hash,
+    last_block_hash: Hash,
+    batch_receipts: Vec<Receipt>,
+) -> Receipt {
+    // Fetch the lane proof for the bundle's final block from L1.
+    let lane_proof = lane_source
+        .fetch_lane_proof(LaneProofRequest { block: last_block_hash, lane_key: *lane_key })
+        .await;
+
+    // Encode the aggregator inputs over the per-batch journal bytes.
+    let journals: Vec<Vec<u8>> = batch_receipts.iter().map(|r| r.journal.bytes.clone()).collect();
+    let inputs = AggregatorInputs::encode(
+        &backend.batch_processor.id,
+        &lane_proof,
+        journals.iter().map(|j| j.as_slice()),
+    );
+
+    // Prove the aggregator with the per-batch receipts as composition assumptions.
+    backend.prove_aggregator(&inputs, batch_receipts).await
+}
+
+/// Returns `true` when risc0 dev mode is active (env var `RISC0_DEV_MODE` is set to anything
+/// other than `0`). In dev mode the prover emits fake receipts, so any code path that
+/// cryptographically depends on the proof being real (receipt verification, on-chain script
+/// engine checks of the covenant precompile) must be gated on this returning `false`.
+pub fn dev_mode_enabled() -> bool {
+    !matches!(std::env::var("RISC0_DEV_MODE").as_deref(), Err(_) | Ok("0"))
+}
+
 /// Loads the pre-built transaction processor ELF from the repository.
 pub fn transaction_processor_elf() -> Vec<u8> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -6,6 +83,24 @@ pub fn transaction_processor_elf() -> Vec<u8> {
         panic!(
             "transaction processor ELF not found at {elf_path}: {e}\n\
              Run `./zk/backend/risc0/build-guests.sh transaction-processor` to rebuild it."
+        )
+    })
+}
+
+/// Loads the pre-built transaction-processor variant that emits one L2→L1 exit per tx.
+///
+/// Use this in tests that need to exercise the settlement covenant's `count == 2` branch:
+/// the resulting batch journal carries a non-zero `permission_spk_hash`, the host
+/// `Settlement::build` emits two covenant-bound outputs, and `TxScriptEngine` runs the
+/// permission-output validation path. See `settlement_e2e.rs` for the end-to-end test.
+pub fn transaction_processor_with_exits_elf() -> Vec<u8> {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let elf_path =
+        format!("{manifest_dir}/../transaction-processor-with-exits/compiled/program.elf");
+    std::fs::read(&elf_path).unwrap_or_else(|e| {
+        panic!(
+            "transaction-processor-with-exits ELF not found at {elf_path}: {e}\n\
+             Run `./zk/backend/risc0/build-guests.sh transaction-processor-with-exits` to rebuild it."
         )
     })
 }
@@ -20,4 +115,132 @@ pub fn batch_processor_elf() -> Vec<u8> {
              Run `./zk/backend/risc0/build-guests.sh batch-processor` to rebuild it."
         )
     })
+}
+
+/// Loads the pre-built batch aggregator ELF from the repository.
+pub fn batch_aggregator_elf() -> Vec<u8> {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let elf_path = format!("{manifest_dir}/../batch-aggregator/compiled/program.elf");
+    std::fs::read(&elf_path).unwrap_or_else(|e| {
+        panic!(
+            "batch aggregator ELF not found at {elf_path}: {e}\n\
+             Run `./zk/backend/risc0/build-guests.sh batch-aggregator` to rebuild it."
+        )
+    })
+}
+
+/// Empirical check that the build-time succinct verifier-identity consts (used by the
+/// covenant redeem script's `OpZkPrecompile` pin) still match what the live succinct prover
+/// emits. The pin is baked into `succinct_consts::SUCCINCT_CONTROL_ID` at covenant build
+/// time; if risc0 changes the recursion pipeline (or a different ProverOpts variant gets
+/// used) the pin and the receipt would silently diverge and on-chain script validation
+/// would fail at settle time. Catching it here in the test pipeline is the point.
+///
+/// kaspa only supports `poseidon2` for the succinct precompile, so the hashfn check is a
+/// simple string-equality assertion (no mapping table needed).
+///
+/// Must be called only when [`dev_mode_enabled`] is false: dev-mode receipts are the `Fake`
+/// variant and don't have succinct fields. See
+/// [`vprogs_zk_backend_risc0_covenant::succinct_consts`].
+pub fn assert_receipt_pins_match_succinct_consts(receipt: &Receipt) {
+    use vprogs_zk_backend_risc0_covenant::succinct_consts::SUCCINCT_CONTROL_ID;
+
+    let succinct = receipt.inner.succinct().expect("expected succinct receipt outside dev mode");
+    let live_control_id: [u8; 32] = succinct.control_id.into();
+    assert_eq!(
+        live_control_id, SUCCINCT_CONTROL_ID,
+        "batch receipt control_id must match SUCCINCT_CONTROL_ID; if this fires, risc0 \
+         changed the recursion pipeline (or a different ProverOpts variant got used) and \
+         the covenant pins are now stale",
+    );
+    assert_eq!(
+        succinct.hashfn, "poseidon2",
+        "kaspa only supports poseidon2 for the succinct precompile; receipt reports `{}`",
+        succinct.hashfn,
+    );
+}
+
+/// Computes `lane_tip_next` for a single batch's worth of activity.
+pub fn compute_section_lane_tip(
+    metadata: &ChainBlockMetadata,
+    txs: &[(u32, &L1Transaction)],
+    lane_key: &Hash,
+) -> Hash {
+    let context_hash = mergeset_context_hash(&MergesetContext {
+        timestamp: metadata.prev_timestamp,
+        daa_score: metadata.daa_score,
+        blue_score: metadata.blue_score,
+    });
+
+    let mut activity = ActivityDigestBuilder::new();
+    for (merge_idx, tx) in txs {
+        let tx_id = kaspa_tx_id(tx);
+        activity.add_leaf(activity_leaf(&tx_id, tx.version, *merge_idx));
+    }
+
+    let parent_ref =
+        if metadata.lane_expired { metadata.prev_seq_commit } else { metadata.prev_lane_tip };
+
+    lane_tip_next(&LaneTipInput {
+        parent_ref: &parent_ref,
+        lane_key,
+        activity_digest: &activity.finalize(),
+        context_hash: &context_hash,
+    })
+}
+
+/// Forces the Toccata fork active on `params`. The covenant flow is only valid where Toccata is
+/// live.
+pub fn force_covenant_forks(params: &mut Params) {
+    params.toccata_activation = ForkActivation::always();
+}
+
+/// Builds a scheduler over `processor` and `store` with default execution and storage config: the
+/// construction the settlement-l1 test and the tn10 example share. They differ only in the
+/// processor's proving pipeline, which is baked into `processor`.
+pub fn build_scheduler<S: Store, P: Processor<S>>(processor: P, store: S) -> Scheduler<S, P> {
+    Scheduler::new(
+        ExecutionConfig::default().with_processor(processor),
+        StorageConfig::default().with_store(store),
+    )
+}
+
+/// Reads a resource's latest bytes and decodes the leading four as a little-endian u32 counter,
+/// returning 0 when the resource has never been written. The transaction-processor guest stores
+/// each accessed resource as a u32 it bumps once per tx, so this is the lane's state as a number.
+/// Call only after the batch has committed.
+pub fn read_resource_u32<S: ReadStore>(store: &S, id: ResourceId) -> u32 {
+    let version = StateVersion::from_latest_data(store, id);
+    let data = version.data();
+    if data.len() >= 4 { u32::from_le_bytes(data[..4].try_into().expect("4 bytes")) } else { 0 }
+}
+
+/// A freshly bootstrapped covenant and the transaction that created it.
+pub struct Bootstrapped {
+    /// Covenant id consensus recomputed from the bootstrap input and output.
+    pub covenant_id: Hash,
+    /// Bootstrap transaction id; the covenant UTXO's outpoint is `(this, 0)`.
+    pub bootstrap_txid: Hash,
+}
+
+/// Builds and submits a dev covenant (no `OpZkPrecompile` pin) bound to `lane_key`, locking `value`
+/// sompi in its UTXO. Dev covenants are what an execution-only or dev-mode flow settles against;
+/// the real-pins path is only needed once proving is enabled.
+pub async fn bootstrap_dev_covenant<C: RpcApi + ?Sized>(
+    wallet: &Wallet<'_, C>,
+    lane_key: &Hash,
+    value: u64,
+) -> Bootstrapped {
+    let bootstrap_state = EMPTY_HASH;
+    let bootstrap_lane_tip = Hash::default();
+
+    let redeem_len = dev_redeem_script_len(&bootstrap_state, lane_key);
+    let redeem =
+        build_dev_redeem_script(&bootstrap_state, &bootstrap_lane_tip, lane_key, redeem_len);
+
+    let (tx, covenant_id) = wallet.build_covenant_bootstrap_transaction(&redeem, value).await;
+    let bootstrap_txid =
+        wallet.submit_transaction(&tx).await.expect("bootstrap tx submission failed");
+
+    Bootstrapped { covenant_id, bootstrap_txid }
 }

@@ -1,0 +1,21 @@
+[package]
+edition.workspace = true
+name              = "vprogs-zk-aggregate-prover"
+version.workspace = true
+
+[dependencies]
+arc-swap.workspace                     = true
+kaspa-hashes.workspace                 = true
+kaspa-rpc-core.workspace               = true
+log.workspace                          = true
+tokio                                  = { workspace = true, features = ["rt", "macros", "sync"] }
+vprogs-core-atomics.workspace          = true
+vprogs-core-codec.workspace            = true
+vprogs-core-macros.workspace           = true
+vprogs-core-smt.workspace              = true
+vprogs-l1-types.workspace              = true
+vprogs-scheduling-scheduler.workspace  = true
+vprogs-storage-types.workspace         = true
+vprogs-zk-abi                          = { workspace = true, features = ["host"] }
+vprogs-zk-batch-prover.workspace       = true
+vprogs-zk-transaction-prover.workspace = true

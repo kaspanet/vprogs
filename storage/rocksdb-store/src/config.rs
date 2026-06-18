@@ -1,7 +1,8 @@
 use rocksdb::{Options, SliceTransform, WriteOptions};
 use tap::Tap;
 
-/// Prefix length for keys that start with a u64 (batch_index or version).
+/// Prefix length for keys that start with a u64 (batch_index, version, or a proof-receipt
+/// checkpoint_index).
 const U64_PREFIX_LEN: usize = size_of::<u64>();
 
 pub trait Config: Send + Sync + 'static {
@@ -16,16 +17,16 @@ pub trait Config: Send + Sync + 'static {
             // --- Write path semantics --------------------------------------------
             // We have exactly ONE writer worker that issues large WriteBatches.
             // Pipelined writes help when multiple writers contend (WAL vs memtable).
-            // With a single writer they add overhead but no benefit-turn them off.
+            // With a single writer they add overhead but no benefit; turn them off.
             o.set_enable_pipelined_write(false);
 
             // Unordered writes relax memtable insert order (WAL order still serialized).
-            // That’s great for many concurrent writers, but unnecessary here and can
-            // complicate iterator/snapshot semantics across CFs-so keep it off.
+            // That's great for many concurrent writers, but unnecessary here and can
+            // complicate iterator/snapshot semantics across CFs, so keep it off.
             o.set_unordered_write(false);
 
             // Allow concurrent memtable writes is a no-op with one writer, but harmless.
-            // Leave it on so scaling to >1 writer later won’t require a RocksDB reopen.
+            // Leave it on so scaling to >1 writer later won't require a RocksDB reopen.
             o.set_allow_concurrent_memtable_write(true);
 
             // --- I/O smoothing ----------------------------------------------------
@@ -91,6 +92,15 @@ pub trait Config: Send + Sync + 'static {
             // SmtStale keys are: stale_since_version(8 BE) || path(32) || level(2 BE)
             // 8-byte prefix groups all stale markers for the same version.
             o.set_prefix_extractor(SliceTransform::create_fixed_prefix(8));
+        })
+    }
+
+    fn cf_proof_receipt_opts() -> Options {
+        Options::default().tap_mut(|o| {
+            // ProofReceipt keys all start with the checkpoint_index (a u64), grouping every
+            // program's receipts for one checkpoint -- across image ids and block hashes alike --
+            // so the reorg orchestrator can prune a reverted checkpoint with a single prefix scan.
+            o.set_prefix_extractor(SliceTransform::create_fixed_prefix(U64_PREFIX_LEN));
         })
     }
 }
