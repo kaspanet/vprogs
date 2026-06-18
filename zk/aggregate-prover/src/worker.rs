@@ -316,6 +316,13 @@ where
         // skip it rather than settling a stale advance (mirrors the settler's "skipping
         // superseded bundle"). The next bundle self-derives its `prev_state` from the lane
         // proof and chains from the absorbed state.
+        //
+        // TODO(livelock): the superseded bundle's proved-but-unsettled batches are dropped here
+        // rather than re-formed against the adopted tip. When fresh L1 activity keeps arriving a
+        // later bundle re-covers the range, but if activity stops while two provers contend, both
+        // keep proving bundles the other has already advanced past and the covenant wedges (neither
+        // settles). Fix is to re-form the unsettled suffix against `settled.state` and refresh the
+        // settle-time tip so one prover lands it.
         if st.prev_state != self.settled.state {
             log::info!(
                 "aggregate-prover: skipping superseded bundle through {block_prove_to} \
