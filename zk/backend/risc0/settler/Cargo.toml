@@ -15,6 +15,7 @@ secp256k1.workspace                        = true
 tokio                                      = { workspace = true, features = ["macros", "sync", "time"] }
 vprogs-core-atomics.workspace              = true
 vprogs-core-smt.workspace                  = true
+vprogs-l1-types.workspace                  = true
 vprogs-l1-wallet.workspace                 = true
 vprogs-zk-aggregate-prover.workspace       = true
 vprogs-zk-backend-risc0-api                = { workspace = true, features = ["host"] }

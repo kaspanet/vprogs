@@ -179,6 +179,31 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
         Some((tx, fee_outpoint))
     }
 
+    /// Builds and signs (without submitting) a transaction paying `count` outputs of `value` sompi
+    /// each to `recipient`, funded from the largest spendable UTXO, with the remainder returned as
+    /// change to this wallet's own address. Used to seed a distinct funding address (e.g. another
+    /// prover's fee key) from this wallet's coinbase.
+    pub async fn pay_to_address(
+        &self,
+        recipient: &Address,
+        value: u64,
+        count: usize,
+    ) -> Transaction {
+        let utxos = self.fetch_spendable_utxos().await.expect("fetch spendable utxos");
+        let (outpoint, entry) =
+            utxos.into_iter().next().expect("no spendable UTXO for pay_to_address");
+        build::pay_to_address_transaction(build::PayToAddressTx {
+            outpoint,
+            entry,
+            recipient,
+            value,
+            count,
+            keypair: self.keypair,
+            change_address: &self.address,
+            params: self.params,
+        })
+    }
+
     /// Submits `tx` through the node's mempool, returning its id (or the RPC error).
     pub async fn submit_transaction(&self, tx: &Transaction) -> Result<Hash, RpcError> {
         self.client.submit_transaction(RpcTransaction::from(tx), false).await?;

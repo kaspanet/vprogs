@@ -6,6 +6,7 @@ use kaspa_hashes::Hash;
 use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_txscript::standard::pay_to_script_hash_script;
 use vprogs_core_smt::EMPTY_HASH;
+use vprogs_l1_types::SettlementInfo;
 use vprogs_l1_wallet::Wallet;
 use vprogs_zk_aggregate_prover::SettlementArtifact;
 use vprogs_zk_backend_risc0_api::{Backend, OwnedSuccinctWitness, Receipt};
@@ -21,6 +22,7 @@ use vprogs_zk_backend_risc0_covenant::{
 pub const DEV_COVENANT_BUDGET: ComputeBudget = ComputeBudget(100);
 
 use super::{BuiltSettlement, CovenantAdvance, CovenantState};
+use crate::worker::SettlementMode;
 
 /// Bootstraps a fresh production-pins covenant (terminates in `OpZkPrecompile`, so the first
 /// settlement's reconstructed prev redeem matches this UTXO's SPK) bound to `lane_key`, locking
@@ -227,6 +229,43 @@ pub fn build_dev_settlement(
             continuation_spk,
             value: cov.value,
         },
+    }
+}
+
+/// Rebuilds the live [`CovenantState`] from an external settlement `s` that advanced the covenant
+/// (a competing settler landed it first). Deterministically reconstructs the continuation UTXO's
+/// P2SH SPK from `s.new_state` / `s.new_lane_tip` in the configured redeem variant, points the
+/// outpoint at `s.tx_id:0`, and carries `covenant_id` / `value` forward unchanged. `daa_score` is
+/// left 0; the caller confirms the outpoint on chain to stamp it (the competitor's settlement is
+/// already confirmed, so confirmation returns immediately).
+pub fn covenant_from_settlement(
+    mode: SettlementMode,
+    backend: &Backend,
+    lane_key: &Hash,
+    cov: &CovenantState,
+    s: &SettlementInfo,
+) -> CovenantState {
+    let spk = match mode {
+        SettlementMode::Dev => {
+            let len = dev_redeem_script_len(&s.new_state, lane_key);
+            let redeem = build_dev_redeem_script(&s.new_state, &s.new_lane_tip, lane_key, len);
+            pay_to_script_hash_script(&redeem)
+        }
+        SettlementMode::Production => {
+            let pins = redeem_pins(backend, lane_key);
+            let len = redeem_script_len(&s.new_state, &pins);
+            let redeem = build_redeem_script(&s.new_state, &s.new_lane_tip, len, &pins);
+            pay_to_script_hash_script(&redeem)
+        }
+    };
+    CovenantState {
+        covenant_id: cov.covenant_id,
+        state: s.new_state,
+        lane_tip: s.new_lane_tip,
+        outpoint: TransactionOutpoint::new(s.tx_id, 0),
+        spk,
+        value: cov.value,
+        daa_score: 0,
     }
 }
 

@@ -135,7 +135,7 @@ fn assert_settlement_compute_mass_within_limit(
     // Mirror `Wallet::prepare_settlement_transaction`: set the covenant input's committed
     // budget, then append a funding input (~64-byte schnorr sig script) and a change output.
     let mut tx = settlement.transaction.clone();
-    tx.inputs[0].mass = budget.into();
+    tx.inputs[0].compute_commit = budget.into();
     tx.inputs.push(TransactionInput::new(
         TransactionOutpoint::new(Hash::from_bytes([0xEE; 32]), 0),
         vec![0u8; 65],
@@ -146,7 +146,7 @@ fn assert_settlement_compute_mass_within_limit(
     // this from `sign()`; this helper hand-builds the funding input, so set it explicitly. A
     // standard schnorr P2PK fits the per-input free allowance, so its committed budget is 0 -- the
     // same value `sign()` commits for it.
-    tx.inputs[1].mass = ComputeBudget(0).into();
+    tx.inputs[1].compute_commit = ComputeBudget(0).into();
     tx.outputs.push(TransactionOutput::new(
         50_000_000,
         pay_to_script_hash_script(&[kaspa_txscript::opcodes::codes::OpTrue]),

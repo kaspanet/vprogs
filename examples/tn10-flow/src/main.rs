@@ -282,7 +282,13 @@ async fn start_settlement(
         aggregator_elf,
         store,
         bridge_params(cfg, network_id, lane_subnet, covenant_id, params, Some(tip_daa.clone())),
-        ProvingParams { covenant_id, lane_key, client: client.clone(), sink: queue.clone() },
+        ProvingParams {
+            covenant_id,
+            lane_key,
+            client: client.clone(),
+            sink: queue.clone(),
+            bundle_size: 1..=usize::MAX,
+        },
     );
     // Target the bridge replays toward: the node's virtual DAA now (the bootstrap was just sent, so
     // its block lands around here). Captured once; the reporter loop only reads the tip atomic.
@@ -303,6 +309,7 @@ async fn start_settlement(
             lane_key,
             backend,
             mode,
+            submit_jitter: None,
         },
         covenant,
         shutdown.clone(),

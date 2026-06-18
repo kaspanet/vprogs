@@ -12,7 +12,10 @@
 //!   settlement worker drains to settle proven bundles on chain. Real proofs need a GPU (the `cuda`
 //!   feature); see `main.rs`.
 
-use std::sync::{Arc, atomic::AtomicU64};
+use std::{
+    ops::RangeInclusive,
+    sync::{Arc, atomic::AtomicU64},
+};
 
 use kaspa_consensus_core::{network::NetworkId, subnets::SubnetworkId};
 use kaspa_hashes::Hash;
@@ -72,6 +75,9 @@ pub struct ProvingParams {
     /// worker pops from it and awaits each bundle's artifact to build and submit the on-chain
     /// settlement.
     pub sink: FlowSettlementQueue,
+    /// Inclusive bundle-size bound for this prover's aggregate prover (min ready before forming,
+    /// max per bundle). `1..=usize::MAX` is the greedy default used by the real daemon.
+    pub bundle_size: RangeInclusive<usize>,
 }
 
 /// Builds and starts an execution-only [`FlowNode`]: a zk `Vm` with no proving, the given store,
@@ -114,6 +120,7 @@ pub fn build_proving_node(
             covenant_id: Some(proving.covenant_id),
             lane_source: RemoteLaneSource::new(proving.client),
             settlement_queue: Some(proving.sink),
+            bundle_size: proving.bundle_size,
         },
     );
     let vm = Vm::new(backend, pipeline);

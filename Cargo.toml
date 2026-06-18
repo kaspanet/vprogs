@@ -112,33 +112,34 @@ resolver = "3"
   ] }
   sha2 = { version = "0.10", default-features = false }
 
-  # Kaspa dependencies — pinned to `biryukovmaxim/rusty-kaspa#fix-covenant-binding` (v2.0.x): a
-  # master-based branch that fixes the wRPC v2 accepted-transactions convert path to populate the
-  # per-output covenant binding (`RpcTransactionOutput.covenant`), which the prior
-  # `covpp-reset2-rpc-lane-proof` branch dropped, starving the L2 bridge's settlement detection.
-  # Newer API revision than the old covpp pin, so the vprogs side carries a v2.0 API-drift port.
-  kaspa-addresses = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
-  kaspa-consensus = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
-  kaspa-consensus-core = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
-  kaspa-consensus-notify = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
-  kaspa-core = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
-  kaspa-database = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
-  kaspa-grpc-client = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
-  kaspa-hashes = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding", default-features = false, features = [
+  # Kaspa dependencies — pinned to `kaspanet/rusty-kaspa` master (v2.0.x). Master now carries
+  # `fix(rpc/vspcv2): covenant field was missing from tx outputs` (#1056), which populates the
+  # per-output covenant binding (`RpcTransactionOutput.covenant`) on the wRPC v2 accepted-transactions
+  # convert path the L2 bridge's settlement detection reads; the prior `covpp-reset2-rpc-lane-proof`
+  # branch dropped it. Newer API revision than the old covpp pin, so the vprogs side carries a v2.0
+  # API-drift port.
+  kaspa-addresses = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+  kaspa-consensus = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+  kaspa-consensus-core = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+  kaspa-consensus-notify = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+  kaspa-core = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+  kaspa-database = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+  kaspa-grpc-client = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+  kaspa-hashes = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master", default-features = false, features = [
     "zerocopy",
   ] }
-  kaspa-merkle = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
-  kaspa-notify = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
-  kaspa-rpc-core = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
-  kaspa-seq-commit = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding", default-features = false }
-  kaspa-smt = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding", default-features = false }
-  kaspa-testing-integration = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
-  kaspa-txscript = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
-  kaspa-utils = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
-  kaspa-wrpc-client = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
-  kaspa-wrpc-server = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
-  kaspad = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
-  simpa = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "fix-covenant-binding" }
+  kaspa-merkle = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+  kaspa-notify = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+  kaspa-rpc-core = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+  kaspa-seq-commit = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master", default-features = false }
+  kaspa-smt = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master", default-features = false }
+  kaspa-testing-integration = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+  kaspa-txscript = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+  kaspa-utils = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+  kaspa-wrpc-client = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+  kaspa-wrpc-server = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+  kaspad = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+  simpa = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
 
   # Internal dependencies
   vprogs-core-atomics                             = { path = "core/atomics" }

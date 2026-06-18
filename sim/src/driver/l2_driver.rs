@@ -216,6 +216,7 @@ fn build_exec(
                 covenant_id,
                 lane_source: ConsensusLaneSource::from_weak(consensus),
                 settlement_queue: Some(queue.clone()),
+                bundle_size: 1..=usize::MAX,
             },
         );
         (pipeline, Some(queue))
@@ -384,11 +385,9 @@ impl L2Driver {
                     meta.lane_expired = true;
                 }
                 if let Ok(proof) = c.get_seq_commit_lane_proof(hash, self.lane_key) {
-                    if let Some(tip) = proof.lane_tip {
-                        meta.lane_tip = tip;
-                    }
-                    if let Some(bs) = proof.lane_blue_score {
-                        meta.lane_blue_score = bs;
+                    if let Some(lane) = proof.lane {
+                        meta.lane_tip = lane.tip;
+                        meta.lane_blue_score = lane.blue_score;
                     }
                 }
             }

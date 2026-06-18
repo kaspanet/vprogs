@@ -8,7 +8,7 @@ mod covenant_state;
 
 pub use build::{
     DEV_COVENANT_BUDGET, bootstrap_dev_covenant, bootstrap_real_covenant, bootstrap_redeem,
-    build_dev_settlement, build_settlement, dev_bootstrap_redeem,
+    build_dev_settlement, build_settlement, covenant_from_settlement, dev_bootstrap_redeem,
 };
 pub use built_settlement::BuiltSettlement;
 pub use covenant_advance::CovenantAdvance;
