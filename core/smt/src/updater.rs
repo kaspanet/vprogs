@@ -184,7 +184,15 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
     /// Writes a child node to the tree and returns its [`HashedNode`] summary.
     fn write_child(&mut self, child: &Option<Node>, key: &Key) -> HashedNode {
         match child {
-            None => HashedNode::EMPTY,
+            None => {
+                // Tombstone an emptied position so a later read can't resurface the deleted node.
+                let exists = |(_, node)| !matches!(node, Node::Empty);
+                if self.tree.node(key, self.prev_version).is_some_and(exists) {
+                    self.wb.put_node(key, self.version, &Node::Empty);
+                    self.wb.put_stale_node(&StaleNode::new(self.version, *key, self.version));
+                }
+                HashedNode::EMPTY
+            }
             Some(node) => {
                 self.wb.put_node(key, self.version, node);
                 HashedNode::from(node)
@@ -195,7 +203,7 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
     /// Marks an existing node at the given position as stale (if it exists).
     fn mark_stale(&mut self, node_key: &Key) {
         if let Some((old_version, _)) = self.tree.node(node_key, self.prev_version) {
-            self.wb.put_stale_node(&StaleNode::new(self.version, node_key.clone(), old_version));
+            self.wb.put_stale_node(&StaleNode::new(self.version, *node_key, old_version));
         }
     }
 }
