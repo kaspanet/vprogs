@@ -29,4 +29,6 @@ pub use covenant::{
     bootstrap_real_covenant, bootstrap_redeem, build_dev_settlement, build_settlement,
     covenant_from_settlement, dev_bootstrap_redeem,
 };
-pub use worker::{AlternationPacer, SettlementMode, SettlementWorkerConfig, run};
+#[cfg(feature = "test-utils")]
+pub use worker::AlternationPacer;
+pub use worker::{SettlementMode, SettlementWorkerConfig, run};

@@ -8,11 +8,20 @@ version = "0.1.0"
 name = "tn10-flow"
 path = "src/main.rs"
 
+# The two-prover contention test needs the settler's alternation knob, so it only builds with
+# `--features test-utils`; a plain `cargo test` skips it.
+[[test]]
+name              = "two_provers_contend"
+required-features = ["test-utils"]
+
 [features]
 # `cuda` swaps the RISC0 prover for the GPU one. The proving + settlement path compiles and runs
 # end to end without it (CPU/dev stub proofs), but the on-chain `OpZkPrecompile` only accepts real
 # receipts, so meaningful settlements happen only under `cuda` without `RISC0_DEV_MODE`.
 cuda = ["vprogs-zk-backend-risc0-api/cuda"]
+# Pulls in the settler's alternation pacer for the two-prover contention test. Off in normal builds,
+# so the binary's settlement config carries no alternation field.
+test-utils = ["vprogs-zk-backend-risc0-settler/test-utils"]
 
 [dependencies]
 # vprogs internal. The scheduler/Vm construction, covenant bootstrap, fork toggle, state-read, and

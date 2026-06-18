@@ -299,6 +299,7 @@ async fn start_settlement(
             backend,
             mode,
             submit_jitter: None,
+            #[cfg(feature = "test-utils")]
             alternation: None,
         },
         covenant,

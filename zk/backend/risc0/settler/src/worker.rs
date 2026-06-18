@@ -1,9 +1,4 @@
-use std::{
-    collections::HashSet,
-    ops::Range,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{collections::HashSet, ops::Range, time::Duration};
 
 use kaspa_addresses::Prefix;
 use kaspa_consensus_core::{
@@ -73,20 +68,25 @@ pub struct SettlementWorkerConfig {
     /// before settling again, so competing provers strictly alternate instead of one sweeping
     /// every range (and each settles at half rate, so its recycled fee-change UTXO confirms
     /// before reuse). `None` in production, where settlers race freely.
-    pub alternation: Option<(u8, Arc<AlternationPacer>)>,
+    #[cfg(feature = "test-utils")]
+    pub alternation: Option<(u8, std::sync::Arc<AlternationPacer>)>,
 }
 
 /// Forces two competing settlers to alternate, used only by the contention test. Holds the id of
 /// whoever settled last; a settler that finds itself there waits on `bell` until the other reports.
 /// A short poll fallback re-checks the turn so a missed notification can never wedge the wait.
+#[cfg(feature = "test-utils")]
+#[derive(Default)]
 pub struct AlternationPacer {
-    last: Mutex<Option<u8>>,
+    last: std::sync::Mutex<Option<u8>>,
     bell: tokio::sync::Notify,
 }
 
+#[cfg(feature = "test-utils")]
 impl AlternationPacer {
+    /// Creates a fresh pacer: no settler has reported yet, so neither defers.
     pub fn new() -> Self {
-        Self { last: Mutex::new(None), bell: tokio::sync::Notify::new() }
+        Self { last: std::sync::Mutex::new(None), bell: tokio::sync::Notify::new() }
     }
 
     /// Blocks until it is not `me`'s turn to defer (a different settler reported since `me`, or
@@ -106,12 +106,6 @@ impl AlternationPacer {
     fn mark_settled(&self, me: u8) {
         *self.last.lock().unwrap() = Some(me);
         self.bell.notify_waiters();
-    }
-}
-
-impl Default for AlternationPacer {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -238,6 +232,7 @@ pub async fn run(
         // we stop advancing rather than poll through teardown (a restart re-bootstraps).
         // Test-only: wait our turn so competing settlers alternate rather than one sweeping the
         // ranges. Production leaves this `None` and settles as soon as a bundle is ready.
+        #[cfg(feature = "test-utils")]
         if let Some((me, pacer)) = &cfg.alternation {
             pacer.await_turn(*me, &shutdown).await;
             if shutdown.is_open() {
@@ -247,6 +242,7 @@ pub async fn run(
         match settle_one(&cfg, &cov, &artifact, &shutdown).await {
             SettleOutcome::Advanced(next) => {
                 cov = next;
+                #[cfg(feature = "test-utils")]
                 if let Some((me, pacer)) = &cfg.alternation {
                     pacer.mark_settled(*me);
                 }

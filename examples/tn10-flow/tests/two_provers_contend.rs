@@ -352,8 +352,11 @@ async fn two_provers_contend() {
 /// One link in the covenant continuation chain: a settlement tx, the covenant outpoint its input 0
 /// spends, and the SPKs of all its outputs (so attribution can match a prover's change SPK).
 struct CovenantLink {
+    /// The settlement transaction's id.
     tx_id: Hash,
+    /// Covenant outpoint this settlement's input 0 spends.
     covenant_input: TransactionOutpoint,
+    /// SPKs of all outputs, used to attribute the settlement to a prover by its change SPK.
     change_spks: Vec<kaspa_consensus_core::tx::ScriptPublicKey>,
 }
 
