@@ -10,4 +10,5 @@ tap.workspace                  = true
 vprogs-core-codec.workspace    = true
 vprogs-core-hashing.workspace  = true
 vprogs-core-smt.workspace      = true
+vprogs-core-types.workspace    = true
 vprogs-storage-types.workspace = true

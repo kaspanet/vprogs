@@ -335,6 +335,9 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
             StoredBatchMetadata::set(wb, self.checkpoint.index(), self.checkpoint.metadata());
             StateMetadata::set_last_committed(wb, &self.checkpoint);
 
+            // Stage the durable canonical entry; the in-memory append happened at schedule time.
+            self.state.canonical_chain().append_to_disk(wb, &self.checkpoint);
+
             // Persist root on first commit for crash-fault tolerance. Root was already set
             // in-memory when this batch was scheduled (see next_checkpoint).
             if self.checkpoint.index() == self.state.root().index() {

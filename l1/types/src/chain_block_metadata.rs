@@ -4,9 +4,6 @@ use kaspa_rpc_core::{RpcHeader, RpcOptionalHeader};
 use crate::{Hash, SettlementInfo};
 
 /// Per-block metadata the bridge attaches to each L1 chain block.
-///
-/// Satisfies the [`BatchMetadata`](vprogs_core_types::BatchMetadata) blanket impl via its derived
-/// traits.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct ChainBlockMetadata {
     /// L1 block hash.
@@ -37,6 +34,12 @@ pub struct ChainBlockMetadata {
     pub lane_expired: bool,
     /// Most-recent settlement of the configured covenant, or `None` until one lands.
     pub last_settlement: Option<SettlementInfo>,
+}
+
+impl vprogs_core_types::BatchMetadata for ChainBlockMetadata {
+    fn block_hash(&self) -> [u8; 32] {
+        self.hash.as_bytes()
+    }
 }
 
 impl From<&RpcHeader> for ChainBlockMetadata {

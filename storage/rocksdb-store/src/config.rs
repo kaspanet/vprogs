@@ -1,11 +1,15 @@
 use rocksdb::{Options, SliceTransform, WriteOptions};
 use tap::Tap;
+use vprogs_core_types::{CanonicalChain, NoOpCanonicalChain};
 
 /// Prefix length for keys that start with a u64 (batch_index, version, or a proof-receipt
 /// checkpoint_index).
 const U64_PREFIX_LEN: usize = size_of::<u64>();
 
 pub trait Config: Send + Sync + 'static {
+    /// Canonical chain for fork-aware SMT reads; `NoOpCanonicalChain` disables filtering.
+    type CanonicalChain: CanonicalChain + Default;
+
     fn db_opts() -> Options {
         Options::default().tap_mut(|o| {
             // --- Parallelism & background work -----------------------------------
@@ -95,6 +99,13 @@ pub trait Config: Send + Sync + 'static {
         })
     }
 
+    fn cf_canonical_chain_opts() -> Options {
+        Options::default().tap_mut(|o| {
+            // CanonicalChain keys are: batch_index (u64 big-endian); value is the 32-byte hash.
+            o.set_prefix_extractor(SliceTransform::create_fixed_prefix(U64_PREFIX_LEN));
+        })
+    }
+
     fn cf_proof_receipt_opts() -> Options {
         Options::default().tap_mut(|o| {
             // ProofReceipt keys all start with the checkpoint_index (a u64), grouping every
@@ -106,4 +117,6 @@ pub trait Config: Send + Sync + 'static {
 }
 
 pub struct DefaultConfig;
-impl Config for DefaultConfig {}
+impl Config for DefaultConfig {
+    type CanonicalChain = NoOpCanonicalChain;
+}

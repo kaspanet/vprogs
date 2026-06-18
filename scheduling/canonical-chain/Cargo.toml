@@ -1,0 +1,15 @@
+[package]
+edition.workspace = true
+name              = "vprogs-scheduling-canonical-chain"
+version.workspace = true
+
+[dependencies]
+vprogs-core-atomics.workspace          = true
+vprogs-core-macros.workspace           = true
+vprogs-core-types.workspace            = true
+vprogs-state-canonical-chain.workspace = true
+vprogs-storage-types.workspace         = true
+
+[dev-dependencies]
+tempfile.workspace                     = true
+vprogs-storage-rocksdb-store.workspace = true
