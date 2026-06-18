@@ -37,18 +37,21 @@ use kaspa_consensus_core::{
     constants::{SOMPI_PER_KASPA, TX_VERSION_TOCCATA},
     network::NetworkId,
     subnets::SubnetworkId,
+    tx::TransactionOutpoint,
 };
+use kaspa_hashes::Hash;
 use kaspa_seq_commit::hashing::lane_key;
 use kaspa_wrpc_client::prelude::*;
 use secp256k1::Keypair;
 use vprogs_core_atomics::AtomicAsyncLatch;
+use vprogs_core_smt::EMPTY_HASH;
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId};
 use vprogs_l1_wallet::{Wallet, encode_activity_payload};
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_settler::{
-    SettlementMode, SettlementWorkerConfig, bootstrap_dev_covenant, bootstrap_real_covenant,
-    run as run_settlement_worker,
+    CovenantState, SettlementMode, SettlementWorkerConfig, bootstrap_dev_covenant,
+    bootstrap_real_covenant, bootstrap_redeem, dev_bootstrap_redeem, run as run_settlement_worker,
 };
 use vprogs_zk_backend_risc0_test_suite::{
     batch_aggregator_elf, batch_processor_elf, dev_mode_enabled, transaction_processor_elf,
@@ -188,8 +191,12 @@ async fn start_exec(
             covenant.covenant_id
         }
     };
-    // Persist the resolved id so an env-supplied covenant survives a restart without re-bootstrap.
+    // Persist the resolved id and any env-supplied bootstrap anchor so an env-supplied covenant
+    // survives a restart without re-bootstrap (a catch-up node becomes a plain resume).
     persisted.covenant_id.get_or_insert_with(|| covenant_id.to_string());
+    if let Some(txid) = cfg.bootstrap_txid {
+        persisted.bootstrap_txid.get_or_insert_with(|| txid.to_string());
+    }
     persisted.save(&cfg.data_dir);
 
     let store = daemon::Store::open(cfg.data_dir.join("db"));
@@ -202,10 +209,11 @@ async fn start_exec(
 }
 
 /// Builds the proving + settlement node: bootstrap a fresh covenant (dev-pins under
-/// `RISC0_DEV_MODE`, real-pins otherwise), wire the batch prover over the remote node, and spawn
-/// the [`settler`] on the node's batch sink. Always bootstraps fresh (the prover's store starts at
-/// the empty SMT, which the bootstrap's initial state matches), so the data dir should be clean for
-/// a settlement run.
+/// `RISC0_DEV_MODE`, real-pins otherwise) or, when `TN10_COVENANT_ID` is set, catch up to an
+/// existing one (reconstructing its initial state from env instead of bootstrapping); then wire the
+/// batch prover over the remote node and spawn the [`settler`] on the node's batch sink. A
+/// fresh-bootstrap run starts at the empty SMT, so its data dir should be clean; a catch-up run
+/// rebuilds state by replaying L1 forward from `TN10_START_FROM`.
 ///
 /// Returns the node, the settler's [`JoinHandle`](tokio::task::JoinHandle) so `main` can await it
 /// (the settler panics loudly on a rejected settlement or a confirmation timeout, and awaiting the
@@ -226,22 +234,44 @@ async fn start_settlement(
 ) -> (FlowNode, tokio::task::JoinHandle<()>, AtomicAsyncLatch) {
     let backend = Backend::new(elfs.transaction, elfs.batch, elfs.aggregator, ProofType::Succinct);
     let wallet = Wallet::new(client, params, keypair);
-    // A settlement run reuses no prior covenant (the prover's store starts at the empty SMT), so
-    // warn if the data dir already carries one: it is about to be overwritten by a fresh
-    // bootstrap.
-    if let Some(prior) = persisted.covenant_id.as_deref() {
-        log::warn!(
-            "settlement mode bootstraps a fresh covenant; overwriting stored covenant {prior} \
-             (use a clean TN10_DATA_DIR for a settlement run)",
-        );
-    }
     // Under `RISC0_DEV_MODE` the prover emits stub receipts the production `OpZkPrecompile` would
     // reject, so settle against the dev redeem (chain-anchored seq commit, no precompile); a real
     // (CUDA, non-dev) run settles against the production redeem. Same operating contract the tests
     // gate on.
     let dev = dev_mode_enabled();
     let mode = if dev { SettlementMode::Dev } else { SettlementMode::Production };
-    let (covenant, bootstrap_txid) = if dev {
+    // Catch-up: an env-supplied covenant id joins an existing covenant instead of bootstrapping a
+    // fresh one, reconstructing the never-advanced state bootstrap produces. The bridge replays L1
+    // from `start_from` and the settler self-heals from the on-chain last_settlement, so the
+    // reconstruction is correct even when the covenant has already moved.
+    let (covenant, bootstrap_txid) = if let Some(covenant_id) = cfg.covenant_id_env {
+        let bootstrap_txid = cfg.bootstrap_txid.unwrap_or_else(|| {
+            panic!(
+                "TN10_COVENANT_ID set without TN10_BOOTSTRAP_TXID: the covenant UTXO outpoint is \
+                 not derivable from the covenant id, so a catch-up node must supply it"
+            )
+        });
+        // Same redeem builder bootstrap uses, so the reconstructed P2SH SPK matches the on-chain
+        // covenant UTXO (asserted at the first settlement).
+        let (_redeem, spk) = if dev {
+            dev_bootstrap_redeem(&lane_key)
+        } else {
+            bootstrap_redeem(&backend, &lane_key)
+        };
+        log::info!(
+            "catching up to existing covenant {covenant_id} (bootstrap tx {bootstrap_txid})"
+        );
+        let covenant = CovenantState {
+            covenant_id,
+            state: EMPTY_HASH,
+            lane_tip: Hash::default(),
+            outpoint: TransactionOutpoint::new(bootstrap_txid, 0),
+            spk,
+            value: COVENANT_VALUE,
+            daa_score: 0,
+        };
+        (covenant, bootstrap_txid)
+    } else if dev {
         log::info!(
             "settlement mode (dev): bootstrapping dev-pins covenant; issuer address {}",
             wallet.address()
@@ -255,10 +285,11 @@ async fn start_settlement(
         bootstrap_real_covenant(&wallet, &backend, lane_key, COVENANT_VALUE).await
     };
     let covenant_id = covenant.covenant_id;
+    // Persist the resolved id and bootstrap anchor so a restart reuses them without env.
     persisted.covenant_id = Some(covenant_id.to_string());
     persisted.bootstrap_txid = Some(bootstrap_txid.to_string());
     persisted.save(&cfg.data_dir);
-    log::info!("covenant {covenant_id} bootstrapped (tx {bootstrap_txid})");
+    log::info!("covenant {covenant_id} ready (tx {bootstrap_txid})");
 
     // The in-process aggregate prover publishes each proved bundle handle onto this queue; the
     // settlement worker pops from it and settles on chain.
@@ -324,6 +355,7 @@ fn bridge_params(
         covenant_id,
         finality_depth: params.finality_depth(),
         seed_depth: cfg.seed_depth,
+        start_from: cfg.start_from,
         tip_daa,
     }
 }

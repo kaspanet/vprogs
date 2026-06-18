@@ -68,6 +68,10 @@ pub struct BridgeParams {
     pub finality_depth: u64,
     /// Chain-block head-room the bridge seeds below the sink, so the lane starts near the tip.
     pub seed_depth: u64,
+    /// Explicit block the bridge seeds its fresh-chain root at (a covenant's deploy block), so a
+    /// catch-up node rebuilds state forward from there. Takes precedence over `seed_depth`. `None`
+    /// defers to `seed_depth`.
+    pub start_from: Option<Hash>,
     /// Observer the bridge publishes its latest chain-block DAA score into, for the sync-progress
     /// reporter. `None` disables publishing.
     pub tip_daa: Option<Arc<AtomicU64>>,
@@ -145,6 +149,7 @@ fn base_config(vm: V, store: Store, params: BridgeParams) -> NodeConfig<Store, V
                 .with_covenant_id(Some(params.covenant_id))
                 .with_finality_depth(params.finality_depth)
                 .with_seed_depth(Some(params.seed_depth))
+                .with_start_from(params.start_from)
                 .with_tip_daa_observer(params.tip_daa),
         )
 }

@@ -18,6 +18,14 @@ pub struct Config {
     pub lane_id_env: Option<u32>,
     /// Covenant id from env, if any. Final value is resolved against storage in `main`.
     pub covenant_id_env: Option<Hash>,
+    /// Bootstrap transaction id from env, if any. The covenant UTXO's outpoint is `(this, 0)`.
+    /// Required alongside `covenant_id_env` to catch up to a never-settled covenant: the outpoint
+    /// is not derivable from the covenant id.
+    pub bootstrap_txid: Option<Hash>,
+    /// Explicit L1 block the bridge seeds its fresh-chain root at (a covenant's deploy block), so
+    /// a catch-up node rebuilds state forward from there. `None` defers to
+    /// `seed_depth`/pruning point.
+    pub start_from: Option<Hash>,
     /// RocksDB + state-file directory.
     pub data_dir: PathBuf,
     /// Milliseconds between issued activity transactions.
@@ -52,6 +60,10 @@ impl Config {
             opt("TN10_LANE_ID").map(|s| s.parse().expect("TN10_LANE_ID must be a u32"));
         let covenant_id_env = opt("TN10_COVENANT_ID")
             .map(|s| Hash::from_str(s.trim()).expect("TN10_COVENANT_ID must be 32-byte hex"));
+        let bootstrap_txid = opt("TN10_BOOTSTRAP_TXID")
+            .map(|s| Hash::from_str(s.trim()).expect("TN10_BOOTSTRAP_TXID must be 32-byte hex"));
+        let start_from = opt("TN10_START_FROM")
+            .map(|s| Hash::from_str(s.trim()).expect("TN10_START_FROM must be 32-byte hex"));
 
         let data_dir = PathBuf::from(opt("TN10_DATA_DIR").unwrap_or_else(|| "./tn10-data".into()));
 
@@ -60,6 +72,8 @@ impl Config {
             private_key,
             lane_id_env,
             covenant_id_env,
+            bootstrap_txid,
+            start_from,
             data_dir,
             activity_interval_ms: opt_u64("TN10_ACTIVITY_INTERVAL_MS", 5_000),
             activity_count: opt_u64("TN10_ACTIVITY_COUNT", 0),

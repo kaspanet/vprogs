@@ -26,6 +26,7 @@ use kaspa_txscript::pay_to_address_script;
 use kaspa_wrpc_client::prelude::*;
 use secp256k1::Keypair;
 use tempfile::TempDir;
+use tokio::sync::{Mutex, MutexGuard};
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_smt::EMPTY_HASH;
 use vprogs_core_test_utils::ResourceIdExt;
@@ -43,6 +44,17 @@ use vprogs_zk_backend_risc0_test_suite::{
     TEST_SUBNETWORK_ID, batch_aggregator_elf, batch_processor_elf, dev_mode_enabled, test_lane_key,
     transaction_processor_elf,
 };
+
+/// Serializes the two settlement tests in this binary. Each spins up a full in-process L1 node and
+/// two dev-proving provers; running both at once oversubscribes the CPU, so each range's proving
+/// misses its acceptance window and the contention assertions flake. The tests share nothing else,
+/// so a single lock held for each test's duration is enough to keep them from racing for the host.
+static SETTLEMENT_TEST_LOCK: Mutex<()> = Mutex::const_new(());
+
+/// Acquires the cross-test serialization lock for the duration of a settlement test.
+async fn serialize_settlement_test() -> MutexGuard<'static, ()> {
+    SETTLEMENT_TEST_LOCK.lock().await
+}
 
 /// Value locked in the covenant UTXO at bootstrap (1 KAS), matching the e2e settlement tests.
 const COVENANT_VALUE: u64 = SOMPI_PER_KASPA;
@@ -97,6 +109,8 @@ async fn two_provers_contend() {
         );
         return;
     }
+    // Serialize against the other settlement test: two at once oversubscribe the CPU and flake.
+    let _serial = serialize_settlement_test().await;
 
     // === Step 0: simnet L1 ===
     // Mirror the e2e settlement config: instant coinbase maturity, covenants always active, a
@@ -179,6 +193,7 @@ async fn two_provers_contend() {
         initial_covenant.clone(),
         elfs,
         (0, pacer.clone()),
+        None,
     )
     .await;
     let prover_b = spawn_prover(
@@ -194,6 +209,7 @@ async fn two_provers_contend() {
         initial_covenant.clone(),
         elfs,
         (1, pacer.clone()),
+        None,
     )
     .await;
 
@@ -349,6 +365,242 @@ async fn two_provers_contend() {
     l1.shutdown().await;
 }
 
+/// A second prover joins an already-advancing covenant through the catch-up path: an EMPTY store,
+/// a `CovenantState` reconstructed from only the covenant id + bootstrap txid (no bootstrap), and a
+/// bridge seeded at the deploy block via `start_from` so it replays L1 forward from there. This is
+/// how a node joins a running covenant it did not create.
+///
+/// Prover A bootstraps the covenant and lands the first settlements alone; prover B then joins via
+/// catch-up, reconstructs the never-advanced covenant from env-style inputs (the same state
+/// `bootstrap_dev_covenant` produces), and self-heals to A's on-chain advance. We assert B catches
+/// up and lands at least one settlement on the SAME single contiguous spend-chain.
+#[tokio::test(flavor = "multi_thread")]
+async fn prover_catches_up_to_existing_covenant() {
+    if !dev_mode_enabled() {
+        eprintln!(
+            "skipping prover_catches_up_to_existing_covenant: RISC0_DEV_MODE!=1 - catch-up runs \
+             dev stub proofs + the dev redeem on CPU",
+        );
+        return;
+    }
+    // Serialize against the other settlement test: two at once oversubscribe the CPU and flake.
+    let _serial = serialize_settlement_test().await;
+
+    // === Step 0: simnet L1 (same config as two_provers_contend) ===
+    let l1 = L1Node::new(
+        NetworkId::new(NetworkType::Simnet),
+        Some(|p| {
+            p.blockrate.coinbase_maturity = 1;
+            p.toccata_activation = ForkActivation::always();
+            p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+        }),
+    )
+    .await;
+    l1.mine_utxos(30).await;
+
+    let network_id = NetworkId::new(NetworkType::Simnet);
+    let lane_key = test_lane_key();
+
+    // === Step 1: bootstrap the dev covenant ===
+    let (bootstrap_redeem, bootstrap_spk) = dev_bootstrap_redeem(&lane_key);
+    let (boot_tx, covenant_id) =
+        l1.build_covenant_bootstrap_transaction(&bootstrap_redeem, COVENANT_VALUE).await;
+    let boot_txid = boot_tx.id();
+    let block_deploy = l1.mine_block(&[boot_tx]).await;
+    l1.mine_blocks(1).await;
+    eprintln!("dev covenant bootstrapped: covenant_id={covenant_id} block_deploy={block_deploy}");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let bootstrap_outpoint = TransactionOutpoint::new(boot_txid, 0);
+    let initial_covenant = CovenantState {
+        covenant_id,
+        state: EMPTY_HASH,
+        lane_tip: Hash::default(),
+        outpoint: bootstrap_outpoint,
+        spk: bootstrap_spk,
+        value: COVENANT_VALUE,
+        daa_score: 0,
+    };
+
+    // === Step 2: fund both provers ===
+    let kp_a = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
+    let kp_b = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
+    let addr_a = prover_address(&kp_a, network_id);
+    let addr_b = prover_address(&kp_b, network_id);
+    l1.fund_address(&addr_a, FUND_VALUE, FUND_COUNT).await;
+    l1.fund_address(&addr_b, FUND_VALUE, FUND_COUNT).await;
+
+    let tx_elf = transaction_processor_elf();
+    let batch_elf = batch_processor_elf();
+    let aggregator_elf = batch_aggregator_elf();
+    let elfs = Elfs { transaction: &tx_elf, batch: &batch_elf, aggregator: &aggregator_elf };
+    let params = Params::from(network_id);
+    let pacer = Arc::new(AlternationPacer::new());
+
+    // === Step 3: prover A holds the bootstrap state; prover B joins via the catch-up path ===
+    // A is the original prover, seeded at the sink (seed_depth 0) with the bootstrap covenant
+    // state, exactly as in two_provers_contend.
+    //
+    // B never bootstrapped: it reconstructs the covenant from ONLY the covenant id + bootstrap txid
+    // (no on-chain bootstrap call), exactly as main.rs's settlement-mode catch-up branch does (same
+    // `dev_bootstrap_redeem`, so the reconstructed P2SH SPK matches the on-chain UTXO), starts from
+    // an EMPTY store, and seeds its bridge at the deploy block via `start_from` so it replays L1
+    // forward from there to rebuild L2 state. This is how a 2nd prover joins the 1st prover's
+    // covenant to contend.
+    //
+    // The two are spawned together while the bootstrap UTXO is still unspent: each settler confirms
+    // that UTXO at startup, then they race and alternate, with the deferring prover adopting the
+    // other's on-chain advance via the last_settlement self-heal. (A catch-up that joins a covenant
+    // already settled past its bootstrap is out of scope here: the settler's startup confirm waits
+    // on the bootstrap UTXO as unspent, so an already-spent bootstrap would stall it - the
+    // realistic contention case is two provers joining a freshly deployed covenant, which this
+    // exercises.)
+    let prover_a = spawn_prover(
+        &l1,
+        "A",
+        kp_a,
+        addr_a.clone(),
+        2..=4,
+        network_id,
+        &params,
+        lane_key,
+        covenant_id,
+        initial_covenant,
+        elfs,
+        (0, pacer.clone()),
+        None,
+    )
+    .await;
+
+    let (_redeem, catchup_spk) = dev_bootstrap_redeem(&lane_key);
+    let catchup_covenant = CovenantState {
+        covenant_id,
+        state: EMPTY_HASH,
+        lane_tip: Hash::default(),
+        outpoint: TransactionOutpoint::new(boot_txid, 0),
+        spk: catchup_spk,
+        value: COVENANT_VALUE,
+        daa_score: 0,
+    };
+    let prover_b = spawn_prover(
+        &l1,
+        "B",
+        kp_b,
+        addr_b.clone(),
+        2..=4,
+        network_id,
+        &params,
+        lane_key,
+        covenant_id,
+        catchup_covenant,
+        elfs,
+        (1, pacer.clone()),
+        Some(block_deploy),
+    )
+    .await;
+
+    // === Step 4: drive both, then drain ===
+    const DRIVER_ITERS: usize = 16;
+    for i in 0..DRIVER_ITERS {
+        eprintln!("catchup driver: iteration {i}");
+        drive_range(&l1).await;
+    }
+
+    let mut prev_len = 0usize;
+    let mut stable_rounds = 0;
+    for _ in 0..40 {
+        l1.mine_blocks(1).await;
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        let len = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+        if len == prev_len {
+            stable_rounds += 1;
+        } else {
+            stable_rounds = 0;
+        }
+        prev_len = len;
+        if stable_rounds >= 3 && len >= 3 {
+            break;
+        }
+    }
+
+    prover_a.shutdown.open();
+    prover_b.shutdown.open();
+    let join_a = prover_a.settler.await;
+    let join_b = prover_b.settler.await;
+    prover_a.node.shutdown();
+    prover_b.node.shutdown();
+
+    assert!(join_a.is_ok(), "prover A settler panicked: {join_a:?}");
+    assert!(join_b.is_ok(), "catch-up prover B settler panicked: {join_b:?}");
+
+    // === Assertions: contiguous chain + the catch-up prover landed a settlement ===
+    let chain = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await;
+    let change_spk_a = pay_to_address_script(&addr_a);
+    let change_spk_b = pay_to_address_script(&addr_b);
+
+    let mut count_b = 0usize;
+    let mut expected_input = bootstrap_outpoint;
+    for (pos, link) in chain.iter().enumerate() {
+        if link.change_spks.contains(&change_spk_b) {
+            count_b += 1;
+        }
+        let attributed = if link.change_spks.contains(&change_spk_a) {
+            "A"
+        } else if link.change_spks.contains(&change_spk_b) {
+            "B"
+        } else {
+            "?"
+        };
+        eprintln!("catchup settlement #{pos}: tx={} prover={attributed}", link.tx_id);
+        assert_eq!(
+            link.covenant_input, expected_input,
+            "settlement #{pos} ({}) must spend the previous covenant output {expected_input}; the \
+             continuation chain forked",
+            link.tx_id,
+        );
+        expected_input = TransactionOutpoint::new(link.tx_id, 0);
+    }
+
+    // The chain must have advanced under contention.
+    assert!(
+        chain.len() >= 3,
+        "expected a covenant chain of at least 3 settlements under contention, got {}",
+        chain.len(),
+    );
+    // The catch-up prover (empty store, no bootstrap, reconstructed covenant, replayed from the
+    // deploy block) must have rebuilt state and landed at least one settlement on the shared chain
+    // - the whole point of the catch-up path.
+    assert!(
+        count_b >= 1,
+        "catch-up prover B (addr {addr_b}) landed no settlements; it failed to join the covenant",
+    );
+
+    l1.shutdown().await;
+}
+
+/// Lane carriers mined per settlement range in the catch-up test (the bundle minimum).
+const CATCHUP_CARRIERS: usize = 2;
+
+/// Mines one settlement range for the catch-up test: a bundle's worth of lane carriers, then
+/// several acceptance blocks (with pauses) so pending settlements land and confirm on chain.
+async fn drive_range(l1: &L1Node) {
+    for _ in 0..CATCHUP_CARRIERS {
+        let payload =
+            encode_activity_payload(&[AccessMetadata::write(ResourceId::for_test(1))], &[1, 2, 3]);
+        let carrier = l1
+            .build_subnet_payload_transactions(vec![payload], LANE_SUBNET, TX_VERSION_TOCCATA)
+            .await
+            .into_iter()
+            .next()
+            .expect("carrier tx");
+        l1.mine_block(std::slice::from_ref(&carrier)).await;
+    }
+    for _ in 0..5 {
+        l1.mine_blocks(1).await;
+        tokio::time::sleep(Duration::from_millis(800)).await;
+    }
+}
+
 /// One link in the covenant continuation chain: a settlement tx, the covenant outpoint its input 0
 /// spends, and the SPKs of all its outputs (so attribution can match a prover's change SPK).
 struct CovenantLink {
@@ -384,6 +636,7 @@ async fn spawn_prover(
     covenant: CovenantState,
     elfs: Elfs<'_>,
     turn: (u8, Arc<AlternationPacer>),
+    start_from: Option<Hash>,
 ) -> Prover {
     let wrpc_url = l1.wrpc_borsh_url();
     // Separate wRPC clients for the lane source and the settler so they own independent handles.
@@ -404,6 +657,7 @@ async fn spawn_prover(
             covenant_id,
             finality_depth: LANE_FINALITY_DEPTH,
             seed_depth: 0,
+            start_from,
             tip_daa: None,
         },
         ProvingParams {
