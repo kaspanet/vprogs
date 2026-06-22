@@ -59,6 +59,7 @@ impl L1BridgeParams {
             seed_depth: None,
             start_from: None,
             tip_daa: None,
+            settlement: None,
         }
     }
 }

@@ -19,11 +19,10 @@ use crate::covenant::CovenantState;
 const CONFIRM_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const CONFIRM_MAX_POLLS: u32 = 300;
 
-/// Short ceiling for confirming an adopted competitor settlement's continuation UTXO. The
-/// settlement is already on chain when it is the live tip, so its UTXO is found within a poll or
-/// two; a backward snapshot reconstructs an already-spent (and so never-unspent-again) outpoint
-/// that never appears. A short ceiling distinguishes the two without the long liveness poll a
-/// settlement we submitted ourselves warrants.
+/// Short ceiling for the startup tip-resolution confirm. The resolved outpoint (the newest on-chain
+/// settlement's continuation, or the still-unspent bootstrap) is found within a poll or two unless
+/// a competitor already spent it since the scan, in which case the resolver re-scans rather than
+/// polling out a long liveness ceiling.
 pub(super) const ADOPT_MAX_POLLS: u32 = 5;
 
 /// A specific outpoint at a covenant's P2SH SPK. Covenant UTXOs are P2SH, so the node's utxoindex

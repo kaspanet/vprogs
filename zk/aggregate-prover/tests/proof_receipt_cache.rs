@@ -33,7 +33,6 @@ fn proof_receipt_round_trips_through_storage_workers() {
         1,
         batch.checkpoint().index(),
         BundleBlocks { from_block: block, block_prove_to: block },
-        None,
     );
 
     let rt = tokio::runtime::Builder::new_current_thread()

@@ -4,7 +4,6 @@ use arc_swap::ArcSwapOption;
 use kaspa_hashes::Hash;
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_macros::smart_pointer;
-use vprogs_l1_types::SettlementInfo;
 use vprogs_scheduling_scheduler::{AggReceiptCoord, Processor, ReceiptRead, ScheduledBatch};
 use vprogs_storage_types::Store;
 
@@ -43,9 +42,6 @@ pub struct ScheduledBundle<A> {
     from_block: Hash,
     /// L1 block the bundle proves through (its final block). Immediate, for logging / pacing.
     block_prove_to: Hash,
-    /// Most-recent covenant settlement visible on chain as of the bundle's final block, or `None`
-    /// until one lands. Immediate.
-    latest_settlement: Option<SettlementInfo>,
     /// The proved artifact, filled via [`publish_artifact`](Self::publish_artifact). `None` for a
     /// no-op bundle that advanced no state.
     artifact: ArcSwapOption<A>,
@@ -56,19 +52,13 @@ pub struct ScheduledBundle<A> {
 impl<A> ScheduledBundle<A> {
     /// Creates an unresolved bundle handle: its metadata is readable immediately, the artifact is
     /// filled later via [`publish_artifact`](Self::publish_artifact).
-    pub fn new(
-        batches: usize,
-        checkpoint_index: u64,
-        blocks: BundleBlocks,
-        latest_settlement: Option<SettlementInfo>,
-    ) -> Self {
+    pub fn new(batches: usize, checkpoint_index: u64, blocks: BundleBlocks) -> Self {
         let BundleBlocks { from_block, block_prove_to } = blocks;
         Self(Arc::new(ScheduledBundleData {
             batches,
             checkpoint_index,
             from_block,
             block_prove_to,
-            latest_settlement,
             artifact: ArcSwapOption::empty(),
             artifact_published: AtomicAsyncLatch::new(),
         }))
@@ -76,12 +66,7 @@ impl<A> ScheduledBundle<A> {
 
     /// Creates an immediately-resolved no-op bundle: it advanced no state, so it carries no
     /// artifact and its artifact latch is already open.
-    pub fn resolved_noop(
-        batches: usize,
-        checkpoint_index: u64,
-        blocks: BundleBlocks,
-        latest_settlement: Option<SettlementInfo>,
-    ) -> Self {
+    pub fn resolved_noop(batches: usize, checkpoint_index: u64, blocks: BundleBlocks) -> Self {
         let BundleBlocks { from_block, block_prove_to } = blocks;
         let artifact_published = AtomicAsyncLatch::new();
         artifact_published.open();
@@ -90,7 +75,6 @@ impl<A> ScheduledBundle<A> {
             checkpoint_index,
             from_block,
             block_prove_to,
-            latest_settlement,
             artifact: ArcSwapOption::empty(),
             artifact_published,
         }))
@@ -114,12 +98,6 @@ impl<A> ScheduledBundle<A> {
     /// L1 block the bundle proves through (its final block).
     pub fn block_prove_to(&self) -> Hash {
         self.block_prove_to
-    }
-
-    /// Most-recent covenant settlement visible on chain as of the bundle's final block, or `None`
-    /// until one lands.
-    pub fn latest_settlement(&self) -> Option<SettlementInfo> {
-        self.latest_settlement
     }
 
     /// Looks up this bundle's cached aggregate (settlement) receipt, returning a handle that

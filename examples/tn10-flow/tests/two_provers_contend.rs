@@ -11,6 +11,7 @@
 
 use std::{collections::HashMap, ops::RangeInclusive, sync::Arc, time::Duration};
 
+use arc_swap::ArcSwapOption;
 use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus_core::{
     config::params::{ForkActivation, Params},
@@ -31,8 +32,10 @@ use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_smt::EMPTY_HASH;
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId};
-use vprogs_example_tn10_flow::daemon::{self, BridgeParams, Elfs, FlowNode, ProvingParams};
-use vprogs_l1_types::L1TransactionCovenantExt;
+use vprogs_example_tn10_flow::daemon::{
+    self, BridgeObservers, BridgeParams, Elfs, FlowNode, ProvingParams,
+};
+use vprogs_l1_types::{L1TransactionCovenantExt, SettlementInfo};
 use vprogs_l1_wallet::encode_activity_payload;
 use vprogs_node_test_utils::L1Node;
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
@@ -98,12 +101,6 @@ struct Prover {
     _db_dir: TempDir,
 }
 
-// TODO(livelock): flaky under sustained contention. When a competitor supersedes a proved-but-
-// unsettled bundle, the aggregate prover drops it instead of re-forming it against the adopted tip,
-// so two provers can wedge and the chain stalls (here: stalls below 3 settlements). Pre-existing and
-// orthogonal to the resume/catch-up fix. Re-enable once the aggregate prover re-forms superseded
-// ranges.
-#[ignore = "flaky: pre-existing aggregate-prover supersession livelock under contention"]
 #[tokio::test(flavor = "multi_thread")]
 async fn two_provers_contend() {
     // Dev-only: real proofs need a GPU. Under non-dev builds this test has nothing to assert.
@@ -188,10 +185,10 @@ async fn two_provers_contend() {
 
     // Both fresh-deploy provers seed from the deploy block (`Some(block_deploy)`), exactly as the
     // binary's fresh-deploy path does (`main.rs` persists the captured sink as the seed and threads
-    // it into both the bridge and the settler config). This exercises the shipped resolve-scan path:
-    // the settler scans the chain at startup, finds no settlement yet, and bounded-polls the unspent
-    // bootstrap (re-resolving if a competitor settles it first) instead of taking the `start_from =
-    // None` direct-confirm path the binary never reaches.
+    // it into both the bridge and the settler config). This exercises the shipped resolve-scan
+    // path: the settler scans the chain at startup, finds no settlement yet, and bounded-polls
+    // the unspent bootstrap (re-resolving if a competitor settles it first) instead of taking
+    // the `start_from = None` direct-confirm path the binary never reaches.
     let prover_a = spawn_prover(
         &l1,
         "A",
@@ -374,7 +371,8 @@ async fn two_provers_contend() {
     assert!(count_a >= 1, "prover A (addr {addr_a}) produced no settlements");
     assert!(count_b >= 1, "prover B (addr {addr_b}) produced no settlements");
 
-    // No settlement landed on a DAG side-branch: the selected-chain count equals the DAG-wide count.
+    // No settlement landed on a DAG side-branch: the selected-chain count equals the DAG-wide
+    // count.
     assert_no_fork(&l1, block_deploy, bootstrap_outpoint, covenant_id).await;
 
     l1.shutdown().await;
@@ -389,13 +387,6 @@ async fn two_provers_contend() {
 /// catch-up, reconstructs the never-advanced covenant from env-style inputs (the same state
 /// `bootstrap_dev_covenant` produces), and self-heals to A's on-chain advance. We assert B catches
 /// up and lands at least one settlement on the SAME single contiguous spend-chain.
-///
-/// TODO(livelock): flaky under sustained contention for the same reason as `two_provers_contend` -
-/// the aggregate prover drops superseded proved-but-unsettled bundles instead of re-forming them, so
-/// the contending provers can wedge below 3 settlements. The catch-up START path this exercises is
-/// also covered by `prover_catches_up_to_already_settled_covenant` (stable). Re-enable once the
-/// aggregate prover re-forms superseded ranges.
-#[ignore = "flaky: pre-existing aggregate-prover supersession livelock under contention"]
 #[tokio::test(flavor = "multi_thread")]
 async fn prover_catches_up_to_existing_covenant() {
     if !dev_mode_enabled() {
@@ -721,9 +712,9 @@ async fn prover_catches_up_to_already_settled_covenant() {
 
     // Shut A down before B joins, so B catches up and settles alone (no contention). The point of
     // this test is the startup adopt-the-tip path, not a fairness race: an established A would
-    // out-compete a freshly-joined B for every spend, leaving B with nothing to attribute. B joining
-    // a covenant whose bootstrap is ALREADY spent is the regression; that it then advances the chain
-    // alone proves the adoption.
+    // out-compete a freshly-joined B for every spend, leaving B with nothing to attribute. B
+    // joining a covenant whose bootstrap is ALREADY spent is the regression; that it then
+    // advances the chain alone proves the adoption.
     let join_a = {
         prover_a.shutdown.open();
         let join = prover_a.settler.await;
@@ -841,9 +832,10 @@ async fn prover_catches_up_to_already_settled_covenant() {
 /// A settlement-mode prover RESUMES after it has already settled: it is restarted (a fresh, EMPTY
 /// store + a fresh settler) from the SAME bootstrap `CovenantState` it deployed with, but the
 /// bootstrap UTXO is now SPENT by the settlement it landed before the restart. This mirrors the
-/// daemon reading covenant_id + bootstrap_block_hash from its state file and re-spawning the settler:
-/// the settler reconstructs the bootstrap outpoint, finds it spent, and must adopt the on-chain tip
-/// instead of panicking. Old behavior panicked at the startup confirm; the fix times out and adopts.
+/// daemon reading covenant_id + bootstrap_block_hash from its state file and re-spawning the
+/// settler: the settler reconstructs the bootstrap outpoint, finds it spent, and must adopt the
+/// on-chain tip instead of panicking. Old behavior panicked at the startup confirm; the fix times
+/// out and adopts.
 #[tokio::test(flavor = "multi_thread")]
 async fn prover_resumes_after_settlement() {
     if !dev_mode_enabled() {
@@ -1143,8 +1135,8 @@ async fn prover_resumes_after_settlement_contended() {
     // === Restart B mid-run: shut B1 down, spawn B2 from a fresh empty store ===
     // B2 is handed the SAME bootstrap state the persisted state file would rebuild, but the
     // bootstrap UTXO is now spent. It seeds its bridge at the deploy block (start_from), replays L1
-    // forward, and its settler resolves the on-chain tip A advanced rather than confirming the spent
-    // bootstrap. A keeps running, so B2 rejoins under contention.
+    // forward, and its settler resolves the on-chain tip A advanced rather than confirming the
+    // spent bootstrap. A keeps running, so B2 rejoins under contention.
     prover_b1.shutdown.open();
     let join_b1 = prover_b1.settler.await;
     prover_b1.node.shutdown();
@@ -1202,7 +1194,8 @@ async fn prover_resumes_after_settlement_contended() {
     prover_a.node.shutdown();
     prover_b2.node.shutdown();
 
-    // === Assertion 1: neither settler panicked (the resumed B2 on a spent bootstrap especially) ===
+    // === Assertion 1: neither settler panicked (the resumed B2 on a spent bootstrap especially)
+    // ===
     assert!(join_a.is_ok(), "prover A settler panicked: {join_a:?}");
     assert!(
         join_b2.is_ok(),
@@ -1216,8 +1209,8 @@ async fn prover_resumes_after_settlement_contended() {
     let change_spk_b2 = pay_to_address_script(&addr_b2);
 
     let mut count_a = 0usize;
-    // B-family: settlements from B's original key OR its restarted key, so the restart is attributed
-    // to the same prover.
+    // B-family: settlements from B's original key OR its restarted key, so the restart is
+    // attributed to the same prover.
     let mut count_b = 0usize;
     let mut expected_input = bootstrap_outpoint;
     for (pos, link) in chain.iter().enumerate() {
@@ -1322,6 +1315,10 @@ async fn spawn_prover(
     let store = daemon::Store::open(db_dir.path());
 
     let queue = daemon::FlowSettlementQueue::new();
+    // Each prover follows the same L1 through its own bridge, so each gets its own live settlement
+    // handle: the bridge (writer) publishes settlements it observes (including the competitor's),
+    // and this prover's settler (reader) reconciles against them.
+    let settlement: Arc<ArcSwapOption<SettlementInfo>> = Arc::new(ArcSwapOption::empty());
     let node = daemon::build_proving_node(
         elfs,
         store,
@@ -1333,7 +1330,7 @@ async fn spawn_prover(
             finality_depth: LANE_FINALITY_DEPTH,
             seed_depth: 0,
             start_from,
-            tip_daa: None,
+            observers: BridgeObservers { tip_daa: None, settlement: Some(settlement.clone()) },
         },
         ProvingParams {
             covenant_id,
@@ -1359,6 +1356,7 @@ async fn spawn_prover(
             start_from,
             backend,
             mode: SettlementMode::Dev,
+            settlement: Some(settlement),
             // Jitter each submission so neither prover deterministically wins the spend race for
             // every range; without it the first-spawned prover lands every settlement. The window
             // is wide relative to the dev proving time so the per-range winner is a
@@ -1408,7 +1406,8 @@ async fn covenant_chain(
             };
             // A settlement of this covenant binds output 0 to it and ends input 0 with the
             // settlement tail; `settlement_info` returns Some only for those.
-            if tx.settlement_info(covenant_id, cursor).is_none() {
+            // Only the structural match matters here, so the daa_score argument is irrelevant.
+            if tx.settlement_info(covenant_id, cursor, 0).is_none() {
                 continue;
             }
             let covenant_input = tx.inputs.first().expect("settlement input").previous_outpoint;
@@ -1440,15 +1439,15 @@ async fn covenant_chain(
 /// Counts the DISTINCT settlement transactions of `covenant_id` across the WHOLE DAG above
 /// `block_deploy` (every block, not just the selected-parent chain), deduplicated by txid.
 ///
-/// A settlement that landed on a DAG SIDE-branch (a fork) is a settlement that exists in the DAG but
-/// not on the selected-parent chain `covenant_chain` walks. Comparing this DAG-wide count to the
-/// selected-chain length is the anti-fork check: they are equal iff no settlement of this covenant
-/// ever forked off the single continuation chain.
+/// A settlement that landed on a DAG SIDE-branch (a fork) is a settlement that exists in the DAG
+/// but not on the selected-parent chain `covenant_chain` walks. Comparing this DAG-wide count to
+/// the selected-chain length is the anti-fork check: they are equal iff no settlement of this
+/// covenant ever forked off the single continuation chain.
 async fn dag_settlement_count(l1: &L1Node, block_deploy: Hash, covenant_id: Hash) -> usize {
     // `get_blocks` is server-capped at roughly `mergeset_size_limit + 1` blocks per call, so a DAG
     // larger than one page truncates. Page forward: advance `low_hash` to the highest block of each
-    // page and re-query until a page returns no block past the cursor (only the cursor echoes back),
-    // deduping blocks by hash across the overlapping page boundaries.
+    // page and re-query until a page returns no block past the cursor (only the cursor echoes
+    // back), deduping blocks by hash across the overlapping page boundaries.
     let mut settlement_txids = std::collections::HashSet::new();
     let mut seen_blocks = std::collections::HashSet::new();
     let mut low_hash = block_deploy;
@@ -1475,7 +1474,7 @@ async fn dag_settlement_count(l1: &L1Node, block_deploy: Hash, covenant_id: Hash
                     Ok(tx) => tx,
                     Err(_) => continue,
                 };
-                if tx.settlement_info(covenant_id, block_hash).is_some() {
+                if tx.settlement_info(covenant_id, block_hash, 0).is_some() {
                     settlement_txids.insert(tx.id());
                 }
             }
@@ -1491,10 +1490,10 @@ async fn dag_settlement_count(l1: &L1Node, block_deploy: Hash, covenant_id: Hash
 }
 
 /// Asserts the covenant never forked: every settlement on the selected-parent chain is reachable
-/// from `bootstrap_outpoint` (already checked by the contiguity walk at the call site) AND the count
-/// of this covenant's settlement txs ON the selected chain equals the total count of its settlement
-/// txs in the DAG. A side-branch settlement (the fork failure mode the racy mid-loop adoption
-/// produced) shows up as a DAG count strictly greater than the selected-chain length.
+/// from `bootstrap_outpoint` (already checked by the contiguity walk at the call site) AND the
+/// count of this covenant's settlement txs ON the selected chain equals the total count of its
+/// settlement txs in the DAG. A side-branch settlement (the fork failure mode the racy mid-loop
+/// adoption produced) shows up as a DAG count strictly greater than the selected-chain length.
 async fn assert_no_fork(
     l1: &L1Node,
     block_deploy: Hash,

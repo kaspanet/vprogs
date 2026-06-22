@@ -8510,6 +8510,7 @@ dependencies = [
 name = "vprogs-example-tn10-flow"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "ctrlc",
  "fastrand",
  "kaspa-addresses",
@@ -9167,6 +9168,7 @@ dependencies = [
 name = "vprogs-zk-backend-risc0-settler"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "kaspa-addresses",
  "kaspa-consensus-core",
  "kaspa-hashes",

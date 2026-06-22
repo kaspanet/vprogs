@@ -8,8 +8,7 @@ use kaspa_hashes::Hash;
 use tokio::runtime::Builder;
 use vprogs_core_atomics::AsyncQueue;
 use vprogs_core_codec::Reader;
-use vprogs_core_smt::EMPTY_HASH;
-use vprogs_l1_types::{ChainBlockMetadata, SettlementInfo};
+use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
 use vprogs_zk_abi::batch_aggregator::{Inputs as AggregatorInputs, StateTransition};
@@ -19,33 +18,6 @@ use crate::{
     AggregateProver, AggregateProverConfig, Backend, BundleBlocks, ScheduledBundle,
     SettlementArtifact, command::Command,
 };
-
-/// Settled lower bound a new bundle chains from. The three fields move together: `block` and
-/// `index` are the last settled L1 block and its scheduling index, and `state` is the L2 SMT state
-/// after that settlement.
-struct SettledBound {
-    /// Last settled L1 block. `None` at genesis.
-    block: Option<Hash>,
-    /// Scheduling index of `block`, used to keep external-settlement absorption forward-only so a
-    /// competitor's older settlement never regresses the settled lower bound. `None` at genesis.
-    index: Option<u64>,
-    /// Last settled L2 SMT state. The empty SMT at genesis.
-    state: [u8; 32],
-}
-
-impl SettledBound {
-    /// The genesis bound: nothing settled, the empty SMT state.
-    fn genesis() -> Self {
-        Self { block: None, index: None, state: EMPTY_HASH }
-    }
-
-    /// Advances the bound to a newly settled block, index, and state.
-    fn advance(&mut self, block: Hash, index: u64, state: [u8; 32]) {
-        self.block = Some(block);
-        self.index = Some(index);
-        self.state = state;
-    }
-}
 
 /// Background worker that accumulates scheduled batches, forms bundles from the consecutively-ready
 /// prefix of their per-batch receipts, and proves one settlement-level receipt per bundle.
@@ -68,8 +40,6 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend, L: LaneProofSour
     bundle_size: RangeInclusive<usize>,
     /// Batches accumulated but not yet bundled, in scheduling order.
     queued: VecDeque<ScheduledBatch<S, P>>,
-    /// Settled lower bound a new bundle chains from.
-    settled: SettledBound,
 }
 
 impl<S, P, B, L> Worker<S, P, B, L>
@@ -116,7 +86,6 @@ where
             settlement_queue,
             bundle_size,
             queued: VecDeque::new(),
-            settled: SettledBound::genesis(),
         };
         let runtime = Builder::new_current_thread().enable_all().build().expect("runtime");
         spawn(move || runtime.block_on(this.run()))
@@ -137,10 +106,8 @@ where
                 }
             }
 
-            // Fold in any external settlement visible on the queued batches, then try to prove one
-            // bundle. Loop without parking while progress is made so back-to-back ready bundles
-            // drain promptly.
-            self.absorb_external_settlements();
+            // Try to prove one bundle. Loop without parking while progress is made so back-to-back
+            // ready bundles drain promptly.
             let made_progress = self.try_prove_one_bundle().await;
             if self.prover.shutdown.is_open() {
                 return;
@@ -160,12 +127,9 @@ where
     }
 
     /// Forms the next bundle from the consecutively-ready prefix of the queue and proves it.
-    /// Returns `true` when a bundle was consumed (proved, settled-redundant, or empty), `false`
+    /// Returns `true` when a bundle was consumed (proved, no-op, or empty), `false`
     /// when there was nothing to do.
     async fn try_prove_one_bundle(&mut self) -> bool {
-        // A newly-formed bundle must not re-prove already-settled batches.
-        self.drop_settled_prefix();
-
         let Some(front) = self.queued.front().cloned() else {
             return false;
         };
@@ -176,13 +140,6 @@ where
             biased;
             () = self.prover.shutdown.wait() => return false,
             () = front.wait_artifact_published() => {}
-        }
-
-        // A settlement may have landed while we awaited; if it covered this work, the front is
-        // dropped and there may be nothing left to prove.
-        self.absorb_external_settlements();
-        if self.queued.is_empty() {
-            return true;
         }
 
         // Greedily extend the bundle over the consecutively-ready prefix: the front is ready
@@ -208,18 +165,14 @@ where
             (0..take).map(|_| self.queued.pop_front().unwrap()).collect();
 
         let last_checkpoint = bundle.last().unwrap().checkpoint();
-        let last_index = last_checkpoint.index();
         let last_metadata = *last_checkpoint.metadata();
         let block_prove_to = last_metadata.hash;
 
         // Bundle-start coordinate (first batch's index + block) keys the aggregator receipt in the
-        // proof-receipt store; `latest_settlement` is the newest on-chain covenant settlement as of
-        // the final block, letting the settler skip a bundle an external settlement already
-        // covered.
+        // proof-receipt store.
         let first_checkpoint = bundle.first().unwrap().checkpoint();
         let checkpoint_index = first_checkpoint.index();
         let from_block = first_checkpoint.metadata().hash;
-        let latest_settlement = last_metadata.last_settlement;
 
         // Empty batches publish no receipt; the aggregator composes only the non-empty ones.
         let receipts: Vec<B::Receipt> = bundle
@@ -236,7 +189,6 @@ where
                 take,
                 checkpoint_index,
                 BundleBlocks { from_block, block_prove_to },
-                latest_settlement,
             ));
             return true;
         }
@@ -249,7 +201,6 @@ where
             take,
             checkpoint_index,
             BundleBlocks { from_block, block_prove_to },
-            latest_settlement,
         );
         self.emit(handle.clone());
 
@@ -310,27 +261,6 @@ where
             return true;
         }
 
-        // Under contention a competitor's settlement (absorbed into `settled.state`) can advance
-        // the covenant past this bundle's base while it was forming. The bundle then no
-        // longer chains from the settled state, so it is superseded: publish a no-op and
-        // skip it rather than settling a stale advance (mirrors the settler's "skipping
-        // superseded bundle"). The next bundle self-derives its `prev_state` from the lane
-        // proof and chains from the absorbed state.
-        //
-        // TODO(livelock): the superseded bundle's proved-but-unsettled batches are dropped here
-        // rather than re-formed against the adopted tip. When fresh L1 activity keeps arriving a
-        // later bundle re-covers the range, but if activity stops while two provers contend, both
-        // keep proving bundles the other has already advanced past and the covenant wedges (neither
-        // settles). Fix is to re-form the unsettled suffix against `settled.state` and refresh the
-        // settle-time tip so one prover lands it.
-        if st.prev_state != self.settled.state {
-            log::info!(
-                "aggregate-prover: skipping superseded bundle through {block_prove_to} \
-                 (a competitor advanced the covenant past its base)"
-            );
-            handle.publish_artifact(None);
-            return true;
-        }
         if let Some(covenant_id) = self.covenant_id {
             assert_eq!(
                 Hash::from_bytes(st.covenant_id),
@@ -342,11 +272,6 @@ where
             st.new_seq_commit, last_metadata.seq_commit,
             "bundle new_seq_commit must equal the final block's seq_commit",
         );
-
-        // Advance the settled lower bound to this bundle. The next bundle's aggregator self-derives
-        // its own prev_state from the lane proof and journals, so this is bookkeeping only: it lets
-        // us drop already-settled batches and detect redundant external settlements.
-        self.settled.advance(block_prove_to, last_index, st.new_state);
 
         // Fill the published handle with the proved settlement; the settlement worker awaiting it
         // is then released. With no queue wired the bundle is proved but not settled (exec/test
@@ -372,67 +297,6 @@ where
     fn emit(&self, bundle: ScheduledBundle<SettlementArtifact<B::Receipt>>) {
         if let Some(queue) = &self.settlement_queue {
             queue.push(bundle);
-        }
-    }
-
-    /// Folds the newest external covenant settlement visible on the queued batches into the settled
-    /// lower bound, dropping batches it already covered. `last_settlement` is monotone forward
-    /// along the chain, so the last advancing entry wins.
-    ///
-    /// Absorption is forward-only: a competitor's settlement is adopted only when its
-    /// `block_prove_to` maps to a queued batch strictly ahead of our settled lower bound. This
-    /// prevents a settlement we already advanced past (e.g. one this prover won the race on) from
-    /// regressing `settled.state` and starving every subsequent bundle as superseded.
-    fn absorb_external_settlements(&mut self) {
-        let newest: Option<SettlementInfo> = self
-            .queued
-            .iter()
-            .filter_map(|b| b.checkpoint().metadata().last_settlement)
-            .rfind(|s| s.new_state != self.settled.state);
-        let Some(s) = newest else {
-            return;
-        };
-
-        // Locate the settlement's prove-to block among the queued batches to order it against our
-        // settled lower bound. A settlement whose block is not (or no longer) queued, or that is
-        // not strictly ahead of `settled.index`, is already covered: ignore it rather than
-        // regress.
-        let Some(settled_index) = self
-            .queued
-            .iter()
-            .find(|b| b.checkpoint().metadata().hash == s.block_prove_to)
-            .map(|b| b.checkpoint().index())
-        else {
-            return;
-        };
-        if self.settled.index.is_some_and(|from| settled_index <= from) {
-            return;
-        }
-
-        self.settled.advance(s.block_prove_to, settled_index, s.new_state);
-        self.drop_settled_prefix();
-
-        // TODO: cancel an in-flight aggregator proof made redundant by this settlement. A running
-        // GPU proof can't be aborted (same gap as the batch prover); dropping the queued prefix and
-        // the redundancy checks below prevent *starting* redundant work, and because proofs are
-        // awaited inline a stale result is simply never published.
-    }
-
-    /// Drops queued batches at or below the settled L1 block. There is a 1:1 L1-block to L2-batch
-    /// correspondence (the node schedules one batch per chain block), so the settled
-    /// `block_prove_to` equals some queued batch's block hash; everything up to and including
-    /// it is already settled.
-    fn drop_settled_prefix(&mut self) {
-        let Some(from_block) = self.settled.block else {
-            return;
-        };
-        let cut = self
-            .queued
-            .iter()
-            .find(|b| b.checkpoint().metadata().hash == from_block)
-            .map(|b| b.checkpoint().index());
-        if let Some(cut) = cut {
-            self.queued.retain(|b| b.checkpoint().index() > cut);
         }
     }
 

@@ -32,6 +32,7 @@ use std::{
     time::Duration,
 };
 
+use arc_swap::ArcSwapOption;
 use kaspa_consensus_core::{
     config::params::Params,
     constants::{SOMPI_PER_KASPA, TX_VERSION_TOCCATA},
@@ -59,7 +60,7 @@ use vprogs_zk_backend_risc0_test_suite::{
 
 use crate::{
     config::Config,
-    daemon::{BridgeParams, Elfs, FlowNode, ProvingParams},
+    daemon::{BridgeObservers, BridgeParams, Elfs, FlowNode, ProvingParams},
     persistence::PersistedState,
 };
 
@@ -207,8 +208,17 @@ async fn start_exec(
     daemon::build_node(
         elfs,
         store,
-        // Exec-only mode does not run the sync-progress reporter, so no DAA observer.
-        bridge_params(cfg, network_id, lane_subnet, covenant_id, params, start_from, None),
+        // Exec-only mode does not run the sync-progress reporter or a settler, so no DAA observer
+        // and no settlement handle.
+        bridge_params(
+            cfg,
+            network_id,
+            lane_subnet,
+            covenant_id,
+            params,
+            start_from,
+            BridgeObservers::default(),
+        ),
     )
 }
 
@@ -332,6 +342,9 @@ async fn start_settlement(
     // The bridge replays from the pruning point and publishes its tip DAA here; a reporter task
     // polls it against the bootstrap's DAA to log how far the catch-up has progressed.
     let tip_daa = Arc::new(AtomicU64::new(0));
+    // Live settlement handle: the bridge (writer) publishes the covenant's last on-chain
+    // settlement here; the settler (reader) detects a competitor advancing past its in-memory tip.
+    let settlement = Arc::new(ArcSwapOption::empty());
     let node = daemon::build_proving_node(
         elfs,
         store,
@@ -342,7 +355,10 @@ async fn start_settlement(
             covenant_id,
             params,
             start_from,
-            Some(tip_daa.clone()),
+            BridgeObservers {
+                tip_daa: Some(tip_daa.clone()),
+                settlement: Some(settlement.clone()),
+            },
         ),
         ProvingParams {
             covenant_id,
@@ -373,6 +389,7 @@ async fn start_settlement(
             start_from,
             backend,
             mode,
+            settlement: Some(settlement),
             submit_jitter: None,
             #[cfg(feature = "test-utils")]
             alternation: None,
@@ -393,7 +410,7 @@ fn bridge_params(
     covenant_id: kaspa_hashes::Hash,
     params: &Params,
     start_from: Option<Hash>,
-    tip_daa: Option<Arc<AtomicU64>>,
+    observers: BridgeObservers,
 ) -> BridgeParams {
     BridgeParams {
         url: cfg.wrpc_url.clone(),
@@ -403,7 +420,7 @@ fn bridge_params(
         finality_depth: params.finality_depth(),
         seed_depth: cfg.seed_depth,
         start_from,
-        tip_daa,
+        observers,
     }
 }
 

@@ -40,16 +40,18 @@ pub async fn run(
 ) {
     let mut cov = covenant;
 
-    // Resolve the CURRENT on-chain covenant tip before chaining. A fresh deploy (`start_from` unset)
-    // starts at the supplied, unspent bootstrap and confirms it directly. A resume / catch-up into
-    // an already-advanced covenant (`start_from` set) is handed a bootstrap outpoint that is now
-    // spent, so confirming it would time out and panic; instead scan the selected-parent chain
-    // forward from the deploy block for the newest settlement of this covenant and reconstruct the
-    // live continuation state from it. This is the same `last_settlement` the bridge derives off the
-    // replayed chain, so the resolved tip is exactly the one the replay rebuilt L2 state up to.
+    // Resolve the CURRENT on-chain covenant tip before chaining. A fresh deploy (`start_from`
+    // unset) starts at the supplied, unspent bootstrap and confirms it directly. A resume /
+    // catch-up into an already-advanced covenant (`start_from` set) is handed a bootstrap
+    // outpoint that is now spent, so confirming it would time out and panic; instead scan the
+    // selected-parent chain forward from the deploy block for the newest settlement of this
+    // covenant and reconstruct the live continuation state from it. This is the same
+    // `last_settlement` the bridge derives off the replayed chain, so the resolved tip is
+    // exactly the one the replay rebuilt L2 state up to.
     match cfg.start_from {
         Some(start_from) => {
-            let Some(daa_score) = resolve_and_confirm_tip(&cfg, &mut cov, start_from, &shutdown).await
+            let Some(daa_score) =
+                resolve_and_confirm_tip(&cfg, &mut cov, start_from, &shutdown).await
             else {
                 log::info!("settlement-worker: shutdown before tip resolved");
                 return;
@@ -57,11 +59,12 @@ pub async fn run(
             cov.daa_score = daa_score;
         }
         None => {
-            // Confirm the supplied (unspent) bootstrap UTXO before chaining, so the first settlement
-            // can spend it and we know its DAA score. It must confirm; its absence is a real
-            // liveness failure worth the panicking confirm.
+            // Confirm the supplied (unspent) bootstrap UTXO before chaining, so the first
+            // settlement can spend it and we know its DAA score. It must confirm; its
+            // absence is a real liveness failure worth the panicking confirm.
             let target = OutpointAt { spk: &cov.spk, outpoint: cov.outpoint };
-            let Some(daa_score) = confirm_outpoint(&cfg.client, &cfg.params, target, &shutdown).await
+            let Some(daa_score) =
+                confirm_outpoint(&cfg.client, &cfg.params, target, &shutdown).await
             else {
                 log::info!("settlement-worker: shutdown before bootstrap confirmed");
                 return;
@@ -99,55 +102,30 @@ pub async fn run(
         };
 
         // A competing settler may have advanced the covenant since our last settlement. If our
-        // in-memory covenant no longer matches this bundle's proving base, adopt the competitor's
-        // settlement carried as `latest_settlement` and confirm its continuation UTXO so we can
-        // spend it.
+        // in-memory covenant no longer matches this bundle's proving base, consult the live
+        // settlement handle the bridge writes: it carries the covenant's last settlement the bridge
+        // observed in an accepted chain block, including its DAA score. When that settlement is
+        // ahead of `cov`, adopt it as the new optimistic tip so a later bundle that chains from it
+        // settles instead of leaving us permanently stuck behind.
         //
-        // Adoption is forward-only: `latest_settlement` is a snapshot taken at bundle formation, so
-        // an older queued bundle can carry a settlement *behind* an already-advanced `cov`.
-        // That snapshot reconstructs an already-spent continuation outpoint, which the node
-        // never reports as an unspent UTXO, so confirmation times out: skip the bundle
-        // rather than poll out the ceiling or regress `cov`. A confirmation whose DAA score
-        // does not advance past our current tip is likewise not ahead, so it is ignored.
-        // Only a settlement whose continuation UTXO is live and strictly ahead advances
-        // `cov`, tracking the on-chain tip so a later bundle that chains from it settles
-        // instead of leaving us permanently stuck behind.
+        // The handle is read, not the per-bundle snapshot: the settler advances `cov`
+        // optimistically when it settles, but the bridge needs ≈RTT to observe that, so the
+        // handle lags `cov` by one settlement. Adoption is therefore gated on the handle
+        // being *ahead* (`s.new_state` differs from `cov.state`) and forward-only
+        // (`s.daa_score` at or past `cov.daa_score`); a handle value behind `cov` (a
+        // competitor we already passed) is ignored. The continuation outpoint is adopted
+        // without an on-chain confirm: the bridge only publishes settlements from accepted
+        // chain blocks, so the UTXO existed, and the rare case it was already spent by a reorg/race
+        // is caught at settle time (`classify_rejection` -> `Superseded`), which skips the bundle.
         if cov.state != artifact.prev_state {
-            if let Some(s) = bundle.latest_settlement() {
-                log::info!(
-                    "settlement-worker: TRACE_ADOPT cov {:?} daa {} bundle.prev {:?} snap.new {:?}",
-                    &cov.state[..4], cov.daa_score, &artifact.prev_state[..4], &s.new_state[..4],
-                );
-                if s.new_state != cov.state {
-                    let adopted =
-                        covenant_from_settlement(cfg.mode, &cfg.backend, &cfg.lane_key, &cov, &s);
-                    let target = OutpointAt { spk: &adopted.spk, outpoint: adopted.outpoint };
-                    match poll_outpoint(
-                        &cfg.client,
-                        &cfg.params,
-                        target,
-                        &shutdown,
-                        ADOPT_MAX_POLLS,
-                    )
-                    .await
-                    {
-                        ConfirmOutcome::Confirmed(daa_score) if daa_score >= cov.daa_score => {
-                            cov = CovenantState { daa_score, ..adopted };
-                            log::info!(
-                                "settlement-worker: adopted external settlement {} (covenant advanced)",
-                                s.tx_id,
-                            );
-                        }
-                        ConfirmOutcome::Confirmed(_) | ConfirmOutcome::Timeout => {
-                            log::info!(
-                                "settlement-worker: skipping stale external settlement {} \
-                                 (not ahead of current covenant tip)",
-                                s.tx_id,
-                            );
-                            continue;
-                        }
-                        ConfirmOutcome::Shutdown => break,
-                    }
+            if let Some(s) = cfg.settlement.as_ref().and_then(|h| h.load_full()) {
+                if s.new_state != cov.state && s.daa_score.get() >= cov.daa_score {
+                    cov = covenant_from_settlement(cfg.mode, &cfg.backend, &cfg.lane_key, &cov, &s);
+                    log::info!(
+                        "settlement-worker: adopted external settlement {} (covenant advanced to daa {})",
+                        s.tx_id,
+                        cov.daa_score,
+                    );
                 }
             }
         }
@@ -156,10 +134,6 @@ pub async fn run(
         // bundle's range: it is superseded. Skip it rather than asserting in the builder; a later
         // bundle chaining from the adopted tip settles.
         if cov.state != artifact.prev_state {
-            log::info!(
-                "settlement-worker: TRACE_SKIP cov {:?} prev {:?} new {:?} daa {}",
-                &cov.state[..4], &artifact.prev_state[..4], &artifact.new_state[..4], cov.daa_score,
-            );
             log::info!(
                 "settlement-worker: skipping superseded bundle (a competitor covered its range)"
             );
@@ -172,14 +146,11 @@ pub async fn run(
         // ranges. Production leaves this `None` and settles as soon as a bundle is ready.
         #[cfg(feature = "test-utils")]
         if let Some((me, pacer)) = &cfg.alternation {
-            log::info!("settlement-worker: TRACE_PACER me {me} awaiting turn (cov {:?})", &cov.state[..4]);
             pacer.await_turn(*me, &shutdown).await;
-            log::info!("settlement-worker: TRACE_PACER me {me} turn granted");
             if shutdown.is_open() {
                 break;
             }
         }
-        log::info!("settlement-worker: TRACE_SETTLE attempting settle prev {:?} new {:?}", &artifact.prev_state[..4], &artifact.new_state[..4]);
         match settle_one(&cfg, &cov, &artifact, &shutdown).await {
             SettleOutcome::Advanced(next) => {
                 cov = next;
@@ -189,9 +160,9 @@ pub async fn run(
                 }
             }
             // A competitor's settlement is already in the mempool spending this covenant outpoint,
-            // so ours can never land. Hold `cov` and drop the bundle: once that
-            // settlement confirms, the bridge surfaces it as `latest_settlement` and
-            // the reconcile block above adopts it.
+            // so ours can never land. Hold `cov` and drop the bundle: once that settlement confirms
+            // in a chain block, the bridge publishes it to the live settlement handle and the
+            // reconcile block above adopts it.
             SettleOutcome::Superseded => continue,
             SettleOutcome::Shutdown => break,
         }
@@ -221,7 +192,8 @@ async fn resolve_and_confirm_tip(
         // still-unspent bootstrap when the covenant has never settled.
         match newest_settlement(&cfg.client, cfg.covenant_id, start_from).await {
             Some(s) => {
-                *cov = covenant_from_settlement(cfg.mode, &cfg.backend, &cfg.lane_key, &bootstrap, &s);
+                *cov =
+                    covenant_from_settlement(cfg.mode, &cfg.backend, &cfg.lane_key, &bootstrap, &s);
                 log::info!(
                     "settlement-worker: resolved covenant {} tip from on-chain settlement {} \
                      (continuation {})",

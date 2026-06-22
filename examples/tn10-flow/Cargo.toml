@@ -58,6 +58,7 @@ kaspa-txscript       = { workspace = true }
 kaspa-wrpc-client    = { workspace = true }
 
 # external
+arc-swap   = { workspace = true }
 ctrlc      = { workspace = true }
 fastrand   = { workspace = true }
 log        = { workspace = true }

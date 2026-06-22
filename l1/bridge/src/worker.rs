@@ -6,6 +6,7 @@ use std::{
     time::Duration,
 };
 
+use arc_swap::ArcSwapOption;
 use crossbeam_queue::SegQueue;
 use futures::{FutureExt, select_biased};
 use kaspa_consensus_core::subnets::SubnetworkId;
@@ -26,7 +27,9 @@ use kaspa_wrpc_client::prelude::*;
 use tokio::sync::{Notify, mpsc};
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_types::{AccessMetadata, ChainSink, SchedulerTransaction};
-use vprogs_l1_types::{ChainBlockMetadata, Hash, L1Transaction, L1TransactionCovenantExt};
+use vprogs_l1_types::{
+    ChainBlockMetadata, Hash, L1Transaction, L1TransactionCovenantExt, SettlementInfo,
+};
 use workflow_core::channel::{Channel, MultiplexerChannel};
 
 use crate::{
@@ -74,6 +77,9 @@ pub(crate) struct BridgeWorker<T: ChainSink<ChainBlockMetadata, L1Transaction>> 
     start_from: Option<Hash>,
     /// Optional observer the latest chain-block DAA score is published to, for catch-up progress.
     tip_daa: Option<Arc<AtomicU64>>,
+    /// Optional live handle the tip's last covenant settlement is published to (the bridge is the
+    /// single writer), so the settler can read the canonical settlement without a confirm RTT.
+    settlement: Option<Arc<ArcSwapOption<SettlementInfo>>>,
 }
 
 impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
@@ -145,6 +151,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             seed_depth: config.seed_depth,
             start_from: config.start_from,
             tip_daa: config.tip_daa.clone(),
+            settlement: config.settlement.clone(),
         }
         .run()
         .await;
@@ -260,6 +267,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
 
         // Step 3: publish the tip as a progress baseline, then announce Connected and sync.
         self.publish_tip_daa();
+        self.publish_settlement();
         self.push_event(L1Event::Connected);
         let result = self.fetch_chain_updates().await;
         self.handle_sync_result(result);
@@ -277,6 +285,13 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
     fn publish_tip_daa(&self) {
         if let Some(observer) = &self.tip_daa {
             observer.store(self.tip_metadata().daa_score, Ordering::Relaxed);
+        }
+    }
+
+    /// Publishes the tip's last covenant settlement to the optional live handle.
+    fn publish_settlement(&self) {
+        if let Some(observer) = &self.settlement {
+            observer.store(self.tip_metadata().last_settlement.map(Arc::new));
         }
     }
 
@@ -329,7 +344,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
     /// `seed_from_recent`.
     async fn seed_from_block(&mut self, hash: Hash) -> Result<()> {
         let block = self.client.get_block(hash, false).await?;
-        self.virtual_chain = VirtualChain::new(Checkpoint::new(0, (&block.header).into()));
+        self.genesis = (&block.header).into();
         log::info!("L1 bridge: seeding from explicit block {hash}");
 
         Ok(())
@@ -393,6 +408,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             let header = &chain_block.chain_block_header;
             let parent = self.tip_metadata();
             let block_hash = header.hash.expect("missing hash");
+            let block_daa = header.daa_score.expect("missing daa_score");
             let mut last_settlement = parent.last_settlement;
 
             // Enumerate before filtering so kept txs keep their block-wide positions.
@@ -404,7 +420,8 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
                     // Carry forward the last settlement.
                     let tx = L1Transaction::try_from(tx.clone()).expect("missing tx fields");
                     if let Some(id) = self.covenant_id {
-                        last_settlement = tx.settlement_info(id, block_hash).or(last_settlement);
+                        last_settlement =
+                            tx.settlement_info(id, block_hash, block_daa).or(last_settlement);
                     }
 
                     // Parse access metadata; marlformed = no dependencies and prover attests.
@@ -444,6 +461,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
 
         // Publish the batch's new tip so the progress reporter advances as catch-up proceeds.
         self.publish_tip_daa();
+        self.publish_settlement();
 
         Ok(())
     }

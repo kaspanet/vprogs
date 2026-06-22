@@ -17,12 +17,14 @@ use std::{
     sync::{Arc, atomic::AtomicU64},
 };
 
+use arc_swap::ArcSwapOption;
 use kaspa_consensus_core::{network::NetworkId, subnets::SubnetworkId};
 use kaspa_hashes::Hash;
 use kaspa_rpc_core::{GetSeqCommitLaneProofResponse, api::rpc::RpcApi};
 use kaspa_wrpc_client::prelude::KaspaRpcClient;
 use vprogs_core_atomics::AsyncQueue;
 use vprogs_l1_bridge::L1BridgeConfig;
+use vprogs_l1_types::SettlementInfo;
 use vprogs_node_framework::{Node, NodeConfig};
 use vprogs_scheduling_scheduler::ExecutionConfig;
 use vprogs_storage_manager::StorageConfig;
@@ -54,6 +56,18 @@ pub struct Elfs<'a> {
     pub aggregator: &'a [u8],
 }
 
+/// Optional observer handles the bridge publishes into as it follows the chain. Both default to
+/// `None`, which disables publishing.
+#[derive(Default)]
+pub struct BridgeObservers {
+    /// Observer the bridge publishes its latest chain-block DAA score into, for the sync-progress
+    /// reporter. `None` disables publishing.
+    pub tip_daa: Option<Arc<AtomicU64>>,
+    /// Live handle the bridge publishes the covenant's last settlement into (writer), shared with
+    /// the settler (reader). `None` disables publishing.
+    pub settlement: Option<Arc<ArcSwapOption<SettlementInfo>>>,
+}
+
 /// Everything the bridge needs to follow our lane on the remote node.
 pub struct BridgeParams {
     /// wRPC URL of the node, e.g. `ws://host:17210`.
@@ -72,9 +86,8 @@ pub struct BridgeParams {
     /// catch-up node rebuilds state forward from there. Takes precedence over `seed_depth`. `None`
     /// defers to `seed_depth`.
     pub start_from: Option<Hash>,
-    /// Observer the bridge publishes its latest chain-block DAA score into, for the sync-progress
-    /// reporter. `None` disables publishing.
-    pub tip_daa: Option<Arc<AtomicU64>>,
+    /// Observer handles the bridge publishes progress into.
+    pub observers: BridgeObservers,
 }
 
 /// Extra wiring the proving + settlement node needs on top of [`BridgeParams`].
@@ -150,7 +163,8 @@ fn base_config(vm: V, store: Store, params: BridgeParams) -> NodeConfig<Store, V
                 .with_finality_depth(params.finality_depth)
                 .with_seed_depth(Some(params.seed_depth))
                 .with_start_from(params.start_from)
-                .with_tip_daa_observer(params.tip_daa),
+                .with_tip_daa_observer(params.observers.tip_daa)
+                .with_settlement_observer(params.observers.settlement),
         )
 }
 

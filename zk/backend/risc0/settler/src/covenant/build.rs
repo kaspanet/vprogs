@@ -236,8 +236,8 @@ pub fn build_dev_settlement(
 /// (a competing settler landed it first). Deterministically reconstructs the continuation UTXO's
 /// P2SH SPK from `s.new_state` / `s.new_lane_tip` in the configured redeem variant, points the
 /// outpoint at `s.tx_id:0`, and carries `covenant_id` / `value` forward unchanged. `daa_score` is
-/// left 0; the caller confirms the outpoint on chain to stamp it (the competitor's settlement is
-/// already confirmed, so confirmation returns immediately).
+/// stamped from `s.daa_score` (the bridge publishes settlements only off accepted chain blocks, so
+/// it is the score of the block that contained the settlement).
 pub fn covenant_from_settlement(
     mode: SettlementMode,
     backend: &Backend,
@@ -265,7 +265,7 @@ pub fn covenant_from_settlement(
         outpoint: TransactionOutpoint::new(s.tx_id, 0),
         spk,
         value: cov.value,
-        daa_score: 0,
+        daa_score: s.daa_score.get(),
     }
 }
 
