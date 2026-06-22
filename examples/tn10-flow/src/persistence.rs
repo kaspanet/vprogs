@@ -56,4 +56,9 @@ impl PersistedState {
             .as_ref()
             .map(|h| h.parse().expect("stored bootstrap_block_hash must be hex"))
     }
+
+    /// Decoded bootstrap transaction id, if set. The covenant UTXO's outpoint is `(this, 0)`.
+    pub fn bootstrap_txid(&self) -> Option<Hash> {
+        self.bootstrap_txid.as_ref().map(|h| h.parse().expect("stored bootstrap_txid must be hex"))
+    }
 }

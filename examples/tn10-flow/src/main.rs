@@ -268,7 +268,25 @@ async fn start_settlement(
     // the bootstrap UTXO is spent, so confirming it is pointless. The settler detects that at
     // startup and adopts the on-chain tip from `last_settlement` instead. The outpoint is a
     // placeholder in that case; only the first-settlement path needs the real bootstrap outpoint.
-    let (covenant, bootstrap_txid) = if let Some(covenant_id) = cfg.covenant_id_env {
+    // Resume == catch-up keyed on persisted identity: a populated data dir reconstructs the same
+    // covenant without env, so a restart resumes instead of re-bootstrapping and clobbering the
+    // state file. Mirrors `start_exec`'s `persisted.covenant_hash().or(cfg.covenant_id_env)`.
+    let resolved_covenant = persisted.covenant_hash().or(cfg.covenant_id_env);
+    let (covenant, bootstrap_txid) = if let Some(covenant_id) = resolved_covenant {
+        // A fresh catch-up (env-supplied covenant, no persisted deploy block) seeds the bridge from
+        // `start_from`; without it, seeding only `seed_depth` below the sink loses the lane history
+        // before the seed and corrupts the reconstructed seq commit. A resume is exempt: it carries
+        // a persisted bootstrap_block. There is no RPC to resolve a tx's containing block, so fail
+        // fast instead of seeding from the wrong height.
+        let is_fresh_catchup =
+            cfg.covenant_id_env.is_some() && persisted.bootstrap_block().is_none();
+        if is_fresh_catchup && cfg.start_from.is_none() {
+            panic!(
+                "catch-up to existing covenant {covenant_id} requires TN10_START_FROM (the \
+                 covenant deploy block); seeding only seed_depth below the sink loses pre-seed \
+                 lane history and corrupts the reconstructed seq_commit"
+            );
+        }
         // Same redeem builder bootstrap uses, so the reconstructed P2SH SPK matches the on-chain
         // covenant UTXO (asserted at the first settlement).
         let (_redeem, spk) = if dev {
@@ -276,8 +294,11 @@ async fn start_settlement(
         } else {
             bootstrap_redeem(&backend, &lane_key)
         };
-        // Real bootstrap outpoint if supplied, else a placeholder the settler replaces on adoption.
-        let outpoint = match cfg.bootstrap_txid {
+        // Real bootstrap outpoint if known (env or persisted), so a resumed never-settled covenant
+        // still confirms its real bootstrap UTXO; else a placeholder the settler replaces on
+        // adoption when the bootstrap is already spent.
+        let bootstrap_txid = cfg.bootstrap_txid.or_else(|| persisted.bootstrap_txid());
+        let outpoint = match bootstrap_txid {
             Some(txid) => {
                 log::info!("catching up to existing covenant {covenant_id} (bootstrap tx {txid})");
                 TransactionOutpoint::new(txid, 0)
@@ -299,7 +320,7 @@ async fn start_settlement(
             value: COVENANT_VALUE,
             daa_score: 0,
         };
-        (covenant, cfg.bootstrap_txid)
+        (covenant, bootstrap_txid)
     } else if dev {
         log::info!(
             "settlement mode (dev): bootstrapping dev-pins covenant; issuer address {}",
@@ -324,8 +345,12 @@ async fn start_settlement(
     if let Some(txid) = bootstrap_txid {
         persisted.bootstrap_txid.get_or_insert_with(|| txid.to_string());
     }
+    // A resolved covenant (env catch-up or persisted resume) seeds from the operator-supplied
+    // `start_from`; a fresh deploy seeds from the captured sink. The `get_or_insert_with` is a
+    // no-op once a deploy block is already persisted, so a resume never overwrites it with a fresh
+    // seed_block (and `start_from` is `None` on resume anyway).
     let seed_for_resume =
-        if cfg.covenant_id_env.is_some() { cfg.start_from } else { Some(seed_block) };
+        if resolved_covenant.is_some() { cfg.start_from } else { Some(seed_block) };
     if let Some(seed) = seed_for_resume {
         persisted.bootstrap_block_hash.get_or_insert_with(|| seed.to_string());
     }
