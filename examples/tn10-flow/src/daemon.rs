@@ -203,7 +203,9 @@ impl LaneProofSource for RemoteLaneSource {
                     );
                     tokio::time::sleep(LANE_PROOF_RETRY_DELAY).await;
                 }
-                Err(e) => panic!("get_seq_commit_lane_proof failed after {LANE_PROOF_MAX_ATTEMPTS} attempts: {e}"),
+                Err(e) => panic!(
+                    "get_seq_commit_lane_proof failed after {LANE_PROOF_MAX_ATTEMPTS} attempts: {e}"
+                ),
             }
         }
         unreachable!("lane-proof retry loop returns or panics on the final attempt")
