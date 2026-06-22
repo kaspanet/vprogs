@@ -17,8 +17,9 @@ use kaspa_wrpc_client::prelude::KaspaRpcClient;
 use vprogs_l1_types::{L1Transaction, L1TransactionCovenantExt, SettlementInfo};
 
 /// Scans the selected-parent chain forward from `start_from`, returning the NEWEST settlement of
-/// `covenant_id`, or `None` if the covenant has never settled (a fresh deploy whose bootstrap UTXO
-/// is still unspent).
+/// `covenant_id`, or `Ok(None)` if the covenant has never settled (a fresh deploy whose bootstrap
+/// UTXO is still unspent). A transient RPC failure returns `Err(())` so the caller can retry the
+/// resolve loop rather than crash the process on a momentary node timeout.
 ///
 /// Walks the chain in `get_virtual_chain_from_block_v2` batches from `start_from` to the virtual
 /// tip, decoding each accepted transaction with [`L1TransactionCovenantExt::settlement_info`] and
@@ -43,15 +44,23 @@ pub(super) async fn newest_settlement(
     client: &KaspaRpcClient,
     covenant_id: Hash,
     start_from: Hash,
-) -> Option<SettlementInfo> {
+) -> Result<Option<SettlementInfo>, ()> {
     'scan: loop {
         let mut cursor = start_from;
         let mut newest: Option<SettlementInfo> = None;
         loop {
-            let response = client
+            let response = match client
                 .get_virtual_chain_from_block_v2(cursor, Some(Full), None)
                 .await
-                .expect("get_virtual_chain_from_block_v2");
+            {
+                Ok(response) => response,
+                // A transient RPC failure (e.g. a request timeout under load) must not crash the
+                // node mid-scan. Surface it so the caller retries the resolve loop after a backoff.
+                Err(e) => {
+                    log::warn!("settlement-worker: tip scan RPC failed ({e}); retrying resolve");
+                    return Err(());
+                }
+            };
             // The cursor's branch is being reorged out: restart from the seed block so the scan
             // never reads a settlement off a block that is being removed.
             if !response.removed_chain_block_hashes.is_empty() {
@@ -63,7 +72,7 @@ pub(super) async fn newest_settlement(
             }
             // An empty batch means the scan has reached the virtual tip: no more chain blocks.
             if response.chain_block_accepted_transactions.is_empty() {
-                return newest;
+                return Ok(newest);
             }
             for chain_block in response.chain_block_accepted_transactions.iter() {
                 let block_hash =

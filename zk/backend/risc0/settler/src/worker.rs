@@ -19,6 +19,10 @@ use vprogs_zk_backend_risc0_api::Receipt;
 
 use crate::covenant::{CovenantState, covenant_from_settlement};
 
+/// Backoff before re-resolving the covenant tip after a transient RPC failure in the fallback chain
+/// scan, so a momentary node timeout retries instead of hot-looping or crashing.
+const RESOLVE_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Drives the settlement loop, popping each bundle the aggregate prover publishes onto `queue`.
 ///
 /// The aggregate prover publishes every formed bundle as a [`ScheduledBundle`] handle; the worker
@@ -190,8 +194,25 @@ async fn resolve_and_confirm_tip(
     loop {
         // Resolve the outpoint to confirm: the newest on-chain settlement's continuation, or the
         // still-unspent bootstrap when the covenant has never settled.
-        match newest_settlement(&cfg.client, cfg.covenant_id, start_from).await {
-            Some(s) => {
+        //
+        // Prefer the live settlement handle the bridge writes whenever it observes this covenant's
+        // settlement in an accepted chain block. When it carries a value ahead of the bootstrap
+        // (a different `new_state`, at or past the bootstrap's DAA score), reconstruct the tip
+        // directly from it - the continuation UTXO is deterministic (outpoint `tx_id:0`, SPK
+        // rebuilt from the seeded redeem) - and skip the full virtual-chain RPC scan entirely. This
+        // is the same `last_settlement` the scan would derive off the replayed chain, so the
+        // resolved tip is identical; reading it avoids re-scanning the whole chain on every
+        // re-resolve (and the RPC timeout that scan can hit under contention).
+        let from_handle = cfg.settlement.as_ref().and_then(|h| h.load_full()).filter(|s| {
+            s.new_state != bootstrap.state && s.daa_score.get() >= bootstrap.daa_score
+        });
+        let resolved = match from_handle {
+            Some(s) => Ok(Some(*s)),
+            // Cold start (the handle is empty or not yet ahead): fall back to the chain scan.
+            None => newest_settlement(&cfg.client, cfg.covenant_id, start_from).await,
+        };
+        match resolved {
+            Ok(Some(s)) => {
                 *cov =
                     covenant_from_settlement(cfg.mode, &cfg.backend, &cfg.lane_key, &bootstrap, &s);
                 log::info!(
@@ -202,13 +223,23 @@ async fn resolve_and_confirm_tip(
                     cov.outpoint,
                 );
             }
-            None => {
+            Ok(None) => {
                 *cov = bootstrap.clone();
                 log::info!(
                     "settlement-worker: covenant {} never settled; confirming bootstrap {}",
                     cov.covenant_id,
                     cov.outpoint,
                 );
+            }
+            // The fallback chain scan hit a transient RPC failure. Back off and retry the resolve
+            // rather than crash; a momentary node timeout must never take the process down.
+            Err(()) => {
+                tokio::select! {
+                    biased;
+                    () = shutdown.wait() => return None,
+                    () = tokio::time::sleep(RESOLVE_RETRY_BACKOFF) => {}
+                }
+                continue;
             }
         }
 
