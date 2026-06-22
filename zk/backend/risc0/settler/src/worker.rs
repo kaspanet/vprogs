@@ -4,24 +4,18 @@
 
 mod config;
 mod confirm;
-mod resolve;
 mod settle;
 
 #[cfg(feature = "test-utils")]
 pub use config::AlternationPacer;
 pub use config::{SettlementMode, SettlementWorkerConfig};
-use confirm::{ADOPT_MAX_POLLS, ConfirmOutcome, OutpointAt, confirm_outpoint, poll_outpoint};
-use resolve::newest_settlement;
+use confirm::{OutpointAt, confirm_outpoint};
 use settle::{SettleOutcome, settle_one};
 use vprogs_core_atomics::{AsyncQueue, AtomicAsyncLatch};
 use vprogs_zk_aggregate_prover::{ScheduledBundle, SettlementArtifact};
 use vprogs_zk_backend_risc0_api::Receipt;
 
 use crate::covenant::{CovenantState, covenant_from_settlement};
-
-/// Backoff before re-resolving the covenant tip after a transient RPC failure in the fallback chain
-/// scan, so a momentary node timeout retries instead of hot-looping or crashing.
-const RESOLVE_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Drives the settlement loop, popping each bundle the aggregate prover publishes onto `queue`.
 ///
@@ -44,40 +38,48 @@ pub async fn run(
 ) {
     let mut cov = covenant;
 
-    // Resolve the CURRENT on-chain covenant tip before chaining. A fresh deploy (`start_from`
-    // unset) starts at the supplied, unspent bootstrap and confirms it directly. A resume /
-    // catch-up into an already-advanced covenant (`start_from` set) is handed a bootstrap
-    // outpoint that is now spent, so confirming it would time out and panic; instead scan the
-    // selected-parent chain forward from the deploy block for the newest settlement of this
-    // covenant and reconstruct the live continuation state from it. This is the same
-    // `last_settlement` the bridge derives off the replayed chain, so the resolved tip is
-    // exactly the one the replay rebuilt L2 state up to.
-    match cfg.start_from {
-        Some(start_from) => {
-            let Some(daa_score) =
-                resolve_and_confirm_tip(&cfg, &mut cov, start_from, &shutdown).await
-            else {
-                log::info!("settlement-worker: shutdown before tip resolved");
-                return;
-            };
-            cov.daa_score = daa_score;
-        }
-        None => {
-            // Confirm the supplied (unspent) bootstrap UTXO before chaining, so the first
-            // settlement can spend it and we know its DAA score. It must confirm; its
-            // absence is a real liveness failure worth the panicking confirm.
-            let target = OutpointAt { spk: &cov.spk, outpoint: cov.outpoint };
-            let Some(daa_score) =
-                confirm_outpoint(&cfg.client, &cfg.params, target, &shutdown).await
-            else {
-                log::info!("settlement-worker: shutdown before bootstrap confirmed");
-                return;
-            };
-            cov.daa_score = daa_score;
-        }
+    // Establish the starting covenant tip before chaining, reading it SOLELY from the live
+    // settlement handle the bridge writes - never by scanning L1. The bridge replays the chain
+    // from the deploy block and publishes the tip's `last_settlement` into the handle, so when the
+    // covenant has already advanced the handle carries the canonical continuation; reconstruct the
+    // tip from it directly (outpoint `tx_id:0`, SPK rebuilt from the seeded redeem) without an
+    // on-chain confirm. This is the exact `last_settlement` a chain scan would derive, with no RPC.
+    //
+    // When the handle is empty (a fresh deploy, or the bridge has not yet replayed a settlement),
+    // the in-memory `cov` already points at the bootstrap. A `start_from` is the resume / catch-up
+    // signal: that bootstrap may already be spent, so it must not be hard-confirmed (which would
+    // time out and panic). Instead leave `cov` at the bootstrap and let the loop's mid-stream
+    // adoption advance it once the bridge publishes the live tip - a catch-up prover's first
+    // bundle proves from the already-advanced on-chain state, mismatches the empty bootstrap, and
+    // adopts the handle. A fresh deploy (`start_from` unset) has an unspent bootstrap and confirms
+    // it directly, stamping its DAA score, so the first settlement can spend it.
+    if let Some(s) = cfg
+        .settlement
+        .as_ref()
+        .and_then(|h| h.load_full())
+        .filter(|s| s.new_state != cov.state && s.daa_score.get() >= cov.daa_score)
+    {
+        cov = covenant_from_settlement(cfg.mode, &cfg.backend, &cfg.lane_key, &cov, &s);
+        log::info!(
+            "settlement-worker: starting covenant {} from live settlement handle {} (tip daa {})",
+            cov.covenant_id,
+            s.tx_id,
+            cov.daa_score,
+        );
+    } else if cfg.start_from.is_none() {
+        // Fresh deploy: the supplied bootstrap UTXO is unspent. Confirm it before chaining so the
+        // first settlement can spend it and we know its DAA score. It must confirm; its absence is
+        // a real liveness failure worth the panicking confirm.
+        let target = OutpointAt { spk: &cov.spk, outpoint: cov.outpoint };
+        let Some(daa_score) = confirm_outpoint(&cfg.client, &cfg.params, target, &shutdown).await
+        else {
+            log::info!("settlement-worker: shutdown before bootstrap confirmed");
+            return;
+        };
+        cov.daa_score = daa_score;
     }
     log::info!(
-        "settlement-worker: covenant {} confirmed at tip (daa {})",
+        "settlement-worker: covenant {} ready at tip (daa {})",
         cov.covenant_id,
         cov.daa_score,
     );
@@ -172,91 +174,4 @@ pub async fn run(
         }
     }
     log::info!("settlement-worker: shut down");
-}
-
-/// Sets `cov` to the current on-chain covenant tip and confirms its UTXO, returning the confirmed
-/// DAA score (or `None` on shutdown).
-///
-/// A covenant that has settled resolves to its newest on-chain settlement; one that has not yet
-/// settled (a catch-up joining while the bootstrap is still unspent) keeps the supplied bootstrap.
-/// The resolution races a live competitor whose settlement can spend the resolved outpoint (or the
-/// still-unspent bootstrap) between the scan and the confirm, so the resolved tip is confirmed with
-/// a bounded poll and re-resolved on timeout rather than confirmed with the panicking
-/// [`confirm_outpoint`]. A competitor that settles a never-yet-settled covenant out from under the
-/// scan spends the bootstrap; the re-resolve then finds that new on-chain tip and confirms it.
-async fn resolve_and_confirm_tip(
-    cfg: &SettlementWorkerConfig,
-    cov: &mut CovenantState,
-    start_from: kaspa_hashes::Hash,
-    shutdown: &AtomicAsyncLatch,
-) -> Option<u64> {
-    let bootstrap = cov.clone();
-    loop {
-        // Resolve the outpoint to confirm: the newest on-chain settlement's continuation, or the
-        // still-unspent bootstrap when the covenant has never settled.
-        //
-        // Prefer the live settlement handle the bridge writes whenever it observes this covenant's
-        // settlement in an accepted chain block. When it carries a value ahead of the bootstrap
-        // (a different `new_state`, at or past the bootstrap's DAA score), reconstruct the tip
-        // directly from it - the continuation UTXO is deterministic (outpoint `tx_id:0`, SPK
-        // rebuilt from the seeded redeem) - and skip the full virtual-chain RPC scan entirely. This
-        // is the same `last_settlement` the scan would derive off the replayed chain, so the
-        // resolved tip is identical; reading it avoids re-scanning the whole chain on every
-        // re-resolve (and the RPC timeout that scan can hit under contention).
-        let from_handle = cfg.settlement.as_ref().and_then(|h| h.load_full()).filter(|s| {
-            s.new_state != bootstrap.state && s.daa_score.get() >= bootstrap.daa_score
-        });
-        let resolved = match from_handle {
-            Some(s) => Ok(Some(*s)),
-            // Cold start (the handle is empty or not yet ahead): fall back to the chain scan.
-            None => newest_settlement(&cfg.client, cfg.covenant_id, start_from).await,
-        };
-        match resolved {
-            Ok(Some(s)) => {
-                *cov =
-                    covenant_from_settlement(cfg.mode, &cfg.backend, &cfg.lane_key, &bootstrap, &s);
-                log::info!(
-                    "settlement-worker: resolved covenant {} tip from on-chain settlement {} \
-                     (continuation {})",
-                    cov.covenant_id,
-                    s.tx_id,
-                    cov.outpoint,
-                );
-            }
-            Ok(None) => {
-                *cov = bootstrap.clone();
-                log::info!(
-                    "settlement-worker: covenant {} never settled; confirming bootstrap {}",
-                    cov.covenant_id,
-                    cov.outpoint,
-                );
-            }
-            // The fallback chain scan hit a transient RPC failure. Back off and retry the resolve
-            // rather than crash; a momentary node timeout must never take the process down.
-            Err(()) => {
-                tokio::select! {
-                    biased;
-                    () = shutdown.wait() => return None,
-                    () = tokio::time::sleep(RESOLVE_RETRY_BACKOFF) => {}
-                }
-                continue;
-            }
-        }
-
-        // Bounded confirm: the resolved outpoint is found within a poll or two unless a competitor
-        // already spent it (advanced the covenant, or settled a never-yet-settled covenant, since
-        // the scan), in which case re-resolve to pick up the newer on-chain tip. A competitor race
-        // here is normal liveness, never a panic.
-        let target = OutpointAt { spk: &cov.spk, outpoint: cov.outpoint };
-        match poll_outpoint(&cfg.client, &cfg.params, target, shutdown, ADOPT_MAX_POLLS).await {
-            ConfirmOutcome::Confirmed(daa_score) => return Some(daa_score),
-            ConfirmOutcome::Shutdown => return None,
-            ConfirmOutcome::Timeout => log::info!(
-                "settlement-worker: resolved covenant {} tip {} already spent by a competitor; \
-                 re-resolving",
-                cov.covenant_id,
-                cov.outpoint,
-            ),
-        }
-    }
 }

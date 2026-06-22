@@ -19,9 +19,10 @@ pub struct Config {
     /// Covenant id from env, if any. Final value is resolved against storage in `main`.
     pub covenant_id_env: Option<Hash>,
     /// Bootstrap transaction id from env, if any. The covenant UTXO's outpoint is `(this, 0)`.
-    /// Optional alongside `covenant_id_env`: it confirms a never-settled covenant's bootstrap UTXO,
-    /// but a covenant that has already settled past its bootstrap is adopted from its on-chain
-    /// `last_settlement` instead (the spent bootstrap UTXO is useless), so no txid is needed there.
+    /// Optional alongside `covenant_id_env`: it confirms a never-settled covenant's bootstrap
+    /// UTXO, but a covenant that has already settled past its bootstrap is adopted from its
+    /// on-chain `last_settlement` instead (the spent bootstrap UTXO is useless), so no txid is
+    /// needed there.
     pub bootstrap_txid: Option<Hash>,
     /// Explicit L1 block the bridge seeds its fresh-chain root at (a covenant's deploy block), so
     /// a catch-up node rebuilds state forward from there. `None` defers to

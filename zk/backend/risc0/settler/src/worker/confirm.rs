@@ -19,12 +19,6 @@ use crate::covenant::CovenantState;
 const CONFIRM_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const CONFIRM_MAX_POLLS: u32 = 300;
 
-/// Short ceiling for the startup tip-resolution confirm. The resolved outpoint (the newest on-chain
-/// settlement's continuation, or the still-unspent bootstrap) is found within a poll or two unless
-/// a competitor already spent it since the scan, in which case the resolver re-scans rather than
-/// polling out a long liveness ceiling.
-pub(super) const ADOPT_MAX_POLLS: u32 = 5;
-
 /// A specific outpoint at a covenant's P2SH SPK. Covenant UTXOs are P2SH, so the node's utxoindex
 /// tracks them by their script address; confirming one means finding `outpoint` among the unspent
 /// UTXOs the node reports for `spk`'s address.
@@ -96,8 +90,7 @@ pub(super) async fn poll_outpoint(
 /// Polls the node until `target`'s outpoint appears at its P2SH address, returning its block DAA
 /// score. Returns `None` if `shutdown` opens while polling. Panics on timeout: a UTXO this worker
 /// bootstrapped or settled itself must confirm, so its absence is a liveness failure worth
-/// surfacing. The adoption path uses [`poll_outpoint`] directly instead, where a non-confirming
-/// outpoint is competitor-derived (a stale snapshot) and recovered by skipping, not a panic.
+/// surfacing.
 pub(super) async fn confirm_outpoint(
     client: &KaspaRpcClient,
     params: &Params,

@@ -37,12 +37,11 @@ pub struct SettlementWorkerConfig {
     pub keypair: Keypair,
     /// Lane key the covenant SPK pins.
     pub lane_key: Hash,
-    /// Covenant id, used to recognize this covenant's settlements when scanning L1 to resolve the
-    /// current on-chain tip at startup (a resume / catch-up into an already-advanced covenant).
+    /// Covenant id this worker settles, carried for identity / journal binding.
     pub covenant_id: Hash,
-    /// L1 block the startup tip-resolution scan walks the selected-parent chain forward from (the
-    /// covenant's deploy/seed block). `None` skips the scan and confirms the supplied bootstrap
-    /// outpoint directly (a fresh deploy, whose bootstrap UTXO is unspent).
+    /// Resume / catch-up signal: `Some` when the worker may be joining an already-advanced
+    /// covenant (its supplied bootstrap outpoint already spent), `None` for a fresh deploy
+    /// whose bootstrap UTXO is unspent.
     pub start_from: Option<Hash>,
     /// Backend, for the covenant's redeem pins (guest image ids). Unused in
     /// [`SettlementMode::Dev`] (the dev redeem pins no image ids).

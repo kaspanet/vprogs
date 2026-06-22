@@ -185,10 +185,10 @@ async fn two_provers_contend() {
 
     // Both fresh-deploy provers seed from the deploy block (`Some(block_deploy)`), exactly as the
     // binary's fresh-deploy path does (`main.rs` persists the captured sink as the seed and threads
-    // it into both the bridge and the settler config). This exercises the shipped resolve-scan
-    // path: the settler scans the chain at startup, finds no settlement yet, and bounded-polls
-    // the unspent bootstrap (re-resolving if a competitor settles it first) instead of taking
-    // the `start_from = None` direct-confirm path the binary never reaches.
+    // it into both the bridge and the settler config). The `start_from = Some` settler starts from
+    // its live settlement handle: at startup the handle is empty (no settlement yet), so it leaves
+    // `cov` at the unspent bootstrap and the loop's mid-stream adoption advances it as the bridge
+    // publishes each settlement off the replayed chain - no L1 chain scan.
     let prover_a = spawn_prover(
         &l1,
         "A",
@@ -1081,7 +1081,8 @@ async fn prover_resumes_after_settlement_contended() {
 
     // === Run 1: A and B contend from the unspent bootstrap (like two_provers_contend) ===
     // Both fresh-deploy provers seed from the deploy block, matching the binary's fresh-deploy path
-    // (resolve-scan finds no settlement yet and bounded-polls the unspent bootstrap).
+    // (the live settlement handle is empty at startup, so each starts from the unspent bootstrap
+    // and the loop's mid-stream adoption advances it as the bridge publishes settlements).
     let prover_a = spawn_prover(
         &l1,
         "A",
