@@ -9,7 +9,7 @@
 //! ```no_run
 //! use std::time::Duration;
 //!
-//! use vprogs_l1_bridge::{L1Bridge, L1BridgeConfig, L1Event};
+//! use vprogs_l1_bridge::{CanonicalWriter, L1Bridge, L1BridgeConfig, L1Event};
 //! use vprogs_l1_types::{NetworkId, NetworkType};
 //! use vprogs_node_test_utils::{L1BridgeExt, L1Node};
 //!
@@ -22,6 +22,7 @@
 //!     L1BridgeConfig::default()
 //!         .with_url(Some(node.wrpc_borsh_url()))
 //!         .with_network_type(NetworkType::Simnet),
+//!     CanonicalWriter::new(),
 //! );
 //!
 //! // Wait for the bridge to connect.

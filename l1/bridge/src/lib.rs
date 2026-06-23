@@ -8,13 +8,14 @@
 //! # Usage
 //!
 //! ```no_run
-//! use vprogs_l1_bridge::{L1Bridge, L1BridgeConfig, L1Event};
+//! use vprogs_l1_bridge::{CanonicalWriter, L1Bridge, L1BridgeConfig, L1Event};
 //! use vprogs_l1_types::NetworkType;
 //!
 //! let bridge = L1Bridge::new(
 //!     L1BridgeConfig::default()
 //!         .with_url(Some("ws://localhost:17110"))
 //!         .with_network_type(NetworkType::Mainnet),
+//!     CanonicalWriter::new(),
 //! );
 //!
 //! // Consume events in a loop.
@@ -63,3 +64,6 @@ mod worker;
 pub use bridge::L1Bridge;
 pub use config::L1BridgeConfig;
 pub use event::{L1Event, RpcOptionalHeader};
+// Re-exported because `L1Bridge::new` requires it, so callers need not depend on the crate
+// directly.
+pub use vprogs_storage_canonical_chain::CanonicalWriter;
