@@ -19,10 +19,9 @@ use crate::{
 };
 
 /// The result of attempting to settle one bundle.
-#[allow(clippy::large_enum_variant)]
 pub enum SettleOutcome {
     /// The settlement landed and confirmed; the covenant advanced to this state.
-    Advanced(CovenantState),
+    Advanced(Box<CovenantState>),
     /// A competitor already spent this covenant outpoint, so this bundle is superseded. The caller
     /// holds its covenant and waits to adopt the competitor's settlement once it confirms.
     Superseded,
@@ -155,7 +154,7 @@ impl<F: FeeSource, K: SettlementSink> Settler<F, K> {
                 "settlement-worker: settlement {txid} confirmed (daa {})",
                 info.daa_score.get(),
             );
-            SettleOutcome::Advanced(built.advance.apply(txid, info.daa_score.get()))
+            SettleOutcome::Advanced(Box::new(built.advance.apply(txid, info.daa_score.get())))
         } else {
             // A competitor's settlement advanced the covenant before ours confirmed (a reorg
             // replaced ours, or it never made the chain). Hold our covenant and let the caller's
