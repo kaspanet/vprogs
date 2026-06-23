@@ -66,16 +66,9 @@ impl NodeExt for NodeApi<RocksDbStore, TestNodeVm> {
 
     fn assert_written_state(&self, resource_id: ResourceId, writers: &[Hash]) {
         let store = self.storage().store();
-        let writer_count = writers.len();
         let writer_log: Vec<u8> = writers.iter().flat_map(|h| h.as_bytes()).collect();
 
         let versioned_state = StateVersion::from_latest_data(store.as_ref(), resource_id);
-        assert_eq!(
-            versioned_state.version(),
-            writer_count as u64,
-            "resource {resource_id:?}: expected version {writer_count}, got {}",
-            versioned_state.version()
-        );
         assert_eq!(
             *versioned_state.data(),
             writer_log,

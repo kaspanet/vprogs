@@ -7,7 +7,7 @@ use vprogs_state_ptr_rollback::StatePtrRollback;
 use vprogs_storage_manager::concat_bytes;
 use vprogs_storage_types::{ReadStore, StateSpace, WriteBatch};
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct StateVersion {
     resource_id: ResourceId,
     version: u64,
@@ -19,10 +19,7 @@ impl StateVersion {
         Self { resource_id: id, version: 0, data: Vec::new() }
     }
 
-    pub fn from_latest_data<S>(store: &S, id: ResourceId) -> Self
-    where
-        S: ReadStore,
-    {
+    pub fn from_latest_data<S: ReadStore>(store: &S, id: ResourceId) -> Self {
         match StatePtrLatest::get(store, &id) {
             None => Self::empty(id),
             Some(version) => Self {
@@ -41,52 +38,45 @@ impl StateVersion {
         &self.data
     }
 
-    pub fn data_mut(self: &mut Arc<Self>) -> &mut Vec<u8> {
-        &mut Arc::make_mut(self).tap_mut(|s| s.version += 1).data
+    pub fn data_mut(self: &mut Arc<Self>, version: u64) -> &mut Vec<u8> {
+        &mut Arc::make_mut(self).tap_mut(|s| s.version = version).data
     }
 
-    pub fn set_data(self: &mut Arc<Self>, data: Vec<u8>) {
+    pub fn set_data(self: &mut Arc<Self>, version: u64, data: Vec<u8>) {
         if self.data != data {
             if let Some(s) = Arc::get_mut(self) {
-                s.version += 1;
+                s.version = version;
                 s.data = data;
             } else {
-                let this = Self { resource_id: self.resource_id, version: self.version + 1, data };
+                let this = Self { resource_id: self.resource_id, version, data };
                 *self = Arc::new(this);
             }
         }
     }
 
-    pub fn write_data<W>(&self, wb: &mut W)
-    where
-        W: WriteBatch,
-    {
+    pub fn write_data<W: WriteBatch>(&self, wb: &mut W) {
         if !self.data.is_empty() {
             Self::put(wb, self.version, &self.resource_id, &self.data);
         }
     }
 
-    pub fn write_latest_ptr<W>(&self, wb: &mut W)
-    where
-        W: WriteBatch,
-    {
-        StatePtrLatest::put(wb, &self.resource_id, self.version);
+    pub fn write_latest_ptr<W: WriteBatch>(&self, wb: &mut W) {
+        if !self.data.is_empty() {
+            StatePtrLatest::put(wb, &self.resource_id, self.version);
+        } else {
+            StatePtrLatest::delete(wb, &self.resource_id);
+        }
     }
 
-    pub fn write_rollback_ptr<W>(&self, wb: &mut W, batch_index: u64)
-    where
-        W: WriteBatch,
-    {
-        StatePtrRollback::put(wb, batch_index, &self.resource_id, self.version);
+    pub fn write_rollback_ptr<W: WriteBatch>(&self, wb: &mut W, batch_index: u64) {
+        let version = if self.data.is_empty() { 0 } else { self.version };
+        StatePtrRollback::put(wb, batch_index, &self.resource_id, version);
     }
 
     /// Gets the data for a specific version of a resource.
     ///
     /// Key layout: `version (u64 BE) || resource_id (borsh)`
-    pub fn get<S>(store: &S, version: u64, resource_id: &ResourceId) -> Option<Vec<u8>>
-    where
-        S: ReadStore,
-    {
+    pub fn get<S: ReadStore>(store: &S, version: u64, resource_id: &ResourceId) -> Option<Vec<u8>> {
         let rid = borsh::to_vec(resource_id).expect("failed to serialize ResourceId");
         let key = concat_bytes!(&version.to_be_bytes(), &rid);
         store.get(StateSpace::StateVersion, &key)
@@ -95,10 +85,7 @@ impl StateVersion {
     /// Stores data for a specific version of a resource.
     ///
     /// Key layout: `version (u64 BE) || resource_id (borsh)`
-    pub fn put<W>(wb: &mut W, version: u64, resource_id: &ResourceId, data: &[u8])
-    where
-        W: WriteBatch,
-    {
+    pub fn put<W: WriteBatch>(wb: &mut W, version: u64, resource_id: &ResourceId, data: &[u8]) {
         let rid = borsh::to_vec(resource_id).expect("failed to serialize ResourceId");
         let key = concat_bytes!(&version.to_be_bytes(), &rid);
         wb.put(StateSpace::StateVersion, &key, data);
@@ -107,10 +94,7 @@ impl StateVersion {
     /// Deletes data for a specific version of a resource.
     ///
     /// Key layout: `version (u64 BE) || resource_id (borsh)`
-    pub fn delete<W>(wb: &mut W, version: u64, resource_id: &ResourceId)
-    where
-        W: WriteBatch,
-    {
+    pub fn delete<W: WriteBatch>(wb: &mut W, version: u64, resource_id: &ResourceId) {
         let rid = borsh::to_vec(resource_id).expect("failed to serialize ResourceId");
         let key = concat_bytes!(&version.to_be_bytes(), &rid);
         wb.delete(StateSpace::StateVersion, &key);
