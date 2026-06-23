@@ -2,6 +2,7 @@ use std::{marker::PhantomData, path::Path, sync::Arc};
 
 use rocksdb::{DB, DBIteratorWithThreadMode, Direction, IteratorMode};
 use vprogs_core_smt::{Key, Node, StaleNode, Tree, WriteBatch as SmtWriteBatch};
+use vprogs_storage_canonical_chain::CanonicalChain;
 use vprogs_storage_types::{PrefixIterator, StateSpace, Store};
 
 use crate::{
@@ -12,6 +13,8 @@ use crate::{
 pub struct RocksDbStore<C: Config = DefaultConfig> {
     db: Arc<DB>,
     write_opts: Arc<rocksdb::WriteOptions>,
+    /// In-memory canonical-chain oracle, shared by clones; driven by the restored writer.
+    canonical: CanonicalChain,
     _marker: PhantomData<C>,
 }
 
@@ -33,6 +36,7 @@ impl<C: Config> RocksDbStore<C> {
                 },
             ),
             write_opts: Arc::new(C::write_opts()),
+            canonical: CanonicalChain::new(),
             _marker: PhantomData,
         }
     }
@@ -69,11 +73,14 @@ impl<C: Config> Store for RocksDbStore<C> {
     fn prefix_iter(&self, state_space: StateSpace, prefix: &[u8]) -> PrefixIterator<'_> {
         let cf = self.cf(&state_space);
 
-        // An empty prefix matches every key: full scan (the prefix-seek path mishandles empty).
+        // An empty prefix matches every key: a full forward scan. The CFs carry a fixed-prefix
+        // extractor, so this must opt into total-order seek or iteration stops at the first prefix
+        // boundary instead of spanning the whole column family.
         if prefix.is_empty() {
-            return Box::new(RocksDbPrefixIter {
-                inner: self.db.iterator_cf(cf, IteratorMode::Start),
-            });
+            let mut read_opts = rocksdb::ReadOptions::default();
+            read_opts.set_total_order_seek(true);
+            let iter = self.db.iterator_cf_opt(cf, read_opts, IteratorMode::Start);
+            return Box::new(RocksDbPrefixIter { inner: iter });
         }
 
         let mut read_opts = rocksdb::ReadOptions::default();
@@ -83,6 +90,10 @@ impl<C: Config> Store for RocksDbStore<C> {
         let mode = IteratorMode::From(prefix, Direction::Forward);
         let iter = self.db.iterator_cf_opt(cf, read_opts, mode);
         Box::new(RocksDbPrefixIter { inner: iter })
+    }
+
+    fn canonical_chain(&self) -> CanonicalChain {
+        self.canonical.clone()
     }
 }
 
@@ -137,6 +148,7 @@ impl<C: Config> Clone for RocksDbStore<C> {
         RocksDbStore {
             db: self.db.clone(),
             write_opts: self.write_opts.clone(),
+            canonical: self.canonical.clone(),
             _marker: PhantomData,
         }
     }

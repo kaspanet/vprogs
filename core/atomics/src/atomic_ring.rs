@@ -85,6 +85,39 @@ impl<V> AtomicRing<V> {
         self.with(index, V::clone)
     }
 
+    /// Overwrites the live entry at `index` in place, preserving its tag; a no-op if out of range.
+    /// Single-writer.
+    pub fn replace(&self, index: u64, value: V) {
+        if index < self.base() || index >= self.next_index() {
+            return;
+        }
+        Self::slot(&self.slots.load(), index).store(Some(Arc::new((index, value))));
+    }
+
+    /// Returns an independent ring over the same live range, sharing each entry by `Arc` (per-entry
+    /// copy-on-write). Single-writer.
+    pub fn fork(&self) -> Self {
+        let base = self.base();
+        let tip = self.next_index();
+        let slots = self.slots.load();
+
+        // Copy the slot array, sharing each live entry's Arc with the original.
+        let copy = Self::empty_slots(slots.len());
+        for index in base..tip {
+            if let Some(entry) = Self::slot(&slots, index).load_full() {
+                if entry.0 == index {
+                    Self::slot(&copy, index).store(Some(entry));
+                }
+            }
+        }
+
+        Self {
+            base: AtomicU64::new(base),
+            tip: AtomicU64::new(tip),
+            slots: ArcSwap::from_pointee(copy),
+        }
+    }
+
     /// Drops every entry at index `>= from` (truncating the suffix). Single-writer.
     pub fn truncate_from(&self, from: u64) {
         // Clamp so truncation never raises the tip or drops below the live base.
@@ -195,6 +228,43 @@ mod tests {
         for v in 1..=5u64 {
             assert_eq!(ring.get(v), Some(v));
         }
+    }
+
+    #[test]
+    fn replace_rewrites_a_live_entry_in_place() {
+        let ring = AtomicRing::new(1);
+        ring.push(10u64);
+        ring.push(20);
+        ring.replace(1, 99);
+        assert_eq!(ring.get(1), Some(99));
+        assert_eq!(ring.get(2), Some(20));
+
+        // Out-of-range replaces are no-ops.
+        ring.replace(5, 123);
+        assert_eq!(ring.get(5), None);
+    }
+
+    #[test]
+    fn fork_is_independent_but_shares_entries() {
+        let ring = AtomicRing::new(1);
+        for v in 1..=3u64 {
+            ring.push(v);
+        }
+
+        let fork = ring.fork();
+        assert_eq!(fork.get(1), Some(1));
+        assert_eq!(fork.get(3), Some(3));
+
+        // Mutating the fork leaves the original untouched, and vice versa.
+        fork.replace(2, 222);
+        fork.push(4);
+        ring.replace(1, 111);
+        assert_eq!(ring.get(2), Some(2));
+        assert_eq!(ring.get(4), None);
+        assert_eq!(fork.get(2), Some(222));
+        assert_eq!(fork.get(4), Some(4));
+        assert_eq!(fork.get(1), Some(1));
+        assert_eq!(ring.get(1), Some(111));
     }
 
     #[test]

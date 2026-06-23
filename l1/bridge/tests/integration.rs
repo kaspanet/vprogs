@@ -5,6 +5,7 @@ use vprogs_core_types::Checkpoint;
 use vprogs_l1_bridge::{L1Bridge, L1BridgeConfig, L1Event, RpcOptionalHeader};
 use vprogs_l1_types::{ChainBlockMetadata, ConnectStrategy, L1Transaction, NetworkType};
 use vprogs_node_test_utils::{L1BridgeExt, L1Node};
+use vprogs_storage_canonical_chain::CanonicalWriter;
 
 // Timeout for waiting for events.
 const TIMEOUT: Duration = Duration::from_secs(30);
@@ -99,7 +100,7 @@ async fn test_bridge_syncs_from_specific_block() {
             ChainBlockMetadata { hash: start_from, ..Default::default() },
         )));
 
-    let bridge = L1Bridge::new(config);
+    let bridge = L1Bridge::new(config, CanonicalWriter::new());
 
     let events = bridge.wait_for(TIMEOUT, |e| matches!(e, L1Event::Connected)).await;
     assert_eq!(events.len(), 1);
@@ -140,7 +141,7 @@ async fn test_bridge_catches_up_after_reconnection() {
         .with_connect_strategy(ConnectStrategy::Fallback)
         .with_filter_half_life(Duration::ZERO);
 
-    let bridge1 = L1Bridge::new(config);
+    let bridge1 = L1Bridge::new(config, CanonicalWriter::new());
     bridge1.wait_for(TIMEOUT, |e| matches!(e, L1Event::Connected)).await;
 
     let initial_hashes = node.mine_blocks(3).await;
@@ -177,7 +178,7 @@ async fn test_bridge_catches_up_after_reconnection() {
         .with_filter_half_life(Duration::ZERO)
         .with_tip(Some(checkpoint));
 
-    let bridge2 = L1Bridge::new(config);
+    let bridge2 = L1Bridge::new(config, CanonicalWriter::new());
 
     let events = bridge2
         .wait_for(TIMEOUT, |e| {
@@ -306,6 +307,7 @@ async fn test_reorg_filter_causes_lag() {
             .with_network_type(NetworkType::Simnet)
             .with_connect_strategy(ConnectStrategy::Fallback)
             .with_filter_half_life(Duration::from_secs(3600)),
+        CanonicalWriter::new(),
     );
     let unfiltered = L1Bridge::new(
         L1BridgeConfig::default()
@@ -313,6 +315,7 @@ async fn test_reorg_filter_causes_lag() {
             .with_network_type(NetworkType::Simnet)
             .with_connect_strategy(ConnectStrategy::Fallback)
             .with_filter_half_life(Duration::ZERO),
+        CanonicalWriter::new(),
     );
     // Bridge to node2 for waiting on block processing.
     let node2_bridge = L1Bridge::new(
@@ -321,6 +324,7 @@ async fn test_reorg_filter_causes_lag() {
             .with_network_type(NetworkType::Simnet)
             .with_connect_strategy(ConnectStrategy::Fallback)
             .with_filter_half_life(Duration::ZERO),
+        CanonicalWriter::new(),
     );
 
     // Wait for all bridges to connect.
@@ -419,7 +423,7 @@ async fn setup_node_with_bridge(
         .with_filter_half_life(Duration::ZERO)
         .with_tip(tip);
 
-    let bridge = L1Bridge::new(config);
+    let bridge = L1Bridge::new(config, CanonicalWriter::new());
 
     let events = bridge.wait_for(TIMEOUT, |e| matches!(e, L1Event::Connected)).await;
     assert_eq!(events.len(), 1);

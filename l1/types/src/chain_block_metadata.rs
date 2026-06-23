@@ -8,6 +8,8 @@ use crate::{Hash, SettlementInfo};
 pub struct ChainBlockMetadata {
     /// L1 block hash.
     pub hash: Hash,
+    /// Canonical id of the parent block (the one this block extends); `0` for the first block.
+    pub parent_id: u64,
     /// DAG blue score at this block's position.
     pub blue_score: u64,
     /// DAA score at this block's position.
@@ -39,6 +41,10 @@ pub struct ChainBlockMetadata {
 impl vprogs_core_types::BatchMetadata for ChainBlockMetadata {
     fn block_hash(&self) -> [u8; 32] {
         self.hash.as_bytes()
+    }
+
+    fn parent_id(&self) -> u64 {
+        self.parent_id
     }
 }
 

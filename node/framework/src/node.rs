@@ -6,6 +6,7 @@ use std::{
 use tokio::{runtime::Builder, sync::mpsc};
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_l1_bridge::L1Bridge;
+use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::Scheduler;
 use vprogs_storage_types::Store;
 
@@ -35,8 +36,15 @@ impl<S: Store, P: Processor<S>> Node<S, P> {
         // root and tip are default (index 0), so the bridge starts from genesis.
         let root = (*scheduler.state().root()).clone();
         let tip = (*scheduler.state().last_committed()).clone();
-        let bridge =
-            L1Bridge::new(config.l1_bridge_config.with_root(Some(root)).with_tip(Some(tip)));
+
+        // Restore the canonical-chain writer from the store (replaying committed batch metadata)
+        // and hand it to the bridge to drive in memory alongside the virtual chain.
+        let canonical_writer =
+            scheduler.state().storage().store().canonical_writer::<ChainBlockMetadata>();
+        let bridge = L1Bridge::new(
+            config.l1_bridge_config.with_root(Some(root)).with_tip(Some(tip)),
+            canonical_writer,
+        );
 
         // Create the shutdown latch and the API.
         let shutdown = Arc::new(AtomicAsyncLatch::new());

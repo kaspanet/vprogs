@@ -8565,6 +8565,7 @@ dependencies = [
  "vprogs-core-types",
  "vprogs-l1-types",
  "vprogs-node-test-utils",
+ "vprogs-storage-canonical-chain",
  "workflow-core",
 ]
 
@@ -8880,6 +8881,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-storage-canonical-chain"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "borsh",
+ "vprogs-core-atomics",
+ "vprogs-core-types",
+]
+
+[[package]]
 name = "vprogs-storage-manager"
 version = "0.1.0"
 dependencies = [
@@ -8900,6 +8911,7 @@ dependencies = [
  "vprogs-core-hashing",
  "vprogs-core-smt",
  "vprogs-core-types",
+ "vprogs-storage-canonical-chain",
  "vprogs-storage-types",
 ]
 
@@ -8907,7 +8919,10 @@ dependencies = [
 name = "vprogs-storage-types"
 version = "0.1.0"
 dependencies = [
+ "borsh",
  "vprogs-core-smt",
+ "vprogs-core-types",
+ "vprogs-storage-canonical-chain",
 ]
 
 [[package]]

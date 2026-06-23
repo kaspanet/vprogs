@@ -26,6 +26,7 @@ use kaspa_wrpc_client::prelude::*;
 use tokio::sync::Notify;
 use vprogs_core_types::Checkpoint;
 use vprogs_l1_types::{ChainBlockMetadata, Hash, L1Transaction, L1TransactionCovenantExt};
+use vprogs_storage_canonical_chain::CanonicalWriter;
 use workflow_core::channel::{Channel, MultiplexerChannel};
 
 use crate::{
@@ -42,6 +43,9 @@ pub(crate) struct BridgeWorker {
     client: Arc<KaspaRpcClient>,
     /// Local view of the selected parent chain.
     virtual_chain: VirtualChain,
+    /// Drives the store's canonical-chain oracle in memory (ids assigned here, persisted at
+    /// commit).
+    canonical_writer: CanonicalWriter<ChainBlockMetadata>,
     /// Event queue shared with the bridge consumer.
     queue: Arc<SegQueue<L1Event>>,
     /// Wakes the consumer after pushing an event.
@@ -81,6 +85,7 @@ impl BridgeWorker {
     /// If connection fails, pushes a [`L1Event::Fatal`] and returns immediately.
     pub(crate) async fn spawn(
         config: &L1BridgeConfig,
+        canonical_writer: CanonicalWriter<ChainBlockMetadata>,
         queue: Arc<SegQueue<L1Event>>,
         event_signal: Arc<Notify>,
         shutdown: Arc<Notify>,
@@ -141,6 +146,7 @@ impl BridgeWorker {
         Self {
             client,
             virtual_chain,
+            canonical_writer,
             queue,
             event_signal,
             shutdown,
@@ -455,6 +461,8 @@ impl BridgeWorker {
                 self.advance_lane(&parent_meta, &accepted_transactions, header);
 
             let checkpoint = self.virtual_chain.advance_tip(ChainBlockMetadata {
+                // The current canonical tip is the block this one extends.
+                parent_id: self.canonical_writer.tip(),
                 prev_seq_commit: parent_meta.seq_commit,
                 lane_key: self.lane_key.unwrap_or_default(),
                 prev_timestamp: parent_meta.timestamp,
@@ -466,6 +474,9 @@ impl BridgeWorker {
                 last_settlement,
                 ..ChainBlockMetadata::try_from(header).unwrap()
             });
+
+            // Mirror the new canonical block into the in-memory canonical chain (id assigned here).
+            self.canonical_writer.append(*checkpoint.metadata());
 
             self.push_event(L1Event::ChainBlockAdded {
                 checkpoint,
@@ -529,6 +540,17 @@ impl BridgeWorker {
         let (checkpoint, blue_score_depth) = self.virtual_chain.rollback(num_removed)?;
         self.reorg_filter.record(blue_score_depth);
 
+        // Mirror the rollback in the canonical chain: orphan the removed ids and drop the tip back
+        // to the surviving block. New fork blocks get fresh ids via append (ids are never reused).
+        let orphaned: Vec<u64> = response
+            .removed_chain_block_hashes
+            .iter()
+            .filter_map(|hash| self.canonical_writer.id_of(&hash.as_bytes()))
+            .collect();
+        if let Some(new_tip) = self.canonical_writer.id_of(&checkpoint.metadata().hash.as_bytes()) {
+            self.canonical_writer.reorg(new_tip, &orphaned, &[]);
+        }
+
         log::info!(
             "L1 bridge: reorg detected, {} blocks removed, rolling back to index {} \
              (blue score depth: {}, filter threshold: {:?})",
@@ -549,6 +571,10 @@ impl BridgeWorker {
         let pruning_hash = self.client.get_block_dag_info().await?.pruning_point_hash;
 
         if let Some(new_root) = self.virtual_chain.advance_root(&pruning_hash)? {
+            // Finalize ids below the new root in the canonical chain.
+            if let Some(below) = self.canonical_writer.id_of(&new_root.metadata().hash.as_bytes()) {
+                self.canonical_writer.finalize(below);
+            }
             log::info!(
                 "L1 bridge: pruning point advanced to index {} (hash {})",
                 new_root.index(),

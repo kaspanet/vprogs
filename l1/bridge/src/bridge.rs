@@ -2,6 +2,8 @@ use std::{sync::Arc, thread::JoinHandle};
 
 use crossbeam_queue::SegQueue;
 use tokio::{runtime::Builder, sync::Notify};
+use vprogs_l1_types::ChainBlockMetadata;
+use vprogs_storage_canonical_chain::CanonicalWriter;
 
 use crate::{L1BridgeConfig, L1Event, worker::BridgeWorker};
 
@@ -24,7 +26,10 @@ pub struct L1Bridge {
 impl L1Bridge {
     /// Creates and starts a new bridge. The worker runs on a dedicated thread with its own tokio
     /// runtime, isolated from the caller's runtime.
-    pub fn new(config: L1BridgeConfig) -> Self {
+    pub fn new(
+        config: L1BridgeConfig,
+        canonical_writer: CanonicalWriter<ChainBlockMetadata>,
+    ) -> Self {
         let queue = Arc::new(SegQueue::new());
         let event_signal = Arc::new(Notify::new());
         let shutdown = Arc::new(Notify::new());
@@ -41,7 +46,13 @@ impl L1Bridge {
                     .enable_all()
                     .build()
                     .expect("failed to build tokio runtime")
-                    .block_on(BridgeWorker::spawn(&config, queue, event_signal, shutdown));
+                    .block_on(BridgeWorker::spawn(
+                        &config,
+                        canonical_writer,
+                        queue,
+                        event_signal,
+                        shutdown,
+                    ));
             }
         });
 
