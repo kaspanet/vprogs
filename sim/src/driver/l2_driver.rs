@@ -7,7 +7,7 @@ use kaspa_consensus_core::{
     constants::TX_VERSION_TOCCATA,
     mass::units::ComputeBudget,
     subnets::SubnetworkId,
-    tx::{Transaction, TransactionOutpoint, TransactionQueryResult, TransactionType, UtxoEntry},
+    tx::{Transaction, TransactionOutpoint, TransactionQueryResult, TransactionType},
 };
 use kaspa_hashes::Hash;
 use kaspa_seq_commit::hashing::lane_key;
@@ -26,7 +26,8 @@ use vprogs_zk_aggregate_prover::{AggregateProverConfig, ScheduledBundle, Settlem
 use vprogs_zk_backend_risc0_api::{Backend, ProofType, Receipt};
 use vprogs_zk_backend_risc0_covenant::{Settlement, SettlementDevInput};
 use vprogs_zk_backend_risc0_settler::{
-    CovenantState, bootstrap_redeem, build_dev_settlement, build_settlement, dev_bootstrap_redeem,
+    CovenantState, SettlementMode, bootstrap_redeem, build_settlement_for_mode,
+    dev_bootstrap_redeem,
 };
 use vprogs_zk_backend_risc0_test_suite::{
     batch_aggregator_elf, batch_processor_elf, build_scheduler, dev_mode_enabled,
@@ -150,6 +151,10 @@ pub struct L2Driver {
 
     /// Whether the driver issues settlement transactions.
     settlements_enabled: bool,
+    /// Redeem variant the driver bootstraps and settles against, picked once from the proof mode:
+    /// [`Dev`](SettlementMode::Dev) under `RISC0_DEV_MODE`, else
+    /// [`Production`](SettlementMode::Production).
+    mode: SettlementMode,
     /// Proving-driven settlement mode: prove each bundle and settle it from the bundle's artifact,
     /// instead of the inline (no-prover) dev settlements. Implied by `enable_proving &&
     /// enable_settlements`. With real (CUDA) receipts each bundle settles via the production
@@ -275,6 +280,7 @@ impl L2Driver {
             chain: Vec::new(),
             expected_counter: 0,
             settlements_enabled: config.enable_settlements,
+            mode: if dev_mode_enabled() { SettlementMode::Dev } else { SettlementMode::Production },
             real_e2e,
             proving_ready: !real_e2e,
             init_proving_pending: false,
@@ -544,7 +550,7 @@ impl L2Driver {
         // reject). Both branches share their construction with the production settler
         // (`bootstrap_redeem` / `dev_bootstrap_redeem`) so the first settlement's reconstructed
         // prev redeem matches this UTXO's SPK.
-        let (redeem, spk) = if self.real_e2e && !dev_mode_enabled() {
+        let (redeem, spk) = if self.real_e2e && self.mode == SettlementMode::Production {
             bootstrap_redeem(&self.backend, &self.lane_key)
         } else {
             dev_bootstrap_redeem(&self.lane_key)
@@ -607,8 +613,7 @@ impl L2Driver {
         });
         let continuation_spk = pay_to_script_hash_script(&settlement.next_redeem);
 
-        let covenant_entry =
-            UtxoEntry::new(cov.value, cov.spk.clone(), cov.daa_score, false, Some(cov.covenant_id));
+        let covenant_entry = cov.utxo_entry();
         let (xonly, _) = ctx.keypair.x_only_public_key();
         let address = Address::new(
             Prefix::from(ctx.params.net.network_type()),
@@ -707,19 +712,15 @@ impl L2Driver {
         let (fee_outpoint, fee_entry) = ctx.spendable.first().expect("fee output");
         let cov = self.confirmed.last().expect("covenant").covenant.clone();
 
-        // Build the settlement and its covenant compute budget the same way the production settler
-        // does; the sim only differs in how it funds the fee and submits the tx (mined by its
-        // miner, not the wallet's wRPC client). Under `RISC0_DEV_MODE` the receipt is a stub the
-        // production `OpZkPrecompile` would reject, so settle against the dev redeem (shared
-        // `build_dev_settlement`); a real (CUDA) run settles the production receipt.
-        let built = if dev_mode_enabled() {
-            build_dev_settlement(&self.lane_key, &cov, artifact)
-        } else {
-            build_settlement(&self.backend, &self.lane_key, &cov, artifact)
-        };
+        // Build through the same `mode`-keyed construction the production settler uses; the sim
+        // differs only in funding the fee and mining the tx (no wRPC mempool). Under
+        // `RISC0_DEV_MODE` the receipt is a stub the production `OpZkPrecompile` would
+        // reject, so `mode` is `Dev` (dev redeem); a real (CUDA) run settles the production
+        // receipt.
+        let built =
+            build_settlement_for_mode(self.mode, &self.backend, &self.lane_key, &cov, artifact);
 
-        let covenant_entry =
-            UtxoEntry::new(cov.value, cov.spk.clone(), cov.daa_score, false, Some(cov.covenant_id));
+        let covenant_entry = cov.utxo_entry();
         let (xonly, _) = ctx.keypair.x_only_public_key();
         let address = Address::new(
             Prefix::from(ctx.params.net.network_type()),

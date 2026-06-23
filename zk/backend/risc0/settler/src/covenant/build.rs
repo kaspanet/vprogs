@@ -109,6 +109,23 @@ pub fn dev_bootstrap_redeem(lane_key: &Hash) -> (Vec<u8>, ScriptPublicKey) {
     (redeem, spk)
 }
 
+/// Builds the settlement for one proven bundle in the configured [`SettlementMode`], dispatching to
+/// [`build_settlement`] (production redeem, on-chain `OpZkPrecompile` over the real receipt) or
+/// [`build_dev_settlement`] (dev redeem, chain-anchored seq commit). The single place a settlement
+/// mode selects its builder.
+pub fn build_settlement_for_mode(
+    mode: SettlementMode,
+    backend: &Backend,
+    lane_key: &Hash,
+    cov: &CovenantState,
+    artifact: &SettlementArtifact<Receipt>,
+) -> BuiltSettlement {
+    match mode {
+        SettlementMode::Production => build_settlement(backend, lane_key, cov, artifact),
+        SettlementMode::Dev => build_dev_settlement(lane_key, cov, artifact),
+    }
+}
+
 /// Builds the production settlement for one proven bundle against the live covenant `cov`.
 ///
 /// Asserts the artifact's bounds chain from `cov`; the on-chain script enforces the same, but a

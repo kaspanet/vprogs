@@ -27,7 +27,7 @@ mod worker;
 pub use covenant::{
     BuiltSettlement, CovenantAdvance, CovenantState, DEV_COVENANT_BUDGET, bootstrap_dev_covenant,
     bootstrap_real_covenant, bootstrap_redeem, build_dev_settlement, build_settlement,
-    covenant_from_settlement, dev_bootstrap_redeem,
+    build_settlement_for_mode, covenant_from_settlement, dev_bootstrap_redeem,
 };
 #[cfg(feature = "test-utils")]
 pub use worker::AlternationPacer;

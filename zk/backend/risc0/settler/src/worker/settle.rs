@@ -3,7 +3,7 @@
 
 use std::{collections::HashSet, time::Duration};
 
-use kaspa_consensus_core::tx::{TransactionOutpoint, UtxoEntry};
+use kaspa_consensus_core::tx::TransactionOutpoint;
 use kaspa_rpc_core::RpcError;
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_l1_wallet::Wallet;
@@ -11,10 +11,10 @@ use vprogs_zk_aggregate_prover::SettlementArtifact;
 use vprogs_zk_backend_risc0_api::Receipt;
 
 use super::{
-    config::{SettlementMode, SettlementWorkerConfig},
+    config::SettlementWorkerConfig,
     confirm::{CovenantLiveness, OutpointAt, confirm_outpoint, covenant_liveness},
 };
-use crate::covenant::{CovenantState, build_dev_settlement, build_settlement};
+use crate::covenant::{CovenantState, build_settlement_for_mode};
 
 /// The result of attempting to settle one bundle.
 #[allow(clippy::large_enum_variant)]
@@ -41,13 +41,8 @@ pub(super) async fn settle_one(
 ) -> SettleOutcome {
     // Build the settlement and its covenant compute budget from the bundle's authoritative bounds.
     // Asserts the live covenant agrees before we pay to submit.
-    let built = match cfg.mode {
-        SettlementMode::Production => build_settlement(&cfg.backend, &cfg.lane_key, cov, artifact),
-        SettlementMode::Dev => build_dev_settlement(&cfg.lane_key, cov, artifact),
-    };
-
-    let covenant_entry =
-        UtxoEntry::new(cov.value, cov.spk.clone(), cov.daa_score, false, Some(cov.covenant_id));
+    let built = build_settlement_for_mode(cfg.mode, &cfg.backend, &cfg.lane_key, cov, artifact);
+    let covenant_entry = cov.utxo_entry();
     let wallet = Wallet::new(&cfg.client, &cfg.params, cfg.keypair);
 
     // The node can reject a settlement for a transient reason that funding the fee from a
