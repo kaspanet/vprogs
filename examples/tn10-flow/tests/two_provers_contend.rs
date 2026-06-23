@@ -11,7 +11,6 @@
 
 use std::{collections::HashMap, ops::RangeInclusive, sync::Arc, time::Duration};
 
-use arc_swap::ArcSwapOption;
 use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus_core::{
     config::params::{ForkActivation, Params},
@@ -27,7 +26,7 @@ use kaspa_txscript::pay_to_address_script;
 use kaspa_wrpc_client::prelude::*;
 use secp256k1::Keypair;
 use tempfile::TempDir;
-use tokio::sync::{Mutex, MutexGuard};
+use tokio::sync::{Mutex, MutexGuard, watch};
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_smt::EMPTY_HASH;
 use vprogs_core_test_utils::ResourceIdExt;
@@ -1317,9 +1316,9 @@ async fn spawn_prover(
 
     let queue = daemon::FlowSettlementQueue::new();
     // Each prover follows the same L1 through its own bridge, so each gets its own live settlement
-    // handle: the bridge (writer) publishes settlements it observes (including the competitor's),
+    // channel: the bridge (writer) publishes settlements it observes (including the competitor's),
     // and this prover's settler (reader) reconciles against them.
-    let settlement: Arc<ArcSwapOption<SettlementInfo>> = Arc::new(ArcSwapOption::empty());
+    let (settlement_tx, settlement_rx) = watch::channel(None::<SettlementInfo>);
     let node = daemon::build_proving_node(
         elfs,
         store,
@@ -1331,7 +1330,7 @@ async fn spawn_prover(
             finality_depth: LANE_FINALITY_DEPTH,
             seed_depth: 0,
             start_from,
-            observers: BridgeObservers { tip_daa: None, settlement: Some(settlement.clone()) },
+            observers: BridgeObservers { tip_daa: None, settlement: Some(settlement_tx) },
         },
         ProvingParams {
             covenant_id,
@@ -1357,7 +1356,7 @@ async fn spawn_prover(
             start_from,
             backend,
             mode: SettlementMode::Dev,
-            settlement: Some(settlement),
+            settlement: settlement_rx,
             // Jitter each submission so neither prover deterministically wins the spend race for
             // every range; without it the first-spawned prover lands every settlement. The window
             // is wide relative to the dev proving time so the per-range winner is a

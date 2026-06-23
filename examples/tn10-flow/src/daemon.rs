@@ -17,11 +17,11 @@ use std::{
     sync::{Arc, atomic::AtomicU64},
 };
 
-use arc_swap::ArcSwapOption;
 use kaspa_consensus_core::{network::NetworkId, subnets::SubnetworkId};
 use kaspa_hashes::Hash;
 use kaspa_rpc_core::{GetSeqCommitLaneProofResponse, api::rpc::RpcApi};
 use kaspa_wrpc_client::prelude::KaspaRpcClient;
+use tokio::sync::watch;
 use vprogs_core_atomics::AsyncQueue;
 use vprogs_l1_bridge::L1BridgeConfig;
 use vprogs_l1_types::SettlementInfo;
@@ -63,9 +63,10 @@ pub struct BridgeObservers {
     /// Observer the bridge publishes its latest chain-block DAA score into, for the sync-progress
     /// reporter. `None` disables publishing.
     pub tip_daa: Option<Arc<AtomicU64>>,
-    /// Live handle the bridge publishes the covenant's last settlement into (writer), shared with
-    /// the settler (reader). `None` disables publishing.
-    pub settlement: Option<Arc<ArcSwapOption<SettlementInfo>>>,
+    /// `watch` sender the bridge publishes the covenant's last settlement into (writer); each
+    /// settler holds a [`watch::Receiver`](tokio::sync::watch::Receiver) subscribed to it
+    /// (reader). `None` disables publishing.
+    pub settlement: Option<watch::Sender<Option<SettlementInfo>>>,
 }
 
 /// Everything the bridge needs to follow our lane on the remote node.

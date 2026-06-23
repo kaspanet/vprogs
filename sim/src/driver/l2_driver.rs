@@ -1,18 +1,23 @@
-use std::sync::{Arc, Mutex, Weak};
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex, Weak},
+};
 
 use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus::consensus::Consensus;
 use kaspa_consensus_core::{
     api::ConsensusApi,
+    config::params::Params,
     constants::TX_VERSION_TOCCATA,
     mass::units::ComputeBudget,
     subnets::SubnetworkId,
-    tx::{Transaction, TransactionOutpoint, TransactionQueryResult, TransactionType},
+    tx::{Transaction, TransactionOutpoint, TransactionQueryResult, TransactionType, UtxoEntry},
 };
 use kaspa_hashes::Hash;
 use kaspa_seq_commit::hashing::lane_key;
 use kaspa_txscript::standard::pay_to_script_hash_script;
 use rand::{Rng, SeedableRng, rngs::StdRng};
+use secp256k1::Keypair;
 use tempfile::TempDir;
 use vprogs_core_atomics::{AsyncQueue, AtomicAsyncLatch};
 use vprogs_core_smt::EMPTY_HASH;
@@ -26,8 +31,8 @@ use vprogs_zk_aggregate_prover::{AggregateProverConfig, ScheduledBundle, Settlem
 use vprogs_zk_backend_risc0_api::{Backend, ProofType, Receipt};
 use vprogs_zk_backend_risc0_covenant::{Settlement, SettlementDevInput};
 use vprogs_zk_backend_risc0_settler::{
-    CovenantState, SettlementMode, bootstrap_redeem, build_settlement_for_mode,
-    dev_bootstrap_redeem,
+    BuiltSettlement, CovenantState, FeeSource, FundedSettlement, SettlementMode, bootstrap_redeem,
+    build_settlement_for_mode, dev_bootstrap_redeem,
 };
 use vprogs_zk_backend_risc0_test_suite::{
     batch_aggregator_elf, batch_processor_elf, build_scheduler, dev_mode_enabled,
@@ -691,7 +696,7 @@ impl L2Driver {
             self.outstanding_batches = self.outstanding_batches.saturating_sub(bundle.batches());
             bundle.wait_artifact_published().await;
             if let Some(artifact) = bundle.artifact() {
-                return self.build_settlement_tx(ctx, &artifact);
+                return self.build_settlement_tx(ctx, &artifact).await;
             }
             // No-op bundle: nothing to settle. Stop once the backlog drains below a full bundle.
             if self.outstanding_batches < self.bundle_size {
@@ -704,40 +709,44 @@ impl L2Driver {
     /// confirmed covenant, chains to the artifact's `new_state` / `new_lane_tip`, funds the fee
     /// from a spendable coinbase, and records it pending. Returns the single settlement
     /// transaction.
-    fn build_settlement_tx(
+    ///
+    /// Construction and funding go through the same shared primitives the production settler uses -
+    /// [`build_settlement_for_mode`] and a [`FeeSource`] ([`SimFeeSource`]) - so the two paths
+    /// differ only in the funding source (the sim's in-memory spendable set vs a wRPC fetch) and
+    /// the fact that the sim mines the tx itself, confirming it via [`Self::observe_covenant`]
+    /// rather than awaiting a settlement watch.
+    async fn build_settlement_tx(
         &mut self,
         ctx: &ProduceCtx<'_>,
         artifact: &SettlementArtifact<Receipt>,
     ) -> Vec<Transaction> {
-        let (fee_outpoint, fee_entry) = ctx.spendable.first().expect("fee output");
         let cov = self.confirmed.last().expect("covenant").covenant.clone();
 
-        // Build through the same `mode`-keyed construction the production settler uses; the sim
-        // differs only in funding the fee and mining the tx (no wRPC mempool). Under
-        // `RISC0_DEV_MODE` the receipt is a stub the production `OpZkPrecompile` would
-        // reject, so `mode` is `Dev` (dev redeem); a real (CUDA) run settles the production
-        // receipt.
+        // Build through the same `mode`-keyed construction the production settler uses. Under
+        // `RISC0_DEV_MODE` the receipt is a stub the production `OpZkPrecompile` would reject, so
+        // `mode` is `Dev` (dev redeem); a real (CUDA) run settles the production receipt.
         let built =
             build_settlement_for_mode(self.mode, &self.backend, &self.lane_key, &cov, artifact);
 
-        let covenant_entry = cov.utxo_entry();
         let (xonly, _) = ctx.keypair.x_only_public_key();
         let address = Address::new(
             Prefix::from(ctx.params.net.network_type()),
             Version::PubKey,
             &xonly.serialize(),
         );
-        let tx = build::settlement_transaction(build::SettlementTx {
-            settlement_tx: built.transaction,
-            covenant_entry,
-            covenant_compute_budget: built.compute_budget,
-            fee_outpoint: *fee_outpoint,
-            fee_entry: fee_entry.clone(),
+        // The single miner never contends for a fee output, so nothing is ever excluded and the
+        // first spendable always funds the fee.
+        let funder = SimFeeSource {
+            spendable: &ctx.spendable,
             keypair: ctx.keypair,
-            address: &address,
+            address,
             params: ctx.params,
-        });
-        let txid = tx.id();
+        };
+        let funded = funder
+            .fund(&built, cov.utxo_entry(), &HashSet::new())
+            .await
+            .expect("no spendable output to fund the settlement fee");
+        let txid = funded.tx.id();
 
         self.pending = Some(PendingCovenant {
             txid,
@@ -748,7 +757,7 @@ impl L2Driver {
             next: built.advance.apply(txid, 0),
         });
         self.stats.lock().unwrap().settlements_issued += 1;
-        vec![tx]
+        vec![funded.tx]
     }
 
     /// Issues a seeded number of lane-activity transactions, each writing the tracked resource,
@@ -790,6 +799,45 @@ impl L2Driver {
                 })
             })
             .collect()
+    }
+}
+
+/// The sim's [`FeeSource`]: funds a settlement fee from the miner's in-memory spendable set, the
+/// counterpart to the production `WalletFeeSource` (which fetches over wRPC). Built per block over
+/// the [`ProduceCtx`]'s spendable snapshot, key, and address. The sim is the sole miner, so there
+/// is no fee contention: nothing is ever excluded and the first spendable output always funds the
+/// fee.
+struct SimFeeSource<'a> {
+    /// Matured outpoints (with entries) the miner can spend this block, in insertion order.
+    spendable: &'a [(TransactionOutpoint, UtxoEntry)],
+    /// The miner's key, signing the fee input.
+    keypair: Keypair,
+    /// The miner's address, receiving the fee change.
+    address: Address,
+    /// Consensus params (mass calc, network prefix).
+    params: &'a Params,
+}
+
+impl FeeSource for SimFeeSource<'_> {
+    async fn fund(
+        &self,
+        built: &BuiltSettlement,
+        covenant_entry: UtxoEntry,
+        excluded: &HashSet<TransactionOutpoint>,
+    ) -> Option<FundedSettlement> {
+        let (fee_outpoint, fee_entry) =
+            self.spendable.iter().find(|(outpoint, _)| !excluded.contains(outpoint))?;
+        let tx = build::settlement_transaction(build::SettlementTx {
+            settlement_tx: built.transaction.clone(),
+            covenant_entry,
+            covenant_compute_budget: built.compute_budget,
+            fee_outpoint: *fee_outpoint,
+            fee_entry: fee_entry.clone(),
+            keypair: self.keypair,
+            address: &self.address,
+            params: self.params,
+        });
+        Some(FundedSettlement { tx, fee_outpoint: *fee_outpoint })
     }
 }
 

@@ -1,5 +1,8 @@
-//! Confirming covenant UTXOs on chain: polling the node's utxoindex for an outpoint at its P2SH
-//! address, and the liveness check that disambiguates an orphan rejection.
+//! Residual RPC confirmation helpers: polling the node's utxoindex for an outpoint at its P2SH
+//! address. Steady-state settlement confirmation is notification-based (see
+//! [`Settler::settle_one`](crate::settle::Settler) awaiting the bridge's settlement `watch`); these
+//! helpers cover only the two cases that have no watch event: the one-time fresh-deploy bootstrap
+//! confirm, and the single liveness poll that disambiguates an orphan rejection.
 
 use std::time::Duration;
 
@@ -13,8 +16,6 @@ use kaspa_txscript::standard::extract_script_pub_key_address;
 use kaspa_wrpc_client::prelude::KaspaRpcClient;
 use vprogs_core_atomics::AtomicAsyncLatch;
 
-use crate::covenant::CovenantState;
-
 /// Poll cadence and ceiling for waiting on a covenant UTXO to confirm on chain.
 const CONFIRM_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const CONFIRM_MAX_POLLS: u32 = 300;
@@ -23,15 +24,15 @@ const CONFIRM_MAX_POLLS: u32 = 300;
 /// tracks them by their script address; confirming one means finding `outpoint` among the unspent
 /// UTXOs the node reports for `spk`'s address.
 #[derive(Clone, Copy)]
-pub(super) struct OutpointAt<'a> {
+pub struct OutpointAt<'a> {
     /// The covenant UTXO's P2SH SPK, whose address the utxoindex is queried by.
-    pub(super) spk: &'a ScriptPublicKey,
+    pub spk: &'a ScriptPublicKey,
     /// The outpoint being awaited at that SPK.
-    pub(super) outpoint: TransactionOutpoint,
+    pub outpoint: TransactionOutpoint,
 }
 
 /// The result of polling for a covenant UTXO to confirm on chain.
-pub(super) enum ConfirmOutcome {
+enum ConfirmOutcome {
     /// The outpoint appeared as an unspent UTXO; carries its block DAA score.
     Confirmed(u64),
     /// `shutdown` opened while polling.
@@ -42,7 +43,7 @@ pub(super) enum ConfirmOutcome {
 
 /// Whether the covenant (state) outpoint is still spendable, the disambiguator for an orphan
 /// rejection (which names no input).
-pub(super) enum CovenantLiveness {
+pub(crate) enum CovenantLiveness {
     /// Still an unspent UTXO: the orphan is a transient fee-UTXO problem, retry with another.
     Unspent,
     /// Gone from the UTXO set: a competitor confirmed-spent it, so the bundle is superseded.
@@ -54,7 +55,7 @@ pub(super) enum CovenantLiveness {
 /// Polls the node up to `max_polls` times for `target`'s outpoint at its P2SH address, returning
 /// its block DAA score on success. Resolves to [`Shutdown`](ConfirmOutcome::Shutdown) if `shutdown`
 /// opens mid-poll, or [`Timeout`](ConfirmOutcome::Timeout) if the outpoint never appears.
-pub(super) async fn poll_outpoint(
+async fn poll_outpoint(
     client: &KaspaRpcClient,
     params: &Params,
     target: OutpointAt<'_>,
@@ -89,9 +90,8 @@ pub(super) async fn poll_outpoint(
 
 /// Polls the node until `target`'s outpoint appears at its P2SH address, returning its block DAA
 /// score. Returns `None` if `shutdown` opens while polling. Panics on timeout: a UTXO this worker
-/// bootstrapped or settled itself must confirm, so its absence is a liveness failure worth
-/// surfacing.
-pub(super) async fn confirm_outpoint(
+/// bootstrapped itself must confirm, so its absence is a liveness failure worth surfacing.
+pub(crate) async fn confirm_outpoint(
     client: &KaspaRpcClient,
     params: &Params,
     target: OutpointAt<'_>,
@@ -106,18 +106,18 @@ pub(super) async fn confirm_outpoint(
     }
 }
 
-/// Polls whether the covenant (state) outpoint is still an unspent UTXO on chain, to disambiguate
-/// an orphan rejection: a settlement orphans on a missing input, and the covenant outpoint goes
-/// missing exactly when a competitor confirmed-spent it (a superseded bundle), whereas a transient
-/// fee orphan leaves the covenant live (a fee UTXO to swap). A single poll suffices: the covenant
-/// was confirmed before we built against it, so its absence now is a spend, not a confirmation lag.
-pub(super) async fn covenant_liveness(
+/// Polls whether the covenant (state) `target` outpoint is still an unspent UTXO on chain, to
+/// disambiguate an orphan rejection: a settlement orphans on a missing input, and the covenant
+/// outpoint goes missing exactly when a competitor confirmed-spent it (a superseded bundle),
+/// whereas a transient fee orphan leaves the covenant live (a fee UTXO to swap). A single poll
+/// suffices: the covenant was confirmed before we built against it, so its absence now is a spend,
+/// not a confirmation lag.
+pub(crate) async fn covenant_liveness(
     client: &KaspaRpcClient,
     params: &Params,
-    cov: &CovenantState,
+    target: OutpointAt<'_>,
     shutdown: &AtomicAsyncLatch,
 ) -> CovenantLiveness {
-    let target = OutpointAt { spk: &cov.spk, outpoint: cov.outpoint };
     match poll_outpoint(client, params, target, shutdown, 1).await {
         ConfirmOutcome::Confirmed(_) => CovenantLiveness::Unspent,
         ConfirmOutcome::Timeout => CovenantLiveness::Spent,

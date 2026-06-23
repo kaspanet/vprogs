@@ -1,15 +1,15 @@
 //! Static configuration for the settlement worker: which redeem variant it settles against and the
 //! per-worker handles and knobs that aren't carried per bundle.
 
+use std::ops::Range;
 #[cfg(feature = "test-utils")]
 use std::time::Duration;
-use std::{ops::Range, sync::Arc};
 
-use arc_swap::ArcSwapOption;
 use kaspa_consensus_core::config::params::Params;
 use kaspa_hashes::Hash;
 use kaspa_wrpc_client::prelude::KaspaRpcClient;
 use secp256k1::Keypair;
+use tokio::sync::watch;
 #[cfg(feature = "test-utils")]
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_l1_types::SettlementInfo;
@@ -48,10 +48,10 @@ pub struct SettlementWorkerConfig {
     pub backend: Backend,
     /// Whether to settle against the production or dev redeem variant.
     pub mode: SettlementMode,
-    /// Live handle the bridge publishes the covenant's last on-chain settlement into. The settler
-    /// reads it to detect a competitor advancing the covenant past its optimistic in-memory tip.
-    /// `None` disables live reconciliation.
-    pub settlement: Option<Arc<ArcSwapOption<SettlementInfo>>>,
+    /// `watch` receiver the bridge publishes the covenant's last on-chain settlement into. It is
+    /// the settler's confirmation source (`settle_one` awaits a change on it) and the settler also
+    /// borrows it to detect a competitor advancing the covenant past its optimistic in-memory tip.
+    pub settlement: watch::Receiver<Option<SettlementInfo>>,
     /// Optional millisecond window to jitter each submission by. `None` submits immediately (the
     /// production default). Multiple provers settling one covenant race to spend the same
     /// outpoint; without jitter the same prover's submission deterministically wins every

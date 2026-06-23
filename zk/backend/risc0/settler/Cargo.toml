@@ -10,7 +10,6 @@ version.workspace = true
 test-utils = []
 
 [dependencies]
-arc-swap.workspace                         = true
 kaspa-addresses.workspace                  = true
 kaspa-consensus-core.workspace             = true
 kaspa-hashes.workspace                     = true

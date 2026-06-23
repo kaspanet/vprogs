@@ -32,7 +32,6 @@ use std::{
     time::Duration,
 };
 
-use arc_swap::ArcSwapOption;
 use kaspa_consensus_core::{
     config::params::Params,
     constants::{SOMPI_PER_KASPA, TX_VERSION_TOCCATA},
@@ -44,10 +43,12 @@ use kaspa_hashes::Hash;
 use kaspa_seq_commit::hashing::lane_key;
 use kaspa_wrpc_client::prelude::*;
 use secp256k1::Keypair;
+use tokio::sync::watch;
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_smt::EMPTY_HASH;
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId};
+use vprogs_l1_types::SettlementInfo;
 use vprogs_l1_wallet::{Wallet, encode_activity_payload};
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_settler::{
@@ -367,9 +368,9 @@ async fn start_settlement(
     // The bridge replays from the pruning point and publishes its tip DAA here; a reporter task
     // polls it against the bootstrap's DAA to log how far the catch-up has progressed.
     let tip_daa = Arc::new(AtomicU64::new(0));
-    // Live settlement handle: the bridge (writer) publishes the covenant's last on-chain
+    // Live settlement channel: the bridge (writer) publishes the covenant's last on-chain
     // settlement here; the settler (reader) detects a competitor advancing past its in-memory tip.
-    let settlement = Arc::new(ArcSwapOption::empty());
+    let (settlement_tx, settlement_rx) = watch::channel(None::<SettlementInfo>);
     let node = daemon::build_proving_node(
         elfs,
         store,
@@ -380,10 +381,7 @@ async fn start_settlement(
             covenant_id,
             params,
             start_from,
-            BridgeObservers {
-                tip_daa: Some(tip_daa.clone()),
-                settlement: Some(settlement.clone()),
-            },
+            BridgeObservers { tip_daa: Some(tip_daa.clone()), settlement: Some(settlement_tx) },
         ),
         ProvingParams {
             covenant_id,
@@ -414,7 +412,7 @@ async fn start_settlement(
             start_from,
             backend,
             mode,
-            settlement: Some(settlement),
+            settlement: settlement_rx,
             submit_jitter: None,
             #[cfg(feature = "test-utils")]
             alternation: None,

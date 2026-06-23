@@ -6,7 +6,6 @@ use std::{
     time::Duration,
 };
 
-use arc_swap::ArcSwapOption;
 use crossbeam_queue::SegQueue;
 use futures::{FutureExt, select_biased};
 use kaspa_consensus_core::subnets::SubnetworkId;
@@ -24,7 +23,7 @@ use kaspa_seq_commit::{
     types::{LaneTipInput, MergesetContext},
 };
 use kaspa_wrpc_client::prelude::*;
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::{Notify, mpsc, watch};
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_types::{AccessMetadata, ChainSink, SchedulerTransaction};
 use vprogs_l1_types::{
@@ -84,9 +83,10 @@ pub(crate) struct BridgeWorker<T: ChainSink<ChainBlockMetadata, L1Transaction>> 
     start_from: Option<Hash>,
     /// Optional observer the latest chain-block DAA score is published to, for catch-up progress.
     tip_daa: Option<Arc<AtomicU64>>,
-    /// Optional live handle the tip's last covenant settlement is published to (the bridge is the
-    /// single writer), so the settler can read the canonical settlement without a confirm RTT.
-    settlement: Option<Arc<ArcSwapOption<SettlementInfo>>>,
+    /// Optional `watch` sender the tip's last covenant settlement is published to (the bridge is
+    /// the single writer), so each settler can read the canonical settlement without a confirm
+    /// RTT.
+    settlement: Option<watch::Sender<Option<SettlementInfo>>>,
 }
 
 impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
@@ -295,10 +295,13 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         }
     }
 
-    /// Publishes the tip's last covenant settlement to the optional live handle.
+    /// Publishes the tip's last covenant settlement to the optional `watch` sender, so each settler
+    /// reads the canonical settlement. Sends `None` when the tip carries no settlement yet or a
+    /// reorg has rolled past the last one. `send_replace` never errors, even with no live
+    /// receivers, so a settler-less bridge still publishes harmlessly.
     fn publish_settlement(&self) {
-        if let Some(observer) = &self.settlement {
-            observer.store(self.tip_metadata().last_settlement.map(Arc::new));
+        if let Some(sender) = &self.settlement {
+            sender.send_replace(self.tip_metadata().last_settlement);
         }
     }
 
