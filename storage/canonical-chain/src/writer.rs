@@ -61,7 +61,7 @@ impl<M: BatchMetadata> CanonicalWriter<M> {
         let mut id = tip;
         loop {
             canonical.push(id);
-            let parent = writer.metadata(id).parent_id();
+            let parent = writer.metadata(id).expect("walked id is live").parent_id();
             if parent < writer.base || parent >= id {
                 break;
             }
@@ -130,6 +130,16 @@ impl<M: BatchMetadata> CanonicalWriter<M> {
         self.chain.snapshot()
     }
 
+    /// Returns the metadata stored for `id`, or `None` if it is finalized or never assigned.
+    pub fn metadata(&self, id: u64) -> Option<&M> {
+        self.entries.get(id.checked_sub(self.base)? as usize)
+    }
+
+    /// Returns the metadata of the current canonical tip, or `None` if the chain is empty.
+    pub fn tip_metadata(&self) -> Option<&M> {
+        self.metadata(self.tip())
+    }
+
     /// Appends `metadata` at the next dense id and returns it (the log's allocate primitive).
     fn push(&mut self, metadata: M) -> u64 {
         let id = self.base + self.entries.len() as u64;
@@ -141,11 +151,6 @@ impl<M: BatchMetadata> CanonicalWriter<M> {
     /// The highest live id, or `None` if the log is empty.
     fn last_id(&self) -> Option<u64> {
         (!self.entries.is_empty()).then(|| self.base + self.entries.len() as u64 - 1)
-    }
-
-    /// The metadata stored at `id` (which must be live).
-    fn metadata(&self, id: u64) -> &M {
-        &self.entries[(id - self.base) as usize]
     }
 }
 
@@ -247,5 +252,24 @@ mod tests {
         let oracle = writer.chain();
         writer.append(10u64);
         assert!(oracle.is_canonical(1), "the handed-out oracle shares the writer's chain");
+    }
+
+    #[test]
+    fn metadata_is_retrievable_by_id() {
+        let mut writer = CanonicalWriter::new();
+        writer.append(10u64);
+        writer.append(20u64);
+
+        assert_eq!(writer.metadata(1), Some(&10u64));
+        assert_eq!(writer.metadata(2), Some(&20u64));
+        assert_eq!(writer.metadata(3), None, "unassigned id");
+        assert_eq!(writer.metadata(0), None, "pre-genesis sentinel");
+        assert_eq!(writer.tip_metadata(), Some(&20u64), "tip metadata is the highest canonical id");
+    }
+
+    #[test]
+    fn tip_metadata_is_none_when_empty() {
+        let writer: CanonicalWriter<u64> = CanonicalWriter::new();
+        assert_eq!(writer.tip_metadata(), None);
     }
 }
