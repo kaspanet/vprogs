@@ -144,13 +144,8 @@ pub async fn run(
             let latest = *cfg.settlement.borrow();
             if let Some(s) = latest {
                 if s.new_state != cov.state && s.daa_score.get() >= cov.daa_score {
-                    *cov = covenant_from_settlement(
-                        cfg.mode,
-                        &cfg.backend,
-                        &cfg.lane_key,
-                        &cov,
-                        &s,
-                    );
+                    *cov =
+                        covenant_from_settlement(cfg.mode, &cfg.backend, &cfg.lane_key, &cov, &s);
                     log::info!(
                         "settlement-worker: adopted external settlement {} (covenant advanced to daa {})",
                         s.tx_id,
