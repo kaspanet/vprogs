@@ -102,10 +102,21 @@ version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d69eab57e8d2663efa5c63135b2af4f396d66424f88954c21104125ab6b3e6bc"
 dependencies = [
- "ark-ec",
- "ark-ff",
- "ark-r1cs-std",
- "ark-std",
+ "ark-ec 0.5.0",
+ "ark-ff 0.5.0",
+ "ark-r1cs-std 0.5.0",
+ "ark-std 0.5.0",
+]
+
+[[package]]
+name = "ark-bn254"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6bc66f96ebe2a17a499475b4f94791d379817592ef494171586967ffdc6f95db"
+dependencies = [
+ "ark-ec 0.6.0",
+ "ark-ff 0.6.0",
+ "ark-std 0.6.0",
 ]
 
 [[package]]
@@ -116,17 +127,43 @@ checksum = "1e0c292754729c8a190e50414fd1a37093c786c709899f29c9f7daccecfa855e"
 dependencies = [
  "ahash",
  "ark-crypto-primitives-macros",
- "ark-ec",
- "ark-ff",
- "ark-relations",
- "ark-serialize",
- "ark-snark",
- "ark-std",
+ "ark-ec 0.5.0",
+ "ark-ff 0.5.0",
+ "ark-relations 0.5.1",
+ "ark-serialize 0.5.0",
+ "ark-snark 0.5.1",
+ "ark-std 0.5.0",
  "blake2",
  "derivative",
  "digest",
  "fnv",
  "merlin",
+ "rayon",
+ "sha2",
+]
+
+[[package]]
+name = "ark-crypto-primitives"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "31b3409b1846fe459d19c95df039481575ac6d5842ae63858ad75cc31219bfc1"
+dependencies = [
+ "ahash",
+ "ark-crypto-primitives-macros",
+ "ark-ec 0.6.0",
+ "ark-ff 0.6.0",
+ "ark-r1cs-std 0.6.0",
+ "ark-relations 0.6.0",
+ "ark-serialize 0.6.0",
+ "ark-snark 0.6.0",
+ "ark-std 0.6.0",
+ "blake2",
+ "blake3",
+ "derivative",
+ "digest",
+ "fnv",
+ "merlin",
+ "num-bigint 0.4.6",
  "rayon",
  "sha2",
 ]
@@ -149,14 +186,36 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "43d68f2d516162846c1238e755a7c4d131b892b70cc70c471a8e3ca3ed818fce"
 dependencies = [
  "ahash",
- "ark-ff",
- "ark-poly",
- "ark-serialize",
- "ark-std",
+ "ark-ff 0.5.0",
+ "ark-poly 0.5.0",
+ "ark-serialize 0.5.0",
+ "ark-std 0.5.0",
  "educe",
  "fnv",
  "hashbrown 0.15.5",
  "itertools 0.13.0",
+ "num-bigint 0.4.6",
+ "num-integer",
+ "num-traits",
+ "rayon",
+ "zeroize",
+]
+
+[[package]]
+name = "ark-ec"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8352a2b2aedf6ba2cc38f7520fc51191d518dde96175c729af19f2d059f191c4"
+dependencies = [
+ "ahash",
+ "ark-ff 0.6.0",
+ "ark-poly 0.6.0",
+ "ark-serialize 0.6.0",
+ "ark-std 0.6.0",
+ "educe",
+ "fnv",
+ "hashbrown 0.17.0",
+ "itertools 0.14.0",
  "num-bigint 0.4.6",
  "num-integer",
  "num-traits",
@@ -170,10 +229,10 @@ version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a177aba0ed1e0fbb62aa9f6d0502e9b46dad8c2eab04c14258a1212d2557ea70"
 dependencies = [
- "ark-ff-asm",
- "ark-ff-macros",
- "ark-serialize",
- "ark-std",
+ "ark-ff-asm 0.5.0",
+ "ark-ff-macros 0.5.0",
+ "ark-serialize 0.5.0",
+ "ark-std 0.5.0",
  "arrayvec",
  "digest",
  "educe",
@@ -186,10 +245,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "ark-ff"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f7a806ac6c8307b929df4645776290a50ee2aac754ad09d8bdf73391309e43af"
+dependencies = [
+ "ark-ff-asm 0.6.0",
+ "ark-ff-macros 0.6.0",
+ "ark-serialize 0.6.0",
+ "ark-std 0.6.0",
+ "digest",
+ "educe",
+ "num-bigint 0.4.6",
+ "num-traits",
+ "rayon",
+ "zeroize",
+]
+
+[[package]]
 name = "ark-ff-asm"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "62945a2f7e6de02a31fe400aa489f0e0f5b2502e69f95f853adb82a96c7a6b60"
+dependencies = [
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "ark-ff-asm"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1479009684adc073dff49a1025d3a7065b317a9ead25aaaca38cdc70058ba8a2"
 dependencies = [
  "quote",
  "syn 2.0.117",
@@ -209,18 +296,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "ark-ff-macros"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a0691ed21ef00ef89c1e9bda832eba493dda3ec2f8d892fb25b705f73f06bb8"
+dependencies = [
+ "num-bigint 0.4.6",
+ "num-traits",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "ark-groth16"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88f1d0f3a534bb54188b8dcc104307db6c56cdae574ddc3212aec0625740fc7e"
 dependencies = [
- "ark-crypto-primitives",
- "ark-ec",
- "ark-ff",
- "ark-poly",
- "ark-relations",
- "ark-serialize",
- "ark-std",
+ "ark-crypto-primitives 0.5.0",
+ "ark-ec 0.5.0",
+ "ark-ff 0.5.0",
+ "ark-poly 0.5.0",
+ "ark-relations 0.5.1",
+ "ark-serialize 0.5.0",
+ "ark-std 0.5.0",
+ "rayon",
+]
+
+[[package]]
+name = "ark-groth16"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a293328aa422e65527e285614ce5d1dceb0bd7b8b18d18b1b63191ee1f74cb41"
+dependencies = [
+ "ark-crypto-primitives 0.6.0",
+ "ark-ec 0.6.0",
+ "ark-ff 0.6.0",
+ "ark-poly 0.6.0",
+ "ark-relations 0.6.0",
+ "ark-serialize 0.6.0",
+ "ark-snark 0.6.0",
+ "ark-std 0.6.0",
  "rayon",
 ]
 
@@ -231,12 +348,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "579305839da207f02b89cd1679e50e67b4331e2f9294a57693e5051b7703fe27"
 dependencies = [
  "ahash",
- "ark-ff",
- "ark-serialize",
- "ark-std",
+ "ark-ff 0.5.0",
+ "ark-serialize 0.5.0",
+ "ark-std 0.5.0",
  "educe",
  "fnv",
  "hashbrown 0.15.5",
+ "rayon",
+]
+
+[[package]]
+name = "ark-poly"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75f55af10b672002b8d953e230282c51206842e20e5791a94432219b4201de5c"
+dependencies = [
+ "ahash",
+ "ark-ff 0.6.0",
+ "ark-serialize 0.6.0",
+ "ark-std 0.6.0",
+ "educe",
+ "fnv",
+ "hashbrown 0.17.0",
  "rayon",
 ]
 
@@ -246,11 +379,29 @@ version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "941551ef1df4c7a401de7068758db6503598e6f01850bdb2cfdb614a1f9dbea1"
 dependencies = [
- "ark-ec",
- "ark-ff",
- "ark-relations",
- "ark-std",
+ "ark-ec 0.5.0",
+ "ark-ff 0.5.0",
+ "ark-relations 0.5.1",
+ "ark-std 0.5.0",
  "educe",
+ "num-bigint 0.4.6",
+ "num-integer",
+ "num-traits",
+ "tracing",
+]
+
+[[package]]
+name = "ark-r1cs-std"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "291f1c6628bfcac79b0dc2adbe401aa9100e2e96daa971645e0b18fc94de9a98"
+dependencies = [
+ "ark-ec 0.6.0",
+ "ark-ff 0.6.0",
+ "ark-relations 0.6.0",
+ "ark-std 0.6.0",
+ "educe",
+ "itertools 0.14.0",
  "num-bigint 0.4.6",
  "num-integer",
  "num-traits",
@@ -263,10 +414,27 @@ version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec46ddc93e7af44bcab5230937635b06fb5744464dd6a7e7b083e80ebd274384"
 dependencies = [
- "ark-ff",
- "ark-std",
+ "ark-ff 0.5.0",
+ "ark-std 0.5.0",
  "tracing",
- "tracing-subscriber",
+ "tracing-subscriber 0.2.25",
+]
+
+[[package]]
+name = "ark-relations"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe4c11c797a64b8a23e22bf4e77bf582ac27bb21395e3183a9a506ba2561e9f9"
+dependencies = [
+ "ark-ff 0.6.0",
+ "ark-poly 0.6.0",
+ "ark-serialize 0.6.0",
+ "ark-std 0.6.0",
+ "foldhash 0.1.5",
+ "indexmap 2.14.0",
+ "rayon",
+ "tracing",
+ "tracing-subscriber 0.3.23",
 ]
 
 [[package]]
@@ -275,12 +443,26 @@ version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f4d068aaf107ebcd7dfb52bc748f8030e0fc930ac8e360146ca54c1203088f7"
 dependencies = [
- "ark-serialize-derive",
- "ark-std",
+ "ark-serialize-derive 0.5.0",
+ "ark-std 0.5.0",
  "arrayvec",
  "digest",
  "num-bigint 0.4.6",
  "rayon",
+]
+
+[[package]]
+name = "ark-serialize"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a74dd304fd536fb95d0a328e72be759209cc496a9da094c5bc56e5fea4f9e86b"
+dependencies = [
+ "ark-serialize-derive 0.6.0",
+ "ark-std 0.6.0",
+ "digest",
+ "num-bigint 0.4.6",
+ "rayon",
+ "serde_with",
 ]
 
 [[package]]
@@ -295,15 +477,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "ark-serialize-derive"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f153690697a2b91e5e1251ff98411ee5371500a111a0fd317a70e588eb300f9"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "ark-snark"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d368e2848c2d4c129ce7679a7d0d2d612b6a274d3ea6a13bad4445d61b381b88"
 dependencies = [
- "ark-ff",
- "ark-relations",
- "ark-serialize",
- "ark-std",
+ "ark-ff 0.5.0",
+ "ark-relations 0.5.1",
+ "ark-serialize 0.5.0",
+ "ark-std 0.5.0",
+]
+
+[[package]]
+name = "ark-snark"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5bdb461d2be9b2bd6f303c79fffc89f5858790a7b4d33257bca3178e2c071fb9"
+dependencies = [
+ "ark-ff 0.6.0",
+ "ark-relations 0.6.0",
+ "ark-serialize 0.6.0",
+ "ark-std 0.6.0",
 ]
 
 [[package]]
@@ -311,6 +516,17 @@ name = "ark-std"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "246a225cc6131e9ee4f24619af0f19d67761fff15d7ccc22e42b80846e69449a"
+dependencies = [
+ "num-traits",
+ "rand 0.8.5",
+ "rayon",
+]
+
+[[package]]
+name = "ark-std"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "367c9c827ed431bff6868b7aa926e05b16eb46603cc8b6e768e4a5553fa1d155"
 dependencies = [
  "num-traits",
  "rand 0.8.5",
@@ -1041,16 +1257,6 @@ dependencies = [
 
 [[package]]
 name = "darling"
-version = "0.21.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9cdf337090841a411e2a7f3deb9187445851f91b309c0c0a29e05f74a00a48c0"
-dependencies = [
- "darling_core 0.21.3",
- "darling_macro 0.21.3",
-]
-
-[[package]]
-name = "darling"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "25ae13da2f202d56bd7f91c25fba009e7717a1e4a1cc98a76d844b65ae912e9d"
@@ -1064,20 +1270,6 @@ name = "darling_core"
 version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d00b9596d185e565c2207a0b01f8bd1a135483d02d9b7b0a54b11da8d53412e"
-dependencies = [
- "fnv",
- "ident_case",
- "proc-macro2",
- "quote",
- "strsim",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "darling_core"
-version = "0.21.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1247195ecd7e3c85f83c8d2a366e4210d588e802133e1e355180a9870b517ea4"
 dependencies = [
  "fnv",
  "ident_case",
@@ -1107,17 +1299,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc34b93ccb385b40dc71c6fceac4b2ad23662c7eeb248cf10d529b7e055b6ead"
 dependencies = [
  "darling_core 0.20.11",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "darling_macro"
-version = "0.21.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d38308df82d1080de0afee5d069fa14b0326a88c14f15c5ccda35b4a6c414c81"
-dependencies = [
- "darling_core 0.21.3",
  "quote",
  "syn 2.0.117",
 ]
@@ -1988,6 +2169,9 @@ name = "hashbrown"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4f467dd6dccf739c208452f8014c75c18bb8301b050ad1cfb27153803edb0f51"
+dependencies = [
+ "allocator-api2",
+]
 
 [[package]]
 name = "hashlink"
@@ -2503,9 +2687,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "kaspa-addresses"
+version = "2.0.1"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=master#98a4ccd8d200853787f227bd4536ac540cf34957"
+dependencies = [
+ "borsh",
+ "js-sys",
+ "serde",
+ "smallvec",
+ "thiserror 2.0.18",
+ "wasm-bindgen",
+ "workflow-log",
+ "workflow-wasm",
+]
+
+[[package]]
 name = "kaspa-consensus-client"
-version = "1.1.0"
-source = "git+https://github.com/biryukovmaxim/rusty-kaspa?branch=zk-rollup-covenant-example-rpc-lane-proof#a5652ff71b2b74444cd651949113afe7f4ff5440"
+version = "2.0.1"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=master#98a4ccd8d200853787f227bd4536ac540cf34957"
 dependencies = [
  "ahash",
  "borsh",
@@ -2514,12 +2713,12 @@ dependencies = [
  "hex",
  "itertools 0.13.0",
  "js-sys",
- "kaspa-addresses",
- "kaspa-consensus-core",
- "kaspa-hashes",
- "kaspa-math",
- "kaspa-txscript",
- "kaspa-utils",
+ "kaspa-addresses 2.0.1",
+ "kaspa-consensus-core 2.0.1",
+ "kaspa-hashes 2.0.1",
+ "kaspa-math 2.0.1",
+ "kaspa-txscript 2.0.1",
+ "kaspa-utils 2.0.1",
  "kaspa-wasm-core",
  "rand 0.8.5",
  "secp256k1",
@@ -2547,15 +2746,15 @@ dependencies = [
  "getrandom 0.2.17",
  "itertools 0.13.0",
  "js-sys",
- "kaspa-addresses",
- "kaspa-core",
- "kaspa-hashes",
- "kaspa-math",
- "kaspa-merkle",
- "kaspa-muhash",
- "kaspa-smt",
- "kaspa-txscript-errors",
- "kaspa-utils",
+ "kaspa-addresses 1.1.0",
+ "kaspa-core 1.1.0",
+ "kaspa-hashes 1.1.0",
+ "kaspa-math 1.1.0",
+ "kaspa-merkle 1.1.0",
+ "kaspa-muhash 1.1.0",
+ "kaspa-smt 1.1.0",
+ "kaspa-txscript-errors 1.1.0",
+ "kaspa-utils 1.1.0",
  "rand 0.8.5",
  "secp256k1",
  "serde",
@@ -2571,19 +2770,58 @@ dependencies = [
 ]
 
 [[package]]
+name = "kaspa-consensus-core"
+version = "2.0.1"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=master#98a4ccd8d200853787f227bd4536ac540cf34957"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "bitflags 2.11.1",
+ "borsh",
+ "cfg-if",
+ "faster-hex",
+ "futures-util",
+ "getrandom 0.2.17",
+ "itertools 0.13.0",
+ "js-sys",
+ "kaspa-addresses 2.0.1",
+ "kaspa-core 2.0.1",
+ "kaspa-hashes 2.0.1",
+ "kaspa-math 2.0.1",
+ "kaspa-merkle 2.0.1",
+ "kaspa-muhash 2.0.1",
+ "kaspa-smt 2.0.1",
+ "kaspa-txscript-errors 2.0.1",
+ "kaspa-utils 2.0.1",
+ "rand 0.8.5",
+ "secp256k1",
+ "serde",
+ "serde-value",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "smallvec",
+ "thiserror 2.0.18",
+ "wasm-bindgen",
+ "workflow-core",
+ "workflow-log",
+ "workflow-serializer",
+ "workflow-wasm",
+]
+
+[[package]]
 name = "kaspa-consensus-notify"
-version = "1.1.0"
-source = "git+https://github.com/biryukovmaxim/rusty-kaspa?branch=zk-rollup-covenant-example-rpc-lane-proof#a5652ff71b2b74444cd651949113afe7f4ff5440"
+version = "2.0.1"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=master#98a4ccd8d200853787f227bd4536ac540cf34957"
 dependencies = [
  "async-channel 2.5.0",
  "cfg-if",
  "derive_more 0.99.20",
  "futures",
- "kaspa-consensus-core",
- "kaspa-core",
- "kaspa-hashes",
+ "kaspa-consensus-core 2.0.1",
+ "kaspa-core 2.0.1",
+ "kaspa-hashes 2.0.1",
  "kaspa-notify",
- "kaspa-utils",
+ "kaspa-utils 2.0.1",
  "log",
  "paste",
  "thiserror 2.0.18",
@@ -2592,18 +2830,18 @@ dependencies = [
 
 [[package]]
 name = "kaspa-consensus-wasm"
-version = "1.1.0"
-source = "git+https://github.com/biryukovmaxim/rusty-kaspa?branch=zk-rollup-covenant-example-rpc-lane-proof#a5652ff71b2b74444cd651949113afe7f4ff5440"
+version = "2.0.1"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=master#98a4ccd8d200853787f227bd4536ac540cf34957"
 dependencies = [
  "cfg-if",
  "faster-hex",
  "js-sys",
- "kaspa-addresses",
+ "kaspa-addresses 2.0.1",
  "kaspa-consensus-client",
- "kaspa-consensus-core",
- "kaspa-hashes",
- "kaspa-txscript",
- "kaspa-utils",
+ "kaspa-consensus-core 2.0.1",
+ "kaspa-hashes 2.0.1",
+ "kaspa-txscript 2.0.1",
+ "kaspa-utils 2.0.1",
  "rand 0.8.5",
  "secp256k1",
  "serde",
@@ -2636,6 +2874,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "kaspa-core"
+version = "2.0.1"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=master#98a4ccd8d200853787f227bd4536ac540cf34957"
+dependencies = [
+ "anyhow",
+ "cfg-if",
+ "ctrlc",
+ "downcast",
+ "futures-util",
+ "log",
+ "log4rs",
+ "num_cpus",
+ "thiserror 2.0.18",
+ "tokio",
+ "triggered",
+ "wasm-bindgen",
+ "workflow-log",
+]
+
+[[package]]
 name = "kaspa-hashes"
 version = "1.1.0"
 source = "git+https://github.com/biryukovmaxim/rusty-kaspa?branch=zk-rollup-covenant-example-rpc-lane-proof#a5652ff71b2b74444cd651949113afe7f4ff5440"
@@ -2645,8 +2903,27 @@ dependencies = [
  "borsh",
  "cc",
  "faster-hex",
+ "kaspa-utils 1.1.0",
+ "keccak",
+ "serde",
+ "sha2",
+ "sha2-const-stable",
+ "wasm-bindgen",
+ "zerocopy",
+]
+
+[[package]]
+name = "kaspa-hashes"
+version = "2.0.1"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=master#98a4ccd8d200853787f227bd4536ac540cf34957"
+dependencies = [
+ "blake2b_simd",
+ "blake3",
+ "borsh",
+ "cc",
+ "faster-hex",
  "js-sys",
- "kaspa-utils",
+ "kaspa-utils 2.0.1",
  "keccak",
  "serde",
  "sha2",
@@ -2658,17 +2935,17 @@ dependencies = [
 
 [[package]]
 name = "kaspa-index-core"
-version = "1.1.0"
-source = "git+https://github.com/biryukovmaxim/rusty-kaspa?branch=zk-rollup-covenant-example-rpc-lane-proof#a5652ff71b2b74444cd651949113afe7f4ff5440"
+version = "2.0.1"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=master#98a4ccd8d200853787f227bd4536ac540cf34957"
 dependencies = [
  "async-channel 2.5.0",
  "async-trait",
  "derive_more 0.99.20",
  "futures",
- "kaspa-consensus-core",
- "kaspa-hashes",
+ "kaspa-consensus-core 2.0.1",
+ "kaspa-hashes 2.0.1",
  "kaspa-notify",
- "kaspa-utils",
+ "kaspa-utils 2.0.1",
  "log",
  "paste",
  "serde",
@@ -2684,7 +2961,27 @@ dependencies = [
  "borsh",
  "faster-hex",
  "js-sys",
- "kaspa-utils",
+ "kaspa-utils 1.1.0",
+ "malachite-base 0.9.1",
+ "malachite-nz 0.9.1",
+ "serde",
+ "serde-wasm-bindgen",
+ "thiserror 2.0.18",
+ "wasm-bindgen",
+ "workflow-core",
+ "workflow-log",
+ "workflow-wasm",
+]
+
+[[package]]
+name = "kaspa-math"
+version = "2.0.1"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=master#98a4ccd8d200853787f227bd4536ac540cf34957"
+dependencies = [
+ "borsh",
+ "faster-hex",
+ "js-sys",
+ "kaspa-utils 2.0.1",
  "malachite-base 0.9.1",
  "malachite-nz 0.9.1",
  "serde",
@@ -2701,15 +2998,23 @@ name = "kaspa-merkle"
 version = "1.1.0"
 source = "git+https://github.com/biryukovmaxim/rusty-kaspa?branch=zk-rollup-covenant-example-rpc-lane-proof#a5652ff71b2b74444cd651949113afe7f4ff5440"
 dependencies = [
- "kaspa-hashes",
+ "kaspa-hashes 1.1.0",
+]
+
+[[package]]
+name = "kaspa-merkle"
+version = "2.0.1"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=master#98a4ccd8d200853787f227bd4536ac540cf34957"
+dependencies = [
+ "kaspa-hashes 2.0.1",
 ]
 
 [[package]]
 name = "kaspa-mining-errors"
-version = "1.1.0"
-source = "git+https://github.com/biryukovmaxim/rusty-kaspa?branch=zk-rollup-covenant-example-rpc-lane-proof#a5652ff71b2b74444cd651949113afe7f4ff5440"
+version = "2.0.1"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=master#98a4ccd8d200853787f227bd4536ac540cf34957"
 dependencies = [
- "kaspa-consensus-core",
+ "kaspa-consensus-core 2.0.1",
  "thiserror 2.0.18",
 ]
 
@@ -2718,16 +3023,27 @@ name = "kaspa-muhash"
 version = "1.1.0"
 source = "git+https://github.com/biryukovmaxim/rusty-kaspa?branch=zk-rollup-covenant-example-rpc-lane-proof#a5652ff71b2b74444cd651949113afe7f4ff5440"
 dependencies = [
- "kaspa-hashes",
- "kaspa-math",
+ "kaspa-hashes 1.1.0",
+ "kaspa-math 1.1.0",
+ "rand_chacha 0.3.1",
+ "serde",
+]
+
+[[package]]
+name = "kaspa-muhash"
+version = "2.0.1"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=master#98a4ccd8d200853787f227bd4536ac540cf34957"
+dependencies = [
+ "kaspa-hashes 2.0.1",
+ "kaspa-math 2.0.1",
  "rand_chacha 0.3.1",
  "serde",
 ]
 
 [[package]]
 name = "kaspa-notify"
-version = "1.1.0"
-source = "git+https://github.com/biryukovmaxim/rusty-kaspa?branch=zk-rollup-covenant-example-rpc-lane-proof#a5652ff71b2b74444cd651949113afe7f4ff5440"
+version = "2.0.1"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=master#98a4ccd8d200853787f227bd4536ac540cf34957"
 dependencies = [
  "async-channel 2.5.0",
  "async-trait",
@@ -2737,13 +3053,13 @@ dependencies = [
  "futures-util",
  "indexmap 2.14.0",
  "itertools 0.13.0",
- "kaspa-addresses",
- "kaspa-consensus-core",
- "kaspa-core",
- "kaspa-hashes",
- "kaspa-txscript",
- "kaspa-txscript-errors",
- "kaspa-utils",
+ "kaspa-addresses 2.0.1",
+ "kaspa-consensus-core 2.0.1",
+ "kaspa-core 2.0.1",
+ "kaspa-hashes 2.0.1",
+ "kaspa-txscript 2.0.1",
+ "kaspa-txscript-errors 2.0.1",
+ "kaspa-utils 2.0.1",
  "log",
  "parking_lot",
  "paste",
@@ -2758,8 +3074,8 @@ dependencies = [
 
 [[package]]
 name = "kaspa-rpc-core"
-version = "1.1.0"
-source = "git+https://github.com/biryukovmaxim/rusty-kaspa?branch=zk-rollup-covenant-example-rpc-lane-proof#a5652ff71b2b74444cd651949113afe7f4ff5440"
+version = "2.0.1"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=master#98a4ccd8d200853787f227bd4536ac540cf34957"
 dependencies = [
  "async-channel 2.5.0",
  "async-trait",
@@ -2770,26 +3086,25 @@ dependencies = [
  "faster-hex",
  "hex",
  "js-sys",
- "kaspa-addresses",
+ "kaspa-addresses 2.0.1",
  "kaspa-consensus-client",
- "kaspa-consensus-core",
+ "kaspa-consensus-core 2.0.1",
  "kaspa-consensus-notify",
  "kaspa-consensus-wasm",
- "kaspa-core",
- "kaspa-hashes",
+ "kaspa-core 2.0.1",
+ "kaspa-hashes 2.0.1",
  "kaspa-index-core",
- "kaspa-math",
+ "kaspa-math 2.0.1",
  "kaspa-mining-errors",
  "kaspa-notify",
  "kaspa-rpc-macros",
- "kaspa-txscript",
- "kaspa-utils",
+ "kaspa-txscript 2.0.1",
+ "kaspa-utils 2.0.1",
  "log",
  "paste",
  "rand 0.8.5",
  "serde",
  "serde-wasm-bindgen",
- "serde_nested_with",
  "smallvec",
  "thiserror 2.0.18",
  "uuid 1.23.1",
@@ -2801,8 +3116,8 @@ dependencies = [
 
 [[package]]
 name = "kaspa-rpc-macros"
-version = "1.1.0"
-source = "git+https://github.com/biryukovmaxim/rusty-kaspa?branch=zk-rollup-covenant-example-rpc-lane-proof#a5652ff71b2b74444cd651949113afe7f4ff5440"
+version = "2.0.1"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=master#98a4ccd8d200853787f227bd4536ac540cf34957"
 dependencies = [
  "convert_case 0.6.0",
  "proc-macro-error",
@@ -2814,12 +3129,12 @@ dependencies = [
 
 [[package]]
 name = "kaspa-seq-commit"
-version = "1.1.0"
-source = "git+https://github.com/biryukovmaxim/rusty-kaspa?branch=zk-rollup-covenant-example-rpc-lane-proof#a5652ff71b2b74444cd651949113afe7f4ff5440"
+version = "2.0.1"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=master#98a4ccd8d200853787f227bd4536ac540cf34957"
 dependencies = [
- "kaspa-hashes",
- "kaspa-merkle",
- "kaspa-smt",
+ "kaspa-hashes 2.0.1",
+ "kaspa-merkle 2.0.1",
+ "kaspa-smt 2.0.1",
  "thiserror 2.0.18",
 ]
 
@@ -2829,7 +3144,18 @@ version = "1.1.0"
 source = "git+https://github.com/biryukovmaxim/rusty-kaspa?branch=zk-rollup-covenant-example-rpc-lane-proof#a5652ff71b2b74444cd651949113afe7f4ff5440"
 dependencies = [
  "blake3",
- "kaspa-hashes",
+ "kaspa-hashes 1.1.0",
+ "thiserror 2.0.18",
+ "zerocopy",
+]
+
+[[package]]
+name = "kaspa-smt"
+version = "2.0.1"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=master#98a4ccd8d200853787f227bd4536ac540cf34957"
+dependencies = [
+ "blake3",
+ "kaspa-hashes 2.0.1",
  "thiserror 2.0.18",
  "zerocopy",
 ]
@@ -2839,12 +3165,12 @@ name = "kaspa-txscript"
 version = "1.1.0"
 source = "git+https://github.com/biryukovmaxim/rusty-kaspa?branch=zk-rollup-covenant-example-rpc-lane-proof#a5652ff71b2b74444cd651949113afe7f4ff5440"
 dependencies = [
- "ark-bn254",
- "ark-ec",
- "ark-groth16",
- "ark-relations",
- "ark-serialize",
- "ark-snark",
+ "ark-bn254 0.5.0",
+ "ark-ec 0.5.0",
+ "ark-groth16 0.5.0",
+ "ark-relations 0.5.1",
+ "ark-serialize 0.5.0",
+ "ark-snark 0.5.1",
  "blake2b_simd",
  "blake3",
  "borsh",
@@ -2854,11 +3180,53 @@ dependencies = [
  "hexplay",
  "indexmap 2.14.0",
  "itertools 0.13.0",
- "kaspa-addresses",
- "kaspa-consensus-core",
- "kaspa-hashes",
- "kaspa-txscript-errors",
- "kaspa-utils",
+ "kaspa-addresses 1.1.0",
+ "kaspa-consensus-core 1.1.0",
+ "kaspa-hashes 1.1.0",
+ "kaspa-txscript-errors 1.1.0",
+ "kaspa-utils 1.1.0",
+ "log",
+ "parking_lot",
+ "rand 0.8.5",
+ "risc0-binfmt",
+ "risc0-circuit-recursion",
+ "risc0-core",
+ "risc0-zkp",
+ "secp256k1",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "sha2",
+ "smallvec",
+ "thiserror 2.0.18",
+ "wasm-bindgen",
+ "workflow-wasm",
+]
+
+[[package]]
+name = "kaspa-txscript"
+version = "2.0.1"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=master#98a4ccd8d200853787f227bd4536ac540cf34957"
+dependencies = [
+ "ark-bn254 0.6.0",
+ "ark-ec 0.6.0",
+ "ark-groth16 0.6.0",
+ "ark-relations 0.6.0",
+ "ark-serialize 0.6.0",
+ "ark-snark 0.6.0",
+ "blake2b_simd",
+ "blake3",
+ "borsh",
+ "cfg-if",
+ "faster-hex",
+ "hexplay",
+ "indexmap 2.14.0",
+ "itertools 0.13.0",
+ "kaspa-addresses 2.0.1",
+ "kaspa-consensus-core 2.0.1",
+ "kaspa-hashes 2.0.1",
+ "kaspa-txscript-errors 2.0.1",
+ "kaspa-utils 2.0.1",
  "log",
  "parking_lot",
  "rand 0.8.5",
@@ -2883,7 +3251,18 @@ version = "1.1.0"
 source = "git+https://github.com/biryukovmaxim/rusty-kaspa?branch=zk-rollup-covenant-example-rpc-lane-proof#a5652ff71b2b74444cd651949113afe7f4ff5440"
 dependencies = [
  "borsh",
- "kaspa-hashes",
+ "kaspa-hashes 1.1.0",
+ "secp256k1",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "kaspa-txscript-errors"
+version = "2.0.1"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=master#98a4ccd8d200853787f227bd4536ac540cf34957"
+dependencies = [
+ "borsh",
+ "kaspa-hashes 2.0.1",
  "secp256k1",
  "thiserror 2.0.18",
 ]
@@ -2907,6 +3286,28 @@ dependencies = [
  "sha2",
  "smallvec",
  "thiserror 2.0.18",
+ "uuid 1.23.1",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "kaspa-utils"
+version = "2.0.1"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=master#98a4ccd8d200853787f227bd4536ac540cf34957"
+dependencies = [
+ "async-channel 2.5.0",
+ "borsh",
+ "cfg-if",
+ "faster-hex",
+ "ipnet",
+ "itertools 0.13.0",
+ "log",
+ "once_cell",
+ "parking_lot",
+ "serde",
+ "sha2",
+ "smallvec",
+ "thiserror 2.0.18",
  "triggered",
  "uuid 1.23.1",
  "wasm-bindgen",
@@ -2914,8 +3315,8 @@ dependencies = [
 
 [[package]]
 name = "kaspa-wasm-core"
-version = "1.1.0"
-source = "git+https://github.com/biryukovmaxim/rusty-kaspa?branch=zk-rollup-covenant-example-rpc-lane-proof#a5652ff71b2b74444cd651949113afe7f4ff5440"
+version = "2.0.1"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=master#98a4ccd8d200853787f227bd4536ac540cf34957"
 dependencies = [
  "faster-hex",
  "hexplay",
@@ -2926,17 +3327,17 @@ dependencies = [
 
 [[package]]
 name = "kaspa-wrpc-client"
-version = "1.1.0"
-source = "git+https://github.com/biryukovmaxim/rusty-kaspa?branch=zk-rollup-covenant-example-rpc-lane-proof#a5652ff71b2b74444cd651949113afe7f4ff5440"
+version = "2.0.1"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=master#98a4ccd8d200853787f227bd4536ac540cf34957"
 dependencies = [
- "async-std",
+ "async-lock",
  "async-trait",
  "borsh",
  "cfg-if",
  "futures",
  "js-sys",
- "kaspa-addresses",
- "kaspa-consensus-core",
+ "kaspa-addresses 2.0.1",
+ "kaspa-consensus-core 2.0.1",
  "kaspa-consensus-wasm",
  "kaspa-notify",
  "kaspa-rpc-core",
@@ -3417,6 +3818,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a5b0c77c1b780822bc749a33e39aeb2c07584ab93332303babeabb645298a76e"
 
 [[package]]
+name = "nu-ansi-term"
+version = "0.50.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
+dependencies = [
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "num-bigint"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3856,28 +4266,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "version_check",
-]
-
-[[package]]
-name = "proc-macro-error-attr2"
-version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96de42df36bb9bba5542fe9f1a054b8cc87e172759a1868aa05c1f3acc89dfc5"
-dependencies = [
- "proc-macro2",
- "quote",
-]
-
-[[package]]
-name = "proc-macro-error2"
-version = "2.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11ec05c52be0a07b08061f7dd003e7d7092e0472bc731b4af7bb1ef876109802"
-dependencies = [
- "proc-macro-error-attr2",
- "proc-macro2",
- "quote",
- "syn 2.0.117",
 ]
 
 [[package]]
@@ -4538,11 +4926,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc57e76bb87193d154ac5ee6ee352fbd7edabddab36f02a81f40a048e5ca14f9"
 dependencies = [
  "anyhow",
- "ark-bn254",
- "ark-ec",
- "ark-ff",
- "ark-groth16",
- "ark-serialize",
+ "ark-bn254 0.5.0",
+ "ark-ec 0.5.0",
+ "ark-ff 0.5.0",
+ "ark-groth16 0.5.0",
+ "ark-serialize 0.5.0",
  "bytemuck",
  "cfg-if",
  "hex",
@@ -5030,17 +5418,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_nested_with"
-version = "0.2.5"
-source = "git+https://github.com/murar8/serde_nested_with?tag=0.2.6#ee200a4978ae4cc7da5469af0212431b0f8919a1"
-dependencies = [
- "darling 0.21.3",
- "proc-macro-error2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
 name = "serde_spanned"
 version = "0.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5132,6 +5509,15 @@ name = "sha2-const-stable"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f179d4e11094a893b82fff208f74d448a7512f99f5a0acbd5c679b705f83ed9"
+
+[[package]]
+name = "sharded-slab"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
+dependencies = [
+ "lazy_static",
+]
 
 [[package]]
 name = "shared_child"
@@ -5444,6 +5830,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "thread_local"
+version = "1.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f60246a4944f24f6e018aa17cdeffb7818b76356965d03b07d6a9886e8962185"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "time"
 version = "0.3.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5716,12 +6111,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "tracing-log"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee855f1f400bd0e5c02d150ae5de3840039a3f54b025156404e34c23c03f47c3"
+dependencies = [
+ "log",
+ "once_cell",
+ "tracing-core",
+]
+
+[[package]]
 name = "tracing-subscriber"
 version = "0.2.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e0d2eaa99c3c2e41547cfa109e910a68ea03823cccad4a0525dcbc9b01e8c71"
 dependencies = [
  "tracing-core",
+]
+
+[[package]]
+name = "tracing-subscriber"
+version = "0.3.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
+dependencies = [
+ "nu-ansi-term",
+ "sharded-slab",
+ "smallvec",
+ "thread_local",
+ "tracing-core",
+ "tracing-log",
 ]
 
 [[package]]
@@ -5951,6 +6371,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "vprogs-core-atomics"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "crossbeam-queue",
  "futures",
  "tokio",
@@ -5967,6 +6388,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-core-hashing"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "sha2",
+]
+
+[[package]]
 name = "vprogs-core-macros"
 version = "0.1.0"
 dependencies = [
@@ -5976,13 +6405,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-core-merkle-tree"
+version = "0.1.0"
+dependencies = [
+ "vprogs-core-hashing",
+]
+
+[[package]]
 name = "vprogs-core-smt"
 version = "0.1.0"
 dependencies = [
- "blake3",
  "tap",
  "vprogs-core-codec",
+ "vprogs-core-hashing",
  "vprogs-core-types",
+ "zerocopy",
 ]
 
 [[package]]
@@ -5991,7 +6428,6 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "rkyv",
- "tap",
  "vprogs-core-codec",
  "zerocopy",
 ]
@@ -6001,10 +6437,13 @@ name = "vprogs-l1-types"
 version = "0.1.0"
 dependencies = [
  "borsh",
- "kaspa-consensus-core",
- "kaspa-hashes",
+ "kaspa-consensus-core 2.0.1",
+ "kaspa-hashes 2.0.1",
  "kaspa-rpc-core",
+ "kaspa-txscript 2.0.1",
  "kaspa-wrpc-client",
+ "vprogs-core-types",
+ "zerocopy",
 ]
 
 [[package]]
@@ -6033,7 +6472,6 @@ name = "vprogs-scheduling-scheduler"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
- "blake3",
  "borsh",
  "crossbeam-deque",
  "crossbeam-queue",
@@ -6042,17 +6480,21 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "vprogs-core-atomics",
+ "vprogs-core-hashing",
  "vprogs-core-macros",
  "vprogs-core-smt",
  "vprogs-core-types",
  "vprogs-scheduling-execution-workers",
  "vprogs-state-batch-metadata",
  "vprogs-state-metadata",
+ "vprogs-state-proof-receipt",
  "vprogs-state-ptr-latest",
  "vprogs-state-ptr-rollback",
  "vprogs-state-version",
+ "vprogs-storage-canonical-chain",
  "vprogs-storage-manager",
  "vprogs-storage-types",
+ "zerocopy",
 ]
 
 [[package]]
@@ -6072,6 +6514,15 @@ dependencies = [
  "vprogs-core-smt",
  "vprogs-core-types",
  "vprogs-storage-types",
+]
+
+[[package]]
+name = "vprogs-state-proof-receipt"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "vprogs-storage-types",
+ "zerocopy",
 ]
 
 [[package]]
@@ -6107,6 +6558,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-storage-canonical-chain"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "vprogs-core-atomics",
+ "vprogs-core-types",
+]
+
+[[package]]
 name = "vprogs-storage-manager"
 version = "0.1.0"
 dependencies = [
@@ -6120,23 +6580,26 @@ dependencies = [
 name = "vprogs-storage-types"
 version = "0.1.0"
 dependencies = [
+ "borsh",
  "vprogs-core-smt",
+ "vprogs-core-types",
+ "vprogs-storage-canonical-chain",
 ]
 
 [[package]]
 name = "vprogs-zk-abi"
 version = "0.1.0"
 dependencies = [
- "blake3",
  "borsh",
- "kaspa-consensus-core",
- "kaspa-hashes",
+ "kaspa-consensus-core 2.0.1",
+ "kaspa-hashes 2.0.1",
  "kaspa-rpc-core",
  "kaspa-seq-commit",
- "kaspa-smt",
+ "kaspa-smt 2.0.1",
  "tap",
  "thiserror 2.0.18",
  "vprogs-core-codec",
+ "vprogs-core-hashing",
  "vprogs-core-smt",
  "vprogs-core-types",
  "vprogs-l1-types",
@@ -6150,8 +6613,11 @@ dependencies = [
 name = "vprogs-zk-backend-risc0-api"
 version = "0.1.0"
 dependencies = [
+ "blake2b_simd",
  "risc0-zkvm",
  "vprogs-core-codec",
+ "vprogs-core-hashing",
+ "vprogs-core-merkle-tree",
  "vprogs-zk-abi",
 ]
 
@@ -6161,8 +6627,8 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "k256",
- "kaspa-consensus-core",
- "kaspa-txscript",
+ "kaspa-consensus-core 1.1.0",
+ "kaspa-txscript 1.1.0",
  "rand 0.8.5",
  "risc0-binfmt",
  "risc0-zkos-v1compat",
@@ -7270,3 +7736,8 @@ dependencies = [
  "log",
  "simd-adler32",
 ]
+
+[[patch.unused]]
+name = "serde_nested_with"
+version = "0.2.5"
+source = "git+https://github.com/murar8/serde_nested_with?tag=0.2.6#ee200a4978ae4cc7da5469af0212431b0f8919a1"
