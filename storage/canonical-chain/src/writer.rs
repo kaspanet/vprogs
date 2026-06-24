@@ -7,6 +7,18 @@ use vprogs_core_types::BatchMetadata;
 
 use crate::{chain::CanonicalChain, view::View};
 
+/// Outcome of [`CanonicalWriter::append`]: the block's id and whether it was freshly allocated.
+///
+/// `is_new` is `false` when an existing id was reused (a block returning after a reorg); its
+/// retained state can then be revived rather than re-executed.
+#[derive(Debug, Clone, Copy)]
+pub struct Appended {
+    /// Canonical id of the appended block.
+    pub id: u64,
+    /// `true` if a fresh id was allocated; `false` if a returning block reused its existing id.
+    pub is_new: bool,
+}
+
 /// Single-owner write/management handle for the canonical chain, held by the L1 bridge.
 ///
 /// It is the append-only batch-metadata log: ids are dense from `base`, with a `block_hash -> id`
@@ -73,21 +85,23 @@ impl<M: BatchMetadata> CanonicalWriter<M> {
         writer
     }
 
-    /// Ingests `metadata` as the next canonical batch and returns its id, or returns the existing
-    /// id if its block was already seen.
-    pub fn append(&mut self, metadata: M) -> u64 {
+    /// Ingests `metadata` as a canonical block, returning its [`Appended`] outcome.
+    pub fn append(&mut self, metadata: M) -> Appended {
         if let Some(id) = self.id_of(&metadata.block_hash()) {
-            return id;
+            // Returning block: re-canonicalize it.
+            if id > self.chain.tip() {
+                self.chain.append(id);
+            }
+            return Appended { id, is_new: false };
         }
         let id = self.push(metadata);
         self.chain.append(id);
-        id
+        Appended { id, is_new: true }
     }
 
-    /// Applies a reorg over already-allocated ids: `new_tip` becomes the tip, `orphaned` ids leave
-    /// the chain and `recanonical` ids (including `new_tip`) join it.
-    pub fn reorg(&mut self, new_tip: u64, orphaned: &[u64], recanonical: &[u64]) {
-        self.chain.reorg(new_tip, orphaned, recanonical);
+    /// Rolls the canonical chain back to `new_tip`, orphaning every id above it.
+    pub fn rollback(&mut self, new_tip: u64) {
+        self.chain.rollback(new_tip);
     }
 
     /// Finalizes ids below `below`: the chain reads them as canonical and their log entries drop.
@@ -215,9 +229,9 @@ mod tests {
     #[test]
     fn append_assigns_monotonic_ids_and_canonicalizes() {
         let mut writer = CanonicalWriter::new();
-        assert_eq!(writer.append(10u64), 1);
-        assert_eq!(writer.append(20u64), 2);
-        assert_eq!(writer.append(30u64), 3);
+        assert_eq!(writer.append(10u64).id, 1);
+        assert_eq!(writer.append(20u64).id, 2);
+        assert_eq!(writer.append(30u64).id, 3);
 
         assert_eq!(writer.tip(), 3);
         assert!(writer.is_canonical_block(&20u64.block_hash()));
@@ -228,19 +242,22 @@ mod tests {
     fn appending_a_known_block_dedups_to_its_id() {
         let mut writer = CanonicalWriter::new();
         let first = writer.append(10u64);
+        assert!(first.is_new, "a fresh block is new");
         writer.append(20u64);
-        assert_eq!(writer.append(10u64), first, "same block returns its existing id");
+        let again = writer.append(10u64);
+        assert_eq!(again.id, first.id, "same block returns its existing id");
+        assert!(!again.is_new, "a re-appended block is not new");
         assert_eq!(writer.tip(), 2, "no new id was allocated");
     }
 
     #[test]
-    fn reorg_orphans_the_losing_block() {
+    fn rollback_orphans_blocks_above_new_tip() {
         let mut writer = CanonicalWriter::new();
         writer.append(10u64);
         writer.append(20u64);
         writer.append(30u64);
 
-        writer.reorg(1, &[2, 3], &[]);
+        writer.rollback(1);
         assert!(writer.is_canonical_block(&10u64.block_hash()));
         assert!(!writer.is_canonical_block(&20u64.block_hash()));
         assert!(!writer.is_canonical_block(&30u64.block_hash()));

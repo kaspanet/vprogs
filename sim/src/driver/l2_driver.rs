@@ -17,7 +17,7 @@ use tempfile::TempDir;
 use vprogs_core_atomics::{AsyncQueue, AtomicAsyncLatch};
 use vprogs_core_smt::EMPTY_HASH;
 use vprogs_core_test_utils::ResourceIdExt;
-use vprogs_core_types::{AccessMetadata, ResourceId, SchedulerTransaction};
+use vprogs_core_types::{AccessMetadata, ChainSink, ResourceId, SchedulerTransaction};
 use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_l1_wallet::{build, encode_activity_payload};
 use vprogs_scheduling_scheduler::{Processor, Scheduler};
@@ -51,6 +51,8 @@ const DEV_COVENANT_BUDGET: ComputeBudget = ComputeBudget(100);
 struct BlockRec {
     /// Block hash.
     hash: Hash,
+    /// Canonical batch id the scheduler assigned this block.
+    id: u64,
     /// Chain-block metadata recorded for this block.
     meta: ChainBlockMetadata,
     /// Number of lane transactions the driver scheduled into this block.
@@ -340,7 +342,9 @@ impl L2Driver {
             for b in self.chain.drain(keep..) {
                 self.expected_counter -= b.lane_tx_count;
             }
-            self.exec.scheduler.rollback_to(keep as u64).expect("rollback");
+            // Roll back to the kept tip's canonical id, not the chain position.
+            let target_id = self.chain.last().map(|b| b.id).unwrap_or(0);
+            self.exec.scheduler.rollback_to(target_id).expect("rollback");
             self.rollback_covenant(keep);
             let mut s = self.stats.lock().unwrap();
             s.reorgs += 1;
@@ -402,6 +406,7 @@ impl L2Driver {
 
             let count = lane_txs.len() as u32;
             let batch = self.exec.scheduler.schedule(meta, sched_txs);
+            let id = self.exec.scheduler.tip();
             batch.wait_committed_blocking();
             // In real-proof mode the batch was submitted to the aggregate prover (via the
             // scheduler); count it as outstanding so the settlement loop knows a bundle
@@ -411,7 +416,7 @@ impl L2Driver {
                 self.outstanding_batches += 1;
             }
             self.expected_counter += count;
-            self.chain.push(BlockRec { hash, meta, lane_tx_count: count });
+            self.chain.push(BlockRec { hash, id, meta, lane_tx_count: count });
 
             // Core invariant: the decoded counter equals lane txs executed on this chain.
             let actual = read_resource_u32(&self.exec.store, self.tracked);

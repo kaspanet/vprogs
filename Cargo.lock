@@ -8561,6 +8561,7 @@ dependencies = [
  "tap",
  "thiserror 2.0.18",
  "tokio",
+ "vprogs-core-atomics",
  "vprogs-core-macros",
  "vprogs-core-types",
  "vprogs-l1-types",
@@ -8696,19 +8697,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "vprogs-scheduling-canonical-chain"
-version = "0.1.0"
-dependencies = [
- "tempfile",
- "vprogs-core-atomics",
- "vprogs-core-macros",
- "vprogs-core-types",
- "vprogs-state-canonical-chain",
- "vprogs-storage-rocksdb-store",
- "vprogs-storage-types",
-]
-
-[[package]]
 name = "vprogs-scheduling-execution-workers"
 version = "0.1.0"
 dependencies = [
@@ -8741,7 +8729,6 @@ dependencies = [
  "vprogs-core-smt",
  "vprogs-core-test-utils",
  "vprogs-core-types",
- "vprogs-scheduling-canonical-chain",
  "vprogs-scheduling-execution-workers",
  "vprogs-scheduling-test-utils",
  "vprogs-state-batch-metadata",
@@ -8749,6 +8736,7 @@ dependencies = [
  "vprogs-state-ptr-latest",
  "vprogs-state-ptr-rollback",
  "vprogs-state-version",
+ "vprogs-storage-canonical-chain",
  "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
@@ -8817,13 +8805,6 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "vprogs-core-types",
- "vprogs-storage-types",
-]
-
-[[package]]
-name = "vprogs-state-canonical-chain"
-version = "0.1.0"
-dependencies = [
  "vprogs-storage-types",
 ]
 

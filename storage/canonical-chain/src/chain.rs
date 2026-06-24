@@ -92,35 +92,26 @@ impl CanonicalChain {
         });
     }
 
-    /// Applies a reorg, setting `new_tip` and flipping `orphaned` ids off / `recanonical` ids on.
-    /// Single-writer.
+    /// Rolls the chain back to `new_tip`, flipping off every id above it. Single-writer.
     ///
-    /// A reorg that rewrites a sealed body bucket forks the body so existing views keep their
+    /// A rollback that rewrites a sealed body bucket forks the body so existing views keep their
     /// perception; one confined to the hot zone shares it.
-    pub(crate) fn reorg(&self, new_tip: u64, orphaned: &[u64], recanonical: &[u64]) {
+    pub(crate) fn rollback(&self, new_tip: u64) {
         let cur = self.view.load();
+        debug_assert!(new_tip <= cur.tip, "rollback target {new_tip} exceeds tip {}", cur.tip);
 
-        // Allocate up to the highest id this reorg references (and never below current allocation).
-        let max_id = orphaned.iter().chain(recanonical).copied().fold(new_tip, u64::max);
-        let needed_bucket =
-            if max_id == 0 { cur.tail_bucket } else { locate(max_id).0.max(cur.tail_bucket) };
-
-        // Rewriting a bucket views read through the ring mutates shared state, so fork the body;
-        // hot-zone buckets are read through frozen fields and stay shareable.
-        let deep =
-            orphaned.iter().chain(recanonical).any(|&id| locate(id).0 + 2 <= cur.tail_bucket);
+        // Rewriting a sealed bucket mutates shared state, so fork the body; hot-zone buckets stay
+        // shareable. The orphaned ids are the dense suffix above new_tip, so the lowest one
+        // (new_tip + 1) alone decides whether any sealed bucket is touched.
+        let deep = locate(new_tip + 1).0 + 2 <= cur.tail_bucket;
         let body: Arc<AtomicRing<Arc<Bucket>>> =
             if deep { Arc::new(cur.body.fork()) } else { Arc::clone(&cur.body) };
 
-        let (tail_bucket, mut last_sealed, mut tail) = roll_forward(&cur, needed_bucket, &body);
+        let (tail_bucket, mut last_sealed, mut tail) = roll_forward(&cur, cur.tail_bucket, &body);
 
         // Group the bit edits by bucket so each touched bucket is rewritten once.
         let mut edits: BTreeMap<u64, Vec<(usize, bool)>> = BTreeMap::new();
-        for &id in recanonical {
-            let (bucket, bit) = locate(id);
-            edits.entry(bucket).or_default().push((bit, true));
-        }
-        for &id in orphaned {
+        for id in new_tip + 1..=cur.tip {
             let (bucket, bit) = locate(id);
             edits.entry(bucket).or_default().push((bit, false));
         }
@@ -279,29 +270,13 @@ mod tests {
     }
 
     #[test]
-    fn reorg_switches_to_a_heavier_fork() {
-        let chain = CanonicalChain::new();
-        chain.append(1);
-        chain.append(2);
-        chain.append(3);
-
-        chain.reorg(4, &[2, 3], &[4]);
-
-        assert_eq!(chain.tip(), 4);
-        assert!(chain.is_canonical(1));
-        assert!(chain.is_canonical(4));
-        assert!(!chain.is_canonical(2));
-        assert!(!chain.is_canonical(3));
-    }
-
-    #[test]
     fn rollback_clears_the_orphaned_suffix() {
         let chain = CanonicalChain::new();
         chain.append(1);
         chain.append(2);
         chain.append(3);
 
-        chain.reorg(1, &[2, 3], &[]);
+        chain.rollback(1);
         assert_eq!(chain.tip(), 1);
         assert!(!chain.is_canonical(2));
 
@@ -312,12 +287,21 @@ mod tests {
     }
 
     #[test]
-    fn re_reorg_recanonicalizes_a_previously_orphaned_fork() {
+    fn rollback_then_reappend_revives_orphaned_ids() {
         let chain = CanonicalChain::new();
         chain.append(1);
-        chain.reorg(4, &[2, 3], &[4]);
+        chain.append(2);
+        chain.append(3);
 
-        chain.reorg(5, &[4], &[2, 3, 5]);
+        // Fork away from 1: orphan 2, 3 and build a different branch.
+        chain.rollback(1);
+        chain.append(4);
+
+        // Reorg back: roll to the fork and re-append the original branch, reviving 2 and 3.
+        chain.rollback(1);
+        chain.append(2);
+        chain.append(3);
+        chain.append(5);
 
         assert_eq!(chain.tip(), 5);
         assert!(chain.is_canonical(2));
@@ -341,61 +325,65 @@ mod tests {
     }
 
     #[test]
-    fn deep_reorg_rewrites_a_sealed_bucket() {
+    fn deep_rollback_rewrites_a_sealed_bucket() {
         let chain = CanonicalChain::new();
         for id in 1..=10_000 {
             chain.append(id);
         }
         assert!(chain.is_canonical(100));
 
-        chain.reorg(10_000, &[100], &[]);
+        chain.rollback(50);
+
+        assert_eq!(chain.tip(), 50);
+        assert!(chain.is_canonical(50));
+        assert!(!chain.is_canonical(51));
         assert!(!chain.is_canonical(100));
-        assert!(chain.is_canonical(99));
-        assert!(chain.is_canonical(101));
+        assert!(!chain.is_canonical(10_000));
     }
 
     #[test]
-    fn finalize_prunes_head_buckets_which_then_read_canonical() {
+    fn finalize_makes_pruned_gaps_read_canonical() {
         let chain = CanonicalChain::new();
         for id in 1..=10_000 {
             chain.append(id);
         }
-        chain.reorg(10_000, &[100], &[]);
-        assert!(!chain.is_canonical(100));
 
+        // Roll back deep, then extend past the gap so 100 stays orphaned below the new tip.
+        chain.rollback(50);
+        chain.append(10_001);
+        assert!(!chain.is_canonical(100), "100 is orphaned in the gap");
+
+        // Finalizing past the gap prunes its bucket, which then reads as canonical.
         chain.finalize(8_200);
-
         assert!(chain.is_canonical(100), "pruned bucket reads as finalized-canonical");
-        assert!(chain.is_canonical(9_000));
-        assert!(!chain.is_canonical(10_001));
     }
 
     #[test]
-    fn snapshot_is_stable_across_a_shallow_reorg() {
+    fn snapshot_is_stable_across_a_shallow_rollback() {
         let chain = CanonicalChain::new();
         chain.append(1);
         chain.append(2);
         chain.append(3);
 
         let snap = chain.snapshot();
-        chain.reorg(4, &[2, 3], &[4]);
+        chain.rollback(1);
 
-        assert!(!chain.is_canonical(3), "live chain reflects the reorg");
+        assert!(!chain.is_canonical(3), "live chain reflects the rollback");
         assert!(snap.is_canonical(3), "snapshot keeps its perception");
         assert_eq!(snap.tip(), 3);
     }
 
     #[test]
-    fn snapshot_is_stable_across_a_deep_reorg() {
+    fn snapshot_is_stable_across_a_deep_rollback() {
         let chain = CanonicalChain::new();
         for id in 1..=10_000 {
             chain.append(id);
         }
 
         let snap = chain.snapshot();
-        chain.reorg(10_000, &[100], &[]);
+        chain.rollback(50);
 
-        assert!(!chain.is_canonical(100), "live chain reflects the reorg");
+        assert!(!chain.is_canonical(100), "live chain reflects the rollback");
         assert!(snap.is_canonical(100), "snapshot keeps its perception of the sealed bucket");
     }
 

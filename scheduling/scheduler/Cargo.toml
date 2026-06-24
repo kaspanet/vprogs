@@ -17,13 +17,13 @@ vprogs-core-hashing.workspace                 = true
 vprogs-core-macros.workspace                  = true
 vprogs-core-smt.workspace                     = true
 vprogs-core-types.workspace                   = true
-vprogs-scheduling-canonical-chain.workspace   = true
 vprogs-scheduling-execution-workers.workspace = true
 vprogs-state-batch-metadata.workspace         = true
 vprogs-state-metadata.workspace               = true
 vprogs-state-ptr-latest.workspace             = true
 vprogs-state-ptr-rollback.workspace           = true
 vprogs-state-version.workspace                = true
+vprogs-storage-canonical-chain.workspace      = true
 vprogs-storage-manager.workspace              = true
 vprogs-storage-types.workspace                = true
 

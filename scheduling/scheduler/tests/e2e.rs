@@ -236,7 +236,7 @@ pub fn test_add_batches_after_rollback() {
             .assert_resource_deleted(ResourceId::for_test(3))
             .assert_written_state(ResourceId::for_test(1), vec![0]);
 
-        // Schedule new batches after rollback - should continue from index 2
+        // Schedule new batches after rollback - should continue at 4, 5.
         let batch4 = scheduler.schedule(
             4,
             vec![SchedulerTransaction::new(
@@ -255,8 +255,8 @@ pub fn test_add_batches_after_rollback() {
         );
         batch5.wait_committed_blocking();
 
-        assert_eq!(batch4.checkpoint().index(), 2);
-        assert_eq!(batch5.checkpoint().index(), 3);
+        assert_eq!(batch4.checkpoint().index(), 4);
+        assert_eq!(batch5.checkpoint().index(), 5);
 
         // Verify new state
         scheduler
@@ -459,8 +459,8 @@ pub fn test_rollback_multiple_contexts() {
         );
         batch7.wait_committed_blocking();
 
-        assert_eq!(new_batch6.checkpoint().index(), 6);
-        assert_eq!(batch7.checkpoint().index(), 7);
+        assert_eq!(new_batch6.checkpoint().index(), 7);
+        assert_eq!(batch7.checkpoint().index(), 8);
 
         scheduler
             .assert_written_state(ResourceId::for_test(60), vec![60])
@@ -498,8 +498,8 @@ pub fn test_rollback_multiple_contexts() {
         );
         final_batch5.wait_committed_blocking();
 
-        assert_eq!(final_batch4.checkpoint().index(), 4);
-        assert_eq!(final_batch5.checkpoint().index(), 5);
+        assert_eq!(final_batch4.checkpoint().index(), 9);
+        assert_eq!(final_batch5.checkpoint().index(), 10);
 
         // Verify final state
         scheduler
@@ -566,7 +566,7 @@ pub fn test_rollback_to_zero() {
             .assert_resource_deleted(ResourceId::for_test(2))
             .assert_resource_deleted(ResourceId::for_test(3));
 
-        // New batches should start from index 1 again
+        // Ids are never reused: the next batch continues past the orphaned ids (at 4), not at 1.
         let new_batch1 = scheduler.schedule(
             100,
             vec![SchedulerTransaction::new(
@@ -577,7 +577,7 @@ pub fn test_rollback_to_zero() {
         );
         new_batch1.wait_committed_blocking();
 
-        assert_eq!(new_batch1.checkpoint().index(), 1);
+        assert_eq!(new_batch1.checkpoint().index(), 4);
         scheduler.assert_written_state(ResourceId::for_test(100), vec![100]);
 
         scheduler.shutdown();
@@ -682,7 +682,7 @@ pub fn test_consecutive_rollbacks() {
             )],
         );
         new_batch.wait_committed_blocking();
-        assert_eq!(new_batch.checkpoint().index(), 2);
+        assert_eq!(new_batch.checkpoint().index(), 6);
 
         scheduler.shutdown();
     }

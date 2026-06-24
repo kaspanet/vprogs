@@ -4,9 +4,10 @@ use std::{
 };
 
 use tap::Tap;
-use vprogs_core_types::{Checkpoint, ResourceId, SchedulerTransaction};
+use vprogs_core_types::{ChainSink, Checkpoint, ResourceId, SchedulerTransaction};
 use vprogs_scheduling_execution_workers::ExecutionWorkers;
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
+use vprogs_storage_canonical_chain::CanonicalWriter;
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_types::Store;
 
@@ -39,6 +40,8 @@ pub struct Scheduler<S: Store, P: Processor<S>> {
     execution_workers: ExecutionWorkers<ManagerTask<S, P>, ScheduledBatch<S, P>>,
     /// Background worker that prunes old state data when the pruning threshold advances.
     pruning_worker: PruningWorker<S, P>,
+    /// Assigns never-reused batch ids and drives the canonical oracle.
+    canonical_writer: CanonicalWriter<P::BatchMetadata>,
 }
 
 impl<S: Store, P: Processor<S>> Scheduler<S, P> {
@@ -46,6 +49,7 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
     pub fn new(execution_config: ExecutionConfig<P>, storage_config: StorageConfig<S>) -> Self {
         let (worker_count, processor) = execution_config.unpack();
         let state = SchedulerState::new(storage_config);
+        let canonical_writer = state.storage().store().canonical_writer::<P::BatchMetadata>();
         Self {
             batch_lifecycle_worker: BatchLifecycleWorker::new(),
             pruning_worker: PruningWorker::new(state.clone()),
@@ -55,6 +59,7 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
             cancellation: CancellationContext::new(state.root().index()),
             state,
             processor,
+            canonical_writer,
         }
     }
 
@@ -227,12 +232,10 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
     fn next_checkpoint(&mut self, metadata: P::BatchMetadata) -> Checkpoint<P::BatchMetadata> {
         self.drain_committed();
 
-        let checkpoint = Checkpoint::new(self.state.last_processed().index() + 1, metadata);
+        let index = self.canonical_writer.append(metadata.clone()).id;
+        let checkpoint = Checkpoint::new(index, metadata);
         self.state.set_last_processed(Arc::new(checkpoint.clone()));
         self.pending_batches.push_back(checkpoint.clone());
-
-        // Append to the live canonical chain; the durable write is deferred to commit().
-        self.state.canonical_chain().append(&checkpoint);
 
         // Initialize root when the first batch is scheduled. On a fresh database or after
         // rollback-to-genesis, root is default (index 0). The disk write is deferred to
@@ -256,8 +259,8 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
         // write worker, which sees the true committed state without races.
         self.state.set_last_processed(Arc::new(target.clone()));
 
-        // Retract the live canonical chain; disk deletes are deferred to Rollback::execute().
-        self.state.canonical_chain().rollback_to(target_index + 1);
+        // Roll the canonical chain back to the target.
+        self.canonical_writer.rollback(target_index);
 
         // Pop canceled entries from the tip. Must happen after lookup_checkpoint (which
         // searches the pending queue) but before returning.
@@ -294,5 +297,40 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
 
         // Fall back to disk for committed batches.
         Checkpoint::new(index, StoredBatchMetadata::get(&**self.state.storage().store(), index))
+    }
+}
+
+impl<S: Store, P: Processor<S>> ChainSink<P::BatchMetadata, P::Transaction> for Scheduler<S, P> {
+    fn append(
+        &mut self,
+        metadata: P::BatchMetadata,
+        txs: Vec<SchedulerTransaction<P::Transaction>>,
+    ) -> u64 {
+        self.schedule(metadata, txs).checkpoint().index()
+    }
+
+    fn rollback(&mut self, new_tip: u64) {
+        self.rollback_to(new_tip).unwrap();
+    }
+
+    fn finalize(&mut self, below: u64) {
+        self.canonical_writer.finalize(below);
+        self.pruning().set_threshold(below);
+    }
+
+    fn tip(&self) -> u64 {
+        self.canonical_writer.tip()
+    }
+
+    fn metadata(&self, id: u64) -> Option<P::BatchMetadata> {
+        self.canonical_writer.metadata(id).cloned()
+    }
+
+    fn id_of(&self, block_hash: &[u8; 32]) -> Option<u64> {
+        self.canonical_writer.id_of(block_hash)
+    }
+
+    fn shutdown(self) {
+        self.shutdown();
     }
 }

@@ -13,8 +13,8 @@ pub const DEPTH: usize = 256;
 
 /// Versioned Sparse Merkle Tree with shortcut leaves, pruning, and multi-proofs.
 ///
-/// Implementors only need to provide `node`, `prune`, and `rollback`; all tree operations
-/// (commits, proofs, root lookups) are default methods.
+/// Implementors only need to provide `node` and `prune`; all tree operations (commits, proofs,
+/// root lookups) are default methods.
 pub trait Tree: Sized {
     /// The hash function used for node and leaf hashing.
     type Hasher: Hasher;
@@ -27,12 +27,6 @@ pub trait Tree: Sized {
 
     /// Prunes stale nodes for the given version, deleting superseded nodes and their stale markers.
     fn prune(&self, wb: &mut impl WriteBatch, version: u64);
-
-    /// Rolls back a committed tree update at the given version.
-    ///
-    /// Unlike `prune` (which deletes superseded nodes), this undoes the version itself: deletes
-    /// nodes written at `version` and removes stale markers so old nodes become current again.
-    fn rollback(&self, wb: &mut impl WriteBatch, version: u64);
 
     // -- Default methods --
 

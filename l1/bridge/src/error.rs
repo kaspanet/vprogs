@@ -1,5 +1,4 @@
 use kaspa_rpc_core::RpcError;
-use vprogs_l1_types::Hash;
 
 /// Bridge error types, split into recoverable (RPC) and fatal.
 #[derive(Debug, thiserror::Error)]
@@ -11,20 +10,6 @@ pub(crate) enum Error {
     /// The starting block has been pruned or reorged away.
     #[error("starting block no longer in chain: {0}")]
     CheckpointLost(RpcError),
-
-    /// A reorg would roll back past the finalization boundary.
-    #[error(
-        "rollback to index {target_index} would go past finalization boundary at index {root_index}"
-    )]
-    RollbackPastRoot { target_index: u64, root_index: u64 },
-
-    /// A pruning point hash was not found in the virtual chain.
-    #[error("pruning point hash {0} not found in chain")]
-    HashNotFound(Hash),
-
-    /// The backfill target hash was not found in the chain.
-    #[error("backfill target hash {0} not found in chain")]
-    BackfillTargetNotFound(Hash),
 
     /// An internal channel closed unexpectedly.
     #[error("notification channel closed: {0}")]

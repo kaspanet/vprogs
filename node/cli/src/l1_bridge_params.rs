@@ -54,8 +54,6 @@ impl L1BridgeParams {
             // Kept as String upstream because `ConnectStrategy` lacks `Display`/`Serialize`.
             connect_strategy: self.connect_strategy.parse().expect("invalid connect strategy"),
             filter_half_life: Duration::from_secs(self.filter_half_life_secs),
-            root: None,
-            tip: None,
             subnetwork_id: self.subnetwork_id,
             finality_depth: self.finality_depth,
             covenant_id: self.covenant_id,

@@ -201,23 +201,27 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
         // Advance root in memory before deleting so no observer sees root pointing to pruned data.
         state.set_root(new_root.clone());
 
-        // Retract the live canonical chain's finalized prefix; the disk deletes are staged below.
-        state.canonical_chain().prune_below(upper_bound + 1);
+        // Pin one canonical view for the whole pass so every reclaim decision is consistent.
+        let view = store.canonical_chain().snapshot();
 
         // Commit all deletions and root update atomically.
         store.commit(store.write_batch().tap_mut(|wb| {
             // Walk batches from oldest to newest (order doesn't matter for pruning).
             for index in lower_bound..=upper_bound {
-                // Delete all rollback pointers and their referenced old versions for this batch.
+                // Whether this finalized batch is on the canonical chain decides what to reclaim.
+                let is_canonical = view.is_canonical(index);
+
                 for (resource_id, old_version) in
                     StatePtrRollback::iter_batch(store.as_ref(), index)
                 {
                     let resource_id: ResourceId =
                         borsh::from_slice(&resource_id).expect("corrupted store: unrecoverable");
 
-                    // Delete the old version data if it exists (version 0 means resource
-                    // didn't exist).
-                    if old_version != 0 {
+                    if !is_canonical {
+                        // Orphaned batch: its own write is now invisible, so reclaim it.
+                        StateVersion::delete(wb, index, &resource_id);
+                    } else if old_version != 0 {
+                        // Canonical batch: drop the predecessor (if it existed).
                         StateVersion::delete(wb, old_version, &resource_id);
                     }
 
@@ -231,9 +235,6 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
                 // Prune stale SMT nodes for this version.
                 store.prune(wb, index);
             }
-
-            // Clear the pruned canonical entries on disk.
-            state.canonical_chain().delete_from_disk(wb, lower_bound..=upper_bound);
 
             // Advance root on disk.
             StateMetadata::set_root(wb, &new_root);

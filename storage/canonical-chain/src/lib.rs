@@ -8,4 +8,4 @@ mod writer;
 
 pub use chain::CanonicalChain;
 pub use view::View;
-pub use writer::CanonicalWriter;
+pub use writer::{Appended, CanonicalWriter};
