@@ -26,7 +26,6 @@ default = []
 experimental-image-lock = []
 
 [dependencies]
-blake3   = { version = "1", default-features = false }
 zerocopy = { version = "0.8", default-features = false, features = ["derive"] }
 # BIP-340 schnorr verification. For risc0 guest builds, pin to a precompile-accelerated
 # fork via `[patch.crates-io]` (e.g. risc0/RustCrypto-elliptic-curves) when wiring up

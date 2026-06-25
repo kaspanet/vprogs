@@ -42,5 +42,8 @@ pub use risc0_zkvm::Receipt;
 pub use sha256::Sha256;
 #[cfg(feature = "guest")]
 pub use verify_journal::verify_journal;
+/// Re-exported so guests can call the [`Sha256`] hasher's trait methods without a direct
+/// dependency on `vprogs-core-hashing`.
+pub use vprogs_core_hashing::Hasher;
 #[cfg(feature = "host")]
 pub use witness::{OwnedGroth16Witness, OwnedSuccinctWitness};

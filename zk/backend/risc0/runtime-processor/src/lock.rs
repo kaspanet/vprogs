@@ -102,7 +102,7 @@ impl<'a> LockEnum<'a> {
         }
     }
 
-    /// Stable 32-byte identity hash of this lock: `blake3(tag || body)`.
+    /// Stable 32-byte identity hash of this lock: `SHA-256(domain || tag || body)`.
     /// Dispatches to the variant's `Lock::id_hash`. See `Lock::id_hash` for
     /// the contract (used to derive user-resource addresses).
     pub fn id_hash(&self) -> [u8; 32] {
@@ -231,15 +231,20 @@ mod tests {
     // Lock identity hash (Lock::id_hash)
 
     #[test]
-    fn id_hash_matches_blake3_of_tag_and_body() {
+    fn id_hash_matches_sha256_with_domain_of_tag_and_body() {
         // The canonical id-hash input is `tag || body`: same bytes the wire
-        // dispatcher produces via `LockEnum::encode`.
+        // dispatcher produces via `LockEnum::encode`, prefixed by the LockId
+        // domain tag.
+        use vprogs_zk_backend_risc0_api::{Hasher, Sha256};
+
+        use crate::domain::Domain;
+
         let pubkey = [0x77u8; 32];
         let lock = LockEnum::Schnorr(SchnorrLockView { pubkey: &pubkey });
 
         let mut canonical = Vec::new();
         lock.encode(&mut canonical);
-        let expected = *blake3::hash(&canonical).as_bytes();
+        let expected = Sha256::hash_with_domain(&[Domain::LockId as u8], &canonical);
         assert_eq!(lock.id_hash(), expected);
     }
 

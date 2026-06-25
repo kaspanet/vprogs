@@ -4,6 +4,9 @@
 use alloc::vec::Vec;
 
 use vprogs_core_codec::Result as CodecResult;
+use vprogs_zk_backend_risc0_api::{Hasher, Sha256};
+
+use crate::domain::Domain;
 
 pub trait Lock<'a>: Sized {
     /// One-byte tag identifying this variant on the wire.
@@ -31,14 +34,16 @@ pub trait Lock<'a>: Sized {
     /// address (`derive_user_resource`) and recorded in `UserRaw::initial_lock_hash`
     /// so the address can be re-validated against a (possibly rotated) lock.
     ///
-    /// Canonical form is `[Self::TAG || encode()]`: same bytes the wire
-    /// dispatcher in `crate::lock` would produce. The tag prefix prevents
-    /// cross-variant collisions (e.g. a Schnorr body that happens to alias
-    /// the leading bytes of a Multisig body).
+    /// Canonical form is `SHA-256(Domain::LockId || Self::TAG || encode())`: the
+    /// [`Domain::LockId`] tag separates lock identities from other runtime
+    /// derivations, and the `Self::TAG` prefix is the same byte the wire
+    /// dispatcher in `crate::lock` would produce, preventing cross-variant
+    /// collisions (e.g. a Schnorr body that happens to alias the leading bytes
+    /// of a Multisig body).
     fn id_hash(&self) -> [u8; 32] {
         let mut buf = Vec::with_capacity(1 + self.wire_body_len());
         buf.push(Self::TAG);
         self.encode(&mut buf);
-        *blake3::hash(&buf).as_bytes()
+        Sha256::hash_with_domain(&[Domain::LockId as u8], &buf)
     }
 }

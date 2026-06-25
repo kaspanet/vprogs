@@ -34,7 +34,7 @@ pub struct SignerResolveContext<'a> {
     /// parse outpoints from the input list).
     pub current_rest_preimage: &'a [u8],
     /// Pre-computed runtime signed-message digest for schnorr signatures:
-    /// `blake3_keyed(KEY_SIG_MSG_V1, current_rest_preimage || payload[..end_of_actions])`.
+    /// `SHA-256(Domain::SigMessage || current_rest_preimage || payload[..end_of_actions])`.
     pub sig_msg: &'a [u8; 32],
     /// Resource set; signature signers read the lock at `resource_idx` to
     /// look up the expected pubkey.

@@ -5,12 +5,14 @@ use vprogs_zk_abi::{
     Error as AbiError, Result as AbiResult,
     transaction_processor::{Resource, Transaction},
 };
+use vprogs_zk_backend_risc0_api::{Hasher, Sha256};
 
 #[cfg(feature = "experimental-image-lock")]
 use crate::signer_variants::ImageProofSigner;
 use crate::{
     action::apply_action,
     auth_context::{AuthContext, MultisigUnlocker},
+    domain::Domain,
     ix::{DecodedIx, decode_ix},
     signer::SignerEnum,
     signer_trait::{Signer, SignerResolveContext},
@@ -19,12 +21,6 @@ use crate::{
         SchnorrSigPtrSigner,
     },
 };
-
-/// 32-byte BLAKE3 keyed-hash key for the schnorr message digest. Same shape
-/// as the kaspa-hashes domain keys (`vprogs-l1-utils::tx_id_v1`): zero-padded
-/// ASCII tag, length 32. Distinct from any tx_id key so an attacker can't
-/// replay a tx_id digest as a runtime sig.
-pub const KEY_SIG_MSG_V1: [u8; 32] = *b"RuntimeSigMessageV1\0\0\0\0\0\0\0\0\0\0\0\0\0";
 
 /// Verifies signers against resource locks and applies the decoded actions.
 ///
@@ -69,15 +65,12 @@ pub fn run<'a>(tx: &Transaction<'a>, resources: &mut [Resource<'a>]) -> AbiResul
     Ok(())
 }
 
-/// `M = blake3_keyed(KEY_SIG_MSG_V1, rest_preimage || payload_presig)`: the
+/// `M = SHA-256(Domain::SigMessage || rest_preimage || payload_presig)`: the
 /// 32-byte digest a BIP-340 schnorr signer commits to. Off-chain signers must
-/// produce the exact same blake3 keyed-hash input. Exposed publicly so test
+/// produce the exact same domain-separated input. Exposed publicly so test
 /// harnesses sign against the same function the guest verifies (no drift).
 pub fn compute_sig_message(rest_preimage: &[u8], payload_presig: &[u8]) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new_keyed(&KEY_SIG_MSG_V1);
-    hasher.update(rest_preimage);
-    hasher.update(payload_presig);
-    *hasher.finalize().as_bytes()
+    Sha256::hash_parts_with_domain(&[Domain::SigMessage as u8], [rest_preimage, payload_presig])
 }
 
 /// Walks parsed signers, calls `Signer::resolve` on each, and routes the
@@ -167,19 +160,19 @@ mod tests {
     // Sig-message digest
 
     #[test]
-    fn sig_msg_is_keyed_blake3_of_concat() {
+    fn sig_msg_is_sha256_with_domain_of_concat() {
         // Cross-check: compute_sig_message(rp, pp) ==
-        //   blake3_keyed(KEY_SIG_MSG_V1, rp || pp).
+        //   SHA-256(Domain::SigMessage || rp || pp).
         let rp = b"rest-preimage";
         let pp = b"payload-presig-bytes";
 
         let got = compute_sig_message(rp, pp);
 
-        let mut concat = Vec::new();
-        concat.extend_from_slice(rp);
-        concat.extend_from_slice(pp);
-        let want = blake3::Hasher::new_keyed(&KEY_SIG_MSG_V1).update(&concat).finalize();
-        assert_eq!(&got, want.as_bytes());
+        let want = Sha256::hash_with_domain(
+            &[Domain::SigMessage as u8],
+            [rp.as_slice(), pp.as_slice()].concat(),
+        );
+        assert_eq!(got, want);
     }
 
     #[test]
@@ -190,14 +183,14 @@ mod tests {
     }
 
     #[test]
-    fn sig_msg_is_domain_separated_from_unkeyed_blake3() {
-        // Plain blake3 of the same bytes must not collide with the keyed
-        // version: that's the whole point of the domain key.
+    fn sig_msg_is_domain_separated_from_plain_sha256() {
+        // Plain SHA-256 of the same bytes must not collide with the
+        // domain-separated version: that's the whole point of the domain tag.
         let rp = b"x";
         let pp = b"y";
-        let keyed = compute_sig_message(rp, pp);
-        let unkeyed = blake3::hash(&[rp.as_slice(), pp.as_slice()].concat());
-        assert_ne!(&keyed, unkeyed.as_bytes());
+        let domained = compute_sig_message(rp, pp);
+        let plain = Sha256::hash([rp.as_slice(), pp.as_slice()].concat());
+        assert_ne!(domained, plain);
     }
 
     #[test]
@@ -217,13 +210,10 @@ mod tests {
         // separate without an ambiguity-prone glue byte.
         let rp = b"r";
         let split = compute_sig_message(rp, b"hello-world");
-        // Hand-rolled equivalent: blake3_keyed(K, rp || pp).
-        let combined = {
-            let mut h = blake3::Hasher::new_keyed(&KEY_SIG_MSG_V1);
-            h.update(rp);
-            h.update(b"hello-world");
-            *h.finalize().as_bytes()
-        };
+        let combined = Sha256::hash_parts_with_domain(
+            &[Domain::SigMessage as u8],
+            [rp.as_slice(), b"hello-world"],
+        );
         assert_eq!(split, combined);
     }
 
@@ -275,15 +265,5 @@ mod tests {
         }
         assert_eq!(bucket.len(), 1);
         assert_eq!(bucket[0].1.pubkeys, alloc::vec![[0x03u8; 32], [0x01u8; 32], [0x02u8; 32]]);
-    }
-
-    #[test]
-    fn key_const_is_32_zero_padded_ascii() {
-        // The key is intentionally an ASCII tag zero-padded to 32 bytes so
-        // it's grep-able and matches the kaspa-hashes domain-key style.
-        assert_eq!(KEY_SIG_MSG_V1.len(), 32);
-        assert!(KEY_SIG_MSG_V1.starts_with(b"RuntimeSigMessageV1"));
-        // No non-zero bytes after the tag.
-        assert!(KEY_SIG_MSG_V1[b"RuntimeSigMessageV1".len()..].iter().all(|b| *b == 0));
     }
 }

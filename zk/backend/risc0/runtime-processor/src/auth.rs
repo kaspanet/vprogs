@@ -72,7 +72,7 @@ pub fn extract_p2pk_pubkey(spk: &[u8]) -> Option<[u8; 32]> {
 
 /// Verifies a 64-byte BIP-340 schnorr signature against a 32-byte X-only pubkey
 /// over the given message. Pure-function: the message digest is constructed
-/// upstream by the runtime (`blake3(domain || rest_preimage || payload_presig)`).
+/// upstream by the runtime (`SHA-256(domain || rest_preimage || payload_presig)`).
 ///
 /// Returns `false` for any failure (bad pubkey encoding, bad sig encoding,
 /// signature equation doesn't hold). Treated as user error by the caller.

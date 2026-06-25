@@ -22,6 +22,7 @@ pub mod action;
 pub mod auth;
 pub mod auth_context;
 pub mod config;
+pub mod domain;
 pub mod genesis;
 pub mod ix;
 pub mod kind;
