@@ -1,10 +1,10 @@
 //! Permission (exit) Merkle tree of `(spk, amount)` leaves.
 //!
-//! Thin permission-specific wiring around the generic
-//! [`vprogs_core_merkle_tree::StreamingBuilder`]: defines the (module-private) node tags, holds
-//! the build-time empty-subtree hash table, and exposes [`PermissionTreeAccumulator`], the default
-//! [`ExitAccumulator`] that hashes leaves with the on-chain SPK byte representation of each
-//! [`StandardSpk`] and commits the bundle's exits.
+//! Uses the generic [`StreamingBuilder`](vprogs_core_merkle_tree::StreamingBuilder) over SHA-256
+//! with the 1-byte [`PermTags`](crate::permission_tags::PermTags) enum domain shared with the
+//! on-chain redeem script (issue #78). Holds the build-time empty-subtree hash table and exposes
+//! [`PermissionTreeAccumulator`], the default [`ExitAccumulator`] that hashes leaves with the
+//! on-chain SPK byte representation of each [`StandardSpk`] and commits the bundle's exits.
 //!
 //! ## On-chain commitment
 //!
@@ -19,8 +19,14 @@ use vprogs_zk_abi::withdrawal::{ExitAccumulator, StandardSpk};
 
 use crate::{
     permission_script::{blake2b_script_hash, build_permission_redeem_script},
-    permission_tree::config::Builder,
+    permission_tags::PermTags,
 };
+
+/// Permission-tree streaming builder: SHA-256, 1-byte [`PermTags`] domain, depth 32.
+///
+/// Depth 32 covers `u32::MAX` leaves (the accumulator's count type), keeping `required_depth`'s
+/// clamp non-lossy and the stack non-overflowing for any input.
+type Builder = vprogs_core_merkle_tree::StreamingBuilder<crate::Sha256, PermTags, 32, 1>;
 
 /// Default [`ExitAccumulator`]: accumulates the bundle's exits into a permission tree and
 /// finalizes to the on-chain commitment.
@@ -97,33 +103,10 @@ impl ExitAccumulator for PermissionTreeAccumulator {
     }
 }
 
-/// All the type-level wiring that configures the permission tree's streaming builder: hasher
-/// choice, `NodeTags` impl, max depth, and tag length.
-mod config {
-    use vprogs_core_merkle_tree::{NodeTags, StreamingBuilder};
-
-    use crate::Sha256;
-
-    /// Concrete [`StreamingBuilder`] instantiation for the permission tree: SHA-256 hasher,
-    /// [`Tags`], 32-level depth bound, 1-byte tags.
-    ///
-    /// Depth = 32 covers `u32::MAX` leaves (the accumulator's count type), keeping
-    /// `required_depth`'s clamp non-lossy and the builder's stack non-overflowing for any input.
-    pub(super) type Builder = StreamingBuilder<Sha256, Tags, 32, 1>;
-
-    /// Node tags used by the permission tree.
-    pub(super) struct Tags;
-
-    impl NodeTags<1> for Tags {
-        const LEAF: &'static [u8; 1] = &[0x00];
-        const BRANCH: &'static [u8; 1] = &[0x01];
-        const EMPTY: &'static [u8; 1] = &[0x02];
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::permission_tags::PermNode;
 
     #[test]
     fn empty_accumulator_finalize_is_zero() {
@@ -158,6 +141,85 @@ mod tests {
         let depth = PermissionTreeAccumulator::required_depth(2);
         let redeem = build_permission_redeem_script(&manual_root, 2, depth);
         assert_eq!(commitment, blake2b_script_hash(&redeem));
+    }
+
+    #[test]
+    fn hashes_match_script_tag_domains() {
+        // Issue #78: the off-chain accumulator must hash leaf/branch/empty with the SAME 1-byte tag
+        // domains the on-chain redeem script uses (`permission_script.rs` pushes
+        // `[PermNode::Leaf]`, `[PermNode::Branch]`, `[PermNode::Empty]` before OP_SHA256).
+        // Recompute each independently and assert byte equality, so a domain regression
+        // here would fail before reaching the engine.
+        use sha2::{Digest, Sha256 as RefSha256};
+
+        let pk = [0x33u8; 32];
+        let spk = StandardSpk::PubKey(&pk);
+        let amount = 4321u64;
+
+        // Leaf: SHA256(Leaf || spk_bytes || amount_le).
+        let mut h = RefSha256::new();
+        h.update([PermNode::Leaf as u8]);
+        h.update(spk.to_script_bytes().as_slice());
+        h.update(amount.to_le_bytes());
+        let expected_leaf: [u8; 32] = h.finalize().into();
+        assert_eq!(PermissionTreeAccumulator::hash_leaf(spk, amount), expected_leaf);
+
+        // Branch: SHA256(Branch || left || right).
+        let left = [0x01u8; 32];
+        let right = [0x02u8; 32];
+        let mut h = RefSha256::new();
+        h.update([PermNode::Branch as u8]);
+        h.update(left);
+        h.update(right);
+        let expected_branch: [u8; 32] = h.finalize().into();
+        assert_eq!(PermissionTreeAccumulator::hash_branch(&left, &right), expected_branch);
+
+        // Empty: SHA256(Empty).
+        let expected_empty: [u8; 32] = RefSha256::digest([PermNode::Empty as u8]).into();
+        assert_eq!(PermissionTreeAccumulator::hash_empty(), expected_empty);
+    }
+
+    #[test]
+    fn root_matches_script_side_recomputation() {
+        // Issue #78 test 2: the accumulator's root for a known leaf set must equal the root
+        // recomputed via the script-side tag-domain hashing for the same leaves.
+        use sha2::{Digest, Sha256 as RefSha256};
+
+        fn ref_leaf(spk: &[u8], amount: u64) -> [u8; 32] {
+            let mut h = RefSha256::new();
+            h.update([PermNode::Leaf as u8]);
+            h.update(spk);
+            h.update(amount.to_le_bytes());
+            h.finalize().into()
+        }
+        fn ref_branch(l: &[u8; 32], r: &[u8; 32]) -> [u8; 32] {
+            let mut h = RefSha256::new();
+            h.update([PermNode::Branch as u8]);
+            h.update(l);
+            h.update(r);
+            h.finalize().into()
+        }
+
+        let pk_a = [0xAAu8; 32];
+        let pk_b = [0xBBu8; 32];
+        let pk_c = [0xCCu8; 32];
+
+        let mut acc = PermissionTreeAccumulator::new();
+        acc.add_exit(StandardSpk::PubKey(&pk_a), 100);
+        acc.add_exit(StandardSpk::PubKey(&pk_b), 200);
+        acc.add_exit(StandardSpk::PubKey(&pk_c), 300);
+        // Accumulator root (depth 2 over [a, b, c, empty]).
+        let acc_root = acc.builder.finalize(&PermissionTreeAccumulator::EMPTY_HASHES);
+
+        let la = ref_leaf(StandardSpk::PubKey(&pk_a).to_script_bytes().as_slice(), 100);
+        let lb = ref_leaf(StandardSpk::PubKey(&pk_b).to_script_bytes().as_slice(), 200);
+        let lc = ref_leaf(StandardSpk::PubKey(&pk_c).to_script_bytes().as_slice(), 300);
+        let empty = RefSha256::digest([PermNode::Empty as u8]).into();
+        let b01 = ref_branch(&la, &lb);
+        let b2e = ref_branch(&lc, &empty);
+        let expected_root = ref_branch(&b01, &b2e);
+
+        assert_eq!(acc_root, expected_root);
     }
 
     #[test]

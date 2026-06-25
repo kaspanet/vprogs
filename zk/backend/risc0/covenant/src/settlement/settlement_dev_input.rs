@@ -32,6 +32,18 @@ pub struct SettlementDevInput<'a> {
     pub claimed_seq_commit: Hash,
     /// UTXO outpoint of the covenant being spent.
     pub prev_outpoint: TransactionOutpoint,
-    /// Value carried on the covenant UTXO (forwarded verbatim to the continuation output).
+    /// Value carried on the covenant UTXO. Split between continuation and permission outputs
+    /// when [`Self::permission_spk_hash`] is non-zero (see
+    /// [`Settlement::build_dev`](super::Settlement::build_dev)).
     pub value: u64,
+    /// `blake2b(perm_redeem_script)` from the batch. Non-zero →
+    /// [`Settlement::build_dev`](super::Settlement::build_dev) emits a second covenant-bound P2SH
+    /// exit output of value [`Self::permission_output_value`] (count==2 layout). `[0; 32]` →
+    /// single continuation output (count==1, no exits). Mirrors
+    /// [`SettlementInput::permission_spk_hash`](super::SettlementInput::permission_spk_hash).
+    pub permission_spk_hash: &'a [u8; 32],
+    /// Sompi value split off into the permission-exit output (output index 1) and pinned into the
+    /// dev redeem script for the count==2 continuation check. Ignored when `permission_spk_hash`
+    /// is `[0; 32]`.
+    pub permission_output_value: u64,
 }

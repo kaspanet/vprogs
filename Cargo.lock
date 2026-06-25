@@ -9131,6 +9131,7 @@ dependencies = [
  "risc0-groth16",
  "risc0-zkos-v1compat",
  "risc0-zkvm",
+ "sha2",
  "vprogs-core-codec",
  "vprogs-core-hashing",
  "vprogs-core-macros",

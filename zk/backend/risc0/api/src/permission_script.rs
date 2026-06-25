@@ -18,6 +18,8 @@
 
 use alloc::vec::Vec;
 
+use crate::permission_tags::PermNode;
+
 /// Maximum number of *delegate inputs* the permission script will sum over.
 ///
 /// A delegate input is an extra funding UTXO locked under the same covenant that tops up a
@@ -46,6 +48,7 @@ const OP_DROP: u8 = 0x75;
 const OP_DUP: u8 = 0x76;
 const OP_NIP: u8 = 0x77;
 const OP_OVER: u8 = 0x78;
+const OP_PICK: u8 = 0x79;
 const OP_ROLL: u8 = 0x7a;
 const OP_ROT: u8 = 0x7b;
 const OP_SWAP: u8 = 0x7c;
@@ -55,6 +58,7 @@ const OP_EQUALVERIFY: u8 = 0x88;
 const OP_1SUB: u8 = 0x8c;
 const OP_ADD: u8 = 0x93;
 const OP_SUB: u8 = 0x94;
+const OP_NUMEQUALVERIFY: u8 = 0x9d;
 const OP_GREATERTHAN: u8 = 0xa0;
 const OP_GREATERTHANOREQUAL: u8 = 0xa2;
 const OP_SHA256: u8 = 0xa8;
@@ -97,28 +101,28 @@ trait PermRedeemScript {
     /// Byte count of `emit_verify_withdrawal`.
     const VERIFY_WITHDRAWAL_LEN: usize = 13;
     /// Byte count of `emit_compute_leaf_hashes`.
-    const COMPUTE_LEAF_HASHES_LEN: usize = 64;
+    const COMPUTE_LEAF_HASHES_LEN: usize = 42;
     /// Byte count of `emit_verify_old_root`'s fixed tail (excludes the `depth` Merkle steps).
     const VERIFY_OLD_ROOT_TAIL_LEN: usize = 12;
     /// Byte count of `emit_compute_new_unclaimed`.
     const COMPUTE_NEW_UNCLAIMED_LEN: usize = 13;
     /// Byte count of `emit_verify_outputs`, excluding [`Self::EMBEDDED_LEN_PUSH`].
-    const VERIFY_OUTPUTS_FIXED_LEN: usize = 69;
+    const VERIFY_OUTPUTS_FIXED_LEN: usize = 88;
     /// Byte count of `emit_verify_delegate_balance` (`MAX_DELEGATE_INPUTS` fully unrolled).
     const VERIFY_DELEGATE_BALANCE_LEN: usize = 214;
     /// Byte count of `emit_trailer`.
     const TRAILER_LEN: usize = 3;
     /// Byte count of `emit_merkle_step`, emitted `2 * depth` times across the two Merkle walks.
-    const MERKLE_STEP_LEN: usize = 20;
+    const MERKLE_STEP_LEN: usize = 11;
 
     /// Bytes emitted for the one self-referential `push_i64(PREFIX_LEN - total_len)` in
     /// `emit_verify_outputs`.
     ///
-    /// For every `depth` in `1..=PERM_MAX_DEPTH` the total script length lands in `[488, 1728]`, so
-    /// the pushed magnitude `total_len - 42` is in `[446, 1686]`, always two little-endian bytes
+    /// For every `depth` in `1..=PERM_MAX_DEPTH` the total script length lands in `[467, 1149]`, so
+    /// the pushed magnitude `total_len - 42` is in `[425, 1107]`, always two little-endian bytes
     /// with the high bit clear, so `push_i64` emits 1 length-prefix byte + 2 magnitude bytes = 3,
-    /// with no sign byte. Past `PERM_MAX_DEPTH ≈ 800` the magnitude would need a sign byte and this
-    /// constant would have to change.
+    /// with no sign byte. Past depth ~1450 the magnitude would need a sign byte and this constant
+    /// would have to change.
     const EMBEDDED_LEN_PUSH: usize = 3;
 
     /// Depth-independent byte count of the redeem script, the sum of every fixed-size phase.
@@ -278,16 +282,16 @@ impl PermRedeemScript for Vec<u8> {
         self.push(OP_DUP);
         self.push(OP_TOALTSTACK);
 
-        // new leaf (nonzero): SHA256("PermLeaf" || spk || new_amt_8b)
+        // new leaf (nonzero): SHA256(Leaf || spk || new_amt_8b)
         self.push(OP_SWAP);
         self.push(OP_CAT);
-        self.push_data(b"PermLeaf");
+        self.push_data(&[PermNode::Leaf as u8]);
         self.push(OP_SWAP);
         self.push(OP_CAT);
         self.push(OP_SHA256);
 
         // empty leaf hash
-        self.push_data(b"PermEmpty");
+        self.push_data(&[PermNode::Empty as u8]);
         self.push(OP_SHA256);
 
         // select new_leaf based on is_zero; re-stash is_zero and spk_dup
@@ -306,13 +310,13 @@ impl PermRedeemScript for Vec<u8> {
 
         self.push(OP_TOALTSTACK); // stash new_leaf
 
-        // old leaf hash: SHA256("PermLeaf" || spk || amount)
+        // old leaf hash: SHA256(Leaf || spk || amount)
         self.push(OP_FROMALTSTACK); // new_leaf
         self.push(OP_FROMALTSTACK); // spk_dup
 
         self.push(OP_ROT); // [new_leaf, spk_dup, amount]
         self.push(OP_CAT); // [new_leaf, spk_dup||amount]
-        self.push_data(b"PermLeaf");
+        self.push_data(&[PermNode::Leaf as u8]);
         self.push(OP_SWAP);
         self.push(OP_CAT);
         self.push(OP_SHA256);
@@ -378,6 +382,14 @@ impl PermRedeemScript for Vec<u8> {
     }
 
     fn emit_verify_outputs(&mut self, redeem_script_len: i64) {
+        // enforce output 0's payout >= deduct (#77). Main: [deduct, new_root, new_uncl_8b].
+        self.push(OP_FALSE); // output index 0
+        self.push(OP_TXOUTPUTAMOUNT); // [deduct, new_root, new_uncl_8b, out0_amount]
+        self.push_i64(3);
+        self.push(OP_PICK); // copy deduct to top -> [..., out0_amount, deduct]
+        self.push(OP_GREATERTHANOREQUAL); // out0_amount >= deduct
+        self.push(OP_VERIFY); // back to [deduct, new_root, new_uncl_8b]
+
         // enforce output_count <= MAX_OUTPUTS
         self.push(OP_TXOUTPUTCOUNT);
         self.push_i64(MAX_OUTPUTS);
@@ -402,6 +414,17 @@ impl PermRedeemScript for Vec<u8> {
             self.push(OP_COVOUTCOUNT);
             self.push_i64(0);
             self.push(OP_EQUALVERIFY);
+
+            // No continuation output holds the permission UTXO's residual rent, so fold it into the
+            // final payout: output 0 value >= deduct + input 0 value. Main in/out: [deduct].
+            self.push(OP_FALSE); // output index 0
+            self.push(OP_TXOUTPUTAMOUNT); // [deduct, out0]
+            self.push(OP_OVER); // copy deduct -> [deduct, out0, deduct]
+            self.push(OP_TXINPUTINDEX);
+            self.push(OP_TXINPUTAMOUNT); // [deduct, out0, deduct, in0]
+            self.push(OP_ADD); // [deduct, out0, deduct + in0]
+            self.push(OP_GREATERTHANOREQUAL); // out0 >= deduct + in0
+            self.push(OP_VERIFY); // back to [deduct]
         }
         self.push(OP_ELSE);
         {
@@ -453,6 +476,14 @@ impl PermRedeemScript for Vec<u8> {
             self.push(OP_COVOUTPUTIDX); // [..., output_idx]
             self.push_i64(1);
             self.push(OP_EQUALVERIFY); // [...]
+
+            // The permission UTXO's residual rent must pass through unchanged into the
+            // continuation: output 1 value == input 0 value. Main in/out: [deduct].
+            self.push(OP_TXINPUTINDEX);
+            self.push(OP_TXINPUTAMOUNT); // [deduct, in0]
+            self.push_i64(1);
+            self.push(OP_TXOUTPUTAMOUNT); // [deduct, in0, out1]
+            self.push(OP_NUMEQUALVERIFY); // in0 == out1, back to [deduct]
         }
         self.push(OP_ENDIF);
     }
@@ -575,7 +606,7 @@ impl PermRedeemScript for Vec<u8> {
         // dir == 0: Cat -> current||sib
         self.push(OP_ENDIF);
         self.push(OP_CAT);
-        self.push_data(b"PermBranch");
+        self.push_data(&[PermNode::Branch as u8]);
         self.push(OP_SWAP);
         self.push(OP_CAT);
         self.push(OP_SHA256);
@@ -698,9 +729,9 @@ mod tests {
 
     #[test]
     fn const_fn_length_is_linear_in_depth() {
-        // Closed form: 488 bytes at depth 1, +40 (two Merkle walks) per extra depth.
-        assert_eq!(perm_redeem_script_len(1), 488);
-        assert_eq!(perm_redeem_script_len(PERM_MAX_DEPTH), 488 + 40 * (PERM_MAX_DEPTH - 1));
+        // Closed form: 467 bytes at depth 1, +22 (two Merkle walks) per extra depth.
+        assert_eq!(perm_redeem_script_len(1), 467);
+        assert_eq!(perm_redeem_script_len(PERM_MAX_DEPTH), 467 + 22 * (PERM_MAX_DEPTH - 1));
         for depth in 1..PERM_MAX_DEPTH {
             assert_eq!(
                 perm_redeem_script_len(depth + 1) - perm_redeem_script_len(depth),
@@ -714,8 +745,8 @@ mod tests {
         // Proves it is genuinely a `const fn` (usable in const context, the whole point).
         const AT_MIN: usize = perm_redeem_script_len(1);
         const AT_MAX: usize = perm_redeem_script_len(PERM_MAX_DEPTH);
-        assert_eq!(AT_MIN, 488);
-        assert_eq!(AT_MAX, 1728); // 448 + 40 * 32
+        assert_eq!(AT_MIN, 467);
+        assert_eq!(AT_MAX, 1149); // 467 + 22 * 31
     }
 
     #[test]

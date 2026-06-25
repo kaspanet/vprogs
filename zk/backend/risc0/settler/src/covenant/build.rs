@@ -86,8 +86,14 @@ pub async fn bootstrap_dev_covenant<C: RpcApi + ?Sized>(
 pub fn dev_bootstrap_redeem(lane_key: &Hash) -> (Vec<u8>, ScriptPublicKey) {
     let state = EMPTY_HASH;
     let lane_tip = Hash::default();
-    let redeem_len = dev_redeem_script_len(&state, lane_key);
-    let redeem = build_dev_redeem_script(&state, &lane_tip, lane_key, redeem_len);
+    let redeem_len = dev_redeem_script_len(&state, lane_key, DEFAULT_PERMISSION_OUTPUT_VALUE);
+    let redeem = build_dev_redeem_script(
+        &state,
+        &lane_tip,
+        lane_key,
+        redeem_len,
+        DEFAULT_PERMISSION_OUTPUT_VALUE,
+    );
     let spk = pay_to_script_hash_script(&redeem);
     (redeem, spk)
 }
@@ -188,7 +194,7 @@ pub fn build_dev_settlement(
     );
     assert_eq!(
         artifact.permission_spk_hash, [0u8; 32],
-        "dev settlement does not support permission exits (the dev redeem pins output count to 1)",
+        "this dev settlement builder does not wire permission exits through the artifact yet",
     );
 
     let settlement = Settlement::build_dev(&SettlementDevInput {
@@ -202,6 +208,8 @@ pub fn build_dev_settlement(
         claimed_seq_commit: artifact.new_seq_commit,
         prev_outpoint: cov.outpoint,
         value: cov.value,
+        permission_spk_hash: &[0u8; 32],
+        permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
     });
     let continuation_spk = pay_to_script_hash_script(&settlement.next_redeem);
 
@@ -228,8 +236,15 @@ pub fn covenant_from_settlement(
 ) -> CovenantState {
     let spk = match mode {
         SettlementMode::Dev => {
-            let len = dev_redeem_script_len(&s.new_state, lane_key);
-            let redeem = build_dev_redeem_script(&s.new_state, &s.new_lane_tip, lane_key, len);
+            let len =
+                dev_redeem_script_len(&s.new_state, lane_key, DEFAULT_PERMISSION_OUTPUT_VALUE);
+            let redeem = build_dev_redeem_script(
+                &s.new_state,
+                &s.new_lane_tip,
+                lane_key,
+                len,
+                DEFAULT_PERMISSION_OUTPUT_VALUE,
+            );
             pay_to_script_hash_script(&redeem)
         }
         SettlementMode::Production => {

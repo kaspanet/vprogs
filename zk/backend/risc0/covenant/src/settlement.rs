@@ -224,20 +224,31 @@ impl Settlement {
     /// Builds a dev-mode settlement transaction. Uses the [`build_dev_redeem_script`] redeem
     /// variant so the test path can drive the full chain pipeline (mempool, block inclusion,
     /// acceptance) without a real ZK seal.
+    ///
+    /// Output layout mirrors [`Settlement::build`]:
+    /// - **No exits** (`permission_spk_hash == [0; 32]`): one continuation output (index 0)
+    ///   carrying the full input value.
+    /// - **Exits** (`permission_spk_hash != [0; 32]`): two covenant-bound outputs - index 0 the
+    ///   continuation (value `input.value - input.permission_output_value`), index 1 the permission
+    ///   exit (value `input.permission_output_value`, SPK
+    ///   `permission_spk(input.permission_spk_hash)`).
     pub fn build_dev(input: &SettlementDevInput<'_>) -> Self {
-        let redeem_len = dev_redeem_script_len(input.prev_state, input.lane_key);
+        let redeem_len =
+            dev_redeem_script_len(input.prev_state, input.lane_key, input.permission_output_value);
 
         let prev_redeem = build_dev_redeem_script(
             input.prev_state,
             input.prev_lane_tip,
             input.lane_key,
             redeem_len,
+            input.permission_output_value,
         );
         let next_redeem = build_dev_redeem_script(
             input.new_state,
             input.new_lane_tip,
             input.lane_key,
             redeem_len,
+            input.permission_output_value,
         );
 
         let sig_script = sig_script_dev(
@@ -249,16 +260,40 @@ impl Settlement {
         );
 
         let tx_input = TransactionInput::new(input.prev_outpoint, sig_script, 0, 1);
-        let tx_output = TransactionOutput::with_covenant(
-            input.value,
-            pay_to_script_hash_script(&next_redeem),
-            Some(CovenantBinding::new(0, input.covenant_id)),
-        );
+
+        let outputs = if input.permission_spk_hash == &[0u8; 32] {
+            // No exits: single continuation output carrying the full covenant value.
+            vec![TransactionOutput::with_covenant(
+                input.value,
+                pay_to_script_hash_script(&next_redeem),
+                Some(CovenantBinding::new(0, input.covenant_id)),
+            )]
+        } else {
+            // Exits present: split the covenant value between the continuation (output 0) and
+            // the permission exit (output 1). Order is load-bearing - the script reads output 1
+            // by index.
+            let continuation_value = input
+                .value
+                .checked_sub(input.permission_output_value)
+                .expect("covenant value must cover the permission output");
+            vec![
+                TransactionOutput::with_covenant(
+                    continuation_value,
+                    pay_to_script_hash_script(&next_redeem),
+                    Some(CovenantBinding::new(0, input.covenant_id)),
+                ),
+                TransactionOutput::with_covenant(
+                    input.permission_output_value,
+                    permission_spk(input.permission_spk_hash),
+                    Some(CovenantBinding::new(0, input.covenant_id)),
+                ),
+            ]
+        };
 
         let tx = Transaction::new(
             TX_VERSION_TOCCATA,
             vec![tx_input],
-            vec![tx_output],
+            outputs,
             0,
             SUBNETWORK_ID_NATIVE,
             0,
@@ -594,6 +629,8 @@ mod tests {
             claimed_seq_commit: Hash::from_bytes([0x66; 32]),
             prev_outpoint: TransactionOutpoint::new(Hash::from_bytes([0x77; 32]), 0),
             value: 100_000_000,
+            permission_spk_hash: &[0u8; 32],
+            permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
         };
 
         let settlement = Settlement::build_dev(&input);
@@ -606,5 +643,301 @@ mod tests {
             Some(CovenantBinding::new(0, Hash::from_bytes([0xAA; 32]))),
         );
         assert_ne!(settlement.prev_redeem, settlement.next_redeem);
+    }
+}
+
+/// Engine-level proof that the continuation-output value constraint (issue #76) is enforced
+/// on chain. These tests drive a covenant input-0 spend through the real Kaspa
+/// `TxScriptEngine` and call `execute()` UNCONDITIONALLY (no `dev_mode_enabled()` gate; the
+/// historical gating is exactly why the missing amount check went unnoticed).
+///
+/// The vehicle is the dev redeem script (`build_dev_redeem_script`): it has no journal / proof
+/// branch, so a valid input-0 sig_script is fully constructible without a real ZK seal, yet it
+/// runs the same output-count branch (`verify_dev_outputs`) the production script does in
+/// `verify_outputs_and_append_perm_hash`, sharing the `verify_continuation_value`,
+/// `verify_permission_output_value`, and `extract_and_match_permission_spk` helpers. The dev path
+/// exercises BOTH branches: the count==1 tests cover the no-exits continuation-value check, and
+/// the count==2 (`dev_exits_*`) tests cover the exits layout - the continuation-value split, the
+/// permission-output-value pin, and the permission-SPK rebuild/match. The production count==2
+/// branch differs only in appending the extracted hash to its journal preimage; that journal /
+/// proof path requires a real seal (CUDA-only) and is out of scope for a host dev-mode test.
+#[cfg(test)]
+mod engine_value_spend_tests {
+    use std::collections::HashMap;
+
+    use kaspa_consensus_core::tx::TransactionOutpoint;
+    use kaspa_txscript::{opcodes::codes::OpTrue, standard::pay_to_script_hash_script};
+
+    use super::*;
+    use crate::script::DEFAULT_PERMISSION_OUTPUT_VALUE;
+
+    /// HashMap-backed `OpChainblockSeqCommit` accessor: `block_prove_to -> claimed_seq_commit`.
+    /// Reports the mapped block as a selected, in-depth ancestor so the dev script's
+    /// `OpChainblockSeqCommit` resolves and its `OpEqualVerify` against the sig-script's
+    /// `claimed_seq_commit` passes.
+    struct MockSeqCommitAccessor(HashMap<Hash, Hash>);
+
+    impl SeqCommitAccessor for MockSeqCommitAccessor {
+        fn is_chain_ancestor_from_pov(&self, block_hash: Hash) -> Option<bool> {
+            self.0.contains_key(&block_hash).then_some(true)
+        }
+        fn seq_commitment_within_depth(&self, block_hash: Hash) -> Option<Hash> {
+            self.0.get(&block_hash).copied()
+        }
+    }
+
+    const COVENANT_ID: Hash = Hash::from_bytes([0xAA; 32]);
+    const PREV_STATE: [u8; 32] = [0x11; 32];
+    const PREV_LANE_TIP: Hash = Hash::from_bytes([0x22; 32]);
+    const LANE_KEY: Hash = Hash::from_bytes([0xEE; 32]);
+    const NEW_STATE: [u8; 32] = [0x33; 32];
+    const NEW_LANE_TIP: Hash = Hash::from_bytes([0x44; 32]);
+    const BLOCK_PROVE_TO: Hash = Hash::from_bytes([0x55; 32]);
+    const CLAIMED_SEQ_COMMIT: Hash = Hash::from_bytes([0x99; 32]);
+    const COVENANT_VALUE: u64 = 100_000_000;
+    /// Non-zero permission-spk hash that selects the count==2 (exits) dev layout.
+    const PERMISSION_SPK_HASH: [u8; 32] = [0x77; 32];
+
+    fn dev_settlement() -> Settlement {
+        let input = SettlementDevInput {
+            covenant_id: COVENANT_ID,
+            prev_state: &PREV_STATE,
+            prev_lane_tip: &PREV_LANE_TIP,
+            lane_key: &LANE_KEY,
+            new_state: &NEW_STATE,
+            new_lane_tip: &NEW_LANE_TIP,
+            block_prove_to: BLOCK_PROVE_TO,
+            claimed_seq_commit: CLAIMED_SEQ_COMMIT,
+            prev_outpoint: TransactionOutpoint::new(Hash::from_bytes([0x77; 32]), 0),
+            value: COVENANT_VALUE,
+            permission_spk_hash: &[0u8; 32],
+            permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
+        };
+        Settlement::build_dev(&input)
+    }
+
+    /// Dev settlement in the count==2 (exits) layout: a non-zero `permission_spk_hash` and a
+    /// covenant value large enough to cover the permission-exit split.
+    fn dev_settlement_with_exits() -> Settlement {
+        let value = 10 * DEFAULT_PERMISSION_OUTPUT_VALUE;
+        let input = SettlementDevInput {
+            covenant_id: COVENANT_ID,
+            prev_state: &PREV_STATE,
+            prev_lane_tip: &PREV_LANE_TIP,
+            lane_key: &LANE_KEY,
+            new_state: &NEW_STATE,
+            new_lane_tip: &NEW_LANE_TIP,
+            block_prove_to: BLOCK_PROVE_TO,
+            claimed_seq_commit: CLAIMED_SEQ_COMMIT,
+            prev_outpoint: TransactionOutpoint::new(Hash::from_bytes([0x77; 32]), 0),
+            value,
+            permission_spk_hash: &PERMISSION_SPK_HASH,
+            permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
+        };
+        Settlement::build_dev(&input)
+    }
+
+    fn accessor() -> MockSeqCommitAccessor {
+        MockSeqCommitAccessor(HashMap::from([(BLOCK_PROVE_TO, CLAIMED_SEQ_COMMIT)]))
+    }
+
+    /// Runs the script engine over input 0 of `tx`, spending a covenant UTXO of `utxo_value`
+    /// reconstructed from `prev_redeem`. Returns the `execute()` result UNGATED, mapping the
+    /// engine error to its `Debug` string (the error type is not re-exported by kaspa-txscript).
+    fn run_engine(
+        tx: &Transaction,
+        prev_redeem: &[u8],
+        utxo_value: u64,
+        accessor: &dyn SeqCommitAccessor,
+    ) -> Result<(), String> {
+        let utxo = UtxoEntry::new(
+            utxo_value,
+            pay_to_script_hash_script(prev_redeem),
+            0,
+            false,
+            Some(COVENANT_ID),
+        );
+        let sig_cache = Cache::new(1);
+        let reused = SigHashReusedValuesUnsync::new();
+        let flags = EngineFlags { covenants_enabled: true, ..Default::default() };
+        let populated = PopulatedTransaction::new(tx, vec![utxo.clone()]);
+        let cov_ctx =
+            CovenantsContext::from_tx(&populated).expect("covenant continuity validation");
+        let exec_ctx = EngineContext::new(&sig_cache)
+            .with_reused(&reused)
+            .with_seq_commit_accessor(accessor)
+            .with_covenants_ctx(&cov_ctx);
+        let mut vm = TxScriptEngine::from_transaction_input(
+            &populated,
+            &tx.inputs[0],
+            0,
+            &utxo,
+            exec_ctx,
+            flags,
+        );
+        vm.execute().map_err(|e| format!("{e:?}"))
+    }
+
+    /// Positive: the honest dev settlement (continuation output 0 == full covenant value)
+    /// passes the engine. Exercises `verify_continuation_value(.., 0)` on the count==1 path.
+    #[test]
+    fn honest_continuation_value_verifies() {
+        let settlement = dev_settlement();
+        assert_eq!(settlement.transaction.outputs.len(), 1);
+        assert_eq!(settlement.transaction.outputs[0].value, COVENANT_VALUE);
+        run_engine(&settlement.transaction, &settlement.prev_redeem, COVENANT_VALUE, &accessor())
+            .expect("honest settlement must verify");
+    }
+
+    /// Malleation rejection: take the honest settlement, keep input 0's sig_script and the
+    /// covenant continuation output's SPK/binding, but shrink output 0's value and divert the
+    /// freed value to a fresh non-covenant attacker output (keeping inputs >= outputs balanced
+    /// so the consensus fee check still passes). The new `OpNumEqualVerify` on
+    /// `out0_value == in0_value` must reject this.
+    #[test]
+    fn malleated_continuation_value_rejected() {
+        let settlement = dev_settlement();
+        let mut tx = settlement.transaction.clone();
+
+        // Shrink the continuation output and divert the difference to an attacker output.
+        let divert: u64 = COVENANT_VALUE - 1; // leave 1 sompi in the continuation
+        tx.outputs[0].value -= divert;
+        // Plain (non-covenant) P2SH paying the diverted balance to the attacker.
+        let attacker_spk = pay_to_script_hash_script(&[OpTrue]);
+        tx.outputs.push(TransactionOutput::new(divert, attacker_spk));
+
+        // The covenant UTXO still holds the full COVENANT_VALUE, and outputs still sum to it,
+        // so the engine's inputs >= outputs check passes and the malleation must be caught by
+        // the in-script amount constraint, not the fee check.
+        let result = run_engine(&tx, &settlement.prev_redeem, COVENANT_VALUE, &accessor());
+        assert!(
+            result.is_err(),
+            "malleated continuation value (output 0 shrunk, balance diverted) must be rejected",
+        );
+    }
+
+    /// Control: a settlement whose continuation output is shrunk WITHOUT the new constraint
+    /// would have passed. Confirms the rejection above is the amount check firing and not an
+    /// unrelated engine failure, by asserting the honest tx with the SAME structure (one
+    /// covenant output, full value) verifies; the only difference from the rejected case is
+    /// output 0's value and the extra attacker output.
+    #[test]
+    fn rejection_is_the_amount_check_not_structure() {
+        // Honest single-output tx verifies (baseline).
+        let settlement = dev_settlement();
+        run_engine(&settlement.transaction, &settlement.prev_redeem, COVENANT_VALUE, &accessor())
+            .expect("baseline honest tx must verify");
+
+        // Same tx but with only output 0's value reduced while the covenant UTXO still holds
+        // the full COVENANT_VALUE (the missing value just becomes implicit fee; outputs <
+        // inputs is allowed by the consensus fee check). This isolates the in-script amount
+        // constraint (`out0 == in0`) as the cause of failure: structure is identical to the
+        // verifying baseline, only output 0's value differs from the input value.
+        let mut tx = settlement.transaction.clone();
+        tx.outputs[0].value = COVENANT_VALUE - 1;
+        let result = run_engine(&tx, &settlement.prev_redeem, COVENANT_VALUE, &accessor());
+        assert!(
+            result.is_err(),
+            "shrinking the continuation output below the covenant input value must be rejected",
+        );
+    }
+
+    /// Positive: the honest two-output (count==2) dev settlement passes the engine. Exercises
+    /// the count==2 branch end to end - continuation value split, permission-output-value pin,
+    /// and permission-SPK rebuild/match.
+    #[test]
+    fn dev_exits_honest_two_outputs_verify() {
+        let settlement = dev_settlement_with_exits();
+        let value = 10 * DEFAULT_PERMISSION_OUTPUT_VALUE;
+        assert_eq!(settlement.transaction.outputs.len(), 2);
+        assert_eq!(
+            settlement.transaction.outputs[0].value,
+            value - DEFAULT_PERMISSION_OUTPUT_VALUE,
+        );
+        assert_eq!(settlement.transaction.outputs[1].value, DEFAULT_PERMISSION_OUTPUT_VALUE);
+        run_engine(&settlement.transaction, &settlement.prev_redeem, value, &accessor())
+            .expect("honest two-output settlement must verify");
+    }
+
+    /// Malleation rejection: keep the sig_script and both covenant outputs' SPKs / bindings,
+    /// shrink output 0's value and divert the freed value to a fresh non-covenant attacker
+    /// output (keeping inputs >= outputs balanced). The count==2 `out0 == in0 - perm` check
+    /// must reject this.
+    #[test]
+    fn dev_exits_malleated_continuation_rejected() {
+        let settlement = dev_settlement_with_exits();
+        let value = 10 * DEFAULT_PERMISSION_OUTPUT_VALUE;
+        let mut tx = settlement.transaction.clone();
+
+        let divert: u64 = tx.outputs[0].value - 1; // leave 1 sompi in the continuation
+        tx.outputs[0].value -= divert;
+        let attacker_spk = pay_to_script_hash_script(&[OpTrue]);
+        tx.outputs.push(TransactionOutput::new(divert, attacker_spk));
+
+        let result = run_engine(&tx, &settlement.prev_redeem, value, &accessor());
+        assert!(
+            result.is_err(),
+            "shrinking output 0 in the count==2 layout must be rejected by the continuation check",
+        );
+    }
+
+    /// Malleation rejection: keep structure, change output 1's value away from
+    /// `permission_output_value` (shrink it, divert the freed value to a non-covenant attacker
+    /// output, keep balance). The count==2 `out1 == perm_value` check must reject this.
+    #[test]
+    fn dev_exits_malleated_permission_output_value_rejected() {
+        let settlement = dev_settlement_with_exits();
+        let value = 10 * DEFAULT_PERMISSION_OUTPUT_VALUE;
+        let mut tx = settlement.transaction.clone();
+
+        let divert: u64 = tx.outputs[1].value - 1; // leave 1 sompi on the permission output
+        tx.outputs[1].value -= divert;
+        let attacker_spk = pay_to_script_hash_script(&[OpTrue]);
+        tx.outputs.push(TransactionOutput::new(divert, attacker_spk));
+
+        let result = run_engine(&tx, &settlement.prev_redeem, value, &accessor());
+        assert!(
+            result.is_err(),
+            "changing output 1's value away from permission_output_value must be rejected",
+        );
+    }
+
+    /// Malleation rejection: keep structure and values but replace output 1's SPK with a
+    /// non-P2SH SPK. The count==2 SPK rebuild/match (`extract_and_match_permission_spk`)
+    /// reconstructs the canonical 37-byte permission P2SH from the bytes at offset [4..36] and
+    /// asserts it equals the actual SPK, so a malformed SPK must be rejected.
+    ///
+    /// (The dev script has no journal, so it cannot pin a *specific* permission hash the way the
+    /// production count==2 branch does; it can only require output 1 to be a well-formed
+    /// covenant-bound permission P2SH. Production additionally binds the exact hash via the
+    /// journal preimage.)
+    #[test]
+    fn dev_exits_diverted_permission_spk_rejected() {
+        let settlement = dev_settlement_with_exits();
+        let value = 10 * DEFAULT_PERMISSION_OUTPUT_VALUE;
+        let mut tx = settlement.transaction.clone();
+
+        // Same covenant binding and value, but a non-P2SH SPK (not the
+        // `OpBlake2b | OpData32 | hash | OpEqual` shape): rebuilding a P2SH from the bytes at
+        // offset [4..36] does not reproduce this SPK, so the match fails.
+        tx.outputs[1].script_public_key =
+            ScriptPublicKey::new(MAX_SCRIPT_PUBLIC_KEY_VERSION, vec![OpTrue; 37].into());
+
+        let result = run_engine(&tx, &settlement.prev_redeem, value, &accessor());
+        assert!(
+            result.is_err(),
+            "replacing output 1's SPK with a non-permission-P2SH SPK must be rejected",
+        );
+    }
+
+    /// Control: confirm the honest two-output tx verifies as the baseline, so the
+    /// `dev_exits_*` rejections above are the specific count==2 checks firing rather than an
+    /// unrelated structural failure.
+    #[test]
+    fn dev_exits_rejection_is_the_checks_not_structure() {
+        let settlement = dev_settlement_with_exits();
+        let value = 10 * DEFAULT_PERMISSION_OUTPUT_VALUE;
+        run_engine(&settlement.transaction, &settlement.prev_redeem, value, &accessor())
+            .expect("baseline honest two-output tx must verify");
     }
 }

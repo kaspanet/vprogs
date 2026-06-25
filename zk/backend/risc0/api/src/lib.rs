@@ -3,6 +3,7 @@
 extern crate alloc;
 
 mod permission_script;
+mod permission_tags;
 mod permission_tree;
 mod proof_type;
 
