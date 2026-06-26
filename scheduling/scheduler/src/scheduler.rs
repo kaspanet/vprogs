@@ -326,8 +326,11 @@ impl<S: Store, P: Processor<S>> ChainSink<P::BatchMetadata, P::Transaction> for 
     }
 
     fn finalize(&mut self, below: u64) {
-        self.canonical_chain_manager.finalize(below);
+        // Set the prune target.
         self.pruning().set_threshold(below);
+
+        // Finalize up to the point the pruning worker has reached; pruning needs canonical data.
+        self.canonical_chain_manager.finalize(self.state.root().index());
     }
 
     fn tip(&self) -> u64 {
