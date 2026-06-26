@@ -1,6 +1,6 @@
 use vprogs_core_smt::Tree;
 use vprogs_core_types::BatchMetadata;
-use vprogs_storage_canonical_chain::{CanonicalChain, CanonicalWriter};
+use vprogs_storage_canonical_chain::{CanonicalChain, CanonicalChainManager};
 
 use crate::{StateSpace, WriteBatch};
 
@@ -27,14 +27,14 @@ pub trait Store: Tree + Clone + Send + Sync + 'static {
     /// Returns the store's shared canonical-chain read oracle.
     fn canonical_chain(&self) -> CanonicalChain;
 
-    /// Restores a single-owner canonical-chain writer driving this store's oracle, replaying the
+    /// Restores a single-owner canonical-chain manager driving this store's oracle, replaying the
     /// committed `BatchMetadata` so each batch's id equals its stored index.
-    fn canonical_writer<M: BatchMetadata>(&self) -> CanonicalWriter<M> {
+    fn canonical_chain_manager<M: BatchMetadata>(&self) -> CanonicalChainManager<M> {
         let entries = self.prefix_iter(StateSpace::BatchMetadata, &[]).map(|(key, value)| {
             let id = u64::from_be_bytes(key[..8].try_into().expect("corrupted batch index key"));
             let metadata: M = borsh::from_slice(&value).expect("corrupted batch metadata");
             (id, metadata)
         });
-        CanonicalWriter::restore(self.canonical_chain(), entries)
+        CanonicalChainManager::new(self.canonical_chain(), entries)
     }
 }

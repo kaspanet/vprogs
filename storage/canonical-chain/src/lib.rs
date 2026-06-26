@@ -3,9 +3,9 @@
 
 mod bucket;
 mod chain;
-mod view;
-mod writer;
+mod manager;
+mod snapshot;
 
 pub use chain::CanonicalChain;
-pub use view::View;
-pub use writer::{Appended, CanonicalWriter};
+pub use manager::{Appended, CanonicalChainManager};
+pub use snapshot::CanonicalChainSnapshot;

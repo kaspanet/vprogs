@@ -9,15 +9,15 @@ use vprogs_core_types::{ChainSink, SchedulerTransaction};
 use vprogs_l1_bridge::{Command, L1Bridge, L1BridgeConfig, L1Event};
 use vprogs_l1_types::{ChainBlockMetadata, ConnectStrategy, Hash, L1Transaction, NetworkType};
 use vprogs_node_test_utils::{L1BridgeExt, L1Node};
-use vprogs_storage_canonical_chain::CanonicalWriter;
+use vprogs_storage_canonical_chain::CanonicalChainManager;
 
 // Timeout for waiting for events / scheduled blocks.
 const TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A [`ChainSink`] that records what the bridge drives into it, for assertions.
 ///
-/// It wraps a real [`CanonicalWriter`] (the same chain logic the scheduler uses) so reads
-/// (`tip`/`metadata`/`id_of`) and reorgs behave correctly, and logs each scheduled block and reorg
+/// It wraps a real [`CanonicalChainManager`] (the same chain logic the scheduler uses) so reads
+/// (`tip`/`metadata`/`id`) and reorgs behave correctly, and logs each scheduled block and reorg
 /// into a shared buffer the test inspects. Cloning shares the buffer, so the test keeps one clone
 /// while the bridge owns another on its worker thread.
 #[derive(Clone)]
@@ -25,7 +25,7 @@ struct RecordingSink(Arc<Mutex<SinkInner>>);
 
 struct SinkInner {
     /// The canonical chain the bridge drives, providing the ids/metadata it reads back.
-    writer: CanonicalWriter<ChainBlockMetadata>,
+    manager: CanonicalChainManager<ChainBlockMetadata>,
     /// Each scheduled block as `(id, metadata, tx_count)`, in order.
     scheduled: Vec<(u64, ChainBlockMetadata, usize)>,
     /// The `new_tip` of each reorg, in order.
@@ -35,7 +35,7 @@ struct SinkInner {
 impl RecordingSink {
     fn new() -> Self {
         Self(Arc::new(Mutex::new(SinkInner {
-            writer: CanonicalWriter::new(),
+            manager: CanonicalChainManager::default(),
             scheduled: Vec::new(),
             reorgs: Vec::new(),
         })))
@@ -45,7 +45,7 @@ impl RecordingSink {
     /// so the bridge resumes from it rather than seeding from genesis.
     fn seed(&self, metadata: ChainBlockMetadata) {
         let mut inner = self.0.lock().unwrap();
-        let id = inner.writer.append(metadata).id;
+        let id = inner.manager.append(metadata).id;
         inner.scheduled.push((id, metadata, 0));
     }
 
@@ -96,31 +96,31 @@ impl ChainSink<ChainBlockMetadata, L1Transaction> for RecordingSink {
         txs: Vec<SchedulerTransaction<L1Transaction>>,
     ) -> u64 {
         let mut inner = self.0.lock().unwrap();
-        let id = inner.writer.append(metadata).id;
+        let id = inner.manager.append(metadata).id;
         inner.scheduled.push((id, metadata, txs.len()));
         id
     }
 
     fn rollback(&mut self, new_tip: u64) {
         let mut inner = self.0.lock().unwrap();
-        inner.writer.rollback(new_tip);
+        inner.manager.rollback(new_tip);
         inner.reorgs.push(new_tip);
     }
 
     fn finalize(&mut self, below: u64) {
-        self.0.lock().unwrap().writer.finalize(below);
+        self.0.lock().unwrap().manager.finalize(below);
     }
 
     fn tip(&self) -> u64 {
-        self.0.lock().unwrap().writer.tip()
+        self.0.lock().unwrap().manager.chain().tip()
     }
 
     fn metadata(&self, id: u64) -> Option<ChainBlockMetadata> {
-        self.0.lock().unwrap().writer.metadata(id).copied()
+        self.0.lock().unwrap().manager.metadata(id).copied()
     }
 
-    fn id_of(&self, block_hash: &[u8; 32]) -> Option<u64> {
-        self.0.lock().unwrap().writer.id_of(block_hash)
+    fn id(&self, block_hash: &[u8; 32]) -> Option<u64> {
+        self.0.lock().unwrap().manager.id(block_hash)
     }
 
     fn shutdown(self) {}

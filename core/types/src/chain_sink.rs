@@ -20,7 +20,7 @@ pub trait ChainSink<M, Tx> {
     fn metadata(&self, id: u64) -> Option<M>;
 
     /// The id assigned to `block_hash`, or `None` if the block has not been seen.
-    fn id_of(&self, block_hash: &[u8; 32]) -> Option<u64>;
+    fn id(&self, block_hash: &[u8; 32]) -> Option<u64>;
 
     /// Shuts down cleanly, consuming the sink.
     fn shutdown(self);

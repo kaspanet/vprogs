@@ -7,7 +7,7 @@ use tap::Tap;
 use vprogs_core_types::{ChainSink, Checkpoint, ResourceId, SchedulerTransaction};
 use vprogs_scheduling_execution_workers::ExecutionWorkers;
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
-use vprogs_storage_canonical_chain::CanonicalWriter;
+use vprogs_storage_canonical_chain::CanonicalChainManager;
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_types::Store;
 
@@ -41,7 +41,7 @@ pub struct Scheduler<S: Store, P: Processor<S>> {
     /// Background worker that prunes old state data when the pruning threshold advances.
     pruning_worker: PruningWorker<S, P>,
     /// Assigns never-reused batch ids and drives the canonical oracle.
-    canonical_writer: CanonicalWriter<P::BatchMetadata>,
+    canonical_chain_manager: CanonicalChainManager<P::BatchMetadata>,
 }
 
 impl<S: Store, P: Processor<S>> Scheduler<S, P> {
@@ -49,7 +49,8 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
     pub fn new(execution_config: ExecutionConfig<P>, storage_config: StorageConfig<S>) -> Self {
         let (worker_count, processor) = execution_config.unpack();
         let state = SchedulerState::new(storage_config);
-        let canonical_writer = state.storage().store().canonical_writer::<P::BatchMetadata>();
+        let canonical_chain_manager =
+            state.storage().store().canonical_chain_manager::<P::BatchMetadata>();
         Self {
             batch_lifecycle_worker: BatchLifecycleWorker::new(),
             pruning_worker: PruningWorker::new(state.clone()),
@@ -59,7 +60,7 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
             cancellation: CancellationContext::new(state.root().index()),
             state,
             processor,
-            canonical_writer,
+            canonical_chain_manager,
         }
     }
 
@@ -132,6 +133,11 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
                 return Err(SchedulerError::PruningConflict);
             }
 
+            // Snapshot the canonical chain before cancel_and_rollback flips the orphaned bits, so
+            // the rollback reverts only batches being orphaned now and skips
+            // already-orphaned gap ids.
+            let snapshot = self.canonical_chain_manager.chain().snapshot();
+
             // Look up target metadata, cancel in-flight batches, and update shared state.
             let target = self.cancel_and_rollback(target_index);
 
@@ -140,6 +146,7 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
             self.state.storage().submit_write(Write::Rollback(Rollback::new(
                 target.clone(),
                 upper_bound,
+                snapshot,
                 self.state.clone(),
                 &done_signal,
             )));
@@ -178,6 +185,11 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
     /// Returns a reference to the pruning worker.
     pub fn pruning(&self) -> &PruningWorker<S, P> {
         &self.pruning_worker
+    }
+
+    /// Returns a mutable handle to the canonical-chain manager, the chain's sole writer.
+    pub fn canonical_chain_manager(&mut self) -> &mut CanonicalChainManager<P::BatchMetadata> {
+        &mut self.canonical_chain_manager
     }
 
     /// Shuts down the scheduler and all its components.
@@ -232,7 +244,7 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
     fn next_checkpoint(&mut self, metadata: P::BatchMetadata) -> Checkpoint<P::BatchMetadata> {
         self.drain_committed();
 
-        let index = self.canonical_writer.append(metadata.clone()).id;
+        let index = self.canonical_chain_manager.append(metadata.clone()).id;
         let checkpoint = Checkpoint::new(index, metadata);
         self.state.set_last_processed(Arc::new(checkpoint.clone()));
         self.pending_batches.push_back(checkpoint.clone());
@@ -260,7 +272,7 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
         self.state.set_last_processed(Arc::new(target.clone()));
 
         // Roll the canonical chain back to the target.
-        self.canonical_writer.rollback(target_index);
+        self.canonical_chain_manager.rollback(target_index);
 
         // Pop canceled entries from the tip. Must happen after lookup_checkpoint (which
         // searches the pending queue) but before returning.
@@ -314,20 +326,20 @@ impl<S: Store, P: Processor<S>> ChainSink<P::BatchMetadata, P::Transaction> for 
     }
 
     fn finalize(&mut self, below: u64) {
-        self.canonical_writer.finalize(below);
+        self.canonical_chain_manager.finalize(below);
         self.pruning().set_threshold(below);
     }
 
     fn tip(&self) -> u64 {
-        self.canonical_writer.tip()
+        self.canonical_chain_manager.chain().tip()
     }
 
     fn metadata(&self, id: u64) -> Option<P::BatchMetadata> {
-        self.canonical_writer.metadata(id).cloned()
+        self.canonical_chain_manager.metadata(id).cloned()
     }
 
-    fn id_of(&self, block_hash: &[u8; 32]) -> Option<u64> {
-        self.canonical_writer.id_of(block_hash)
+    fn id(&self, block_hash: &[u8; 32]) -> Option<u64> {
+        self.canonical_chain_manager.id(block_hash)
     }
 
     fn shutdown(self) {

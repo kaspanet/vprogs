@@ -275,7 +275,7 @@ fn prune_preserves_tree_integrity() {
 fn orphaned_version_is_skipped() {
     let dir = TempDir::new().unwrap();
     let store = RocksDbStore::open(dir.path());
-    let mut versions = store.canonical_writer::<u64>();
+    let mut versions = store.canonical_chain_manager::<u64>();
 
     // Version 1: insert key.
     versions.append(1);

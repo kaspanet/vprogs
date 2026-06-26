@@ -36,7 +36,7 @@ impl<C: Config> RocksDbStore<C> {
                 },
             ),
             write_opts: Arc::new(C::write_opts()),
-            canonical: CanonicalChain::new(),
+            canonical: CanonicalChain::default(),
             _marker: PhantomData,
         }
     }

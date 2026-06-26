@@ -6,20 +6,23 @@ use vprogs_core_types::{Checkpoint, ResourceId};
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_ptr_latest::StatePtrLatest;
 use vprogs_state_ptr_rollback::StatePtrRollback;
+use vprogs_storage_canonical_chain::CanonicalChainSnapshot;
 use vprogs_storage_types::Store;
 
 use crate::{Processor, state::SchedulerState};
 
-/// Represents a rollback operation that reverts all batches after a target checkpoint.
+/// Represents a rollback operation that reverts the canonical batches after a target checkpoint.
 ///
-/// Walks batches from `upper_bound` down to `target.index() + 1` in reverse order, restoring each
-/// affected resource to the version it had before the batch was applied.
+/// Walks the canonical batches from `upper_bound` down to `target.index() + 1` in reverse order,
+/// restoring each affected resource to the version it had before the batch was applied.
 pub struct Rollback<S: Store, P: Processor<S>> {
     /// The checkpoint we're rolling back to. Its metadata is resolved by the scheduler from
     /// in-memory state to avoid a disk read race condition.
     target: Checkpoint<P::BatchMetadata>,
     /// Upper bound of the batch index range to roll back (inclusive).
     upper_bound: u64,
+    /// Canonical chain snapshot from before the rollback.
+    snapshot: Arc<CanonicalChainSnapshot>,
     /// Shared scheduler state. Used to update `last_committed` and `root` alongside disk writes.
     state: SchedulerState<S, P>,
     /// Signal that resolves when the rollback operation is complete.
@@ -32,10 +35,11 @@ impl<S: Store, P: Processor<S>> Rollback<S, P> {
     pub fn new(
         target: Checkpoint<P::BatchMetadata>,
         upper_bound: u64,
+        snapshot: Arc<CanonicalChainSnapshot>,
         state: SchedulerState<S, P>,
         done_signal: &Arc<AtomicAsyncLatch>,
     ) -> Self {
-        Rollback { target, upper_bound, state, done_signal: done_signal.clone() }
+        Rollback { target, upper_bound, snapshot, state, done_signal: done_signal.clone() }
     }
 
     /// Executes the rollback on `store`.
@@ -63,8 +67,13 @@ impl<S: Store, P: Processor<S>> Rollback<S, P> {
 
         // Commit the latest-pointer repoints atomically.
         store.commit(store.write_batch().tap_mut(|wb| {
-            // Walk the orphaned batches newest to oldest, repointing each touched resource.
+            // Walk the orphaned batches newest to oldest, repointing each touched resource. Skip
+            // already-orphaned gap ids: their effect was undone when they were orphaned, and their
+            // retained rollback pointers would over-revert past kept (e.g. revived) batches.
             for index in (self.target.index() + 1..=self.upper_bound).rev() {
+                if !self.snapshot.is_canonical(index) {
+                    continue;
+                }
                 for (resource_id, old_version) in StatePtrRollback::iter_batch(store, index) {
                     let resource_id: ResourceId =
                         borsh::from_slice(&resource_id).expect("corrupted store: unrecoverable");

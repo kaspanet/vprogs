@@ -510,7 +510,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         let orphaned: Vec<u64> = response
             .removed_chain_block_hashes
             .iter()
-            .filter_map(|hash| self.sink.id_of(&hash.as_bytes()))
+            .filter_map(|hash| self.sink.id(&hash.as_bytes()))
             .collect();
 
         // None of the removed blocks are known to the scheduler (already finalized away) - nothing
@@ -558,7 +558,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
     async fn handle_finalization(&mut self) -> Result<()> {
         let pruning_hash = self.client.get_block_dag_info().await?.pruning_point_hash;
 
-        if let Some(below) = self.sink.id_of(&pruning_hash.as_bytes()) {
+        if let Some(below) = self.sink.id(&pruning_hash.as_bytes()) {
             self.sink.finalize(below);
             log::info!("L1 bridge: pruning point advanced to id {} (hash {})", below, pruning_hash);
         }
