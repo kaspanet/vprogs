@@ -10,6 +10,7 @@ pub enum Read<S: Store, P: Processor<S>> {
 }
 
 impl<S: Store, P: Processor<S>> ReadCmd for Read<S, P> {
+    /// Runs the variant's read against the store.
     fn exec<RS: ReadStore>(&self, store: &RS) {
         match self {
             Read::LatestData(resource_access) => resource_access.read_latest_data(store),
@@ -17,7 +18,7 @@ impl<S: Store, P: Processor<S>> ReadCmd for Read<S, P> {
     }
 }
 
-/// Commands dispatched to the storage manager's write worker.
+/// Commands dispatched to the storage managers write worker.
 pub enum Write<S: Store, P: Processor<S>> {
     /// Persist a resource's versioned data and rollback pointer.
     StateDiff(StateDiff<S, P>),
@@ -28,6 +29,7 @@ pub enum Write<S: Store, P: Processor<S>> {
 }
 
 impl<S: Store, P: Processor<S>> WriteCmd for Write<S, P> {
+    /// Applies the variant's write to the batch and returns it.
     fn exec<ST: Store>(&self, store: &ST, mut wb: ST::WriteBatch) -> ST::WriteBatch {
         match self {
             Write::StateDiff(state_diff) => state_diff.write(&mut wb),
@@ -37,11 +39,18 @@ impl<S: Store, P: Processor<S>> WriteCmd for Write<S, P> {
         wb
     }
 
-    fn done(self) {
+    /// Whole-batch commands (commit, rollback) flush immediately; diffs accumulate.
+    #[inline(always)]
+    fn flush_now(&self) -> bool {
+        matches!(self, Write::CommitBatch(_) | Write::Rollback(_))
+    }
+
+    /// Runs the variant's post-commit callback once its batch is flushed.
+    fn flushed(self) {
         match self {
-            Write::StateDiff(state_diff) => state_diff.write_done(),
             Write::CommitBatch(batch) => batch.commit_done(),
             Write::Rollback(rollback) => rollback.done(),
+            _ => {}
         }
     }
 }
