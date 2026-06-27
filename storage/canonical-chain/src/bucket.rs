@@ -1,8 +1,13 @@
-use std::sync::Arc;
+use std::{
+    array::from_fn,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 /// A fixed-size run of canonical bits (`1` = canonical), covering [`Bucket::CAPACITY`] ids.
-#[derive(Clone)]
-pub(crate) struct Bucket([u64; Bucket::CAPACITY / 64]);
+pub(crate) struct Bucket([AtomicU64; Bucket::CAPACITY / 64]);
 
 impl Bucket {
     /// Ids a bucket holds, one bit each.
@@ -10,28 +15,28 @@ impl Bucket {
 
     /// Creates a bucket with no canonical bits set (every bit `0`).
     pub(crate) fn new() -> Self {
-        Self([0; Self::CAPACITY / 64])
+        Self(from_fn(|_| AtomicU64::new(0)))
     }
 
     /// Returns whether the within-bucket bit `bit` is set.
     pub(crate) fn get(&self, bit: usize) -> bool {
-        (self.0[bit / 64] >> (bit % 64)) & 1 == 1
+        (self.0[bit / 64].load(Ordering::Relaxed) >> (bit % 64)) & 1 == 1
     }
 
-    /// Sets the within-bucket bit `bit` to `value`.
-    pub(crate) fn set(&mut self, bit: usize, value: bool) {
-        let word = &mut self.0[bit / 64];
+    /// Sets the within-bucket bit `bit` to `value`, atomically and in place.
+    pub(crate) fn set(&self, bit: usize, value: bool) {
+        let word = &self.0[bit / 64];
         let mask = 1u64 << (bit % 64);
         if value {
-            *word |= mask;
+            word.fetch_or(mask, Ordering::Relaxed);
         } else {
-            *word &= !mask;
+            word.fetch_and(!mask, Ordering::Relaxed);
         }
     }
 
-    /// Returns a shareable copy with each `(bit, value)` in `ops` applied.
+    /// Returns an independent copy with each `(bit, value)` in `ops` applied (copy-on-write).
     pub(crate) fn edited(&self, ops: &[(usize, bool)]) -> Arc<Bucket> {
-        let mut bucket = self.clone();
+        let bucket = Self(from_fn(|w| AtomicU64::new(self.0[w].load(Ordering::Relaxed))));
         for &(bit, value) in ops {
             bucket.set(bit, value);
         }

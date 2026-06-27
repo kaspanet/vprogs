@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeMap,
+    iter::repeat_with,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -56,7 +57,8 @@ impl CanonicalChain {
         let tail_bucket = Bucket::locate(tip).0;
 
         // One owned bucket per live bucket number, with the canonical bits set in place.
-        let mut buckets = vec![Bucket::new(); (tail_bucket - base_bucket + 1) as usize];
+        let bucket_count = (tail_bucket - base_bucket + 1) as usize;
+        let mut buckets: Vec<Bucket> = repeat_with(Bucket::new).take(bucket_count).collect();
         for id in canonical {
             let (bucket, bit) = Bucket::locate(id);
             buckets[(bucket - base_bucket) as usize].set(bit, true);
@@ -83,11 +85,11 @@ impl CanonicalChain {
         let cur = self.current.load();
         debug_assert!(id > cur.tip, "append id {id} must extend tip {}", cur.tip);
 
-        // Appends only grow the shared body (a monotonic seal), so reuse the same ring.
+        // Monotonic append - reuse the shared ring and set the tail bit in place, no copy.
         let (bucket, bit) = Bucket::locate(id);
         let body = Arc::clone(&cur.body);
-        let mut hot_zone = cur.hot_zone.roll_forward(bucket, &body);
-        hot_zone.tail = hot_zone.tail.edited(&[(bit, true)]);
+        let hot_zone = cur.hot_zone.roll_forward(bucket, &body);
+        hot_zone.tail.set(bit, true);
 
         self.current.store(Arc::new(CanonicalChainSnapshot { tip: id, hot_zone, body }));
     }
