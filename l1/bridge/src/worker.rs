@@ -39,21 +39,13 @@ use crate::{
 /// writer of `&mut` sink state (so L1 ingestion and API calls never contend).
 pub type Command<T> = Box<dyn FnOnce(&mut T) + Send>;
 
-/// Runs inside a dedicated thread, talks to the L1 node over RPC, and drives the sink directly.
-///
-/// The sink (a [`ChainSink`]) owns the canonical chain, so the bridge keeps no chain tracker of
-/// its own: it threads the next block's parent by reading the tip metadata back through the sink,
-/// holding only a genesis anchor for the empty-chain case. The worker also applies API commands
-/// against the sink, interleaved with L1 processing. Only events (`Connected` / `Disconnected` /
-/// `Fatal`) are pushed to a queue for observers; chain changes are direct sink calls.
+/// Bridges an L1 node's chain to a [`ChainSink`] over RPC, high-pass filtering reorgs.
 pub(crate) struct BridgeWorker<T: ChainSink<ChainBlockMetadata, L1Transaction>> {
     /// RPC client for L1 communication.
     client: Arc<KaspaRpcClient>,
     /// The chain sink, driven directly. Owns the canonical chain.
     sink: T,
-    /// L1-anchor metadata for the empty-chain case (sink tip `0`), threading the first block's
-    /// parent fields. Set once at startup from L1; once the chain is non-empty the running tip is
-    /// read from the sink (see `tip_metadata`).
+    /// L1-anchor metadata: the first block's parent while the sink's chain is empty (tip `0`).
     genesis: ChainBlockMetadata,
     /// API commands to apply against the sink, interleaved with L1 processing.
     api_requests: mpsc::Receiver<Command<T>>,
@@ -89,8 +81,6 @@ pub(crate) struct BridgeWorker<T: ChainSink<ChainBlockMetadata, L1Transaction>> 
 
 impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
     /// Connects to the L1 node and runs the event loop until shutdown or a fatal error.
-    ///
-    /// If connection fails, pushes a [`L1Event::Fatal`] and returns immediately.
     pub(crate) async fn spawn(
         config: L1BridgeConfig,
         sink: T,
@@ -212,7 +202,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             }
         }
 
-        // Clean up the RPC connection, then shut the sink down (joins its workers + storage).
+        // Clean up the RPC connection, then shut the sink down.
         let _ = self.client.disconnect().await;
         log::info!("L1 bridge worker stopped");
         self.sink.shutdown();
@@ -294,8 +284,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         }
     }
 
-    /// Seeds the threading tip from the L1 pruning-point header, so the first emitted block extends
-    /// a real parent (`parent_id` 0, since the sink's chain is still empty).
+    /// Seeds the genesis anchor from the L1 pruning-point header.
     async fn seed_from_pruning_point(&mut self) -> Result<()> {
         let pruning_point = self
             .client
@@ -307,15 +296,11 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         Ok(())
     }
 
-    /// Seeds the threading tip `depth` chain-blocks below the current sink (instead of the pruning
-    /// point), so the bridge starts near the tip rather than replaying the whole pruning window.
-    /// Walks the selected-parent chain back `depth` blocks from the sink and installs the block it
-    /// lands on as the tip.
+    /// Seeds the genesis anchor `depth` chain-blocks below the current sink instead of the pruning
+    /// point, so the bridge starts near the tip rather than replaying the whole pruning window.
     ///
-    /// `depth` is the reorg head-room: a reorg shallower than it never rolls back past this tip. A
-    /// deeper reorg does, and the sink panics in `rollback` - which means `depth` is
-    /// configured too small for the network. The walk stops early if it reaches the chain's
-    /// base (a block whose selected parent is itself) before `depth`, seeding from there.
+    /// `depth` is the reorg head-room: a reorg shallower than it never rolls back past this anchor;
+    /// a deeper one panics in `rollback`, meaning `depth` is too small for the network.
     async fn seed_from_recent(&mut self, depth: u64) -> Result<()> {
         let sink = self.client.get_block_dag_info().await?.sink;
 
@@ -350,9 +335,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         self.stopping = true;
     }
 
-    /// Registers a notification listener for VirtualChainChanged (used as a "something changed"
-    /// signal - actual data is fetched via the v2 API) and PruningPointUtxoSetOverride
-    /// (finalization).
+    /// Registers listeners for VirtualChainChanged and PruningPointUtxoSetOverride (finalization).
     async fn subscribe_to_notifications(&mut self) -> Result<()> {
         // Register a persistent listener that pipes notifications into our channel.
         let id = self.client.rpc_api().register_new_listener(ChannelConnection::new(
@@ -397,7 +380,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             );
         }
 
-        // Schedule each new block, threading its parent from the locally-held tip.
+        // Schedule each new block, threading its parent from the current tip.
         for chain_block in response.chain_block_accepted_transactions.iter() {
             let header = &chain_block.chain_block_header;
             let parent_meta = self.tip_metadata();
@@ -440,8 +423,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             };
 
             // Pair each accepted tx with its declared resource accesses and hand the batch to the
-            // sink, which assigns the never-reused id and processes it. Malformed access
-            // metadata = no dependencies; the prover attests invalidity.
+            // sink. Malformed access metadata = no dependencies; the prover attests invalidity.
             let txs = accepted_transactions
                 .into_iter()
                 .map(|(idx, tx)| {
