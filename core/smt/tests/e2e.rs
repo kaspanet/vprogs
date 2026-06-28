@@ -212,18 +212,18 @@ fn node_returns_correct_version() {
     commit(&store, 1, &[(key, test_value(1))]);
 
     // The root node written at version 1 should report version = 1.
-    let (version, _node) = store.node(&Key::ROOT, 1).expect("root should exist at v1");
+    let (version, _node) = store.node(&Key::ROOT, 1, &store.snapshot()).expect("root exists at v1");
     assert_eq!(version, 1, "node should return version 1, not a byte-swapped value");
 
     // Version 2: update same key.
     commit(&store, 2, &[(key, test_value(2))]);
 
     // Root at max_version=2 should report version 2.
-    let (version, _node) = store.node(&Key::ROOT, 2).expect("root should exist at v2");
+    let (version, _node) = store.node(&Key::ROOT, 2, &store.snapshot()).expect("root exists at v2");
     assert_eq!(version, 2, "node should return version 2");
 
     // Root at max_version=1 should still report version 1 (historical read).
-    let (version, _node) = store.node(&Key::ROOT, 1).expect("root should exist at v1");
+    let (version, _node) = store.node(&Key::ROOT, 1, &store.snapshot()).expect("root exists at v1");
     assert_eq!(version, 1, "historical node should return version 1");
 }
 

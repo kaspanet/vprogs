@@ -6,9 +6,11 @@ use vprogs_core_types::ResourceId;
 use crate::{Commitment, DEPTH, EMPTY_HASH, HashedNode, Key, Node, StaleNode, Tree, WriteBatch};
 
 /// Applies leaf mutations to the tree and writes resulting nodes into a `WriteBatch`.
-pub(crate) struct Updater<'a, S, W> {
+pub(crate) struct Updater<'a, S: Tree, W> {
     /// Read-only access to existing tree nodes.
     tree: &'a S,
+    /// Read snapshot shared by every `node` lookup in this update, for a consistent base.
+    snapshot: S::Snapshot,
     /// Accumulates new/deleted nodes for atomic commit.
     wb: &'a mut W,
     /// Version to read existing nodes from (version - 1).
@@ -25,8 +27,9 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
         version: u64,
         mut commitments: Vec<Commitment>,
     ) -> [u8; 32] {
-        // Initialize the update context. Version > 0 is guaranteed by `Tree::update`.
-        let mut ctx = Self { tree, wb, prev_version: version - 1, version };
+        // Capture one snapshot for the whole update. Version > 0 is guaranteed by `Tree::update`.
+        let snapshot = tree.snapshot();
+        let mut ctx = Self { tree, snapshot, wb, prev_version: version - 1, version };
 
         // Sort and deduplicate by key. On duplicate keys, last-write-wins: `dedup_by` removes `a`
         // (later element) and keeps `b`, so we copy `a`'s value_hash into `b` first.
@@ -55,6 +58,11 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
         }
     }
 
+    /// Reads the existing node at `key` from the prior version, against the captured snapshot.
+    fn node(&self, key: &Key) -> Option<(u64, Node)> {
+        self.tree.node(key, self.prev_version, &self.snapshot)
+    }
+
     /// Recursive update for a sorted sub-slice of leaf mutations at `key`.
     ///
     /// Returns `None` for empty subtrees or the node at this position. Returned `Leaf` nodes are
@@ -65,11 +73,11 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
         if commitments.is_empty() {
             // An `Empty` tombstone collapses to `None` so callers can treat both as "no subtree".
             let exists = |node: &Node| !matches!(node, Node::Empty);
-            return self.tree.node(key, self.prev_version).map(|(_, data)| data).filter(exists);
+            return self.node(key).map(|(_, data)| data).filter(exists);
         }
 
         // Look up existing node at this position to determine the update strategy.
-        match self.tree.node(key, self.prev_version).map(|(_, data)| data) {
+        match self.node(key).map(|(_, data)| data) {
             // Empty subtree: resolve commitments into leaves directly.
             None => self.resolve_leaves(key, commitments),
 
@@ -187,7 +195,7 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
             None => {
                 // Tombstone an emptied position so a later read can't resurface the deleted node.
                 let exists = |(_, node)| !matches!(node, Node::Empty);
-                if self.tree.node(key, self.prev_version).is_some_and(exists) {
+                if self.node(key).is_some_and(exists) {
                     self.wb.put_node(key, self.version, &Node::Empty);
                     self.wb.put_stale_node(&StaleNode::new(self.version, *key, self.version));
                 }
@@ -202,7 +210,7 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
 
     /// Marks an existing node at the given position as stale (if it exists).
     fn mark_stale(&mut self, node_key: &Key) {
-        if let Some((old_version, _)) = self.tree.node(node_key, self.prev_version) {
+        if let Some((old_version, _)) = self.node(node_key) {
             self.wb.put_stale_node(&StaleNode::new(self.version, *node_key, old_version));
         }
     }

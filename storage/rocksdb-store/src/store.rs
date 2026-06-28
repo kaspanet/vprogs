@@ -2,7 +2,7 @@ use std::{marker::PhantomData, path::Path, sync::Arc};
 
 use rocksdb::{DB, DBIteratorWithThreadMode, Direction, IteratorMode};
 use vprogs_core_smt::{Key, Node, StaleNode, Tree, WriteBatch as SmtWriteBatch};
-use vprogs_storage_canonical_chain::CanonicalChain;
+use vprogs_storage_canonical_chain::{CanonicalChain, CanonicalChainSnapshot};
 use vprogs_storage_types::{PrefixIterator, StateSpace, Store};
 
 use crate::{
@@ -99,10 +99,13 @@ impl<C: Config> Store for RocksDbStore<C> {
 
 impl<C: Config> Tree for RocksDbStore<C> {
     type Hasher = vprogs_core_hashing::Sha256;
+    type Snapshot = Arc<CanonicalChainSnapshot>;
 
-    fn node(&self, key: &Key, max_version: u64) -> Option<(u64, Node)> {
-        // Snapshot the canonical chain for consistent reads and check if versions are tracked.
-        let snapshot = self.canonical.snapshot();
+    fn snapshot(&self) -> Arc<CanonicalChainSnapshot> {
+        self.canonical.snapshot()
+    }
+
+    fn node(&self, key: &Key, max_version: u64, snapshot: &Self::Snapshot) -> Option<(u64, Node)> {
         let versions_tracked = snapshot.tip() > 0;
 
         // Seek the latest canonical version below `max_version`.

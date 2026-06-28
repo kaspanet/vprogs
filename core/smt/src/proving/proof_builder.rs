@@ -11,9 +11,11 @@ use crate::{
 };
 
 /// Walks the tree top-down to collect witness leaves, siblings, and one membership per input key.
-pub(crate) struct ProofBuilder<'a, S> {
+pub(crate) struct ProofBuilder<'a, S: Tree> {
     /// Read-only access to existing tree nodes.
     tree: &'a S,
+    /// Read snapshot shared by every `node` lookup in this proof, for a consistent view.
+    snapshot: S::Snapshot,
     /// Tree version to generate the proof for.
     version: u64,
     /// Deduplicated keys table. Indices `0..keys_input.len()` are input keys in caller order.
@@ -57,6 +59,7 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
     fn new(tree: &'a S, version: u64, keys_input: &[ResourceId]) -> Self {
         let mut this = Self {
             tree,
+            snapshot: tree.snapshot(),
             version,
             keys: Vec::with_capacity(keys_input.len()),
             key_to_idx: BTreeMap::new(),
@@ -75,6 +78,11 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
         this
     }
 
+    /// Reads the node at `key` for the proof version, against the captured snapshot.
+    fn node(&self, key: &Key) -> Option<(u64, Node)> {
+        self.tree.node(key, self.version, &self.snapshot)
+    }
+
     /// Recursive proof collection for a sorted sub-slice of input keys.
     fn collect(&mut self, key: &Key, input_keys: &[&ResourceId], offset: usize) {
         // No keys to collect in this subtree.
@@ -83,7 +91,7 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
         }
 
         // Dispatch based on the node type at this position.
-        match self.tree.node(key, self.version) {
+        match self.node(key) {
             // Empty subtree (no node or explicit tombstone) - all input keys are absent.
             None | Some((_, Node::Empty)) => self.collect_empty(input_keys, key.level, offset),
 
@@ -196,9 +204,6 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
 
     /// Returns the [`HashedNode`] summary of the node at `node_key`, or [`HashedNode::EMPTY`].
     fn child_summary(&self, node_key: &Key) -> HashedNode {
-        self.tree
-            .node(node_key, self.version)
-            .map(|(_, d)| HashedNode::from(&d))
-            .unwrap_or(HashedNode::EMPTY)
+        self.node(node_key).map(|(_, d)| HashedNode::from(&d)).unwrap_or(HashedNode::EMPTY)
     }
 }
