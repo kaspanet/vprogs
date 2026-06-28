@@ -67,17 +67,15 @@ impl<S: Store, P: Processor<S>> Rollback<S, P> {
 
         // Commit the latest-pointer repoints atomically.
         store.commit(store.write_batch().tap_mut(|wb| {
-            // Walk the orphaned batches newest to oldest, repointing each touched resource. Skip
-            // already-orphaned gap ids: their effect was undone when they were orphaned, and their
-            // retained rollback pointers would over-revert past kept (e.g. revived) batches.
+            // Walk batches from newest to oldest.
             for index in (self.target.index() + 1..=self.upper_bound).rev() {
-                if !self.snapshot.is_canonical(index) {
-                    continue;
-                }
-                for (resource_id, old_version) in StatePtrRollback::iter_batch(store, index) {
-                    let resource_id: ResourceId =
-                        borsh::from_slice(&resource_id).expect("corrupted store: unrecoverable");
-                    self.restore_latest_ptr::<ST>(wb, resource_id, old_version);
+                // Apply all rollback pointers associated with this batch.
+                if self.snapshot.is_canonical(index) {
+                    for (resource_id, old_version) in StatePtrRollback::iter_batch(store, index) {
+                        let resource_id: ResourceId =
+                            borsh::from_slice(&resource_id).expect("corrupted store: unrecoverable");
+                        self.restore_latest_ptr::<ST>(wb, resource_id, old_version);
+                    }
                 }
             }
 
