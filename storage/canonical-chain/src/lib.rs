@@ -6,6 +6,7 @@ mod chain;
 mod manager;
 mod snapshot;
 
+pub use bucket::CAPACITY as BUCKET_CAPACITY;
 pub use chain::CanonicalChain;
 pub use manager::{Appended, CanonicalChainManager};
 pub use snapshot::CanonicalChainSnapshot;

@@ -9,6 +9,7 @@ use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_scheduling_test_utils::{Processor, SchedulerExt};
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_version::StateVersion;
+use vprogs_storage_canonical_chain::BUCKET_CAPACITY;
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 
@@ -2242,12 +2243,8 @@ pub fn test_pruning_removed_resource_zero_footprint() {
     }
 }
 
-/// A reorg-orphaned batch below a finalization point must not get its predecessor reclaimed.
-///
-/// When `finalize` crosses far enough that the orphan's bit-overlay bucket sinks out of the hot
-/// zone and is pruned off the body, the pruning worker must still read that id as orphaned (its
-/// real bit), not as the default-canonical of an absent bucket. Otherwise it walks the canonical
-/// branch and deletes the orphan's predecessor: R's live version.
+/// Pruning must treat a reorg-orphaned id below the finalization point as orphaned - despite
+/// finalized ids defaulting to canonical - so it spares the orphan's still-live predecessor.
 #[test]
 pub fn test_finalize_past_orphan_bucket_keeps_predecessor() {
     use vprogs_core_types::ChainSink;
@@ -2290,15 +2287,15 @@ pub fn test_finalize_past_orphan_bucket_keeps_predecessor() {
         // Push the tip two buckets past the orphan (id 2, bucket 0) with empty fillers, so bucket 0
         // sinks below the two-bucket hot zone into the body where `finalize` can prune it.
         let mut last = None;
-        for meta in 3..=8193u64 {
+        for meta in 3..=2 * BUCKET_CAPACITY + 1 {
             last = Some(scheduler.schedule(meta, vec![]));
         }
         last.expect("scheduled fillers").wait_committed_blocking();
-        assert_eq!(scheduler.tip(), 8193, "fillers must push the tip into the third bucket");
+        assert_eq!(scheduler.tip(), 2 * BUCKET_CAPACITY + 1, "tip advanced into the third bucket");
 
         // Finalize past bucket 0, then let the pruning worker reclaim the finalized range.
-        scheduler.finalize(4097);
-        scheduler.wait_pruned(4096, Duration::from_secs(60));
+        scheduler.finalize(BUCKET_CAPACITY + 1);
+        scheduler.wait_pruned(BUCKET_CAPACITY, Duration::from_secs(60));
 
         // The orphaned batch 2 must not have caused R's live version 1 to be deleted.
         let store = scheduler.state().storage().store();

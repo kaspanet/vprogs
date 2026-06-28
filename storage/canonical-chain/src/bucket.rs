@@ -6,13 +6,13 @@ use std::{
     },
 };
 
-/// A fixed-size run of canonical bits (`1` = canonical), covering [`Bucket::CAPACITY`] ids.
-pub(crate) struct Bucket([AtomicU64; Bucket::CAPACITY / 64]);
+/// Ids a bucket holds, one bit each.
+pub const CAPACITY: u64 = 4096;
+
+/// A fixed-size run of canonical bits (`1` = canonical), covering [`CAPACITY`] ids.
+pub(crate) struct Bucket([AtomicU64; (CAPACITY / 64) as usize]);
 
 impl Bucket {
-    /// Ids a bucket holds, one bit each.
-    pub(crate) const CAPACITY: usize = 4096;
-
     /// Creates a bucket with no canonical bits set (every bit `0`).
     pub(crate) fn new() -> Self {
         Self(from_fn(|_| AtomicU64::new(0)))
@@ -46,7 +46,6 @@ impl Bucket {
     /// Maps a 1-based id to its `(bucket number, within-bucket bit)`.
     pub(crate) fn locate(id: u64) -> (u64, usize) {
         let zero_based = id - 1;
-        let cap = Self::CAPACITY as u64;
-        (zero_based / cap, (zero_based % cap) as usize)
+        (zero_based / CAPACITY, (zero_based % CAPACITY) as usize)
     }
 }

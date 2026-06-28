@@ -342,7 +342,6 @@ impl L2Driver {
             for b in self.chain.drain(keep..) {
                 self.expected_counter -= b.lane_tx_count;
             }
-            // Roll back to the kept tip's canonical id, not the chain position.
             let target_id = self.chain.last().map(|b| b.id).unwrap_or(0);
             self.exec.scheduler.rollback_to(target_id).expect("rollback");
             self.rollback_covenant(keep);
