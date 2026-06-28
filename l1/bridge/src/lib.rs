@@ -12,6 +12,7 @@
 //! its tip and fetches forward from there -- there is no separate backfill.
 
 mod bridge;
+mod command;
 mod config;
 mod error;
 mod event;
@@ -19,6 +20,6 @@ mod reorg_filter;
 mod worker;
 
 pub use bridge::L1Bridge;
+pub use command::Command;
 pub use config::L1BridgeConfig;
 pub use event::L1Event;
-pub use worker::Command;

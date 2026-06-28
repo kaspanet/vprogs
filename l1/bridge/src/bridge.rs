@@ -12,10 +12,7 @@ use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_types::ChainSink;
 use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
 
-use crate::{
-    L1BridgeConfig, L1Event,
-    worker::{BridgeWorker, Command},
-};
+use crate::{Command, L1BridgeConfig, L1Event, worker::BridgeWorker};
 
 /// Handle to a background worker that follows the Kaspa L1 chain and drives a [`ChainSink`].
 pub struct L1Bridge {

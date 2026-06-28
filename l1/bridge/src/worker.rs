@@ -30,14 +30,10 @@ use vprogs_l1_types::{ChainBlockMetadata, Hash, L1Transaction, L1TransactionCove
 use workflow_core::channel::{Channel, MultiplexerChannel};
 
 use crate::{
-    L1BridgeConfig, L1Event,
+    Command, L1BridgeConfig, L1Event,
     error::{Error, Result},
     reorg_filter::ReorgFilter,
 };
-
-/// A boxed command applied against the sink on the worker thread, which is the bridge's only
-/// writer of `&mut` sink state (so L1 ingestion and API calls never contend).
-pub type Command<T> = Box<dyn FnOnce(&mut T) + Send>;
 
 /// Bridges an L1 node's chain to a [`ChainSink`] over RPC, high-pass filtering reorgs.
 pub(crate) struct BridgeWorker<T: ChainSink<ChainBlockMetadata, L1Transaction>> {
@@ -71,11 +67,9 @@ pub(crate) struct BridgeWorker<T: ChainSink<ChainBlockMetadata, L1Transaction>> 
     finality_depth: u64,
     /// Covenant id tracked by [`ChainBlockMetadata::last_settlement`], or `None` to disable.
     covenant_id: Option<Hash>,
-    /// On a fresh chain, seed the root this many chain-blocks below the sink instead of the
-    /// pruning point. `None` seeds from the pruning point.
+    /// Fresh-chain seed depth below the sink; `None` seeds from the pruning point.
     seed_depth: Option<u64>,
-    /// Optional observer the latest chain-block DAA score is published to, for external progress
-    /// reporting during catch-up.
+    /// Optional observer the latest chain-block DAA score is published to, for catch-up progress.
     tip_daa: Option<Arc<AtomicU64>>,
 }
 
@@ -110,8 +104,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             }
         };
 
-        // Subscribe to RPC state changes before connecting so we don't miss the initial Connected
-        // event.
+        // Subscribe to RPC state changes before connecting so we don't miss the Connected event.
         let rpc_ctl_channel = client.rpc_ctl().multiplexer().channel();
 
         if let Err(e) = client
@@ -236,8 +229,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         }
     }
 
-    /// Called on RPC connect: subscribes to notifications, establishes the threading tip, and
-    /// syncs.
+    /// Called on RPC connect: subscribes to notifications, establishes the tip, and syncs.
     async fn handle_connected(&mut self) {
         log::info!("L1 bridge connected to {}", self.client.url().unwrap_or_default());
 
@@ -261,8 +253,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             return;
         }
 
-        // Step 3: Notify observers and sync to current chain state. Publish the tip first so a
-        // progress reporter has a baseline before the first (potentially large) batch lands.
+        // Step 3: publish the tip as a progress baseline, then announce Connected and sync.
         self.publish_tip_daa();
         self.push_event(L1Event::Connected);
         let result = self.fetch_chain_updates().await;
@@ -296,11 +287,9 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         Ok(())
     }
 
-    /// Seeds the genesis anchor `depth` chain-blocks below the current sink instead of the pruning
-    /// point, so the bridge starts near the tip rather than replaying the whole pruning window.
+    /// Seeds the genesis anchor `depth` chain-blocks below the sink to start near the tip.
     ///
-    /// `depth` is the reorg head-room: a reorg shallower than it never rolls back past this anchor;
-    /// a deeper one panics in `rollback`, meaning `depth` is too small for the network.
+    /// `depth` is the reorg head-room; a deeper reorg panics in `rollback`.
     async fn seed_from_recent(&mut self, depth: u64) -> Result<()> {
         let sink = self.client.get_block_dag_info().await?.sink;
 
@@ -344,8 +333,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             ChannelType::Persistent,
         ));
 
-        // VCC is subscribed without accepted_transaction_ids - we only use it as a "something
-        // changed" signal and fetch verbose data via the v2 API.
+        // VCC subscribed without accepted_transaction_ids - only a "something changed" trigger.
         for scope in [
             Scope::VirtualChainChanged(VirtualChainChangedScope::new(false)),
             Scope::PruningPointUtxoSetOverride(PruningPointUtxoSetOverrideScope {}),
@@ -373,6 +361,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             self.handle_reorg(&response)?;
         }
 
+        // Emit log for progress tracing.
         if !response.chain_block_accepted_transactions.is_empty() {
             log::info!(
                 "L1 bridge: processing {} new chain blocks",
@@ -382,59 +371,57 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
 
         // Schedule each new block, threading its parent from the current tip.
         for chain_block in response.chain_block_accepted_transactions.iter() {
+            // The block's parent; its `last_settlement` carries forward, updated per tx below.
             let header = &chain_block.chain_block_header;
-            let parent_meta = self.tip_metadata();
+            let parent = self.tip_metadata();
             let block_hash = header.hash.expect("missing hash");
-            let mut last_settlement = parent_meta.last_settlement;
+            let mut last_settlement = parent.last_settlement;
 
-            // Enumerate before filtering so kept txs retain their block-wide positions.
-            let accepted_transactions: Vec<(u32, L1Transaction)> = chain_block
+            // Enumerate before filtering so kept txs keep their block-wide positions.
+            let txs: Vec<SchedulerTransaction<L1Transaction>> = chain_block
                 .accepted_transactions
                 .iter()
                 .enumerate()
                 .filter_map(|(idx, tx)| {
+                    // Carry forward the last settlement.
                     let tx = L1Transaction::try_from(tx.clone()).expect("missing tx fields");
                     if let Some(id) = self.covenant_id {
                         last_settlement = tx.settlement_info(id, block_hash).or(last_settlement);
                     }
+
+                    // Parse access metadata; marlformed = no dependencies and prover attests.
                     match self.subnetwork_filter.as_ref() {
                         Some(want) if tx.subnetwork_id != *want => None,
-                        _ => Some((idx as u32, tx)),
+                        _ => Some(SchedulerTransaction::new(
+                            idx as u32,
+                            AccessMetadata::decode_vec(&mut tx.payload.as_slice())
+                                .unwrap_or_default(),
+                            tx,
+                        )),
                     }
                 })
                 .collect();
 
-            let (lane_tip, lane_blue_score, lane_expired) =
-                self.advance_lane(&parent_meta, &accepted_transactions, header);
+            // Determine the lane tip over the block's accepted txs.
+            let (lane_tip, lane_blue_score, lane_expired) = self.lane_state(&parent, &txs, header);
 
-            let metadata = ChainBlockMetadata {
-                // The sink's current canonical tip is the block this one extends.
-                parent_id: self.sink.tip(),
-                prev_seq_commit: parent_meta.seq_commit,
-                lane_key: self.lane_key.unwrap_or_default(),
-                prev_timestamp: parent_meta.timestamp,
-                prev_lane_tip: parent_meta.lane_tip,
-                prev_lane_blue_score: parent_meta.lane_blue_score,
-                lane_blue_score,
-                lane_tip,
-                lane_expired,
-                last_settlement,
-                ..ChainBlockMetadata::try_from(header).unwrap()
-            };
-
-            // Pair each accepted tx with its declared resource accesses and hand the batch to the
-            // sink. Malformed access metadata = no dependencies; the prover attests invalidity.
-            let txs = accepted_transactions
-                .into_iter()
-                .map(|(idx, tx)| {
-                    SchedulerTransaction::new(
-                        idx,
-                        AccessMetadata::decode_vec(&mut tx.payload.as_slice()).unwrap_or_default(),
-                        tx,
-                    )
-                })
-                .collect();
-            self.sink.append(metadata, txs);
+            // Append the block's parent-threaded metadata and its txs to the sink.
+            self.sink.append(
+                ChainBlockMetadata {
+                    parent_id: self.sink.tip(),
+                    prev_seq_commit: parent.seq_commit,
+                    lane_key: self.lane_key.unwrap_or_default(),
+                    prev_timestamp: parent.timestamp,
+                    prev_lane_tip: parent.lane_tip,
+                    prev_lane_blue_score: parent.lane_blue_score,
+                    lane_blue_score,
+                    lane_tip,
+                    lane_expired,
+                    last_settlement,
+                    ..ChainBlockMetadata::try_from(header).unwrap()
+                },
+                txs,
+            );
         }
 
         // Publish the batch's new tip so the progress reporter advances as catch-up proceeds.
@@ -444,10 +431,10 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
     }
 
     /// Returns the next `(lane_tip, lane_blue_score, lane_expired)` for this block.
-    fn advance_lane(
+    fn lane_state(
         &self,
         parent: &ChainBlockMetadata,
-        accepted_transactions: &[(u32, L1Transaction)],
+        txs: &[SchedulerTransaction<L1Transaction>],
         header: &RpcOptionalHeader,
     ) -> (Hash, u64, bool) {
         // Check whether the lane has gone silent past the finality window and needs to reset.
@@ -455,17 +442,14 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         let lane_expired = blue_score.saturating_sub(parent.lane_blue_score) > self.finality_depth;
 
         // No lane configured or no activity this block -> carry parent state forward unchanged.
-        let Some(lane_key) = self.lane_key.as_ref().filter(|_| !accepted_transactions.is_empty())
-        else {
+        let Some(lane_key) = self.lane_key.as_ref().filter(|_| !txs.is_empty()) else {
             return (parent.lane_tip, parent.lane_blue_score, lane_expired);
         };
 
-        let parent_ref = if lane_expired { parent.seq_commit } else { parent.lane_tip };
-
         // Merkle root over this block's activity leaves.
         let mut activity = ActivityDigestBuilder::new();
-        for (merge_idx, tx) in accepted_transactions {
-            activity.add_leaf(activity_leaf(&tx.id(), tx.version, *merge_idx));
+        for tx in txs {
+            activity.add_leaf(activity_leaf(&tx.tx.id(), tx.tx.version, tx.merge_idx));
         }
 
         // Context hash of the current chain block.
@@ -476,6 +460,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         });
 
         // Construct the new lane tip.
+        let parent_ref = if lane_expired { parent.seq_commit } else { parent.lane_tip };
         let tip = lane_tip_next(&LaneTipInput {
             lane_key,
             parent_ref: &parent_ref,
@@ -501,6 +486,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         let blue_score_depth = old_blue.saturating_sub(new_blue);
         self.reorg_filter.record(blue_score_depth);
 
+        // Perform sink rollback.
         log::info!(
             "L1 bridge: reorg detected, {} blocks removed, rolling back to id {} \
              (blue score depth: {}, filter threshold: {:?})",
@@ -509,8 +495,8 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             blue_score_depth,
             self.reorg_filter.threshold(),
         );
-
         self.sink.rollback(new_tip);
+
         Ok(())
     }
 
