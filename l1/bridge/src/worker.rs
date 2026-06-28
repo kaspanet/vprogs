@@ -1,5 +1,4 @@
 use std::{
-    collections::HashSet,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -36,28 +35,27 @@ use crate::{
     reorg_filter::ReorgFilter,
 };
 
-/// A boxed command applied against the scheduler on the worker thread, which is the bridge's only
-/// writer of `&mut` scheduler state (so L1 ingestion and API calls never contend).
+/// A boxed command applied against the sink on the worker thread, which is the bridge's only
+/// writer of `&mut` sink state (so L1 ingestion and API calls never contend).
 pub type Command<T> = Box<dyn FnOnce(&mut T) + Send>;
 
-/// Runs inside a dedicated thread, talks to the L1 node over RPC, and drives the scheduler
-/// directly.
+/// Runs inside a dedicated thread, talks to the L1 node over RPC, and drives the sink directly.
 ///
-/// The scheduler (held as a [`ChainSink`]) owns the canonical chain, so the bridge keeps no chain
-/// tracker of its own: it threads the next block's parent from a single locally-held tip metadata
-/// and reads ids/metadata back through the sink. The worker also applies API commands against the
-/// scheduler, interleaved with L1 processing. Only events (`Connected` / `Disconnected` / `Fatal`)
-/// are pushed to a queue for observers; chain changes are direct sink calls.
+/// The sink (a [`ChainSink`]) owns the canonical chain, so the bridge keeps no chain tracker of
+/// its own: it threads the next block's parent by reading the tip metadata back through the sink,
+/// holding only a genesis anchor for the empty-chain case. The worker also applies API commands
+/// against the sink, interleaved with L1 processing. Only events (`Connected` / `Disconnected` /
+/// `Fatal`) are pushed to a queue for observers; chain changes are direct sink calls.
 pub(crate) struct BridgeWorker<T: ChainSink<ChainBlockMetadata, L1Transaction>> {
     /// RPC client for L1 communication.
     client: Arc<KaspaRpcClient>,
-    /// The scheduler, driven directly. Owns the canonical chain.
+    /// The chain sink, driven directly. Owns the canonical chain.
     sink: T,
-    /// Metadata of the current canonical tip, used to thread the next block's parent fields.
-    /// Seeded at genesis (fresh) or read from the resumed scheduler, advanced on each
-    /// scheduled block, and refreshed from the sink after a reorg.
-    tip: ChainBlockMetadata,
-    /// API commands to apply against the scheduler, interleaved with L1 processing.
+    /// L1-anchor metadata for the empty-chain case (sink tip `0`), threading the first block's
+    /// parent fields. Set once at startup from L1; once the chain is non-empty the running tip is
+    /// read from the sink (see `tip_metadata`).
+    genesis: ChainBlockMetadata,
+    /// API commands to apply against the sink, interleaved with L1 processing.
     api_requests: mpsc::Receiver<Command<T>>,
     /// Bridge events for observers.
     events: Arc<SegQueue<L1Event>>,
@@ -145,7 +143,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         Self {
             client,
             sink,
-            tip: ChainBlockMetadata::default(),
+            genesis: ChainBlockMetadata::default(),
             api_requests,
             events,
             event_signal,
@@ -175,7 +173,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
                     self.stopping = true;
                 }
 
-                // API command against the scheduler (e.g. pruning, reads needing &mut).
+                // API command against the sink (e.g. pruning, reads needing &mut).
                 cmd = self.api_requests.recv().fuse() => {
                     match cmd {
                         Some(cmd) => cmd(&mut self.sink),
@@ -214,7 +212,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             }
         }
 
-        // Clean up the RPC connection, then shut the scheduler down (joins its workers + storage).
+        // Clean up the RPC connection, then shut the sink down (joins its workers + storage).
         let _ = self.client.disconnect().await;
         log::info!("L1 bridge worker stopped");
         self.sink.shutdown();
@@ -259,12 +257,8 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             return;
         }
 
-        // Step 2: Establish the tip we thread from. If the scheduler restored a canonical chain,
-        // adopt its tip; otherwise seed from L1 (pruning point or `seed_depth` below the sink).
-        // These are one-shot prerequisites with no retry trigger - any failure is fatal.
+        // Step 2: Establish the tip we thread from.
         let init_result = if self.sink.tip() > 0 {
-            // The canonical tip is always live (never finalized), so its metadata is present.
-            self.tip = self.sink.metadata(self.sink.tip()).expect("canonical tip metadata is live");
             Ok(())
         } else {
             match self.seed_depth {
@@ -285,22 +279,30 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         self.handle_sync_result(result);
     }
 
+    /// The current canonical tip's metadata.
+    fn tip_metadata(&self) -> ChainBlockMetadata {
+        match self.sink.tip() {
+            0 => self.genesis,
+            id => self.sink.metadata(id).expect("canonical tip metadata is live"),
+        }
+    }
+
     /// Publishes the current tip's DAA score to the optional observer.
     fn publish_tip_daa(&self) {
         if let Some(observer) = &self.tip_daa {
-            observer.store(self.tip.daa_score, Ordering::Relaxed);
+            observer.store(self.tip_metadata().daa_score, Ordering::Relaxed);
         }
     }
 
     /// Seeds the threading tip from the L1 pruning-point header, so the first emitted block extends
-    /// a real parent (`parent_id` 0, since the scheduler's chain is still empty).
+    /// a real parent (`parent_id` 0, since the sink's chain is still empty).
     async fn seed_from_pruning_point(&mut self) -> Result<()> {
         let pruning_point = self
             .client
             .get_block(self.client.get_block_dag_info().await?.pruning_point_hash, false)
             .await?;
 
-        self.tip = (&pruning_point.header).into();
+        self.genesis = (&pruning_point.header).into();
 
         Ok(())
     }
@@ -311,7 +313,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
     /// lands on as the tip.
     ///
     /// `depth` is the reorg head-room: a reorg shallower than it never rolls back past this tip. A
-    /// deeper reorg does, and the scheduler panics in `rollback` - which means `depth` is
+    /// deeper reorg does, and the sink panics in `rollback` - which means `depth` is
     /// configured too small for the network. The walk stops early if it reaches the chain's
     /// base (a block whose selected parent is itself) before `depth`, seeding from there.
     async fn seed_from_recent(&mut self, depth: u64) -> Result<()> {
@@ -335,7 +337,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         }
 
         let root = self.client.get_block(hash, false).await?;
-        self.tip = (&root.header).into();
+        self.genesis = (&root.header).into();
         log::info!("L1 bridge: seeding {depth} blocks below sink {sink} (root {hash})");
 
         Ok(())
@@ -377,7 +379,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         let response = self
             .client
             .get_virtual_chain_from_block_v2(
-                self.tip.hash,
+                self.tip_metadata().hash,
                 Some(Full),
                 self.reorg_filter.threshold(),
             )
@@ -385,7 +387,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
 
         // Removed hashes indicate a reorg - roll back before processing additions.
         if !response.removed_chain_block_hashes.is_empty() {
-            self.handle_reorg(&response);
+            self.handle_reorg(&response)?;
         }
 
         if !response.chain_block_accepted_transactions.is_empty() {
@@ -398,7 +400,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         // Schedule each new block, threading its parent from the locally-held tip.
         for chain_block in response.chain_block_accepted_transactions.iter() {
             let header = &chain_block.chain_block_header;
-            let parent_meta = self.tip;
+            let parent_meta = self.tip_metadata();
             let block_hash = header.hash.expect("missing hash");
             let mut last_settlement = parent_meta.last_settlement;
 
@@ -423,7 +425,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
                 self.advance_lane(&parent_meta, &accepted_transactions, header);
 
             let metadata = ChainBlockMetadata {
-                // The scheduler's current canonical tip is the block this one extends.
+                // The sink's current canonical tip is the block this one extends.
                 parent_id: self.sink.tip(),
                 prev_seq_commit: parent_meta.seq_commit,
                 lane_key: self.lane_key.unwrap_or_default(),
@@ -438,7 +440,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             };
 
             // Pair each accepted tx with its declared resource accesses and hand the batch to the
-            // scheduler, which assigns the never-reused id and processes it. Malformed access
+            // sink, which assigns the never-reused id and processes it. Malformed access
             // metadata = no dependencies; the prover attests invalidity.
             let txs = accepted_transactions
                 .into_iter()
@@ -451,7 +453,6 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
                 })
                 .collect();
             self.sink.append(metadata, txs);
-            self.tip = metadata;
         }
 
         // Publish the batch's new tip so the progress reporter advances as catch-up proceeds.
@@ -503,33 +504,14 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         (tip, blue_score, lane_expired)
     }
 
-    /// Maps a reorg onto the scheduler's never-reused id space: orphans the removed ids and rolls
-    /// the scheduler back to the surviving block. New fork blocks then get fresh ids via `append`.
-    fn handle_reorg(&mut self, response: &GetVirtualChainFromBlockV2Response) {
-        // Translate removed block hashes to their canonical ids.
-        let orphaned: Vec<u64> = response
-            .removed_chain_block_hashes
-            .iter()
-            .filter_map(|hash| self.sink.id(&hash.as_bytes()))
-            .collect();
-
-        // None of the removed blocks are known to the scheduler (already finalized away) - nothing
-        // to roll back.
-        if orphaned.is_empty() {
-            return;
-        }
-
-        // The survivor is the fork point: the parent of the orphaned block whose parent is itself
-        // not orphaned. Canonical ids are never reused, so after earlier reorgs the canonical chain
-        // has gaps - the survivor is *not* simply `min(orphaned) - 1` (that id may itself be a
-        // previously orphaned one). The removed set is a connected suffix, so exactly one of its
-        // blocks has a parent outside the set, and that parent is the new tip.
-        let orphaned_set: HashSet<u64> = orphaned.iter().copied().collect();
-        let new_tip = orphaned
-            .iter()
-            .filter_map(|&id| self.sink.metadata(id).map(|m| m.parent_id))
-            .find(|parent| !orphaned_set.contains(parent))
-            .expect("reorg orphan set must contain a fork child whose parent survives");
+    /// Rolls the sink back to the surviving block, recording the reorg's depth in the filter.
+    fn handle_reorg(&mut self, response: &GetVirtualChainFromBlockV2Response) -> Result<()> {
+        // `removed` is tip-first: fork child is its last entry; an unknown one is below finality.
+        let fork_child_hash = response.removed_chain_block_hashes.last().expect("non-empty reorg");
+        let Some(fork_child) = self.sink.id(&fork_child_hash.as_bytes()) else {
+            return Err(Error::ReorgBelowFinality(*fork_child_hash));
+        };
+        let new_tip = self.sink.metadata(fork_child).expect("a known id has metadata").parent_id;
 
         // Blue-score depth (old tip minus new tip) feeds the reorg filter.
         let old_blue = self.sink.metadata(self.sink.tip()).map_or(0, |m| m.blue_score);
@@ -540,21 +522,17 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         log::info!(
             "L1 bridge: reorg detected, {} blocks removed, rolling back to id {} \
              (blue score depth: {}, filter threshold: {:?})",
-            orphaned.len(),
+            response.removed_chain_block_hashes.len(),
             new_tip,
             blue_score_depth,
             self.reorg_filter.threshold(),
         );
 
         self.sink.rollback(new_tip);
-
-        // Adopt the survivor as the threading tip; its metadata is retained (canonical).
-        if let Some(meta) = self.sink.metadata(new_tip) {
-            self.tip = meta;
-        }
+        Ok(())
     }
 
-    /// Advances finalization to the L1 pruning point: finalizes scheduler ids below it.
+    /// Advances finalization to the L1 pruning point: finalizes the sink's ids below it.
     async fn handle_finalization(&mut self) -> Result<()> {
         let pruning_hash = self.client.get_block_dag_info().await?.pruning_point_hash;
 

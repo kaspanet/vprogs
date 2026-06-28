@@ -1,4 +1,5 @@
 use kaspa_rpc_core::RpcError;
+use vprogs_l1_types::Hash;
 
 /// Bridge error types, split into recoverable (RPC) and fatal.
 #[derive(Debug, thiserror::Error)]
@@ -10,6 +11,10 @@ pub(crate) enum Error {
     /// The starting block has been pruned or reorged away.
     #[error("starting block no longer in chain: {0}")]
     CheckpointLost(RpcError),
+
+    /// A reorg's fork point has been finalized away, so we cannot roll back to it.
+    #[error("reorg below finalization boundary: fork block {0} is finalized")]
+    ReorgBelowFinality(Hash),
 
     /// An internal channel closed unexpectedly.
     #[error("notification channel closed: {0}")]

@@ -10,8 +10,6 @@ pub trait BatchMetadata:
     fn block_hash(&self) -> [u8; 32];
 
     /// Canonical id of the parent batch (the one this batch extends), or `0` for the first batch.
-    ///
-    /// Lets the canonical chain be walked structurally (e.g. to rebuild canonical-ness on restart).
     fn parent_id(&self) -> u64;
 }
 
