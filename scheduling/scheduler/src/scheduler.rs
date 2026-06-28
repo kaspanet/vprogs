@@ -49,8 +49,6 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
     pub fn new(execution_config: ExecutionConfig<P>, storage_config: StorageConfig<S>) -> Self {
         let (worker_count, processor) = execution_config.unpack();
         let state = SchedulerState::new(storage_config);
-        let canonical_chain_manager =
-            state.storage().store().canonical_chain_manager::<P::BatchMetadata>();
         Self {
             batch_lifecycle_worker: BatchLifecycleWorker::new(),
             pruning_worker: PruningWorker::new(state.clone()),
@@ -58,9 +56,9 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
             resources: HashMap::new(),
             pending_batches: VecDeque::new(),
             cancellation: CancellationContext::new(state.root().index()),
+            canonical_chain_manager: state.storage().store().canonical_chain_manager(),
             state,
             processor,
-            canonical_chain_manager,
         }
     }
 
