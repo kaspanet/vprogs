@@ -133,9 +133,7 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
                 return Err(SchedulerError::PruningConflict);
             }
 
-            // Snapshot the canonical chain before cancel_and_rollback flips the orphaned bits, so
-            // the rollback reverts only batches being orphaned now and skips
-            // already-orphaned gap ids.
+            // Capture the pre-rollback snapshot for a consistent view of what to revert.
             let snapshot = self.canonical_chain_manager.chain().snapshot();
 
             // Look up target metadata, cancel in-flight batches, and update shared state.
@@ -326,7 +324,7 @@ impl<S: Store, P: Processor<S>> ChainSink<P::BatchMetadata, P::Transaction> for 
     }
 
     fn finalize(&mut self, below: u64) {
-        // Set the prune target.
+        // Set the pruning target.
         self.pruning().set_threshold(below);
 
         // Finalize up to the point the pruning worker has reached; pruning needs canonical data.

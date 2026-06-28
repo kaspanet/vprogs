@@ -33,9 +33,9 @@ impl<S: Store, P: Processor<S>> SchedulerState<S, P> {
     /// to `last_committed` since no new batches have been scheduled yet.
     pub fn new(storage_config: StorageConfig<S>) -> Self {
         let storage = StorageManager::new(storage_config);
-        let root: Checkpoint<P::BatchMetadata> = StateMetadata::root(storage.store().as_ref());
-        let last_committed: Checkpoint<P::BatchMetadata> =
-            StateMetadata::last_committed(storage.store().as_ref());
+        let root = StateMetadata::root(storage.store().as_ref());
+        let last_committed = StateMetadata::last_committed(storage.store().as_ref());
+
         Self(Arc::new(SchedulerStateData {
             storage,
             eviction_queue: SegQueue::new(),
