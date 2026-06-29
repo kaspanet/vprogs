@@ -34,6 +34,15 @@ use crate::lock::LockEnum;
 /// config and fund the matching `P2SH(delegate_entry_script(covenant_id))`.
 pub const EXAMPLE_DEPOSIT_COVENANT_ID: [u8; 32] = [0x44; 32];
 
+/// Example-policy minimum funding required to CREATE a new user.
+///
+/// A user resource is born only when a deposit funds it at or above this amount;
+/// there is no zero-balance, unbacked creation. Crediting an *existing* user has
+/// no such floor (any positive top-up is fine). The value is a property of this
+/// example policy, surfaced via [`CreateSpec::min_balance`]; a different runtime
+/// picks its own.
+pub const EXAMPLE_MIN_CREATE_BALANCE: u64 = 1_000;
+
 /// Decoded deposit action fields, re-exposed so `DepositPolicy` methods can
 /// key on them without taking a full `ActionBody` reference.
 pub struct DepositBody<'a> {
@@ -56,11 +65,14 @@ pub struct DepositSubject<'a> {
     pub covenant_id: &'a [u8; 32],
 }
 
-/// Specifies an initial lock to use when creating a brand-new user slot.
+/// Specifies how a deposit may create a brand-new user slot.
 pub struct CreateSpec<'a> {
     /// Lock written into the new user resource. Its `id_hash()` must equal the `initial_lock_hash`
     /// the resource address was derived from.
     pub initial_lock: LockEnum<'a>,
+    /// Minimum funding the deposit must carry to create this user; a smaller deposit is rejected
+    /// rather than creating an underfunded account.
+    pub min_balance: u64,
 }
 
 /// Resolution of `DepositPolicy::credit_target`.
@@ -132,10 +144,14 @@ impl DepositPolicy for ExampleDepositPolicy {
     ) -> Result<CreditTarget<'a>, &'static str> {
         // Credit the action's `user_idx`; create-or-credit using the carried
         // initial lock (vprogs identity == initial_lock_hash, so a new user
-        // MUST supply its lock; see DESIGN §4.A).
+        // MUST supply its lock; see DESIGN §4.A). Creation requires funding of
+        // at least `EXAMPLE_MIN_CREATE_BALANCE`; there is no zero-balance birth.
         Ok(CreditTarget {
             user_idx: body.user_idx,
-            create_with: Some(CreateSpec { initial_lock: body.initial_lock }),
+            create_with: Some(CreateSpec {
+                initial_lock: body.initial_lock,
+                min_balance: EXAMPLE_MIN_CREATE_BALANCE,
+            }),
         })
     }
 }

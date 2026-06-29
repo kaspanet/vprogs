@@ -89,7 +89,15 @@ pub(super) fn apply_deposit<'a, P: DepositPolicy>(
     }
     let credit_kind = if cx.resources[idx].is_new() {
         match target_decision.create_with {
-            Some(_) => CreditKind::Create,
+            Some(spec) => {
+                // Creation must be funded at or above the policy's minimum; no zero-balance birth.
+                if deposit_value < spec.min_balance {
+                    return Err(AbiError::Decode(
+                        "deposit: funding below policy minimum to create user".into(),
+                    ));
+                }
+                CreditKind::Create
+            }
             None => {
                 return Err(AbiError::Decode(
                     "deposit: user does not exist (policy forbids create)".into(),

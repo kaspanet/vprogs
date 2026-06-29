@@ -1,51 +1,15 @@
-//! User-resource actions: `UserInit` (create at a lock-derived address), `Transfer` (move balance
-//! between two existing users), and `UpdateUserLock` (rotate the current lock in place).
+//! User-resource actions: `Transfer` (move balance between two existing users) and
+//! `UpdateUserLock` (rotate the current lock in place).
+//!
+//! User resources are not created here: a user is born only through the L1-backed `Deposit` path
+//! (see [`super::deposit`]), which funds the slot at or above the policy's creation minimum. There
+//! is no unbacked, zero-balance creation, so both actions below operate strictly on already-live
+//! users.
 
 use vprogs_zk_abi::{Error as AbiError, Result as AbiResult};
 
 use super::ApplyContext;
-use crate::{lock::LockEnum, resource_ext::ResourceExt, resource_id::derive_user_resource};
-
-/// Opens an empty user resource at its derived address.
-///
-/// Permissionless and auth-free by design: the resource id is bound to
-/// `initial_lock` (`derive_user_resource(initial_lock.id_hash())`), so a creator
-/// can only ever open the account that `initial_lock` controls. Demanding a
-/// signature to *create* the account a key will own is circular, and the
-/// L1-backed `Deposit` path creates without one for the same reason.
-///
-/// `initial_balance` MUST be zero: a slot is born empty and fills only via
-/// `Deposit` (committed to an L1 funding output) or `Transfer`. No action may
-/// write a balance out of nothing.
-pub(super) fn apply_user_init<'a>(
-    user_idx: u8,
-    initial_balance: u64,
-    initial_lock: &LockEnum<'a>,
-    cx: &mut ApplyContext<'a, '_>,
-) -> AbiResult<()> {
-    let target = &mut cx.resources[user_idx as usize];
-
-    if !target.is_new() {
-        return Err(AbiError::Decode("user_init: resource not new".into()));
-    }
-
-    let initial_lock_hash = initial_lock.id_hash();
-    let expected_id = derive_user_resource(&initial_lock_hash);
-    if target.id() != &expected_id {
-        return Err(AbiError::Decode(
-            "user_init: resource id != derive_user_resource(lock)".into(),
-        ));
-    }
-
-    // No unbacked minting: creation never carries value; balance enters only via Deposit/Transfer.
-    if initial_balance != 0 {
-        return Err(AbiError::Decode("user_init: initial_balance must be zero".into()));
-    }
-
-    target
-        .init_user(initial_balance, &initial_lock_hash, initial_lock)
-        .map_err(|m| AbiError::Decode(m.into()))
-}
+use crate::{lock::LockEnum, resource_ext::ResourceExt};
 
 /// Moves `amount` from `source_idx` to `dest_idx`. Both must be existing
 /// user resources; the source's current lock must authorize the move.

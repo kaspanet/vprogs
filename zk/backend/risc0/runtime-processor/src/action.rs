@@ -6,8 +6,8 @@
 //! DepositPolicy`) is monomorphized at the `main.rs` call site; non-deposit fns are agnostic to it.
 //!
 //! Apply fns are grouped by the resource lifecycle they drive: [`config`] (config init/update),
-//! [`user`] (user init/transfer/lock rotation), [`withdraw`] (L2-to-L1 exit), and [`deposit`]
-//! (L1-to-L2 credit).
+//! [`user`] (transfer/lock rotation), [`withdraw`] (L2-to-L1 exit), and [`deposit`] (L1-to-L2
+//! credit, the sole path that creates a user resource).
 
 mod config;
 mod deposit;
@@ -18,7 +18,7 @@ use alloc::vec::Vec;
 
 use config::{apply_init, apply_update};
 use deposit::apply_deposit;
-use user::{apply_transfer, apply_update_user_lock, apply_user_init};
+use user::{apply_transfer, apply_update_user_lock};
 use vprogs_zk_abi::{
     Result as AbiResult,
     transaction_processor::{Resource, Transaction},
@@ -74,9 +74,6 @@ pub fn apply_action<'a, P: DepositPolicy>(
         } => apply_update(*updater_idx, *new_min_withdrawal_amount, new_covenant_id, new_lock, cx),
         ActionBody::Init { updater_idx, new_min_withdrawal_amount, new_covenant_id, new_lock } => {
             apply_init(*updater_idx, *new_min_withdrawal_amount, new_covenant_id, new_lock, cx)
-        }
-        ActionBody::UserInit { user_idx, initial_balance, initial_lock } => {
-            apply_user_init(*user_idx, *initial_balance, initial_lock, cx)
         }
         ActionBody::Transfer { source_idx, dest_idx, amount } => {
             apply_transfer(*source_idx, *dest_idx, *amount, cx)

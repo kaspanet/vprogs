@@ -21,10 +21,10 @@ use vprogs_zk_abi::{
 use vprogs_zk_backend_risc0_api::{build_delegate_entry_script, delegate_entry_spk_hash};
 use vprogs_zk_backend_risc0_runtime_processor::{
     config::{ConfigView, config_total_len, write_config},
-    deposit_policy::EXAMPLE_DEPOSIT_COVENANT_ID,
+    deposit_policy::{EXAMPLE_DEPOSIT_COVENANT_ID, EXAMPLE_MIN_CREATE_BALANCE},
     ix::{
         ACTION_TAG_DEPOSIT, ACTION_TAG_TRANSFER, ACTION_TAG_UPDATE, ACTION_TAG_UPDATE_USER_LOCK,
-        ACTION_TAG_USER_INIT, ACTION_TAG_WITHDRAW,
+        ACTION_TAG_WITHDRAW,
     },
     lock::LockEnum,
     lock_trait::Lock,
@@ -153,17 +153,6 @@ fn encode_config_action(
     out.extend_from_slice(&new_min.to_le_bytes());
     out.extend_from_slice(covenant_id);
     new_lock.encode(&mut out);
-    out
-}
-
-/// Encodes one UserInit action:
-/// `tag || user_idx(1) || initial_balance(8) || initial_lock(tag+body)`.
-fn encode_user_init_action(user_idx: u8, balance: u64, initial_lock: &LockEnum<'_>) -> Vec<u8> {
-    let mut out = Vec::new();
-    out.push(ACTION_TAG_USER_INIT);
-    out.push(user_idx);
-    out.extend_from_slice(&balance.to_le_bytes());
-    initial_lock.encode(&mut out);
     out
 }
 
@@ -1745,7 +1734,7 @@ fn update_at_wrong_lex_position_is_rejected() {
     );
 }
 
-// User resource tests (UserInit / Transfer / UpdateUserLock)
+// User resource tests (deposit-driven creation gates / Transfer / UpdateUserLock)
 
 /// Builds a user resource's bytes locked by a single Schnorr key.
 fn build_schnorr_locked_user(pubkey: &[u8; 32], balance: u64) -> ([u8; 32], Vec<u8>) {
@@ -1762,19 +1751,25 @@ fn schnorr_user_id(pubkey: &[u8; 32]) -> [u8; 32] {
     *derive_user_resource(&lock.id_hash())
 }
 
+/// A deposit funding a NEW user below the policy's creation minimum is rejected:
+/// a user is born only when funded at or above `EXAMPLE_MIN_CREATE_BALANCE`, so
+/// no zero-/under-funded account ever materializes. The funding output pays the
+/// correct covenant deposit address; the rejection isolates the creation-minimum
+/// gate, not an SPK or address mismatch.
 #[test]
-fn user_init_creates_user_resource_at_derived_address() {
-    // UserInit opens an EMPTY slot, gated by the address-binding check
-    // (`target.id() == derive_user_resource(initial_lock.id_hash())`) and a
-    // zero-balance requirement; the new resource has no on-disk lock to
-    // authorize against, so the tx carries no signer.
-    let owner_pubkey = [0xAAu8; 32];
-    let user_id_bytes = schnorr_user_id(&owner_pubkey);
-
+fn deposit_below_creation_minimum_rejected() {
+    let owner_pubkey = [0x1Au8; 32];
+    let user_id = deposit_user_id(&owner_pubkey);
     let initial_lock = LockEnum::Schnorr(SchnorrLockView { pubkey: &owner_pubkey });
-    let action_bytes = encode_user_init_action(0, 0, &initial_lock);
+    let deposit_value: u64 = EXAMPLE_MIN_CREATE_BALANCE - 1;
+
+    let rest_preimage = deposit_rest_preimage(deposit_value);
+    let (user_lex_idx, config_lex_idx, access_entries) = sorted_user_config_positions(user_id);
+    let config_data = build_schnorr_locked_config(&[0xCFu8; 32], 0);
+
+    let action_bytes = encode_deposit_action(user_lex_idx, 0, &initial_lock);
     let actions_section = encode_actions_section(&[action_bytes]);
-    let access_meta = encode_access_metadata(&[(user_id_bytes, AccessType::Write)]);
+    let access_meta = encode_access_metadata(&access_entries);
     let signers_section = encode_signers_section(&[]);
 
     let mut payload = Vec::new();
@@ -1782,68 +1777,43 @@ fn user_init_creates_user_resource_at_derived_address() {
     payload.extend_from_slice(&signers_section);
     payload.extend_from_slice(&actions_section);
 
-    let tx_bytes = encode_v1_transaction(&payload, &[]);
-    // is_new = true; resource starts empty.
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(true, 0, Vec::new())]);
-
-    let elf = wrapped_runtime_processor_elf();
-    let outputs_bytes = execute_guest(&elf, &inputs);
-    let decoded = Outputs::decode(&outputs_bytes, 1).expect("guest succeeded");
-
-    assert_eq!(decoded.storage_ops.len(), 1);
-    let Some(data) = &decoded.storage_ops[0] else {
-        panic!("expected created resource, got {:?}", decoded.storage_ops[0]);
-    };
-    let view = UserView::from_bytes(data).expect("valid user bytes");
-    assert_eq!(view.balance(), 0, "UserInit opens an empty slot — no value at creation");
-    let expected_ilh = LockEnum::Schnorr(SchnorrLockView { pubkey: &owner_pubkey }).id_hash();
-    assert_eq!(view.initial_lock_hash(), &expected_ilh);
-}
-
-/// A `UserInit` carrying a nonzero `initial_balance` is rejected: creation never
-/// mints. The address binds correctly (lock derives the slot id), so the
-/// rejection isolates the zero-balance gate, not an address mismatch.
-#[test]
-fn user_init_rejects_nonzero_balance() {
-    let owner_pubkey = [0xADu8; 32];
-    let user_id_bytes = schnorr_user_id(&owner_pubkey);
-
-    let initial_lock = LockEnum::Schnorr(SchnorrLockView { pubkey: &owner_pubkey });
-    let action_bytes = encode_user_init_action(0, 1, &initial_lock);
-    let actions_section = encode_actions_section(&[action_bytes]);
-    let access_meta = encode_access_metadata(&[(user_id_bytes, AccessType::Write)]);
-    let signers_section = encode_signers_section(&[]);
-
-    let mut payload = Vec::new();
-    payload.extend_from_slice(&access_meta);
-    payload.extend_from_slice(&signers_section);
-    payload.extend_from_slice(&actions_section);
-
-    let tx_bytes = encode_v1_transaction(&payload, &[]);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(true, 0, Vec::new())]);
+    let tx_bytes = encode_v1_transaction(&payload, &rest_preimage);
+    let n_resources = access_entries.len();
+    let mut resources = vec![(false, 0u32, Vec::new()); n_resources];
+    resources[user_lex_idx as usize] = (true, 0, Vec::new());
+    resources[config_lex_idx as usize] = (false, 0, config_data);
+    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
     assert!(
-        Outputs::decode(&outputs_bytes, 1).is_err(),
-        "expected guest to reject UserInit with a nonzero initial_balance (no minting)"
+        Outputs::decode(&outputs_bytes, n_resources).is_err(),
+        "expected guest to reject a deposit creating a user below the funding minimum"
     );
 }
 
+/// A deposit whose carried `initial_lock` does not derive the target user's
+/// address is rejected. The attacker funds the covenant deposit address (SPK
+/// passes) and points the action at a victim-owned slot, but supplies their own
+/// key as `initial_lock`; the address-binding check
+/// (`resource.id() == derive_user_resource(initial_lock.id_hash())`) is the gate
+/// that rejects, preventing a deposit from being redirected to a slot it does
+/// not own.
 #[test]
-fn user_init_rejected_when_address_does_not_match_initial_lock() {
-    // Attacker tries to init a user resource at a victim-owned address but
-    // with their *own* key as initial_lock; the address won't derive from
-    // their lock, so the apply-time check rejects. No signer needed;
-    // address binding is the sole gate.
+fn deposit_create_rejected_when_address_does_not_match_initial_lock() {
     let victim_pubkey = [0xBBu8; 32];
     let attacker_pubkey = [0xCCu8; 32];
-    let victim_user_id_bytes = schnorr_user_id(&victim_pubkey);
-
+    let victim_user_id = deposit_user_id(&victim_pubkey);
     let attacker_lock = LockEnum::Schnorr(SchnorrLockView { pubkey: &attacker_pubkey });
-    let action_bytes = encode_user_init_action(0, 999_999, &attacker_lock);
+
+    let rest_preimage = deposit_rest_preimage(EXAMPLE_MIN_CREATE_BALANCE);
+    let (user_lex_idx, config_lex_idx, access_entries) =
+        sorted_user_config_positions(victim_user_id);
+    let config_data = build_schnorr_locked_config(&[0xCFu8; 32], 0);
+
+    let action_bytes = encode_deposit_action(user_lex_idx, 0, &attacker_lock);
     let actions_section = encode_actions_section(&[action_bytes]);
-    let access_meta = encode_access_metadata(&[(victim_user_id_bytes, AccessType::Write)]);
+    let access_meta = encode_access_metadata(&access_entries);
     let signers_section = encode_signers_section(&[]);
 
     let mut payload = Vec::new();
@@ -1851,14 +1821,18 @@ fn user_init_rejected_when_address_does_not_match_initial_lock() {
     payload.extend_from_slice(&signers_section);
     payload.extend_from_slice(&actions_section);
 
-    let tx_bytes = encode_v1_transaction(&payload, &[]);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(true, 0, Vec::new())]);
+    let tx_bytes = encode_v1_transaction(&payload, &rest_preimage);
+    let n_resources = access_entries.len();
+    let mut resources = vec![(false, 0u32, Vec::new()); n_resources];
+    resources[user_lex_idx as usize] = (true, 0, Vec::new());
+    resources[config_lex_idx as usize] = (false, 0, config_data);
+    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
     assert!(
-        Outputs::decode(&outputs_bytes, 1).is_err(),
-        "expected guest to reject when init lock doesn't derive the resource address"
+        Outputs::decode(&outputs_bytes, n_resources).is_err(),
+        "expected guest to reject a deposit whose initial_lock doesn't derive the slot address"
     );
 }
 
