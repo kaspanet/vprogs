@@ -1160,6 +1160,84 @@ fn deposit_two_distinct_outputs_both_credit() {
     assert_eq!(view1.initial_lock_hash(), &lock1.id_hash());
 }
 
+/// Two Deposit actions to the SAME user in one tx: output 0 should CREATE the
+/// slot, output 1 should then CREDIT it, accumulating to `v0 + v1`.
+///
+/// IGNORED — currently fails (observed balance `v1`, not `v0 + v1`): the second
+/// deposit silently OVERWRITES the first. Root cause is that `Resource::is_new()`
+/// is a static per-tx input flag set once at decode from prior-state existence;
+/// nothing flips it as actions apply (`resize`/`data_mut` only set `dirty`). So
+/// both same-tx actions read `is_new() == true`, both take the create branch,
+/// and the second `init_user` (guarded only by `if !is_new()`) clobbers the
+/// slot. `v0`'s funding output is consumed and enters the covenant on L1, but
+/// the L2 balance only reflects `v1` — a fund-loss path.
+///
+/// The create-or-credit "decided from live slot state" property therefore holds
+/// only ACROSS txs (where prior-state existence differs), not WITHIN one tx.
+/// The same staleness bites deletions (lifecycle is inferred from static
+/// `is_new` + current data-emptiness, not a per-tx state machine that advances
+/// as actions apply): a create-then-delete or delete-then-recreate in one tx
+/// reads a stale lifecycle for the later action. The real fix is a proper
+/// per-resource lifecycle state machine the runtime advances intra-tx, replacing
+/// the `is_new` snapshot. Tracked in kaspanet/vprogs#92; un-ignore once fixed.
+#[test]
+#[ignore = "within-tx create-then-credit overwrites instead of accumulating; needs a per-resource lifecycle state machine (kaspanet/vprogs#92)"]
+fn deposit_create_then_credit_same_user() {
+    let owner_pubkey = [0x77u8; 32];
+    let user_id = deposit_user_id(&owner_pubkey);
+    let initial_lock = LockEnum::Schnorr(SchnorrLockView { pubkey: &owner_pubkey });
+
+    let v0: u64 = 5_000;
+    let v1: u64 = 3_333;
+
+    // Two-output funding tx, both outputs paying the deposit address.
+    let rest_preimage = deposit_rest_preimage_two_outputs(v0, v1);
+
+    let (user_lex_idx, config_lex_idx, access_entries) = sorted_user_config_positions(user_id);
+    let config_data = build_schnorr_locked_config(&[0xCFu8; 32], 0);
+
+    // Both deposits target the same user with the same lock; only output_idx differs.
+    let action0 = encode_deposit_action(user_lex_idx, 0, &initial_lock);
+    let action1 = encode_deposit_action(user_lex_idx, 1, &initial_lock);
+    let actions_section = encode_actions_section(&[action0, action1]);
+    let access_meta = encode_access_metadata(&access_entries);
+    let signers_section = encode_signers_section(&[]);
+
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&access_meta);
+    payload.extend_from_slice(&signers_section);
+    payload.extend_from_slice(&actions_section);
+
+    let tx_bytes = encode_v1_transaction(&payload, &rest_preimage);
+    // user slot starts empty (is_new = true); the first deposit creates it.
+    let n_resources = access_entries.len();
+    let mut resources = vec![(false, 0u32, Vec::new()); n_resources];
+    resources[user_lex_idx as usize] = (true, 0, Vec::new());
+    resources[config_lex_idx as usize] = (false, 0, config_data);
+    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
+
+    let elf = wrapped_runtime_processor_elf();
+    let (outputs_bytes, journal_bytes) = execute_guest_with_journal(&elf, &inputs);
+    let decoded = Outputs::decode(&outputs_bytes, n_resources).expect("guest succeeded");
+
+    let Some(data) = &decoded.storage_ops[user_lex_idx as usize] else {
+        panic!("expected created+credited resource");
+    };
+    let view = UserView::from_bytes(data).expect("valid user bytes");
+    assert_eq!(view.balance(), v0 + v1, "create then credit must accumulate both outputs");
+    assert_eq!(view.initial_lock_hash(), &initial_lock.id_hash());
+
+    // Both deposits pay the same covenant address, so the per-tx deposit
+    // commitment is set once (idempotently) to that delegate script-hash.
+    let journal_entries = JournalEntries::decode(&journal_bytes).expect("valid journal");
+    match journal_entries.output_commitment {
+        OutputCommitment::Success { deposit_spk_hash, .. } => {
+            assert_eq!(deposit_spk_hash, &delegate_entry_spk_hash(&COVENANT_ID));
+        }
+        OutputCommitment::Error(e) => panic!("expected Success, got error: {e:?}"),
+    }
+}
+
 /// A funding output paying the delegate address of the WRONG covenant_id is
 /// rejected: it pays `P2SH(delegate_entry_script(wrong_covenant_id))`, a valid
 /// delegate script but for a covenant the config does not commit, so its P2SH
