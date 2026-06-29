@@ -61,7 +61,7 @@ impl CanonicalChain {
         let mut buckets: Vec<Bucket> = repeat_with(Bucket::new).take(bucket_count).collect();
         for id in canonical {
             let (bucket, bit) = Bucket::locate(id);
-            buckets[(bucket - base_bucket) as usize].set(bit, true);
+            buckets[(bucket - base_bucket) as usize].set(bit);
         }
 
         // Peel the hot zone off the top; seal the rest into a ring at the live floor.
@@ -90,7 +90,7 @@ impl CanonicalChain {
         let (bucket, bit) = Bucket::locate(id);
         let body = Arc::clone(&cur.body);
         let hot_zone = cur.hot_zone.roll_forward(bucket, &body);
-        hot_zone.tail.set(bit, true);
+        hot_zone.tail.set(bit);
 
         // Publish the extended snapshot.
         self.current.store(Arc::new(CanonicalChainSnapshot { tip: id, hot_zone, body }));
