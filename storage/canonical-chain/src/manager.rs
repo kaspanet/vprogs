@@ -5,27 +5,9 @@ use std::{
 
 use vprogs_core_types::BatchMetadata;
 
-use crate::chain::CanonicalChain;
+use crate::{append_outcome::AppendOutcome, chain::CanonicalChain};
 
-/// Outcome of [`CanonicalChainManager::append`]: the block's id and whether it was freshly
-/// allocated.
-///
-/// `is_new` is `false` when an existing id was reused (a block returning after a reorg); its
-/// retained state can then be revived rather than re-executed.
-#[derive(Debug, Clone, Copy)]
-pub struct Appended {
-    /// Canonical id of the appended block.
-    pub id: u64,
-    /// `true` if a fresh id was allocated; `false` if a returning block reused its existing id.
-    pub is_new: bool,
-}
-
-/// Single-owner management handle for the canonical chain, held by the L1 bridge.
-///
-/// It is the append-only batch-metadata log: ids are dense from `base`, with a `block_hash -> id`
-/// reverse index, so a finalized prefix drops cleanly. It also drives the canonical bits. `&mut
-/// self` writes enforce the single-writer contract; [`chain`](Self::chain) hands out the lock-free
-/// read oracle for everyone else.
+/// Single-writer handle for the canonical chain, backed by an append-only batch-metadata log.
 pub struct CanonicalChainManager<M> {
     /// The canonical-bit oracle this manager drives and shares with readers.
     chain: CanonicalChain,
@@ -40,49 +22,42 @@ pub struct CanonicalChainManager<M> {
 impl<M: BatchMetadata> CanonicalChainManager<M> {
     /// Creates a manager over `chain`, replaying persisted `(id, metadata)` entries in order.
     pub fn new(chain: CanonicalChain, entries: impl IntoIterator<Item = (u64, M)>) -> Self {
+        // Claim the sole-writer role and start with an empty log.
         chain.claim_writer();
         let mut manager = Self { chain, base: 1, entries: VecDeque::new(), index: HashMap::new() };
 
-        // 1. Replay every persisted batch into the log; the first id establishes the base.
+        // Replay each persisted batch into the log; the first id sets the base, the last the tip.
+        let mut tip = None;
         for (id, metadata) in entries {
             if manager.entries.is_empty() {
                 manager.base = id;
             }
             let assigned = manager.push(metadata);
             debug_assert_eq!(assigned, id, "restore must be contiguous");
+            tip = Some(id);
         }
-        let Some(tip) = manager.last_id() else { return manager };
+        let Some(tip) = tip else { return manager };
 
-        // 2. The canonical chain is the tip's ancestry: walk parent_id to the finalized floor. The
-        // highest id is always canonical (a reorg appends its heavier branch above the orphans).
-        let mut canonical = Vec::new();
-        let mut id = tip;
-        loop {
-            canonical.push(id);
-            let parent = manager.metadata(id).expect("walked id is live").parent_id();
-            if parent < manager.base || parent >= id {
-                break;
-            }
-            id = parent;
-        }
-
-        // 3. Project the canonical set onto the oracle in a single publish.
+        // Project the tip's canonical ancestry onto the oracle in a single publish.
+        let canonical = manager.canonical_ancestry(tip);
         manager.chain.restore(manager.base, tip, canonical);
         manager
     }
 
-    /// Ingests `metadata` as a canonical block, returning its [`Appended`] outcome.
-    pub fn append(&mut self, metadata: M) -> Appended {
+    /// Ingests `metadata` as a canonical block, returning its [`AppendOutcome`].
+    pub fn append(&mut self, metadata: M) -> AppendOutcome {
+        // Returning block: re-canonicalize its existing id.
         if let Some(id) = self.id(&metadata.block_hash()) {
-            // Returning block: re-canonicalize it.
             if id > self.chain.tip() {
                 self.chain.append(id);
             }
-            return Appended { id, is_new: false };
+            return AppendOutcome { id, is_new: false };
         }
+
+        // New block: allocate a fresh id and canonicalize it.
         let id = self.push(metadata);
         self.chain.append(id);
-        Appended { id, is_new: true }
+        AppendOutcome { id, is_new: true }
     }
 
     /// Rolls the canonical chain back to `new_tip`, orphaning every id above it.
@@ -92,7 +67,10 @@ impl<M: BatchMetadata> CanonicalChainManager<M> {
 
     /// Finalizes ids below `below`: the chain reads them as canonical and their log entries drop.
     pub fn finalize(&mut self, below: u64) {
+        // Finalize the canonical bits below `below`.
         self.chain.finalize(below);
+
+        // Drop the now-finalized log entries and their reverse-index keys.
         while self.base < below {
             let Some(metadata) = self.entries.pop_front() else { break };
             self.index.remove(&metadata.block_hash());
@@ -123,9 +101,19 @@ impl<M: BatchMetadata> CanonicalChainManager<M> {
         id
     }
 
-    /// The highest live id, or `None` if the log is empty.
-    fn last_id(&self) -> Option<u64> {
-        (!self.entries.is_empty()).then(|| self.base + self.entries.len() as u64 - 1)
+    /// Walks `tip`'s ancestry via `parent_id` to the finalized floor, collecting the canonical ids.
+    fn canonical_ancestry(&self, tip: u64) -> Vec<u64> {
+        let mut canonical = Vec::new();
+        let mut id = tip;
+        loop {
+            canonical.push(id);
+            let parent = self.metadata(id).expect("walked id is live").parent_id();
+            if parent < self.base || parent >= id {
+                break;
+            }
+            id = parent;
+        }
+        canonical
     }
 }
 

@@ -10,10 +10,7 @@ use std::{
 use arc_swap::ArcSwap;
 use vprogs_core_atomics::AtomicRing;
 
-use crate::{
-    bucket::Bucket,
-    snapshot::{CanonicalChainSnapshot, HotZone},
-};
+use crate::{bucket::Bucket, hot_zone::HotZone, snapshot::CanonicalChainSnapshot};
 
 /// The lock-free canonical-chain oracle; its sole writer is the `CanonicalChainManager`.
 #[derive(Clone)]
