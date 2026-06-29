@@ -53,7 +53,7 @@ impl<'a> Signer<'a> for SchnorrSigPtrSigner {
     ) -> CodecResult<SchnorrUnlocker> {
         let pubkey = read_schnorr_lock_pubkey(resource_idx, ctx)?;
         let sig = read_sig_at_offset(self.sig_offset, ctx)?;
-        if !verify_k256_schnorr_sig(&pubkey, sig, ctx.sig_msg) {
+        if !verify_k256_schnorr_sig(&pubkey, sig, ctx.sig_msg()) {
             return Err(Error::Decode("signer.schnorr: invalid signature"));
         }
         Ok(SchnorrUnlocker { pubkey })
@@ -139,7 +139,7 @@ impl<'a> Signer<'a> for MultisigSchnorrSigPtrSigner {
     ) -> CodecResult<MultisigUnlocker> {
         let pubkey = read_multisig_lock_pubkey_at(resource_idx, self.pubkey_idx, ctx)?;
         let sig = read_sig_at_offset(self.sig_offset, ctx)?;
-        if !verify_k256_schnorr_sig(&pubkey, sig, ctx.sig_msg) {
+        if !verify_k256_schnorr_sig(&pubkey, sig, ctx.sig_msg()) {
             return Err(Error::Decode("signer.multisig_schnorr: invalid signature"));
         }
         Ok(MultisigUnlocker { pubkeys: vec![pubkey] })

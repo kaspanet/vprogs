@@ -49,11 +49,12 @@ pub fn run<'a, P: DepositPolicy>(
 
     // Translate end_of_actions from ix-relative to payload-relative bytes.
     // payload.bytes = access_metadata_prefix || ix_data, so the prefix length
-    // is `payload.bytes.len() - ix_data.len()`.
+    // is `payload.bytes.len() - ix_data.len()`. The sig-message digest over
+    // this presig slice is hashed lazily by `SignerResolveContext`, so a
+    // witness-only tx never pays for it.
     let access_prefix_len = payload.bytes.len() - payload.ix_data.len();
     let end_of_actions_in_payload = access_prefix_len + end_of_actions_in_ix;
     let payload_presig = &payload.bytes[..end_of_actions_in_payload];
-    let sig_msg = compute_sig_message(current_rest_preimage, payload_presig);
 
     // Resolve signers → AuthContext. Entries are pushed in wire order. The
     // wire format must already be `(resource_idx asc, pubkey asc within
@@ -62,12 +63,7 @@ pub fn run<'a, P: DepositPolicy>(
     // per-resource slices at match time rather than silently re-sorting.
     let auth_ctx = resolve_signers(
         &signers,
-        &SignerResolveContext {
-            payload_bytes: payload.bytes,
-            current_rest_preimage,
-            sig_msg: &sig_msg,
-            resources,
-        },
+        &SignerResolveContext::new(payload.bytes, current_rest_preimage, payload_presig, resources),
     )?;
 
     let mut cx = ApplyContext {
