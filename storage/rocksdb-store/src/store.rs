@@ -73,9 +73,7 @@ impl<C: Config> Store for RocksDbStore<C> {
     fn prefix_iter(&self, state_space: StateSpace, prefix: &[u8]) -> PrefixIterator<'_> {
         let cf = self.cf(&state_space);
 
-        // An empty prefix matches every key: a full forward scan. The CFs carry a fixed-prefix
-        // extractor, so this must opt into total-order seek or iteration stops at the first prefix
-        // boundary instead of spanning the whole column family.
+        // Empty prefix = full scan; the fixed-prefix CFs need total-order seek to span all keys.
         if prefix.is_empty() {
             let mut read_opts = rocksdb::ReadOptions::default();
             read_opts.set_total_order_seek(true);

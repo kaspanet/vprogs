@@ -27,14 +27,16 @@ pub trait Store: Tree + Clone + Send + Sync + 'static {
     /// Returns the store's shared canonical-chain read oracle.
     fn canonical_chain(&self) -> CanonicalChain;
 
-    /// Restores a single-owner canonical-chain manager driving this store's oracle, replaying the
-    /// committed `BatchMetadata` so each batch's id equals its stored index.
+    /// Restores a single-owner manager over this store's oracle, each id being its stored index.
     fn canonical_chain_manager<M: BatchMetadata>(&self) -> CanonicalChainManager<M> {
+        // Decode each committed batch, taking its id from the storage key.
         let entries = self.prefix_iter(StateSpace::BatchMetadata, &[]).map(|(key, value)| {
             let id = u64::from_be_bytes(key[..8].try_into().expect("corrupted batch index key"));
             let metadata: M = borsh::from_slice(&value).expect("corrupted batch metadata");
             (id, metadata)
         });
+
+        // Replay them into a manager over this store's oracle.
         CanonicalChainManager::new(self.canonical_chain(), entries)
     }
 }
