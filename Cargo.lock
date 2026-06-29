@@ -8891,7 +8891,6 @@ dependencies = [
  "vprogs-core-codec",
  "vprogs-core-hashing",
  "vprogs-core-smt",
- "vprogs-core-types",
  "vprogs-storage-canonical-chain",
  "vprogs-storage-types",
 ]

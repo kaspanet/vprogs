@@ -1,6 +1,5 @@
 use rocksdb::{Options, SliceTransform, WriteOptions};
 use tap::Tap;
-use vprogs_core_types::{CanonicalChain, NoOpCanonicalChain};
 
 /// Prefix length for keys that start with a u64 (batch_index, version, or a proof-receipt
 /// checkpoint_index).
@@ -8,9 +7,6 @@ const U64_PREFIX_LEN: usize = size_of::<u64>();
 
 /// RocksDB tuning and per-column-family options for the store.
 pub trait Config: Send + Sync + 'static {
-    /// Canonical chain for fork-aware SMT reads; `NoOpCanonicalChain` disables filtering.
-    type CanonicalChain: CanonicalChain + Default;
-
     fn db_opts() -> Options {
         Options::default().tap_mut(|o| {
             // --- Parallelism & background work -----------------------------------
@@ -104,8 +100,6 @@ pub trait Config: Send + Sync + 'static {
     }
 }
 
-/// Default store configuration, with fork-awareness disabled.
+/// Default store configuration.
 pub struct DefaultConfig;
-impl Config for DefaultConfig {
-    type CanonicalChain = NoOpCanonicalChain;
-}
+impl Config for DefaultConfig {}
