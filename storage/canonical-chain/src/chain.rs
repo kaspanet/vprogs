@@ -50,9 +50,12 @@ impl CanonicalChain {
 
     /// Restores the `canonical` ids over `base..=tip` at startup.
     pub(crate) fn restore(&self, base: u64, tip: u64, canonical: impl IntoIterator<Item = u64>) {
+        // Nothing to restore for an empty chain.
         if tip == 0 {
             return;
         }
+
+        // Bucket range spanned by the live ids.
         let base_bucket = Bucket::locate(base).0;
         let tail_bucket = Bucket::locate(tip).0;
 
@@ -64,8 +67,7 @@ impl CanonicalChain {
             buckets[(bucket - base_bucket) as usize].set(bit, true);
         }
 
-        // Peel the hot zone (tail, then last_sealed) off the top; seal the rest into a ring based
-        // at the live floor so lower buckets read as absent (finalized).
+        // Peel the hot zone off the top; seal the rest into a ring at the live floor.
         let tail = Arc::new(buckets.pop().expect("live range has at least one bucket"));
         let last_sealed = buckets.pop().map_or_else(|| Arc::new(Bucket::new()), Arc::new);
         let body = AtomicRing::new(base_bucket);
@@ -73,6 +75,7 @@ impl CanonicalChain {
             body.push(Arc::new(bucket));
         }
 
+        // Publish the restored snapshot.
         self.current.store(Arc::new(CanonicalChainSnapshot {
             tip,
             hot_zone: HotZone { tail_bucket, tail, last_sealed },
@@ -82,6 +85,7 @@ impl CanonicalChain {
 
     /// Marks `id` canonical as the new tip. Debug-panics unless `id` > tip.
     pub(crate) fn append(&self, id: u64) {
+        // Read the current snapshot; the new id must extend its tip.
         let cur = self.current.load();
         debug_assert!(id > cur.tip, "append id {id} must extend tip {}", cur.tip);
 
@@ -91,20 +95,19 @@ impl CanonicalChain {
         let hot_zone = cur.hot_zone.roll_forward(bucket, &body);
         hot_zone.tail.set(bit, true);
 
+        // Publish the extended snapshot.
         self.current.store(Arc::new(CanonicalChainSnapshot { tip: id, hot_zone, body }));
     }
 
     /// Rolls the chain back to `new_tip`, flipping off every id above it.
     pub(crate) fn rollback(&self, new_tip: u64) {
+        // Read the current snapshot; the target must not exceed its tip.
         let cur = self.current.load();
         debug_assert!(new_tip <= cur.tip, "rollback target {new_tip} exceeds tip {}", cur.tip);
 
-        // Rewriting a sealed bucket mutates shared state, so fork the body; hot-zone buckets stay
-        // shareable. The orphaned ids are the dense suffix above new_tip, so the lowest one
-        // (new_tip + 1) alone decides whether any sealed bucket is touched.
+        // Fork the body only for a deep rollback that rewrites a sealed bucket; else share it.
         let deep = Bucket::locate(new_tip + 1).0 + 2 <= cur.hot_zone.tail_bucket;
         let body = if deep { Arc::new(cur.body.fork()) } else { Arc::clone(&cur.body) };
-
         let mut hot_zone = cur.hot_zone.roll_forward(cur.hot_zone.tail_bucket, &body);
 
         // Group the bit edits by bucket so each touched bucket is rewritten once.
@@ -114,8 +117,7 @@ impl CanonicalChain {
             edits.entry(bucket).or_default().push((bit, false));
         }
 
-        // Hot-zone buckets copy-on-write; body buckets are replaced in the (forked) ring; an edit
-        // for a bucket already pruned off the head is below the horizon and dropped.
+        // Hot-zone buckets copy-on-write; body buckets replace in the ring; pruned edits drop.
         for (bucket, ops) in edits {
             if bucket == hot_zone.tail_bucket {
                 hot_zone.tail = hot_zone.tail.edited(&ops);
@@ -126,6 +128,7 @@ impl CanonicalChain {
             }
         }
 
+        // Publish the rolled-back snapshot.
         self.current.store(Arc::new(CanonicalChainSnapshot { tip: new_tip, hot_zone, body }));
     }
 
