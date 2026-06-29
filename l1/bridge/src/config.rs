@@ -30,9 +30,8 @@ pub struct L1BridgeConfig {
     /// On a fresh chain, seed the root this many chain-blocks below the sink, so the bridge starts
     /// near the tip. `None` seeds from the pruning point.
     pub seed_depth: Option<u64>,
-    /// Optional observer the bridge stores its latest chain-block DAA score into. Lets an external
-    /// progress reporter gauge how far the chain has replayed toward the node's virtual tip
-    /// without polling the bridge directly. `None` disables publishing.
+    /// Optional observer the bridge publishes its latest chain-block DAA score into, for an
+    /// external progress reporter; `None` disables publishing.
     pub tip_daa: Option<Arc<AtomicU64>>,
 }
 

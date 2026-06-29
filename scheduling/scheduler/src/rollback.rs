@@ -51,15 +51,13 @@ impl<S: Store, P: Processor<S>> Rollback<S, P> {
         // Commit any existing changes so the rollback sees a consistent state.
         store.commit(write_batch);
 
-        // Only update `last_committed` in memory if the target is already committed. If the target
-        // batch hasn't committed yet, its `commit_done()` will advance `last_committed`.
+        // Update last_committed in memory only if target already committed; else commit_done does.
         let target_committed = self.target.index() < self.state.last_committed().index();
         if target_committed {
             self.state.set_last_committed(Arc::new(self.target.clone()));
         }
 
-        // On rollback-to-genesis, reset root to default so that `next_checkpoint` can
-        // re-initialize it for the next scheduled batch.
+        // On rollback-to-genesis, reset root so next_checkpoint can re-initialize it.
         let rollback_to_genesis = self.target.index() == 0;
         if rollback_to_genesis {
             self.state.set_root(Arc::new(self.target.clone()));
@@ -79,8 +77,8 @@ impl<S: Store, P: Processor<S>> Rollback<S, P> {
                 }
             }
 
-            // Only update `last_committed` on disk if the target is already committed. If the
-            // target batch hasn't committed yet, its `commit_done()` will advance `last_committed`.
+            // Update last_committed on disk only if target already committed; else commit_done
+            // does.
             if target_committed {
                 StateMetadata::set_last_committed(wb, &self.target);
             }

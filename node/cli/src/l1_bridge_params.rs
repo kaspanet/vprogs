@@ -44,8 +44,7 @@ pub struct L1BridgeParams {
 }
 
 impl L1BridgeParams {
-    /// Converts CLI params into an [`L1BridgeConfig`]. Root and tip are left unset - they are
-    /// populated from the scheduler's persisted state at startup.
+    /// Converts CLI params into an [`L1BridgeConfig`] (start point comes from persisted state).
     pub fn into_config(self) -> L1BridgeConfig {
         L1BridgeConfig {
             url: self.url,

@@ -10,15 +10,20 @@ use crate::{
     state_space_ext::StateSpaceExt,
 };
 
+/// A RocksDB-backed [`Store`], with one column family per [`StateSpace`].
 pub struct RocksDbStore<C: Config = DefaultConfig> {
+    /// The shared RocksDB handle.
     db: Arc<DB>,
+    /// Write options applied to every commit.
     write_opts: Arc<rocksdb::WriteOptions>,
     /// In-memory canonical-chain oracle, shared by clones; driven by the restored writer.
     canonical: CanonicalChain,
+    /// Binds the `Config` type parameter, used only through its static options.
     _marker: PhantomData<C>,
 }
 
 impl<C: Config> RocksDbStore<C> {
+    /// Opens the store at `path`, creating the database and column families if absent.
     pub fn open<P: AsRef<Path>>(path: P) -> Self {
         let mut db_opts = C::db_opts();
         db_opts.create_if_missing(true);
@@ -41,6 +46,7 @@ impl<C: Config> RocksDbStore<C> {
         }
     }
 
+    /// The column-family handle for `ns`; panics if the CF is missing.
     fn cf(&self, ns: &StateSpace) -> &rocksdb::ColumnFamily {
         let cf_name = <StateSpace as StateSpaceExt<C>>::cf_name;
         match self.db.cf_handle(cf_name(ns)) {

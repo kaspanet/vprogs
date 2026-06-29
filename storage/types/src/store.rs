@@ -7,18 +7,20 @@ use crate::{StateSpace, WriteBatch};
 /// A boxed iterator over key-value pairs returned by prefix iteration.
 pub type PrefixIterator<'a> = Box<dyn Iterator<Item = (Vec<u8>, Vec<u8>)> + 'a>;
 
+/// Versioned key-value persistence, partitioned into [`StateSpace`] column families.
 pub trait Store: Tree + Clone + Send + Sync + 'static {
     type WriteBatch: WriteBatch;
 
+    /// Reads the value stored at `key` in `state_space`, or `None` if absent.
     fn get(&self, state_space: StateSpace, key: &[u8]) -> Option<Vec<u8>>;
+
+    /// Opens a new write batch.
     fn write_batch(&self) -> Self::WriteBatch;
+
+    /// Atomically commits a write batch.
     fn commit(&self, write_batch: Self::WriteBatch);
 
-    /// Iterate over all key-value pairs in the given state space whose keys
-    /// start with the specified prefix.
-    ///
-    /// The iterator yields `(key, value)` pairs in lexicographic order of keys.
-    /// Iteration stops when a key that does not match the prefix is encountered.
+    /// Iterates `(key, value)` pairs in `state_space` whose keys start with `prefix`, in key order.
     ///
     /// # Panics
     /// Panics if the underlying storage operation fails.

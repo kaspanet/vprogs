@@ -319,8 +319,7 @@ pub fn test_inflight_cancellation_without_waiting() {
             )],
         );
 
-        // Immediately rollback without waiting for batches 2-4 to commit
-        // This tests in-flight cancellation
+        // Immediately rollback without waiting for batches 2-4 (tests in-flight cancellation).
         scheduler.rollback_to(1).expect("rollback should succeed");
 
         // After rollback, the canceled batches should have canceled() == true
@@ -328,8 +327,7 @@ pub fn test_inflight_cancellation_without_waiting() {
         assert!(batch3.canceled(), "batch3 should be canceled");
         assert!(batch4.canceled(), "batch4 should be canceled");
 
-        // Resource 1 should still exist (from batch1 which was committed)
-        // Resources 2, 3, 4 should be cleaned up by rollback
+        // Resource 1 survives (batch1 committed); resources 2-4 are cleaned up by the rollback.
         scheduler
             .assert_written_state(ResourceId::for_test(1), vec![0])
             .assert_resource_deleted(ResourceId::for_test(2))
@@ -365,8 +363,7 @@ pub fn test_rollback_multiple_contexts() {
             StorageConfig::default().with_store(storage),
         );
 
-        // Phase 1: Apply batches 1-6
-        // Using resource IDs that match batch indices for clarity
+        // Phase 1: apply batches 1-6 (resource ids match batch indices for clarity).
         let batch1 = scheduler.schedule(
             1,
             vec![SchedulerTransaction::new(
@@ -817,8 +814,7 @@ pub fn test_cancellation_skips_writes() {
         batch2.wait_committed_blocking();
         batch3.wait_committed_blocking();
 
-        // Resource 1 should only have the write from batch1
-        // Resources 100 and 200 should be cleaned up by rollback
+        // Resource 1 keeps only batch1's write; resources 100 and 200 are cleaned up.
         scheduler
             .assert_written_state(ResourceId::for_test(1), vec![1])
             .assert_resource_deleted(ResourceId::for_test(100))
@@ -1229,8 +1225,7 @@ pub fn test_pruning_crash_recovery() {
         scheduler.pruning().set_threshold(3);
         scheduler.wait_pruned(2, Duration::from_secs(10));
 
-        // Verify root has advanced past the pruned batches.
-        // Root = oldest surviving batch = 3 (since batches 1-2 were pruned).
+        // Root should have advanced to 3 (oldest surviving batch after pruning 1-2).
         let root = StateMetadata::root::<u64, _>(&**scheduler.state().storage().store());
         assert_eq!(root.index(), 3, "Root should point to first surviving batch");
         assert_eq!(*root.metadata(), 3, "Root metadata should match batch 3");

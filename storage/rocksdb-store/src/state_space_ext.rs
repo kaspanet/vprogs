@@ -3,8 +3,11 @@ use vprogs_storage_types::StateSpace;
 
 use crate::config::{Config, DefaultConfig};
 
+/// Maps each [`StateSpace`] to its RocksDB column family and per-CF options.
 pub trait StateSpaceExt<C: Config = DefaultConfig> {
+    /// The column-family name backing this state space.
     fn cf_name(&self) -> &'static str;
+    /// Column-family descriptors for every state space, in enum order.
     fn all_descriptors() -> Vec<ColumnFamilyDescriptor>;
 }
 
@@ -18,7 +21,6 @@ impl<C: Config> StateSpaceExt<C> for StateSpace {
             StateSpace::Metadata => "metas",
             StateSpace::SmtNode => "smt_node",
             StateSpace::SmtStale => "smt_stale",
-            StateSpace::CanonicalChain => "canonical_chain",
             StateSpace::ProofReceipt => "proof_receipt",
         }
     }
@@ -34,7 +36,6 @@ impl<C: Config> StateSpaceExt<C> for StateSpace {
             ColumnFamilyDescriptor::new(cf_name(&Metadata), C::cf_metas_opts()),
             ColumnFamilyDescriptor::new(cf_name(&SmtNode), C::cf_smt_node_opts()),
             ColumnFamilyDescriptor::new(cf_name(&SmtStale), C::cf_smt_stale_opts()),
-            ColumnFamilyDescriptor::new(cf_name(&CanonicalChain), C::cf_canonical_chain_opts()),
             ColumnFamilyDescriptor::new(cf_name(&ProofReceipt), C::cf_proof_receipt_opts()),
         ]
     }

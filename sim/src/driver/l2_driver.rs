@@ -374,13 +374,10 @@ impl L2Driver {
 
             // Use the consensus's own lane tip (authoritative) when the lane saw activity.
             if !lane_txs.is_empty() {
-                // First activation on this chain: nothing has ever been folded into the lane, so
-                // consensus's lane-update resolver falls back to `prev_seq_commit`. The guest's
-                // `verify_activity` picks `prev_seq_commit` over `prev_lane_tip` only when the
-                // batch is marked `lane_expired`, so mirror consensus's first-activation path
-                // here. After the first batch lands, `prev_lane_blue_score > 0` and subsequent
-                // batches chain on `prev_lane_tip` normally. Same workaround as
-                // `settlement_l1_e2e::settle_1`.
+                // First activation: nothing has been folded into the lane yet, so consensus's
+                // resolver falls back to `prev_seq_commit`. The guest's `verify_activity` prefers
+                // `prev_seq_commit` over `prev_lane_tip` only when `lane_expired`, so set it to
+                // mirror that path (same workaround as `settlement_l1_e2e::settle_1`).
                 if meta.prev_lane_blue_score == 0 {
                     meta.lane_expired = true;
                 }

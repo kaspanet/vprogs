@@ -373,10 +373,8 @@ async fn test_reorg_filter_causes_lag() {
     unfiltered_sink.wait_for_block(final_tip, TIMEOUT).await;
     let unfiltered_max = unfiltered_sink.max_id();
 
-    // Give the filtered bridge time to process, then confirm it lags. The reorg filter hides blocks
-    // within the reorg's blue-score depth, so the filtered bridge schedules strictly fewer blocks
-    // and has not yet reached the final tip. (Exact ids exceed chain height because canonical ids
-    // are never reused - the orphaned short chain still consumed ids.)
+    // The reorg filter hides blocks within the reorg's blue-score depth, so the filtered bridge
+    // schedules strictly fewer (ids exceed chain height since orphaned ids stay consumed).
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(
         filtered_sink.max_id() < unfiltered_max,

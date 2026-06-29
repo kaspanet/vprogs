@@ -88,9 +88,7 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
                 // Submit to execution workers for parallel processing.
                 self.execution_workers.execute(batch.clone());
 
-                // Process eviction queue after scheduling to avoid race conditions.
-                // Resources touched by this batch will have updated last_access and won't be
-                // evicted.
+                // Process the eviction queue; this batch's resources won't be evicted yet.
                 self.process_eviction_queue()
             })
     }
@@ -125,8 +123,7 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
 
         // Only perform a rollback if there is state to revert.
         if upper_bound > target_index {
-            // Prevent the pruning worker from pruning into the rollback range.
-            // Returns false if pruning has already advanced past the target.
+            // Stop pruning entering the rollback range; false = it already passed the target.
             if !self.pruning_worker.pause(target_index) {
                 return Err(SchedulerError::PruningConflict);
             }
@@ -245,9 +242,8 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
         self.state.set_last_processed(Arc::new(checkpoint.clone()));
         self.pending_batches.push_back(checkpoint.clone());
 
-        // Initialize root when the first batch is scheduled. On a fresh database or after
-        // rollback-to-genesis, root is default (index 0). The disk write is deferred to
-        // commit() for crash-fault tolerance.
+        // Initialize root on the first batch; default index 0 on a fresh DB or
+        // post-genesis-rollback.
         if self.state.root().index() == 0 {
             self.state.set_root(Arc::new(checkpoint.clone()));
         }
@@ -259,19 +255,16 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
     fn cancel_and_rollback(&mut self, target_index: u64) -> Checkpoint<P::BatchMetadata> {
         let target = self.lookup_checkpoint(target_index);
 
-        // Cancel in-flight batches first so `commit_done()` sees the cancellation before
-        // we update shared state.
+        // Cancel in-flight batches first so commit_done() sees it before the state update.
         self.cancellation.rollback(target_index);
 
-        // Update last_processed. last_committed is corrected by Rollback::execute() on the
-        // write worker, which sees the true committed state without races.
+        // Update last_processed; last_committed is corrected by Rollback::execute() (race-free).
         self.state.set_last_processed(Arc::new(target.clone()));
 
         // Roll the canonical chain back to the target.
         self.canonical_chain_manager.rollback(target_index);
 
-        // Pop canceled entries from the tip. Must happen after lookup_checkpoint (which
-        // searches the pending queue) but before returning.
+        // Pop canceled entries from the tip (after lookup_checkpoint searches the pending queue).
         while self.pending_batches.back().is_some_and(|cp| cp.index() > target_index) {
             self.pending_batches.pop_back();
         }

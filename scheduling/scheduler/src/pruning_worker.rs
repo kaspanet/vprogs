@@ -148,10 +148,8 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
                         // Root is the oldest surviving batch - the first candidate for pruning.
                         let lower_bound = state.root().index();
 
-                        // Last batch eligible for pruning: (min of requested threshold and pause
-                        // ceiling) converted from exclusive to inclusive. `saturating_sub` guards
-                        // against underflow when the effective threshold is 0 (e.g. fresh start
-                        // before any `set_threshold` call).
+                        // Last eligible batch: min(threshold, ceiling) made inclusive;
+                        // saturating_sub guards the threshold-0 fresh start.
                         let upper_bound = pruning_threshold
                             .load(Ordering::Acquire)
                             .min(pause_ceiling.load(Ordering::Acquire))
@@ -162,9 +160,8 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
                             // Advance cursor to signal our prune range (Dekker step 1).
                             let prev = pruning_cursor.swap(upper_bound, Ordering::SeqCst);
 
-                            // Re-check ceiling (Dekker step 2: read their flag). A ceiling may have
-                            // been set between our initial read and the store above. If so, restore
-                            // the cursor and abort this pass.
+                            // Dekker step 2: re-read the ceiling; if set since our first read,
+                            // restore the cursor and abort.
                             if pause_ceiling.load(Ordering::SeqCst) <= upper_bound {
                                 pruning_cursor.store(prev, Ordering::Release);
                                 continue;

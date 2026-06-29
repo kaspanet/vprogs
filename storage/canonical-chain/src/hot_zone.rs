@@ -10,8 +10,7 @@ pub(crate) struct HotZone {
     pub(crate) tail_bucket: u64,
     /// The bucket currently being filled (number `tail_bucket`).
     pub(crate) tail: Arc<Bucket>,
-    /// The previous bucket (number `tail_bucket - 1`), kept hot so a shallow reorg avoids the
-    /// body.
+    /// The previous bucket (`tail_bucket - 1`), kept hot so a shallow reorg avoids the body.
     pub(crate) last_sealed: Arc<Bucket>,
 }
 

@@ -31,8 +31,7 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
         let snapshot = tree.snapshot();
         let mut ctx = Self { tree, snapshot, wb, prev_version: version - 1, version };
 
-        // Sort and deduplicate by key. On duplicate keys, last-write-wins: `dedup_by` removes `a`
-        // (later element) and keeps `b`, so we copy `a`'s value_hash into `b` first.
+        // Sort and dedup by key; on a duplicate, last-write-wins by copying the later value_hash.
         commitments.sort_by_key(|a| a.key);
         commitments.dedup_by(|a, b| {
             if a.key == b.key {
@@ -43,8 +42,7 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
             }
         });
 
-        // Recursively apply commitments starting from the root. `update_subtree` marks the existing
-        // root stale internally, so no separate `mark_stale` call is needed here.
+        // Apply from the root; update_subtree marks the old root stale, so no separate call here.
         match &ctx.update_subtree(&Key::ROOT, &commitments) {
             // Tree drained: write a tombstone so reads don't fall back to the stale prior root.
             None => {
@@ -157,8 +155,7 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
     fn split_and_recurse(&mut self, key: &Key, commitments: &[Commitment]) -> Option<Node> {
         assert!((key.level as usize) < DEPTH, "exceeded tree depth");
 
-        // Partition by the bit at the current depth. Since commitments are sorted MSB-first, all
-        // bit=0 keys precede bit=1 keys - so `partition_point` finds the exact boundary.
+        // Partition by the current-depth bit; sorted MSB-first, so bit=0 keys precede bit=1.
         let mid = commitments.partition_point(|u| !u.key.get_msb(key.level as usize));
         let (left, right) = commitments.split_at(mid);
 
@@ -175,13 +172,11 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
             // Both children empty - this subtree is empty.
             (None, None) => None,
 
-            // One child is a leaf, the other is empty - bubble the leaf up. This is the core
-            // shortcutting mechanism: the single occupant doesn't need an internal node above it.
+            // One child a leaf, the other empty: bubble it up (shortcut, no internal node).
             (Some(Node::Leaf { .. }), None) => left_result,
             (None, Some(Node::Leaf { .. })) => right_result,
 
-            // Otherwise (both non-empty, or at least one Internal) - write children to the tree
-            // and create an Internal node.
+            // Otherwise (both non-empty, or one Internal): write children, make an Internal node.
             _ => Some(Node::internal::<S::Hasher>(
                 &self.write_child(&left_result, &left_child),
                 &self.write_child(&right_result, &right_child),

@@ -6,6 +6,7 @@ use vprogs_core_types::{CanonicalChain, NoOpCanonicalChain};
 /// checkpoint_index).
 const U64_PREFIX_LEN: usize = size_of::<u64>();
 
+/// RocksDB tuning and per-column-family options for the store.
 pub trait Config: Send + Sync + 'static {
     /// Canonical chain for fork-aware SMT reads; `NoOpCanonicalChain` disables filtering.
     type CanonicalChain: CanonicalChain + Default;
@@ -19,23 +20,17 @@ pub trait Config: Send + Sync + 'static {
             o.set_max_subcompactions(2); // bigger L0->L1 compactions benefit
 
             // --- Write path semantics --------------------------------------------
-            // We have exactly ONE writer worker that issues large WriteBatches.
-            // Pipelined writes help when multiple writers contend (WAL vs memtable).
-            // With a single writer they add overhead but no benefit; turn them off.
+            // One writer worker: pipelined writes only help contending writers, so off.
             o.set_enable_pipelined_write(false);
 
-            // Unordered writes relax memtable insert order (WAL order still serialized).
-            // That's great for many concurrent writers, but unnecessary here and can
-            // complicate iterator/snapshot semantics across CFs, so keep it off.
+            // Unordered writes only help many writers and complicate cross-CF snapshots, so off.
             o.set_unordered_write(false);
 
-            // Allow concurrent memtable writes is a no-op with one writer, but harmless.
-            // Leave it on so scaling to >1 writer later won't require a RocksDB reopen.
+            // A no-op with one writer; left on so scaling to >1 writer needs no reopen.
             o.set_allow_concurrent_memtable_write(true);
 
             // --- I/O smoothing ----------------------------------------------------
-            // Throttle background I/O to avoid bursty stalls under heavy load.
-            // 1 MiB is a good, conservative starting point for NVMe.
+            // Throttle background I/O to avoid bursty stalls; 1 MiB is conservative for NVMe.
             o.set_bytes_per_sync(1 << 20); // fsync data file every ~1 MiB written
             o.set_wal_bytes_per_sync(1 << 20); // fdatasync WAL every ~1 MiB appended
 
@@ -99,13 +94,6 @@ pub trait Config: Send + Sync + 'static {
         })
     }
 
-    fn cf_canonical_chain_opts() -> Options {
-        Options::default().tap_mut(|o| {
-            // CanonicalChain keys are: batch_index (u64 big-endian); value is the 32-byte hash.
-            o.set_prefix_extractor(SliceTransform::create_fixed_prefix(U64_PREFIX_LEN));
-        })
-    }
-
     fn cf_proof_receipt_opts() -> Options {
         Options::default().tap_mut(|o| {
             // ProofReceipt keys all start with the checkpoint_index (a u64), grouping every
@@ -116,6 +104,7 @@ pub trait Config: Send + Sync + 'static {
     }
 }
 
+/// Default store configuration, with fork-awareness disabled.
 pub struct DefaultConfig;
 impl Config for DefaultConfig {
     type CanonicalChain = NoOpCanonicalChain;

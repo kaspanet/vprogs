@@ -49,8 +49,7 @@ impl vprogs_core_types::BatchMetadata for ChainBlockMetadata {
 }
 
 impl From<&RpcHeader> for ChainBlockMetadata {
-    /// Builds metadata from a regular RPC header, populating only the header-derived fields and
-    /// leaving lane / parent-derived state at its default.
+    /// Builds metadata from a regular RPC header; only header fields are set, the rest default.
     fn from(h: &RpcHeader) -> Self {
         Self {
             hash: h.hash,
@@ -67,9 +66,9 @@ impl TryFrom<&RpcOptionalHeader> for ChainBlockMetadata {
     /// Name of the first missing required field.
     type Error = &'static str;
 
-    /// Builds metadata from a verbose RPC header, populating only the header-derived fields and
-    /// leaving lane / parent-derived state at its default. Returns the name of the first missing
-    /// required field if the kaspa node returned a malformed Full-verbosity response.
+    /// Builds metadata from a verbose RPC header; only header fields are set, the rest default.
+    ///
+    /// Returns the first missing required field's name on a malformed Full-verbosity response.
     fn try_from(h: &RpcOptionalHeader) -> Result<Self, Self::Error> {
         Ok(Self {
             hash: h.hash.ok_or("missing hash")?,

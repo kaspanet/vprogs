@@ -293,8 +293,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
     async fn seed_from_recent(&mut self, depth: u64) -> Result<()> {
         let sink = self.client.get_block_dag_info().await?.sink;
 
-        // Lowest verbosity (no transactions): we only need each block's selected parent, then the
-        // header of the block we land on.
+        // Lowest verbosity (no txs): we need each block's selected parent, then the landing header.
         let mut hash = sink;
         for _ in 0..depth {
             let parent = self
