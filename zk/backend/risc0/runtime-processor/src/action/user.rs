@@ -1,23 +1,28 @@
-//! User-resource actions: `Transfer` (move balance between two existing users) and
-//! `UpdateUserLock` (rotate the current lock in place).
+//! User-resource actions: `Transfer` (move balance between two users, creating the destination
+//! when it is new) and `UpdateUserLock` (rotate the current lock in place).
 //!
-//! User resources are not created here: a user is born only through the L1-backed `Deposit` path
-//! (see [`super::deposit`]), which funds the slot at or above the policy's creation minimum. There
-//! is no unbacked, zero-balance creation, so both actions below operate strictly on already-live
-//! users.
+//! A transfer is the second path (besides the L1-backed `Deposit`) that may create a user: when the
+//! destination slot is new and the action supplies its initial lock, the moved amount funds the new
+//! account. Creation goes through the same [`super::validate_user_create`] gate as deposit, so the
+//! address binding and the policy creation minimum hold identically; there is still no unbacked,
+//! zero-balance birth.
 
 use vprogs_zk_abi::{Error as AbiError, Result as AbiResult};
 
-use super::ApplyContext;
-use crate::{lock::LockEnum, resource_ext::ResourceExt};
+use super::{ApplyContext, validate_user_create};
+use crate::{deposit_policy::DepositPolicy, lock::LockEnum, resource_ext::ResourceExt};
 
-/// Moves `amount` from `source_idx` to `dest_idx`. Both must be existing
-/// user resources; the source's current lock must authorize the move.
-pub(super) fn apply_transfer<'a>(
+/// Moves `amount` from `source_idx` to `dest_idx`. The source must be an existing user whose
+/// current lock authorizes the move. The destination is credited if it already exists, or created
+/// and funded by this transfer when it is a new slot, `dest_init` supplies its lock, and `amount`
+/// meets `policy.min_create_balance()`.
+pub(super) fn apply_transfer<'a, P: DepositPolicy>(
     source_idx: u8,
     dest_idx: u8,
     amount: u64,
+    dest_init: &Option<LockEnum<'a>>,
     cx: &mut ApplyContext<'a, '_>,
+    policy: &P,
 ) -> AbiResult<()> {
     if source_idx == dest_idx {
         return Err(AbiError::Decode("transfer: source and dest must differ".into()));
@@ -44,8 +49,21 @@ pub(super) fn apply_transfer<'a>(
         .ok_or_else(|| AbiError::Decode("transfer: source not a live user resource".into()))?;
     src_auth.map_err(|m| AbiError::Decode(m.into()))?;
 
-    // Balance updates are fixed-width; no resize. `modify_user` marks
-    // the resource dirty for us.
+    // Resolve a new destination before mutating anything: validate the create (binding + creation
+    // minimum) and carry its `initial_lock_hash`. An existing destination is credited below, where
+    // `modify_user` overflow-checks the add.
+    let create_plan: Option<([u8; 32], &LockEnum<'a>)> = if dst.is_new() {
+        let lock = dest_init.as_ref().ok_or_else(|| {
+            AbiError::Decode("transfer: dest does not exist and no dest lock to create it".into())
+        })?;
+        let ilh = validate_user_create(dst.id(), lock, amount, policy.min_create_balance())?;
+        Some((ilh, lock))
+    } else {
+        None
+    };
+
+    // Debit the source. Balance updates are fixed-width; no resize. `modify_user` marks the
+    // resource dirty for us. Insufficient balance fails here before the destination is touched.
     let debit = src
         .modify_user(|v| {
             let bal = v.balance_mut();
@@ -56,15 +74,24 @@ pub(super) fn apply_transfer<'a>(
         .ok_or_else(|| AbiError::Decode("transfer: source not a live user resource".into()))?;
     debit.map_err(|m| AbiError::Decode(m.into()))?;
 
-    let credit = dst
-        .modify_user(|v| {
-            let bal = v.balance_mut();
-            let new = bal.get().checked_add(amount).ok_or("dest: balance overflow")?;
-            bal.set(new);
-            Ok::<(), &'static str>(())
-        })
-        .ok_or_else(|| AbiError::Decode("transfer: dest not a live user resource".into()))?;
-    credit.map_err(|m| AbiError::Decode(m.into()))?;
+    match create_plan {
+        Some((ilh, lock)) => {
+            dst.init_user(amount, &ilh, lock).map_err(|m| AbiError::Decode(m.into()))?;
+        }
+        None => {
+            let credit = dst
+                .modify_user(|v| {
+                    let bal = v.balance_mut();
+                    let new = bal.get().checked_add(amount).ok_or("dest: balance overflow")?;
+                    bal.set(new);
+                    Ok::<(), &'static str>(())
+                })
+                .ok_or_else(|| {
+                    AbiError::Decode("transfer: dest not a live user resource".into())
+                })?;
+            credit.map_err(|m| AbiError::Decode(m.into()))?;
+        }
+    }
 
     Ok(())
 }

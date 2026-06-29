@@ -156,13 +156,33 @@ fn encode_config_action(
     out
 }
 
-/// Encodes one Transfer action: `tag || source(1) || dest(1) || amount(8)`.
+/// Encodes one Transfer action that credits an existing destination:
+/// `tag || source(1) || dest(1) || amount(8) || has_dest_lock=0`.
 fn encode_transfer_action(source_idx: u8, dest_idx: u8, amount: u64) -> Vec<u8> {
     let mut out = Vec::new();
     out.push(ACTION_TAG_TRANSFER);
     out.push(source_idx);
     out.push(dest_idx);
     out.extend_from_slice(&amount.to_le_bytes());
+    out.push(0); // has_dest_lock = 0: credit existing dest only
+    out
+}
+
+/// Encodes one Transfer that may CREATE its destination:
+/// `tag || source(1) || dest(1) || amount(8) || has_dest_lock=1 || dest_lock(tag+body)`.
+fn encode_transfer_create_action(
+    source_idx: u8,
+    dest_idx: u8,
+    amount: u64,
+    dest_init: &LockEnum<'_>,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.push(ACTION_TAG_TRANSFER);
+    out.push(source_idx);
+    out.push(dest_idx);
+    out.extend_from_slice(&amount.to_le_bytes());
+    out.push(1); // has_dest_lock = 1: create dest from the lock below if its slot is new
+    dest_init.encode(&mut out);
     out
 }
 
@@ -1906,6 +1926,104 @@ fn transfer_moves_balance_between_two_users() {
     let dst_view = UserView::from_bytes(dst_data).unwrap();
     assert_eq!(src_view.balance(), source.2 - amount);
     assert_eq!(dst_view.balance(), dest.2 + amount);
+}
+
+/// Runs a transfer whose destination slot is NEW (`is_new`), with an existing, signed source.
+/// `build_action` receives the id-sorted positional indices and the destination's lock, and returns
+/// the encoded transfer action (with or without a dest lock). Returns the guest stdout plus the
+/// source/dest positions so callers can inspect the resulting resources.
+fn run_new_dest_transfer(
+    source_balance: u64,
+    build_action: impl Fn(u8, u8, &LockEnum<'_>) -> Vec<u8>,
+) -> (Vec<u8>, u8, u8) {
+    let source = TestSigner::new();
+    let dest = TestSigner::new();
+    let source_id = schnorr_user_id(&source.pubkey);
+    let dest_id = schnorr_user_id(&dest.pubkey);
+    let dest_lock = LockEnum::Schnorr(SchnorrLockView { pubkey: &dest.pubkey });
+
+    // Resources arrive id-sorted; map source/dest to their positions.
+    let source_is_first = source_id < dest_id;
+    let (source_idx, dest_idx) = if source_is_first { (0u8, 1u8) } else { (1u8, 0u8) };
+    let (id0, id1) =
+        if source_is_first { (source_id, dest_id) } else { (dest_id, source_id) };
+
+    let action_bytes = build_action(source_idx, dest_idx, &dest_lock);
+    let actions_section = encode_actions_section(&[action_bytes]);
+    let access_meta =
+        encode_access_metadata(&[(id0, AccessType::Write), (id1, AccessType::Write)]);
+
+    // Only the source signs; dest creation is auth-free.
+    let probe_signer = encode_schnorr_signer(source_idx, 0);
+    let probe_signers_section = encode_signers_section(&[probe_signer]);
+    let sig_offset_in_payload =
+        access_meta.len() + probe_signers_section.len() + actions_section.len();
+    let signers_section =
+        encode_signers_section(&[encode_schnorr_signer(source_idx, sig_offset_in_payload as u32)]);
+
+    let mut payload_presig = Vec::new();
+    payload_presig.extend_from_slice(&access_meta);
+    payload_presig.extend_from_slice(&signers_section);
+    payload_presig.extend_from_slice(&actions_section);
+
+    let sig_msg = compute_sig_message(&[], &payload_presig);
+    let sig_bytes = source.sign(&sig_msg);
+
+    let mut payload = payload_presig;
+    payload.extend_from_slice(&sig_bytes);
+    let tx_bytes = encode_v1_transaction(&payload, &[]);
+
+    let (_, source_buf) = build_schnorr_locked_user(&source.pubkey, source_balance);
+    let mut resources = vec![(false, 0u32, Vec::new()); 2];
+    resources[source_idx as usize] = (false, 0, source_buf);
+    resources[dest_idx as usize] = (true, 0, Vec::new());
+    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
+
+    let elf = wrapped_runtime_processor_elf();
+    (execute_guest(&elf, &inputs), source_idx, dest_idx)
+}
+
+/// A transfer whose destination is a new slot creates and funds it from the moved amount, debiting
+/// the source. Same `validate_user_create` gate as deposit: address binding + creation minimum.
+#[test]
+fn transfer_creates_new_dest_when_funded() {
+    let source_balance = 10_000u64;
+    let amount = EXAMPLE_MIN_CREATE_BALANCE + 500;
+    let (outputs_bytes, source_idx, dest_idx) = run_new_dest_transfer(source_balance, |s, d, lock| {
+        encode_transfer_create_action(s, d, amount, lock)
+    });
+    let decoded = Outputs::decode(&outputs_bytes, 2).expect("guest succeeded");
+
+    let dst = decoded.storage_ops[dest_idx as usize].as_ref().expect("dest created");
+    assert_eq!(UserView::from_bytes(dst).unwrap().balance(), amount);
+    let src = decoded.storage_ops[source_idx as usize].as_ref().expect("source debited");
+    assert_eq!(UserView::from_bytes(src).unwrap().balance(), source_balance - amount);
+}
+
+/// A transfer creating a new destination below the policy creation minimum is rejected, just like
+/// an under-funded deposit; no underfunded account is opened.
+#[test]
+fn transfer_create_below_minimum_rejected() {
+    let amount = EXAMPLE_MIN_CREATE_BALANCE - 1;
+    let (outputs_bytes, _, _) = run_new_dest_transfer(10_000, |s, d, lock| {
+        encode_transfer_create_action(s, d, amount, lock)
+    });
+    assert!(
+        Outputs::decode(&outputs_bytes, 2).is_err(),
+        "expected reject: dest funded below the creation minimum"
+    );
+}
+
+/// A transfer to a non-existent destination without a dest lock is rejected: there is nothing to
+/// derive the new slot's address from, so the slot cannot be created.
+#[test]
+fn transfer_to_missing_dest_without_lock_rejected() {
+    let (outputs_bytes, _, _) =
+        run_new_dest_transfer(10_000, |s, d, _lock| encode_transfer_action(s, d, 2_000));
+    assert!(
+        Outputs::decode(&outputs_bytes, 2).is_err(),
+        "expected reject: new dest with no lock to create it"
+    );
 }
 
 #[test]

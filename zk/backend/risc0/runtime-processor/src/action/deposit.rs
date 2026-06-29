@@ -4,12 +4,12 @@
 use vprogs_zk_abi::{Error as AbiError, Result as AbiResult};
 use vprogs_zk_backend_risc0_api::delegate_entry_spk_hash;
 
-use super::ApplyContext;
+use super::{ApplyContext, validate_user_create};
 use crate::{
     deposit_policy::{CreditTarget, DepositBody, DepositPolicy, DepositSubject},
     lock::LockEnum,
     resource_ext::ResourceExt,
-    resource_id::{config_resource_id, derive_user_resource},
+    resource_id::config_resource_id,
     tx_inputs::parse_output_at_index_v1,
 };
 
@@ -72,31 +72,25 @@ pub(super) fn apply_deposit<'a, P: DepositPolicy>(
         return Err(AbiError::Decode("deposit: credit user_idx out of range".into()));
     }
 
-    // Address binding: the user resource's id must derive from initial_lock.
-    let ilh = initial_lock.id_hash();
-    if cx.resources[idx].id() != &derive_user_resource(&ilh) {
-        return Err(AbiError::Decode(
-            "deposit: user address != derive_user_resource(initial_lock)".into(),
-        ));
-    }
-
     let deposit_value = out.value;
 
-    // Decide create-vs-credit and compute the new balance up front.
+    // Decide create-vs-credit and compute the new balance up front. Both arms enforce the
+    // address binding (user resource id must derive from initial_lock): on create via
+    // `validate_user_create`, on credit via the stored `initial_lock_hash`.
     enum CreditKind {
-        Create,
+        Create([u8; 32]),
         CreditExisting(u64),
     }
     let credit_kind = if cx.resources[idx].is_new() {
         match target_decision.create_with {
-            Some(spec) => {
-                // Creation must be funded at or above the policy's minimum; no zero-balance birth.
-                if deposit_value < spec.min_balance {
-                    return Err(AbiError::Decode(
-                        "deposit: funding below policy minimum to create user".into(),
-                    ));
-                }
-                CreditKind::Create
+            Some(_) => {
+                let ilh = validate_user_create(
+                    cx.resources[idx].id(),
+                    initial_lock,
+                    deposit_value,
+                    policy.min_create_balance(),
+                )?;
+                CreditKind::Create(ilh)
             }
             None => {
                 return Err(AbiError::Decode(
@@ -109,7 +103,7 @@ pub(super) fn apply_deposit<'a, P: DepositPolicy>(
         let (cur_balance, stored_ilh) = cx.resources[idx]
             .view_user(|v| (v.balance(), *v.initial_lock_hash()))
             .ok_or_else(|| AbiError::Decode("deposit: target not a live user resource".into()))?;
-        if stored_ilh != ilh {
+        if stored_ilh != initial_lock.id_hash() {
             return Err(AbiError::Decode(
                 "deposit: initial_lock mismatch for existing user".into(),
             ));
@@ -132,7 +126,7 @@ pub(super) fn apply_deposit<'a, P: DepositPolicy>(
 
     let slot = &mut cx.resources[idx];
     match credit_kind {
-        CreditKind::Create => {
+        CreditKind::Create(ilh) => {
             slot.init_user(deposit_value, &ilh, initial_lock)
                 .map_err(|m| AbiError::Decode(m.into()))?;
         }

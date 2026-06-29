@@ -19,8 +19,9 @@ use alloc::vec::Vec;
 use config::{apply_init, apply_update};
 use deposit::apply_deposit;
 use user::{apply_transfer, apply_update_user_lock};
+use vprogs_core_types::ResourceId;
 use vprogs_zk_abi::{
-    Result as AbiResult,
+    Error as AbiError, Result as AbiResult,
     transaction_processor::{Resource, Transaction},
     withdrawal::{DepositSink, ExitSink},
 };
@@ -30,6 +31,8 @@ use crate::{
     auth_context::AuthContext,
     deposit_policy::DepositPolicy,
     ix::{ActionBody, ActionView},
+    lock::LockEnum,
+    resource_id::derive_user_resource,
 };
 
 /// Everything an apply fn may need, bundled once so dispatch and apply signatures stay stable as
@@ -75,8 +78,8 @@ pub fn apply_action<'a, P: DepositPolicy>(
         ActionBody::Init { updater_idx, new_min_withdrawal_amount, new_covenant_id, new_lock } => {
             apply_init(*updater_idx, *new_min_withdrawal_amount, new_covenant_id, new_lock, cx)
         }
-        ActionBody::Transfer { source_idx, dest_idx, amount } => {
-            apply_transfer(*source_idx, *dest_idx, *amount, cx)
+        ActionBody::Transfer { source_idx, dest_idx, amount, dest_init } => {
+            apply_transfer(*source_idx, *dest_idx, *amount, dest_init, cx, policy)
         }
         ActionBody::UpdateUserLock { user_idx, new_lock } => {
             apply_update_user_lock(*user_idx, new_lock, cx)
@@ -88,4 +91,28 @@ pub fn apply_action<'a, P: DepositPolicy>(
             apply_withdraw(*user_idx, *amount, *dest, cx)
         }
     }
+}
+
+/// Validates that a new user slot may be opened at `initial_lock`'s derived address with `funding`,
+/// and returns the `initial_lock_hash` for the caller's subsequent `init_user`.
+///
+/// Shared by every create path (`Deposit` and `Transfer`) so the address binding and the policy
+/// creation minimum stay identical wherever a user is born. Pure validation: the caller owns the
+/// `is_new` check and the mutation, keeping its own "all checks before any state change" ordering.
+pub(super) fn validate_user_create(
+    slot_id: &ResourceId,
+    initial_lock: &LockEnum<'_>,
+    funding: u64,
+    min_balance: u64,
+) -> AbiResult<[u8; 32]> {
+    let ilh = initial_lock.id_hash();
+    if slot_id != &derive_user_resource(&ilh) {
+        return Err(AbiError::Decode(
+            "create: slot id != derive_user_resource(initial_lock)".into(),
+        ));
+    }
+    if funding < min_balance {
+        return Err(AbiError::Decode("create: funding below policy minimum to create user".into()));
+    }
+    Ok(ilh)
 }

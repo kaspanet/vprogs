@@ -44,8 +44,9 @@ pub const ACTION_TAG_UPDATE: u8 = 0x01;
 /// Action variant: bootstrap (create) the singleton config resource. Gated by
 /// the hardcoded genesis pubkey at apply time.
 pub const ACTION_TAG_INIT: u8 = 0x02;
-/// Action variant: move balance between two user resources. Auth is checked
-/// against the source's current lock; destination is not authed.
+/// Action variant: move balance between two user resources, creating the
+/// destination when its slot is new and a dest lock is supplied. Auth is checked
+/// against the source's current lock; the destination is not authed.
 pub const ACTION_TAG_TRANSFER: u8 = 0x03;
 /// Action variant: rotate the lock on a user resource. The current lock must
 /// authorize the rotation; `initial_lock_hash` is preserved.
@@ -90,6 +91,10 @@ pub enum ActionBody<'a> {
         source_idx: u8,
         dest_idx: u8,
         amount: u64,
+        /// Lock for the destination, present only to CREATE a new dest slot from this transfer
+        /// (its `id_hash()` derives the new user's address). `None` credits an existing
+        /// destination.
+        dest_init: Option<LockEnum<'a>>,
     },
     UpdateUserLock {
         user_idx: u8,
@@ -181,7 +186,14 @@ fn decode_action<'a>(buf: &mut &'a [u8], n_resources: usize) -> CodecResult<Acti
             let source_idx = read_resource_idx(buf, "action.transfer.source_idx", n_resources)?;
             let dest_idx = read_resource_idx(buf, "action.transfer.dest_idx", n_resources)?;
             let amount = buf.le_u64("action.transfer.amount")?;
-            ActionBody::Transfer { source_idx, dest_idx, amount }
+            // One presence byte gates an optional dest lock: 0 = credit existing, 1 = lock follows
+            // (create-if-new). Any other value is malformed.
+            let dest_init = match buf.byte("action.transfer.has_dest_lock")? {
+                0 => None,
+                1 => Some(decode_lock(buf)?),
+                _ => return Err(Error::Decode("action.transfer: bad has_dest_lock flag")),
+            };
+            ActionBody::Transfer { source_idx, dest_idx, amount, dest_init }
         }
         ACTION_TAG_UPDATE_USER_LOCK => {
             let user_idx = read_resource_idx(buf, "action.update_user_lock.user_idx", n_resources)?;
@@ -459,6 +471,19 @@ mod tests {
         body.push(source);
         body.push(dest);
         body.extend_from_slice(&amount.to_le_bytes());
+        body.push(0); // has_dest_lock = 0 (credit existing)
+        body
+    }
+
+    fn transfer_create_action(source: u8, dest: u8, amount: u64, pk: [u8; 32]) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.push(ACTION_TAG_TRANSFER);
+        body.push(source);
+        body.push(dest);
+        body.extend_from_slice(&amount.to_le_bytes());
+        body.push(1); // has_dest_lock = 1 (create-if-new)
+        body.push(SchnorrLockView::TAG);
+        body.extend_from_slice(&pk);
         body
     }
 
@@ -479,13 +504,45 @@ mod tests {
 
         let decoded = decode_ix(&ix, 2).unwrap();
         match &decoded.actions[0].body {
-            ActionBody::Transfer { source_idx, dest_idx, amount } => {
+            ActionBody::Transfer { source_idx, dest_idx, amount, dest_init } => {
                 assert_eq!(*source_idx, 0);
                 assert_eq!(*dest_idx, 1);
                 assert_eq!(*amount, 500);
+                assert!(dest_init.is_none());
             }
             _ => panic!("expected Transfer"),
         }
+    }
+
+    #[test]
+    fn decode_transfer_create_action_carries_dest_lock() {
+        let mut ix = 0u32.to_le_bytes().to_vec();
+        ix.extend_from_slice(&1u32.to_le_bytes());
+        ix.extend_from_slice(&transfer_create_action(0, 1, 500, [0xEEu8; 32]));
+
+        let decoded = decode_ix(&ix, 2).unwrap();
+        match &decoded.actions[0].body {
+            ActionBody::Transfer { dest_init, .. } => {
+                let lock = dest_init.as_ref().expect("dest lock present");
+                assert_eq!(lock.tag(), SchnorrLockView::TAG);
+            }
+            _ => panic!("expected Transfer"),
+        }
+    }
+
+    #[test]
+    fn decode_transfer_rejects_bad_has_dest_lock_flag() {
+        let mut ix = 0u32.to_le_bytes().to_vec();
+        ix.extend_from_slice(&1u32.to_le_bytes());
+        let mut body = Vec::new();
+        body.push(ACTION_TAG_TRANSFER);
+        body.push(0); // source
+        body.push(1); // dest
+        body.extend_from_slice(&500u64.to_le_bytes());
+        body.push(2); // invalid presence flag
+        ix.extend_from_slice(&body);
+
+        assert!(decode_ix(&ix, 2).is_err());
     }
 
     #[test]

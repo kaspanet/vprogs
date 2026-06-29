@@ -36,11 +36,10 @@ pub const EXAMPLE_DEPOSIT_COVENANT_ID: [u8; 32] = [0x44; 32];
 
 /// Example-policy minimum funding required to CREATE a new user.
 ///
-/// A user resource is born only when a deposit funds it at or above this amount;
-/// there is no zero-balance, unbacked creation. Crediting an *existing* user has
-/// no such floor (any positive top-up is fine). The value is a property of this
-/// example policy, surfaced via [`CreateSpec::min_balance`]; a different runtime
-/// picks its own.
+/// A user resource is born only when funded at or above this amount, whether by a deposit or a
+/// transfer; there is no zero-balance, unbacked creation. Crediting an *existing* user has no such
+/// floor (any positive top-up is fine). The value is a property of this example policy, surfaced
+/// via [`DepositPolicy::min_create_balance`]; a different runtime picks its own.
 pub const EXAMPLE_MIN_CREATE_BALANCE: u64 = 1_000;
 
 /// Decoded deposit action fields, re-exposed so `DepositPolicy` methods can
@@ -70,9 +69,6 @@ pub struct CreateSpec<'a> {
     /// Lock written into the new user resource. Its `id_hash()` must equal the `initial_lock_hash`
     /// the resource address was derived from.
     pub initial_lock: LockEnum<'a>,
-    /// Minimum funding the deposit must carry to create this user; a smaller deposit is rejected
-    /// rather than creating an underfunded account.
-    pub min_balance: u64,
 }
 
 /// Resolution of `DepositPolicy::credit_target`.
@@ -118,6 +114,11 @@ pub trait DepositPolicy {
         &self,
         body: &'a DepositBody<'a>,
     ) -> Result<CreditTarget<'a>, &'static str>;
+
+    /// Minimum funding a new user must be born with, applied uniformly wherever a user resource is
+    /// created: a `Deposit` whose funding output, or a `Transfer` whose moved amount, falls below
+    /// this is rejected rather than opening an underfunded account. There is no zero-balance birth.
+    fn min_create_balance(&self) -> u64;
 }
 
 /// This example's deposit policy: a single covenant-bound deposit address shared by all depositors;
@@ -144,15 +145,15 @@ impl DepositPolicy for ExampleDepositPolicy {
     ) -> Result<CreditTarget<'a>, &'static str> {
         // Credit the action's `user_idx`; create-or-credit using the carried
         // initial lock (vprogs identity == initial_lock_hash, so a new user
-        // MUST supply its lock; see DESIGN §4.A). Creation requires funding of
-        // at least `EXAMPLE_MIN_CREATE_BALANCE`; there is no zero-balance birth.
+        // MUST supply its lock; see DESIGN §4.A).
         Ok(CreditTarget {
             user_idx: body.user_idx,
-            create_with: Some(CreateSpec {
-                initial_lock: body.initial_lock,
-                min_balance: EXAMPLE_MIN_CREATE_BALANCE,
-            }),
+            create_with: Some(CreateSpec { initial_lock: body.initial_lock }),
         })
+    }
+
+    fn min_create_balance(&self) -> u64 {
+        EXAMPLE_MIN_CREATE_BALANCE
     }
 }
 
