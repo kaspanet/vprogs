@@ -27,6 +27,7 @@ pub mod domain;
 pub mod genesis;
 pub mod ix;
 pub mod kind;
+pub mod lifecycle;
 pub mod lock;
 pub mod lock_codec;
 pub mod lock_trait;

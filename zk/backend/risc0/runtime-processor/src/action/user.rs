@@ -10,7 +10,9 @@
 use vprogs_zk_abi::{Error as AbiError, Result as AbiResult};
 
 use super::{ApplyContext, validate_user_create};
-use crate::{deposit_policy::DepositPolicy, lock::LockEnum, resource_ext::ResourceExt};
+use crate::{
+    deposit_policy::DepositPolicy, lifecycle::Lifecycle, lock::LockEnum, resource_ext::ResourceExt,
+};
 
 /// Moves `amount` from `source_idx` to `dest_idx`. The source must be an existing user whose
 /// current lock authorizes the move. The destination is credited if it already exists, or created
@@ -28,69 +30,91 @@ pub(super) fn apply_transfer<'a, P: DepositPolicy>(
         return Err(AbiError::Decode("transfer: source and dest must differ".into()));
     }
 
-    // Inline stdlib disjoint borrows (no helper).
-    let [src, dst] = cx
-        .resources
-        .get_disjoint_mut([source_idx as usize, dest_idx as usize])
-        .map_err(|_| AbiError::Decode("transfer: bad indices".into()))?;
-
-    // Kind / liveness checks are folded into the combinators: `view_user`
-    // and `modify_user` return `None` when the resource is the wrong kind or
-    // an empty slot (`is_new() || data().is_empty()`). We rely on those `None`s
-    // and never .expect / .unwrap.
-
-    let src_auth = src
-        .view_user(|v| {
-            if !v.lock().unlock(source_idx, cx.auth_ctx) {
-                return Err("source: lock not satisfied");
-            }
-            Ok::<(), &'static str>(())
-        })
-        .ok_or_else(|| AbiError::Decode("transfer: source not a live user resource".into()))?;
-    src_auth.map_err(|m| AbiError::Decode(m.into()))?;
-
-    // Resolve a new destination before mutating anything: validate the create (binding + creation
-    // minimum) and carry its `initial_lock_hash`. An existing destination is credited below, where
-    // `modify_user` overflow-checks the add.
-    let create_plan: Option<([u8; 32], &LockEnum<'a>)> = if dst.is_new() {
-        let lock = dest_init.as_ref().ok_or_else(|| {
-            AbiError::Decode("transfer: dest does not exist and no dest lock to create it".into())
-        })?;
-        let ilh = validate_user_create(dst.id(), lock, amount, policy.min_create_balance())?;
-        Some((ilh, lock))
-    } else {
-        None
+    // Decide create-vs-credit for the destination from its live lifecycle, not the input snapshot,
+    // so a destination created by an earlier same-tx action is credited (not re-created). A slot
+    // torn down earlier in this tx is rejected rather than resurrected.
+    let dst_create = match cx.lifecycle(dest_idx as usize) {
+        Lifecycle::New => true,
+        Lifecycle::Live => false,
+        Lifecycle::Deleted => {
+            return Err(AbiError::Decode("transfer: dest was deleted in this tx".into()));
+        }
     };
 
-    // Debit the source. Balance updates are fixed-width; no resize. `modify_user` marks the
-    // resource dirty for us. Insufficient balance fails here before the destination is touched.
-    let debit = src
-        .modify_user(|v| {
-            let bal = v.balance_mut();
-            let new = bal.get().checked_sub(amount).ok_or("source: insufficient balance")?;
-            bal.set(new);
-            Ok::<(), &'static str>(())
-        })
-        .ok_or_else(|| AbiError::Decode("transfer: source not a live user resource".into()))?;
-    debit.map_err(|m| AbiError::Decode(m.into()))?;
+    // Balance moves happen under a disjoint borrow of source and destination; the `New -> Live`
+    // transition is applied afterwards, once the borrow is released.
+    let created = {
+        // Inline stdlib disjoint borrows (no helper).
+        let [src, dst] = cx
+            .resources
+            .get_disjoint_mut([source_idx as usize, dest_idx as usize])
+            .map_err(|_| AbiError::Decode("transfer: bad indices".into()))?;
 
-    match create_plan {
-        Some((ilh, lock)) => {
-            dst.init_user(amount, &ilh, lock).map_err(|m| AbiError::Decode(m.into()))?;
+        // Kind / liveness checks are folded into the combinators: `view_user`
+        // and `modify_user` return `None` when the resource is the wrong kind or
+        // an empty slot. We rely on those `None`s and never .expect / .unwrap.
+
+        let src_auth = src
+            .view_user(|v| {
+                if !v.lock().unlock(source_idx, cx.auth_ctx) {
+                    return Err("source: lock not satisfied");
+                }
+                Ok::<(), &'static str>(())
+            })
+            .ok_or_else(|| AbiError::Decode("transfer: source not a live user resource".into()))?;
+        src_auth.map_err(|m| AbiError::Decode(m.into()))?;
+
+        // Resolve a new destination before mutating anything: validate the create (binding +
+        // creation minimum) and carry its `initial_lock_hash`. An existing destination is credited
+        // below, where `modify_user` overflow-checks the add.
+        let create_plan: Option<([u8; 32], &LockEnum<'a>)> = if dst_create {
+            let lock = dest_init.as_ref().ok_or_else(|| {
+                AbiError::Decode(
+                    "transfer: dest does not exist and no dest lock to create it".into(),
+                )
+            })?;
+            let ilh = validate_user_create(dst.id(), lock, amount, policy.min_create_balance())?;
+            Some((ilh, lock))
+        } else {
+            None
+        };
+
+        // Debit the source. Balance updates are fixed-width; no resize. `modify_user` marks the
+        // resource dirty for us. Insufficient balance fails here before the destination is touched.
+        let debit = src
+            .modify_user(|v| {
+                let bal = v.balance_mut();
+                let new = bal.get().checked_sub(amount).ok_or("source: insufficient balance")?;
+                bal.set(new);
+                Ok::<(), &'static str>(())
+            })
+            .ok_or_else(|| AbiError::Decode("transfer: source not a live user resource".into()))?;
+        debit.map_err(|m| AbiError::Decode(m.into()))?;
+
+        match create_plan {
+            Some((ilh, lock)) => {
+                dst.init_user(amount, &ilh, lock).map_err(|m| AbiError::Decode(m.into()))?;
+                true
+            }
+            None => {
+                let credit = dst
+                    .modify_user(|v| {
+                        let bal = v.balance_mut();
+                        let new = bal.get().checked_add(amount).ok_or("dest: balance overflow")?;
+                        bal.set(new);
+                        Ok::<(), &'static str>(())
+                    })
+                    .ok_or_else(|| {
+                        AbiError::Decode("transfer: dest not a live user resource".into())
+                    })?;
+                credit.map_err(|m| AbiError::Decode(m.into()))?;
+                false
+            }
         }
-        None => {
-            let credit = dst
-                .modify_user(|v| {
-                    let bal = v.balance_mut();
-                    let new = bal.get().checked_add(amount).ok_or("dest: balance overflow")?;
-                    bal.set(new);
-                    Ok::<(), &'static str>(())
-                })
-                .ok_or_else(|| {
-                    AbiError::Decode("transfer: dest not a live user resource".into())
-                })?;
-            credit.map_err(|m| AbiError::Decode(m.into()))?;
-        }
+    };
+
+    if created {
+        cx.mark_created(dest_idx as usize).map_err(|m| AbiError::Decode(m.into()))?;
     }
 
     Ok(())

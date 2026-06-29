@@ -1169,28 +1169,18 @@ fn deposit_two_distinct_outputs_both_credit() {
     assert_eq!(view1.initial_lock_hash(), &lock1.id_hash());
 }
 
-/// Two Deposit actions to the SAME user in one tx: output 0 should CREATE the
-/// slot, output 1 should then CREDIT it, accumulating to `v0 + v1`.
+/// Two Deposit actions to the SAME user in one tx: output 0 CREATEs the slot,
+/// output 1 then CREDITs it, accumulating to `v0 + v1`.
 ///
-/// IGNORED — currently fails (observed balance `v1`, not `v0 + v1`): the second
-/// deposit silently OVERWRITES the first. Root cause is that `Resource::is_new()`
-/// is a static per-tx input flag set once at decode from prior-state existence;
-/// nothing flips it as actions apply (`resize`/`data_mut` only set `dirty`). So
-/// both same-tx actions read `is_new() == true`, both take the create branch,
-/// and the second `init_user` (guarded only by `if !is_new()`) clobbers the
-/// slot. `v0`'s funding output is consumed and enters the covenant on L1, but
-/// the L2 balance only reflects `v1` — a fund-loss path.
-///
-/// The create-or-credit "decided from live slot state" property therefore holds
-/// only ACROSS txs (where prior-state existence differs), not WITHIN one tx.
-/// The same staleness bites deletions (lifecycle is inferred from static
-/// `is_new` + current data-emptiness, not a per-tx state machine that advances
-/// as actions apply): a create-then-delete or delete-then-recreate in one tx
-/// reads a stale lifecycle for the later action. The real fix is a proper
-/// per-resource lifecycle state machine the runtime advances intra-tx, replacing
-/// the `is_new` snapshot. Tracked in kaspanet/vprogs#92; un-ignore once fixed.
+/// Regression test for kaspanet/vprogs#92. The first deposit creates the slot and
+/// advances its lifecycle `New -> Live`; the second deposit reads the *current*
+/// (`Live`) state, takes the credit branch, and accumulates instead of taking the
+/// create branch and clobbering the first. Before the per-resource lifecycle state
+/// machine landed, both actions saw the static `is_new() == true` snapshot, both
+/// created, and the second `init_user` overwrote the first, so the observed balance
+/// was `v1` rather than `v0 + v1`: `v0`'s funding output enters the covenant on L1
+/// but its L2 credit is lost.
 #[test]
-#[ignore = "within-tx create-then-credit overwrites instead of accumulating; needs a per-resource lifecycle state machine (kaspanet/vprogs#92)"]
 fn deposit_create_then_credit_same_user() {
     let owner_pubkey = [0x77u8; 32];
     let user_id = deposit_user_id(&owner_pubkey);
@@ -1945,13 +1935,11 @@ fn run_new_dest_transfer(
     // Resources arrive id-sorted; map source/dest to their positions.
     let source_is_first = source_id < dest_id;
     let (source_idx, dest_idx) = if source_is_first { (0u8, 1u8) } else { (1u8, 0u8) };
-    let (id0, id1) =
-        if source_is_first { (source_id, dest_id) } else { (dest_id, source_id) };
+    let (id0, id1) = if source_is_first { (source_id, dest_id) } else { (dest_id, source_id) };
 
     let action_bytes = build_action(source_idx, dest_idx, &dest_lock);
     let actions_section = encode_actions_section(&[action_bytes]);
-    let access_meta =
-        encode_access_metadata(&[(id0, AccessType::Write), (id1, AccessType::Write)]);
+    let access_meta = encode_access_metadata(&[(id0, AccessType::Write), (id1, AccessType::Write)]);
 
     // Only the source signs; dest creation is auth-free.
     let probe_signer = encode_schnorr_signer(source_idx, 0);
@@ -1989,9 +1977,10 @@ fn run_new_dest_transfer(
 fn transfer_creates_new_dest_when_funded() {
     let source_balance = 10_000u64;
     let amount = EXAMPLE_MIN_CREATE_BALANCE + 500;
-    let (outputs_bytes, source_idx, dest_idx) = run_new_dest_transfer(source_balance, |s, d, lock| {
-        encode_transfer_create_action(s, d, amount, lock)
-    });
+    let (outputs_bytes, source_idx, dest_idx) =
+        run_new_dest_transfer(source_balance, |s, d, lock| {
+            encode_transfer_create_action(s, d, amount, lock)
+        });
     let decoded = Outputs::decode(&outputs_bytes, 2).expect("guest succeeded");
 
     let dst = decoded.storage_ops[dest_idx as usize].as_ref().expect("dest created");

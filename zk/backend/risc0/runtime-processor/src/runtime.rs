@@ -1,8 +1,6 @@
 //! Core transaction handler, wrapped by `main` into the ABI `TransactionHandler`
 //! shape passed to `process_transaction`.
 
-use alloc::vec::Vec;
-
 use vprogs_zk_abi::{
     Result as AbiResult,
     transaction_processor::{Resource, Transaction},
@@ -66,14 +64,7 @@ pub fn run<'a, P: DepositPolicy>(
         &SignerResolveContext::new(payload.bytes, current_rest_preimage, payload_presig, resources),
     )?;
 
-    let mut cx = ApplyContext {
-        tx,
-        resources,
-        auth_ctx: &auth_ctx,
-        exits,
-        deposit,
-        consumed_outputs: Vec::new(),
-    };
+    let mut cx = ApplyContext::new(tx, resources, &auth_ctx, exits, deposit);
 
     for action in &actions {
         apply_action(action, &mut cx, policy)?;

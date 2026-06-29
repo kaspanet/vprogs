@@ -1,18 +1,20 @@
 //! Closure-based combinators on `Resource<'a>` that layer typed views onto
-//! the framework's byte-backed lifecycle.
+//! the framework's byte-backed storage.
 //!
-//! The framework's `Resource<'a>` already encodes the state machine the
-//! design doc describes (`is_new()` / `is_dirty()` / `resize()`), with deletion
-//! collapsed onto empty data (`data().is_empty()`).
-//! This extension trait adds:
+//! The framework's `Resource<'a>` is byte-backed and lifecycle-agnostic (`data()` / `is_dirty()` /
+//! `resize()`); the per-tx lifecycle state machine lives one layer up in
+//! [`ApplyContext`](crate::action::ApplyContext) (see [`crate::lifecycle`]). This extension trait
+//! layers typed views onto the bytes, reading liveness off data-emptiness alone:
 //!
-//! - `kind()`: read the leading kind byte (`KIND_CONFIG` / `KIND_USER` / ...).
-//! - `view_*`: closure receives a borrowed typed view; returns `None` on kind mismatch or empty
-//!   slot (`is_new() || data().is_empty()`).
+//! - `kind()`: read the leading kind byte (`KIND_CONFIG` / `KIND_USER` / ...); `None` on an empty
+//!   slot (never-created or torn-down).
+//! - `view_*`: closure receives a borrowed typed view; returns `None` on kind mismatch or an empty
+//!   slot, which is what rejects use-after-delete here.
 //! - `modify_*`: closure receives a mutable typed view; takes `&mut Resource` so the framework
 //!   marks the resource dirty internally.
-//! - `init_*`: fresh-resource init requiring `is_new()`, then `resize()` to the new payload's
-//!   length and writes the canonical wire bytes.
+//! - `init_*`: fresh-resource init into an empty slot; `resize()` to the new payload's length and
+//!   writes the canonical wire bytes. The caller owns the `New -> Live` transition via
+//!   `ApplyContext::mark_created`, which rejects double-create and re-create-after-delete.
 //! - `set_*_lock`: variable-tail rewrite for lock rotation. Handles shrink, same-size, and grow by
 //!   deferring to `Resource::resize` (the framework promotes to a heap buffer when needed).
 
@@ -54,7 +56,11 @@ pub trait ResourceExt<'a> {
 
 impl<'a> ResourceExt<'a> for Resource<'a> {
     fn kind(&self) -> Option<u8> {
-        if self.is_new() || self.data().is_empty() {
+        // Empty data means the slot holds no live resource: a `New` slot has nothing yet and a
+        // `Deleted` one was emptied on teardown. Reading both off data-emptiness keeps this view
+        // layer lifecycle-agnostic (the lifecycle lives in `ApplyContext`) while still rejecting
+        // use-after-delete: `view_*`/`modify_*` return `None` on an emptied slot.
+        if self.data().is_empty() {
             return None;
         }
         kind_of(self.data())
@@ -96,8 +102,8 @@ impl<'a> ResourceExt<'a> for Resource<'a> {
         covenant_id: &[u8; 32],
         lock: &LockEnum<'_>,
     ) -> Result<(), &'static str> {
-        if !self.is_new() {
-            return Err("init_config: resource not new");
+        if !self.data().is_empty() {
+            return Err("init_config: slot is not empty");
         }
         let total = config_total_len(lock);
         self.resize(total);
@@ -110,8 +116,8 @@ impl<'a> ResourceExt<'a> for Resource<'a> {
         initial_lock_hash: &[u8; 32],
         lock: &LockEnum<'_>,
     ) -> Result<(), &'static str> {
-        if !self.is_new() {
-            return Err("init_user: resource not new");
+        if !self.data().is_empty() {
+            return Err("init_user: slot is not empty");
         }
         let total = user_total_len(lock);
         self.resize(total);

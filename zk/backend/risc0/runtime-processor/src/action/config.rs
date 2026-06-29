@@ -8,6 +8,7 @@ use super::ApplyContext;
 use crate::{
     config::{ConfigView, config_total_len, write_config},
     genesis::GENESIS_SCHNORR_BYTES,
+    lifecycle::Lifecycle,
     lock::LockEnum,
     lock_variants::SchnorrLockView,
     resource_id::config_resource_id,
@@ -20,20 +21,23 @@ pub(super) fn apply_update<'a>(
     new_lock: &LockEnum<'a>,
     cx: &mut ApplyContext<'a, '_>,
 ) -> AbiResult<()> {
+    let idx = updater_idx as usize;
     // `decode_ix` already bounds-checked `updater_idx` against resources.len(),
     // so this lookup cannot fail.
-    let target = &mut cx.resources[updater_idx as usize];
-
-    if target.id() != &config_resource_id() {
+    if cx.resources[idx].id() != &config_resource_id() {
         return Err(AbiError::Decode("update: target is not the config resource".into()));
     }
-    if target.is_new() {
-        return Err(AbiError::Decode("update: config resource must already exist".into()));
-    }
-    if target.data().is_empty() {
-        return Err(AbiError::Decode("update: config resource is deleted".into()));
+    match cx.lifecycle(idx) {
+        Lifecycle::Live => {}
+        Lifecycle::New => {
+            return Err(AbiError::Decode("update: config resource must already exist".into()));
+        }
+        Lifecycle::Deleted => {
+            return Err(AbiError::Decode("update: config resource is deleted".into()));
+        }
     }
 
+    let target = &mut cx.resources[idx];
     // Read current config: its lock authorizes the update, and its covenant_id
     // is immutable (the deposit address is bound to it for the covenant's life).
     let cur = ConfigView::from_bytes(target.data()).map_err(|m| AbiError::Decode(m.into()))?;
@@ -54,12 +58,11 @@ pub(super) fn apply_init<'a>(
     new_lock: &LockEnum<'a>,
     cx: &mut ApplyContext<'a, '_>,
 ) -> AbiResult<()> {
-    let target = &mut cx.resources[updater_idx as usize];
-
-    if target.id() != &config_resource_id() {
+    let idx = updater_idx as usize;
+    if cx.resources[idx].id() != &config_resource_id() {
         return Err(AbiError::Decode("init: target is not the config resource".into()));
     }
-    if !target.is_new() {
+    if cx.lifecycle(idx) != Lifecycle::New {
         return Err(AbiError::Decode("init: config resource already exists".into()));
     }
 
@@ -71,7 +74,10 @@ pub(super) fn apply_init<'a>(
         return Err(AbiError::Decode("init: not authorized by genesis pubkey".into()));
     }
 
-    write_new_state(target, new_min_withdrawal_amount, new_covenant_id, new_lock)
+    write_new_state(&mut cx.resources[idx], new_min_withdrawal_amount, new_covenant_id, new_lock)?;
+    // Advance the slot `New -> Live` so a later same-tx action reads it as live (and a second
+    // `Init` is rejected as a double-create), mirroring the user-creation paths.
+    cx.mark_created(idx).map_err(|m| AbiError::Decode(m.into()))
 }
 
 /// Writes the new config state into `target`. Re-sizes only when the new
@@ -85,7 +91,7 @@ fn write_new_state<'a>(
 ) -> AbiResult<()> {
     let new_len = config_total_len(new_lock);
 
-    if target.is_new() || target.data().len() != new_len {
+    if target.data().is_empty() || target.data().len() != new_len {
         target.resize(new_len);
     }
     write_config(target.data_mut(), new_min_withdrawal_amount, new_covenant_id, new_lock)

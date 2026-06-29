@@ -7,6 +7,7 @@ use vprogs_zk_backend_risc0_api::delegate_entry_spk_hash;
 use super::{ApplyContext, validate_user_create};
 use crate::{
     deposit_policy::{CreditTarget, DepositBody, DepositPolicy, DepositSubject},
+    lifecycle::Lifecycle,
     lock::LockEnum,
     resource_ext::ResourceExt,
     resource_id::config_resource_id,
@@ -81,8 +82,9 @@ pub(super) fn apply_deposit<'a, P: DepositPolicy>(
         Create([u8; 32]),
         CreditExisting(u64),
     }
-    let credit_kind = if cx.resources[idx].is_new() {
-        match target_decision.create_with {
+    let credit_kind = match cx.lifecycle(idx) {
+        // Brand-new slot: create it if the policy allows, binding its address to `initial_lock`.
+        Lifecycle::New => match target_decision.create_with {
             Some(_) => {
                 let ilh = validate_user_create(
                     cx.resources[idx].id(),
@@ -97,21 +99,28 @@ pub(super) fn apply_deposit<'a, P: DepositPolicy>(
                     "deposit: user does not exist (policy forbids create)".into(),
                 ));
             }
+        },
+        // Live user (committed, or created by an earlier action in this same tx): confirm kind,
+        // read balance, bind initial_lock_hash, then accumulate.
+        Lifecycle::Live => {
+            let (cur_balance, stored_ilh) =
+                cx.resources[idx].view_user(|v| (v.balance(), *v.initial_lock_hash())).ok_or_else(
+                    || AbiError::Decode("deposit: target not a live user resource".into()),
+                )?;
+            if stored_ilh != initial_lock.id_hash() {
+                return Err(AbiError::Decode(
+                    "deposit: initial_lock mismatch for existing user".into(),
+                ));
+            }
+            let new = cur_balance
+                .checked_add(deposit_value)
+                .ok_or_else(|| AbiError::Decode("deposit: balance overflow".into()))?;
+            CreditKind::CreditExisting(new)
         }
-    } else {
-        // Existing user: confirm kind, read balance, bind initial_lock_hash.
-        let (cur_balance, stored_ilh) = cx.resources[idx]
-            .view_user(|v| (v.balance(), *v.initial_lock_hash()))
-            .ok_or_else(|| AbiError::Decode("deposit: target not a live user resource".into()))?;
-        if stored_ilh != initial_lock.id_hash() {
-            return Err(AbiError::Decode(
-                "deposit: initial_lock mismatch for existing user".into(),
-            ));
+        // Torn down earlier in this tx: a deposit must not silently resurrect it.
+        Lifecycle::Deleted => {
+            return Err(AbiError::Decode("deposit: target slot was deleted in this tx".into()));
         }
-        let new = cur_balance
-            .checked_add(deposit_value)
-            .ok_or_else(|| AbiError::Decode("deposit: balance overflow".into()))?;
-        CreditKind::CreditExisting(new)
     };
 
     // Record the deposit-address commitment for the journal: the same delegate-entry script-hash
@@ -124,16 +133,18 @@ pub(super) fn apply_deposit<'a, P: DepositPolicy>(
     // future error below does not leave a half-consumed state.
     cx.consumed_outputs.push(output_idx);
 
-    let slot = &mut cx.resources[idx];
     match credit_kind {
         CreditKind::Create(ilh) => {
-            slot.init_user(deposit_value, &ilh, initial_lock)
+            // Advance `New -> Live` (rejecting double-create) before writing the fresh payload.
+            cx.mark_created(idx).map_err(|m| AbiError::Decode(m.into()))?;
+            cx.resources[idx]
+                .init_user(deposit_value, &ilh, initial_lock)
                 .map_err(|m| AbiError::Decode(m.into()))?;
         }
         CreditKind::CreditExisting(new_balance) => {
-            slot.modify_user(|v| v.balance_mut().set(new_balance)).ok_or_else(|| {
-                AbiError::Decode("deposit: target not a live user resource".into())
-            })?;
+            cx.resources[idx].modify_user(|v| v.balance_mut().set(new_balance)).ok_or_else(
+                || AbiError::Decode("deposit: target not a live user resource".into()),
+            )?;
         }
     }
 
