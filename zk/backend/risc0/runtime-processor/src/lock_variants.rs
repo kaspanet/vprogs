@@ -9,16 +9,12 @@
 //! - `MultisigLockView` consumes the *aggregated* contribution for its resource (`MultisigUnlocker
 //!   { pubkeys }`); the contribution list must be strictly ascending in lex order so the merge
 //!   walk's invariants hold.
-//! - `PreimageLockView` (gated on `experimental-image-lock`) accepts exactly one unlocker (the
-//!   signer's `resolve` already verified the inner receipt).
 
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 
 use vprogs_core_codec::{Error, Reader, Result as CodecResult};
 
-#[cfg(feature = "experimental-image-lock")]
-use crate::auth_context::PreimageUnlocker;
 use crate::{
     auth_context::{MultisigUnlocker, SchnorrUnlocker},
     lock_trait::Lock,
@@ -196,53 +192,6 @@ impl<'a> Lock<'a> for UnlockedLockView {
 
     fn try_unlock(&self, _resource_idx: u8, _us: &[(u8, ())]) -> bool {
         true
-    }
-}
-
-/// Preimage / hash-image lock. Body: `image_id(32) || data_image(32)`.
-///
-/// `image_id` is the risc0 image ID of the inner preimage-proof guest; the
-/// guest's job is to compute `keyed_hash(data) == data_image` for some private
-/// `data` and write the digest to its journal. Unlocking means a verified
-/// inner receipt exists whose journal equals `data_image`.
-///
-/// **Gated behind `experimental-image-lock` and currently unsound.** The
-/// `Signer` impl that produces a `PreimageUnlocker` must verify the inner
-/// receipt *in-guest* with a real verifier (e.g. a native groth16 verifier
-/// wired into the guest). `risc0_zkvm::guest::env::verify` is **not**
-/// acceptable: it only declares an assumption that the host attaches a
-/// matching receipt at proving time, and the host is adversarial in our
-/// threat model, so the assumption can be forged. Until a real in-guest
-/// verifier is wired up, this whole surface is compiled out.
-#[cfg(feature = "experimental-image-lock")]
-#[derive(Copy, Clone)]
-pub struct PreimageLockView<'a> {
-    pub image_id: &'a [u8; 32],
-    pub data_image: &'a [u8; 32],
-}
-
-#[cfg(feature = "experimental-image-lock")]
-impl<'a> Lock<'a> for PreimageLockView<'a> {
-    const TAG: u8 = 0x04;
-    type Unlocker = PreimageUnlocker;
-
-    fn decode(buf: &mut &'a [u8]) -> CodecResult<Self> {
-        let image_id = buf.array::<32>("lock.preimage.image_id")?;
-        let data_image = buf.array::<32>("lock.preimage.data_image")?;
-        Ok(Self { image_id, data_image })
-    }
-
-    fn encode(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(self.image_id);
-        out.extend_from_slice(self.data_image);
-    }
-
-    fn wire_body_len(&self) -> usize {
-        64
-    }
-
-    fn try_unlock(&self, resource_idx: u8, us: &[(u8, PreimageUnlocker)]) -> bool {
-        slice_for_resource(us, resource_idx).len() == 1
     }
 }
 
@@ -502,62 +451,5 @@ mod tests {
 
         let mut buf: &[u8] = &bytes;
         let _ = UnlockedLockView::decode(&mut buf).unwrap();
-    }
-
-    // Preimage lock (gated)
-    #[cfg(feature = "experimental-image-lock")]
-    mod preimage {
-        use super::*;
-
-        #[test]
-        fn preimage_round_trip() {
-            let image_id = pk(0xC0);
-            let data_image = pk(0xDE);
-            let lock = PreimageLockView { image_id: &image_id, data_image: &data_image };
-            let mut bytes = Vec::new();
-            lock.encode(&mut bytes);
-            assert_eq!(bytes.len(), 64);
-
-            let mut buf: &[u8] = &bytes;
-            let decoded = PreimageLockView::decode(&mut buf).unwrap();
-            assert_eq!(decoded.image_id, &image_id);
-            assert_eq!(decoded.data_image, &data_image);
-            assert!(buf.is_empty());
-        }
-
-        #[test]
-        fn preimage_unlocks_with_one_unlocker_for_resource() {
-            let image_id = pk(0xC0);
-            let data_image = pk(0xDE);
-            let lock = PreimageLockView { image_id: &image_id, data_image: &data_image };
-            let bucket = [(0u8, PreimageUnlocker)];
-            assert!(lock.try_unlock(0, &bucket));
-        }
-
-        #[test]
-        fn preimage_rejects_zero_unlockers() {
-            let image_id = pk(0xC0);
-            let data_image = pk(0xDE);
-            let lock = PreimageLockView { image_id: &image_id, data_image: &data_image };
-            assert!(!lock.try_unlock(0, &[]));
-        }
-
-        #[test]
-        fn preimage_rejects_two_unlockers_for_same_resource() {
-            let image_id = pk(0xC0);
-            let data_image = pk(0xDE);
-            let lock = PreimageLockView { image_id: &image_id, data_image: &data_image };
-            let bucket = [(0u8, PreimageUnlocker), (0u8, PreimageUnlocker)];
-            assert!(!lock.try_unlock(0, &bucket));
-        }
-
-        #[test]
-        fn preimage_rejects_unlocker_for_other_resource() {
-            let image_id = pk(0xC0);
-            let data_image = pk(0xDE);
-            let lock = PreimageLockView { image_id: &image_id, data_image: &data_image };
-            let bucket = [(1u8, PreimageUnlocker)];
-            assert!(!lock.try_unlock(0, &bucket));
-        }
     }
 }

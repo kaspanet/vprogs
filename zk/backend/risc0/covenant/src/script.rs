@@ -1,26 +1,38 @@
 //! P2SH redeem script for the settlement covenant.
 //!
-//! The script enforces five invariants on any settlement transaction spending the covenant UTXO:
+//! The script enforces six invariants on any settlement transaction spending the covenant UTXO:
 //!
 //! 1. **State continuation**: the index-0 covenant output's SPK is a P2SH of this script rebuilt
 //!    with the advanced `(new_state, new_lane_tip)` pair pushed as the prefix.
 //! 2. **Journal binding**: the ZK proof's committed journal hashes to `sha256(prev_state ||
 //!    prev_lane_tip || new_state || new_lane_tip || new_seq_commit || covenant_id || tx_image_id ||
-//!    batch_image_id || permission_spk_hash || lane_key)` - 320 bytes total. `tx_image_id`,
-//!    `batch_image_id`, `control_id`, `hashfn`, `image_id`, and `lane_key` are all hardcoded into
-//!    the script body, so the covenant SPK pins the entire verifier identity plus the lane it
-//!    settles - the aggregator's verifier circuit, the batch-processor identity it composes
-//!    against, the inner transaction-processor guest each batch checked against, and the lane the
-//!    prover may not deviate from. The 32 bytes before the `lane_key` (`permission_spk_hash`) are
-//!    either the bundle's L2→L1 exit commitment or `[0; 32]` for a no-exit bundle (matching how the
-//!    guest encodes the field).
-//! 3. **Seq commitment freshness**: the journal's `new_seq_commit` equals
+//!    batch_image_id || permission_spk_hash || deposit_spk_hash || lane_key)` - 352 bytes total.
+//!    `tx_image_id`, `batch_image_id`, `control_id`, `hashfn`, `image_id`, and `lane_key` are all
+//!    hardcoded into the script body, so the covenant SPK pins the entire verifier identity plus
+//!    the lane it settles - the aggregator's verifier circuit, the batch-processor identity it
+//!    composes against, the inner transaction-processor guest each batch checked against, and the
+//!    lane the prover may not deviate from. The 32 bytes before the `deposit_spk_hash`
+//!    (`permission_spk_hash`) are either the bundle's L2→L1 exit commitment or `[0; 32]` for a
+//!    no-exit bundle (matching how the guest encodes the field).
+//! 3. **Deposit-address binding**: `deposit_spk_hash` (the 32 bytes between `permission_spk_hash`
+//!    and `lane_key`) is the bundle's deposit-address commitment
+//!    `delegate_entry_spk_hash(covenant_id) = blake2b(DELEGATE_SCRIPT_PREFIX || covenant_id ||
+//!    DELEGATE_SCRIPT_SUFFIX)`, or `[0; 32]` when no transaction in the bundle credited an L1
+//!    deposit. It is supplied by the sig_script (witnessed, not a script-body constant), cat into
+//!    the journal preimage so the SHA-256 binds it to the proof, and - gated on a non-zero value -
+//!    reconstructed on-chain from `OpInputCovenantId` and `OpEqualVerify`d against the witnessed
+//!    bytes, so a non-zero commitment must equal the delegate-entry address derived from the input
+//!    covenant id. The reconstruction is byte-identical to the guest's `apply_deposit` derivation
+//!    and the permission sweep's `emit_verify_delegate_balance` (same shared `api` constants). Zero
+//!    skips the reconstruction (blake2b is one-way, so `[0; 32]` is an unambiguous no-deposit
+//!    sentinel, exactly as `permission_spk_hash` uses it). See [`verify_and_append_deposit_hash`].
+//! 4. **Seq commitment freshness**: the journal's `new_seq_commit` equals
 //!    `OpChainblockSeqCommit(block_prove_to)` pushed at spend time, which itself is derived by the
 //!    guest from `new_lane_tip` - so the chain of UTXO-locked `lane_tip` values is load-bearing all
 //!    the way through the seq-commit derivation, preventing rewinds.
-//! 4. **Proof validity**: `OpZkPrecompile` verifies the risc0 succinct receipt against the
+//! 5. **Proof validity**: `OpZkPrecompile` verifies the risc0 succinct receipt against the
 //!    configured image id.
-//! 5. **Permission-output binding**: settlements have exactly one or two covenant-bound outputs,
+//! 6. **Permission-output binding**: settlements have exactly one or two covenant-bound outputs,
 //!    with `journal[permission_spk_hash] == [0; 32]` ⇔ count == 1 (no permission output) and
 //!    `journal[permission_spk_hash] != [0; 32]` ⇔ count == 2 (permission output present). Output 0
 //!    is always the continuation (invariant 1). In the count == 2 case the second covenant-bound
@@ -47,6 +59,10 @@ use kaspa_txscript::{
     script_builder::ScriptBuilder,
     zk_precompiles::tags::ZkTag,
 };
+// Single source of the delegate-entry script layout (shared with the guest's deposit
+// derivation and the permission sweep's on-chain reconstruction); lives in the abi crate to
+// avoid a dependency cycle through the proof backend.
+use vprogs_zk_abi::{DELEGATE_SCRIPT_PREFIX, DELEGATE_SCRIPT_SUFFIX};
 
 /// Groth16 verifier-identity constants (compressed VK, control-root halves,
 /// bn254 control id, risc0 receipt-claim/output/post digests) baked at build
@@ -524,15 +540,23 @@ fn verify_output_spk(b: &mut ScriptBuilder) {
 /// Consumes the alt-stack stash, assembles the 160-byte state preimage, appends the input's
 /// covenant id (→ 192B), the script-embedded `tx_image_id` (→ 224B), the script-embedded
 /// `batch_image_id` (→ 256B), the 32-byte permission commitment (→ 288B) via
-/// `verify_outputs_and_append_perm_hash`, recovers the bottom-of-alt `lane_key` and appends it
-/// (→ 320B), then SHA-256s the result.
+/// `verify_outputs_and_append_perm_hash`, the 32-byte witnessed `deposit_spk_hash` (→ 320B) via
+/// `verify_and_append_deposit_hash`, recovers the bottom-of-alt `lane_key` and appends it
+/// (→ 352B), then SHA-256s the result.
 ///
 /// Alt layout going in (top→bottom):
 /// `[new_lane_tip, new_state, new_seq_commit, prev_lane_tip, prev_state, lane_key]`
 ///
-/// The 320-byte preimage byte order matches `StateTransition::encode` field-for-field:
+/// The witnessed `deposit_spk_hash` sits on the main stack just above the ZK witness blob
+/// (pushed by the sig_script between the proof bytes and `new_lane_tip`, so the journal-prefix
+/// builders that consumed everything above it have peeled away), i.e. directly under the growing
+/// preimage that the appends below leave on top. `verify_and_append_deposit_hash` lifts it out from
+/// there, binds it, and cats it. After the SHA-256 only `[..zk_witness.., journal_hash]` remains,
+/// exactly the stack the `verify_risc0_*` terminator expects.
+///
+/// The 352-byte preimage byte order matches `StateTransition::encode` field-for-field:
 /// `prev_state || prev_lane_tip || new_state || new_lane_tip || new_seq_commit || covenant_id ||
-///  tx_image_id || batch_image_id || permission_spk_hash || lane_key`.
+///  tx_image_id || batch_image_id || permission_spk_hash || deposit_spk_hash || lane_key`.
 ///
 /// Output: `[..., journal_hash]`
 fn build_and_hash_journal(b: &mut ScriptBuilder, pins: &RedeemPins<'_>) {
@@ -588,12 +612,83 @@ fn build_and_hash_journal(b: &mut ScriptBuilder, pins: &RedeemPins<'_>) {
     // bytes (count == 1) → 288B preimage matching the guest's journal encoding.
     verify_outputs_and_append_perm_hash(b, pins);
 
-    // Append the lane's 32-byte lane_key (recovered from the bottom of the alt stash) → 320B
+    // Append the witnessed deposit_spk_hash and (gated on non-zero) bind it to the delegate-entry
+    // address rebuilt from OpInputCovenantId → 320B preimage matching the guest's journal encoding.
+    verify_and_append_deposit_hash(b);
+
+    // Append the lane's 32-byte lane_key (recovered from the bottom of the alt stash) → 352B
     // preimage.
     b.add_op(OpFromAltStack).unwrap();
     b.add_op(OpCat).unwrap();
 
     b.add_op(OpSHA256).unwrap();
+}
+
+/// Stack precondition: `[..., deposit_spk_hash, preimage288]` (the 32-byte witnessed
+/// `deposit_spk_hash`, supplied by the sig_script, sits directly under the 288-byte preimage).
+/// Postcondition: `[..., preimage320]`.
+///
+/// Appends the witnessed `deposit_spk_hash` to the preimage (so the journal SHA-256 binds it to the
+/// proof, exactly like a witnessed value), and, gated on `deposit_spk_hash != [0; 32]`, rebuilds
+/// the bundle's deposit address on-chain and asserts it equals the witnessed bytes:
+/// `OpEqualVerify(deposit_spk_hash, blake2b(DELEGATE_SCRIPT_PREFIX || OpInputCovenantId(input0) ||
+/// DELEGATE_SCRIPT_SUFFIX))`. That `blake2b` of the 53-byte delegate redeem is exactly
+/// `delegate_entry_spk_hash(covenant_id)`, the value the guest's `apply_deposit` commits, so a
+/// non-zero commitment is forced to name the covenant's own delegate-entry deposit address.
+///
+/// `[0; 32]` is the guest's no-deposit sentinel (no tx in the bundle credited an L1 deposit); it
+/// skips the reconstruction. blake2b is one-way, so no covenant id rebuilds to all-zeros; this is
+/// the same unambiguity argument `verify_outputs_and_append_perm_hash` relies on for
+/// `permission_spk_hash`. The reconstruction is byte-identical to the permission sweep's
+/// `emit_verify_delegate_balance`, sharing the `DELEGATE_SCRIPT_PREFIX` / `DELEGATE_SCRIPT_SUFFIX`
+/// constants from the abi crate.
+fn verify_and_append_deposit_hash(b: &mut ScriptBuilder) {
+    // Lift the witnessed hash above the preimage so the appends/dups below are top-of-stack.
+    b.add_op(OpSwap).unwrap();
+    // Stack: [..., preimage288, deposit_spk_hash]
+
+    // Keep one copy to cat, and dup a working copy for the gated bind.
+    b.add_op(OpDup).unwrap();
+    // Stack: [..., preimage288, deposit_spk_hash, deposit_spk_hash]
+
+    // ---- gate on deposit_spk_hash != [0; 32] ----
+    b.add_op(OpDup).unwrap();
+    b.add_data(&[0u8; 32]).unwrap();
+    b.add_op(OpEqual).unwrap();
+    b.add_op(OpNot).unwrap();
+    // Stack: [..., preimage288, deposit_spk_hash, deposit_spk_hash, is_nonzero]
+
+    b.add_op(OpIf).unwrap();
+    {
+        // Non-zero: rebuild blake2b(PREFIX || OpInputCovenantId(input0) || SUFFIX) and require the
+        // witnessed hash to equal it. OpInputCovenantId reads input 0's covenant id; input 0 is the
+        // covenant being spent (pinned by `verify_input_index_zero`).
+        b.add_op(OpTxInputIndex).unwrap();
+        b.add_op(OpInputCovenantId).unwrap();
+        // Stack: [..., deposit_spk_hash, deposit_spk_hash, covenant_id]
+        b.add_data(&DELEGATE_SCRIPT_PREFIX).unwrap();
+        b.add_op(OpSwap).unwrap();
+        b.add_op(OpCat).unwrap();
+        // Stack: [..., deposit_spk_hash, deposit_spk_hash, (PREFIX || covenant_id)]
+        b.add_data(&DELEGATE_SCRIPT_SUFFIX).unwrap();
+        b.add_op(OpCat).unwrap();
+        // Stack: [..., deposit_spk_hash, deposit_spk_hash, (PREFIX || covenant_id || SUFFIX)] = 53B
+        b.add_op(OpBlake2b).unwrap();
+        // Stack: [..., deposit_spk_hash, deposit_spk_hash, reconstructed_hash]
+        b.add_op(OpEqualVerify).unwrap();
+        // Stack: [..., preimage288, deposit_spk_hash]
+    }
+    b.add_op(OpElse).unwrap();
+    {
+        // Zero (no deposit this bundle): skip the reconstruction, drop the working copy.
+        b.add_op(OpDrop).unwrap();
+        // Stack: [..., preimage288, deposit_spk_hash]
+    }
+    b.add_op(OpEndIf).unwrap();
+
+    // Append the witnessed hash → 320B preimage.
+    b.add_op(OpCat).unwrap();
+    // Stack: [..., preimage320]
 }
 
 /// Stack precondition: `[..., preimage256]`. Postcondition: `[..., preimage288]`.

@@ -17,6 +17,7 @@ fn state_transition_round_trip() {
     let tx_image_id = [0x77; 32];
     let batch_image_id = [0xAA; 32];
     let permission_spk_hash = [0x88; 32];
+    let deposit_spk_hash = [0xBB; 32];
     let lane_key = Hash::from_bytes([0x99; 32]);
 
     let mut buf = Vec::new();
@@ -32,6 +33,7 @@ fn state_transition_round_trip() {
             tx_image_id: &tx_image_id,
             batch_image_id: &batch_image_id,
             permission_spk_hash: &permission_spk_hash,
+            deposit_spk_hash: &deposit_spk_hash,
             lane_key: &lane_key,
         },
     );
@@ -47,6 +49,7 @@ fn state_transition_round_trip() {
     assert_eq!(decoded.tx_image_id, tx_image_id);
     assert_eq!(decoded.batch_image_id, batch_image_id);
     assert_eq!(decoded.permission_spk_hash, permission_spk_hash);
+    assert_eq!(decoded.deposit_spk_hash, deposit_spk_hash);
     assert_eq!(decoded.lane_key, lane_key);
 }
 
@@ -68,10 +71,12 @@ fn state_transition_zero_permission_hash_when_no_exits() {
             tx_image_id: &zero,
             batch_image_id: &zero,
             permission_spk_hash: &zero,
+            deposit_spk_hash: &zero,
             lane_key: &Hash::from_bytes(zero),
         },
     );
 
     let decoded = (&mut &buf[..]).array_as::<StateTransition>("state_transition").unwrap();
     assert_eq!(decoded.permission_spk_hash, zero);
+    assert_eq!(decoded.deposit_spk_hash, zero);
 }

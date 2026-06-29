@@ -1,17 +1,19 @@
 //! Core transaction handler, wrapped by `main` into the ABI `TransactionHandler`
 //! shape passed to `process_transaction`.
 
+use alloc::vec::Vec;
+
 use vprogs_zk_abi::{
-    Error as AbiError, Result as AbiResult,
+    Result as AbiResult,
     transaction_processor::{Resource, Transaction},
+    withdrawal::{DepositSink, ExitSink},
 };
 use vprogs_zk_backend_risc0_api::{Hasher, Sha256};
 
-#[cfg(feature = "experimental-image-lock")]
-use crate::signer_variants::ImageProofSigner;
 use crate::{
-    action::apply_action,
+    action::{ApplyContext, apply_action},
     auth_context::{AuthContext, MultisigUnlocker},
+    deposit_policy::DepositPolicy,
     domain::Domain,
     ix::{DecodedIx, decode_ix},
     signer::SignerEnum,
@@ -24,11 +26,21 @@ use crate::{
 
 /// Verifies signers against resource locks and applies the decoded actions.
 ///
-/// `main` adapts this into the ABI [`TransactionHandler`] shape; the merge_idx,
-/// context hash, and exit sink it also receives are unused by the runtime.
+/// `main` adapts this into the ABI [`TransactionHandler`] shape. `exits` receives L2-to-L1 exits
+/// emitted by `Withdraw` actions; `deposit` receives the deposit-address commitment written by a
+/// `Deposit` action; `merge_idx` and `context_hash` are unused.
+///
+/// Generic over `P: DepositPolicy` so a different runtime can supply its own deposit rules in
+/// `main.rs` without touching this file.
 ///
 /// [`TransactionHandler`]: vprogs_zk_abi::transaction_processor::TransactionHandler
-pub fn run<'a>(tx: &Transaction<'a>, resources: &mut [Resource<'a>]) -> AbiResult<()> {
+pub fn run<'a, P: DepositPolicy>(
+    tx: &Transaction<'a>,
+    resources: &mut [Resource<'a>],
+    exits: &mut ExitSink,
+    deposit: &mut DepositSink,
+    policy: &P,
+) -> AbiResult<()> {
     // The witness format is V1-specific; the ABI only decodes V1 transactions.
     let current_rest_preimage = tx.rest_preimage;
     let payload = &tx.payload;
@@ -58,8 +70,17 @@ pub fn run<'a>(tx: &Transaction<'a>, resources: &mut [Resource<'a>]) -> AbiResul
         },
     )?;
 
+    let mut cx = ApplyContext {
+        tx,
+        resources,
+        auth_ctx: &auth_ctx,
+        exits,
+        deposit,
+        consumed_outputs: Vec::new(),
+    };
+
     for action in &actions {
-        apply_action(action, tx, resources, &auth_ctx)?;
+        apply_action(action, &mut cx, policy)?;
     }
 
     Ok(())
@@ -92,7 +113,7 @@ pub fn compute_sig_message(rest_preimage: &[u8], payload_presig: &[u8]) -> [u8; 
 /// multisig signers for the same resource lands in the same aggregated
 /// entry (no map lookup or sort).
 fn resolve_signers<'a>(
-    signers: &[(u8, SignerEnum<'a>)],
+    signers: &[(u8, SignerEnum)],
     ctx: &SignerResolveContext<'a>,
 ) -> AbiResult<AuthContext> {
     let mut auth = AuthContext::default();
@@ -115,17 +136,6 @@ fn resolve_signers<'a>(
             SignerEnum::MultisigPrevTxV1Witness(s) => {
                 let u = MultisigPrevTxV1WitnessSigner::resolve(s, resource_idx, ctx)?;
                 append_multisig_contrib(&mut auth.multisig, resource_idx, u);
-            }
-            #[cfg(feature = "experimental-image-lock")]
-            SignerEnum::ImageProof(s) => {
-                let u = ImageProofSigner::resolve(s, resource_idx, ctx)?;
-                auth.preimage.push((resource_idx, u));
-            }
-            SignerEnum::_Phantom(_) => {
-                // `_Phantom` is never constructed by `decode_signer`; this
-                // arm exists only to consume the lifetime parameter. Return
-                // a defensive error instead of panicking.
-                return Err(AbiError::Decode("runtime: phantom signer variant".into()));
             }
         }
     }

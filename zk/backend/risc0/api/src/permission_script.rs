@@ -18,6 +18,8 @@
 
 use alloc::vec::Vec;
 
+pub use vprogs_zk_abi::{DELEGATE_SCRIPT_LEN, DELEGATE_SCRIPT_PREFIX, DELEGATE_SCRIPT_SUFFIX};
+
 use crate::permission_tags::PermNode;
 
 /// Maximum number of *delegate inputs* the permission script will sum over.
@@ -77,12 +79,33 @@ const OP_INPUTCOVENANTID: u8 = 0xcf;
 const OP_COVOUTCOUNT: u8 = 0xd2;
 const OP_COVOUTPUTIDX: u8 = 0xd3;
 
-/// Delegate entry script bytes **before** the 32-byte covenant_id.
-const DELEGATE_SCRIPT_PREFIX: [u8; 7] = [0xb9, 0x00, 0xa0, 0x69, 0x00, 0xcf, 0x20];
+// The `DELEGATE_SCRIPT_PREFIX` / `DELEGATE_SCRIPT_SUFFIX` / `DELEGATE_SCRIPT_LEN` byte constants
+// are the single source of the delegate-entry script layout and live in `vprogs_zk_abi` so the
+// settlement covenant builder can reference them without a dependency cycle through this crate;
+// they are re-exported above (and from this crate's root) so the guest's import path is unchanged.
 
-/// Delegate entry script bytes **after** the 32-byte covenant_id.
-const DELEGATE_SCRIPT_SUFFIX: [u8; 14] =
-    [0x88, 0x00, 0x00, 0xc9, 0x76, 0x52, 0x94, 0x7c, 0xbc, 0x02, 0x51, 0x75, 0x88, 0x51];
+/// Lays out the delegate-entry redeem script for `covenant_id`:
+/// `DELEGATE_SCRIPT_PREFIX || covenant_id || DELEGATE_SCRIPT_SUFFIX`.
+///
+/// This is the covenant-spendable script the permission sweep recognises (it
+/// reconstructs the same bytes on-chain in `emit_verify_delegate_balance`), and
+/// the script a deposit's funding output must pay (as its P2SH). Hashing it with
+/// [`delegate_entry_spk_hash`] yields the P2SH script-hash both sides commit to.
+pub fn build_delegate_entry_script(covenant_id: &[u8; 32]) -> [u8; DELEGATE_SCRIPT_LEN] {
+    let mut out = [0u8; DELEGATE_SCRIPT_LEN];
+    let prefix = DELEGATE_SCRIPT_PREFIX.len();
+    out[..prefix].copy_from_slice(&DELEGATE_SCRIPT_PREFIX);
+    out[prefix..prefix + 32].copy_from_slice(covenant_id);
+    out[prefix + 32..].copy_from_slice(&DELEGATE_SCRIPT_SUFFIX);
+    out
+}
+
+/// P2SH script-hash of the delegate-entry script for `covenant_id`:
+/// `blake2b(build_delegate_entry_script(covenant_id))`. Wrapping this in a P2SH
+/// SPK gives the deposit address depositors must pay.
+pub fn delegate_entry_spk_hash(covenant_id: &[u8; 32]) -> [u8; 32] {
+    blake2b_script_hash(&build_delegate_entry_script(covenant_id))
+}
 
 /// Extension trait that appends the permission redeem script's phases to a byte buffer.
 ///
@@ -94,8 +117,8 @@ const DELEGATE_SCRIPT_SUFFIX: [u8; 14] =
 trait PermRedeemScript {
     /// Byte count of `emit_prefix`: `OpData32 | root(32) | OpData8 | unclaimed_count(8 LE)`.
     const PREFIX_LEN: usize = 42;
-    /// Byte count of `emit_phase2_stash`.
-    const PHASE2_STASH_LEN: usize = 2;
+    /// Byte count of `emit_stash`.
+    const STASH_LEN: usize = 2;
     /// Byte count of `emit_validate_amounts`.
     const VALIDATE_AMOUNTS_LEN: usize = 13;
     /// Byte count of `emit_verify_withdrawal`.
@@ -127,7 +150,7 @@ trait PermRedeemScript {
 
     /// Depth-independent byte count of the redeem script, the sum of every fixed-size phase.
     const FIXED_LEN: usize = Self::PREFIX_LEN
-        + Self::PHASE2_STASH_LEN
+        + Self::STASH_LEN
         + Self::VALIDATE_AMOUNTS_LEN
         + Self::VERIFY_WITHDRAWAL_LEN
         + Self::COMPUTE_LEAF_HASHES_LEN
@@ -146,25 +169,25 @@ trait PermRedeemScript {
     /// sign bit via [`push_data`](Self::push_data).
     fn push_i64(&mut self, val: i64);
 
-    /// Phase 1: `OpData32 | root | OpData8 | unclaimed_count(8 LE)`.
+    /// Emits the embedded prefix: `OpData32 | root | OpData8 | unclaimed_count(8 LE)`.
     fn emit_prefix(&mut self, root: &[u8; 32], unclaimed_count: u64);
-    /// Phase 2: stash the embedded root + unclaimed_count to the alt stack.
-    fn emit_phase2_stash(&mut self);
-    /// Phase 3: validate `deduct > 0` and `amount >= deduct`.
+    /// Stashes the embedded root + unclaimed_count to the alt stack.
+    fn emit_stash(&mut self);
+    /// Validates `deduct > 0` and `amount >= deduct`.
     fn emit_validate_amounts(&mut self);
-    /// Phase 4: verify output 0's SPK matches the leaf's SPK.
+    /// Verifies output 0's SPK matches the leaf's SPK.
     fn emit_verify_withdrawal(&mut self);
-    /// Phase 5: compute old and new leaf hashes.
+    /// Computes the old and new leaf hashes.
     fn emit_compute_leaf_hashes(&mut self);
-    /// Phase 6: verify the old root matches the embedded root (`depth` Merkle steps + tail).
+    /// Verifies the old root matches the embedded root (`depth` Merkle steps + tail).
     fn emit_verify_old_root(&mut self, depth: usize);
-    /// Phase 7: compute the new root from new_leaf (`depth` Merkle steps).
+    /// Computes the new root from new_leaf (`depth` Merkle steps).
     fn emit_compute_new_root(&mut self, depth: usize);
-    /// Phase 8: compute new_unclaimed.
+    /// Computes new_unclaimed.
     fn emit_compute_new_unclaimed(&mut self);
-    /// Phase 9: verify transaction outputs.
+    /// Verifies the transaction outputs.
     fn emit_verify_outputs(&mut self, redeem_script_len: i64);
-    /// Phase 10: verify delegate input/output balance.
+    /// Verifies the delegate input/output balance.
     fn emit_verify_delegate_balance(&mut self);
     /// Trailing `OP_TRUE` (P2SH) followed by the `OP_TRUE OP_DROP` domain suffix.
     fn emit_trailer(&mut self);
@@ -218,7 +241,7 @@ impl PermRedeemScript for Vec<u8> {
         self.extend_from_slice(&unclaimed_count.to_le_bytes());
     }
 
-    fn emit_phase2_stash(&mut self) {
+    fn emit_stash(&mut self) {
         self.push(OP_TOALTSTACK); // stash uncl_emb
         self.push(OP_TOALTSTACK); // stash root_emb
     }
@@ -675,7 +698,7 @@ fn build_permission_redeem_bytes(
 ) -> Vec<u8> {
     let mut s: Vec<u8> = Vec::with_capacity(redeem_script_len.max(64) as usize);
     s.emit_prefix(root, unclaimed_count);
-    s.emit_phase2_stash();
+    s.emit_stash();
     s.emit_validate_amounts();
     s.emit_verify_withdrawal();
     s.emit_compute_leaf_hashes();
@@ -804,5 +827,26 @@ mod tests {
         let a = blake2b_script_hash(b"redeem");
         assert_eq!(a, blake2b_script_hash(b"redeem"));
         assert_ne!(a, blake2b_script_hash(b"other"));
+    }
+
+    #[test]
+    fn build_delegate_entry_script_lays_prefix_covenant_suffix() {
+        // The 53-byte script is exactly PREFIX(7) || covenant_id(32) || SUFFIX(14);
+        // assert each region against the hand-laid bytes the on-chain consumer
+        // (`emit_verify_delegate_balance`) and `permission_spend.rs` expect.
+        let covenant_id = [0x5Au8; 32];
+        let script = build_delegate_entry_script(&covenant_id);
+
+        assert_eq!(script.len(), 53);
+        assert_eq!(DELEGATE_SCRIPT_LEN, 53);
+        assert_eq!(&script[..7], &[0xb9, 0x00, 0xa0, 0x69, 0x00, 0xcf, 0x20]);
+        assert_eq!(&script[7..39], &covenant_id);
+        assert_eq!(
+            &script[39..],
+            &[0x88, 0x00, 0x00, 0xc9, 0x76, 0x52, 0x94, 0x7c, 0xbc, 0x02, 0x51, 0x75, 0x88, 0x51],
+        );
+
+        // The hash helper agrees with hashing the assembled bytes directly.
+        assert_eq!(delegate_entry_spk_hash(&covenant_id), blake2b_script_hash(&script));
     }
 }

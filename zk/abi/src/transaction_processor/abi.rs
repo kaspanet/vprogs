@@ -7,7 +7,7 @@ use crate::{
         Effects, InputCommitment, Inputs, OutputCommitment, Outputs, Transaction,
         TransactionHandler,
     },
-    withdrawal::ExitSink,
+    withdrawal::{DepositSink, ExitSink},
 };
 
 /// Processes a single transaction inside the guest, committing input/output to `journal` and
@@ -30,15 +30,32 @@ pub fn process_transaction<H: Hasher>(
     // TODO:  we may have a hint from host to set capacity for exits
 
     let mut exits = ExitSink::new();
+    let mut deposit = DepositSink::new();
+    // Copied out of the sink after the handler returns so `Effects` can borrow it for the duration
+    // of `OutputCommitment::encode`. Only read in the success arm below, which is also the only
+    // place it is assigned.
+    let deposit_hash;
     let result = match version {
         Transaction::V1 => {
             // Unwrap and verify host-supplied execution input.
             let exec = execution_input.as_mut().expect("host omitted execution_input");
             assert_eq!(tx_id.as_slice(), exec.tx.id(), "host tx_id does not match derived id");
 
-            // Run guest handler, bundling exits + resources into Effects on success.
-            let result = f(&exec.tx, merge_idx, exec.context_hash, &mut exec.resources, &mut exits);
-            result.map(|_| Effects { exits: &exits, resources: exec.resources.as_slice() })
+            // Run guest handler, bundling exits + deposit hash + resources into Effects on success.
+            let result = f(
+                &exec.tx,
+                merge_idx,
+                exec.context_hash,
+                &mut exec.resources,
+                &mut exits,
+                &mut deposit,
+            );
+            deposit_hash = deposit.get();
+            result.map(|_| Effects {
+                exits: &exits,
+                deposit_spk_hash: &deposit_hash,
+                resources: exec.resources.as_slice(),
+            })
         }
         _ => Err(ErrorCode::VersionIncompatible.into()),
     };

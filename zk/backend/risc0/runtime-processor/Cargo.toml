@@ -12,18 +12,16 @@ path = "src/main.rs"
 
 [features]
 default = []
-# Enables the `Preimage` lock kind + `ImageProof` signer kind. **Off by
-# default and not safe to enable yet.**
-#
-# A correct implementation must verify the inner receipt *inside the guest*
-# with a real verifier (e.g. a native groth16 verifier wired into the guest's
-# constraint system) — `risc0_zkvm::guest::env::verify` is **not** acceptable:
-# it only declares an assumption that the host attaches a matching receipt at
-# proving time, and the host is adversarial in our threat model, so the
-# assumption can be forged. Until a real in-guest verifier (groth16 or
-# equivalent) is wired up, this whole surface is compiled out so the default
-# build can't be misconfigured to depend on it.
-experimental-image-lock = []
+
+# Routes the host-side prover (the e2e `prove + verify` path) to the CUDA
+# backend on a GPU machine. The test gate stays `dev_mode_enabled()`
+# (`RISC0_DEV_MODE`), NEVER `cfg(feature = "cuda")` — this feature only selects
+# the prover backend, it does not change which assertions run. Off for the guest
+# ELF build: the Docker build never passes `--features cuda`, so the guest
+# `risc0-zkvm` dependency stays `std`-only.
+#   GPU box: RISC0_DEV_MODE=0 cargo test --manifest-path \
+#     zk/backend/risc0/runtime-processor/Cargo.toml --test e2e --features cuda -- --nocapture
+cuda = ["risc0-zkvm/cuda"]
 
 [dependencies]
 zerocopy = { version = "0.8", default-features = false, features = ["derive"] }

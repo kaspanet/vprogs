@@ -6,10 +6,17 @@ use vprogs_zk_abi::{Error as AbiError, Result as AbiResult};
 use super::ApplyContext;
 use crate::{lock::LockEnum, resource_ext::ResourceExt, resource_id::derive_user_resource};
 
-/// Creates a user resource at its derived address. The action must already
-/// carry the `initial_lock` whose `id_hash()` derives the resource's id; the
-/// auth context must also satisfy that lock at `user_idx`, proving the
-/// caller controls it.
+/// Opens an empty user resource at its derived address.
+///
+/// Permissionless and auth-free by design: the resource id is bound to
+/// `initial_lock` (`derive_user_resource(initial_lock.id_hash())`), so a creator
+/// can only ever open the account that `initial_lock` controls. Demanding a
+/// signature to *create* the account a key will own is circular, and the
+/// L1-backed `Deposit` path creates without one for the same reason.
+///
+/// `initial_balance` MUST be zero: a slot is born empty and fills only via
+/// `Deposit` (committed to an L1 funding output) or `Transfer`. No action may
+/// write a balance out of nothing.
 pub(super) fn apply_user_init<'a>(
     user_idx: u8,
     initial_balance: u64,
@@ -28,6 +35,11 @@ pub(super) fn apply_user_init<'a>(
         return Err(AbiError::Decode(
             "user_init: resource id != derive_user_resource(lock)".into(),
         ));
+    }
+
+    // No unbacked minting: creation never carries value; balance enters only via Deposit/Transfer.
+    if initial_balance != 0 {
+        return Err(AbiError::Decode("user_init: initial_balance must be zero".into()));
     }
 
     target

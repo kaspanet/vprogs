@@ -135,7 +135,8 @@ pub fn build_settlement(
         "settlement covenant_id must match the live covenant",
     );
 
-    let owned_witness = OwnedSuccinctWitness::from_receipt(&artifact.receipt);
+    let owned_witness = OwnedSuccinctWitness::from_receipt(&artifact.receipt)
+        .with_deposit_spk_hash(artifact.deposit_spk_hash);
     let settlement = Settlement::build(&SettlementInput {
         covenant_id: cov.covenant_id,
         pins: redeem_pins(backend, lane_key),

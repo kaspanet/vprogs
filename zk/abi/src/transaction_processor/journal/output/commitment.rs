@@ -13,6 +13,9 @@ pub enum OutputCommitment<'a> {
     Success {
         /// Zero-copy view over the emitted exits.
         exits: &'a Exits,
+        /// Deposit-address commitment, or `[0u8; 32]` when the tx credited no L1 deposit. Fixed
+        /// offset, before the variable-length resource stream.
+        deposit_spk_hash: &'a [u8; 32],
         /// Lazy iterator over per-resource hash commitments.
         resources: OutputResourceCommitments<'a>,
     },
@@ -31,6 +34,7 @@ impl<'a> OutputCommitment<'a> {
         match buf.byte("discriminant")? {
             Self::SUCCESS => Ok(Self::Success {
                 exits: buf.blob_as("exits")?,
+                deposit_spk_hash: buf.array("deposit_spk_hash")?,
                 resources: OutputResourceCommitments::new(buf),
             }),
             Self::ERROR => Ok(Self::Error(Error::decode(buf)?)),
@@ -41,9 +45,10 @@ impl<'a> OutputCommitment<'a> {
     /// Encodes an output commitment payload to the journal, hashing resource data with `H`.
     pub fn encode<H: Hasher>(w: &mut impl Writer, result: &Result<Effects<'_>>) {
         match *result {
-            Ok(Effects { exits, resources }) => {
+            Ok(Effects { exits, deposit_spk_hash, resources }) => {
                 w.write(&[Self::SUCCESS]);
                 w.write_blob(exits.as_bytes());
+                w.write(deposit_spk_hash);
                 for r in resources {
                     OutputResourceCommitment::encode::<H>(w, r);
                 }
@@ -63,25 +68,32 @@ mod tests {
     use super::*;
     use crate::withdrawal::{ExitSink, StandardSpk};
 
-    /// Encodes a `Success` payload directly from raw resource commitments plus an exit blob.
-    /// Mirrors what `OutputCommitment::encode` does in the success arm but operates on
-    /// pre-encoded resource bytes, useful for tests without a full `Resource` instance.
-    fn encode_success_raw(w: &mut Vec<u8>, exit_bytes: &[u8], resource_bytes: &[u8]) {
+    /// Encodes a `Success` payload directly from raw resource commitments plus an exit blob and a
+    /// deposit hash. Mirrors what `OutputCommitment::encode` does in the success arm but operates
+    /// on pre-encoded resource bytes, useful for tests without a full `Resource` instance.
+    fn encode_success_raw(
+        w: &mut Vec<u8>,
+        exit_bytes: &[u8],
+        deposit_hash: &[u8; 32],
+        resource_bytes: &[u8],
+    ) {
         w.write(&[OutputCommitment::SUCCESS]);
         w.write_blob(exit_bytes);
+        w.write(deposit_hash);
         w.write(resource_bytes);
     }
 
     #[test]
     fn success_round_trip_no_resources_no_exits() {
         let mut buf = Vec::new();
-        encode_success_raw(&mut buf, &[], &[]);
+        encode_success_raw(&mut buf, &[], &[0u8; 32], &[]);
 
         let mut slice: &[u8] = &buf;
         let cmt = OutputCommitment::decode(&mut slice).unwrap();
         match cmt {
-            OutputCommitment::Success { exits, mut resources } => {
+            OutputCommitment::Success { exits, deposit_spk_hash, mut resources } => {
                 assert!(exits.is_empty());
+                assert_eq!(deposit_spk_hash, &[0u8; 32]);
                 assert!(resources.next().is_none());
             }
             OutputCommitment::Error(e) => panic!("expected success, got error: {e:?}"),
@@ -101,15 +113,19 @@ mod tests {
         sink.emit(StandardSpk::PubKey(&[0x11; 32]), 100).unwrap();
         sink.emit(StandardSpk::ScriptHash(&[0x22; 32]), 200).unwrap();
 
+        let deposit_hash = [0x5A; 32];
         let mut buf = Vec::new();
-        encode_success_raw(&mut buf, sink.as_bytes(), &resources);
+        encode_success_raw(&mut buf, sink.as_bytes(), &deposit_hash, &resources);
 
         let mut slice: &[u8] = &buf;
         let cmt = OutputCommitment::decode(&mut slice).unwrap();
-        let (exits, resources) = match cmt {
-            OutputCommitment::Success { exits, resources } => (exits, resources),
+        let (exits, deposit_spk_hash, resources) = match cmt {
+            OutputCommitment::Success { exits, deposit_spk_hash, resources } => {
+                (exits, deposit_spk_hash, resources)
+            }
             _ => panic!("expected success"),
         };
+        assert_eq!(deposit_spk_hash, &deposit_hash);
 
         // Consume resources.
         let r1 = resources.clone().next().unwrap().unwrap();
@@ -135,6 +151,22 @@ mod tests {
         let mut buf = Vec::new();
         buf.push(OutputCommitment::SUCCESS);
         buf.extend_from_slice(&10u32.to_le_bytes());
+
+        let mut slice: &[u8] = &buf;
+        match OutputCommitment::decode(&mut slice) {
+            Err(Error::Decode(_)) => {}
+            Ok(_) => panic!("expected decode error, got success"),
+            Err(e) => panic!("expected decode error, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn success_decode_rejects_truncated_deposit_hash() {
+        // Empty exits then only 16 of the 32 deposit-hash bytes.
+        let mut buf = Vec::new();
+        buf.push(OutputCommitment::SUCCESS);
+        buf.extend_from_slice(&0u32.to_le_bytes()); // exit_len = 0
+        buf.extend_from_slice(&[0u8; 16]); // half a deposit hash
 
         let mut slice: &[u8] = &buf;
         match OutputCommitment::decode(&mut slice) {

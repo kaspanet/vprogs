@@ -11,4 +11,8 @@ pub struct SuccinctWitness<'a> {
     pub control_index: u32,
     /// Concatenated 32-byte control-inclusion-proof path digests.
     pub control_digests: &'a [u8],
+    /// Bundle deposit-address commitment (`StateTransition::deposit_spk_hash`), or `[0; 32]` for a
+    /// no-deposit bundle. Witnessed (not pinned), bound by the redeem script's
+    /// `verify_and_append_deposit_hash`.
+    pub deposit_spk_hash: &'a [u8; 32],
 }

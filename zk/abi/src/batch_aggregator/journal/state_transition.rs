@@ -26,6 +26,12 @@ pub struct StateTransition {
     /// exits were emitted. Non-zero values cause the on-chain settlement to add a second P2SH
     /// output for permission-tree withdrawals.
     pub permission_spk_hash: [u8; 32],
+    /// `delegate_entry_spk_hash(covenant_id)` for the bundle's deposit address, or `[0u8; 32]`
+    /// when no tx credited an L1 deposit. Carried opaquely from the batch journals; the
+    /// on-chain settlement redeem script binds it (gated on non-zero) against the address
+    /// rebuilt from `OpInputCovenantId`. Adjacent to `permission_spk_hash` so the redeem
+    /// preimage matches this encode order.
+    pub deposit_spk_hash: [u8; 32],
     /// Lane key of the lane this settlement binds to.
     pub lane_key: Hash,
 }
@@ -45,6 +51,7 @@ impl StateTransition {
         w.write(args.tx_image_id);
         w.write(args.batch_image_id);
         w.write(args.permission_spk_hash);
+        w.write(args.deposit_spk_hash);
         w.write(args.lane_key.as_slice());
     }
 }
@@ -69,6 +76,8 @@ pub struct StateTransitionArgs<'a> {
     pub batch_image_id: &'a [u8; 32],
     /// See [`StateTransition::permission_spk_hash`].
     pub permission_spk_hash: &'a [u8; 32],
+    /// See [`StateTransition::deposit_spk_hash`].
+    pub deposit_spk_hash: &'a [u8; 32],
     /// See [`StateTransition::lane_key`].
     pub lane_key: &'a Hash,
 }
@@ -92,10 +101,68 @@ mod tests {
                 tx_image_id: &[0u8; 32],
                 batch_image_id: &[0u8; 32],
                 permission_spk_hash: &[0u8; 32],
+                deposit_spk_hash: &[0u8; 32],
                 lane_key: &Hash::default(),
             },
         );
         assert_eq!(buf.len(), StateTransition::WIRE_SIZE);
-        assert_eq!(StateTransition::WIRE_SIZE, 320);
+        assert_eq!(StateTransition::WIRE_SIZE, 352);
+    }
+
+    /// The 352-byte preimage byte order the on-chain settlement redeem script assembles
+    /// (`build_and_hash_journal`) must equal this `encode` field-for-field; the redeem SHA-256
+    /// would otherwise never reproduce the proof's committed journal hash. Pin every 32-byte field
+    /// to its absolute offset with distinct sentinels, with explicit focus on the
+    /// `deposit_spk_hash` slot landing between `permission_spk_hash` and the trailing `lane_key`
+    /// (the field order Unit 2/3 introduced).
+    #[test]
+    fn encode_field_offsets_match_redeem_preimage_order() {
+        let prev_state = [0x01u8; 32];
+        let prev_lane_tip = Hash::from_bytes([0x02u8; 32]);
+        let new_state = [0x03u8; 32];
+        let new_lane_tip = Hash::from_bytes([0x04u8; 32]);
+        let new_seq_commit = Hash::from_bytes([0x05u8; 32]);
+        let covenant_id = [0x06u8; 32];
+        let tx_image_id = [0x07u8; 32];
+        let batch_image_id = [0x08u8; 32];
+        let permission_spk_hash = [0x09u8; 32];
+        let deposit_spk_hash = [0x0au8; 32];
+        let lane_key = Hash::from_bytes([0x0bu8; 32]);
+
+        let mut buf = Vec::new();
+        StateTransition::encode(
+            &mut buf,
+            StateTransitionArgs {
+                prev_state: &prev_state,
+                prev_lane_tip: &prev_lane_tip,
+                new_state: &new_state,
+                new_lane_tip: &new_lane_tip,
+                new_seq_commit: &new_seq_commit,
+                covenant_id: &covenant_id,
+                tx_image_id: &tx_image_id,
+                batch_image_id: &batch_image_id,
+                permission_spk_hash: &permission_spk_hash,
+                deposit_spk_hash: &deposit_spk_hash,
+                lane_key: &lane_key,
+            },
+        );
+        assert_eq!(buf.len(), 352);
+
+        // The exact append order `script.rs::build_and_hash_journal` emits.
+        assert_eq!(&buf[0..32], &prev_state);
+        assert_eq!(&buf[32..64], prev_lane_tip.as_bytes());
+        assert_eq!(&buf[64..96], &new_state);
+        assert_eq!(&buf[96..128], new_lane_tip.as_bytes());
+        assert_eq!(&buf[128..160], new_seq_commit.as_bytes());
+        assert_eq!(&buf[160..192], &covenant_id);
+        assert_eq!(&buf[192..224], &tx_image_id);
+        assert_eq!(&buf[224..256], &batch_image_id);
+        assert_eq!(&buf[256..288], &permission_spk_hash, "permission_spk_hash at 256..288");
+        assert_eq!(
+            &buf[288..320],
+            &deposit_spk_hash,
+            "deposit_spk_hash must sit between permission_spk_hash and lane_key (288..320)",
+        );
+        assert_eq!(&buf[320..352], lane_key.as_bytes(), "lane_key stays last (320..352)");
     }
 }

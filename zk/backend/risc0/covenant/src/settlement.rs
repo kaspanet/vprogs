@@ -9,9 +9,11 @@
 //! `new_seq_commit`, and the advanced `(new_state, new_lane_tip)` pair the covenant script
 //! reconstructs into the next redeem prefix.
 //!
-//! The ZK receipt supplied here must have committed the 256-byte settlement journal defined
-//! by `StateTransition` in [`vprogs_zk_abi::batch_processor`] (the final 32 bytes being
-//! `permission_spk_hash`); this builder does not recompute or verify it.
+//! The ZK receipt supplied here must have committed the settlement journal defined by
+//! `StateTransition` in [`vprogs_zk_abi::batch_aggregator`] (with `permission_spk_hash` and
+//! `deposit_spk_hash` adjacent, before the trailing `lane_key`); this builder does not recompute
+//! or verify it, but it threads the witnessed `deposit_spk_hash` into the sig_script so the redeem
+//! script can bind it.
 
 mod settlement_dev_input;
 mod settlement_input;
@@ -88,15 +90,17 @@ impl Settlement {
                 input.new_lane_tip,
                 w,
             ),
-            (RedeemPins::Groth16(_), SettlementWitness::Groth16 { compressed_proof }) => {
-                sig_script_groth16(
-                    &prev_redeem,
-                    input.block_prove_to,
-                    input.new_state,
-                    input.new_lane_tip,
-                    compressed_proof,
-                )
-            }
+            (
+                RedeemPins::Groth16(_),
+                SettlementWitness::Groth16 { compressed_proof, deposit_spk_hash },
+            ) => sig_script_groth16(
+                &prev_redeem,
+                input.block_prove_to,
+                input.new_state,
+                input.new_lane_tip,
+                compressed_proof,
+                deposit_spk_hash,
+            ),
             _ => panic!(
                 "SettlementInput::witness variant does not match pins variant; the host wired up \
                  a Succinct witness for a Groth16 covenant (or vice versa)",
@@ -354,16 +358,19 @@ fn sig_script_dev(
 /// the R0Succinct proof system.
 ///
 /// Push order (bottom to top):
-/// `[claim, control_index, control_digests, seal, new_lane_tip, new_state, block_prove_to,
-///   redeem]`.
+/// `[claim, control_index, control_digests, seal, deposit_spk_hash, new_lane_tip, new_state,
+///   block_prove_to, redeem]`.
 ///
 /// After the P2SH check pops `redeem`, the redeem prefix pushes `prev_lane_tip` /
 /// `prev_state`, the script stashes them to alt, then consumes `block_prove_to` via
 /// `OpChainblockSeqCommit` (so `block_prove_to` must be the top-of-stack item once
 /// `prev_*` are stashed away). It then stashes `new_state` / `new_lane_tip` /
-/// `new_seq_commit` for the journal, builds the journal hash, pushes the script-embedded
-/// `image_id` / `control_id` / `hashfn` constants, and finishes with `OpZkPrecompile`
-/// consuming the 8 items in the R0Succinct pop order.
+/// `new_seq_commit` for the journal and builds the journal hash. `deposit_spk_hash` is pushed
+/// between the proof blob and `new_lane_tip` so that, once those `new_*` values have been peeled
+/// off, it sits on top of the proof blob (directly under the journal preimage the builder
+/// assembles), where `verify_and_append_deposit_hash` consumes it (binding + cat) at the 288→320B
+/// point. The journal hash then leaves `[claim, control_index, control_digests, seal,
+/// journal_hash]`, and `OpZkPrecompile` consumes those 8 items in the R0Succinct pop order.
 fn sig_script_succinct(
     redeem: &[u8],
     block_prove_to: Hash,
@@ -384,6 +391,8 @@ fn sig_script_succinct(
         .unwrap()
         .add_data(witness.seal)
         .unwrap()
+        .add_data(witness.deposit_spk_hash)
+        .unwrap()
         .add_data(new_lane_tip.as_slice())
         .unwrap()
         .add_data(new_state)
@@ -399,21 +408,27 @@ fn sig_script_succinct(
 /// the Groth16 proof system.
 ///
 /// Push order (bottom to top):
-/// `[compressed_proof, new_lane_tip, new_state, block_prove_to, redeem]`.
+/// `[compressed_proof, deposit_spk_hash, new_lane_tip, new_state, block_prove_to, redeem]`.
 ///
 /// The Groth16 verifier does not need a seal/claim/control inclusion proof on the stack;
 /// only the compressed proof. Everything else (receipt-claim hash, public inputs, verifying
 /// key, control-root halves) is reconstructed in-script from build-time constants and the
-/// journal hash. See `script::verify_risc0_groth16`.
+/// journal hash. `deposit_spk_hash` is positioned between the proof and `new_lane_tip` for the
+/// same reason as the succinct path: it lands under the journal preimage where
+/// `verify_and_append_deposit_hash` binds and cats it, leaving `[compressed_proof, journal_hash]`
+/// for `script::verify_risc0_groth16`.
 fn sig_script_groth16(
     redeem: &[u8],
     block_prove_to: Hash,
     new_state: &[u8; 32],
     new_lane_tip: &Hash,
     compressed_proof: &[u8],
+    deposit_spk_hash: &[u8; 32],
 ) -> Vec<u8> {
     ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
         .add_data(compressed_proof)
+        .unwrap()
+        .add_data(deposit_spk_hash)
         .unwrap()
         .add_data(new_lane_tip.as_slice())
         .unwrap()
@@ -468,11 +483,12 @@ mod tests {
             claim: &[0u8; 32],
             control_index: 0,
             control_digests: &[0u8; 0],
+            deposit_spk_hash: &[0u8; 32],
         })
     }
 
     fn groth16_witness() -> SettlementWitness<'static> {
-        SettlementWitness::Groth16 { compressed_proof: &[0u8; 8] }
+        SettlementWitness::Groth16 { compressed_proof: &[0u8; 8], deposit_spk_hash: &[0u8; 32] }
     }
 
     const PREV_STATE: [u8; 32] = [0x11; 32];
@@ -939,5 +955,190 @@ mod engine_value_spend_tests {
         let value = 10 * DEFAULT_PERMISSION_OUTPUT_VALUE;
         run_engine(&settlement.transaction, &settlement.prev_redeem, value, &accessor())
             .expect("baseline honest two-output tx must verify");
+    }
+}
+
+/// Engine-level proof of the on-chain deposit-address binding (the tier-4 half of the
+/// `deposit_spk_hash` mechanism). Drives a PRODUCTION-redeem covenant input-0 spend through the
+/// real Kaspa `TxScriptEngine` and calls `execute()` unconditionally.
+///
+/// The deposit `OpEqualVerify` (in `script::verify_and_append_deposit_hash`, gated on a non-zero
+/// witnessed hash) fires *before* the terminal `OpZkPrecompile`, so its behaviour is observable
+/// with a stub seal in dev mode without a real proof:
+/// - a non-zero hash that does NOT equal `blake2b(PREFIX || covenant_id || SUFFIX)` fails with
+///   `VerifyError` at that `OpEqualVerify`;
+/// - a non-zero hash that DOES equal it, and the `[0; 32]` sentinel (which skips the reconstruction
+///   entirely), both pass the deposit check and only fail later at the precompile (the stub seal
+///   can never satisfy `OpZkPrecompile`) - a DIFFERENT, non-`VerifyError` failure.
+///
+/// Distinguishing `VerifyError` (deposit mismatch) from the precompile failure is what makes these
+/// non-vacuous: every case returns `Err`, but only the mismatch returns `Err` *because of the
+/// deposit binding*. The full prove/verify happy path (a real seal that satisfies the precompile)
+/// is CUDA-gated and covered by `test-suite/tests/settlement_e2e.rs`.
+#[cfg(test)]
+mod engine_deposit_binding_tests {
+    use std::collections::HashMap;
+
+    use kaspa_consensus_core::tx::TransactionOutpoint;
+
+    use super::*;
+    use crate::script::{CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, RedeemPins, SuccinctPins};
+
+    /// `block_prove_to -> seq_commit` accessor. The production redeem only needs
+    /// `OpChainblockSeqCommit` to *resolve* (the value is checked against the journal at the
+    /// precompile, which the stub seal never reaches), so any mapped value lets the script run up
+    /// to the deposit `OpEqualVerify`.
+    struct MockSeqCommitAccessor(HashMap<Hash, Hash>);
+
+    impl SeqCommitAccessor for MockSeqCommitAccessor {
+        fn is_chain_ancestor_from_pov(&self, block_hash: Hash) -> Option<bool> {
+            self.0.contains_key(&block_hash).then_some(true)
+        }
+        fn seq_commitment_within_depth(&self, block_hash: Hash) -> Option<Hash> {
+            self.0.get(&block_hash).copied()
+        }
+    }
+
+    const COVENANT_ID: Hash = Hash::from_bytes([0xAA; 32]);
+    /// A different covenant id whose delegate-entry address must NOT satisfy the binding for a
+    /// spend of `COVENANT_ID`.
+    const OTHER_COVENANT_ID: Hash = Hash::from_bytes([0xBC; 32]);
+    const PREV_STATE: [u8; 32] = [0x11; 32];
+    const PREV_LANE_TIP: Hash = Hash::from_bytes([0x22; 32]);
+    const NEW_STATE: [u8; 32] = [0x33; 32];
+    const NEW_LANE_TIP: Hash = Hash::from_bytes([0x44; 32]);
+    const LANE_KEY: Hash = Hash::from_bytes([0xEE; 32]);
+    const BLOCK_PROVE_TO: Hash = Hash::from_bytes([0x55; 32]);
+    const SEQ_COMMIT: Hash = Hash::from_bytes([0x99; 32]);
+    const COVENANT_VALUE: u64 = 100_000_000;
+
+    /// `delegate_entry_spk_hash(covenant_id)` = `blake2b(PREFIX || covenant_id || SUFFIX)`,
+    /// computed via the same kaspa blake2b `pay_to_script_hash_script` uses (so it matches the
+    /// on-chain `OpBlake2b` reconstruction byte-for-byte). The PREFIX/SUFFIX come from the shared
+    /// abi constants the script reconstructs with.
+    fn delegate_entry_spk_hash(covenant_id: &Hash) -> [u8; 32] {
+        use vprogs_zk_abi::{DELEGATE_SCRIPT_PREFIX, DELEGATE_SCRIPT_SUFFIX};
+        let mut redeem = Vec::with_capacity(53);
+        redeem.extend_from_slice(&DELEGATE_SCRIPT_PREFIX);
+        redeem.extend_from_slice(&covenant_id.as_bytes());
+        redeem.extend_from_slice(&DELEGATE_SCRIPT_SUFFIX);
+        let spk = pay_to_script_hash_script(&redeem);
+        // P2SH SPK script bytes: OpBlake2b | OpData32 | hash(32) | OpEqual; hash is [2..34].
+        spk.script()[2..34].try_into().expect("32-byte P2SH hash")
+    }
+
+    fn succinct_pins() -> RedeemPins<'static> {
+        RedeemPins::Succinct(SuccinctPins {
+            common: CommonPins {
+                program_id: &[0xBB; 32],
+                tx_image_id: &[0xCC; 32],
+                batch_image_id: &[0xDD; 32],
+                lane_key: &LANE_KEY,
+                permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
+            },
+        })
+    }
+
+    /// Builds a production (succinct) no-exit settlement spending `COVENANT_ID`, with a stub seal
+    /// and the supplied witnessed `deposit_spk_hash`.
+    fn production_settlement(deposit_spk_hash: &[u8; 32]) -> Settlement {
+        Settlement::build(&SettlementInput {
+            covenant_id: COVENANT_ID,
+            pins: succinct_pins(),
+            prev_state: &PREV_STATE,
+            prev_lane_tip: &PREV_LANE_TIP,
+            new_state: &NEW_STATE,
+            new_lane_tip: &NEW_LANE_TIP,
+            block_prove_to: BLOCK_PROVE_TO,
+            prev_outpoint: TransactionOutpoint::new(Hash::from_bytes([0x66; 32]), 0),
+            value: COVENANT_VALUE,
+            witness: SettlementWitness::Succinct(SuccinctWitness {
+                seal: &[0u8; 8],
+                claim: &[0u8; 32],
+                control_index: 0,
+                control_digests: &[],
+                deposit_spk_hash,
+            }),
+            permission_spk_hash: &[0u8; 32],
+        })
+    }
+
+    /// Runs input 0 of `settlement` through the engine against a covenant UTXO reconstructed from
+    /// `prev_redeem`, returning the `execute()` result with the error rendered to its `Debug`
+    /// string (`VerifyError` is what a failed `OpEqualVerify` produces).
+    fn run(settlement: &Settlement) -> Result<(), String> {
+        let tx = &settlement.transaction;
+        let utxo_value: u64 = tx.outputs.iter().map(|o| o.value).sum();
+        let utxo = UtxoEntry::new(
+            utxo_value,
+            pay_to_script_hash_script(&settlement.prev_redeem),
+            0,
+            false,
+            Some(COVENANT_ID),
+        );
+        let sig_cache = Cache::new(1);
+        let reused = SigHashReusedValuesUnsync::new();
+        let flags = EngineFlags { covenants_enabled: true, ..Default::default() };
+        let populated = PopulatedTransaction::new(tx, vec![utxo.clone()]);
+        let cov_ctx =
+            CovenantsContext::from_tx(&populated).expect("covenant continuity validation");
+        let accessor = MockSeqCommitAccessor(HashMap::from([(BLOCK_PROVE_TO, SEQ_COMMIT)]));
+        let exec_ctx = EngineContext::new(&sig_cache)
+            .with_reused(&reused)
+            .with_seq_commit_accessor(&accessor)
+            .with_covenants_ctx(&cov_ctx);
+        let mut vm = TxScriptEngine::from_transaction_input(
+            &populated,
+            &tx.inputs[0],
+            0,
+            &utxo,
+            exec_ctx,
+            flags,
+        );
+        vm.execute().map_err(|e| format!("{e:?}"))
+    }
+
+    /// A non-zero `deposit_spk_hash` that does not equal the covenant's delegate-entry address must
+    /// fail at the deposit `OpEqualVerify` (`VerifyError`), before the precompile is ever reached.
+    #[test]
+    fn mismatched_deposit_hash_fails_at_equalverify() {
+        let wrong = delegate_entry_spk_hash(&OTHER_COVENANT_ID);
+        assert_ne!(wrong, delegate_entry_spk_hash(&COVENANT_ID), "fixtures must differ");
+        let settlement = production_settlement(&wrong);
+        let err = run(&settlement).expect_err("mismatched deposit hash must be rejected");
+        assert!(
+            err.contains("VerifyError"),
+            "mismatch must fail at the deposit OpEqualVerify (VerifyError), got: {err}",
+        );
+    }
+
+    /// A non-zero `deposit_spk_hash` that DOES equal the covenant's delegate-entry address passes
+    /// the deposit binding; the spend then fails only at the terminal `OpZkPrecompile` (the stub
+    /// seal can't satisfy it), which is NOT a `VerifyError`. Proves a correct hash does not trip
+    /// the deposit `OpEqualVerify`.
+    #[test]
+    fn matching_deposit_hash_passes_binding_then_fails_at_precompile() {
+        let correct = delegate_entry_spk_hash(&COVENANT_ID);
+        let settlement = production_settlement(&correct);
+        let err = run(&settlement).expect_err("stub seal can never satisfy the precompile");
+        assert!(
+            !err.contains("VerifyError"),
+            "a matching deposit hash must pass the OpEqualVerify and fail later at the \
+             precompile, not with VerifyError; got: {err}",
+        );
+    }
+
+    /// The `[0; 32]` sentinel (no deposit this bundle) skips the reconstruction entirely, so the
+    /// deposit `OpEqualVerify` never runs; the spend proceeds past it and fails only at the
+    /// precompile (not a `VerifyError`). Proves the zero-gate short-circuits the binding.
+    #[test]
+    fn zero_sentinel_skips_reconstruction() {
+        let settlement = production_settlement(&[0u8; 32]);
+        let err = run(&settlement).expect_err("stub seal can never satisfy the precompile");
+        assert!(
+            !err.contains("VerifyError"),
+            "the zero sentinel must skip the deposit binding (no OpEqualVerify) and fail later at \
+             the precompile, not with VerifyError; got: {err}",
+        );
     }
 }

@@ -7,8 +7,6 @@
 //! The `lock_tag` is the same byte every variant declares as `Lock::TAG`; the
 //! body bytes are what `Lock::encode` writes (tag-less).
 
-#[cfg(feature = "experimental-image-lock")]
-use crate::lock_variants::PreimageLockView;
 use crate::{
     lock::LockEnum,
     lock_trait::Lock,
@@ -55,13 +53,6 @@ pub fn validate_lock_body(tag: u8, body: &[u8]) -> Result<(), &'static str> {
             }
             Ok(())
         }
-        #[cfg(feature = "experimental-image-lock")]
-        PreimageLockView::TAG => {
-            if body.len() != 64 {
-                return Err("lock.preimage: body must be 64 bytes (image_id || data_image)");
-            }
-            Ok(())
-        }
         _ => Err("lock: unknown tag"),
     }
 }
@@ -80,14 +71,6 @@ pub fn decode_lock_body<'a>(tag: u8, body: &'a [u8]) -> Result<LockEnum<'a>, &'s
             Ok(LockEnum::Multisig(MultisigLockView { threshold, pubkeys }))
         }
         UnlockedLockView::TAG => Ok(LockEnum::Unlocked(UnlockedLockView)),
-        #[cfg(feature = "experimental-image-lock")]
-        PreimageLockView::TAG => {
-            let image_id: &[u8; 32] =
-                body[..32].try_into().map_err(|_| "lock.preimage: image_id slice")?;
-            let data_image: &[u8; 32] =
-                body[32..].try_into().map_err(|_| "lock.preimage: data_image slice")?;
-            Ok(LockEnum::Preimage(PreimageLockView { image_id, data_image }))
-        }
         _ => Err("lock: unknown tag"),
     }
 }

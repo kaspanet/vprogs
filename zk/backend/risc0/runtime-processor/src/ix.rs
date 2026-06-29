@@ -32,6 +32,7 @@
 use alloc::vec::Vec;
 
 use vprogs_core_codec::{Error, Reader, Result as CodecResult};
+use vprogs_zk_abi::withdrawal::StandardSpk;
 
 use crate::{
     lock::{LockEnum, decode_lock},
@@ -43,9 +44,11 @@ pub const ACTION_TAG_UPDATE: u8 = 0x01;
 /// Action variant: bootstrap (create) the singleton config resource. Gated by
 /// the hardcoded genesis pubkey at apply time.
 pub const ACTION_TAG_INIT: u8 = 0x02;
-/// Action variant: bootstrap (create) a user resource at its derived address.
-/// The resource id must equal `derive_user_resource(initial_lock.id_hash())`,
-/// and the same `initial_lock` must be satisfied by the auth context.
+/// Action variant: open an empty user resource at its derived address. The
+/// resource id must equal `derive_user_resource(initial_lock.id_hash())` and
+/// `initial_balance` must be zero — creation carries no value (balance enters
+/// only via Deposit/Transfer). Permissionless and auth-free, like deposit-driven
+/// creation.
 pub const ACTION_TAG_USER_INIT: u8 = 0x03;
 /// Action variant: move balance between two user resources. Auth is checked
 /// against the source's current lock; destination is not authed.
@@ -53,6 +56,13 @@ pub const ACTION_TAG_TRANSFER: u8 = 0x04;
 /// Action variant: rotate the lock on a user resource. The current lock must
 /// authorize the rotation; `initial_lock_hash` is preserved.
 pub const ACTION_TAG_UPDATE_USER_LOCK: u8 = 0x05;
+/// Action variant: credit a user from an L1 deposit output. The funding output
+/// at `output_idx` of this tx must pay `DepositPolicy::deposit_spk(..)`; the
+/// credited amount is that output's `value`.
+pub const ACTION_TAG_DEPOSIT: u8 = 0x06;
+/// Action variant: debit a user and emit an L2-to-L1 exit to `dest`. Authorized by the user's
+/// current lock; enforces `config.min_withdrawal_amount`.
+pub const ACTION_TAG_WITHDRAW: u8 = 0x07;
 
 /// Read view over a single action entry.
 pub struct ActionView<'a> {
@@ -65,12 +75,19 @@ pub enum ActionBody<'a> {
         /// Index into the resource list of the config resource being updated.
         updater_idx: u8,
         new_min_withdrawal_amount: u64,
+        /// Carried for wire-shape symmetry with `Init`. `apply_update` rejects
+        /// any change here: covenant_id is immutable after `Init`.
+        new_covenant_id: [u8; 32],
         new_lock: LockEnum<'a>,
     },
     Init {
         /// Index into the resource list of the config resource being created.
         updater_idx: u8,
         new_min_withdrawal_amount: u64,
+        /// The covenant a deposit's funding output must pay (as P2SH of its
+        /// delegate-entry script). Written into config state once at `Init`;
+        /// immutable thereafter.
+        new_covenant_id: [u8; 32],
         new_lock: LockEnum<'a>,
     },
     UserInit {
@@ -88,13 +105,33 @@ pub enum ActionBody<'a> {
         user_idx: u8,
         new_lock: LockEnum<'a>,
     },
+    Deposit {
+        /// Resource-list index of the user resource credited (and possibly created).
+        user_idx: u8,
+        /// Index into the current tx's output list of the funding output whose
+        /// `value` is credited and whose SPK must match the deposit policy.
+        output_idx: u32,
+        /// The user's initial lock. Its `id_hash()` derives the user address;
+        /// on a CREATE it becomes the new user's lock, on a credit it must
+        /// match the existing `initial_lock_hash` (address binding).
+        initial_lock: LockEnum<'a>,
+    },
+    Withdraw {
+        /// Resource-list index of the user being debited.
+        user_idx: u8,
+        /// Amount to withdraw; debited from the user and emitted as the exit value.
+        amount: u64,
+        /// Typed L1 destination for the emitted exit. Length-by-tag prevents the byte-length
+        /// foot-gun of a raw script slice.
+        dest: StandardSpk<'a>,
+    },
 }
 
 /// Decoded `ix_data`.
 pub struct DecodedIx<'a> {
     /// Parsed signers paired with their `resource_idx`. Sorted non-strict by
     /// `resource_idx`. Within a resource, order is unconstrained.
-    pub signers: Vec<(u8, SignerEnum<'a>)>,
+    pub signers: Vec<(u8, SignerEnum)>,
     pub actions: Vec<ActionView<'a>>,
     /// Byte offset within `ix_data` (NOT `payload.bytes`) where the actions
     /// section ends. The runtime adds the access-metadata-prefix length to
@@ -139,14 +176,16 @@ fn decode_action<'a>(buf: &mut &'a [u8], n_resources: usize) -> CodecResult<Acti
             let updater_idx = read_resource_idx(buf, "action.update.updater_idx", n_resources)?;
             let new_min_withdrawal_amount =
                 buf.le_u64("action.update.new_min_withdrawal_amount")?;
+            let new_covenant_id = *buf.array::<32>("action.update.new_covenant_id")?;
             let new_lock = decode_lock(buf)?;
-            ActionBody::Update { updater_idx, new_min_withdrawal_amount, new_lock }
+            ActionBody::Update { updater_idx, new_min_withdrawal_amount, new_covenant_id, new_lock }
         }
         ACTION_TAG_INIT => {
             let updater_idx = read_resource_idx(buf, "action.init.updater_idx", n_resources)?;
             let new_min_withdrawal_amount = buf.le_u64("action.init.new_min_withdrawal_amount")?;
+            let new_covenant_id = *buf.array::<32>("action.init.new_covenant_id")?;
             let new_lock = decode_lock(buf)?;
-            ActionBody::Init { updater_idx, new_min_withdrawal_amount, new_lock }
+            ActionBody::Init { updater_idx, new_min_withdrawal_amount, new_covenant_id, new_lock }
         }
         ACTION_TAG_USER_INIT => {
             let user_idx = read_resource_idx(buf, "action.user_init.user_idx", n_resources)?;
@@ -165,6 +204,21 @@ fn decode_action<'a>(buf: &mut &'a [u8], n_resources: usize) -> CodecResult<Acti
             let new_lock = decode_lock(buf)?;
             ActionBody::UpdateUserLock { user_idx, new_lock }
         }
+        ACTION_TAG_DEPOSIT => {
+            let user_idx = read_resource_idx(buf, "action.deposit.user_idx", n_resources)?;
+            let output_idx = buf.le_u32("action.deposit.output_idx")?;
+            let initial_lock = decode_lock(buf)?;
+            ActionBody::Deposit { user_idx, output_idx, initial_lock }
+        }
+        ACTION_TAG_WITHDRAW => {
+            let user_idx = read_resource_idx(buf, "action.withdraw.user_idx", n_resources)?;
+            let amount = buf.le_u64("action.withdraw.amount")?;
+            // StandardSpk::decode returns vprogs_zk_abi::Result; map into
+            // the CodecResult this function returns.
+            let dest = StandardSpk::decode(buf)
+                .map_err(|_| Error::Decode("action.withdraw: bad dest spk"))?;
+            ActionBody::Withdraw { user_idx, amount, dest }
+        }
         _ => return Err(Error::Decode("action: unknown tag")),
     };
     Ok(ActionView { action_tag, body })
@@ -173,7 +227,7 @@ fn decode_action<'a>(buf: &mut &'a [u8], n_resources: usize) -> CodecResult<Acti
 fn read_resource_idx(buf: &mut &[u8], field: &'static str, n_resources: usize) -> CodecResult<u8> {
     let idx = buf.byte(field)?;
     if (idx as usize) >= n_resources {
-        return Err(Error::Decode("action: updater_idx out of range"));
+        return Err(Error::Decode(field));
     }
     Ok(idx)
 }
@@ -255,12 +309,14 @@ mod tests {
         assert!(decode_ix(&ix, 0).is_err());
     }
 
-    /// Builds an `Update` action body: `updater_idx u8 || new_min u64 || schnorr_lock(pk)`.
+    /// Builds an `Update` action body:
+    /// `updater_idx u8 || new_min u64 || covenant_id[32] || schnorr_lock(pk)`.
     fn update_action(updater_idx: u8, new_min: u64, pk: [u8; 32]) -> Vec<u8> {
         let mut body = Vec::new();
         body.push(ACTION_TAG_UPDATE);
         body.push(updater_idx);
         body.extend_from_slice(&new_min.to_le_bytes());
+        body.extend_from_slice(&[0xD7u8; 32]); // covenant_id
         body.push(SchnorrLockView::TAG);
         body.extend_from_slice(&pk);
         body
@@ -277,9 +333,15 @@ mod tests {
         assert!(decoded.signers.is_empty());
         assert_eq!(decoded.actions.len(), 1);
         match &decoded.actions[0].body {
-            ActionBody::Update { updater_idx, new_min_withdrawal_amount, new_lock } => {
+            ActionBody::Update {
+                updater_idx,
+                new_min_withdrawal_amount,
+                new_covenant_id,
+                new_lock,
+            } => {
                 assert_eq!(*updater_idx, 0);
                 assert_eq!(*new_min_withdrawal_amount, 12345);
+                assert_eq!(new_covenant_id, &[0xD7u8; 32]);
                 assert_eq!(new_lock.tag(), SchnorrLockView::TAG);
             }
             _ => panic!("expected Update"),
@@ -493,5 +555,147 @@ mod tests {
             }
             _ => panic!("expected UpdateUserLock"),
         }
+    }
+
+    // Deposit action helpers + tests
+
+    /// Builds a Deposit action: `tag | user_idx | output_idx(4 LE) | schnorr_lock(pk)`.
+    fn deposit_action(user_idx: u8, output_idx: u32, pk: [u8; 32]) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.push(ACTION_TAG_DEPOSIT);
+        body.push(user_idx);
+        body.extend_from_slice(&output_idx.to_le_bytes());
+        body.push(SchnorrLockView::TAG);
+        body.extend_from_slice(&pk);
+        body
+    }
+
+    /// Builds a Withdraw action: `tag | user_idx | amount(8 LE) | spk_tag | spk_payload`.
+    fn withdraw_action_pubkey(user_idx: u8, amount: u64, pk: [u8; 32]) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.push(ACTION_TAG_WITHDRAW);
+        body.push(user_idx);
+        body.extend_from_slice(&amount.to_le_bytes());
+        body.push(0x00); // StandardSpk::PubKey tag
+        body.extend_from_slice(&pk);
+        body
+    }
+
+    fn withdraw_action_pubkey_ecdsa(user_idx: u8, amount: u64, pk: [u8; 33]) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.push(ACTION_TAG_WITHDRAW);
+        body.push(user_idx);
+        body.extend_from_slice(&amount.to_le_bytes());
+        body.push(0x01); // StandardSpk::PubKeyEcdsa tag
+        body.extend_from_slice(&pk);
+        body
+    }
+
+    fn withdraw_action_script_hash(user_idx: u8, amount: u64, hash: [u8; 32]) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.push(ACTION_TAG_WITHDRAW);
+        body.push(user_idx);
+        body.extend_from_slice(&amount.to_le_bytes());
+        body.push(0x08); // StandardSpk::ScriptHash tag
+        body.extend_from_slice(&hash);
+        body
+    }
+
+    #[test]
+    fn decode_deposit_action() {
+        let pk = [0xDDu8; 32];
+        let mut ix = 0u32.to_le_bytes().to_vec();
+        ix.extend_from_slice(&1u32.to_le_bytes());
+        ix.extend_from_slice(&deposit_action(0, 3, pk));
+
+        let decoded = decode_ix(&ix, 1).unwrap();
+        match &decoded.actions[0].body {
+            ActionBody::Deposit { user_idx, output_idx, initial_lock } => {
+                assert_eq!(*user_idx, 0);
+                assert_eq!(*output_idx, 3);
+                assert_eq!(initial_lock.tag(), SchnorrLockView::TAG);
+            }
+            _ => panic!("expected Deposit"),
+        }
+    }
+
+    #[test]
+    fn decode_withdraw_action_pubkey() {
+        let pk = [0xAAu8; 32];
+        let mut ix = 0u32.to_le_bytes().to_vec();
+        ix.extend_from_slice(&1u32.to_le_bytes());
+        ix.extend_from_slice(&withdraw_action_pubkey(0, 1_000, pk));
+
+        let decoded = decode_ix(&ix, 1).unwrap();
+        match &decoded.actions[0].body {
+            ActionBody::Withdraw { user_idx, amount, dest } => {
+                assert_eq!(*user_idx, 0);
+                assert_eq!(*amount, 1_000);
+                use vprogs_zk_abi::withdrawal::StandardSpk;
+                assert_eq!(*dest, StandardSpk::PubKey(&pk));
+            }
+            _ => panic!("expected Withdraw"),
+        }
+    }
+
+    #[test]
+    fn decode_withdraw_action_pubkey_ecdsa() {
+        let pk = [0xBBu8; 33];
+        let mut ix = 0u32.to_le_bytes().to_vec();
+        ix.extend_from_slice(&1u32.to_le_bytes());
+        ix.extend_from_slice(&withdraw_action_pubkey_ecdsa(0, 500, pk));
+
+        let decoded = decode_ix(&ix, 1).unwrap();
+        match &decoded.actions[0].body {
+            ActionBody::Withdraw { dest, .. } => {
+                use vprogs_zk_abi::withdrawal::StandardSpk;
+                assert_eq!(*dest, StandardSpk::PubKeyEcdsa(&pk));
+            }
+            _ => panic!("expected Withdraw"),
+        }
+    }
+
+    #[test]
+    fn decode_withdraw_action_script_hash() {
+        let hash = [0xCCu8; 32];
+        let mut ix = 0u32.to_le_bytes().to_vec();
+        ix.extend_from_slice(&1u32.to_le_bytes());
+        ix.extend_from_slice(&withdraw_action_script_hash(0, 9_999, hash));
+
+        let decoded = decode_ix(&ix, 1).unwrap();
+        match &decoded.actions[0].body {
+            ActionBody::Withdraw { dest, amount, .. } => {
+                use vprogs_zk_abi::withdrawal::StandardSpk;
+                assert_eq!(*dest, StandardSpk::ScriptHash(&hash));
+                assert_eq!(*amount, 9_999);
+            }
+            _ => panic!("expected Withdraw"),
+        }
+    }
+
+    #[test]
+    fn decode_deposit_rejects_out_of_range_user_idx() {
+        // n_resources = 1, so user_idx = 1 is out of range.
+        let mut ix = 0u32.to_le_bytes().to_vec();
+        ix.extend_from_slice(&1u32.to_le_bytes());
+        ix.extend_from_slice(&deposit_action(1, 0, [0xAAu8; 32]));
+
+        assert!(decode_ix(&ix, 1).is_err());
+    }
+
+    #[test]
+    fn decode_withdraw_rejects_bad_dest_tag() {
+        // 0xFF is not a valid StandardSpk tag.
+        let mut ix = 0u32.to_le_bytes().to_vec();
+        ix.extend_from_slice(&1u32.to_le_bytes());
+        let mut body = Vec::new();
+        body.push(ACTION_TAG_WITHDRAW);
+        body.push(0u8); // user_idx
+        body.extend_from_slice(&500u64.to_le_bytes());
+        body.push(0xFF); // bad tag
+        body.extend_from_slice(&[0u8; 32]);
+        ix.extend_from_slice(&body);
+
+        assert!(decode_ix(&ix, 1).is_err());
     }
 }

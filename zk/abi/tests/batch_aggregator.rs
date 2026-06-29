@@ -45,7 +45,7 @@ impl ExitAccumulator for RecordedExits {
     }
 }
 
-/// Encodes a single [`BatchTransition`] journal with no exits.
+/// Encodes a single [`BatchTransition`] journal with no exits and a zero deposit hash.
 fn batch_journal(
     (prev_state, prev_lane_tip, prev_lane_blue_score): ([u8; 32], Hash, u64),
     (new_state, new_lane_tip, new_lane_blue_score): ([u8; 32], Hash, u64),
@@ -66,6 +66,7 @@ fn batch_journal(
             lane_key: &lane_key,
             covenant_id: &covenant_id,
             tx_image_id: &tx_image_id,
+            deposit_spk_hash: &[0u8; 32],
             lane_expired,
             exits,
         },

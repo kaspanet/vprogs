@@ -618,6 +618,16 @@ impl RealProofWitness {
             Self::Groth16(w) => w.as_witness(),
         }
     }
+
+    /// Threads the bundle's `deposit_spk_hash` (from the settlement journal) into the inner owned
+    /// witness. `make_witness` only sees the receipt, which does not carry this value, so the
+    /// caller sets it from the parsed journal before building.
+    fn with_deposit_spk_hash(self, deposit_spk_hash: [u8; 32]) -> Self {
+        match self {
+            Self::Succinct(w) => Self::Succinct(w.with_deposit_spk_hash(deposit_spk_hash)),
+            Self::Groth16(w) => Self::Groth16(w.with_deposit_spk_hash(deposit_spk_hash)),
+        }
+    }
 }
 
 /// Image-id pair the `build_pins` callback receives. Carries named fields so call sites
@@ -1050,7 +1060,8 @@ where
     );
 
     // === c. build production settlement with the real witness ===
-    let owned_witness = (config.make_witness)(&settlement_receipt);
+    let owned_witness =
+        (config.make_witness)(&settlement_receipt).with_deposit_spk_hash(parsed.deposit_spk_hash);
     let settlement = Settlement::build(&SettlementInput {
         covenant_id,
         pins: spend_pins,

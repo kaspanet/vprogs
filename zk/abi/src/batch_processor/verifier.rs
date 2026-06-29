@@ -28,6 +28,9 @@ pub struct Verifier<'a, V> {
     verify_tx_journal: V,
     /// Accumulates exits across the batch.
     exits: ExitSink,
+    /// Deposit-address commitment carried from the per-tx journals, or `[0u8; 32]` when no tx in
+    /// the batch credited a deposit. See [`carry_deposit_hash`].
+    deposit_spk_hash: [u8; 32],
 }
 
 impl<'a, V: FnMut(&[u8; 32], &[u8])> Verifier<'a, V> {
@@ -40,6 +43,7 @@ impl<'a, V: FnMut(&[u8; 32], &[u8])> Verifier<'a, V> {
             inputs,
             verify_tx_journal,
             exits: ExitSink::new(),
+            deposit_spk_hash: [0u8; 32],
         }
     }
 
@@ -101,6 +105,7 @@ impl<'a, V: FnMut(&[u8; 32], &[u8])> Verifier<'a, V> {
                 lane_key: self.inputs.lane_key,
                 covenant_id: self.inputs.covenant_id,
                 tx_image_id: self.inputs.tx_image_id,
+                deposit_spk_hash: &self.deposit_spk_hash,
                 lane_expired: self.inputs.batch.lane_expired,
                 exits: self.exits.as_bytes(),
             },
@@ -121,9 +126,11 @@ impl<'a, V: FnMut(&[u8; 32], &[u8])> Verifier<'a, V> {
                     // Executed txs MUST match the batch's context hash.
                     assert_eq!(exec_ctx.context_hash, context_hash, "context_hash does not match");
 
-                    // Split successful output into exit and resource iterators.
+                    // Split successful output into exit and resource iterators, carrying the per-tx
+                    // deposit hash. A failed tx commits no deposit.
                     let (output_exits, mut output_resources) = match entries.output_commitment {
-                        OutputCommitment::Success { exits, resources } => {
+                        OutputCommitment::Success { exits, deposit_spk_hash, resources } => {
+                            carry_deposit_hash(&mut self.deposit_spk_hash, deposit_spk_hash);
                             (Some(exits), Some(resources))
                         }
                         OutputCommitment::Error(_) => (None, None),
@@ -207,5 +214,22 @@ impl<'a, V: FnMut(&[u8; 32], &[u8])> Verifier<'a, V> {
         assert_eq!(&*r.resource_id, member.key, "resource_id mismatch");
 
         batch_idx
+    }
+}
+
+/// Folds a per-tx `deposit_spk_hash` into the batch carry.
+///
+/// The carry takes the first non-zero hash seen and keeps it; the zero sentinel ("no deposit")
+/// never overwrites a recorded hash. A bundle settles into one covenant, so every non-zero deposit
+/// hash in it is the same value; a second differing non-zero hash is an inconsistency the release
+/// path carries opaquely and a debug build rejects.
+fn carry_deposit_hash(carry: &mut [u8; 32], tx_hash: &[u8; 32]) {
+    if *tx_hash == [0u8; 32] {
+        return;
+    }
+    if *carry == [0u8; 32] {
+        *carry = *tx_hash;
+    } else {
+        debug_assert_eq!(carry, tx_hash, "two distinct deposit_spk_hash values in one batch");
     }
 }

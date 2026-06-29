@@ -7,17 +7,11 @@
 //! - [`PrevTxV1WitnessSigner`] (TAG=0x02) → `SchnorrUnlocker` for Schnorr locks.
 //! - [`MultisigSchnorrSigPtrSigner`] (TAG=0x03) → `MultisigUnlocker` contribution.
 //! - [`MultisigPrevTxV1WitnessSigner`] (TAG=0x04) → `MultisigUnlocker` contribution.
-//!
-//! Behind `experimental-image-lock` (off by default and unsound; see the
-//! feature comment in `Cargo.toml`):
-//! - [`ImageProofSigner`] (TAG=0x05) → `PreimageUnlocker`.
 
 use alloc::vec;
 
 use vprogs_core_codec::{Error, Reader, Result as CodecResult};
 
-#[cfg(feature = "experimental-image-lock")]
-use crate::auth_context::PreimageUnlocker;
 use crate::{
     auth::{recover_prev_tx_v1_p2pk_pubkey, verify_k256_schnorr_sig},
     auth_context::{MultisigUnlocker, SchnorrUnlocker},
@@ -187,50 +181,6 @@ impl<'a> Signer<'a> for MultisigPrevTxV1WitnessSigner {
             ctx,
         )?;
         Ok(MultisigUnlocker { pubkeys: vec![pubkey] })
-    }
-}
-
-// Preimage signer
-
-/// Discharges a `PreimageLockView`'s assumption via in-guest receipt
-/// verification. Empty wire body; both `image_id` and `data_image` are read
-/// from the lock at `resource_idx`.
-///
-/// **Gated behind `experimental-image-lock` and currently unsound.** The
-/// `resolve` impl below MUST NOT use `risc0_zkvm::guest::env::verify`: that
-/// function only declares an assumption that the host attaches a matching
-/// receipt at proving time, and the host is adversarial in our threat model
-/// the assumption can be forged. A correct implementation has to verify
-/// the inner receipt *in-guest* with a real verifier (e.g. a native groth16
-/// verifier wired into the guest's constraint system). Until that's wired
-/// up, this whole signer kind is compiled out so the default build can't
-/// inadvertently rely on it.
-#[cfg(feature = "experimental-image-lock")]
-pub struct ImageProofSigner;
-
-#[cfg(feature = "experimental-image-lock")]
-impl<'a> Signer<'a> for ImageProofSigner {
-    const TAG: u8 = 0x05;
-    type Unlocker = PreimageUnlocker;
-
-    fn decode(_buf: &mut &'a [u8]) -> CodecResult<Self> {
-        Ok(Self)
-    }
-
-    fn resolve(
-        &self,
-        _resource_idx: u8,
-        _ctx: &SignerResolveContext<'a>,
-    ) -> CodecResult<PreimageUnlocker> {
-        // TODO: real in-guest receipt verifier (e.g. native groth16) over the
-        // target resource's lock body (`image_id` / `data_image`). **Do not**
-        // call `risc0_zkvm::guest::env::verify` here; an assumption-based
-        // discharge is unsound under our adversarial-host threat model. Until
-        // a real verifier is wired up, this whole arm refuses cleanly so any
-        // tx that hits it is rejected (never panicked) in the guest.
-        Err(Error::Decode(
-            "signer.image_proof: in-guest verifier not implemented (env::verify is unsound)",
-        ))
     }
 }
 
