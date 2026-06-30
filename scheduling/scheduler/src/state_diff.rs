@@ -80,7 +80,7 @@ impl<S: Store, P: Processor<S>> StateDiff<S, P> {
     /// Records the post-execution state and submits the diff to be persisted.
     pub(crate) fn set_written_state(&self, state: Arc<StateVersion>) {
         self.written_state.store(Some(state));
-        if let Some(batch) = self.batch.upgrade() {
+        if let Some(batch) = self.batch.upgrade().filter(|batch| !batch.restored()) {
             batch.submit_write(Write::StateDiff(self.clone()));
         }
     }

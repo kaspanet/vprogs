@@ -13,6 +13,12 @@ use vprogs_storage_canonical_chain::BUCKET_CAPACITY;
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 
+/// The current global state root: the SMT root at the last committed version.
+fn state_root(scheduler: &Scheduler<RocksDbStore, Processor>) -> [u8; 32] {
+    let store = scheduler.state().storage().store();
+    store.root(StateMetadata::last_committed::<u64, _>(store.as_ref()).index())
+}
+
 #[test]
 pub fn test_scheduler() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
@@ -1548,11 +1554,6 @@ pub fn test_smt_state_root_after_commits() {
             StorageConfig::default().with_store(storage),
         );
 
-        /// Reads the current state root from metadata.
-        fn state_root(scheduler: &Scheduler<RocksDbStore, Processor>) -> [u8; 32] {
-            StateMetadata::state_root(&**scheduler.state().storage().store())
-        }
-
         // Before any batches, state root should be empty.
         assert_eq!(state_root(&scheduler), EMPTY_HASH);
 
@@ -1622,10 +1623,6 @@ pub fn test_smt_state_root_after_rollback() {
             ExecutionConfig::default().with_processor(Processor),
             StorageConfig::default().with_store(storage),
         );
-
-        fn state_root(scheduler: &Scheduler<RocksDbStore, Processor>) -> [u8; 32] {
-            StateMetadata::state_root(&**scheduler.state().storage().store())
-        }
 
         // Commit 3 batches, each touching a distinct resource.
         let batch1 = scheduler.schedule(
@@ -1702,10 +1699,6 @@ pub fn test_smt_state_root_rollback_to_zero() {
             StorageConfig::default().with_store(storage),
         );
 
-        fn state_root(scheduler: &Scheduler<RocksDbStore, Processor>) -> [u8; 32] {
-            StateMetadata::state_root(&**scheduler.state().storage().store())
-        }
-
         // Commit a batch so the root is non-empty.
         let batch1 = scheduler.schedule(
             1,
@@ -1780,12 +1773,8 @@ pub fn test_smt_multi_resource_single_batch() {
         );
         batch.wait_committed_blocking();
 
-        let store = scheduler.state().storage().store();
-        let root = StateMetadata::state_root(&**store);
+        let root = state_root(&scheduler);
         assert_ne!(root, EMPTY_HASH, "multi-resource batch should produce non-empty root");
-
-        // Tree version root should agree with metadata.
-        assert_eq!(store.root(1), root);
 
         scheduler.shutdown();
     }
@@ -1949,10 +1938,6 @@ pub fn test_smt_deterministic_roots() {
             ExecutionConfig::default().with_processor(Processor),
             StorageConfig::default().with_store(storage),
         );
-
-        fn state_root(scheduler: &Scheduler<RocksDbStore, Processor>) -> [u8; 32] {
-            StateMetadata::state_root(&**scheduler.state().storage().store())
-        }
 
         // Commit batch 1, record root.
         let batch1 = scheduler.schedule(
@@ -2428,7 +2413,7 @@ pub fn test_restore_smt_root_is_idempotent() {
             )],
         );
         batch1.wait_committed_blocking();
-        let root_before = StateMetadata::state_root(&**scheduler.state().storage().store());
+        let root_before = scheduler.state().storage().store().root(1);
 
         // Reorg away, then restore the same block.
         scheduler.rollback_to(0).expect("rollback should succeed");
@@ -2444,12 +2429,7 @@ pub fn test_restore_smt_root_is_idempotent() {
 
         // The re-run store.update reproduces the same tree: same state root, same per-version root.
         let store = scheduler.state().storage().store();
-        assert_eq!(
-            StateMetadata::state_root(&**store),
-            root_before,
-            "restored state root must match the original"
-        );
-        assert_eq!(store.root(1), root_before, "restored per-version root must match the original");
+        assert_eq!(store.root(1), root_before, "restored SMT root must match the original");
 
         scheduler.shutdown();
     }

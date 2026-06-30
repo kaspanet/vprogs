@@ -446,16 +446,17 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
                 state_diff.written_state().write_latest_ptr(wb);
             }
 
-            // Update the authenticated state tree with all resource state diffs from this batch.
-            let new_root = store.update(
-                wb,
-                updated.into_iter().map(Commitment::from).collect(),
-                self.checkpoint.index(),
-            );
+            // A fresh batch updates the SMT and persists its metadata.
+            if !self.restored {
+                StoredBatchMetadata::set(wb, self.checkpoint.index(), self.checkpoint.metadata());
+                store.update(
+                    wb,
+                    updated.into_iter().map(Commitment::from).collect(),
+                    self.checkpoint.index(),
+                );
+            }
 
-            // Record the new state root, this batch's metadata, and the last-committed pointer.
-            StateMetadata::set_state_root(wb, &new_root);
-            StoredBatchMetadata::set(wb, self.checkpoint.index(), self.checkpoint.metadata());
+            // Record the last-committed pointer.
             StateMetadata::set_last_committed(wb, &self.checkpoint);
 
             // Persist root on first commit for crash-fault tolerance. Root was already set
