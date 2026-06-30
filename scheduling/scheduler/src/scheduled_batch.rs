@@ -12,24 +12,13 @@ use vprogs_core_types::{BatchMetadata, Checkpoint, ResourceId, SchedulerTransact
 use vprogs_scheduling_execution_workers::Batch;
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
-use vprogs_state_proof_receipt::{AggregatorKey, BatchKey, Prefix};
+use vprogs_state_proof_receipt::{BatchKey, Prefix};
 use vprogs_storage_types::{ReadStore, Store};
 
 use crate::{
-    CancellationContext, Read, ReadReceipt, ReceiptRead, ScheduledTransaction, Scheduler,
-    StateDiff, StoreReceipt, Write, cpu_task::ManagerTask, processor::Processor,
-    state::SchedulerState, storage_cmd::ReceiptLookup,
+    CancellationContext, ReceiptRead, ScheduledTransaction, Scheduler, StateDiff, Write,
+    cpu_task::ManagerTask, processor::Processor, state::SchedulerState, storage_cmd::ReceiptLookup,
 };
-
-/// The bundle-start coordinate and claimed tip that key an aggregate (settlement) receipt.
-pub struct AggReceiptCoord {
-    /// Bundle-start checkpoint index.
-    pub checkpoint_index: u64,
-    /// L1 block at the bundle's first checkpoint (the block it proves from).
-    pub from_block: [u8; 32],
-    /// Commitment to the bundle's claimed tip.
-    pub seq_commit: [u8; 32],
-}
 
 /// A batch of transactions progressing through the scheduler's lifecycle.
 ///
@@ -251,63 +240,24 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         }
     }
 
-    /// Looks up the aggregate (settlement) receipt at `coord`, with this batch as the storage
-    /// gateway: the aggregate prover holds no store of its own, so it reaches the receipt cache
-    /// through a batch's storage handle. Resolves to the receipt, or `None` on a miss.
-    pub fn read_agg_receipt(
-        &self,
-        coord: AggReceiptCoord,
-    ) -> ReceiptRead<S, P, P::AggregatorArtifact> {
-        self.submit_read_receipt(self.agg_key(coord))
-    }
-
-    /// Stores the aggregate (settlement) receipt at `coord` through the write worker, returning a
-    /// latch that opens once it commits. This batch is the storage gateway, as for
-    /// [`read_agg_receipt`](Self::read_agg_receipt).
-    pub fn write_agg_receipt(
-        &self,
-        coord: AggReceiptCoord,
-        receipt: P::AggregatorArtifact,
-    ) -> AtomicAsyncLatch {
-        self.submit_store_receipt(self.agg_key(coord), receipt)
-    }
-
-    /// The aggregate receipt key at `coord`; this batch supplies the aggregator image id.
-    fn agg_key(&self, coord: AggReceiptCoord) -> AggregatorKey {
-        AggregatorKey {
-            prefix: Prefix { checkpoint_index: coord.checkpoint_index.into() },
-            block_hash: coord.from_block,
-            image_id: self.processor.aggregator_image_id(),
-            seq_commit: coord.seq_commit,
-        }
-    }
-
-    /// Submits a proof-receipt lookup for the typed `key` to the read worker, returning the typed
-    /// [`ReceiptRead`] handle the caller awaits. The key type determines the stored value's kind
-    /// and how the served value projects back to the concrete receipt.
+    /// Submits a proof-receipt lookup for the typed `key` through the shared receipt store,
+    /// returning the typed [`ReceiptRead`] handle the caller awaits. The key type determines the
+    /// stored value's kind and how the served value projects back to the concrete receipt.
     pub(crate) fn submit_read_receipt<K: ReceiptLookup<S, P>>(
         &self,
         key: K,
     ) -> ReceiptRead<S, P, K::Artifact> {
-        let (cmd, handle) = ReadReceipt::new(key.into_key(), K::extract);
-        self.state.storage().submit_read(Read::ReadReceipt(cmd));
-        handle
+        self.state.receipt_store().read(key)
     }
 
-    /// Submits `receipt` under the typed `key` to the write worker, returning a latch that opens
-    /// once it commits. The key type pins the receipt to its matching stored variant.
+    /// Submits `receipt` under the typed `key` through the shared receipt store, returning a latch
+    /// that opens once it commits. The key type pins the receipt to its matching stored variant.
     pub(crate) fn submit_store_receipt<K: ReceiptLookup<S, P>>(
         &self,
         key: K,
         receipt: K::Artifact,
     ) -> AtomicAsyncLatch {
-        let committed = AtomicAsyncLatch::new();
-        self.state.storage().submit_write(Write::StoreReceipt(StoreReceipt::new(
-            key.into_key(),
-            K::wrap(receipt),
-            committed.clone(),
-        )));
-        committed
+        self.state.receipt_store().write(key, receipt)
     }
 
     /// Submits this batch for commit on the write worker. No-op if canceled.

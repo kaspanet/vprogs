@@ -6,7 +6,7 @@ use std::{
 use vprogs_core_atomics::{AsyncQueue, AtomicAsyncLatch};
 use vprogs_core_macros::smart_pointer;
 use vprogs_l1_types::ChainBlockMetadata;
-use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
+use vprogs_scheduling_scheduler::{Processor, ReceiptStore, ScheduledBatch};
 use vprogs_storage_types::Store;
 use vprogs_zk_batch_prover::LaneProofSource;
 
@@ -16,22 +16,29 @@ use crate::{AggregateProverConfig, Backend, command::Command, worker::Worker};
 ///
 /// Unlike the batch prover, the aggregate prover never reads SMT state: its only inputs are the
 /// per-batch receipts published onto the [`ScheduledBatch`] handles (by the batch prover) and the
-/// bundle's final-block lane proof (from the configured [`LaneProofSource`]). It therefore takes no
-/// [`Store`] in [`new`](Self::new).
+/// bundle's final-block lane proof (from the configured [`LaneProofSource`]). For its own
+/// settlement receipts it caches through the [`ReceiptStore`] it is constructed with, rather than
+/// borrowing a batch as a storage gateway; the store must therefore be built (from the scheduler's
+/// shared state) before this prover.
 #[smart_pointer]
 pub struct AggregateProver<S: Store, P: Processor<S>> {
     /// Commands awaiting processing by the worker.
     pub(crate) inbox: AsyncQueue<Command<S, P>>,
     /// Opened to signal worker shutdown.
     pub(crate) shutdown: AtomicAsyncLatch,
+    /// Receipt-store handle the worker caches bundle settlement receipts through.
+    pub(crate) receipt_store: ReceiptStore<S, P>,
     /// Worker thread handle, joined on shutdown so its GPU prover tears down before process exit.
     pub(crate) worker: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl<S: Store, P: Processor<S>> AggregateProver<S, P> {
-    /// Creates a new aggregate prover and spawns its worker thread.
+    /// Creates a new aggregate prover and spawns its worker thread. `receipt_store` is the prover's
+    /// own handle into the proof-receipt cache (derived from the scheduler's shared state), through
+    /// which it caches and replays bundle settlement receipts.
     pub fn new<B: Backend, L: LaneProofSource>(
         backend: B,
+        receipt_store: ReceiptStore<S, P>,
         config: AggregateProverConfig<L, B::Receipt>,
     ) -> Self
     where
@@ -46,6 +53,7 @@ impl<S: Store, P: Processor<S>> AggregateProver<S, P> {
         let prover = Self(Arc::new(AggregateProverData {
             inbox: AsyncQueue::new(),
             shutdown: AtomicAsyncLatch::new(),
+            receipt_store,
             worker: Mutex::new(None),
         }));
         let handle = Worker::spawn(prover.clone(), backend, config);

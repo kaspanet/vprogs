@@ -26,7 +26,7 @@ use vprogs_core_atomics::AsyncQueue;
 use vprogs_l1_bridge::L1BridgeConfig;
 use vprogs_l1_types::SettlementInfo;
 use vprogs_node_framework::{Node, NodeConfig};
-use vprogs_scheduling_scheduler::ExecutionConfig;
+use vprogs_scheduling_scheduler::{ExecutionConfig, SchedulerState};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_aggregate_prover::{AggregateProverConfig, ScheduledBundle, SettlementArtifact};
@@ -133,9 +133,14 @@ pub fn build_proving_node(
     proving: ProvingParams,
 ) -> FlowNode {
     let backend = Backend::new(elfs.transaction, elfs.batch, elfs.aggregator, ProofType::Succinct);
+    // Build the shared scheduler state first so the aggregate prover and the scheduler operate over
+    // one storage manager: the prover's receipt store is derived from this state and must exist
+    // before the prover.
+    let state = SchedulerState::new(StorageConfig::default().with_store(store.clone()));
     let pipeline = ProvingPipeline::aggregate(
         backend.clone(),
         store.clone(),
+        state.receipt_store(),
         BatchProverConfig { lane_key: proving.lane_key, covenant_id: Some(proving.covenant_id) },
         AggregateProverConfig {
             lane_key: proving.lane_key,
@@ -146,7 +151,7 @@ pub fn build_proving_node(
         },
     );
     let vm = Vm::new(backend, pipeline);
-    Node::new(base_config(vm, store, bridge))
+    Node::with_state(base_config(vm, store, bridge), state)
 }
 
 /// The bridge + execution + storage config shared by both node modes; the proving mode supplies a

@@ -26,14 +26,19 @@ fn proof_receipt_round_trips_through_storage_workers() {
     // per-batch receipt key from its checkpoint coordinate and the processor's image id.
     let batch = scheduler.schedule(1, vec![]);
 
-    // A single-batch bundle sharing the batch's start coordinate; the batch is its storage gateway
-    // for the aggregate receipt.
+    // A single-batch bundle sharing the batch's start coordinate. The aggregate receipt is read and
+    // written through the scheduler's shared receipt store (the prover's own dependency), not via a
+    // batch gateway.
     let block = Hash::from_bytes(batch.checkpoint().metadata().block_hash());
     let bundle: ScheduledBundle<()> = ScheduledBundle::new(
         1,
         batch.checkpoint().index(),
         BundleBlocks { from_block: block, block_prove_to: block },
     );
+    let receipt_store = scheduler.state().receipt_store();
+
+    // Arbitrary aggregator image id keying the bundle's settlement receipt; any value round-trips.
+    let agg_image_id = [2u8; 32];
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -53,9 +58,10 @@ fn proof_receipt_round_trips_through_storage_workers() {
         // The aggregate receipt at the same coordinate keys differently (it is a distinct kind), so
         // it misses despite the stored batch receipt, then round-trips on its own key.
         let agg_receipt = vec![7u8; 32];
-        assert!(bundle.read_agg_receipt(&batch, [0u8; 32]).resolve().await.is_none());
-        bundle.write_agg_receipt(&batch, [0u8; 32], agg_receipt.clone()).wait().await;
-        assert_eq!(bundle.read_agg_receipt(&batch, [0u8; 32]).resolve().await, Some(agg_receipt));
+        let agg_key = bundle.agg_key(agg_image_id, [0u8; 32]);
+        assert!(receipt_store.read_agg_receipt(agg_key).resolve().await.is_none());
+        receipt_store.write_agg_receipt(agg_key, agg_receipt.clone()).wait().await;
+        assert_eq!(receipt_store.read_agg_receipt(agg_key).resolve().await, Some(agg_receipt));
     });
 
     scheduler.shutdown();

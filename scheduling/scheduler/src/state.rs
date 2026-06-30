@@ -8,7 +8,7 @@ use vprogs_state_metadata::StateMetadata;
 use vprogs_storage_manager::{StorageConfig, StorageManager};
 use vprogs_storage_types::Store;
 
-use crate::{Read, Write, processor::Processor};
+use crate::{Read, ReceiptStore, Write, processor::Processor};
 
 /// Shared scheduler state accessible by all components.
 #[smart_pointer]
@@ -48,6 +48,11 @@ impl<S: Store, P: Processor<S>> SchedulerState<S, P> {
     /// Returns a reference to the storage manager.
     pub fn storage(&self) -> &StorageManager<S, Read<S, P>, Write<S, P>> {
         &self.storage
+    }
+
+    /// Returns a handle to the proof-receipt cache, sharing this state's storage manager.
+    pub fn receipt_store(&self) -> ReceiptStore<S, P> {
+        ReceiptStore::new(self.storage.clone())
     }
 
     /// Returns a reference to the eviction queue.

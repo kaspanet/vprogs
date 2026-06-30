@@ -27,10 +27,6 @@ impl<S: Store> Processor<S> for VM {
         [0u8; 32]
     }
 
-    fn aggregator_image_id(&self) -> [u8; 32] {
-        [0u8; 32]
-    }
-
     type Transaction = L1Transaction;
     type TransactionArtifact = TransactionEffects;
     type BatchArtifact = ();

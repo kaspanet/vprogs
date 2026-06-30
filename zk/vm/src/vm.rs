@@ -73,10 +73,6 @@ impl<B: Backend, S: Store> Processor<S> for Vm<B, S> {
         *self.backend.batch_image_id()
     }
 
-    fn aggregator_image_id(&self) -> [u8; 32] {
-        *self.backend.aggregator_image_id()
-    }
-
     /// Restore is safe only without proving; any proving mode needs per-tx pre-images.
     fn supports_restore(&self) -> bool {
         matches!(*self.proving_pipeline, ProvingPipeline::None)

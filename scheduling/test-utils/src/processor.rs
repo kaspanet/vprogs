@@ -42,10 +42,6 @@ impl<S: Store> vprogs_scheduling_scheduler::Processor<S> for Processor {
         [1u8; 32]
     }
 
-    fn aggregator_image_id(&self) -> [u8; 32] {
-        [2u8; 32]
-    }
-
     fn supports_restore(&self) -> bool {
         true
     }

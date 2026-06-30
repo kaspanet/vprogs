@@ -25,7 +25,8 @@ use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ChainSink, ResourceId, SchedulerTransaction};
 use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_l1_wallet::{build, encode_activity_payload};
-use vprogs_scheduling_scheduler::{Processor, Scheduler};
+use vprogs_scheduling_scheduler::{ExecutionConfig, Processor, Scheduler, SchedulerState};
+use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_aggregate_prover::{AggregateProverConfig, ScheduledBundle, SettlementArtifact};
 use vprogs_zk_backend_risc0_api::{Backend, ProofType, Receipt};
@@ -35,8 +36,8 @@ use vprogs_zk_backend_risc0_settler::{
     build_settlement_for_mode, dev_bootstrap_redeem,
 };
 use vprogs_zk_backend_risc0_test_suite::{
-    batch_aggregator_elf, batch_processor_elf, build_scheduler, dev_mode_enabled,
-    read_resource_u32, transaction_processor_elf,
+    batch_aggregator_elf, batch_processor_elf, dev_mode_enabled, read_resource_u32,
+    transaction_processor_elf,
 };
 use vprogs_zk_batch_prover::BatchProverConfig;
 use vprogs_zk_vm::{ProvingPipeline, Vm};
@@ -215,11 +216,16 @@ fn build_exec(
 ) -> (Exec, Option<AsyncQueue<ScheduledBundle<SettlementArtifact<Receipt>>>>) {
     let db = tempfile::tempdir().expect("temp db dir");
     let store = RocksDbStore::open(db.path().join("l2"));
+    // Build the shared scheduler state (and its storage manager) first, so the aggregate prover and
+    // the scheduler operate over one storage manager: the prover's receipt store is derived from
+    // this state and must exist before the prover.
+    let state = SchedulerState::new(StorageConfig::default().with_store(store.clone()));
     let (pipeline, settlement_queue) = if proving {
         let queue = AsyncQueue::new();
         let pipeline = ProvingPipeline::aggregate(
             backend.clone(),
             store.clone(),
+            state.receipt_store(),
             BatchProverConfig { lane_key: lane, covenant_id },
             AggregateProverConfig {
                 lane_key: lane,
@@ -235,7 +241,7 @@ fn build_exec(
     };
     let vm = Vm::new(backend.clone(), pipeline);
     let proc_handle = vm.clone();
-    let scheduler = build_scheduler(vm, store.clone());
+    let scheduler = Scheduler::with_state(ExecutionConfig::default().with_processor(vm), state);
     (Exec { scheduler, store, _db: db, proc_handle }, settlement_queue)
 }
 

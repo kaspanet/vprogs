@@ -207,12 +207,13 @@ where
         // The bundle's `from -> to` coordinate (its start checkpoint + block, claimed tip
         // commitment) proves to the same settlement receipt, so a replay (including a flip reorg
         // back onto this fork) reuses the cached one instead of re-fetching the lane proof and
-        // re-proving. The bundle keys the receipt off its own start coordinate and the claimed tip
-        // `seq_commit`; its first batch is the storage gateway (the aggregate prover holds no store
-        // of its own) and supplies the aggregator image id.
+        // re-proving. The key combines the bundle's own start coordinate, the claimed tip
+        // `seq_commit`, and the aggregator image id the backend proves with; the receipt store is
+        // the prover's own cache handle (bound by the scheduler at construction).
         let seq_commit = last_metadata.seq_commit.as_bytes();
-        let first_batch = bundle.first().unwrap();
-        let receipt = match handle.read_agg_receipt(first_batch, seq_commit).resolve().await {
+        let agg_key = handle.agg_key(*self.backend.aggregator_image_id(), seq_commit);
+        let receipt_store = &self.prover.receipt_store;
+        let receipt = match receipt_store.read_agg_receipt(agg_key).resolve().await {
             Some(receipt) => receipt,
             None => {
                 // Aggregate the bundle: fetch the final block's lane proof, encode the aggregator
@@ -242,7 +243,7 @@ where
 
                 // Wait for the receipt to be durable before publishing the artifact, so a crash
                 // never leaves a consumed-but-uncached settlement receipt.
-                handle.write_agg_receipt(first_batch, seq_commit, receipt.clone()).wait().await;
+                receipt_store.write_agg_receipt(agg_key, receipt.clone()).wait().await;
                 receipt
             }
         };

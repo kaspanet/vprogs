@@ -1,5 +1,5 @@
 use vprogs_l1_types::ChainBlockMetadata;
-use vprogs_scheduling_scheduler::{Processor, ScheduledBatch, ScheduledTransaction};
+use vprogs_scheduling_scheduler::{Processor, ReceiptStore, ScheduledBatch, ScheduledTransaction};
 use vprogs_storage_types::Store;
 use vprogs_zk_aggregate_prover::{AggregateProver, AggregateProverConfig};
 use vprogs_zk_batch_prover::{BatchProver, BatchProverConfig, LaneProofSource};
@@ -52,6 +52,7 @@ impl<S: Store, P: Processor<S>> ProvingPipeline<S, P> {
     pub fn aggregate<B, L>(
         backend: B,
         store: S,
+        receipt_store: ReceiptStore<S, P>,
         batch_config: BatchProverConfig,
         agg_config: AggregateProverConfig<L, B::Receipt>,
     ) -> Self
@@ -69,7 +70,7 @@ impl<S: Store, P: Processor<S>> ProvingPipeline<S, P> {
         Self::Aggregate(
             TransactionProver::new(backend.clone()),
             BatchProver::new(backend.clone(), store, batch_config),
-            AggregateProver::new(backend, agg_config),
+            AggregateProver::new(backend, receipt_store, agg_config),
         )
     }
 
