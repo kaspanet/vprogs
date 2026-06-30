@@ -250,6 +250,8 @@ pub enum Read<S: Store, P: Processor<S>> {
     LatestData(ResourceAccess<S, P>),
     /// Look up a cached typed proof-receipt by key.
     ReadReceipt(ReadReceipt<S, P>),
+    /// Reconstruct a committed batch's state diffs from disk (restore after a reorg).
+    CommittedBatch(ScheduledBatch<S, P>),
 }
 
 impl<S: Store, P: Processor<S>> ReadCmd for Read<S, P> {
@@ -258,6 +260,7 @@ impl<S: Store, P: Processor<S>> ReadCmd for Read<S, P> {
         match self {
             Read::LatestData(resource_access) => resource_access.read_latest_data(store),
             Read::ReadReceipt(receipt) => receipt.read(store),
+            Read::CommittedBatch(batch) => batch.restore_committed(store),
         }
     }
 }

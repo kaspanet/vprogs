@@ -13,7 +13,7 @@ use vprogs_scheduling_execution_workers::Batch;
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_proof_receipt::{AggregatorKey, BatchKey, Prefix};
-use vprogs_storage_types::Store;
+use vprogs_storage_types::{ReadStore, Store};
 
 use crate::{
     CancellationContext, Read, ReadReceipt, ReceiptRead, ScheduledTransaction, Scheduler,
@@ -375,6 +375,26 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
                 }
             }
         }
+    }
+
+    /// Restores the committed batch from disk and marks it done, skipping execution.
+    pub(crate) fn restore_committed<RS: ReadStore>(&self, store: &RS) {
+        // Each resource's tail access holds the batch's final state; restore it from disk.
+        let index = self.checkpoint.index();
+        for tx in self.txs() {
+            for access in tx.resources() {
+                if access.is_batch_tail() {
+                    access.restore_committed_data(store, index);
+                }
+            }
+        }
+
+        // Nothing executed, so drive the counters down and open the done-latches directly.
+        self.pending_txs.store(0, Ordering::Release);
+        self.pending_tx_artifacts.store(0, Ordering::Release);
+        self.processed.open();
+        self.tx_artifacts_published.open();
+        self.artifact_published.open();
     }
 
     /// Pushes a transaction onto the work-stealing queue of ready transactions.

@@ -8,21 +8,20 @@ pub struct BatchMetadata;
 
 impl BatchMetadata {
     /// Returns the deserialized metadata for a batch, or `M::default()` if not found.
-    pub fn get<M: BatchMetadataTrait, S>(store: &S, batch_index: u64) -> M
-    where
-        S: Store,
-    {
+    pub fn get<M: BatchMetadataTrait, S: Store>(store: &S, batch_index: u64) -> M {
         store
             .get(StateSpace::BatchMetadata, &batch_index.to_be_bytes())
             .map(|bytes| borsh::from_slice(&bytes).expect("corrupted store: unrecoverable"))
             .unwrap_or_default()
     }
 
+    /// Returns whether a batch has a metadata entry (committed and not yet pruned).
+    pub fn exists<S: Store>(store: &S, batch_index: u64) -> bool {
+        store.get(StateSpace::BatchMetadata, &batch_index.to_be_bytes()).is_some()
+    }
+
     /// Stores serialized metadata for a batch.
-    pub fn set<M: BatchMetadataTrait, W>(wb: &mut W, batch_index: u64, metadata: &M)
-    where
-        W: WriteBatch,
-    {
+    pub fn set<M: BatchMetadataTrait, W: WriteBatch>(wb: &mut W, batch_index: u64, metadata: &M) {
         wb.put(
             StateSpace::BatchMetadata,
             &batch_index.to_be_bytes(),
@@ -31,10 +30,7 @@ impl BatchMetadata {
     }
 
     /// Deletes the metadata entry for a single batch index.
-    pub fn delete<W>(wb: &mut W, batch_index: u64)
-    where
-        W: WriteBatch,
-    {
+    pub fn delete<W: WriteBatch>(wb: &mut W, batch_index: u64) {
         wb.delete(StateSpace::BatchMetadata, &batch_index.to_be_bytes());
     }
 }

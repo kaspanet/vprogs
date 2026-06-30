@@ -2302,3 +2302,155 @@ pub fn test_finalize_past_orphan_bucket_keeps_predecessor() {
         scheduler.shutdown();
     }
 }
+
+/// Tests that re-appending a previously committed block after a reorg restores its state from disk
+/// rather than re-executing its transactions.
+#[test]
+pub fn test_restore_returning_committed_batch_skips_execution() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(Processor),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // Commit block 1, writing value 100 to resource 1.
+        let batch1 = scheduler.schedule(
+            1,
+            vec![SchedulerTransaction::new(
+                0,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+                100,
+            )],
+        );
+        batch1.wait_committed_blocking();
+        scheduler.assert_written_state(ResourceId::for_test(1), vec![100]);
+
+        // Reorg block 1 away; its resource is reverted but its committed state stays retained on
+        // disk.
+        scheduler.rollback_to(0).expect("rollback should succeed");
+        scheduler.assert_resource_deleted(ResourceId::for_test(1));
+
+        // Re-append the same block (same metadata -> same block hash -> returning id). The provided
+        // transaction would write 999 if executed; restore must ignore it and reuse the committed
+        // 100.
+        let restored = scheduler.schedule(
+            1,
+            vec![SchedulerTransaction::new(
+                0,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+                999,
+            )],
+        );
+        restored.wait_committed_blocking();
+
+        assert_eq!(restored.checkpoint().index(), 1, "returning block keeps its original id");
+        scheduler.assert_written_state(ResourceId::for_test(1), vec![100]);
+
+        scheduler.shutdown();
+    }
+}
+
+/// Tests that a restored batch feeds its written state into a following batch's read through the
+/// in-memory resource chain, before the restore has committed to disk.
+#[test]
+pub fn test_restore_feeds_following_batch_chain() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(Processor),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // Commit block 1, writing value 100 to resource 1, then reorg it away.
+        scheduler
+            .schedule(
+                1,
+                vec![SchedulerTransaction::new(
+                    0,
+                    vec![AccessMetadata::write(ResourceId::for_test(1))],
+                    100,
+                )],
+            )
+            .wait_committed_blocking();
+        scheduler.rollback_to(0).expect("rollback should succeed");
+
+        // Re-append block 1 to restore it, but do NOT wait: the following batch must chain off its
+        // restored written state in memory rather than reading committed disk state.
+        let _restored = scheduler.schedule(
+            1,
+            vec![SchedulerTransaction::new(
+                0,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+                999,
+            )],
+        );
+
+        // A following new block writes resource 1 again. It must read the restored value (100) and
+        // append 300 - not the post-rollback empty state, and not the ignored 999.
+        let following = scheduler.schedule(
+            2,
+            vec![SchedulerTransaction::new(
+                0,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+                300,
+            )],
+        );
+        following.wait_committed_blocking();
+
+        scheduler.assert_written_state(ResourceId::for_test(1), vec![100, 300]);
+
+        scheduler.shutdown();
+    }
+}
+
+/// Tests that committing a restored batch through the normal path re-runs `store.update`
+/// idempotently: the reconstructed SMT reproduces the original state root.
+#[test]
+pub fn test_restore_smt_root_is_idempotent() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(Processor),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // Commit block 1 and capture the resulting state root.
+        let batch1 = scheduler.schedule(
+            1,
+            vec![SchedulerTransaction::new(
+                0,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+                100,
+            )],
+        );
+        batch1.wait_committed_blocking();
+        let root_before = StateMetadata::state_root(&**scheduler.state().storage().store());
+
+        // Reorg away, then restore the same block.
+        scheduler.rollback_to(0).expect("rollback should succeed");
+        let restored = scheduler.schedule(
+            1,
+            vec![SchedulerTransaction::new(
+                0,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+                100,
+            )],
+        );
+        restored.wait_committed_blocking();
+
+        // The re-run store.update reproduces the same tree: same state root, same per-version root.
+        let store = scheduler.state().storage().store();
+        assert_eq!(
+            StateMetadata::state_root(&**store),
+            root_before,
+            "restored state root must match the original"
+        );
+        assert_eq!(store.root(1), root_before, "restored per-version root must match the original");
+
+        scheduler.shutdown();
+    }
+}

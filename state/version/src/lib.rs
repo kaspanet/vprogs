@@ -30,6 +30,11 @@ impl StateVersion {
         }
     }
 
+    /// Loads the resource's data at a specific version, or empty data if absent.
+    pub fn at_version<S: ReadStore>(store: &S, version: u64, id: ResourceId) -> Self {
+        Self { resource_id: id, version, data: Self::get(store, version, &id).unwrap_or_default() }
+    }
+
     pub fn version(&self) -> u64 {
         self.version
     }

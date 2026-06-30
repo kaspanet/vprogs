@@ -6,6 +6,7 @@ use std::sync::{
 use arc_swap::ArcSwapOption;
 use vprogs_core_macros::smart_pointer;
 use vprogs_core_types::{AccessMetadata, AccessType};
+use vprogs_state_ptr_rollback::StatePtrRollback;
 use vprogs_state_version::StateVersion;
 use vprogs_storage_manager::StorageManager;
 use vprogs_storage_types::{ReadStore, Store};
@@ -112,6 +113,30 @@ impl<S: Store, P: Processor<S>> ResourceAccess<S, P> {
             store,
             self.access_metadata.resource_id,
         )));
+    }
+
+    /// Restores this access's state from the committed batch on disk, without executing.
+    pub(crate) fn restore_committed_data<R: ReadStore>(&self, store: &R, batch_index: u64) {
+        // The rollback pointer's presence distinguishes a written resource from read-only.
+        let resource_id = self.access_metadata.resource_id;
+        let (read, written) = match StatePtrRollback::get(store, batch_index, &resource_id) {
+            // Written: the old version is the read, this batch's version is the written.
+            Some(old_version) => (
+                StateVersion::at_version(store, old_version, resource_id),
+                StateVersion::at_version(store, batch_index, resource_id),
+            ),
+            // Read-only: unchanged, so both stay at the current latest.
+            None => {
+                let current = StateVersion::from_latest_data(store, resource_id);
+                (current.clone(), current)
+            }
+        };
+
+        // Read resolves the diff directly; on the access it would trigger execution.
+        self.state_diff.set_read_state(Arc::new(read));
+
+        // Written goes on the access, which forwards the value to the next batch.
+        self.set_written_state(Arc::new(written));
     }
 
     pub(crate) fn tx(&self) -> &ScheduledTransactionRef<S, P> {
