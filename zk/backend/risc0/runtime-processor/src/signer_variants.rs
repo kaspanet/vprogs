@@ -16,6 +16,7 @@ use crate::{
     auth::{recover_prev_tx_v1_p2pk_pubkey, verify_k256_schnorr_sig},
     auth_context::{MultisigUnlocker, SchnorrUnlocker},
     config::ConfigView,
+    genesis::GENESIS_SCHNORR_BYTES,
     kind::{KIND_CONFIG, KIND_USER, kind_of},
     lock::LockEnum,
     lock_variants::SchnorrLockView,
@@ -104,6 +105,41 @@ impl<'a> Signer<'a> for PrevTxV1WitnessSigner {
             ctx,
         )?;
         Ok(SchnorrUnlocker { pubkey })
+    }
+}
+
+/// Genesis-authority Schnorr signer for the bootstrap `Init` action. Unlike
+/// [`SchnorrSigPtrSigner`], the pubkey is the runtime's baked-in
+/// [`GENESIS_SCHNORR_BYTES`] rather than read from the target resource's lock:
+/// at `Init` the config slot is still empty, so there is no lock to read. Body:
+/// `u32 sig_offset`, offset into `payload_bytes` of the 64-byte BIP-340 signature.
+///
+/// This is the self-contained bootstrap path: the genesis key signs the runtime
+/// sig-message directly, with no on-chain UTXO / witness coupling. `apply_init`
+/// still gates on the resolved unlocker carrying exactly `GENESIS_SCHNORR_BYTES`.
+pub struct GenesisSchnorrSigPtrSigner {
+    pub sig_offset: u32,
+}
+
+impl<'a> Signer<'a> for GenesisSchnorrSigPtrSigner {
+    const TAG: u8 = 0x05;
+    type Unlocker = SchnorrUnlocker;
+
+    fn decode(buf: &mut &'a [u8]) -> CodecResult<Self> {
+        let sig_offset = buf.le_u32("signer.genesis_schnorr.sig_offset")?;
+        Ok(Self { sig_offset })
+    }
+
+    fn resolve(
+        &self,
+        _resource_idx: u8,
+        ctx: &SignerResolveContext<'a>,
+    ) -> CodecResult<SchnorrUnlocker> {
+        let sig = read_sig_at_offset(self.sig_offset, ctx)?;
+        if !verify_k256_schnorr_sig(&GENESIS_SCHNORR_BYTES, sig, ctx.sig_msg()) {
+            return Err(Error::Decode("signer.genesis_schnorr: invalid signature"));
+        }
+        Ok(SchnorrUnlocker { pubkey: GENESIS_SCHNORR_BYTES })
     }
 }
 
