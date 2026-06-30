@@ -74,8 +74,7 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
         txs: Vec<SchedulerTransaction<P::Transaction>>,
     ) -> ScheduledBatch<S, P> {
         let (checkpoint, restore) = self.next_checkpoint(metadata);
-
-        ScheduledBatch::new(self, txs, checkpoint).tap(|batch| {
+        ScheduledBatch::new(self, txs, checkpoint, restore).tap(|batch| {
             // Notify the processor, allowing it to initialize internal caches or buffers.
             self.processor.on_batch_scheduled(batch);
 
@@ -83,7 +82,7 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
             self.batch_lifecycle_worker.push(batch.clone());
 
             // Restore a returning committed batch from disk, or connect and execute a new one.
-            if restore {
+            if batch.restored() {
                 self.state.storage().submit_read(Read::CommittedBatch(batch.clone()));
             } else {
                 batch.connect();
@@ -253,11 +252,10 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
             self.state.set_root(Arc::new(checkpoint.clone()));
         }
 
-        // A returning id restores if its state is already on disk.
-        let restore = match outcome.is_new {
-            true => false,
-            false => StoredBatchMetadata::exists(&**self.state.storage().store(), outcome.id),
-        };
+        // A returning id restores if the processor opts in and its state is already on disk.
+        let restore = !outcome.is_new
+            && self.processor.supports_restore()
+            && StoredBatchMetadata::exists(&**self.state.storage().store(), outcome.id);
 
         (checkpoint, restore)
     }

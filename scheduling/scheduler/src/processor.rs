@@ -34,6 +34,11 @@ pub trait Processor<S: Store>: Clone + Sized + Send + Sync + 'static {
     /// Program identifier keying an aggregate (settlement) receipt in the proof-receipt store.
     fn aggregator_image_id(&self) -> [u8; 32];
 
+    /// Whether a returning committed batch may be restored from disk instead of re-executed.
+    fn supports_restore(&self) -> bool {
+        false
+    }
+
     /// The transaction payload type (e.g. kaspa `L1Transaction`, `usize` in tests).
     /// The scheduler wraps it in `SchedulerTransaction<Self::Transaction>`.
     type Transaction: Send + Sync + 'static;

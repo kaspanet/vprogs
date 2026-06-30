@@ -46,6 +46,10 @@ impl<S: Store> vprogs_scheduling_scheduler::Processor<S> for Processor {
         [2u8; 32]
     }
 
+    fn supports_restore(&self) -> bool {
+        true
+    }
+
     type Transaction = usize;
     type TransactionArtifact = Vec<u8>;
     type BatchArtifact = Vec<u8>;

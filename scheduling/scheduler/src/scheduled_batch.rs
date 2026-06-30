@@ -49,6 +49,8 @@ pub struct ScheduledBatch<S: Store, P: Processor<S>> {
     state: SchedulerState<S, P>,
     /// This batch's sequential index and metadata.
     checkpoint: Checkpoint<P::BatchMetadata>,
+    /// True if restored from committed disk state rather than executed.
+    restored: bool,
     /// All transactions in this batch.
     txs: Vec<ScheduledTransaction<S, P>>,
     /// One state diff per unique resource accessed by this batch.
@@ -121,6 +123,12 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
     #[inline(always)]
     pub fn canceled(&self) -> bool {
         self.checkpoint.index() > self.cancellation.threshold()
+    }
+
+    /// Returns true if this batch was restored from committed disk state rather than executed.
+    #[inline(always)]
+    pub fn restored(&self) -> bool {
+        self.restored
     }
 
     /// Returns true if all transactions have been executed.
@@ -314,6 +322,7 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         scheduler: &mut Scheduler<S, P>,
         txs: Vec<SchedulerTransaction<P::Transaction>>,
         checkpoint: Checkpoint<P::BatchMetadata>,
+        restored: bool,
     ) -> Self {
         Self(Arc::new_cyclic(|this| {
             let processed = AtomicAsyncLatch::default();
@@ -335,6 +344,7 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
                 processor: scheduler.processor().clone(),
                 state: scheduler.state().clone(),
                 checkpoint,
+                restored,
                 pending_txs: AtomicU64::new(txs.len() as u64),
                 pending_tx_artifacts: AtomicU64::new(txs.len() as u64),
                 txs: txs
@@ -391,10 +401,7 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
 
         // Nothing executed, so drive the counters down and open the done-latches directly.
         self.pending_txs.store(0, Ordering::Release);
-        self.pending_tx_artifacts.store(0, Ordering::Release);
         self.processed.open();
-        self.tx_artifacts_published.open();
-        self.artifact_published.open();
     }
 
     /// Pushes a transaction onto the work-stealing queue of ready transactions.
