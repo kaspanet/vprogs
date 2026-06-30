@@ -24,16 +24,19 @@ use vprogs_node_test_utils::L1Node;
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
-use vprogs_zk_backend_risc0_api::{delegate_entry_spk_hash, Backend, ProofType};
+use vprogs_zk_backend_risc0_api::{Backend, ProofType, delegate_entry_spk_hash};
 use vprogs_zk_backend_risc0_covenant::{
-    build_redeem_script, permission_spk, redeem_script_len, CommonPins,
-    DEFAULT_PERMISSION_OUTPUT_VALUE, JOURNAL_SIZE, RedeemPins, Settlement, SettlementInput,
-    SettlementWitness, StateTransition, SuccinctPins, SuccinctWitness,
+    CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, JOURNAL_SIZE, RedeemPins, Settlement,
+    SettlementInput, SettlementWitness, StateTransition, SuccinctPins, SuccinctWitness,
+    build_redeem_script, permission_spk, redeem_script_len,
 };
 use vprogs_zk_backend_risc0_test_suite::{
-    aggregate_batches, batch_aggregator_elf, batch_processor_elf, dev_mode_enabled,
-    runtime_processor_elf, test_lane_key, L1TransactionExt,
-    runtime_flow::{deposit_tx, init_config_tx, withdraw_tx, RuntimeSigner, EXAMPLE_DEPOSIT_COVENANT_ID},
+    L1TransactionExt, aggregate_batches, batch_aggregator_elf, batch_processor_elf,
+    dev_mode_enabled,
+    runtime_flow::{
+        EXAMPLE_DEPOSIT_COVENANT_ID, RuntimeSigner, deposit_tx, init_config_tx, withdraw_tx,
+    },
+    runtime_processor_elf, test_lane_key,
 };
 use vprogs_zk_batch_prover::{Backend as _, BatchProverConfig};
 use vprogs_zk_vm::{ProvingPipeline, Vm};
@@ -78,7 +81,8 @@ async fn deposit_and_withdraw_settle_with_deposit_and_permission_commitments() {
         // covenant's delegate-entry hash; the no-deposit sentinel would fail the carry check.
         deposit_spk_hash: delegate_entry_spk_hash(&cov),
     };
-    let vm = Vm::new(backend.clone(), ProvingPipeline::batch(backend.clone(), storage.clone(), config));
+    let vm =
+        Vm::new(backend.clone(), ProvingPipeline::batch(backend.clone(), storage.clone(), config));
     let mut scheduler = Scheduler::new(
         ExecutionConfig::default().with_processor(vm),
         StorageConfig::default().with_store(storage.clone()),
@@ -180,7 +184,7 @@ async fn deposit_and_withdraw_settle_with_deposit_and_permission_commitments() {
     assert_eq!(settlement.prev_redeem.len(), settlement.next_redeem.len());
 
     eprintln!(
-        "[settlement] dev_mode={} — journal + count==2 settlement structure verified",
+        "[settlement] dev_mode={}: journal + count==2 settlement structure verified",
         dev_mode_enabled(),
     );
 

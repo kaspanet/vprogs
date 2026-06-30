@@ -14,8 +14,9 @@
 //! - `sig_offset` is an absolute byte offset into `payload.bytes` (the whole payload, including the
 //!   access-metadata prefix), pointing at the 64-byte signature appended in the tail.
 //! - The signed message is `compute_sig_message(rest_preimage, payload_presig)` where
-//!   `payload_presig = payload[..start_of_tail]`; `rest_preimage = transaction_v1_rest_preimage(tx)`
-//!   excludes the payload, so it is stable across the signature splice.
+//!   `payload_presig = payload[..start_of_tail]`; `rest_preimage =
+//!   transaction_v1_rest_preimage(tx)` excludes the payload, so it is stable across the signature
+//!   splice.
 
 use k256::schnorr::{Signature, SigningKey};
 use kaspa_addresses::{Address, Prefix, Version};
@@ -33,6 +34,9 @@ use vprogs_core_types::{AccessMetadata, ResourceId};
 use vprogs_l1_types::L1Transaction;
 use vprogs_zk_abi::withdrawal::StandardSpk;
 use vprogs_zk_backend_risc0_api::build_delegate_entry_script;
+pub use vprogs_zk_backend_risc0_runtime_processor::deposit_policy::{
+    EXAMPLE_DEPOSIT_COVENANT_ID, EXAMPLE_MIN_CREATE_BALANCE,
+};
 use vprogs_zk_backend_risc0_runtime_processor::{
     config::ConfigView,
     genesis::GENESIS_SCHNORR_BYTES,
@@ -49,10 +53,6 @@ use vprogs_zk_backend_risc0_runtime_processor::{
     user::UserView,
 };
 use zerocopy::IntoBytes;
-
-pub use vprogs_zk_backend_risc0_runtime_processor::deposit_policy::{
-    EXAMPLE_DEPOSIT_COVENANT_ID, EXAMPLE_MIN_CREATE_BALANCE,
-};
 
 /// Length of a BIP-340 Schnorr signature.
 const SIG_LEN: usize = 64;
@@ -143,6 +143,7 @@ impl RuntimeSigner {
         ResourceId::from(*derive_user_resource(&self.lock().id_hash()))
     }
 
+    /// Signs `msg` with this key's BIP-340 Schnorr key.
     fn sign(&self, msg: &[u8]) -> [u8; SIG_LEN] {
         let sig: Signature = self.sk.sign(msg);
         sig.to_bytes().into()
@@ -220,7 +221,8 @@ fn encode_transfer_action(source_idx: u8, dest_idx: u8, amount: u64) -> Vec<u8> 
     out
 }
 
-/// Transfer that creates its dest when new: `tag || source(1) || dest(1) || amount(8) || 1 || lock`.
+/// Transfer that creates its dest when new: `tag || source(1) || dest(1) || amount(8) || 1 ||
+/// lock`.
 fn encode_transfer_create_action(
     source_idx: u8,
     dest_idx: u8,
@@ -269,26 +271,27 @@ fn sort_access(mut entries: Vec<AccessMetadata>) -> Vec<AccessMetadata> {
 
 /// Position of `id` within the sorted access list.
 fn index_of(entries: &[AccessMetadata], id: ResourceId) -> u8 {
-    entries
-        .iter()
-        .position(|m| m.resource_id == id)
-        .expect("resource id present in access list") as u8
+    entries.iter().position(|m| m.resource_id == id).expect("resource id present in access list")
+        as u8
 }
 
-/// A runtime action assembled into the pieces a carrier tx needs: the id-sorted access metadata, any
-/// extra L1 outputs (deposit funding), and a payload that can be finalized over the carrier's
+/// A runtime action assembled into the pieces a carrier tx needs: the id-sorted access metadata,
+/// any extra L1 outputs (deposit funding), and a payload that can be finalized over the carrier's
 /// rest_preimage.
 ///
 /// Decoupling the payload from the tx lets the same action drive both an unfunded scheduler tx
 /// ([`Self::into_unfunded`]) and a mempool-funded carrier ([`Self::payload`] via
-/// `Wallet::build_signed_carrier`), where the change output — and thus rest_preimage — is fixed only
+/// `Wallet::build_signed_carrier`), where the change output (and thus rest_preimage) is fixed only
 /// after funding. The Schnorr signatures sign `compute_sig_message(rest_preimage, payload_presig)`,
 /// so they must be produced after the outputs are final; `payload` does exactly that.
 pub struct RuntimeCarrier {
+    /// Id-sorted access metadata declared by the carrier.
     access: Vec<AccessMetadata>,
+    /// Extra L1 outputs the action contributes (e.g. a deposit funding output).
     extra_outputs: Vec<TransactionOutput>,
+    /// The payload up to the signature tail: access prefix, signers section, actions section.
     payload_presig: Vec<u8>,
-    /// `(resource_idx, signer)` in tail order; signatures are appended at `start_of_tail + 64*i`.
+    /// Signers in tail order; signature `i` is appended at `start_of_tail + 64*i`.
     signers: Vec<RuntimeSigner>,
 }
 
@@ -345,8 +348,8 @@ fn build_carrier(
     let access_prefix = Vec::new()
         .tap_mut(|p: &mut Vec<u8>| p.write_many(&access_sorted, AccessMetadata::as_bytes));
 
-    // The encoded signers-section length is independent of the offset values, so a zero-offset probe
-    // gives the real section length; use it to locate the tail.
+    // The encoded signers-section length is independent of the offset values, so a zero-offset
+    // probe gives the real section length; use it to locate the tail.
     let probe: Vec<Vec<u8>> =
         signers.iter().map(|(idx, kind, _)| encode_sig_ptr_signer(*idx, *kind, 0)).collect();
     let probe_section = encode_signers_section(&probe);
@@ -379,7 +382,7 @@ fn build_carrier(
 
 /// Builds an `Init` carrier that creates the singleton config resource, authorized by the genesis
 /// key via the [`GenesisSchnorrSigPtrSigner`] (the genesis pubkey is baked into the runtime, so no
-/// resource lock is read — the fix for flow-test-issues/01). `config_owner`'s key becomes the
+/// resource lock is read; the fix for flow-test-issues/01). `config_owner`'s key becomes the
 /// config's lock and authorizes future `Update`s.
 pub fn init_config_carrier(
     min_withdrawal: u64,
@@ -389,7 +392,8 @@ pub fn init_config_carrier(
     let config_id = ResourceId::from(*config_resource_id());
     let access = sort_access(vec![AccessMetadata::write(config_id)]);
     let owner_lock = config_owner.lock();
-    let action = encode_config_action(ACTION_TAG_INIT, 0, min_withdrawal, &covenant_id, &owner_lock);
+    let action =
+        encode_config_action(ACTION_TAG_INIT, 0, min_withdrawal, &covenant_id, &owner_lock);
     let actions = encode_actions_section(&[action]);
     let genesis = RuntimeSigner::genesis();
     build_carrier(access, actions, vec![(0, GenesisSchnorrSigPtrSigner::TAG, genesis)], vec![])
@@ -408,7 +412,12 @@ pub fn update_config_carrier(
     let action =
         encode_config_action(ACTION_TAG_UPDATE, 0, new_min_withdrawal, &covenant_id, &owner_lock);
     let actions = encode_actions_section(&[action]);
-    build_carrier(access, actions, vec![(0, SchnorrSigPtrSigner::TAG, config_owner.clone())], vec![])
+    build_carrier(
+        access,
+        actions,
+        vec![(0, SchnorrSigPtrSigner::TAG, config_owner.clone())],
+        vec![],
+    )
 }
 
 /// Builds a `Deposit` carrier that funds `value` sompi to the covenant deposit address and credits
@@ -417,8 +426,7 @@ pub fn update_config_carrier(
 pub fn deposit_carrier(covenant_id: [u8; 32], user: &RuntimeSigner, value: u64) -> RuntimeCarrier {
     let config_id = ResourceId::from(*config_resource_id());
     let user_id = user.user_id();
-    let access =
-        sort_access(vec![AccessMetadata::write(user_id), AccessMetadata::read(config_id)]);
+    let access = sort_access(vec![AccessMetadata::write(user_id), AccessMetadata::read(config_id)]);
     let user_idx = index_of(&access, user_id);
 
     let deposit_spk = pay_to_script_hash_script(&build_delegate_entry_script(&covenant_id));
@@ -444,7 +452,12 @@ pub fn transfer_carrier(
     let dest_idx = index_of(&access, dest_id);
     let action = encode_transfer_action(source_idx, dest_idx, amount);
     let actions = encode_actions_section(&[action]);
-    build_carrier(access, actions, vec![(source_idx, SchnorrSigPtrSigner::TAG, source.clone())], vec![])
+    build_carrier(
+        access,
+        actions,
+        vec![(source_idx, SchnorrSigPtrSigner::TAG, source.clone())],
+        vec![],
+    )
 }
 
 /// Builds a `Transfer` carrier that creates `dest` from the transfer when its slot is new.
@@ -462,16 +475,24 @@ pub fn transfer_create_carrier(
     let dest_lock = dest.lock();
     let action = encode_transfer_create_action(source_idx, dest_idx, amount, &dest_lock);
     let actions = encode_actions_section(&[action]);
-    build_carrier(access, actions, vec![(source_idx, SchnorrSigPtrSigner::TAG, source.clone())], vec![])
+    build_carrier(
+        access,
+        actions,
+        vec![(source_idx, SchnorrSigPtrSigner::TAG, source.clone())],
+        vec![],
+    )
 }
 
 /// Builds a `Withdraw` carrier debiting `amount` from `user` and emitting an exit to a P2PK
 /// `dest_pubkey`.
-pub fn withdraw_carrier(user: &RuntimeSigner, amount: u64, dest_pubkey: &[u8; 32]) -> RuntimeCarrier {
+pub fn withdraw_carrier(
+    user: &RuntimeSigner,
+    amount: u64,
+    dest_pubkey: &[u8; 32],
+) -> RuntimeCarrier {
     let config_id = ResourceId::from(*config_resource_id());
     let user_id = user.user_id();
-    let access =
-        sort_access(vec![AccessMetadata::write(user_id), AccessMetadata::read(config_id)]);
+    let access = sort_access(vec![AccessMetadata::write(user_id), AccessMetadata::read(config_id)]);
     let user_idx = index_of(&access, user_id);
     let dest = StandardSpk::PubKey(dest_pubkey);
     let action = encode_withdraw_action(user_idx, amount, &dest);
@@ -512,7 +533,11 @@ pub fn transfer_tx(source: &RuntimeSigner, dest: &RuntimeSigner, amount: u64) ->
 }
 
 /// Unfunded create-`Transfer` carrier tx. See [`transfer_create_carrier`].
-pub fn transfer_create_tx(source: &RuntimeSigner, dest: &RuntimeSigner, amount: u64) -> L1Transaction {
+pub fn transfer_create_tx(
+    source: &RuntimeSigner,
+    dest: &RuntimeSigner,
+    amount: u64,
+) -> L1Transaction {
     transfer_create_carrier(source, dest, amount).into_unfunded()
 }
 

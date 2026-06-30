@@ -2,7 +2,7 @@
 //!
 //! A scenario is a list of [`Action`]s in SUBMISSION order (which may differ from logical order).
 //! An in-test [`Model`] predicts, action-by-action in execution order, whether each action is
-//! accepted or rejected by the runtime and the resulting balances — mirroring the runtime's
+//! accepted or rejected by the runtime and the resulting balances, mirroring the runtime's
 //! per-resource lifecycle rules (a premature action, e.g. transfer-before-deposit, is rejected and
 //! the whole tx reverts). The engine then drives the SAME sequence through the real runtime ELF via
 //! the scheduler and asserts the committed state matches the model exactly.
@@ -24,12 +24,13 @@ use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_test_suite::{
-    batch_aggregator_elf, batch_processor_elf, runtime_processor_elf, L1TransactionExt,
+    L1TransactionExt, batch_aggregator_elf, batch_processor_elf,
     runtime_flow::{
-        deposit_tx, init_config_tx, transfer_create_tx, transfer_tx, update_config_tx,
-        user_balance, withdraw_tx, RuntimeSigner, EXAMPLE_DEPOSIT_COVENANT_ID,
-        EXAMPLE_MIN_CREATE_BALANCE,
+        EXAMPLE_DEPOSIT_COVENANT_ID, EXAMPLE_MIN_CREATE_BALANCE, RuntimeSigner, deposit_tx,
+        init_config_tx, transfer_create_tx, transfer_tx, update_config_tx, user_balance,
+        withdraw_tx,
     },
+    runtime_processor_elf,
 };
 use vprogs_zk_vm::{ProvingPipeline, Vm};
 
@@ -53,6 +54,7 @@ struct Model {
 }
 
 impl Model {
+    /// A fresh model: config absent, no live users, no exits.
     fn new() -> Self {
         Self {
             min_create_balance: EXAMPLE_MIN_CREATE_BALANCE,
@@ -194,7 +196,7 @@ fn build_tx(action: &Action) -> L1Transaction {
 type FlowVm = Vm<Backend, RocksDbStore>;
 
 /// Runs `actions` in order through the real runtime via the scheduler (one batch each), then
-/// asserts the committed balances match the model — including that rejected actions left no trace.
+/// asserts the committed balances match the model, including that rejected actions left no trace.
 fn run_scenario(actions: &[Action]) {
     let temp = TempDir::new().unwrap();
     let storage: RocksDbStore = RocksDbStore::open(temp.path());
@@ -264,10 +266,12 @@ fn run_scenario(actions: &[Action]) {
 /// Deterministic LCG (Knuth MMIX constants) so a seed reproduces the exact same scenario.
 struct Lcg(u64);
 impl Lcg {
+    /// Advances the generator and returns the next pseudo-random value.
     fn next(&mut self) -> u64 {
         self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
         self.0 >> 16
     }
+    /// The next value reduced to `0..n`.
     fn below(&mut self, n: u64) -> u64 {
         self.next() % n
     }
@@ -276,7 +280,7 @@ impl Lcg {
 /// Generates `n` deterministic actions over `n_users` users: an `InitConfig` first, then a weighted
 /// mix of deposits / transfers / transfer-creates / withdraws / config updates. Amounts are chosen
 /// to keep plenty of accepted activity (deposits fund users that transfers/withdraws then move),
-/// while the boundary rules still reject premature / over-balance / below-min actions — all of which
+/// while the boundary rules still reject premature / over-balance / below-min actions, all of which
 /// the `Model` predicts and the runtime must match.
 fn generate(seed: u64, n: usize, n_users: u64) -> Vec<Action> {
     let mut rng = Lcg(seed);
@@ -285,7 +289,9 @@ fn generate(seed: u64, n: usize, n_users: u64) -> Vec<Action> {
     for _ in 1..n {
         let kind = rng.below(100);
         let action = match kind {
-            0..=37 => Action::Deposit { user: rng.below(n_users), value: 1_000 + rng.below(20_000) },
+            0..=37 => {
+                Action::Deposit { user: rng.below(n_users), value: 1_000 + rng.below(20_000) }
+            }
             38..=62 => {
                 let (src, dst) = distinct_pair(&mut rng, n_users);
                 Action::Transfer { src, dst, amount: 1 + rng.below(5_000) }
@@ -294,9 +300,7 @@ fn generate(seed: u64, n: usize, n_users: u64) -> Vec<Action> {
                 let (src, dst) = distinct_pair(&mut rng, n_users);
                 Action::TransferCreate { src, dst, amount: 1 + rng.below(5_000) }
             }
-            78..=96 => {
-                Action::Withdraw { user: rng.below(n_users), amount: 1 + rng.below(4_000) }
-            }
+            78..=96 => Action::Withdraw { user: rng.below(n_users), amount: 1 + rng.below(4_000) },
             _ => Action::UpdateConfig { new_min_withdrawal: 50 + rng.below(500) },
         };
         actions.push(action);
@@ -305,7 +309,7 @@ fn generate(seed: u64, n: usize, n_users: u64) -> Vec<Action> {
 }
 
 /// Two distinct user indices (a self-transfer would build a payload with duplicate access metadata,
-/// which the ABI rejects at decode — not an interesting runtime case to fuzz).
+/// which the ABI rejects at decode, not an interesting runtime case to fuzz).
 fn distinct_pair(rng: &mut Lcg, n_users: u64) -> (u64, u64) {
     assert!(n_users >= 2, "need at least 2 users for transfers");
     let src = rng.below(n_users);
@@ -325,6 +329,7 @@ fn large_random_scenario() {
     run_scenario(&actions);
 }
 
+/// Reads env var `key` as a `usize`, falling back to `default` when unset or unparseable.
 fn env_usize(key: &str, default: usize) -> usize {
     std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
@@ -358,15 +363,16 @@ fn comprehensive_deterministic_scenario() {
         // Below-create-minimum transfer-create -> rejected (user 8 never created).
         TransferCreate { src: 1, dst: 8, amount: 10 },
         // Withdraws.
-        Withdraw { user: 1, amount: 2_000 }, // u1: 2000
-        Withdraw { user: 2, amount: 50 },    // rejected: below min_withdrawal (100)
+        Withdraw { user: 1, amount: 2_000 },   // u1: 2000
+        Withdraw { user: 2, amount: 50 },      // rejected: below min_withdrawal (100)
         Withdraw { user: 3, amount: 999_999 }, // rejected: over balance
         // Raise the withdrawal minimum, then a withdraw that the new min rejects.
         UpdateConfig { new_min_withdrawal: 2_500 },
         Withdraw { user: 1, amount: 2_000 }, // rejected: below new min (2500)
-        Withdraw { user: 1, amount: 2_000 }, // accepted again? bal 2000 < 2500 min -> still rejected
+        Withdraw { user: 1, amount: 2_000 }, /* accepted again? bal 2000 < 2500 min -> still
+                                              * rejected */
         // Top up u3 and withdraw above the new min.
-        Deposit { user: 3, value: 1_000 },  // u3: 3000
+        Deposit { user: 3, value: 1_000 },   // u3: 3000
         Withdraw { user: 3, amount: 2_600 }, // u3: 400
     ];
     run_scenario(&actions);

@@ -4,8 +4,8 @@
 //! exact blob the guest expects, that the genesis-gated config `Init` works, and that
 //! deposit/transfer/withdraw mutate committed state as expected.
 //!
-//! Each `scheduler.schedule(..)` is one batch = one committed state version (1, 2, 3, ...). State is
-//! read back from the store via `StateVersion::get(store, version, id)`.
+//! Each `scheduler.schedule(..)` is one batch = one committed state version (1, 2, 3, ...). State
+//! is read back from the store via `StateVersion::get(store, version, id)`.
 //!
 //! Runs under dev mode (`RISC0_DEV_MODE=1`), which still executes the guest (only the proof is
 //! faked), so the asserted state transitions are real.
@@ -19,12 +19,13 @@ use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_test_suite::{
-    batch_aggregator_elf, batch_processor_elf, runtime_processor_elf, L1TransactionExt,
+    L1TransactionExt, batch_aggregator_elf, batch_processor_elf,
     runtime_flow::{
-        config_id, config_min_withdrawal, deposit_tx, init_config_tx, rotate_user_lock_tx,
-        transfer_create_tx, transfer_tx, update_config_tx, user_balance, withdraw_tx, RuntimeSigner,
-        EXAMPLE_DEPOSIT_COVENANT_ID,
+        EXAMPLE_DEPOSIT_COVENANT_ID, RuntimeSigner, config_id, config_min_withdrawal, deposit_tx,
+        init_config_tx, rotate_user_lock_tx, transfer_create_tx, transfer_tx, update_config_tx,
+        user_balance, withdraw_tx,
     },
+    runtime_processor_elf,
 };
 use vprogs_zk_vm::{ProvingPipeline, Vm};
 
@@ -40,6 +41,7 @@ struct Harness {
 }
 
 impl Harness {
+    /// Builds a fresh harness over a temp RocksDB store, executing (not proving) the runtime ELF.
     fn new() -> Self {
         let temp = TempDir::new().expect("temp dir");
         let storage: RocksDbStore = RocksDbStore::open(temp.path());
@@ -86,6 +88,7 @@ impl Harness {
         if data.is_empty() { None } else { Some(data) }
     }
 
+    /// Decoded user balance for `signer`, or `None` if its resource is absent.
     fn balance(&self, signer: &RuntimeSigner) -> Option<u64> {
         self.resource(signer.user_id()).and_then(|b| user_balance(&b))
     }
@@ -95,7 +98,10 @@ impl Harness {
 
 /// Mirrors the scheduler's `Inputs::encode` for one tx + its resources, so a flow tx can be run
 /// through the bare executor and its journal (the `OutputCommitment`, hidden by the Vm) inspected.
-fn build_inputs_blob(tx: &vprogs_l1_types::L1Transaction, resources: &[(bool, Vec<u8>)]) -> Vec<u8> {
+fn build_inputs_blob(
+    tx: &vprogs_l1_types::L1Transaction,
+    resources: &[(bool, Vec<u8>)],
+) -> Vec<u8> {
     use kaspa_consensus_core::hashing::tx::transaction_v1_rest_preimage;
     let rest = transaction_v1_rest_preimage(tx);
     let mut out = Vec::new();
@@ -119,6 +125,7 @@ fn build_inputs_blob(tx: &vprogs_l1_types::L1Transaction, resources: &[(bool, Ve
     out
 }
 
+/// Runs the runtime ELF over `inputs` in the bare executor, returning `(stdout, journal_bytes)`.
 fn exec_with_journal(inputs: &[u8]) -> (Vec<u8>, Vec<u8>) {
     let raw = runtime_processor_elf();
     let elf = risc0_binfmt::ProgramBinary::new(&raw, risc0_zkos_v1compat::V1COMPAT_ELF).encode();
@@ -145,7 +152,10 @@ fn debug_init_guest_error() {
         OutputCommitment::Success { .. } => eprintln!("[debug_init] SUCCESS"),
         OutputCommitment::Error(e) => eprintln!("[debug_init] ERROR: {e:?}"),
     }
-    eprintln!("[debug_init] outputs decode: {:?}", Outputs::decode(&stdout, 1).map(|o| o.storage_ops.len()));
+    eprintln!(
+        "[debug_init] outputs decode: {:?}",
+        Outputs::decode(&stdout, 1).map(|o| o.storage_ops.len())
+    );
 }
 
 #[test]
@@ -174,7 +184,10 @@ fn debug_deposit_guest_error() {
             eprintln!("[debug_deposit] SUCCESS deposit_spk_hash={:02x?}", &deposit_spk_hash[..4]);
             let outs = Outputs::decode(&out, resources.len()).unwrap();
             let user_idx = if alice.user_id() < config_id() { 0 } else { 1 };
-            eprintln!("[debug_deposit] user balance = {:?}", outs.storage_ops[user_idx].as_ref().and_then(|d| user_balance(d)));
+            eprintln!(
+                "[debug_deposit] user balance = {:?}",
+                outs.storage_ops[user_idx].as_ref().and_then(|d| user_balance(d))
+            );
         }
         OutputCommitment::Error(e) => eprintln!("[debug_deposit] ERROR: {e:?}"),
     }
@@ -292,10 +305,7 @@ fn deposit_then_transfer_in_one_block() {
 
     // One block: deposit to Alice, then Alice transfer-creates Bob. The transfer depends on the
     // deposit's write to Alice's resource, so the scheduler orders them.
-    h.commit_block(vec![
-        deposit_tx(cov, &alice, 6_000),
-        transfer_create_tx(&alice, &bob, 2_500),
-    ]);
+    h.commit_block(vec![deposit_tx(cov, &alice, 6_000), transfer_create_tx(&alice, &bob, 2_500)]);
     assert_eq!(h.balance(&alice), Some(3_500), "Alice funded then debited within one block");
     assert_eq!(h.balance(&bob), Some(2_500), "Bob created within one block");
 }

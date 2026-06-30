@@ -4,7 +4,8 @@
 //!
 //! Carriers ride the lane subnetwork ([`TEST_SUBNETWORK_ID`], `TX_VERSION_TOCCATA`) and are funded
 //! from the node's coinbase wallet (the deposit funding output locks real KAS to the covenant
-//! deposit address). Config `Init` is genesis-funded + witness-authorized (see flow-test-issues/01).
+//! deposit address). Config `Init` is genesis-funded + witness-authorized (see
+//! flow-test-issues/01).
 //!
 //! Runs under dev mode (`RISC0_DEV_MODE=1`): the guest executes for real (only the proof is faked).
 
@@ -29,12 +30,12 @@ use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_test_suite::{
-    batch_aggregator_elf, batch_processor_elf, force_covenant_forks, runtime_processor_elf,
+    TEST_SUBNETWORK_ID, batch_aggregator_elf, batch_processor_elf, force_covenant_forks,
     runtime_flow::{
-        deposit_carrier, init_config_carrier, transfer_carrier, transfer_create_carrier,
-        user_balance, withdraw_carrier, RuntimeSigner, EXAMPLE_DEPOSIT_COVENANT_ID,
+        EXAMPLE_DEPOSIT_COVENANT_ID, RuntimeSigner, deposit_carrier, init_config_carrier,
+        transfer_carrier, transfer_create_carrier, user_balance, withdraw_carrier,
     },
-    TEST_SUBNETWORK_ID,
+    runtime_processor_elf,
 };
 use vprogs_zk_vm::{ProvingPipeline, Vm};
 
@@ -93,6 +94,7 @@ fn wait_balance(store: &RocksDbStore, id: ResourceId, expected: u64) {
     }
 }
 
+/// Decoded user balance for `id` in `store`, or `None` if its resource is absent/empty.
 fn read_balance(store: &RocksDbStore, id: ResourceId) -> Option<u64> {
     let data = StateVersion::from_latest_data(store, id).data().clone();
     if data.is_empty() { None } else { user_balance(&data) }

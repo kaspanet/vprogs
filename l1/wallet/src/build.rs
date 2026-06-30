@@ -253,7 +253,9 @@ pub struct SignedCarrierTx<'a, F> {
 /// `rest_preimage` excludes the payload, signature scripts, and mass, so it is stable across the
 /// payload splice and the L1 signing; computing it from the final-output skeleton matches the
 /// submitted transaction.
-pub fn signed_carrier_transaction<F: Fn(&[u8]) -> Vec<u8>>(args: SignedCarrierTx<'_, F>) -> Transaction {
+pub fn signed_carrier_transaction<F: Fn(&[u8]) -> Vec<u8>>(
+    args: SignedCarrierTx<'_, F>,
+) -> Transaction {
     let input = TransactionInput::new(args.outpoint, vec![], 0, 1);
     let change_spk = pay_to_address_script(args.change_address);
     let entries = vec![args.entry.clone()];
@@ -261,8 +263,10 @@ pub fn signed_carrier_transaction<F: Fn(&[u8]) -> Vec<u8>>(args: SignedCarrierTx
 
     let build = |fee: u64, payload: Vec<u8>| {
         let mut outputs = args.extra_outputs.clone();
-        outputs
-            .push(TransactionOutput::new(args.entry.amount - extra_value - fee, change_spk.clone()));
+        outputs.push(TransactionOutput::new(
+            args.entry.amount - extra_value - fee,
+            change_spk.clone(),
+        ));
         let tx = Transaction::new(
             args.tx_version,
             vec![input.clone()],
