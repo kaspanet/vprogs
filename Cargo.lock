@@ -1002,6 +1002,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "base16ct"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c7f02d4ea65f2c1853089ffd8d2787bdbc63de2f0d29dedbcf8ccdfa0ccd4cf"
+
+[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1670,6 +1676,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
+name = "crypto-bigint"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0dc92fb57ca44df6db8059111ab3af99a63d5d0f8375d9972e319a379c6bab76"
+dependencies = [
+ "generic-array",
+ "rand_core 0.6.4",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
 name = "crypto-common"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2089,6 +2107,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
+name = "ecdsa"
+version = "0.16.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee27f32b5c5292967d2d4a9d7f1e0b0aed2c15daded5a60300e4abb9d8020bca"
+dependencies = [
+ "der",
+ "digest 0.10.7",
+ "elliptic-curve",
+ "signature",
+ "spki",
+]
+
+[[package]]
 name = "educe"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2111,6 +2142,25 @@ name = "elf"
 version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4445909572dbd556c457c849c4ca58623d84b27c8fff1e74b0b4227d8b90d17b"
+
+[[package]]
+name = "elliptic-curve"
+version = "0.13.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5e6043086bf7973472e0c7dff2142ea0b680d30e18d9cc40f267efbf222bd47"
+dependencies = [
+ "base16ct",
+ "crypto-bigint",
+ "digest 0.10.7",
+ "ff",
+ "generic-array",
+ "group",
+ "pkcs8",
+ "rand_core 0.6.4",
+ "sec1",
+ "subtle",
+ "zeroize",
+]
 
 [[package]]
 name = "embedded-io"
@@ -2588,6 +2638,7 @@ checksum = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
 dependencies = [
  "typenum",
  "version_check",
+ "zeroize",
 ]
 
 [[package]]
@@ -2679,6 +2730,17 @@ dependencies = [
  "futures-core",
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "group"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0f9ef7462f7c099f518d754361858f86d8a07af53ba9af0fe635bbccb151a63"
+dependencies = [
+ "ff",
+ "rand_core 0.6.4",
+ "subtle",
 ]
 
 [[package]]
@@ -3329,6 +3391,20 @@ checksum = "1cfaf33c695fc6e08064efbc1f72ec937429614f25eef83af942d0e227c3a28f"
 dependencies = [
  "once_cell",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "k256"
+version = "0.13.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6e3919bbaa2945715f0bb6d3934a173d1e9a59ac23767fbaaef277265a7411b"
+dependencies = [
+ "cfg-if",
+ "ecdsa",
+ "elliptic-curve",
+ "once_cell",
+ "sha2",
+ "signature",
 ]
 
 [[package]]
@@ -7003,6 +7079,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
+name = "sec1"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3e97a565f76233a6003f9f5c54be1d9c5bdfa3eccfb189469f11ec4901c47dc"
+dependencies = [
+ "base16ct",
+ "der",
+ "generic-array",
+ "pkcs8",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
 name = "secp256k1"
 version = "0.29.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9165,6 +9255,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-zk-backend-risc0-runtime-processor"
+version = "0.1.0"
+dependencies = [
+ "k256",
+ "risc0-zkvm",
+ "signature",
+ "vprogs-core-codec",
+ "vprogs-core-types",
+ "vprogs-l1-utils",
+ "vprogs-zk-abi",
+ "vprogs-zk-backend-risc0-api",
+ "zerocopy",
+]
+
+[[package]]
 name = "vprogs-zk-backend-risc0-settler"
 version = "0.1.0"
 dependencies = [
@@ -9190,12 +9295,19 @@ dependencies = [
 name = "vprogs-zk-backend-risc0-test-suite"
 version = "0.1.0"
 dependencies = [
+ "k256",
+ "kaspa-addresses",
  "kaspa-consensus-core",
  "kaspa-grpc-client",
  "kaspa-hashes",
  "kaspa-rpc-core",
  "kaspa-seq-commit",
  "kaspa-txscript",
+ "risc0-binfmt",
+ "risc0-zkos-v1compat",
+ "risc0-zkvm",
+ "secp256k1",
+ "signature",
  "tap",
  "tempfile",
  "tokio",
@@ -9204,10 +9316,14 @@ dependencies = [
  "vprogs-core-smt",
  "vprogs-core-test-utils",
  "vprogs-core-types",
+ "vprogs-l1-bridge",
  "vprogs-l1-types",
+ "vprogs-l1-utils",
  "vprogs-l1-wallet",
+ "vprogs-node-framework",
  "vprogs-node-test-utils",
  "vprogs-scheduling-scheduler",
+ "vprogs-state-metadata",
  "vprogs-state-version",
  "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
@@ -9216,6 +9332,7 @@ dependencies = [
  "vprogs-zk-aggregate-prover",
  "vprogs-zk-backend-risc0-api",
  "vprogs-zk-backend-risc0-covenant",
+ "vprogs-zk-backend-risc0-runtime-processor",
  "vprogs-zk-batch-prover",
  "vprogs-zk-transaction-prover",
  "vprogs-zk-vm",
