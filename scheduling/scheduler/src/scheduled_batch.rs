@@ -21,11 +21,12 @@ use crate::{
 
 /// A batch of transactions progressing through the scheduler's lifecycle.
 ///
-/// Each batch moves through three stages: processed (all transactions executed), persisted (all
-/// state diffs written to disk), and committed (batch metadata finalized). When proving is active,
-/// additional latches track asynchronous transaction and batch artifact publication. Callers can
-/// observe progress via the query / `wait_*` methods. A batch may be canceled by a rollback, in
-/// which case the wait methods return immediately.
+/// Each batch moves through two stages: processed (all transactions executed) and committed (batch
+/// metadata finalized). State-diff writes are handed to the storage manager during execution and
+/// land asynchronously under the eventual-consistency model, so there is no separate persist stage.
+/// When proving is active, additional latches track asynchronous transaction and batch artifact
+/// publication. Callers can observe progress via the query / `wait_*` methods. A batch may be
+/// canceled by a rollback, in which case the wait methods return immediately.
 #[smart_pointer]
 pub struct ScheduledBatch<S: Store, P: Processor<S>> {
     /// Cancellation context captured at creation time for rollback detection.
@@ -38,8 +39,7 @@ pub struct ScheduledBatch<S: Store, P: Processor<S>> {
     txs: Vec<ScheduledTransaction<S, P>>,
     /// One state diff per unique resource accessed by this batch.
     state_diffs: Vec<StateDiff<S, P>>,
-    /// Batch artifact (e.g. batch proof receipt), set via
-    /// [`publish_artifact`](Self::publish_artifact).
+    /// Batch artifact (e.g. batch proof receipt), set via `publish_artifact`.
     artifact: ArcSwapOption<P::BatchArtifact>,
     /// Work-stealing queue of transactions ready for execution.
     available_txs: Injector<ManagerTask<S, P>>,
@@ -47,33 +47,31 @@ pub struct ScheduledBatch<S: Store, P: Processor<S>> {
     pending_txs: AtomicU64,
     /// Number of transactions whose artifacts haven't been published yet.
     pending_tx_artifacts: AtomicU64,
-    /// Number of state diff writes not yet persisted to disk.
-    pending_writes: AtomicU64,
     /// Opens when all transactions have been executed.
     processed: AtomicAsyncLatch,
     /// Opens when all transaction artifacts have been published.
     tx_artifacts_published: AtomicAsyncLatch,
-    /// Opens when the batch artifact has been published via
-    /// [`publish_artifact`](Self::publish_artifact).
+    /// Opens when the batch artifact has been published via `publish_artifact`.
     artifact_published: AtomicAsyncLatch,
-    /// Opens when all state diffs have been written to disk.
-    persisted: AtomicAsyncLatch,
     /// Opens when batch metadata has been committed.
     committed: AtomicAsyncLatch,
 }
 
 impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
     /// Returns the checkpoint (index + metadata) identifying this batch.
+    #[inline(always)]
     pub fn checkpoint(&self) -> &Checkpoint<P::BatchMetadata> {
         &self.checkpoint
     }
 
     /// Returns the transactions in this batch.
+    #[inline(always)]
     pub fn txs(&self) -> &[ScheduledTransaction<S, P>] {
         &self.txs
     }
 
     /// Returns the state diffs produced by this batch (one per unique resource).
+    #[inline(always)]
     pub fn state_diffs(&self) -> &[StateDiff<S, P>] {
         &self.state_diffs
     }
@@ -94,21 +92,25 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
     }
 
     /// Returns the number of transactions ready for execution.
+    #[inline(always)]
     pub fn num_available(&self) -> u64 {
         self.available_txs.len() as u64
     }
 
     /// Returns the number of transactions not yet fully executed.
+    #[inline(always)]
     pub fn num_pending(&self) -> u64 {
         self.pending_txs.load(Ordering::Acquire)
     }
 
     /// Returns true if this batch was canceled by a rollback.
+    #[inline(always)]
     pub fn canceled(&self) -> bool {
         self.checkpoint.index() > self.cancellation.threshold()
     }
 
     /// Returns true if all transactions have been executed.
+    #[inline(always)]
     pub fn processed(&self) -> bool {
         self.processed.is_open()
     }
@@ -128,27 +130,8 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         self
     }
 
-    /// Returns true if all state diffs have been written to disk.
-    pub fn persisted(&self) -> bool {
-        self.persisted.is_open()
-    }
-
-    /// Waits until all state diffs have been written to disk, or returns immediately if canceled.
-    pub async fn wait_persisted(&self) {
-        if !self.canceled() {
-            self.persisted.wait().await
-        }
-    }
-
-    /// Blocking version of [`wait_persisted`](Self::wait_persisted).
-    pub fn wait_persisted_blocking(&self) -> &Self {
-        if !self.canceled() {
-            self.persisted.wait_blocking();
-        }
-        self
-    }
-
     /// Returns true if the batch metadata has been committed to disk.
+    #[inline(always)]
     pub fn committed(&self) -> bool {
         self.committed.is_open()
     }
@@ -169,12 +152,12 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
     }
 
     /// Returns true if all transaction artifacts have been published.
+    #[inline(always)]
     pub fn tx_artifacts_published(&self) -> bool {
         self.tx_artifacts_published.is_open()
     }
 
-    /// Waits until all transaction artifacts have been published, or returns immediately if
-    /// canceled.
+    /// Waits until all transaction artifacts are published, or returns immediately if canceled.
     pub async fn wait_tx_artifacts_published(&self) {
         if !self.canceled() {
             self.tx_artifacts_published.wait().await
@@ -189,10 +172,8 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         self
     }
 
-    /// Returns the batch artifact.
-    ///
-    /// # Panics
-    /// Panics if called before [`publish_artifact`](Self::publish_artifact).
+    /// Returns the batch artifact; panics if called before `publish_artifact`.
+    #[inline(always)]
     pub fn artifact(&self) -> Arc<P::BatchArtifact> {
         self.artifact.load_full().expect("batch artifact not ready")
     }
@@ -206,6 +187,7 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
     }
 
     /// Returns true if the batch artifact has been published.
+    #[inline(always)]
     pub fn artifact_published(&self) -> bool {
         self.artifact_published.is_open()
     }
@@ -232,6 +214,7 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         }
     }
 
+    /// Creates the batch, building a scheduled transaction and state diffs for each input.
     pub(crate) fn new(
         scheduler: &mut Scheduler<S, P>,
         txs: Vec<SchedulerTransaction<P::Transaction>>,
@@ -239,15 +222,12 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
     ) -> Self {
         Self(Arc::new_cyclic(|this| {
             let processed = AtomicAsyncLatch::default();
-            let persisted = AtomicAsyncLatch::default();
             let tx_artifacts_published = AtomicAsyncLatch::default();
             let artifact_published = AtomicAsyncLatch::default();
 
-            // An empty batch has nothing to process, persist, or prove - open the latches
-            // immediately so the lifecycle worker can commit it right away.
+            // An empty batch has nothing to process or prove - open the latches immediately.
             if txs.is_empty() {
                 processed.open();
-                persisted.open();
                 tx_artifacts_published.open();
                 artifact_published.open();
             }
@@ -277,17 +257,16 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
                     .collect(),
                 state_diffs,
                 available_txs: Injector::new(),
-                pending_writes: AtomicU64::new(0),
                 processed,
                 tx_artifacts_published,
                 artifact: ArcSwapOption::empty(),
                 artifact_published,
-                persisted,
                 committed: Default::default(),
             }
         }))
     }
 
+    /// Connects each transaction's resources into chains, or makes resource-free txs available.
     pub(crate) fn connect(&self) {
         for tx in self.txs() {
             if tx.resources().is_empty() {
@@ -302,10 +281,13 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         }
     }
 
+    /// Pushes a transaction onto the work-stealing queue of ready transactions.
+    #[inline(always)]
     pub(crate) fn push_available_tx(&self, tx: &ScheduledTransaction<S, P>) {
         self.available_txs.push(ManagerTask::ExecuteTransaction(tx.clone()));
     }
 
+    /// Marks one transaction executed; opens `processed` when the last finishes.
     pub(crate) fn decrease_pending_txs(&self) {
         if self.pending_txs.fetch_sub(1, Ordering::AcqRel) == 1 {
             self.processed.open();
@@ -315,37 +297,24 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
                 self.tx_artifacts_published.open();
                 self.artifact_published.open();
             }
-
-            // Also check if persisted should open (handles case where last TX has no writes)
-            if self.pending_writes.load(Ordering::Acquire) == 0 {
-                self.persisted.open();
-            }
         }
     }
 
+    /// Marks one tx artifact published; opens `tx_artifacts_published` when the last finishes.
     pub(crate) fn decrease_pending_tx_artifacts(&self) {
         if self.pending_tx_artifacts.fetch_sub(1, Ordering::AcqRel) == 1 {
             self.tx_artifacts_published.open();
         }
     }
 
+    /// Submits a write to the storage manager. No-op if canceled.
     pub(crate) fn submit_write(&self, write: Write<S, P>) {
         if !self.canceled() {
-            self.pending_writes.fetch_add(1, Ordering::AcqRel);
             self.state.storage().submit_write(write);
         }
     }
 
-    pub(crate) fn decrease_pending_writes(&self) {
-        if self.pending_writes.fetch_sub(1, Ordering::AcqRel) == 1 {
-            // Double-check: once pending_txs == 0, no new writes can be submitted, so if
-            // pending_writes is still 0, it will stay 0.
-            if self.num_pending() == 0 && self.pending_writes.load(Ordering::Acquire) == 0 {
-                self.persisted.open();
-            }
-        }
-    }
-
+    /// Writes the batch's latest pointers, SMT update, state root, and metadata. No-op if canceled.
     pub(crate) fn commit<ST: Store>(&self, store: &ST, wb: &mut ST::WriteBatch) {
         if !self.canceled() {
             // Write the latest ptr entries for all updated resources.
@@ -361,6 +330,7 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
                 self.checkpoint.index(),
             );
 
+            // Record the new state root, this batch's metadata, and the last-committed pointer.
             StateMetadata::set_state_root(wb, &new_root);
             StoredBatchMetadata::set(wb, self.checkpoint.index(), self.checkpoint.metadata());
             StateMetadata::set_last_committed(wb, &self.checkpoint);
@@ -373,6 +343,7 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         }
     }
 
+    /// Marks the batch committed, updates shared state, and queues its resources for eviction.
     pub(crate) fn commit_done(self) {
         if !self.canceled() {
             // Eagerly update last_committed in the shared state.
@@ -392,6 +363,7 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
 }
 
 impl<S: Store, P: Processor<S>> Batch<ManagerTask<S, P>> for ScheduledBatch<S, P> {
+    /// Steals a ready transaction task for the worker, or None if the queue is empty.
     fn steal_available_tasks(
         &self,
         worker: &Worker<ManagerTask<S, P>>,
@@ -405,6 +377,8 @@ impl<S: Store, P: Processor<S>> Batch<ManagerTask<S, P>> for ScheduledBatch<S, P
         }
     }
 
+    /// Returns true when no transactions are pending or available.
+    #[inline(always)]
     fn is_depleted(&self) -> bool {
         self.num_pending() == 0 && self.available_txs.is_empty()
     }
