@@ -282,7 +282,7 @@ mod tests {
     #[test]
     fn resolve_applies_defaults() {
         let cfg = minimal_raw().resolve().unwrap();
-        assert_eq!(cfg.seed_depth, 100);
+        assert_eq!(cfg.seed_depth, 200);
         assert!(!cfg.prove);
         assert_eq!(cfg.data_dir, PathBuf::from("./vprun-data"));
         assert_eq!(cfg.start_mode, None);
