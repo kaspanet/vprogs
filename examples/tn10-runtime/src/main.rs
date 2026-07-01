@@ -79,7 +79,15 @@ async fn main() {
     let covenant_id: [u8; 32] = handles.covenant_id.as_bytes();
     let lane_subnet = handles.lane_subnet;
 
-    spawn_driver(client.clone(), params.clone(), keypair, lane_subnet, covenant_id, cfg);
+    // Follower mode (`TN10RT_ISSUE=0`): only fetch/execute/settle the covenant, do not issue the
+    // action pass. A multi-node demo runs one issuer and one or more followers on the same covenant,
+    // so the followers do not duplicate the once-only Init or contend on the same accounts.
+    let issue = std::env::var("TN10RT_ISSUE").map(|v| v != "0").unwrap_or(true);
+    if issue {
+        spawn_driver(client.clone(), params.clone(), keypair, lane_subnet, covenant_id, cfg);
+    } else {
+        log::info!("follower mode (TN10RT_ISSUE=0): settling without issuing actions");
+    }
 
     println!("== tn10-runtime driver: lane={} ==", handles.lane_id);
     println!("watch RUST_LOG trace for vprogs_node_framework and vprogs_zk_vm (decoded state)");

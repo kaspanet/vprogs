@@ -2,10 +2,13 @@
 # monitor.sh <logA> <logB> [duration_secs] [pidA] [pidB]
 #
 # Every ~10s prints a one-line health summary per node parsed from its log:
-#   blocks (chain-block batches processed), acts (activity txs issued),
-#   settle (settlements/bundles), reorgs, plus PANIC/ERROR detection.
-# Flags a node that has DIED (pid gone), PANICKED, or STALLED (no new blocks
-# in ~STALL_SECS). Prints a final PASS/FAIL verdict per node on exit.
+#   blocks (chain-block batches processed), acts (runtime actions issued: Init/Deposit/Transfer/
+#   Withdraw), settle (settlements/bundles), reorgs, plus PANIC/ERROR detection. Flags a node that
+#   has DIED (pid gone), PANICKED, or STALLED (no new blocks in ~STALL_SECS). Prints a final
+#   PASS/FAIL verdict per node plus a cross-node covenant-consistency check on exit.
+#
+# The follower node (B) issues no actions by design, so its `acts` stays 0; the consistency line is
+# what proves B settled A's covenant rather than forking its own.
 #
 # Standalone-usable; run-demo.sh invokes it with the live pids so DIED is real.
 
@@ -21,30 +24,25 @@ INTERVAL=10
 STALL_SECS=60
 
 # --- grep patterns (verified against source) ---------------------------------
-# A "block batch processed" is the framework per-block trace OR the bridge's
-# "processing N new chain blocks" line. We count both kinds of evidence.
 PAT_BLOCK='block idx=|L1 bridge: processing [0-9]+ new chain blocks'
-PAT_ACT='issued activity tx '
+# Runtime action issuance the driver logs (main.rs spawn_driver).
+PAT_ACT='issued Init config tx |issued Deposit for account |issued Transfer |issued Withdraw '
 PAT_SETTLE='submitted settlement |settlement [0-9a-f]+ confirmed|adopted external settlement|proved bundle through'
 PAT_REORG='reorg detected|reorg: rolled back'
 PAT_PANIC='panicked at|covenant outpoint .* not confirmed within timeout|settlement submit rejected'
 PAT_ERROR=' ERROR | bridge fatal error|rollback to .* failed'
 PAT_CONNECT='L1 bridge connected'
-PAT_CATCHUP='resolving existing covenant|bootstrap covenant .* confirmed'
-PAT_BOOTSTRAP='covenant .* bootstrapped|covenant .* ready'
 
 count() { grep -aE "$1" "$2" 2>/dev/null | wc -l | tr -d ' '; }
-last()  { grep -aE "$1" "$2" 2>/dev/null | tail -1; }
 
 # Extract the 64-hex covenant id each node logs:
-#   A (settlement bootstrap): "covenant <64hex> ready"
-#   B (catchup):              "resolving existing covenant <64hex>"
+#   A (issuer bootstrap): "covenant <64hex> ready"
+#   B (follower catchup): "resolving existing covenant <64hex>"
 covenant_id() { # covenant_id <log>
   grep -aoE 'covenant ([0-9a-f]{64}) ready|resolving existing covenant ([0-9a-f]{64})' "$1" 2>/dev/null \
     | grep -aoE '[0-9a-f]{64}' | tail -1
 }
 
-# Print the cross-node consistency line and (via globals) set FAIL reasons.
 CONSIST_FAIL=""
 consistency() { # consistency  (uses LOGA/LOGB globals)
   local covA covB match settleA settleB
@@ -70,12 +68,10 @@ alive() { # alive <pid>  -> echo yes/no/?  (? when no pid given)
   kill -0 "$pid" 2>/dev/null && echo yes || echo no
 }
 
-# Per-node rolling state for stall detection.
 declare -A LAST_BLOCKS LAST_BLOCK_TS
 LAST_BLOCKS[A]=0; LAST_BLOCKS[B]=0
 NOW=$(date +%s); LAST_BLOCK_TS[A]=$NOW; LAST_BLOCK_TS[B]=$NOW
 
-# Persistent health flags accumulated across the run for the final verdict.
 declare -A EVER_CONNECTED EVER_PANIC STALLED DIED
 for n in A B; do EVER_CONNECTED[$n]=0; EVER_PANIC[$n]=0; STALLED[$n]=0; DIED[$n]=0; done
 
@@ -97,7 +93,6 @@ summarize_node() { # summarize_node <name> <log> <pid>
   [ "$conn" -gt 0 ] && EVER_CONNECTED[$name]=1
   [ "$panics" -gt 0 ] && EVER_PANIC[$name]=1
 
-  # stall: block count not advancing for STALL_SECS
   if [ "$blocks" -gt "${LAST_BLOCKS[$name]}" ]; then
     LAST_BLOCKS[$name]=$blocks
     LAST_BLOCK_TS[$name]=$now
@@ -120,8 +115,8 @@ summarize_node() { # summarize_node <name> <log> <pid>
 
 START=$(date +%s)
 echo "=== monitor start (duration ${DURATION}s, tick ${INTERVAL}s, stall ${STALL_SECS}s) ==="
-echo "    A=$LOGA  pidA=${PIDA:-none}"
-echo "    B=$LOGB  pidB=${PIDB:-none}"
+echo "    A=$LOGA  pidA=${PIDA:-none}  (issuer)"
+echo "    B=$LOGB  pidB=${PIDB:-none}  (follower)"
 
 while :; do
   now=$(date +%s); elapsed=$(( now - START ))
@@ -130,7 +125,6 @@ while :; do
   summarize_node A "$LOGA" "$PIDA"
   summarize_node B "$LOGB" "$PIDB"
   consistency
-  # stop early if both processes are gone
   if [ -n "$PIDA" ] && [ -n "$PIDB" ]; then
     if [ "$(alive "$PIDA")" = no ] && [ "$(alive "$PIDB")" = no ]; then
       echo "both processes gone; ending monitor early"; break
@@ -139,9 +133,9 @@ while :; do
   sleep "$INTERVAL"
 done
 
-verdict() { # verdict <name> <log> <pid> ; assumes summarize was run at least once
+verdict() { # verdict <name> <log> <pid>
   local name="$1" log="$2" pid="$3"
-  summarize_node "$name" "$log" "$pid" >/dev/null  # refresh flags
+  summarize_node "$name" "$log" "$pid" >/dev/null
   local pass=1 reasons=""
   if [ "${EVER_CONNECTED[$name]}" -ne 1 ]; then pass=0; reasons+=" never-connected"; fi
   if [ "${EVER_PANIC[$name]}" -eq 1 ];     then pass=0; reasons+=" panicked"; fi
