@@ -31,13 +31,13 @@ use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_smt::EMPTY_HASH;
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId};
+use vprogs_l1_types::{L1TransactionCovenantExt, SettlementInfo};
+use vprogs_l1_wallet::encode_activity_payload;
+use vprogs_node_test_utils::L1Node;
 use vprogs_runner::{
     BridgeObservers, BridgeParams, Elfs, ProvingParams, RunnerNode, RunnerStore, SettlementQueue,
     build_proving_node,
 };
-use vprogs_l1_types::{L1TransactionCovenantExt, SettlementInfo};
-use vprogs_l1_wallet::encode_activity_payload;
-use vprogs_node_test_utils::L1Node;
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_settler::{
     AlternationPacer, CovenantState, SettlementMode, SettlementWorkerConfig, dev_bootstrap_redeem,

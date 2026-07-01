@@ -1,6 +1,7 @@
 //! Tiny JSON state file holding the lane id and covenant id so they survive restarts and can be
 //! reused. Load precedence (resolved in [`start`](crate::start)): storage > config > (random for
-//! lane / bootstrap for covenant). Kept separate from the RocksDB dir so it stays human-inspectable.
+//! lane / bootstrap for covenant). Kept separate from the RocksDB dir so it stays
+//! human-inspectable.
 
 use std::path::{Path, PathBuf};
 

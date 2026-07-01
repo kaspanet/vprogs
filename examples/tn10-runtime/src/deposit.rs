@@ -13,6 +13,7 @@
 //! The pure [`deposit_funding_rest_preimage`] is also reused by the direct-guest test to synthesize
 //! the funding-output preimage without an L1 node.
 
+use kaspa_addresses::Address;
 use kaspa_consensus_core::{
     config::params::Params,
     constants::TX_VERSION_TOCCATA,
@@ -25,7 +26,6 @@ use kaspa_consensus_core::{
         TransactionOutpoint, TransactionOutput, UtxoEntry,
     },
 };
-use kaspa_addresses::Address;
 use kaspa_txscript::{pay_to_address_script, standard::pay_to_script_hash_script};
 use secp256k1::Keypair;
 use vprogs_l1_wallet::build::commit_storage_mass;
@@ -186,7 +186,12 @@ pub fn build_lane_action_transaction(args: LaneActionTx<'_>) -> Transaction {
     let placeholder = vec![0u8; payload_len];
     let probe = build(0, placeholder.clone());
     let fee = min_fee(args.params, &probe, &entries);
-    assert!(args.entry.amount > fee, "funding UTXO {} too small for fee {}", args.entry.amount, fee);
+    assert!(
+        args.entry.amount > fee,
+        "funding UTXO {} too small for fee {}",
+        args.entry.amount,
+        fee
+    );
 
     // Rest excludes payload/sig-scripts/mass, so this funded skeleton's rest is final.
     let funded_skeleton = build(fee, placeholder);

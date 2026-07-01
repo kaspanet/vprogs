@@ -39,7 +39,8 @@ impl Config {
             SecretKey::from_str(hex.trim())
                 .expect("TN10RT_PRIVATE_KEY must be a 32-byte hex secp256k1 key")
         };
-        let lane_id = opt("TN10RT_LANE_ID").map(|s| s.parse().expect("TN10RT_LANE_ID must be a u32"));
+        let lane_id =
+            opt("TN10RT_LANE_ID").map(|s| s.parse().expect("TN10RT_LANE_ID must be a u32"));
         let covenant_id = opt("TN10RT_COVENANT_ID")
             .map(|s| Hash::from_str(s.trim()).expect("TN10RT_COVENANT_ID must be 32-byte hex"));
         let bootstrap_txid = opt("TN10RT_BOOTSTRAP_TXID")
@@ -58,8 +59,8 @@ impl Config {
             wrpc_url,
             private_key,
             network_id,
-            // The example loads its guest ELFs via the test-suite loaders and hands the bytes to the
-            // runner directly, so it carries no ELF paths.
+            // The example loads its guest ELFs via the test-suite loaders and hands the bytes to
+            // the runner directly, so it carries no ELF paths.
             program_elf: None,
             batch_elf: None,
             aggregator_elf: None,

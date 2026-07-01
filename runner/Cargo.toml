@@ -75,22 +75,27 @@ figment = { workspace = true, features = ["test"] }
 # settlement stack directly, so it depends on every crate it imports by name (integration tests see
 # only the public API plus dev-deps). Crates already in `[dependencies]` are re-declared here so the
 # test's extern prelude resolves them regardless; Cargo dedups.
-kaspa-addresses      = { workspace = true }
+kaspa-addresses = { workspace = true }
 kaspa-consensus-core = { workspace = true }
-kaspa-hashes         = { workspace = true }
-kaspa-rpc-core       = { workspace = true }
-kaspa-txscript       = { workspace = true }
-kaspa-wrpc-client    = { workspace = true }
-secp256k1            = { workspace = true }
-tempfile            = { workspace = true }
-tokio               = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
-vprogs-core-atomics                = { workspace = true }
-vprogs-core-smt                    = { workspace = true }
-vprogs-core-test-utils             = { workspace = true }
-vprogs-core-types                  = { workspace = true }
-vprogs-l1-types                    = { workspace = true }
-vprogs-l1-wallet                   = { workspace = true }
-vprogs-node-test-utils             = { workspace = true }
+kaspa-hashes = { workspace = true }
+kaspa-rpc-core = { workspace = true }
+kaspa-txscript = { workspace = true }
+kaspa-wrpc-client = { workspace = true }
+secp256k1 = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = [
+  "rt-multi-thread",
+  "macros",
+  "time",
+  "sync",
+] }
+vprogs-core-atomics = { workspace = true }
+vprogs-core-smt = { workspace = true }
+vprogs-core-test-utils = { workspace = true }
+vprogs-core-types = { workspace = true }
+vprogs-l1-types = { workspace = true }
+vprogs-l1-wallet = { workspace = true }
+vprogs-node-test-utils = { workspace = true }
 # Do NOT enable the settler's `test-utils` here: a dev-dep feature is unified into every dev/test
 # build, which would activate the settler's `alternation` field while the runner's own `test-utils`
 # gate (in `start.rs`) stays off, breaking `cargo test --lib`. The runner's `test-utils` feature

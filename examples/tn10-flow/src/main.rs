@@ -37,15 +37,16 @@ async fn main() {
     let cfg = Config::from_env();
     let network_id = cfg.runner.network_id;
 
-    // Network params, used off-chain only for mass calculation and lane-key derivation; never pushed
-    // to the node (the remote fork node runs its own params, with the covenant forks active).
+    // Network params, used off-chain only for mass calculation and lane-key derivation; never
+    // pushed to the node (the remote fork node runs its own params, with the covenant forks
+    // active).
     let params = Params::from(network_id);
     let client = connect_wrpc(&cfg.runner.wrpc_url, network_id).await;
     log::info!("connected to {}", cfg.runner.wrpc_url);
 
     let keypair = Keypair::from_secret_key(secp256k1::SECP256K1, &cfg.runner.private_key);
-    // This example runs the trivial transaction-processor guest; a program-agnostic run uses `vprun`
-    // with `--program-elf`.
+    // This example runs the trivial transaction-processor guest; a program-agnostic run uses
+    // `vprun` with `--program-elf`.
     let tx_elf = transaction_processor_elf();
     let batch_elf = batch_processor_elf();
     let aggregator_elf = batch_aggregator_elf();
@@ -99,12 +100,12 @@ async fn main() {
     }
 }
 
-/// Spawns the background activity issuer: every `interval_ms`, build and submit one lane transaction
-/// that writes the tracked resource, until `count` is reached (0 = unbounded).
+/// Spawns the background activity issuer: every `interval_ms`, build and submit one lane
+/// transaction that writes the tracked resource, until `count` is reached (0 = unbounded).
 ///
-/// In settlement mode the issuer shares the funding key with the covenant bootstrap and the settler;
-/// both pick the largest spendable UTXO, so a tight activity cadence can contend with settlement
-/// funding. Keep the cadence modest (or fund a dedicated key) for settlement runs.
+/// In settlement mode the issuer shares the funding key with the covenant bootstrap and the
+/// settler; both pick the largest spendable UTXO, so a tight activity cadence can contend with
+/// settlement funding. Keep the cadence modest (or fund a dedicated key) for settlement runs.
 #[allow(clippy::too_many_arguments)]
 fn spawn_issuer(
     client: KaspaRpcClient,
@@ -172,8 +173,8 @@ fn spawn_issuer(
 }
 
 /// The single resource every activity transaction on `lane_id` writes to. Derived from the lane id
-/// via [`ResourceIdExt::for_test`] so the counter is stable across restarts and matches the lane key
-/// the prover and settlement use.
+/// via [`ResourceIdExt::for_test`] so the counter is stable across restarts and matches the lane
+/// key the prover and settlement use.
 fn tracked_resource(lane_id: u32) -> ResourceId {
     ResourceId::for_test(lane_id as usize)
 }

@@ -31,8 +31,8 @@ use vprogs_zk_backend_risc0_test_suite::dev_mode_enabled;
 use crate::{
     config::{RunnerConfig, StartMode},
     node::{
-        BridgeObservers, BridgeParams, Elfs, ProvingParams, RunnerNode, RunnerStore, SettlementQueue,
-        build_exec_node, build_proving_node,
+        BridgeObservers, BridgeParams, Elfs, ProvingParams, RunnerNode, RunnerStore,
+        SettlementQueue, build_exec_node, build_proving_node,
     },
     persistence::PersistedState,
     report::spawn_sync_reporter,
@@ -78,8 +78,8 @@ pub enum StartError {
     DataDirNotClean(std::path::PathBuf),
 }
 
-/// Resolves the effective start mode: explicit when set, else resume if the data dir already holds a
-/// covenant identity, else fresh.
+/// Resolves the effective start mode: explicit when set, else resume if the data dir already holds
+/// a covenant identity, else fresh.
 fn effective_mode(cfg: &RunnerConfig, persisted: &PersistedState) -> StartMode {
     cfg.start_mode.unwrap_or({
         if persisted.covenant_id.is_some() { StartMode::Resume } else { StartMode::Fresh }
@@ -106,14 +106,32 @@ pub async fn start_runner(
     log::info!("lane id={lane_id} subnetwork={lane_subnet} mode={mode:?}");
 
     if cfg.prove {
-        let (node, settler, covenant_id) =
-            start_settlement(cfg, client, params, keypair, lane_subnet, lane_key, elfs, mode, &mut persisted)
-                .await?;
+        let (node, settler, covenant_id) = start_settlement(
+            cfg,
+            client,
+            params,
+            keypair,
+            lane_subnet,
+            lane_key,
+            elfs,
+            mode,
+            &mut persisted,
+        )
+        .await?;
         Ok(RunnerHandles { node, settler: Some(settler), lane_id, lane_subnet, covenant_id })
     } else {
-        let (node, covenant_id) =
-            start_exec(cfg, client, params, keypair, lane_subnet, lane_key, elfs, mode, &mut persisted)
-                .await?;
+        let (node, covenant_id) = start_exec(
+            cfg,
+            client,
+            params,
+            keypair,
+            lane_subnet,
+            lane_key,
+            elfs,
+            mode,
+            &mut persisted,
+        )
+        .await?;
         Ok(RunnerHandles { node, settler: None, lane_id, lane_subnet, covenant_id })
     }
 }
@@ -132,29 +150,50 @@ async fn start_exec(
     mode: StartMode,
     persisted: &mut PersistedState,
 ) -> Result<(RunnerNode, Hash), StartError> {
-    let covenant_id = match mode {
-        StartMode::Resume => persisted
-            .covenant_hash()
-            .ok_or_else(|| StartError::NoPersistedState(cfg.data_dir.clone()))?,
-        StartMode::Catchup => cfg.covenant_id.ok_or(StartError::NoCovenantId)?,
+    // Resolve the covenant id and the seed block per mode. `seed` is the L1 block the bridge
+    // rebuilds decoded state forward from; a catch-up that seeds only `seed_depth` below the
+    // tip misses lane history and reconstructs wrong state, so catch-up requires an explicit
+    // deploy block just like the settlement path.
+    let (covenant_id, seed) = match mode {
+        StartMode::Resume => {
+            let covenant_id = persisted
+                .covenant_hash()
+                .ok_or_else(|| StartError::NoPersistedState(cfg.data_dir.clone()))?;
+            (covenant_id, persisted.bootstrap_block().or(cfg.start_from))
+        }
+        StartMode::Catchup => {
+            let covenant_id = cfg.covenant_id.ok_or(StartError::NoCovenantId)?;
+            let seed = persisted
+                .bootstrap_block()
+                .or(cfg.start_from)
+                .ok_or(StartError::CatchupNeedsStartFrom(covenant_id))?;
+            (covenant_id, Some(seed))
+        }
         StartMode::Fresh => {
             if persisted.covenant_id.is_some() {
                 return Err(StartError::DataDirNotClean(cfg.data_dir.clone()));
             }
+            // Capture the node's selected tip before bootstrap: a real chain block at or just
+            // before the deploy block, seeded so a later resume replays forward from
+            // the deploy.
+            let seed_block = client.get_block_dag_info().await.expect("get_block_dag_info").sink;
             let wallet = Wallet::new(client, params, keypair);
             log::info!("bootstrapping dev covenant; issuer address {}", wallet.address());
             let (covenant, bootstrap_txid) =
                 bootstrap_dev_covenant(&wallet, lane_key, COVENANT_VALUE).await;
             persisted.bootstrap_txid = Some(bootstrap_txid.to_string());
             log::info!("covenant {} bootstrapped (tx {})", covenant.covenant_id, bootstrap_txid);
-            covenant.covenant_id
+            (covenant.covenant_id, Some(seed_block))
         }
     };
-    // Persist the resolved id and any supplied bootstrap anchor so a catch-up becomes a plain resume
-    // on the next restart.
+    // Persist the resolved id, any supplied bootstrap anchor, and the seed block so a catch-up (or
+    // a fresh deploy) becomes a plain resume on the next restart without re-supplying them.
     persisted.covenant_id.get_or_insert_with(|| covenant_id.to_string());
     if let Some(txid) = cfg.bootstrap_txid {
         persisted.bootstrap_txid.get_or_insert_with(|| txid.to_string());
+    }
+    if let Some(seed) = seed {
+        persisted.bootstrap_block_hash.get_or_insert_with(|| seed.to_string());
     }
     persisted.save(&cfg.data_dir);
 
@@ -165,15 +204,22 @@ async fn start_exec(
     let node = build_exec_node(
         elfs,
         store,
-        bridge_params(cfg, lane_subnet, covenant_id, params, start_from, BridgeObservers::default()),
+        bridge_params(
+            cfg,
+            lane_subnet,
+            covenant_id,
+            params,
+            start_from,
+            BridgeObservers::default(),
+        ),
     );
     Ok((node, covenant_id))
 }
 
 /// Builds the proving + settlement node per the start mode: fresh bootstrap (dev-pins under
-/// `RISC0_DEV_MODE`, real-pins otherwise), resume from persisted identity, or catch up to an existing
-/// covenant (reconstructing its initial state). Wires the batch prover over the remote node and
-/// spawns the settler on the node's batch sink.
+/// `RISC0_DEV_MODE`, real-pins otherwise), resume from persisted identity, or catch up to an
+/// existing covenant (reconstructing its initial state). Wires the batch prover over the remote
+/// node and spawns the settler on the node's batch sink.
 #[allow(clippy::too_many_arguments)]
 async fn start_settlement(
     cfg: &RunnerConfig,
@@ -212,14 +258,18 @@ async fn start_settlement(
         StartMode::Catchup => {
             let covenant_id = cfg.covenant_id.ok_or(StartError::NoCovenantId)?;
             // A fresh catch-up without a deploy block seeds only `seed_depth` below the sink, which
-            // loses pre-seed lane history and corrupts the reconstructed seq commit. There is no RPC
-            // to resolve a tx's containing block, so fail fast instead of seeding from the wrong
-            // height.
+            // loses pre-seed lane history and corrupts the reconstructed seq commit. There is no
+            // RPC to resolve a tx's containing block, so fail fast instead of seeding
+            // from the wrong height.
             let start_from = persisted
                 .bootstrap_block()
                 .or(cfg.start_from)
                 .ok_or(StartError::CatchupNeedsStartFrom(covenant_id))?;
-            Some((covenant_id, Some(start_from), cfg.bootstrap_txid.or_else(|| persisted.bootstrap_txid())))
+            Some((
+                covenant_id,
+                Some(start_from),
+                cfg.bootstrap_txid.or_else(|| persisted.bootstrap_txid()),
+            ))
         }
         StartMode::Fresh => {
             if persisted.covenant_id.is_some() {
@@ -232,8 +282,11 @@ async fn start_settlement(
     let (covenant, bootstrap_txid) = if let Some((covenant_id, _seed, bootstrap_txid)) = resolved {
         // Same redeem builder bootstrap uses, so the reconstructed P2SH SPK matches the on-chain
         // covenant UTXO (asserted at the first settlement).
-        let (_redeem, spk) =
-            if dev { dev_bootstrap_redeem(&lane_key) } else { bootstrap_redeem(&backend, &lane_key) };
+        let (_redeem, spk) = if dev {
+            dev_bootstrap_redeem(&lane_key)
+        } else {
+            bootstrap_redeem(&backend, &lane_key)
+        };
         // Real bootstrap outpoint if known, so a resumed never-settled covenant still confirms its
         // real bootstrap UTXO; else a placeholder the settler replaces on adoption when the
         // bootstrap is already spent.
@@ -261,11 +314,17 @@ async fn start_settlement(
         };
         (covenant, bootstrap_txid)
     } else if dev {
-        log::info!("settlement mode (dev): bootstrapping dev-pins covenant; issuer {}", wallet.address());
+        log::info!(
+            "settlement mode (dev): bootstrapping dev-pins covenant; issuer {}",
+            wallet.address()
+        );
         let (covenant, txid) = bootstrap_dev_covenant(&wallet, lane_key, COVENANT_VALUE).await;
         (covenant, Some(txid))
     } else {
-        log::info!("settlement mode: bootstrapping real-pins covenant; issuer {}", wallet.address());
+        log::info!(
+            "settlement mode: bootstrapping real-pins covenant; issuer {}",
+            wallet.address()
+        );
         let (covenant, txid) =
             bootstrap_real_covenant(&wallet, &backend, lane_key, COVENANT_VALUE).await;
         (covenant, Some(txid))
@@ -294,11 +353,12 @@ async fn start_settlement(
     // settlement worker pops from it and settles on chain.
     let queue = SettlementQueue::new();
     let store = RunnerStore::open(cfg.data_dir.join("db"));
-    // The bridge replays from the pruning point and publishes its tip DAA here; a reporter task polls
-    // it against the bootstrap's DAA to log how far the catch-up has progressed.
+    // The bridge replays from the pruning point and publishes its tip DAA here; a reporter task
+    // polls it against the bootstrap's DAA to log how far the catch-up has progressed.
     let tip_daa = Arc::new(AtomicU64::new(0));
-    // Live settlement channel: the bridge (writer) publishes the covenant's last on-chain settlement
-    // here; the settler (reader) detects a competitor advancing past its in-memory tip.
+    // Live settlement channel: the bridge (writer) publishes the covenant's last on-chain
+    // settlement here; the settler (reader) detects a competitor advancing past its in-memory
+    // tip.
     let (settlement_tx, settlement_rx) = watch::channel(None::<SettlementInfo>);
     let node = build_proving_node(
         elfs,
@@ -320,8 +380,8 @@ async fn start_settlement(
             settlement_rx: Some(settlement_rx.clone()),
         },
     );
-    // Target the bridge replays toward: the node's virtual DAA now. Captured once; the reporter loop
-    // only reads the tip atomic.
+    // Target the bridge replays toward: the node's virtual DAA now. Captured once; the reporter
+    // loop only reads the tip atomic.
     let target_daa =
         client.get_block_dag_info().await.expect("get_block_dag_info").virtual_daa_score;
     spawn_sync_reporter(tip_daa, target_daa);

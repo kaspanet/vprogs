@@ -115,7 +115,10 @@ async fn main() {
     };
 
     let mode = if prove { "settlement" } else { "exec" };
-    println!("== vprun {mode} daemon: lane={} covenant={} ==", handles.lane_id, handles.covenant_id);
+    println!(
+        "== vprun {mode} daemon: lane={} covenant={} ==",
+        handles.lane_id, handles.covenant_id
+    );
     println!(
         "watch RUST_LOG trace for vprogs_node_framework (blocks/reorgs/settlements) and \
          vprogs_zk_vm (decoded state)"

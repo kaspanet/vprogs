@@ -2,7 +2,7 @@
 //! that drives the pre-built `runtime-processor` ELF through the risc0 executor, exactly as the
 //! guest's own e2e suite does. It threads real resource bytes between steps
 //! (Init → Deposit → Deposit → Transfer → Withdraw), so every byte the shared [`actions`] encoders
-//! produce is fed back into the guest — this is what proves the port is faithful.
+//! produce is fed back into the guest; this is what proves the port is faithful.
 //!
 //! Run with dev mode: `RISC0_DEV_MODE=1 cargo test -p vprogs-example-tn10-runtime --test
 //! runtime_actions`.
@@ -83,9 +83,13 @@ fn run_deposit(
     decoded.storage_ops[user_idx as usize].clone().expect("user created")
 }
 
-/// Builds a config blob locked by the genesis Schnorr key, the seed the `is_new` config slot
-/// carries so Init's signer can resolve the genesis pubkey. Its committed values are irrelevant —
-/// `apply_init` overwrites them.
+/// Builds a config blob locked by the genesis Schnorr key. Init's signer resolves the genesis
+/// pubkey by reading the target config resource's lock, so the still-`is_new` config slot must
+/// already carry a genesis-locked blob; `apply_init` then overwrites its committed values.
+///
+/// This is a TEST-ONLY seed. Nothing in the scheduler/storage/node layers seeds an empty config
+/// slot with this blob, so the live `Init` path cannot resolve its signer yet. See the TODO on the
+/// driver's Init step in `main.rs`.
 fn genesis_seeded_config() -> Vec<u8> {
     let lock = LockEnum::Schnorr(SchnorrLockView { pubkey: &GENESIS_SCHNORR_BYTES });
     let mut buf = vec![0u8; config_total_len(&lock)];
@@ -101,8 +105,9 @@ fn full_lifecycle_init_deposit_transfer_withdraw() {
     // 1) Init the singleton config under the genesis key, committing the covenant id.
     //
     // Signer resolution reads the target's Schnorr lock to verify the genesis signature, so the
-    // still-`is_new` config slot is presented seeded with a genesis-locked config blob (the
-    // framework provides this seed for the first Init); `apply_init` then overwrites it in full.
+    // still-`is_new` config slot is presented seeded with a genesis-locked config blob;
+    // `apply_init` then overwrites it in full. This seed is supplied here by the test only; see
+    // `genesis_seeded_config` and the driver's Init TODO.
     let genesis = actions::genesis_signer();
     let init_presig = actions::init_presig(min_withdrawal, &COVENANT_ID);
     let init_payload = actions::finish_signed_payload(init_presig, &genesis, &[]);
@@ -110,9 +115,7 @@ fn full_lifecycle_init_deposit_transfer_withdraw() {
     let genesis_seed = genesis_seeded_config();
     let init_inputs = actions::encode_inputs(0, [0u8; 32], &init_tx, &[(true, 0, genesis_seed)]);
     let init_out = execute_guest(&elf, &init_inputs);
-    let config_bytes = Outputs::decode(&init_out, 1)
-        .expect("Init succeeded")
-        .storage_ops[0]
+    let config_bytes = Outputs::decode(&init_out, 1).expect("Init succeeded").storage_ops[0]
         .clone()
         .expect("config created");
     {

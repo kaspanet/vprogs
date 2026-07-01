@@ -114,13 +114,13 @@ resolver = "3"
   risc0-circuit-recursion = { version = "4.0", default-features = false }
   risc0-groth16 = "3.0.3"
   risc0-zkos-v1compat = "2.2.2"
-  signature = { version = "2", default-features = false }
   risc0-zkvm = { version = "3.0", default-features = false }
   rkyv = { version = "0.8", default-features = false, features = [
     "alloc",
     "bytecheck",
   ] }
   sha2 = { version = "0.10", default-features = false }
+  signature = { version = "2", default-features = false }
 
   # Kaspa dependencies — pinned to `kaspanet/rusty-kaspa` master (v2.0.x). Master now carries
   # `fix(rpc/vspcv2): covenant field was missing from tx outputs` (#1056), which populates the

@@ -1,15 +1,18 @@
 //! Background L1 catch-up progress reporter.
 
 use std::{
-    sync::{Arc, atomic::{AtomicU64, Ordering}},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
-/// Spawns a background task that logs L1 catch-up progress while the bridge replays from the pruning
-/// point toward the present. `target_daa` is the node's virtual DAA captured once right after the
-/// bootstrap tx was sent (≈ the block the bootstrap lands in); the task polls the bridge's published
-/// `tip_daa` every few seconds and logs a percentage until the tip reaches it. The loop does no RPC;
-/// it only reads the atomic.
+/// Spawns a background task that logs L1 catch-up progress while the bridge replays from the
+/// pruning point toward the present. `target_daa` is the node's virtual DAA captured once right
+/// after the bootstrap tx was sent (≈ the block the bootstrap lands in); the task polls the
+/// bridge's published `tip_daa` every few seconds and logs a percentage until the tip reaches it.
+/// The loop does no RPC; it only reads the atomic.
 pub fn spawn_sync_reporter(tip_daa: Arc<AtomicU64>, target_daa: u64) {
     const POLL: Duration = Duration::from_secs(5);
     tokio::spawn(async move {

@@ -6,7 +6,8 @@
 //! interpretation of the spec. Two layers live here:
 //!
 //! - **Low-level section encoders** (`encode_*`, [`encode_inputs`], [`TestSigner`]): the raw
-//!   building blocks, byte-for-byte identical to e2e. The direct-guest acceptance test drives these.
+//!   building blocks, byte-for-byte identical to e2e. The direct-guest acceptance test drives
+//!   these.
 //! - **Driver builders** ([`init_presig`], [`transfer_presig`], [`withdraw_presig`],
 //!   [`deposit_payload`], [`finish_signed_payload`]): higher-level helpers that assemble a whole
 //!   lane-transaction payload for one action, sorting resources by id and computing each action's
@@ -62,7 +63,11 @@ pub fn encode_schnorr_signer(resource_idx: u8, sig_offset: u32) -> Vec<u8> {
 
 /// Multisig Schnorr signer entry:
 /// `resource_idx(1) || kind(1) || pubkey_idx(1) || sig_offset(4)`.
-pub fn encode_multisig_schnorr_signer(resource_idx: u8, pubkey_idx: u8, sig_offset: u32) -> Vec<u8> {
+pub fn encode_multisig_schnorr_signer(
+    resource_idx: u8,
+    pubkey_idx: u8,
+    sig_offset: u32,
+) -> Vec<u8> {
     let mut out = Vec::new();
     out.push(resource_idx);
     out.push(MultisigSchnorrSigPtrSigner::TAG);
@@ -130,7 +135,11 @@ pub fn encode_transfer_create_action(
 }
 
 /// Encodes one Deposit action: `tag || user_idx(1) || output_idx(4 LE) || initial_lock(tag+body)`.
-pub fn encode_deposit_action(user_idx: u8, output_idx: u32, initial_lock: &LockEnum<'_>) -> Vec<u8> {
+pub fn encode_deposit_action(
+    user_idx: u8,
+    output_idx: u32,
+    initial_lock: &LockEnum<'_>,
+) -> Vec<u8> {
     let mut out = Vec::new();
     out.push(ACTION_TAG_DEPOSIT);
     out.push(user_idx);
@@ -187,10 +196,10 @@ pub fn tx_id_of(tx_blob: &[u8]) -> [u8; 32] {
 }
 
 /// Builds the full `Inputs` host blob the guest reads:
-/// `version(2) || tx_id(32) || merge_idx(4) || context_hash(32) || tx_blob || resources`, where each
-/// resource is `is_new(1) || index(4) || data_len(4) || data` (one per access-metadata entry, in the
-/// same lex order). The scheduler assembles this for the daemon; the direct-guest test hand-rolls it
-/// with the resource bytes it is threading between steps.
+/// `version(2) || tx_id(32) || merge_idx(4) || context_hash(32) || tx_blob || resources`, where
+/// each resource is `is_new(1) || index(4) || data_len(4) || data` (one per access-metadata entry,
+/// in the same lex order). The scheduler assembles this for the daemon; the direct-guest test
+/// hand-rolls it with the resource bytes it is threading between steps.
 pub fn encode_inputs(
     merge_idx: u32,
     context_hash: [u8; 32],
@@ -260,15 +269,16 @@ pub fn genesis_signer() -> TestSigner {
 
 // Resource-id helpers.
 
-/// The user resource id for a single-Schnorr lock over `pubkey`: `derive_user_resource(lock.id_hash())`.
+/// The user resource id for a single-Schnorr lock over `pubkey`:
+/// `derive_user_resource(lock.id_hash())`.
 pub fn user_resource_id(pubkey: &[u8; 32]) -> [u8; 32] {
     let lock = LockEnum::Schnorr(SchnorrLockView { pubkey });
     *derive_user_resource(&lock.id_hash())
 }
 
 /// Returns `(user_lex_idx, config_lex_idx, sorted_entries)` for a two-resource set of `user_id`
-/// (Write) and the singleton config (Read), sorted ascending by id — the order resources and access
-/// metadata must arrive in.
+/// (Write) and the singleton config (Read), sorted ascending by id (the order resources and access
+/// metadata must arrive in).
 pub fn sorted_user_config_positions(user_id: [u8; 32]) -> (u8, u8, Vec<([u8; 32], AccessType)>) {
     let config_id: [u8; 32] = *config_resource_id();
     let mut entries = vec![(user_id, AccessType::Write), (config_id, AccessType::Read)];
@@ -315,12 +325,16 @@ fn single_schnorr_presig(access_meta: &[u8], actions_section: &[u8], resource_id
 }
 
 /// Completes a signed action: signs the pre-signature prefix over
-/// `compute_sig_message(rest_preimage, presig)` and appends the 64-byte signature, yielding the full
-/// lane payload `access_meta || signers || actions || signature`.
+/// `compute_sig_message(rest_preimage, presig)` and appends the 64-byte signature, yielding the
+/// full lane payload `access_meta || signers || actions || signature`.
 ///
 /// `rest_preimage` is the carrying L1 transaction's rest (inputs/outputs/version, excluding payload
 /// and signature scripts); the direct-guest test uses an empty rest for signature-only txs.
-pub fn finish_signed_payload(presig: Vec<u8>, signer: &TestSigner, rest_preimage: &[u8]) -> Vec<u8> {
+pub fn finish_signed_payload(
+    presig: Vec<u8>,
+    signer: &TestSigner,
+    rest_preimage: &[u8],
+) -> Vec<u8> {
     let sig = signer.sign(&compute_sig_message(rest_preimage, &presig));
     let mut payload = presig;
     payload.extend_from_slice(&sig);
@@ -334,7 +348,8 @@ pub fn init_presig(min_withdrawal: u64, covenant_id: &[u8; 32]) -> Vec<u8> {
     let config_id: [u8; 32] = *config_resource_id();
     let access_meta = encode_access_metadata(&[(config_id, AccessType::Write)]);
     let genesis_lock = LockEnum::Schnorr(SchnorrLockView { pubkey: &GENESIS_SCHNORR_BYTES });
-    let action = encode_config_action(ACTION_TAG_INIT, 0, min_withdrawal, covenant_id, &genesis_lock);
+    let action =
+        encode_config_action(ACTION_TAG_INIT, 0, min_withdrawal, covenant_id, &genesis_lock);
     let actions_section = encode_actions_section(&[action]);
     single_schnorr_presig(&access_meta, &actions_section, 0)
 }
@@ -352,9 +367,9 @@ pub fn transfer_presig(source_pubkey: &[u8; 32], dest_pubkey: &[u8; 32], amount:
     single_schnorr_presig(&access_meta, &actions_section, source_idx)
 }
 
-/// Builds the pre-signature prefix for a Withdraw of `amount` from `user_pubkey`'s user to the `dest`
-/// L1 script. Sign it with the user's key. The resource list must present the user (Write) and the
-/// config (Read) in ascending id order; use [`sorted_user_config_positions`].
+/// Builds the pre-signature prefix for a Withdraw of `amount` from `user_pubkey`'s user to the
+/// `dest` L1 script. Sign it with the user's key. The resource list must present the user (Write)
+/// and the config (Read) in ascending id order; use [`sorted_user_config_positions`].
 pub fn withdraw_presig(user_pubkey: &[u8; 32], amount: u64, dest: &StandardSpk<'_>) -> Vec<u8> {
     let user_id = user_resource_id(user_pubkey);
     let (user_idx, _config_idx, entries) = sorted_user_config_positions(user_id);
@@ -367,7 +382,7 @@ pub fn withdraw_presig(user_pubkey: &[u8; 32], amount: u64, dest: &StandardSpk<'
 /// Builds the complete (signature-free) lane payload for a Deposit crediting `user_pubkey`'s user
 /// from the funding output at `output_idx` of the carrying L1 transaction. The resource list must
 /// present the user (Write, `is_new` for a fresh account) and the config (Read) in ascending id
-/// order; use [`sorted_user_config_positions`]. Deposits carry no in-payload signature — the funding
+/// order; use [`sorted_user_config_positions`]. Deposits carry no in-payload signature; the funding
 /// output itself is the authorization.
 pub fn deposit_payload(user_pubkey: &[u8; 32], output_idx: u32) -> Vec<u8> {
     let user_id = user_resource_id(user_pubkey);

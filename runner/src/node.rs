@@ -45,8 +45,8 @@ pub type RunnerNode = Node<RunnerStore, RunnerVm>;
 /// bundle).
 pub type SettlementQueue = AsyncQueue<ScheduledBundle<SettlementArtifact<Receipt>>>;
 
-/// The three guest ELF images the backend pins. Exec mode runs only `program`; proving mode runs all
-/// three. Any RISC0 guest can be supplied; the runner does not assume a specific program.
+/// The three guest ELF images the backend pins. Exec mode runs only `program`; proving mode runs
+/// all three. Any RISC0 guest can be supplied; the runner does not assume a specific program.
 #[derive(Clone, Copy)]
 pub struct Elfs<'a> {
     /// Per-transaction program guest (the arbitrary program under execution).
@@ -116,20 +116,20 @@ pub struct ProvingParams {
 
 /// Builds and starts an execution-only [`RunnerNode`]: a zk `Vm` with no proving, the given store,
 /// and a bridge pointed at the remote node's lane + covenant. [`Node::new`] immediately starts the
-/// bridge, scheduler, and event loop on a dedicated thread. The batch and aggregator ELFs are loaded
-/// only so the backend can pin their image ids; they are never executed in exec mode.
+/// bridge, scheduler, and event loop on a dedicated thread. The batch and aggregator ELFs are
+/// loaded only so the backend can pin their image ids; they are never executed in exec mode.
 pub fn build_exec_node(elfs: Elfs, store: RunnerStore, params: BridgeParams) -> RunnerNode {
     let backend = Backend::new(elfs.program, elfs.batch, elfs.aggregator, ProofType::Succinct);
     let vm = Vm::new(backend, ProvingPipeline::None);
     Node::new(base_config(vm, store, params))
 }
 
-/// Builds and starts a proving [`RunnerNode`]: a zk `Vm` driving the full proving stack (transaction,
-/// batch, and aggregate provers), binding `proving.covenant_id` into every journal. The in-process
-/// aggregate prover bundles the per-batch receipts and hands each proved bundle to `proving.sink`,
-/// which the settlement worker drains to settle on chain. Real proofs need a GPU; without it (or
-/// under `RISC0_DEV_MODE=1`) the wiring still runs end to end with stub proofs, but the on-chain
-/// `OpZkPrecompile` only accepts real receipts.
+/// Builds and starts a proving [`RunnerNode`]: a zk `Vm` driving the full proving stack
+/// (transaction, batch, and aggregate provers), binding `proving.covenant_id` into every journal.
+/// The in-process aggregate prover bundles the per-batch receipts and hands each proved bundle to
+/// `proving.sink`, which the settlement worker drains to settle on chain. Real proofs need a GPU;
+/// without it (or under `RISC0_DEV_MODE=1`) the wiring still runs end to end with stub proofs, but
+/// the on-chain `OpZkPrecompile` only accepts real receipts.
 pub fn build_proving_node(
     elfs: Elfs,
     store: RunnerStore,
@@ -161,7 +161,11 @@ pub fn build_proving_node(
 
 /// The bridge + execution + storage config shared by both node modes; the proving mode supplies a
 /// `Vm` whose pipeline carries the settlement sink; this config is otherwise identical.
-fn base_config(vm: RunnerVm, store: RunnerStore, params: BridgeParams) -> NodeConfig<RunnerStore, RunnerVm> {
+fn base_config(
+    vm: RunnerVm,
+    store: RunnerStore,
+    params: BridgeParams,
+) -> NodeConfig<RunnerStore, RunnerVm> {
     NodeConfig::default()
         .with_execution_config(ExecutionConfig::default().with_processor(vm))
         .with_storage_config(StorageConfig::default().with_store(store))

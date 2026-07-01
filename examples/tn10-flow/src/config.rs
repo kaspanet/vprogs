@@ -40,8 +40,7 @@ impl Config {
             .map(|s| Hash::from_str(s.trim()).expect("TN10_BOOTSTRAP_TXID must be 32-byte hex"));
         let start_from = opt("TN10_START_FROM")
             .map(|s| Hash::from_str(s.trim()).expect("TN10_START_FROM must be 32-byte hex"));
-        let data_dir =
-            PathBuf::from(opt("TN10_DATA_DIR").unwrap_or_else(|| "./tn10-data".into()));
+        let data_dir = PathBuf::from(opt("TN10_DATA_DIR").unwrap_or_else(|| "./tn10-data".into()));
         let network_id = opt("TN10_NETWORK").map(|s| parse_network(&s)).unwrap_or(TESTNET_10);
 
         // An env-supplied covenant id means "join that covenant" (catch-up); otherwise let the
@@ -53,8 +52,8 @@ impl Config {
             wrpc_url,
             private_key,
             network_id,
-            // The example loads its guest ELFs via the test-suite loaders and hands the bytes to the
-            // runner directly, so it carries no ELF paths.
+            // The example loads its guest ELFs via the test-suite loaders and hands the bytes to
+            // the runner directly, so it carries no ELF paths.
             program_elf: None,
             batch_elf: None,
             aggregator_elf: None,

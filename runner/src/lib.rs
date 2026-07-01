@@ -8,9 +8,9 @@
 //! Two run modes, selected by [`RunnerConfig::prove`]:
 //! - **Execution-only**: a framework node with no proving that tracks decoded state, reorgs, and
 //!   settlements.
-//! - **Proving + settlement**: the full transaction/batch/aggregate proving stack, with a settlement
-//!   worker landing each proved bundle on chain. Real proofs need a GPU (the `cuda` feature) without
-//!   `RISC0_DEV_MODE`; otherwise stub proofs settle against the dev redeem.
+//! - **Proving + settlement**: the full transaction/batch/aggregate proving stack, with a
+//!   settlement worker landing each proved bundle on chain. Real proofs need a GPU (the `cuda`
+//!   feature) without `RISC0_DEV_MODE`; otherwise stub proofs settle against the dev redeem.
 //!
 //! Three explicit start modes ([`StartMode`]): `Fresh` (bootstrap a covenant), `Resume` (from
 //! persisted identity), `Catchup` (join an existing covenant from a known deploy block).
@@ -24,6 +24,7 @@ mod start;
 mod wrpc;
 
 pub use config::{ConfigError, OwnedElfs, RawConfig, RunnerConfig, StartMode, parse_network};
+use kaspa_consensus_core::config::params::Params;
 pub use node::{
     BridgeObservers, BridgeParams, Elfs, ProvingParams, RunnerNode, RunnerStore, RunnerVm,
     SettlementQueue, build_exec_node, build_proving_node,
@@ -31,8 +32,6 @@ pub use node::{
 pub use persistence::PersistedState;
 pub use start::{RunnerHandles, StartError, start_runner};
 pub use wrpc::connect_wrpc;
-
-use kaspa_consensus_core::config::params::Params;
 
 /// Top-level runner entry point for the binary: connect, load the guest ELFs named by `config`, and
 /// start the node (and, in prove mode, the settler). Returns live handles the caller keeps alive.
@@ -43,8 +42,8 @@ pub async fn run(config: RunnerConfig) -> Result<RunnerHandles, RunError> {
     let elfs = config.load_elfs()?;
     let client = connect_wrpc(&config.wrpc_url, config.network_id).await;
     log::info!("connected to {}", config.wrpc_url);
-    // Network params, used off-chain only for mass calculation and lane-key derivation; never pushed
-    // to the node (the remote node runs its own params, with the covenant forks active).
+    // Network params, used off-chain only for mass calculation and lane-key derivation; never
+    // pushed to the node (the remote node runs its own params, with the covenant forks active).
     let params = Params::from(config.network_id);
     let handles = start_runner(&config, &client, &params, elfs.as_elfs()).await?;
     Ok(handles)

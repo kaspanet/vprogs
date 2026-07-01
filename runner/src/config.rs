@@ -1,8 +1,8 @@
 //! Layered runner configuration.
 //!
 //! The library consumes a fully-resolved, typed [`RunnerConfig`]. The binary builds one by layering
-//! sources, highest precedence first: explicit CLI flags, then `VPRUN_*` environment variables, then
-//! a `--config <path>` TOML file, then built-in defaults. Examples and tests construct a
+//! sources, highest precedence first: explicit CLI flags, then `VPRUN_*` environment variables,
+//! then a `--config <path>` TOML file, then built-in defaults. Examples and tests construct a
 //! [`RunnerConfig`] directly instead of layering.
 
 use std::{path::PathBuf, str::FromStr};
@@ -19,13 +19,13 @@ use serde::{Deserialize, Serialize};
 use crate::node::Elfs;
 
 /// Explicit start mode. Where tn10-flow inferred this from persisted-or-env state, the runner makes
-/// it a first-class choice; the safety guards (catch-up needs a deploy block, resume needs persisted
-/// state) are preserved as typed errors.
+/// it a first-class choice; the safety guards (catch-up needs a deploy block, resume needs
+/// persisted state) are preserved as typed errors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 pub enum StartMode {
-    /// Bootstrap a fresh covenant (dev-pins under dev mode, real-pins otherwise). Needs a clean data
-    /// dir.
+    /// Bootstrap a fresh covenant (dev-pins under dev mode, real-pins otherwise). Needs a clean
+    /// data dir.
     Fresh,
     /// Reconstruct identity from the persisted state file and replay L1 from the persisted deploy
     /// block. Fails if there is no persisted state.
@@ -101,16 +101,15 @@ impl RunnerConfig {
     }
 
     /// Layers CLI flags over `VPRUN_*` env vars over an optional TOML file over defaults, then
-    /// resolves and validates. `cli` carries only the flags the operator actually set (unset ones are
-    /// `None` and do not clobber lower layers).
+    /// resolves and validates. `cli` carries only the flags the operator actually set (unset ones
+    /// are `None` and do not clobber lower layers).
     pub fn load(cli: RawConfig, config_path: Option<PathBuf>) -> Result<Self, ConfigError> {
         let mut figment = Figment::new();
         if let Some(path) = config_path {
             figment = figment.merge(Toml::file(path));
         }
         figment = figment.merge(Env::prefixed("VPRUN_")).merge(Serialized::defaults(cli));
-        let raw: RawConfig =
-            figment.extract().map_err(|e| ConfigError::Layering(Box::new(e)))?;
+        let raw: RawConfig = figment.extract().map_err(|e| ConfigError::Layering(Box::new(e)))?;
         raw.resolve()
     }
 }
@@ -255,7 +254,10 @@ mod tests {
 
     #[test]
     fn network_parsing() {
-        assert_eq!(parse_network("tn10").unwrap(), NetworkId::with_suffix(NetworkType::Testnet, 10));
+        assert_eq!(
+            parse_network("tn10").unwrap(),
+            NetworkId::with_suffix(NetworkType::Testnet, 10)
+        );
         assert_eq!(
             parse_network(" Testnet-42 ").unwrap(),
             NetworkId::with_suffix(NetworkType::Testnet, 42)
@@ -292,6 +294,9 @@ mod tests {
         assert!(matches!(bad.resolve(), Err(ConfigError::Invalid("covenant_id", _))));
     }
 
+    // The Jail closure must return `figment::Result<()>`, whose large `figment::Error` we cannot box
+    // (the return type is fixed by the Jail API).
+    #[allow(clippy::result_large_err)]
     #[test]
     fn layering_precedence_flag_over_env_over_file() {
         figment::Jail::expect_with(|jail| {

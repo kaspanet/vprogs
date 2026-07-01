@@ -14,6 +14,13 @@
 //! `TN10RT_SETTLE=1` selects proving + settlement; under `RISC0_DEV_MODE` the prover emits stub
 //! receipts so the whole flow runs without a GPU.
 //!
+//! POC scope: the driver funds each step from the single runner wallet with naive largest-UTXO
+//! selection and spaces steps by `step_delay_ms` rather than polling for confirmation, so a step
+//! that outruns block times can double-spend or race ahead of the state it depends on. A production
+//! issuer would track in-flight outpoints (as tn10-flow's issuer does) and await confirmation. The
+//! encoders and tx builders it drives are covered by the direct-guest acceptance test; the live
+//! sequencing is not.
+//!
 //! Required env: `TN10RT_WRPC_URL`, `TN10RT_PRIVATE_KEY`. See `config.rs` for the full surface.
 
 use std::time::Duration;
@@ -56,7 +63,8 @@ async fn main() {
 
     let keypair = Keypair::from_secret_key(SECP256K1, &cfg.runner.private_key);
 
-    // The account model lives in the runtime-processor guest; batch + aggregator complete the stack.
+    // The account model lives in the runtime-processor guest; batch + aggregator complete the
+    // stack.
     let program_elf = runtime_processor_elf();
     let batch_elf = batch_processor_elf();
     let aggregator_elf = batch_aggregator_elf();
@@ -66,7 +74,8 @@ async fn main() {
         .await
         .unwrap_or_else(|e| panic!("runner start failed: {e}"));
 
-    // The config commits this at Init; deposits must pay `P2SH(delegate_entry_script(covenant_id))`.
+    // The config commits this at Init; deposits must pay
+    // `P2SH(delegate_entry_script(covenant_id))`.
     let covenant_id: [u8; 32] = handles.covenant_id.as_bytes();
     let lane_subnet = handles.lane_subnet;
 
@@ -115,6 +124,15 @@ fn spawn_driver(
             .collect();
 
         // 1) Init the singleton config under the genesis key, committing the covenant id.
+        //
+        // TODO(framework gap): the runtime-processor guest resolves this Init's signer by reading
+        // the genesis pubkey out of the *target config resource's* lock. On a first Init
+        // the config slot is `is_new` with empty bytes, and nothing in the
+        // scheduler/storage/node layers seeds it with a genesis-locked blob, so the guest
+        // rejects with "unknown or absent resource kind". The acceptance test hand-seeds
+        // that slot; over the live flow this step cannot succeed until the guest resolves
+        // the genesis pubkey from its constant (or a framework component seeds the
+        // slot). Left as-is (rather than worked around) so the gap stays visible.
         let genesis = actions::genesis_signer();
         let init_presig = actions::init_presig(min_withdrawal, &covenant_id);
         let init_id =
@@ -163,17 +181,24 @@ fn spawn_driver(
         let transfer_id =
             submit_lane_action(&wallet, keypair, &params, lane_subnet, transfer_presig, &source.l2)
                 .await;
-        log::info!("issued Transfer {} sompi account 0 -> 1 (tx {transfer_id})", cfg.transfer_amount);
+        log::info!(
+            "issued Transfer {} sompi account 0 -> 1 (tx {transfer_id})",
+            cfg.transfer_amount
+        );
         tokio::time::sleep(step).await;
 
         // 5) Withdraw from account 1 to a fresh P2PK exit, signed by account 1's L2 key.
         let exit_pubkey = TestSigner::new().pubkey;
         let dest_spk = StandardSpk::PubKey(&exit_pubkey);
-        let withdraw_presig = actions::withdraw_presig(&dest.l2.pubkey, cfg.withdraw_amount, &dest_spk);
+        let withdraw_presig =
+            actions::withdraw_presig(&dest.l2.pubkey, cfg.withdraw_amount, &dest_spk);
         let withdraw_id =
             submit_lane_action(&wallet, keypair, &params, lane_subnet, withdraw_presig, &dest.l2)
                 .await;
-        log::info!("issued Withdraw {} sompi from account 1 (tx {withdraw_id})", cfg.withdraw_amount);
+        log::info!(
+            "issued Withdraw {} sompi from account 1 (tx {withdraw_id})",
+            cfg.withdraw_amount
+        );
 
         log::info!("tn10-runtime action pass complete");
     });
@@ -204,8 +229,8 @@ async fn submit_lane_action<C: kaspa_wrpc_client::prelude::RpcApi + ?Sized>(
     wallet.submit_transaction(&tx).await.expect("submit lane action")
 }
 
-/// Builds and submits a deposit tx from `account_wallet`'s largest spendable UTXO. Returns the tx id,
-/// or `None` when the account has no spendable UTXO yet.
+/// Builds and submits a deposit tx from `account_wallet`'s largest spendable UTXO. Returns the tx
+/// id, or `None` when the account has no spendable UTXO yet.
 async fn submit_deposit<C: kaspa_wrpc_client::prelude::RpcApi + ?Sized>(
     account_wallet: &Wallet<'_, C>,
     keypair: Keypair,
