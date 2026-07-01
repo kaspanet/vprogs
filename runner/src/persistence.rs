@@ -1,0 +1,70 @@
+//! Tiny JSON state file holding the lane id and covenant id so they survive restarts and can be
+//! reused. Load precedence (resolved in [`start`](crate::start)): storage > config > (random for
+//! lane / bootstrap for covenant). Kept separate from the RocksDB dir so it stays human-inspectable.
+
+use std::path::{Path, PathBuf};
+
+use kaspa_hashes::Hash;
+use serde::{Deserialize, Serialize};
+
+const FILE_NAME: &str = "vprun-state.json";
+
+/// Persisted identifiers and the covenant bootstrap anchor.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct PersistedState {
+    /// Lane id (subnetwork namespace). `None` until first chosen.
+    pub lane_id: Option<u32>,
+    /// Covenant id (hex). `None` until bootstrap.
+    pub covenant_id: Option<String>,
+    /// Bootstrap transaction id (hex); the covenant UTXO's outpoint is `(this, 0)`.
+    pub bootstrap_txid: Option<String>,
+    /// L1 block (hex) at or just before the covenant deploy, captured at bootstrap. Used as the
+    /// bridge `start_from` seed on resume, so a restart replays forward from the deploy without
+    /// re-supplying it. `None` for state files written before this field existed (back-compat: a
+    /// missing optional reads as `None`).
+    pub bootstrap_block_hash: Option<String>,
+}
+
+impl PersistedState {
+    fn path(data_dir: &Path) -> PathBuf {
+        data_dir.join(FILE_NAME)
+    }
+
+    /// Loads the state file, returning defaults if it doesn't exist yet.
+    pub fn load(data_dir: &Path) -> Self {
+        match std::fs::read(Self::path(data_dir)) {
+            Ok(bytes) => serde_json::from_slice(&bytes).expect("corrupt vprun-state.json"),
+            Err(_) => Self::default(),
+        }
+    }
+
+    /// Writes the state file, creating the data dir if needed.
+    pub fn save(&self, data_dir: &Path) {
+        std::fs::create_dir_all(data_dir).expect("create data dir");
+        let json = serde_json::to_vec_pretty(self).expect("serialize state");
+        std::fs::write(Self::path(data_dir), json).expect("write state file");
+    }
+
+    /// Whether a populated state file already exists in `data_dir` (used to default the start mode
+    /// to resume rather than fresh).
+    pub fn exists(data_dir: &Path) -> bool {
+        Self::path(data_dir).exists()
+    }
+
+    /// Decoded covenant id, if set.
+    pub fn covenant_hash(&self) -> Option<Hash> {
+        self.covenant_id.as_ref().map(|h| h.parse().expect("stored covenant_id must be hex"))
+    }
+
+    /// Decoded bootstrap seed block, if set. The bridge seeds its fresh-chain root here on resume.
+    pub fn bootstrap_block(&self) -> Option<Hash> {
+        self.bootstrap_block_hash
+            .as_ref()
+            .map(|h| h.parse().expect("stored bootstrap_block_hash must be hex"))
+    }
+
+    /// Decoded bootstrap transaction id, if set. The covenant UTXO's outpoint is `(this, 0)`.
+    pub fn bootstrap_txid(&self) -> Option<Hash> {
+        self.bootstrap_txid.as_ref().map(|h| h.parse().expect("stored bootstrap_txid must be hex"))
+    }
+}
