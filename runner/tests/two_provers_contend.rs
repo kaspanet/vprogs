@@ -31,8 +31,9 @@ use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_smt::EMPTY_HASH;
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId};
-use vprogs_example_tn10_flow::daemon::{
-    self, BridgeObservers, BridgeParams, Elfs, FlowNode, ProvingParams,
+use vprogs_runner::{
+    BridgeObservers, BridgeParams, Elfs, ProvingParams, RunnerNode, RunnerStore, SettlementQueue,
+    build_proving_node,
 };
 use vprogs_l1_types::{L1TransactionCovenantExt, SettlementInfo};
 use vprogs_l1_wallet::encode_activity_payload;
@@ -85,12 +86,12 @@ const LANE_FINALITY_DEPTH: u64 = 10;
 const FUND_VALUE: u64 = 100_000_000;
 const FUND_COUNT: usize = 6;
 
-/// Per-prover wiring kept alive for the duration of the run. Dropping the [`FlowNode`] tears the
+/// Per-prover wiring kept alive for the duration of the run. Dropping the [`RunnerNode`] tears the
 /// prover's bridge and pipeline down, so the test holds both for the whole driver loop.
 struct Prover {
     /// The proving node (bridge + pipeline). Explicitly shut down at teardown so its worker, and
     /// the RocksDB store it holds, is released before `_db_dir` is reclaimed.
-    node: FlowNode,
+    node: RunnerNode,
     /// The settler task. Awaited at the end; `Ok(())` proves it did not panic on a competitor.
     settler: tokio::task::JoinHandle<()>,
     /// Latch the test opens to tear the settler down gracefully.
@@ -178,7 +179,7 @@ async fn two_provers_contend() {
     let tx_elf = transaction_processor_elf();
     let batch_elf = batch_processor_elf();
     let aggregator_elf = batch_aggregator_elf();
-    let elfs = Elfs { transaction: &tx_elf, batch: &batch_elf, aggregator: &aggregator_elf };
+    let elfs = Elfs { program: &tx_elf, batch: &batch_elf, aggregator: &aggregator_elf };
     let params = Params::from(network_id);
     let pacer = Arc::new(AlternationPacer::new());
 
@@ -452,7 +453,7 @@ async fn two_provers_reform_superseded_suffix() {
     let tx_elf = transaction_processor_elf();
     let batch_elf = batch_processor_elf();
     let aggregator_elf = batch_aggregator_elf();
-    let elfs = Elfs { transaction: &tx_elf, batch: &batch_elf, aggregator: &aggregator_elf };
+    let elfs = Elfs { program: &tx_elf, batch: &batch_elf, aggregator: &aggregator_elf };
     let params = Params::from(network_id);
     let pacer = Arc::new(AlternationPacer::new());
 
@@ -675,7 +676,7 @@ async fn prover_catches_up_to_existing_covenant() {
     let tx_elf = transaction_processor_elf();
     let batch_elf = batch_processor_elf();
     let aggregator_elf = batch_aggregator_elf();
-    let elfs = Elfs { transaction: &tx_elf, batch: &batch_elf, aggregator: &aggregator_elf };
+    let elfs = Elfs { program: &tx_elf, batch: &batch_elf, aggregator: &aggregator_elf };
     let params = Params::from(network_id);
     let pacer = Arc::new(AlternationPacer::new());
 
@@ -898,7 +899,7 @@ async fn prover_catches_up_to_already_settled_covenant() {
     let tx_elf = transaction_processor_elf();
     let batch_elf = batch_processor_elf();
     let aggregator_elf = batch_aggregator_elf();
-    let elfs = Elfs { transaction: &tx_elf, batch: &batch_elf, aggregator: &aggregator_elf };
+    let elfs = Elfs { program: &tx_elf, batch: &batch_elf, aggregator: &aggregator_elf };
     let params = Params::from(network_id);
 
     // === Step 3: prover A settles ALONE until the bootstrap is well spent ===
@@ -1116,7 +1117,7 @@ async fn prover_resumes_after_settlement() {
     let tx_elf = transaction_processor_elf();
     let batch_elf = batch_processor_elf();
     let aggregator_elf = batch_aggregator_elf();
-    let elfs = Elfs { transaction: &tx_elf, batch: &batch_elf, aggregator: &aggregator_elf };
+    let elfs = Elfs { program: &tx_elf, batch: &batch_elf, aggregator: &aggregator_elf };
     let params = Params::from(network_id);
 
     // === Run 1: A lands at least one settlement, spending the bootstrap UTXO ===
@@ -1301,7 +1302,7 @@ async fn prover_resumes_after_settlement_contended() {
     let tx_elf = transaction_processor_elf();
     let batch_elf = batch_processor_elf();
     let aggregator_elf = batch_aggregator_elf();
-    let elfs = Elfs { transaction: &tx_elf, batch: &batch_elf, aggregator: &aggregator_elf };
+    let elfs = Elfs { program: &tx_elf, batch: &batch_elf, aggregator: &aggregator_elf };
     let params = Params::from(network_id);
     let pacer = Arc::new(AlternationPacer::new());
 
@@ -1514,7 +1515,7 @@ fn prover_address(keypair: &Keypair, network_id: NetworkId) -> Address {
     Address::new(Prefix::from(network_id.network_type()), Version::PubKey, &xonly.serialize())
 }
 
-/// Builds, wires, and starts one prover: a proving [`FlowNode`] over a fresh store + wRPC client,
+/// Builds, wires, and starts one prover: a proving [`RunnerNode`] over a fresh store + wRPC client,
 /// and a spawned settler draining the node's settlement queue against the shared covenant. Returns
 /// the assembled [`Prover`] (node kept alive, settler handle + shutdown latch for teardown).
 #[allow(clippy::too_many_arguments)]
@@ -1539,14 +1540,14 @@ async fn spawn_prover(
     let client_for_settler = connect_wrpc(&wrpc_url, network_id).await;
 
     let db_dir = TempDir::new().expect("temp dir");
-    let store = daemon::Store::open(db_dir.path());
+    let store = RunnerStore::open(db_dir.path());
 
-    let queue = daemon::FlowSettlementQueue::new();
+    let queue = SettlementQueue::new();
     // Each prover follows the same L1 through its own bridge, so each gets its own live settlement
     // channel: the bridge (writer) publishes settlements it observes (including the competitor's),
     // and this prover's settler (reader) reconciles against them.
     let (settlement_tx, settlement_rx) = watch::channel(None::<SettlementInfo>);
-    let node = daemon::build_proving_node(
+    let node = build_proving_node(
         elfs,
         store,
         BridgeParams {
@@ -1574,7 +1575,7 @@ async fn spawn_prover(
 
     // Backend is required by the settler config; in Dev mode it pins no image ids but the type is
     // still threaded through.
-    let backend = Backend::new(elfs.transaction, elfs.batch, elfs.aggregator, ProofType::Succinct);
+    let backend = Backend::new(elfs.program, elfs.batch, elfs.aggregator, ProofType::Succinct);
     let shutdown = AtomicAsyncLatch::new();
     let settler = tokio::spawn(run_settlement_worker(
         queue,

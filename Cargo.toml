@@ -162,6 +162,7 @@ resolver = "3"
   vprogs-node-framework                           = { path = "node/framework" }
   vprogs-node-test-utils                          = { path = "node/test-utils" }
   vprogs-node-vm                                  = { path = "node/vm" }
+  vprogs-runner                                   = { path = "runner" }
   vprogs-scheduling-execution-workers             = { path = "scheduling/execution-workers" }
   vprogs-scheduling-scheduler                     = { path = "scheduling/scheduler" }
   vprogs-scheduling-test-utils                    = { path = "scheduling/test-utils" }

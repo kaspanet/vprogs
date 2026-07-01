@@ -44,12 +44,14 @@ pub struct RunnerConfig {
     pub private_key: SecretKey,
     /// Kaspa network to connect to. No default: the operator/example chooses it.
     pub network_id: NetworkId,
-    /// Per-transaction program guest ELF (the arbitrary program under execution).
-    pub program_elf: PathBuf,
-    /// Batch-processor guest ELF.
-    pub batch_elf: PathBuf,
-    /// Batch-aggregator guest ELF.
-    pub aggregator_elf: PathBuf,
+    /// Per-transaction program guest ELF (the arbitrary program under execution). Required by the
+    /// path-based [`run`](crate::run) entry point; `None` when the caller supplies ELF bytes to
+    /// [`start_runner`](crate::start_runner) directly (as the examples do).
+    pub program_elf: Option<PathBuf>,
+    /// Batch-processor guest ELF. See [`program_elf`](Self::program_elf).
+    pub batch_elf: Option<PathBuf>,
+    /// Batch-aggregator guest ELF. See [`program_elf`](Self::program_elf).
+    pub aggregator_elf: Option<PathBuf>,
     /// RocksDB + state-file directory.
     pub data_dir: PathBuf,
     /// Lane id, if pinned. Resolved against storage in [`start`](crate::start) when `None`.
@@ -84,15 +86,17 @@ impl OwnedElfs {
 }
 
 impl RunnerConfig {
-    /// Reads the three guest ELFs named by this config into memory.
+    /// Reads the three guest ELFs named by this config into memory. Errors if any path is unset
+    /// (the path-based entry point requires all three).
     pub fn load_elfs(&self) -> Result<OwnedElfs, ConfigError> {
-        let read = |p: &PathBuf| {
+        let read = |p: &Option<PathBuf>, field: &'static str| {
+            let p = p.as_ref().ok_or(ConfigError::Missing(field))?;
             std::fs::read(p).map_err(|e| ConfigError::Elf { path: p.clone(), source: e })
         };
         Ok(OwnedElfs {
-            program: read(&self.program_elf)?,
-            batch: read(&self.batch_elf)?,
-            aggregator: read(&self.aggregator_elf)?,
+            program: read(&self.program_elf, "program_elf")?,
+            batch: read(&self.batch_elf, "batch_elf")?,
+            aggregator: read(&self.aggregator_elf, "aggregator_elf")?,
         })
     }
 
@@ -159,18 +163,15 @@ impl RawConfig {
             Some(n) => parse_network(&n)?,
             None => return Err(ConfigError::Missing("network")),
         };
-        let program_elf = self.program_elf.ok_or(ConfigError::Missing("program_elf"))?;
-        let batch_elf = self.batch_elf.ok_or(ConfigError::Missing("batch_elf"))?;
-        let aggregator_elf = self.aggregator_elf.ok_or(ConfigError::Missing("aggregator_elf"))?;
         let data_dir = self.data_dir.unwrap_or_else(|| PathBuf::from("./vprun-data"));
 
         Ok(RunnerConfig {
             wrpc_url,
             private_key,
             network_id,
-            program_elf,
-            batch_elf,
-            aggregator_elf,
+            program_elf: self.program_elf,
+            batch_elf: self.batch_elf,
+            aggregator_elf: self.aggregator_elf,
             data_dir,
             lane_id: self.lane_id,
             covenant_id: parse_opt_hash(self.covenant_id, "covenant_id")?,
@@ -266,8 +267,14 @@ mod tests {
     #[test]
     fn resolve_reports_missing_required() {
         assert!(matches!(RawConfig::default().resolve(), Err(ConfigError::Missing("wrpc_url"))));
-        let no_elf = RawConfig { program_elf: None, ..minimal_raw() };
-        assert!(matches!(no_elf.resolve(), Err(ConfigError::Missing("program_elf"))));
+    }
+
+    #[test]
+    fn load_elfs_reports_missing_path() {
+        // ELF paths are optional at resolve time (byte-based callers skip them) but required by the
+        // path-based `load_elfs`.
+        let cfg = RawConfig { program_elf: None, ..minimal_raw() }.resolve().unwrap();
+        assert!(matches!(cfg.load_elfs(), Err(ConfigError::Missing("program_elf"))));
     }
 
     #[test]
