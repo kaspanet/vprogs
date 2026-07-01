@@ -69,7 +69,7 @@ impl Config {
             covenant_id,
             bootstrap_txid,
             start_from,
-            seed_depth: opt_u64("TN10RT_SEED_DEPTH", 100),
+            seed_depth: opt_u64("TN10RT_SEED_DEPTH", 200),
             prove: opt("TN10RT_SETTLE").is_some_and(|s| s != "0"),
             start_mode,
         };

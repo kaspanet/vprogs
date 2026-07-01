@@ -176,7 +176,7 @@ impl RawConfig {
             covenant_id: parse_opt_hash(self.covenant_id, "covenant_id")?,
             bootstrap_txid: parse_opt_hash(self.bootstrap_txid, "bootstrap_txid")?,
             start_from: parse_opt_hash(self.start_from, "start_from")?,
-            seed_depth: self.seed_depth.unwrap_or(100),
+            seed_depth: self.seed_depth.unwrap_or(200),
             prove: self.prove.unwrap_or(false),
             start_mode: self.start_mode,
         })

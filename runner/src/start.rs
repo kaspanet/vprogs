@@ -199,19 +199,16 @@ async fn start_exec(
 
     // Seed from the persisted deploy block if we have one, else from the supplied seed.
     let start_from = persisted.bootstrap_block().or(cfg.start_from);
+    // Seed the bridge with reorg headroom: pin the anchor only if it is already deep, else seed
+    // seed_depth below the sink (see `resolve_bridge_seed`).
+    let tip_daa = client.get_block_dag_info().await.expect("get_block_dag_info").virtual_daa_score;
+    let bridge_seed = resolve_bridge_seed(client, start_from, cfg.seed_depth, tip_daa).await;
 
     let store = RunnerStore::open(cfg.data_dir.join("db"));
     let node = build_exec_node(
         elfs,
         store,
-        bridge_params(
-            cfg,
-            lane_subnet,
-            covenant_id,
-            params,
-            start_from,
-            BridgeObservers::default(),
-        ),
+        bridge_params(cfg, lane_subnet, covenant_id, params, bridge_seed, BridgeObservers::default()),
     );
     Ok((node, covenant_id))
 }
@@ -242,8 +239,11 @@ async fn start_settlement(
     let settlement_mode = if dev { SettlementMode::Dev } else { SettlementMode::Production };
     // The node's selected tip right now: a real chain block at or just before any deploy block we
     // are about to mint. Captured before bootstrap so a fresh deploy seeds the bridge at or before
-    // the covenant, which the seed contract requires.
-    let seed_block = client.get_block_dag_info().await.expect("get_block_dag_info").sink;
+    // the covenant, which the seed contract requires. The virtual DAA is captured alongside to size
+    // the bridge's reorg headroom (see `resolve_bridge_seed`) and to target the sync reporter.
+    let dag_info = client.get_block_dag_info().await.expect("get_block_dag_info");
+    let seed_block = dag_info.sink;
+    let tip_daa = dag_info.virtual_daa_score;
 
     // Resolve the covenant identity + reconstruction inputs from the explicit start mode.
     let resolved = match mode {
@@ -355,11 +355,15 @@ async fn start_settlement(
     let store = RunnerStore::open(cfg.data_dir.join("db"));
     // The bridge replays from the pruning point and publishes its tip DAA here; a reporter task
     // polls it against the bootstrap's DAA to log how far the catch-up has progressed.
-    let tip_daa = Arc::new(AtomicU64::new(0));
+    let tip_daa_obs = Arc::new(AtomicU64::new(0));
     // Live settlement channel: the bridge (writer) publishes the covenant's last on-chain
     // settlement here; the settler (reader) detects a competitor advancing past its in-memory
     // tip.
     let (settlement_tx, settlement_rx) = watch::channel(None::<SettlementInfo>);
+    // Seed the bridge with reorg headroom: pin the anchor only if it is already deep, else seed
+    // seed_depth below the sink. The settler keeps the unmodified `start_from` (its own resume/adopt
+    // semantics), so this only affects where the bridge roots its chain.
+    let bridge_seed = resolve_bridge_seed(client, start_from, cfg.seed_depth, tip_daa).await;
     let node = build_proving_node(
         elfs,
         store,
@@ -368,8 +372,8 @@ async fn start_settlement(
             lane_subnet,
             covenant_id,
             params,
-            start_from,
-            BridgeObservers { tip_daa: Some(tip_daa.clone()), settlement: Some(settlement_tx) },
+            bridge_seed,
+            BridgeObservers { tip_daa: Some(tip_daa_obs.clone()), settlement: Some(settlement_tx) },
         ),
         ProvingParams {
             covenant_id,
@@ -380,11 +384,9 @@ async fn start_settlement(
             settlement_rx: Some(settlement_rx.clone()),
         },
     );
-    // Target the bridge replays toward: the node's virtual DAA now. Captured once; the reporter
-    // loop only reads the tip atomic.
-    let target_daa =
-        client.get_block_dag_info().await.expect("get_block_dag_info").virtual_daa_score;
-    spawn_sync_reporter(tip_daa, target_daa);
+    // Target the bridge replays toward: the node's virtual DAA captured before bootstrap. The
+    // reporter loop only reads the tip atomic.
+    spawn_sync_reporter(tip_daa_obs, tip_daa);
 
     // The settlement worker drains bundle handles off the queue until `main` opens this latch on a
     // signal, or it hits a fatal error (a rejected settlement or a confirmation timeout).
@@ -411,15 +413,45 @@ async fn start_settlement(
     Ok((node, (settler, shutdown), covenant_id))
 }
 
-/// The bridge wiring for either mode, pointed at the remote node's lane + covenant. `start_from` is
-/// the resolved seed block (persisted bootstrap block, else supplied), which the bridge seeds its
-/// fresh-chain root at so a resume/catch-up replays L1 forward from the deploy.
+/// Resolves the block the bridge seeds its fresh-chain root at, decoupled from the settler's
+/// `start_from`. Pins `anchor` only when it is already at least `seed_depth` chain-blocks below the
+/// tip (deep enough that reorgs cannot roll back past it); otherwise returns `None` so the bridge
+/// seeds `seed_depth` below the sink instead. This is the reorg-headroom rule: a fresh bootstrap or a
+/// shallow catch-up seeds its root a full `seed_depth` below the tip (headroom), while a catch-up to
+/// an already-deep covenant still pins the exact deploy block (no history lost, and it is deep enough
+/// to be reorg-safe). Seeding a near-tip anchor directly is what panics the bridge (`rollback_tip` on
+/// the root) the first time a reorg is deeper than the root.
+async fn resolve_bridge_seed(
+    client: &KaspaRpcClient,
+    anchor: Option<Hash>,
+    seed_depth: u64,
+    tip_daa: u64,
+) -> Option<Hash> {
+    let anchor = anchor?;
+    match client.get_block(anchor, false).await {
+        Ok(block) => {
+            let anchor_daa = block.header.daa_score;
+            // Pin only a genuinely deep anchor; a near-tip one defers to seed_depth for headroom.
+            (tip_daa.saturating_sub(anchor_daa) >= seed_depth).then_some(anchor)
+        }
+        // If the anchor block cannot be resolved (e.g. pruned), fall back to pinning it rather than
+        // silently reseeding somewhere else; the bridge surfaces an unusable seed loudly.
+        Err(e) => {
+            log::warn!("bridge seed: could not resolve anchor {anchor} depth ({e}); pinning it");
+            Some(anchor)
+        }
+    }
+}
+
+/// The bridge wiring for either mode, pointed at the remote node's lane + covenant. `bridge_seed` is
+/// the resolved root block ([`resolve_bridge_seed`]): a deep anchor to pin, or `None` to seed
+/// `seed_depth` below the sink for reorg headroom.
 fn bridge_params(
     cfg: &RunnerConfig,
     lane_subnet: SubnetworkId,
     covenant_id: Hash,
     params: &Params,
-    start_from: Option<Hash>,
+    bridge_seed: Option<Hash>,
     observers: BridgeObservers,
 ) -> BridgeParams {
     BridgeParams {
@@ -429,7 +461,7 @@ fn bridge_params(
         covenant_id,
         finality_depth: params.finality_depth(),
         seed_depth: cfg.seed_depth,
-        start_from,
+        start_from: bridge_seed,
         observers,
     }
 }

@@ -15,7 +15,7 @@
 #   TN10_KEY1, TN10_KEY2  (required)  two funded testnet-10 private keys (32-byte hex)
 #   TN10_WRPC_URL         (required)  wRPC node URL, e.g. ws://HOST:PORT
 #   ACT_INTERVAL_MS       (optional)  activity cadence in ms (default 2000)
-#   SEED_DEPTH            (optional)  bridge seed head-room (default 50)
+#   SEED_DEPTH            (optional)  bridge seed head-room + reorg tolerance (default 200)
 
 set -u
 
@@ -49,7 +49,7 @@ ACT_INTERVAL_MS="${ACT_INTERVAL_MS:-2000}"
 # RPCs at startup, which can stall the bridge / trip a ws reconnect on a slow
 # remote node; the chain then never advances past the seed root. A modest depth
 # seeds close to the tip so the bridge tracks the live chain promptly.
-SEED_DEPTH="${SEED_DEPTH:-50}"
+SEED_DEPTH="${SEED_DEPTH:-200}"
 
 RUST_LOG_VAL="info,tn10_flow=info,vprogs_node_framework=info"
 
