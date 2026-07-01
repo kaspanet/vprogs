@@ -1,0 +1,57 @@
+[package]
+edition = "2021"
+name    = "vprogs-example-tn10-runtime"
+publish = false
+version = "0.1.0"
+
+# Shared encoders live in the lib target so both the driver binary and the acceptance test
+# (`tests/runtime_actions.rs`) build the exact same wire bytes the guest expects.
+[lib]
+name = "vprogs_example_tn10_runtime"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tn10-runtime"
+path = "src/main.rs"
+
+[features]
+# `cuda` swaps the RISC0 prover for the GPU one (forwarded to the runner). Off, the proving path
+# still compiles and settles against dev stub proofs; only the on-chain precompile needs real ones.
+cuda = ["vprogs-runner/cuda"]
+
+[dependencies]
+# The reusable daemon engine. tn10-runtime adds only its account-model action issuer on top.
+vprogs-runner = { workspace = true }
+
+# vprogs internal, used by the action encoders and driver.
+vprogs-core-types                         = { workspace = true }
+vprogs-l1-utils                           = { workspace = true }
+vprogs-l1-wallet                          = { workspace = true }
+vprogs-zk-abi                             = { workspace = true, features = ["host"] }
+vprogs-zk-backend-risc0-api               = { workspace = true }
+vprogs-zk-backend-risc0-runtime-processor = { workspace = true }
+vprogs-zk-backend-risc0-test-suite        = { workspace = true }
+
+# kaspa (same fork pins as the rest of the workspace)
+kaspa-addresses      = { workspace = true }
+kaspa-consensus-core = { workspace = true }
+kaspa-core           = { workspace = true }
+kaspa-hashes         = { workspace = true }
+kaspa-txscript       = { workspace = true }
+kaspa-wrpc-client    = { workspace = true }
+
+# external
+ctrlc     = { workspace = true }
+k256      = { workspace = true, features = ["schnorr"] }
+log       = { workspace = true }
+rand      = { workspace = true }
+secp256k1 = { workspace = true }
+signature = { workspace = true }
+tokio     = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+
+[dev-dependencies]
+# Host-side dev-deps for the direct-guest acceptance test: it talks to risc0-zkvm directly
+# (executor + v1compat kernel wrap), mirroring the runtime-processor e2e harness.
+risc0-binfmt        = { workspace = true }
+risc0-zkos-v1compat = { workspace = true }
+risc0-zkvm          = { workspace = true, features = ["std", "prove"] }

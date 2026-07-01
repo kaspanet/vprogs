@@ -8615,6 +8615,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-example-tn10-runtime"
+version = "0.1.0"
+dependencies = [
+ "ctrlc",
+ "k256",
+ "kaspa-addresses",
+ "kaspa-consensus-core",
+ "kaspa-core",
+ "kaspa-hashes",
+ "kaspa-txscript",
+ "kaspa-wrpc-client",
+ "log",
+ "rand 0.8.5",
+ "risc0-binfmt",
+ "risc0-zkos-v1compat",
+ "risc0-zkvm",
+ "secp256k1",
+ "signature",
+ "tokio",
+ "vprogs-core-types",
+ "vprogs-l1-utils",
+ "vprogs-l1-wallet",
+ "vprogs-runner",
+ "vprogs-zk-abi",
+ "vprogs-zk-backend-risc0-api",
+ "vprogs-zk-backend-risc0-runtime-processor",
+ "vprogs-zk-backend-risc0-test-suite",
+]
+
+[[package]]
 name = "vprogs-l1-bridge"
 version = "0.1.0"
 dependencies = [

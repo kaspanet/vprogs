@@ -56,8 +56,8 @@ pub struct RunnerHandles {
     pub covenant_id: Hash,
 }
 
-/// Operator-facing start-up failure. Distinct from `ConfigError` (which is about parsing the config)
-/// — these are about the requested start mode not matching on-disk / supplied state.
+/// Operator-facing start-up failure, as opposed to `ConfigError` (which is about parsing the
+/// config): these are about the requested start mode not matching on-disk / supplied state.
 #[derive(Debug, thiserror::Error)]
 pub enum StartError {
     /// Resume was requested but no persisted covenant identity exists in the data dir.
