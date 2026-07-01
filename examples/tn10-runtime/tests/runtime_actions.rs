@@ -7,21 +7,27 @@
 //! Run with dev mode: `RISC0_DEV_MODE=1 cargo test -p vprogs-example-tn10-runtime --test
 //! runtime_actions`.
 
+use kaspa_consensus_core::{
+    Hash as KaspaHash,
+    hashing::tx::transaction_v1_rest_preimage,
+    subnets::SUBNETWORK_ID_NATIVE,
+    tx::{
+        ScriptPublicKey, ScriptVec, Transaction as KaspaTransaction, TransactionInput,
+        TransactionOutpoint, TransactionOutput,
+    },
+};
 use risc0_binfmt::ProgramBinary;
 use risc0_zkos_v1compat::V1COMPAT_ELF;
 use risc0_zkvm::{ExecutorEnv, ProverOpts, default_executor, default_prover};
 use vprogs_example_tn10_runtime::{actions, deposit};
+use vprogs_l1_utils::{payload_digest_v1, tx_id_v1};
 use vprogs_zk_abi::{
     transaction_processor::{JournalEntries, OutputCommitment, Outputs},
     withdrawal::StandardSpk,
 };
 use vprogs_zk_backend_risc0_runtime_processor::{
-    config::{ConfigView, config_total_len, write_config},
-    deposit_policy::EXAMPLE_DEPOSIT_COVENANT_ID,
-    genesis::GENESIS_SCHNORR_BYTES,
-    lock::LockEnum,
-    lock_variants::SchnorrLockView,
-    user::UserView,
+    config::ConfigView, deposit_policy::EXAMPLE_DEPOSIT_COVENANT_ID,
+    genesis::GENESIS_SCHNORR_BYTES, user::UserView,
 };
 use vprogs_zk_backend_risc0_test_suite::runtime_processor_elf;
 
@@ -83,18 +89,81 @@ fn run_deposit(
     decoded.storage_ops[user_idx as usize].clone().expect("user created")
 }
 
-/// Builds a config blob locked by the genesis Schnorr key. Init's signer resolves the genesis
-/// pubkey by reading the target config resource's lock, so the still-`is_new` config slot must
-/// already carry a genesis-locked blob; `apply_init` then overwrites its committed values.
+/// Builds a kaspa V1 transaction with a single P2PK output (index 0) to `pubkey`. The witness Init
+/// spends this output to prove control of the genesis key; the guest recovers the pubkey from the
+/// P2PK SPK and matches it against the genesis lock. Mirrors the guest's own witness harness.
+fn build_prev_tx_v1_with_p2pk(pubkey: &[u8; 32]) -> KaspaTransaction {
+    // P2PK SPK: OP_DATA_32 (0x20) || 32-byte pubkey || OP_CHECK_SIG (0xac), 34 bytes.
+    let mut spk_bytes = Vec::with_capacity(34);
+    spk_bytes.push(0x20);
+    spk_bytes.extend_from_slice(pubkey);
+    spk_bytes.push(0xac);
+    let spk = ScriptPublicKey::new(0, ScriptVec::from_slice(&spk_bytes));
+    KaspaTransaction::new(
+        1,
+        Vec::new(),
+        vec![TransactionOutput::new(0, spk)],
+        0,
+        SUBNETWORK_ID_NATIVE,
+        0,
+        Vec::new(),
+    )
+}
+
+/// Builds a kaspa V1 transaction whose input 0 spends `prev_tx_id`:0. The guest parses this to learn
+/// the outpoint the witness authorizes, then asserts the witness preimage hashes to `prev_tx_id`.
+fn build_current_tx_v1_spending(prev_tx_id: &[u8; 32]) -> KaspaTransaction {
+    let outpoint = TransactionOutpoint::new(KaspaHash::from_bytes(*prev_tx_id), 0);
+    KaspaTransaction::new(
+        1,
+        vec![TransactionInput::new(outpoint, Vec::new(), 0, 0)],
+        Vec::new(),
+        0,
+        SUBNETWORK_ID_NATIVE,
+        0,
+        Vec::new(),
+    )
+}
+
+/// Init authorized by an L1 prev-tx witness against an EMPTY new config slot: no hand-seeding.
 ///
-/// This is a TEST-ONLY seed. Nothing in the scheduler/storage/node layers seeds an empty config
-/// slot with this blob, so the live `Init` path cannot resolve its signer yet. See the TODO on the
-/// driver's Init step in `main.rs`.
-fn genesis_seeded_config() -> Vec<u8> {
-    let lock = LockEnum::Schnorr(SchnorrLockView { pubkey: &GENESIS_SCHNORR_BYTES });
-    let mut buf = vec![0u8; config_total_len(&lock)];
-    write_config(&mut buf, 0, &COVENANT_ID, &lock).expect("write genesis-seed config");
-    buf
+/// The current tx spends a P2PK(GENESIS) output; the witness signer recovers that pubkey and
+/// matches it against the genesis lock `apply_init` builds, so the still-`is_new` config resource
+/// is presented with empty bytes and `apply_init` writes it from scratch. This is the live Init
+/// path the driver takes, proven here end-to-end through the guest.
+#[test]
+fn genesis_init_via_witness_on_empty_slot() {
+    let elf = wrapped_runtime_processor_elf();
+    let min_withdrawal = 500u64;
+
+    // Prev tx: output 0 is a P2PK to the genesis pubkey. Its funding payload is empty, so its
+    // payload digest is `payload_digest_v1(&[])` and its id is `tx_id_v1(&[], prev_rest)`.
+    let prev_tx = build_prev_tx_v1_with_p2pk(&GENESIS_SCHNORR_BYTES);
+    let prev_rest_preimage = transaction_v1_rest_preimage(&prev_tx);
+    let prev_payload_digest = payload_digest_v1(&[]);
+    let prev_tx_id = tx_id_v1(&[], &prev_rest_preimage);
+
+    // Current tx: input 0 spends the genesis P2PK output.
+    let current_tx = build_current_tx_v1_spending(&prev_tx_id);
+    let current_rest_preimage = transaction_v1_rest_preimage(&current_tx);
+
+    let payload = actions::init_witness_payload(
+        min_withdrawal,
+        &COVENANT_ID,
+        &prev_rest_preimage,
+        &prev_payload_digest,
+        0,
+    );
+    let tx = actions::encode_v1_transaction(&payload, &current_rest_preimage);
+    let inputs = actions::encode_inputs(0, [0u8; 32], &tx, &[(true, 0, Vec::new())]);
+
+    let out = execute_guest(&elf, &inputs);
+    let config_bytes = Outputs::decode(&out, 1).expect("Init succeeded").storage_ops[0]
+        .clone()
+        .expect("config created");
+    let view = ConfigView::from_bytes(&config_bytes).expect("valid config bytes");
+    assert_eq!(view.min_withdrawal_amount(), min_withdrawal);
+    assert_eq!(view.covenant_id(), &COVENANT_ID);
 }
 
 #[test]
@@ -102,18 +171,24 @@ fn full_lifecycle_init_deposit_transfer_withdraw() {
     let elf = wrapped_runtime_processor_elf();
     let min_withdrawal = 500u64;
 
-    // 1) Init the singleton config under the genesis key, committing the covenant id.
-    //
-    // Signer resolution reads the target's Schnorr lock to verify the genesis signature, so the
-    // still-`is_new` config slot is presented seeded with a genesis-locked config blob;
-    // `apply_init` then overwrites it in full. This seed is supplied here by the test only; see
-    // `genesis_seeded_config` and the driver's Init TODO.
-    let genesis = actions::genesis_signer();
-    let init_presig = actions::init_presig(min_withdrawal, &COVENANT_ID);
-    let init_payload = actions::finish_signed_payload(init_presig, &genesis, &[]);
-    let init_tx = actions::encode_v1_transaction(&init_payload, &[]);
-    let genesis_seed = genesis_seeded_config();
-    let init_inputs = actions::encode_inputs(0, [0u8; 32], &init_tx, &[(true, 0, genesis_seed)]);
+    // 1) Init the singleton config under the genesis key, committing the covenant id. Authorized by
+    // an L1 prev-tx witness spending a P2PK(GENESIS) output, so the config slot is presented as an
+    // empty `is_new` resource with no hand-seed. See `genesis_init_via_witness_on_empty_slot`.
+    let prev_tx = build_prev_tx_v1_with_p2pk(&GENESIS_SCHNORR_BYTES);
+    let prev_rest_preimage = transaction_v1_rest_preimage(&prev_tx);
+    let prev_payload_digest = payload_digest_v1(&[]);
+    let prev_tx_id = tx_id_v1(&[], &prev_rest_preimage);
+    let current_tx = build_current_tx_v1_spending(&prev_tx_id);
+    let current_rest_preimage = transaction_v1_rest_preimage(&current_tx);
+    let init_payload = actions::init_witness_payload(
+        min_withdrawal,
+        &COVENANT_ID,
+        &prev_rest_preimage,
+        &prev_payload_digest,
+        0,
+    );
+    let init_tx = actions::encode_v1_transaction(&init_payload, &current_rest_preimage);
+    let init_inputs = actions::encode_inputs(0, [0u8; 32], &init_tx, &[(true, 0, Vec::new())]);
     let init_out = execute_guest(&elf, &init_inputs);
     let config_bytes = Outputs::decode(&init_out, 1).expect("Init succeeded").storage_ops[0]
         .clone()

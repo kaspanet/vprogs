@@ -8,7 +8,7 @@
 //! - **Low-level section encoders** (`encode_*`, [`encode_inputs`], [`TestSigner`]): the raw
 //!   building blocks, byte-for-byte identical to e2e. The direct-guest acceptance test drives
 //!   these.
-//! - **Driver builders** ([`init_presig`], [`transfer_presig`], [`withdraw_presig`],
+//! - **Driver builders** ([`init_witness_payload`], [`transfer_presig`], [`withdraw_presig`],
 //!   [`deposit_payload`], [`finish_signed_payload`]): higher-level helpers that assemble a whole
 //!   lane-transaction payload for one action, sorting resources by id and computing each action's
 //!   position exactly as the guest requires. The driver binary issues these on L1.
@@ -32,7 +32,7 @@ use vprogs_zk_backend_risc0_runtime_processor::{
     resource_id::{config_resource_id, derive_user_resource},
     runtime::compute_sig_message,
     signer_trait::Signer,
-    signer_variants::{MultisigSchnorrSigPtrSigner, SchnorrSigPtrSigner},
+    signer_variants::{MultisigSchnorrSigPtrSigner, PrevTxV1WitnessSigner, SchnorrSigPtrSigner},
 };
 
 // Low-level section encoders (ported from e2e.rs).
@@ -73,6 +73,29 @@ pub fn encode_multisig_schnorr_signer(
     out.push(MultisigSchnorrSigPtrSigner::TAG);
     out.push(pubkey_idx);
     out.extend_from_slice(&sig_offset.to_le_bytes());
+    out
+}
+
+/// Prev-tx V1 witness signer entry:
+/// `resource_idx(1) || kind(1) || input_idx(1) || rp_off(4) || rp_len(4) || pd_off(4)`.
+///
+/// Authorizes without a signature: the guest recovers the P2PK pubkey of the output the current
+/// tx's `input_idx` spends and matches it against the lock at `resource_idx`. The three offsets
+/// locate the prev tx's `rest_preimage` and 32-byte `payload_digest` inside `payload_bytes`.
+pub fn encode_witness_signer(
+    resource_idx: u8,
+    input_idx: u8,
+    rest_preimage_offset: u32,
+    rest_preimage_len: u32,
+    payload_digest_offset: u32,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.push(resource_idx);
+    out.push(PrevTxV1WitnessSigner::TAG);
+    out.push(input_idx);
+    out.extend_from_slice(&rest_preimage_offset.to_le_bytes());
+    out.extend_from_slice(&rest_preimage_len.to_le_bytes());
+    out.extend_from_slice(&payload_digest_offset.to_le_bytes());
     out
 }
 
@@ -352,6 +375,56 @@ pub fn init_presig(min_withdrawal: u64, covenant_id: &[u8; 32]) -> Vec<u8> {
         encode_config_action(ACTION_TAG_INIT, 0, min_withdrawal, covenant_id, &genesis_lock);
     let actions_section = encode_actions_section(&[action]);
     single_schnorr_presig(&access_meta, &actions_section, 0)
+}
+
+/// Builds the complete (signature-free) lane payload for a genesis `Init` of the singleton config,
+/// authorized by a prev-tx witness instead of an in-payload signature.
+///
+/// The witness signer proves control of the genesis key by pointing at a spent P2PK(GENESIS)
+/// output: the guest recovers that output's pubkey and matches it against the genesis lock
+/// `apply_init` builds. Because the witness signer ignores the config resource, the config may be
+/// presented as an empty `is_new` slot; no genesis-locked seed is needed. `input_idx` is the
+/// current tx's input that spends the P2PK(GENESIS) output; `prev_rest_preimage` and
+/// `prev_payload_digest` are that spent tx's rest and payload digest (its funding payload is empty,
+/// so `prev_payload_digest = payload_digest_v1(&[])`).
+///
+/// Two-pass, as in [`single_schnorr_presig`]: a probe sizes the signers section so the witness tail
+/// (`prev_rest_preimage || prev_payload_digest`) can be placed at the offsets the signer names.
+pub fn init_witness_payload(
+    min_withdrawal: u64,
+    covenant_id: &[u8; 32],
+    prev_rest_preimage: &[u8],
+    prev_payload_digest: &[u8; 32],
+    input_idx: u8,
+) -> Vec<u8> {
+    let config_id: [u8; 32] = *config_resource_id();
+    let access_meta = encode_access_metadata(&[(config_id, AccessType::Write)]);
+    let genesis_lock = LockEnum::Schnorr(SchnorrLockView { pubkey: &GENESIS_SCHNORR_BYTES });
+    let action =
+        encode_config_action(ACTION_TAG_INIT, 0, min_withdrawal, covenant_id, &genesis_lock);
+    let actions_section = encode_actions_section(&[action]);
+
+    let probe = encode_signers_section(&[encode_witness_signer(0, input_idx, 0, 0, 0)]);
+    let rp_offset = access_meta.len() + probe.len() + actions_section.len();
+    let rp_len = prev_rest_preimage.len();
+    let pd_offset = rp_offset + rp_len;
+    let signers_section = encode_signers_section(&[encode_witness_signer(
+        0,
+        input_idx,
+        rp_offset as u32,
+        rp_len as u32,
+        pd_offset as u32,
+    )]);
+    debug_assert_eq!(signers_section.len(), probe.len());
+
+    let mut payload = Vec::with_capacity(pd_offset + 32);
+    payload.extend_from_slice(&access_meta);
+    payload.extend_from_slice(&signers_section);
+    payload.extend_from_slice(&actions_section);
+    debug_assert_eq!(payload.len(), rp_offset);
+    payload.extend_from_slice(prev_rest_preimage);
+    payload.extend_from_slice(prev_payload_digest);
+    payload
 }
 
 /// Builds the pre-signature prefix for a Transfer of `amount` from `source_pubkey`'s user to
