@@ -128,9 +128,24 @@ pub fn build_deposit_transaction(args: DepositTx<'_>) -> Transaction {
         signed
     };
 
-    // Zero-fee probe to learn the signed mass, price it at the node floor, then rebuild funded.
-    let probe = build(0);
-    let fee = min_fee(args.params, &probe, &entries);
+    // For a 2-output tx (deposit + change) the KIP-0009 storage mass depends on the change value, so
+    // pricing off a zero-fee probe underprices: shrinking change by the fee raises the required fee
+    // above the probe's estimate. Iterate the fee to a fixpoint instead, repricing each round on the
+    // tx actually built with the current fee (its real change output). The sequence is monotone
+    // non-decreasing (a smaller change never lowers storage mass) and converges; a handful of rounds
+    // suffices, and reaching the fixpoint means the built tx pays at least its own min fee.
+    const MAX_ROUNDS: u32 = 8;
+    let mut fee = min_fee(args.params, &build(0), &entries);
+    let mut converged = false;
+    for _ in 0..MAX_ROUNDS {
+        let next = min_fee(args.params, &build(fee), &entries);
+        if next == fee {
+            converged = true;
+            break;
+        }
+        fee = next;
+    }
+    assert!(converged, "deposit fee did not converge within {MAX_ROUNDS} rounds (fee {fee})");
     assert!(
         args.entry.amount > args.deposit_value + fee,
         "funding UTXO {} too small for deposit {} + fee {}",
@@ -304,4 +319,53 @@ pub fn build_genesis_init_transaction(args: GenesisInitTx<'_>) -> Transaction {
         fee,
     );
     build(fee)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kaspa_consensus_core::network::{NetworkId, NetworkType};
+
+    /// The default demo amounts (deposit 100M, funding 150M single UTXO) are the case where a
+    /// zero-fee probe underprices: the fixpoint fee must clear the node floor recomputed on the tx
+    /// actually built with that fee (its shrunk change output), or the node rejects it "fee too low".
+    #[test]
+    fn deposit_fee_clears_min_on_shrunk_change() {
+        let params = Params::from(NetworkId::with_suffix(NetworkType::Testnet, 10));
+        let mut secret = [0u8; 32];
+        secret[31] = 9;
+        let keypair =
+            Keypair::from_secret_key(SECP256K1, &SecretKey::from_slice(&secret).unwrap());
+        let change_address = Address::new(
+            Prefix::Testnet,
+            Version::PubKey,
+            &keypair.x_only_public_key().0.serialize(),
+        );
+        let covenant_id = [7u8; 32];
+        let deposit_value = 100_000_000u64;
+        let funding = 150_000_000u64;
+
+        let entry =
+            UtxoEntry::new(funding, pay_to_address_script(&change_address), 0, false, None);
+        let outpoint = TransactionOutpoint::new(kaspa_hashes::Hash::from_bytes([1u8; 32]), 0);
+        let payload = actions::deposit_payload(&keypair.x_only_public_key().0.serialize(), 0);
+
+        let tx = build_deposit_transaction(DepositTx {
+            payload,
+            covenant_id,
+            deposit_value,
+            outpoint,
+            entry: entry.clone(),
+            keypair,
+            change_address: &change_address,
+            subnetwork_id: SUBNETWORK_ID_NATIVE,
+            params: &params,
+        });
+
+        // The tx must pay at least its own node-floor min fee, priced on its real (shrunk) change.
+        let change = tx.outputs[1].value;
+        let fee_paid = funding - deposit_value - change;
+        let required = min_fee(&params, &tx, &[entry]);
+        assert!(fee_paid >= required, "deposit underpaid: fee {fee_paid} < required {required}");
+    }
 }
