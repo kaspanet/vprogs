@@ -11,3 +11,8 @@ vprogs-core-codec.workspace    = true
 vprogs-core-hashing.workspace  = true
 vprogs-core-smt.workspace      = true
 vprogs-storage-types.workspace = true
+
+# jemalloc is a throughput win for the store but does not build on Windows; enable it everywhere
+# else. Cargo feature unification then turns it on for the whole non-Windows build.
+[target.'cfg(not(windows))'.dependencies]
+rocksdb = { workspace = true, features = ["jemalloc"] }
