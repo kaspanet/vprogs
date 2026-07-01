@@ -10,10 +10,14 @@
 //!   fee-prices the tx first, derives the rest from the funded skeleton, signs the L2 message over
 //!   it, then rebuilds with the real payload (same length, so fee and rest are unchanged).
 //!
+//! The genesis `Init` is authorized by an L1 prev-tx witness rather than a signature:
+//! [`build_genesis_init_transaction`] spends a P2PK(GENESIS) funding output, and the guest recovers
+//! the genesis pubkey from that spent output. [`genesis_p2pk_address`] names the address to fund.
+//!
 //! The pure [`deposit_funding_rest_preimage`] is also reused by the direct-guest test to synthesize
 //! the funding-output preimage without an L1 node.
 
-use kaspa_addresses::Address;
+use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus_core::{
     config::params::Params,
     constants::TX_VERSION_TOCCATA,
@@ -27,9 +31,11 @@ use kaspa_consensus_core::{
     },
 };
 use kaspa_txscript::{pay_to_address_script, standard::pay_to_script_hash_script};
-use secp256k1::Keypair;
+use secp256k1::{Keypair, SECP256K1, SecretKey};
+use vprogs_l1_utils::payload_digest_v1;
 use vprogs_l1_wallet::build::commit_storage_mass;
 use vprogs_zk_backend_risc0_api::build_delegate_entry_script;
+use vprogs_zk_backend_risc0_runtime_processor::genesis::GENESIS_SCHNORR_BYTES;
 
 use crate::actions::{self, TestSigner};
 
@@ -199,4 +205,103 @@ pub fn build_lane_action_transaction(args: LaneActionTx<'_>) -> Transaction {
     let real_payload = actions::finish_signed_payload(args.presig, args.signer, &rest);
     debug_assert_eq!(real_payload.len(), payload_len);
     build(fee, real_payload)
+}
+
+/// The runtime's genesis secp256k1 keypair: scalar `3` (BIP-340 test vector 0), whose x-only pubkey
+/// is `GENESIS_SCHNORR_BYTES`. Signs the L1 input that spends the P2PK(GENESIS) funding output; that
+/// spend is what authorizes the witness `Init`.
+pub fn genesis_keypair() -> Keypair {
+    let mut secret = [0u8; 32];
+    secret[31] = 3;
+    let sk = SecretKey::from_slice(&secret).expect("scalar 3 is a valid secp256k1 secret key");
+    let keypair = Keypair::from_secret_key(SECP256K1, &sk);
+    debug_assert_eq!(
+        keypair.x_only_public_key().0.serialize(),
+        GENESIS_SCHNORR_BYTES,
+        "scalar-3 x-only pubkey must equal the runtime GENESIS_PUBKEY",
+    );
+    keypair
+}
+
+/// The genesis P2PK address `P2PK(GENESIS)` under the network prefix implied by `params`. Funding
+/// output 0 of a payment to this address is the output the witness `Init` spends.
+pub fn genesis_p2pk_address(params: &Params) -> Address {
+    let prefix = Prefix::from(params.net.network_type());
+    Address::new(prefix, Version::PubKey, &GENESIS_SCHNORR_BYTES)
+}
+
+/// Inputs to [`build_genesis_init_transaction`].
+pub struct GenesisInitTx<'a> {
+    /// Minimum withdrawal amount the config commits at Init.
+    pub min_withdrawal: u64,
+    /// Covenant the config binds for its life; deposits must pay its deposit address.
+    pub covenant_id: [u8; 32],
+    /// The funding tx whose output 0 is the P2PK(GENESIS) this Init spends. Its payload must be empty
+    /// (its `payload_digest` is committed in the witness).
+    pub funding_tx: &'a Transaction,
+    /// Genesis keypair (scalar 3), from [`genesis_keypair`]. Signs the P2PK(GENESIS) input.
+    pub genesis_keypair: Keypair,
+    /// Address the change (after fee) is paid back to.
+    pub change_address: &'a Address,
+    /// Lane subnetwork the tx is issued on.
+    pub subnetwork_id: SubnetworkId,
+    /// Consensus params, for the mass-based fee and storage mass.
+    pub params: &'a Params,
+}
+
+/// Builds one signed `Init` transaction whose input 0 spends output 0 (the P2PK(GENESIS) output) of
+/// `funding_tx`. The witness payload proves control of the genesis key by that spend, so it carries
+/// no L2 signature and its bytes are fixed: the builder just prices the fee against the single change
+/// output. The witness commits the funding tx's `rest_preimage` and `payload_digest`, which the guest
+/// re-hashes to the spent outpoint before recovering the P2PK pubkey.
+pub fn build_genesis_init_transaction(args: GenesisInitTx<'_>) -> Transaction {
+    let funding_output = &args.funding_tx.outputs[0];
+    let outpoint = TransactionOutpoint::new(args.funding_tx.id(), 0);
+    let entry = UtxoEntry::new(
+        funding_output.value,
+        funding_output.script_public_key.clone(),
+        0,
+        false,
+        None,
+    );
+    let input = TransactionInput::new(outpoint, vec![], 0, 1);
+    let entries = vec![entry.clone()];
+    let change_spk = pay_to_address_script(args.change_address);
+
+    let prev_rest_preimage = transaction_v1_rest_preimage(args.funding_tx);
+    let prev_payload_digest = payload_digest_v1(&args.funding_tx.payload);
+    let payload = actions::init_witness_payload(
+        args.min_withdrawal,
+        &args.covenant_id,
+        &prev_rest_preimage,
+        &prev_payload_digest,
+        0,
+    );
+
+    let build = |fee: u64| {
+        let tx = Transaction::new(
+            TX_VERSION_TOCCATA,
+            vec![input.clone()],
+            vec![TransactionOutput::new(entry.amount - fee, change_spk.clone())],
+            0,
+            args.subnetwork_id,
+            0,
+            payload.clone(),
+        );
+        let signed =
+            sign(MutableTransaction::with_entries(tx, entries.clone()), args.genesis_keypair).tx;
+        commit_storage_mass(args.params, &signed, &entries);
+        signed
+    };
+
+    // Zero-fee probe to learn the signed mass, price it at the node floor, then rebuild funded.
+    let probe = build(0);
+    let fee = min_fee(args.params, &probe, &entries);
+    assert!(
+        entry.amount > fee,
+        "genesis funding output {} too small for Init fee {}",
+        entry.amount,
+        fee,
+    );
+    build(fee)
 }

@@ -275,21 +275,6 @@ impl Default for TestSigner {
     }
 }
 
-/// The signer for the runtime's baked-in genesis pubkey: secp256k1 scalar `3` (BIP-340 test
-/// vector 0), whose x-only public key is `GENESIS_SCHNORR_BYTES`. `Init` actions must be signed by
-/// this key.
-pub fn genesis_signer() -> TestSigner {
-    let mut sk_bytes = [0u8; 32];
-    sk_bytes[31] = 3;
-    let sk = SigningKey::from_bytes(&sk_bytes).expect("scalar 3 is a valid BIP-340 signing key");
-    let pubkey: [u8; 32] = sk.verifying_key().to_bytes().into();
-    debug_assert_eq!(
-        pubkey, GENESIS_SCHNORR_BYTES,
-        "scalar-3 x-only pubkey must equal the runtime's GENESIS_PUBKEY",
-    );
-    TestSigner { sk, pubkey }
-}
-
 // Resource-id helpers.
 
 /// The user resource id for a single-Schnorr lock over `pubkey`:
@@ -362,19 +347,6 @@ pub fn finish_signed_payload(
     let mut payload = presig;
     payload.extend_from_slice(&sig);
     payload
-}
-
-/// Builds the pre-signature prefix for a genesis `Init` of the singleton config, committing
-/// `min_withdrawal` and `covenant_id` and locking the config under the genesis pubkey. Sign it with
-/// [`genesis_signer`]. The config resource must be presented `is_new`.
-pub fn init_presig(min_withdrawal: u64, covenant_id: &[u8; 32]) -> Vec<u8> {
-    let config_id: [u8; 32] = *config_resource_id();
-    let access_meta = encode_access_metadata(&[(config_id, AccessType::Write)]);
-    let genesis_lock = LockEnum::Schnorr(SchnorrLockView { pubkey: &GENESIS_SCHNORR_BYTES });
-    let action =
-        encode_config_action(ACTION_TAG_INIT, 0, min_withdrawal, covenant_id, &genesis_lock);
-    let actions_section = encode_actions_section(&[action]);
-    single_schnorr_presig(&access_meta, &actions_section, 0)
 }
 
 /// Builds the complete (signature-free) lane payload for a genesis `Init` of the singleton config,

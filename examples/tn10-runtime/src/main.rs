@@ -31,7 +31,7 @@ use secp256k1::{Keypair, SECP256K1};
 use vprogs_example_tn10_runtime::{
     actions::{self, TestSigner},
     config::Config,
-    deposit::{self, DepositTx, LaneActionTx},
+    deposit::{self, DepositTx, GenesisInitTx, LaneActionTx},
 };
 use vprogs_l1_wallet::Wallet;
 use vprogs_runner::{Elfs, connect_wrpc, start_runner};
@@ -131,20 +131,29 @@ fn spawn_driver(
             })
             .collect();
 
-        // 1) Init the singleton config under the genesis key, committing the covenant id.
-        //
-        // TODO(framework gap): the runtime-processor guest resolves this Init's signer by reading
-        // the genesis pubkey out of the *target config resource's* lock. On a first Init
-        // the config slot is `is_new` with empty bytes, and nothing in the
-        // scheduler/storage/node layers seeds it with a genesis-locked blob, so the guest
-        // rejects with "unknown or absent resource kind". The acceptance test hand-seeds
-        // that slot; over the live flow this step cannot succeed until the guest resolves
-        // the genesis pubkey from its constant (or a framework component seeds the
-        // slot). Left as-is (rather than worked around) so the gap stays visible.
-        let genesis = actions::genesis_signer();
-        let init_presig = actions::init_presig(min_withdrawal, &covenant_id);
-        let init_id =
-            submit_lane_action(&wallet, keypair, &params, lane_subnet, init_presig, &genesis).await;
+        // 1) Init the singleton config under the genesis key, committing the covenant id. Authorized
+        // by an L1 prev-tx witness: fund a P2PK(GENESIS) output, then issue an Init tx that spends
+        // it. The guest recovers the genesis pubkey from that spent output, so the config slot is
+        // presented as an empty new resource with no hand-seed.
+        let genesis_address = deposit::genesis_p2pk_address(&params);
+        let genesis_fund_value = cfg.deposit_amount + 50_000_000;
+        let funding_tx = wallet.pay_to_address(&genesis_address, genesis_fund_value, 1).await;
+        match wallet.submit_transaction(&funding_tx).await {
+            Ok(id) => log::info!("funded genesis P2PK output {genesis_fund_value} sompi (tx {id})"),
+            Err(e) => log::warn!("genesis funding failed: {e}"),
+        }
+        tokio::time::sleep(step).await;
+
+        let init_tx = deposit::build_genesis_init_transaction(GenesisInitTx {
+            min_withdrawal,
+            covenant_id,
+            funding_tx: &funding_tx,
+            genesis_keypair: deposit::genesis_keypair(),
+            change_address: wallet.address(),
+            subnetwork_id: lane_subnet,
+            params: &params,
+        });
+        let init_id = wallet.submit_transaction(&init_tx).await.expect("submit Init");
         log::info!("issued Init config tx {init_id} (min_withdrawal={min_withdrawal})");
         tokio::time::sleep(step).await;
 
