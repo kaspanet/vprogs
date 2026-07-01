@@ -1,3 +1,20 @@
+//! The single-writer build side of the canonical chain.
+//!
+//! Each mutation builds a brand-new [`CanonicalChainSnapshot`] and atomically publishes it, so a
+//! reader holding an older snapshot keeps a stable view. See [`snapshot`](crate::snapshot) for the
+//! bit layout (hot zone, body, finalized) that these operations maintain. In those terms:
+//!
+//! * [`append`](CanonicalChain::append) sets the next bit in the `tail` bucket. When the new id
+//!   crosses into a fresh bucket the hot zone slides up by one: the old `tail` becomes the new
+//!   `last_sealed`, the old `last_sealed` is sealed into the body ring, and a fresh empty `tail` is
+//!   allocated (the sealing is done by [`HotZone::roll_forward`]).
+//! * [`rollback`](CanonicalChain::rollback) clears every bit above `new_tip`. A shallow rollback
+//!   rewrites only the copy-on-write hot buckets; a deep one that reaches a sealed bucket forks the
+//!   body ring first, so earlier snapshots are untouched.
+//! * [`finalize`](CanonicalChain::finalize) prunes the body buckets below the finalized id; once
+//!   pruned, those buckets read as canonical.
+//! * [`restore`](CanonicalChain::restore) rebuilds the whole layout from persisted ids at startup.
+
 use std::{
     collections::BTreeMap,
     iter::repeat_with,
