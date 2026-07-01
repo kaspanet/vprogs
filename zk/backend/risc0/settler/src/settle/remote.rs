@@ -42,9 +42,9 @@ impl FeeSource for WalletFeeSource {
     ) -> Option<FundedSettlement> {
         let wallet = Wallet::new(&self.client, &self.params, self.keypair);
         // A transient wRPC error (request timeout, dropped connection) while fetching the spendable
-        // set is expected against a live node; retry with backoff instead of surfacing it as `None`,
-        // which the settler treats as "every fee UTXO rejected" and panics on. Only a persistent
-        // failure gives up (returns `None`) after the bounded retries.
+        // set is expected against a live node; retry with backoff instead of surfacing it as
+        // `None`, which the settler treats as "every fee UTXO rejected" and panics on. Only
+        // a persistent failure gives up (returns `None`) after the bounded retries.
         const MAX_ATTEMPTS: u32 = 10;
         const RETRY_DELAY: Duration = Duration::from_millis(500);
         for attempt in 1..=MAX_ATTEMPTS {

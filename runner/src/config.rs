@@ -294,8 +294,8 @@ mod tests {
         assert!(matches!(bad.resolve(), Err(ConfigError::Invalid("covenant_id", _))));
     }
 
-    // The Jail closure must return `figment::Result<()>`, whose large `figment::Error` we cannot box
-    // (the return type is fixed by the Jail API).
+    // The Jail closure must return `figment::Result<()>`, whose large `figment::Error` we cannot
+    // box (the return type is fixed by the Jail API).
     #[allow(clippy::result_large_err)]
     #[test]
     fn layering_precedence_flag_over_env_over_file() {

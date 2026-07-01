@@ -194,7 +194,8 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
         excluded: &std::collections::HashSet<TransactionOutpoint>,
     ) -> Result<Option<(Transaction, TransactionOutpoint)>, RpcError> {
         let utxos = self.fetch_spendable_utxos().await?;
-        let Some((fee_outpoint, fee_entry)) = utxos.into_iter().find(|(o, _)| !excluded.contains(o))
+        let Some((fee_outpoint, fee_entry)) =
+            utxos.into_iter().find(|(o, _)| !excluded.contains(o))
         else {
             return Ok(None);
         };

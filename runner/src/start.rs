@@ -208,7 +208,14 @@ async fn start_exec(
     let node = build_exec_node(
         elfs,
         store,
-        bridge_params(cfg, lane_subnet, covenant_id, params, bridge_seed, BridgeObservers::default()),
+        bridge_params(
+            cfg,
+            lane_subnet,
+            covenant_id,
+            params,
+            bridge_seed,
+            BridgeObservers::default(),
+        ),
     );
     Ok((node, covenant_id))
 }
@@ -361,8 +368,8 @@ async fn start_settlement(
     // tip.
     let (settlement_tx, settlement_rx) = watch::channel(None::<SettlementInfo>);
     // Seed the bridge with reorg headroom: pin the anchor only if it is already deep, else seed
-    // seed_depth below the sink. The settler keeps the unmodified `start_from` (its own resume/adopt
-    // semantics), so this only affects where the bridge roots its chain.
+    // seed_depth below the sink. The settler keeps the unmodified `start_from` (its own
+    // resume/adopt semantics), so this only affects where the bridge roots its chain.
     let bridge_seed = resolve_bridge_seed(client, start_from, cfg.seed_depth, tip_daa).await;
     let node = build_proving_node(
         elfs,
@@ -416,11 +423,11 @@ async fn start_settlement(
 /// Resolves the block the bridge seeds its fresh-chain root at, decoupled from the settler's
 /// `start_from`. Pins `anchor` only when it is already at least `seed_depth` chain-blocks below the
 /// tip (deep enough that reorgs cannot roll back past it); otherwise returns `None` so the bridge
-/// seeds `seed_depth` below the sink instead. This is the reorg-headroom rule: a fresh bootstrap or a
-/// shallow catch-up seeds its root a full `seed_depth` below the tip (headroom), while a catch-up to
-/// an already-deep covenant still pins the exact deploy block (no history lost, and it is deep enough
-/// to be reorg-safe). Seeding a near-tip anchor directly is what panics the bridge (`rollback_tip` on
-/// the root) the first time a reorg is deeper than the root.
+/// seeds `seed_depth` below the sink instead. This is the reorg-headroom rule: a fresh bootstrap or
+/// a shallow catch-up seeds its root a full `seed_depth` below the tip (headroom), while a catch-up
+/// to an already-deep covenant still pins the exact deploy block (no history lost, and it is deep
+/// enough to be reorg-safe). Seeding a near-tip anchor directly is what panics the bridge
+/// (`rollback_tip` on the root) the first time a reorg is deeper than the root.
 async fn resolve_bridge_seed(
     client: &KaspaRpcClient,
     anchor: Option<Hash>,
@@ -429,17 +436,18 @@ async fn resolve_bridge_seed(
 ) -> Option<Hash> {
     let anchor = anchor?;
     // A transient wRPC error (request timeout, dropped connection) resolving the anchor's depth is
-    // expected against a live node; retry with backoff instead of pinning on the first blip. Pinning
-    // a near-tip anchor (a fresh or shallow start) makes it the bridge root, which panics the first
-    // time a reorg is deeper than the root. Only a persistent failure (e.g. a pruned anchor) falls
-    // back to pinning it, where the anchor is genuinely deep and safe.
+    // expected against a live node; retry with backoff instead of pinning on the first blip.
+    // Pinning a near-tip anchor (a fresh or shallow start) makes it the bridge root, which
+    // panics the first time a reorg is deeper than the root. Only a persistent failure (e.g. a
+    // pruned anchor) falls back to pinning it, where the anchor is genuinely deep and safe.
     const MAX_ATTEMPTS: u32 = 10;
     const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
     for attempt in 1..=MAX_ATTEMPTS {
         match client.get_block(anchor, false).await {
             Ok(block) => {
                 let anchor_daa = block.header.daa_score;
-                // Pin only a genuinely deep anchor; a near-tip one defers to seed_depth for headroom.
+                // Pin only a genuinely deep anchor; a near-tip one defers to seed_depth for
+                // headroom.
                 return (tip_daa.saturating_sub(anchor_daa) >= seed_depth).then_some(anchor);
             }
             Err(e) if attempt < MAX_ATTEMPTS => {
@@ -461,8 +469,8 @@ async fn resolve_bridge_seed(
     Some(anchor)
 }
 
-/// The bridge wiring for either mode, pointed at the remote node's lane + covenant. `bridge_seed` is
-/// the resolved root block ([`resolve_bridge_seed`]): a deep anchor to pin, or `None` to seed
+/// The bridge wiring for either mode, pointed at the remote node's lane + covenant. `bridge_seed`
+/// is the resolved root block ([`resolve_bridge_seed`]): a deep anchor to pin, or `None` to seed
 /// `seed_depth` below the sink for reorg headroom.
 fn bridge_params(
     cfg: &RunnerConfig,

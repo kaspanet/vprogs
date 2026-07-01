@@ -128,12 +128,13 @@ pub fn build_deposit_transaction(args: DepositTx<'_>) -> Transaction {
         signed
     };
 
-    // For a 2-output tx (deposit + change) the KIP-0009 storage mass depends on the change value, so
-    // pricing off a zero-fee probe underprices: shrinking change by the fee raises the required fee
-    // above the probe's estimate. Iterate the fee to a fixpoint instead, repricing each round on the
-    // tx actually built with the current fee (its real change output). The sequence is monotone
-    // non-decreasing (a smaller change never lowers storage mass) and converges; a handful of rounds
-    // suffices, and reaching the fixpoint means the built tx pays at least its own min fee.
+    // For a 2-output tx (deposit + change) the KIP-0009 storage mass depends on the change value,
+    // so pricing off a zero-fee probe underprices: shrinking change by the fee raises the
+    // required fee above the probe's estimate. Iterate the fee to a fixpoint instead, repricing
+    // each round on the tx actually built with the current fee (its real change output). The
+    // sequence is monotone non-decreasing (a smaller change never lowers storage mass) and
+    // converges; a handful of rounds suffices, and reaching the fixpoint means the built tx
+    // pays at least its own min fee.
     const MAX_ROUNDS: u32 = 8;
     let mut fee = min_fee(args.params, &build(0), &entries);
     let mut converged = false;
@@ -223,8 +224,8 @@ pub fn build_lane_action_transaction(args: LaneActionTx<'_>) -> Transaction {
 }
 
 /// The runtime's genesis secp256k1 keypair: scalar `3` (BIP-340 test vector 0), whose x-only pubkey
-/// is `GENESIS_SCHNORR_BYTES`. Signs the L1 input that spends the P2PK(GENESIS) funding output; that
-/// spend is what authorizes the witness `Init`.
+/// is `GENESIS_SCHNORR_BYTES`. Signs the L1 input that spends the P2PK(GENESIS) funding output;
+/// that spend is what authorizes the witness `Init`.
 pub fn genesis_keypair() -> Keypair {
     let mut secret = [0u8; 32];
     secret[31] = 3;
@@ -251,8 +252,8 @@ pub struct GenesisInitTx<'a> {
     pub min_withdrawal: u64,
     /// Covenant the config binds for its life; deposits must pay its deposit address.
     pub covenant_id: [u8; 32],
-    /// The funding tx whose output 0 is the P2PK(GENESIS) this Init spends. Its payload must be empty
-    /// (its `payload_digest` is committed in the witness).
+    /// The funding tx whose output 0 is the P2PK(GENESIS) this Init spends. Its payload must be
+    /// empty (its `payload_digest` is committed in the witness).
     pub funding_tx: &'a Transaction,
     /// Genesis keypair (scalar 3), from [`genesis_keypair`]. Signs the P2PK(GENESIS) input.
     pub genesis_keypair: Keypair,
@@ -266,9 +267,9 @@ pub struct GenesisInitTx<'a> {
 
 /// Builds one signed `Init` transaction whose input 0 spends output 0 (the P2PK(GENESIS) output) of
 /// `funding_tx`. The witness payload proves control of the genesis key by that spend, so it carries
-/// no L2 signature and its bytes are fixed: the builder just prices the fee against the single change
-/// output. The witness commits the funding tx's `rest_preimage` and `payload_digest`, which the guest
-/// re-hashes to the spent outpoint before recovering the P2PK pubkey.
+/// no L2 signature and its bytes are fixed: the builder just prices the fee against the single
+/// change output. The witness commits the funding tx's `rest_preimage` and `payload_digest`, which
+/// the guest re-hashes to the spent outpoint before recovering the P2PK pubkey.
 pub fn build_genesis_init_transaction(args: GenesisInitTx<'_>) -> Transaction {
     let funding_output = &args.funding_tx.outputs[0];
     let outpoint = TransactionOutpoint::new(args.funding_tx.id(), 0);
@@ -323,19 +324,20 @@ pub fn build_genesis_init_transaction(args: GenesisInitTx<'_>) -> Transaction {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use kaspa_consensus_core::network::{NetworkId, NetworkType};
+
+    use super::*;
 
     /// The default demo amounts (deposit 100M, funding 150M single UTXO) are the case where a
     /// zero-fee probe underprices: the fixpoint fee must clear the node floor recomputed on the tx
-    /// actually built with that fee (its shrunk change output), or the node rejects it "fee too low".
+    /// actually built with that fee (its shrunk change output), or the node rejects it "fee too
+    /// low".
     #[test]
     fn deposit_fee_clears_min_on_shrunk_change() {
         let params = Params::from(NetworkId::with_suffix(NetworkType::Testnet, 10));
         let mut secret = [0u8; 32];
         secret[31] = 9;
-        let keypair =
-            Keypair::from_secret_key(SECP256K1, &SecretKey::from_slice(&secret).unwrap());
+        let keypair = Keypair::from_secret_key(SECP256K1, &SecretKey::from_slice(&secret).unwrap());
         let change_address = Address::new(
             Prefix::Testnet,
             Version::PubKey,
@@ -345,8 +347,7 @@ mod tests {
         let deposit_value = 100_000_000u64;
         let funding = 150_000_000u64;
 
-        let entry =
-            UtxoEntry::new(funding, pay_to_address_script(&change_address), 0, false, None);
+        let entry = UtxoEntry::new(funding, pay_to_address_script(&change_address), 0, false, None);
         let outpoint = TransactionOutpoint::new(kaspa_hashes::Hash::from_bytes([1u8; 32]), 0);
         let payload = actions::deposit_payload(&keypair.x_only_public_key().0.serialize(), 0);
 

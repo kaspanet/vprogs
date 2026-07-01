@@ -110,8 +110,9 @@ fn build_prev_tx_v1_with_p2pk(pubkey: &[u8; 32]) -> KaspaTransaction {
     )
 }
 
-/// Builds a kaspa V1 transaction whose input 0 spends `prev_tx_id`:0. The guest parses this to learn
-/// the outpoint the witness authorizes, then asserts the witness preimage hashes to `prev_tx_id`.
+/// Builds a kaspa V1 transaction whose input 0 spends `prev_tx_id`:0. The guest parses this to
+/// learn the outpoint the witness authorizes, then asserts the witness preimage hashes to
+/// `prev_tx_id`.
 fn build_current_tx_v1_spending(prev_tx_id: &[u8; 32]) -> KaspaTransaction {
     let outpoint = TransactionOutpoint::new(KaspaHash::from_bytes(*prev_tx_id), 0);
     KaspaTransaction::new(
