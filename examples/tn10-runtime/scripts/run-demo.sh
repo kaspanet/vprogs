@@ -14,11 +14,11 @@
 # (timeout 120s) -> start B with that env -> run monitor for the given duration -> SIGTERM both,
 # reap orphans, print final verdict.
 #
-# KNOWN BLOCKER: the runtime-processor guest's first `Init` cannot be resolved through the live
-# scheduler yet (it reads the genesis pubkey from an unseeded config slot). Until that guest/framework
-# gap is fixed, node A's Init step fails and no deposits/transfers/withdraws land. The demo wiring is
-# ready; the monitor will report the covenant match and node health, but action/settlement counts stay
-# at zero until the Init gap is addressed. See ../src/main.rs (the Init TODO).
+# Init is authorized by an L1 prev-tx witness: node A funds a P2PK(GENESIS) output, then issues an
+# Init tx that spends it, and the guest recovers the genesis pubkey from that spent output (no guest
+# change, no seeded config slot). Node A then runs the full deposit -> transfer -> withdraw pass and
+# both nodes settle. The monitor reports covenant match, node health, and non-zero action/settlement
+# counts on A. See ../src/main.rs (the live Init step).
 #
 # Secrets come from the environment, never the repo:
 #   TN10RT_KEY1, TN10RT_KEY2  (required)  two funded testnet-10 private keys (32-byte hex)

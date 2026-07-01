@@ -6,20 +6,18 @@ covenant and runs the scripted `Init → distribute → deposit → transfer →
 B catches up to that same covenant and settles in lock-step **without issuing its own actions**
 (follower mode). The monitor reports per-node health and a cross-node covenant-consistency check.
 
-## ⚠ Known blocker: the live `Init` does not work yet
+## How the live `Init` is authorized
 
-The runtime-processor guest resolves the `Init` action's signer by reading the genesis pubkey out of
-the **config resource's** lock. On a first `Init` the config slot is `is_new` with empty bytes, and
-nothing in the scheduler/storage/node layers seeds it with a genesis-locked blob, so the guest
-rejects with `"unknown or absent resource kind"`. Until that guest/framework gap is fixed (the guest
-should resolve the genesis pubkey from its constant, or a framework component should seed the slot),
-node A's `Init` fails and **no deposits/transfers/withdraws land**. See the `Init` TODO in
-`../src/main.rs`.
+The first `Init` proves control of the runtime's genesis key with an **L1 prev-tx witness** instead
+of an in-payload signature. Node A funds a `P2PK(GENESIS)` output, then issues an `Init` tx whose
+input spends it; the guest recovers the genesis pubkey from that spent output and matches it against
+the genesis lock `apply_init` builds. The config resource is presented as an empty `is_new` slot with
+no seeding, and no guest change is required. Node A then runs the full `deposit → transfer → withdraw`
+pass and both nodes settle.
 
-The scripts and follower wiring are complete and ready; run them once the gap is addressed. Until
-then the monitor will still show node health and the covenant match, but `acts` and `settle` stay 0.
-The encoders and tx builders the driver uses are independently proven by the dev-mode direct-guest
-acceptance test (`cargo test -p vprogs-example-tn10-runtime --test runtime_actions`, `RISC0_DEV_MODE=1`).
+The same encoders and tx builders the driver uses are proven end-to-end by the dev-mode direct-guest
+acceptance test (`cargo test -p vprogs-example-tn10-runtime --test runtime_actions`,
+`RISC0_DEV_MODE=1`), including the witness `Init` on an empty config slot.
 
 ## Prereqs
 
