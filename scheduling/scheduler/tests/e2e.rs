@@ -8,6 +8,7 @@ use vprogs_core_types::{AccessMetadata, Checkpoint, ResourceId, SchedulerTransac
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_scheduling_test_utils::{Processor, SchedulerExt};
 use vprogs_state_metadata::StateMetadata;
+use vprogs_state_version::StateVersion;
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 
@@ -1996,6 +1997,246 @@ pub fn test_smt_deterministic_roots() {
 
         // The tree builds from (version=1 root) + same diffs → same result.
         assert_ne!(state_root(&scheduler), root1, "adding batch 2 should change root");
+
+        scheduler.shutdown();
+    }
+}
+
+/// A resource emptied by a batch leaves no latest pointer once that batch commits.
+#[test]
+pub fn test_removal_deletes_latest_ptr() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(Processor),
+            StorageConfig::default().with_store(storage),
+        );
+
+        let batch1 = scheduler.schedule(
+            1,
+            vec![SchedulerTransaction::new(
+                1,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+                1,
+            )],
+        );
+        batch1.wait_committed_blocking();
+        scheduler.assert_written_state(ResourceId::for_test(1), vec![1]);
+
+        // Batch 2 empties resource 1.
+        let batch2 = scheduler.schedule(
+            2,
+            vec![SchedulerTransaction::new(
+                2,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+                Processor::CLEAR_DATA,
+            )],
+        );
+        batch2.wait_committed_blocking();
+
+        scheduler.assert_resource_deleted(ResourceId::for_test(1));
+
+        scheduler.shutdown();
+    }
+}
+
+/// Recreating a removed resource takes the recreating batch's index as its version and does not
+/// collide with the retained pre-removal version.
+#[test]
+pub fn test_recreate_after_removal_uses_batch_index_version() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(Processor),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // Create (batch 1), remove (batch 2), recreate (batch 3).
+        scheduler.schedule(
+            1,
+            vec![SchedulerTransaction::new(
+                1,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+                1,
+            )],
+        );
+        scheduler.schedule(
+            2,
+            vec![SchedulerTransaction::new(
+                2,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+                Processor::CLEAR_DATA,
+            )],
+        );
+        let batch3 = scheduler.schedule(
+            3,
+            vec![SchedulerTransaction::new(
+                3,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+                3,
+            )],
+        );
+        batch3.wait_committed_blocking();
+
+        let store = scheduler.state().storage().store();
+        let state = StateVersion::from_latest_data(store.as_ref(), ResourceId::for_test(1));
+        assert_eq!(state.version(), 3, "recreate takes the batch-index version");
+        assert_eq!(*state.data(), 3usize.to_be_bytes().to_vec());
+
+        // The pre-removal version (batch 1) is retained at its own key, not overwritten.
+        assert_eq!(
+            StateVersion::get(store.as_ref(), 1, &ResourceId::for_test(1)),
+            Some(1usize.to_be_bytes().to_vec()),
+            "the original version is retained without collision"
+        );
+
+        scheduler.shutdown();
+    }
+}
+
+/// Rolling back a removal restores the resource's pre-removal version.
+#[test]
+pub fn test_rollback_removal_restores_prior_version() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(Processor),
+            StorageConfig::default().with_store(storage),
+        );
+
+        scheduler.schedule(
+            1,
+            vec![SchedulerTransaction::new(
+                1,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+                1,
+            )],
+        );
+        let batch2 = scheduler.schedule(
+            2,
+            vec![SchedulerTransaction::new(
+                2,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+                Processor::CLEAR_DATA,
+            )],
+        );
+        batch2.wait_committed_blocking();
+        scheduler.assert_resource_deleted(ResourceId::for_test(1));
+
+        // Rolling back the removal batch restores resource 1.
+        scheduler.rollback_to(1).expect("rollback should succeed");
+        scheduler.assert_written_state(ResourceId::for_test(1), vec![1]);
+
+        scheduler.shutdown();
+    }
+}
+
+/// Rolling back a recreate (after a removal) leaves the resource absent again.
+#[test]
+pub fn test_rollback_recreate_leaves_absent() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(Processor),
+            StorageConfig::default().with_store(storage),
+        );
+
+        scheduler.schedule(
+            1,
+            vec![SchedulerTransaction::new(
+                1,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+                1,
+            )],
+        );
+        scheduler.schedule(
+            2,
+            vec![SchedulerTransaction::new(
+                2,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+                Processor::CLEAR_DATA,
+            )],
+        );
+        let batch3 = scheduler.schedule(
+            3,
+            vec![SchedulerTransaction::new(
+                3,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+                3,
+            )],
+        );
+        batch3.wait_committed_blocking();
+        scheduler.assert_written_state(ResourceId::for_test(1), vec![3]);
+
+        // Rolling back to the removal batch (2) undoes the recreate: absent again.
+        scheduler.rollback_to(2).expect("rollback should succeed");
+        scheduler.assert_resource_deleted(ResourceId::for_test(1));
+
+        scheduler.shutdown();
+    }
+}
+
+/// After pruning crosses the removal batch, a removed resource has zero on-disk footprint: no
+/// latest pointer, no version rows, and no rollback pointers.
+#[test]
+pub fn test_pruning_removed_resource_zero_footprint() {
+    use vprogs_state_ptr_rollback::StatePtrRollback;
+
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(Processor),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // Create resource 1 (batch 1), remove it (batch 2), then an unrelated batch 3 so batches
+        // 1-2 fall below the pruning threshold.
+        scheduler.schedule(
+            1,
+            vec![SchedulerTransaction::new(
+                1,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+                1,
+            )],
+        );
+        scheduler.schedule(
+            2,
+            vec![SchedulerTransaction::new(
+                2,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+                Processor::CLEAR_DATA,
+            )],
+        );
+        let batch3 = scheduler.schedule(
+            3,
+            vec![SchedulerTransaction::new(
+                3,
+                vec![AccessMetadata::write(ResourceId::for_test(2))],
+                3,
+            )],
+        );
+        batch3.wait_committed_blocking();
+
+        // Prune batches 1 and 2.
+        scheduler.pruning().set_threshold(3);
+        scheduler.wait_pruned(2, Duration::from_secs(10));
+
+        let store = scheduler.state().storage().store();
+
+        // No latest pointer, no data row for the pre-removal version, no rollback pointers.
+        scheduler.assert_resource_deleted(ResourceId::for_test(1));
+        assert_eq!(
+            StateVersion::get(store.as_ref(), 1, &ResourceId::for_test(1)),
+            None,
+            "the pre-removal version row should be pruned"
+        );
+        assert_eq!(StatePtrRollback::iter_batch(store.as_ref(), 1).count(), 0);
+        assert_eq!(StatePtrRollback::iter_batch(store.as_ref(), 2).count(), 0);
 
         scheduler.shutdown();
     }
