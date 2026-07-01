@@ -428,19 +428,37 @@ async fn resolve_bridge_seed(
     tip_daa: u64,
 ) -> Option<Hash> {
     let anchor = anchor?;
-    match client.get_block(anchor, false).await {
-        Ok(block) => {
-            let anchor_daa = block.header.daa_score;
-            // Pin only a genuinely deep anchor; a near-tip one defers to seed_depth for headroom.
-            (tip_daa.saturating_sub(anchor_daa) >= seed_depth).then_some(anchor)
-        }
-        // If the anchor block cannot be resolved (e.g. pruned), fall back to pinning it rather than
-        // silently reseeding somewhere else; the bridge surfaces an unusable seed loudly.
-        Err(e) => {
-            log::warn!("bridge seed: could not resolve anchor {anchor} depth ({e}); pinning it");
-            Some(anchor)
+    // A transient wRPC error (request timeout, dropped connection) resolving the anchor's depth is
+    // expected against a live node; retry with backoff instead of pinning on the first blip. Pinning
+    // a near-tip anchor (a fresh or shallow start) makes it the bridge root, which panics the first
+    // time a reorg is deeper than the root. Only a persistent failure (e.g. a pruned anchor) falls
+    // back to pinning it, where the anchor is genuinely deep and safe.
+    const MAX_ATTEMPTS: u32 = 10;
+    const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+    for attempt in 1..=MAX_ATTEMPTS {
+        match client.get_block(anchor, false).await {
+            Ok(block) => {
+                let anchor_daa = block.header.daa_score;
+                // Pin only a genuinely deep anchor; a near-tip one defers to seed_depth for headroom.
+                return (tip_daa.saturating_sub(anchor_daa) >= seed_depth).then_some(anchor);
+            }
+            Err(e) if attempt < MAX_ATTEMPTS => {
+                log::warn!(
+                    "bridge seed: could not resolve anchor {anchor} depth (attempt {attempt}/{MAX_ATTEMPTS}, retrying): {e}"
+                );
+                tokio::time::sleep(RETRY_DELAY).await;
+            }
+            // Persistently unresolvable (e.g. pruned): fall back to pinning the anchor rather than
+            // silently reseeding somewhere else; the bridge surfaces an unusable seed loudly.
+            Err(e) => {
+                log::warn!(
+                    "bridge seed: could not resolve anchor {anchor} depth after {MAX_ATTEMPTS} attempts ({e}); pinning it"
+                );
+                return Some(anchor);
+            }
         }
     }
+    Some(anchor)
 }
 
 /// The bridge wiring for either mode, pointed at the remote node's lane + covenant. `bridge_seed` is
