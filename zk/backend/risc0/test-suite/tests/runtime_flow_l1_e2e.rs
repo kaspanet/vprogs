@@ -127,13 +127,13 @@ async fn two_nodes_agree_on_deposit_transfer_withdraw_flow() {
     mine_carrier(&l1, deposit_carrier(cov, &bob, 3 * KAS)).await;
 
     // 3. Transfer 1 KAS Alice -> Bob.  (Alice 4, Bob 4)
-    mine_carrier(&l1, transfer_carrier(&alice, &bob, 1 * KAS)).await;
+    mine_carrier(&l1, transfer_carrier(&alice, &bob, KAS)).await;
 
     // 4. Withdraw 2 KAS from Bob (emits an exit).  (Bob 2)
     mine_carrier(&l1, withdraw_carrier(&bob, 2 * KAS, &[0xAA; 32])).await;
 
     // 5. Out-of-order: Carol (unfunded) transfer-creates Dave -> runtime REJECTS the whole tx.
-    mine_carrier(&l1, transfer_create_carrier(&carol, &dave, 1 * KAS)).await;
+    mine_carrier(&l1, transfer_create_carrier(&carol, &dave, KAS)).await;
 
     // 6. Deposit Carol (2 KAS) -> the observable success after the rejection.
     mine_carrier(&l1, deposit_carrier(cov, &carol, 2 * KAS)).await;

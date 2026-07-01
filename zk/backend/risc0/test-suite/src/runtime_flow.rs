@@ -146,7 +146,7 @@ impl RuntimeSigner {
     /// Signs `msg` with this key's BIP-340 Schnorr key.
     fn sign(&self, msg: &[u8]) -> [u8; SIG_LEN] {
         let sig: Signature = self.sk.sign(msg);
-        sig.to_bytes().into()
+        sig.to_bytes()
     }
 }
 
