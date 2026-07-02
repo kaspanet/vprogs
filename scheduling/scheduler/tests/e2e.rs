@@ -9,6 +9,7 @@ use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_scheduling_test_utils::{Processor, SchedulerExt};
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_version::StateVersion;
+use vprogs_storage_canonical_chain::BUCKET_CAPACITY;
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 
@@ -236,7 +237,7 @@ pub fn test_add_batches_after_rollback() {
             .assert_resource_deleted(ResourceId::for_test(3))
             .assert_written_state(ResourceId::for_test(1), vec![0]);
 
-        // Schedule new batches after rollback - should continue from index 2
+        // Schedule new batches after rollback - should continue at 4, 5.
         let batch4 = scheduler.schedule(
             4,
             vec![SchedulerTransaction::new(
@@ -255,8 +256,8 @@ pub fn test_add_batches_after_rollback() {
         );
         batch5.wait_committed_blocking();
 
-        assert_eq!(batch4.checkpoint().index(), 2);
-        assert_eq!(batch5.checkpoint().index(), 3);
+        assert_eq!(batch4.checkpoint().index(), 4);
+        assert_eq!(batch5.checkpoint().index(), 5);
 
         // Verify new state
         scheduler
@@ -318,8 +319,7 @@ pub fn test_inflight_cancellation_without_waiting() {
             )],
         );
 
-        // Immediately rollback without waiting for batches 2-4 to commit
-        // This tests in-flight cancellation
+        // Immediately rollback without waiting for batches 2-4 (tests in-flight cancellation).
         scheduler.rollback_to(1).expect("rollback should succeed");
 
         // After rollback, the canceled batches should have canceled() == true
@@ -327,8 +327,7 @@ pub fn test_inflight_cancellation_without_waiting() {
         assert!(batch3.canceled(), "batch3 should be canceled");
         assert!(batch4.canceled(), "batch4 should be canceled");
 
-        // Resource 1 should still exist (from batch1 which was committed)
-        // Resources 2, 3, 4 should be cleaned up by rollback
+        // Resource 1 survives (batch1 committed); resources 2-4 are cleaned up by the rollback.
         scheduler
             .assert_written_state(ResourceId::for_test(1), vec![0])
             .assert_resource_deleted(ResourceId::for_test(2))
@@ -364,8 +363,7 @@ pub fn test_rollback_multiple_contexts() {
             StorageConfig::default().with_store(storage),
         );
 
-        // Phase 1: Apply batches 1-6
-        // Using resource IDs that match batch indices for clarity
+        // Phase 1: apply batches 1-6 (resource ids match batch indices for clarity).
         let batch1 = scheduler.schedule(
             1,
             vec![SchedulerTransaction::new(
@@ -459,8 +457,8 @@ pub fn test_rollback_multiple_contexts() {
         );
         batch7.wait_committed_blocking();
 
-        assert_eq!(new_batch6.checkpoint().index(), 6);
-        assert_eq!(batch7.checkpoint().index(), 7);
+        assert_eq!(new_batch6.checkpoint().index(), 7);
+        assert_eq!(batch7.checkpoint().index(), 8);
 
         scheduler
             .assert_written_state(ResourceId::for_test(60), vec![60])
@@ -498,8 +496,8 @@ pub fn test_rollback_multiple_contexts() {
         );
         final_batch5.wait_committed_blocking();
 
-        assert_eq!(final_batch4.checkpoint().index(), 4);
-        assert_eq!(final_batch5.checkpoint().index(), 5);
+        assert_eq!(final_batch4.checkpoint().index(), 9);
+        assert_eq!(final_batch5.checkpoint().index(), 10);
 
         // Verify final state
         scheduler
@@ -566,7 +564,7 @@ pub fn test_rollback_to_zero() {
             .assert_resource_deleted(ResourceId::for_test(2))
             .assert_resource_deleted(ResourceId::for_test(3));
 
-        // New batches should start from index 1 again
+        // Ids are never reused: the next batch continues past the orphaned ids (at 4), not at 1.
         let new_batch1 = scheduler.schedule(
             100,
             vec![SchedulerTransaction::new(
@@ -577,7 +575,7 @@ pub fn test_rollback_to_zero() {
         );
         new_batch1.wait_committed_blocking();
 
-        assert_eq!(new_batch1.checkpoint().index(), 1);
+        assert_eq!(new_batch1.checkpoint().index(), 4);
         scheduler.assert_written_state(ResourceId::for_test(100), vec![100]);
 
         scheduler.shutdown();
@@ -682,7 +680,7 @@ pub fn test_consecutive_rollbacks() {
             )],
         );
         new_batch.wait_committed_blocking();
-        assert_eq!(new_batch.checkpoint().index(), 2);
+        assert_eq!(new_batch.checkpoint().index(), 6);
 
         scheduler.shutdown();
     }
@@ -816,8 +814,7 @@ pub fn test_cancellation_skips_writes() {
         batch2.wait_committed_blocking();
         batch3.wait_committed_blocking();
 
-        // Resource 1 should only have the write from batch1
-        // Resources 100 and 200 should be cleaned up by rollback
+        // Resource 1 keeps only batch1's write; resources 100 and 200 are cleaned up.
         scheduler
             .assert_written_state(ResourceId::for_test(1), vec![1])
             .assert_resource_deleted(ResourceId::for_test(100))
@@ -1228,8 +1225,7 @@ pub fn test_pruning_crash_recovery() {
         scheduler.pruning().set_threshold(3);
         scheduler.wait_pruned(2, Duration::from_secs(10));
 
-        // Verify root has advanced past the pruned batches.
-        // Root = oldest surviving batch = 3 (since batches 1-2 were pruned).
+        // Root should have advanced to 3 (oldest surviving batch after pruning 1-2).
         let root = StateMetadata::root::<u64, _>(&**scheduler.state().storage().store());
         assert_eq!(root.index(), 3, "Root should point to first surviving batch");
         assert_eq!(*root.metadata(), 3, "Root metadata should match batch 3");
@@ -2237,6 +2233,71 @@ pub fn test_pruning_removed_resource_zero_footprint() {
         );
         assert_eq!(StatePtrRollback::iter_batch(store.as_ref(), 1).count(), 0);
         assert_eq!(StatePtrRollback::iter_batch(store.as_ref(), 2).count(), 0);
+
+        scheduler.shutdown();
+    }
+}
+
+/// Pruning must treat a reorg-orphaned id below the finalization point as orphaned - despite
+/// finalized ids defaulting to canonical - so it spares the orphan's still-live predecessor.
+#[test]
+pub fn test_finalize_past_orphan_bucket_keeps_predecessor() {
+    use vprogs_core_types::ChainSink;
+
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(Processor),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // Batch 1 writes R: the canonical version, stored at version 1.
+        scheduler
+            .schedule(
+                1,
+                vec![SchedulerTransaction::new(
+                    0,
+                    vec![AccessMetadata::write(ResourceId::for_test(1))],
+                    0,
+                )],
+            )
+            .wait_committed_blocking();
+
+        // Batch 2 rewrites R, so its rollback pointer for R points back at version 1.
+        scheduler
+            .schedule(
+                2,
+                vec![SchedulerTransaction::new(
+                    0,
+                    vec![AccessMetadata::write(ResourceId::for_test(1))],
+                    1,
+                )],
+            )
+            .wait_committed_blocking();
+
+        // Reorg batch 2 away: id 2 becomes an orphaned gap and R reverts to version 1.
+        scheduler.rollback_to(1).expect("rollback should succeed");
+
+        // Push the tip two buckets past the orphan (id 2, bucket 0) with empty fillers, so bucket 0
+        // sinks below the two-bucket hot zone into the body where `finalize` can prune it.
+        let mut last = None;
+        for meta in 3..=2 * BUCKET_CAPACITY + 1 {
+            last = Some(scheduler.schedule(meta, vec![]));
+        }
+        last.expect("scheduled fillers").wait_committed_blocking();
+        assert_eq!(scheduler.tip(), 2 * BUCKET_CAPACITY + 1, "tip advanced into the third bucket");
+
+        // Finalize past bucket 0, then let the pruning worker reclaim the finalized range.
+        scheduler.finalize(BUCKET_CAPACITY + 1);
+        scheduler.wait_pruned(BUCKET_CAPACITY, Duration::from_secs(60));
+
+        // The orphaned batch 2 must not have caused R's live version 1 to be deleted.
+        let store = scheduler.state().storage().store();
+        assert!(
+            StateVersion::get(store.as_ref(), 1, &ResourceId::for_test(1)).is_some(),
+            "finalizing past the orphan's pruned bucket reclaimed R's canonical predecessor"
+        );
 
         scheduler.shutdown();
     }

@@ -12,19 +12,9 @@ pub(crate) enum Error {
     #[error("starting block no longer in chain: {0}")]
     CheckpointLost(RpcError),
 
-    /// A reorg would roll back past the finalization boundary.
-    #[error(
-        "rollback to index {target_index} would go past finalization boundary at index {root_index}"
-    )]
-    RollbackPastRoot { target_index: u64, root_index: u64 },
-
-    /// A pruning point hash was not found in the virtual chain.
-    #[error("pruning point hash {0} not found in chain")]
-    HashNotFound(Hash),
-
-    /// The backfill target hash was not found in the chain.
-    #[error("backfill target hash {0} not found in chain")]
-    BackfillTargetNotFound(Hash),
+    /// A reorg's fork point has been finalized away, so we cannot roll back to it.
+    #[error("reorg below finalization boundary: fork block {0} is finalized")]
+    ReorgBelowFinality(Hash),
 
     /// An internal channel closed unexpectedly.
     #[error("notification channel closed: {0}")]
@@ -39,8 +29,7 @@ impl Error {
 }
 
 impl From<RpcError> for Error {
-    /// Classifies RPC errors by inspecting the message text. The Kaspa RPC library does not expose
-    /// structured error variants, so string matching is the only option for now.
+    /// Classifies RPC errors by message text; Kaspa's RPC exposes no structured error variants.
     fn from(e: RpcError) -> Self {
         let msg = e.to_string().to_lowercase();
         let is_checkpoint_lost = msg.contains("cannot find")

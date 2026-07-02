@@ -6,13 +6,13 @@ use vprogs_core_types::ResourceId;
 use crate::{Commitment, DEPTH, EMPTY_HASH, HashedNode, Key, Node, StaleNode, Tree, WriteBatch};
 
 /// Applies leaf mutations to the tree and writes resulting nodes into a `WriteBatch`.
-pub(crate) struct Updater<'a, S, W> {
+pub(crate) struct Updater<'a, S: Tree, W> {
     /// Read-only access to existing tree nodes.
     tree: &'a S,
+    /// Read snapshot shared by every `node` lookup in this update, for a consistent base.
+    snapshot: S::Snapshot,
     /// Accumulates new/deleted nodes for atomic commit.
     wb: &'a mut W,
-    /// Version to read existing nodes from (version - 1).
-    prev_version: u64,
     /// Version being written.
     version: u64,
 }
@@ -25,11 +25,10 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
         version: u64,
         mut commitments: Vec<Commitment>,
     ) -> [u8; 32] {
-        // Initialize the update context. Version > 0 is guaranteed by `Tree::update`.
-        let mut ctx = Self { tree, wb, prev_version: version - 1, version };
+        // Capture one snapshot for the whole update. Version > 0 is guaranteed by `Tree::update`.
+        let mut ctx = Self { tree, snapshot: tree.snapshot(), wb, version };
 
-        // Sort and deduplicate by key. On duplicate keys, last-write-wins: `dedup_by` removes `a`
-        // (later element) and keeps `b`, so we copy `a`'s value_hash into `b` first.
+        // Sort and dedup by key; on a duplicate, last-write-wins by copying the later value_hash.
         commitments.sort_by_key(|a| a.key);
         commitments.dedup_by(|a, b| {
             if a.key == b.key {
@@ -40,8 +39,7 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
             }
         });
 
-        // Recursively apply commitments starting from the root. `update_subtree` marks the existing
-        // root stale internally, so no separate `mark_stale` call is needed here.
+        // Apply from the root; update_subtree marks the old root stale, so no separate call here.
         match &ctx.update_subtree(&Key::ROOT, &commitments) {
             // Tree drained: write a tombstone so reads don't fall back to the stale prior root.
             None => {
@@ -55,6 +53,11 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
         }
     }
 
+    /// Reads the existing node at `key` from the prior version, against the captured snapshot.
+    fn node(&self, key: &Key) -> Option<(u64, Node)> {
+        self.tree.node(key, self.version - 1, &self.snapshot)
+    }
+
     /// Recursive update for a sorted sub-slice of leaf mutations at `key`.
     ///
     /// Returns `None` for empty subtrees or the node at this position. Returned `Leaf` nodes are
@@ -65,11 +68,11 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
         if commitments.is_empty() {
             // An `Empty` tombstone collapses to `None` so callers can treat both as "no subtree".
             let exists = |node: &Node| !matches!(node, Node::Empty);
-            return self.tree.node(key, self.prev_version).map(|(_, data)| data).filter(exists);
+            return self.node(key).map(|(_, data)| data).filter(exists);
         }
 
         // Look up existing node at this position to determine the update strategy.
-        match self.tree.node(key, self.prev_version).map(|(_, data)| data) {
+        match self.node(key).map(|(_, data)| data) {
             // Empty subtree: resolve commitments into leaves directly.
             None => self.resolve_leaves(key, commitments),
 
@@ -149,8 +152,7 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
     fn split_and_recurse(&mut self, key: &Key, commitments: &[Commitment]) -> Option<Node> {
         assert!((key.level as usize) < DEPTH, "exceeded tree depth");
 
-        // Partition by the bit at the current depth. Since commitments are sorted MSB-first, all
-        // bit=0 keys precede bit=1 keys - so `partition_point` finds the exact boundary.
+        // Partition by the current-depth bit; sorted MSB-first, so bit=0 keys precede bit=1.
         let mid = commitments.partition_point(|u| !u.key.get_msb(key.level as usize));
         let (left, right) = commitments.split_at(mid);
 
@@ -167,13 +169,11 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
             // Both children empty - this subtree is empty.
             (None, None) => None,
 
-            // One child is a leaf, the other is empty - bubble the leaf up. This is the core
-            // shortcutting mechanism: the single occupant doesn't need an internal node above it.
+            // One child a leaf, the other empty: bubble it up (shortcut, no internal node).
             (Some(Node::Leaf { .. }), None) => left_result,
             (None, Some(Node::Leaf { .. })) => right_result,
 
-            // Otherwise (both non-empty, or at least one Internal) - write children to the tree
-            // and create an Internal node.
+            // Otherwise (both non-empty, or one Internal): write children, make an Internal node.
             _ => Some(Node::internal::<S::Hasher>(
                 &self.write_child(&left_result, &left_child),
                 &self.write_child(&right_result, &right_child),
@@ -187,7 +187,7 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
             None => {
                 // Tombstone an emptied position so a later read can't resurface the deleted node.
                 let exists = |(_, node)| !matches!(node, Node::Empty);
-                if self.tree.node(key, self.prev_version).is_some_and(exists) {
+                if self.node(key).is_some_and(exists) {
                     self.wb.put_node(key, self.version, &Node::Empty);
                     self.wb.put_stale_node(&StaleNode::new(self.version, *key, self.version));
                 }
@@ -202,7 +202,7 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
 
     /// Marks an existing node at the given position as stale (if it exists).
     fn mark_stale(&mut self, node_key: &Key) {
-        if let Some((old_version, _)) = self.tree.node(node_key, self.prev_version) {
+        if let Some((old_version, _)) = self.node(node_key) {
             self.wb.put_stale_node(&StaleNode::new(self.version, *node_key, old_version));
         }
     }

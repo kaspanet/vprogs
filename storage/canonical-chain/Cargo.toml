@@ -1,0 +1,12 @@
+[package]
+edition.workspace = true
+name              = "vprogs-storage-canonical-chain"
+version.workspace = true
+
+[dependencies]
+arc-swap.workspace            = true
+vprogs-core-atomics.workspace = true
+vprogs-core-types.workspace   = true
+
+[dev-dependencies]
+borsh.workspace = true

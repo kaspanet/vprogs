@@ -30,7 +30,6 @@ mod config;
 mod error;
 mod node;
 mod processor;
-mod worker;
 
 pub use api::NodeApi;
 pub use config::NodeConfig;

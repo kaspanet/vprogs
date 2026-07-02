@@ -1,65 +1,75 @@
-use std::{sync::Arc, thread::JoinHandle};
+use std::{
+    sync::Arc,
+    thread::{self, JoinHandle},
+};
 
 use crossbeam_queue::SegQueue;
-use tokio::{runtime::Builder, sync::Notify};
+use tokio::{
+    runtime::Builder,
+    sync::{Notify, mpsc},
+};
+use vprogs_core_atomics::AtomicAsyncLatch;
+use vprogs_core_types::ChainSink;
+use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
 
-use crate::{L1BridgeConfig, L1Event, worker::BridgeWorker};
+use crate::{Command, L1BridgeConfig, L1Event, worker::BridgeWorker};
 
-/// Bridge to the Kaspa L1 network that emits chain events.
-///
-/// Spawns a background worker thread that communicates with the L1 node over RPC. Events are
-/// delivered through a lock-free queue and can be consumed via [`pop`], [`wait_and_pop`], or
-/// [`drain`].
+/// Handle to a background worker that follows the Kaspa L1 chain and drives a [`ChainSink`].
 pub struct L1Bridge {
-    /// Event queue shared with the worker.
-    queue: Arc<SegQueue<L1Event>>,
-    /// Wakes consumers blocked in [`wait_and_pop`].
+    /// Bridge events emitted by the worker.
+    events: Arc<SegQueue<L1Event>>,
+    /// Wakes a consumer blocked in [`wait_and_pop`] when an event is queued.
     event_signal: Arc<Notify>,
-    /// Signals the worker to shut down.
-    shutdown: Arc<Notify>,
-    /// Worker thread handle, wrapped in `Option` so [`shutdown`] can join it.
+    /// Lock-free signal that stops the worker.
+    shutdown: Arc<AtomicAsyncLatch>,
+    /// Worker thread handle; `Option` so [`shutdown`] can join it.
     handle: Option<JoinHandle<()>>,
 }
 
 impl L1Bridge {
-    /// Creates and starts a new bridge. The worker runs on a dedicated thread with its own tokio
-    /// runtime, isolated from the caller's runtime.
-    pub fn new(config: L1BridgeConfig) -> Self {
-        let queue = Arc::new(SegQueue::new());
+    /// Starts the bridge driving `sink`, applying `api_requests` against it.
+    pub fn new<T>(config: L1BridgeConfig, sink: T, api_requests: mpsc::Receiver<Command<T>>) -> Self
+    where
+        T: ChainSink<ChainBlockMetadata, L1Transaction> + Send + 'static,
+    {
+        let events = Arc::new(SegQueue::new());
         let event_signal = Arc::new(Notify::new());
-        let shutdown = Arc::new(Notify::new());
+        let shutdown = Arc::new(AtomicAsyncLatch::new());
+        let worker = BridgeWorker::spawn(
+            config,
+            sink,
+            api_requests,
+            events.clone(),
+            event_signal.clone(),
+            shutdown.clone(),
+        );
 
-        // Spawn the worker on a dedicated thread with its own single-threaded tokio runtime so
-        // async RPC I/O doesn't block the caller's executor.
-        let handle = std::thread::spawn({
-            let queue = queue.clone();
-            let event_signal = event_signal.clone();
-            let shutdown = shutdown.clone();
-
-            move || {
+        Self {
+            events,
+            event_signal,
+            shutdown,
+            handle: Some(thread::spawn(move || {
+                // Single-threaded runtime so the worker's blocking RPC I/O never stalls the caller.
                 Builder::new_current_thread()
                     .enable_all()
                     .build()
                     .expect("failed to build tokio runtime")
-                    .block_on(BridgeWorker::spawn(&config, queue, event_signal, shutdown));
-            }
-        });
-
-        Self { queue, event_signal, shutdown, handle: Some(handle) }
+                    .block_on(worker);
+            })),
+        }
     }
 
     /// Non-blocking pop of the next event, if available.
     pub fn pop(&self) -> Option<L1Event> {
-        self.queue.pop()
+        self.events.pop()
     }
 
-    /// Asynchronously waits until an event is available and returns it.
+    /// Asynchronously waits for the next event and returns it.
     pub async fn wait_and_pop(&self) -> L1Event {
         loop {
-            // Register the notification future *before* checking the queue so that a push between
-            // `pop()` and `notified().await` is not lost.
+            // Register before checking the queue so a push between `pop()` and `await` is not lost.
             let notified = self.event_signal.notified();
-            if let Some(event) = self.queue.pop() {
+            if let Some(event) = self.events.pop() {
                 return event;
             }
             notified.await;
@@ -69,7 +79,7 @@ impl L1Bridge {
     /// Returns all currently queued events.
     pub fn drain(&self) -> Vec<L1Event> {
         let mut events = Vec::new();
-        while let Some(event) = self.queue.pop() {
+        while let Some(event) = self.events.pop() {
             events.push(event);
         }
         events
@@ -77,17 +87,16 @@ impl L1Bridge {
 
     /// Signals the worker to stop and blocks until it finishes.
     pub fn shutdown(mut self) {
-        self.shutdown.notify_one();
+        self.shutdown.open();
         if let Some(handle) = self.handle.take() {
             handle.join().expect("bridge worker panicked");
         }
     }
 }
 
-/// Ensures the worker thread receives a shutdown signal even if the bridge is dropped without an
-/// explicit [`shutdown`] call.
+/// Signals the worker to stop if the bridge is dropped without an explicit [`shutdown`].
 impl Drop for L1Bridge {
     fn drop(&mut self) {
-        self.shutdown.notify_one();
+        self.shutdown.open();
     }
 }

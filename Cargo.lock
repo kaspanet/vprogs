@@ -8435,6 +8435,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "vprogs-core-atomics"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "crossbeam-queue",
  "futures",
  "tokio",
@@ -8560,10 +8561,12 @@ dependencies = [
  "tap",
  "thiserror 2.0.18",
  "tokio",
+ "vprogs-core-atomics",
  "vprogs-core-macros",
  "vprogs-core-types",
  "vprogs-l1-types",
  "vprogs-node-test-utils",
+ "vprogs-storage-canonical-chain",
  "workflow-core",
 ]
 
@@ -8577,6 +8580,7 @@ dependencies = [
  "kaspa-rpc-core",
  "kaspa-txscript",
  "kaspa-wrpc-client",
+ "vprogs-core-types",
  "zerocopy",
 ]
 
@@ -8732,6 +8736,7 @@ dependencies = [
  "vprogs-state-ptr-latest",
  "vprogs-state-ptr-rollback",
  "vprogs-state-version",
+ "vprogs-storage-canonical-chain",
  "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
@@ -8857,6 +8862,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-storage-canonical-chain"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "borsh",
+ "vprogs-core-atomics",
+ "vprogs-core-types",
+]
+
+[[package]]
 name = "vprogs-storage-manager"
 version = "0.1.0"
 dependencies = [
@@ -8876,6 +8891,7 @@ dependencies = [
  "vprogs-core-codec",
  "vprogs-core-hashing",
  "vprogs-core-smt",
+ "vprogs-storage-canonical-chain",
  "vprogs-storage-types",
 ]
 
@@ -8883,7 +8899,10 @@ dependencies = [
 name = "vprogs-storage-types"
 version = "0.1.0"
 dependencies = [
+ "borsh",
  "vprogs-core-smt",
+ "vprogs-core-types",
+ "vprogs-storage-canonical-chain",
 ]
 
 [[package]]

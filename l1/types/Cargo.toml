@@ -10,4 +10,5 @@ kaspa-hashes.workspace         = true
 kaspa-rpc-core.workspace       = true
 kaspa-txscript.workspace       = true
 kaspa-wrpc-client.workspace    = true
+vprogs-core-types.workspace    = true
 zerocopy.workspace             = true

@@ -1,60 +1,28 @@
-use std::{
-    sync::Arc,
-    thread::{JoinHandle, spawn},
-};
-
-use tokio::{runtime::Builder, sync::mpsc};
-use vprogs_core_atomics::AtomicAsyncLatch;
+use tokio::sync::mpsc;
 use vprogs_l1_bridge::L1Bridge;
 use vprogs_scheduling_scheduler::Scheduler;
 use vprogs_storage_types::Store;
 
-use crate::{Processor, api::NodeApi, config::NodeConfig, worker::NodeWorker};
+use crate::{Processor, api::NodeApi, config::NodeConfig};
 
 /// A running node that processes L1 chain blocks through the L2 scheduler.
-///
-/// Created via [`Node::new`], which starts all background components (bridge, scheduler, event
-/// loop). The node runs autonomously until [`shutdown`](Self::shutdown) is called.
 pub struct Node<S: Store, P: Processor<S>> {
     /// Cloneable handle for interacting with the node.
     api: NodeApi<S, P>,
-    /// Worker thread running the event loop.
-    handle: Option<JoinHandle<()>>,
-    /// Signal to stop the event loop.
-    shutdown: Arc<AtomicAsyncLatch>,
+    /// The L1 bridge, which owns and drives the scheduler on its worker thread.
+    bridge: L1Bridge,
 }
 
 impl<S: Store, P: Processor<S>> Node<S, P> {
     /// Creates and starts a new node.
     pub fn new(config: NodeConfig<S, P>) -> Self {
-        // Create the scheduler - internally reads last checkpoint from store.
+        // Create the scheduler and the channels for communicating via the API.
         let scheduler = Scheduler::new(config.execution_config, config.storage_config);
-
-        // Configure the bridge with resume state. Root is the oldest surviving batch
-        // (initialized on first commit, advanced on prune). On a fresh database both
-        // root and tip are default (index 0), so the bridge starts from genesis.
-        let root = (*scheduler.state().root()).clone();
-        let tip = (*scheduler.state().last_committed()).clone();
-        let bridge =
-            L1Bridge::new(config.l1_bridge_config.with_root(Some(root)).with_tip(Some(tip)));
-
-        // Create the shutdown latch and the API.
-        let shutdown = Arc::new(AtomicAsyncLatch::new());
         let (tx, rx) = mpsc::channel(config.api_channel_capacity);
-        let api = NodeApi::new(scheduler.state().clone(), tx);
 
-        // Spawn the worker on a dedicated thread.
-        let worker = NodeWorker::spawn(bridge, scheduler, rx, shutdown.clone());
         Self {
-            handle: Some(spawn(move || {
-                Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("failed to build tokio runtime")
-                    .block_on(worker)
-            })),
-            shutdown,
-            api,
+            api: NodeApi::new(scheduler.state().clone(), tx),
+            bridge: L1Bridge::new(config.l1_bridge_config, scheduler, rx),
         }
     }
 
@@ -63,22 +31,8 @@ impl<S: Store, P: Processor<S>> Node<S, P> {
         &self.api
     }
 
-    /// Shuts down the node and all its components.
-    ///
-    /// Signals the event loop to stop, then waits for the worker thread to finish. The worker
-    /// shuts down the bridge and scheduler in order before exiting.
-    pub fn shutdown(mut self) {
-        self.shutdown.open();
-        if let Some(handle) = self.handle.take() {
-            handle.join().expect("node worker panicked");
-        }
-    }
-}
-
-/// Ensures the worker thread receives a shutdown signal even if the node is dropped without an
-/// explicit [`shutdown`] call.
-impl<S: Store, P: Processor<S>> Drop for Node<S, P> {
-    fn drop(&mut self) {
-        self.shutdown.open();
+    /// Shuts the node down by signaling the bridge worker to shut down.
+    pub fn shutdown(self) {
+        self.bridge.shutdown();
     }
 }
