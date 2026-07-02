@@ -1,5 +1,6 @@
 //! Fork-aware canonical chain over monotonic batch ids: a `block_hash`-keyed log with a lock-free
-//! `is_canonical(id)` overlay. See `spec.md` at the repo root for the full design.
+//! `is_canonical(id)` overlay. See [`CanonicalChainSnapshot`] for the bit layout (hot zone, body,
+//! finalized regions) and [`CanonicalChain`] for how appends, rollbacks, and finalization move it.
 
 mod append_outcome;
 mod bucket;

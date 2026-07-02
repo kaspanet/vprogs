@@ -14,6 +14,14 @@
 //! * [`finalize`](CanonicalChain::finalize) prunes the body buckets below the finalized id; once
 //!   pruned, those buckets read as canonical.
 //! * [`restore`](CanonicalChain::restore) rebuilds the whole layout from persisted ids at startup.
+//!
+//! One visibility wrinkle in the "older snapshots stay stable" guarantee, unique to `append`: it is
+//! the only operation that mutates a bucket in place (`tail.set`), on a bucket the previous
+//! snapshot may still share, so a reader on that older snapshot can observe the bit early. That is
+//! benign: the bit belongs to an `id` above the old snapshot's `tip`, which
+//! [`is_canonical`](CanonicalChainSnapshot::is_canonical) rejects before reading any bit. The other
+//! mutators never expose a bit early - `rollback` edits copy-on-write (fresh buckets via
+//! [`Bucket::edited`]), and `finalize` only prunes.
 
 use std::{
     collections::BTreeMap,
@@ -103,7 +111,7 @@ impl CanonicalChain {
         let cur = self.current.load();
         debug_assert!(id > cur.tip, "append id {id} must extend tip {}", cur.tip);
 
-        // Monotonic append - reuse the shared ring and set the tail bit in place, no copy.
+        // Append - advance hot zone, reuse shared ring and set tail bit in place, no copy.
         let (bucket, bit) = Bucket::locate(id);
         let body = Arc::clone(&cur.body);
         let hot_zone = cur.hot_zone.roll_forward(bucket, &body);

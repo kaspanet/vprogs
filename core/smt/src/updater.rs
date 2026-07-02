@@ -13,8 +13,6 @@ pub(crate) struct Updater<'a, S: Tree, W> {
     snapshot: S::Snapshot,
     /// Accumulates new/deleted nodes for atomic commit.
     wb: &'a mut W,
-    /// Version to read existing nodes from (version - 1).
-    prev_version: u64,
     /// Version being written.
     version: u64,
 }
@@ -28,8 +26,7 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
         mut commitments: Vec<Commitment>,
     ) -> [u8; 32] {
         // Capture one snapshot for the whole update. Version > 0 is guaranteed by `Tree::update`.
-        let snapshot = tree.snapshot();
-        let mut ctx = Self { tree, snapshot, wb, prev_version: version - 1, version };
+        let mut ctx = Self { tree, snapshot: tree.snapshot(), wb, version };
 
         // Sort and dedup by key; on a duplicate, last-write-wins by copying the later value_hash.
         commitments.sort_by_key(|a| a.key);
@@ -58,7 +55,7 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
 
     /// Reads the existing node at `key` from the prior version, against the captured snapshot.
     fn node(&self, key: &Key) -> Option<(u64, Node)> {
-        self.tree.node(key, self.prev_version, &self.snapshot)
+        self.tree.node(key, self.version - 1, &self.snapshot)
     }
 
     /// Recursive update for a sorted sub-slice of leaf mutations at `key`.

@@ -25,8 +25,8 @@
 //! * **Body**: buckets `0 ..= T - 2`, sealed into an [`AtomicRing`]. A reorg deep enough to rewrite
 //!   a sealed bucket forks the ring copy-on-write, so snapshots published earlier keep their view.
 //! * **Finalized**: buckets below the body's base, pruned by `finalize` once their ids can no
-//!   longer reorg. An absent bucket reads canonical, because every finalized id is on the final
-//!   chain.
+//!   longer reorg. An absent bucket reads canonical for *every* id in it, orphaned ids included;
+//!   this is sound only if callers never query below the finalization threshold.
 //!
 //! For example, with `CAPACITY == 128` and `tip == 300`, id 300 sits at bucket 2 bit 43: `tail` is
 //! bucket 2 (ids 257..=384), `last_sealed` is bucket 1 (ids 129..=256), and the body holds bucket 0
@@ -38,7 +38,14 @@ use vprogs_core_atomics::AtomicRing;
 
 use crate::{bucket::Bucket, hot_zone::HotZone};
 
-/// A snapshot of the canonical bits, frozen at publication so its answers never change.
+/// A snapshot of the canonical bits, taken at publication.
+///
+/// A snapshot's answers are stable where it matters: for any id at or above the finalization
+/// threshold, [`is_canonical`](Self::is_canonical) returns the same value for as long as the
+/// snapshot is held - a canonical bit never flips. Below the threshold there is no such guarantee -
+/// a later `finalize` prunes those buckets out of the body ring this snapshot shares, after which
+/// every id in them reads canonical regardless of its real bit - so callers must not query below
+/// the finalization threshold.
 pub struct CanonicalChainSnapshot {
     /// Highest canonical id and the upper bound for reads. `0` means empty.
     pub(crate) tip: u64,

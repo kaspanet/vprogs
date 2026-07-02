@@ -3,7 +3,7 @@
 
 use std::{sync::Arc, thread};
 
-use vprogs_storage_canonical_chain::CanonicalChainManager;
+use vprogs_storage_canonical_chain::{BUCKET_CAPACITY, CanonicalChainManager};
 
 /// Whether `id` is canonical in a fresh snapshot of the manager's chain.
 fn is_canon(manager: &CanonicalChainManager<u64>, id: u64) -> bool {
@@ -75,6 +75,26 @@ fn appends_across_bucket_boundaries() {
     assert!(is_canon(&manager, 4_097));
     assert!(is_canon(&manager, 10_000));
     assert!(!is_canon(&manager, 10_001));
+}
+
+#[test]
+fn appends_slide_the_hot_zone_and_seal_older_buckets() {
+    // Each bucket holds `BUCKET_CAPACITY` consecutive ids. The hot zone is the top two buckets
+    // (`last_sealed`, `tail`); anything below them is sealed into the body. Filling three buckets'
+    // worth of ids leaves bucket 0 in the body, bucket 1 as `last_sealed`, and bucket 2 as `tail`.
+    let cap = BUCKET_CAPACITY;
+    let mut manager = CanonicalChainManager::default();
+    for i in 1..=3 * cap {
+        manager.append(i);
+    }
+    // A bit sealed into the body still reads correctly through the snapshot.
+    assert!(is_canon(&manager, 1), "first id, now in the body");
+    assert!(is_canon(&manager, cap), "last id of body bucket 0");
+    // The hot pair: bucket 1 (last_sealed) and bucket 2 (tail).
+    assert!(is_canon(&manager, cap + 1), "first id of last_sealed bucket 1");
+    assert!(is_canon(&manager, 2 * cap + 1), "first id of tail bucket 2");
+    assert!(is_canon(&manager, 3 * cap), "tip, the last filled bit");
+    assert!(!is_canon(&manager, 3 * cap + 1), "nothing above the tip is canonical");
 }
 
 #[test]
