@@ -13,6 +13,7 @@ use crate::{ResourceAccess, processor::Processor};
 pub struct AccessHandle<'a, S: Store, P: Processor<S>> {
     state_version: Arc<StateVersion>,
     access: &'a ResourceAccess<S, P>,
+    batch_index: u64,
 }
 
 impl<'a, S: Store, P: Processor<S>> AccessHandle<'a, S, P> {
@@ -42,13 +43,13 @@ impl<'a, S: Store, P: Processor<S>> AccessHandle<'a, S, P> {
     /// Returns a mutable reference to the serialized resource data.
     #[inline]
     pub fn data_mut(&mut self) -> &mut Vec<u8> {
-        self.state_version.data_mut()
+        self.state_version.data_mut(self.batch_index)
     }
 
     /// Replaces the serialized resource data.
     #[inline]
     pub fn set_data(&mut self, data: Vec<u8>) {
-        self.state_version.set_data(data)
+        self.state_version.set_data(self.batch_index, data)
     }
 
     /// Returns true if this resource was created by the current transaction (version 0).
@@ -57,8 +58,8 @@ impl<'a, S: Store, P: Processor<S>> AccessHandle<'a, S, P> {
         self.state_version.version() == 0
     }
 
-    pub(crate) fn new(access: &'a ResourceAccess<S, P>) -> Self {
-        Self { state_version: access.read_state(), access }
+    pub(crate) fn new(access: &'a ResourceAccess<S, P>, batch_index: u64) -> Self {
+        Self { state_version: access.read_state(), access, batch_index }
     }
 
     pub(crate) fn commit_changes(self) {

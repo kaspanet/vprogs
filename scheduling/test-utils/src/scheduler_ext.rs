@@ -17,7 +17,7 @@ pub trait SchedulerExt {
     /// Repeatedly processes the eviction queue until the cache is empty or timeout is reached.
     fn wait_cache_empty(&mut self, timeout: Duration) -> &mut Self;
 
-    /// Asserts that a resource has the expected version and writer log.
+    /// Asserts that a resource's stored data matches the expected writer log.
     fn assert_written_state(&self, resource_id: ResourceId, writers: Vec<usize>) -> &Self;
 
     /// Asserts that a resource has been deleted (no latest pointer exists).
@@ -56,11 +56,9 @@ impl SchedulerExt for Scheduler<RocksDbStore, Processor> {
 
     fn assert_written_state(&self, resource_id: ResourceId, writers: Vec<usize>) -> &Self {
         let store = self.state().storage().store();
-        let writer_count = writers.len();
         let writer_log: Vec<u8> = writers.iter().flat_map(|id| id.to_be_bytes()).collect();
 
         let versioned_state = StateVersion::from_latest_data(store.as_ref(), resource_id);
-        assert_eq!(versioned_state.version(), writer_count as u64);
         assert_eq!(*versioned_state.data(), writer_log);
         self
     }

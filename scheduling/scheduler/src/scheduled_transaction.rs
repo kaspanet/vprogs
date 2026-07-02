@@ -127,11 +127,12 @@ impl<S: Store, P: Processor<S>> ScheduledTransaction<S, P> {
 
     pub(crate) fn execute(&self) {
         if let Some(batch) = self.batch.upgrade() {
+            let batch_index = batch.checkpoint().index();
             let mut ctx = TransactionContext::new(
                 &self.tx,
                 self.batch_position,
                 &batch,
-                self.resources.iter().map(AccessHandle::new).collect(),
+                self.resources.iter().map(|a| AccessHandle::new(a, batch_index)).collect(),
             );
 
             // If the batch was canceled, roll back all changes and exit early.

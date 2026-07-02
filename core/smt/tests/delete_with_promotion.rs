@@ -1,4 +1,4 @@
-//! Regression tests for deletes that trigger SMT shortcut-promotion.
+//! Regression tests for SMT delete behaviour: shortcut-promotion and stale-leaf retention.
 //!
 //! When a `Present` query writes `EMPTY_HASH` and its sibling at some depth is a single `Leaf`,
 //! the SMT promotes that leaf upward (potentially many levels). Without kind-aware hashing in
@@ -164,4 +164,87 @@ fn delete_only_key_yields_empty_root() {
     let computed = proof.new_root::<Sha256>(|_| &EMPTY_HASH).unwrap();
     assert_eq!(computed, EMPTY_HASH);
     assert_eq!(computed, smt_root);
+}
+
+/// Builds the bug's shape: a single key on the bit-0 = 0 half (a root-level shortcut leaf) opposite
+/// a two-key `Internal` subtree on the bit-0 = 1 half. Returns `(k_drop, k_sub_a, k_sub_b)`.
+fn store_with_leaf_opposite_subtree() -> (TempDir, RocksDbStore, ResourceId, ResourceId, ResourceId)
+{
+    // k_drop is the only key on its half, so it sits as a shortcut leaf directly under the root.
+    // The other half holds two keys that diverge only at byte 31, forming an `Internal` subtree
+    // - the sibling that blocks promotion when k_drop is deleted.
+    let k_drop = key(0x00, 0xAA);
+    let k_sub_a = key(0x80, 0xCC);
+    let k_sub_b = key(0x80, 0xDD);
+    let dir = TempDir::new().unwrap();
+    let store: RocksDbStore = RocksDbStore::open(dir.path());
+    let mut wb = store.write_batch();
+    store.update(
+        &mut wb,
+        vec![
+            Commitment::new(k_drop, [0x22; 32]),
+            Commitment::new(k_sub_a, [0x33; 32]),
+            Commitment::new(k_sub_b, [0x44; 32]),
+        ],
+        1,
+    );
+    store.commit(wb);
+    (dir, store, k_drop, k_sub_a, k_sub_b)
+}
+
+/// Deleting a leaf whose immediate sibling is an `Internal` subtree leaves the parent as
+/// `Internal(EMPTY, sibling)` - no promotion fires, so the deleted leaf's own position is abandoned
+/// without a tombstone. Reading that version must still see the key as gone; without a tombstone
+/// the `latest <= version` seek surfaces the stale pre-deletion leaf and resurrects the resource.
+#[test]
+fn delete_with_internal_sibling_does_not_resurrect_at_same_version() {
+    let (_dir, store, k_drop, ..) = store_with_leaf_opposite_subtree();
+
+    // Delete k_drop at v=2; its position is abandoned with no tombstone written.
+    let mut wb = store.write_batch();
+    store.update(&mut wb, vec![Commitment::new(k_drop, EMPTY_HASH)], 2);
+    store.commit(wb);
+
+    // Prove k_drop AT v=2 (after the delete). It must witness as empty, and the proof's pre-state
+    // root must match the committed root - both fail if the stale leaf is resurfaced.
+    let proof_bytes = store.prove(&[k_drop], 2).unwrap();
+    let proof = Proof::decode(&proof_bytes).unwrap();
+    assert_eq!(
+        proof.member(0).unwrap().value_hash(),
+        &EMPTY_HASH,
+        "key deleted at v=2 must read as empty at v=2, not resurrect its pre-deletion value",
+    );
+    assert_eq!(
+        proof.root::<Sha256>().unwrap(),
+        store.root(2),
+        "proof's pre-state root must match the committed root after deletion",
+    );
+}
+
+/// The same un-tombstoned position is also re-incorporated by a *later* update that touches the
+/// parent region: the updater reads the abandoned position at `prev_version` and carries the stale
+/// leaf forward, silently resurrecting the deleted resource at a version where nothing re-created
+/// it.
+#[test]
+fn delete_with_internal_sibling_does_not_resurrect_at_later_version() {
+    let (_dir, store, k_drop, k_sub_a, _) = store_with_leaf_opposite_subtree();
+
+    // v=2: delete k_drop.
+    let mut wb = store.write_batch();
+    store.update(&mut wb, vec![Commitment::new(k_drop, EMPTY_HASH)], 2);
+    store.commit(wb);
+
+    // v=3: touch only the sibling subtree. The root is rebuilt reading v=2, where k_drop's
+    // abandoned position still holds its stale leaf - it must not be carried into v=3.
+    let mut wb = store.write_batch();
+    store.update(&mut wb, vec![Commitment::new(k_sub_a, [0x55; 32])], 3);
+    store.commit(wb);
+
+    let proof_bytes = store.prove(&[k_drop], 3).unwrap();
+    let proof = Proof::decode(&proof_bytes).unwrap();
+    assert_eq!(
+        proof.member(0).unwrap().value_hash(),
+        &EMPTY_HASH,
+        "key deleted at v=2 must stay absent at v=3, not be resurrected by an unrelated update",
+    );
 }

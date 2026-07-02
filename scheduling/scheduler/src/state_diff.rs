@@ -31,36 +31,36 @@ pub struct StateDiff<S: Store, P: Processor<S>> {
 
 impl<S: Store, P: Processor<S>> StateDiff<S, P> {
     /// Returns the resource ID this state diff tracks.
+    #[inline(always)]
     pub fn resource_id(&self) -> &ResourceId {
         &self.resource_id
     }
 
-    /// Returns the resource state as it was before this batch executed.
-    ///
-    /// # Panics
-    /// Panics if called before the read state has been resolved.
+    /// Returns the resource state before this batch executed; panics if not yet resolved.
+    #[inline(always)]
     pub fn read_state(&self) -> Arc<StateVersion> {
         self.read_state.load_full().expect("read state unknown")
     }
 
-    /// Returns the resource state after this batch executed.
-    ///
-    /// # Panics
-    /// Panics if called before the written state has been resolved.
+    /// Returns the resource state after this batch executed; panics if not yet resolved.
+    #[inline(always)]
     pub fn written_state(&self) -> Arc<StateVersion> {
         self.written_state.load_full().expect("written state unknown")
     }
 
     /// Returns the per-batch resource index.
+    #[inline(always)]
     pub fn index(&self) -> u32 {
         self.index
     }
 
     /// Returns `true` when the batch's execution advanced this resource's version.
+    #[inline(always)]
     pub fn data_updated(&self) -> bool {
         self.written_state().version() > self.read_state().version()
     }
 
+    /// Creates a state diff for a resource at its index within the batch.
     pub(crate) fn new(batch: ScheduledBatchRef<S, P>, resource_id: ResourceId, index: u32) -> Self {
         Self(Arc::new(StateDiffData {
             batch,
@@ -71,18 +71,13 @@ impl<S: Store, P: Processor<S>> StateDiff<S, P> {
         }))
     }
 
-    /// Returns true if the batch this state diff belongs to has been committed.
-    ///
-    /// If the batch reference can no longer be upgraded (batch dropped), returns true as the batch
-    /// has completed its lifecycle.
-    pub(crate) fn committed(&self) -> bool {
-        self.batch.upgrade().is_none_or(|batch| batch.committed())
-    }
-
+    /// Records the resource state read before execution.
+    #[inline(always)]
     pub(crate) fn set_read_state(&self, state: Arc<StateVersion>) {
         self.read_state.store(Some(state))
     }
 
+    /// Records the post-execution state and submits the diff to be persisted.
     pub(crate) fn set_written_state(&self, state: Arc<StateVersion>) {
         self.written_state.store(Some(state));
         if let Some(batch) = self.batch.upgrade() {
@@ -90,7 +85,9 @@ impl<S: Store, P: Processor<S>> StateDiff<S, P> {
         }
     }
 
+    /// Persists the new version and rollback pointer if the resource's version advanced.
     pub(crate) fn write<W: WriteBatch>(&self, wb: &mut W) {
+        // The batch and both states must be resolved by the time the worker writes this diff.
         let Some(batch) = self.batch.upgrade() else {
             panic!("batch must be known at write time");
         };
@@ -101,20 +98,22 @@ impl<S: Store, P: Processor<S>> StateDiff<S, P> {
             panic!("written_state must be known at write time");
         };
 
+        // Persist the new version and rollback pointer unless canceled or unchanged.
         if !batch.canceled() && written_state.version() > read_state.version() {
             written_state.write_data(wb);
             read_state.write_rollback_ptr(wb, batch.checkpoint().index());
         }
     }
 
-    pub(crate) fn write_done(self) {
-        if let Some(batch) = self.batch.upgrade() {
-            batch.decrease_pending_writes();
-        }
+    /// Returns true if the diff's batch has committed, or was dropped (lifecycle complete).
+    #[inline(always)]
+    pub(crate) fn committed(&self) -> bool {
+        self.batch.upgrade().is_none_or(|batch| batch.committed())
     }
 }
 
 impl<S: Store, P: Processor<S>> From<&StateDiff<S, P>> for Commitment {
+    /// Hashes the diff's written data into the resource's SMT commitment.
     fn from(diff: &StateDiff<S, P>) -> Self {
         let written_state = diff.written_state();
 
