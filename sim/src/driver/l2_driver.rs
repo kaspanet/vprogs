@@ -165,7 +165,7 @@ pub struct L2Driver {
     /// Queue the in-process aggregate prover publishes each bundle handle onto (real_e2e only).
     /// The driver pops from it to settle proved bundles. `None` in the other modes and before
     /// the proving stack is built.
-    settlement_queue: Option<AsyncQueue<ScheduledBundle<Receipt>>>,
+    settlement_queue: Option<AsyncQueue<ScheduledBundle<SettlementArtifact<Receipt>>>>,
     /// Batches submitted to the aggregate prover but not yet accounted by a bundle outcome
     /// (real_e2e only). Gates the settlement back-pressure and is reconciled by each outcome's
     /// `batches`.
@@ -200,7 +200,7 @@ fn build_exec(
     proving: bool,
     covenant_id: Option<Hash>,
     consensus: Weak<Consensus>,
-) -> (Exec, Option<AsyncQueue<ScheduledBundle<Receipt>>>) {
+) -> (Exec, Option<AsyncQueue<ScheduledBundle<SettlementArtifact<Receipt>>>>) {
     let db = tempfile::tempdir().expect("temp db dir");
     let store = RocksDbStore::open(db.path().join("l2"));
     let (pipeline, settlement_queue) = if proving {

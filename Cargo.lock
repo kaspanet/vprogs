@@ -8733,6 +8733,7 @@ dependencies = [
  "vprogs-scheduling-test-utils",
  "vprogs-state-batch-metadata",
  "vprogs-state-metadata",
+ "vprogs-state-proof-receipt",
  "vprogs-state-ptr-latest",
  "vprogs-state-ptr-rollback",
  "vprogs-state-version",
@@ -8740,6 +8741,7 @@ dependencies = [
  "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
+ "zerocopy",
 ]
 
 [[package]]
@@ -9060,6 +9062,9 @@ dependencies = [
 [[package]]
 name = "vprogs-transaction-runtime-transaction-effects"
 version = "0.1.0"
+dependencies = [
+ "borsh",
+]
 
 [[package]]
 name = "vprogs-zk-abi"
@@ -9092,13 +9097,19 @@ dependencies = [
  "kaspa-hashes",
  "kaspa-rpc-core",
  "log",
+ "tempfile",
  "tokio",
  "vprogs-core-atomics",
  "vprogs-core-codec",
  "vprogs-core-macros",
  "vprogs-core-smt",
+ "vprogs-core-types",
  "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
+ "vprogs-scheduling-test-utils",
+ "vprogs-state-proof-receipt",
+ "vprogs-storage-manager",
+ "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
  "vprogs-zk-abi",
  "vprogs-zk-batch-prover",
@@ -9219,6 +9230,7 @@ dependencies = [
  "vprogs-core-macros",
  "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
+ "vprogs-state-proof-receipt",
  "vprogs-storage-types",
  "vprogs-zk-abi",
  "vprogs-zk-transaction-prover",
@@ -9229,11 +9241,14 @@ dependencies = [
 name = "vprogs-zk-transaction-prover"
 version = "0.1.0"
 dependencies = [
+ "borsh",
  "tap",
  "tokio",
  "vprogs-core-atomics",
  "vprogs-core-macros",
+ "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
+ "vprogs-state-proof-receipt",
  "vprogs-storage-types",
 ]
 

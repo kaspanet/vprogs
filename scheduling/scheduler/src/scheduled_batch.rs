@@ -8,16 +8,28 @@ use crossbeam_deque::{Injector, Steal, Worker};
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_macros::smart_pointer;
 use vprogs_core_smt::Commitment;
-use vprogs_core_types::{Checkpoint, ResourceId, SchedulerTransaction};
+use vprogs_core_types::{BatchMetadata, Checkpoint, ResourceId, SchedulerTransaction};
 use vprogs_scheduling_execution_workers::Batch;
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
+use vprogs_state_proof_receipt::{AggregatorKey, BatchKey, Prefix};
 use vprogs_storage_types::Store;
 
 use crate::{
-    CancellationContext, ScheduledTransaction, Scheduler, StateDiff, Write, cpu_task::ManagerTask,
-    processor::Processor, state::SchedulerState,
+    CancellationContext, Read, ReadReceipt, ReceiptRead, ScheduledTransaction, Scheduler,
+    StateDiff, StoreReceipt, Write, cpu_task::ManagerTask, processor::Processor,
+    state::SchedulerState, storage_cmd::ReceiptLookup,
 };
+
+/// The bundle-start coordinate and claimed tip that key an aggregate (settlement) receipt.
+pub struct AggReceiptCoord {
+    /// Bundle-start checkpoint index.
+    pub checkpoint_index: u64,
+    /// L1 block at the bundle's first checkpoint (the block it proves from).
+    pub from_block: [u8; 32],
+    /// Commitment to the bundle's claimed tip.
+    pub seq_commit: [u8; 32],
+}
 
 /// A batch of transactions progressing through the scheduler's lifecycle.
 ///
@@ -31,6 +43,8 @@ use crate::{
 pub struct ScheduledBatch<S: Store, P: Processor<S>> {
     /// Cancellation context captured at creation time for rollback detection.
     cancellation: CancellationContext,
+    /// Processor handle for deriving the program image ids that key this batch's proof receipts.
+    processor: P,
     /// Shared scheduler state for storage access and eviction.
     state: SchedulerState<S, P>,
     /// This batch's sequential index and metadata.
@@ -207,6 +221,87 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         self
     }
 
+    /// Looks up this batch's cached per-batch receipt, returning a handle that resolves to the
+    /// deserialized receipt, or `None` on a cache miss. Served by the read worker so the caller
+    /// never blocks its async runtime on a store read.
+    pub fn read_batch_receipt(&self) -> ReceiptRead<S, P, P::BatchArtifact> {
+        self.submit_read_receipt(self.batch_key())
+    }
+
+    /// Stores this batch's per-batch receipt through the write worker, returning a latch that opens
+    /// once it commits. Independent of the batch's own persistence latches.
+    pub fn write_batch_receipt(&self, receipt: P::BatchArtifact) -> AtomicAsyncLatch {
+        self.submit_store_receipt(self.batch_key(), receipt)
+    }
+
+    /// The per-batch receipt key at this batch's coordinate.
+    fn batch_key(&self) -> BatchKey {
+        BatchKey {
+            prefix: Prefix { checkpoint_index: self.checkpoint.index().into() },
+            block_hash: self.checkpoint.metadata().block_hash(),
+            image_id: self.processor.batch_image_id(),
+        }
+    }
+
+    /// Looks up the aggregate (settlement) receipt at `coord`, with this batch as the storage
+    /// gateway: the aggregate prover holds no store of its own, so it reaches the receipt cache
+    /// through a batch's storage handle. Resolves to the receipt, or `None` on a miss.
+    pub fn read_agg_receipt(
+        &self,
+        coord: AggReceiptCoord,
+    ) -> ReceiptRead<S, P, P::AggregatorArtifact> {
+        self.submit_read_receipt(self.agg_key(coord))
+    }
+
+    /// Stores the aggregate (settlement) receipt at `coord` through the write worker, returning a
+    /// latch that opens once it commits. This batch is the storage gateway, as for
+    /// [`read_agg_receipt`](Self::read_agg_receipt).
+    pub fn write_agg_receipt(
+        &self,
+        coord: AggReceiptCoord,
+        receipt: P::AggregatorArtifact,
+    ) -> AtomicAsyncLatch {
+        self.submit_store_receipt(self.agg_key(coord), receipt)
+    }
+
+    /// The aggregate receipt key at `coord`; this batch supplies the aggregator image id.
+    fn agg_key(&self, coord: AggReceiptCoord) -> AggregatorKey {
+        AggregatorKey {
+            prefix: Prefix { checkpoint_index: coord.checkpoint_index.into() },
+            block_hash: coord.from_block,
+            image_id: self.processor.aggregator_image_id(),
+            seq_commit: coord.seq_commit,
+        }
+    }
+
+    /// Submits a proof-receipt lookup for the typed `key` to the read worker, returning the typed
+    /// [`ReceiptRead`] handle the caller awaits. The key type determines the stored value's kind
+    /// and how the served value projects back to the concrete receipt.
+    pub(crate) fn submit_read_receipt<K: ReceiptLookup<S, P>>(
+        &self,
+        key: K,
+    ) -> ReceiptRead<S, P, K::Artifact> {
+        let (cmd, handle) = ReadReceipt::new(key.into_key(), K::extract);
+        self.state.storage().submit_read(Read::ReadReceipt(cmd));
+        handle
+    }
+
+    /// Submits `receipt` under the typed `key` to the write worker, returning a latch that opens
+    /// once it commits. The key type pins the receipt to its matching stored variant.
+    pub(crate) fn submit_store_receipt<K: ReceiptLookup<S, P>>(
+        &self,
+        key: K,
+        receipt: K::Artifact,
+    ) -> AtomicAsyncLatch {
+        let committed = AtomicAsyncLatch::new();
+        self.state.storage().submit_write(Write::StoreReceipt(StoreReceipt::new(
+            key.into_key(),
+            K::wrap(receipt),
+            committed.clone(),
+        )));
+        committed
+    }
+
     /// Submits this batch for commit on the write worker. No-op if canceled.
     pub fn schedule_commit(&self) {
         if !self.canceled() {
@@ -237,6 +332,7 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
 
             ScheduledBatchData {
                 cancellation: scheduler.cancellation().clone(),
+                processor: scheduler.processor().clone(),
                 state: scheduler.state().clone(),
                 checkpoint,
                 pending_txs: AtomicU64::new(txs.len() as u64),

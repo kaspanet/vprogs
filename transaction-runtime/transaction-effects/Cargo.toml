@@ -2,3 +2,6 @@
 edition.workspace = true
 name              = "vprogs-transaction-runtime-transaction-effects"
 version.workspace = true
+
+[dependencies]
+borsh.workspace = true

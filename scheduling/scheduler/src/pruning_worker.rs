@@ -12,6 +12,7 @@ use tokio::{runtime::Builder, sync::Notify};
 use vprogs_core_types::{Checkpoint, ResourceId};
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
+use vprogs_state_proof_receipt::{Prefix, invalidate_checkpoint};
 use vprogs_state_ptr_rollback::StatePtrRollback;
 use vprogs_state_version::StateVersion;
 use vprogs_storage_types::Store;
@@ -228,6 +229,15 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
 
                 // Delete batch metadata entries for this batch.
                 StoredBatchMetadata::delete(wb, index);
+
+                // Drop every cached proof receipt at this checkpoint index, across all programs
+                // and all competing forks. A pruned batch can never be rolled back to, so no
+                // future replay (even a flip reorg) needs its receipts again.
+                invalidate_checkpoint(
+                    store.as_ref(),
+                    wb,
+                    &Prefix { checkpoint_index: index.into() },
+                );
 
                 // Prune stale SMT nodes for this version.
                 store.prune(wb, index);

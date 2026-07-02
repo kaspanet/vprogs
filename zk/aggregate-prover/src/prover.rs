@@ -39,6 +39,7 @@ impl<S: Store, P: Processor<S>> AggregateProver<S, P> {
                 S,
                 TransactionArtifact = B::Receipt,
                 BatchArtifact = B::Receipt,
+                AggregatorArtifact = B::Receipt,
                 BatchMetadata = ChainBlockMetadata,
             >,
     {

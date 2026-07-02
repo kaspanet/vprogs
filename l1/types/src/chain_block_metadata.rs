@@ -1,5 +1,6 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use kaspa_rpc_core::{RpcHeader, RpcOptionalHeader};
+use vprogs_core_types::BatchMetadata;
 
 use crate::{Hash, SettlementInfo};
 
@@ -38,7 +39,7 @@ pub struct ChainBlockMetadata {
     pub last_settlement: Option<SettlementInfo>,
 }
 
-impl vprogs_core_types::BatchMetadata for ChainBlockMetadata {
+impl BatchMetadata for ChainBlockMetadata {
     fn block_hash(&self) -> [u8; 32] {
         self.hash.as_bytes()
     }

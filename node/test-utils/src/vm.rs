@@ -22,9 +22,23 @@ impl<S: Store> Processor<S> for TestNodeVm {
         Ok(())
     }
 
+    // This test VM does not prove, so its receipt-cache image ids are unset.
+    fn tx_image_id(&self) -> [u8; 32] {
+        [0u8; 32]
+    }
+
+    fn batch_image_id(&self) -> [u8; 32] {
+        [0u8; 32]
+    }
+
+    fn aggregator_image_id(&self) -> [u8; 32] {
+        [0u8; 32]
+    }
+
     type Transaction = L1Transaction;
     type TransactionArtifact = ();
     type BatchArtifact = ();
+    type AggregatorArtifact = ();
     type BatchMetadata = ChainBlockMetadata;
     type Error = ();
 }

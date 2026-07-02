@@ -14,6 +14,7 @@ pub trait BatchMetadata:
 }
 
 /// Lightweight metadata for tests and simple deployments: the value zero-padded into a hash.
+#[cfg(feature = "test-utils")]
 impl BatchMetadata for u64 {
     fn block_hash(&self) -> [u8; 32] {
         let mut hash = [0u8; 32];

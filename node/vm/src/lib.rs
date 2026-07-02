@@ -18,9 +18,23 @@ impl<S: Store> Processor<S> for VM {
         todo!("transaction execution from SchedulerTransaction<L1Transaction>")
     }
 
+    // The node VM does not yet drive proving, so its receipt-cache image ids are unset.
+    fn tx_image_id(&self) -> [u8; 32] {
+        [0u8; 32]
+    }
+
+    fn batch_image_id(&self) -> [u8; 32] {
+        [0u8; 32]
+    }
+
+    fn aggregator_image_id(&self) -> [u8; 32] {
+        [0u8; 32]
+    }
+
     type Transaction = L1Transaction;
     type TransactionArtifact = TransactionEffects;
     type BatchArtifact = ();
+    type AggregatorArtifact = ();
     type BatchMetadata = ChainBlockMetadata;
     type Error = VmError;
 }

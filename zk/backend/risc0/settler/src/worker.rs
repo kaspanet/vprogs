@@ -49,7 +49,7 @@ pub struct SettlementWorkerConfig {
 /// panicking on a rejected settlement or a confirmation timeout (propagated through its
 /// `JoinHandle`).
 pub async fn run(
-    queue: AsyncQueue<ScheduledBundle<Receipt>>,
+    queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Receipt>>>,
     cfg: SettlementWorkerConfig,
     covenant: CovenantState,
     shutdown: AtomicAsyncLatch,

@@ -4,13 +4,15 @@ use std::sync::{
 };
 
 use arc_swap::ArcSwapOption;
+use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_macros::smart_pointer;
-use vprogs_core_types::SchedulerTransaction;
+use vprogs_core_types::{BatchMetadata, SchedulerTransaction};
+use vprogs_state_proof_receipt::{Prefix, TxKey};
 use vprogs_storage_types::Store;
 
 use crate::{
-    AccessHandle, ResourceAccess, ScheduledBatchRef, Scheduler, StateDiff, TransactionContext,
-    processor::Processor,
+    AccessHandle, ReceiptRead, ResourceAccess, ScheduledBatch, ScheduledBatchRef, Scheduler,
+    StateDiff, TransactionContext, processor::Processor,
 };
 
 /// A transaction progressing through the scheduler's execution pipeline.
@@ -52,6 +54,32 @@ impl<S: Store, P: Processor<S>> ScheduledTransaction<S, P> {
     /// Panics if called before [`publish_artifact`](Self::publish_artifact).
     pub fn artifact(&self) -> Arc<P::TransactionArtifact> {
         self.artifact.load_full().expect("artifact not ready")
+    }
+
+    /// Looks up this transaction's cached receipt, returning a handle that resolves to the
+    /// deserialized receipt, or `None` on a cache miss. Served by the read worker through the
+    /// owning batch's storage handle.
+    pub fn read_tx_receipt(&self) -> ReceiptRead<S, P, P::TransactionArtifact> {
+        let batch = self.batch.upgrade().expect("owning batch dropped");
+        batch.submit_read_receipt(self.tx_key(&batch))
+    }
+
+    /// Stores this transaction's receipt through the owning batch's write worker, returning a latch
+    /// that opens once it commits.
+    pub fn write_tx_receipt(&self, receipt: P::TransactionArtifact) -> AtomicAsyncLatch {
+        let batch = self.batch.upgrade().expect("owning batch dropped");
+        batch.submit_store_receipt(self.tx_key(&batch), receipt)
+    }
+
+    /// The per-transaction receipt key at the owning batch's coordinate and this transaction's
+    /// merge index.
+    fn tx_key(&self, batch: &ScheduledBatch<S, P>) -> TxKey {
+        TxKey {
+            prefix: Prefix { checkpoint_index: batch.checkpoint().index().into() },
+            block_hash: batch.checkpoint().metadata().block_hash(),
+            image_id: self.processor.tx_image_id(),
+            merge_idx: self.merge_idx.into(),
+        }
     }
 
     /// Publishes this transaction's artifact. `None` skips without storing an artifact.

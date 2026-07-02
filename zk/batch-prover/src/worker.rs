@@ -79,25 +79,39 @@ where
             return;
         }
 
-        // Collect SMT proof at the version preceding the batch's checkpoint.
-        let prev_version = batch.checkpoint().index().saturating_sub(1);
-        let proof_bytes = self.store.prove(&batch.resource_ids(), prev_version).expect("proof");
+        // The (checkpoint, block, batch-image) coordinate proves to the same per-batch receipt, so
+        // a replay (including a flip reorg back onto this fork) reuses the cached one instead of
+        // re-collecting the SMT proof and re-proving.
+        let receipt = match batch.read_batch_receipt().resolve().await {
+            Some(receipt) => receipt,
+            None => {
+                // Collect SMT proof at the version preceding the batch's checkpoint.
+                let prev_version = batch.checkpoint().index().saturating_sub(1);
+                let proof_bytes =
+                    self.store.prove(&batch.resource_ids(), prev_version).expect("proof");
 
-        // One pass: per-tx journal bytes (inputs) + receipt clones (proof composition).
-        let (journals, receipts): (Vec<_>, Vec<_>) =
-            batch.tx_artifacts().map(|a| (B::journal_bytes(&a), (*a).clone())).unzip();
+                // One pass: per-tx journal bytes (inputs) + receipt clones (proof composition).
+                let (journals, receipts): (Vec<_>, Vec<_>) =
+                    batch.tx_artifacts().map(|a| (B::journal_bytes(&a), (*a).clone())).unzip();
 
-        // Encode the inputs for the proof.
-        let covenant_id = self.config.covenant_id.map(|h| h.as_bytes()).unwrap_or_default();
-        let input_bytes = BatchInputs::encode(
-            (self.backend.image_id(), &covenant_id, &self.config.lane_key),
-            &proof_bytes,
-            batch.checkpoint().metadata(),
-            &journals,
-        );
+                // Encode the inputs for the proof.
+                let covenant_id = self.config.covenant_id.map(|h| h.as_bytes()).unwrap_or_default();
+                let input_bytes = BatchInputs::encode(
+                    (self.backend.image_id(), &covenant_id, &self.config.lane_key),
+                    &proof_bytes,
+                    batch.checkpoint().metadata(),
+                    &journals,
+                );
 
-        // Compose the batch proof against those tx receipts.
-        let receipt = self.backend.prove_batch(&input_bytes, receipts).await;
+                // Compose the batch proof against those tx receipts.
+                let receipt = self.backend.prove_batch(&input_bytes, receipts).await;
+
+                // Wait for the receipt to be durable before publishing the artifact, so a crash
+                // never leaves a consumed-but-uncached receipt.
+                batch.write_batch_receipt(receipt.clone()).wait().await;
+                receipt
+            }
+        };
 
         // Publish the receipt as the batch's artifact.
         batch.publish_artifact(Some(receipt));
