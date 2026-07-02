@@ -12,7 +12,7 @@ use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_types::Store;
 
 use crate::{
-    BatchLifecycleWorker, CancellationContext, ExecutionConfig, PruningWorker, Resource,
+    BatchLifecycleWorker, CancellationContext, ExecutionConfig, PruningWorker, Read, Resource,
     ResourceAccess, ScheduledBatch, ScheduledBatchRef, ScheduledTransactionRef, SchedulerError,
     SchedulerResult, StateDiff, Write, cpu_task::ManagerTask, processor::Processor,
     rollback::Rollback, state::SchedulerState,
@@ -73,24 +73,25 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
         metadata: P::BatchMetadata,
         txs: Vec<SchedulerTransaction<P::Transaction>>,
     ) -> ScheduledBatch<S, P> {
-        let checkpoint = self.next_checkpoint(metadata);
+        let (checkpoint, restore) = self.next_checkpoint(metadata);
+        ScheduledBatch::new(self, txs, checkpoint, restore).tap(|batch| {
+            // Notify the processor, allowing it to initialize internal caches or buffers.
+            self.processor.on_batch_scheduled(batch);
 
-        ScheduledBatch::new(self, txs, checkpoint)
-            // Connect transactions to resource dependency chains.
-            .tap(ScheduledBatch::connect)
-            .tap(|batch| {
-                // Notify the processor, allowing it to initialize internal caches or buffers.
-                self.processor.on_batch_scheduled(batch);
+            // Push to the batch lifecycle worker for lifecycle progression.
+            self.batch_lifecycle_worker.push(batch.clone());
 
-                // Push to the batch lifecycle worker for lifecycle progression.
-                self.batch_lifecycle_worker.push(batch.clone());
-
-                // Submit to execution workers for parallel processing.
+            // Restore a returning committed batch from disk, or connect and execute a new one.
+            if batch.restored() {
+                self.state.storage().submit_read(Read::CommittedBatch(batch.clone()));
+            } else {
+                batch.connect();
                 self.execution_workers.execute(batch.clone());
+            }
 
-                // Process the eviction queue; this batch's resources won't be evicted yet.
-                self.process_eviction_queue()
-            })
+            // Process the eviction queue; this batch's resources won't be evicted yet.
+            self.process_eviction_queue();
+        })
     }
 
     /// Processes pending eviction requests from committed batches.
@@ -233,12 +234,15 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
             .collect()
     }
 
-    /// Advances to the next batch, returning its checkpoint.
-    fn next_checkpoint(&mut self, metadata: P::BatchMetadata) -> Checkpoint<P::BatchMetadata> {
+    /// Advances to the next batch, returning its checkpoint and whether it can be restored.
+    fn next_checkpoint(
+        &mut self,
+        metadata: P::BatchMetadata,
+    ) -> (Checkpoint<P::BatchMetadata>, bool) {
         self.drain_committed();
 
-        let index = self.canonical_chain_manager.append(metadata.clone()).id;
-        let checkpoint = Checkpoint::new(index, metadata);
+        let outcome = self.canonical_chain_manager.append(metadata.clone());
+        let checkpoint = Checkpoint::new(outcome.id, metadata);
         self.state.set_last_processed(Arc::new(checkpoint.clone()));
         self.pending_batches.push_back(checkpoint.clone());
 
@@ -248,7 +252,12 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
             self.state.set_root(Arc::new(checkpoint.clone()));
         }
 
-        checkpoint
+        // A returning id restores if the processor opts in and its state is already on disk.
+        let restore = !outcome.is_new
+            && self.processor.supports_restore()
+            && StoredBatchMetadata::exists(&**self.state.storage().store(), outcome.id);
+
+        (checkpoint, restore)
     }
 
     /// Cancels in-flight batches and rolls back shared state to the given index.
@@ -297,7 +306,8 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
         }
 
         // Fall back to disk for committed batches.
-        Checkpoint::new(index, StoredBatchMetadata::get(&**self.state.storage().store(), index))
+        let store = &**self.state.storage().store();
+        Checkpoint::new(index, StoredBatchMetadata::get(store, index))
     }
 }
 

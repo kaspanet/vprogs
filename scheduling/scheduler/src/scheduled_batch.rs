@@ -13,7 +13,7 @@ use vprogs_scheduling_execution_workers::Batch;
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_proof_receipt::{AggregatorKey, BatchKey, Prefix};
-use vprogs_storage_types::Store;
+use vprogs_storage_types::{ReadStore, Store};
 
 use crate::{
     CancellationContext, Read, ReadReceipt, ReceiptRead, ScheduledTransaction, Scheduler,
@@ -49,6 +49,8 @@ pub struct ScheduledBatch<S: Store, P: Processor<S>> {
     state: SchedulerState<S, P>,
     /// This batch's sequential index and metadata.
     checkpoint: Checkpoint<P::BatchMetadata>,
+    /// True if restored from committed disk state rather than executed.
+    restored: bool,
     /// All transactions in this batch.
     txs: Vec<ScheduledTransaction<S, P>>,
     /// One state diff per unique resource accessed by this batch.
@@ -121,6 +123,12 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
     #[inline(always)]
     pub fn canceled(&self) -> bool {
         self.checkpoint.index() > self.cancellation.threshold()
+    }
+
+    /// Returns true if this batch was restored from committed disk state rather than executed.
+    #[inline(always)]
+    pub fn restored(&self) -> bool {
+        self.restored
     }
 
     /// Returns true if all transactions have been executed.
@@ -314,6 +322,7 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         scheduler: &mut Scheduler<S, P>,
         txs: Vec<SchedulerTransaction<P::Transaction>>,
         checkpoint: Checkpoint<P::BatchMetadata>,
+        restored: bool,
     ) -> Self {
         Self(Arc::new_cyclic(|this| {
             let processed = AtomicAsyncLatch::default();
@@ -335,6 +344,7 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
                 processor: scheduler.processor().clone(),
                 state: scheduler.state().clone(),
                 checkpoint,
+                restored,
                 pending_txs: AtomicU64::new(txs.len() as u64),
                 pending_tx_artifacts: AtomicU64::new(txs.len() as u64),
                 txs: txs
@@ -375,6 +385,23 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
                 }
             }
         }
+    }
+
+    /// Restores the committed batch from disk and marks it done, skipping execution.
+    pub(crate) fn restore_committed<RS: ReadStore>(&self, store: &RS) {
+        // Each resource's tail access holds the batch's final state; restore it from disk.
+        let index = self.checkpoint.index();
+        for tx in self.txs() {
+            for access in tx.resources() {
+                if access.is_batch_tail() {
+                    access.restore_committed_data(store, index);
+                }
+            }
+        }
+
+        // Nothing executed, so drive the counters down and open the done-latches directly.
+        self.pending_txs.store(0, Ordering::Release);
+        self.processed.open();
     }
 
     /// Pushes a transaction onto the work-stealing queue of ready transactions.
@@ -419,16 +446,17 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
                 state_diff.written_state().write_latest_ptr(wb);
             }
 
-            // Update the authenticated state tree with all resource state diffs from this batch.
-            let new_root = store.update(
-                wb,
-                updated.into_iter().map(Commitment::from).collect(),
-                self.checkpoint.index(),
-            );
+            // A fresh batch updates the SMT and persists its metadata.
+            if !self.restored {
+                StoredBatchMetadata::set(wb, self.checkpoint.index(), self.checkpoint.metadata());
+                store.update(
+                    wb,
+                    updated.into_iter().map(Commitment::from).collect(),
+                    self.checkpoint.index(),
+                );
+            }
 
-            // Record the new state root, this batch's metadata, and the last-committed pointer.
-            StateMetadata::set_state_root(wb, &new_root);
-            StoredBatchMetadata::set(wb, self.checkpoint.index(), self.checkpoint.metadata());
+            // Record the last-committed pointer.
             StateMetadata::set_last_committed(wb, &self.checkpoint);
 
             // Persist root on first commit for crash-fault tolerance. Root was already set

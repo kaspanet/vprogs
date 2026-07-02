@@ -87,9 +87,6 @@ impl<S: Store, P: Processor<S>> Rollback<S, P> {
             if rollback_to_genesis {
                 StateMetadata::set_root(wb, &self.target);
             }
-
-            // Reset the persisted state root to the target version's (canonical) root.
-            StateMetadata::set_state_root(wb, &store.root(self.target.index()));
         }));
 
         // Return a new empty write batch for further operations.
