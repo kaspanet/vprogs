@@ -1,5 +1,4 @@
-//! Static configuration for the settlement worker: which redeem variant it settles against and the
-//! per-worker handles and knobs that aren't carried per bundle.
+//! Static settlement-worker configuration and test-only pacing helpers.
 
 use std::ops::Range;
 #[cfg(feature = "test-utils")]
@@ -15,10 +14,7 @@ use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_l1_types::SettlementInfo;
 use vprogs_zk_backend_risc0_api::Backend;
 
-/// Which redeem variant the worker settles against. The caller picks it; the operating contract is
-/// to settle in [`Production`](SettlementMode::Production) only when real (CUDA) proofs are in play
-/// and in [`Dev`](SettlementMode::Dev) under `RISC0_DEV_MODE`, where the prover emits stub receipts
-/// the production `OpZkPrecompile` would reject.
+/// Which redeem variant the worker settles against.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SettlementMode {
     /// Production redeem: the on-chain `OpZkPrecompile` verifies the bundle's real receipt.
@@ -39,43 +35,22 @@ pub struct SettlementWorkerConfig {
     pub lane_key: Hash,
     /// Covenant id this worker settles, carried for identity / journal binding.
     pub covenant_id: Hash,
-    /// Resume / catch-up signal: `Some` when the worker may be joining an already-advanced
-    /// covenant (its supplied bootstrap outpoint already spent), `None` for a fresh deploy
-    /// whose bootstrap UTXO is unspent.
+    /// Resume / catch-up signal for an already-advanced covenant.
     pub start_from: Option<Hash>,
-    /// Backend, for the covenant's redeem pins (guest image ids). Unused in
-    /// [`SettlementMode::Dev`] (the dev redeem pins no image ids).
+    /// Backend for the covenant's production redeem pins.
     pub backend: Backend,
     /// Whether to settle against the production or dev redeem variant.
     pub mode: SettlementMode,
-    /// `watch` receiver the bridge publishes the covenant's last on-chain settlement into. It is
-    /// the settler's confirmation source (`settle_one` awaits a change on it) and the settler also
-    /// borrows it to detect a competitor advancing the covenant past its optimistic in-memory tip.
+    /// Receiver for the covenant's latest bridge-observed on-chain settlement.
     pub settlement: watch::Receiver<Option<SettlementInfo>>,
-    /// Optional millisecond window to jitter each submission by. `None` submits immediately (the
-    /// production default). Multiple provers settling one covenant race to spend the same
-    /// outpoint; without jitter the same prover's submission deterministically wins every
-    /// range. A small random pre-submit delay models real relay-timing variance so the winner
-    /// alternates.
+    /// Optional millisecond window to jitter each submission by, or `None` to submit immediately.
     pub submit_jitter: Option<Range<u64>>,
-    /// Test-only alternation: `(this settler's id, pacer shared with the competitor)`. When set, a
-    /// settler that landed the previous settlement waits until a different settler lands one
-    /// before settling again, so competing provers strictly alternate instead of one sweeping
-    /// every range (and each settles at half rate, so its recycled fee-change UTXO confirms
-    /// before reuse). `None` in production, where settlers race freely.
+    /// Test-only alternation: `(this settler's id, pacer shared with the competitor)`.
     #[cfg(feature = "test-utils")]
     pub alternation: Option<(u8, std::sync::Arc<AlternationPacer>)>,
 }
 
-/// Forces two competing settlers to alternate, used only by the contention test. Holds the id of
-/// whoever settled last; a settler that finds itself there defers to the competitor until it
-/// reports. The deferral is bounded ([`DEFER_GRACE`]): the two provers form bundles at independent,
-/// timing-dependent boundaries, so after one settles to state `S` the other may hold no bundle
-/// whose prev state is `S` (all its boundaries lie past `S`) and so cannot continue the chain from
-/// `S`. An unbounded deferral would then mutually wedge: the prover at `S` waits its turn while the
-/// other can never settle from `S`. Bounding the deferral keeps the alternation pressure (under
-/// normal contention the competitor lands its settlement well within the grace, so both provers
-/// settle) while letting the chain keep advancing when their boundaries diverge.
+/// Forces two competing settlers to alternate in contention tests.
 #[cfg(feature = "test-utils")]
 #[derive(Default)]
 pub struct AlternationPacer {
@@ -83,9 +58,7 @@ pub struct AlternationPacer {
     bell: tokio::sync::Notify,
 }
 
-/// Upper bound on the [`AlternationPacer`] deferral. Sized to comfortably exceed one
-/// prove+submit+confirm cycle (~1s in dev) so the competitor reliably takes its turn under normal
-/// contention, while still capping the wait.
+/// Upper bound on [`AlternationPacer`] deferral.
 #[cfg(feature = "test-utils")]
 const DEFER_GRACE: Duration = Duration::from_secs(2);
 
@@ -96,9 +69,7 @@ impl AlternationPacer {
         Self { last: std::sync::Mutex::new(None), bell: tokio::sync::Notify::new() }
     }
 
-    /// Defers while it is `me`'s turn to wait (a different settler reported since `me`, or none has
-    /// yet), up to [`DEFER_GRACE`]; past that, proceeds regardless so divergent bundle boundaries
-    /// cannot wedge the chain. Returns early when `shutdown` opens so teardown is not held up.
+    /// Defers while the previous settlement was also by `me`, up to [`DEFER_GRACE`] or shutdown.
     pub(super) async fn await_turn(&self, me: u8, shutdown: &AtomicAsyncLatch) {
         let deadline = tokio::time::Instant::now() + DEFER_GRACE;
         while *self.last.lock().unwrap() == Some(me) {

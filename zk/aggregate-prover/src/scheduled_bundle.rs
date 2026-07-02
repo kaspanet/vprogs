@@ -18,39 +18,26 @@ pub struct BundleBlocks {
 /// A formed bundle of proved batches, published to a settlement consumer before its artifact
 /// exists.
 ///
-/// Mirrors [`ScheduledBatch`]'s artifact mechanism: the handle is published *before* its artifact
-/// exists, so a consumer can pop it, read the immediate metadata (e.g. reconcile pacing against
-/// `batches`), and then await the proved artifact `A`, filled via
-/// [`publish_artifact`](Self::publish_artifact) once proving completes.
-///
-/// A no-op bundle (all-empty prefix, or one that advanced no state) carries no artifact: it is
-/// constructed already resolved (latch open, artifact `None`) and the consumer skips it. Every
-/// formed bundle still produces exactly one handle, so a consumer that paces itself against proving
-/// can account for all submitted batches by summing each handle's `batches`.
+/// The artifact may be published later through [`publish_artifact`](Self::publish_artifact), or
+/// remain `None` when the bundle resolves as a no-op.
 #[smart_pointer]
 pub struct ScheduledBundle<A> {
-    /// Number of scheduled batches this bundle consumed (including empty batches in the ready
-    /// prefix). Readable immediately, before the artifact is published.
+    /// Number of scheduled batches this bundle consumed.
     batches: usize,
-    /// The bundle's first checkpoint index (bundle-start). With `from_block`, the coordinate that
-    /// keys the bundle's aggregate receipt. Immediate.
+    /// The bundle's first checkpoint index.
     checkpoint_index: u64,
-    /// L1 block at the bundle's first checkpoint (the block it proves *from*), pairing with
-    /// `block_prove_to`. Together with `checkpoint_index` it keys the aggregator receipt and keeps
-    /// bundles that began on competing forks distinct. Immediate.
+    /// L1 block at the bundle's first checkpoint.
     from_block: Hash,
-    /// L1 block the bundle proves through (its final block). Immediate, for logging / pacing.
+    /// L1 block the bundle proves through.
     block_prove_to: Hash,
-    /// The proved artifact, filled via [`publish_artifact`](Self::publish_artifact). `None` for a
-    /// no-op bundle that advanced no state.
+    /// The proved artifact, or `None` for a no-op bundle.
     artifact: ArcSwapOption<A>,
     /// Opens when the artifact has been published (or resolved as a no-op).
     artifact_published: AtomicAsyncLatch,
 }
 
 impl<A> ScheduledBundle<A> {
-    /// Creates an unresolved bundle handle: its metadata is readable immediately, the artifact is
-    /// filled later via [`publish_artifact`](Self::publish_artifact).
+    /// Creates an unresolved bundle handle with immediately readable metadata.
     pub fn new(batches: usize, checkpoint_index: u64, blocks: BundleBlocks) -> Self {
         let BundleBlocks { from_block, block_prove_to } = blocks;
         Self(Arc::new(ScheduledBundleData {
@@ -63,8 +50,7 @@ impl<A> ScheduledBundle<A> {
         }))
     }
 
-    /// Creates an immediately-resolved no-op bundle: it advanced no state, so it carries no
-    /// artifact and its artifact latch is already open.
+    /// Creates an immediately-resolved no-op bundle with no artifact.
     pub fn resolved_noop(batches: usize, checkpoint_index: u64, blocks: BundleBlocks) -> Self {
         let BundleBlocks { from_block, block_prove_to } = blocks;
         let artifact_published = AtomicAsyncLatch::new();
@@ -99,11 +85,7 @@ impl<A> ScheduledBundle<A> {
         self.block_prove_to
     }
 
-    /// The aggregate (settlement) receipt key for this bundle, pairing its own start coordinate
-    /// (checkpoint index + `from_block`) with the claimed tip `seq_commit` and the `image_id` of
-    /// the aggregator program that proves it. The aggregate prover reads and writes the receipt
-    /// under this key through its own
-    /// [`ReceiptStore`](vprogs_scheduling_scheduler::ReceiptStore).
+    /// Returns the aggregate receipt key for this bundle and claimed tip `seq_commit`.
     pub fn agg_key(&self, image_id: [u8; 32], seq_commit: [u8; 32]) -> AggregatorKey {
         AggregatorKey {
             prefix: Prefix { checkpoint_index: self.checkpoint_index.into() },
@@ -113,8 +95,7 @@ impl<A> ScheduledBundle<A> {
         }
     }
 
-    /// Publishes the bundle's artifact and opens the `artifact_published` latch. A `None` artifact
-    /// resolves the handle as a no-op (the consumer skips it).
+    /// Publishes the bundle's artifact and opens the `artifact_published` latch.
     pub fn publish_artifact(&self, artifact: Option<A>) {
         if let Some(artifact) = artifact {
             self.artifact.store(Some(Arc::new(artifact)));
@@ -124,9 +105,8 @@ impl<A> ScheduledBundle<A> {
 
     /// Returns the published artifact, or `None` if the bundle resolved as a no-op.
     ///
-    /// Must be called after [`wait_artifact_published`](Self::wait_artifact_published): the handle
-    /// is visible to consumers before its artifact exists, so an early call returns `None` for an
-    /// unresolved bundle rather than panicking.
+    /// Must be called after [`wait_artifact_published`](Self::wait_artifact_published); early calls
+    /// return `None` for unresolved bundles.
     pub fn artifact(&self) -> Option<Arc<A>> {
         self.artifact.load_full()
     }

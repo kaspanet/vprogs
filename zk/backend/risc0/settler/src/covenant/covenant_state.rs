@@ -1,8 +1,7 @@
 use kaspa_consensus_core::tx::{ScriptPublicKey, TransactionOutpoint, UtxoEntry};
 use kaspa_hashes::Hash;
 
-/// The live on-chain covenant: identity, committed state, and the UTXO that carries it. Advanced by
-/// each confirmed settlement.
+/// The live on-chain covenant: identity, committed state, and the UTXO that carries it.
 #[derive(Clone)]
 pub struct CovenantState {
     /// Consensus covenant id this UTXO is bound to.
@@ -22,8 +21,7 @@ pub struct CovenantState {
 }
 
 impl CovenantState {
-    /// The [`UtxoEntry`] of the covenant's carrying outpoint, as a settlement spends it: the locked
-    /// `value` under the covenant `spk`, at the confirmed `daa_score`, tagged with `covenant_id`.
+    /// Returns the [`UtxoEntry`] of the covenant's carrying outpoint as a settlement spends it.
     pub fn utxo_entry(&self) -> UtxoEntry {
         UtxoEntry::new(self.value, self.spk.clone(), self.daa_score, false, Some(self.covenant_id))
     }

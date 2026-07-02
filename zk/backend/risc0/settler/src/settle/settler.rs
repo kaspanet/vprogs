@@ -1,7 +1,5 @@
-//! The environment-agnostic settlement step: build one proven bundle's settlement, fund and submit
-//! it through the injected [`FeeSource`]/[`SettlementSink`], then **await** the bridge's settlement
-//! `watch` for it to confirm - no polling. The production daemon and the L2 sim drive the same
-//! [`Settler`] with their own trait impls.
+//! Environment-agnostic settlement execution for proven bundles. The production daemon and L2 sim
+//! drive the same [`Settler`] with their own [`FeeSource`] and [`SettlementSink`] implementations.
 
 use std::collections::HashSet;
 
@@ -29,11 +27,7 @@ pub enum SettleOutcome {
     Shutdown,
 }
 
-/// Settles proven bundles against one covenant, driving the same build → fund → submit → confirm →
-/// advance flow in any environment. The per-environment behavior is injected: `funder` funds each
-/// fee, `sink` gets the tx onto the network. Confirmation is shared - both environments await the
-/// `settlement` watch a chain observer feeds (the bridge for the daemon, the sim's own block
-/// observation for the sim), so neither path polls.
+/// Settles proven bundles against one covenant using injected funding and submission effects.
 pub struct Settler<F: FeeSource, K: SettlementSink> {
     /// Funds and signs each settlement's fee.
     funder: F,
@@ -64,12 +58,8 @@ impl<F: FeeSource, K: SettlementSink> Settler<F, K> {
         Self { funder, sink, backend, lane_key, mode, settlement }
     }
 
-    /// Builds the settlement for one proven bundle, funds and submits it (refunding from another
-    /// fee UTXO on a fee rejection), then awaits the settlement watch until the covenant
-    /// advances past `cov`. Returns [`Advanced`](SettleOutcome::Advanced) when our settlement
-    /// confirms, [`Superseded`](SettleOutcome::Superseded) when a competitor's settlement
-    /// spends the covenant outpoint first, or [`Shutdown`](SettleOutcome::Shutdown) if
-    /// `shutdown` opens while waiting.
+    /// Settles one proven bundle and returns whether it advanced the covenant, was superseded, or
+    /// shut down.
     pub async fn settle_one(
         &self,
         cov: &CovenantState,

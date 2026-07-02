@@ -16,20 +16,14 @@ use vprogs_zk_backend_risc0_covenant::{
     build_redeem_script, dev_redeem_script_len, redeem_script_len,
 };
 
-/// Covenant-input compute budget for a dev settlement: the dev redeem has no `OpZkPrecompile`, so a
-/// small fixed budget covers its hash + concat + equality ops. Production settlements size their
-/// budget off the receipt instead.
+/// Covenant-input compute budget for a dev settlement.
 pub const DEV_COVENANT_BUDGET: ComputeBudget = ComputeBudget(100);
 
 use super::{BuiltSettlement, CovenantAdvance, CovenantState};
 use crate::worker::SettlementMode;
 
-/// Bootstraps a fresh production-pins covenant (terminates in `OpZkPrecompile`, so the first
-/// settlement's reconstructed prev redeem matches this UTXO's SPK) bound to `lane_key`, locking
-/// `value` sompi. Submits it and returns the initial [`CovenantState`] plus the bootstrap txid; the
-/// state's `daa_score` is 0 until [`run`](crate::run) confirms the UTXO. The covenant's initial
-/// state is the empty SMT, matching a fresh prover store, so the first proved bundle chains from
-/// here.
+/// Bootstraps a fresh production-pins covenant bound to `lane_key` and returns its initial state
+/// plus bootstrap txid.
 pub async fn bootstrap_real_covenant<C: RpcApi + ?Sized>(
     wallet: &Wallet<'_, C>,
     backend: &Backend,
@@ -53,10 +47,7 @@ pub async fn bootstrap_real_covenant<C: RpcApi + ?Sized>(
     (covenant, txid)
 }
 
-/// The production redeem script and its P2SH `ScriptPublicKey` for a fresh covenant: empty initial
-/// state, empty lane tip, pins from `backend` / `lane_key`. The first settlement's reconstructed
-/// prev redeem must match this UTXO's SPK, so bootstrap and settlement build it identically; this
-/// is the single place that construction lives. Returns `(redeem_script, p2sh_spk)`.
+/// Returns the production redeem script and P2SH `ScriptPublicKey` for a fresh covenant.
 pub fn bootstrap_redeem(backend: &Backend, lane_key: &Hash) -> (Vec<u8>, ScriptPublicKey) {
     let state = EMPTY_HASH;
     let lane_tip = Hash::default();
@@ -67,13 +58,8 @@ pub fn bootstrap_redeem(backend: &Backend, lane_key: &Hash) -> (Vec<u8>, ScriptP
     (redeem, spk)
 }
 
-/// Bootstraps a fresh dev-pins covenant (the [`build_dev_redeem_script`] variant: chain-anchored
-/// seq-commit check, no `OpZkPrecompile`) bound to `lane_key`, locking `value` sompi. Submits it
-/// and returns the initial [`CovenantState`] plus the bootstrap txid. The dev counterpart of
-/// [`bootstrap_real_covenant`], for `RISC0_DEV_MODE` runs where the prover emits stub receipts the
-/// production precompile would reject. Like the real bootstrap, the initial state is the empty SMT,
-/// so the first proved bundle chains from here; the returned state's `daa_score` is 0 until the
-/// UTXO confirms.
+/// Bootstraps a fresh dev-pins covenant bound to `lane_key` and returns its initial state plus
+/// bootstrap txid.
 pub async fn bootstrap_dev_covenant<C: RpcApi + ?Sized>(
     wallet: &Wallet<'_, C>,
     lane_key: Hash,
@@ -96,10 +82,7 @@ pub async fn bootstrap_dev_covenant<C: RpcApi + ?Sized>(
     (covenant, txid)
 }
 
-/// The dev redeem script and its P2SH `ScriptPublicKey` for a fresh covenant: empty initial state,
-/// empty lane tip, `lane_key` pinned. The dev counterpart of [`bootstrap_redeem`]; the first dev
-/// settlement's reconstructed prev redeem must match this UTXO's SPK, so bootstrap and settlement
-/// build it identically. Returns `(redeem_script, p2sh_spk)`.
+/// Returns the dev redeem script and P2SH `ScriptPublicKey` for a fresh covenant.
 pub fn dev_bootstrap_redeem(lane_key: &Hash) -> (Vec<u8>, ScriptPublicKey) {
     let state = EMPTY_HASH;
     let lane_tip = Hash::default();
@@ -109,10 +92,7 @@ pub fn dev_bootstrap_redeem(lane_key: &Hash) -> (Vec<u8>, ScriptPublicKey) {
     (redeem, spk)
 }
 
-/// Builds the settlement for one proven bundle in the configured [`SettlementMode`], dispatching to
-/// [`build_settlement`] (production redeem, on-chain `OpZkPrecompile` over the real receipt) or
-/// [`build_dev_settlement`] (dev redeem, chain-anchored seq commit). The single place a settlement
-/// mode selects its builder.
+/// Builds the settlement for one proven bundle in the configured [`SettlementMode`].
 pub fn build_settlement_for_mode(
     mode: SettlementMode,
     backend: &Backend,
@@ -128,11 +108,7 @@ pub fn build_settlement_for_mode(
 
 /// Builds the production settlement for one proven bundle against the live covenant `cov`.
 ///
-/// Asserts the artifact's bounds chain from `cov`; the on-chain script enforces the same, but a
-/// local mismatch means the prover was seeded with the wrong covenant, so fail loudly before paying
-/// to submit. Builds the [`Settlement`], sizes its covenant compute budget off the artifact's
-/// seq-commit anchor, and returns both with a [`CovenantAdvance`] the caller applies once the
-/// finalized tx confirms. Pure: the caller funds the fee, submits, and confirms.
+/// Panics if the artifact does not chain from `cov`.
 pub fn build_settlement(
     backend: &Backend,
     lane_key: &Hash,
@@ -190,15 +166,8 @@ pub fn build_settlement(
 
 /// Builds a dev settlement for one proven bundle against the live dev covenant `cov`.
 ///
-/// The dev counterpart of [`build_settlement`]: same authoritative bounds from `artifact` and the
-/// same chaining asserts, but the [`build_dev_redeem_script`] variant (no `OpZkPrecompile`; the
-/// chain anchors the claimed seq commit instead). The journal's `new_seq_commit` is fed through as
-/// the `claimed_seq_commit` the dev script `OpEqualVerify`s against `OpChainblockSeqCommit`, so the
-/// guest-committed value and the chain's value must agree exactly. The covenant compute budget is
-/// the fixed [`DEV_COVENANT_BUDGET`] (no precompile to size for).
-///
-/// The dev redeem only handles the single-output (no-exit) path, so a bundle carrying L2→L1 exits
-/// (non-zero `permission_spk_hash`) is rejected here rather than silently dropping them.
+/// Panics if the artifact does not chain from `cov` or carries L2-to-L1 exits, which the dev redeem
+/// does not support.
 pub fn build_dev_settlement(
     lane_key: &Hash,
     cov: &CovenantState,
@@ -249,12 +218,7 @@ pub fn build_dev_settlement(
     }
 }
 
-/// Rebuilds the live [`CovenantState`] from an external settlement `s` that advanced the covenant
-/// (a competing settler landed it first). Deterministically reconstructs the continuation UTXO's
-/// P2SH SPK from `s.new_state` / `s.new_lane_tip` in the configured redeem variant, points the
-/// outpoint at `s.tx_id:0`, and carries `covenant_id` / `value` forward unchanged. `daa_score` is
-/// stamped from `s.daa_score` (the bridge publishes settlements only off accepted chain blocks, so
-/// it is the score of the block that contained the settlement).
+/// Rebuilds the live [`CovenantState`] from an external settlement `s` that advanced the covenant.
 pub fn covenant_from_settlement(
     mode: SettlementMode,
     backend: &Backend,
@@ -286,8 +250,7 @@ pub fn covenant_from_settlement(
     }
 }
 
-/// The production redeem pins for this covenant: the batch + transaction guest image ids, the lane
-/// key, and the default permission-output value. Stable across the run.
+/// Returns the production redeem pins for this covenant.
 fn redeem_pins<'a>(backend: &'a Backend, lane_key: &'a Hash) -> RedeemPins<'a> {
     RedeemPins::Succinct(SuccinctPins {
         common: CommonPins {
@@ -300,10 +263,7 @@ fn redeem_pins<'a>(backend: &'a Backend, lane_key: &'a Hash) -> RedeemPins<'a> {
     })
 }
 
-/// Single-block [`SeqCommitAccessor`] for sizing the covenant input's compute budget off chain:
-/// resolves the proven block to the journal's `new_seq_commit` (and treats it as an in-depth chain
-/// ancestor). On chain the node answers `OpChainblockSeqCommit` from the real DAG; for the local
-/// script-engine dry run we only need the one anchor block the redeem script looks up.
+/// Single-block [`SeqCommitAccessor`] for sizing the covenant input's compute budget off chain.
 struct AnchorSeqCommit {
     block: Hash,
     seq_commit: Hash,

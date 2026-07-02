@@ -1,8 +1,5 @@
-//! Drives the settlement loop, popping each bundle the aggregate prover publishes and landing it on
-//! L1: see [`run`]. The per-worker [`config`] selects the redeem variant and submission policy; the
-//! environment-agnostic [`Settler`](crate::settle::Settler) builds, funds, submits, and awaits each
-//! bundle's settlement. This worker is the production driver: it constructs a `Settler` from the
-//! wRPC-backed [`WalletFeeSource`]/[`RpcSink`] and runs the queue loop around it.
+//! Production settlement worker that lands aggregate-prover bundles on L1 through the wRPC-backed
+//! [`Settler`](crate::settle::Settler).
 
 mod config;
 
@@ -19,18 +16,10 @@ use crate::{
     settle::{RpcSink, SettleOutcome, Settler, WalletFeeSource},
 };
 
-/// Drives the settlement loop, popping each bundle the aggregate prover publishes onto `queue`.
+/// Runs the production settlement loop until `shutdown` opens or a settlement rejection panics.
 ///
-/// The aggregate prover publishes every formed bundle as a [`ScheduledBundle`] handle; the worker
-/// pops one, awaits its proved artifact, and (when it carries a settlement) hands it to a
-/// [`Settler`](crate::settle::Settler) to build, fund, submit, and **await** its confirmation
-/// before taking the next. No-op bundles (resolved with no artifact) are skipped. Handles are
-/// processed one at a time, so settlements are serialized.
-///
-/// Runs until `shutdown` opens: every park (the queue pop, the artifact wait, the confirmation
-/// await) is a biased `select!` that checks `shutdown` first, so a teardown request returns
-/// promptly instead of blocking on a latch. It otherwise exits only by panicking on a rejected
-/// settlement (propagated through its `JoinHandle`).
+/// Settlements are serialized: each queued bundle is awaited, skipped if it resolves without an
+/// artifact, or settled before the next bundle is processed.
 pub async fn run(
     queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Receipt>>>,
     cfg: SettlementWorkerConfig,

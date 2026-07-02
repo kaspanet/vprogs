@@ -1,6 +1,5 @@
-//! The production [`FeeSource`]/[`SettlementSink`] impls: fund each settlement fee from a wRPC
-//! [`Wallet`] and submit it to the node's mempool, mapping the node's rejection text to a
-//! [`SubmitOutcome`]. The L2 sim supplies its own in-memory impls instead.
+//! Production [`FeeSource`]/[`SettlementSink`] implementations for funding settlements from a wRPC
+//! [`Wallet`] and submitting them to the node mempool.
 
 use std::{collections::HashSet, ops::Range, time::Duration};
 
@@ -20,9 +19,7 @@ use crate::{
     settle::effects::{FeeSource, FundedSettlement, SettlementSink, SubmitOutcome},
 };
 
-/// Funds settlement fees from a wRPC [`Wallet`]: selects the largest spendable UTXO not yet
-/// excluded, signs the fee input, and returns the funded transaction. The wallet is constructed
-/// fresh per call so each funding fetches the current spendable set.
+/// Funds settlement fees from the current spendable wRPC wallet set.
 pub struct WalletFeeSource {
     client: KaspaRpcClient,
     params: Params,
@@ -30,8 +27,7 @@ pub struct WalletFeeSource {
 }
 
 impl WalletFeeSource {
-    /// Wraps a wRPC client, consensus params, and the fee key (each cloned, so the settler owns its
-    /// own handles).
+    /// Wraps a wRPC client, consensus params, and fee key.
     pub fn new(client: KaspaRpcClient, params: Params, keypair: Keypair) -> Self {
         Self { client, params, keypair }
     }
@@ -57,9 +53,7 @@ impl FeeSource for WalletFeeSource {
     }
 }
 
-/// Submits settlements to the node's mempool over wRPC, classifying each rejection. Jitters each
-/// submission by `submit_jitter` (when set) so competing provers don't deterministically lose the
-/// spend race; `None` submits immediately (the production default).
+/// Submits settlements to the node mempool over wRPC.
 pub struct RpcSink {
     client: KaspaRpcClient,
     params: Params,
@@ -68,8 +62,7 @@ pub struct RpcSink {
 }
 
 impl RpcSink {
-    /// Wraps a wRPC client, consensus params, and the fee key, with an optional submission-jitter
-    /// window.
+    /// Wraps a wRPC client, consensus params, fee key, and optional submission-jitter window.
     pub fn new(
         client: KaspaRpcClient,
         params: Params,
@@ -127,9 +120,7 @@ impl SettlementSink for RpcSink {
 enum RejectionClass {
     /// The fee (collateral) input double-spent; refunding from a different UTXO resolves it.
     FeeRetry,
-    /// The node orphaned the settlement: an input is missing, but the message names neither. The
-    /// caller re-polls the covenant to tell a transient fee orphan (retry) from a competitor-spent
-    /// covenant (superseded).
+    /// The node orphaned the settlement without naming the missing input.
     Orphan,
     /// The covenant (state) input is already spent by a competitor's mempool settlement; this
     /// bundle is superseded and no fee UTXO can rescue it.
@@ -138,22 +129,13 @@ enum RejectionClass {
     Fatal,
 }
 
-/// Classifies a settlement submit rejection by which input the node is complaining about.
+/// Classifies a settlement submit rejection by which input the node reports.
 ///
-/// The mempool reports a double-spend as `output (txid, index) already spent by transaction ... in
-/// the mempool`, citing the conflicting input as the outpoint's [`Display`](std::fmt::Display)
-/// form. When that input is our `covenant_outpoint`, a competitor's settlement landed first and
-/// this bundle is [`Superseded`](RejectionClass::Superseded); when it is any other input, the fee
-/// UTXO clashed with an unconfirmed spend and a different one resolves it
-/// ([`FeeRetry`](RejectionClass::FeeRetry)).
-///
-/// An orphan rejection (`transaction ... is an orphan where orphan is disallowed`) names only the
-/// tx id, not the missing input. Both the fee UTXO (orphaned transiently) and the covenant input (a
-/// competitor confirmed-spent it) can be the cause, so it maps to
-/// [`Orphan`](RejectionClass::Orphan) for the caller to disambiguate by re-polling covenant
-/// liveness.
-///
-/// Matched on message text because the wRPC layer exposes no structured rejection reason.
+/// Returns [`Superseded`](RejectionClass::Superseded) when the message cites `covenant_outpoint`,
+/// [`FeeRetry`](RejectionClass::FeeRetry) when another input was already spent,
+/// [`Orphan`](RejectionClass::Orphan) for missing-input rejections that name no input, or
+/// [`Fatal`](RejectionClass::Fatal) for every other rejection. Matched on message text because the
+/// wRPC layer exposes no structured rejection reason.
 fn classify_rejection(e: &RpcError, covenant_outpoint: TransactionOutpoint) -> RejectionClass {
     let msg = e.to_string().to_lowercase();
     let cites_covenant_input = msg.contains(&format!("{covenant_outpoint}").to_lowercase());
