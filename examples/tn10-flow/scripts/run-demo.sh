@@ -7,8 +7,9 @@
 #   B = catchup node (settlement mode, key2, covenant env read from A's state.json).
 #
 # Flow: fresh data dirs -> start A -> poll A's state.json for covenant_id +
-# bootstrap_txid (timeout 120s) -> start B with that env -> run monitor for the
-# given duration -> SIGTERM both, wait, reap orphans, print final verdict.
+# bootstrap_txid + deploy block (timeout 120s) -> start B with that env -> run
+# monitor for the given duration -> SIGTERM both, wait, reap orphans, print final
+# verdict.
 #
 # Secrets come from the environment, never the repo:
 #   TN10_KEY1, TN10_KEY2  (required)  two funded testnet-10 private keys (32-byte hex)
@@ -103,7 +104,7 @@ PIDA=$!
 echo "A pid=$PIDA log=$LOG_A"
 
 echo "=== poll A state.json for covenant_id + bootstrap_txid (timeout 120s) ==="
-COV=""; BTX=""; LANE=""
+COV=""; BTX=""; LANE=""; START_FROM=""
 for i in $(seq 1 120); do
   if ! kill -0 "$PIDA" 2>/dev/null; then
     echo "FATAL: node A exited before bootstrap (see $LOG_A):"; tail -20 "$LOG_A"; exit 3
@@ -112,19 +113,20 @@ for i in $(seq 1 120); do
     COV=$(grep -oE '"covenant_id"[[:space:]]*:[[:space:]]*"[0-9a-fA-F]+"' "$STATE_A" | grep -oE '[0-9a-fA-F]{64}' | head -1)
     BTX=$(grep -oE '"bootstrap_txid"[[:space:]]*:[[:space:]]*"[0-9a-fA-F]+"' "$STATE_A" | grep -oE '[0-9a-fA-F]{64}' | head -1)
     LANE=$(grep -oE '"lane_id"[[:space:]]*:[[:space:]]*[0-9]+' "$STATE_A" | grep -oE '[0-9]+' | head -1)
-    if [ -n "$COV" ] && [ -n "$BTX" ] && [ -n "$LANE" ]; then
-      echo "A bootstrapped after ~${i}s: covenant=$COV bootstrap_txid=$BTX lane=$LANE"
+    START_FROM=$(grep -oE '"bootstrap_block_hash"[[:space:]]*:[[:space:]]*"[0-9a-fA-F]+"' "$STATE_A" | grep -oE '[0-9a-fA-F]{64}' | head -1)
+    if [ -n "$COV" ] && [ -n "$BTX" ] && [ -n "$LANE" ] && [ -n "$START_FROM" ]; then
+      echo "A bootstrapped after ~${i}s: covenant=$COV bootstrap_txid=$BTX lane=$LANE start_from=$START_FROM"
       break
     fi
   fi
   sleep 1
 done
-if [ -z "$COV" ] || [ -z "$BTX" ] || [ -z "$LANE" ]; then
-  echo "FATAL: A did not write covenant_id+bootstrap_txid+lane within 120s"; tail -30 "$LOG_A"; exit 4
+if [ -z "$COV" ] || [ -z "$BTX" ] || [ -z "$LANE" ] || [ -z "$START_FROM" ]; then
+  echo "FATAL: A did not write covenant_id+bootstrap_txid+lane+bootstrap_block_hash within 120s"; tail -30 "$LOG_A"; exit 4
 fi
 
 echo "=== start B (catchup, settlement mode, key2) ==="
-echo "    env: TN10_COVENANT_ID=$COV TN10_LANE_ID=$LANE TN10_BOOTSTRAP_TXID=$BTX (no TN10_START_FROM; seed_depth=$SEED_DEPTH)"
+echo "    env: TN10_COVENANT_ID=$COV TN10_LANE_ID=$LANE TN10_BOOTSTRAP_TXID=$BTX TN10_START_FROM=$START_FROM (seed_depth=$SEED_DEPTH)"
 RUST_LOG="$RUST_LOG_VAL" \
 RISC0_DEV_MODE=1 \
 TN10_SETTLE=1 \
@@ -134,6 +136,7 @@ TN10_DATA_DIR="$DATA_B" \
 TN10_COVENANT_ID="$COV" \
 TN10_LANE_ID="$LANE" \
 TN10_BOOTSTRAP_TXID="$BTX" \
+TN10_START_FROM="$START_FROM" \
 TN10_ACTIVITY_INTERVAL_MS="$ACT_INTERVAL_MS" \
 TN10_SEED_DEPTH="$SEED_DEPTH" \
   "$BIN" >>"$LOG_B" 2>&1 &

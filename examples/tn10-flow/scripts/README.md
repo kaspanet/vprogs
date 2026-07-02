@@ -81,9 +81,9 @@ the reconstructed `seq_commit`. There is no RPC to resolve a tx's containing blo
 the node **fails fast** by design (the guard in `main.rs`) rather than silently produce
 a wrong state root.
 
-> The `run-demo.sh` node B catches up the instant after A's deploy, while the covenant is
-> still shallow, so it does **not** pass `TN10_START_FROM`. The env var becomes mandatory
-> only once the covenant has advanced beyond `seed_depth`.
+> The `run-demo.sh` node B passes A's persisted `bootstrap_block_hash` as
+> `TN10_START_FROM`, so catch-up always replays from the covenant deploy block instead
+> of depending on how shallow the covenant still is.
 
 ## Run the 2-node demo
 
@@ -95,8 +95,8 @@ TN10_KEY1=<funded-key-1> TN10_KEY2=<funded-key-2> \
 `seconds` defaults to 240. Optional knobs: `TN10_WRPC_URL`, `ACT_INTERVAL_MS` (activity
 cadence, default 2000), `SEED_DEPTH` (bridge seed head-room, default 50). The script
 wipes its scratch data dirs, starts A (bootstrap), polls A's state file for the covenant
-triplet (120 s timeout), starts B (catchup) with that env, runs the monitor for the
-window, then tears both nodes down (and reaps any orphan) on exit.
+triplet plus deploy block (120 s timeout), starts B (catchup) with that env, runs the
+monitor for the window, then tears both nodes down (and reaps any orphan) on exit.
 
 ### Reading the monitor output
 
