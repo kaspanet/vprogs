@@ -4,8 +4,7 @@ use std::{
 };
 
 use kaspa_consensus_core::{config::params::Params, subnets::SubnetworkId};
-use vprogs_core_types::Checkpoint;
-use vprogs_l1_types::{ChainBlockMetadata, ConnectStrategy, Hash, NetworkId, NetworkType};
+use vprogs_l1_types::{ConnectStrategy, Hash, NetworkId, NetworkType};
 
 /// Configuration for the L1 bridge.
 #[derive(Clone, Debug)]
@@ -18,11 +17,6 @@ pub struct L1BridgeConfig {
     pub connect_timeout_ms: u64,
     /// First-time connect behavior: `Retry` blocks until connected, `Fallback` fails fast.
     pub connect_strategy: ConnectStrategy,
-    /// Finalization boundary, or `None` to start from the L1 pruning point. When set together with
-    /// `tip`, the bridge backfills the chain between them on startup.
-    pub root: Option<Checkpoint<ChainBlockMetadata>>,
-    /// Last known tip, or `None` to start from the L1 pruning point.
-    pub tip: Option<Checkpoint<ChainBlockMetadata>>,
     /// Reorg filter half-life. Observed reorg depths accumulate into a threshold that halves
     /// every half-life until it decays to zero. Set to `Duration::ZERO` to disable.
     pub filter_half_life: Duration,
@@ -33,26 +27,22 @@ pub struct L1BridgeConfig {
     pub finality_depth: u64,
     /// Covenant id tracked by [`ChainBlockMetadata::last_settlement`], or `None` to disable.
     pub covenant_id: Option<Hash>,
-    /// On a fresh chain (no `root`/`tip`), seed the root this many chain-blocks below the sink
-    /// instead of from the pruning point, so the bridge starts near the tip. `None` seeds from the
-    /// pruning point.
+    /// On a fresh chain, seed the root this many chain-blocks below the sink, so the bridge starts
+    /// near the tip. `None` seeds from the pruning point.
     pub seed_depth: Option<u64>,
-    /// Optional observer the bridge stores its latest chain-block DAA score into. Lets an external
-    /// progress reporter gauge how far the chain has replayed toward the node's virtual tip
-    /// without polling the bridge directly. `None` disables publishing.
+    /// Optional observer the bridge publishes its latest chain-block DAA score into, for an
+    /// external progress reporter; `None` disables publishing.
     pub tip_daa: Option<Arc<AtomicU64>>,
 }
 
 impl Default for L1BridgeConfig {
-    /// Defaults to mainnet with a 10-second timeout, blocking initial connect, and no resume state.
+    /// Defaults to mainnet with a 10-second timeout and blocking initial connect.
     fn default() -> Self {
         Self {
             url: None, // Use the public resolver.
             network_id: NetworkId::new(NetworkType::Mainnet),
             connect_timeout_ms: 10_000,
             connect_strategy: ConnectStrategy::Retry, // Block until the first connect succeeds.
-            root: None,                               // Start from the L1 pruning point.
-            tip: None,
             filter_half_life: Duration::from_secs(3600), // 1 hour.
             subnetwork_id: None,
             finality_depth: Params::from(NetworkId::new(NetworkType::Mainnet)).finality_depth(),
@@ -91,18 +81,6 @@ impl L1BridgeConfig {
     /// Sets the first-time connect strategy (block-until-connected vs. fail-fast).
     pub fn with_connect_strategy(mut self, strategy: ConnectStrategy) -> Self {
         self.connect_strategy = strategy;
-        self
-    }
-
-    /// Sets the finalization boundary to resume from.
-    pub fn with_root(mut self, checkpoint: Option<Checkpoint<ChainBlockMetadata>>) -> Self {
-        self.root = checkpoint;
-        self
-    }
-
-    /// Sets the last known tip to resume from.
-    pub fn with_tip(mut self, checkpoint: Option<Checkpoint<ChainBlockMetadata>>) -> Self {
-        self.tip = checkpoint;
         self
     }
 

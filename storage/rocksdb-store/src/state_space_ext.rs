@@ -3,8 +3,11 @@ use vprogs_storage_types::StateSpace;
 
 use crate::config::{Config, DefaultConfig};
 
+/// Maps each [`StateSpace`] to its RocksDB column family and per-CF options.
 pub trait StateSpaceExt<C: Config = DefaultConfig> {
+    /// The column-family name backing this state space.
     fn cf_name(&self) -> &'static str;
+    /// Column-family descriptors for every state space, in enum order.
     fn all_descriptors() -> Vec<ColumnFamilyDescriptor>;
 }
 

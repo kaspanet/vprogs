@@ -1,65 +1,25 @@
-//! Event-driven bridge to the Kaspa L1 network.
+//! Bridge to the Kaspa L1 network.
 //!
-//! Spawns a background worker thread that connects to an L1 node over wRPC,
-//! tracks the selected parent chain, and emits [`L1Event`]s through a lock-free
-//! queue. The bridge handles reconnection, reorgs, and finalization
-//! automatically.
+//! Spawns a background worker thread that connects to an L1 node over wRPC, tracks the selected
+//! parent chain, and drives a [`ChainSink`](vprogs_core_types::ChainSink) (the scheduler) directly:
+//! it schedules each new chain block, maps reorgs onto the scheduler's never-reused id space, and
+//! advances finalization. It also applies API commands against the scheduler, interleaved with L1
+//! processing, and handles reconnection automatically. Events (`Connected` / `Disconnected` /
+//! `Fatal`) are delivered through a lock-free queue for observers via [`L1Bridge::pop`] /
+//! [`L1Bridge::wait_and_pop`] / [`L1Bridge::drain`].
 //!
-//! # Usage
-//!
-//! ```no_run
-//! use vprogs_l1_bridge::{L1Bridge, L1BridgeConfig, L1Event};
-//! use vprogs_l1_types::NetworkType;
-//!
-//! let bridge = L1Bridge::new(
-//!     L1BridgeConfig::default()
-//!         .with_url(Some("ws://localhost:17110"))
-//!         .with_network_type(NetworkType::Mainnet),
-//! );
-//!
-//! // Consume events in a loop.
-//! loop {
-//!     match bridge.pop() {
-//!         Some(L1Event::Connected) => println!("connected"),
-//!         Some(L1Event::ChainBlockAdded { checkpoint, .. }) => {
-//!             println!("block {}", checkpoint.index());
-//!         }
-//!         Some(L1Event::Rollback { checkpoint, blue_score_depth }) => {
-//!             println!("rollback to {} (depth: {blue_score_depth})", checkpoint.index());
-//!         }
-//!         Some(L1Event::Finalized(checkpoint)) => {
-//!             println!("finalized up to index {}", checkpoint.index());
-//!         }
-//!         Some(L1Event::Disconnected) => println!("disconnected"),
-//!         Some(L1Event::Fatal { reason }) => {
-//!             eprintln!("fatal: {reason}");
-//!             break;
-//!         }
-//!         None => {}
-//!     }
-//! }
-//!
-//! bridge.shutdown();
-//! ```
-//!
-//! For async consumers, [`L1Bridge::wait_and_pop`] blocks until an event is
-//! available. [`L1Bridge::drain`] returns all currently queued events at once.
-//!
-//! # Resuming
-//!
-//! To resume from a previously known chain position, pass both `root` and `tip`
-//! in the config. The bridge will backfill the chain between them on first
-//! connect before emitting new events.
+//! On resume the scheduler restores its canonical chain from storage, so the bridge simply adopts
+//! its tip and fetches forward from there -- there is no separate backfill.
 
 mod bridge;
-mod chain_block;
+mod command;
 mod config;
 mod error;
 mod event;
 mod reorg_filter;
-mod virtual_chain;
 mod worker;
 
 pub use bridge::L1Bridge;
+pub use command::Command;
 pub use config::L1BridgeConfig;
-pub use event::{L1Event, RpcOptionalHeader};
+pub use event::L1Event;

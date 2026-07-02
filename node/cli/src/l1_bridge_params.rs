@@ -44,8 +44,7 @@ pub struct L1BridgeParams {
 }
 
 impl L1BridgeParams {
-    /// Converts CLI params into an [`L1BridgeConfig`]. Root and tip are left unset - they are
-    /// populated from the scheduler's persisted state at startup.
+    /// Converts CLI params into an [`L1BridgeConfig`] (start point comes from persisted state).
     pub fn into_config(self) -> L1BridgeConfig {
         L1BridgeConfig {
             url: self.url,
@@ -54,8 +53,6 @@ impl L1BridgeParams {
             // Kept as String upstream because `ConnectStrategy` lacks `Display`/`Serialize`.
             connect_strategy: self.connect_strategy.parse().expect("invalid connect strategy"),
             filter_half_life: Duration::from_secs(self.filter_half_life_secs),
-            root: None,
-            tip: None,
             subnetwork_id: self.subnetwork_id,
             finality_depth: self.finality_depth,
             covenant_id: self.covenant_id,

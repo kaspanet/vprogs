@@ -4,4 +4,7 @@ name              = "vprogs-storage-types"
 version.workspace = true
 
 [dependencies]
-vprogs-core-smt.workspace = true
+borsh.workspace                          = true
+vprogs-core-smt.workspace                = true
+vprogs-core-types.workspace              = true
+vprogs-storage-canonical-chain.workspace = true

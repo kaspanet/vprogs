@@ -6,34 +6,32 @@
 //!
 //! # Example
 //!
-//! ```no_run
+//! ```ignore
 //! use std::time::Duration;
 //!
+//! use tokio::sync::mpsc;
 //! use vprogs_l1_bridge::{L1Bridge, L1BridgeConfig, L1Event};
 //! use vprogs_l1_types::{NetworkId, NetworkType};
 //! use vprogs_node_test_utils::{L1BridgeExt, L1Node};
 //!
-//! # async fn example() {
+//! # async fn example(sink: MySink) {
 //! // Start an isolated simnet node.
 //! let node = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
 //!
-//! // Connect a bridge to it.
+//! // Connect a bridge that drives `sink` (a `ChainSink`, e.g. the scheduler). API commands flow
+//! // over the channel; mined blocks are scheduled directly into the sink, not surfaced as events.
+//! let (_api_tx, api_rx) = mpsc::channel(16);
 //! let bridge = L1Bridge::new(
 //!     L1BridgeConfig::default()
 //!         .with_url(Some(node.wrpc_borsh_url()))
 //!         .with_network_type(NetworkType::Simnet),
+//!     sink,
+//!     api_rx,
 //! );
 //!
-//! // Wait for the bridge to connect.
+//! // Wait for the bridge to connect, then mine; the bridge schedules the blocks into `sink`.
 //! bridge.wait_for(Duration::from_secs(10), |e| matches!(e, L1Event::Connected)).await;
-//!
-//! // Mine some blocks and wait for them to arrive.
 //! node.mine_blocks(5).await;
-//! bridge
-//!     .wait_for(Duration::from_secs(10), |e| {
-//!         matches!(e, L1Event::ChainBlockAdded { checkpoint, .. } if checkpoint.index() == 5)
-//!     })
-//!     .await;
 //!
 //! bridge.shutdown();
 //! node.shutdown().await;

@@ -24,6 +24,7 @@ vprogs-state-proof-receipt.workspace          = true
 vprogs-state-ptr-latest.workspace             = true
 vprogs-state-ptr-rollback.workspace           = true
 vprogs-state-version.workspace                = true
+vprogs-storage-canonical-chain.workspace      = true
 vprogs-storage-manager.workspace              = true
 vprogs-storage-types.workspace                = true
 zerocopy.workspace                            = true

@@ -4,9 +4,10 @@ use std::{
 };
 
 use tap::Tap;
-use vprogs_core_types::{Checkpoint, ResourceId, SchedulerTransaction};
+use vprogs_core_types::{ChainSink, Checkpoint, ResourceId, SchedulerTransaction};
 use vprogs_scheduling_execution_workers::ExecutionWorkers;
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
+use vprogs_storage_canonical_chain::CanonicalChainManager;
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_types::Store;
 
@@ -39,6 +40,8 @@ pub struct Scheduler<S: Store, P: Processor<S>> {
     execution_workers: ExecutionWorkers<ManagerTask<S, P>, ScheduledBatch<S, P>>,
     /// Background worker that prunes old state data when the pruning threshold advances.
     pruning_worker: PruningWorker<S, P>,
+    /// Assigns never-reused batch ids and drives the canonical oracle.
+    canonical_chain_manager: CanonicalChainManager<P::BatchMetadata>,
 }
 
 impl<S: Store, P: Processor<S>> Scheduler<S, P> {
@@ -53,6 +56,7 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
             resources: HashMap::new(),
             pending_batches: VecDeque::new(),
             cancellation: CancellationContext::new(state.root().index()),
+            canonical_chain_manager: state.storage().store().canonical_chain_manager(),
             state,
             processor,
         }
@@ -84,9 +88,7 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
                 // Submit to execution workers for parallel processing.
                 self.execution_workers.execute(batch.clone());
 
-                // Process eviction queue after scheduling to avoid race conditions.
-                // Resources touched by this batch will have updated last_access and won't be
-                // evicted.
+                // Process the eviction queue; this batch's resources won't be evicted yet.
                 self.process_eviction_queue()
             })
     }
@@ -121,11 +123,13 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
 
         // Only perform a rollback if there is state to revert.
         if upper_bound > target_index {
-            // Prevent the pruning worker from pruning into the rollback range.
-            // Returns false if pruning has already advanced past the target.
+            // Stop pruning entering the rollback range; false = it already passed the target.
             if !self.pruning_worker.pause(target_index) {
                 return Err(SchedulerError::PruningConflict);
             }
+
+            // Capture the pre-rollback snapshot for a consistent view of what to revert.
+            let snapshot = self.canonical_chain_manager.chain().snapshot();
 
             // Look up target metadata, cancel in-flight batches, and update shared state.
             let target = self.cancel_and_rollback(target_index);
@@ -135,6 +139,7 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
             self.state.storage().submit_write(Write::Rollback(Rollback::new(
                 target.clone(),
                 upper_bound,
+                snapshot,
                 self.state.clone(),
                 &done_signal,
             )));
@@ -173,6 +178,11 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
     /// Returns a reference to the pruning worker.
     pub fn pruning(&self) -> &PruningWorker<S, P> {
         &self.pruning_worker
+    }
+
+    /// Returns a mutable handle to the canonical-chain manager, the chain's sole writer.
+    pub fn canonical_chain_manager(&mut self) -> &mut CanonicalChainManager<P::BatchMetadata> {
+        &mut self.canonical_chain_manager
     }
 
     /// Shuts down the scheduler and all its components.
@@ -227,13 +237,13 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
     fn next_checkpoint(&mut self, metadata: P::BatchMetadata) -> Checkpoint<P::BatchMetadata> {
         self.drain_committed();
 
-        let checkpoint = Checkpoint::new(self.state.last_processed().index() + 1, metadata);
+        let index = self.canonical_chain_manager.append(metadata.clone()).id;
+        let checkpoint = Checkpoint::new(index, metadata);
         self.state.set_last_processed(Arc::new(checkpoint.clone()));
         self.pending_batches.push_back(checkpoint.clone());
 
-        // Initialize root when the first batch is scheduled. On a fresh database or after
-        // rollback-to-genesis, root is default (index 0). The disk write is deferred to
-        // commit() for crash-fault tolerance.
+        // Initialize root on the first batch; default index 0 on a fresh DB or
+        // post-genesis-rollback.
         if self.state.root().index() == 0 {
             self.state.set_root(Arc::new(checkpoint.clone()));
         }
@@ -245,16 +255,16 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
     fn cancel_and_rollback(&mut self, target_index: u64) -> Checkpoint<P::BatchMetadata> {
         let target = self.lookup_checkpoint(target_index);
 
-        // Cancel in-flight batches first so `commit_done()` sees the cancellation before
-        // we update shared state.
+        // Cancel in-flight batches first so commit_done() sees it before the state update.
         self.cancellation.rollback(target_index);
 
-        // Update last_processed. last_committed is corrected by Rollback::execute() on the
-        // write worker, which sees the true committed state without races.
+        // Update last_processed; last_committed is corrected by Rollback::execute() (race-free).
         self.state.set_last_processed(Arc::new(target.clone()));
 
-        // Pop canceled entries from the tip. Must happen after lookup_checkpoint (which
-        // searches the pending queue) but before returning.
+        // Roll the canonical chain back to the target.
+        self.canonical_chain_manager.rollback(target_index);
+
+        // Pop canceled entries from the tip (after lookup_checkpoint searches the pending queue).
         while self.pending_batches.back().is_some_and(|cp| cp.index() > target_index) {
             self.pending_batches.pop_back();
         }
@@ -288,5 +298,43 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
 
         // Fall back to disk for committed batches.
         Checkpoint::new(index, StoredBatchMetadata::get(&**self.state.storage().store(), index))
+    }
+}
+
+impl<S: Store, P: Processor<S>> ChainSink<P::BatchMetadata, P::Transaction> for Scheduler<S, P> {
+    fn append(
+        &mut self,
+        metadata: P::BatchMetadata,
+        txs: Vec<SchedulerTransaction<P::Transaction>>,
+    ) -> u64 {
+        self.schedule(metadata, txs).checkpoint().index()
+    }
+
+    fn rollback(&mut self, new_tip: u64) {
+        self.rollback_to(new_tip).unwrap();
+    }
+
+    fn finalize(&mut self, below: u64) {
+        // Set the pruning target.
+        self.pruning().set_threshold(below);
+
+        // Finalize up to the point the pruning worker has reached; pruning needs canonical data.
+        self.canonical_chain_manager.finalize(self.state.root().index());
+    }
+
+    fn tip(&self) -> u64 {
+        self.canonical_chain_manager.chain().tip()
+    }
+
+    fn metadata(&self, id: u64) -> Option<P::BatchMetadata> {
+        self.canonical_chain_manager.metadata(id).cloned()
+    }
+
+    fn id(&self, block_hash: &[u8; 32]) -> Option<u64> {
+        self.canonical_chain_manager.id(block_hash)
+    }
+
+    fn shutdown(self) {
+        self.shutdown();
     }
 }

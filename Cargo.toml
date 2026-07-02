@@ -165,6 +165,7 @@ resolver = "3"
   vprogs-state-ptr-latest                         = { path = "state/ptr-latest" }
   vprogs-state-ptr-rollback                       = { path = "state/ptr-rollback" }
   vprogs-state-version                            = { path = "state/version" }
+  vprogs-storage-canonical-chain                  = { path = "storage/canonical-chain" }
   vprogs-storage-manager                          = { path = "storage/manager" }
   vprogs-storage-rocksdb-store                    = { path = "storage/rocksdb-store" }
   vprogs-storage-types                            = { path = "storage/types" }

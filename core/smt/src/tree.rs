@@ -13,26 +13,26 @@ pub const DEPTH: usize = 256;
 
 /// Versioned Sparse Merkle Tree with shortcut leaves, pruning, and multi-proofs.
 ///
-/// Implementors only need to provide `node`, `prune`, and `rollback`; all tree operations
-/// (commits, proofs, root lookups) are default methods.
+/// Implementors only need to provide `node` and `prune`; all tree operations (commits, proofs,
+/// root lookups) are default methods.
 pub trait Tree: Sized {
     /// The hash function used for node and leaf hashing.
     type Hasher: Hasher;
 
+    /// A read snapshot fixing which node versions are visible for one operation's whole traversal.
+    type Snapshot;
+
     // -- Required methods (implementors must provide these) --
 
-    /// Returns the node data and version of the latest SMT node at `key` where
-    /// version <= `max_version`, or `None` if no such node exists.
-    fn node(&self, key: &Key, max_version: u64) -> Option<(u64, Node)>;
+    /// Captures a read snapshot for an operation; every `node` lookup in that operation shares it.
+    fn snapshot(&self) -> Self::Snapshot;
+
+    /// Returns the node data and version of the latest SMT node at `key` where version <=
+    /// `max_version`, as seen by `snapshot`, or `None` if no such node exists.
+    fn node(&self, key: &Key, max_version: u64, snapshot: &Self::Snapshot) -> Option<(u64, Node)>;
 
     /// Prunes stale nodes for the given version, deleting superseded nodes and their stale markers.
     fn prune(&self, wb: &mut impl WriteBatch, version: u64);
-
-    /// Rolls back a committed tree update at the given version.
-    ///
-    /// Unlike `prune` (which deletes superseded nodes), this undoes the version itself: deletes
-    /// nodes written at `version` and removes stale markers so old nodes become current again.
-    fn rollback(&self, wb: &mut impl WriteBatch, version: u64);
 
     // -- Default methods --
 
@@ -43,8 +43,11 @@ pub trait Tree: Sized {
             return EMPTY_HASH;
         }
 
+        // Create a snapshot of the current SMT.
+        let snapshot = self.snapshot();
+
         // Look up the root node and extract its hash.
-        self.node(&Key::ROOT, version).map(|(_, data)| *data.hash()).unwrap_or(EMPTY_HASH)
+        self.node(&Key::ROOT, version, &snapshot).map(|(_, d)| *d.hash()).unwrap_or(EMPTY_HASH)
     }
 
     /// Commits state diffs to the tree at the given version, returning the new root hash.

@@ -149,10 +149,8 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
                         // Root is the oldest surviving batch - the first candidate for pruning.
                         let lower_bound = state.root().index();
 
-                        // Last batch eligible for pruning: (min of requested threshold and pause
-                        // ceiling) converted from exclusive to inclusive. `saturating_sub` guards
-                        // against underflow when the effective threshold is 0 (e.g. fresh start
-                        // before any `set_threshold` call).
+                        // Last eligible batch: min(threshold, ceiling) made inclusive;
+                        // saturating_sub guards the threshold-0 fresh start.
                         let upper_bound = pruning_threshold
                             .load(Ordering::Acquire)
                             .min(pause_ceiling.load(Ordering::Acquire))
@@ -163,9 +161,8 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
                             // Advance cursor to signal our prune range (Dekker step 1).
                             let prev = pruning_cursor.swap(upper_bound, Ordering::SeqCst);
 
-                            // Re-check ceiling (Dekker step 2: read their flag). A ceiling may have
-                            // been set between our initial read and the store above. If so, restore
-                            // the cursor and abort this pass.
+                            // Dekker step 2: re-read the ceiling; if set since our first read,
+                            // restore the cursor and abort.
                             if pause_ceiling.load(Ordering::SeqCst) <= upper_bound {
                                 pruning_cursor.store(prev, Ordering::Release);
                                 continue;
@@ -202,20 +199,27 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
         // Advance root in memory before deleting so no observer sees root pointing to pruned data.
         state.set_root(new_root.clone());
 
+        // Pin one canonical view for the whole pass so every reclaim decision is consistent.
+        let view = store.canonical_chain().snapshot();
+
         // Commit all deletions and root update atomically.
         store.commit(store.write_batch().tap_mut(|wb| {
             // Walk batches from oldest to newest (order doesn't matter for pruning).
             for index in lower_bound..=upper_bound {
-                // Delete all rollback pointers and their referenced old versions for this batch.
+                // Whether this finalized batch is on the canonical chain decides what to reclaim.
+                let is_canonical = view.is_canonical(index);
+
                 for (resource_id, old_version) in
                     StatePtrRollback::iter_batch(store.as_ref(), index)
                 {
                     let resource_id: ResourceId =
                         borsh::from_slice(&resource_id).expect("corrupted store: unrecoverable");
 
-                    // Delete the old version data if it exists (version 0 means resource
-                    // didn't exist).
-                    if old_version != 0 {
+                    if !is_canonical {
+                        // Orphaned batch: its own write is now invisible, so reclaim it.
+                        StateVersion::delete(wb, index, &resource_id);
+                    } else if old_version != 0 {
+                        // Canonical batch: drop the predecessor (if it existed).
                         StateVersion::delete(wb, old_version, &resource_id);
                     }
 

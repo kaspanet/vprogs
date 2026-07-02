@@ -17,7 +17,7 @@ use tempfile::TempDir;
 use vprogs_core_atomics::{AsyncQueue, AtomicAsyncLatch};
 use vprogs_core_smt::EMPTY_HASH;
 use vprogs_core_test_utils::ResourceIdExt;
-use vprogs_core_types::{AccessMetadata, ResourceId, SchedulerTransaction};
+use vprogs_core_types::{AccessMetadata, ChainSink, ResourceId, SchedulerTransaction};
 use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_l1_wallet::{build, encode_activity_payload};
 use vprogs_scheduling_scheduler::{Processor, Scheduler};
@@ -51,6 +51,8 @@ const DEV_COVENANT_BUDGET: ComputeBudget = ComputeBudget(100);
 struct BlockRec {
     /// Block hash.
     hash: Hash,
+    /// Canonical batch id the scheduler assigned this block.
+    id: u64,
     /// Chain-block metadata recorded for this block.
     meta: ChainBlockMetadata,
     /// Number of lane transactions the driver scheduled into this block.
@@ -340,7 +342,8 @@ impl L2Driver {
             for b in self.chain.drain(keep..) {
                 self.expected_counter -= b.lane_tx_count;
             }
-            self.exec.scheduler.rollback_to(keep as u64).expect("rollback");
+            let target_id = self.chain.last().map(|b| b.id).unwrap_or(0);
+            self.exec.scheduler.rollback_to(target_id).expect("rollback");
             self.rollback_covenant(keep);
             let mut s = self.stats.lock().unwrap();
             s.reorgs += 1;
@@ -371,13 +374,10 @@ impl L2Driver {
 
             // Use the consensus's own lane tip (authoritative) when the lane saw activity.
             if !lane_txs.is_empty() {
-                // First activation on this chain: nothing has ever been folded into the lane, so
-                // consensus's lane-update resolver falls back to `prev_seq_commit`. The guest's
-                // `verify_activity` picks `prev_seq_commit` over `prev_lane_tip` only when the
-                // batch is marked `lane_expired`, so mirror consensus's first-activation path
-                // here. After the first batch lands, `prev_lane_blue_score > 0` and subsequent
-                // batches chain on `prev_lane_tip` normally. Same workaround as
-                // `settlement_l1_e2e::settle_1`.
+                // First activation: nothing has been folded into the lane yet, so consensus's
+                // resolver falls back to `prev_seq_commit`. The guest's `verify_activity` prefers
+                // `prev_seq_commit` over `prev_lane_tip` only when `lane_expired`, so set it to
+                // mirror that path (same workaround as `settlement_l1_e2e::settle_1`).
                 if meta.prev_lane_blue_score == 0 {
                     meta.lane_expired = true;
                 }
@@ -402,6 +402,7 @@ impl L2Driver {
 
             let count = lane_txs.len() as u32;
             let batch = self.exec.scheduler.schedule(meta, sched_txs);
+            let id = self.exec.scheduler.tip();
             batch.wait_committed_blocking();
             // In real-proof mode the batch was submitted to the aggregate prover (via the
             // scheduler); count it as outstanding so the settlement loop knows a bundle
@@ -411,7 +412,7 @@ impl L2Driver {
                 self.outstanding_batches += 1;
             }
             self.expected_counter += count;
-            self.chain.push(BlockRec { hash, meta, lane_tx_count: count });
+            self.chain.push(BlockRec { hash, id, meta, lane_tx_count: count });
 
             // Core invariant: the decoded counter equals lane txs executed on this chain.
             let actual = read_resource_u32(&self.exec.store, self.tracked);

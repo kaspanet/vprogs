@@ -2,29 +2,27 @@ use core::fmt::Debug;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
-/// Opaque metadata attached to each scheduler batch, supporting serialization.
-///
-/// Implementors derive `BorshSerialize` and `BorshDeserialize` and supply the chain block hash
-/// the batch was formed against via [`block_hash`](Self::block_hash), which keys the batch's
-/// proof receipts in the proof-receipt store.
+/// Metadata attached to each scheduler batch.
 pub trait BatchMetadata:
     BorshSerialize + BorshDeserialize + Clone + Debug + Default + Send + Sync + 'static
 {
-    /// The chain block hash this batch was formed against, as raw bytes.
-    ///
-    /// The proving workers fold it into each receipt's cache key so the same checkpoint index on
-    /// two competing chains yields distinct keys.
+    /// The block hash this batch corresponds to.
     fn block_hash(&self) -> [u8; 32];
+
+    /// Canonical id of the parent batch (the one this batch extends), or `0` for the first batch.
+    fn parent_id(&self) -> u64;
 }
 
-/// A `u64` batch index doubles as minimal test metadata: its big-endian bytes stand in for a
-/// block hash, keeping per-index receipts distinct without a real chain. Gated behind `test-utils`
-/// so the node never treats a bare index as batch metadata.
+/// Lightweight metadata for tests and simple deployments: the value zero-padded into a hash.
 #[cfg(feature = "test-utils")]
 impl BatchMetadata for u64 {
     fn block_hash(&self) -> [u8; 32] {
-        let mut bytes = [0u8; 32];
-        bytes[..8].copy_from_slice(&self.to_be_bytes());
-        bytes
+        let mut hash = [0u8; 32];
+        hash[24..].copy_from_slice(&self.to_be_bytes());
+        hash
+    }
+
+    fn parent_id(&self) -> u64 {
+        0
     }
 }

@@ -5,13 +5,12 @@ use vprogs_core_types::BatchMetadata;
 use crate::{Hash, SettlementInfo};
 
 /// Per-block metadata the bridge attaches to each L1 chain block.
-///
-/// Satisfies the [`BatchMetadata`](vprogs_core_types::BatchMetadata) blanket impl via its derived
-/// traits.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct ChainBlockMetadata {
     /// L1 block hash.
     pub hash: Hash,
+    /// Canonical id of the parent block (the one this block extends); `0` for the first block.
+    pub parent_id: u64,
     /// DAG blue score at this block's position.
     pub blue_score: u64,
     /// DAA score at this block's position.
@@ -44,11 +43,14 @@ impl BatchMetadata for ChainBlockMetadata {
     fn block_hash(&self) -> [u8; 32] {
         self.hash.as_bytes()
     }
+
+    fn parent_id(&self) -> u64 {
+        self.parent_id
+    }
 }
 
 impl From<&RpcHeader> for ChainBlockMetadata {
-    /// Builds metadata from a regular RPC header, populating only the header-derived fields and
-    /// leaving lane / parent-derived state at its default.
+    /// Builds metadata from a regular RPC header; only header fields are set, the rest default.
     fn from(h: &RpcHeader) -> Self {
         Self {
             hash: h.hash,
@@ -65,9 +67,9 @@ impl TryFrom<&RpcOptionalHeader> for ChainBlockMetadata {
     /// Name of the first missing required field.
     type Error = &'static str;
 
-    /// Builds metadata from a verbose RPC header, populating only the header-derived fields and
-    /// leaving lane / parent-derived state at its default. Returns the name of the first missing
-    /// required field if the kaspa node returned a malformed Full-verbosity response.
+    /// Builds metadata from a verbose RPC header; only header fields are set, the rest default.
+    ///
+    /// Returns the first missing required field's name on a malformed Full-verbosity response.
     fn try_from(h: &RpcOptionalHeader) -> Result<Self, Self::Error> {
         Ok(Self {
             hash: h.hash.ok_or("missing hash")?,

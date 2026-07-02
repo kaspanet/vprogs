@@ -212,18 +212,18 @@ fn node_returns_correct_version() {
     commit(&store, 1, &[(key, test_value(1))]);
 
     // The root node written at version 1 should report version = 1.
-    let (version, _node) = store.node(&Key::ROOT, 1).expect("root should exist at v1");
+    let (version, _node) = store.node(&Key::ROOT, 1, &store.snapshot()).expect("root exists at v1");
     assert_eq!(version, 1, "node should return version 1, not a byte-swapped value");
 
     // Version 2: update same key.
     commit(&store, 2, &[(key, test_value(2))]);
 
     // Root at max_version=2 should report version 2.
-    let (version, _node) = store.node(&Key::ROOT, 2).expect("root should exist at v2");
+    let (version, _node) = store.node(&Key::ROOT, 2, &store.snapshot()).expect("root exists at v2");
     assert_eq!(version, 2, "node should return version 2");
 
     // Root at max_version=1 should still report version 1 (historical read).
-    let (version, _node) = store.node(&Key::ROOT, 1).expect("root should exist at v1");
+    let (version, _node) = store.node(&Key::ROOT, 1, &store.snapshot()).expect("root exists at v1");
     assert_eq!(version, 1, "historical node should return version 1");
 }
 
@@ -269,29 +269,32 @@ fn prune_preserves_tree_integrity() {
     );
 }
 
-/// Rollback undoes a committed version: the previous root is restored and proofs verify.
+/// Retention + canonical filtering: a reorg that orphans version 2 leaves its nodes on disk but
+/// makes `root`/`prove` resolve to the canonical version 1.
 #[test]
-fn rollback_restores_previous_state() {
+fn orphaned_version_is_skipped() {
     let dir = TempDir::new().unwrap();
     let store = RocksDbStore::open(dir.path());
+    let mut versions = store.canonical_chain_manager::<u64>();
 
     // Version 1: insert key.
+    versions.append(1);
     let root1 = commit(&store, 1, &[(test_key(1), test_value(1))]);
 
     // Version 2: update key.
+    versions.append(2);
     let root2 = commit(&store, 2, &[(test_key(1), test_value(2))]);
     assert_ne!(root1, root2);
 
     // Rollback version 2.
-    let mut wb = store.write_batch();
-    store.rollback(&mut wb, 2);
-    store.commit(wb);
+    versions.rollback(1);
 
     // Root at version 1 should still be intact.
     assert_eq!(store.root(1), root1);
 
-    // Proof at version 1 should verify.
-    let proof_bytes = store.prove(&[test_key(1)], 1).unwrap();
+    // Reads at version 2 now skip the orphaned nodes and resolve to the canonical version 1.
+    assert_eq!(store.root(2), root1, "orphaned v2 is skipped; root resolves to canonical v1");
+    let proof_bytes = store.prove(&[test_key(1)], 2).unwrap();
     let proof = Proof::decode(&proof_bytes).unwrap();
     assert_eq!(proof.root::<Sha256>().unwrap(), root1);
 }
