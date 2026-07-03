@@ -17,6 +17,8 @@ pub struct L2Config {
     /// end to end with the CPU/dev executor, which is what makes the wiring testable without a
     /// GPU.
     pub enable_proving: bool,
-    /// Batches bundled per proof when `enable_proving` is set (clamped to at least 1).
+    /// Bundle sizing knob when `enable_proving` is set (clamped to at least 1). Drives both the
+    /// aggregate prover's proof granularity (one proof per this-many batches) and the driver's
+    /// settle-side drain threshold (how many batches accumulate before settlements are pulled).
     pub bundle_size: usize,
 }

@@ -133,8 +133,10 @@ pub struct L2Driver {
     activity_per_block: u64,
     /// Blocks between settlement transactions.
     settle_every: u64,
-    /// Number of batches the aggregate prover bundles per proof.
-    bundle_size: usize,
+    /// Batch backlog at which [`settle_real`](Self::settle_real) starts pulling settlements,
+    /// bounding how far the miner runs ahead of the detached prover. Separate from the prover's
+    /// proof-bundle size (both derive from the one `bundle_size` knob).
+    settle_drain_threshold: usize,
     /// Seeded RNG driving deterministic activity and settlement choices.
     rng: StdRng,
 
@@ -204,15 +206,16 @@ pub struct L2Driver {
 
 /// Builds a fresh execution stack (temp store + zk `Vm` scheduler). When `proving` is set the `Vm`
 /// drives the full proving stack (transaction + batch + aggregate provers), reading lane proofs
-/// from `consensus` and binding `covenant_id` into every journal, and returns the queue the
-/// aggregate prover publishes each bundle handle onto; otherwise it is execution-only and returns
-/// `None`.
+/// from `consensus`, binding `covenant_id` into every journal, and forming one proof per
+/// `proof_bundle_size` batches, and returns the queue the aggregate prover publishes each bundle
+/// handle onto; otherwise it is execution-only and returns `None` (`proof_bundle_size` is unused).
 fn build_exec(
     backend: &Backend,
     lane: Hash,
     proving: bool,
     covenant_id: Option<Hash>,
     consensus: Weak<Consensus>,
+    proof_bundle_size: usize,
 ) -> (Exec, Option<AsyncQueue<ScheduledBundle<SettlementArtifact<Receipt>>>>) {
     let db = tempfile::tempdir().expect("temp db dir");
     let store = RocksDbStore::open(db.path().join("l2"));
@@ -232,7 +235,10 @@ fn build_exec(
                 covenant_id,
                 lane_source: ConsensusLaneSource::from_weak(consensus),
                 settlement_queue: Some(queue.clone()),
-                bundle_size: 1..=usize::MAX,
+                // Fixed-size proof bundles: one proof per `proof_bundle_size` batches. The
+                // aggregate worker's park self-heals when the minimum (> 1 here) leaves the ready
+                // prefix short.
+                bundle_size: proof_bundle_size..=proof_bundle_size,
             },
         );
         (pipeline, Some(queue))
@@ -271,7 +277,8 @@ impl L2Driver {
         // zero placeholder covenant id since no on-chain settlement consumes those receipts.
         let real_e2e = config.enable_proving && config.enable_settlements;
         let prove_only = config.enable_proving && !config.enable_settlements;
-        let (exec, settlement_queue) = build_exec(&backend, lane, prove_only, None, weak.clone());
+        let (exec, settlement_queue) =
+            build_exec(&backend, lane, prove_only, None, weak.clone(), config.bundle_size.max(1));
 
         let stats = Arc::new(Mutex::new(DriverStats::default()));
         let drained = AtomicAsyncLatch::new();
@@ -281,7 +288,7 @@ impl L2Driver {
             tracked: ResourceId::for_test(config.lane_id as usize),
             activity_per_block: config.activity_per_block,
             settle_every: config.settle_every.max(1),
-            bundle_size: config.bundle_size.max(1),
+            settle_drain_threshold: config.bundle_size.max(1),
             rng: StdRng::seed_from_u64(config.seed),
             backend,
             exec,
@@ -320,6 +327,7 @@ impl L2Driver {
             true,
             Some(covenant_id),
             self.consensus.clone(),
+            self.settle_drain_threshold,
         );
         self.exec = exec;
         self.settlement_queue = settlement_queue;
@@ -665,11 +673,12 @@ impl L2Driver {
     /// Settles the next proven bundle the in-process aggregate prover publishes, driven by the
     /// bundle's settlement artifact. Returns at most one transaction.
     ///
-    /// Blocks for bundle handles only once a full `bundle_size` worth of batches has been submitted
-    /// to the prover, giving the back-pressure that keeps the simulated clock (wall-time-free
-    /// logical ticks) from outpacing the detached prover thread. Every submitted batch is accounted
-    /// by exactly one bundle's `batches`, so the blocking pop never deadlocks: an outstanding batch
-    /// guarantees a forthcoming bundle. The handle is published before its proof exists, so its
+    /// Blocks for bundle handles only once a full `settle_drain_threshold` worth of batches has
+    /// been submitted to the prover, giving the back-pressure that keeps the simulated clock
+    /// (wall-time- free logical ticks) from outpacing the detached prover thread. The threshold
+    /// equals the prover's fixed proof-bundle size, so reaching it means a full bundle's
+    /// batches are queued and the prover forms and publishes their bundle; the blocking pop
+    /// therefore never deadlocks. The handle is published before its proof exists, so its
     /// `batches` is reconciled on pop and its artifact awaited after. No-op bundles carry no
     /// artifact and are skipped; a state-advancing one is built into a settlement that spends the
     /// live covenant and chains to the journal's `new_state` / `new_lane_tip`. The on-chain
@@ -682,7 +691,7 @@ impl L2Driver {
         // Wait until a full bundle's worth of batches has been submitted before pulling
         // settlements, mirroring the previous bundle cadence and bounding how far the miner
         // runs ahead of proving.
-        if self.outstanding_batches < self.bundle_size {
+        if self.outstanding_batches < self.settle_drain_threshold {
             return Vec::new();
         }
         // A fee output funds the settlement; if none is free this block, retry next block without
@@ -705,7 +714,7 @@ impl L2Driver {
                 return self.build_settlement_tx(ctx, &artifact).await;
             }
             // No-op bundle: nothing to settle. Stop once the backlog drains below a full bundle.
-            if self.outstanding_batches < self.bundle_size {
+            if self.outstanding_batches < self.settle_drain_threshold {
                 return Vec::new();
             }
         }
