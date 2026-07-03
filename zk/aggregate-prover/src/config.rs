@@ -1,3 +1,5 @@
+use std::ops::RangeInclusive;
+
 use kaspa_hashes::Hash;
 use vprogs_core_atomics::AsyncQueue;
 use vprogs_zk_batch_prover::LaneProofSource;
@@ -23,4 +25,9 @@ pub struct AggregateProverConfig<L: LaneProofSource, R: Send + Sync + 'static> {
     /// on. `None` runs the prover without settling (e.g. exec/test paths); proved bundles are
     /// then only logged.
     pub settlement_queue: Option<AsyncQueue<ScheduledBundle<SettlementArtifact<R>>>>,
+    /// Inclusive bound on how many scheduled batches one bundle may consume. A bundle forms only
+    /// once at least `*start()` batches are consecutively ready (parking until then) and is
+    /// capped at `*end()`. `1..=usize::MAX` ("1..") is the greedy default: form as soon as the
+    /// front is ready and extend over every consecutively-ready batch.
+    pub bundle_size: RangeInclusive<usize>,
 }

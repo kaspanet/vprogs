@@ -18,6 +18,11 @@ pub struct PersistedState {
     pub covenant_id: Option<String>,
     /// Bootstrap transaction id (hex); the covenant UTXO's outpoint is `(this, 0)`.
     pub bootstrap_txid: Option<String>,
+    /// L1 block (hex) at or just before the covenant deploy, captured at bootstrap. Used as the
+    /// bridge `start_from` seed on resume, so a restart replays forward from the deploy without
+    /// re-supplying it. `None` for state files written before this field existed (back-compat: a
+    /// missing optional reads as `None`).
+    pub bootstrap_block_hash: Option<String>,
 }
 
 impl PersistedState {
@@ -43,5 +48,17 @@ impl PersistedState {
     /// Decoded covenant id, if set.
     pub fn covenant_hash(&self) -> Option<Hash> {
         self.covenant_id.as_ref().map(|h| h.parse().expect("stored covenant_id must be hex"))
+    }
+
+    /// Decoded bootstrap seed block, if set. The bridge seeds its fresh-chain root here on resume.
+    pub fn bootstrap_block(&self) -> Option<Hash> {
+        self.bootstrap_block_hash
+            .as_ref()
+            .map(|h| h.parse().expect("stored bootstrap_block_hash must be hex"))
+    }
+
+    /// Decoded bootstrap transaction id, if set. The covenant UTXO's outpoint is `(this, 0)`.
+    pub fn bootstrap_txid(&self) -> Option<Hash> {
+        self.bootstrap_txid.as_ref().map(|h| h.parse().expect("stored bootstrap_txid must be hex"))
     }
 }

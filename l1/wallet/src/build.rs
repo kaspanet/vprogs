@@ -55,7 +55,7 @@ pub fn commit_storage_mass(params: &Params, tx: &Transaction, entries: &[UtxoEnt
     let masses = calc
         .calc_contextual_masses(&populated)
         .expect("contextual mass calculation must succeed for a populated transaction");
-    tx.set_mass(masses.storage_mass);
+    tx.set_storage_mass(masses.storage_mass);
 }
 
 /// Inputs to [`activity_transaction`].
@@ -108,6 +108,75 @@ pub fn activity_transaction(args: ActivityTx<'_>) -> Transaction {
     assert!(args.entry.amount > fee, "UTXO amount {} too small for fee {}", args.entry.amount, fee);
 
     sign(MutableTransaction::with_entries(build(args.entry.amount - fee), entries), args.keypair).tx
+}
+
+/// Inputs to [`pay_to_address_transaction`].
+pub struct PayToAddressTx<'a> {
+    /// The funding outpoint to spend.
+    pub outpoint: TransactionOutpoint,
+    /// The funding outpoint's entry (amount, spk, ...).
+    pub entry: UtxoEntry,
+    /// Recipient address each of the `count` outputs pays.
+    pub recipient: &'a Address,
+    /// Sompi paid to each recipient output.
+    pub value: u64,
+    /// Number of equal-value outputs to the recipient.
+    pub count: usize,
+    /// Key that funds the input and receives the change.
+    pub keypair: Keypair,
+    /// Address the remainder (after the recipient outputs and the fee) is paid back to.
+    pub change_address: &'a Address,
+    /// Consensus params, for the mass-based fee and storage mass.
+    pub params: &'a Params,
+}
+
+/// Builds one signed transaction spending `args.outpoint` that pays `args.count` outputs of
+/// `args.value` sompi each to `args.recipient`, returning the remainder (after those outputs and
+/// the node's minimum mass-based fee) as change to `args.change_address`. Used to seed a distinct
+/// prover's funding address from a coinbase wallet.
+pub fn pay_to_address_transaction(args: PayToAddressTx<'_>) -> Transaction {
+    let input = TransactionInput::new(args.outpoint, vec![], 0, 1);
+    let recipient_spk = pay_to_address_script(args.recipient);
+    let change_spk = pay_to_address_script(args.change_address);
+    let payout: u64 = args.value.checked_mul(args.count as u64).expect("recipient payout overflow");
+    assert!(
+        args.entry.amount > payout,
+        "funding UTXO amount {} too small for payout {}",
+        args.entry.amount,
+        payout,
+    );
+    let entries = vec![args.entry.clone()];
+
+    let build = |fee: u64| {
+        let mut outputs: Vec<TransactionOutput> = (0..args.count)
+            .map(|_| TransactionOutput::new(args.value, recipient_spk.clone()))
+            .collect();
+        outputs.push(TransactionOutput::new(args.entry.amount - payout - fee, change_spk.clone()));
+        let tx = Transaction::new(
+            TX_VERSION_TOCCATA,
+            vec![input.clone()],
+            outputs,
+            0,
+            SUBNETWORK_ID_NATIVE,
+            0,
+            Vec::new(),
+        );
+        let signed = sign(MutableTransaction::with_entries(tx, entries.clone()), args.keypair).tx;
+        commit_storage_mass(args.params, &signed, &entries);
+        signed
+    };
+
+    // Zero-fee probe to learn the signed mass, price it at the node floor, then rebuild funded.
+    let probe = build(0);
+    let fee = min_fee(args.params, &probe, &entries);
+    assert!(
+        args.entry.amount > payout + fee,
+        "funding UTXO amount {} too small for payout {} + fee {}",
+        args.entry.amount,
+        payout,
+        fee,
+    );
+    build(fee)
 }
 
 /// Builds a signed bootstrap transaction whose single output is P2SH(`redeem_script`) with a
@@ -187,10 +256,14 @@ pub fn settlement_transaction(args: SettlementTx<'_>) -> Transaction {
     let build = |fee: u64| {
         let mut tx = args.settlement_tx.clone();
         tx.inputs.push(TransactionInput::new(args.fee_outpoint, vec![], 0, 1));
-        tx.outputs.push(TransactionOutput::new(args.fee_entry.amount - fee, change_spk.clone()));
+        tx.outputs.push(TransactionOutput::with_covenant(
+            args.fee_entry.amount - fee,
+            change_spk.clone(),
+            None,
+        ));
         let mut tx = sign(MutableTransaction::with_entries(tx, entries.clone()), args.keypair).tx;
         tx.inputs[0].signature_script = covenant_sig_script.clone();
-        tx.inputs[0].mass = args.covenant_compute_budget.into();
+        tx.inputs[0].compute_commit = args.covenant_compute_budget.into();
         commit_storage_mass(args.params, &tx, &entries);
         // The signature script on input 0 changed, so recompute the on-the-wire id.
         tx.finalize();

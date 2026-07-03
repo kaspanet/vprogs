@@ -43,17 +43,12 @@ use vprogs_zk_backend_risc0_test_suite::{
 use vprogs_zk_batch_prover::{Backend as _, BatchProverConfig};
 use vprogs_zk_vm::{ProvingPipeline, Vm};
 
-/// HashMap-backed accessor for `OpChainblockSeqCommit`. The opcode delegates the
-/// ancestor / depth checks to this trait, so a static map of `block_hash -> seq_commit`
-/// is enough to satisfy the covenant's seq-commit lookup in tests.
+/// HashMap-backed accessor for `OpChainblockSeqCommit`.
 ///
-/// The mapped value must equal the journal's `new_seq_commit` for the anchor block: the
-/// covenant script reuses the accessor's response inside the journal preimage and that
-/// preimage's SHA-256 must reproduce the receipt's committed journal hash. On the real
-/// chain the block's `accepted_id_merkle_root` IS that `new_seq_commit` by construction,
-/// but in these tests the simnet block is empty (the scheduled L2 txs never enter the
-/// block), so the chain's value diverges from what the guest computes and we have to
-/// echo the guest's value back through the accessor.
+/// The mapped value must equal the journal's `new_seq_commit` for the anchor block because the
+/// covenant script binds the accessor response into the receipt journal commitment. On the real
+/// chain the block's `accepted_id_merkle_root` is that `new_seq_commit` by construction, but these
+/// tests use empty simnet blocks, so the chain value diverges from the guest-computed value.
 struct MockSeqCommitAccessor(HashMap<Hash, Hash>);
 
 impl SeqCommitAccessor for MockSeqCommitAccessor {
@@ -135,7 +130,7 @@ fn assert_settlement_compute_mass_within_limit(
     // Mirror `Wallet::prepare_settlement_transaction`: set the covenant input's committed
     // budget, then append a funding input (~64-byte schnorr sig script) and a change output.
     let mut tx = settlement.transaction.clone();
-    tx.inputs[0].mass = budget.into();
+    tx.inputs[0].compute_commit = budget.into();
     tx.inputs.push(TransactionInput::new(
         TransactionOutpoint::new(Hash::from_bytes([0xEE; 32]), 0),
         vec![0u8; 65],
@@ -146,7 +141,7 @@ fn assert_settlement_compute_mass_within_limit(
     // this from `sign()`; this helper hand-builds the funding input, so set it explicitly. A
     // standard schnorr P2PK fits the per-input free allowance, so its committed budget is 0 -- the
     // same value `sign()` commits for it.
-    tx.inputs[1].mass = ComputeBudget(0).into();
+    tx.inputs[1].compute_commit = ComputeBudget(0).into();
     tx.outputs.push(TransactionOutput::new(
         50_000_000,
         pay_to_script_hash_script(&[kaspa_txscript::opcodes::codes::OpTrue]),

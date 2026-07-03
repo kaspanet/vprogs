@@ -53,7 +53,9 @@ use crate::script::{
 pub struct Settlement {
     /// The settlement transaction, ready to submit after mass/fee finalization.
     pub transaction: Transaction,
-    /// Redeem script spent by input 0 (useful for debugging / SPK reconstruction).
+    /// Redeem script spent by input 0. Reconstructs the spent UTXO's P2SH SPK, which
+    /// [`Settlement::covenant_input_script_units`] needs to size the covenant input's compute
+    /// budget off chain.
     pub prev_redeem: Vec<u8>,
     /// Redeem script embedded in the continuation output (useful for the follow-on settlement).
     pub next_redeem: Vec<u8>,

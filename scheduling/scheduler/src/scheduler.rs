@@ -45,10 +45,19 @@ pub struct Scheduler<S: Store, P: Processor<S>> {
 }
 
 impl<S: Store, P: Processor<S>> Scheduler<S, P> {
-    /// Creates a new scheduler with the given execution and storage configurations.
+    /// Creates a new scheduler with the given execution and storage configurations, building a
+    /// fresh shared state (and storage manager) from `storage_config`.
     pub fn new(execution_config: ExecutionConfig<P>, storage_config: StorageConfig<S>) -> Self {
+        Self::with_state(execution_config, SchedulerState::new(storage_config))
+    }
+
+    /// Creates a new scheduler over a pre-built shared `state`. Use this when the state's storage
+    /// manager must be shared with another component built beforehand: the aggregate prover takes a
+    /// [`ReceiptStore`](crate::ReceiptStore) derived from the same state
+    /// ([`SchedulerState::receipt_store`]), so it must be created before the processor that drives
+    /// it, and thus before this scheduler.
+    pub fn with_state(execution_config: ExecutionConfig<P>, state: SchedulerState<S, P>) -> Self {
         let (worker_count, processor) = execution_config.unpack();
-        let state = SchedulerState::new(storage_config);
         Self {
             batch_lifecycle_worker: BatchLifecycleWorker::new(),
             pruning_worker: PruningWorker::new(state.clone()),

@@ -1,6 +1,6 @@
 use tokio::sync::mpsc;
 use vprogs_l1_bridge::L1Bridge;
-use vprogs_scheduling_scheduler::Scheduler;
+use vprogs_scheduling_scheduler::{Scheduler, SchedulerState};
 use vprogs_storage_types::Store;
 
 use crate::{Processor, api::NodeApi, config::NodeConfig};
@@ -14,10 +14,21 @@ pub struct Node<S: Store, P: Processor<S>> {
 }
 
 impl<S: Store, P: Processor<S>> Node<S, P> {
-    /// Creates and starts a new node.
+    /// Creates and starts a new node, building the scheduler's shared state from
+    /// `config.storage_config`.
     pub fn new(config: NodeConfig<S, P>) -> Self {
-        // Create the scheduler and the channels for communicating via the API.
-        let scheduler = Scheduler::new(config.execution_config, config.storage_config);
+        let state = SchedulerState::new(config.storage_config.clone());
+        Self::with_state(config, state)
+    }
+
+    /// Creates and starts a new node over a pre-built shared `state`, ignoring
+    /// `config.storage_config`. Use this when the state's storage manager must be shared with a
+    /// component built before the node: the processor's aggregate prover takes a
+    /// [`ReceiptStore`](vprogs_scheduling_scheduler::ReceiptStore) derived from this same state, so
+    /// the state must exist before that processor and hence before the node.
+    pub fn with_state(config: NodeConfig<S, P>, state: SchedulerState<S, P>) -> Self {
+        // Build the scheduler over the shared state - state reads the last checkpoint from store.
+        let scheduler = Scheduler::with_state(config.execution_config, state);
         let (tx, rx) = mpsc::channel(config.api_channel_capacity);
 
         Self {

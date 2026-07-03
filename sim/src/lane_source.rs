@@ -6,7 +6,7 @@ use std::sync::Weak;
 use kaspa_consensus::consensus::Consensus;
 use kaspa_consensus_core::api::ConsensusApi;
 use kaspa_hashes::Hash;
-use kaspa_rpc_core::GetSeqCommitLaneProofResponse;
+use kaspa_rpc_core::{GetSeqCommitLaneProofResponse, RpcLaneEntry};
 use vprogs_zk_batch_prover::{LaneProofRequest, LaneProofSource};
 
 /// Supplies the batch prover with a block's seq-commit lane proof by reading the simulation's
@@ -42,8 +42,7 @@ impl LaneProofSource for ConsensusLaneSource {
             // The node was torn down (we are shutting down); this bundle's receipt is discarded.
             return GetSeqCommitLaneProofResponse {
                 smt_proof: Vec::new(),
-                lane_tip: None,
-                lane_blue_score: None,
+                lane: None,
                 payload_and_ctx_digest: Hash::default(),
                 parent_seq_commit: Hash::default(),
                 inactivity_shortcut: Hash::default(),
@@ -56,8 +55,7 @@ impl LaneProofSource for ConsensusLaneSource {
             .expect("get_seq_commit_lane_proof");
         GetSeqCommitLaneProofResponse {
             smt_proof: proof.smt_proof.to_bytes(),
-            lane_tip: proof.lane_tip,
-            lane_blue_score: proof.lane_blue_score,
+            lane: proof.lane.map(|l| RpcLaneEntry { tip: l.tip, blue_score: l.blue_score }),
             payload_and_ctx_digest: proof.payload_and_ctx_digest,
             parent_seq_commit: proof.parent_seq_commit,
             inactivity_shortcut: proof.inactivity_shortcut,

@@ -16,12 +16,23 @@ use crate::{Hash, L1Transaction, SettlementInfo};
 
 /// Covenant-aware extension methods for [`L1Transaction`].
 pub trait L1TransactionCovenantExt {
-    /// Decodes `self` as a settlement of `covenant_id`, or `None` if it isn't one.
-    fn settlement_info(&self, covenant_id: Hash, containing_block: Hash) -> Option<SettlementInfo>;
+    /// Decodes `self` as a settlement of `covenant_id`, or `None` if it isn't one. `daa_score` is
+    /// the DAA score of `containing_block`, stamped onto the decoded info.
+    fn settlement_info(
+        &self,
+        covenant_id: Hash,
+        containing_block: Hash,
+        daa_score: u64,
+    ) -> Option<SettlementInfo>;
 }
 
 impl L1TransactionCovenantExt for L1Transaction {
-    fn settlement_info(&self, covenant_id: Hash, containing_block: Hash) -> Option<SettlementInfo> {
+    fn settlement_info(
+        &self,
+        covenant_id: Hash,
+        containing_block: Hash,
+        daa_score: u64,
+    ) -> Option<SettlementInfo> {
         // Cheap structural gate: output 0 must bind to the configured covenant.
         if self.outputs.first()?.covenant.as_ref()?.covenant_id != covenant_id {
             return None;
@@ -34,6 +45,7 @@ impl L1TransactionCovenantExt for L1Transaction {
         Some(SettlementInfo {
             tx_id: self.id(),
             containing_block,
+            daa_score: daa_score.into(),
             block_prove_to,
             new_state,
             new_lane_tip,
@@ -79,6 +91,7 @@ mod tests {
 
     const COVENANT_ID: Hash = Hash::from_bytes([0xAA; 32]);
     const CONTAINING_BLOCK: Hash = Hash::from_bytes([0x44; 32]);
+    const CONTAINING_DAA: u64 = 12_345;
     const NEW_LANE_TIP: [u8; 32] = [0x11; 32];
     const NEW_STATE: [u8; 32] = [0x22; 32];
     const BLOCK_PROVE_TO: [u8; 32] = [0x33; 32];
@@ -148,10 +161,13 @@ mod tests {
         let sig_script = build_sig_script(&[&[0xEE; 800]]);
         let tx = settlement_tx(sig_script, COVENANT_ID);
 
-        let settlement = tx.settlement_info(COVENANT_ID, CONTAINING_BLOCK).expect("groth16 tail");
+        let settlement = tx
+            .settlement_info(COVENANT_ID, CONTAINING_BLOCK, CONTAINING_DAA)
+            .expect("groth16 tail");
 
         assert_eq!(settlement.tx_id, tx.id());
         assert_eq!(settlement.containing_block, CONTAINING_BLOCK);
+        assert_eq!(settlement.daa_score.get(), CONTAINING_DAA);
         assert_eq!(settlement.new_lane_tip, Hash::from_bytes(NEW_LANE_TIP));
         assert_eq!(settlement.new_state, NEW_STATE);
         assert_eq!(settlement.block_prove_to, Hash::from_bytes(BLOCK_PROVE_TO));
@@ -167,10 +183,13 @@ mod tests {
         ]);
         let tx = settlement_tx(sig_script, COVENANT_ID);
 
-        let settlement = tx.settlement_info(COVENANT_ID, CONTAINING_BLOCK).expect("succinct tail");
+        let settlement = tx
+            .settlement_info(COVENANT_ID, CONTAINING_BLOCK, CONTAINING_DAA)
+            .expect("succinct tail");
 
         assert_eq!(settlement.block_prove_to, Hash::from_bytes(BLOCK_PROVE_TO));
         assert_eq!(settlement.containing_block, CONTAINING_BLOCK);
+        assert_eq!(settlement.daa_score.get(), CONTAINING_DAA);
     }
 
     #[test]
@@ -178,7 +197,7 @@ mod tests {
         let sig_script = build_sig_script(&[]);
         let tx = settlement_tx(sig_script, Hash::from_bytes([0x77; 32]));
 
-        assert!(tx.settlement_info(COVENANT_ID, CONTAINING_BLOCK).is_none());
+        assert!(tx.settlement_info(COVENANT_ID, CONTAINING_BLOCK, CONTAINING_DAA).is_none());
     }
 
     #[test]
@@ -192,7 +211,7 @@ mod tests {
             0,
             Vec::new(),
         );
-        assert!(tx.settlement_info(COVENANT_ID, CONTAINING_BLOCK).is_none());
+        assert!(tx.settlement_info(COVENANT_ID, CONTAINING_BLOCK, CONTAINING_DAA).is_none());
     }
 
     #[test]
@@ -202,7 +221,7 @@ mod tests {
         push(&mut sig_script, &[0xDD; 64]);
         let tx = settlement_tx(sig_script, COVENANT_ID);
 
-        assert!(tx.settlement_info(COVENANT_ID, CONTAINING_BLOCK).is_none());
+        assert!(tx.settlement_info(COVENANT_ID, CONTAINING_BLOCK, CONTAINING_DAA).is_none());
     }
 
     #[test]
@@ -210,7 +229,7 @@ mod tests {
         let mut script = build_sig_script(&[]);
         script.push(0x4d); // OpPushData2 without its 2-byte length suffix
         let tx = settlement_tx(script, COVENANT_ID);
-        assert!(tx.settlement_info(COVENANT_ID, CONTAINING_BLOCK).is_none());
+        assert!(tx.settlement_info(COVENANT_ID, CONTAINING_BLOCK, CONTAINING_DAA).is_none());
     }
 
     #[test]
@@ -218,7 +237,7 @@ mod tests {
         let mut script = build_sig_script(&[]);
         script.push(0x69); // OpVerify - any non-push byte.
         let tx = settlement_tx(script, COVENANT_ID);
-        assert!(tx.settlement_info(COVENANT_ID, CONTAINING_BLOCK).is_none());
+        assert!(tx.settlement_info(COVENANT_ID, CONTAINING_BLOCK, CONTAINING_DAA).is_none());
     }
 
     #[test]
@@ -238,8 +257,9 @@ mod tests {
         push(&mut script, PREV_REDEEM);
 
         let tx = settlement_tx(script, COVENANT_ID);
-        let settlement =
-            tx.settlement_info(COVENANT_ID, CONTAINING_BLOCK).expect("opcode-agnostic tail");
+        let settlement = tx
+            .settlement_info(COVENANT_ID, CONTAINING_BLOCK, CONTAINING_DAA)
+            .expect("opcode-agnostic tail");
         assert_eq!(settlement.new_lane_tip, Hash::from_bytes(NEW_LANE_TIP));
         assert_eq!(settlement.new_state, NEW_STATE);
         assert_eq!(settlement.block_prove_to, Hash::from_bytes(BLOCK_PROVE_TO));

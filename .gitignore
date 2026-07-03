@@ -26,3 +26,6 @@ CLAUDE.md
 
 # Node data directory
 .data/
+
+# Agent coordination scratch
+.agent-work/

@@ -270,6 +270,21 @@ impl L1Node {
         wallet.submit_transaction(&tx).await.expect("settlement tx submission failed")
     }
 
+    /// Builds, signs, submits, and mines a transaction paying `count` outputs of `value` sompi each
+    /// to `address`, funded from this node's coinbase wallet, then mines one acceptance block so
+    /// the outputs are confirmed and spendable. Returns the funding tx id.
+    ///
+    /// Use it to seed a distinct address (e.g. a prover's fee key) with spendable UTXOs before a
+    /// run that funds its own fees from that address. The outputs are non-coinbase, so they are
+    /// spendable as soon as they confirm (no maturity wait).
+    pub async fn fund_address(&self, address: &Address, value: u64, count: usize) -> Hash {
+        let tx = self.wallet().pay_to_address(address, value, count).await;
+        let tx_id = tx.id();
+        self.mine_block(std::slice::from_ref(&tx)).await;
+        self.mine_blocks(1).await;
+        tx_id
+    }
+
     /// Builds a signed bootstrap transaction whose single output is P2SH(`redeem_script`) with a
     /// genesis covenant binding. Returns the tx and the covenant id consensus recomputes. See
     /// [`Wallet::build_covenant_bootstrap_transaction`].

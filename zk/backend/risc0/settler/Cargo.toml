@@ -3,6 +3,12 @@ edition.workspace = true
 name              = "vprogs-zk-backend-risc0-settler"
 version.workspace = true
 
+[features]
+# Exposes `AlternationPacer` and the settlement worker's `alternation` knob, which force two
+# competing settlers to take strict turns. Used only by the two-prover contention test; production
+# builds leave it off so the worker has no alternation field at all.
+test-utils = []
+
 [dependencies]
 kaspa-addresses.workspace                  = true
 kaspa-consensus-core.workspace             = true
@@ -15,6 +21,7 @@ secp256k1.workspace                        = true
 tokio                                      = { workspace = true, features = ["macros", "sync", "time"] }
 vprogs-core-atomics.workspace              = true
 vprogs-core-smt.workspace                  = true
+vprogs-l1-types.workspace                  = true
 vprogs-l1-wallet.workspace                 = true
 vprogs-zk-aggregate-prover.workspace       = true
 vprogs-zk-backend-risc0-api                = { workspace = true, features = ["host"] }

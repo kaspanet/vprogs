@@ -4,7 +4,8 @@ use std::{
 };
 
 use kaspa_consensus_core::{config::params::Params, subnets::SubnetworkId};
-use vprogs_l1_types::{ConnectStrategy, Hash, NetworkId, NetworkType};
+use tokio::sync::watch;
+use vprogs_l1_types::{ConnectStrategy, Hash, NetworkId, NetworkType, SettlementInfo};
 
 /// Configuration for the L1 bridge.
 #[derive(Clone, Debug)]
@@ -30,9 +31,19 @@ pub struct L1BridgeConfig {
     /// On a fresh chain, seed the root this many chain-blocks below the sink, so the bridge starts
     /// near the tip. `None` seeds from the pruning point.
     pub seed_depth: Option<u64>,
+    /// On a fresh chain (no `root`/`tip`), the explicit block to seed the root at, instead of the
+    /// sink or the pruning point: a known historical block (a covenant's deploy block) a catch-up
+    /// node rebuilds state forward from. Fresh-chain precedence: `start_from` > `seed_depth` >
+    /// pruning point. `None` defers to the lower-precedence options.
+    pub start_from: Option<Hash>,
     /// Optional observer the bridge publishes its latest chain-block DAA score into, for an
     /// external progress reporter; `None` disables publishing.
     pub tip_daa: Option<Arc<AtomicU64>>,
+    /// Optional `watch` sender the bridge publishes the tip's last covenant settlement into. The
+    /// bridge is the single writer; each settler holds a [`watch::Receiver`] it borrows (and, once
+    /// confirmation is notification-based, awaits) to reconcile against the canonical settlement
+    /// without a confirm RTT. `None` disables publishing.
+    pub settlement_observer: Option<watch::Sender<Option<SettlementInfo>>>,
 }
 
 impl Default for L1BridgeConfig {
@@ -48,7 +59,9 @@ impl Default for L1BridgeConfig {
             finality_depth: Params::from(NetworkId::new(NetworkType::Mainnet)).finality_depth(),
             covenant_id: None,
             seed_depth: None, // Replay from the pruning point by default.
+            start_from: None, // No explicit seed block; defer to seed_depth/pruning point.
             tip_daa: None,
+            settlement_observer: None,
         }
     }
 }
@@ -117,10 +130,28 @@ impl L1BridgeConfig {
         self
     }
 
+    /// On a fresh chain, seed the root at this explicit block instead of from the sink or the
+    /// pruning point. `None` defers to `seed_depth`/pruning point. Precedence on a fresh chain:
+    /// `start_from` > `seed_depth` > pruning point.
+    pub fn with_start_from(mut self, start_from: Option<Hash>) -> Self {
+        self.start_from = start_from;
+        self
+    }
+
     /// Sets the observer the bridge publishes its latest chain-block DAA score into. `None`
     /// disables publishing.
     pub fn with_tip_daa_observer(mut self, tip_daa: Option<Arc<AtomicU64>>) -> Self {
         self.tip_daa = tip_daa;
+        self
+    }
+
+    /// Sets the `watch` sender the bridge publishes the tip's last covenant settlement into. `None`
+    /// disables publishing.
+    pub fn with_settlement_observer(
+        mut self,
+        settlement_observer: Option<watch::Sender<Option<SettlementInfo>>>,
+    ) -> Self {
+        self.settlement_observer = settlement_observer;
         self
     }
 }

@@ -57,7 +57,9 @@ impl L1BridgeParams {
             finality_depth: self.finality_depth,
             covenant_id: self.covenant_id,
             seed_depth: None,
+            start_from: None,
             tip_daa: None,
+            settlement_observer: None,
         }
     }
 }

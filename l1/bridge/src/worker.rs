@@ -23,10 +23,12 @@ use kaspa_seq_commit::{
     types::{LaneTipInput, MergesetContext},
 };
 use kaspa_wrpc_client::prelude::*;
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::{Notify, mpsc, watch};
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_types::{AccessMetadata, ChainSink, SchedulerTransaction};
-use vprogs_l1_types::{ChainBlockMetadata, Hash, L1Transaction, L1TransactionCovenantExt};
+use vprogs_l1_types::{
+    ChainBlockMetadata, Hash, L1Transaction, L1TransactionCovenantExt, SettlementInfo,
+};
 use workflow_core::channel::{Channel, MultiplexerChannel};
 
 use crate::{
@@ -34,6 +36,13 @@ use crate::{
     error::{Error, Result},
     reorg_filter::ReorgFilter,
 };
+
+/// Bounded retries for the virtual-chain RPC before surfacing the error. A real testnet node times
+/// out transiently, so the bridge must ride out a blip rather than fatal on the first one. Sized to
+/// cover a short node hiccup without wedging the worker indefinitely on a genuinely dead node.
+const RPC_RETRY_MAX_ATTEMPTS: u32 = 10;
+/// Delay between virtual-chain RPC retries.
+const RPC_RETRY_DELAY: Duration = Duration::from_millis(500);
 
 /// Bridges an L1 node's chain to a [`ChainSink`] over RPC, high-pass filtering reorgs.
 pub(crate) struct BridgeWorker<T: ChainSink<ChainBlockMetadata, L1Transaction>> {
@@ -69,8 +78,15 @@ pub(crate) struct BridgeWorker<T: ChainSink<ChainBlockMetadata, L1Transaction>> 
     covenant_id: Option<Hash>,
     /// Fresh-chain seed depth below the sink; `None` seeds from the pruning point.
     seed_depth: Option<u64>,
+    /// On a fresh chain, seed the root at this explicit block instead of the sink or the pruning
+    /// point. Takes precedence over `seed_depth`. `None` defers to `seed_depth`/pruning point.
+    start_from: Option<Hash>,
     /// Optional observer the latest chain-block DAA score is published to, for catch-up progress.
     tip_daa: Option<Arc<AtomicU64>>,
+    /// Optional `watch` sender the tip's last covenant settlement is published to (the bridge is
+    /// the single writer), so each settler can read the canonical settlement without a confirm
+    /// RTT.
+    settlement: Option<watch::Sender<Option<SettlementInfo>>>,
 }
 
 impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
@@ -140,7 +156,9 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             finality_depth: config.finality_depth,
             covenant_id: config.covenant_id,
             seed_depth: config.seed_depth,
+            start_from: config.start_from,
             tip_daa: config.tip_daa.clone(),
+            settlement: config.settlement_observer.clone(),
         }
         .run()
         .await;
@@ -243,9 +261,10 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         let init_result = if self.sink.tip() > 0 {
             Ok(())
         } else {
-            match self.seed_depth {
-                Some(depth) => self.seed_from_recent(depth).await,
-                None => self.seed_from_pruning_point().await,
+            match (self.start_from, self.seed_depth) {
+                (Some(hash), _) => self.seed_from_block(hash).await,
+                (None, Some(depth)) => self.seed_from_recent(depth).await,
+                (None, None) => self.seed_from_pruning_point().await,
             }
         };
         if let Err(e) = init_result {
@@ -255,6 +274,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
 
         // Step 3: publish the tip as a progress baseline, then announce Connected and sync.
         self.publish_tip_daa();
+        self.publish_settlement();
         self.push_event(L1Event::Connected);
         let result = self.fetch_chain_updates().await;
         self.handle_sync_result(result);
@@ -272,6 +292,16 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
     fn publish_tip_daa(&self) {
         if let Some(observer) = &self.tip_daa {
             observer.store(self.tip_metadata().daa_score, Ordering::Relaxed);
+        }
+    }
+
+    /// Publishes the tip's last covenant settlement to the optional `watch` sender, so each settler
+    /// reads the canonical settlement. Sends `None` when the tip carries no settlement yet or a
+    /// reorg has rolled past the last one. `send_replace` never errors, even with no live
+    /// receivers, so a settler-less bridge still publishes harmlessly.
+    fn publish_settlement(&self) {
+        if let Some(sender) = &self.settlement {
+            sender.send_replace(self.tip_metadata().last_settlement);
         }
     }
 
@@ -316,6 +346,20 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         Ok(())
     }
 
+    /// Seeds the virtual chain at an explicit block, installing it as the root/tip at index 0 so
+    /// the first emitted block lands at index 1. Used to start replay at a known historical
+    /// block (a covenant's deploy block) so a catch-up node rebuilds state forward from there.
+    /// The block must be at or before the covenant bootstrap, or the bridge misses the
+    /// bootstrap's settlements; a reorg below it panics in `rollback`, same as
+    /// `seed_from_recent`.
+    async fn seed_from_block(&mut self, hash: Hash) -> Result<()> {
+        let block = self.client.get_block(hash, false).await?;
+        self.genesis = (&block.header).into();
+        log::info!("L1 bridge: seeding from explicit block {hash}");
+
+        Ok(())
+    }
+
     /// Notifies observers that the connection was lost and tears the worker down.
     fn handle_disconnected(&mut self) {
         log::info!("L1 bridge disconnected");
@@ -343,17 +387,56 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         Ok(())
     }
 
+    /// Fetches the virtual chain from `from` with Full verbosity, retrying transient RPC failures
+    /// with a bounded backoff. A real testnet node times out transiently; without this the chain
+    /// init backfill (and steady-state follow) would fatal the whole worker on a single blip.
+    ///
+    /// Only transient `Error::Rpc` failures are retried. Terminal errors (`CheckpointLost`,
+    /// `BackfillTargetNotFound`, and the rest) are returned immediately so a genuine reorg/prune
+    /// past the root still fatals. The backoff sleep is interruptible by the worker's shutdown
+    /// signal, so shutdown during a backfill is honored within one `RPC_RETRY_DELAY`.
+    async fn get_vcc_with_retry(
+        client: Arc<KaspaRpcClient>,
+        shutdown: Arc<AtomicAsyncLatch>,
+        from: Hash,
+        threshold: Option<u64>,
+    ) -> Result<GetVirtualChainFromBlockV2Response> {
+        for attempt in 1..=RPC_RETRY_MAX_ATTEMPTS {
+            match client
+                .get_virtual_chain_from_block_v2(from, Some(Full), threshold)
+                .await
+                .map_err(Error::from)
+            {
+                Ok(response) => return Ok(response),
+                Err(e) if e.is_fatal() || attempt == RPC_RETRY_MAX_ATTEMPTS => return Err(e),
+                Err(e) => {
+                    log::warn!(
+                        "L1 bridge: get_virtual_chain_from_block_v2 failed \
+                         (attempt {attempt}/{RPC_RETRY_MAX_ATTEMPTS}, retrying): {e}"
+                    );
+                    // Sleep, but let shutdown cut the backoff short.
+                    select_biased! {
+                        _ = shutdown.wait().fuse() => {
+                            return Err(Error::ChannelClosed("shutdown during RPC retry".into()));
+                        }
+                        _ = tokio::time::sleep(RPC_RETRY_DELAY).fuse() => {}
+                    }
+                }
+            }
+        }
+        unreachable!("retry loop returns on the final attempt")
+    }
+
     /// Fetches chain updates from the current tip, handling reorgs and scheduling each new block.
     async fn fetch_chain_updates(&mut self) -> Result<()> {
-        // Fetch with Full verbosity to get complete headers and accepted transactions.
-        let response = self
-            .client
-            .get_virtual_chain_from_block_v2(
-                self.tip_metadata().hash,
-                Some(Full),
-                self.reorg_filter.threshold(),
-            )
-            .await?;
+        // Fetch with Full verbosity to get complete headers and accepted transactions. Resolve the
+        // tip and the (mutably-computed) reorg threshold first so the shared borrow taken by the
+        // retry helper doesn't overlap them.
+        let from = self.tip_metadata().hash;
+        let threshold = self.reorg_filter.threshold();
+        let response =
+            Self::get_vcc_with_retry(self.client.clone(), self.shutdown.clone(), from, threshold)
+                .await?;
 
         // Removed hashes indicate a reorg - roll back before processing additions.
         if !response.removed_chain_block_hashes.is_empty() {
@@ -374,6 +457,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             let header = &chain_block.chain_block_header;
             let parent = self.tip_metadata();
             let block_hash = header.hash.expect("missing hash");
+            let block_daa = header.daa_score.expect("missing daa_score");
             let mut last_settlement = parent.last_settlement;
 
             // Enumerate before filtering so kept txs keep their block-wide positions.
@@ -385,7 +469,8 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
                     // Carry forward the last settlement.
                     let tx = L1Transaction::try_from(tx.clone()).expect("missing tx fields");
                     if let Some(id) = self.covenant_id {
-                        last_settlement = tx.settlement_info(id, block_hash).or(last_settlement);
+                        last_settlement =
+                            tx.settlement_info(id, block_hash, block_daa).or(last_settlement);
                     }
 
                     // Parse access metadata; marlformed = no dependencies and prover attests.
@@ -425,6 +510,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
 
         // Publish the batch's new tip so the progress reporter advances as catch-up proceeds.
         self.publish_tip_daa();
+        self.publish_settlement();
 
         Ok(())
     }

@@ -1,5 +1,6 @@
 use std::{
     collections::VecDeque,
+    ops::RangeInclusive,
     thread::{JoinHandle, spawn},
 };
 
@@ -7,8 +8,7 @@ use kaspa_hashes::Hash;
 use tokio::runtime::Builder;
 use vprogs_core_atomics::AsyncQueue;
 use vprogs_core_codec::Reader;
-use vprogs_core_smt::EMPTY_HASH;
-use vprogs_l1_types::{ChainBlockMetadata, SettlementInfo};
+use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
 use vprogs_zk_abi::batch_aggregator::{Inputs as AggregatorInputs, StateTransition};
@@ -35,12 +35,11 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend, L: LaneProofSour
     /// Queue each formed bundle's [`ScheduledBundle`] handle is published onto for on-chain
     /// settlement, or `None` to run without settling.
     settlement_queue: Option<AsyncQueue<ScheduledBundle<SettlementArtifact<B::Receipt>>>>,
+    /// Inclusive bound on how many batches one bundle may consume (min ready before forming, max
+    /// per bundle).
+    bundle_size: RangeInclusive<usize>,
     /// Batches accumulated but not yet bundled, in scheduling order.
     queued: VecDeque<ScheduledBatch<S, P>>,
-    /// Last settled L1 block (the lower bound a new bundle chains from). `None` at genesis.
-    from_block: Option<Hash>,
-    /// Last settled L2 SMT state. The empty SMT at genesis.
-    from_state: [u8; 32],
 }
 
 impl<S, P, B, L> Worker<S, P, B, L>
@@ -64,7 +63,20 @@ where
         backend: B,
         config: AggregateProverConfig<L, B::Receipt>,
     ) -> JoinHandle<()> {
-        let AggregateProverConfig { lane_key, covenant_id, lane_source, settlement_queue } = config;
+        let AggregateProverConfig {
+            lane_key,
+            covenant_id,
+            lane_source,
+            settlement_queue,
+            bundle_size,
+        } = config;
+        // Bundle formation parks while `take` is below the range start and caps `take` at the range
+        // end, so an empty range (start > end) would never form a bundle. Reject it up front rather
+        // than stall silently.
+        assert!(
+            !bundle_size.is_empty(),
+            "bundle_size must be a non-empty range (start <= end); got {bundle_size:?}",
+        );
         let this = Self {
             prover,
             backend,
@@ -72,9 +84,8 @@ where
             covenant_id,
             lane_source,
             settlement_queue,
+            bundle_size,
             queued: VecDeque::new(),
-            from_block: None,
-            from_state: EMPTY_HASH,
         };
         let runtime = Builder::new_current_thread().enable_all().build().expect("runtime");
         spawn(move || runtime.block_on(this.run()))
@@ -95,10 +106,8 @@ where
                 }
             }
 
-            // Fold in any external settlement visible on the queued batches, then try to prove one
-            // bundle. Loop without parking while progress is made so back-to-back ready bundles
-            // drain promptly.
-            self.absorb_external_settlements();
+            // Try to prove one bundle. Loop without parking while progress is made so back-to-back
+            // ready bundles drain promptly.
             let made_progress = self.try_prove_one_bundle().await;
             if self.prover.shutdown.is_open() {
                 return;
@@ -107,23 +116,25 @@ where
                 continue;
             }
 
-            // Nothing ready: park until a new command arrives or shutdown. `pop` re-runs at the top
-            // of the next iteration, so a push between here and the drain is not missed.
+            // Nothing ready: park until a new command arrives, a queued batch behind the front
+            // publishes its receipt, or shutdown. `pop` re-runs at the top of the next iteration,
+            // so a push between here and the drain is not missed. The batch-publication
+            // wake lets a configured minimum bundle size (`*bundle_size.start() > 1`)
+            // self-heal: the ready prefix grows past a parked point only when a batch
+            // behind the front publishes, which nothing else notifies the loop of.
             tokio::select! {
                 biased;
                 () = self.prover.shutdown.wait() => break,
                 () = self.prover.inbox.notified() => {}
+                () = next_queued_batch_published(&self.queued) => {}
             }
         }
     }
 
     /// Forms the next bundle from the consecutively-ready prefix of the queue and proves it.
-    /// Returns `true` when a bundle was consumed (proved, settled-redundant, or empty), `false`
+    /// Returns `true` when a bundle was consumed (proved, no-op, or empty), `false`
     /// when there was nothing to do.
     async fn try_prove_one_bundle(&mut self) -> bool {
-        // A newly-formed bundle must not re-prove already-settled batches.
-        self.drop_settled_prefix();
-
         let Some(front) = self.queued.front().cloned() else {
             return false;
         };
@@ -136,34 +147,37 @@ where
             () = front.wait_artifact_published() => {}
         }
 
-        // A settlement may have landed while we awaited; if it covered this work, the front is
-        // dropped and there may be nothing left to prove.
-        self.absorb_external_settlements();
-        if self.queued.is_empty() {
-            return true;
-        }
-
         // Greedily extend the bundle over the consecutively-ready prefix: the front is ready
         // (awaited above); include each following batch whose receipt is already published, and
-        // stop at the first one that is not.
+        // stop at the first one that is not, or once the configured maximum is reached.
         let mut take = 1;
-        while take < self.queued.len() && self.queued[take].artifact_published() {
+        while take < self.queued.len()
+            && take < *self.bundle_size.end()
+            && self.queued[take].artifact_published()
+        {
             take += 1;
+        }
+        // Park until at least the configured minimum are consecutively ready. Returning false
+        // leaves the batches queued; the run loop re-tries when more arrive. The extend
+        // loop above caps `take` at the maximum, so a `take` short of the minimum is
+        // genuinely short of ready batches, not the cap. With the default `1..`, `take >= 1
+        // == *start()` always, so this never fires and behavior is identical to
+        // greedy-from-1.
+        if take < *self.bundle_size.start() {
+            return false;
         }
         let bundle: Vec<ScheduledBatch<S, P>> =
             (0..take).map(|_| self.queued.pop_front().unwrap()).collect();
 
-        let last_metadata = *bundle.last().unwrap().checkpoint().metadata();
+        let last_checkpoint = bundle.last().unwrap().checkpoint();
+        let last_metadata = *last_checkpoint.metadata();
         let block_prove_to = last_metadata.hash;
 
         // Bundle-start coordinate (first batch's index + block) keys the aggregator receipt in the
-        // proof-receipt store; `latest_settlement` is the newest on-chain covenant settlement as of
-        // the final block, letting the settler skip a bundle an external settlement already
-        // covered.
+        // proof-receipt store.
         let first_checkpoint = bundle.first().unwrap().checkpoint();
         let checkpoint_index = first_checkpoint.index();
         let from_block = first_checkpoint.metadata().hash;
-        let latest_settlement = last_metadata.last_settlement;
 
         // Empty batches publish no receipt; the aggregator composes only the non-empty ones.
         let receipts: Vec<B::Receipt> = bundle
@@ -180,7 +194,6 @@ where
                 take,
                 checkpoint_index,
                 BundleBlocks { from_block, block_prove_to },
-                latest_settlement,
             ));
             return true;
         }
@@ -193,19 +206,19 @@ where
             take,
             checkpoint_index,
             BundleBlocks { from_block, block_prove_to },
-            latest_settlement,
         );
         self.emit(handle.clone());
 
         // The bundle's `from -> to` coordinate (its start checkpoint + block, claimed tip
         // commitment) proves to the same settlement receipt, so a replay (including a flip reorg
         // back onto this fork) reuses the cached one instead of re-fetching the lane proof and
-        // re-proving. The bundle keys the receipt off its own start coordinate and the claimed tip
-        // `seq_commit`; its first batch is the storage gateway (the aggregate prover holds no store
-        // of its own) and supplies the aggregator image id.
+        // re-proving. The key combines the bundle's own start coordinate, the claimed tip
+        // `seq_commit`, and the aggregator image id the backend proves with; the receipt store is
+        // the prover's own cache handle (bound by the scheduler at construction).
         let seq_commit = last_metadata.seq_commit.as_bytes();
-        let first_batch = bundle.first().unwrap();
-        let receipt = match handle.read_agg_receipt(first_batch, seq_commit).resolve().await {
+        let agg_key = handle.agg_key(*self.backend.aggregator_image_id(), seq_commit);
+        let receipt_store = &self.prover.receipt_store;
+        let receipt = match receipt_store.read_agg_receipt(agg_key).resolve().await {
             Some(receipt) => receipt,
             None => {
                 // Aggregate the bundle: fetch the final block's lane proof, encode the aggregator
@@ -235,7 +248,7 @@ where
 
                 // Wait for the receipt to be durable before publishing the artifact, so a crash
                 // never leaves a consumed-but-uncached settlement receipt.
-                handle.write_agg_receipt(first_batch, seq_commit, receipt.clone()).wait().await;
+                receipt_store.write_agg_receipt(agg_key, receipt.clone()).wait().await;
                 receipt
             }
         };
@@ -254,12 +267,6 @@ where
             return true;
         }
 
-        // The journal is authoritative; assert the chain-derived bookkeeping agrees before
-        // advancing, so a desync fails loudly and locally (mirrors the settler's asserts).
-        debug_assert_eq!(
-            st.prev_state, self.from_state,
-            "bundle prev_state must chain from the last settled state",
-        );
         if let Some(covenant_id) = self.covenant_id {
             assert_eq!(
                 Hash::from_bytes(st.covenant_id),
@@ -271,12 +278,6 @@ where
             st.new_seq_commit, last_metadata.seq_commit,
             "bundle new_seq_commit must equal the final block's seq_commit",
         );
-
-        // Advance the settled lower bound to this bundle. The next bundle's aggregator self-derives
-        // its own prev_state from the lane proof and journals, so this is bookkeeping only: it lets
-        // us drop already-settled batches and detect redundant external settlements.
-        self.from_block = Some(block_prove_to);
-        self.from_state = st.new_state;
 
         // Fill the published handle with the proved settlement; the settlement worker awaiting it
         // is then released. With no queue wired the bundle is proved but not settled (exec/test
@@ -305,52 +306,31 @@ where
         }
     }
 
-    /// Folds the newest external covenant settlement visible on the queued batches into the settled
-    /// lower bound, dropping batches it already covered. `last_settlement` is monotone forward
-    /// along the chain, so the last advancing entry wins.
-    fn absorb_external_settlements(&mut self) {
-        let newest: Option<SettlementInfo> = self
-            .queued
-            .iter()
-            .filter_map(|b| b.checkpoint().metadata().last_settlement)
-            .rfind(|s| s.new_state != self.from_state);
-        let Some(s) = newest else {
-            return;
-        };
-
-        self.from_block = Some(s.block_prove_to);
-        self.from_state = s.new_state;
-        self.drop_settled_prefix();
-
-        // TODO: cancel an in-flight aggregator proof made redundant by this settlement. A running
-        // GPU proof can't be aborted (same gap as the batch prover); dropping the queued prefix and
-        // the redundancy checks below prevent *starting* redundant work, and because proofs are
-        // awaited inline a stale result is simply never published.
-    }
-
-    /// Drops queued batches at or below the settled L1 block. There is a 1:1 L1-block to L2-batch
-    /// correspondence (the node schedules one batch per chain block), so the settled
-    /// `block_prove_to` equals some queued batch's block hash; everything up to and including
-    /// it is already settled.
-    fn drop_settled_prefix(&mut self) {
-        let Some(from_block) = self.from_block else {
-            return;
-        };
-        let cut = self
-            .queued
-            .iter()
-            .find(|b| b.checkpoint().metadata().hash == from_block)
-            .map(|b| b.checkpoint().index());
-        if let Some(cut) = cut {
-            self.queued.retain(|b| b.checkpoint().index() > cut);
-        }
-    }
-
     /// Drops queued batches rolled back by a reorg. The active bundle's proof is awaited inline, so
     /// a rollback command is only applied between bundles and can never silently include a
     /// rolled-back suffix; aborting a proof already running on the GPU remains a TODO (same gap as
     /// the batch prover).
     fn apply_rollback(&mut self, target_index: u64) {
         self.queued.retain(|b| b.checkpoint().index() <= target_index);
+    }
+}
+
+/// Awaits the receipt publication of the first not-yet-published queued batch, the wake source the
+/// park needs beyond the inbox. With a configured minimum bundle size the ready prefix can be short
+/// of the minimum; a batch behind the front publishing its receipt is what extends it, yet that
+/// publication does not touch the inbox. Without this arm a formable min-size bundle would strand
+/// at an idle tip. Parks forever when every queued batch is already published or the queue is
+/// empty: then only a new command can grow the prefix, which the inbox arm already wakes on.
+///
+/// Canceled batches are skipped: `wait_artifact_published` returns immediately for one (a rollback
+/// resolved it), so awaiting a canceled-but-still-queued batch would busy-spin. Such a batch is
+/// cleared by the forthcoming `Command::Rollback` (an inbox wake), and the extend loop treats it as
+/// not-ready anyway, so parking past it until the rollback arrives is correct.
+async fn next_queued_batch_published<S: Store, P: Processor<S>>(
+    queued: &VecDeque<ScheduledBatch<S, P>>,
+) {
+    match queued.iter().find(|batch| !batch.artifact_published() && !batch.canceled()) {
+        Some(batch) => batch.wait_artifact_published().await,
+        None => std::future::pending::<()>().await,
     }
 }

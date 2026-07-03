@@ -1,82 +1,109 @@
-use std::{collections::HashSet, time::Duration};
+//! Production settlement worker that lands aggregate-prover bundles on L1 through the wRPC-backed
+//! [`Settler`](crate::settle::Settler).
 
-use kaspa_addresses::Prefix;
-use kaspa_consensus_core::{
-    config::params::Params,
-    tx::{ScriptPublicKey, TransactionOutpoint, UtxoEntry},
-};
-use kaspa_hashes::Hash;
-use kaspa_rpc_core::{RpcError, api::rpc::RpcApi};
-use kaspa_txscript::standard::extract_script_pub_key_address;
-use kaspa_wrpc_client::prelude::KaspaRpcClient;
-use secp256k1::Keypair;
+mod config;
+
+use std::time::Duration;
+
+#[cfg(feature = "test-utils")]
+pub use config::AlternationPacer;
+pub use config::{SettlementMode, SettlementWorkerConfig};
 use vprogs_core_atomics::{AsyncQueue, AtomicAsyncLatch};
-use vprogs_l1_wallet::Wallet;
 use vprogs_zk_aggregate_prover::{ScheduledBundle, SettlementArtifact};
-use vprogs_zk_backend_risc0_api::{Backend, Receipt};
+use vprogs_zk_backend_risc0_api::Receipt;
 
-use crate::covenant::{CovenantState, build_settlement};
+use crate::{
+    confirm::{OutpointAt, confirm_outpoint},
+    covenant::{CovenantState, covenant_from_settlement},
+    settle::{RpcSink, SettleOutcome, Settler, WalletFeeSource},
+};
 
-/// Poll cadence and ceiling for waiting on a covenant UTXO to confirm on chain.
-const CONFIRM_POLL_INTERVAL: Duration = Duration::from_secs(1);
-const CONFIRM_MAX_POLLS: u32 = 300;
+/// Backoff between retries when the funder has no spendable fee UTXO. Funding exhaustion is
+/// recoverable (a later deposit to the funder lets the same bundle settle), so the worker waits
+/// this long (shutdown-interruptible) and retries rather than dropping the bundle or stopping.
+const FEE_EXHAUSTED_BACKOFF: Duration = Duration::from_secs(5);
 
-/// Everything the settlement worker needs that isn't carried per bundle.
-pub struct SettlementWorkerConfig {
-    /// wRPC client for funding, submission, and confirmation polling.
-    pub client: KaspaRpcClient,
-    /// Consensus params (mass calc, network prefix).
-    pub params: Params,
-    /// Key that funds and signs settlement fees.
-    pub keypair: Keypair,
-    /// Lane key the covenant SPK pins.
-    pub lane_key: Hash,
-    /// Backend, for the covenant's redeem pins (guest image ids).
-    pub backend: Backend,
-}
-
-/// Drives the settlement loop, popping each bundle the aggregate prover publishes onto `queue`.
+/// Runs the production settlement loop until `shutdown` opens or an unrecoverable settlement
+/// failure (a node hard-reject) stops it; temporary funding exhaustion is retried, not fatal.
 ///
-/// The aggregate prover publishes every formed bundle as a [`ScheduledBundle`] handle; the worker
-/// pops one, awaits its proved artifact, and (when it carries a settlement) builds a production
-/// [`Settlement`], submits it, and waits for its continuation UTXO to confirm before taking the
-/// next. No-op bundles (resolved with no artifact) are skipped. Handles are processed one at a
-/// time, so settlements are serialized.
-///
-/// Runs until `shutdown` opens: every park and poll (the queue pop, the artifact wait, the
-/// confirmation polling) is a biased `select!` that checks `shutdown` first, so a teardown request
-/// returns promptly instead of blocking on a latch or a 1s poll. It otherwise exits only by
-/// panicking on a rejected settlement or a confirmation timeout (propagated through its
-/// `JoinHandle`).
+/// Settlements are serialized: each queued bundle is awaited, skipped if it resolves without an
+/// artifact, or settled before the next bundle is processed.
 pub async fn run(
     queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Receipt>>>,
     cfg: SettlementWorkerConfig,
     covenant: CovenantState,
     shutdown: AtomicAsyncLatch,
 ) {
-    let mut cov = covenant;
+    let mut cov = Box::new(covenant);
 
-    // Confirm the bootstrap UTXO before chaining, so the first settlement can spend it and we know
-    // its DAA score.
-    let Some(daa_score) =
-        confirm_outpoint(&cfg.client, &cfg.params, &cov.spk, cov.outpoint, &shutdown).await
-    else {
-        log::info!("settlement-worker: shutdown before bootstrap confirmed");
-        return;
-    };
-    cov.daa_score = daa_score;
+    // The production settler: fund each fee over wRPC, submit to the node's mempool, and confirm by
+    // awaiting the bridge's settlement watch. The bridge fills that watch as it follows the chain.
+    let settler = Settler::new(
+        WalletFeeSource::new(cfg.client.clone(), cfg.params.clone(), cfg.keypair),
+        RpcSink::new(
+            cfg.client.clone(),
+            cfg.params.clone(),
+            cfg.keypair,
+            cfg.submit_jitter.clone(),
+        ),
+        cfg.backend.clone(),
+        cfg.lane_key,
+        cfg.mode,
+        cfg.settlement.clone(),
+    );
+
+    // Establish the starting covenant tip before chaining, reading it SOLELY from the settlement
+    // watch the bridge writes - never by scanning L1. The bridge replays the chain from the deploy
+    // block and publishes the tip's `last_settlement`, so when the covenant has already advanced
+    // the watch carries the canonical continuation; reconstruct the tip from it directly
+    // (outpoint `tx_id:0`, SPK rebuilt from the seeded redeem) without an on-chain confirm.
+    // This is the exact `last_settlement` a chain scan would derive, with no RPC.
+    //
+    // When the watch is empty (a fresh deploy, or the bridge has not yet replayed a settlement),
+    // the in-memory `cov` already points at the bootstrap. A `start_from` is the resume /
+    // catch-up signal: that bootstrap may already be spent, so it must not be hard-confirmed
+    // (which would time out and panic). Instead leave `cov` at the bootstrap and let the loop's
+    // mid-stream adoption advance it once the bridge publishes the live tip - a catch-up
+    // prover's first bundle proves from the already-advanced on-chain state, mismatches the
+    // empty bootstrap, and adopts the watch. A fresh deploy (`start_from` unset) has an unspent
+    // bootstrap and confirms it directly, stamping its DAA score, so the first settlement can
+    // spend it.
+    let initial = *cfg.settlement.borrow();
+    if let Some(s) =
+        initial.filter(|s| s.new_state != cov.state && s.daa_score.get() >= cov.daa_score)
+    {
+        *cov = covenant_from_settlement(cfg.mode, &cfg.backend, &cfg.lane_key, &cov, &s);
+        log::info!(
+            "settlement-worker: starting covenant {} from live settlement {} (tip daa {})",
+            cov.covenant_id,
+            s.tx_id,
+            cov.daa_score,
+        );
+    } else if cfg.start_from.is_none() {
+        // Fresh deploy: the supplied bootstrap UTXO is unspent. Confirm it before chaining so the
+        // first settlement can spend it and we know its DAA score. It must confirm; its absence is
+        // a real liveness failure worth the panicking confirm. This is the one residual RPC
+        // confirm - the bridge publishes settlements, not the covenant-creating bootstrap.
+        let target = OutpointAt { spk: &cov.spk, outpoint: cov.outpoint };
+        let Some(daa_score) = confirm_outpoint(&cfg.client, &cfg.params, target, &shutdown).await
+        else {
+            log::info!("settlement-worker: shutdown before bootstrap confirmed");
+            return;
+        };
+        cov.daa_score = daa_score;
+    }
     log::info!(
-        "settlement-worker: bootstrap covenant {} confirmed (daa {})",
+        "settlement-worker: covenant {} ready at tip (daa {})",
         cov.covenant_id,
         cov.daa_score,
     );
 
-    loop {
+    'outer: loop {
         // TODO: track which settlements are done vs pending and persist that (a no-op bundle marks
         // a proved-but-not-settled range), so a restart can resume mid-chain instead of
         // re-bootstrapping.
-        // TODO: fee-bump a settlement that does not confirm within a deadline, rather than polling
-        // `confirm_outpoint` indefinitely.
+        // TODO: fee-bump a settlement that does not confirm within a deadline, rather than awaiting
+        // the watch indefinitely.
         // TODO: handle reorgs that orphan `artifact.block_prove_to` (single-miner / low-reorg
         // only).
         let bundle = tokio::select! {
@@ -93,126 +120,100 @@ pub async fn run(
         let Some(artifact) = bundle.artifact() else {
             continue;
         };
-        // A shutdown during confirmation aborts the chain: the settlement is already on chain, but
-        // we stop advancing rather than poll through teardown (a restart re-bootstraps).
-        match settle_one(&cfg, cov, &artifact, &shutdown).await {
-            Some(next) => cov = next,
-            None => break,
+
+        // A competing settler may have advanced the covenant since our last settlement. If our
+        // in-memory covenant no longer matches this bundle's proving base, consult the settlement
+        // watch the bridge writes: it carries the covenant's last settlement the bridge observed in
+        // an accepted chain block, including its DAA score. When that settlement is ahead of `cov`,
+        // adopt it as the new optimistic tip so a later bundle that chains from it settles instead
+        // of leaving us permanently stuck behind.
+        //
+        // The watch is read, not the per-bundle snapshot: the settler advances `cov` optimistically
+        // when it settles, but the bridge needs ≈RTT to observe that, so the watch lags `cov` by
+        // one settlement. Adoption is therefore gated on the watch being *ahead*
+        // (`s.new_state` differs from `cov.state`) and forward-only (`s.daa_score` at or
+        // past `cov.daa_score`); a value behind `cov` (a competitor we already passed) is
+        // ignored. The continuation outpoint is adopted without an on-chain confirm: the
+        // bridge only publishes settlements from accepted chain blocks, so the UTXO
+        // existed, and the rare case it was already spent by a reorg/race is caught at
+        // settle time (the sink's `Superseded`), which skips the bundle.
+        if cov.state != artifact.prev_state {
+            let latest = *cfg.settlement.borrow();
+            if let Some(s) = latest {
+                if s.new_state != cov.state && s.daa_score.get() >= cov.daa_score {
+                    *cov =
+                        covenant_from_settlement(cfg.mode, &cfg.backend, &cfg.lane_key, &cov, &s);
+                    log::info!(
+                        "settlement-worker: adopted external settlement {} (covenant advanced to daa {})",
+                        s.tx_id,
+                        cov.daa_score,
+                    );
+                }
+            }
+        }
+
+        // If the base still mismatches after adopting the tip, a competitor already covered this
+        // bundle's range: it is superseded. Skip it rather than asserting in the builder; a later
+        // bundle chaining from the adopted tip settles.
+        if cov.state != artifact.prev_state {
+            log::info!(
+                "settlement-worker: skipping superseded bundle (a competitor covered its range)"
+            );
+            continue;
+        }
+
+        // Test-only: wait our turn so competing settlers alternate rather than one sweeping the
+        // ranges. Production leaves this `None` and settles as soon as a bundle is ready.
+        #[cfg(feature = "test-utils")]
+        if let Some((me, pacer)) = &cfg.alternation {
+            pacer.await_turn(*me, &shutdown).await;
+            if shutdown.is_open() {
+                break;
+            }
+        }
+        // Settle this bundle, retrying the same one while funding is temporarily exhausted: an
+        // empty fee set is recoverable (a later deposit to the funder lets it settle), so
+        // back off and retry rather than dropping the bundle. A node hard-reject is not
+        // recoverable, so stop.
+        let advanced = loop {
+            match settler.settle_one(&cov, &artifact, &shutdown).await {
+                SettleOutcome::Advanced(next) => break next,
+                // A competitor's settlement is already spending this covenant outpoint, so ours can
+                // never land. Hold `cov` and drop the bundle: once that settlement confirms in a
+                // chain block, the bridge publishes it to the settlement watch and the reconcile
+                // block above adopts it.
+                SettleOutcome::Superseded => continue 'outer,
+                SettleOutcome::Shutdown => break 'outer,
+                // The node hard-rejected the submission; retrying the same bundle cannot recover
+                // it. Stop the settler with a logged reason rather than panicking
+                // the worker task.
+                SettleOutcome::Failed(reason) => {
+                    log::error!(
+                        "settlement-worker: unrecoverable settlement failure: {reason}; stopping"
+                    );
+                    break 'outer;
+                }
+                // Funding is exhausted right now but may be replenished; log and retry the same
+                // bundle after a backoff, staying interruptible so teardown is not held up.
+                SettleOutcome::FeeExhausted => {
+                    log::warn!(
+                        "settlement-worker: no spendable fee UTXO; backing off {}s and retrying \
+                         (awaiting a deposit to the funder)",
+                        FEE_EXHAUSTED_BACKOFF.as_secs(),
+                    );
+                    tokio::select! {
+                        biased;
+                        () = shutdown.wait() => break 'outer,
+                        () = tokio::time::sleep(FEE_EXHAUSTED_BACKOFF) => {}
+                    }
+                }
+            }
+        };
+        cov = advanced;
+        #[cfg(feature = "test-utils")]
+        if let Some((me, pacer)) = &cfg.alternation {
+            pacer.mark_settled(*me);
         }
     }
     log::info!("settlement-worker: shut down");
-}
-
-/// Builds the settlement for one proven bundle, submits it, waits for the continuation UTXO, and
-/// returns the advanced covenant. Returns `None` if `shutdown` opens while waiting for the
-/// continuation UTXO to confirm.
-async fn settle_one(
-    cfg: &SettlementWorkerConfig,
-    cov: CovenantState,
-    artifact: &SettlementArtifact<Receipt>,
-    shutdown: &AtomicAsyncLatch,
-) -> Option<CovenantState> {
-    // Build the settlement and its covenant compute budget from the bundle's authoritative bounds
-    // (shared with the sim driver). Asserts the live covenant agrees before we pay to submit.
-    let built = build_settlement(&cfg.backend, &cfg.lane_key, &cov, artifact);
-
-    let covenant_entry =
-        UtxoEntry::new(cov.value, cov.spk.clone(), cov.daa_score, false, Some(cov.covenant_id));
-    let wallet = Wallet::new(&cfg.client, &cfg.params, cfg.keypair);
-
-    // The node can reject a settlement for a transient reason that funding the fee from a
-    // different UTXO resolves (see [`is_retriable_fee_rejection`]). Re-fund from another settled
-    // UTXO, excluding each rejected one, until one is accepted or every spendable UTXO is
-    // exhausted.
-    let mut excluded = HashSet::new();
-    let txid = loop {
-        let Some((tx, fee_outpoint)) = wallet
-            .prepare_settlement_excluding(
-                built.transaction.clone(),
-                covenant_entry.clone(),
-                built.compute_budget,
-                &excluded,
-            )
-            .await
-        else {
-            panic!("settlement submit failed: every spendable fee UTXO was rejected");
-        };
-        match wallet.submit_transaction(&tx).await {
-            Ok(id) => break id,
-            Err(e) if is_retriable_fee_rejection(&e) => {
-                log::warn!(
-                    "settlement-worker: fee UTXO {fee_outpoint} rejected, \
-                     retrying with another UTXO: {e}"
-                );
-                excluded.insert(fee_outpoint);
-            }
-            // Any other rejection is the on-chain script (incl. `OpZkPrecompile`) refusing the
-            // settlement; surface it loudly, as that is exactly the end-to-end check this path
-            // exists to make.
-            Err(e) => panic!("settlement submit rejected by node: {e}"),
-        }
-    };
-    log::info!(
-        "settlement-worker: submitted settlement {txid} (block {})",
-        artifact.block_prove_to
-    );
-
-    let continuation_outpoint = TransactionOutpoint::new(txid, 0);
-    let daa_score = confirm_outpoint(
-        &cfg.client,
-        &cfg.params,
-        built.advance.continuation_spk(),
-        continuation_outpoint,
-        shutdown,
-    )
-    .await?;
-    log::info!("settlement-worker: settlement {txid} confirmed (daa {daa_score})");
-
-    Some(built.advance.apply(txid, daa_score))
-}
-
-/// Whether a submit error is the node refusing a transaction for a reason a different fee UTXO
-/// resolves: an orphan (an input references an output it has not accepted, "orphan where orphan is
-/// disallowed") or a double spend (a fee UTXO the confirmed set still reports was already spent by
-/// an unconfirmed mempool transaction). Matched on the message text because the wRPC layer does not
-/// expose structured rejection reasons.
-fn is_retriable_fee_rejection(e: &RpcError) -> bool {
-    let msg = e.to_string().to_lowercase();
-    msg.contains("orphan") || msg.contains("already spent")
-}
-
-/// Polls the node until `outpoint` appears at `spk`'s P2SH address, returning its block DAA score.
-/// Covenant UTXOs are P2SH, so the node's utxoindex tracks them by their script address. Returns
-/// `None` if `shutdown` opens while polling. Panics on timeout (a settlement that never confirms is
-/// a liveness failure worth surfacing).
-async fn confirm_outpoint(
-    client: &KaspaRpcClient,
-    params: &Params,
-    spk: &ScriptPublicKey,
-    outpoint: TransactionOutpoint,
-    shutdown: &AtomicAsyncLatch,
-) -> Option<u64> {
-    let prefix = Prefix::from(params.net.network_type());
-    let address = extract_script_pub_key_address(spk, prefix).expect("covenant P2SH address");
-    for _ in 0..CONFIRM_MAX_POLLS {
-        if shutdown.is_open() {
-            return None;
-        }
-        let utxos = client
-            .get_utxos_by_addresses(vec![address.clone()])
-            .await
-            .expect("get_utxos_by_addresses");
-        if let Some(entry) =
-            utxos.into_iter().find(|e| TransactionOutpoint::from(e.outpoint) == outpoint)
-        {
-            return Some(entry.utxo_entry.block_daa_score);
-        }
-        // Cancelable poll delay: wake on shutdown instead of sleeping out the full interval.
-        tokio::select! {
-            biased;
-            () = shutdown.wait() => return None,
-            () = tokio::time::sleep(CONFIRM_POLL_INTERVAL) => {}
-        }
-    }
-    panic!("covenant outpoint {outpoint} not confirmed at {address} within timeout");
 }

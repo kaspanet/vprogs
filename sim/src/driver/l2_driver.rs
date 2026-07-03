@@ -1,9 +1,13 @@
-use std::sync::{Arc, Mutex, Weak};
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex, Weak},
+};
 
 use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus::consensus::Consensus;
 use kaspa_consensus_core::{
     api::ConsensusApi,
+    config::params::Params,
     constants::TX_VERSION_TOCCATA,
     mass::units::ComputeBudget,
     subnets::SubnetworkId,
@@ -13,6 +17,7 @@ use kaspa_hashes::Hash;
 use kaspa_seq_commit::hashing::lane_key;
 use kaspa_txscript::standard::pay_to_script_hash_script;
 use rand::{Rng, SeedableRng, rngs::StdRng};
+use secp256k1::Keypair;
 use tempfile::TempDir;
 use vprogs_core_atomics::{AsyncQueue, AtomicAsyncLatch};
 use vprogs_core_smt::EMPTY_HASH;
@@ -20,16 +25,18 @@ use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ChainSink, ResourceId, SchedulerTransaction};
 use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_l1_wallet::{build, encode_activity_payload};
-use vprogs_scheduling_scheduler::{Processor, Scheduler};
+use vprogs_scheduling_scheduler::{ExecutionConfig, Processor, Scheduler, SchedulerState};
+use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_aggregate_prover::{AggregateProverConfig, ScheduledBundle, SettlementArtifact};
 use vprogs_zk_backend_risc0_api::{Backend, ProofType, Receipt};
-use vprogs_zk_backend_risc0_covenant::{
-    Settlement, SettlementDevInput, build_dev_redeem_script, dev_redeem_script_len,
+use vprogs_zk_backend_risc0_covenant::{Settlement, SettlementDevInput};
+use vprogs_zk_backend_risc0_settler::{
+    BuiltSettlement, CovenantState, FeeSource, FundedSettlement, SettlementMode, bootstrap_redeem,
+    build_settlement_for_mode, dev_bootstrap_redeem,
 };
-use vprogs_zk_backend_risc0_settler::{CovenantState, bootstrap_redeem, build_settlement};
 use vprogs_zk_backend_risc0_test_suite::{
-    batch_aggregator_elf, batch_processor_elf, build_scheduler, read_resource_u32,
+    batch_aggregator_elf, batch_processor_elf, dev_mode_enabled, read_resource_u32,
     transaction_processor_elf,
 };
 use vprogs_zk_batch_prover::BatchProverConfig;
@@ -126,8 +133,10 @@ pub struct L2Driver {
     activity_per_block: u64,
     /// Blocks between settlement transactions.
     settle_every: u64,
-    /// Number of batches the aggregate prover bundles per proof.
-    bundle_size: usize,
+    /// Batch backlog at which [`settle_real`](Self::settle_real) starts pulling settlements,
+    /// bounding how far the miner runs ahead of the detached prover. Separate from the prover's
+    /// proof-bundle size (both derive from the one `bundle_size` knob).
+    settle_drain_threshold: usize,
     /// Seeded RNG driving deterministic activity and settlement choices.
     rng: StdRng,
 
@@ -150,10 +159,16 @@ pub struct L2Driver {
 
     /// Whether the driver issues settlement transactions.
     settlements_enabled: bool,
-    /// Real-proof end-to-end mode: prove each bundle and settle it with a production
-    /// `Settlement::build` (real receipt → `OpZkPrecompile`), instead of dev settlements. Implied
-    /// by `enable_proving && enable_settlements`. Single-miner only (a reorg can orphan a block
-    /// whose batch the async worker is proving).
+    /// Redeem variant the driver bootstraps and settles against, picked once from the proof mode:
+    /// [`Dev`](SettlementMode::Dev) under `RISC0_DEV_MODE`, else
+    /// [`Production`](SettlementMode::Production).
+    mode: SettlementMode,
+    /// Proving-driven settlement mode: prove each bundle and settle it from the bundle's artifact,
+    /// instead of the inline (no-prover) dev settlements. Implied by `enable_proving &&
+    /// enable_settlements`. With real (CUDA) receipts each bundle settles via the production
+    /// `Settlement::build` (`OpZkPrecompile`); under `RISC0_DEV_MODE` the receipts are stubs the
+    /// precompile would reject, so it settles via the dev redeem (`build_dev_settlement`) instead.
+    /// Single-miner only (a reorg can orphan a block whose batch the async worker is proving).
     real_e2e: bool,
     /// In `real_e2e`, false until the proving stack has been rebuilt with the live covenant id
     /// (after the bootstrap confirms); gates activity + settlement so nothing is proved against
@@ -191,29 +206,39 @@ pub struct L2Driver {
 
 /// Builds a fresh execution stack (temp store + zk `Vm` scheduler). When `proving` is set the `Vm`
 /// drives the full proving stack (transaction + batch + aggregate provers), reading lane proofs
-/// from `consensus` and binding `covenant_id` into every journal, and returns the queue the
-/// aggregate prover publishes each bundle handle onto; otherwise it is execution-only and returns
-/// `None`.
+/// from `consensus`, binding `covenant_id` into every journal, and forming one proof per
+/// `proof_bundle_size` batches, and returns the queue the aggregate prover publishes each bundle
+/// handle onto; otherwise it is execution-only and returns `None` (`proof_bundle_size` is unused).
 fn build_exec(
     backend: &Backend,
     lane: Hash,
     proving: bool,
     covenant_id: Option<Hash>,
     consensus: Weak<Consensus>,
+    proof_bundle_size: usize,
 ) -> (Exec, Option<AsyncQueue<ScheduledBundle<SettlementArtifact<Receipt>>>>) {
     let db = tempfile::tempdir().expect("temp db dir");
     let store = RocksDbStore::open(db.path().join("l2"));
+    // Build the shared scheduler state (and its storage manager) first, so the aggregate prover and
+    // the scheduler operate over one storage manager: the prover's receipt store is derived from
+    // this state and must exist before the prover.
+    let state = SchedulerState::new(StorageConfig::default().with_store(store.clone()));
     let (pipeline, settlement_queue) = if proving {
         let queue = AsyncQueue::new();
         let pipeline = ProvingPipeline::aggregate(
             backend.clone(),
             store.clone(),
+            state.receipt_store(),
             BatchProverConfig { lane_key: lane, covenant_id },
             AggregateProverConfig {
                 lane_key: lane,
                 covenant_id,
                 lane_source: ConsensusLaneSource::from_weak(consensus),
                 settlement_queue: Some(queue.clone()),
+                // Fixed-size proof bundles: one proof per `proof_bundle_size` batches. The
+                // aggregate worker's park self-heals when the minimum (> 1 here) leaves the ready
+                // prefix short.
+                bundle_size: proof_bundle_size..=proof_bundle_size,
             },
         );
         (pipeline, Some(queue))
@@ -222,7 +247,7 @@ fn build_exec(
     };
     let vm = Vm::new(backend.clone(), pipeline);
     let proc_handle = vm.clone();
-    let scheduler = build_scheduler(vm, store.clone());
+    let scheduler = Scheduler::with_state(ExecutionConfig::default().with_processor(vm), state);
     (Exec { scheduler, store, _db: db, proc_handle }, settlement_queue)
 }
 
@@ -252,7 +277,8 @@ impl L2Driver {
         // zero placeholder covenant id since no on-chain settlement consumes those receipts.
         let real_e2e = config.enable_proving && config.enable_settlements;
         let prove_only = config.enable_proving && !config.enable_settlements;
-        let (exec, settlement_queue) = build_exec(&backend, lane, prove_only, None, weak.clone());
+        let (exec, settlement_queue) =
+            build_exec(&backend, lane, prove_only, None, weak.clone(), config.bundle_size.max(1));
 
         let stats = Arc::new(Mutex::new(DriverStats::default()));
         let drained = AtomicAsyncLatch::new();
@@ -262,7 +288,7 @@ impl L2Driver {
             tracked: ResourceId::for_test(config.lane_id as usize),
             activity_per_block: config.activity_per_block,
             settle_every: config.settle_every.max(1),
-            bundle_size: config.bundle_size.max(1),
+            settle_drain_threshold: config.bundle_size.max(1),
             rng: StdRng::seed_from_u64(config.seed),
             backend,
             exec,
@@ -272,6 +298,7 @@ impl L2Driver {
             chain: Vec::new(),
             expected_counter: 0,
             settlements_enabled: config.enable_settlements,
+            mode: if dev_mode_enabled() { SettlementMode::Dev } else { SettlementMode::Production },
             real_e2e,
             proving_ready: !real_e2e,
             init_proving_pending: false,
@@ -300,6 +327,7 @@ impl L2Driver {
             true,
             Some(covenant_id),
             self.consensus.clone(),
+            self.settle_drain_threshold,
         );
         self.exec = exec;
         self.settlement_queue = settlement_queue;
@@ -382,11 +410,9 @@ impl L2Driver {
                     meta.lane_expired = true;
                 }
                 if let Ok(proof) = c.get_seq_commit_lane_proof(hash, self.lane_key) {
-                    if let Some(tip) = proof.lane_tip {
-                        meta.lane_tip = tip;
-                    }
-                    if let Some(bs) = proof.lane_blue_score {
-                        meta.lane_blue_score = bs;
+                    if let Some(lane) = proof.lane {
+                        meta.lane_tip = lane.tip;
+                        meta.lane_blue_score = lane.blue_score;
                     }
                 }
             }
@@ -536,17 +562,17 @@ impl L2Driver {
         let value = entry.amount / 2;
         let state = EMPTY_HASH;
         let lane_tip = Hash::default();
-        // Real-proof mode deploys the production redeem script (terminates in `OpZkPrecompile`) so
-        // the first settlement's reconstructed prev redeem matches this UTXO's SPK; dev mode uses
-        // the dev redeem (chain-anchored, no precompile). The real path shares
-        // `bootstrap_redeem` with the production settler so both build the covenant identically.
-        let (redeem, spk) = if self.real_e2e {
+        // The production redeem (terminates in `OpZkPrecompile`) is deployed only for a real-proof
+        // run: proving-driven settlement with real (CUDA) receipts. Every other case deploys the
+        // dev redeem (chain-anchored seq commit, no precompile): the inline dev settlements, and
+        // proving-driven settlement under `RISC0_DEV_MODE` (stub receipts the precompile would
+        // reject). Both branches share their construction with the production settler
+        // (`bootstrap_redeem` / `dev_bootstrap_redeem`) so the first settlement's reconstructed
+        // prev redeem matches this UTXO's SPK.
+        let (redeem, spk) = if self.real_e2e && self.mode == SettlementMode::Production {
             bootstrap_redeem(&self.backend, &self.lane_key)
         } else {
-            let redeem_len = dev_redeem_script_len(&state, &self.lane_key);
-            let redeem = build_dev_redeem_script(&state, &lane_tip, &self.lane_key, redeem_len);
-            let spk = pay_to_script_hash_script(&redeem);
-            (redeem, spk)
+            dev_bootstrap_redeem(&self.lane_key)
         };
 
         let (tx, covenant_id) = build::covenant_bootstrap_transaction(
@@ -606,8 +632,7 @@ impl L2Driver {
         });
         let continuation_spk = pay_to_script_hash_script(&settlement.next_redeem);
 
-        let covenant_entry =
-            UtxoEntry::new(cov.value, cov.spk.clone(), cov.daa_score, false, Some(cov.covenant_id));
+        let covenant_entry = cov.utxo_entry();
         let (xonly, _) = ctx.keypair.x_only_public_key();
         let address = Address::new(
             Prefix::from(ctx.params.net.network_type()),
@@ -648,11 +673,12 @@ impl L2Driver {
     /// Settles the next proven bundle the in-process aggregate prover publishes, driven by the
     /// bundle's settlement artifact. Returns at most one transaction.
     ///
-    /// Blocks for bundle handles only once a full `bundle_size` worth of batches has been submitted
-    /// to the prover, giving the back-pressure that keeps the simulated clock (wall-time-free
-    /// logical ticks) from outpacing the detached prover thread. Every submitted batch is accounted
-    /// by exactly one bundle's `batches`, so the blocking pop never deadlocks: an outstanding batch
-    /// guarantees a forthcoming bundle. The handle is published before its proof exists, so its
+    /// Blocks for bundle handles only once a full `settle_drain_threshold` worth of batches has
+    /// been submitted to the prover, giving the back-pressure that keeps the simulated clock
+    /// (wall-time- free logical ticks) from outpacing the detached prover thread. The threshold
+    /// equals the prover's fixed proof-bundle size, so reaching it means a full bundle's
+    /// batches are queued and the prover forms and publishes their bundle; the blocking pop
+    /// therefore never deadlocks. The handle is published before its proof exists, so its
     /// `batches` is reconciled on pop and its artifact awaited after. No-op bundles carry no
     /// artifact and are skipped; a state-advancing one is built into a settlement that spends the
     /// live covenant and chains to the journal's `new_state` / `new_lane_tip`. The on-chain
@@ -665,7 +691,7 @@ impl L2Driver {
         // Wait until a full bundle's worth of batches has been submitted before pulling
         // settlements, mirroring the previous bundle cadence and bounding how far the miner
         // runs ahead of proving.
-        if self.outstanding_batches < self.bundle_size {
+        if self.outstanding_batches < self.settle_drain_threshold {
             return Vec::new();
         }
         // A fee output funds the settlement; if none is free this block, retry next block without
@@ -685,10 +711,10 @@ impl L2Driver {
             self.outstanding_batches = self.outstanding_batches.saturating_sub(bundle.batches());
             bundle.wait_artifact_published().await;
             if let Some(artifact) = bundle.artifact() {
-                return self.build_settlement_tx(ctx, &artifact);
+                return self.build_settlement_tx(ctx, &artifact).await;
             }
             // No-op bundle: nothing to settle. Stop once the backlog drains below a full bundle.
-            if self.outstanding_batches < self.bundle_size {
+            if self.outstanding_batches < self.settle_drain_threshold {
                 return Vec::new();
             }
         }
@@ -698,38 +724,44 @@ impl L2Driver {
     /// confirmed covenant, chains to the artifact's `new_state` / `new_lane_tip`, funds the fee
     /// from a spendable coinbase, and records it pending. Returns the single settlement
     /// transaction.
-    fn build_settlement_tx(
+    ///
+    /// Construction and funding go through the same shared primitives the production settler uses -
+    /// [`build_settlement_for_mode`] and a [`FeeSource`] ([`SimFeeSource`]) - so the two paths
+    /// differ only in the funding source (the sim's in-memory spendable set vs a wRPC fetch) and
+    /// the fact that the sim mines the tx itself, confirming it via [`Self::observe_covenant`]
+    /// rather than awaiting a settlement watch.
+    async fn build_settlement_tx(
         &mut self,
         ctx: &ProduceCtx<'_>,
         artifact: &SettlementArtifact<Receipt>,
     ) -> Vec<Transaction> {
-        let (fee_outpoint, fee_entry) = ctx.spendable.first().expect("fee output");
         let cov = self.confirmed.last().expect("covenant").covenant.clone();
 
-        // Build the settlement and its precise covenant compute budget the same way the production
-        // settler does (shared `build_settlement`); the sim only differs in how it funds the fee
-        // and submits the tx (mined by its miner, not the wallet's wRPC client).
-        let built = build_settlement(&self.backend, &self.lane_key, &cov, artifact);
+        // Build through the same `mode`-keyed construction the production settler uses. Under
+        // `RISC0_DEV_MODE` the receipt is a stub the production `OpZkPrecompile` would reject, so
+        // `mode` is `Dev` (dev redeem); a real (CUDA) run settles the production receipt.
+        let built =
+            build_settlement_for_mode(self.mode, &self.backend, &self.lane_key, &cov, artifact);
 
-        let covenant_entry =
-            UtxoEntry::new(cov.value, cov.spk.clone(), cov.daa_score, false, Some(cov.covenant_id));
         let (xonly, _) = ctx.keypair.x_only_public_key();
         let address = Address::new(
             Prefix::from(ctx.params.net.network_type()),
             Version::PubKey,
             &xonly.serialize(),
         );
-        let tx = build::settlement_transaction(build::SettlementTx {
-            settlement_tx: built.transaction,
-            covenant_entry,
-            covenant_compute_budget: built.compute_budget,
-            fee_outpoint: *fee_outpoint,
-            fee_entry: fee_entry.clone(),
+        // The single miner never contends for a fee output, so nothing is ever excluded and the
+        // first spendable always funds the fee.
+        let funder = SimFeeSource {
+            spendable: &ctx.spendable,
             keypair: ctx.keypair,
-            address: &address,
+            address,
             params: ctx.params,
-        });
-        let txid = tx.id();
+        };
+        let funded = funder
+            .fund(&built, cov.utxo_entry(), &HashSet::new())
+            .await
+            .expect("no spendable output to fund the settlement fee");
+        let txid = funded.tx.id();
 
         self.pending = Some(PendingCovenant {
             txid,
@@ -740,7 +772,7 @@ impl L2Driver {
             next: built.advance.apply(txid, 0),
         });
         self.stats.lock().unwrap().settlements_issued += 1;
-        vec![tx]
+        vec![funded.tx]
     }
 
     /// Issues a seeded number of lane-activity transactions, each writing the tracked resource,
@@ -782,6 +814,45 @@ impl L2Driver {
                 })
             })
             .collect()
+    }
+}
+
+/// The sim's [`FeeSource`]: funds a settlement fee from the miner's in-memory spendable set, the
+/// counterpart to the production `WalletFeeSource` (which fetches over wRPC). Built per block over
+/// the [`ProduceCtx`]'s spendable snapshot, key, and address. The sim is the sole miner, so there
+/// is no fee contention: nothing is ever excluded and the first spendable output always funds the
+/// fee.
+struct SimFeeSource<'a> {
+    /// Matured outpoints (with entries) the miner can spend this block, in insertion order.
+    spendable: &'a [(TransactionOutpoint, UtxoEntry)],
+    /// The miner's key, signing the fee input.
+    keypair: Keypair,
+    /// The miner's address, receiving the fee change.
+    address: Address,
+    /// Consensus params (mass calc, network prefix).
+    params: &'a Params,
+}
+
+impl FeeSource for SimFeeSource<'_> {
+    async fn fund(
+        &self,
+        built: &BuiltSettlement,
+        covenant_entry: UtxoEntry,
+        excluded: &HashSet<TransactionOutpoint>,
+    ) -> Option<FundedSettlement> {
+        let (fee_outpoint, fee_entry) =
+            self.spendable.iter().find(|(outpoint, _)| !excluded.contains(outpoint))?;
+        let tx = build::settlement_transaction(build::SettlementTx {
+            settlement_tx: built.transaction.clone(),
+            covenant_entry,
+            covenant_compute_budget: built.compute_budget,
+            fee_outpoint: *fee_outpoint,
+            fee_entry: fee_entry.clone(),
+            keypair: self.keypair,
+            address: &self.address,
+            params: self.params,
+        });
+        Some(FundedSettlement { tx, fee_outpoint: *fee_outpoint })
     }
 }
 

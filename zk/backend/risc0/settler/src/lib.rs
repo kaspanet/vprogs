@@ -3,9 +3,15 @@
 //! The [`AggregateProver`](vprogs_zk_aggregate_prover::AggregateProver) proves each bundle and
 //! hands off a [`SettlementArtifact`](vprogs_zk_aggregate_prover::SettlementArtifact) (the
 //! aggregate receipt plus its decoded state-transition bounds). This worker owns the on-chain side:
-//! it builds a production [`Settlement`](vprogs_zk_backend_risc0_covenant::Settlement) that spends
-//! the live covenant, submits it over wRPC, waits for the continuation UTXO to confirm, and
-//! advances the covenant so the next settlement can spend it.
+//! it builds a [`Settlement`](vprogs_zk_backend_risc0_covenant::Settlement) that spends the live
+//! covenant, submits it over wRPC, **awaits** the bridge's settlement notification to confirm it,
+//! and advances the covenant so the next settlement can spend it. The build → fund → submit →
+//! await-confirm → advance step is the environment-agnostic [`Settler`]; the production daemon and
+//! the L2 sim drive the same [`Settler`] with their own [`FeeSource`]/[`SettlementSink`] impls. The
+//! redeem variant is chosen by the configured
+//! [`SettlementMode`](worker::SettlementMode): production (on-chain `OpZkPrecompile` over a real
+//! receipt) or dev (chain-anchored seq commit, no precompile, for `RISC0_DEV_MODE` stub-receipt
+//! runs).
 //!
 //! Settlements are serialized: the artifact channel is processed one at a time, and the next
 //! settlement is built only after the previous continuation UTXO confirms (so it is spendable).
@@ -18,11 +24,21 @@
 //! - **reorg handling**: a reorg that orphans a settled block is not detected (single-miner /
 //!   low-reorg only, matching the aggregate prover's own gap).
 
+mod confirm;
 mod covenant;
+mod settle;
 mod worker;
 
+pub use confirm::OutpointAt;
 pub use covenant::{
-    BuiltSettlement, CovenantAdvance, CovenantState, bootstrap_real_covenant, bootstrap_redeem,
-    build_settlement,
+    BuiltSettlement, CovenantAdvance, CovenantState, DEV_COVENANT_BUDGET, bootstrap_dev_covenant,
+    bootstrap_real_covenant, bootstrap_redeem, build_dev_settlement, build_settlement,
+    build_settlement_for_mode, covenant_from_settlement, dev_bootstrap_redeem,
 };
-pub use worker::{SettlementWorkerConfig, run};
+pub use settle::{
+    FeeSource, FundedSettlement, RpcSink, SettleOutcome, SettlementSink, Settler, SubmitOutcome,
+    WalletFeeSource,
+};
+#[cfg(feature = "test-utils")]
+pub use worker::AlternationPacer;
+pub use worker::{SettlementMode, SettlementWorkerConfig, run};

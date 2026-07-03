@@ -31,9 +31,6 @@ pub trait Processor<S: Store>: Clone + Sized + Send + Sync + 'static {
     /// Program identifier keying a per-batch receipt in the proof-receipt store.
     fn batch_image_id(&self) -> [u8; 32];
 
-    /// Program identifier keying an aggregate (settlement) receipt in the proof-receipt store.
-    fn aggregator_image_id(&self) -> [u8; 32];
-
     /// Whether a returning committed batch may be restored from disk instead of re-executed.
     fn supports_restore(&self) -> bool {
         false
