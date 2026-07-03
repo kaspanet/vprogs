@@ -116,12 +116,17 @@ where
                 continue;
             }
 
-            // Nothing ready: park until a new command arrives or shutdown. `pop` re-runs at the top
-            // of the next iteration, so a push between here and the drain is not missed.
+            // Nothing ready: park until a new command arrives, a queued batch behind the front
+            // publishes its receipt, or shutdown. `pop` re-runs at the top of the next iteration,
+            // so a push between here and the drain is not missed. The batch-publication
+            // wake lets a configured minimum bundle size (`*bundle_size.start() > 1`)
+            // self-heal: the ready prefix grows past a parked point only when a batch
+            // behind the front publishes, which nothing else notifies the loop of.
             tokio::select! {
                 biased;
                 () = self.prover.shutdown.wait() => break,
                 () = self.prover.inbox.notified() => {}
+                () = next_queued_batch_published(&self.queued) => {}
             }
         }
     }
@@ -307,5 +312,25 @@ where
     /// the batch prover).
     fn apply_rollback(&mut self, target_index: u64) {
         self.queued.retain(|b| b.checkpoint().index() <= target_index);
+    }
+}
+
+/// Awaits the receipt publication of the first not-yet-published queued batch, the wake source the
+/// park needs beyond the inbox. With a configured minimum bundle size the ready prefix can be short
+/// of the minimum; a batch behind the front publishing its receipt is what extends it, yet that
+/// publication does not touch the inbox. Without this arm a formable min-size bundle would strand
+/// at an idle tip. Parks forever when every queued batch is already published or the queue is
+/// empty: then only a new command can grow the prefix, which the inbox arm already wakes on.
+///
+/// Canceled batches are skipped: `wait_artifact_published` returns immediately for one (a rollback
+/// resolved it), so awaiting a canceled-but-still-queued batch would busy-spin. Such a batch is
+/// cleared by the forthcoming `Command::Rollback` (an inbox wake), and the extend loop treats it as
+/// not-ready anyway, so parking past it until the rollback arrives is correct.
+async fn next_queued_batch_published<S: Store, P: Processor<S>>(
+    queued: &VecDeque<ScheduledBatch<S, P>>,
+) {
+    match queued.iter().find(|batch| !batch.artifact_published() && !batch.canceled()) {
+        Some(batch) => batch.wait_artifact_published().await,
+        None => std::future::pending::<()>().await,
     }
 }
