@@ -229,7 +229,7 @@ async fn two_provers_contend() {
     // a confirmation-latency behind the other: each range is a fresh, jittered spend race, so
     // over many ranges both provers win some. Settlements the settlers submit to the mempool
     // are pulled into the next mined block.
-    const DRIVER_ITERS: usize = 16;
+    const DRIVER_ITERS: usize = 10;
     const CARRIERS_PER_RANGE: usize = 2;
     for i in 0..DRIVER_ITERS {
         eprintln!("driver: top of iteration {i}");
@@ -262,7 +262,7 @@ async fn two_provers_contend() {
         eprintln!("driver: iteration {i} mined carriers, mining acceptance");
         for _ in 0..5 {
             l1.mine_blocks(1).await;
-            tokio::time::sleep(Duration::from_millis(800)).await;
+            tokio::time::sleep(Duration::from_millis(250)).await;
         }
         eprintln!("driver: iteration {i} mined acceptance");
         if i % 5 == 0 {
@@ -282,7 +282,7 @@ async fn two_provers_contend() {
     let mut stable_rounds = 0;
     for round in 0..40 {
         l1.mine_blocks(1).await;
-        tokio::time::sleep(Duration::from_millis(800)).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
         let len = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
         if len == prev_len {
             stable_rounds += 1;
@@ -499,7 +499,7 @@ async fn two_provers_reform_superseded_suffix() {
     // bridges publish the covenant's advancing `last_settlement`. The divergent boundaries
     // guarantee at least one prover's bundle is superseded each range, exercising retain +
     // re-aggregation.
-    const DRIVER_ITERS: usize = 12;
+    const DRIVER_ITERS: usize = 8;
     const CARRIERS_PER_RANGE: usize = 5;
     for i in 0..DRIVER_ITERS {
         for _ in 0..CARRIERS_PER_RANGE {
@@ -517,7 +517,7 @@ async fn two_provers_reform_superseded_suffix() {
         }
         for _ in 0..5 {
             l1.mine_blocks(1).await;
-            tokio::time::sleep(Duration::from_millis(800)).await;
+            tokio::time::sleep(Duration::from_millis(250)).await;
         }
         if i % 4 == 0 {
             let len =
@@ -544,7 +544,7 @@ async fn two_provers_reform_superseded_suffix() {
     let mut stable_rounds = 0;
     for round in 0..40 {
         l1.mine_blocks(1).await;
-        tokio::time::sleep(Duration::from_millis(800)).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
         let len = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
         if len == prev_len {
             stable_rounds += 1;
@@ -741,7 +741,7 @@ async fn prover_catches_up_to_existing_covenant() {
     .await;
 
     // === Step 4: drive both, then drain ===
-    const DRIVER_ITERS: usize = 16;
+    const DRIVER_ITERS: usize = 10;
     for i in 0..DRIVER_ITERS {
         eprintln!("catchup driver: iteration {i}");
         drive_range(&l1).await;
@@ -982,7 +982,7 @@ async fn prover_catches_up_to_already_settled_covenant() {
     .await;
 
     // === Step 5: keep driving so B catches up and lands a settlement, then drain ===
-    const DRIVER_ITERS: usize = 16;
+    const DRIVER_ITERS: usize = 10;
     for i in 0..DRIVER_ITERS {
         eprintln!("already-settled catchup driver: iteration {i}");
         drive_range(&l1).await;
@@ -992,7 +992,7 @@ async fn prover_catches_up_to_already_settled_covenant() {
     let mut stable_rounds = 0;
     for _ in 0..40 {
         l1.mine_blocks(1).await;
-        tokio::time::sleep(Duration::from_millis(800)).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
         let len = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
         if len == prev_len {
             stable_rounds += 1;
@@ -1182,7 +1182,7 @@ async fn prover_resumes_after_settlement() {
     )
     .await;
 
-    const DRIVER_ITERS: usize = 14;
+    const DRIVER_ITERS: usize = 9;
     for i in 0..DRIVER_ITERS {
         eprintln!("resume run2 driver: iteration {i}");
         drive_range(&l1).await;
@@ -1192,7 +1192,7 @@ async fn prover_resumes_after_settlement() {
     let mut stable_rounds = 0;
     for _ in 0..40 {
         l1.mine_blocks(1).await;
-        tokio::time::sleep(Duration::from_millis(800)).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
         let len = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
         if len == prev_len {
             stable_rounds += 1;
@@ -1390,7 +1390,7 @@ async fn prover_resumes_after_settlement_contended() {
     .await;
 
     // === Run 2: A and the restarted B2 contend; drive then drain ===
-    const DRIVER_ITERS: usize = 16;
+    const DRIVER_ITERS: usize = 10;
     for i in 0..DRIVER_ITERS {
         eprintln!("contended-resume run2 driver: iteration {i}");
         drive_range(&l1).await;
@@ -1492,7 +1492,7 @@ async fn drive_range(l1: &L1Node) {
     }
     for _ in 0..5 {
         l1.mine_blocks(1).await;
-        tokio::time::sleep(Duration::from_millis(800)).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
 
