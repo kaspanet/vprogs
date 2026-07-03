@@ -158,7 +158,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             seed_depth: config.seed_depth,
             start_from: config.start_from,
             tip_daa: config.tip_daa.clone(),
-            settlement: config.settlement.clone(),
+            settlement: config.settlement_observer.clone(),
         }
         .run()
         .await;

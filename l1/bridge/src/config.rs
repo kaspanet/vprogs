@@ -43,7 +43,7 @@ pub struct L1BridgeConfig {
     /// bridge is the single writer; each settler holds a [`watch::Receiver`] it borrows (and, once
     /// confirmation is notification-based, awaits) to reconcile against the canonical settlement
     /// without a confirm RTT. `None` disables publishing.
-    pub settlement: Option<watch::Sender<Option<SettlementInfo>>>,
+    pub settlement_observer: Option<watch::Sender<Option<SettlementInfo>>>,
 }
 
 impl Default for L1BridgeConfig {
@@ -61,7 +61,7 @@ impl Default for L1BridgeConfig {
             seed_depth: None, // Replay from the pruning point by default.
             start_from: None, // No explicit seed block; defer to seed_depth/pruning point.
             tip_daa: None,
-            settlement: None,
+            settlement_observer: None,
         }
     }
 }
@@ -149,9 +149,9 @@ impl L1BridgeConfig {
     /// disables publishing.
     pub fn with_settlement_observer(
         mut self,
-        settlement: Option<watch::Sender<Option<SettlementInfo>>>,
+        settlement_observer: Option<watch::Sender<Option<SettlementInfo>>>,
     ) -> Self {
-        self.settlement = settlement;
+        self.settlement_observer = settlement_observer;
         self
     }
 }
