@@ -235,6 +235,7 @@ fn build_exec(
                 covenant_id,
                 lane_source: ConsensusLaneSource::from_weak(consensus),
                 settlement_queue: Some(queue.clone()),
+                settlement: None,
                 // Fixed-size proof bundles: one proof per `proof_bundle_size` batches. The
                 // aggregate worker's park self-heals when the minimum (> 1 here) leaves the ready
                 // prefix short.

@@ -5,10 +5,10 @@ use std::{
 };
 
 use kaspa_hashes::Hash;
-use tokio::runtime::Builder;
+use tokio::{runtime::Builder, sync::watch};
 use vprogs_core_atomics::AsyncQueue;
 use vprogs_core_codec::Reader;
-use vprogs_l1_types::ChainBlockMetadata;
+use vprogs_l1_types::{ChainBlockMetadata, SettlementInfo};
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
 use vprogs_zk_abi::batch_aggregator::{Inputs as AggregatorInputs, StateTransition};
@@ -40,6 +40,17 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend, L: LaneProofSour
     bundle_size: RangeInclusive<usize>,
     /// Batches accumulated but not yet bundled, in scheduling order.
     queued: VecDeque<ScheduledBatch<S, P>>,
+    /// Batches consumed into a proved bundle but not yet known to be settled, in scheduling order.
+    /// [`reaggregate_superseded`](Self::reaggregate_superseded) re-forms the suffix of these a
+    /// shorter competitor superseded; drained once a settlement covers them.
+    retained: VecDeque<ScheduledBatch<S, P>>,
+    /// Receiver on the bridge's covenant `last_settlement` watch driving
+    /// [`reaggregate_superseded`](Self::reaggregate_superseded), or `None` to run without
+    /// re-forming.
+    settlement: Option<watch::Receiver<Option<SettlementInfo>>>,
+    /// First-batch checkpoint index of the most recently re-formed suffix, guarding against
+    /// re-emitting it on every settlement wake. Reset by a rollback.
+    last_reformed_from: Option<u64>,
 }
 
 impl<S, P, B, L> Worker<S, P, B, L>
@@ -68,6 +79,7 @@ where
             covenant_id,
             lane_source,
             settlement_queue,
+            settlement,
             bundle_size,
         } = config;
         // Bundle formation parks while `take` is below the range start and caps `take` at the range
@@ -86,12 +98,16 @@ where
             settlement_queue,
             bundle_size,
             queued: VecDeque::new(),
+            retained: VecDeque::new(),
+            settlement,
+            last_reformed_from: None,
         };
         let runtime = Builder::new_current_thread().enable_all().build().expect("runtime");
         spawn(move || runtime.block_on(this.run()))
     }
 
-    /// Main loop: drain commands into local state, then prove every ready bundle in arrival order.
+    /// Main loop: drain commands into local state, prove every ready bundle in arrival order, and
+    /// re-aggregate a superseded suffix whenever the settlement watch advances.
     async fn run(mut self) {
         loop {
             // Draining only accumulates: a bundle spans many batches and depends on which receipts
@@ -101,6 +117,19 @@ where
                     Command::Batch(batch) => self.queued.push_back(batch),
                     Command::Rollback(target) => self.apply_rollback(target),
                 }
+                if self.prover.shutdown.is_open() {
+                    return;
+                }
+            }
+
+            // Re-aggregate a superseded suffix when the settlement watch advances. `has_changed`
+            // errors only once the bridge dropped the sender (node teardown), not on a fresh
+            // settlement; `borrow_and_update` clears the flag so each settlement is acted on once.
+            let changed =
+                self.settlement.as_ref().is_some_and(|rx| rx.has_changed().unwrap_or(false));
+            if changed {
+                let latest = *self.settlement.as_mut().expect("settlement").borrow_and_update();
+                self.reaggregate_superseded(latest).await;
                 if self.prover.shutdown.is_open() {
                     return;
                 }
@@ -117,16 +146,24 @@ where
             }
 
             // Nothing ready: park until a new command arrives, a queued batch behind the front
-            // publishes its receipt, or shutdown. `pop` re-runs at the top of the next iteration,
-            // so a push between here and the drain is not missed. The batch-publication
-            // wake lets a configured minimum bundle size (`*bundle_size.start() > 1`)
-            // self-heal: the ready prefix grows past a parked point only when a batch
-            // behind the front publishes, which nothing else notifies the loop of.
+            // publishes its receipt, a settlement advances, or shutdown. `pop` and the settlement
+            // check re-run at the top of the next iteration, so a signal between here and the drain
+            // is not missed. Shutdown is checked first so a teardown request is never starved by a
+            // busy watch and the worker's join never hangs. The batch-publication wake lets a
+            // configured minimum bundle size (`*bundle_size.start() > 1`) self-heal: the ready
+            // prefix grows past a parked point only when a batch behind the front publishes, which
+            // nothing else notifies the loop of. The settlement wake is low-priority (last): a
+            // pending re-aggregation is cheap and can wait behind real proving work.
+            let shutdown = &self.prover.shutdown;
+            let inbox = &self.prover.inbox;
+            let queued = &self.queued;
+            let settlement = self.settlement.as_mut();
             tokio::select! {
                 biased;
-                () = self.prover.shutdown.wait() => break,
-                () = self.prover.inbox.notified() => {}
-                () = next_queued_batch_published(&self.queued) => {}
+                () = shutdown.wait() => break,
+                () = inbox.notified() => {}
+                () = next_queued_batch_published(queued) => {}
+                () = settlement_changed(settlement) => {}
             }
         }
     }
@@ -169,6 +206,24 @@ where
         let bundle: Vec<ScheduledBatch<S, P>> =
             (0..take).map(|_| self.queued.pop_front().unwrap()).collect();
 
+        self.prove_bundle(&bundle).await;
+        // Retain the consumed batches so a competitor settling a shorter range can re-aggregate the
+        // surviving suffix from them. A shutdown-discard (the proof was abandoned mid-flight) skips
+        // retention, matching the discard-the-proved-bundle behavior in `prove_bundle`.
+        if !self.prover.shutdown.is_open() {
+            self.retained.extend(bundle.iter().cloned());
+        }
+        true
+    }
+
+    /// Aggregates one already-chosen bundle into a settlement receipt and publishes it: fetches the
+    /// final block's lane proof, encodes the aggregator inputs over the per-batch journals, proves
+    /// (with the per-batch receipts as composition assumptions) or reuses the cached receipt, then
+    /// fills the published handle with the proved [`SettlementArtifact`]. An all-empty or no-op
+    /// bundle (one that advances no state) publishes a resolved no-op handle instead. The same body
+    /// serves the normal front-of-queue bundle and a re-aggregated superseded suffix.
+    async fn prove_bundle(&self, bundle: &[ScheduledBatch<S, P>]) {
+        let take = bundle.len();
         let last_checkpoint = bundle.last().unwrap().checkpoint();
         let last_metadata = *last_checkpoint.metadata();
         let block_prove_to = last_metadata.hash;
@@ -195,7 +250,7 @@ where
                 checkpoint_index,
                 BundleBlocks { from_block, block_prove_to },
             ));
-            return true;
+            return;
         }
 
         // Publish the (still unproven) bundle handle before proving, mirroring how the scheduler
@@ -243,7 +298,7 @@ where
                     // its artifact is released rather than blocked on a latch that never opens, and
                     // drop the proved bundle (the same discard-on-shutdown behavior as before).
                     handle.publish_artifact(None);
-                    return true;
+                    return;
                 }
 
                 // Wait for the receipt to be durable before publishing the artifact, so a crash
@@ -264,7 +319,7 @@ where
         // batches.
         if st.new_state == st.prev_state {
             handle.publish_artifact(None);
-            return true;
+            return;
         }
 
         if let Some(covenant_id) = self.covenant_id {
@@ -295,7 +350,6 @@ where
             covenant_id: st.covenant_id,
         };
         handle.publish_artifact(Some(artifact));
-        true
     }
 
     /// Publishes a formed bundle's handle onto the settlement queue, if one is wired. With no queue
@@ -306,12 +360,75 @@ where
         }
     }
 
-    /// Drops queued batches rolled back by a reorg. The active bundle's proof is awaited inline, so
-    /// a rollback command is only applied between bundles and can never silently include a
-    /// rolled-back suffix; aborting a proof already running on the GPU remains a TODO (same gap as
-    /// the batch prover).
+    /// Re-aggregates the suffix of our retained batches that survives a competitor's settlement.
+    ///
+    /// `latest` is the bridge's newest covenant `last_settlement`. Both provers consume the same
+    /// bridge batch stream, so the settlement's `block_prove_to` is the final block of one of our
+    /// retained batches: drop that batch and every batch before it (the competitor covered them),
+    /// then re-form the surviving suffix into a fresh bundle whose first batch's `prev_state`
+    /// already equals the adopted tip, and prove it. The settler accepts that artifact directly
+    /// (its `prev_state == cov.state`), so two contending provers converge on one continuation
+    /// chain. Only the cheap aggregator STARK re-runs; the cached per-batch receipts are reused.
+    ///
+    /// Cases on the settlement boundary `block_prove_to`:
+    /// - matches a retained batch: prefix-drain `0..=k` (keeps the suffix consecutive for the
+    ///   verifier's `prev_state` chaining), then re-form the remainder.
+    /// - absent from our window (the boundary is not one of our retained blocks): drop nothing and
+    ///   re-form nothing. `block_prove_to` is a block hash with no orderable relation to our
+    ///   retained blocks, so we cannot tell "covered all of them" from "behind / not ours" without
+    ///   risking dropping batches that are still unsettled. Forward-only: a later settlement whose
+    ///   boundary does land on a retained block drains them, and a competitor settling past our
+    ///   whole window simply leaves a bounded residual that never re-forms (the same memory profile
+    ///   as the pre-existing unbounded-await case, under the single-miner / low-reorg assumption).
+    ///
+    /// `None` is a no-op: a reorg that orphaned the settlement publishes `None`, and the rollback
+    /// command truncates `retained` ahead of any re-form (single-miner / low-reorg assumption,
+    /// inherited from the settler).
+    async fn reaggregate_superseded(&mut self, latest: Option<SettlementInfo>) {
+        let Some(settlement) = latest else {
+            return;
+        };
+
+        // Re-form only on a boundary that lands on one of our retained blocks: the competitor (or
+        // our own settler) covered it and everything before it. An unmatched boundary drops
+        // nothing, so an unsettled suffix is never silently lost.
+        let blocks: Vec<Hash> =
+            self.retained.iter().map(|b| b.checkpoint().metadata().hash).collect();
+        let Some(drain) = settled_prefix(&blocks, settlement.block_prove_to) else {
+            return;
+        };
+        self.retained.drain(0..drain);
+
+        // Re-form the surviving suffix: take up to a full bundle's worth from the front of the
+        // retained remainder. Its first batch's `prev_state` already equals the adopted tip, so the
+        // proved artifact chains straight off the settlement. The batches stay in `retained`
+        // (dropped only when a later settlement covers them), so a still-shorter competitor
+        // re-forms again until convergence; the guard and the receipt cache keep that
+        // idempotent.
+        let suffix_len = self.retained.len().min(*self.bundle_size.end());
+        if suffix_len == 0 {
+            self.last_reformed_from = None;
+            return;
+        }
+        let suffix: Vec<ScheduledBatch<S, P>> =
+            self.retained.iter().take(suffix_len).cloned().collect();
+        let suffix_from = suffix.first().unwrap().checkpoint().index();
+        if self.last_reformed_from == Some(suffix_from) {
+            return;
+        }
+        self.prove_bundle(&suffix).await;
+        self.last_reformed_from = Some(suffix_from);
+    }
+
+    /// Drops queued and retained batches rolled back by a reorg, and resets the re-form guard so
+    /// the next settlement re-aggregates against the rolled-back retained suffix. The active
+    /// bundle's proof is awaited inline, so a rollback command is only applied between bundles
+    /// and can never silently include a rolled-back suffix; aborting a proof already running on
+    /// the GPU remains a TODO (same gap as the batch prover).
     fn apply_rollback(&mut self, target_index: u64) {
         self.queued.retain(|b| b.checkpoint().index() <= target_index);
+        self.retained.retain(|b| b.checkpoint().index() <= target_index);
+        self.last_reformed_from = None;
     }
 }
 
@@ -332,5 +449,69 @@ async fn next_queued_batch_published<S: Store, P: Processor<S>>(
     match queued.iter().find(|batch| !batch.artifact_published() && !batch.canceled()) {
         Some(batch) => batch.wait_artifact_published().await,
         None => std::future::pending::<()>().await,
+    }
+}
+
+/// Awaits the settlement watch's next change, or parks forever when no watch is wired. The watch
+/// also errors here once the bridge dropped the sender (node teardown); treat that as no further
+/// settlements and park, leaving shutdown to drive the loop.
+async fn settlement_changed(rx: Option<&mut watch::Receiver<Option<SettlementInfo>>>) {
+    match rx {
+        Some(rx) => {
+            if rx.changed().await.is_err() {
+                std::future::pending::<()>().await
+            }
+        }
+        None => std::future::pending::<()>().await,
+    }
+}
+
+/// How many leading retained blocks a settlement landing on `boundary` covers, given the retained
+/// blocks in scheduling order.
+///
+/// `Some(n)`: `boundary` is the `n`-th retained block, so the settlement covered the first `n`;
+/// drain that prefix and re-form the remainder. `None`: `boundary` is not one of our retained
+/// blocks, so drop nothing. Dropping on an unmatched boundary would risk discarding a still-
+/// unsettled suffix (the boundary may sit behind our window, or cover a range we never proved),
+/// which is the wedge [`Worker::reaggregate_superseded`] exists to prevent. The boundary is matched
+/// from the back: chain-block hashes are unique, so at most one retained block matches.
+fn settled_prefix(retained_blocks: &[Hash], boundary: Hash) -> Option<usize> {
+    retained_blocks.iter().rposition(|hash| *hash == boundary).map(|index| index + 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use kaspa_hashes::Hash;
+
+    use super::settled_prefix;
+
+    fn block(byte: u8) -> Hash {
+        Hash::from_bytes([byte; 32])
+    }
+
+    #[test]
+    fn boundary_inside_window_drains_through_it() {
+        let blocks = [block(1), block(2), block(3), block(4)];
+        // A competitor settled through block 2: drain blocks 1 and 2, leaving [3, 4] to re-form.
+        assert_eq!(settled_prefix(&blocks, block(2)), Some(2));
+    }
+
+    #[test]
+    fn boundary_at_window_tip_drains_everything() {
+        let blocks = [block(1), block(2), block(3)];
+        assert_eq!(settled_prefix(&blocks, block(3)), Some(3));
+    }
+
+    #[test]
+    fn unmatched_boundary_drains_nothing() {
+        // The boundary is not one of our retained blocks: drop nothing rather than clear the
+        // window, or an unsettled suffix is lost and the chain wedges.
+        let blocks = [block(1), block(2), block(3)];
+        assert_eq!(settled_prefix(&blocks, block(9)), None);
+    }
+
+    #[test]
+    fn empty_window_drains_nothing() {
+        assert_eq!(settled_prefix(&[], block(1)), None);
     }
 }

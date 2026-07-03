@@ -389,6 +389,9 @@ async fn start_settlement(
             client: client.clone(),
             sink: queue.clone(),
             bundle_size: 1..=usize::MAX,
+            // The aggregate prover observes the same settlement watch as the settler, re-forming a
+            // superseded suffix when a competitor settles a shorter range.
+            settlement_rx: Some(settlement_rx.clone()),
         },
     );
     // Target the bridge replays toward: the node's virtual DAA now (the bootstrap was just sent, so

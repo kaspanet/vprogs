@@ -108,6 +108,9 @@ pub struct ProvingParams {
     /// Inclusive bundle-size bound for this prover's aggregate prover (min ready before forming,
     /// max per bundle). `1..=usize::MAX` is the greedy default used by the real daemon.
     pub bundle_size: RangeInclusive<usize>,
+    /// Receiver on the bridge's covenant `last_settlement` watch, cloned for the aggregate prover
+    /// so it re-aggregates a superseded suffix, or `None` to run without re-forming.
+    pub settlement_rx: Option<watch::Receiver<Option<SettlementInfo>>>,
 }
 
 /// Builds and starts an execution-only [`FlowNode`]: a zk `Vm` with no proving, the given store,
@@ -147,6 +150,7 @@ pub fn build_proving_node(
             covenant_id: Some(proving.covenant_id),
             lane_source: RemoteLaneSource::new(proving.client),
             settlement_queue: Some(proving.sink),
+            settlement: proving.settlement_rx,
             bundle_size: proving.bundle_size,
         },
     );

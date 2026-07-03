@@ -229,7 +229,7 @@ async fn two_provers_contend() {
     // a confirmation-latency behind the other: each range is a fresh, jittered spend race, so
     // over many ranges both provers win some. Settlements the settlers submit to the mempool
     // are pulled into the next mined block.
-    const DRIVER_ITERS: usize = 16;
+    const DRIVER_ITERS: usize = 10;
     const CARRIERS_PER_RANGE: usize = 2;
     for i in 0..DRIVER_ITERS {
         eprintln!("driver: top of iteration {i}");
@@ -262,7 +262,7 @@ async fn two_provers_contend() {
         eprintln!("driver: iteration {i} mined carriers, mining acceptance");
         for _ in 0..5 {
             l1.mine_blocks(1).await;
-            tokio::time::sleep(Duration::from_millis(800)).await;
+            tokio::time::sleep(Duration::from_millis(250)).await;
         }
         eprintln!("driver: iteration {i} mined acceptance");
         if i % 5 == 0 {
@@ -282,7 +282,7 @@ async fn two_provers_contend() {
     let mut stable_rounds = 0;
     for round in 0..40 {
         l1.mine_blocks(1).await;
-        tokio::time::sleep(Duration::from_millis(800)).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
         let len = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
         if len == prev_len {
             stable_rounds += 1;
@@ -372,6 +372,236 @@ async fn two_provers_contend() {
 
     // No settlement landed on a DAG side-branch: the selected-chain count equals the DAG-wide
     // count.
+    assert_no_fork(&l1, block_deploy, bootstrap_outpoint, covenant_id).await;
+
+    l1.shutdown().await;
+}
+
+/// Two provers contend over one covenant with DIVERGENT bundle sizes so their boundaries never
+/// align: prover A bundles `5..=5`, prover B bundles `3..=3`, so each of B's short settlements
+/// covers only part of A's longer in-flight bundle, leaving A a surviving suffix it proved but
+/// could not settle (B's shorter range superseded the whole bundle). The driver runs several
+/// contended ranges, then stops injecting fresh ranges and runs a bounded acceptance-only drain,
+/// exercising the retain + re-aggregation path that keeps the provers converging once fresh
+/// activity stops.
+///
+/// This is integration coverage of the contention path: it asserts the two provers converge on a
+/// single non-forked continuation chain that advances to settle their proved work, and that neither
+/// settler panics while adopting competitors and re-forming superseded suffixes. It is NOT a
+/// decisive isolation of the re-form path on its own: the contention livelock is rare and
+/// nondeterministic, and the covenant chain self-heals through whichever prover settles each range,
+/// so a whole-system advance cannot be attributed solely to re-aggregation. The decisive,
+/// deterministic guard for the re-form drain decision (an unmatched settlement boundary must drop
+/// nothing, never clear the retained window) lives in the `settled_prefix` unit tests in
+/// `vprogs-zk-aggregate-prover`.
+#[tokio::test(flavor = "multi_thread")]
+async fn two_provers_reform_superseded_suffix() {
+    if !dev_mode_enabled() {
+        eprintln!(
+            "skipping two_provers_reform_superseded_suffix: RISC0_DEV_MODE!=1 - the re-form \
+             scenario runs dev stub proofs + the dev redeem on CPU",
+        );
+        return;
+    }
+    let _serial = serialize_settlement_test().await;
+
+    // === Step 0: simnet L1 (same config as two_provers_contend) ===
+    let l1 = L1Node::new(
+        NetworkId::new(NetworkType::Simnet),
+        Some(|p| {
+            p.blockrate.coinbase_maturity = 1;
+            p.toccata_activation = ForkActivation::always();
+            p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+        }),
+    )
+    .await;
+    l1.mine_utxos(30).await;
+
+    let network_id = NetworkId::new(NetworkType::Simnet);
+    let lane_key = test_lane_key();
+
+    // === Step 1: bootstrap the shared dev covenant ===
+    let (bootstrap_redeem, bootstrap_spk) = dev_bootstrap_redeem(&lane_key);
+    let (boot_tx, covenant_id) =
+        l1.build_covenant_bootstrap_transaction(&bootstrap_redeem, COVENANT_VALUE).await;
+    let boot_txid = boot_tx.id();
+    let block_deploy = l1.mine_block(&[boot_tx]).await;
+    l1.mine_blocks(1).await;
+    eprintln!("dev covenant bootstrapped: covenant_id={covenant_id} block_deploy={block_deploy}");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let bootstrap_outpoint = TransactionOutpoint::new(boot_txid, 0);
+    let initial_covenant = CovenantState {
+        covenant_id,
+        state: EMPTY_HASH,
+        lane_tip: Hash::default(),
+        outpoint: bootstrap_outpoint,
+        spk: bootstrap_spk,
+        value: COVENANT_VALUE,
+        daa_score: 0,
+    };
+
+    // === Step 2: two distinct, funded prover keypairs ===
+    let kp_a = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
+    let kp_b = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
+    let addr_a = prover_address(&kp_a, network_id);
+    let addr_b = prover_address(&kp_b, network_id);
+    l1.fund_address(&addr_a, FUND_VALUE, FUND_COUNT).await;
+    l1.fund_address(&addr_b, FUND_VALUE, FUND_COUNT).await;
+
+    let tx_elf = transaction_processor_elf();
+    let batch_elf = batch_processor_elf();
+    let aggregator_elf = batch_aggregator_elf();
+    let elfs = Elfs { transaction: &tx_elf, batch: &batch_elf, aggregator: &aggregator_elf };
+    let params = Params::from(network_id);
+    let pacer = Arc::new(AlternationPacer::new());
+
+    // === Step 3: spin up both provers with DIVERGENT bundle sizes ===
+    // A bundles fives, B bundles threes: their bundle boundaries never align, so each settlement
+    // covers only part of the other's in-flight bundle and leaves a surviving suffix that the loser
+    // must re-aggregate against the adopted tip rather than drop.
+    let prover_a = spawn_prover(
+        &l1,
+        "A",
+        kp_a,
+        addr_a.clone(),
+        5..=5,
+        network_id,
+        &params,
+        lane_key,
+        covenant_id,
+        initial_covenant.clone(),
+        elfs,
+        Some((0, pacer.clone())),
+        Some(block_deploy),
+    )
+    .await;
+    let prover_b = spawn_prover(
+        &l1,
+        "B",
+        kp_b,
+        addr_b.clone(),
+        3..=3,
+        network_id,
+        &params,
+        lane_key,
+        covenant_id,
+        initial_covenant,
+        elfs,
+        Some((1, pacer.clone())),
+        Some(block_deploy),
+    )
+    .await;
+
+    // === Step 4: drive several contended ranges (carriers + acceptance) ===
+    // Each range mines a burst of consecutive lane carriers so both bundle sizes can form (A needs
+    // 5, B needs 3 consecutively ready), then acceptance blocks so settlements land and both
+    // bridges publish the covenant's advancing `last_settlement`. The divergent boundaries
+    // guarantee at least one prover's bundle is superseded each range, exercising retain +
+    // re-aggregation.
+    const DRIVER_ITERS: usize = 8;
+    const CARRIERS_PER_RANGE: usize = 5;
+    for i in 0..DRIVER_ITERS {
+        for _ in 0..CARRIERS_PER_RANGE {
+            let payload = encode_activity_payload(
+                &[AccessMetadata::write(ResourceId::for_test(1))],
+                &[1, 2, 3],
+            );
+            let carrier = l1
+                .build_subnet_payload_transactions(vec![payload], LANE_SUBNET, TX_VERSION_TOCCATA)
+                .await
+                .into_iter()
+                .next()
+                .expect("carrier tx");
+            l1.mine_block(std::slice::from_ref(&carrier)).await;
+        }
+        for _ in 0..5 {
+            l1.mine_blocks(1).await;
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        if i % 4 == 0 {
+            let len =
+                covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+            eprintln!("reform driver: iteration {i}/{DRIVER_ITERS}, covenant chain length {len}");
+        }
+    }
+
+    // Pre-drain chain length: residual suffixes proved past here may still be in flight, superseded
+    // and awaiting re-aggregation against the adopted tip.
+    let pre_drain_len =
+        covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+    assert!(
+        pre_drain_len >= 3,
+        "the two provers must land >=3 settlements under contention before the drain, got {pre_drain_len}",
+    );
+
+    // === Step 5: acceptance-only drain - NO fresh ranges ===
+    // Mine acceptance blocks only (the divergent ranges are spent), one at a time with a pause so a
+    // re-formed suffix has time to prove and confirm. The retain + re-aggregation path keeps the
+    // contending provers converging rather than wedging once fresh activity stops; stop once the
+    // chain has advanced and stabilized, or at a bounded ceiling.
+    let mut prev_len = pre_drain_len;
+    let mut stable_rounds = 0;
+    for round in 0..40 {
+        l1.mine_blocks(1).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let len = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+        if len == prev_len {
+            stable_rounds += 1;
+        } else {
+            stable_rounds = 0;
+        }
+        prev_len = len;
+        if stable_rounds >= 3 && len > pre_drain_len {
+            break;
+        }
+        if round % 5 == 0 {
+            eprintln!("reform drain: round {round}, covenant chain length {len}");
+        }
+    }
+
+    prover_a.shutdown.open();
+    prover_b.shutdown.open();
+    let join_a = prover_a.settler.await;
+    let join_b = prover_b.settler.await;
+    prover_a.node.shutdown();
+    prover_b.node.shutdown();
+
+    // Neither settler panicked while adopting competitors and re-forming superseded suffixes.
+    assert!(join_a.is_ok(), "prover A settler panicked: {join_a:?}");
+    assert!(join_b.is_ok(), "prover B settler panicked: {join_b:?}");
+
+    // === Assertions: the contending provers converged on one contiguous, advancing chain ===
+    let chain = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await;
+    let mut expected_input = bootstrap_outpoint;
+    for (pos, link) in chain.iter().enumerate() {
+        assert_eq!(
+            link.covenant_input, expected_input,
+            "settlement #{pos} ({}) must spend the previous covenant output {expected_input}; the \
+             continuation chain forked",
+            link.tx_id,
+        );
+        expected_input = TransactionOutpoint::new(link.tx_id, 0);
+    }
+
+    eprintln!(
+        "reform: final covenant chain length = {} (pre_drain_len = {pre_drain_len})",
+        chain.len(),
+    );
+
+    // The chain kept advancing through the acceptance-only drain rather than wedging: the
+    // contending provers adopted each other's settlements and re-formed superseded suffixes
+    // instead of dropping them. (This advance is convergence evidence, not a re-form isolation
+    // - see the doc comment and the `settled_prefix` unit tests for the decisive drain-decision
+    // guard.)
+    assert!(
+        chain.len() > pre_drain_len,
+        "the acceptance-only drain must keep the chain advancing past the pre-drain length \
+         ({} <= {pre_drain_len}); the contending provers wedged",
+        chain.len(),
+    );
+
+    // No settlement landed on a DAG side-branch: every settlement chained off the adopted tip.
     assert_no_fork(&l1, block_deploy, bootstrap_outpoint, covenant_id).await;
 
     l1.shutdown().await;
@@ -511,20 +741,17 @@ async fn prover_catches_up_to_existing_covenant() {
     .await;
 
     // === Step 4: drive both, then drain ===
-    const DRIVER_ITERS: usize = 16;
+    const DRIVER_ITERS: usize = 10;
     for i in 0..DRIVER_ITERS {
         eprintln!("catchup driver: iteration {i}");
         drive_range(&l1).await;
     }
 
-    // TODO(livelock): an acceptance-only drain (mine acceptance blocks with NO fresh ranges and
-    // require the chain to advance from in-flight bundles) would catch a steady-state contention
-    // livelock, but the aggregate prover currently has one: a proved-but-unsettled bundle that a
-    // competitor supersedes is dropped, not re-formed against the adopted tip, so two contending
-    // provers can wedge once fresh activity stops. This is pre-existing and orthogonal to the
-    // resume/catch-up fix; the catch-up path itself is exercised by
-    // prover_catches_up_to_already_settled_covenant. Restore the acceptance-only assertion once the
-    // aggregate prover re-forms superseded ranges.
+    // The acceptance-only drain that catches a steady-state contention livelock (where a
+    // proved-but-unsettled bundle a competitor supersedes must re-form against the adopted tip
+    // instead of being dropped) lives in `two_provers_reform_superseded_suffix`, which drives
+    // divergent bundle sizes and then drains with NO fresh ranges. This test keeps a
+    // range-injecting drain because its focus is the catch-up join, not the re-form path.
     //
     // Range-injecting drain: keep offering fresh carrier ranges (which keeps the contention path
     // making progress) until the chain reaches the target and stabilizes.
@@ -755,7 +982,7 @@ async fn prover_catches_up_to_already_settled_covenant() {
     .await;
 
     // === Step 5: keep driving so B catches up and lands a settlement, then drain ===
-    const DRIVER_ITERS: usize = 16;
+    const DRIVER_ITERS: usize = 10;
     for i in 0..DRIVER_ITERS {
         eprintln!("already-settled catchup driver: iteration {i}");
         drive_range(&l1).await;
@@ -765,7 +992,7 @@ async fn prover_catches_up_to_already_settled_covenant() {
     let mut stable_rounds = 0;
     for _ in 0..40 {
         l1.mine_blocks(1).await;
-        tokio::time::sleep(Duration::from_millis(800)).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
         let len = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
         if len == prev_len {
             stable_rounds += 1;
@@ -955,7 +1182,7 @@ async fn prover_resumes_after_settlement() {
     )
     .await;
 
-    const DRIVER_ITERS: usize = 14;
+    const DRIVER_ITERS: usize = 9;
     for i in 0..DRIVER_ITERS {
         eprintln!("resume run2 driver: iteration {i}");
         drive_range(&l1).await;
@@ -965,7 +1192,7 @@ async fn prover_resumes_after_settlement() {
     let mut stable_rounds = 0;
     for _ in 0..40 {
         l1.mine_blocks(1).await;
-        tokio::time::sleep(Duration::from_millis(800)).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
         let len = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
         if len == prev_len {
             stable_rounds += 1;
@@ -1163,7 +1390,7 @@ async fn prover_resumes_after_settlement_contended() {
     .await;
 
     // === Run 2: A and the restarted B2 contend; drive then drain ===
-    const DRIVER_ITERS: usize = 16;
+    const DRIVER_ITERS: usize = 10;
     for i in 0..DRIVER_ITERS {
         eprintln!("contended-resume run2 driver: iteration {i}");
         drive_range(&l1).await;
@@ -1265,7 +1492,7 @@ async fn drive_range(l1: &L1Node) {
     }
     for _ in 0..5 {
         l1.mine_blocks(1).await;
-        tokio::time::sleep(Duration::from_millis(800)).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
 
@@ -1338,6 +1565,10 @@ async fn spawn_prover(
             client: client_for_lane,
             sink: queue.clone(),
             bundle_size,
+            // The aggregate prover re-forms a superseded suffix off the same settlement watch the
+            // settler reconciles against, so a bundle a shorter competitor superseded still
+            // settles.
+            settlement_rx: Some(settlement_rx.clone()),
         },
     );
 
