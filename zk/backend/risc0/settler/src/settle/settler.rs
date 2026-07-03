@@ -25,6 +25,14 @@ pub enum SettleOutcome {
     Superseded,
     /// `shutdown` opened mid-settlement; the caller should stop.
     Shutdown,
+    /// No spendable fee UTXO was available: every candidate was rejected. This is recoverable
+    /// (fresh funds may later arrive at the funder), so the caller backs off and retries the same
+    /// bundle rather than dropping it or stopping.
+    FeeExhausted,
+    /// The node hard-rejected the submission; retrying the same bundle cannot recover it. Carries a
+    /// human-readable reason. The caller stops the settler rather than looping on a doomed
+    /// submission.
+    Failed(String),
 }
 
 /// Settles proven bundles against one covenant using injected funding and submission effects.
@@ -58,8 +66,8 @@ impl<F: FeeSource, K: SettlementSink> Settler<F, K> {
         Self { funder, sink, backend, lane_key, mode, settlement }
     }
 
-    /// Settles one proven bundle and returns whether it advanced the covenant, was superseded, or
-    /// shut down.
+    /// Settles one proven bundle and returns whether it advanced the covenant, was superseded, hit
+    /// recoverable fee exhaustion (retry the same bundle), failed unrecoverably, or shut down.
     pub async fn settle_one(
         &self,
         cov: &CovenantState,
@@ -85,7 +93,7 @@ impl<F: FeeSource, K: SettlementSink> Settler<F, K> {
             }
             let Some(funded) = self.funder.fund(&built, covenant_entry.clone(), &excluded).await
             else {
-                panic!("settlement submit failed: every spendable fee UTXO was rejected");
+                return SettleOutcome::FeeExhausted;
             };
             match self.sink.submit(&funded.tx, covenant, shutdown).await {
                 SubmitOutcome::Accepted(txid) => break txid,
@@ -105,7 +113,9 @@ impl<F: FeeSource, K: SettlementSink> Settler<F, K> {
                     return SettleOutcome::Superseded;
                 }
                 SubmitOutcome::Fatal(reason) => {
-                    panic!("settlement submit rejected by node: {reason}")
+                    return SettleOutcome::Failed(format!(
+                        "node rejected the settlement: {reason}"
+                    ));
                 }
                 SubmitOutcome::Shutdown => return SettleOutcome::Shutdown,
             }

@@ -3,6 +3,8 @@
 
 mod config;
 
+use std::time::Duration;
+
 #[cfg(feature = "test-utils")]
 pub use config::AlternationPacer;
 pub use config::{SettlementMode, SettlementWorkerConfig};
@@ -16,7 +18,13 @@ use crate::{
     settle::{RpcSink, SettleOutcome, Settler, WalletFeeSource},
 };
 
-/// Runs the production settlement loop until `shutdown` opens or a settlement rejection panics.
+/// Backoff between retries when the funder has no spendable fee UTXO. Funding exhaustion is
+/// recoverable (a later deposit to the funder lets the same bundle settle), so the worker waits
+/// this long (shutdown-interruptible) and retries rather than dropping the bundle or stopping.
+const FEE_EXHAUSTED_BACKOFF: Duration = Duration::from_secs(5);
+
+/// Runs the production settlement loop until `shutdown` opens or an unrecoverable settlement
+/// failure (a node hard-reject) stops it; temporary funding exhaustion is retried, not fatal.
 ///
 /// Settlements are serialized: each queued bundle is awaited, skipped if it resolves without an
 /// artifact, or settled before the next bundle is processed.
@@ -90,7 +98,7 @@ pub async fn run(
         cov.daa_score,
     );
 
-    loop {
+    'outer: loop {
         // TODO: track which settlements are done vs pending and persist that (a no-op bundle marks
         // a proved-but-not-settled range), so a restart can resume mid-chain instead of
         // re-bootstrapping.
@@ -163,20 +171,48 @@ pub async fn run(
                 break;
             }
         }
-        match settler.settle_one(&cov, &artifact, &shutdown).await {
-            SettleOutcome::Advanced(next) => {
-                cov = next;
-                #[cfg(feature = "test-utils")]
-                if let Some((me, pacer)) = &cfg.alternation {
-                    pacer.mark_settled(*me);
+        // Settle this bundle, retrying the same one while funding is temporarily exhausted: an
+        // empty fee set is recoverable (a later deposit to the funder lets it settle), so
+        // back off and retry rather than dropping the bundle. A node hard-reject is not
+        // recoverable, so stop.
+        let advanced = loop {
+            match settler.settle_one(&cov, &artifact, &shutdown).await {
+                SettleOutcome::Advanced(next) => break next,
+                // A competitor's settlement is already spending this covenant outpoint, so ours can
+                // never land. Hold `cov` and drop the bundle: once that settlement confirms in a
+                // chain block, the bridge publishes it to the settlement watch and the reconcile
+                // block above adopts it.
+                SettleOutcome::Superseded => continue 'outer,
+                SettleOutcome::Shutdown => break 'outer,
+                // The node hard-rejected the submission; retrying the same bundle cannot recover
+                // it. Stop the settler with a logged reason rather than panicking
+                // the worker task.
+                SettleOutcome::Failed(reason) => {
+                    log::error!(
+                        "settlement-worker: unrecoverable settlement failure: {reason}; stopping"
+                    );
+                    break 'outer;
+                }
+                // Funding is exhausted right now but may be replenished; log and retry the same
+                // bundle after a backoff, staying interruptible so teardown is not held up.
+                SettleOutcome::FeeExhausted => {
+                    log::warn!(
+                        "settlement-worker: no spendable fee UTXO; backing off {}s and retrying \
+                         (awaiting a deposit to the funder)",
+                        FEE_EXHAUSTED_BACKOFF.as_secs(),
+                    );
+                    tokio::select! {
+                        biased;
+                        () = shutdown.wait() => break 'outer,
+                        () = tokio::time::sleep(FEE_EXHAUSTED_BACKOFF) => {}
+                    }
                 }
             }
-            // A competitor's settlement is already spending this covenant outpoint, so ours can
-            // never land. Hold `cov` and drop the bundle: once that settlement confirms in a chain
-            // block, the bridge publishes it to the settlement watch and the reconcile block above
-            // adopts it.
-            SettleOutcome::Superseded => continue,
-            SettleOutcome::Shutdown => break,
+        };
+        cov = advanced;
+        #[cfg(feature = "test-utils")]
+        if let Some((me, pacer)) = &cfg.alternation {
+            pacer.mark_settled(*me);
         }
     }
     log::info!("settlement-worker: shut down");
