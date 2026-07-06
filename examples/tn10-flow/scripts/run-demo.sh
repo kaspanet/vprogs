@@ -52,7 +52,7 @@ ACT_INTERVAL_MS="${ACT_INTERVAL_MS:-2000}"
 # hundred DAA seeds promptly and clears any normal reorg.
 SEED_DEPTH="${SEED_DEPTH:-500}"
 
-RUST_LOG_VAL="info,tn10_flow=info,vprogs_node_framework=info"
+RUST_LOG_VAL="info,tn10_flow=info,vprogs_node_framework=info,vprogs_zk_batch_prover=debug,vprogs_zk_aggregate_prover=debug,vprogs_runner=debug"
 
 PIDA=""; PIDB=""
 
