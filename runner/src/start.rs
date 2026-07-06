@@ -12,7 +12,7 @@ use kaspa_consensus_core::{
     tx::TransactionOutpoint,
 };
 use kaspa_hashes::Hash;
-use kaspa_rpc_core::api::rpc::RpcApi;
+use kaspa_rpc_core::{RpcBlock, api::rpc::RpcApi};
 use kaspa_seq_commit::hashing::lane_key;
 use kaspa_wrpc_client::prelude::KaspaRpcClient;
 use secp256k1::Keypair;
@@ -420,58 +420,85 @@ async fn start_settlement(
     Ok((node, (settler, shutdown), covenant_id))
 }
 
-/// Resolves the block the bridge seeds its fresh-chain root at, decoupled from the settler's
-/// `start_from`. Pins `anchor` only when it is already at least `seed_depth` chain-blocks below the
-/// tip (deep enough that reorgs cannot roll back past it); otherwise returns `None` so the bridge
-/// seeds `seed_depth` below the sink instead. This is the reorg-headroom rule: a fresh bootstrap or
-/// a shallow catch-up seeds its root a full `seed_depth` below the tip (headroom), while a catch-up
-/// to an already-deep covenant still pins the exact deploy block (no history lost, and it is deep
-/// enough to be reorg-safe). Seeding a near-tip anchor directly is what panics the bridge
-/// (`rollback_tip` on the root) the first time a reorg is deeper than the root.
-async fn resolve_bridge_seed(
-    client: &KaspaRpcClient,
+/// Resolves the explicit block the bridge roots its fresh chain at, decoupled from the settler's
+/// `start_from`. Always returns an explicit block (never a "seed `seed_depth` below the sink
+/// yourself" signal), so the bridge takes the fast `seed_from_block` path rather than its deep
+/// sequential `seed_from_recent` walk.
+///
+/// Pins `anchor` directly when it is already at least `seed_depth` DAA below the tip (reorg-safe; a
+/// deep catch-up loses no history). When `anchor` is near the tip (a fresh bootstrap, whose
+/// just-minted deploy block has no headroom yet), resolves an explicit root `seed_depth` DAA below
+/// the sink instead. Returns `None` only when there is no anchor at all. The near-tip case must not
+/// resolve to `None`: that routes the worker into the `seed_from_recent` walk, which stalls against
+/// a live node and never advances.
+async fn resolve_bridge_seed<R: RpcApi>(
+    client: &R,
     anchor: Option<Hash>,
     seed_depth: u64,
     tip_daa: u64,
 ) -> Option<Hash> {
     let anchor = anchor?;
-    // A transient wRPC error (request timeout, dropped connection) resolving the anchor's depth is
-    // expected against a live node; retry with backoff instead of pinning on the first blip.
-    // Pinning a near-tip anchor (a fresh or shallow start) makes it the bridge root, which
-    // panics the first time a reorg is deeper than the root. Only a persistent failure (e.g. a
-    // pruned anchor) falls back to pinning it, where the anchor is genuinely deep and safe.
+    match get_block_with_retry(client, anchor).await {
+        // Already at least `seed_depth` below the tip: reorg-safe, so pin the exact deploy block
+        // (no history lost).
+        Some(block) if tip_daa.saturating_sub(block.header.daa_score) >= seed_depth => Some(anchor),
+        // Near-tip anchor (a fresh bootstrap): resolve an explicit root `seed_depth` below the sink
+        // for headroom. Resolving it here, once at start-up, keeps that walk off the worker's
+        // reconnect path. Falls back to pinning the anchor if it cannot resolve.
+        Some(_) => seed_root_below_sink(client, seed_depth).await.or(Some(anchor)),
+        // Persistently unresolvable (e.g. pruned): genuinely deep and reorg-safe, so pin it rather
+        // than silently reseeding elsewhere.
+        None => Some(anchor),
+    }
+}
+
+/// Returns an explicit, reorg-safe seed root at least `depth` DAA below the current sink, found by
+/// walking the selected-parent chain back from the sink, or `None` if it cannot be resolved. Each
+/// `get_block` is bounded (retry-with-backoff), so a transient or hung RPC cannot stall start-up.
+/// Stops early at the chain base (a block whose selected parent is itself).
+async fn seed_root_below_sink<R: RpcApi>(client: &R, depth: u64) -> Option<Hash> {
+    let dag = client.get_block_dag_info().await.ok()?;
+    let (tip_daa, mut hash) = (dag.virtual_daa_score, dag.sink);
+    loop {
+        let block = get_block_with_retry(client, hash).await?;
+        let parent = block.verbose_data?.selected_parent_hash;
+        // Deep enough for the requested headroom, or the chain base (selected parent is itself).
+        if tip_daa.saturating_sub(block.header.daa_score) >= depth || parent == hash {
+            return Some(hash);
+        }
+        hash = parent;
+    }
+}
+
+/// Fetches a block, retrying transient RPC failures with a bounded backoff. Returns `None` once the
+/// attempts are exhausted (a persistent failure, e.g. a pruned block or an unresponsive node). A
+/// live node times out transiently, so a single blip must not be treated as terminal.
+async fn get_block_with_retry<R: RpcApi>(client: &R, hash: Hash) -> Option<RpcBlock> {
     const MAX_ATTEMPTS: u32 = 10;
     const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
     for attempt in 1..=MAX_ATTEMPTS {
-        match client.get_block(anchor, false).await {
-            Ok(block) => {
-                let anchor_daa = block.header.daa_score;
-                // Pin only a genuinely deep anchor; a near-tip one defers to seed_depth for
-                // headroom.
-                return (tip_daa.saturating_sub(anchor_daa) >= seed_depth).then_some(anchor);
-            }
+        match client.get_block(hash, false).await {
+            Ok(block) => return Some(block),
             Err(e) if attempt < MAX_ATTEMPTS => {
                 log::warn!(
-                    "bridge seed: could not resolve anchor {anchor} depth (attempt {attempt}/{MAX_ATTEMPTS}, retrying): {e}"
+                    "bridge seed: get_block {hash} failed (attempt {attempt}/{MAX_ATTEMPTS}, retrying): {e}"
                 );
                 tokio::time::sleep(RETRY_DELAY).await;
             }
-            // Persistently unresolvable (e.g. pruned): fall back to pinning the anchor rather than
-            // silently reseeding somewhere else; the bridge surfaces an unusable seed loudly.
             Err(e) => {
                 log::warn!(
-                    "bridge seed: could not resolve anchor {anchor} depth after {MAX_ATTEMPTS} attempts ({e}); pinning it"
+                    "bridge seed: get_block {hash} failed after {MAX_ATTEMPTS} attempts: {e}"
                 );
-                return Some(anchor);
+                return None;
             }
         }
     }
-    Some(anchor)
+    None
 }
 
 /// The bridge wiring for either mode, pointed at the remote node's lane + covenant. `bridge_seed`
-/// is the resolved root block ([`resolve_bridge_seed`]): a deep anchor to pin, or `None` to seed
-/// `seed_depth` below the sink for reorg headroom.
+/// is the resolved root block ([`resolve_bridge_seed`]): an explicit reorg-safe root to pin, or
+/// `None` (no anchor at all) to fall back to the bridge's own `seed_depth`-below-sink seeding.
 fn bridge_params(
     cfg: &RunnerConfig,
     lane_subnet: SubnetworkId,
@@ -489,5 +516,62 @@ fn bridge_params(
         seed_depth: cfg.seed_depth,
         start_from: bridge_seed,
         observers,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use kaspa_consensus_core::network::{NetworkId, NetworkType};
+    use vprogs_node_test_utils::L1Node;
+
+    use super::*;
+
+    /// A fresh-bootstrap node resolves its bridge seed the instant it mints the deploy block, so
+    /// the anchor sits at the tip. `resolve_bridge_seed` must still hand the bridge an
+    /// *explicit* root with reorg headroom (a real block `seed_depth` below the sink) rather
+    /// than `None` - `None` routes the worker into the deep sequential `seed_from_recent` walk,
+    /// which stalls against a live node and never advances (the fresh-node-A regression).
+    #[tokio::test]
+    async fn resolve_bridge_seed_returns_deep_root_for_near_tip_anchor() {
+        let l1 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
+        // A chain deeper than seed_depth, so a headroom root genuinely exists below the tip.
+        l1.mine_blocks(20).await;
+        let client = l1.grpc_client();
+        let dag = client.get_block_dag_info().await.unwrap();
+        let (sink, tip_daa) = (dag.sink, dag.virtual_daa_score);
+        let seed_depth = 5;
+
+        // The anchor is the sink itself: tip_daa - anchor_daa < seed_depth (node A at bootstrap).
+        let root = resolve_bridge_seed(client, Some(sink), seed_depth, tip_daa)
+            .await
+            .expect("a near-tip anchor must resolve to an explicit deep seed, not None");
+
+        assert_ne!(root, sink, "the seed root must sit below the sink for reorg headroom");
+        let root_daa = client.get_block(root, false).await.unwrap().header.daa_score;
+        assert!(
+            tip_daa.saturating_sub(root_daa) >= seed_depth,
+            "seed root must be >= seed_depth below the tip (was {} below)",
+            tip_daa.saturating_sub(root_daa),
+        );
+    }
+
+    /// A catch-up node whose anchor is already `seed_depth` below the tip keeps pinning the exact
+    /// deploy block (no history lost, and it is deep enough to be reorg-safe).
+    #[tokio::test]
+    async fn resolve_bridge_seed_pins_already_deep_anchor() {
+        let l1 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
+        let mined = l1.mine_blocks(20).await;
+        let client = l1.grpc_client();
+        let tip_daa = client.get_block_dag_info().await.unwrap().virtual_daa_score;
+        let seed_depth = 3;
+
+        let deep_anchor = mined[5];
+        let deep_daa = client.get_block(deep_anchor, false).await.unwrap().header.daa_score;
+        assert!(tip_daa - deep_daa >= seed_depth, "test setup: anchor must be deep");
+
+        assert_eq!(
+            resolve_bridge_seed(client, Some(deep_anchor), seed_depth, tip_daa).await,
+            Some(deep_anchor),
+        );
     }
 }

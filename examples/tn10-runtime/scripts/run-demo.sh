@@ -24,7 +24,7 @@
 #   TN10RT_KEY1, TN10RT_KEY2  (required)  two funded testnet-10 private keys (32-byte hex)
 #   TN10RT_WRPC_URL           (required)  wRPC node URL, e.g. ws://HOST:PORT
 #   STEP_DELAY_MS             (optional)  ms between scripted action steps (default 4000)
-#   SEED_DEPTH                (optional)  bridge seed head-room + reorg tolerance (default 200)
+#   SEED_DEPTH                (optional)  bridge seed head-room in DAA + reorg tolerance (default 500)
 #   ACCOUNTS                  (optional)  number of L2 accounts (default 3)
 
 set -u
@@ -48,7 +48,7 @@ LOG_A="$HERE/logA.txt"
 LOG_B="$HERE/logB.txt"
 
 STEP_DELAY_MS="${STEP_DELAY_MS:-4000}"
-SEED_DEPTH="${SEED_DEPTH:-200}"
+SEED_DEPTH="${SEED_DEPTH:-500}"
 ACCOUNTS="${ACCOUNTS:-3}"
 
 RUST_LOG_VAL="info,tn10_runtime=info,vprogs_node_framework=info"

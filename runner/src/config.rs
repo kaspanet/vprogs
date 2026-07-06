@@ -62,7 +62,7 @@ pub struct RunnerConfig {
     pub bootstrap_txid: Option<Hash>,
     /// Explicit L1 deploy block the bridge seeds its fresh-chain root at (catch-up).
     pub start_from: Option<Hash>,
-    /// Chain-block head-room the bridge seeds below the sink for a fresh lane.
+    /// Reorg head-room, in DAA, the bridge seeds below the sink for a fresh lane.
     pub seed_depth: u64,
     /// Run the proving + settlement path. Off = execution-only daemon.
     pub prove: bool,
@@ -176,7 +176,7 @@ impl RawConfig {
             covenant_id: parse_opt_hash(self.covenant_id, "covenant_id")?,
             bootstrap_txid: parse_opt_hash(self.bootstrap_txid, "bootstrap_txid")?,
             start_from: parse_opt_hash(self.start_from, "start_from")?,
-            seed_depth: self.seed_depth.unwrap_or(200),
+            seed_depth: self.seed_depth.unwrap_or(500),
             prove: self.prove.unwrap_or(false),
             start_mode: self.start_mode,
         })
@@ -282,7 +282,7 @@ mod tests {
     #[test]
     fn resolve_applies_defaults() {
         let cfg = minimal_raw().resolve().unwrap();
-        assert_eq!(cfg.seed_depth, 200);
+        assert_eq!(cfg.seed_depth, 500);
         assert!(!cfg.prove);
         assert_eq!(cfg.data_dir, PathBuf::from("./vprun-data"));
         assert_eq!(cfg.start_mode, None);
