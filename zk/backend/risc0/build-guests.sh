@@ -18,7 +18,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 if [ $# -eq 0 ]; then
-  PROGRAMS=(transaction-processor transaction-processor-with-exits batch-processor batch-aggregator)
+  PROGRAMS=(transaction-processor transaction-processor-with-exits batch-processor batch-aggregator runtime-processor)
 else
   PROGRAMS=("$@")
 fi

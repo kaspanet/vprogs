@@ -40,9 +40,9 @@ use kaspa_txscript::{
         Op0, Op2Dup, OpAdd, OpBlake2b, OpCat, OpChainblockSeqCommit, OpCovOutputCount,
         OpCovOutputIdx, OpData32, OpDiv, OpDrop, OpDup, OpElse, OpEndIf, OpEqual, OpEqualVerify,
         OpFromAltStack, OpIf, OpInputCovenantId, OpMul, OpNot, OpNumEqual, OpNumEqualVerify, OpRot,
-        OpSHA256, OpSize, OpSubstr, OpSwap, OpToAltStack, OpTrue, OpTxInputIndex,
-        OpTxInputScriptSigLen, OpTxInputScriptSigSubstr, OpTxOutputAmount, OpTxOutputSpk,
-        OpTxOutputSpkSubstr, OpVerify, OpZkPrecompile,
+        OpSHA256, OpSize, OpSub, OpSubstr, OpSwap, OpToAltStack, OpTrue, OpTxInputAmount,
+        OpTxInputIndex, OpTxInputScriptSigLen, OpTxInputScriptSigSubstr, OpTxOutputAmount,
+        OpTxOutputSpk, OpTxOutputSpkSubstr, OpVerify, OpZkPrecompile,
     },
     script_builder::ScriptBuilder,
     zk_precompiles::tags::ZkTag,
@@ -238,6 +238,13 @@ pub fn redeem_script_len(prev_state: &[u8; 32], pins: &RedeemPins<'_>) -> i64 {
 /// - `covenant_id` is bound by [`CovenantsContext::from_tx`] at the consensus level.
 /// - `new_seq_commit` is strictly equated to the chain's value for `block_prove_to`.
 ///
+/// Supports both output layouts: a zero `permission_spk_hash` (count==1, single continuation
+/// output) and a non-zero one (count==2, continuation + permission-exit output). The count
+/// branch enforces the same structural / value / SPK invariants as the production
+/// [`verify_outputs_and_append_perm_hash`], minus the journal preimage. `permission_output_value`
+/// is the value pinned on the permission-exit output (output index 1) in the count==2 case; it is
+/// ignored in the count==1 case.
+///
 /// Use this only for tests that want to exercise the full chain pipeline (bootstrap, lane
 /// carriers, mempool, block inclusion, acceptance data) without paying the cost of a real
 /// CUDA-produced STARK seal.
@@ -246,6 +253,7 @@ pub fn build_dev_redeem_script(
     prev_lane_tip: &Hash,
     lane_key: &Hash,
     redeem_script_len: i64,
+    permission_output_value: u64,
 ) -> Vec<u8> {
     let mut b = ScriptBuilder::new();
 
@@ -267,27 +275,80 @@ pub fn build_dev_redeem_script(
     verify_output_spk(&mut b);
     drop_stashed_prev_values(&mut b);
     verify_input_index_zero(&mut b);
-    // Dev script has no journal, no exits - the covenant always emits exactly one output, and
-    // it must be at tx-output index 0 (so the SPK check above lands on the covenant-bound
-    // output rather than on a host-controlled non-bound sibling).
-    b.add_op(OpTxInputIndex).unwrap();
-    b.add_op(OpInputCovenantId).unwrap();
-    b.add_op(OpCovOutputCount).unwrap();
-    b.add_i64(1).unwrap();
-    b.add_op(OpEqualVerify).unwrap();
-    verify_cov_output_at_idx(&mut b, 0, 0);
+    verify_dev_outputs(&mut b, permission_output_value);
     b.add_op(OpTrue).unwrap();
 
     b.drain()
 }
 
+/// Dev-mode analog of [`verify_outputs_and_append_perm_hash`] without the journal preimage: the
+/// dev script has no journal, so the count branch only enforces structure and values.
+///
+/// Reads `OpCovOutputCount` and branches:
+/// - `count == 2`: pins both covenant outputs to tx-output indices 0 and 1, enforces
+///   `outputs[0].value == input[0].value - permission_output_value` and `outputs[1].value ==
+///   permission_output_value`, rejects the `[0; 32]` permission-hash sentinel, and rebuilds +
+///   matches the permission P2SH SPK on output 1.
+/// - `count == 1`: pins the sole covenant output to tx-output index 0 and enforces full
+///   carry-forward (`outputs[0].value == input[0].value`).
+/// - any other count: fails.
+///
+/// The `OpCovOutputIdx` pinning binds the SPK / value checks to the covenant-bound outputs
+/// rather than host-controlled non-bound siblings, exactly as the production branch does.
+fn verify_dev_outputs(b: &mut ScriptBuilder, permission_output_value: u64) {
+    b.add_op(OpTxInputIndex).unwrap();
+    b.add_op(OpInputCovenantId).unwrap();
+    b.add_op(OpCovOutputCount).unwrap();
+    // Stack: [..., count]
+
+    b.add_op(OpDup).unwrap();
+    b.add_i64(2).unwrap();
+    b.add_op(OpNumEqual).unwrap();
+    // Stack: [..., count, count == 2]
+
+    b.add_op(OpIf).unwrap();
+    {
+        // count == 2 branch: permission-exit output is present at index 1.
+        b.add_op(OpDrop).unwrap(); // discard the duped count
+
+        verify_cov_output_at_idx(b, 0, 0);
+        verify_cov_output_at_idx(b, 1, 1);
+
+        verify_continuation_value(b, permission_output_value);
+        verify_permission_output_value(b, permission_output_value);
+        extract_and_match_permission_spk(b);
+        // The extracted hash is unused in dev (no journal to append it to).
+        b.add_op(OpDrop).unwrap();
+    }
+    b.add_op(OpElse).unwrap();
+    {
+        // count == 1 branch: no permission output; the continuation carries the full value.
+        b.add_i64(1).unwrap();
+        b.add_op(OpNumEqualVerify).unwrap();
+
+        verify_cov_output_at_idx(b, 0, 0);
+        verify_continuation_value(b, 0);
+    }
+    b.add_op(OpEndIf).unwrap();
+}
+
 /// Iteratively computes the dev redeem script length (the dev script also embeds its own
 /// length as an offset, so the value is computed the same way as [`redeem_script_len`]).
-pub fn dev_redeem_script_len(prev_state: &[u8; 32], lane_key: &Hash) -> i64 {
+pub fn dev_redeem_script_len(
+    prev_state: &[u8; 32],
+    lane_key: &Hash,
+    permission_output_value: u64,
+) -> i64 {
     let mut guess: i64 = 75;
     loop {
-        let len =
-            build_dev_redeem_script(prev_state, &Hash::default(), lane_key, guess).len() as i64;
+        let len = build_dev_redeem_script(
+            prev_state,
+            &Hash::default(),
+            lane_key,
+            guess,
+            permission_output_value,
+        )
+        .len() as i64;
         if len == guess {
             return len;
         }
@@ -583,59 +644,14 @@ fn verify_outputs_and_append_perm_hash(b: &mut ScriptBuilder, pins: &RedeemPins<
         verify_cov_output_at_idx(b, 0, 0);
         verify_cov_output_at_idx(b, 1, 1);
 
+        // ---- enforce output[0].value == input[0].value - permission_output_value ----
+        verify_continuation_value(b, pins.common().permission_output_value);
+
         // ---- enforce output[1].value == pins.permission_output_value ----
-        b.add_i64(1).unwrap();
-        b.add_op(OpTxOutputAmount).unwrap();
-        // Stack: [..., preimage256, out1_value]
-        b.add_i64(pins.common().permission_output_value as i64).unwrap();
-        b.add_op(OpEqualVerify).unwrap();
-        // Stack: [..., preimage288]
+        verify_permission_output_value(b, pins.common().permission_output_value);
 
-        // ---- extract the 32-byte script hash from outputs[1].script_public_key ----
-        // SPK layout: version(2 BE) | OpBlake2b(1) | OpData32(1) | hash(32) | OpEqual(1) = 37B.
-        // `OpTxOutputSpkSubstr` reads the version-prefixed bytes, so [4..36] is the hash.
-        b.add_i64(1).unwrap(); // output index
-        b.add_i64(4).unwrap(); // start
-        b.add_i64(36).unwrap(); // end (exclusive)
-        b.add_op(OpTxOutputSpkSubstr).unwrap();
-        // Stack: [..., preimage256, hash32]
-
-        // ---- reject hash == [0; 32] ----
-        // `[0; 32]` is the guest's no-exits sentinel and must always take the count==1 path.
-        // Reaching count==2 with a zero hash would otherwise satisfy the journal binding (the
-        // journal also commits `[0; 32]`) while paying dust to `permission_spk([0; 32])`, an
-        // unspendable script that permanently locks the operator's permission-output value.
-        b.add_op(OpDup).unwrap();
-        b.add_data(&[0u8; 32]).unwrap();
-        b.add_op(OpEqual).unwrap();
-        b.add_op(OpNot).unwrap();
-        b.add_op(OpVerify).unwrap();
-        // Stack: [..., preimage256, hash32]
-
-        // ---- rebuild the full 37-byte P2SH SPK and assert it matches the actual one ----
-        b.add_op(OpDup).unwrap();
-        // Stack: [..., preimage256, hash32, hash32]
-
-        // Big-endian to match `ScriptPublicKey::to_bytes()` (the wire-format used by
-        // `OpTxOutputSpk`). See `hash_redeem_to_spk` for the same rationale.
-        let mut header = [0u8; 4];
-        header[0..2].copy_from_slice(
-            &kaspa_consensus_core::constants::MAX_SCRIPT_PUBLIC_KEY_VERSION.to_be_bytes(),
-        );
-        header[2] = OpBlake2b;
-        header[3] = OpData32;
-        b.add_data(&header).unwrap();
-        b.add_op(OpSwap).unwrap();
-        b.add_op(OpCat).unwrap();
-        // Stack: [..., preimage256, hash32, header4 || hash32] = 36B partial SPK
-
-        b.add_data(&[OpEqual]).unwrap();
-        b.add_op(OpCat).unwrap();
-        // Stack: [..., preimage256, hash32, header4 || hash32 || OpEqual] = full 37B P2SH SPK
-
-        b.add_i64(1).unwrap();
-        b.add_op(OpTxOutputSpk).unwrap();
-        b.add_op(OpEqualVerify).unwrap();
+        // ---- extract the 32-byte script hash, reject the zero sentinel, match the SPK ----
+        extract_and_match_permission_spk(b);
         // Stack: [..., preimage256, hash32]
 
         // ---- append the hash to the preimage → 256B ----
@@ -655,11 +671,81 @@ fn verify_outputs_and_append_perm_hash(b: &mut ScriptBuilder, pins: &RedeemPins<
         // by absolute index, so this binds that index to the covenant-bound output).
         verify_cov_output_at_idx(b, 0, 0);
 
+        // ---- enforce output[0].value == input[0].value (full carry-forward) ----
+        verify_continuation_value(b, 0);
+
         b.add_data(&[0u8; 32]).unwrap();
         b.add_op(OpCat).unwrap();
         // Stack: [..., preimage288]
     }
     b.add_op(OpEndIf).unwrap();
+}
+
+/// Asserts `outputs[1].value == perm_value` (the permission-exit output). Shared by the
+/// production count==2 branch and the dev count==2 branch.
+///
+/// Stack precondition: `[...]`. Postcondition: `[...]` (consumes nothing it does not push).
+fn verify_permission_output_value(b: &mut ScriptBuilder, perm_value: u64) {
+    b.add_i64(1).unwrap();
+    b.add_op(OpTxOutputAmount).unwrap();
+    // Stack: [..., out1_value]
+    b.add_i64(perm_value as i64).unwrap();
+    b.add_op(OpEqualVerify).unwrap();
+}
+
+/// Extracts the 32-byte P2SH script hash from `outputs[1].script_public_key`, rejects the
+/// `[0; 32]` no-exits sentinel, rebuilds the full 37-byte P2SH SPK and asserts it matches the
+/// actual one. Shared by the production count==2 branch and the dev count==2 branch.
+///
+/// SPK layout: version(2 BE) | OpBlake2b(1) | OpData32(1) | hash(32) | OpEqual(1) = 37B.
+/// `OpTxOutputSpkSubstr` reads the version-prefixed bytes, so [4..36] is the hash.
+///
+/// `[0; 32]` is the guest's no-exits sentinel and must always take the count==1 path. Reaching
+/// count==2 with a zero hash would pay dust to `permission_spk([0; 32])`, an unspendable script
+/// (blake2b is one-way) that permanently locks the operator's permission-output value.
+///
+/// Stack precondition: `[...]`. Postcondition: `[..., hash32]` (the extracted hash, left on top
+/// so the production branch can append it to its journal preimage).
+fn extract_and_match_permission_spk(b: &mut ScriptBuilder) {
+    b.add_i64(1).unwrap(); // output index
+    b.add_i64(4).unwrap(); // start
+    b.add_i64(36).unwrap(); // end (exclusive)
+    b.add_op(OpTxOutputSpkSubstr).unwrap();
+    // Stack: [..., hash32]
+
+    // ---- reject hash == [0; 32] ----
+    b.add_op(OpDup).unwrap();
+    b.add_data(&[0u8; 32]).unwrap();
+    b.add_op(OpEqual).unwrap();
+    b.add_op(OpNot).unwrap();
+    b.add_op(OpVerify).unwrap();
+    // Stack: [..., hash32]
+
+    // ---- rebuild the full 37-byte P2SH SPK and assert it matches the actual one ----
+    b.add_op(OpDup).unwrap();
+    // Stack: [..., hash32, hash32]
+
+    // Big-endian to match `ScriptPublicKey::to_bytes()` (the wire-format used by
+    // `OpTxOutputSpk`). See `hash_redeem_to_spk` for the same rationale.
+    let mut header = [0u8; 4];
+    header[0..2].copy_from_slice(
+        &kaspa_consensus_core::constants::MAX_SCRIPT_PUBLIC_KEY_VERSION.to_be_bytes(),
+    );
+    header[2] = OpBlake2b;
+    header[3] = OpData32;
+    b.add_data(&header).unwrap();
+    b.add_op(OpSwap).unwrap();
+    b.add_op(OpCat).unwrap();
+    // Stack: [..., hash32, header4 || hash32] = 36B partial SPK
+
+    b.add_data(&[OpEqual]).unwrap();
+    b.add_op(OpCat).unwrap();
+    // Stack: [..., hash32, header4 || hash32 || OpEqual] = full 37B P2SH SPK
+
+    b.add_i64(1).unwrap();
+    b.add_op(OpTxOutputSpk).unwrap();
+    b.add_op(OpEqualVerify).unwrap();
+    // Stack: [..., hash32]
 }
 
 /// Asserts that the `k`-th covenant-bound output (0-indexed within the input's covenant_id
@@ -674,6 +760,33 @@ fn verify_cov_output_at_idx(b: &mut ScriptBuilder, k: i64, expected_idx: i64) {
     b.add_op(OpCovOutputIdx).unwrap();
     b.add_i64(expected_idx).unwrap();
     b.add_op(OpEqualVerify).unwrap();
+}
+
+/// Pins the continuation output's value (tx-output index 0) to the covenant input's value
+/// (input index 0) minus `perm_value`. With `perm_value == 0` this is strict carry-forward of
+/// the full covenant value; with `perm_value == permission_output_value` it accounts for the
+/// permission-exit output split off in the count==2 case.
+///
+/// Consensus covenant tracking is index-only (it conserves no value across a covenant's inputs
+/// and outputs), and input 0 carries no signature, so without this the continuation output's
+/// amount is unconstrained: an attacker can shrink output 0 and divert the freed value to a
+/// non-covenant output while every other invariant still passes. The strict equality (fees come
+/// from a separate schnorr-signed funding input, never from the covenant value) is the on-chain
+/// mirror of the builder's `input.value - permission_output_value` (see
+/// `Settlement::build`; `checked_sub` there computes exactly the same quantity).
+fn verify_continuation_value(b: &mut ScriptBuilder, perm_value: u64) {
+    b.add_i64(0).unwrap();
+    b.add_op(OpTxInputAmount).unwrap();
+    // Stack: [..., in0_value]
+    if perm_value != 0 {
+        b.add_i64(perm_value as i64).unwrap();
+        b.add_op(OpSub).unwrap();
+        // Stack: [..., in0_value - perm_value]
+    }
+    b.add_i64(0).unwrap();
+    b.add_op(OpTxOutputAmount).unwrap();
+    // Stack: [..., expected_out0_value, out0_value]
+    b.add_op(OpNumEqualVerify).unwrap();
 }
 
 /// Asserts that the spending input is at index 0 (covenant always lives at input 0).
@@ -920,8 +1033,14 @@ mod tests {
     #[test]
     fn dev_redeem_script_length_converges() {
         let state = [0u8; 32];
-        let len = dev_redeem_script_len(&state, &TEST_LANE_KEY);
-        let built = build_dev_redeem_script(&state, &Hash::default(), &TEST_LANE_KEY, len);
+        let len = dev_redeem_script_len(&state, &TEST_LANE_KEY, DEFAULT_PERMISSION_OUTPUT_VALUE);
+        let built = build_dev_redeem_script(
+            &state,
+            &Hash::default(),
+            &TEST_LANE_KEY,
+            len,
+            DEFAULT_PERMISSION_OUTPUT_VALUE,
+        );
         assert_eq!(built.len() as i64, len, "self-referential length must match");
     }
 
@@ -931,8 +1050,15 @@ mod tests {
         let pins = succinct_pins(&[1u8; 32], &[2u8; 32]);
         let prod_len = redeem_script_len(&state, &pins);
         let prod = build_redeem_script(&state, &Hash::default(), prod_len, &pins);
-        let dev_len = dev_redeem_script_len(&state, &TEST_LANE_KEY);
-        let dev = build_dev_redeem_script(&state, &Hash::default(), &TEST_LANE_KEY, dev_len);
+        let dev_len =
+            dev_redeem_script_len(&state, &TEST_LANE_KEY, DEFAULT_PERMISSION_OUTPUT_VALUE);
+        let dev = build_dev_redeem_script(
+            &state,
+            &Hash::default(),
+            &TEST_LANE_KEY,
+            dev_len,
+            DEFAULT_PERMISSION_OUTPUT_VALUE,
+        );
         assert_ne!(prod, dev, "dev and prod scripts must differ");
         assert!(dev.len() < prod.len(), "dev script should be shorter (no journal/zk verify)");
     }
@@ -943,8 +1069,15 @@ mod tests {
         let pins = groth16_pins(&[1u8; 32], &[2u8; 32]);
         let prod_len = redeem_script_len(&state, &pins);
         let prod = build_redeem_script(&state, &Hash::default(), prod_len, &pins);
-        let dev_len = dev_redeem_script_len(&state, &TEST_LANE_KEY);
-        let dev = build_dev_redeem_script(&state, &Hash::default(), &TEST_LANE_KEY, dev_len);
+        let dev_len =
+            dev_redeem_script_len(&state, &TEST_LANE_KEY, DEFAULT_PERMISSION_OUTPUT_VALUE);
+        let dev = build_dev_redeem_script(
+            &state,
+            &Hash::default(),
+            &TEST_LANE_KEY,
+            dev_len,
+            DEFAULT_PERMISSION_OUTPUT_VALUE,
+        );
         assert_ne!(prod, dev, "dev and prod scripts must differ");
         assert!(dev.len() < prod.len(), "dev script should be shorter (no journal/zk verify)");
     }

@@ -54,3 +54,6 @@ vprogs-zk-vm                     = { path = "../../../vm", optional = true }
 [build-dependencies]
 vprogs-core-hashing     = { workspace = true }
 vprogs-core-merkle-tree = { workspace = true }
+
+[dev-dependencies]
+sha2 = { workspace = true }

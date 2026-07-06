@@ -176,7 +176,9 @@ async fn settlement_lands_in_real_block_groth16() {
 /// [`build_dev_redeem_script`]: vprogs_zk_backend_risc0_covenant::build_dev_redeem_script
 #[tokio::test(flavor = "multi_thread")]
 async fn settlement_lands_in_real_block_dev_redeem() {
-    use vprogs_zk_backend_risc0_covenant::{build_dev_redeem_script, dev_redeem_script_len};
+    use vprogs_zk_backend_risc0_covenant::{
+        DEFAULT_PERMISSION_OUTPUT_VALUE, build_dev_redeem_script, dev_redeem_script_len,
+    };
     use vprogs_zk_backend_risc0_test_suite::dev_mode_enabled;
 
     if !dev_mode_enabled() {
@@ -204,9 +206,15 @@ async fn settlement_lands_in_real_block_dev_redeem() {
     let bootstrap_state = EMPTY_HASH;
     let bootstrap_lane_tip = Hash::default();
     let lane_key = test_lane_key();
-    let redeem_len = dev_redeem_script_len(&bootstrap_state, &lane_key);
-    let bootstrap_redeem =
-        build_dev_redeem_script(&bootstrap_state, &bootstrap_lane_tip, &lane_key, redeem_len);
+    let redeem_len =
+        dev_redeem_script_len(&bootstrap_state, &lane_key, DEFAULT_PERMISSION_OUTPUT_VALUE);
+    let bootstrap_redeem = build_dev_redeem_script(
+        &bootstrap_state,
+        &bootstrap_lane_tip,
+        &lane_key,
+        redeem_len,
+        DEFAULT_PERMISSION_OUTPUT_VALUE,
+    );
     let bootstrap_spk = pay_to_script_hash_script(&bootstrap_redeem);
 
     let (bootstrap_tx, covenant_id) =
@@ -241,6 +249,7 @@ async fn settlement_lands_in_real_block_dev_redeem() {
         prev_state: bootstrap_state,
         prev_lane_tip: bootstrap_lane_tip,
         new_state: new_state_1,
+        permission_spk_hash: [0u8; 32],
         carrier_resource_id: ResourceId::for_test(1),
         carrier_payload: vec![1u8, 2, 3],
         label: "dev settlement #1",
@@ -259,6 +268,7 @@ async fn settlement_lands_in_real_block_dev_redeem() {
         prev_state: settle_1.new_state,
         prev_lane_tip: settle_1.new_lane_tip,
         new_state: new_state_2,
+        permission_spk_hash: [0u8; 32],
         carrier_resource_id: ResourceId::for_test(2),
         carrier_payload: vec![4u8, 5, 6],
         label: "dev settlement #2",
@@ -306,6 +316,123 @@ async fn settlement_lands_in_real_block_dev_redeem() {
     l1.shutdown().await;
 }
 
+/// Dev-mode L1 settlement WITH exits: drives the count==2 (two-output) dev settlement through the
+/// full simnet pipeline so the permission-exit output lands in a real block and passes the dev
+/// redeem's count==2 branch on chain (continuation value split, permission-output value, and
+/// permission-P2SH rebuild/match). The `permission_spk_hash` is a real
+/// [`PermissionTreeAccumulator`] commitment, so this exercises the permission tree's
+/// on-chain/off-chain hash agreement (issue #78) end to end alongside the value split (issue #76).
+/// Runs only under `RISC0_DEV_MODE=1`, same rationale as
+/// [`settlement_lands_in_real_block_dev_redeem`].
+#[tokio::test(flavor = "multi_thread")]
+async fn settlement_with_exits_lands_in_real_block_dev_redeem() {
+    use vprogs_zk_abi::withdrawal::StandardSpk;
+    use vprogs_zk_backend_risc0_api::PermissionTreeAccumulator;
+    use vprogs_zk_backend_risc0_covenant::{
+        DEFAULT_PERMISSION_OUTPUT_VALUE, build_dev_redeem_script, dev_redeem_script_len,
+    };
+    use vprogs_zk_backend_risc0_test_suite::dev_mode_enabled;
+
+    if !dev_mode_enabled() {
+        eprintln!(
+            "skipping: RISC0_DEV_MODE!=1 - the dev redeem variant only runs without OpZkPrecompile",
+        );
+        return;
+    }
+
+    let l1 = L1Node::new(
+        NetworkId::new(NetworkType::Simnet),
+        Some(|p| {
+            p.blockrate.coinbase_maturity = 1;
+            p.toccata_activation = ForkActivation::always();
+            p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+        }),
+    )
+    .await;
+    l1.mine_utxos(4).await;
+
+    // Real permission-tree commitment: one exit finalized to the P2SH script-hash the on-chain dev
+    // redeem rebuilds and matches against output 1. Non-zero, so the spend takes the count==2 path.
+    let permission_spk_hash = {
+        let mut acc = PermissionTreeAccumulator::new();
+        acc.add_exit(StandardSpk::PubKey(&[0x42; 32]), 1_000_000);
+        acc.finalize()
+    };
+    assert_ne!(permission_spk_hash, [0u8; 32], "exit commitment must be non-zero");
+
+    // === deploy the dev covenant ===
+    let bootstrap_state = EMPTY_HASH;
+    let bootstrap_lane_tip = Hash::default();
+    let lane_key = test_lane_key();
+    let redeem_len =
+        dev_redeem_script_len(&bootstrap_state, &lane_key, DEFAULT_PERMISSION_OUTPUT_VALUE);
+    let bootstrap_redeem = build_dev_redeem_script(
+        &bootstrap_state,
+        &bootstrap_lane_tip,
+        &lane_key,
+        redeem_len,
+        DEFAULT_PERMISSION_OUTPUT_VALUE,
+    );
+    let bootstrap_spk = pay_to_script_hash_script(&bootstrap_redeem);
+
+    let (bootstrap_tx, covenant_id) =
+        l1.build_covenant_bootstrap_transaction(&bootstrap_redeem, COVENANT_VALUE).await;
+    let bootstrap_tx_id = bootstrap_tx.id();
+    let block_deploy = l1.mine_block(&[bootstrap_tx]).await;
+    let block_acc_deploy = l1.mine_blocks(1).await[0];
+    eprintln!(
+        "dev covenant bootstrap accepted: covenant_id={covenant_id} block_deploy={block_deploy}"
+    );
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let block_acc_deploy_hdr =
+        l1.grpc_client().get_block(block_acc_deploy, false).await.expect("get_block acc_deploy");
+    let bootstrap_utxo = UtxoEntry::new(
+        COVENANT_VALUE,
+        bootstrap_spk,
+        block_acc_deploy_hdr.header.daa_score,
+        false,
+        Some(covenant_id),
+    );
+
+    // === one dev settlement that commits the exit (count==2 two-output layout) ===
+    let settle = run_one_dev_settlement(DevSettlementStep {
+        l1: &l1,
+        covenant_id,
+        prev_outpoint: TransactionOutpoint::new(bootstrap_tx_id, 0),
+        prev_utxo: bootstrap_utxo,
+        prev_state: bootstrap_state,
+        prev_lane_tip: bootstrap_lane_tip,
+        new_state: [0xAB; 32],
+        permission_spk_hash,
+        carrier_resource_id: ResourceId::for_test(1),
+        carrier_payload: vec![1u8, 2, 3],
+        label: "dev settlement with exits",
+    })
+    .await;
+
+    // The two-output layout (count, values, permission SPK) is asserted inside
+    // run_one_dev_settlement; here confirm the spend was accepted onto the selected-parent chain.
+    let chain = l1
+        .grpc_client()
+        .get_virtual_chain_from_block(block_deploy, true, None)
+        .await
+        .expect("get_virtual_chain_from_block");
+    let accepted = chain
+        .accepted_transaction_ids
+        .iter()
+        .any(|entry| entry.accepted_transaction_ids.contains(&settle.settlement_tx_id));
+    assert!(
+        accepted,
+        "dev settlement with exits tx_id {} must appear in acceptance data walked from \
+         block_deploy={block_deploy}",
+        settle.settlement_tx_id,
+    );
+    eprintln!("dev settlement with exits accepted: tx_id={}", settle.settlement_tx_id);
+
+    l1.shutdown().await;
+}
+
 /// Inputs to [`run_one_dev_settlement`]. Mirrors [`SettlementStep`] but drops the
 /// scheduler/backend/witness machinery (dev redeem has no guest journal) and the lane-tracking
 /// fields (`prev_lane_blue_score`, `lane_expired`, `lane_key`) that the real test threads into
@@ -318,6 +445,9 @@ struct DevSettlementStep<'a> {
     prev_state: [u8; 32],
     prev_lane_tip: Hash,
     new_state: [u8; 32],
+    /// `[0; 32]` settles single-output (count==1); a non-zero hash splits off a permission-exit
+    /// output (count==2) committing to that hash.
+    permission_spk_hash: [u8; 32],
     carrier_resource_id: ResourceId,
     carrier_payload: Vec<u8>,
     label: &'static str,
@@ -340,7 +470,9 @@ struct DevSettlementOutcome {
 /// mines it, and asserts acceptance. Returns the continuation UTXO + chained state for the
 /// next step.
 async fn run_one_dev_settlement(step: DevSettlementStep<'_>) -> DevSettlementOutcome {
-    use vprogs_zk_backend_risc0_covenant::{Settlement, SettlementDevInput};
+    use vprogs_zk_backend_risc0_covenant::{
+        DEFAULT_PERMISSION_OUTPUT_VALUE, Settlement, SettlementDevInput,
+    };
 
     let DevSettlementStep {
         l1,
@@ -350,10 +482,17 @@ async fn run_one_dev_settlement(step: DevSettlementStep<'_>) -> DevSettlementOut
         prev_state,
         prev_lane_tip,
         new_state,
+        permission_spk_hash,
         carrier_resource_id,
         carrier_payload: payload_bytes,
         label,
     } = step;
+
+    // Value the continuation output carries forward: the full covenant value on the single-output
+    // path, or that minus the permission-exit split when this settlement commits exits.
+    let perm_value =
+        if permission_spk_hash == [0u8; 32] { 0 } else { DEFAULT_PERMISSION_OUTPUT_VALUE };
+    let continuation_value = COVENANT_VALUE - perm_value;
 
     // === a. mine the carrier tx ===
     let carrier_payload = Vec::new().tap_mut(|p| {
@@ -396,8 +535,31 @@ async fn run_one_dev_settlement(step: DevSettlementStep<'_>) -> DevSettlementOut
         claimed_seq_commit: chain_seq_commit,
         prev_outpoint,
         value: COVENANT_VALUE,
+        permission_spk_hash: &permission_spk_hash,
+        permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
     });
     let continuation_spk = pay_to_script_hash_script(&settlement.next_redeem);
+
+    // Output layout the dev redeem's count branch pins: single continuation output on the no-exit
+    // path, or continuation (index 0) + permission exit (index 1) when exits are committed. The
+    // permission exit must carry `perm_value` under `permission_spk(permission_spk_hash)`.
+    let outputs = &settlement.transaction.outputs;
+    if perm_value == 0 {
+        assert_eq!(outputs.len(), 1, "{label}: no-exit dev settlement must have one output");
+    } else {
+        assert_eq!(outputs.len(), 2, "{label}: dev settlement with exits must have two outputs");
+        assert_eq!(outputs[0].value, continuation_value, "{label}: continuation value split");
+        assert_eq!(outputs[1].value, perm_value, "{label}: permission-exit value");
+        // Wire SPK layout: version(2) | OpBlake2b | OpData32 | hash(32) | OpEqual; .script() drops
+        // the version, so script()[2..34] is the committed permission-tree hash.
+        let exit_script = outputs[1].script_public_key.script();
+        assert_eq!(exit_script.len(), 35, "{label}: permission P2SH must be 35 bytes");
+        assert_eq!(
+            &exit_script[2..34],
+            &permission_spk_hash[..],
+            "{label}: output 1 must commit to permission_spk_hash",
+        );
+    }
 
     // === d. submit, mine, verify acceptance ===
     // Dev redeem has no precompile; the script just runs a fixed number of hash + concat +
@@ -425,7 +587,7 @@ async fn run_one_dev_settlement(step: DevSettlementStep<'_>) -> DevSettlementOut
     let block_acc_settle_hdr =
         l1.grpc_client().get_block(block_acc_settle, false).await.expect("get_block acc_settle");
     let continuation_utxo = UtxoEntry::new(
-        COVENANT_VALUE,
+        continuation_value,
         continuation_spk,
         block_acc_settle_hdr.header.daa_score,
         false,
