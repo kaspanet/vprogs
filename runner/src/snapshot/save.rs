@@ -42,8 +42,8 @@ pub enum SaveError {
     NoIdentity,
     /// The committed tip carries no settlement to pin the snapshot to.
     NoSettlement,
-    /// The settlement's containing block is older than the store's retained root; pruning has
-    /// already discarded the batch metadata needed to reconstruct that state.
+    /// The settlement's `block_prove_to` block is older than the store's retained root; pruning
+    /// has already discarded the batch metadata needed to reconstruct that state.
     SettlementNotRetained,
     /// The reconstructed state root does not match the on-chain settlement root.
     RootMismatch { computed: [u8; 32], settlement: [u8; 32] },
@@ -82,8 +82,18 @@ impl From<std::io::Error> for SaveError {
 /// Open `data_dir` read-only, reconstruct the L2 state as of the latest retained settlement, and
 /// write a self-verifying snapshot to `out`. Never writes to the source store and never needs L1;
 /// the settlement root is verified against the store's own authenticated SMT root at the batch
-/// index the settlement lands on.
+/// index the settlement proves to (`block_prove_to`, not the later block the settlement
+/// transaction landed in).
+///
+/// Staleness contract: the read-only handle only sees data already flushed to SST files at open
+/// time, not a live daemon's in-memory/WAL writes. Run against a running node, this can
+/// reconstruct a slightly older (but still on-chain-confirmed) settlement than the daemon's
+/// current tip, or observe a torn cross-CF view (some CFs flushed past a point, others not) that
+/// trips one of the root self-checks below and returns [`SaveError::RootMismatch`]. That failure
+/// is fail-safe, not corruption: the operator can retry, or snapshot a quiesced (stopped) node for
+/// a guaranteed-consistent view.
 pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveError> {
+    // Read-only open: see the staleness contract on `save_snapshot` above.
     let store = RocksDbStore::<DefaultConfig>::open_read_only(data_dir.join("db"))
         .map_err(SaveError::OpenStore)?;
 
@@ -99,11 +109,15 @@ pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveErr
     let settlement: SettlementInfo =
         tip.metadata().last_settlement.ok_or(SaveError::NoSettlement)?;
 
-    // Find N_S: the batch whose block is settlement.containing_block. Walk down from the tip.
+    // Find N_S: the batch whose block is settlement.block_prove_to, NOT
+    // settlement.containing_block (the later block the settlement transaction landed in).
+    // store.root(n_s) is the state root the settlement actually attests to. Walk down from the tip.
     let mut n_s = tip.index();
+    let mut meta_at_s: ChainBlockMetadata;
     loop {
         let meta = StoredBatchMetadata::get::<ChainBlockMetadata, _>(&store, n_s);
-        if meta.hash == settlement.containing_block {
+        if meta.hash == settlement.block_prove_to {
+            meta_at_s = meta;
             break;
         }
         if n_s <= root_cp.index() {
@@ -111,7 +125,10 @@ pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveErr
         }
         n_s -= 1;
     }
-    let meta_at_s: ChainBlockMetadata = StoredBatchMetadata::get(&store, n_s);
+    // n_s's own metadata naturally carries the PRIOR settlement (if any), not this one. A restored
+    // node resumes from n_s and seeds the settler from this metadata's `last_settlement`, which
+    // must be this settlement so the settler adopts the covenant tip the snapshot pins to.
+    meta_at_s.last_settlement = Some(settlement);
 
     // The store's authenticated root at N_S must equal the settlement root.
     let store_root_at_s = store.root(n_s);
@@ -149,6 +166,10 @@ pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveErr
         }
         records.push(Record { resource_id: rid, value });
     }
+    // Deterministic file bytes: `version_at_s` is a HashMap, so iteration order (and thus record
+    // order) is non-reproducible across runs. Sort by id so two saves of identical state produce
+    // byte-identical files.
+    records.sort_by_key(|r| r.resource_id);
 
     // Belt-and-suspenders: rebuild the root from just these records and compare.
     let tmp = tempfile::tempdir()?;
@@ -192,6 +213,7 @@ mod tests {
     use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
     use vprogs_state_metadata::StateMetadata;
     use vprogs_state_ptr_latest::StatePtrLatest;
+    use vprogs_state_ptr_rollback::StatePtrRollback;
     use vprogs_state_snapshot::{compute_root_from_records, read_container};
     use vprogs_state_version::StateVersion;
     use vprogs_storage_rocksdb_store::{DefaultConfig, RocksDbStore};
@@ -235,44 +257,46 @@ mod tests {
 
         let r1 = ResourceId::from([1u8; 32]);
         let r2 = ResourceId::from([2u8; 32]);
+        let r3 = ResourceId::from([3u8; 32]);
 
-        // Batch 1: r1=alpha, r2=beta. Settlement lands at this block.
+        // Batch 1 is block_prove_to: the last block of the proven bundle. r1=alpha, r2=beta.
+        // R1 = store.root(1) is the state the settlement attests to.
         let m1 = ChainBlockMetadata {
             hash: Hash::from_bytes([11u8; 32]),
             ..ChainBlockMetadata::default()
         };
         let root1 = commit_batch(&store, 1, &[(r1, 1, b"alpha"), (r2, 1, b"beta")], m1, true);
+
+        // Batch 2 is a later block with lane activity that happens BEFORE the settlement
+        // transaction lands: r1 changes to gamma, and r3 is newly created. Neither must appear
+        // in a snapshot pinned to batch 1's state.
+        let m2 = ChainBlockMetadata {
+            hash: Hash::from_bytes([22u8; 32]),
+            ..ChainBlockMetadata::default()
+        };
+        {
+            let mut wb = store.write_batch();
+            StatePtrRollback::put(&mut wb, 2, &r1, 1); // r1's version before batch 2
+            StatePtrRollback::put(&mut wb, 2, &r3, 0); // r3 did not exist before batch 2
+            store.commit(wb);
+        }
+        commit_batch(&store, 2, &[(r1, 2, b"gamma"), (r3, 1, b"delta")], m2, false);
+
+        // Batch 3 is settlement.containing_block: the later block the settlement transaction
+        // actually landed in, with no lane state change of its own. batch(containing_block) >
+        // batch(block_prove_to), exactly as a bridge stamps it in practice.
         let settlement = SettlementInfo {
-            containing_block: m1.hash,
+            block_prove_to: m1.hash,
+            containing_block: Hash::from_bytes([33u8; 32]),
             new_state: root1,
             ..SettlementInfo::default()
         };
-        // Re-commit batch-1 metadata carrying the settlement (a node records last_settlement on
-        // the block that contained the settlement tx).
-        {
-            let mut wb = store.write_batch();
-            let mut m1s = m1;
-            m1s.last_settlement = Some(settlement);
-            let cp = Checkpoint::new(1, m1s);
-            StoredBatchMetadata::set(&mut wb, 1, cp.metadata());
-            StateMetadata::set_last_committed(&mut wb, &cp);
-            store.commit(wb);
-        }
-
-        // Batch 2 (after the settlement): change r1 -> gamma. This must NOT appear in the snapshot.
-        let m2 = ChainBlockMetadata {
-            hash: Hash::from_bytes([22u8; 32]),
-            last_settlement: Some(settlement), // carried forward
+        let m3 = ChainBlockMetadata {
+            hash: Hash::from_bytes([33u8; 32]),
+            last_settlement: Some(settlement),
             ..ChainBlockMetadata::default()
         };
-        // record rollback ptr for r1 (its pre-batch-2 version was 1) as the commit path does:
-        {
-            use vprogs_state_ptr_rollback::StatePtrRollback;
-            let mut wb = store.write_batch();
-            StatePtrRollback::put(&mut wb, 2, &r1, 1); // old_version of r1 before batch 2
-            store.commit(wb);
-        }
-        commit_batch(&store, 2, &[(r1, 2, b"gamma")], m2, false);
+        commit_batch(&store, 3, &[], m3, false);
 
         // Write identity file the save routine reads.
         PersistedState {
@@ -288,13 +312,22 @@ mod tests {
         // Save.
         let out = dir.path().join("snap.vpsnap");
         let summary = save_snapshot(dir.path(), &out).expect("save should succeed");
+        // Anchored on block_prove_to's batch (1), NOT containing_block's batch (3).
         assert_eq!(summary.committed_index, 1);
         assert_eq!(summary.settlement_new_state, root1);
-        assert_eq!(summary.record_count, 2); // r1=alpha (NOT gamma) and r2=beta
+        // Only r1=alpha and r2=beta: the changed-after-S resource (r1) shows its OLD value and
+        // the created-after-S resource (r3) is excluded entirely.
+        assert_eq!(summary.record_count, 2);
 
         // The file must rebuild to the settlement root using only its records.
         let bytes = std::fs::read(&out).unwrap();
         let (_hdr, records) = read_container(&mut bytes.as_slice()).unwrap();
+        assert_eq!(records.len(), 2);
+        let mut by_id: std::collections::HashMap<ResourceId, &[u8]> =
+            records.iter().map(|r| (r.resource_id, r.value.as_slice())).collect();
+        assert_eq!(by_id.remove(&r1), Some(b"alpha".as_slice()));
+        assert_eq!(by_id.remove(&r2), Some(b"beta".as_slice()));
+
         let recon_dir = tempfile::tempdir().unwrap();
         let recon = RocksDbStore::<DefaultConfig>::open(recon_dir.path());
         assert_eq!(compute_root_from_records(&recon, &records), root1);

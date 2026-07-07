@@ -16,10 +16,8 @@ pub struct SnapshotHeader {
     pub bootstrap_txid: Hash,
     /// Batch index the snapshot's records were reconstructed at.
     pub committed_index: u64,
-    /// Committed batch metadata at `committed_index`: carries `hash ==
-    /// settlement.containing_block` and `last_settlement == the settlement this snapshot pins
-    /// to`, and becomes the restored node's `last_committed` metadata so the bridge fetches on
-    /// top of that block.
+    /// Committed batch metadata at `committed_index`, with `last_settlement` overridden to the
+    /// settlement this snapshot pins to. Becomes the restored node's `last_committed` metadata.
     pub chain_block_metadata: ChainBlockMetadata,
 }
 
