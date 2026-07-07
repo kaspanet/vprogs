@@ -11,13 +11,15 @@ use vprogs_core_types::{Checkpoint, ResourceId};
 use vprogs_l1_types::{ChainBlockMetadata, Hash, SettlementInfo};
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
-use vprogs_state_ptr_latest::StatePtrLatest;
 use vprogs_state_ptr_rollback::StatePtrRollback;
-use vprogs_state_snapshot::{Record, write_snapshot};
-use vprogs_state_version::StateVersion;
+use vprogs_state_snapshot::SnapshotWriter;
 use vprogs_storage_rocksdb_store::{DefaultConfig, RocksDbStore};
+use vprogs_storage_types::StateSpace;
 
-use crate::{persistence::PersistedState, snapshot::header::SnapshotHeader};
+use crate::{
+    persistence::PersistedState,
+    snapshot::{VpsnapFormat, header::SnapshotHeader},
+};
 
 /// Outcome of a successful [`save_snapshot`] call.
 pub struct SaveSummary {
@@ -34,49 +36,31 @@ pub struct SaveSummary {
 }
 
 /// Failure modes for [`save_snapshot`].
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum SaveError {
     /// The source RocksDB directory could not be opened read-only.
+    #[error("cannot open store read-only: {0}")]
     OpenStore(rocksdb::Error),
     /// `vprun-state.json` is missing the covenant/lane identity a snapshot needs.
+    #[error("no vprun-state.json identity (covenant_id) in data dir")]
     NoIdentity,
     /// The committed tip carries no settlement to pin the snapshot to.
+    #[error("no settlement recorded in the committed state")]
     NoSettlement,
     /// The settlement's `block_prove_to` block is older than the store's retained root; pruning
     /// has already discarded the batch metadata needed to reconstruct that state.
+    #[error("settlement block is below the pruned root; snapshot a more recent state")]
     SettlementNotRetained,
     /// The reconstructed state root does not match the on-chain settlement root.
+    #[error(
+        "reconstructed state root {} does not match settlement root {}",
+        faster_hex::hex_string(.computed),
+        faster_hex::hex_string(.settlement)
+    )]
     RootMismatch { computed: [u8; 32], settlement: [u8; 32] },
     /// I/O failure while writing the snapshot file.
-    Io(std::io::Error),
-}
-
-impl std::fmt::Display for SaveError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SaveError::OpenStore(e) => write!(f, "cannot open store read-only: {e}"),
-            SaveError::NoIdentity => {
-                write!(f, "no vprun-state.json identity (covenant_id) in data dir")
-            }
-            SaveError::NoSettlement => write!(f, "no settlement recorded in the committed state"),
-            SaveError::SettlementNotRetained => {
-                write!(f, "settlement block is below the pruned root; snapshot a more recent state")
-            }
-            SaveError::RootMismatch { computed, settlement } => write!(
-                f,
-                "reconstructed state root {} does not match settlement root {}",
-                faster_hex::hex_string(computed),
-                faster_hex::hex_string(settlement)
-            ),
-            SaveError::Io(e) => write!(f, "snapshot io error: {e}"),
-        }
-    }
-}
-impl std::error::Error for SaveError {}
-impl From<std::io::Error> for SaveError {
-    fn from(e: std::io::Error) -> Self {
-        SaveError::Io(e)
-    }
+    #[error("snapshot io error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 /// Open `data_dir` read-only, reconstruct the L2 state as of the latest retained settlement, and
@@ -155,26 +139,20 @@ pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveErr
         }
     }
 
-    // Pass 1 (index-only, no data reads): count the records N_S actually has. A resource is
-    // excluded only when it was CREATED after N_S, which surfaces as a correction of exactly 0 (no
-    // version existed before the batch that created it); everything else existed at N_S.
-    let record_count = StatePtrLatest::iter_all(&store)
-        .filter(|(id, _)| corrections.get(id) != Some(&0))
-        .count() as u64;
-
-    // Pass 2 (lazy, one value resident at a time): `StatePtrLatest::iter_all` already yields ids in
-    // ascending order (latest-ptr keys are the raw 32-byte resource id, so RocksDB's byte order is
-    // resource_id order), exactly what `write_snapshot` requires, so no sort is needed. A resource
-    // emptied at/before N_S surfaces an empty value here rather than being filtered, since the SMT
-    // treats empty as absent (root unaffected) and pass 1 already counted it by version, not value.
-    let records = StatePtrLatest::iter_all(&store).filter_map(|(id, latest)| {
-        let ver = corrections.get(&id).copied().unwrap_or(latest);
-        if ver == 0 {
-            return None;
+    // Pass 1 (index-only, borrowed keys, no data reads): count the records N_S actually has. A
+    // resource is excluded only when it was CREATED after N_S, which surfaces as a correction of
+    // exactly 0 (no version existed before the batch that created it); everything else existed at
+    // N_S. `StatePtrLatest` keys are the raw 32-byte resource id, so no decode is needed to count.
+    let mut record_count: u64 = 0;
+    let mut count_cursor = store.raw_scan(StateSpace::StatePtrLatest);
+    while count_cursor.valid() {
+        let key = count_cursor.key().expect("valid cursor has a key");
+        let id: [u8; 32] = key.try_into().expect("corrupted latest-ptr resource id");
+        if corrections.get(&ResourceId::from(id)) != Some(&0) {
+            record_count += 1;
         }
-        let value = StateVersion::get(&store, ver, &id).unwrap_or_default();
-        Some(Record { resource_id: id, value })
-    });
+        count_cursor.next();
+    }
 
     // Write the snapshot. The `store.root(n_s) == settlement.new_state` check above is the
     // authoritative self-check: it is the same authenticated SMT root the records here are read
@@ -187,13 +165,45 @@ pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveErr
         chain_block_metadata: meta_at_s,
     };
     let mut file = std::fs::File::create(out)?;
-    write_snapshot::<_, <crate::RunnerStore as Tree>::Hasher>(
+    let mut writer = SnapshotWriter::<_, <crate::RunnerStore as Tree>::Hasher, VpsnapFormat>::open(
         &mut file,
         &header.encode(),
         record_count,
-        records,
     )
     .map_err(|e| SaveError::Io(std::io::Error::other(e.to_string())))?;
+
+    // Pass 2 (lazy, one value resident at a time): the raw cursor yields ids in ascending order
+    // (latest-ptr keys are the raw 32-byte resource id, so RocksDB's byte order is resource_id
+    // order), exactly the order `SnapshotWriter::write_record` requires, so no sort is needed. A
+    // resource emptied at/before N_S surfaces an empty value here rather than being filtered, since
+    // the SMT treats empty as absent (root unaffected) and pass 1 already counted it by version,
+    // not value. This loop's emitted-record count must equal pass 1's `record_count` exactly:
+    // both filter on the same `corrections` map, and `SnapshotWriter::finish` debug-asserts the
+    // two agree.
+    let mut emit_cursor = store.raw_scan(StateSpace::StatePtrLatest);
+    while emit_cursor.valid() {
+        let key = emit_cursor.key().expect("valid cursor has a key");
+        let id: [u8; 32] = key.try_into().expect("corrupted latest-ptr resource id");
+        let value_bytes = emit_cursor.value().expect("valid cursor has a value");
+        let latest =
+            u64::from_be_bytes(value_bytes.try_into().expect("corrupted latest-ptr version"));
+
+        let ver = corrections.get(&ResourceId::from(id)).copied().unwrap_or(latest);
+        if ver != 0 {
+            // StateVersion key layout: version (u64 BE) || resource_id (borsh); `ResourceId`'s
+            // borsh encoding of its single `[u8; 32]` field is the field's bytes verbatim, so `id`
+            // doubles as the borsh-encoded key suffix with no re-encode.
+            let mut version_key = [0u8; 40];
+            version_key[..8].copy_from_slice(&ver.to_be_bytes());
+            version_key[8..].copy_from_slice(&id);
+            let value = store.get_pinned(StateSpace::StateVersion, &version_key);
+            writer
+                .write_record(&id, value.as_deref().unwrap_or(&[]))
+                .map_err(|e| SaveError::Io(std::io::Error::other(e.to_string())))?;
+        }
+        emit_cursor.next();
+    }
+    writer.finish().map_err(|e| SaveError::Io(std::io::Error::other(e.to_string())))?;
 
     Ok(SaveSummary {
         covenant_id,
@@ -207,14 +217,14 @@ pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveErr
 #[cfg(test)]
 mod tests {
     use vprogs_core_hashing::{Hasher, Sha256};
-    use vprogs_core_smt::{Commitment, Tree};
+    use vprogs_core_smt::{Commitment, StreamingBuilder, Tree};
     use vprogs_core_types::{Checkpoint, ResourceId};
     use vprogs_l1_types::{ChainBlockMetadata, Hash, SettlementInfo};
     use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
     use vprogs_state_metadata::StateMetadata;
     use vprogs_state_ptr_latest::StatePtrLatest;
     use vprogs_state_ptr_rollback::StatePtrRollback;
-    use vprogs_state_snapshot::{SnapshotReader, compute_root_from_records};
+    use vprogs_state_snapshot::SnapshotReader;
     use vprogs_state_version::StateVersion;
     use vprogs_storage_rocksdb_store::{DefaultConfig, RocksDbStore};
     use vprogs_storage_types::Store;
@@ -319,22 +329,36 @@ mod tests {
         // the created-after-S resource (r3) is excluded entirely.
         assert_eq!(summary.record_count, 2);
 
-        // The file must rebuild to the settlement root using only its records.
+        // The file must rebuild to the settlement root using only its records. `reader.next`
+        // lends borrowed slices, so collect them into owned form before the reader goes away.
         let bytes = std::fs::read(&out).unwrap();
-        let (_hdr, mut reader) = SnapshotReader::<_, Sha256>::open(bytes.as_slice()).unwrap();
-        let mut records = Vec::new();
-        while let Some(r) = reader.next().unwrap() {
-            records.push(r);
+        let (_hdr, mut reader) =
+            SnapshotReader::<_, Sha256, VpsnapFormat>::open(bytes.as_slice()).unwrap();
+        let mut records: Vec<([u8; 32], Vec<u8>)> = Vec::new();
+        while let Some((id, value)) = reader.next().unwrap() {
+            records.push((*id, value.to_vec()));
         }
         reader.finish().unwrap();
         assert_eq!(records.len(), 2);
-        let mut by_id: std::collections::HashMap<ResourceId, &[u8]> =
-            records.iter().map(|r| (r.resource_id, r.value.as_slice())).collect();
-        assert_eq!(by_id.remove(&r1), Some(b"alpha".as_slice()));
-        assert_eq!(by_id.remove(&r2), Some(b"beta".as_slice()));
+        let mut by_id: std::collections::HashMap<ResourceId, Vec<u8>> =
+            records.iter().map(|(id, value)| (ResourceId::from(*id), value.clone())).collect();
+        assert_eq!(by_id.remove(&r1), Some(b"alpha".to_vec()));
+        assert_eq!(by_id.remove(&r2), Some(b"beta".to_vec()));
 
+        // Reconstruct the root by feeding the (already ascending-id-order) non-empty records into
+        // a fresh streaming builder, mirroring what a real restore does; it must equal the
+        // settlement root the save routine self-checked against.
         let recon_dir = tempfile::tempdir().unwrap();
         let recon = RocksDbStore::<DefaultConfig>::open(recon_dir.path());
-        assert_eq!(compute_root_from_records(&recon, &records), root1);
+        let mut wb = recon.write_batch();
+        let mut builder = StreamingBuilder::<Sha256>::new(1);
+        for (id, value) in &records {
+            if !value.is_empty() {
+                builder.feed(&mut wb, ResourceId::from(*id), Sha256::hash(value));
+            }
+        }
+        let reconstructed = builder.finish(&mut wb);
+        recon.commit(wb);
+        assert_eq!(reconstructed, root1);
     }
 }
