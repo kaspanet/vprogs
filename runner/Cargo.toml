@@ -113,6 +113,9 @@ vprogs-node-test-utils = { workspace = true }
 vprogs-state-ptr-latest = { workspace = true }
 vprogs-state-settlement-journal = { workspace = true }
 vprogs-storage-types = { workspace = true }
+# Read by the snapshot round-trip test to seed a resumed prover's settlement watch from the restored
+# store's committed tip, mirroring the daemon's resume path in `start.rs`.
+vprogs-state-metadata = { workspace = true }
 # Do NOT enable the settler's `test-utils` here: a dev-dep feature is unified into every dev/test
 # build, which would activate the settler's `alternation` field while the runner's own `test-utils`
 # gate (in `start.rs`) stays off, breaking `cargo test --lib`. The runner's `test-utils` feature
