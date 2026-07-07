@@ -46,6 +46,25 @@ impl<C: Config> RocksDbStore<C> {
         }
     }
 
+    /// Open an existing store read-only. Sees data flushed to SST/committed at open time;
+    /// does not observe writes made by another handle after this open. Used by snapshot
+    /// export so a live daemon can keep the store open for writing.
+    pub fn open_read_only<P: AsRef<Path>>(path: P) -> Result<Self, rocksdb::Error> {
+        let db_opts = C::db_opts();
+        let db = DB::open_cf_descriptors_read_only(
+            &db_opts,
+            path,
+            <StateSpace as StateSpaceExt<C>>::all_descriptors(),
+            false,
+        )?;
+        Ok(Self {
+            db: Arc::new(db),
+            write_opts: Arc::new(C::write_opts()),
+            canonical: CanonicalChain::default(),
+            _marker: PhantomData,
+        })
+    }
+
     /// The column-family handle for `ns`; panics if the CF is missing.
     fn cf(&self, ns: &StateSpace) -> &rocksdb::ColumnFamily {
         let cf_name = <StateSpace as StateSpaceExt<C>>::cf_name;
@@ -198,5 +217,37 @@ impl Iterator for RocksDbPrefixIter<'_> {
             Ok((k, v)) => (k.to_vec(), v.to_vec()),
             Err(e) => panic!("rocksdb prefix iteration failed: {e}"),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use vprogs_storage_types::{StateSpace, Store, WriteBatch as _};
+
+    use super::*;
+
+    #[test]
+    fn open_read_only_sees_committed_writes() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Write a value with a normal read-write handle, then drop it.
+        {
+            let store = RocksDbStore::<DefaultConfig>::open(dir.path());
+            let mut wb = store.write_batch();
+            wb.put(StateSpace::Metadata, b"k", b"v");
+            store.commit(wb);
+        }
+
+        // Re-open read-only and confirm the value is visible.
+        let ro = RocksDbStore::<DefaultConfig>::open_read_only(dir.path())
+            .expect("read-only open should succeed for an existing db");
+        assert_eq!(ro.get(StateSpace::Metadata, b"k"), Some(b"v".to_vec()));
+    }
+
+    #[test]
+    fn open_read_only_missing_db_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("does-not-exist");
+        assert!(RocksDbStore::<DefaultConfig>::open_read_only(&missing).is_err());
     }
 }
