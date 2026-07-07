@@ -7,3 +7,7 @@ version.workspace = true
 borsh.workspace                = true
 vprogs-core-types.workspace    = true
 vprogs-storage-types.workspace = true
+
+[dev-dependencies]
+tempfile.workspace                     = true
+vprogs-storage-rocksdb-store.workspace = true

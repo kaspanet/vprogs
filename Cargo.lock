@@ -8993,7 +8993,9 @@ name = "vprogs-state-ptr-latest"
 version = "0.1.0"
 dependencies = [
  "borsh",
+ "tempfile",
  "vprogs-core-types",
+ "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
 ]
 
