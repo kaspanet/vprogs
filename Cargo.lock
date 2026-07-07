@@ -9025,6 +9025,7 @@ name = "vprogs-state-snapshot"
 version = "0.1.0"
 dependencies = [
  "tempfile",
+ "thiserror 2.0.18",
  "vprogs-core-hashing",
  "vprogs-core-smt",
  "vprogs-core-types",
