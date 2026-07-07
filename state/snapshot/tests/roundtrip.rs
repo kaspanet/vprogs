@@ -1,7 +1,7 @@
 use vprogs_core_hashing::{Hasher, Sha256};
 use vprogs_core_smt::{Commitment, Tree};
 use vprogs_core_types::ResourceId;
-use vprogs_state_snapshot::{Record, compute_root_from_records, read_container, write_container};
+use vprogs_state_snapshot::{Record, SnapshotReader, compute_root_from_records, write_snapshot};
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_storage_types::Store;
 
@@ -28,10 +28,17 @@ fn reconstructed_root_matches_independent_commit() {
     let reference_root = ref_store.update(&mut wb, commitments, 4242);
     ref_store.commit(wb);
 
-    // Round-trip through the container, then reconstruct on a fresh empty store at version 1.
+    // Round-trip through the streaming container, then reconstruct on a fresh empty store at
+    // version 1.
     let mut buf = Vec::new();
-    write_container(&mut buf, b"hdr", records.len() as u64, records.clone()).unwrap();
-    let (_hdr, got) = read_container(&mut buf.as_slice()).unwrap();
+    write_snapshot::<_, Sha256>(&mut buf, b"hdr", records.len() as u64, records.clone()).unwrap();
+
+    let (_hdr, mut reader) = SnapshotReader::<_, Sha256>::open(buf.as_slice()).unwrap();
+    let mut got = Vec::new();
+    while let Some(r) = reader.next().unwrap() {
+        got.push(r);
+    }
+    reader.finish().unwrap();
 
     let recon_dir = tempfile::tempdir().unwrap();
     let recon_store =
