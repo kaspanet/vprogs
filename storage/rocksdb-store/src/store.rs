@@ -13,7 +13,7 @@ use crate::{
 /// A RocksDB-backed [`Store`], with one column family per [`StateSpace`].
 pub struct RocksDbStore<C: Config = DefaultConfig> {
     /// The shared RocksDB handle.
-    db: Arc<DB>,
+    pub(crate) db: Arc<DB>,
     /// Write options applied to every commit.
     write_opts: Arc<rocksdb::WriteOptions>,
     /// In-memory canonical-chain oracle, shared by clones; driven by the restored writer.
@@ -46,9 +46,9 @@ impl<C: Config> RocksDbStore<C> {
         }
     }
 
-    /// Open an existing store read-only. Sees data flushed to SST/committed at open time;
-    /// does not observe writes made by another handle after this open. Used by snapshot
-    /// export so a live daemon can keep the store open for writing.
+    /// Opens an existing store read-only: sees data committed at open time, not writes made
+    /// through another handle afterward. Can be opened while a separate read-write handle holds the
+    /// same store open.
     pub fn open_read_only<P: AsRef<Path>>(path: P) -> Result<Self, rocksdb::Error> {
         let db_opts = C::db_opts();
         let db = DB::open_cf_descriptors_read_only(
@@ -66,7 +66,7 @@ impl<C: Config> RocksDbStore<C> {
     }
 
     /// The column-family handle for `ns`; panics if the CF is missing.
-    fn cf(&self, ns: &StateSpace) -> &rocksdb::ColumnFamily {
+    pub(crate) fn cf(&self, ns: &StateSpace) -> &rocksdb::ColumnFamily {
         let cf_name = <StateSpace as StateSpaceExt<C>>::cf_name;
         match self.db.cf_handle(cf_name(ns)) {
             Some(cf) => cf,
