@@ -3,82 +3,67 @@
 //! settlement is genuine.
 //!
 //! [`restore_into_store`] never buffers the whole snapshot: it streams each record straight into
-//! `data` + `latest_ptr`, committing in bounded chunks, while accumulating only the compact SMT
-//! commitments. The tree is rebuilt once at EOF and checked against the pinned settlement root
-//! before anything is written that would make the store look resumable; any failure after the
-//! store has been opened drops the freshly written column families, since the fresh data dir is
-//! exclusively ours at that point.
+//! `data` + `latest_ptr` AND feeds it to a [`StreamingBuilder`] in the same pass, committing in
+//! bounded chunks. The builder retains only a bounded spine of not-yet-finalized SMT subtrees (see
+//! `vprogs_core_smt::builder`), so its writes land in the very same write-batch as the record's
+//! `data`/`latest_ptr` writes with no separate accumulation step. The root is sealed and checked
+//! against the pinned settlement root at EOF, in the final write-batch, before anything is written
+//! that would make the store look resumable; any failure after the store has been opened drops the
+//! freshly written column families, since the fresh data dir is exclusively ours at that point.
 
 use std::{io::Read, path::Path};
 
 use kaspa_rpc_core::{RpcDataVerbosityLevel::Full, api::rpc::RpcApi};
 use vprogs_core_hashing::{Hasher, Sha256};
-use vprogs_core_smt::{Commitment, Tree};
-use vprogs_core_types::Checkpoint;
+use vprogs_core_smt::StreamingBuilder;
+use vprogs_core_types::{Checkpoint, ResourceId};
 use vprogs_l1_types::{Hash, L1Transaction, L1TransactionCovenantExt, NetworkId, SettlementInfo};
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_ptr_latest::StatePtrLatest;
-use vprogs_state_snapshot::SnapshotReader;
+use vprogs_state_snapshot::{SnapshotFormat, SnapshotReader};
 use vprogs_state_version::StateVersion;
 use vprogs_storage_rocksdb_store::{DefaultConfig, RocksDbStore};
 use vprogs_storage_types::Store;
 
-use crate::{persistence::PersistedState, snapshot::header::SnapshotHeader};
+use crate::{
+    persistence::PersistedState,
+    snapshot::{VpsnapFormat, header::SnapshotHeader},
+};
 
 /// Records committed per write-batch while streaming a snapshot into the store. Bounds memory
 /// while still amortizing RocksDB write-batch overhead over many records.
 const CHUNK_SIZE: usize = 1000;
 
 /// Failure modes for [`restore_into_store`], [`validate_against_l1`], and the CLI orchestrator.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum RestoreError {
     /// `data_dir` already holds a store or identity file; restore refuses to clobber it.
+    #[error("data dir already holds a store or identity file")]
     DataDirNotEmpty,
     /// The snapshot file itself is malformed (bad magic/version/digest/framing) or internally
     /// inconsistent (header doesn't match its own settlement).
+    #[error("malformed snapshot: {0}")]
     BadSnapshot(String),
     /// The header carries no settlement to restore from.
+    #[error("snapshot header carries no settlement to restore from")]
     NoSettlement,
     /// The SMT rebuilt from the snapshot's records does not match the pinned settlement root.
+    #[error(
+        "rebuilt state root {} does not match settlement root {}",
+        faster_hex::hex_string(.rebuilt),
+        faster_hex::hex_string(.settlement)
+    )]
     RootMismatch { rebuilt: [u8; 32], settlement: [u8; 32] },
     /// The local L1 node's RPC failed or otherwise could not be used to confirm the snapshot.
+    #[error("L1 validation failed: {0}")]
     L1(String),
     /// The local L1's reachable selected chain does not confirm the snapshot's settlement.
+    #[error("settlement not confirmed on the local L1's reachable chain")]
     NotOnChain,
     /// I/O failure while reading the snapshot file or writing the store.
-    Io(std::io::Error),
-}
-
-impl std::fmt::Display for RestoreError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RestoreError::DataDirNotEmpty => {
-                write!(f, "data dir already holds a store or identity file")
-            }
-            RestoreError::BadSnapshot(msg) => write!(f, "malformed snapshot: {msg}"),
-            RestoreError::NoSettlement => {
-                write!(f, "snapshot header carries no settlement to restore from")
-            }
-            RestoreError::RootMismatch { rebuilt, settlement } => write!(
-                f,
-                "rebuilt state root {} does not match settlement root {}",
-                faster_hex::hex_string(rebuilt),
-                faster_hex::hex_string(settlement)
-            ),
-            RestoreError::L1(msg) => write!(f, "L1 validation failed: {msg}"),
-            RestoreError::NotOnChain => {
-                write!(f, "settlement not confirmed on the local L1's reachable chain")
-            }
-            RestoreError::Io(e) => write!(f, "restore io error: {e}"),
-        }
-    }
-}
-impl std::error::Error for RestoreError {}
-impl From<std::io::Error> for RestoreError {
-    fn from(e: std::io::Error) -> Self {
-        RestoreError::Io(e)
-    }
+    #[error("restore io error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 /// Drops `store` and deletes the just-written `db_path`. Called only on a failure path after
@@ -94,10 +79,13 @@ fn discard_store(store: RocksDbStore<DefaultConfig>, db_path: &Path) {
 /// and identity) that makes the store look like a node already committed up to the settlement
 /// block. Caller MUST have validated the snapshot against L1 first (see `validate_against_l1`);
 /// this function only re-confirms the file's own internal consistency.
-pub fn restore_into_store<R: Read, H: Hasher>(
+///
+/// Generic over the framing identity `F`: a caller pins a concrete [`SnapshotFormat`] (e.g.
+/// `VpsnapFormat`) when it builds the `SnapshotReader` passed in here.
+pub fn restore_into_store<R: Read, H: Hasher, F: SnapshotFormat>(
     data_dir: &Path,
     header: &SnapshotHeader,
-    mut reader: SnapshotReader<R, H>,
+    mut reader: SnapshotReader<R, H, F>,
 ) -> Result<(), RestoreError> {
     let db_path = data_dir.join("db");
     if db_path.exists() || PersistedState::exists(data_dir) {
@@ -108,43 +96,49 @@ pub fn restore_into_store<R: Read, H: Hasher>(
 
     let store = RocksDbStore::<DefaultConfig>::open(&db_path);
 
-    // Stream every record straight into `data` + `latest_ptr`, committing in bounded chunks, while
-    // accumulating only the compact SMT commitments (never the whole record set).
-    let mut commitments: Vec<Commitment> = Vec::new();
+    // Every record streams straight into `data` + `latest_ptr` and is fed to the SMT builder, all
+    // in the same write-batch, committed in bounded chunks. Record order is not checked here: a
+    // snapshot that reorders or duplicates records (the header pins the settlement root, not the
+    // ordering) rebuilds to a different root, which the `root == settlement.new_state` check below
+    // rejects, so the record order is verified transitively.
+    let mut builder = StreamingBuilder::<H>::new(version);
     let mut wb = store.write_batch();
     let mut pending = 0usize;
     loop {
-        let record = match reader.next() {
-            Ok(Some(r)) => r,
+        match reader.next() {
+            Ok(Some((id, value))) => {
+                let rid = ResourceId::from(*id);
+                StateVersion::put(&mut wb, version, &rid, value);
+                StatePtrLatest::put(&mut wb, &rid, version);
+                // Empty value = resource absent from the tree (matches save's emit + the SMT's
+                // empty=absent contract); only non-empty values are live leaves.
+                if !value.is_empty() {
+                    builder.feed(&mut wb, rid, H::hash(value));
+                }
+
+                pending += 1;
+                if pending >= CHUNK_SIZE {
+                    store.commit(wb);
+                    wb = store.write_batch();
+                    pending = 0;
+                }
+            }
             Ok(None) => break,
             Err(e) => {
                 discard_store(store, &db_path);
                 return Err(RestoreError::BadSnapshot(e.to_string()));
             }
-        };
-        if !record.value.is_empty() {
-            commitments.push(Commitment::new(record.resource_id, H::hash(&record.value)));
-        }
-        StateVersion::put(&mut wb, version, &record.resource_id, &record.value);
-        StatePtrLatest::put(&mut wb, &record.resource_id, version);
-        pending += 1;
-        if pending >= CHUNK_SIZE {
-            store.commit(wb);
-            wb = store.write_batch();
-            pending = 0;
         }
     }
-    store.commit(wb);
 
     if let Err(e) = reader.finish() {
         discard_store(store, &db_path);
         return Err(RestoreError::BadSnapshot(e.to_string()));
     }
 
-    // Rebuild the SMT from the accumulated commitments and verify it against the pinned
-    // settlement root before writing anything that would make the store look resumable.
-    let mut wb = store.write_batch();
-    let root = store.update(&mut wb, commitments, version);
+    // Seal the tree into the final (possibly partial) batch and verify the root BEFORE writing the
+    // cursor that would make the store look resumable.
+    let root = builder.finish(&mut wb);
     if root != settlement.new_state {
         discard_store(store, &db_path);
         return Err(RestoreError::RootMismatch { rebuilt: root, settlement: settlement.new_state });
@@ -258,8 +252,9 @@ pub async fn restore_snapshot(
     network: NetworkId,
 ) -> Result<RestoreSummary, RestoreError> {
     let file = std::fs::File::open(snapshot)?;
-    let (header_bytes, reader) = SnapshotReader::<_, Sha256>::open(std::io::BufReader::new(file))
-        .map_err(|e| RestoreError::BadSnapshot(e.to_string()))?;
+    let (header_bytes, reader) =
+        SnapshotReader::<_, Sha256, VpsnapFormat>::open(std::io::BufReader::new(file))
+            .map_err(|e| RestoreError::BadSnapshot(e.to_string()))?;
     let header = SnapshotHeader::decode(&header_bytes)
         .map_err(|e| RestoreError::BadSnapshot(e.to_string()))?;
     let settlement = header.settlement().ok_or(RestoreError::NoSettlement)?;
@@ -290,19 +285,20 @@ pub async fn restore_snapshot(
 #[cfg(test)]
 mod tests {
     use vprogs_core_hashing::Sha256;
-    use vprogs_core_smt::Tree;
+    use vprogs_core_smt::{Commitment, Tree};
     use vprogs_core_types::{Checkpoint, ResourceId};
     use vprogs_l1_types::{ChainBlockMetadata, Hash, SettlementInfo};
     use vprogs_state_metadata::StateMetadata;
-    use vprogs_state_snapshot::{Record, compute_root_from_records, write_snapshot};
+    use vprogs_state_snapshot::SnapshotWriter;
     use vprogs_state_version::StateVersion;
     use vprogs_storage_rocksdb_store::{DefaultConfig, RocksDbStore};
 
     use super::*;
     use crate::persistence::PersistedState;
 
-    fn rec(b: u8, v: &[u8]) -> Record {
-        Record { resource_id: ResourceId::from([b; 32]), value: v.to_vec() }
+    /// One `(id, value)` snapshot record, `id = [b; 32]`.
+    fn rec(b: u8, v: &[u8]) -> ([u8; 32], Vec<u8>) {
+        ([b; 32], v.to_vec())
     }
 
     fn minimal_header() -> SnapshotHeader {
@@ -315,14 +311,44 @@ mod tests {
         }
     }
 
+    /// Writes `records` (already in ascending id order) as a well-formed `VpsnapFormat` snapshot.
+    fn write_test_snapshot(header: &[u8], records: &[([u8; 32], Vec<u8>)]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let mut writer = SnapshotWriter::<_, Sha256, VpsnapFormat>::open(
+            &mut bytes,
+            header,
+            records.len() as u64,
+        )
+        .unwrap();
+        for (id, value) in records {
+            writer.write_record(id, value).unwrap();
+        }
+        writer.finish().unwrap();
+        bytes
+    }
+
+    /// Computes the state root `records` would settle to, the same way a node does: a direct
+    /// `store.update` of the non-empty commitments on a scratch store. Independent of
+    /// `restore_into_store`'s own `StreamingBuilder` path, so it is a genuine oracle for the
+    /// pinned settlement root in these tests.
+    fn settlement_root(records: &[([u8; 32], Vec<u8>)], version: u64) -> [u8; 32] {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = RocksDbStore::<DefaultConfig>::open(tmp.path());
+        let commitments: Vec<Commitment> = records
+            .iter()
+            .filter(|(_, value)| !value.is_empty())
+            .map(|(id, value)| Commitment::new(ResourceId::from(*id), Sha256::hash(value)))
+            .collect();
+        let mut wb = store.write_batch();
+        let root = store.update(&mut wb, commitments, version);
+        store.commit(wb);
+        root
+    }
+
     #[test]
     fn restore_seeds_resumable_store() {
         let records = vec![rec(1, b"alpha"), rec(2, b"beta")];
-
-        // Compute the settlement root the same way a node would.
-        let tmp = tempfile::tempdir().unwrap();
-        let tmp_store = RocksDbStore::<DefaultConfig>::open(tmp.path());
-        let new_state = compute_root_from_records(&tmp_store, &records);
+        let new_state = settlement_root(&records, 4242);
 
         let block_prove_to = Hash::from_bytes([11u8; 32]);
         let settlement = SettlementInfo {
@@ -344,16 +370,10 @@ mod tests {
             chain_block_metadata: meta,
         };
 
-        let mut bytes = Vec::new();
-        write_snapshot::<_, Sha256>(
-            &mut bytes,
-            &header.encode(),
-            records.len() as u64,
-            records.clone(),
-        )
-        .unwrap();
+        let bytes = write_test_snapshot(&header.encode(), &records);
 
-        let (header_bytes, reader) = SnapshotReader::<_, Sha256>::open(bytes.as_slice()).unwrap();
+        let (header_bytes, reader) =
+            SnapshotReader::<_, Sha256, VpsnapFormat>::open(bytes.as_slice()).unwrap();
         let header = SnapshotHeader::decode(&header_bytes).unwrap();
 
         let dir = tempfile::tempdir().unwrap();
@@ -386,9 +406,9 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("db")).unwrap();
 
         let header = minimal_header();
-        let mut bytes = Vec::new();
-        write_snapshot::<_, Sha256>(&mut bytes, &header.encode(), 0, Vec::new()).unwrap();
-        let (_header_bytes, reader) = SnapshotReader::<_, Sha256>::open(bytes.as_slice()).unwrap();
+        let bytes = write_test_snapshot(&header.encode(), &[]);
+        let (_header_bytes, reader) =
+            SnapshotReader::<_, Sha256, VpsnapFormat>::open(bytes.as_slice()).unwrap();
 
         assert!(matches!(
             restore_into_store(dir.path(), &header, reader),
@@ -400,9 +420,7 @@ mod tests {
     fn restore_rejects_forged_root() {
         // The pinned settlement root is honest (computed from `honest_records`)...
         let honest_records = vec![rec(1, b"alpha"), rec(2, b"beta")];
-        let tmp = tempfile::tempdir().unwrap();
-        let tmp_store = RocksDbStore::<DefaultConfig>::open(tmp.path());
-        let honest_root = compute_root_from_records(&tmp_store, &honest_records);
+        let honest_root = settlement_root(&honest_records, 4242);
 
         let block_prove_to = Hash::from_bytes([11u8; 32]);
         let settlement = SettlementInfo {
@@ -426,16 +444,10 @@ mod tests {
 
         // ...but the file's actual records (tampered) hash to a different root.
         let forged_records = vec![rec(1, b"EVIL!"), rec(2, b"beta")];
-        let mut bytes = Vec::new();
-        write_snapshot::<_, Sha256>(
-            &mut bytes,
-            &header.encode(),
-            forged_records.len() as u64,
-            forged_records,
-        )
-        .unwrap();
+        let bytes = write_test_snapshot(&header.encode(), &forged_records);
 
-        let (header_bytes, reader) = SnapshotReader::<_, Sha256>::open(bytes.as_slice()).unwrap();
+        let (header_bytes, reader) =
+            SnapshotReader::<_, Sha256, VpsnapFormat>::open(bytes.as_slice()).unwrap();
         let header = SnapshotHeader::decode(&header_bytes).unwrap();
 
         let dir = tempfile::tempdir().unwrap();
