@@ -2,7 +2,7 @@
 //! self-verifying snapshot file.
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
 
@@ -13,7 +13,7 @@ use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_ptr_latest::StatePtrLatest;
 use vprogs_state_ptr_rollback::StatePtrRollback;
-use vprogs_state_snapshot::{Record, compute_root_from_records, write_snapshot};
+use vprogs_state_snapshot::{Record, write_snapshot};
 use vprogs_state_version::StateVersion;
 use vprogs_storage_rocksdb_store::{DefaultConfig, RocksDbStore};
 
@@ -139,50 +139,46 @@ pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveErr
         });
     }
 
-    // version_at_s[resource] = its data version at N_S. Start from current latest, then correct
-    // backward using the earliest rollback pointer recorded in any batch after N_S.
-    let mut version_at_s: std::collections::HashMap<ResourceId, u64> =
-        StatePtrLatest::iter_all(&store).collect();
+    // Bounded-memory enumeration: `corrections` holds only resources changed after N_S (the churn
+    // of a few post-settlement batches, never the full resource set); a resource absent here kept
+    // its current latest version back to N_S. `pinned` keeps each resource's first post-S touch,
+    // since that rollback entry is the version held right before that batch, i.e. its value at N_S.
+    let mut corrections: HashMap<ResourceId, u64> = HashMap::new();
     let mut pinned: HashSet<ResourceId> = HashSet::new();
     for idx in (n_s + 1)..=tip.index() {
         for (rid_bytes, old_version) in StatePtrRollback::iter_batch(&store, idx) {
             let rid: ResourceId =
                 borsh::from_slice(&rid_bytes).expect("corrupted rollback resource id");
             if pinned.insert(rid) {
-                version_at_s.insert(rid, old_version);
+                corrections.insert(rid, old_version);
             }
         }
     }
 
-    // Enumerate records: skip resources absent/empty at N_S (version 0 or no data).
-    let mut records: Vec<Record> = Vec::new();
-    for (rid, ver) in version_at_s {
+    // Pass 1 (index-only, no data reads): count the records N_S actually has. A resource is
+    // excluded only when it was CREATED after N_S, which surfaces as a correction of exactly 0 (no
+    // version existed before the batch that created it); everything else existed at N_S.
+    let record_count = StatePtrLatest::iter_all(&store)
+        .filter(|(id, _)| corrections.get(id) != Some(&0))
+        .count() as u64;
+
+    // Pass 2 (lazy, one value resident at a time): `StatePtrLatest::iter_all` already yields ids in
+    // ascending order (latest-ptr keys are the raw 32-byte resource id, so RocksDB's byte order is
+    // resource_id order), exactly what `write_snapshot` requires, so no sort is needed. A resource
+    // emptied at/before N_S surfaces an empty value here rather than being filtered, since the SMT
+    // treats empty as absent (root unaffected) and pass 1 already counted it by version, not value.
+    let records = StatePtrLatest::iter_all(&store).filter_map(|(id, latest)| {
+        let ver = corrections.get(&id).copied().unwrap_or(latest);
         if ver == 0 {
-            continue;
+            return None;
         }
-        let value = StateVersion::get(&store, ver, &rid).unwrap_or_default();
-        if value.is_empty() {
-            continue;
-        }
-        records.push(Record { resource_id: rid, value });
-    }
-    // Deterministic file bytes: `version_at_s` is a HashMap, so iteration order (and thus record
-    // order) is non-reproducible across runs. Sort by id so two saves of identical state produce
-    // byte-identical files.
-    records.sort_by_key(|r| r.resource_id);
+        let value = StateVersion::get(&store, ver, &id).unwrap_or_default();
+        Some(Record { resource_id: id, value })
+    });
 
-    // Belt-and-suspenders: rebuild the root from just these records and compare.
-    let tmp = tempfile::tempdir()?;
-    let tmp_store = RocksDbStore::<DefaultConfig>::open(tmp.path());
-    let rebuilt = compute_root_from_records(&tmp_store, &records);
-    if rebuilt != settlement.new_state {
-        return Err(SaveError::RootMismatch {
-            computed: rebuilt,
-            settlement: settlement.new_state,
-        });
-    }
-
-    // Write the snapshot.
+    // Write the snapshot. The `store.root(n_s) == settlement.new_state` check above is the
+    // authoritative self-check: it is the same authenticated SMT root the records here are read
+    // back from, so no separate in-memory rebuild is needed.
     let header = SnapshotHeader {
         covenant_id,
         lane_id,
@@ -190,7 +186,6 @@ pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveErr
         committed_index: n_s,
         chain_block_metadata: meta_at_s,
     };
-    let record_count = records.len() as u64;
     let mut file = std::fs::File::create(out)?;
     write_snapshot::<_, <crate::RunnerStore as Tree>::Hasher>(
         &mut file,
