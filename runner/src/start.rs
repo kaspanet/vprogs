@@ -24,11 +24,12 @@ use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_smt::EMPTY_HASH;
 use vprogs_core_types::ChainSink;
 use vprogs_l1_bridge::{PermissionSpendHooks, lane_walk_reached_genesis};
-use vprogs_l1_types::SettlementInfo;
+use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_l1_wallet::Wallet;
 use vprogs_node_framework::NodeApi;
 use vprogs_scheduling_scheduler::Indexer;
 use vprogs_zk_aggregate_prover::ExitsForBundle;
+use vprogs_state_metadata::StateMetadata;
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_settler::{
     CovenantState, SettlementMode, SettlementWorkerConfig, bootstrap_dev_covenant,
@@ -613,8 +614,12 @@ where
     let tip_daa_obs = Arc::new(AtomicU64::new(0));
     // Live settlement channel: the bridge (writer) publishes the covenant's last on-chain
     // settlement here; the settler (reader) detects a competitor advancing past its in-memory
-    // tip.
-    let (settlement_tx, settlement_rx) = watch::channel(None::<SettlementInfo>);
+    // tip. Seeded from the store's own persisted settlement (`None` on a fresh bootstrap store) so
+    // a restored or resumed store's settler adopts the covenant tip without waiting on the bridge
+    // to re-observe a settlement that may reference a since-pruned deploy block.
+    let seed_settlement =
+        StateMetadata::last_committed::<ChainBlockMetadata, _>(&store).metadata().last_settlement;
+    let (settlement_tx, settlement_rx) = watch::channel(seed_settlement);
     // Re-root channel: the aggregate prover (writer) publishes the covenant tip when it holds a
     // fold whose window head enters off the tip's exit; the drain task below (reader) rolls
     // execution back to the settlement boundary.
