@@ -75,6 +75,7 @@ serde_json = { workspace = true }
 tempfile   = { workspace = true }
 thiserror  = { workspace = true }
 tokio      = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+zerocopy   = { workspace = true, features = ["derive"] }
 
 # The two-prover contention test needs the settler's alternation knob, so it only builds with
 # `--features test-utils`; a plain `cargo test` skips it.

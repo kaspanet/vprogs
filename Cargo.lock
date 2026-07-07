@@ -8859,6 +8859,7 @@ dependencies = [
  "vprogs-zk-backend-risc0-test-suite",
  "vprogs-zk-batch-prover",
  "vprogs-zk-vm",
+ "zerocopy",
 ]
 
 [[package]]

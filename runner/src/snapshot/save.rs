@@ -13,7 +13,7 @@ use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_ptr_latest::StatePtrLatest;
 use vprogs_state_ptr_rollback::StatePtrRollback;
-use vprogs_state_snapshot::{Record, compute_root_from_records, write_container};
+use vprogs_state_snapshot::{Record, compute_root_from_records, write_snapshot};
 use vprogs_state_version::StateVersion;
 use vprogs_storage_rocksdb_store::{DefaultConfig, RocksDbStore};
 
@@ -182,7 +182,7 @@ pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveErr
         });
     }
 
-    // Write the container.
+    // Write the snapshot.
     let header = SnapshotHeader {
         covenant_id,
         lane_id,
@@ -192,8 +192,13 @@ pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveErr
     };
     let record_count = records.len() as u64;
     let mut file = std::fs::File::create(out)?;
-    write_container(&mut file, &header.encode(), record_count, records)
-        .map_err(|e| SaveError::Io(std::io::Error::other(e.to_string())))?;
+    write_snapshot::<_, <crate::RunnerStore as Tree>::Hasher>(
+        &mut file,
+        &header.encode(),
+        record_count,
+        records,
+    )
+    .map_err(|e| SaveError::Io(std::io::Error::other(e.to_string())))?;
 
     Ok(SaveSummary {
         covenant_id,
@@ -214,7 +219,7 @@ mod tests {
     use vprogs_state_metadata::StateMetadata;
     use vprogs_state_ptr_latest::StatePtrLatest;
     use vprogs_state_ptr_rollback::StatePtrRollback;
-    use vprogs_state_snapshot::{compute_root_from_records, read_container};
+    use vprogs_state_snapshot::{SnapshotReader, compute_root_from_records};
     use vprogs_state_version::StateVersion;
     use vprogs_storage_rocksdb_store::{DefaultConfig, RocksDbStore};
     use vprogs_storage_types::Store;
@@ -321,7 +326,12 @@ mod tests {
 
         // The file must rebuild to the settlement root using only its records.
         let bytes = std::fs::read(&out).unwrap();
-        let (_hdr, records) = read_container(&mut bytes.as_slice()).unwrap();
+        let (_hdr, mut reader) = SnapshotReader::<_, Sha256>::open(bytes.as_slice()).unwrap();
+        let mut records = Vec::new();
+        while let Some(r) = reader.next().unwrap() {
+            records.push(r);
+        }
+        reader.finish().unwrap();
         assert_eq!(records.len(), 2);
         let mut by_id: std::collections::HashMap<ResourceId, &[u8]> =
             records.iter().map(|r| (r.resource_id, r.value.as_slice())).collect();
