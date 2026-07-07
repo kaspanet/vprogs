@@ -21,8 +21,8 @@ pub fn commitments_from_records<'a>(
 ///
 /// `empty_store` MUST be freshly opened (no prior SMT nodes). The version is fixed at 1 because
 /// `Tree::update` on an empty store yields a root that depends only on the leaf set, never on the
-/// version number. The returned root equals `StateMetadata::state_root` of the node whose latest
-/// live state was exactly these records.
+/// version number. The returned root equals the node's committed state root at the point whose
+/// latest live state was exactly these records.
 pub fn compute_root_from_records<S>(empty_store: &S, records: &[Record]) -> [u8; 32]
 where
     S: Store,
