@@ -1,36 +1,49 @@
-//! Streaming bulk-load construction of a sparse Merkle tree from sorted leaves.
+//! Feed-based streaming bulk-load construction of a sparse Merkle tree from sorted leaves.
 //!
 //! ## Contract
 //!
-//! [`build_sorted`] consumes an ascending, duplicate-free stream of live leaves
-//! `(resource_id, value_hash)` (every `value_hash != EMPTY_HASH`) and writes the resulting nodes
-//! through `wb`, returning the new root hash.
+//! [`StreamingBuilder`] consumes an ascending, duplicate-free stream of live leaves
+//! `(resource_id, value_hash)` (every `value_hash != EMPTY_HASH`) one
+//! [`feed`](StreamingBuilder::feed) at a time, writing each finalized node through the caller's
+//! `WriteBatch` the moment its subtree is sealed. [`finish`](StreamingBuilder::finish) writes the
+//! root and returns its hash. [`build_sorted`] is a thin wrapper that feeds an iterator and
+//! finishes.
 //!
 //! The output is byte-identical to [`Tree::update`](crate::Tree::update) (which drives
 //! `Updater::apply`) run on an EMPTY store with the same leaves supplied as `Commitment`s: the same
 //! root hash AND the same set of `put_node` writes (same keys, same version, same encoded `Node`s).
-//! That equivalence lets a snapshot restore rebuild the authenticated tree in memory bounded by the
-//! tree depth instead of holding every commitment in a `Vec`.
+//! That equivalence lets a snapshot restore rebuild the authenticated tree with memory bounded by
+//! the tree depth instead of holding every commitment in a `Vec`.
 //!
-//! ## Why it matches `Updater` on an empty store
+//! ## Bounded memory and mid-stream commits
+//!
+//! The builder retains only its left spine of not-yet-finalized subtrees (at most [`DEPTH`]
+//! entries) plus one in-progress subtree; every internal node is written into the caller's
+//! `WriteBatch` as soon as its subtree is sealed. The builder holds no borrow of the batch between
+//! calls, so a caller rebuilding from a snapshot may commit the batch and hand a fresh one to the
+//! next `feed` without changing the output. Peak working memory is bounded by the tree depth, not
+//! the leaf count, letting a restore stream billions of leaves through a bounded set.
+//!
+//! ## How it mirrors the recursion / `Updater`
 //!
 //! On an empty store `Updater` never reads a pre-existing node, so its recursion reduces to a pure
-//! function of the sorted, unique, live leaf set:
+//! function of the sorted, unique, live leaf set. This builder walks the same recursion as a
+//! divergence-driven stack machine, keying every decision off the split bit where two adjacent ids
+//! first differ (MSB-first). Two subtrees that meet at a split resolve exactly as
+//! `Updater::split_and_recurse`:
 //!
-//! - A subtree holding exactly one leaf resolves to a shortcut `Node::leaf` that its parent (or the
-//!   root) writes at the leaf's resting position; the leaf bubbles up only past empty siblings.
-//! - A subtree holding two or more leaves splits on the bit at the current level (`get_msb`;
-//!   MSB-first sorting keeps every bit=0 key before every bit=1 key), recurses into both children,
-//!   then writes each non-empty child and returns a `Node::internal` over the two child summaries.
-//!
-//! This builder walks the same recursion. A two-item lookahead over the sorted stream distinguishes
-//! "exactly one leaf under this key" from "two or more under this key" without materializing the
-//! subtree, so peak memory is bounded by the recursion depth (at most `DEPTH`), not the leaf count.
-//!
-//! The combine step mirrors `Updater::split_and_recurse` exactly. Under the sorted, unique, live
-//! contract a split always has at least two leaves beneath it, so only the internal-forming arm
-//! fires in practice; the leaf-bubbling arms are retained to match `Updater` byte-for-byte should
-//! the combine ever be reached with a single-occupant subtree.
+//! - A subtree holding a single leaf is a shortcut `Node::leaf`. A bare leaf BUBBLES up past empty
+//!   siblings with no writes and no wrapper nodes; it is written only once it acquires a non-empty
+//!   sibling at a split (or, alone, at the root). This is the deferred-leaf-write shortcut.
+//! - A subtree that must be raised past empty siblings while it is an internal node gets WRAPPED:
+//!   raising an internal from level `d` to level `t` writes a chain of
+//!   one-real-child-one-empty-child `Node::internal` nodes at levels `d, d-1, ..., t+1` and returns
+//!   the (unwritten) node at level `t`, each node's hash feeding the next. This leaf-bubble versus
+//!   internal-wrap asymmetry is the crux of matching `Updater` byte-for-byte.
+//! - Two non-empty subtrees meeting at a split write both children at their resting positions and
+//!   combine into a `Node::internal` over the two child summaries.
+
+use core::marker::PhantomData;
 
 use vprogs_core_codec::Bits;
 use vprogs_core_hashing::Hasher;
@@ -41,142 +54,185 @@ use crate::{DEPTH, EMPTY_HASH, HashedNode, Key, Node, WriteBatch};
 /// A single leaf entry: a resource id and the hash of its value.
 type Leaf = (ResourceId, [u8; 32]);
 
-/// A sorted leaf stream with a two-item lookahead.
+/// A not-yet-finalized subtree on the builder's left spine.
 ///
-/// Buffers the next two entries so a subtree can be classified as empty, a single shortcut leaf, or
-/// a split without materializing the leaves beneath it.
-struct Stream<I: Iterator<Item = Leaf>> {
-    /// The unconsumed tail of the sorted leaf stream.
-    iter: I,
-    /// The next entry to be consumed, if any.
-    a: Option<Leaf>,
-    /// The entry after `a`, if any.
-    b: Option<Leaf>,
+/// `node` occupies position `(level, path)` and is itself unwritten, while every strict descendant
+/// of it has already been written into the `WriteBatch`.
+struct Pending {
+    /// The node at this position; unwritten, but all of its strict descendants are written.
+    node: Node,
+    /// The resting level of `node` (0 = root, [`DEPTH`] = full-depth leaf).
+    level: u16,
+    /// A full resource id of some leaf under this subtree; bits `[0, level)` are the canonical
+    /// path.
+    path: [u8; 32],
 }
 
-impl<I: Iterator<Item = Leaf>> Stream<I> {
-    /// Buffers the first two entries of `iter`.
-    fn new(mut iter: I) -> Self {
-        let a = iter.next();
-        let b = iter.next();
-        let stream = Self { iter, a, b };
-        stream.assert_sorted();
-        stream
-    }
-
-    /// The next entry without consuming it.
-    fn peek(&self) -> Option<&Leaf> {
-        self.a.as_ref()
-    }
-
-    /// The entry after `peek` without consuming it.
-    fn peek_second(&self) -> Option<&Leaf> {
-        self.b.as_ref()
-    }
-
-    /// Consumes and returns the next entry, advancing the lookahead.
-    fn next(&mut self) -> Option<Leaf> {
-        let out = self.a.take();
-        self.a = self.b.take();
-        self.b = self.iter.next();
-        self.assert_sorted();
-        out
-    }
-
-    /// Debug-only guard: the caller must deliver strictly ascending, unique resource ids.
-    #[cfg(debug_assertions)]
-    fn assert_sorted(&self) {
-        if let (Some((a, _)), Some((b, _))) = (&self.a, &self.b) {
-            debug_assert!(a < b, "build_sorted requires strictly ascending, unique leaves");
-        }
-    }
-
-    /// No-op in release builds.
-    #[cfg(not(debug_assertions))]
-    fn assert_sorted(&self) {}
-}
-
-/// Whether `path` lies under `key`, i.e. shares `key`'s top `key.level` path bits (MSB-first).
-fn under(key: &Key, path: &[u8; 32]) -> bool {
-    path[..].shares_prefix(&key.path[..], key.level as usize)
-}
-
-/// Writes a child node and returns its summary, or the empty summary for an absent child.
+/// Streams a sorted, unique, live leaf set into a `WriteBatch`, writing each node as it finalizes.
 ///
-/// Mirrors `Updater::write_child`: `None` yields [`HashedNode::EMPTY`] and writes nothing; `Some`
-/// persists the node at `key` and returns its projected [`HashedNode`].
-fn write_child<W: WriteBatch>(
-    wb: &mut W,
+/// See the module docs for the byte-identical-to-`Updater` guarantee and the bounded-commit
+/// property. Fed ids must be strictly ascending, unique, and carry non-empty value hashes.
+pub struct StreamingBuilder<H: Hasher> {
+    /// The left spine of not-yet-finalized subtrees, at strictly increasing levels (`<= DEPTH`).
+    stack: alloc::vec::Vec<Pending>,
+    /// The most recently fed subtree, deeper than every stack entry; `None` before the first feed.
+    current: Option<Pending>,
+    /// The previous fed id, for the split point and the strictly-ascending guard.
+    prev: Option<[u8; 32]>,
+    /// The version stamped on every written node.
     version: u64,
-    key: &Key,
-    child: &Option<Node>,
-) -> HashedNode {
-    match child {
-        None => HashedNode::EMPTY,
-        Some(node) => {
-            wb.put_node(key, version, node);
-            HashedNode::from(node)
-        }
-    }
+    /// Binds the hasher without storing a value.
+    _hasher: PhantomData<H>,
 }
 
-/// Builds the subtree rooted at `key` from the leaves the stream holds under `key`.
-///
-/// Consumes exactly the contiguous run of stream entries whose path lies under `key` and returns
-/// the node occupying this position: `None` for no leaves, `Some(Node::Leaf)` for exactly one,
-/// otherwise a `Some(Node::Internal)` after recursing into both children. Deeper nodes are written
-/// during the recursion; the returned node is written by the caller (or the root).
-fn build<W: WriteBatch, H: Hasher, I: Iterator<Item = Leaf>>(
-    wb: &mut W,
-    version: u64,
-    key: &Key,
-    stream: &mut Stream<I>,
-) -> Option<Node> {
-    // No stream entry lies under this key: an empty subtree.
-    match stream.peek() {
-        Some((id, _)) if under(key, id) => {}
-        _ => return None,
-    }
-
-    // Exactly one leaf under this key when the following entry is not also under it (the run of
-    // under-key entries is contiguous in sorted order). Resolve it as a shortcut leaf.
-    let single = !matches!(stream.peek_second(), Some((id, _)) if under(key, id));
-    if single {
-        let (id, value_hash) = stream.next().expect("peek guaranteed an entry");
-        return Some(Node::leaf::<H>(id, value_hash));
-    }
-
-    // Two or more leaves under this key: split on the bit at this level and recurse. Sorted
-    // MSB-first means every bit=0 leaf precedes every bit=1 leaf, so left is consumed fully first.
-    assert!((key.level as usize) < DEPTH, "exceeded tree depth");
-    let left_key = key.left_child();
-    let right_key = key.right_child();
-    let left = build::<W, H, I>(wb, version, &left_key, stream);
-    let right = build::<W, H, I>(wb, version, &right_key, stream);
-
-    // Combine per `Updater::split_and_recurse`.
-    match (&left, &right) {
-        // Empty on both sides: unreachable with two or more leaves, kept to mirror `Updater`.
-        (None, None) => None,
-
-        // A lone leaf bubbles up past an empty sibling.
-        (Some(Node::Leaf { .. }), None) => left,
-        (None, Some(Node::Leaf { .. })) => right,
-
-        // Otherwise write both children and return an internal node over their summaries.
-        _ => {
-            let left_hn = write_child(wb, version, &left_key, &left);
-            let right_hn = write_child(wb, version, &right_key, &right);
-            Some(Node::internal::<H>(&left_hn, &right_hn))
+impl<H: Hasher> StreamingBuilder<H> {
+    /// Starts an empty builder writing at `version`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `version` is 0 (version 0 is reserved as pre-genesis).
+    pub fn new(version: u64) -> Self {
+        assert!(version > 0, "version 0 is reserved as pre-genesis");
+        Self {
+            stack: alloc::vec::Vec::new(),
+            current: None,
+            prev: None,
+            version,
+            _hasher: PhantomData,
         }
+    }
+
+    /// Feeds the next leaf, sealing and writing every subtree that this leaf closes off.
+    ///
+    /// Ids must arrive strictly ascending and unique. The builder holds no borrow of `wb` after
+    /// this call returns, so the caller may commit `wb` and pass a fresh batch to the next
+    /// `feed`.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if `id` is not strictly greater than the previously fed id.
+    pub fn feed<W: WriteBatch>(&mut self, wb: &mut W, id: ResourceId, value_hash: [u8; 32]) {
+        let new_id: [u8; 32] = *id;
+
+        // Seal the accumulated left side into the left child of the split with the incoming leaf.
+        if let Some(prev) = self.prev {
+            debug_assert!(new_id > prev, "build_sorted requires strictly ascending, unique leaves");
+            let split = divergence(&prev, &new_id);
+            self.seal_current(wb, split);
+        }
+
+        // The new leaf starts as the in-progress subtree, as deep as possible until it is raised.
+        self.current = Some(Pending {
+            node: Node::leaf::<H>(id, value_hash),
+            level: DEPTH as u16,
+            path: new_id,
+        });
+        self.prev = Some(new_id);
+    }
+
+    /// Finalizes the stream, writing the remaining spine and the root, and returns the root hash.
+    ///
+    /// An empty stream writes an `Empty` tombstone at the root and returns [`EMPTY_HASH`],
+    /// mirroring `Updater` on a drained tree (the non-empty contract excludes this in
+    /// practice).
+    pub fn finish<W: WriteBatch>(mut self, wb: &mut W) -> [u8; 32] {
+        let Some(mut current) = self.current.take() else {
+            wb.put_node(&Key::ROOT, self.version, &Node::Empty);
+            return EMPTY_HASH;
+        };
+
+        // Collapse the whole left spine into the in-progress subtree, deepest split first.
+        while let Some(left) = self.stack.pop() {
+            current = self.merge(wb, left, current);
+        }
+
+        // Raise the sole remaining subtree to the root and write it there.
+        self.raise(wb, &mut current, 0);
+        wb.put_node(&Key::ROOT, self.version, &current.node);
+        *current.node.hash()
+    }
+
+    /// Seals the in-progress subtree into the left child of the split at `split`, then pushes it.
+    ///
+    /// Merges every stack entry whose split against `current` is deeper than `split` (those splits
+    /// are now closed), raises the result to the child level `split + 1`, and parks it on the spine
+    /// to await its right sibling (the subtree the incoming leaf will grow).
+    fn seal_current<W: WriteBatch>(&mut self, wb: &mut W, split: u16) {
+        let mut current = self.current.take().expect("feed sets current before sealing");
+
+        while let Some(top) = self.stack.last() {
+            if divergence(&top.path, &current.path) <= split {
+                break;
+            }
+            let left = self.stack.pop().expect("stack has a top");
+            current = self.merge(wb, left, current);
+        }
+
+        self.raise(wb, &mut current, split + 1);
+        self.stack.push(current);
+        debug_assert!(self.stack.len() <= DEPTH, "left spine exceeded tree depth");
+    }
+
+    /// Combines two sibling subtrees at the split where their ids first diverge.
+    ///
+    /// Raises each child to the child level, writes both at their resting positions, and returns
+    /// the unwritten parent `Node::internal` over the two child summaries. Both children are
+    /// non-empty, so this always takes `Updater::split_and_recurse`'s internal-forming arm.
+    fn merge<W: WriteBatch>(&self, wb: &mut W, mut left: Pending, mut right: Pending) -> Pending {
+        let split = divergence(&left.path, &right.path);
+        self.raise(wb, &mut left, split + 1);
+        self.raise(wb, &mut right, split + 1);
+
+        let left_hn = self.write(wb, &left);
+        let right_hn = self.write(wb, &right);
+        Pending { node: Node::internal::<H>(&left_hn, &right_hn), level: split, path: left.path }
+    }
+
+    /// Raises `entry` from its current level up to `target`, writing the nodes this exposes.
+    ///
+    /// A bare leaf bubbles up with no writes. An internal chains up, writing a
+    /// one-real-child-one-empty-child wrapper at each level it passes and returning the unwritten
+    /// wrapper resting at `target`.
+    fn raise<W: WriteBatch>(&self, wb: &mut W, entry: &mut Pending, target: u16) {
+        debug_assert!(target <= entry.level, "raise must not deepen a node");
+        if target >= entry.level {
+            return;
+        }
+
+        // A lone leaf shortcut bubbles past empty siblings with no wrapper nodes and no writes.
+        if matches!(entry.node, Node::Leaf { .. }) {
+            entry.level = target;
+            return;
+        }
+
+        // An internal wraps: write it at each level, then re-parent it past the empty sibling.
+        while entry.level > target {
+            let parent_level = entry.level - 1;
+            let child_hn = self.write(wb, entry);
+            let node = if entry.path.get_msb(parent_level as usize) {
+                Node::internal::<H>(&HashedNode::EMPTY, &child_hn)
+            } else {
+                Node::internal::<H>(&child_hn, &HashedNode::EMPTY)
+            };
+            entry.node = node;
+            entry.level = parent_level;
+        }
+    }
+
+    /// Writes `entry` at its canonical key and returns its summary, mirroring
+    /// `Updater::write_child`.
+    fn write<W: WriteBatch>(&self, wb: &mut W, entry: &Pending) -> HashedNode {
+        let key = Key { level: entry.level, path: canonical_path(&entry.path, entry.level) };
+        wb.put_node(&key, self.version, &entry.node);
+        HashedNode::from(&entry.node)
     }
 }
 
 /// Streams a sorted, unique, live leaf set into `wb` and returns the new root hash.
 ///
-/// See the module docs for the byte-identical-to-`Updater` guarantee. `leaves` must be sorted
-/// ascending by resource id, contain no duplicates, and carry only non-empty value hashes; the
-/// stream is consumed in a single forward pass with memory bounded by the tree depth.
+/// A thin wrapper over [`StreamingBuilder`]. `leaves` must be sorted ascending by resource id,
+/// contain no duplicates, and carry only non-empty value hashes; the stream is consumed in a single
+/// forward pass with memory bounded by the tree depth.
 ///
 /// # Panics
 ///
@@ -186,21 +242,40 @@ pub fn build_sorted<W: WriteBatch, H: Hasher>(
     version: u64,
     leaves: impl Iterator<Item = Leaf>,
 ) -> [u8; 32] {
-    assert!(version > 0, "version 0 is reserved as pre-genesis");
+    let mut builder = StreamingBuilder::<H>::new(version);
+    for (id, value_hash) in leaves {
+        builder.feed(wb, id, value_hash);
+    }
+    builder.finish(wb)
+}
 
-    let mut stream = Stream::new(leaves);
-
-    // Mirror `Updater::apply`'s root handling: write the built root node, or a tombstone when the
-    // stream is empty (excluded by the non-empty contract, retained for parity with a drained
-    // tree).
-    match build::<W, H, _>(wb, version, &Key::ROOT, &mut stream) {
-        None => {
-            wb.put_node(&Key::ROOT, version, &Node::Empty);
-            EMPTY_HASH
-        }
-        Some(node) => {
-            wb.put_node(&Key::ROOT, version, &node);
-            *node.hash()
+/// The bit index (MSB-first) where `a` and `b` first differ, or [`DEPTH`] if they are equal.
+fn divergence(a: &[u8; 32], b: &[u8; 32]) -> u16 {
+    for i in 0..32 {
+        let xor = a[i] ^ b[i];
+        if xor != 0 {
+            return (i * 8) as u16 + xor.leading_zeros() as u16;
         }
     }
+    DEPTH as u16
+}
+
+/// Zeros every path bit at index `>= level`, yielding the canonical key path for that level.
+fn canonical_path(path: &[u8; 32], level: u16) -> [u8; 32] {
+    let mut out = *path;
+    let byte = level as usize / 8;
+    let rem = level as usize % 8;
+    if byte < 32 {
+        // Keep the top `rem` bits of the boundary byte, then zero every byte beyond it.
+        let start = if rem == 0 {
+            byte
+        } else {
+            out[byte] &= 0xFFu8 << (8 - rem);
+            byte + 1
+        };
+        for b in out[start..].iter_mut() {
+            *b = 0;
+        }
+    }
+    out
 }

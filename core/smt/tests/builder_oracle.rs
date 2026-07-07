@@ -17,7 +17,9 @@ use std::collections::BTreeMap;
 use tempfile::TempDir;
 use vprogs_core_codec::Bits;
 use vprogs_core_hashing::Sha256;
-use vprogs_core_smt::{Commitment, Key, Node, StaleNode, Tree, WriteBatch, build_sorted};
+use vprogs_core_smt::{
+    Commitment, Key, Node, StaleNode, StreamingBuilder, Tree, WriteBatch, build_sorted,
+};
 use vprogs_core_types::ResourceId;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_storage_types::Store;
@@ -332,4 +334,187 @@ fn builder_matches_updater_on_rocksdb() {
         1,
         "rocksdb min-max",
     );
+}
+
+// -- Bounded-commit and stack-bound coverage --
+
+/// Builds `leaves` via `Updater` into its own RocksDB store; returns the directory, store, and
+/// root.
+///
+/// The `TempDir` is returned so the caller keeps it alive for the store's lifetime.
+fn updater_rocksdb(
+    leaves: &[(ResourceId, [u8; 32])],
+    version: u64,
+) -> (TempDir, RocksDbStore, [u8; 32]) {
+    let dir = TempDir::new().unwrap();
+    let store = RocksDbStore::open(dir.path());
+    let commitments = leaves.iter().map(|&(id, vh)| Commitment::new(id, vh)).collect();
+    let mut wb = store.write_batch();
+    let root = store.update(&mut wb, commitments, version);
+    store.commit(wb);
+    (dir, store, root)
+}
+
+/// Feeds `leaves` into the streaming builder, committing the batch once after `commit_after` feeds
+/// and continuing on a fresh batch. Returns the root hash.
+///
+/// The builder holds no borrow of the batch between feeds, so committing mid-stream is sound and
+/// must not change the output.
+fn build_streaming_with_commit(
+    store: &RocksDbStore,
+    leaves: &[(ResourceId, [u8; 32])],
+    version: u64,
+    commit_after: usize,
+) -> [u8; 32] {
+    let mut builder = StreamingBuilder::<Sha256>::new(version);
+    let mut wb = store.write_batch();
+    for (i, &(id, vh)) in leaves.iter().enumerate() {
+        if i == commit_after {
+            store.commit(wb);
+            wb = store.write_batch();
+        }
+        builder.feed(&mut wb, id, vh);
+    }
+    let root = builder.finish(&mut wb);
+    store.commit(wb);
+    root
+}
+
+/// Feeds `leaves` into the streaming builder, committing the batch after every single feed and
+/// after `finish`. Returns the root hash. The cheapest strong proof that commit boundaries are
+/// invisible.
+fn build_streaming_commit_every(
+    store: &RocksDbStore,
+    leaves: &[(ResourceId, [u8; 32])],
+    version: u64,
+) -> [u8; 32] {
+    let mut builder = StreamingBuilder::<Sha256>::new(version);
+    let mut wb = store.write_batch();
+    for &(id, vh) in leaves {
+        builder.feed(&mut wb, id, vh);
+        store.commit(wb);
+        wb = store.write_batch();
+    }
+    let root = builder.finish(&mut wb);
+    store.commit(wb);
+    root
+}
+
+/// Asserts the persisted root and full reachable node set match `Updater`'s for a builder store.
+fn assert_streaming_matches(
+    store_b: &RocksDbStore,
+    root_b: [u8; 32],
+    store_o: &RocksDbStore,
+    root_o: [u8; 32],
+    version: u64,
+    tag: &str,
+) {
+    assert_eq!(root_b, root_o, "root mismatch [{tag}]");
+    assert_eq!(store_b.root(version), root_o, "persisted root mismatch [{tag}]");
+    assert_eq!(
+        reachable_nodes(store_b, version),
+        reachable_nodes(store_o, version),
+        "column-family mismatch [{tag}]"
+    );
+}
+
+/// Committing the batch partway through a build and continuing on a fresh batch is invisible: the
+/// persisted root and node set still equal `Updater`'s. This exercises incremental writes, the
+/// absence of any dangling batch borrow, and commit-boundary independence.
+#[test]
+fn builder_matches_updater_rocksdb_mid_commit() {
+    for seed in 0..24u64 {
+        let mut rng = fastrand::Rng::with_seed(seed);
+        let n = (seed as usize % 12) * 15 + 1;
+        let version = (seed % 5) + 1;
+        let leaves = random_leaves(&mut rng, n);
+        let (_dir_o, store_o, root_o) = updater_rocksdb(&leaves, version);
+
+        let dir_b = TempDir::new().unwrap();
+        let store_b = RocksDbStore::open(dir_b.path());
+        let root_b = build_streaming_with_commit(&store_b, &leaves, version, n / 2);
+
+        assert_streaming_matches(
+            &store_b,
+            root_b,
+            &store_o,
+            root_o,
+            version,
+            &format!("mid-commit seed={seed} n={n}"),
+        );
+    }
+
+    // A deep left spine (leading-ones keys) crosses the mid-stream commit while the spine is tall.
+    let deep = leading_ones_leaves(200);
+    let (_dir_o, store_o, root_o) = updater_rocksdb(&deep, 1);
+    let dir_b = TempDir::new().unwrap();
+    let store_b = RocksDbStore::open(dir_b.path());
+    let root_b = build_streaming_with_commit(&store_b, &deep, 1, deep.len() / 2);
+    assert_streaming_matches(&store_b, root_b, &store_o, root_o, 1, "mid-commit deep-spine");
+}
+
+/// Committing after every single feed still reproduces `Updater` exactly, proving the builder is
+/// stateless across commit boundaries and never holds the batch between feeds.
+#[test]
+fn builder_matches_updater_rocksdb_commit_every_feed() {
+    for seed in 0..12u64 {
+        let mut rng = fastrand::Rng::with_seed(seed);
+        let n = (seed as usize % 6) * 8 + 1;
+        let version = (seed % 4) + 1;
+        let leaves = random_leaves(&mut rng, n);
+        let (_dir_o, store_o, root_o) = updater_rocksdb(&leaves, version);
+
+        let dir_b = TempDir::new().unwrap();
+        let store_b = RocksDbStore::open(dir_b.path());
+        let root_b = build_streaming_commit_every(&store_b, &leaves, version);
+
+        assert_streaming_matches(
+            &store_b,
+            root_b,
+            &store_o,
+            root_o,
+            version,
+            &format!("commit-every seed={seed} n={n}"),
+        );
+    }
+
+    // Edge cases committed after every feed.
+    let single = leaves_of(&[([7u8; 32], [9u8; 32])]);
+    let (_d, so, ro) = updater_rocksdb(&single, 1);
+    let dir = TempDir::new().unwrap();
+    let sb = RocksDbStore::open(dir.path());
+    let rb = build_streaming_commit_every(&sb, &single, 1);
+    assert_streaming_matches(&sb, rb, &so, ro, 1, "commit-every single");
+}
+
+/// Leading-ones keys: `key_i` has bits `[0, i)` set and the rest zero, sorted ascending by `i`.
+///
+/// Consecutive ids diverge at strictly increasing bits (`key_i` and `key_{i+1}` first differ at bit
+/// `i`), so every feed parks a fresh subtree on the spine without popping. The result is a left
+/// spine `n - 1` entries tall, the worst case for the builder's bounded stack.
+fn leading_ones_leaves(n: usize) -> Vec<(ResourceId, [u8; 32])> {
+    (0..n)
+        .map(|i| {
+            let mut id = [0u8; 32];
+            for bit in 0..i {
+                id[..].set_msb(bit);
+            }
+            let mut vh = [0u8; 32];
+            vh[31] = (i as u8).wrapping_add(1);
+            if vh == [0u8; 32] {
+                vh[0] = 1;
+            }
+            (ResourceId::from(id), vh)
+        })
+        .collect()
+}
+
+/// A maximal left spine (leading-ones keys) grows the pending stack to nearly `DEPTH` entries. The
+/// builder's `debug_assert!(stack.len() <= DEPTH)` fires here if the bound is ever exceeded, and
+/// the oracle still confirms byte-identity to `Updater`.
+#[test]
+fn builder_matches_updater_deep_left_spine() {
+    for n in [2usize, 8, 64, 200, 256] {
+        assert_identical(&leading_ones_leaves(n), 1, &format!("deep-spine n={n}"));
+    }
 }

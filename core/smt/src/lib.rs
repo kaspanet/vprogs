@@ -39,7 +39,7 @@ pub(crate) mod tree;
 pub(crate) mod updater;
 pub(crate) mod write_batch;
 
-pub use builder::build_sorted;
+pub use builder::{StreamingBuilder, build_sorted};
 pub use commitment::Commitment;
 pub use empty_hash::EMPTY_HASH;
 pub use hashed_node::{EMPTY, HashedNode, INTERNAL, LEAF};
