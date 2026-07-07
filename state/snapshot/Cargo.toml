@@ -1,0 +1,15 @@
+[package]
+edition.workspace = true
+name              = "vprogs-state-snapshot"
+version.workspace = true
+
+[dependencies]
+sha2.workspace                 = true
+vprogs-core-hashing.workspace  = true
+vprogs-core-smt.workspace      = true
+vprogs-core-types.workspace    = true
+vprogs-storage-types.workspace = true
+
+[dev-dependencies]
+tempfile.workspace                     = true
+vprogs-storage-rocksdb-store.workspace = true

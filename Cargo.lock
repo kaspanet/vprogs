@@ -9020,6 +9020,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-state-snapshot"
+version = "0.1.0"
+dependencies = [
+ "sha2",
+ "tempfile",
+ "vprogs-core-hashing",
+ "vprogs-core-smt",
+ "vprogs-core-types",
+ "vprogs-storage-rocksdb-store",
+ "vprogs-storage-types",
+]
+
+[[package]]
 name = "vprogs-state-version"
 version = "0.1.0"
 dependencies = [
