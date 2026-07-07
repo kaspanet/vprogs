@@ -11,10 +11,11 @@
 
 use std::{io::Read, path::Path};
 
+use kaspa_rpc_core::{RpcDataVerbosityLevel::Full, api::rpc::RpcApi};
 use vprogs_core_hashing::Hasher;
 use vprogs_core_smt::{Commitment, Tree};
 use vprogs_core_types::Checkpoint;
-use vprogs_l1_types::SettlementInfo;
+use vprogs_l1_types::{L1Transaction, L1TransactionCovenantExt, SettlementInfo};
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_ptr_latest::StatePtrLatest;
@@ -29,8 +30,7 @@ use crate::{persistence::PersistedState, snapshot::header::SnapshotHeader};
 /// while still amortizing RocksDB write-batch overhead over many records.
 const CHUNK_SIZE: usize = 1000;
 
-/// Failure modes across the restore path: streaming a snapshot into a store, confirming it
-/// against the local L1, and the CLI orchestrator.
+/// Failure modes for [`restore_into_store`], [`validate_against_l1`], and the CLI orchestrator.
 #[derive(Debug)]
 pub enum RestoreError {
     /// `data_dir` already holds a store or identity file; restore refuses to clobber it.
@@ -166,6 +166,73 @@ pub fn restore_into_store<R: Read, H: Hasher>(
     }
     .save(data_dir);
 
+    Ok(())
+}
+
+/// Confirms `header`'s pinned settlement against the local L1 node: the resume point
+/// (`block_prove_to`, this header's own block) is a reachable selected-chain block reported from
+/// the pruning point, and a covenant settlement transaction committing `new_state` is among
+/// `containing_block`'s accepted transactions. Trust-minimized: a snapshot file that only
+/// self-verifies (root rebuild in [`restore_into_store`]) but was never actually confirmed by a
+/// settlement on this L1 fails here. Mirrors the bridge's own decode path
+/// (`l1/bridge/src/worker.rs`).
+pub async fn validate_against_l1<R: RpcApi>(
+    client: &R,
+    header: &SnapshotHeader,
+) -> Result<(), RestoreError> {
+    let s = header.settlement().ok_or(RestoreError::NoSettlement)?;
+
+    let dag = client
+        .get_block_dag_info()
+        .await
+        .map_err(|e| RestoreError::L1(format!("get_block_dag_info: {e}")))?;
+
+    // The settlement must not claim a DAA score ahead of the node's own virtual DAA.
+    if s.daa_score.get() > dag.virtual_daa_score {
+        return Err(RestoreError::L1(format!(
+            "settlement daa {} is ahead of virtual daa {}",
+            s.daa_score.get(),
+            dag.virtual_daa_score
+        )));
+    }
+
+    // Chain from the pruning point: membership + reachability + at-or-after pruning in one call.
+    // Full verbosity so the response also carries accepted transactions per block.
+    let vc = client
+        .get_virtual_chain_from_block_v2(dag.pruning_point_hash, Some(Full), None)
+        .await
+        .map_err(|e| RestoreError::L1(format!("get_virtual_chain_from_block_v2: {e}")))?;
+
+    // The resume point (block_prove_to, this header's own block) must be a reachable chain block.
+    let resume_point = header.chain_block_metadata.hash;
+    if !vc.added_chain_block_hashes.contains(&resume_point) {
+        return Err(RestoreError::NotOnChain);
+    }
+
+    // Confirm a covenant settlement committing exactly this root, accepted in containing_block.
+    let mut confirmed = false;
+    for cb in vc.chain_block_accepted_transactions.iter() {
+        let bh = match cb.chain_block_header.hash {
+            Some(h) if h == s.containing_block => h,
+            _ => continue,
+        };
+        for tx in cb.accepted_transactions.iter() {
+            let l1tx = match L1Transaction::try_from(tx.clone()) {
+                Ok(tx) => tx,
+                Err(_) => continue,
+            };
+            if let Some(info) = l1tx.settlement_info(header.covenant_id, bh, s.daa_score.get()) {
+                if info.new_state == s.new_state && info.tx_id == s.tx_id {
+                    confirmed = true;
+                    break;
+                }
+            }
+        }
+        break;
+    }
+    if !confirmed {
+        return Err(RestoreError::NotOnChain);
+    }
     Ok(())
 }
 
