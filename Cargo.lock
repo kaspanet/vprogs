@@ -8569,6 +8569,7 @@ dependencies = [
 name = "vprogs-core-smt"
 version = "0.1.0"
 dependencies = [
+ "fastrand",
  "tap",
  "tempfile",
  "vprogs-core-codec",
