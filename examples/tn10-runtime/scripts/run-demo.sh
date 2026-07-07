@@ -26,6 +26,13 @@
 #   STEP_DELAY_MS             (optional)  ms between scripted action steps (default 4000)
 #   SEED_DEPTH                (optional)  bridge seed head-room in DAA + reorg tolerance (default 500)
 #   ACCOUNTS                  (optional)  number of L2 accounts (default 3)
+#   DEMO_SNAPSHOT             (optional)  1 = after the window, snapshot A and boot a node C from it
+#   TN10RT_KEY3               (optional)  third funded key for node C's own settlements (DEMO_SNAPSHOT)
+#
+# With DEMO_SNAPSHOT=1 (needs the `vprun` CLI: cargo build -p vprogs-runner), the script also runs
+#   C = snapshot-booted follower -> `vprun snapshot save` exports A's state at its latest settlement,
+#       `vprun snapshot restore` seeds a fresh dir from it (confirmed against L1), and C resumes on
+#       top from that dir WITHOUT catching up from the deploy. Live-only, like the rest of this demo.
 
 set -u
 
@@ -33,6 +40,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # scripts/ lives at examples/tn10-runtime/scripts; the repo root is three up.
 REPO="$(cd "$HERE/../../.." && pwd)"
 BIN="$REPO/target/debug/tn10-runtime"
+# vprun is the runner CLI carrying `snapshot save`/`restore`; only needed for the DEMO_SNAPSHOT stage.
+VPRUN="$REPO/target/debug/vprun"
 DURATION="${1:-240}"
 
 NODE_URL="${TN10RT_WRPC_URL:?set TN10RT_WRPC_URL to your wRPC node URL, e.g. ws://HOST:PORT}"
@@ -43,9 +52,12 @@ KEY2="$TN10RT_KEY2"
 
 DATA_A="$HERE/dataA"
 DATA_B="$HERE/dataB"
+DATA_C="$HERE/dataC"
+SNAP="$HERE/nodeA.vpsnap"
 STATE_A="$DATA_A/vprun-state.json"
 LOG_A="$HERE/logA.txt"
 LOG_B="$HERE/logB.txt"
+LOG_C="$HERE/logC.txt"
 
 STEP_DELAY_MS="${STEP_DELAY_MS:-4000}"
 SEED_DEPTH="${SEED_DEPTH:-500}"
@@ -53,22 +65,22 @@ ACCOUNTS="${ACCOUNTS:-3}"
 
 RUST_LOG_VAL="info,tn10_runtime=info,vprogs_node_framework=info"
 
-PIDA=""; PIDB=""
+PIDA=""; PIDB=""; PIDC=""
 
 cleanup() {
   echo "=== cleanup: terminating daemons ==="
-  for pid in "$PIDA" "$PIDB"; do
+  for pid in "$PIDA" "$PIDB" "$PIDC"; do
     [ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null
   done
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     local_any=0
-    for pid in "$PIDA" "$PIDB"; do
+    for pid in "$PIDA" "$PIDB" "$PIDC"; do
       [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && local_any=1
     done
     [ "$local_any" -eq 0 ] && break
     sleep 1
   done
-  for pid in "$PIDA" "$PIDB"; do
+  for pid in "$PIDA" "$PIDB" "$PIDC"; do
     [ -n "$pid" ] && kill -KILL "$pid" 2>/dev/null
   done
   local orphans
@@ -84,9 +96,10 @@ trap cleanup EXIT INT TERM
 [ -x "$BIN" ] || { echo "FATAL: binary not found/executable at $BIN"; echo "build it with: cargo build -p vprogs-example-tn10-runtime"; exit 2; }
 
 echo "=== fresh data dirs ==="
-rm -rf "$DATA_A" "$DATA_B"
+# DATA_C is left absent on purpose: `vprun snapshot restore` refuses a non-empty dir.
+rm -rf "$DATA_A" "$DATA_B" "$DATA_C" "$SNAP"
 mkdir -p "$DATA_A" "$DATA_B"
-: > "$LOG_A"; : > "$LOG_B"
+: > "$LOG_A"; : > "$LOG_B"; : > "$LOG_C"
 
 echo "=== start A (issuer, settlement-mode, key1) ==="
 RUST_LOG="$RUST_LOG_VAL" \
@@ -144,6 +157,44 @@ echo "B pid=$PIDB log=$LOG_B"
 
 echo "=== run monitor for ${DURATION}s ==="
 bash "$HERE/monitor.sh" "$LOG_A" "$LOG_B" "$DURATION" "$PIDA" "$PIDB"
+
+# Optional stage: prove a fresh node can boot from a snapshot instead of catching up from the
+# deploy. Guarded by DEMO_SNAPSHOT=1 so the default demo is unchanged. Needs the `vprun` CLI
+# (cargo build -p vprogs-runner), a third funded key for C's own settlements, and A to have settled
+# at least once during the window above.
+if [ "${DEMO_SNAPSHOT:-0}" = "1" ]; then
+  echo "=== DEMO_SNAPSHOT: snapshot A and boot node C from it ==="
+  if [ ! -x "$VPRUN" ]; then
+    echo "skip: vprun not built at $VPRUN (build with: cargo build -p vprogs-runner)"
+  elif [ -z "${TN10RT_KEY3:-}" ]; then
+    echo "skip: set TN10RT_KEY3 (a third funded key) so node C can settle on its own"
+  else
+    echo "--- save A's state (read-only) to $SNAP ---"
+    if ! "$VPRUN" snapshot save --data-dir "$DATA_A" --out "$SNAP"; then
+      echo "snapshot save failed (needs >=1 settlement; retry with a longer window or a quiesced A)"
+    else
+      echo "--- restore into fresh $DATA_C, confirming the settlement against the L1 node ---"
+      "$VPRUN" snapshot restore --data-dir "$DATA_C" --snapshot "$SNAP" \
+        --wrpc-url "$NODE_URL" --network testnet-10 || echo "restore failed"
+      echo "--- start C: follower from the restored dir (auto-resume, no covenant env) ---"
+      # No TN10RT_COVENANT_ID: the runner auto-resumes from the populated store (last_committed > 0)
+      # and fetches on top, never re-bootstrapping the pruned deploy.
+      RUST_LOG="$RUST_LOG_VAL" \
+      RISC0_DEV_MODE=1 \
+      TN10RT_SETTLE=1 \
+      TN10RT_ISSUE=0 \
+      TN10RT_WRPC_URL="$NODE_URL" \
+      TN10RT_PRIVATE_KEY="$TN10RT_KEY3" \
+      TN10RT_DATA_DIR="$DATA_C" \
+      TN10RT_SEED_DEPTH="$SEED_DEPTH" \
+        "$BIN" >>"$LOG_C" 2>&1 &
+      PIDC=$!
+      echo "C pid=$PIDC log=$LOG_C"
+      echo "=== monitor A vs snapshot-booted C for ${DURATION}s ==="
+      bash "$HERE/monitor.sh" "$LOG_A" "$LOG_C" "$DURATION" "$PIDA" "$PIDC"
+    fi
+  fi
+fi
 
 echo "=== demo window complete; cleanup runs on exit ==="
 # cleanup() runs via trap on EXIT
