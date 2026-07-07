@@ -57,3 +57,11 @@ secp256k1  = { workspace = true }
 tap        = { workspace = true }
 tempfile   = { workspace = true }
 tokio      = { workspace = true, features = ["rt"] }
+
+[dev-dependencies]
+# The snapshot-reconstruction check enumerates the driver's committed state through these directly,
+# the same way a real snapshot save would.
+vprogs-core-hashing     = { workspace = true }
+vprogs-state-metadata   = { workspace = true }
+vprogs-state-ptr-latest = { workspace = true }
+vprogs-state-version    = { workspace = true }
