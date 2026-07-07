@@ -12,10 +12,10 @@
 use std::{io::Read, path::Path};
 
 use kaspa_rpc_core::{RpcDataVerbosityLevel::Full, api::rpc::RpcApi};
-use vprogs_core_hashing::Hasher;
+use vprogs_core_hashing::{Hasher, Sha256};
 use vprogs_core_smt::{Commitment, Tree};
 use vprogs_core_types::Checkpoint;
-use vprogs_l1_types::{L1Transaction, L1TransactionCovenantExt, SettlementInfo};
+use vprogs_l1_types::{Hash, L1Transaction, L1TransactionCovenantExt, NetworkId, SettlementInfo};
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_ptr_latest::StatePtrLatest;
@@ -234,6 +234,57 @@ pub async fn validate_against_l1<R: RpcApi>(
         return Err(RestoreError::NotOnChain);
     }
     Ok(())
+}
+
+/// Outcome of a successful [`restore_snapshot`] call.
+pub struct RestoreSummary {
+    /// Covenant id the snapshot was taken from.
+    pub covenant_id: Hash,
+    /// Batch index the restored store's cursor now sits at.
+    pub committed_index: u64,
+    /// Number of resource records the snapshot carried.
+    pub record_count: u64,
+    /// L1 block a subsequent `vprun` run resumes fetching on top of (`block_prove_to`).
+    pub resume_from: Hash,
+}
+
+/// Reads `snapshot`, confirms it against `wrpc_url`'s L1 node, and seeds a fresh `data_dir` store
+/// and identity file from it. On success, a subsequent `vprun` run against `data_dir` resumes
+/// fetching on top of the settlement block.
+pub async fn restore_snapshot(
+    data_dir: &Path,
+    snapshot: &Path,
+    wrpc_url: &str,
+    network: NetworkId,
+) -> Result<RestoreSummary, RestoreError> {
+    let file = std::fs::File::open(snapshot)?;
+    let (header_bytes, reader) = SnapshotReader::<_, Sha256>::open(std::io::BufReader::new(file))
+        .map_err(|e| RestoreError::BadSnapshot(e.to_string()))?;
+    let header = SnapshotHeader::decode(&header_bytes)
+        .map_err(|e| RestoreError::BadSnapshot(e.to_string()))?;
+    let settlement = header.settlement().ok_or(RestoreError::NoSettlement)?;
+
+    // Header self-consistency: the header's own block IS block_prove_to (the resume point), never
+    // the later block the settlement transaction landed in (`settlement.containing_block`).
+    if header.chain_block_metadata.hash != settlement.block_prove_to {
+        return Err(RestoreError::BadSnapshot(
+            "header block hash does not match settlement.block_prove_to".into(),
+        ));
+    }
+    let record_count = reader.record_count();
+
+    // Independent L1 confirmation, then the streaming store population (which re-verifies the
+    // root internally as it writes).
+    let client = crate::wrpc::connect_wrpc(wrpc_url, network).await;
+    validate_against_l1(&client, &header).await?;
+    restore_into_store(data_dir, &header, reader)?;
+
+    Ok(RestoreSummary {
+        covenant_id: header.covenant_id,
+        committed_index: header.committed_index,
+        record_count,
+        resume_from: settlement.block_prove_to,
+    })
 }
 
 #[cfg(test)]
