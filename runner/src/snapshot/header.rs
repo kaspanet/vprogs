@@ -1,29 +1,40 @@
+//! Typed header embedded in a snapshot container's opaque header bytes (see
+//! `vprogs_state_snapshot::write_container`), carrying the identity and settlement point a
+//! restored node resumes from.
+
 use borsh::{BorshDeserialize, BorshSerialize};
 use vprogs_l1_types::{ChainBlockMetadata, Hash, SettlementInfo};
 
-/// Metadata that seeds a fresh node from a snapshot. `chain_block_metadata` is the committed
-/// batch metadata at the settlement block: it carries `hash == settlement.containing_block` and
-/// `last_settlement == the settlement this snapshot pins to`, and becomes the restored node's
-/// `last_committed` metadata so the bridge fetches on top of that block.
+/// Metadata that seeds a fresh node from a snapshot.
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct SnapshotHeader {
+    /// Covenant id the snapshot was taken from.
     pub covenant_id: Hash,
+    /// Lane id (subnetwork namespace) the snapshot was taken from.
     pub lane_id: u32,
+    /// Bootstrap transaction id of the covenant.
     pub bootstrap_txid: Hash,
+    /// Batch index the snapshot's records were reconstructed at.
     pub committed_index: u64,
+    /// Committed batch metadata at `committed_index`: carries `hash ==
+    /// settlement.containing_block` and `last_settlement == the settlement this snapshot pins
+    /// to`, and becomes the restored node's `last_committed` metadata so the bridge fetches on
+    /// top of that block.
     pub chain_block_metadata: ChainBlockMetadata,
 }
 
 impl SnapshotHeader {
+    /// Borsh-encodes the header for embedding in a snapshot container.
     pub fn encode(&self) -> Vec<u8> {
         borsh::to_vec(self).expect("snapshot header serialization is infallible")
     }
 
+    /// Decodes a header previously produced by [`encode`](Self::encode).
     pub fn decode(bytes: &[u8]) -> Result<Self, std::io::Error> {
         borsh::from_slice(bytes)
     }
 
-    /// The settlement this snapshot pins to (always Some for a valid snapshot).
+    /// The settlement this snapshot pins to (always `Some` for a valid snapshot).
     pub fn settlement(&self) -> Option<SettlementInfo> {
         self.chain_block_metadata.last_settlement
     }

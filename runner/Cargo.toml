@@ -26,6 +26,7 @@ test-utils = ["vprogs-zk-backend-risc0-settler/test-utils"]
 # vprogs internal: the node/bridge/scheduler wiring, the proving stack, covenant bootstrap, and the
 # ELF loaders + dev-mode probe are reused rather than reimplemented.
 vprogs-core-atomics                = { workspace = true }
+vprogs-core-hashing                = { workspace = true }
 vprogs-core-smt                    = { workspace = true }
 vprogs-core-types                  = { workspace = true }
 vprogs-l1-bridge                   = { workspace = true }
@@ -34,6 +35,12 @@ vprogs-l1-wallet                   = { workspace = true }
 vprogs-node-framework              = { workspace = true }
 vprogs-scheduling-scheduler        = { workspace = true }
 vprogs-state-settlement-journal    = { workspace = true }
+vprogs-state-batch-metadata        = { workspace = true }
+vprogs-state-metadata              = { workspace = true }
+vprogs-state-ptr-latest            = { workspace = true }
+vprogs-state-ptr-rollback          = { workspace = true }
+vprogs-state-snapshot              = { path = "../state/snapshot" }
+vprogs-state-version               = { workspace = true }
 vprogs-storage-manager             = { workspace = true }
 vprogs-storage-rocksdb-store       = { workspace = true }
 vprogs-storage-types               = { workspace = true }
@@ -57,12 +64,15 @@ kaspa-wrpc-client    = { workspace = true }
 borsh      = { workspace = true }
 clap       = { workspace = true }
 ctrlc      = { workspace = true }
+faster-hex = { workspace = true }
 fastrand   = { workspace = true }
 figment    = { workspace = true }
 log        = { workspace = true }
+rocksdb    = { workspace = true }
 secp256k1  = { workspace = true }
 serde      = { workspace = true }
 serde_json = { workspace = true }
+tempfile   = { workspace = true }
 thiserror  = { workspace = true }
 tokio      = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 
