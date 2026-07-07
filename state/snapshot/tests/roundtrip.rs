@@ -1,9 +1,7 @@
-use vprogs_core_hashing::Sha256;
-use vprogs_core_smt::Tree;
+use vprogs_core_hashing::{Hasher, Sha256};
+use vprogs_core_smt::{Commitment, Tree};
 use vprogs_core_types::ResourceId;
-use vprogs_state_snapshot::{
-    Record, SnapshotReader, commitments_from_records, compute_root_from_records, write_snapshot,
-};
+use vprogs_state_snapshot::{Record, SnapshotReader, compute_root_from_records, write_snapshot};
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_storage_types::Store;
 
@@ -18,13 +16,17 @@ fn reconstructed_root_matches_independent_commit() {
     let records = vec![rec(1, b"alpha"), rec(2, b""), rec(5, b"gamma"), rec(7, b"delta")];
 
     // Independent reference: commit the same non-empty leaves directly at some version N, with
-    // the leaf hash taken from the store's own Tree::Hasher rather than a hardcoded algorithm.
+    // each commitment's leaf hash computed inline here (not via `commitments_from_records`, which
+    // is the function this test exists to catch bugs in) so a bug in that function's formula
+    // can't cancel out against the reconstruction path under test.
     let ref_dir = tempfile::tempdir().unwrap();
     let ref_store =
         RocksDbStore::<vprogs_storage_rocksdb_store::DefaultConfig>::open(ref_dir.path());
-    let commitments = commitments_from_records::<
-        <RocksDbStore<vprogs_storage_rocksdb_store::DefaultConfig> as Tree>::Hasher,
-    >(records.iter());
+    let commitments: Vec<Commitment> = records
+        .iter()
+        .filter(|r| !r.value.is_empty())
+        .map(|r| Commitment::new(r.resource_id, Sha256::hash(&r.value)))
+        .collect();
     let mut wb = ref_store.write_batch();
     let reference_root = ref_store.update(&mut wb, commitments, 4242);
     ref_store.commit(wb);

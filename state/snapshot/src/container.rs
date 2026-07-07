@@ -24,11 +24,11 @@ pub const FORMAT_VERSION: u16 = 1;
 /// never resource values, so 1 MiB is generous while still bounding the allocation
 /// [`SnapshotReader::open`] performs before it has validated anything else about the file.
 pub const MAX_HEADER_LEN: u32 = 1 << 20;
-/// Per-record value cap. Equal to `u32::MAX` because the on-wire `value_len` field is a `u32`;
-/// named here so callers have a documented upper bound to reason about. Not an extra runtime
-/// check: a `u32` value can never exceed it, so a single record's allocation is bounded by this
-/// even for a hostile `value_len`, independent of how large `record_count` claims to be.
-pub const MAX_VALUE_LEN: u32 = u32::MAX;
+/// Per-record value cap, enforced by [`SnapshotReader::next`] before it allocates anything sized
+/// by the untrusted on-wire `value_len`. 256 MiB is generous for a single resource blob under this
+/// account/state model; a program that legitimately needs a larger single value should bump this
+/// constant rather than work around it.
+pub const MAX_VALUE_LEN: u32 = 256 * 1024 * 1024;
 
 /// One resource's latest state: an opaque id and opaque value bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,8 +50,10 @@ pub enum SnapshotError {
     DigestMismatch,
     /// Stream ended before a fixed-size or declared-length field could be fully read.
     Truncated,
-    /// A length-prefixed field declares a value this reader refuses on its face (currently only
-    /// `header_len > MAX_HEADER_LEN`), independent of how many bytes the stream actually holds.
+    /// A length-prefixed field declares a value this reader refuses on its face (e.g.
+    /// `header_len > MAX_HEADER_LEN` or `value_len > MAX_VALUE_LEN`), independent of how many
+    /// bytes the stream actually holds; also returned by [`SnapshotReader::finish`] for a
+    /// structurally invalid call (early finish, or trailing bytes after the digest).
     Malformed(&'static str),
     /// [`write_snapshot`] was asked to frame a header or value whose length does not fit in the
     /// on-wire `u32` field.
@@ -114,9 +116,10 @@ impl<W: Write, Inc: IncrementalHasher> Write for HashingWriter<'_, W, Inc> {
 /// in transit or at rest only; it is recomputed by any producer and so authenticates nothing.
 ///
 /// `header` is opaque; interpreting it is the caller's responsibility (e.g. the runner's encoded
-/// typed header). `records` MUST be sorted by `resource_id` and yield exactly `record_count`
-/// items; this is checked with a `debug_assert` since callers control both from the same
-/// enumeration.
+/// typed header). `records` MUST be sorted by non-decreasing `resource_id` and yield exactly
+/// `record_count` items; both are checked with a `debug_assert` (sortedness per consecutive pair,
+/// count once the iterator is drained) since callers control both from the same enumeration and
+/// this is not re-validated in release builds.
 ///
 /// Returns [`SnapshotError::FieldTooLarge`] if `header` or any record value is longer than
 /// `u32::MAX`, rather than silently truncating the on-wire length prefix.
@@ -137,9 +140,23 @@ pub fn write_snapshot<W: Write, H: Hasher>(
     hw.write_all(&record_count.to_le_bytes())?;
 
     let mut written = 0u64;
+    #[cfg(debug_assertions)]
+    let mut prev_id: Option<ResourceId> = None;
     for rec in records {
         let value_len: u32 =
             rec.value.len().try_into().map_err(|_| SnapshotError::FieldTooLarge)?;
+        // Sortedness check against the previous record; compiled out entirely in release builds.
+        #[cfg(debug_assertions)]
+        {
+            if let Some(prev) = prev_id {
+                debug_assert!(
+                    prev <= rec.resource_id,
+                    "records not sorted by resource_id: {prev:?} appeared before {:?}",
+                    rec.resource_id
+                );
+            }
+            prev_id = Some(rec.resource_id);
+        }
         hw.write_all(rec.resource_id.as_slice())?;
         hw.write_all(&value_len.to_le_bytes())?;
         hw.write_all(&rec.value)?;
@@ -205,10 +222,12 @@ impl<R: Read, H: Hasher> SnapshotReader<R, H> {
     }
 
     /// Reads the next record, or `Ok(None)` once all `record_count` records have been consumed.
-    /// Reads exactly one `id` (32 bytes) then one declared-length `value`; a `value_len` the
-    /// stream cannot back yields [`SnapshotError::Truncated`] from the failing `read_exact`,
-    /// never an unbounded allocation, since the declared length is only acted on after it was
-    /// itself fully read.
+    /// Reads exactly one `id` (32 bytes) then one declared-length `value`. Rejects a `value_len`
+    /// over [`MAX_VALUE_LEN`] with [`SnapshotError::Malformed`] before allocating anything sized
+    /// by it, and even within that cap never pre-allocates the declared length: the value is read
+    /// through a bounded adapter that grows only with bytes actually observed, so a `value_len`
+    /// the stream cannot back yields [`SnapshotError::Truncated`] instead of the buffer being
+    /// pre-sized to a length the file never delivers.
     ///
     /// Named `next` rather than implemented as `Iterator` on purpose: the fallible,
     /// record-at-a-time shape is the point, and an `Iterator<Item = Result<Record, ..>>` adapter
@@ -224,8 +243,18 @@ impl<R: Read, H: Hasher> SnapshotReader<R, H> {
         read_exact_fold(&mut self.reader, &mut id, &mut self.hasher)?;
 
         let value_len = read_u32_fold(&mut self.reader, &mut self.hasher)?;
-        let mut value = vec![0u8; value_len as usize];
-        read_exact_fold(&mut self.reader, &mut value, &mut self.hasher)?;
+        if value_len > MAX_VALUE_LEN {
+            return Err(SnapshotError::Malformed("record value_len exceeds MAX_VALUE_LEN"));
+        }
+        // Bounded by the `take` limit, not by `value_len` up front: the `Vec` this grows into is
+        // only ever as large as the bytes actually read, so a hostile `value_len` within the cap
+        // still can't force an allocation the stream doesn't back.
+        let mut value = Vec::new();
+        let n = self.reader.by_ref().take(value_len as u64).read_to_end(&mut value)?;
+        if n as u64 != value_len as u64 {
+            return Err(SnapshotError::Truncated);
+        }
+        self.hasher.update(&value);
 
         self.remaining -= 1;
         Ok(Some(Record { resource_id: ResourceId::from(id), value }))
@@ -234,7 +263,9 @@ impl<R: Read, H: Hasher> SnapshotReader<R, H> {
     /// Verifies the trailing digest against everything read so far. Callers must drive
     /// [`next`](Self::next) to `Ok(None)` first; calling `finish` early returns
     /// [`SnapshotError::Malformed`] instead of silently verifying a partial read as if it were
-    /// the whole snapshot.
+    /// the whole snapshot. Also rejects (`Malformed`) any bytes left in the reader once the
+    /// digest has been consumed, so a file with a correct digest but junk appended after it does
+    /// not "verify".
     pub fn finish(self) -> Result<(), SnapshotError> {
         if self.remaining != 0 {
             return Err(SnapshotError::Malformed("finish called before all records were read"));
@@ -244,6 +275,11 @@ impl<R: Read, H: Hasher> SnapshotReader<R, H> {
         reader.read_exact(&mut digest).map_err(|_| SnapshotError::Truncated)?;
         if self.hasher.finalize() != digest {
             return Err(SnapshotError::DigestMismatch);
+        }
+
+        let mut probe = [0u8; 1];
+        if reader.read(&mut probe)? != 0 {
+            return Err(SnapshotError::Malformed("trailing bytes after digest"));
         }
         Ok(())
     }
@@ -323,6 +359,33 @@ mod tests {
         assert_eq!(got, records);
     }
 
+    /// `records` must be sorted by non-decreasing `resource_id`; feeding them out of order trips
+    /// the writer's `debug_assert` in debug builds rather than silently emitting an unsorted
+    /// (and hence unreadable-as-canonical) file. This test only runs meaningfully in debug builds
+    /// (`debug_assertions`), matching where the check is compiled in.
+    #[test]
+    #[should_panic(expected = "records not sorted by resource_id")]
+    #[cfg_attr(not(debug_assertions), ignore = "debug_assert is compiled out in release builds")]
+    fn unsorted_records_trip_debug_assert() {
+        let records = vec![rec(2, b"beta"), rec(1, b"alpha")];
+        let mut buf = Vec::new();
+        let _ = write_snapshot::<_, Sha256>(&mut buf, b"h", records.len() as u64, records);
+    }
+
+    /// A file with a correct digest but extra bytes appended after it must not silently
+    /// "verify": `finish` should notice the underlying reader isn't at EOF once the digest has
+    /// been consumed and reject the trailing junk instead.
+    #[test]
+    fn trailing_bytes_after_digest_are_rejected() {
+        let mut buf = Vec::new();
+        write_snapshot::<_, Sha256>(&mut buf, b"h", 1, vec![rec(9, b"x")]).unwrap();
+        buf.extend_from_slice(b"junk-appended-after-digest");
+
+        let (_hdr, mut reader) = SnapshotReader::<_, Sha256>::open(buf.as_slice()).unwrap();
+        while reader.next().unwrap().is_some() {}
+        assert!(matches!(reader.finish(), Err(SnapshotError::Malformed(_))));
+    }
+
     #[test]
     fn corrupted_digest_is_rejected() {
         let mut buf = Vec::new();
@@ -390,6 +453,54 @@ mod tests {
         body.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
         body.extend_from_slice(&0u32.to_le_bytes()); // header_len = 0
         body.extend_from_slice(&u64::MAX.to_le_bytes()); // record_count = u64::MAX
+
+        let (_hdr, mut reader) = SnapshotReader::<_, Sha256>::open(body.as_slice()).unwrap();
+        let result = reader.next();
+        assert!(
+            matches!(result, Err(SnapshotError::Truncated)),
+            "expected Truncated, got {result:?}"
+        );
+    }
+
+    /// Regression test for the review finding: a forged record can declare a `value_len` far
+    /// beyond anything the tiny file actually holds (here `MAX_VALUE_LEN + 1`, close to 4 GiB).
+    /// `next` must reject it before allocating a buffer sized by that declared length, never
+    /// panic (capacity overflow / OOM) or actually perform a multi-gigabyte allocation.
+    #[test]
+    fn oversized_value_len_is_rejected() {
+        let mut body = Vec::new();
+        body.extend_from_slice(&MAGIC);
+        body.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+        body.extend_from_slice(&0u32.to_le_bytes()); // header_len = 0
+        body.extend_from_slice(&1u64.to_le_bytes()); // record_count = 1
+        body.extend_from_slice(&[3u8; 32]); // resource_id
+        body.extend_from_slice(&(MAX_VALUE_LEN + 1).to_le_bytes()); // value_len over the cap
+
+        // A trailing digest is irrelevant here: the reader must reject the oversized `value_len`
+        // from `next` before it ever gets far enough to check the digest, so any 32 bytes will do.
+        body.extend_from_slice(&[0u8; 32]);
+
+        let (_hdr, mut reader) = SnapshotReader::<_, Sha256>::open(body.as_slice()).unwrap();
+        let result = reader.next();
+        assert!(
+            matches!(result, Err(SnapshotError::Malformed(_))),
+            "expected Malformed, got {result:?}"
+        );
+    }
+
+    /// A record honestly declares `value_len = 100` but the stream only has 10 more bytes before
+    /// EOF: the bounded reader must observe the short read and report `Truncated`, not silently
+    /// yield a shorter-than-declared value.
+    #[test]
+    fn truncated_value_is_rejected() {
+        let mut body = Vec::new();
+        body.extend_from_slice(&MAGIC);
+        body.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+        body.extend_from_slice(&0u32.to_le_bytes()); // header_len = 0
+        body.extend_from_slice(&1u64.to_le_bytes()); // record_count = 1
+        body.extend_from_slice(&[4u8; 32]); // resource_id
+        body.extend_from_slice(&100u32.to_le_bytes()); // value_len declares 100 bytes
+        body.extend_from_slice(&[0xCC; 10]); // only 10 bytes actually follow
 
         let (_hdr, mut reader) = SnapshotReader::<_, Sha256>::open(body.as_slice()).unwrap();
         let result = reader.next();
