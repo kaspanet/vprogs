@@ -2,14 +2,10 @@
 //! after confirming (both internally and against the local L1 node) that the snapshot's pinned
 //! settlement is genuine.
 //!
-//! [`restore_into_store`] never buffers the whole snapshot: it streams each record straight into
-//! `data` + `latest_ptr` AND feeds it to a [`StreamingBuilder`] in the same pass, committing in
-//! bounded chunks. The builder retains only a bounded spine of not-yet-finalized SMT subtrees (see
-//! `vprogs_core_smt::builder`), so its writes land in the very same write-batch as the record's
-//! `data`/`latest_ptr` writes with no separate accumulation step. The root is sealed and checked
-//! against the pinned settlement root at EOF, in the final write-batch, before anything is written
-//! that would make the store look resumable; any failure after the store has been opened drops the
-//! freshly written column families, since the fresh data dir is exclusively ours at that point.
+//! [`restore_into_store`] streams the snapshot without ever buffering the whole file, and seals and
+//! checks the rebuilt state root against the pinned settlement before writing anything that would
+//! make the store look resumable. Any failure after the store is opened discards the freshly
+//! written data, so a rejected snapshot never leaves a partial store behind.
 
 use std::{io::Read, path::Path};
 
@@ -21,7 +17,7 @@ use vprogs_l1_types::{Hash, L1Transaction, L1TransactionCovenantExt, NetworkId, 
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_ptr_latest::StatePtrLatest;
-use vprogs_state_snapshot::{SnapshotFormat, SnapshotReader};
+use vprogs_state_snapshot::{Record, SnapshotFormat, SnapshotReader};
 use vprogs_state_version::StateVersion;
 use vprogs_storage_rocksdb_store::{DefaultConfig, RocksDbStore};
 use vprogs_storage_types::Store;
@@ -66,9 +62,9 @@ pub enum RestoreError {
     Io(#[from] std::io::Error),
 }
 
-/// Drops `store` and deletes the just-written `db_path`. Called only on a failure path after
-/// [`RocksDbStore::open`] has created a fresh directory exclusively ours, so a failed restore
-/// never leaves a partially written (but not-yet-verified) store behind.
+/// Drops `store` and deletes the just-written `db_path`. The restore owns this fresh directory
+/// exclusively, so discarding it on failure never leaves a partial store behind and never clobbers
+/// a pre-existing one.
 fn discard_store(store: RocksDbStore<DefaultConfig>, db_path: &Path) {
     drop(store);
     let _ = std::fs::remove_dir_all(db_path);
@@ -77,8 +73,8 @@ fn discard_store(store: RocksDbStore<DefaultConfig>, db_path: &Path) {
 /// Streams `reader`'s records into a fresh store at `data_dir`, verifies the rebuilt SMT root
 /// against `header`'s pinned settlement, and only then writes the cursor (batch metadata, `metas`,
 /// and identity) that makes the store look like a node already committed up to the settlement
-/// block. Caller MUST have validated the snapshot against L1 first (see `validate_against_l1`);
-/// this function only re-confirms the file's own internal consistency.
+/// block. Caller MUST have validated the snapshot against L1 first; this function only re-confirms
+/// the file's own internal consistency.
 ///
 /// Generic over the framing identity `F`: a caller pins a concrete [`SnapshotFormat`] (e.g.
 /// `VpsnapFormat`) when it builds the `SnapshotReader` passed in here.
@@ -106,7 +102,7 @@ pub fn restore_into_store<R: Read, H: Hasher, F: SnapshotFormat>(
     let mut pending = 0usize;
     loop {
         match reader.next() {
-            Ok(Some((id, value))) => {
+            Ok(Some(Record { id, value })) => {
                 let rid = ResourceId::from(*id);
                 StateVersion::put(&mut wb, version, &rid, value);
                 StatePtrLatest::put(&mut wb, &rid, version);
@@ -167,9 +163,7 @@ pub fn restore_into_store<R: Read, H: Hasher, F: SnapshotFormat>(
 /// (`block_prove_to`, this header's own block) is a reachable selected-chain block reported from
 /// the pruning point, and a covenant settlement transaction committing `new_state` is among
 /// `containing_block`'s accepted transactions. Trust-minimized: a snapshot file that only
-/// self-verifies (root rebuild in [`restore_into_store`]) but was never actually confirmed by a
-/// settlement on this L1 fails here. Mirrors the bridge's own decode path
-/// (`l1/bridge/src/worker.rs`).
+/// self-verifies but was never actually confirmed by a settlement on this L1 fails here.
 pub async fn validate_against_l1<R: RpcApi>(
     client: &R,
     header: &SnapshotHeader,
