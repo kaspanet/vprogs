@@ -307,18 +307,14 @@ mod tests {
 
     /// Writes `records` (already in ascending id order) as a well-formed `VpsnapFormat` snapshot.
     fn write_test_snapshot(header: &[u8], records: &[([u8; 32], Vec<u8>)]) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        let mut writer = SnapshotWriter::<_, Sha256, VpsnapFormat>::open(
-            &mut bytes,
-            header,
-            records.len() as u64,
-        )
-        .unwrap();
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        let mut writer =
+            SnapshotWriter::<_, Sha256, VpsnapFormat>::open(&mut bytes, header).unwrap();
         for (id, value) in records {
             writer.write_record(id, value).unwrap();
         }
         writer.finish().unwrap();
-        bytes
+        bytes.into_inner()
     }
 
     /// Computes the state root `records` would settle to, the same way a node does: a direct
