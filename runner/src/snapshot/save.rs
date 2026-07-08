@@ -139,24 +139,12 @@ pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveErr
         }
     }
 
-    // Pass 1 (index-only, borrowed keys, no data reads): count the records N_S actually has. A
-    // resource is excluded only when it was CREATED after N_S, which surfaces as a correction of
-    // exactly 0 (no version existed before the batch that created it); everything else existed at
-    // N_S. `StatePtrLatest` keys are the raw 32-byte resource id, so no decode is needed to count.
-    let mut record_count: u64 = 0;
-    let mut count_cursor = store.raw_scan(StateSpace::StatePtrLatest);
-    while count_cursor.valid() {
-        let key = count_cursor.key().expect("valid cursor has a key");
-        let id: [u8; 32] = key.try_into().expect("corrupted latest-ptr resource id");
-        if corrections.get(&ResourceId::from(id)) != Some(&0) {
-            record_count += 1;
-        }
-        count_cursor.next();
-    }
-
-    // Write the snapshot. The `store.root(n_s) == settlement.new_state` check above is the
-    // authoritative self-check: it is the same authenticated SMT root the records here are read
-    // back from, so no separate in-memory rebuild is needed.
+    // Write the snapshot in a single streaming pass. The `store.root(n_s) == settlement.new_state`
+    // check above is the authoritative self-check: it is the same authenticated SMT root the
+    // records here are read back from, so no separate in-memory rebuild is needed. The record count
+    // is neither pre-scanned nor needed up front: `SnapshotWriter` reserves the count field,
+    // streams the records, then backpatches the true count, so nothing here ever holds the full
+    // resource set.
     let header = SnapshotHeader {
         covenant_id,
         lane_id,
@@ -168,18 +156,17 @@ pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveErr
     let mut writer = SnapshotWriter::<_, <crate::RunnerStore as Tree>::Hasher, VpsnapFormat>::open(
         &mut file,
         &header.encode(),
-        record_count,
     )
     .map_err(|e| SaveError::Io(std::io::Error::other(e.to_string())))?;
 
-    // Pass 2 (lazy, one value resident at a time): the raw cursor yields ids in ascending order
-    // (latest-ptr keys are the raw 32-byte resource id, so RocksDB's byte order is resource_id
-    // order), exactly the order `SnapshotWriter::write_record` requires, so no sort is needed. A
-    // resource emptied at/before N_S surfaces an empty value here rather than being filtered, since
-    // the SMT treats empty as absent (root unaffected) and pass 1 already counted it by version,
-    // not value. This loop's emitted-record count must equal pass 1's `record_count` exactly:
-    // both filter on the same `corrections` map, and `SnapshotWriter::finish` debug-asserts the
-    // two agree.
+    // Lazy, one value resident at a time: the raw cursor yields ids in ascending order (latest-ptr
+    // keys are the raw 32-byte resource id, so RocksDB's byte order is resource_id order), exactly
+    // the order `SnapshotWriter::write_record` requires, so no sort is needed. A resource is
+    // emitted at its version as of N_S: `corrections` overrides the current latest for
+    // resources touched after N_S, and a resource CREATED after N_S surfaces as a correction of
+    // exactly 0 and is skipped, since no version existed at N_S. A resource emptied at/before
+    // N_S surfaces an empty value here rather than being skipped, since the SMT treats empty as
+    // absent (root unaffected).
     let mut emit_cursor = store.raw_scan(StateSpace::StatePtrLatest);
     while emit_cursor.valid() {
         let key = emit_cursor.key().expect("valid cursor has a key");
@@ -203,7 +190,8 @@ pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveErr
         }
         emit_cursor.next();
     }
-    writer.finish().map_err(|e| SaveError::Io(std::io::Error::other(e.to_string())))?;
+    let record_count =
+        writer.finish().map_err(|e| SaveError::Io(std::io::Error::other(e.to_string())))?;
 
     Ok(SaveSummary {
         covenant_id,
