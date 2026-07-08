@@ -1894,9 +1894,9 @@ async fn spawn_prover_persistent(
 /// [`restore_snapshot`]), opening the existing `data_dir/db` rather than a fresh store. The
 /// framework reads the store's committed tip as the bridge's resume point, so the bridge skips
 /// seeding and fetches on top of the restored state rather than replaying from `start_from`. The
-/// settlement watch is seeded from the store's own persisted `last_settlement` (mirroring the
-/// daemon's resume path in `start.rs`), so the settler adopts the restored covenant tip without
-/// waiting for the bridge to re-observe it. The supplied `covenant`'s bootstrap outpoint is already
+/// settlement watch is seeded from the store's own persisted `last_settlement`, so the settler
+/// adopts the restored covenant tip without waiting for the bridge to re-observe it. The supplied
+/// `covenant`'s bootstrap outpoint is already
 /// spent by the settlements the snapshot pinned to, so the settler adopts the on-chain tip.
 #[allow(clippy::too_many_arguments)]
 async fn spawn_prover_resume(
