@@ -1,6 +1,5 @@
-//! Typed header embedded in a snapshot container's opaque header bytes (see
-//! `vprogs_state_snapshot::write_snapshot`), carrying the identity and settlement point a
-//! restored node resumes from.
+//! Typed header embedded in a snapshot container's opaque header bytes, carrying the identity and
+//! settlement point a restored node resumes from.
 //!
 //! On-wire layout: a zerocopy fixed prefix ([`HeaderFixed`]) followed by a length-delimited
 //! borsh-encoded [`ChainBlockMetadata`] region. `ChainBlockMetadata` carries an

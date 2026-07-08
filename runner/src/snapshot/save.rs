@@ -224,7 +224,7 @@ mod tests {
     use vprogs_state_metadata::StateMetadata;
     use vprogs_state_ptr_latest::StatePtrLatest;
     use vprogs_state_ptr_rollback::StatePtrRollback;
-    use vprogs_state_snapshot::SnapshotReader;
+    use vprogs_state_snapshot::{Record, SnapshotReader};
     use vprogs_state_version::StateVersion;
     use vprogs_storage_rocksdb_store::{DefaultConfig, RocksDbStore};
     use vprogs_storage_types::Store;
@@ -335,7 +335,7 @@ mod tests {
         let (_hdr, mut reader) =
             SnapshotReader::<_, Sha256, VpsnapFormat>::open(bytes.as_slice()).unwrap();
         let mut records: Vec<([u8; 32], Vec<u8>)> = Vec::new();
-        while let Some((id, value)) = reader.next().unwrap() {
+        while let Some(Record { id, value }) = reader.next().unwrap() {
             records.push((*id, value.to_vec()));
         }
         reader.finish().unwrap();
