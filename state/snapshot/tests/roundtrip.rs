@@ -1,7 +1,7 @@
 use vprogs_core_hashing::{Hasher, Sha256};
 use vprogs_core_smt::{Commitment, StreamingBuilder, Tree};
 use vprogs_core_types::ResourceId;
-use vprogs_state_snapshot::{SnapshotFormat, SnapshotReader, SnapshotWriter};
+use vprogs_state_snapshot::{Record, SnapshotFormat, SnapshotReader, SnapshotWriter};
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_storage_types::Store;
 
@@ -59,7 +59,7 @@ fn reconstructed_root_matches_independent_commit() {
         RocksDbStore::<vprogs_storage_rocksdb_store::DefaultConfig>::open(recon_dir.path());
     let mut wb = recon_store.write_batch();
     let mut builder = StreamingBuilder::<Sha256>::new(1);
-    while let Some((id, value)) = reader.next().unwrap() {
+    while let Some(Record { id, value }) = reader.next().unwrap() {
         if !value.is_empty() {
             builder.feed(&mut wb, ResourceId::from(*id), Sha256::hash(value));
         }

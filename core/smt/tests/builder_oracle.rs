@@ -18,7 +18,7 @@ use tempfile::TempDir;
 use vprogs_core_codec::Bits;
 use vprogs_core_hashing::Sha256;
 use vprogs_core_smt::{
-    Commitment, Key, Node, StaleNode, StreamingBuilder, Tree, WriteBatch, build_sorted,
+    Commitment, Key, Leaf, Node, StaleNode, StreamingBuilder, Tree, WriteBatch, build_sorted,
 };
 use vprogs_core_types::ResourceId;
 use vprogs_storage_rocksdb_store::RocksDbStore;
@@ -80,7 +80,11 @@ fn updater_build(leaves: &[(ResourceId, [u8; 32])], version: u64) -> ([u8; 32], 
 /// Runs the streaming builder; returns the root and captured node set.
 fn builder_build(leaves: &[(ResourceId, [u8; 32])], version: u64) -> ([u8; 32], Capture) {
     let mut cap = Capture::default();
-    let root = build_sorted::<_, Sha256>(&mut cap, version, leaves.iter().copied());
+    let root = build_sorted::<_, Sha256>(
+        &mut cap,
+        version,
+        leaves.iter().map(|&(id, value_hash)| Leaf { id, value_hash }),
+    );
     (root, cap)
 }
 
@@ -227,7 +231,11 @@ fn build_rejects_unsorted() {
     let mut cap = Capture::default();
     let leaves =
         vec![(ResourceId::from([2u8; 32]), [1u8; 32]), (ResourceId::from([1u8; 32]), [2u8; 32])];
-    build_sorted::<_, Sha256>(&mut cap, 1, leaves.into_iter());
+    build_sorted::<_, Sha256>(
+        &mut cap,
+        1,
+        leaves.into_iter().map(|(id, value_hash)| Leaf { id, value_hash }),
+    );
 }
 
 /// Duplicate ids violate the uniqueness contract and must panic in debug builds.
@@ -237,7 +245,11 @@ fn build_rejects_duplicates() {
     let mut cap = Capture::default();
     let id = ResourceId::from([1u8; 32]);
     let leaves = vec![(id, [1u8; 32]), (id, [2u8; 32])];
-    build_sorted::<_, Sha256>(&mut cap, 1, leaves.into_iter());
+    build_sorted::<_, Sha256>(
+        &mut cap,
+        1,
+        leaves.into_iter().map(|(id, value_hash)| Leaf { id, value_hash }),
+    );
 }
 
 /// Version 0 is reserved as pre-genesis.
@@ -246,7 +258,11 @@ fn build_rejects_duplicates() {
 fn build_rejects_version_zero() {
     let mut cap = Capture::default();
     let leaves = vec![(ResourceId::from([1u8; 32]), [1u8; 32])];
-    build_sorted::<_, Sha256>(&mut cap, 0, leaves.into_iter());
+    build_sorted::<_, Sha256>(
+        &mut cap,
+        0,
+        leaves.into_iter().map(|(id, value_hash)| Leaf { id, value_hash }),
+    );
 }
 
 // -- RocksDB integration --
@@ -296,7 +312,11 @@ fn assert_identical_rocksdb(leaves: &[(ResourceId, [u8; 32])], version: u64, tag
     let dir_b = TempDir::new().unwrap();
     let store_b = RocksDbStore::open(dir_b.path());
     let mut wb_b = store_b.write_batch();
-    let root_b = build_sorted::<_, Sha256>(&mut wb_b, version, leaves.iter().copied());
+    let root_b = build_sorted::<_, Sha256>(
+        &mut wb_b,
+        version,
+        leaves.iter().map(|&(id, value_hash)| Leaf { id, value_hash }),
+    );
     store_b.commit(wb_b);
 
     assert_eq!(root_b, root_o, "root mismatch [{tag}]");

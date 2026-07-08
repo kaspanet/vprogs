@@ -45,6 +45,8 @@ impl<'a> RawScanCursor<'a> {
     }
 
     /// Advances to the next key.
+    // Can't be `Iterator::next`: this advances the cursor and returns `()`, mirroring rocksdb's
+    // raw-iterator API. The lint fires on the name alone.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) {
         self.iter.next();

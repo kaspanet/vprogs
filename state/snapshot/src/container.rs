@@ -77,10 +77,7 @@ pub enum SnapshotError {
     FieldTooLarge,
 }
 
-/// Forwards writes to `inner`, folding exactly the bytes `inner` accepts into `hasher`. Folding
-/// only the accepted bytes (not the whole input slice up front) keeps the digest correct even if
-/// `inner` ever performs a short write, since `write_all`'s retry loop then re-offers only the
-/// unwritten remainder.
+/// Forwards writes to `inner`, folding exactly the bytes `inner` accepts into `hasher`.
 struct HashingWriter<'a, W: Write, Inc: IncrementalHasher> {
     /// Sink every write is forwarded to.
     inner: &'a mut W,
@@ -91,6 +88,8 @@ struct HashingWriter<'a, W: Write, Inc: IncrementalHasher> {
 impl<W: Write, Inc: IncrementalHasher> Write for HashingWriter<'_, W, Inc> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let n = self.inner.write(buf)?;
+        // Fold only the bytes actually accepted: on a short write, `write_all`'s retry loop
+        // re-offers the unwritten remainder, so folding `n` (not the whole slice) stays correct.
         self.hasher.update(&buf[..n]);
         Ok(n)
     }
@@ -152,16 +151,15 @@ impl<'w, W: Write, H: Hasher, F: SnapshotFormat> SnapshotWriter<'w, W, H, F> {
 
     /// Appends one record (`id[32] | value_len:u32 | value`), folding it into the running digest.
     ///
-    /// `id` MUST be non-decreasing across calls (the canonical on-wire order); checked with a
-    /// `debug_assert` against the previously written id, not re-validated in release builds since
-    /// the caller controls the write order from the same enumeration it sorted upstream.
+    /// `id` MUST be non-decreasing across calls: the canonical on-wire order.
     ///
     /// Returns [`SnapshotError::FieldTooLarge`] if `value` is longer than `u32::MAX`, rather than
     /// silently truncating the on-wire length prefix.
     pub fn write_record(&mut self, id: &[u8; 32], value: &[u8]) -> Result<(), SnapshotError> {
         let value_len: u32 = value.len().try_into().map_err(|_| SnapshotError::FieldTooLarge)?;
 
-        // Sortedness check against the previous record; compiled out entirely in release builds.
+        // Sortedness check against the previous record; compiled out entirely in release builds,
+        // where the caller controls the write order from the enumeration it sorted upstream.
         #[cfg(debug_assertions)]
         {
             if let Some(prev) = self.prev_id {
@@ -182,10 +180,8 @@ impl<'w, W: Write, H: Hasher, F: SnapshotFormat> SnapshotWriter<'w, W, H, F> {
     }
 
     /// Writes the trailing digest over every byte written since [`open`](Self::open).
-    ///
-    /// Debug-asserts the number of [`write_record`](Self::write_record) calls matched the
-    /// `record_count` declared at `open` time; not re-validated in release builds.
     pub fn finish(self) -> Result<(), SnapshotError> {
+        // Debug-only: the number of records written must match the count declared at open.
         debug_assert_eq!(
             self.written, self.expected,
             "write_record call count disagreed with record_count declared at open"
@@ -194,6 +190,15 @@ impl<'w, W: Write, H: Hasher, F: SnapshotFormat> SnapshotWriter<'w, W, H, F> {
         inner.write_all(&hasher.finalize())?;
         Ok(())
     }
+}
+
+/// A borrowed record from a snapshot: a resource id and its value bytes, valid until the next read.
+#[derive(Clone, Copy, Debug)]
+pub struct Record<'a> {
+    /// The record's resource id.
+    pub id: &'a [u8; 32],
+    /// The record's value bytes.
+    pub value: &'a [u8],
 }
 
 /// Streaming, lending reader over a snapshot produced by [`SnapshotWriter`]. The whole file is
@@ -220,10 +225,10 @@ pub struct SnapshotReader<R: Read, H: Hasher, F: SnapshotFormat> {
 
 impl<R: Read, H: Hasher, F: SnapshotFormat> SnapshotReader<R, H, F> {
     /// Reads and validates the fixed prefix (`magic`, `version`, `header_len`, `header`,
-    /// `record_count`), folding every byte read into the running digest, and returns the opaque
-    /// header. Rejects unknown magic ([`SnapshotFormat::MAGIC`]) or an unsupported version
-    /// ([`SnapshotFormat::FORMAT_VERSION`]) before ever looking at `header_len`, and rejects a
-    /// `header_len` over [`MAX_HEADER_LEN`] before allocating the header buffer.
+    /// `record_count`) and returns the opaque header. Rejects unknown magic
+    /// ([`SnapshotFormat::MAGIC`]) or an unsupported version ([`SnapshotFormat::FORMAT_VERSION`])
+    /// before ever looking at `header_len`, and rejects a `header_len` over [`MAX_HEADER_LEN`]
+    /// before allocating the header buffer.
     pub fn open(mut r: R) -> Result<(Vec<u8>, Self), SnapshotError> {
         let mut hasher = H::incremental();
 
@@ -270,20 +275,16 @@ impl<R: Read, H: Hasher, F: SnapshotFormat> SnapshotReader<R, H, F> {
     /// valid until the next call to `next` (or until `self` is dropped). Returns `Ok(None)` once
     /// all `record_count` records have been consumed.
     ///
-    /// Reads exactly one `id` (32 bytes) then one declared-length `value`. Rejects a `value_len`
-    /// over [`MAX_VALUE_LEN`] with [`SnapshotError::Malformed`] before allocating anything sized
-    /// by it, and even within that cap never pre-allocates the declared length: the value is read
-    /// through a bounded adapter that grows the reused buffer only with bytes actually observed,
-    /// so a `value_len` the stream cannot back yields [`SnapshotError::Truncated`] instead of the
-    /// buffer being pre-sized to a length the file never delivers.
-    ///
-    /// Named `next` rather than implemented as `Iterator` on purpose: the fallible,
-    /// record-at-a-time shape is the point, and an `Iterator` cannot express a return borrowed
-    /// from `&mut self` (a lending iterator), so an `Iterator<Item = Result<Record, ..>>` adapter
-    /// here would force an owned allocation per item, which is exactly the whole-file/per-record
-    /// buffering this type exists to avoid.
-    #[allow(clippy::should_implement_trait, clippy::type_complexity)]
-    pub fn next(&mut self) -> Result<Option<(&[u8; 32], &[u8])>, SnapshotError> {
+    /// Rejects a `value_len` over [`MAX_VALUE_LEN`] with [`SnapshotError::Malformed`] before
+    /// allocating anything sized by it, and never pre-allocates the declared length: a `value_len`
+    /// the stream cannot back yields [`SnapshotError::Truncated`], not a buffer pre-sized to a
+    /// length the file never delivers.
+    // Named `next`, not an `Iterator` impl: an `Iterator` cannot return a value borrowed from
+    // `&mut self` (a lending iterator), so an `Iterator<Item = Result<..>>` here would force an
+    // owned allocation per record, defeating the per-record streaming this type exists for. The
+    // lint fires on the name alone and is a false positive for that deliberate shape.
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> Result<Option<Record<'_>>, SnapshotError> {
         if self.remaining == 0 {
             return Ok(None);
         }
@@ -305,7 +306,7 @@ impl<R: Read, H: Hasher, F: SnapshotFormat> SnapshotReader<R, H, F> {
         self.hasher.update(&self.value_buf);
 
         self.remaining -= 1;
-        Ok(Some((&self.id_buf, &self.value_buf)))
+        Ok(Some(Record { id: &self.id_buf, value: &self.value_buf }))
     }
 
     /// Verifies the trailing digest against everything read so far. Callers must drive
@@ -414,7 +415,7 @@ mod tests {
         assert_eq!(reader.record_count(), records.len() as u64);
 
         let mut got: Vec<([u8; 32], Vec<u8>)> = Vec::new();
-        while let Some((id, value)) = reader.next().unwrap() {
+        while let Some(Record { id, value }) = reader.next().unwrap() {
             got.push((*id, value.to_vec()));
         }
         reader.finish().unwrap();
@@ -510,8 +511,8 @@ mod tests {
         );
     }
 
-    /// Regression test for the review finding: a forged file can declare an absurd
-    /// `record_count` (here `u64::MAX`) while still being tiny. The reader never preallocates
+    /// A forged file can declare an absurd `record_count` (here `u64::MAX`) while still being
+    /// tiny. The reader never preallocates
     /// anything sized by `record_count`; the first `next()` call simply runs out of stream while
     /// reading the first record's `id` and must return an error, never panic (capacity overflow)
     /// or abort (alloc failure).
@@ -532,8 +533,8 @@ mod tests {
         );
     }
 
-    /// Regression test for the review finding: a forged record can declare a `value_len` far
-    /// beyond anything the tiny file actually holds (here `MAX_VALUE_LEN + 1`, close to 4 GiB).
+    /// A forged record can declare a `value_len` far beyond anything the tiny file actually holds
+    /// (here `MAX_VALUE_LEN + 1`, close to 4 GiB).
     /// `next` must reject it before allocating a buffer sized by that declared length, never
     /// panic (capacity overflow / OOM) or actually perform a multi-gigabyte allocation.
     #[test]

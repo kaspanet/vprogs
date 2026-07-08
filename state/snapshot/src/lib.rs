@@ -17,5 +17,6 @@
 mod container;
 
 pub use container::{
-    MAX_HEADER_LEN, MAX_VALUE_LEN, SnapshotError, SnapshotFormat, SnapshotReader, SnapshotWriter,
+    MAX_HEADER_LEN, MAX_VALUE_LEN, Record, SnapshotError, SnapshotFormat, SnapshotReader,
+    SnapshotWriter,
 };
