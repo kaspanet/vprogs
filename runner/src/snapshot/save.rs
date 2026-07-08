@@ -162,11 +162,13 @@ pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveErr
     // Lazy, one value resident at a time: the raw cursor yields ids in ascending order (latest-ptr
     // keys are the raw 32-byte resource id, so RocksDB's byte order is resource_id order), exactly
     // the order `SnapshotWriter::write_record` requires, so no sort is needed. A resource is
-    // emitted at its version as of N_S: `corrections` overrides the current latest for
-    // resources touched after N_S, and a resource CREATED after N_S surfaces as a correction of
-    // exactly 0 and is skipped, since no version existed at N_S. A resource emptied at/before
-    // N_S surfaces an empty value here rather than being skipped, since the SMT treats empty as
-    // absent (root unaffected).
+    // emitted at its version as of N_S: `corrections` overrides the current latest for resources
+    // touched after N_S, and a resource CREATED after N_S surfaces as a correction of exactly 0 and
+    // is skipped, since no version existed at N_S. A resource whose value at N_S is empty (or has
+    // no stored version) is skipped too: the live store keeps an empty value to mark a deletion
+    // and shadow the prior version, but a restore rebuilds a fresh tree where empty and absent
+    // coincide and the SMT already treats empty as absent, so the record would only bloat the
+    // file.
     let mut emit_cursor = store.raw_scan(StateSpace::StatePtrLatest);
     while emit_cursor.valid() {
         let key = emit_cursor.key().expect("valid cursor has a key");
@@ -184,9 +186,11 @@ pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveErr
             version_key[..8].copy_from_slice(&ver.to_be_bytes());
             version_key[8..].copy_from_slice(&id);
             let value = store.get_pinned(StateSpace::StateVersion, &version_key);
-            writer
-                .write_record(&id, value.as_deref().unwrap_or(&[]))
-                .map_err(|e| SaveError::Io(std::io::Error::other(e.to_string())))?;
+            if let Some(value) = value.as_deref().filter(|v| !v.is_empty()) {
+                writer
+                    .write_record(&id, value)
+                    .map_err(|e| SaveError::Io(std::io::Error::other(e.to_string())))?;
+            }
         }
         emit_cursor.next();
     }
@@ -348,5 +352,68 @@ mod tests {
         let reconstructed = builder.finish(&mut wb);
         recon.commit(wb);
         assert_eq!(reconstructed, root1);
+    }
+
+    // A resource emptied at N_S keeps its latest ptr and a version entry holding an empty value,
+    // but is absent from the authenticated tree. The snapshot must skip it: empty and absent are
+    // the same on a fresh restore, so writing the record would only bloat the file.
+    #[test]
+    fn save_skips_resources_empty_at_settlement() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RocksDbStore::<DefaultConfig>::open(dir.path().join("db"));
+
+        let r_live = ResourceId::from([1u8; 32]);
+        let r_empty = ResourceId::from([2u8; 32]);
+
+        // Batch 1 is both the tip and block_prove_to. r_live is committed to the tree; r_empty has
+        // a latest ptr and an empty-valued version but is deliberately left out of the commitments.
+        let mut wb = store.write_batch();
+        StateVersion::put(&mut wb, 1, &r_live, b"alpha");
+        StatePtrLatest::put(&mut wb, &r_live, 1);
+        StateVersion::put(&mut wb, 1, &r_empty, b"");
+        StatePtrLatest::put(&mut wb, &r_empty, 1);
+        let root1 = store.update(&mut wb, vec![Commitment::new(r_live, Sha256::hash(b"alpha"))], 1);
+        let settlement = SettlementInfo {
+            block_prove_to: Hash::from_bytes([11u8; 32]),
+            containing_block: Hash::from_bytes([11u8; 32]),
+            new_state: root1,
+            ..SettlementInfo::default()
+        };
+        let m1 = ChainBlockMetadata {
+            hash: Hash::from_bytes([11u8; 32]),
+            last_settlement: Some(settlement),
+            ..ChainBlockMetadata::default()
+        };
+        let cp = Checkpoint::new(1, m1);
+        StoredBatchMetadata::set(&mut wb, 1, cp.metadata());
+        StateMetadata::set_last_committed(&mut wb, &cp);
+        StateMetadata::set_root(&mut wb, &cp);
+        store.commit(wb);
+
+        PersistedState {
+            lane_id: Some(9),
+            covenant_id: Some(Hash::from_bytes([7u8; 32]).to_string()),
+            bootstrap_txid: Some(Hash::from_bytes([8u8; 32]).to_string()),
+            bootstrap_block_hash: None,
+        }
+        .save(dir.path());
+
+        drop(store);
+
+        let out = dir.path().join("snap.vpsnap");
+        let summary = save_snapshot(dir.path(), &out).expect("save should succeed");
+        // Only r_live is written; the emptied resource is skipped.
+        assert_eq!(summary.record_count, 1);
+
+        let bytes = std::fs::read(&out).unwrap();
+        let (_hdr, mut reader) =
+            SnapshotReader::<_, Sha256, VpsnapFormat>::open(bytes.as_slice()).unwrap();
+        let mut ids: Vec<[u8; 32]> = Vec::new();
+        while let Some(Record { id, value }) = reader.next().unwrap() {
+            ids.push(*id);
+            assert!(!value.is_empty(), "no empty record should be written");
+        }
+        reader.finish().unwrap();
+        assert_eq!(ids, vec![[1u8; 32]]);
     }
 }
