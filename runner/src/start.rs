@@ -86,6 +86,29 @@ fn effective_mode(cfg: &RunnerConfig, persisted: &PersistedState) -> StartMode {
     })
 }
 
+/// The resolved start-up inputs a node builder needs: the config, the connected client, the prover
+/// identity, the lane wiring, the guest ELFs, the start mode, and the mutable persisted state.
+struct StartContext<'a> {
+    /// Resolved runner configuration.
+    cfg: &'a RunnerConfig,
+    /// Connected wRPC client for the remote node.
+    client: &'a KaspaRpcClient,
+    /// Consensus params for the target network.
+    params: &'a Params,
+    /// Fee / bootstrap keypair derived from `cfg.private_key`.
+    keypair: Keypair,
+    /// Lane subnetwork this runner routes onto.
+    lane_subnet: SubnetworkId,
+    /// Lane key derived from `lane_subnet`.
+    lane_key: Hash,
+    /// Guest ELF images the backend pins.
+    elfs: Elfs<'a>,
+    /// Resolved start mode: fresh bootstrap, resume, or catch-up.
+    mode: StartMode,
+    /// Persisted identity and bootstrap anchors, updated as start-up resolves them.
+    persisted: &'a mut PersistedState,
+}
+
 /// Connect-and-run: resolve identity + start mode, build the node and (in prove mode) the settler.
 /// Does not issue any action/activity transactions and does not block; the caller owns the handles.
 pub async fn start_runner(
@@ -105,51 +128,32 @@ pub async fn start_runner(
     let lane_key = lane_key(lane_subnet.as_bytes());
     log::info!("lane id={lane_id} subnetwork={lane_subnet} mode={mode:?}");
 
+    let ctx = StartContext {
+        cfg,
+        client,
+        params,
+        keypair,
+        lane_subnet,
+        lane_key,
+        elfs,
+        mode,
+        persisted: &mut persisted,
+    };
     if cfg.prove {
-        let (node, settler, covenant_id) = start_settlement(
-            cfg,
-            client,
-            params,
-            keypair,
-            lane_subnet,
-            lane_key,
-            elfs,
-            mode,
-            &mut persisted,
-        )
-        .await?;
+        let (node, settler, covenant_id) = start_settlement(ctx).await?;
         Ok(RunnerHandles { node, settler: Some(settler), lane_id, lane_subnet, covenant_id })
     } else {
-        let (node, covenant_id) = start_exec(
-            cfg,
-            client,
-            params,
-            keypair,
-            lane_subnet,
-            lane_key,
-            elfs,
-            mode,
-            &mut persisted,
-        )
-        .await?;
+        let (node, covenant_id) = start_exec(ctx).await?;
         Ok(RunnerHandles { node, settler: None, lane_id, lane_subnet, covenant_id })
     }
 }
 
 /// Builds the execution-only node: resolve or dev-bootstrap a covenant per the start mode, then a
 /// `Node` with no proving. The bridge tracks the covenant's settlements; nothing here settles.
-#[allow(clippy::too_many_arguments)]
-async fn start_exec(
-    cfg: &RunnerConfig,
-    client: &KaspaRpcClient,
-    params: &Params,
-    keypair: Keypair,
-    lane_subnet: SubnetworkId,
-    lane_key: Hash,
-    elfs: Elfs<'_>,
-    mode: StartMode,
-    persisted: &mut PersistedState,
-) -> Result<(RunnerNode, Hash), StartError> {
+async fn start_exec(ctx: StartContext<'_>) -> Result<(RunnerNode, Hash), StartError> {
+    let StartContext { cfg, client, params, keypair, lane_subnet, lane_key, elfs, mode, persisted } =
+        ctx;
+
     // Resolve the covenant id and the seed block per mode. `seed` is the L1 block the bridge
     // rebuilds decoded state forward from; a catch-up that seeds only `seed_depth` below the
     // tip misses lane history and reconstructs wrong state, so catch-up requires an explicit
@@ -224,18 +228,12 @@ async fn start_exec(
 /// `RISC0_DEV_MODE`, real-pins otherwise), resume from persisted identity, or catch up to an
 /// existing covenant (reconstructing its initial state). Wires the batch prover over the remote
 /// node and spawns the settler on the node's batch sink.
-#[allow(clippy::too_many_arguments)]
 async fn start_settlement(
-    cfg: &RunnerConfig,
-    client: &KaspaRpcClient,
-    params: &Params,
-    keypair: Keypair,
-    lane_subnet: SubnetworkId,
-    lane_key: Hash,
-    elfs: Elfs<'_>,
-    mode: StartMode,
-    persisted: &mut PersistedState,
+    ctx: StartContext<'_>,
 ) -> Result<(RunnerNode, (JoinHandle<()>, AtomicAsyncLatch), Hash), StartError> {
+    let StartContext { cfg, client, params, keypair, lane_subnet, lane_key, elfs, mode, persisted } =
+        ctx;
+
     let backend = Backend::new(elfs.program, elfs.batch, elfs.aggregator, ProofType::Succinct);
     let wallet = Wallet::new(client, params, keypair);
     // Under `RISC0_DEV_MODE` the prover emits stub receipts the production `OpZkPrecompile` would
