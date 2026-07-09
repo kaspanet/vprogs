@@ -193,37 +193,37 @@ async fn two_provers_contend() {
     // its live settlement handle: at startup the handle is empty (no settlement yet), so it leaves
     // `cov` at the unspent bootstrap and the loop's mid-stream adoption advances it as the bridge
     // publishes each settlement off the replayed chain - no L1 chain scan.
-    let prover_a = spawn_prover(
-        &l1,
-        "A",
-        kp_a,
-        addr_a.clone(),
-        2..=4,
+    let prover_a = spawn_prover(ProverSpec {
+        l1: &l1,
+        label: "A",
+        keypair: kp_a,
+        address: addr_a.clone(),
+        bundle_size: 2..=4,
         network_id,
-        &params,
+        params: &params,
         lane_key,
         covenant_id,
-        initial_covenant.clone(),
+        covenant: initial_covenant.clone(),
         elfs,
-        Some((0, pacer.clone())),
-        Some(block_deploy),
-    )
+        alternation: Some((0, pacer.clone())),
+        start_from: Some(block_deploy),
+    })
     .await;
-    let prover_b = spawn_prover(
-        &l1,
-        "B",
-        kp_b,
-        addr_b.clone(),
-        2..=4,
+    let prover_b = spawn_prover(ProverSpec {
+        l1: &l1,
+        label: "B",
+        keypair: kp_b,
+        address: addr_b.clone(),
+        bundle_size: 2..=4,
         network_id,
-        &params,
+        params: &params,
         lane_key,
         covenant_id,
-        initial_covenant.clone(),
+        covenant: initial_covenant.clone(),
         elfs,
-        Some((1, pacer.clone())),
-        Some(block_deploy),
-    )
+        alternation: Some((1, pacer.clone())),
+        start_from: Some(block_deploy),
+    })
     .await;
 
     // === Step 4: drive lane activity ===
@@ -465,37 +465,37 @@ async fn two_provers_reform_superseded_suffix() {
     // A bundles fives, B bundles threes: their bundle boundaries never align, so each settlement
     // covers only part of the other's in-flight bundle and leaves a surviving suffix that the loser
     // must re-aggregate against the adopted tip rather than drop.
-    let prover_a = spawn_prover(
-        &l1,
-        "A",
-        kp_a,
-        addr_a.clone(),
-        5..=5,
+    let prover_a = spawn_prover(ProverSpec {
+        l1: &l1,
+        label: "A",
+        keypair: kp_a,
+        address: addr_a.clone(),
+        bundle_size: 5..=5,
         network_id,
-        &params,
+        params: &params,
         lane_key,
         covenant_id,
-        initial_covenant.clone(),
+        covenant: initial_covenant.clone(),
         elfs,
-        Some((0, pacer.clone())),
-        Some(block_deploy),
-    )
+        alternation: Some((0, pacer.clone())),
+        start_from: Some(block_deploy),
+    })
     .await;
-    let prover_b = spawn_prover(
-        &l1,
-        "B",
-        kp_b,
-        addr_b.clone(),
-        3..=3,
+    let prover_b = spawn_prover(ProverSpec {
+        l1: &l1,
+        label: "B",
+        keypair: kp_b,
+        address: addr_b.clone(),
+        bundle_size: 3..=3,
         network_id,
-        &params,
+        params: &params,
         lane_key,
         covenant_id,
-        initial_covenant,
+        covenant: initial_covenant,
         elfs,
-        Some((1, pacer.clone())),
-        Some(block_deploy),
-    )
+        alternation: Some((1, pacer.clone())),
+        start_from: Some(block_deploy),
+    })
     .await;
 
     // === Step 4: drive several contended ranges (carriers + acceptance) ===
@@ -712,21 +712,21 @@ async fn prover_catches_up_to_existing_covenant() {
     // already settled past its bootstrap - where the bootstrap UTXO is spent before the joining
     // settler starts - is covered by `prover_catches_up_to_already_settled_covenant`, which
     // exercises the startup adopt-the-tip path.)
-    let prover_a = spawn_prover(
-        &l1,
-        "A",
-        kp_a,
-        addr_a.clone(),
-        2..=4,
+    let prover_a = spawn_prover(ProverSpec {
+        l1: &l1,
+        label: "A",
+        keypair: kp_a,
+        address: addr_a.clone(),
+        bundle_size: 2..=4,
         network_id,
-        &params,
+        params: &params,
         lane_key,
         covenant_id,
-        initial_covenant,
+        covenant: initial_covenant,
         elfs,
-        Some((0, pacer.clone())),
-        None,
-    )
+        alternation: Some((0, pacer.clone())),
+        start_from: None,
+    })
     .await;
 
     let (_redeem, catchup_spk) = dev_bootstrap_redeem(&lane_key);
@@ -739,21 +739,21 @@ async fn prover_catches_up_to_existing_covenant() {
         value: COVENANT_VALUE,
         daa_score: 0,
     };
-    let prover_b = spawn_prover(
-        &l1,
-        "B",
-        kp_b,
-        addr_b.clone(),
-        2..=4,
+    let prover_b = spawn_prover(ProverSpec {
+        l1: &l1,
+        label: "B",
+        keypair: kp_b,
+        address: addr_b.clone(),
+        bundle_size: 2..=4,
         network_id,
-        &params,
+        params: &params,
         lane_key,
         covenant_id,
-        catchup_covenant,
+        covenant: catchup_covenant,
         elfs,
-        Some((1, pacer.clone())),
-        Some(block_deploy),
-    )
+        alternation: Some((1, pacer.clone())),
+        start_from: Some(block_deploy),
+    })
     .await;
 
     // === Step 4: drive both, then drain ===
@@ -920,21 +920,21 @@ async fn prover_catches_up_to_already_settled_covenant() {
     // === Step 3: prover A settles ALONE until the bootstrap is well spent ===
     // No alternation partner, so A settles every range it forms; we drive until it has landed at
     // least 2 settlements (the bootstrap outpoint is spent by the first).
-    let prover_a = spawn_prover(
-        &l1,
-        "A",
-        kp_a,
-        addr_a.clone(),
-        2..=4,
+    let prover_a = spawn_prover(ProverSpec {
+        l1: &l1,
+        label: "A",
+        keypair: kp_a,
+        address: addr_a.clone(),
+        bundle_size: 2..=4,
         network_id,
-        &params,
+        params: &params,
         lane_key,
         covenant_id,
-        initial_covenant,
+        covenant: initial_covenant,
         elfs,
-        None,
-        None,
-    )
+        alternation: None,
+        start_from: None,
+    })
     .await;
 
     for i in 0..10 {
@@ -980,21 +980,21 @@ async fn prover_catches_up_to_already_settled_covenant() {
         value: COVENANT_VALUE,
         daa_score: 0,
     };
-    let prover_b = spawn_prover(
-        &l1,
-        "B",
-        kp_b,
-        addr_b.clone(),
-        2..=4,
+    let prover_b = spawn_prover(ProverSpec {
+        l1: &l1,
+        label: "B",
+        keypair: kp_b,
+        address: addr_b.clone(),
+        bundle_size: 2..=4,
         network_id,
-        &params,
+        params: &params,
         lane_key,
         covenant_id,
-        catchup_covenant,
+        covenant: catchup_covenant,
         elfs,
-        None,
-        Some(block_deploy),
-    )
+        alternation: None,
+        start_from: Some(block_deploy),
+    })
     .await;
 
     // === Step 5: keep driving so B catches up and lands a settlement, then drain ===
@@ -1136,21 +1136,21 @@ async fn prover_resumes_after_settlement() {
     let params = Params::from(network_id);
 
     // === Run 1: A lands at least one settlement, spending the bootstrap UTXO ===
-    let prover_a1 = spawn_prover(
-        &l1,
-        "A1",
-        kp_a,
-        addr_a.clone(),
-        2..=4,
+    let prover_a1 = spawn_prover(ProverSpec {
+        l1: &l1,
+        label: "A1",
+        keypair: kp_a,
+        address: addr_a.clone(),
+        bundle_size: 2..=4,
         network_id,
-        &params,
+        params: &params,
         lane_key,
         covenant_id,
-        bootstrap_state.clone(),
+        covenant: bootstrap_state.clone(),
         elfs,
-        None,
-        Some(block_deploy),
-    )
+        alternation: None,
+        start_from: Some(block_deploy),
+    })
     .await;
 
     for i in 0..10 {
@@ -1181,21 +1181,21 @@ async fn prover_resumes_after_settlement() {
     let kp_a2 = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
     let addr_a2 = prover_address(&kp_a2, network_id);
     l1.fund_address(&addr_a2, FUND_VALUE, FUND_COUNT).await;
-    let prover_a2 = spawn_prover(
-        &l1,
-        "A2",
-        kp_a2,
-        addr_a2.clone(),
-        2..=4,
+    let prover_a2 = spawn_prover(ProverSpec {
+        l1: &l1,
+        label: "A2",
+        keypair: kp_a2,
+        address: addr_a2.clone(),
+        bundle_size: 2..=4,
         network_id,
-        &params,
+        params: &params,
         lane_key,
         covenant_id,
-        bootstrap_state,
+        covenant: bootstrap_state,
         elfs,
-        None,
-        Some(block_deploy),
-    )
+        alternation: None,
+        start_from: Some(block_deploy),
+    })
     .await;
 
     const DRIVER_ITERS: usize = 9;
@@ -1325,37 +1325,37 @@ async fn prover_resumes_after_settlement_contended() {
     // Both fresh-deploy provers seed from the deploy block, matching the binary's fresh-deploy path
     // (the live settlement handle is empty at startup, so each starts from the unspent bootstrap
     // and the loop's mid-stream adoption advances it as the bridge publishes settlements).
-    let prover_a = spawn_prover(
-        &l1,
-        "A",
-        kp_a,
-        addr_a.clone(),
-        2..=4,
+    let prover_a = spawn_prover(ProverSpec {
+        l1: &l1,
+        label: "A",
+        keypair: kp_a,
+        address: addr_a.clone(),
+        bundle_size: 2..=4,
         network_id,
-        &params,
+        params: &params,
         lane_key,
         covenant_id,
-        bootstrap_state.clone(),
+        covenant: bootstrap_state.clone(),
         elfs,
-        Some((0, pacer.clone())),
-        Some(block_deploy),
-    )
+        alternation: Some((0, pacer.clone())),
+        start_from: Some(block_deploy),
+    })
     .await;
-    let prover_b1 = spawn_prover(
-        &l1,
-        "B1",
-        kp_b,
-        addr_b.clone(),
-        2..=4,
+    let prover_b1 = spawn_prover(ProverSpec {
+        l1: &l1,
+        label: "B1",
+        keypair: kp_b,
+        address: addr_b.clone(),
+        bundle_size: 2..=4,
         network_id,
-        &params,
+        params: &params,
         lane_key,
         covenant_id,
-        bootstrap_state.clone(),
+        covenant: bootstrap_state.clone(),
         elfs,
-        Some((1, pacer.clone())),
-        Some(block_deploy),
-    )
+        alternation: Some((1, pacer.clone())),
+        start_from: Some(block_deploy),
+    })
     .await;
 
     // Drive until the chain has advanced a few settlements, so the bootstrap is well spent before B
@@ -1388,21 +1388,21 @@ async fn prover_resumes_after_settlement_contended() {
     let kp_b2 = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
     let addr_b2 = prover_address(&kp_b2, network_id);
     l1.fund_address(&addr_b2, FUND_VALUE, FUND_COUNT).await;
-    let prover_b2 = spawn_prover(
-        &l1,
-        "B2",
-        kp_b2,
-        addr_b2.clone(),
-        2..=4,
+    let prover_b2 = spawn_prover(ProverSpec {
+        l1: &l1,
+        label: "B2",
+        keypair: kp_b2,
+        address: addr_b2.clone(),
+        bundle_size: 2..=4,
         network_id,
-        &params,
+        params: &params,
         lane_key,
         covenant_id,
-        bootstrap_state,
+        covenant: bootstrap_state,
         elfs,
-        Some((1, pacer.clone())),
-        Some(block_deploy),
-    )
+        alternation: Some((1, pacer.clone())),
+        start_from: Some(block_deploy),
+    })
     .await;
 
     // === Run 2: A and the restarted B2 contend; drive then drain ===
@@ -1579,19 +1579,21 @@ async fn snapshot_save_restore_resumes_and_settles() {
     l1.fund_address(&addr_a, FUND_VALUE, FUND_COUNT).await;
     let prover_a = spawn_prover_persistent(
         &data_dir_a,
-        &l1,
-        "A",
-        kp_a,
-        addr_a.clone(),
-        2..=4,
-        network_id,
-        &params,
-        lane_key,
-        covenant_id,
-        bootstrap_state.clone(),
-        elfs,
-        None,
-        Some(block_deploy),
+        ProverSpec {
+            l1: &l1,
+            label: "A",
+            keypair: kp_a,
+            address: addr_a.clone(),
+            bundle_size: 2..=4,
+            network_id,
+            params: &params,
+            lane_key,
+            covenant_id,
+            covenant: bootstrap_state.clone(),
+            elfs,
+            alternation: None,
+            start_from: Some(block_deploy),
+        },
     )
     .await;
 
@@ -1680,19 +1682,21 @@ async fn snapshot_save_restore_resumes_and_settles() {
     l1.fund_address(&addr_b, FUND_VALUE, FUND_COUNT).await;
     let prover_b = spawn_prover_resume(
         &data_dir_b,
-        &l1,
-        "B",
-        kp_b,
-        addr_b.clone(),
-        2..=4,
-        network_id,
-        &params,
-        lane_key,
-        covenant_id,
-        bootstrap_state,
-        elfs,
-        None,
-        Some(block_deploy),
+        ProverSpec {
+            l1: &l1,
+            label: "B",
+            keypair: kp_b,
+            address: addr_b.clone(),
+            bundle_size: 2..=4,
+            network_id,
+            params: &params,
+            lane_key,
+            covenant_id,
+            covenant: bootstrap_state,
+            elfs,
+            alternation: None,
+            start_from: Some(block_deploy),
+        },
     )
     .await;
 
@@ -1804,141 +1808,72 @@ fn prover_address(keypair: &Keypair, network_id: NetworkId) -> Address {
     Address::new(Prefix::from(network_id.network_type()), Version::PubKey, &xonly.serialize())
 }
 
+/// The parameters every prover-spawn helper shares: the L1 to follow, the prover's identity and
+/// funding, the covenant it settles, and the guest ELFs. [`spawn_prover`] and its persistent /
+/// resume variants add only their store-provenance arguments on top of this.
+struct ProverSpec<'a> {
+    /// L1 node the prover's bridge follows.
+    l1: &'a L1Node,
+    /// Short label for the prover's log lines.
+    label: &'static str,
+    /// Keypair the settler funds settlement fees from.
+    keypair: Keypair,
+    /// Funding address derived from `keypair`.
+    address: Address,
+    /// Bundle-size range the proving pipeline targets.
+    bundle_size: RangeInclusive<usize>,
+    /// Network the prover operates on.
+    network_id: NetworkId,
+    /// Consensus params the settler builds settlement txs under.
+    params: &'a Params,
+    /// Lane key the guest commits to.
+    lane_key: Hash,
+    /// Covenant id the prover settles.
+    covenant_id: Hash,
+    /// Covenant the settler bootstraps from or adopts.
+    covenant: CovenantState,
+    /// Guest ELF images the backend pins.
+    elfs: Elfs<'a>,
+    /// Index and pacer coordinating the spend race with a competitor, or `None` for a solo prover.
+    alternation: Option<(u8, Arc<AlternationPacer>)>,
+    /// Block the bridge seeds its fetch from, or `None` to seed from the recent tip.
+    start_from: Option<Hash>,
+}
+
 /// Builds, wires, and starts one prover: a proving [`RunnerNode`] over a fresh store + wRPC client,
 /// and a spawned settler draining the node's settlement queue against the shared covenant. Returns
 /// the assembled [`Prover`] (node kept alive, settler handle + shutdown latch for teardown).
-#[allow(clippy::too_many_arguments)]
-async fn spawn_prover(
-    l1: &L1Node,
-    label: &'static str,
-    keypair: Keypair,
-    address: Address,
-    bundle_size: RangeInclusive<usize>,
-    network_id: NetworkId,
-    params: &Params,
-    lane_key: Hash,
-    covenant_id: Hash,
-    covenant: CovenantState,
-    elfs: Elfs<'_>,
-    alternation: Option<(u8, Arc<AlternationPacer>)>,
-    start_from: Option<Hash>,
-) -> Prover {
+async fn spawn_prover(spec: ProverSpec<'_>) -> Prover {
     let db_dir = TempDir::new().expect("temp dir");
     let store = RunnerStore::open(db_dir.path());
-    spawn_prover_with_store(
-        l1,
-        label,
-        keypair,
-        address,
-        bundle_size,
-        network_id,
-        params,
-        lane_key,
-        covenant_id,
-        covenant,
-        elfs,
-        alternation,
-        start_from,
-        store,
-        None,
-        Some(db_dir),
-    )
-    .await
+    spawn_prover_with_store(spec, store, None, Some(db_dir)).await
 }
 
 /// Builds and starts a prover whose RocksDB store lives under a caller-owned `data_dir` (at
 /// `data_dir/db`, the layout the daemon uses) rather than an internal scratch dir, so the caller
 /// can `save_snapshot(data_dir, ..)` against it while the prover keeps running. Otherwise identical
 /// to [`spawn_prover`]: a fresh (empty) store with the settlement watch seeded `None`, freshly
-/// bootstrapping the covenant `covenant` describes.
-#[allow(clippy::too_many_arguments)]
-async fn spawn_prover_persistent(
-    data_dir: &Path,
-    l1: &L1Node,
-    label: &'static str,
-    keypair: Keypair,
-    address: Address,
-    bundle_size: RangeInclusive<usize>,
-    network_id: NetworkId,
-    params: &Params,
-    lane_key: Hash,
-    covenant_id: Hash,
-    covenant: CovenantState,
-    elfs: Elfs<'_>,
-    alternation: Option<(u8, Arc<AlternationPacer>)>,
-    start_from: Option<Hash>,
-) -> Prover {
+/// bootstrapping the covenant `spec.covenant` describes.
+async fn spawn_prover_persistent(data_dir: &Path, spec: ProverSpec<'_>) -> Prover {
     let store = RunnerStore::open(data_dir.join("db"));
-    spawn_prover_with_store(
-        l1,
-        label,
-        keypair,
-        address,
-        bundle_size,
-        network_id,
-        params,
-        lane_key,
-        covenant_id,
-        covenant,
-        elfs,
-        alternation,
-        start_from,
-        store,
-        None,
-        None,
-    )
-    .await
+    spawn_prover_with_store(spec, store, None, None).await
 }
 
 /// Builds and starts a prover that RESUMES from an already-populated `data_dir` (a store seeded by
 /// [`restore_snapshot`]), opening the existing `data_dir/db` rather than a fresh store. The
 /// framework reads the store's committed tip as the bridge's resume point, so the bridge skips
-/// seeding and fetches on top of the restored state rather than replaying from `start_from`. The
-/// settlement watch is seeded from the store's own persisted `last_settlement`, so the settler
+/// seeding and fetches on top of the restored state rather than replaying from `spec.start_from`.
+/// The settlement watch is seeded from the store's own persisted `last_settlement`, so the settler
 /// adopts the restored covenant tip without waiting for the bridge to re-observe it. The supplied
-/// `covenant`'s bootstrap outpoint is already
-/// spent by the settlements the snapshot pinned to, so the settler adopts the on-chain tip.
-#[allow(clippy::too_many_arguments)]
-async fn spawn_prover_resume(
-    data_dir: &Path,
-    l1: &L1Node,
-    label: &'static str,
-    keypair: Keypair,
-    address: Address,
-    bundle_size: RangeInclusive<usize>,
-    network_id: NetworkId,
-    params: &Params,
-    lane_key: Hash,
-    covenant_id: Hash,
-    covenant: CovenantState,
-    elfs: Elfs<'_>,
-    alternation: Option<(u8, Arc<AlternationPacer>)>,
-    start_from: Option<Hash>,
-) -> Prover {
+/// `spec.covenant`'s bootstrap outpoint is already spent by the settlements the snapshot pinned to,
+/// so the settler adopts the on-chain tip.
+async fn spawn_prover_resume(data_dir: &Path, spec: ProverSpec<'_>) -> Prover {
     let store = RunnerStore::open(data_dir.join("db"));
     // Seed the settler's watch from the restored tip's committed settlement, exactly as `start.rs`
     // does on resume, so the settler adopts the pinned covenant tip immediately.
     let seed_settlement =
         StateMetadata::last_committed::<ChainBlockMetadata, _>(&store).metadata().last_settlement;
-    spawn_prover_with_store(
-        l1,
-        label,
-        keypair,
-        address,
-        bundle_size,
-        network_id,
-        params,
-        lane_key,
-        covenant_id,
-        covenant,
-        elfs,
-        alternation,
-        start_from,
-        store,
-        seed_settlement,
-        None,
-    )
-    .await
+    spawn_prover_with_store(spec, store, seed_settlement, None).await
 }
 
 /// Wires and starts a prover over an already-opened `store`: a proving [`RunnerNode`] plus a
@@ -1947,25 +1882,28 @@ async fn spawn_prover_resume(
 /// resume); `db_dir` is the scratch dir to keep alive for the run, or `None` when the caller owns
 /// the store's data dir. Shared core of [`spawn_prover`], [`spawn_prover_persistent`], and
 /// [`spawn_prover_resume`].
-#[allow(clippy::too_many_arguments)]
 async fn spawn_prover_with_store(
-    l1: &L1Node,
-    label: &'static str,
-    keypair: Keypair,
-    address: Address,
-    bundle_size: RangeInclusive<usize>,
-    network_id: NetworkId,
-    params: &Params,
-    lane_key: Hash,
-    covenant_id: Hash,
-    covenant: CovenantState,
-    elfs: Elfs<'_>,
-    alternation: Option<(u8, Arc<AlternationPacer>)>,
-    start_from: Option<Hash>,
+    spec: ProverSpec<'_>,
     store: RunnerStore,
     seed_settlement: Option<SettlementInfo>,
     db_dir: Option<TempDir>,
 ) -> Prover {
+    let ProverSpec {
+        l1,
+        label,
+        keypair,
+        address,
+        bundle_size,
+        network_id,
+        params,
+        lane_key,
+        covenant_id,
+        covenant,
+        elfs,
+        alternation,
+        start_from,
+    } = spec;
+
     let wrpc_url = l1.wrpc_borsh_url();
     // Separate wRPC clients for the lane source and the settler so they own independent handles.
     let client_for_lane = connect_wrpc(&wrpc_url, network_id).await;
