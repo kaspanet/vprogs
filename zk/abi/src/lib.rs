@@ -40,7 +40,10 @@ pub mod batch_processor {
         pub(crate) mod batch_transition;
     }
 
-    pub use input::{batch::Batch, inputs::Inputs};
+    pub use input::{
+        batch::Batch,
+        inputs::{BatchPins, Inputs},
+    };
     pub use journal::batch_transition::{BatchTransition, BatchTransitionArgs};
     pub use verifier::Verifier;
 }

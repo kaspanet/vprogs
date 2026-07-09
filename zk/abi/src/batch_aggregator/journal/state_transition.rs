@@ -26,11 +26,10 @@ pub struct StateTransition {
     /// exits were emitted. Non-zero values cause the on-chain settlement to add a second P2SH
     /// output for permission-tree withdrawals.
     pub permission_spk_hash: [u8; 32],
-    /// `delegate_entry_spk_hash(covenant_id)` for the bundle's deposit address, or `[0u8; 32]`
-    /// when no tx credited an L1 deposit. Carried opaquely from the batch journals; the
-    /// on-chain settlement redeem script binds it (gated on non-zero) against the address
-    /// rebuilt from `OpInputCovenantId`. Adjacent to `permission_spk_hash` so the redeem
-    /// preimage matches this encode order.
+    /// The bundle's deposit address, or `[0u8; 32]` when no tx credited an L1 deposit. Carried
+    /// opaquely from the batch journals; the on-chain settlement redeem script decides (gated on
+    /// non-zero) what address this covenant accepts. Adjacent to `permission_spk_hash` so the
+    /// redeem preimage matches this encode order.
     pub deposit_spk_hash: [u8; 32],
     /// Lane key of the lane this settlement binds to.
     pub lane_key: Hash,

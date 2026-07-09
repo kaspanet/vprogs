@@ -171,9 +171,9 @@ where
 /// Folds a per-batch `deposit_spk_hash` into the bundle carry.
 ///
 /// The carry takes the first non-zero hash seen and keeps it; the zero sentinel ("no deposit")
-/// never overwrites a recorded hash. Panics on a second, differing non-zero hash: a bundle settles
-/// into one covenant, so every non-zero deposit hash in it derives from that covenant and they must
-/// all agree.
+/// never overwrites a recorded hash. Panics on a second, differing non-zero hash: the deposit
+/// address is bundle-constant, and each batch has already matched its own against the pin its
+/// prover declared.
 fn carry_deposit_hash(carry: &mut [u8; 32], batch_hash: &[u8; 32]) {
     if *batch_hash == [0u8; 32] {
         return;

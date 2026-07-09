@@ -29,7 +29,7 @@ use vprogs_scheduling_scheduler::{ExecutionConfig, Processor, Scheduler, Schedul
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_aggregate_prover::{AggregateProverConfig, ScheduledBundle, SettlementArtifact};
-use vprogs_zk_backend_risc0_api::{Backend, ProofType, Receipt};
+use vprogs_zk_backend_risc0_api::{Backend, ProofType, Receipt, delegate_entry_spk_hash};
 use vprogs_zk_backend_risc0_covenant::{
     DEFAULT_PERMISSION_OUTPUT_VALUE, Settlement, SettlementDevInput,
 };
@@ -231,7 +231,16 @@ fn build_exec(
             backend.clone(),
             store.clone(),
             state.receipt_store(),
-            BatchProverConfig { lane_key: lane, covenant_id },
+            BatchProverConfig {
+                lane_key: lane,
+                // No covenant: the batch journal commits the all-zero placeholder.
+                covenant_id: covenant_id.unwrap_or_default(),
+                // The sim credits no L1 deposits, so this pin is only ever compared against the
+                // no-deposit sentinel; derive it anyway to mirror a real deployment.
+                deposit_spk_hash: covenant_id
+                    .map(|c| delegate_entry_spk_hash(&c.as_bytes()))
+                    .unwrap_or_default(),
+            },
             AggregateProverConfig {
                 lane_key: lane,
                 covenant_id,
@@ -622,6 +631,8 @@ impl L2Driver {
         let new_state = state_for(self.confirmed.len() as u64);
 
         let settlement = Settlement::build_dev(&SettlementDevInput {
+            // The sim settles synthetic state transitions, never L1 deposits.
+            deposit_spk_hash: &[0u8; 32],
             covenant_id: cov.covenant_id,
             prev_state: &cov.state,
             prev_lane_tip: &cov.lane_tip,

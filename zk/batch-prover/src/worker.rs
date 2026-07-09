@@ -4,7 +4,7 @@ use tokio::runtime::Builder;
 use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
-use vprogs_zk_abi::batch_processor::Inputs as BatchInputs;
+use vprogs_zk_abi::batch_processor::{BatchPins, Inputs as BatchInputs};
 
 use crate::{Backend, BatchProver, BatchProverConfig, command::Command};
 
@@ -95,9 +95,14 @@ where
                     batch.tx_artifacts().map(|a| (B::journal_bytes(&a), (*a).clone())).unzip();
 
                 // Encode the inputs for the proof.
-                let covenant_id = self.config.covenant_id.map(|h| h.as_bytes()).unwrap_or_default();
+                let covenant_id = self.config.covenant_id.as_bytes();
                 let input_bytes = BatchInputs::encode(
-                    (self.backend.image_id(), &covenant_id, &self.config.lane_key),
+                    BatchPins {
+                        tx_image_id: self.backend.image_id(),
+                        covenant_id: &covenant_id,
+                        deposit_spk_hash: &self.config.deposit_spk_hash,
+                        lane_key: &self.config.lane_key,
+                    },
                     &proof_bytes,
                     batch.checkpoint().metadata(),
                     &journals,

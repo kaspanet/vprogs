@@ -30,7 +30,7 @@ use vprogs_scheduling_scheduler::{ExecutionConfig, SchedulerState};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_aggregate_prover::{AggregateProverConfig, ScheduledBundle, SettlementArtifact};
-use vprogs_zk_backend_risc0_api::{Backend, ProofType, Receipt};
+use vprogs_zk_backend_risc0_api::{Backend, ProofType, Receipt, delegate_entry_spk_hash};
 use vprogs_zk_batch_prover::{BatchProverConfig, LaneProofRequest, LaneProofSource};
 use vprogs_zk_vm::{ProvingPipeline, Vm};
 
@@ -144,7 +144,13 @@ pub fn build_proving_node(
         backend.clone(),
         store.clone(),
         state.receipt_store(),
-        BatchProverConfig { lane_key: proving.lane_key, covenant_id: Some(proving.covenant_id) },
+        BatchProverConfig {
+            lane_key: proving.lane_key,
+            covenant_id: proving.covenant_id,
+            // This example's deposit policy pays the covenant's delegate-entry address. A program
+            // that pays elsewhere declares that address here instead.
+            deposit_spk_hash: delegate_entry_spk_hash(&proving.covenant_id.as_bytes()),
+        },
         AggregateProverConfig {
             lane_key: proving.lane_key,
             covenant_id: Some(proving.covenant_id),

@@ -65,7 +65,12 @@ async fn batch_proof_two_transactions() {
     // Mine a couple of blocks so we have real block hashes to anchor metadata against.
     let block_hashes = l1.mine_blocks(2).await;
 
-    let config = BatchProverConfig { lane_key: test_lane_key(), covenant_id: None };
+    let config = BatchProverConfig {
+        lane_key: test_lane_key(),
+        covenant_id: Hash::default(),
+        // No deposits in this flow; every batch commits the no-deposit sentinel.
+        deposit_spk_hash: [0u8; 32],
+    };
 
     let proving = ProvingPipeline::batch(backend.clone(), storage.clone(), config);
     let vm = Vm::new(backend.clone(), proving);
@@ -226,7 +231,12 @@ async fn batch_proofs_chain_across_batches() {
     let l1 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
     let block_hashes = l1.mine_blocks(2).await;
 
-    let config = BatchProverConfig { lane_key: test_lane_key(), covenant_id: None };
+    let config = BatchProverConfig {
+        lane_key: test_lane_key(),
+        covenant_id: Hash::default(),
+        // No deposits in this flow; every batch commits the no-deposit sentinel.
+        deposit_spk_hash: [0u8; 32],
+    };
 
     let proving = ProvingPipeline::batch(backend.clone(), storage.clone(), config);
     let vm = Vm::new(backend.clone(), proving);

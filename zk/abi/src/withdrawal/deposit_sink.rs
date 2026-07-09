@@ -4,11 +4,12 @@ use crate::{Error, Result};
 ///
 /// The ABI constructs one of these per `process_transaction` invocation, passes it as `&mut` to the
 /// transaction handler, and reads its value into the journal's [`OutputCommitment`] after the
-/// handler returns. A tx that credits an L1 deposit calls [`set`](Self::set) with
-/// `delegate_entry_spk_hash(covenant_id)`; a non-deposit tx leaves it at the zero sentinel.
+/// handler returns. A tx that credits an L1 deposit calls [`set`](Self::set) with the address its
+/// program's deposit policy pays; a non-deposit tx leaves it at the zero sentinel.
 ///
-/// The value is bundle-constant (a bundle settles into a single covenant): the batch and bundle
-/// journals carry it without interpreting it, and the on-chain settlement redeem script binds it.
+/// The value must be bundle-constant. Nothing here interprets it: the batch and bundle journals
+/// carry it opaquely, the batch processor matches it against the pin its prover declared, and the
+/// on-chain settlement redeem script decides what address that covenant accepts.
 ///
 /// [`OutputCommitment`]: crate::transaction_processor::OutputCommitment
 pub struct DepositSink {
@@ -24,9 +25,9 @@ impl DepositSink {
 
     /// Records the deposit SPK hash for this tx.
     ///
-    /// Idempotent across repeats with the same value (every deposit in one tx pays the same
-    /// covenant-bound address). Returns `Ok` on the first set or an identical re-set, or `Err` on a
-    /// conflicting non-zero hash.
+    /// Idempotent across repeats with the same value. Returns `Ok` on the first set or an identical
+    /// re-set, or `Err` on a conflicting non-zero hash: one transaction may not credit deposits
+    /// paid to two different addresses.
     pub fn set(&mut self, hash: &[u8; 32]) -> Result<()> {
         if self.hash == [0u8; 32] {
             self.hash = *hash;

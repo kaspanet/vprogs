@@ -255,13 +255,7 @@ impl Settlement {
             input.permission_output_value,
         );
 
-        let sig_script = sig_script_dev(
-            &prev_redeem,
-            input.block_prove_to,
-            input.new_state,
-            input.new_lane_tip,
-            input.claimed_seq_commit,
-        );
+        let sig_script = sig_script_dev(&prev_redeem, input);
 
         let tx_input = TransactionInput::new(input.prev_outpoint, sig_script, 0, 1);
 
@@ -324,30 +318,29 @@ pub fn permission_spk(script_hash: &[u8; 32]) -> ScriptPublicKey {
 }
 
 /// Dev-mode sig script. Push order (bottom to top):
-/// `[claimed_seq_commit, new_lane_tip, new_state, block_prove_to, redeem]`.
+/// `[deposit_spk_hash, claimed_seq_commit, new_lane_tip, new_state, block_prove_to, redeem]`.
 ///
 /// After the P2SH check pops `redeem`, the redeem prefix pushes `prev_lane_tip` /
 /// `prev_state`, the script stashes them to alt, consumes `block_prove_to` via
 /// `OpChainblockSeqCommit`, then `OpEqualVerify`s the resulting `chain_seq_commit` against
 /// `claimed_seq_commit`. The remaining `new_state` / `new_lane_tip` feed the next-redeem
-/// prefix builder.
-fn sig_script_dev(
-    redeem: &[u8],
-    block_prove_to: Hash,
-    new_state: &[u8; 32],
-    new_lane_tip: &Hash,
-    claimed_seq_commit: Hash,
-) -> Vec<u8> {
+/// prefix builder. `deposit_spk_hash` is pushed first so it is the sole data item left once the
+/// continuation check has consumed everything above it, where `script::verify_deposit_hash` binds
+/// and drops it. Production instead threads it between the proof blob and `new_lane_tip`, since
+/// there it must surface directly under the journal preimage.
+fn sig_script_dev(redeem: &[u8], input: &SettlementDevInput<'_>) -> Vec<u8> {
     // Dev sig_script is small (no seal), but use the covenants-enabled flags for parity with
     // the production sig_script builder.
     ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
-        .add_data(claimed_seq_commit.as_slice())
+        .add_data(input.deposit_spk_hash)
         .unwrap()
-        .add_data(new_lane_tip.as_slice())
+        .add_data(input.claimed_seq_commit.as_slice())
         .unwrap()
-        .add_data(new_state)
+        .add_data(input.new_lane_tip.as_slice())
         .unwrap()
-        .add_data(block_prove_to.as_slice())
+        .add_data(input.new_state)
+        .unwrap()
+        .add_data(input.block_prove_to.as_slice())
         .unwrap()
         .add_data(redeem)
         .unwrap()
@@ -635,6 +628,7 @@ mod tests {
     #[test]
     fn dev_settlement_tx_has_single_covenant_output() {
         let input = SettlementDevInput {
+            deposit_spk_hash: &[0u8; 32],
             covenant_id: Hash::from_bytes([0xAA; 32]),
             prev_state: &[0x11; 32],
             prev_lane_tip: &Hash::from_bytes([0x22; 32]),
@@ -660,6 +654,22 @@ mod tests {
         );
         assert_ne!(settlement.prev_redeem, settlement.next_redeem);
     }
+}
+
+/// `delegate_entry_spk_hash(covenant_id)` = `blake2b(PREFIX || covenant_id || SUFFIX)`,
+/// computed via the same kaspa blake2b `pay_to_script_hash_script` uses (so it matches the
+/// on-chain `OpBlake2b` reconstruction byte-for-byte). The PREFIX/SUFFIX come from the shared
+/// abi constants the script reconstructs with.
+#[cfg(test)]
+fn delegate_entry_spk_hash(covenant_id: &Hash) -> [u8; 32] {
+    use vprogs_zk_abi::{DELEGATE_SCRIPT_PREFIX, DELEGATE_SCRIPT_SUFFIX};
+    let mut redeem = Vec::with_capacity(53);
+    redeem.extend_from_slice(&DELEGATE_SCRIPT_PREFIX);
+    redeem.extend_from_slice(&covenant_id.as_bytes());
+    redeem.extend_from_slice(&DELEGATE_SCRIPT_SUFFIX);
+    let spk = pay_to_script_hash_script(&redeem);
+    // P2SH SPK script bytes: OpBlake2b | OpData32 | hash(32) | OpEqual; hash is [2..34].
+    spk.script()[2..34].try_into().expect("32-byte P2SH hash")
 }
 
 /// Engine-level proof that the continuation-output value constraint (issue #76) is enforced
@@ -703,6 +713,9 @@ mod engine_value_spend_tests {
     }
 
     const COVENANT_ID: Hash = Hash::from_bytes([0xAA; 32]);
+    /// A different covenant id whose delegate-entry address must NOT satisfy the binding for a
+    /// spend of `COVENANT_ID`.
+    const OTHER_COVENANT_ID: Hash = Hash::from_bytes([0xBC; 32]);
     const PREV_STATE: [u8; 32] = [0x11; 32];
     const PREV_LANE_TIP: Hash = Hash::from_bytes([0x22; 32]);
     const LANE_KEY: Hash = Hash::from_bytes([0xEE; 32]);
@@ -715,7 +728,13 @@ mod engine_value_spend_tests {
     const PERMISSION_SPK_HASH: [u8; 32] = [0x77; 32];
 
     fn dev_settlement() -> Settlement {
+        dev_settlement_with_deposit(&[0u8; 32])
+    }
+
+    /// Count==1 dev settlement whose sig_script witnesses `deposit_spk_hash`.
+    fn dev_settlement_with_deposit(deposit_spk_hash: &[u8; 32]) -> Settlement {
         let input = SettlementDevInput {
+            deposit_spk_hash,
             covenant_id: COVENANT_ID,
             prev_state: &PREV_STATE,
             prev_lane_tip: &PREV_LANE_TIP,
@@ -737,6 +756,7 @@ mod engine_value_spend_tests {
     fn dev_settlement_with_exits() -> Settlement {
         let value = 10 * DEFAULT_PERMISSION_OUTPUT_VALUE;
         let input = SettlementDevInput {
+            deposit_spk_hash: &[0u8; 32],
             covenant_id: COVENANT_ID,
             prev_state: &PREV_STATE,
             prev_lane_tip: &PREV_LANE_TIP,
@@ -956,6 +976,43 @@ mod engine_value_spend_tests {
         run_engine(&settlement.transaction, &settlement.prev_redeem, value, &accessor())
             .expect("baseline honest two-output tx must verify");
     }
+
+    /// A deposit commitment naming the spent covenant's own delegate-entry address passes the
+    /// binding. The dev script has no terminal precompile, so this reaches `OpTrue` and verifies
+    /// outright, which is what makes the rejection below attributable to the binding rather than to
+    /// structure.
+    #[test]
+    fn dev_deposit_hash_matching_the_covenant_verifies() {
+        let settlement = dev_settlement_with_deposit(&delegate_entry_spk_hash(&COVENANT_ID));
+        run_engine(&settlement.transaction, &settlement.prev_redeem, COVENANT_VALUE, &accessor())
+            .expect("deposit hash derived from the spent covenant must verify");
+    }
+
+    /// A commitment derived from a covenant other than the spent one is rejected, matching the
+    /// production gate.
+    #[test]
+    fn dev_deposit_hash_from_another_covenant_rejected() {
+        let settlement = dev_settlement_with_deposit(&delegate_entry_spk_hash(&OTHER_COVENANT_ID));
+        let result = run_engine(
+            &settlement.transaction,
+            &settlement.prev_redeem,
+            COVENANT_VALUE,
+            &accessor(),
+        );
+        assert!(
+            result.is_err(),
+            "a deposit hash derived from a covenant other than the spent one must be rejected",
+        );
+    }
+
+    /// The `[0; 32]` no-deposit sentinel skips the reconstruction, so bundles that credited no
+    /// deposit still settle. Pins the binding as conditional rather than mandatory.
+    #[test]
+    fn dev_zero_deposit_sentinel_skips_the_binding() {
+        let settlement = dev_settlement();
+        run_engine(&settlement.transaction, &settlement.prev_redeem, COVENANT_VALUE, &accessor())
+            .expect("the no-deposit sentinel must skip the binding and verify");
+    }
 }
 
 /// Engine-level proof of the on-chain deposit-address binding (the tier-4 half of the
@@ -1011,21 +1068,6 @@ mod engine_deposit_binding_tests {
     const BLOCK_PROVE_TO: Hash = Hash::from_bytes([0x55; 32]);
     const SEQ_COMMIT: Hash = Hash::from_bytes([0x99; 32]);
     const COVENANT_VALUE: u64 = 100_000_000;
-
-    /// `delegate_entry_spk_hash(covenant_id)` = `blake2b(PREFIX || covenant_id || SUFFIX)`,
-    /// computed via the same kaspa blake2b `pay_to_script_hash_script` uses (so it matches the
-    /// on-chain `OpBlake2b` reconstruction byte-for-byte). The PREFIX/SUFFIX come from the shared
-    /// abi constants the script reconstructs with.
-    fn delegate_entry_spk_hash(covenant_id: &Hash) -> [u8; 32] {
-        use vprogs_zk_abi::{DELEGATE_SCRIPT_PREFIX, DELEGATE_SCRIPT_SUFFIX};
-        let mut redeem = Vec::with_capacity(53);
-        redeem.extend_from_slice(&DELEGATE_SCRIPT_PREFIX);
-        redeem.extend_from_slice(&covenant_id.as_bytes());
-        redeem.extend_from_slice(&DELEGATE_SCRIPT_SUFFIX);
-        let spk = pay_to_script_hash_script(&redeem);
-        // P2SH SPK script bytes: OpBlake2b | OpData32 | hash(32) | OpEqual; hash is [2..34].
-        spk.script()[2..34].try_into().expect("32-byte P2SH hash")
-    }
 
     fn succinct_pins() -> RedeemPins<'static> {
         RedeemPins::Succinct(SuccinctPins {

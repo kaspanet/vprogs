@@ -199,6 +199,7 @@ pub fn build_dev_settlement(
     );
 
     let settlement = Settlement::build_dev(&SettlementDevInput {
+        deposit_spk_hash: &artifact.deposit_spk_hash,
         covenant_id: cov.covenant_id,
         prev_state: &artifact.prev_state,
         prev_lane_tip: &artifact.prev_lane_tip,

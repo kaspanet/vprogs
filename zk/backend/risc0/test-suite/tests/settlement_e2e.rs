@@ -232,7 +232,12 @@ async fn batch_proof_is_directly_settleable_single_batch() {
     let l1 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
     let block_hashes = l1.mine_blocks(1).await;
 
-    let config = BatchProverConfig { lane_key: test_lane_key(), covenant_id: None };
+    let config = BatchProverConfig {
+        lane_key: test_lane_key(),
+        covenant_id: Hash::default(),
+        // No deposits in this flow; every batch commits the no-deposit sentinel.
+        deposit_spk_hash: [0u8; 32],
+    };
 
     let proving = ProvingPipeline::batch(backend.clone(), storage.clone(), config);
     let vm = Vm::new(backend.clone(), proving);
@@ -407,7 +412,12 @@ async fn batch_proof_groth16_is_directly_settleable_single_batch() {
     let l1 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
     let block_hashes = l1.mine_blocks(1).await;
 
-    let config = BatchProverConfig { lane_key: test_lane_key(), covenant_id: None };
+    let config = BatchProverConfig {
+        lane_key: test_lane_key(),
+        covenant_id: Hash::default(),
+        // No deposits in this flow; every batch commits the no-deposit sentinel.
+        deposit_spk_hash: [0u8; 32],
+    };
 
     let proving = ProvingPipeline::batch(backend.clone(), storage.clone(), config);
     let vm = Vm::new(backend.clone(), proving);
@@ -567,7 +577,12 @@ async fn batch_proof_bundles_two_batches() {
     let l1 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
     let block_hashes = l1.mine_blocks(2).await;
 
-    let config = BatchProverConfig { lane_key: test_lane_key(), covenant_id: None };
+    let config = BatchProverConfig {
+        lane_key: test_lane_key(),
+        covenant_id: Hash::default(),
+        // No deposits in this flow; every batch commits the no-deposit sentinel.
+        deposit_spk_hash: [0u8; 32],
+    };
 
     let proving = ProvingPipeline::batch(backend.clone(), storage.clone(), config);
     let vm = Vm::new(backend.clone(), proving);
@@ -754,7 +769,12 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
     let l1 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
     let block_hashes = l1.mine_blocks(2).await;
 
-    let config = BatchProverConfig { lane_key: test_lane_key(), covenant_id: None };
+    let config = BatchProverConfig {
+        lane_key: test_lane_key(),
+        covenant_id: Hash::default(),
+        // No deposits in this flow; every batch commits the no-deposit sentinel.
+        deposit_spk_hash: [0u8; 32],
+    };
 
     let proving = ProvingPipeline::batch(backend.clone(), storage.clone(), config);
     let vm = Vm::new(backend.clone(), proving);

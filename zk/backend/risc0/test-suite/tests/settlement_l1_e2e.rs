@@ -528,6 +528,9 @@ async fn run_one_dev_settlement(step: DevSettlementStep<'_>) -> DevSettlementOut
     let new_lane_tip = chain_seq_commit;
     let lane_key = test_lane_key();
     let settlement = Settlement::build_dev(&SettlementDevInput {
+        // This flow credits no L1 deposit, so the bundle carries the no-deposit sentinel and the
+        // dev script's deposit binding is skipped.
+        deposit_spk_hash: &[0u8; 32],
         covenant_id,
         prev_state: &prev_state,
         prev_lane_tip: &prev_lane_tip,
@@ -756,7 +759,12 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
     // scheduler advances per committed batch.
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-    let proving_config = BatchProverConfig { lane_key, covenant_id: Some(covenant_id) };
+    let proving_config = BatchProverConfig {
+        lane_key,
+        covenant_id,
+        // No deposits in this flow; every batch commits the no-deposit sentinel.
+        deposit_spk_hash: [0u8; 32],
+    };
     let proving = ProvingPipeline::batch(backend.clone(), storage.clone(), proving_config);
     let vm = Vm::new(backend.clone(), proving);
     let mut scheduler = Scheduler::new(

@@ -13,13 +13,11 @@
 //! the binding lives in committed state (its bytes hash into the resource
 //! commitment and the SMT state root).
 //!
-//! Follow-ups (not in this unit):
-//! - Batch-tier soundness: assert `config.covenant_id == settlement covenant_id` so the L2 deposit
-//!   address provably equals the on-chain covenant. Tracked as Unit 2 (batch processor /
-//!   aggregator); not touched here.
-//! - Anti-double-count: an input-0 sig-script-suffix guard preventing one funding UTXO from
-//!   crediting more than once across batches.
-//! - The withdrawal-claim builder that spends a credited delegate UTXO.
+//! A funding output is named by `(tx_id, output_idx)` of the crediting transaction itself, so it
+//! credits at most once: `consumed_outputs` dedups `output_idx` within the transaction, and the
+//! transaction enters the lane's activity digest exactly once. Replaying it in a second batch
+//! changes that batch's `activity_digest`, hence `new_lane_tip` and the bundle's `new_seq_commit`,
+//! which the settlement script equates to `OpChainblockSeqCommit(block_prove_to)`.
 
 use vprogs_zk_abi::withdrawal::{ScriptBytes, StandardSpk};
 use vprogs_zk_backend_risc0_api::delegate_entry_spk_hash;
