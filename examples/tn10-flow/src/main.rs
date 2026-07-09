@@ -54,7 +54,9 @@ async fn main() {
 
     // The runner builds and starts the node (kept alive until we return) and, in settlement mode,
     // bootstraps the covenant and spawns the settler.
-    let handles = start_runner(&cfg.runner, &client, &params, elfs)
+    // The counter `transaction-processor` credits no L1 deposits, so every batch commits the
+    // no-deposit sentinel.
+    let handles = start_runner(&cfg.runner, &client, &params, elfs, |_| [0u8; 32])
         .await
         .unwrap_or_else(|e| panic!("runner start failed: {e}"));
 

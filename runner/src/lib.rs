@@ -26,8 +26,8 @@ mod wrpc;
 pub use config::{ConfigError, OwnedElfs, RawConfig, RunnerConfig, StartMode, parse_network};
 use kaspa_consensus_core::config::params::Params;
 pub use node::{
-    BridgeObservers, BridgeParams, Elfs, ProvingParams, RunnerNode, RunnerStore, RunnerVm,
-    SettlementQueue, build_exec_node, build_proving_node,
+    BridgeObservers, BridgeParams, CovenantIdBytes, DepositSpkHash, Elfs, ProvingParams,
+    RunnerNode, RunnerStore, RunnerVm, SettlementQueue, build_exec_node, build_proving_node,
 };
 pub use persistence::PersistedState;
 pub use start::{RunnerHandles, StartError, start_runner};
@@ -45,7 +45,10 @@ pub async fn run(config: RunnerConfig) -> Result<RunnerHandles, RunError> {
     // Network params, used off-chain only for mass calculation and lane-key derivation; never
     // pushed to the node (the remote node runs its own params, with the covenant forks active).
     let params = Params::from(config.network_id);
-    let handles = start_runner(&config, &client, &params, elfs.as_elfs()).await?;
+    // The CLI runs an arbitrary program ELF and cannot know its deposit policy, so it declares the
+    // no-deposit sentinel. A deposit-crediting program calls `start_runner` directly with its own
+    // derivation.
+    let handles = start_runner(&config, &client, &params, elfs.as_elfs(), |_| [0u8; 32]).await?;
     Ok(handles)
 }
 

@@ -31,8 +31,8 @@ use vprogs_zk_backend_risc0_test_suite::dev_mode_enabled;
 use crate::{
     config::{RunnerConfig, StartMode},
     node::{
-        BridgeObservers, BridgeParams, Elfs, ProvingParams, RunnerNode, RunnerStore,
-        SettlementQueue, build_exec_node, build_proving_node,
+        BridgeObservers, BridgeParams, CovenantIdBytes, DepositSpkHash, Elfs, ProvingParams,
+        RunnerNode, RunnerStore, SettlementQueue, build_exec_node, build_proving_node,
     },
     persistence::PersistedState,
     report::spawn_sync_reporter,
@@ -87,8 +87,9 @@ fn effective_mode(cfg: &RunnerConfig, persisted: &PersistedState) -> StartMode {
 }
 
 /// The resolved start-up inputs a node builder needs: the config, the connected client, the prover
-/// identity, the lane wiring, the guest ELFs, the start mode, and the mutable persisted state.
-struct StartContext<'a> {
+/// identity, the lane wiring, the guest ELFs, the deposit-address derivation, the start mode, and
+/// the mutable persisted state.
+struct StartContext<'a, F> {
     /// Resolved runner configuration.
     cfg: &'a RunnerConfig,
     /// Connected wRPC client for the remote node.
@@ -103,6 +104,8 @@ struct StartContext<'a> {
     lane_key: Hash,
     /// Guest ELF images the backend pins.
     elfs: Elfs<'a>,
+    /// The program's deposit-address derivation, applied once to the resolved covenant id.
+    deposit_spk_hash: F,
     /// Resolved start mode: fresh bootstrap, resume, or catch-up.
     mode: StartMode,
     /// Persisted identity and bootstrap anchors, updated as start-up resolves them.
@@ -111,12 +114,31 @@ struct StartContext<'a> {
 
 /// Connect-and-run: resolve identity + start mode, build the node and (in prove mode) the settler.
 /// Does not issue any action/activity transactions and does not block; the caller owns the handles.
-pub async fn start_runner(
+///
+/// `deposit_spk_hash` maps the covenant id this node settles onto the deposit address the program's
+/// policy requires; a program that credits no L1 deposits returns `[0u8; 32]`. It is applied once,
+/// after the covenant is resolved, and only when `cfg.prove` is set. A fresh node mints its
+/// covenant during this call, so the address cannot be supplied as a ready value.
+// `FnOnce` rather than a plain `fn` so a policy can capture what it needs (a treasury key, a config
+// handle) instead of deriving everything from the covenant id.
+//
+// Three ways a wrong derivation escapes start-up:
+//
+// - `start_exec` drops it unused, so a wrong one stays invisible until the node runs in prove mode.
+// - It is not validated here. Every depositing transaction commits its own address, and the batch
+//   circuit aborts on the mismatch, leaving the bundle unprovable and the covenant stuck.
+// - `[0u8; 32]` is the no-deposit sentinel, not a default. The circuit skips its carry check on it,
+//   so a deposit-crediting program that returns zero looks healthy until the first deposit lands.
+pub async fn start_runner<F>(
     cfg: &RunnerConfig,
     client: &KaspaRpcClient,
     params: &Params,
     elfs: Elfs<'_>,
-) -> Result<RunnerHandles, StartError> {
+    deposit_spk_hash: F,
+) -> Result<RunnerHandles, StartError>
+where
+    F: FnOnce(&CovenantIdBytes) -> DepositSpkHash,
+{
     let keypair = Keypair::from_secret_key(secp256k1::SECP256K1, &cfg.private_key);
 
     // --- resolve lane id: storage > config > random ---
@@ -136,6 +158,7 @@ pub async fn start_runner(
         lane_subnet,
         lane_key,
         elfs,
+        deposit_spk_hash,
         mode,
         persisted: &mut persisted,
     };
@@ -150,9 +173,20 @@ pub async fn start_runner(
 
 /// Builds the execution-only node: resolve or dev-bootstrap a covenant per the start mode, then a
 /// `Node` with no proving. The bridge tracks the covenant's settlements; nothing here settles.
-async fn start_exec(ctx: StartContext<'_>) -> Result<(RunnerNode, Hash), StartError> {
-    let StartContext { cfg, client, params, keypair, lane_subnet, lane_key, elfs, mode, persisted } =
-        ctx;
+async fn start_exec<F>(ctx: StartContext<'_, F>) -> Result<(RunnerNode, Hash), StartError> {
+    // Exec mode runs no prover, so the deposit-address derivation is dropped unused.
+    let StartContext {
+        cfg,
+        client,
+        params,
+        keypair,
+        lane_subnet,
+        lane_key,
+        elfs,
+        deposit_spk_hash: _,
+        mode,
+        persisted,
+    } = ctx;
 
     // Resolve the covenant id and the seed block per mode. `seed` is the L1 block the bridge
     // rebuilds decoded state forward from; a catch-up that seeds only `seed_depth` below the
@@ -228,11 +262,24 @@ async fn start_exec(ctx: StartContext<'_>) -> Result<(RunnerNode, Hash), StartEr
 /// `RISC0_DEV_MODE`, real-pins otherwise), resume from persisted identity, or catch up to an
 /// existing covenant (reconstructing its initial state). Wires the batch prover over the remote
 /// node and spawns the settler on the node's batch sink.
-async fn start_settlement(
-    ctx: StartContext<'_>,
-) -> Result<(RunnerNode, (JoinHandle<()>, AtomicAsyncLatch), Hash), StartError> {
-    let StartContext { cfg, client, params, keypair, lane_subnet, lane_key, elfs, mode, persisted } =
-        ctx;
+async fn start_settlement<F>(
+    ctx: StartContext<'_, F>,
+) -> Result<(RunnerNode, (JoinHandle<()>, AtomicAsyncLatch), Hash), StartError>
+where
+    F: FnOnce(&CovenantIdBytes) -> DepositSpkHash,
+{
+    let StartContext {
+        cfg,
+        client,
+        params,
+        keypair,
+        lane_subnet,
+        lane_key,
+        elfs,
+        deposit_spk_hash,
+        mode,
+        persisted,
+    } = ctx;
 
     let backend = Backend::new(elfs.program, elfs.batch, elfs.aggregator, ProofType::Succinct);
     let wallet = Wallet::new(client, params, keypair);
@@ -382,6 +429,9 @@ async fn start_settlement(
         ),
         ProvingParams {
             covenant_id,
+            // Bind the pin to the covenant this node actually settles: minted just above in fresh
+            // mode, read from persisted state or config otherwise.
+            deposit_spk_hash: deposit_spk_hash(&covenant_id.as_bytes()),
             lane_key,
             client: client.clone(),
             sink: queue.clone(),

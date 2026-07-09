@@ -130,19 +130,6 @@ pub fn batch_processor_elf() -> Vec<u8> {
     })
 }
 
-/// Loads the pre-built runtime-processor ELF from the repository. This is the account-model guest
-/// (Init/Deposit/Transfer/Withdraw) the `tn10-runtime` example drives.
-pub fn runtime_processor_elf() -> Vec<u8> {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let elf_path = format!("{manifest_dir}/../runtime-processor/compiled/program.elf");
-    std::fs::read(&elf_path).unwrap_or_else(|e| {
-        panic!(
-            "runtime processor ELF not found at {elf_path}: {e}\n\
-             Run `./zk/backend/risc0/build-guests.sh runtime-processor` to rebuild it."
-        )
-    })
-}
-
 /// Loads the pre-built batch aggregator ELF from the repository.
 pub fn batch_aggregator_elf() -> Vec<u8> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");

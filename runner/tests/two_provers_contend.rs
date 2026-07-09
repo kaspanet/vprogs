@@ -1562,6 +1562,9 @@ async fn spawn_prover(
         },
         ProvingParams {
             covenant_id,
+            // The counter `transaction-processor` credits no L1 deposits, so every batch carries
+            // the no-deposit sentinel.
+            deposit_spk_hash: [0u8; 32],
             lane_key,
             client: client_for_lane,
             sink: queue.clone(),

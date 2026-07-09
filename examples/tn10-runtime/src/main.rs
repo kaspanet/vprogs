@@ -36,6 +36,7 @@ use vprogs_example_tn10_runtime::{
 use vprogs_l1_wallet::Wallet;
 use vprogs_runner::{Elfs, connect_wrpc, start_runner};
 use vprogs_zk_abi::withdrawal::StandardSpk;
+use vprogs_zk_backend_risc0_api::delegate_entry_spk_hash;
 use vprogs_zk_backend_risc0_test_suite::{
     batch_aggregator_elf, batch_processor_elf, runtime_processor_elf,
 };
@@ -70,7 +71,8 @@ async fn main() {
     let aggregator_elf = batch_aggregator_elf();
     let elfs = Elfs { program: &program_elf, batch: &batch_elf, aggregator: &aggregator_elf };
 
-    let handles = start_runner(&cfg.runner, &client, &params, elfs)
+    // The runner pins this program's deposit address on every batch once it resolves the covenant.
+    let handles = start_runner(&cfg.runner, &client, &params, elfs, delegate_entry_spk_hash)
         .await
         .unwrap_or_else(|e| panic!("runner start failed: {e}"));
 

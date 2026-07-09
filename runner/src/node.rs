@@ -92,11 +92,28 @@ pub struct BridgeParams {
     pub observers: BridgeObservers,
 }
 
+/// Raw 32 bytes of a covenant id, the form the guest and the covenant script commit to. Input to a
+/// program's deposit-address derivation.
+pub type CovenantIdBytes = [u8; 32];
+
+/// Script hash of the deposit address a depositing transaction must pay, or `[0u8; 32]` when the
+/// program credits no L1 deposits. Output of a program's deposit-address derivation, and the pin
+/// every batch in the bundle declares.
+// The batch circuit skips its carry check on the `[0u8; 32]` sentinel, and aborts when a non-zero
+// carry disagrees with the pin.
+//
+// This and `CovenantIdBytes` are both `[u8; 32]`, so they name roles rather than enforce them:
+// passing a covenant id where a pin belongs compiles, and only fails at proving time.
+pub type DepositSpkHash = [u8; 32];
+
 /// Extra wiring the proving + settlement node needs on top of [`BridgeParams`].
 pub struct ProvingParams {
     /// Live covenant id bound into every per-batch journal (the on-chain script rejects the zero
     /// placeholder).
     pub covenant_id: Hash,
+    /// Deposit address every depositing transaction in the bundle must have committed, already
+    /// resolved against [`Self::covenant_id`].
+    pub deposit_spk_hash: DepositSpkHash,
     /// Lane key the guest commits and the covenant SPK pins.
     pub lane_key: Hash,
     /// wRPC client the aggregate prover's lane source fetches each bundle's final-block lane proof
@@ -145,7 +162,11 @@ pub fn build_proving_node(
         backend.clone(),
         store.clone(),
         state.receipt_store(),
-        BatchProverConfig { lane_key: proving.lane_key, covenant_id: Some(proving.covenant_id) },
+        BatchProverConfig {
+            lane_key: proving.lane_key,
+            covenant_id: proving.covenant_id,
+            deposit_spk_hash: proving.deposit_spk_hash,
+        },
         AggregateProverConfig {
             lane_key: proving.lane_key,
             covenant_id: Some(proving.covenant_id),
