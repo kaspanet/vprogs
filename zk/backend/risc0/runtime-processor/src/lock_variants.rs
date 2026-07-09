@@ -66,10 +66,32 @@ impl<'a> Lock<'a> for SchnorrLockView<'a> {
 /// Hard cap on multisig list size; bounds wire size and pre-allocated state.
 pub const MULTISIG_MAX_PUBKEYS: u8 = 16;
 
+/// Validates a decoded multisig header and its trailing `pubkeys` blob against the well-formed body
+/// shape documented on [`MultisigLockView`].
+pub(crate) fn validate_multisig_fields(
+    threshold: u8,
+    n_pubkeys: u8,
+    pubkeys: &[u8],
+) -> Result<(), &'static str> {
+    if threshold == 0 || n_pubkeys == 0 || threshold > n_pubkeys || n_pubkeys > MULTISIG_MAX_PUBKEYS
+    {
+        return Err("lock.multisig: invalid threshold/n_pubkeys");
+    }
+    let (keys, rem) = pubkeys.as_chunks::<32>();
+    if !rem.is_empty() || keys.len() != usize::from(n_pubkeys) {
+        return Err("lock.multisig: body length doesn't match n_pubkeys");
+    }
+    if !is_strictly_ascending(keys) {
+        return Err("lock.multisig: pubkeys not strictly ascending");
+    }
+    Ok(())
+}
+
 /// M-of-N Schnorr-keys lock. Body: `u8 threshold || u8 n_pubkeys || [u8; 32 * n_pubkeys]`.
 ///
-/// Decoder enforces:
+/// A well-formed body satisfies:
 /// - `1 <= threshold <= n_pubkeys <= MULTISIG_MAX_PUBKEYS`
+/// - `pubkeys` is exactly `n_pubkeys * 32` bytes.
 /// - Pubkeys in strictly-ascending lex order (canonicality + implicit dedup).
 #[derive(Copy, Clone)]
 pub struct MultisigLockView<'a> {
@@ -99,23 +121,10 @@ impl<'a> Lock<'a> for MultisigLockView<'a> {
     fn decode(buf: &mut &'a [u8]) -> CodecResult<Self> {
         let threshold = buf.byte("lock.multisig.threshold")?;
         let n_pubkeys = buf.byte("lock.multisig.n_pubkeys")?;
-        if threshold == 0
-            || n_pubkeys == 0
-            || threshold > n_pubkeys
-            || n_pubkeys > MULTISIG_MAX_PUBKEYS
-        {
-            return Err(Error::Decode("lock.multisig: invalid threshold/n_pubkeys"));
-        }
-        let pubkeys = buf.bytes((n_pubkeys as usize) * 32, "lock.multisig.pubkeys")?;
-        let mut prev: Option<&[u8]> = None;
-        for chunk in pubkeys.chunks_exact(32) {
-            if let Some(p) = prev {
-                if p >= chunk {
-                    return Err(Error::Decode("lock.multisig: pubkeys not strictly ascending"));
-                }
-            }
-            prev = Some(chunk);
-        }
+        // `n_pubkeys` sizes the read before the cap is checked; it is a `u8`, so the read borrows
+        // at most 8 KiB of `buf` and a short buffer surfaces as a decode error.
+        let pubkeys = buf.bytes(usize::from(n_pubkeys) * 32, "lock.multisig.pubkeys")?;
+        validate_multisig_fields(threshold, n_pubkeys, pubkeys).map_err(Error::Decode)?;
         Ok(Self { threshold, pubkeys })
     }
 

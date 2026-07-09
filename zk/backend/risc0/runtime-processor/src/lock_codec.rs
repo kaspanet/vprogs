@@ -10,7 +10,9 @@
 use crate::{
     lock::LockEnum,
     lock_trait::Lock,
-    lock_variants::{MULTISIG_MAX_PUBKEYS, MultisigLockView, SchnorrLockView, UnlockedLockView},
+    lock_variants::{
+        MultisigLockView, SchnorrLockView, UnlockedLockView, validate_multisig_fields,
+    },
 };
 
 /// Validates `body` against the shape implied by `tag`. Returns `Ok(())` if
@@ -24,28 +26,10 @@ pub fn validate_lock_body(tag: u8, body: &[u8]) -> Result<(), &'static str> {
             Ok(())
         }
         MultisigLockView::TAG => {
-            if body.len() < 2 {
+            let [threshold, n_pubkeys, pubkeys @ ..] = body else {
                 return Err("lock.multisig: body too short");
-            }
-            let threshold = body[0];
-            let n = body[1];
-            if threshold == 0 || n == 0 || threshold > n || n > MULTISIG_MAX_PUBKEYS {
-                return Err("lock.multisig: invalid threshold/n_pubkeys");
-            }
-            if body.len() != 2 + (n as usize) * 32 {
-                return Err("lock.multisig: body length doesn't match n_pubkeys");
-            }
-            let pubkeys = &body[2..];
-            let mut prev: Option<&[u8]> = None;
-            for chunk in pubkeys.chunks_exact(32) {
-                if let Some(p) = prev {
-                    if p >= chunk {
-                        return Err("lock.multisig: pubkeys not strictly ascending");
-                    }
-                }
-                prev = Some(chunk);
-            }
-            Ok(())
+            };
+            validate_multisig_fields(*threshold, *n_pubkeys, pubkeys)
         }
         UnlockedLockView::TAG => {
             if !body.is_empty() {
@@ -79,9 +63,10 @@ pub(crate) fn decode_lock_body_unchecked<'a>(tag: u8, body: &'a [u8]) -> LockEnu
             LockEnum::Schnorr(SchnorrLockView { pubkey })
         }
         MultisigLockView::TAG => {
-            let threshold = body[0];
-            let pubkeys = &body[2..];
-            LockEnum::Multisig(MultisigLockView { threshold, pubkeys })
+            let [threshold, _n_pubkeys, pubkeys @ ..] = body else {
+                panic!("lock.multisig: body validated")
+            };
+            LockEnum::Multisig(MultisigLockView { threshold: *threshold, pubkeys })
         }
         UnlockedLockView::TAG => LockEnum::Unlocked(UnlockedLockView),
         _ => panic!("lock: tag validated"),
@@ -90,6 +75,8 @@ pub(crate) fn decode_lock_body_unchecked<'a>(tag: u8, body: &'a [u8]) -> LockEnu
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
+
     use super::*;
 
     #[test]
@@ -103,6 +90,46 @@ mod tests {
     #[test]
     fn decode_lock_body_rejects_unknown_tag() {
         assert_eq!(decode_lock_body(0xff, &[]).err(), Some("lock: unknown tag"));
+    }
+
+    #[test]
+    fn slice_validator_and_cursor_decoder_agree_on_multisig_bodies() {
+        fn key(b: u8) -> [u8; 32] {
+            [b; 32]
+        }
+        fn body(threshold: u8, n_pubkeys: u8, keys: &[[u8; 32]]) -> Vec<u8> {
+            let mut v = alloc::vec![threshold, n_pubkeys];
+            for k in keys {
+                v.extend_from_slice(k);
+            }
+            v
+        }
+
+        let over_cap: Vec<[u8; 32]> = (1..=17).map(key).collect();
+        let mut trailing_byte = body(1, 1, &[key(1)]);
+        trailing_byte.push(0);
+
+        let cases = [
+            body(1, 1, &[key(1)]),                 // 1-of-1
+            body(2, 3, &[key(1), key(2), key(3)]), // 2-of-3
+            body(0, 1, &[key(1)]),                 // threshold zero
+            body(2, 1, &[key(1)]),                 // threshold above n_pubkeys
+            body(1, 17, &over_cap),                // n_pubkeys above the cap
+            body(1, 2, &[key(1)]),                 // length disagrees with n_pubkeys
+            body(2, 2, &[key(2), key(1)]),         // pubkeys descending
+            body(2, 2, &[key(1), key(1)]),         // duplicate pubkey
+            alloc::vec![1u8],                      // header truncated
+            trailing_byte,                         // body followed by an extra byte
+        ];
+
+        // Both readers share one validator; this pins them together so a rule re-inlined into only
+        // one of them shows up as a disagreement rather than a silent divergence.
+        for case in &cases {
+            let via_slice = validate_lock_body(MultisigLockView::TAG, case).is_ok();
+            let mut buf: &[u8] = case;
+            let via_cursor = MultisigLockView::decode(&mut buf).is_ok() && buf.is_empty();
+            assert_eq!(via_slice, via_cursor, "readers disagree on body {case:?}");
+        }
     }
 
     #[test]
