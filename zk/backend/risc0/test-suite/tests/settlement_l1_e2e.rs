@@ -103,8 +103,11 @@ async fn settlement_lands_in_real_block_succinct() {
                 },
             })
         },
-        make_witness: |receipt| {
-            RealProofWitness::Succinct(OwnedSuccinctWitness::from_receipt(receipt))
+        make_witness: |receipt, deposit_spk_hash| {
+            RealProofWitness::Succinct(OwnedSuccinctWitness::from_receipt(
+                receipt,
+                deposit_spk_hash,
+            ))
         },
         // OpZkPrecompile alone burns ~2500 budget units for the succinct precompile; ship
         // 10_000 for headroom.
@@ -151,8 +154,8 @@ async fn settlement_lands_in_real_block_groth16() {
                 },
             })
         },
-        make_witness: |receipt| {
-            RealProofWitness::Groth16(OwnedGroth16Witness::from_receipt(receipt))
+        make_witness: |receipt, deposit_spk_hash| {
+            RealProofWitness::Groth16(OwnedGroth16Witness::from_receipt(receipt, deposit_spk_hash))
         },
         // Groth16 precompile is cheaper than succinct (~1000*140 gram units per
         // `ZkTag::cost`); 10_000 is still ample headroom.
@@ -618,16 +621,6 @@ impl RealProofWitness {
             Self::Groth16(w) => w.as_witness(),
         }
     }
-
-    /// Threads the bundle's `deposit_spk_hash` (from the settlement journal) into the inner owned
-    /// witness. `make_witness` only sees the receipt, which does not carry this value, so the
-    /// caller sets it from the parsed journal before building.
-    fn with_deposit_spk_hash(self, deposit_spk_hash: [u8; 32]) -> Self {
-        match self {
-            Self::Succinct(w) => Self::Succinct(w.with_deposit_spk_hash(deposit_spk_hash)),
-            Self::Groth16(w) => Self::Groth16(w.with_deposit_spk_hash(deposit_spk_hash)),
-        }
-    }
 }
 
 /// Image-id pair the `build_pins` callback receives. Carries named fields so call sites
@@ -646,7 +639,7 @@ struct BuildPinsArgs<'a> {
 struct RealProofConfig<BuildPins, MakeWitness>
 where
     BuildPins: for<'a> Fn(BuildPinsArgs<'a>) -> RedeemPins<'a>,
-    MakeWitness: Fn(&Receipt) -> RealProofWitness,
+    MakeWitness: Fn(&Receipt, [u8; 32]) -> RealProofWitness,
 {
     proof_type: ProofType,
     build_pins: BuildPins,
@@ -675,7 +668,7 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
     config: RealProofConfig<BuildPins, MakeWitness>,
 ) where
     BuildPins: for<'a> Fn(BuildPinsArgs<'a>) -> RedeemPins<'a>,
-    MakeWitness: Fn(&Receipt) -> RealProofWitness,
+    MakeWitness: Fn(&Receipt, [u8; 32]) -> RealProofWitness,
 {
     use tempfile::TempDir;
     use vprogs_scheduling_scheduler::ExecutionConfig;
@@ -881,7 +874,7 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
 struct SettlementStep<'a, BuildPins, MakeWitness>
 where
     BuildPins: for<'b> Fn(BuildPinsArgs<'b>) -> RedeemPins<'b>,
-    MakeWitness: Fn(&Receipt) -> RealProofWitness,
+    MakeWitness: Fn(&Receipt, [u8; 32]) -> RealProofWitness,
 {
     l1: &'a L1Node,
     scheduler:
@@ -922,7 +915,7 @@ async fn run_one_settlement<BuildPins, MakeWitness>(
 ) -> SettlementOutcome
 where
     BuildPins: for<'b> Fn(BuildPinsArgs<'b>) -> RedeemPins<'b>,
-    MakeWitness: Fn(&Receipt) -> RealProofWitness,
+    MakeWitness: Fn(&Receipt, [u8; 32]) -> RealProofWitness,
 {
     use vprogs_core_codec::Reader;
     use vprogs_zk_abi::batch_aggregator::StateTransition;
@@ -1060,8 +1053,7 @@ where
     );
 
     // === c. build production settlement with the real witness ===
-    let owned_witness =
-        (config.make_witness)(&settlement_receipt).with_deposit_spk_hash(parsed.deposit_spk_hash);
+    let owned_witness = (config.make_witness)(&settlement_receipt, parsed.deposit_spk_hash);
     let settlement = Settlement::build(&SettlementInput {
         covenant_id,
         pins: spend_pins,

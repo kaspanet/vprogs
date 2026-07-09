@@ -77,7 +77,7 @@ pub fn parse_output_at_index_v1(
 ) -> CodecResult<OutputData<'_>> {
     let mut buf = rest_preimage;
     let version = buf.le_u16("tx.version")?;
-    if version < 1 {
+    if version != 1 {
         return Err(Error::Decode("rest_preimage: unsupported tx version"));
     }
     let n_inputs = buf.le_u64("tx.n_inputs")?;

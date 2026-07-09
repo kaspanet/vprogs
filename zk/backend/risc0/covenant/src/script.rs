@@ -132,6 +132,10 @@ pub struct CommonPins<'a> {
     /// batch's `permission_spk_hash` is non-zero. Baked into the redeem script so this value is
     /// part of the covenant SPK identity; the host builder must emit exactly this value on
     /// output 1.
+    ///
+    /// Fixed for a covenant's lifetime: it lives in the redeem suffix that each spend copies
+    /// verbatim into its successor, so a per-settlement value would make the host's `next_redeem`
+    /// disagree with the script's reconstruction and fail the continuation SPK check.
     pub permission_output_value: u64,
 }
 
@@ -497,6 +501,10 @@ fn build_next_redeem_prefix(b: &mut ScriptBuilder) {
 
 /// Appends the current redeem script's suffix (everything after the first
 /// [`REDEEM_PREFIX_LEN`] bytes) to the stacked prefix, yielding the full next redeem script.
+///
+/// The suffix is taken byte-for-byte from the spending sig_script, so every pin baked into it (the
+/// image ids, [`CommonPins::permission_output_value`]) is carried forward unchanged and cannot vary
+/// per settlement.
 fn extract_redeem_suffix_and_concat(b: &mut ScriptBuilder, redeem_script_len: i64) {
     b.add_op(OpTxInputIndex).unwrap();
     b.add_op(OpTxInputIndex).unwrap();

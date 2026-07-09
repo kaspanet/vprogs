@@ -351,8 +351,8 @@ async fn batch_proof_is_directly_settleable_single_batch() {
     // bytes - the placeholder witness above would never satisfy `OpZkPrecompile`. Rebuild
     // the settlement here with the actual receipt witness and feed it to the engine.
     if !dev_mode_enabled() {
-        let owned = OwnedSuccinctWitness::from_receipt(&settlement_receipt)
-            .with_deposit_spk_hash(parsed.deposit_spk_hash);
+        let owned =
+            OwnedSuccinctWitness::from_receipt(&settlement_receipt, parsed.deposit_spk_hash);
         let real_settlement = Settlement::build(&SettlementInput {
             covenant_id: covenant_id_hash,
             pins,
@@ -526,8 +526,7 @@ async fn batch_proof_groth16_is_directly_settleable_single_batch() {
     // receipt-claim recomputation + public-inputs layout + VK push) actually verifies a real
     // seal.
     if !dev_mode_enabled() {
-        let owned = OwnedGroth16Witness::from_receipt(&settlement_receipt)
-            .with_deposit_spk_hash(parsed.deposit_spk_hash);
+        let owned = OwnedGroth16Witness::from_receipt(&settlement_receipt, parsed.deposit_spk_hash);
         let real_settlement = Settlement::build(&SettlementInput {
             covenant_id: covenant_id_hash,
             pins,
@@ -699,8 +698,8 @@ async fn batch_proof_bundles_two_batches() {
     // Run the on-chain inner-proof check on the aggregated settlement receipt's real witness
     // bytes.
     if !dev_mode_enabled() {
-        let owned = OwnedSuccinctWitness::from_receipt(&settlement_receipt)
-            .with_deposit_spk_hash(parsed.deposit_spk_hash);
+        let owned =
+            OwnedSuccinctWitness::from_receipt(&settlement_receipt, parsed.deposit_spk_hash);
         let real_settlement = Settlement::build(&SettlementInput {
             covenant_id: covenant_id_hash,
             pins,
@@ -921,8 +920,8 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
 
     // ---- cuda-mode end-to-end: run the Kaspa script engine on the count==2 settlement ----
     if !dev_mode_enabled() {
-        let owned = OwnedSuccinctWitness::from_receipt(&settlement_receipt)
-            .with_deposit_spk_hash(parsed.deposit_spk_hash);
+        let owned =
+            OwnedSuccinctWitness::from_receipt(&settlement_receipt, parsed.deposit_spk_hash);
         let real_settlement = Settlement::build(&SettlementInput {
             covenant_id: covenant_id_hash,
             pins,

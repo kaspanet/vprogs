@@ -57,20 +57,61 @@ pub fn validate_lock_body(tag: u8, body: &[u8]) -> Result<(), &'static str> {
     }
 }
 
-/// Decodes a (`tag`, `body`) pair into the matching `LockEnum` variant.
-/// Pre-condition: `validate_lock_body(tag, body)` returned `Ok(())`.
+/// Decodes a (`tag`, `body`) pair into the matching [`LockEnum`] variant, rejecting an unknown tag
+/// or a body that is not a well-formed encoding of that variant.
 pub fn decode_lock_body<'a>(tag: u8, body: &'a [u8]) -> Result<LockEnum<'a>, &'static str> {
+    validate_lock_body(tag, body)?;
+    Ok(decode_lock_body_unchecked(tag, body))
+}
+
+/// Decodes a (`tag`, `body`) pair that [`validate_lock_body`] has already accepted into the
+/// matching [`LockEnum`] variant.
+///
+/// Panics on an unknown tag or a malformed body. Callers carry the validation as a precondition, so
+/// the guest's decode path pays for the shape checks exactly once.
+// The `#[allow]` is sound only under that precondition: every in-crate caller reaches this through
+// a `from_bytes` that returned `Ok`, which validated the same (tag, body) pair.
+#[allow(clippy::expect_used, clippy::panic)]
+pub(crate) fn decode_lock_body_unchecked<'a>(tag: u8, body: &'a [u8]) -> LockEnum<'a> {
     match tag {
         SchnorrLockView::TAG => {
-            let pubkey: &[u8; 32] = body.try_into().map_err(|_| "lock.schnorr: bad len")?;
-            Ok(LockEnum::Schnorr(SchnorrLockView { pubkey }))
+            let pubkey: &[u8; 32] = body.try_into().expect("lock.schnorr: body validated");
+            LockEnum::Schnorr(SchnorrLockView { pubkey })
         }
         MultisigLockView::TAG => {
             let threshold = body[0];
             let pubkeys = &body[2..];
-            Ok(LockEnum::Multisig(MultisigLockView { threshold, pubkeys }))
+            LockEnum::Multisig(MultisigLockView { threshold, pubkeys })
         }
-        UnlockedLockView::TAG => Ok(LockEnum::Unlocked(UnlockedLockView)),
-        _ => Err("lock: unknown tag"),
+        UnlockedLockView::TAG => LockEnum::Unlocked(UnlockedLockView),
+        _ => panic!("lock: tag validated"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decode_lock_body_rejects_short_multisig_body() {
+        // Bodies the unchecked decoder would index out of bounds on.
+        for body in [[].as_slice(), [1u8].as_slice()] {
+            assert!(decode_lock_body(MultisigLockView::TAG, body).is_err());
+        }
+    }
+
+    #[test]
+    fn decode_lock_body_rejects_unknown_tag() {
+        assert_eq!(decode_lock_body(0xff, &[]).err(), Some("lock: unknown tag"));
+    }
+
+    #[test]
+    fn decode_lock_body_accepts_validated_body() {
+        let mut body = alloc::vec![1u8, 1];
+        body.extend_from_slice(&[7u8; 32]);
+        assert!(matches!(
+            decode_lock_body(MultisigLockView::TAG, &body),
+            Ok(LockEnum::Multisig(_))
+        ));
     }
 }

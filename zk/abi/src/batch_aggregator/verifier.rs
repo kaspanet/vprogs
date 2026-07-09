@@ -171,9 +171,9 @@ where
 /// Folds a per-batch `deposit_spk_hash` into the bundle carry.
 ///
 /// The carry takes the first non-zero hash seen and keeps it; the zero sentinel ("no deposit")
-/// never overwrites a recorded hash. A bundle settles into one covenant, so every non-zero deposit
-/// hash in it is the same value; a second differing non-zero hash is an inconsistency the release
-/// path carries opaquely and a debug build rejects.
+/// never overwrites a recorded hash. Panics on a second, differing non-zero hash: a bundle settles
+/// into one covenant, so every non-zero deposit hash in it derives from that covenant and they must
+/// all agree.
 fn carry_deposit_hash(carry: &mut [u8; 32], batch_hash: &[u8; 32]) {
     if *batch_hash == [0u8; 32] {
         return;
@@ -181,6 +181,6 @@ fn carry_deposit_hash(carry: &mut [u8; 32], batch_hash: &[u8; 32]) {
     if *carry == [0u8; 32] {
         *carry = *batch_hash;
     } else {
-        debug_assert_eq!(carry, batch_hash, "two distinct deposit_spk_hash values in one bundle");
+        assert_eq!(carry, batch_hash, "two distinct deposit_spk_hash values in one bundle");
     }
 }

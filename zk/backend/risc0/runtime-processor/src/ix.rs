@@ -24,10 +24,10 @@
 //! breaks the circularity of "signing over your own signature" and lets a
 //! single signature in the tail be referenced by multiple signer entries.
 //!
-//! Signers must appear sorted by `resource_idx` (non-strict; multisig allows
-//! multiple signers per resource). Within a resource no further wire ordering
-//! is enforced; `runtime::resolve_signers` post-sorts the resolved unlocker
-//! buckets by pubkey for O(log K) / O(N+M) matching.
+//! Signers carry the same bounds-checked `resource_idx` as actions, and must appear sorted by it
+//! (non-strict; multisig allows multiple signers per resource). Within a resource the wire order
+//! must be ascending by pubkey; `decode_ix` enforces the outer ordering and the lock matchers
+//! verify the inner one, so no stage re-sorts what the prover supplied.
 
 use alloc::vec::Vec;
 
@@ -124,8 +124,9 @@ pub enum ActionBody<'a> {
 
 /// Decoded `ix_data`.
 pub struct DecodedIx<'a> {
-    /// Parsed signers paired with their `resource_idx`. Sorted non-strict by
-    /// `resource_idx`. Within a resource, order is unconstrained.
+    /// Parsed signers paired with their `resource_idx`, each below `n_resources` and sorted
+    /// non-strict by it. Within a resource, decode leaves the order as supplied; the lock matchers
+    /// require it ascending by pubkey.
     pub signers: Vec<(u8, SignerEnum)>,
     pub actions: Vec<ActionView<'a>>,
     /// Byte offset within `ix_data` (NOT `payload.bytes`) where the actions
@@ -138,20 +139,22 @@ pub struct DecodedIx<'a> {
 /// section are treated as the tail and remain part of `payload.bytes` for
 /// signer offset dereferencing.
 ///
-/// `n_resources` is the count of resources declared by the transaction's
-/// `AccessMetadata`. It bounds the resource indices that actions are allowed
-/// to reference; an action with `updater_idx >= n_resources` is rejected here
-/// so callers can dispatch unconditionally.
+/// `n_resources` is the count of resources declared by the transaction's `AccessMetadata`. It
+/// bounds every resource index the stream may reference: a signer or action index `>= n_resources`
+/// is rejected here, so callers can dispatch unconditionally.
 pub fn decode_ix<'a>(orig: &'a [u8], n_resources: usize) -> CodecResult<DecodedIx<'a>> {
     let mut bytes: &'a [u8] = orig;
 
-    // Signers: enforce non-strict ascending by resource_idx during decode.
+    // Signers: enforce in-range and non-strict ascending by resource_idx during decode.
     let mut prev_resource_idx: Option<u8> = None;
     let signers = bytes.many("ix.signers", |buf: &mut &'a [u8]| {
         let entry = decode_signer(buf)?;
+        if entry.0 as usize >= n_resources {
+            return Err(Error::Decode("ix.signer: resource_idx out of range"));
+        }
         if let Some(p) = prev_resource_idx {
             if entry.0 < p {
-                return Err(Error::Decode("ix.signer: resource_idx out of order"));
+                return Err(Error::Decode("ix.signer: resource_idx not ascending"));
             }
         }
         prev_resource_idx = Some(entry.0);
@@ -266,7 +269,7 @@ mod tests {
         let mut ix = signer_section(&[(0, 0x01, schnorr_signer_body(100))]);
         ix.extend_from_slice(&empty_actions_section());
 
-        let decoded = decode_ix(&ix, 0).unwrap();
+        let decoded = decode_ix(&ix, 1).unwrap();
         assert_eq!(decoded.signers.len(), 1);
         assert_eq!(decoded.signers[0].0, 0);
         assert_eq!(decoded.actions.len(), 0);
@@ -283,7 +286,7 @@ mod tests {
         ]);
         ix.extend_from_slice(&empty_actions_section());
 
-        let decoded = decode_ix(&ix, 0).unwrap();
+        let decoded = decode_ix(&ix, 1).unwrap();
         assert_eq!(decoded.signers.len(), 2);
     }
 
@@ -295,14 +298,23 @@ mod tests {
         ]);
         ix.extend_from_slice(&empty_actions_section());
 
-        assert!(decode_ix(&ix, 0).is_err());
+        // Both indices are in range, so this can only fail on the ordering rule.
+        assert!(matches!(decode_ix(&ix, 2), Err(Error::Decode(m)) if m.contains("not ascending")));
+    }
+
+    #[test]
+    fn decode_signers_rejects_out_of_range_resource_idx() {
+        let mut ix = signer_section(&[(1, 0x01, schnorr_signer_body(100))]);
+        ix.extend_from_slice(&empty_actions_section());
+
+        assert!(matches!(decode_ix(&ix, 1), Err(Error::Decode(m)) if m.contains("out of range")));
     }
 
     #[test]
     fn decode_signers_rejects_unknown_kind() {
         let mut ix = signer_section(&[(0, 0xEE, vec![0u8; 5])]);
         ix.extend_from_slice(&empty_actions_section());
-        assert!(decode_ix(&ix, 0).is_err());
+        assert!(decode_ix(&ix, 1).is_err());
     }
 
     /// Builds an `Update` action body:

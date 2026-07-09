@@ -73,12 +73,23 @@ pub fn run<'a, P: DepositPolicy>(
     Ok(())
 }
 
-/// `M = SHA-256(Domain::SigMessage || rest_preimage || payload_presig)`: the
-/// 32-byte digest a BIP-340 schnorr signer commits to. Off-chain signers must
-/// produce the exact same domain-separated input. Exposed publicly so test
-/// harnesses sign against the same function the guest verifies (no drift).
+/// `M = SHA-256(Domain::SigMessage || len(rest_preimage) || rest_preimage || len(payload_presig) ||
+/// payload_presig)`, each `len` a little-endian `u32`: the 32-byte digest a BIP-340 schnorr signer
+/// commits to. Off-chain signers must produce the exact same domain-separated input. Exposed
+/// publicly so test harnesses sign against the same function the guest verifies (no drift).
+///
+/// Length-prefixing both halves makes the preimage injective: distinct `(rest_preimage,
+/// payload_presig)` pairs cannot share a digest, so a signature over one split is never valid for a
+/// shifted one.
 pub fn compute_sig_message(rest_preimage: &[u8], payload_presig: &[u8]) -> [u8; 32] {
-    Sha256::hash_parts_with_domain(&[Domain::SigMessage as u8], [rest_preimage, payload_presig])
+    // Guest `usize` is 32-bit, so neither cast can truncate.
+    let rest_len = (rest_preimage.len() as u32).to_le_bytes();
+    let presig_len = (payload_presig.len() as u32).to_le_bytes();
+
+    Sha256::hash_parts_with_domain(
+        &[Domain::SigMessage as u8],
+        [&rest_len[..], rest_preimage, &presig_len[..], payload_presig],
+    )
 }
 
 /// Walks parsed signers, calls `Signer::resolve` on each, and routes the
@@ -157,9 +168,9 @@ mod tests {
     // Sig-message digest
 
     #[test]
-    fn sig_msg_is_sha256_with_domain_of_concat() {
+    fn sig_msg_is_sha256_with_domain_of_length_prefixed_halves() {
         // Cross-check: compute_sig_message(rp, pp) ==
-        //   SHA-256(Domain::SigMessage || rp || pp).
+        //   SHA-256(Domain::SigMessage || len32(rp) || rp || len32(pp) || pp).
         let rp = b"rest-preimage";
         let pp = b"payload-presig-bytes";
 
@@ -167,7 +178,13 @@ mod tests {
 
         let want = Sha256::hash_with_domain(
             &[Domain::SigMessage as u8],
-            [rp.as_slice(), pp.as_slice()].concat(),
+            [
+                &(rp.len() as u32).to_le_bytes()[..],
+                rp.as_slice(),
+                &(pp.len() as u32).to_le_bytes()[..],
+                pp.as_slice(),
+            ]
+            .concat(),
         );
         assert_eq!(got, want);
     }
@@ -200,18 +217,13 @@ mod tests {
     }
 
     #[test]
-    fn sig_msg_split_invariance() {
-        // Splitting the second argument across two calls is forbidden; the
-        // function commits to (rp, pp) as two distinct fields. This is what
-        // lets the test harness keep `rest_preimage` and `payload_presig`
-        // separate without an ambiguity-prone glue byte.
-        let rp = b"r";
-        let split = compute_sig_message(rp, b"hello-world");
-        let combined = Sha256::hash_parts_with_domain(
-            &[Domain::SigMessage as u8],
-            [rp.as_slice(), b"hello-world"],
-        );
-        assert_eq!(split, combined);
+    fn sig_msg_distinguishes_shifted_splits() {
+        // The length prefixes commit to (rp, pp) as two distinct fields. Without them both
+        // pairs below hash `domain || "abc"`, and one signature would cover either split.
+        assert_ne!(compute_sig_message(b"ab", b"c"), compute_sig_message(b"a", b"bc"));
+
+        // The degenerate splits of the same concatenation are distinct too.
+        assert_ne!(compute_sig_message(b"", b"abc"), compute_sig_message(b"abc", b""));
     }
 
     // Multisig aggregator

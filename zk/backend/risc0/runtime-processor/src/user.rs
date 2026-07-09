@@ -16,7 +16,7 @@
 //! its derived address: `derive_user_resource(initial_lock_hash) == resource.id()`.
 //!
 //! Body shapes match the config wire layout (Lock body bytes only, no tag);
-//! both formats share `validate_lock_body` / `decode_lock_body` from
+//! both formats share `validate_lock_body` / `decode_lock_body_unchecked` from
 //! `crate::lock_codec`.
 
 use zerocopy::{
@@ -26,7 +26,7 @@ use zerocopy::{
 use crate::{
     kind::KIND_USER,
     lock::LockEnum,
-    lock_codec::{decode_lock_body, validate_lock_body},
+    lock_codec::{decode_lock_body_unchecked, validate_lock_body},
 };
 
 /// Fixed-header byte length: `kind (u8) || balance (u64 LE) || initial_lock_hash ([u8; 32]) ||
@@ -75,13 +75,9 @@ impl<'a> UserView<'a> {
 
     /// Returns the typed lock view over the (current) body bytes.
     ///
-    /// Infallible by construction: `from_bytes` already ran
-    /// `validate_lock_body` against the same tag set `decode_lock_body`
-    /// accepts. The `.expect` is unreachable in correct usage, hence the
-    /// localized `#[allow]`.
-    #[allow(clippy::expect_used)]
+    /// Infallible by construction: `from_bytes` validated this (tag, body) pair.
     pub fn lock(&self) -> LockEnum<'a> {
-        decode_lock_body(self.0.lock_tag, &self.0.lock_body).expect("body validated by from_bytes")
+        decode_lock_body_unchecked(self.0.lock_tag, &self.0.lock_body)
     }
 }
 

@@ -38,15 +38,15 @@ pub struct OwnedSuccinctWitness {
 impl OwnedSuccinctWitness {
     /// Extracts the witness fields from a succinct receipt produced by the prover.
     ///
-    /// The bundle's `deposit_spk_hash` is not carried by the receipt (it lives in the settlement
-    /// journal / artifact, not the proof seal), so it defaults to the zero sentinel here; set it
-    /// with [`Self::with_deposit_spk_hash`] before building a settlement that credits a deposit.
+    /// `deposit_spk_hash` comes from the settlement artifact / journal, not the receipt, and is
+    /// threaded into the sig_script so the redeem script can bind it to the delegate-entry deposit
+    /// address. Pass the zero sentinel for a bundle that credits no deposit.
     ///
     /// Panics if the receipt isn't a succinct variant (we always prove tx receipts with
     /// `ProverOpts::succinct()` and batch receipts with `ProverOpts::succinct()` when the
     /// backend's `settlement_proof_type` is `ProofType::Succinct`). That condition is a
     /// programmer error at this layer.
-    pub fn from_receipt(receipt: &Receipt) -> Self {
+    pub fn from_receipt(receipt: &Receipt, deposit_spk_hash: [u8; 32]) -> Self {
         let s = receipt.inner.succinct().expect("expected succinct receipt");
 
         let seal = s.seal.iter().flat_map(|w| w.to_le_bytes()).collect();
@@ -55,14 +55,7 @@ impl OwnedSuccinctWitness {
         let control_digests =
             s.control_inclusion_proof.digests.iter().flat_map(|d| <[u8; 32]>::from(*d)).collect();
 
-        Self { seal, claim, control_index, control_digests, deposit_spk_hash: [0u8; 32] }
-    }
-
-    /// Sets the bundle's `deposit_spk_hash` (from the settlement artifact / journal). Threaded into
-    /// the sig_script so the redeem script can bind it to the delegate-entry deposit address.
-    pub fn with_deposit_spk_hash(mut self, deposit_spk_hash: [u8; 32]) -> Self {
-        self.deposit_spk_hash = deposit_spk_hash;
-        self
+        Self { seal, claim, control_index, control_digests, deposit_spk_hash }
     }
 
     /// Borrows the owned bytes as a [`SettlementWitness::Succinct`] for `Settlement::build`.
@@ -97,23 +90,16 @@ impl OwnedGroth16Witness {
     /// then reserializes the `Proof<Bn254>` in compressed form — the byte layout the
     /// in-script Groth16 verifier consumes.
     ///
-    /// The bundle's `deposit_spk_hash` is not carried by the receipt, so it defaults to the zero
-    /// sentinel; set it with [`Self::with_deposit_spk_hash`] for a deposit-crediting bundle.
+    /// `deposit_spk_hash` comes from the settlement artifact / journal, not the receipt. See
+    /// [`OwnedSuccinctWitness::from_receipt`].
     ///
     /// Panics if the receipt isn't a Groth16 variant. That's a host-side wire-up bug (the
     /// backend's `settlement_proof_type` and the receipt's actual proof system are out of
     /// sync).
-    pub fn from_receipt(receipt: &Receipt) -> Self {
+    pub fn from_receipt(receipt: &Receipt, deposit_spk_hash: [u8; 32]) -> Self {
         let seal_bytes = receipt.inner.groth16().expect("expected groth16 receipt").seal.as_slice();
         let compressed_proof = seal_to_compressed_proof(seal_bytes);
-        Self { compressed_proof, deposit_spk_hash: [0u8; 32] }
-    }
-
-    /// Sets the bundle's `deposit_spk_hash` (from the settlement artifact / journal). See
-    /// [`OwnedSuccinctWitness::with_deposit_spk_hash`].
-    pub fn with_deposit_spk_hash(mut self, deposit_spk_hash: [u8; 32]) -> Self {
-        self.deposit_spk_hash = deposit_spk_hash;
-        self
+        Self { compressed_proof, deposit_spk_hash }
     }
 
     /// Borrows the owned bytes as a [`SettlementWitness::Groth16`].

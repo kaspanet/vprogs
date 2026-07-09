@@ -29,7 +29,7 @@ use zerocopy::{
 use crate::{
     kind::KIND_CONFIG,
     lock::LockEnum,
-    lock_codec::{decode_lock_body, validate_lock_body},
+    lock_codec::{decode_lock_body_unchecked, validate_lock_body},
 };
 
 /// Fixed-header byte length:
@@ -80,13 +80,9 @@ impl<'a> ConfigView<'a> {
 
     /// Returns the typed lock view over the body bytes.
     ///
-    /// Infallible by construction: `from_bytes` already ran
-    /// `validate_lock_body` against the same tag set `decode_lock_body`
-    /// accepts. The `.expect` is unreachable in correct usage, hence the
-    /// localized `#[allow]`.
-    #[allow(clippy::expect_used)]
+    /// Infallible by construction: `from_bytes` validated this (tag, body) pair.
     pub fn lock(&self) -> LockEnum<'a> {
-        decode_lock_body(self.0.lock_tag, &self.0.lock_body).expect("body validated by from_bytes")
+        decode_lock_body_unchecked(self.0.lock_tag, &self.0.lock_body)
     }
 }
 
