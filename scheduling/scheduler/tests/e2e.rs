@@ -894,6 +894,69 @@ pub fn test_wait_artifact_published_wakes_on_late_cancellation() {
     }
 }
 
+/// Tests that a rollback releases a waiter already parked on a canceled batch's tx-artifacts
+/// latch. Nothing in this harness publishes transaction artifacts, so only the cancellation can
+/// release the waiter.
+#[test]
+#[ignore = "rollback cancellation does not wake a waiter already parked on \
+            tx_artifacts_published"]
+pub fn test_wait_tx_artifacts_published_wakes_on_late_cancellation() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(Processor),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // Commit an anchor so the rollback below has a committed target.
+        let anchor = scheduler.schedule(
+            1,
+            vec![SchedulerTransaction::new(
+                0,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+                0,
+            )],
+        );
+        anchor.wait_committed_blocking();
+
+        // Let the batch execute fully while live.
+        let batch = scheduler.schedule(
+            2,
+            vec![SchedulerTransaction::new(
+                1,
+                vec![AccessMetadata::write(ResourceId::for_test(2))],
+                1,
+            )],
+        );
+        batch.wait_processed_blocking();
+        assert!(!batch.canceled(), "batch must be live before the waiter parks");
+
+        // Park a consumer on the tx-artifacts latch.
+        let (done_tx, done_rx) = mpsc::channel();
+        let waiter = {
+            let batch = batch.clone();
+            thread::spawn(move || {
+                batch.wait_tx_artifacts_published_blocking();
+                done_tx.send(()).unwrap();
+            })
+        };
+        thread::sleep(Duration::from_millis(200));
+        assert!(done_rx.try_recv().is_err(), "waiter must be parked before the rollback");
+
+        // Cancel the batch out from under the parked waiter.
+        scheduler.rollback_to(1).expect("rollback should succeed");
+        assert!(batch.canceled(), "batch should be canceled");
+
+        done_rx.recv_timeout(Duration::from_secs(5)).expect(
+            "a rollback must release a consumer parked on the canceled batch's tx artifacts",
+        );
+        waiter.join().unwrap();
+
+        scheduler.shutdown();
+    }
+}
+
 /// Tests complex scenario with interleaved writes to multiple resources followed by rollback and
 /// new writes.
 #[test]
