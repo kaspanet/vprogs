@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{sync::mpsc, thread, time::Duration};
 
 use tempfile::TempDir;
 use vprogs_core_hashing::Sha256;
@@ -825,6 +825,70 @@ pub fn test_cancellation_skips_writes() {
             .assert_written_state(ResourceId::for_test(1), vec![1])
             .assert_resource_deleted(ResourceId::for_test(100))
             .assert_resource_deleted(ResourceId::for_test(200));
+
+        scheduler.shutdown();
+    }
+}
+
+/// Tests that a rollback releases a waiter already parked on a canceled batch's artifact latch.
+///
+/// The batch executes fully while live, so the cancel-conditional latch opening at the end of
+/// execution has already declined, and nothing in this harness publishes batch artifacts.
+#[test]
+#[ignore = "rollback cancellation never opens artifact_published for a batch that finished \
+            executing while live; a parked waiter stalls forever"]
+pub fn test_wait_artifact_published_wakes_on_late_cancellation() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(Processor),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // Commit an anchor so the rollback below has a committed target.
+        let anchor = scheduler.schedule(
+            1,
+            vec![SchedulerTransaction::new(
+                0,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+                0,
+            )],
+        );
+        anchor.wait_committed_blocking();
+
+        // Let the batch execute fully while live.
+        let batch = scheduler.schedule(
+            2,
+            vec![SchedulerTransaction::new(
+                1,
+                vec![AccessMetadata::write(ResourceId::for_test(2))],
+                1,
+            )],
+        );
+        batch.wait_processed_blocking();
+        assert!(!batch.canceled(), "batch must be live before the waiter parks");
+
+        // Park a consumer on the artifact latch.
+        let (done_tx, done_rx) = mpsc::channel();
+        let waiter = {
+            let batch = batch.clone();
+            thread::spawn(move || {
+                batch.wait_artifact_published_blocking();
+                done_tx.send(()).unwrap();
+            })
+        };
+        thread::sleep(Duration::from_millis(200));
+        assert!(done_rx.try_recv().is_err(), "waiter must be parked before the rollback");
+
+        // Cancel the batch out from under the parked waiter.
+        scheduler.rollback_to(1).expect("rollback should succeed");
+        assert!(batch.canceled(), "batch should be canceled");
+
+        done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a rollback must release a consumer parked on the canceled batch's artifact");
+        waiter.join().unwrap();
 
         scheduler.shutdown();
     }
