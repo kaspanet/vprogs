@@ -31,6 +31,7 @@ zerocopy.workspace                            = true
 
 [dev-dependencies]
 tempfile.workspace                     = true
+vprogs-core-atomics.workspace          = true
 vprogs-core-test-utils.workspace       = true
 vprogs-core-types.workspace            = true
 vprogs-scheduling-test-utils.workspace = true
