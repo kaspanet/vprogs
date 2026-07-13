@@ -836,8 +836,6 @@ pub fn test_cancellation_skips_writes() {
 /// The batch executes fully while live, so the cancel-conditional latch opening at the end of
 /// execution has already declined, and nothing in this harness publishes batch artifacts.
 #[test]
-#[ignore = "rollback cancellation never opens artifact_published for a batch that finished \
-            executing while live; a parked waiter stalls forever"]
 pub fn test_wait_artifact_published_wakes_on_late_cancellation() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     {
@@ -899,8 +897,6 @@ pub fn test_wait_artifact_published_wakes_on_late_cancellation() {
 /// latch. Nothing in this harness publishes transaction artifacts, so only the cancellation can
 /// release the waiter.
 #[test]
-#[ignore = "rollback cancellation does not wake a waiter already parked on \
-            tx_artifacts_published"]
 pub fn test_wait_tx_artifacts_published_wakes_on_late_cancellation() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     {
@@ -1001,8 +997,6 @@ impl vprogs_scheduling_scheduler::Processor<RocksDbStore> for GateProcessor {
 /// rollback lands; a canceled batch's commit submission is a no-op, so only the cancellation can
 /// release the waiter.
 #[test]
-#[ignore = "a batch canceled before its commit is scheduled never opens committed; a parked \
-            waiter stalls forever"]
 pub fn test_wait_committed_wakes_on_late_cancellation() {
     const GATE_TX: usize = 100;
 
@@ -1067,6 +1061,99 @@ pub fn test_wait_committed_wakes_on_late_cancellation() {
         done_rx
             .recv_timeout(Duration::from_secs(5))
             .expect("a rollback must release a consumer parked on the canceled batch's commit");
+        waiter.join().unwrap();
+
+        scheduler.shutdown();
+    }
+}
+
+/// Tests that a waiter woken by a rollback that leaves its batch live re-parks, and that a later,
+/// deeper rollback canceling the batch (now held in a parent cancellation context) releases it.
+///
+/// The first rollback cancels only the tip: the parked waiter is woken, must observe its batch
+/// still live, and park again. The second rollback reaches the watched batch's context through the
+/// rollback chain walk; only that cancellation can release the waiter, since nothing in this
+/// harness publishes batch artifacts.
+#[test]
+pub fn test_reparked_waiter_wakes_on_deeper_rollback() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(Processor),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // Two committed anchors give both rollbacks committed targets.
+        let anchor1 = scheduler.schedule(
+            1,
+            vec![SchedulerTransaction::new(
+                0,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+                0,
+            )],
+        );
+        anchor1.wait_committed_blocking();
+        let anchor2 = scheduler.schedule(
+            2,
+            vec![SchedulerTransaction::new(
+                1,
+                vec![AccessMetadata::write(ResourceId::for_test(2))],
+                1,
+            )],
+        );
+        anchor2.wait_committed_blocking();
+
+        // The watched batch and the tip execute fully while live.
+        let watched = scheduler.schedule(
+            3,
+            vec![SchedulerTransaction::new(
+                2,
+                vec![AccessMetadata::write(ResourceId::for_test(3))],
+                2,
+            )],
+        );
+        watched.wait_processed_blocking();
+        let tip = scheduler.schedule(
+            4,
+            vec![SchedulerTransaction::new(
+                3,
+                vec![AccessMetadata::write(ResourceId::for_test(4))],
+                3,
+            )],
+        );
+        tip.wait_processed_blocking();
+
+        // Park a consumer on the watched batch's artifact latch.
+        let (done_tx, done_rx) = mpsc::channel();
+        let waiter = {
+            let watched = watched.clone();
+            thread::spawn(move || {
+                watched.wait_artifact_published_blocking();
+                done_tx.send(()).unwrap();
+            })
+        };
+        thread::sleep(Duration::from_millis(200));
+        assert!(done_rx.try_recv().is_err(), "waiter must be parked before the rollbacks");
+
+        // The shallow rollback cancels only the tip. Its wake reaches the watched batch's waiter,
+        // which must find the batch live and re-park rather than return.
+        scheduler.rollback_to(3).expect("shallow rollback should succeed");
+        assert!(tip.canceled(), "the tip should be canceled by the shallow rollback");
+        assert!(!watched.canceled(), "the watched batch must survive the shallow rollback");
+        thread::sleep(Duration::from_millis(200));
+        assert!(
+            done_rx.try_recv().is_err(),
+            "a cancellation wake that leaves the batch live must re-park the waiter",
+        );
+
+        // The deep rollback cancels the watched batch, whose context is now a parent in the
+        // rollback chain; the chain walk must release the re-parked waiter.
+        scheduler.rollback_to(2).expect("deep rollback should succeed");
+        assert!(watched.canceled(), "the watched batch should be canceled by the deep rollback");
+        done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a deeper rollback must release a waiter re-parked after an earlier wake");
         waiter.join().unwrap();
 
         scheduler.shutdown();

@@ -1,8 +1,6 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::Arc;
 
+use vprogs_core_atomics::WaitCell;
 use vprogs_core_macros::smart_pointer;
 
 /// Shared cancellation state for in-flight batches, supporting rollback chains.
@@ -20,7 +18,7 @@ pub struct CancellationContext {
     /// The first batch index assigned in this context.
     first_index: u64,
     /// Batch index threshold for cancellation. Batches with index > threshold are canceled.
-    cancel_threshold: AtomicU64,
+    cancel_threshold: WaitCell,
 }
 
 impl CancellationContext {
@@ -29,13 +27,19 @@ impl CancellationContext {
         Self(Arc::new(CancellationContextData {
             parent_context: None,
             first_index,
-            cancel_threshold: AtomicU64::new(u64::MAX),
+            cancel_threshold: WaitCell::new(u64::MAX),
         }))
     }
 
     /// Returns the cancel threshold. Batches with index > threshold should abort.
     pub fn threshold(&self) -> u64 {
-        self.cancel_threshold.load(Ordering::Acquire)
+        self.cancel_threshold.load()
+    }
+
+    /// Resolves when a batch at `index` is canceled, i.e. when this context's cancel threshold
+    /// drops below `index`.
+    pub(crate) async fn wait_canceled(&self, index: u64) {
+        self.cancel_threshold.wait_until(move |threshold| index > threshold).await
     }
 
     /// Performs a rollback to the given index.
@@ -47,7 +51,7 @@ impl CancellationContext {
         self.0 = Arc::new(CancellationContextData {
             parent_context: self.canceled_parent_context(index),
             first_index: index,
-            cancel_threshold: AtomicU64::new(u64::MAX),
+            cancel_threshold: WaitCell::new(u64::MAX),
         });
     }
 
@@ -56,8 +60,9 @@ impl CancellationContext {
     /// Walks up the context chain to find the context that contains `index` within its range. Each
     /// visited context has its cancel threshold updated.
     fn canceled_parent_context(&self, index: u64) -> Option<CancellationContextRef> {
-        // Mark batches after this index as canceled in the current context.
-        self.cancel_threshold.store(index, Ordering::Release);
+        // Mark batches after this index as canceled in the current context, waking any parked in
+        // wait_canceled so they observe the new threshold and re-check.
+        self.cancel_threshold.store(index);
 
         // If this context contains the rollback index, it becomes the parent.
         if index >= self.first_index {

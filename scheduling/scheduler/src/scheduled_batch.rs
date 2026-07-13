@@ -126,18 +126,23 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         self.processed.is_open()
     }
 
-    /// Waits until all transactions have been executed, or returns immediately if canceled.
-    pub async fn wait_processed(&self) {
-        if !self.canceled() {
-            self.processed.wait().await
+    /// Waits until `latch` opens or the batch is canceled by a rollback.
+    async fn wait_open_or_canceled(&self, latch: &AtomicAsyncLatch) {
+        tokio::select! {
+            () = latch.wait() => {}
+            () = self.cancellation.wait_canceled(self.checkpoint.index()) => {}
         }
+    }
+
+    /// Waits until all transactions have been executed, or until the batch is canceled by a
+    /// rollback.
+    pub async fn wait_processed(&self) {
+        self.wait_open_or_canceled(&self.processed).await
     }
 
     /// Blocking version of [`wait_processed`](Self::wait_processed).
     pub fn wait_processed_blocking(&self) -> &Self {
-        if !self.canceled() {
-            self.processed.wait_blocking();
-        }
+        futures::executor::block_on(self.wait_processed());
         self
     }
 
@@ -147,18 +152,14 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         self.committed.is_open()
     }
 
-    /// Waits until the batch has been committed, or returns immediately if canceled.
+    /// Waits until the batch has been committed, or until the batch is canceled by a rollback.
     pub async fn wait_committed(&self) {
-        if !self.canceled() {
-            self.committed.wait().await
-        }
+        self.wait_open_or_canceled(&self.committed).await
     }
 
     /// Blocking version of [`wait_committed`](Self::wait_committed).
     pub fn wait_committed_blocking(&self) -> &Self {
-        if !self.canceled() {
-            self.committed.wait_blocking();
-        }
+        futures::executor::block_on(self.wait_committed());
         self
     }
 
@@ -168,18 +169,15 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         self.tx_artifacts_published.is_open()
     }
 
-    /// Waits until all transaction artifacts are published, or returns immediately if canceled.
+    /// Waits until all transaction artifacts are published, or until the batch is canceled by a
+    /// rollback.
     pub async fn wait_tx_artifacts_published(&self) {
-        if !self.canceled() {
-            self.tx_artifacts_published.wait().await
-        }
+        self.wait_open_or_canceled(&self.tx_artifacts_published).await
     }
 
     /// Blocking version of [`wait_tx_artifacts_published`](Self::wait_tx_artifacts_published).
     pub fn wait_tx_artifacts_published_blocking(&self) -> &Self {
-        if !self.canceled() {
-            self.tx_artifacts_published.wait_blocking();
-        }
+        futures::executor::block_on(self.wait_tx_artifacts_published());
         self
     }
 
@@ -203,18 +201,15 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         self.artifact_published.is_open()
     }
 
-    /// Waits until the batch artifact has been published, or returns immediately if canceled.
+    /// Waits until the batch artifact has been published, or until the batch is canceled by a
+    /// rollback.
     pub async fn wait_artifact_published(&self) {
-        if !self.canceled() {
-            self.artifact_published.wait().await
-        }
+        self.wait_open_or_canceled(&self.artifact_published).await
     }
 
     /// Blocking version of [`wait_artifact_published`](Self::wait_artifact_published).
     pub fn wait_artifact_published_blocking(&self) -> &Self {
-        if !self.canceled() {
-            self.artifact_published.wait_blocking();
-        }
+        futures::executor::block_on(self.wait_artifact_published());
         self
     }
 
