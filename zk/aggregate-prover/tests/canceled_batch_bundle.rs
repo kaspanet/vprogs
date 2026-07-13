@@ -174,8 +174,6 @@ fn next_bundle(
 /// parked on the front's artifact latch when the reorg lands and cannot drain `Command::Rollback`
 /// until it returns from bundling, which is the very call that panics.
 #[test]
-#[ignore = "the bundle extend loop sweeps in a batch canceled mid-execution, whose force-opened \
-            artifact latch holds no receipt; collecting it panics and kills the aggregate worker"]
 fn canceled_batch_is_not_swept_into_a_bundle() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     {
@@ -249,6 +247,102 @@ fn canceled_batch_is_not_swept_into_a_bundle() {
         prover.submit(&probe);
         let bundle = next_bundle(&settlement_queue, Duration::from_secs(5))
             .expect("the aggregate worker must survive the canceled batch and keep bundling");
+        assert_eq!(bundle.checkpoint_index(), probe.checkpoint().index());
+
+        prover.shutdown();
+        scheduler.shutdown();
+    }
+}
+
+/// Tests that the worker evicts an entirely-canceled queue and keeps bundling afterwards.
+///
+/// The queue holds two canceled batches in the two shapes a rollback produces: the front finished
+/// executing while live, so its artifact latch never opens (only the cancellation can release the
+/// worker's front wait), and the batch behind it finished after the cancellation, so its latch was
+/// force-opened without a receipt. Both must be evicted, never bundled, and a live batch submitted
+/// afterwards must still bundle.
+#[test]
+fn whole_canceled_queue_is_evicted() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let entered = AtomicAsyncLatch::new();
+        let release = AtomicAsyncLatch::new();
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(GateProcessor {
+                entered: entered.clone(),
+                release: release.clone(),
+            }),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // A committed anchor gives the rollback a target below every queued batch.
+        let anchor = scheduler.schedule(block(1, 0), vec![]);
+        anchor.wait_committed_blocking();
+
+        // The future front executes fully while live: its artifact latch stays closed, so only
+        // the cancellation can release the worker's wait on it.
+        let never_published = scheduler.schedule(
+            block(2, 1),
+            vec![SchedulerTransaction::new(
+                0,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+                0,
+            )],
+        );
+        never_published.wait_processed_blocking();
+
+        // The batch behind it parks inside execution so the rollback lands mid-flight; finishing
+        // afterwards force-opens its artifact latch without a receipt.
+        let force_opened = scheduler.schedule(
+            block(3, 2),
+            vec![SchedulerTransaction::new(
+                0,
+                vec![AccessMetadata::write(ResourceId::for_test(2))],
+                GATE_TX,
+            )],
+        );
+        entered.wait_blocking();
+
+        scheduler.rollback_to(1).expect("rollback should succeed");
+        assert!(never_published.canceled(), "the processed batch should be canceled");
+        assert!(force_opened.canceled(), "the in-flight batch should be canceled");
+        assert!(
+            !never_published.artifact_published(),
+            "a batch that finished while live keeps its artifact latch closed",
+        );
+
+        release.open();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !force_opened.artifact_published() {
+            assert!(Instant::now() < deadline, "the canceled batch should force-open its latch");
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        let settlement_queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Vec<u8>>>> =
+            AsyncQueue::new();
+        let prover = AggregateProver::new(
+            NoopBackend,
+            scheduler.state().receipt_store(),
+            AggregateProverConfig {
+                lane_key: Hash::default(),
+                covenant_id: None,
+                lane_source: NoLaneProofs,
+                settlement_queue: Some(settlement_queue.clone()),
+                settlement: None,
+                bundle_size: 1..=usize::MAX,
+            },
+        );
+        prover.submit(&never_published);
+        prover.submit(&force_opened);
+
+        // A live batch scheduled after the rollback must bundle: the worker survived evicting the
+        // canceled queue without bundling (or panicking on) either canceled batch.
+        let probe = scheduler.schedule(block(4, 1), vec![]);
+        prover.submit(&probe);
+        let bundle = next_bundle(&settlement_queue, Duration::from_secs(5))
+            .expect("the worker must evict the canceled queue and keep bundling");
+        assert_eq!(bundle.batches(), 1, "no canceled batch may be swept into the probe's bundle");
         assert_eq!(bundle.checkpoint_index(), probe.checkpoint().index());
 
         prover.shutdown();
