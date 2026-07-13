@@ -73,8 +73,13 @@ where
 
     /// Proves one scheduled batch and publishes the receipt as the batch's artifact.
     async fn process_batch(&mut self, batch: ScheduledBatch<S, P>) {
-        // Wait for tx artifacts on the batch before proving (composition needs them).
-        batch.wait_tx_artifacts_published().await;
+        // Wait for tx artifacts on the batch before proving (composition needs them). Stay
+        // shutdown-escapable so a wedged latch during teardown cannot hang the worker join.
+        tokio::select! {
+            biased;
+            () = self.prover.shutdown.wait() => return,
+            () = batch.wait_tx_artifacts_published() => {}
+        }
         if batch.canceled() {
             return;
         }
@@ -116,7 +121,12 @@ where
         // Publish the receipt as the batch's artifact.
         batch.publish_artifact(Some(receipt));
 
-        // Wait for this batch's commit so the next batch has access to the committed prev_state.
-        batch.wait_committed().await;
+        // Wait for this batch's commit so the next batch sees the committed prev_state, but stay
+        // shutdown-escapable so a wedged latch during teardown cannot hang the join.
+        tokio::select! {
+            biased;
+            () = self.prover.shutdown.wait() => {}
+            () = batch.wait_committed() => {}
+        }
     }
 }
