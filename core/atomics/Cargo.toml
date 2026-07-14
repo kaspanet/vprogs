@@ -7,6 +7,15 @@ version.workspace = true
 arc-swap.workspace           = true
 crossbeam-queue.workspace    = true
 futures.workspace            = true
+pin-project-lite.workspace   = true
 tokio                        = { workspace = true, features = ["sync"] }
 tokio-util.workspace         = true
 vprogs-core-macros.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = [
+  "macros",
+  "rt",
+  "rt-multi-thread",
+  "time",
+] }

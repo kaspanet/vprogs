@@ -1,7 +1,7 @@
 //! Environment-agnostic settlement execution for proven bundles. The production daemon and L2 sim
 //! drive the same [`Settler`] with their own [`FeeSource`] and [`SettlementSink`] implementations.
 
-use std::collections::HashSet;
+use std::{collections::HashSet, time::Duration};
 
 use tokio::sync::watch;
 use vprogs_core_atomics::AtomicAsyncLatch;
@@ -15,6 +15,11 @@ use crate::{
     covenant::{CovenantState, build_settlement_for_mode},
     settle::effects::{FeeSource, SettlementSink, SubmitOutcome},
 };
+
+/// How long a submitted settlement may stay unconfirmed before the confirm wait WARN-logs and keeps
+/// waiting. A settlement with no competitor to advance the covenant can sit in the mempool
+/// indefinitely; the periodic warning makes that stall visible without abandoning the bundle.
+const CONFIRM_WARN_INTERVAL: Duration = Duration::from_secs(30);
 
 /// The result of attempting to settle one bundle.
 pub enum SettleOutcome {
@@ -135,12 +140,27 @@ impl<F: FeeSource, K: SettlementSink> Settler<F, K> {
         let target_state = cov.state;
         let min_daa = cov.daa_score;
         let mut rx = self.settlement.clone();
-        let matched = tokio::select! {
-            biased;
-            () = shutdown.wait() => return SettleOutcome::Shutdown,
-            res = rx.wait_for(|opt| {
-                opt.is_some_and(|s| s.new_state != target_state && s.daa_score.get() >= min_daa)
-            }) => res,
+        let confirmed = rx.wait_for(|opt| {
+            opt.is_some_and(|s| s.new_state != target_state && s.daa_score.get() >= min_daa)
+        });
+        tokio::pin!(confirmed);
+        // The confirm has no natural deadline: without a competitor nothing advances the covenant,
+        // so a settlement stuck in the mempool would park here silently. WARN every
+        // CONFIRM_WARN_INTERVAL and keep waiting; shutdown still wins the biased select.
+        let mut waited = Duration::ZERO;
+        let matched = loop {
+            tokio::select! {
+                biased;
+                () = shutdown.wait() => return SettleOutcome::Shutdown,
+                res = &mut confirmed => break res,
+                () = tokio::time::sleep(CONFIRM_WARN_INTERVAL) => {
+                    waited += CONFIRM_WARN_INTERVAL;
+                    log::warn!(
+                        "settlement-worker: settlement {txid} unconfirmed after {}s, still waiting",
+                        waited.as_secs(),
+                    );
+                }
+            }
         };
         // Copy the settlement out of the borrow and drop the `Ref` promptly so the sender is not
         // blocked. A dropped sender (`Err`) is the shutdown signal.

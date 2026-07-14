@@ -184,13 +184,29 @@ where
             () = front.wait_artifact_published() => {}
         }
 
-        // Greedily extend the bundle over the consecutively-ready prefix: the front is ready
-        // (awaited above); include each following batch whose receipt is already published, and
-        // stop at the first one that is not, or once the configured maximum is reached.
+        // A rollback may have canceled the front while we were parked: a canceled batch's wait
+        // returns immediately, and cancellation force-opens the artifact latch without a receipt.
+        // Evict the canceled prefix rather than bundle it (which would panic collecting a missing
+        // receipt). Returning progress re-drains the inbox, where the forthcoming
+        // `Command::Rollback` truncates `retained`, resets the re-form guard, and re-runs this
+        // eviction on `queued` idempotently.
+        if front.canceled() {
+            while self.queued.front().is_some_and(|b| b.canceled()) {
+                self.queued.pop_front();
+            }
+            return true;
+        }
+
+        // Greedily extend the bundle over the consecutively-ready prefix: include each following
+        // batch whose receipt is published, stopping at the first that is not, at a canceled batch,
+        // or at the configured maximum. Check artifact_published() before canceled(): a receiptless
+        // force-opened latch always has canceled() already true, so this order never extends over a
+        // batch that would panic when its missing receipt is collected.
         let mut take = 1;
         while take < self.queued.len()
             && take < *self.bundle_size.end()
             && self.queued[take].artifact_published()
+            && !self.queued[take].canceled()
         {
             take += 1;
         }
@@ -208,9 +224,11 @@ where
 
         self.prove_bundle(&bundle).await;
         // Retain the consumed batches so a competitor settling a shorter range can re-aggregate the
-        // surviving suffix from them. A shutdown-discard (the proof was abandoned mid-flight) skips
-        // retention, matching the discard-the-proved-bundle behavior in `prove_bundle`.
-        if !self.prover.shutdown.is_open() {
+        // surviving suffix from them, but only when a settlement watch drives that re-aggregation:
+        // with no watch wired, `retained` is never read and would grow for the whole run. A
+        // shutdown-discard (the proof was abandoned mid-flight) skips retention, matching the
+        // discard-the-proved-bundle behavior in `prove_bundle`.
+        if self.settlement.is_some() && !self.prover.shutdown.is_open() {
             self.retained.extend(bundle.iter().cloned());
         }
         true
@@ -440,10 +458,9 @@ where
 /// at an idle tip. Parks forever when every queued batch is already published or the queue is
 /// empty: then only a new command can grow the prefix, which the inbox arm already wakes on.
 ///
-/// Canceled batches are skipped: `wait_artifact_published` returns immediately for one (a rollback
-/// resolved it), so awaiting a canceled-but-still-queued batch would busy-spin. Such a batch is
-/// cleared by the forthcoming `Command::Rollback` (an inbox wake), and the extend loop treats it as
-/// not-ready anyway, so parking past it until the rollback arrives is correct.
+/// Canceled batches are skipped: a canceled batch's `wait_artifact_published` returns immediately,
+/// so awaiting one would busy-spin. The caller evicts a canceled front, so this arm parks past
+/// canceled batches until the rollback command arrives.
 async fn next_queued_batch_published<S: Store, P: Processor<S>>(
     queued: &VecDeque<ScheduledBatch<S, P>>,
 ) {

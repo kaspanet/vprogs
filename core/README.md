@@ -22,7 +22,7 @@ These traits allow the scheduling layer to work with any concrete types that imp
 Concurrent atomic wrappers for lock-free programming:
 
 - **AtomicAsyncLatch** - Async-aware latch for signaling completion
-- **AtomicEnum** - Atomic enum wrapper using discriminant mapping
+- **WaitCell** - Value cell that wakes async and blocking waiters when the stored value changes
 
 ### macros/
 `vprogs-core-macros`
