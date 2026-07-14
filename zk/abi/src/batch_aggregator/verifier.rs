@@ -36,6 +36,9 @@ where
     verify_batch_journal: V,
     /// Accumulates exits across the bundle.
     exits: A,
+    /// Deposit-address commitment carried from the batch journals, or `[0u8; 32]` when no batch
+    /// credited a deposit. See [`carry_deposit_hash`].
+    deposit_spk_hash: [u8; 32],
 }
 
 impl<'a, V, A> Verifier<'a, V, A>
@@ -58,13 +61,15 @@ where
             remaining_batches: inputs.batch_journals,
             verify_batch_journal,
             exits,
+            deposit_spk_hash: [0u8; 32],
         }
     }
 
     /// Verifies and chains every remaining batch onto the anchor; returns the bundle's last batch.
     pub fn verify_batches(&mut self) -> &'a BatchTransition {
-        // Stream the exits of the first batch.
+        // Stream the exits of the first batch and carry its deposit hash.
         Self::stream_exits(&mut self.exits, self.first_batch);
+        carry_deposit_hash(&mut self.deposit_spk_hash, &self.first_batch.deposit_spk_hash);
 
         // Fold the remaining batches onto the anchor.
         self.remaining_batches.fold(self.first_batch, |prev, entry| {
@@ -84,8 +89,9 @@ where
                     assert_eq!(this.prev_lane_tip, prev.new_lane_tip, "prev_lane_tip");
                 }
 
-                // Stream this batch's exits in journal order.
+                // Stream this batch's exits in journal order and carry its deposit hash.
                 Self::stream_exits(&mut self.exits, this);
+                carry_deposit_hash(&mut self.deposit_spk_hash, &this.deposit_spk_hash);
             })
         })
     }
@@ -108,6 +114,7 @@ where
                 tx_image_id: &self.first_batch.tx_image_id,
                 batch_image_id: self.batch_image_id,
                 permission_spk_hash: &self.exits.finalize(),
+                deposit_spk_hash: &self.deposit_spk_hash,
                 lane_key: &self.first_batch.lane_key,
             },
         );
@@ -158,5 +165,22 @@ where
             parent_seq_commit: self.lane_proof.prev_seq_commit,
             state_root: &state_root_seq,
         })
+    }
+}
+
+/// Folds a per-batch `deposit_spk_hash` into the bundle carry.
+///
+/// The carry takes the first non-zero hash seen and keeps it; the zero sentinel ("no deposit")
+/// never overwrites a recorded hash. Panics on a second, differing non-zero hash: the deposit
+/// address is bundle-constant, and each batch has already matched its own against the pin its
+/// prover declared.
+fn carry_deposit_hash(carry: &mut [u8; 32], batch_hash: &[u8; 32]) {
+    if *batch_hash == [0u8; 32] {
+        return;
+    }
+    if *carry == [0u8; 32] {
+        *carry = *batch_hash;
+    } else {
+        assert_eq!(carry, batch_hash, "two distinct deposit_spk_hash values in one bundle");
     }
 }

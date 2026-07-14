@@ -32,15 +32,9 @@ use kaspa_txscript::{
 };
 use vprogs_zk_abi::withdrawal::StandardSpk;
 use vprogs_zk_backend_risc0_api::{
-    MAX_DELEGATE_INPUTS, PermissionTreeAccumulator, build_permission_redeem_script,
+    MAX_DELEGATE_INPUTS, PermissionTreeAccumulator, build_delegate_entry_script,
+    build_permission_redeem_script,
 };
-
-/// Delegate-entry redeem-script framing the permission script expects (mirrors the bytes the
-/// permission script reconstructs in `emit_verify_delegate_balance`):
-/// `DELEGATE_SCRIPT_PREFIX || covenant_id || DELEGATE_SCRIPT_SUFFIX`.
-const DELEGATE_SCRIPT_PREFIX: [u8; 7] = [0xb9, 0x00, 0xa0, 0x69, 0x00, 0xcf, 0x20];
-const DELEGATE_SCRIPT_SUFFIX: [u8; 14] =
-    [0x88, 0x00, 0x00, 0xc9, 0x76, 0x52, 0x94, 0x7c, 0xbc, 0x02, 0x51, 0x75, 0x88, 0x51];
 
 const COV_ID_BYTES: [u8; 32] = [0xFF; 32];
 
@@ -147,11 +141,12 @@ fn cov_builder() -> ScriptBuilder {
 }
 
 /// Delegate redeem bytes and its P2SH sig_script for the standard test covenant id.
+///
+/// Built via the shared [`build_delegate_entry_script`], so this spend proves the
+/// canonical builder matches the bytes the on-chain consumer reconstructs in
+/// `emit_verify_delegate_balance`.
 fn delegate_input() -> (ScriptPublicKey, Vec<u8>) {
-    let mut redeem = Vec::with_capacity(53);
-    redeem.extend_from_slice(&DELEGATE_SCRIPT_PREFIX);
-    redeem.extend_from_slice(&COV_ID_BYTES);
-    redeem.extend_from_slice(&DELEGATE_SCRIPT_SUFFIX);
+    let redeem = build_delegate_entry_script(&COV_ID_BYTES);
     let spk = pay_to_script_hash_script(&redeem);
     let sig = cov_builder().add_data(&redeem).unwrap().drain();
     (spk, sig)

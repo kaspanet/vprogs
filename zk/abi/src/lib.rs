@@ -2,12 +2,14 @@
 
 extern crate alloc;
 
+mod delegate_script;
 mod error;
 mod error_code;
 mod journals;
 mod read;
 
 pub mod withdrawal {
+    pub(crate) mod deposit_sink;
     pub(crate) mod exit_accumulator;
     pub(crate) mod exit_sink;
     pub(crate) mod exits;
@@ -16,6 +18,7 @@ pub mod withdrawal {
     pub(crate) mod script_bytes;
     pub(crate) mod standard_spk;
 
+    pub use deposit_sink::DepositSink;
     pub use exit_accumulator::ExitAccumulator;
     pub use exit_sink::ExitSink;
     pub use exits::Exits;
@@ -37,7 +40,10 @@ pub mod batch_processor {
         pub(crate) mod batch_transition;
     }
 
-    pub use input::{batch::Batch, inputs::Inputs};
+    pub use input::{
+        batch::Batch,
+        inputs::{BatchPins, Inputs},
+    };
     pub use journal::batch_transition::{BatchTransition, BatchTransitionArgs};
     pub use verifier::Verifier;
 }
@@ -113,6 +119,7 @@ pub mod transaction_processor {
     pub use transaction_handler::TransactionHandler;
 }
 
+pub use delegate_script::{DELEGATE_SCRIPT_LEN, DELEGATE_SCRIPT_PREFIX, DELEGATE_SCRIPT_SUFFIX};
 pub use error::{Error, Result};
 pub use error_code::ErrorCode;
 pub use journals::Journals;

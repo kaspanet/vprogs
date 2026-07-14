@@ -212,7 +212,7 @@ fn assert_settlement_structure(
     assert_eq!(settlement.prev_redeem.len(), settlement.next_redeem.len());
 }
 
-/// K=1 - single-batch bundle. Verifies that the bundling pipeline produces a 256-byte
+/// K=1 - single-batch bundle. Verifies that the bundling pipeline produces a `JOURNAL_SIZE`-byte
 /// settlement journal that can be wrapped in a host-side `Settlement::build` call. The
 /// production transaction-processor handler used here emits no exits, so the journal's
 /// `permission_spk_hash` is `[0; 32]` and the settlement takes the single-output (count==1)
@@ -232,7 +232,12 @@ async fn batch_proof_is_directly_settleable_single_batch() {
     let l1 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
     let block_hashes = l1.mine_blocks(1).await;
 
-    let config = BatchProverConfig { lane_key: test_lane_key(), covenant_id: None };
+    let config = BatchProverConfig {
+        lane_key: test_lane_key(),
+        covenant_id: Hash::default(),
+        // No deposits in this flow; every batch commits the no-deposit sentinel.
+        deposit_spk_hash: [0u8; 32],
+    };
 
     let proving = ProvingPipeline::batch(backend.clone(), storage.clone(), config);
     let vm = Vm::new(backend.clone(), proving);
@@ -341,6 +346,7 @@ async fn batch_proof_is_directly_settleable_single_batch() {
             claim: &[0u8; 32],
             control_index: 0,
             control_digests: &[],
+            deposit_spk_hash: &parsed.deposit_spk_hash,
         }),
         permission_spk_hash: &parsed.permission_spk_hash,
     });
@@ -350,7 +356,8 @@ async fn batch_proof_is_directly_settleable_single_batch() {
     // bytes - the placeholder witness above would never satisfy `OpZkPrecompile`. Rebuild
     // the settlement here with the actual receipt witness and feed it to the engine.
     if !dev_mode_enabled() {
-        let owned = OwnedSuccinctWitness::from_receipt(&settlement_receipt);
+        let owned =
+            OwnedSuccinctWitness::from_receipt(&settlement_receipt, parsed.deposit_spk_hash);
         let real_settlement = Settlement::build(&SettlementInput {
             covenant_id: covenant_id_hash,
             pins,
@@ -405,7 +412,12 @@ async fn batch_proof_groth16_is_directly_settleable_single_batch() {
     let l1 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
     let block_hashes = l1.mine_blocks(1).await;
 
-    let config = BatchProverConfig { lane_key: test_lane_key(), covenant_id: None };
+    let config = BatchProverConfig {
+        lane_key: test_lane_key(),
+        covenant_id: Hash::default(),
+        // No deposits in this flow; every batch commits the no-deposit sentinel.
+        deposit_spk_hash: [0u8; 32],
+    };
 
     let proving = ProvingPipeline::batch(backend.clone(), storage.clone(), config);
     let vm = Vm::new(backend.clone(), proving);
@@ -511,7 +523,10 @@ async fn batch_proof_groth16_is_directly_settleable_single_batch() {
         block_prove_to: block_hashes[0],
         prev_outpoint: TransactionOutpoint::new(Hash::from_bytes([0xCD; 32]), 0),
         value: 100_000_000,
-        witness: SettlementWitness::Groth16 { compressed_proof: &[0u8; 8] },
+        witness: SettlementWitness::Groth16 {
+            compressed_proof: &[0u8; 8],
+            deposit_spk_hash: &parsed.deposit_spk_hash,
+        },
         permission_spk_hash: &parsed.permission_spk_hash,
     });
     assert_settlement_structure(&settlement, parsed, &pins, covenant_id_hash);
@@ -521,7 +536,7 @@ async fn batch_proof_groth16_is_directly_settleable_single_batch() {
     // receipt-claim recomputation + public-inputs layout + VK push) actually verifies a real
     // seal.
     if !dev_mode_enabled() {
-        let owned = OwnedGroth16Witness::from_receipt(&settlement_receipt);
+        let owned = OwnedGroth16Witness::from_receipt(&settlement_receipt, parsed.deposit_spk_hash);
         let real_settlement = Settlement::build(&SettlementInput {
             covenant_id: covenant_id_hash,
             pins,
@@ -562,7 +577,12 @@ async fn batch_proof_bundles_two_batches() {
     let l1 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
     let block_hashes = l1.mine_blocks(2).await;
 
-    let config = BatchProverConfig { lane_key: test_lane_key(), covenant_id: None };
+    let config = BatchProverConfig {
+        lane_key: test_lane_key(),
+        covenant_id: Hash::default(),
+        // No deposits in this flow; every batch commits the no-deposit sentinel.
+        deposit_spk_hash: [0u8; 32],
+    };
 
     let proving = ProvingPipeline::batch(backend.clone(), storage.clone(), config);
     let vm = Vm::new(backend.clone(), proving);
@@ -684,6 +704,7 @@ async fn batch_proof_bundles_two_batches() {
             claim: &[0u8; 32],
             control_index: 0,
             control_digests: &[],
+            deposit_spk_hash: &parsed.deposit_spk_hash,
         }),
         permission_spk_hash: &parsed.permission_spk_hash,
     });
@@ -692,7 +713,8 @@ async fn batch_proof_bundles_two_batches() {
     // Run the on-chain inner-proof check on the aggregated settlement receipt's real witness
     // bytes.
     if !dev_mode_enabled() {
-        let owned = OwnedSuccinctWitness::from_receipt(&settlement_receipt);
+        let owned =
+            OwnedSuccinctWitness::from_receipt(&settlement_receipt, parsed.deposit_spk_hash);
         let real_settlement = Settlement::build(&SettlementInput {
             covenant_id: covenant_id_hash,
             pins,
@@ -729,7 +751,7 @@ async fn batch_proof_bundles_two_batches() {
 /// In cuda mode `verify_settlement_onchain` runs the Kaspa script engine on the settlement
 /// transaction's input - exercising the script's count==2 branch end-to-end:
 /// `OpCovOutputCount == 2`, `OpTxOutputAmount` value check, P2SH SPK rebuild + match against
-/// `OpTxOutputSpk`, and the 32-byte hash append into the 256B journal preimage. A divergence
+/// `OpTxOutputSpk`, and the 32-byte hash append into the journal preimage. A divergence
 /// between the script's reconstruction and the receipt's journal would fail `OpZkPrecompile`
 /// here.
 #[tokio::test(flavor = "multi_thread")]
@@ -747,7 +769,12 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
     let l1 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
     let block_hashes = l1.mine_blocks(2).await;
 
-    let config = BatchProverConfig { lane_key: test_lane_key(), covenant_id: None };
+    let config = BatchProverConfig {
+        lane_key: test_lane_key(),
+        covenant_id: Hash::default(),
+        // No deposits in this flow; every batch commits the no-deposit sentinel.
+        deposit_spk_hash: [0u8; 32],
+    };
 
     let proving = ProvingPipeline::batch(backend.clone(), storage.clone(), config);
     let vm = Vm::new(backend.clone(), proving);
@@ -878,6 +905,7 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
             claim: &[0u8; 32],
             control_index: 0,
             control_digests: &[],
+            deposit_spk_hash: &parsed.deposit_spk_hash,
         }),
         permission_spk_hash: &parsed.permission_spk_hash,
     });
@@ -912,7 +940,8 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
 
     // ---- cuda-mode end-to-end: run the Kaspa script engine on the count==2 settlement ----
     if !dev_mode_enabled() {
-        let owned = OwnedSuccinctWitness::from_receipt(&settlement_receipt);
+        let owned =
+            OwnedSuccinctWitness::from_receipt(&settlement_receipt, parsed.deposit_spk_hash);
         let real_settlement = Settlement::build(&SettlementInput {
             covenant_id: covenant_id_hash,
             pins,

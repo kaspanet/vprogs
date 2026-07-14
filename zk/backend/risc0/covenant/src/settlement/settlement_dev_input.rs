@@ -10,6 +10,9 @@ use kaspa_hashes::Hash;
 /// [`OpEqualVerify`]: kaspa_txscript::opcodes::codes::OpEqualVerify
 /// [`OpChainblockSeqCommit(block_prove_to)`]: kaspa_txscript::opcodes::codes::OpChainblockSeqCommit
 pub struct SettlementDevInput<'a> {
+    /// Bundle deposit-address commitment `delegate_entry_spk_hash(covenant_id)`, or `[0; 32]` when
+    /// the bundle credited no L1 deposit.
+    pub deposit_spk_hash: &'a [u8; 32],
     /// Covenant id carried forward by the continuation output.
     pub covenant_id: Hash,
     /// L2 state root before this batch.

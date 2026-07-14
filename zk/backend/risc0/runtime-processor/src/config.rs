@@ -2,10 +2,13 @@
 //!
 //! Wire layout: kind byte + fixed header + tag-driven variable body:
 //! ```text
-//! [0]      kind                    (KIND_CONFIG = 0; see `crate::kind`)
-//! [1..9]   min_withdrawal_amount   (u64 LE)
-//! [9]      lock_tag                (one of the LockEnum variants)
-//! [10..]   lock_body               (length and shape implied by tag)
+//! [0]       kind                    (KIND_CONFIG = 0; see `crate::kind`)
+//! [1..9]    min_withdrawal_amount   (u64 LE)
+//! [9..41]   covenant_id             ([u8; 32]; the covenant a deposit's funding
+//!                                    output must pay, as P2SH of its
+//!                                    delegate-entry script)
+//! [41]      lock_tag                (one of the LockEnum variants)
+//! [42..]    lock_body               (length and shape implied by tag)
 //! ```
 //!
 //! Body shapes (each variant's wire form is the same as on the ix wire,
@@ -26,11 +29,12 @@ use zerocopy::{
 use crate::{
     kind::KIND_CONFIG,
     lock::LockEnum,
-    lock_codec::{decode_lock_body, validate_lock_body},
+    lock_codec::{decode_lock_body_unchecked, validate_lock_body},
 };
 
-/// Fixed-header byte length: `kind (u8) || min_withdrawal_amount (u64 LE) || lock_tag (u8)`.
-pub const CONFIG_HEADER_LEN: usize = 1 + 8 + 1;
+/// Fixed-header byte length:
+/// `kind (u8) || min_withdrawal_amount (u64 LE) || covenant_id ([u8; 32]) || lock_tag (u8)`.
+pub const CONFIG_HEADER_LEN: usize = 1 + 8 + 32 + 1;
 
 /// Zerocopy DST: kind discriminator + fixed header + tag-driven variable body.
 #[repr(C)]
@@ -38,6 +42,7 @@ pub const CONFIG_HEADER_LEN: usize = 1 + 8 + 1;
 pub struct ConfigRaw {
     pub kind: u8,
     pub min_withdrawal_amount: Le64,
+    pub covenant_id: [u8; 32],
     pub lock_tag: u8,
     pub lock_body: [u8],
 }
@@ -63,19 +68,21 @@ impl<'a> ConfigView<'a> {
         self.0.min_withdrawal_amount.get()
     }
 
+    /// The covenant a deposit's funding output must pay (as P2SH of its
+    /// delegate-entry script). Immutable after `Init`.
+    pub fn covenant_id(&self) -> &[u8; 32] {
+        &self.0.covenant_id
+    }
+
     pub fn lock_tag(&self) -> u8 {
         self.0.lock_tag
     }
 
     /// Returns the typed lock view over the body bytes.
     ///
-    /// Infallible by construction: `from_bytes` already ran
-    /// `validate_lock_body` against the same tag set `decode_lock_body`
-    /// accepts. The `.expect` is unreachable in correct usage, hence the
-    /// localized `#[allow]`.
-    #[allow(clippy::expect_used)]
+    /// Infallible by construction: `from_bytes` validated this (tag, body) pair.
     pub fn lock(&self) -> LockEnum<'a> {
-        decode_lock_body(self.0.lock_tag, &self.0.lock_body).expect("body validated by from_bytes")
+        decode_lock_body_unchecked(self.0.lock_tag, &self.0.lock_body)
     }
 }
 
@@ -101,6 +108,10 @@ impl<'a> ConfigViewMut<'a> {
         self.0.min_withdrawal_amount.set(v);
     }
 
+    pub fn set_covenant_id(&mut self, covenant_id: &[u8; 32]) {
+        self.0.covenant_id = *covenant_id;
+    }
+
     pub fn lock_tag(&self) -> u8 {
         self.0.lock_tag
     }
@@ -120,6 +131,7 @@ pub fn config_total_len(lock: &LockEnum<'_>) -> usize {
 pub fn write_config(
     out: &mut [u8],
     min_withdrawal_amount: u64,
+    covenant_id: &[u8; 32],
     lock: &LockEnum<'_>,
 ) -> Result<(), &'static str> {
     let need = config_total_len(lock);
@@ -128,7 +140,8 @@ pub fn write_config(
     }
     out[0] = KIND_CONFIG;
     out[1..9].copy_from_slice(&min_withdrawal_amount.to_le_bytes());
-    out[9] = lock.tag();
+    out[9..41].copy_from_slice(covenant_id);
+    out[41] = lock.tag();
     lock.write_body(&mut out[CONFIG_HEADER_LEN..]);
     Ok(())
 }
@@ -138,8 +151,6 @@ mod tests {
     use alloc::{vec, vec::Vec};
 
     use super::*;
-    #[cfg(feature = "experimental-image-lock")]
-    use crate::lock_variants::PreimageLockView;
     use crate::{
         lock_trait::Lock,
         lock_variants::{MultisigLockView, SchnorrLockView, UnlockedLockView},
@@ -149,20 +160,28 @@ mod tests {
         [b; 32]
     }
 
+    /// Distinct test vector for the covenant_id field, kept apart from `pk(..)`
+    /// so a round-trip can prove covenant_id is not aliased with the lock pubkey.
+    fn covenant_id(b: u8) -> [u8; 32] {
+        [b; 32]
+    }
+
     // Schnorr layout
 
     #[test]
     fn schnorr_round_trip() {
         let pubkey = pk(0x55);
+        let cov_id = covenant_id(0x77);
         let lock = LockEnum::Schnorr(SchnorrLockView { pubkey: &pubkey });
         let total = config_total_len(&lock);
         assert_eq!(total, CONFIG_HEADER_LEN + 32);
 
         let mut buf = vec![0u8; total];
-        write_config(&mut buf, 999_999, &lock).unwrap();
+        write_config(&mut buf, 999_999, &cov_id, &lock).unwrap();
 
         let view = ConfigView::from_bytes(&buf).unwrap();
         assert_eq!(view.min_withdrawal_amount(), 999_999);
+        assert_eq!(view.covenant_id(), &cov_id);
         match view.lock() {
             LockEnum::Schnorr(SchnorrLockView { pubkey: pk_back }) => {
                 assert_eq!(pk_back, &pubkey);
@@ -200,11 +219,13 @@ mod tests {
         let total = config_total_len(&lock);
         assert_eq!(total, CONFIG_HEADER_LEN + 2 + 3 * 32);
 
+        let cov_id = covenant_id(0x88);
         let mut buf = vec![0u8; total];
-        write_config(&mut buf, 42, &lock).unwrap();
+        write_config(&mut buf, 42, &cov_id, &lock).unwrap();
 
         let view = ConfigView::from_bytes(&buf).unwrap();
         assert_eq!(view.min_withdrawal_amount(), 42);
+        assert_eq!(view.covenant_id(), &cov_id);
         match view.lock() {
             LockEnum::Multisig(m) => {
                 assert_eq!(m.threshold, 2);
@@ -224,32 +245,32 @@ mod tests {
         // Manually craft a malformed config: tag = Multisig, body has unsorted pks.
         let mut buf = vec![0u8; CONFIG_HEADER_LEN + 2 + 2 * 32];
         // buf[0] = KIND_CONFIG (0) is already correct via vec![0u8; ..]
-        buf[9] = MultisigLockView::TAG;
-        buf[10] = 1; // threshold
-        buf[11] = 2; // n_pubkeys
+        buf[41] = MultisigLockView::TAG;
+        buf[42] = 1; // threshold
+        buf[43] = 2; // n_pubkeys
         // pks: 0x05 then 0x03, descending
-        buf[12..44].copy_from_slice(&pk(0x05));
-        buf[44..76].copy_from_slice(&pk(0x03));
+        buf[44..76].copy_from_slice(&pk(0x05));
+        buf[76..108].copy_from_slice(&pk(0x03));
         assert!(ConfigView::from_bytes(&buf).is_err());
     }
 
     #[test]
     fn multisig_rejects_threshold_zero() {
         let mut buf = vec![0u8; CONFIG_HEADER_LEN + 2 + 32];
-        buf[9] = MultisigLockView::TAG;
-        buf[10] = 0; // threshold = 0 → invalid
-        buf[11] = 1;
-        buf[12..44].copy_from_slice(&pk(0x42));
+        buf[41] = MultisigLockView::TAG;
+        buf[42] = 0; // threshold = 0 → invalid
+        buf[43] = 1;
+        buf[44..76].copy_from_slice(&pk(0x42));
         assert!(ConfigView::from_bytes(&buf).is_err());
     }
 
     #[test]
     fn multisig_rejects_threshold_above_n() {
         let mut buf = vec![0u8; CONFIG_HEADER_LEN + 2 + 32];
-        buf[9] = MultisigLockView::TAG;
-        buf[10] = 2; // threshold = 2
-        buf[11] = 1; // n = 1 → threshold > n
-        buf[12..44].copy_from_slice(&pk(0x42));
+        buf[41] = MultisigLockView::TAG;
+        buf[42] = 2; // threshold = 2
+        buf[43] = 1; // n = 1 → threshold > n
+        buf[44..76].copy_from_slice(&pk(0x42));
         assert!(ConfigView::from_bytes(&buf).is_err());
     }
 
@@ -257,10 +278,10 @@ mod tests {
     fn multisig_rejects_body_length_mismatch() {
         // n_pubkeys = 2 but body claims only 1 pk worth of trailing data.
         let mut buf = vec![0u8; CONFIG_HEADER_LEN + 2 + 32];
-        buf[9] = MultisigLockView::TAG;
-        buf[10] = 1;
-        buf[11] = 2; // n = 2
-        buf[12..44].copy_from_slice(&pk(0x01));
+        buf[41] = MultisigLockView::TAG;
+        buf[42] = 1;
+        buf[43] = 2; // n = 2
+        buf[44..76].copy_from_slice(&pk(0x01));
         // Missing the second pk. ConfigView should reject.
         assert!(ConfigView::from_bytes(&buf).is_err());
     }
@@ -273,62 +294,22 @@ mod tests {
         let total = config_total_len(&lock);
         assert_eq!(total, CONFIG_HEADER_LEN);
 
+        let cov_id = covenant_id(0x99);
         let mut buf = vec![0u8; total];
-        write_config(&mut buf, 7, &lock).unwrap();
+        write_config(&mut buf, 7, &cov_id, &lock).unwrap();
 
         let view = ConfigView::from_bytes(&buf).unwrap();
         assert_eq!(view.min_withdrawal_amount(), 7);
+        assert_eq!(view.covenant_id(), &cov_id);
         assert!(matches!(view.lock(), LockEnum::Unlocked(_)));
     }
 
     #[test]
     fn unlocked_rejects_trailing_bytes() {
         let mut buf = vec![0u8; CONFIG_HEADER_LEN + 4];
-        buf[9] = UnlockedLockView::TAG;
+        buf[41] = UnlockedLockView::TAG;
         // 4 spurious tail bytes must be rejected.
         assert!(ConfigView::from_bytes(&buf).is_err());
-    }
-
-    // Preimage layout (gated)
-    #[cfg(feature = "experimental-image-lock")]
-    mod preimage {
-        use super::*;
-
-        #[test]
-        fn preimage_round_trip() {
-            let image_id = pk(0xC0);
-            let data_image = pk(0xDE);
-            let lock = LockEnum::Preimage(PreimageLockView {
-                image_id: &image_id,
-                data_image: &data_image,
-            });
-            let total = config_total_len(&lock);
-            assert_eq!(total, CONFIG_HEADER_LEN + 64);
-
-            let mut buf = vec![0u8; total];
-            write_config(&mut buf, 9000, &lock).unwrap();
-
-            let view = ConfigView::from_bytes(&buf).unwrap();
-            assert_eq!(view.min_withdrawal_amount(), 9000);
-            match view.lock() {
-                LockEnum::Preimage(p) => {
-                    assert_eq!(p.image_id, &image_id);
-                    assert_eq!(p.data_image, &data_image);
-                }
-                _ => panic!("expected Preimage"),
-            }
-        }
-
-        #[test]
-        fn preimage_rejects_wrong_body_length() {
-            let mut buf = vec![0u8; CONFIG_HEADER_LEN + 63];
-            buf[9] = PreimageLockView::TAG;
-            assert!(ConfigView::from_bytes(&buf).is_err());
-
-            let mut buf = vec![0u8; CONFIG_HEADER_LEN + 65];
-            buf[9] = PreimageLockView::TAG;
-            assert!(ConfigView::from_bytes(&buf).is_err());
-        }
     }
 
     // Tag dispatch
@@ -336,7 +317,7 @@ mod tests {
     #[test]
     fn rejects_unknown_lock_tag() {
         let mut buf = vec![0u8; CONFIG_HEADER_LEN];
-        buf[9] = 0xFF;
+        buf[41] = 0xFF;
         assert!(ConfigView::from_bytes(&buf).is_err());
     }
 
@@ -348,7 +329,7 @@ mod tests {
         let pubkey = pk(0x55);
         let lock = LockEnum::Schnorr(SchnorrLockView { pubkey: &pubkey });
         let mut buf = vec![0u8; config_total_len(&lock)];
-        write_config(&mut buf, 1, &lock).unwrap();
+        write_config(&mut buf, 1, &covenant_id(0x44), &lock).unwrap();
         buf[0] = 0xFE; // not KIND_CONFIG
         assert!(ConfigView::from_bytes(&buf).is_err());
     }
@@ -360,16 +341,18 @@ mod tests {
         let pubkey = pk(0x11);
         let lock = LockEnum::Schnorr(SchnorrLockView { pubkey: &pubkey });
         let mut buf = vec![0u8; config_total_len(&lock)];
-        write_config(&mut buf, 100, &lock).unwrap();
+        write_config(&mut buf, 100, &covenant_id(0x33), &lock).unwrap();
 
         {
             let mut mv = ConfigViewMut::from_bytes_mut(&mut buf).unwrap();
             mv.set_min_withdrawal_amount(200);
+            mv.set_covenant_id(&covenant_id(0x66));
             mv.lock_body_mut().copy_from_slice(&pk(0x22));
         }
 
         let view = ConfigView::from_bytes(&buf).unwrap();
         assert_eq!(view.min_withdrawal_amount(), 200);
+        assert_eq!(view.covenant_id(), &covenant_id(0x66));
         match view.lock() {
             LockEnum::Schnorr(SchnorrLockView { pubkey }) => assert_eq!(pubkey, &pk(0x22)),
             _ => panic!("expected Schnorr"),

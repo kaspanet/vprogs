@@ -347,6 +347,7 @@ where
             new_lane_tip: st.new_lane_tip,
             new_seq_commit: st.new_seq_commit,
             permission_spk_hash: st.permission_spk_hash,
+            deposit_spk_hash: st.deposit_spk_hash,
             covenant_id: st.covenant_id,
         };
         handle.publish_artifact(Some(artifact));

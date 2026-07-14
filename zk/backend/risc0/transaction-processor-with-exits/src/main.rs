@@ -10,7 +10,7 @@ fn main() {
     process_transaction::<Sha256>(
         &mut Host,
         &mut Journal,
-        |_tx, merge_idx, _context_hash, resources, exits| {
+        |_tx, merge_idx, _context_hash, resources, exits, _deposit| {
             // Same resource-mutation semantics as the production handler: increment each resource's
             // little-endian u32 payload by 1. Keeps the state-transition shape identical so the
             // batch's prev/new state roots evolve the same way.

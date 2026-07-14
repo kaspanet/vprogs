@@ -28,6 +28,9 @@ pub struct Verifier<'a, V> {
     verify_tx_journal: V,
     /// Accumulates exits across the batch.
     exits: ExitSink,
+    /// Deposit-address commitment carried from the per-tx journals, or `[0u8; 32]` when no tx in
+    /// the batch credited a deposit. See [`carry_deposit_hash`].
+    deposit_spk_hash: [u8; 32],
 }
 
 impl<'a, V: FnMut(&[u8; 32], &[u8])> Verifier<'a, V> {
@@ -40,6 +43,7 @@ impl<'a, V: FnMut(&[u8; 32], &[u8])> Verifier<'a, V> {
             inputs,
             verify_tx_journal,
             exits: ExitSink::new(),
+            deposit_spk_hash: [0u8; 32],
         }
     }
 
@@ -59,6 +63,9 @@ impl<'a, V: FnMut(&[u8; 32], &[u8])> Verifier<'a, V> {
 
         // Compute resulting activity digest while verifying each tx journal and accumulating exits.
         let activity_digest = self.verified_activity_digest(&context_hash);
+
+        // The carry is final once every tx journal folded in; match it against the declared pin.
+        assert_declared_deposit_hash(&self.deposit_spk_hash, self.inputs.deposit_spk_hash);
 
         // Calculate the resulting lane tip.
         let new_lane_tip = lane_tip_next(&LaneTipInput {
@@ -101,6 +108,7 @@ impl<'a, V: FnMut(&[u8; 32], &[u8])> Verifier<'a, V> {
                 lane_key: self.inputs.lane_key,
                 covenant_id: self.inputs.covenant_id,
                 tx_image_id: self.inputs.tx_image_id,
+                deposit_spk_hash: &self.deposit_spk_hash,
                 lane_expired: self.inputs.batch.lane_expired,
                 exits: self.exits.as_bytes(),
             },
@@ -121,9 +129,11 @@ impl<'a, V: FnMut(&[u8; 32], &[u8])> Verifier<'a, V> {
                     // Executed txs MUST match the batch's context hash.
                     assert_eq!(exec_ctx.context_hash, context_hash, "context_hash does not match");
 
-                    // Split successful output into exit and resource iterators.
+                    // Split successful output into exit and resource iterators, carrying the per-tx
+                    // deposit hash. A failed tx commits no deposit.
                     let (output_exits, mut output_resources) = match entries.output_commitment {
-                        OutputCommitment::Success { exits, resources } => {
+                        OutputCommitment::Success { exits, deposit_spk_hash, resources } => {
+                            carry_deposit_hash(&mut self.deposit_spk_hash, deposit_spk_hash);
                             (Some(exits), Some(resources))
                         }
                         OutputCommitment::Error(_) => (None, None),
@@ -207,5 +217,84 @@ impl<'a, V: FnMut(&[u8; 32], &[u8])> Verifier<'a, V> {
         assert_eq!(&*r.resource_id, member.key, "resource_id mismatch");
 
         batch_idx
+    }
+}
+
+/// Folds a per-tx `deposit_spk_hash` into the batch carry.
+///
+/// The carry takes the first non-zero hash seen and keeps it; the zero sentinel ("no deposit")
+/// never overwrites a recorded hash. Panics on a second, differing non-zero hash: the deposit
+/// address is bundle-constant, so every non-zero hash in a batch must agree.
+fn carry_deposit_hash(carry: &mut [u8; 32], tx_hash: &[u8; 32]) {
+    if *tx_hash == [0u8; 32] {
+        return;
+    }
+    if *carry == [0u8; 32] {
+        *carry = *tx_hash;
+    } else {
+        assert_eq!(carry, tx_hash, "two distinct deposit_spk_hash values in one batch");
+    }
+}
+
+/// Asserts a batch that credited a deposit committed the deposit address the prover declared in
+/// [`Inputs::deposit_spk_hash`].
+///
+/// Pure equality: the framework never derives a deposit address, so a program may pay deposits
+/// anywhere, and tying that address to `covenant_id` is the covenant redeem script's job on chain.
+/// The guarantee here is only that the executed transactions and the declared pin agree, which
+/// turns a runtime configured against the wrong covenant into a proving failure rather than an
+/// unsettleable bundle.
+///
+/// `[0u8; 32]` is the no-deposit sentinel and skips the check, matching the on-chain gate. A batch
+/// that credits a deposit under an undeclared (all-zero) pin therefore fails.
+fn assert_declared_deposit_hash(carry: &[u8; 32], declared: &[u8; 32]) {
+    if *carry == [0u8; 32] {
+        return;
+    }
+    assert_eq!(carry, declared, "batch deposit_spk_hash does not match the declared pin");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zero_carry_skips_the_check() {
+        assert_declared_deposit_hash(&[0u8; 32], &[0xCC; 32]);
+    }
+
+    #[test]
+    fn carry_matching_the_declared_pin_passes() {
+        assert_declared_deposit_hash(&[0xCC; 32], &[0xCC; 32]);
+    }
+
+    #[test]
+    #[should_panic(expected = "batch deposit_spk_hash does not match the declared pin")]
+    fn carry_disagreeing_with_the_declared_pin_is_rejected() {
+        // The runtime derived its deposit address from a covenant the prover did not declare.
+        assert_declared_deposit_hash(&[0xDD; 32], &[0xCC; 32]);
+    }
+
+    #[test]
+    #[should_panic(expected = "batch deposit_spk_hash does not match the declared pin")]
+    fn crediting_a_deposit_under_an_undeclared_pin_is_rejected() {
+        assert_declared_deposit_hash(&[0xCC; 32], &[0u8; 32]);
+    }
+
+    #[test]
+    fn carry_keeps_first_non_zero_and_ignores_the_sentinel() {
+        let mut carry = [0u8; 32];
+        carry_deposit_hash(&mut carry, &[0u8; 32]);
+        assert_eq!(carry, [0u8; 32]);
+        carry_deposit_hash(&mut carry, &[0xAB; 32]);
+        carry_deposit_hash(&mut carry, &[0u8; 32]);
+        assert_eq!(carry, [0xAB; 32]);
+    }
+
+    #[test]
+    #[should_panic(expected = "two distinct deposit_spk_hash values in one batch")]
+    fn carry_rejects_a_conflicting_hash() {
+        let mut carry = [0xAB; 32];
+        carry_deposit_hash(&mut carry, &[0xCD; 32]);
     }
 }

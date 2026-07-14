@@ -7,8 +7,6 @@ use alloc::vec::Vec;
 
 use vprogs_core_codec::{Error, Reader, Result as CodecResult};
 
-#[cfg(feature = "experimental-image-lock")]
-use crate::lock_variants::PreimageLockView;
 use crate::{
     auth_context::AuthContext,
     lock_trait::Lock,
@@ -21,12 +19,6 @@ pub enum LockEnum<'a> {
     Schnorr(SchnorrLockView<'a>),
     Multisig(MultisigLockView<'a>),
     Unlocked(UnlockedLockView),
-    /// **Unsound under the current threat model; gated.** A real
-    /// implementation must verify the inner receipt *in-guest* with a real
-    /// verifier (e.g. native groth16); `risc0_zkvm::guest::env::verify`'s
-    /// host-attached assumption can be forged by an adversarial host.
-    #[cfg(feature = "experimental-image-lock")]
-    Preimage(PreimageLockView<'a>),
 }
 
 /// Decodes a tag-prefixed lock from a self-advancing buffer.
@@ -36,8 +28,6 @@ pub fn decode_lock<'a>(buf: &mut &'a [u8]) -> CodecResult<LockEnum<'a>> {
         SchnorrLockView::TAG => Ok(LockEnum::Schnorr(SchnorrLockView::decode(buf)?)),
         MultisigLockView::TAG => Ok(LockEnum::Multisig(MultisigLockView::decode(buf)?)),
         UnlockedLockView::TAG => Ok(LockEnum::Unlocked(UnlockedLockView::decode(buf)?)),
-        #[cfg(feature = "experimental-image-lock")]
-        PreimageLockView::TAG => Ok(LockEnum::Preimage(PreimageLockView::decode(buf)?)),
         _ => Err(Error::Decode("lock: unknown tag")),
     }
 }
@@ -49,8 +39,6 @@ impl<'a> LockEnum<'a> {
             LockEnum::Schnorr(_) => SchnorrLockView::TAG,
             LockEnum::Multisig(_) => MultisigLockView::TAG,
             LockEnum::Unlocked(_) => UnlockedLockView::TAG,
-            #[cfg(feature = "experimental-image-lock")]
-            LockEnum::Preimage(_) => PreimageLockView::TAG,
         }
     }
 
@@ -60,8 +48,6 @@ impl<'a> LockEnum<'a> {
             LockEnum::Schnorr(l) => l.wire_body_len(),
             LockEnum::Multisig(l) => l.wire_body_len(),
             LockEnum::Unlocked(l) => l.wire_body_len(),
-            #[cfg(feature = "experimental-image-lock")]
-            LockEnum::Preimage(l) => l.wire_body_len(),
         }
     }
 
@@ -77,8 +63,6 @@ impl<'a> LockEnum<'a> {
             LockEnum::Schnorr(l) => l.encode(out),
             LockEnum::Multisig(l) => l.encode(out),
             LockEnum::Unlocked(l) => l.encode(out),
-            #[cfg(feature = "experimental-image-lock")]
-            LockEnum::Preimage(l) => l.encode(out),
         }
     }
 
@@ -94,11 +78,6 @@ impl<'a> LockEnum<'a> {
                 out[2..].copy_from_slice(m.pubkeys);
             }
             LockEnum::Unlocked(_) => debug_assert!(out.is_empty()),
-            #[cfg(feature = "experimental-image-lock")]
-            LockEnum::Preimage(p) => {
-                out[..32].copy_from_slice(p.image_id);
-                out[32..].copy_from_slice(p.data_image);
-            }
         }
     }
 
@@ -110,8 +89,6 @@ impl<'a> LockEnum<'a> {
             LockEnum::Schnorr(l) => l.id_hash(),
             LockEnum::Multisig(l) => l.id_hash(),
             LockEnum::Unlocked(l) => l.id_hash(),
-            #[cfg(feature = "experimental-image-lock")]
-            LockEnum::Preimage(l) => l.id_hash(),
         }
     }
 
@@ -125,8 +102,6 @@ impl<'a> LockEnum<'a> {
             LockEnum::Schnorr(l) => l.try_unlock(resource_idx, &ctx.schnorr),
             LockEnum::Multisig(l) => l.try_unlock(resource_idx, &ctx.multisig),
             LockEnum::Unlocked(l) => l.try_unlock(resource_idx, &[]),
-            #[cfg(feature = "experimental-image-lock")]
-            LockEnum::Preimage(l) => l.try_unlock(resource_idx, &ctx.preimage),
         }
     }
 }
@@ -192,19 +167,6 @@ mod tests {
     fn dispatcher_routes_unlocked_with_empty_bucket() {
         let lock = LockEnum::Unlocked(UnlockedLockView);
         let ctx = AuthContext::default();
-        assert!(lock.unlock(0, &ctx));
-    }
-
-    #[cfg(feature = "experimental-image-lock")]
-    #[test]
-    fn dispatcher_routes_preimage_to_preimage_bucket() {
-        use crate::auth_context::PreimageUnlocker;
-        let image_id = [0xC0u8; 32];
-        let data_image = [0xDEu8; 32];
-        let lock =
-            LockEnum::Preimage(PreimageLockView { image_id: &image_id, data_image: &data_image });
-        let mut ctx = AuthContext::default();
-        ctx.preimage.push((0, PreimageUnlocker));
         assert!(lock.unlock(0, &ctx));
     }
 

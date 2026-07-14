@@ -2,16 +2,16 @@
 //! shape passed to `process_transaction`.
 
 use vprogs_zk_abi::{
-    Error as AbiError, Result as AbiResult,
+    Result as AbiResult,
     transaction_processor::{Resource, Transaction},
+    withdrawal::{DepositSink, ExitSink},
 };
 use vprogs_zk_backend_risc0_api::{Hasher, Sha256};
 
-#[cfg(feature = "experimental-image-lock")]
-use crate::signer_variants::ImageProofSigner;
 use crate::{
-    action::apply_action,
+    action::{ApplyContext, apply_action},
     auth_context::{AuthContext, MultisigUnlocker},
+    deposit_policy::DepositPolicy,
     domain::Domain,
     ix::{DecodedIx, decode_ix},
     signer::SignerEnum,
@@ -24,11 +24,21 @@ use crate::{
 
 /// Verifies signers against resource locks and applies the decoded actions.
 ///
-/// `main` adapts this into the ABI [`TransactionHandler`] shape; the merge_idx,
-/// context hash, and exit sink it also receives are unused by the runtime.
+/// `main` adapts this into the ABI [`TransactionHandler`] shape. `exits` receives L2-to-L1 exits
+/// emitted by `Withdraw` actions; `deposit` receives the deposit-address commitment written by a
+/// `Deposit` action; `merge_idx` and `context_hash` are unused.
+///
+/// Generic over `P: DepositPolicy` so a different runtime can supply its own deposit rules in
+/// `main.rs` without touching this file.
 ///
 /// [`TransactionHandler`]: vprogs_zk_abi::transaction_processor::TransactionHandler
-pub fn run<'a>(tx: &Transaction<'a>, resources: &mut [Resource<'a>]) -> AbiResult<()> {
+pub fn run<'a, P: DepositPolicy>(
+    tx: &Transaction<'a>,
+    resources: &mut [Resource<'a>],
+    exits: &mut ExitSink,
+    deposit: &mut DepositSink,
+    policy: &P,
+) -> AbiResult<()> {
     // The witness format is V1-specific; the ABI only decodes V1 transactions.
     let current_rest_preimage = tx.rest_preimage;
     let payload = &tx.payload;
@@ -37,11 +47,12 @@ pub fn run<'a>(tx: &Transaction<'a>, resources: &mut [Resource<'a>]) -> AbiResul
 
     // Translate end_of_actions from ix-relative to payload-relative bytes.
     // payload.bytes = access_metadata_prefix || ix_data, so the prefix length
-    // is `payload.bytes.len() - ix_data.len()`.
+    // is `payload.bytes.len() - ix_data.len()`. The sig-message digest over
+    // this presig slice is hashed lazily by `SignerResolveContext`, so a
+    // witness-only tx never pays for it.
     let access_prefix_len = payload.bytes.len() - payload.ix_data.len();
     let end_of_actions_in_payload = access_prefix_len + end_of_actions_in_ix;
     let payload_presig = &payload.bytes[..end_of_actions_in_payload];
-    let sig_msg = compute_sig_message(current_rest_preimage, payload_presig);
 
     // Resolve signers → AuthContext. Entries are pushed in wire order. The
     // wire format must already be `(resource_idx asc, pubkey asc within
@@ -50,27 +61,35 @@ pub fn run<'a>(tx: &Transaction<'a>, resources: &mut [Resource<'a>]) -> AbiResul
     // per-resource slices at match time rather than silently re-sorting.
     let auth_ctx = resolve_signers(
         &signers,
-        &SignerResolveContext {
-            payload_bytes: payload.bytes,
-            current_rest_preimage,
-            sig_msg: &sig_msg,
-            resources,
-        },
+        &SignerResolveContext::new(payload.bytes, current_rest_preimage, payload_presig, resources),
     )?;
 
+    let mut cx = ApplyContext::new(tx, resources, &auth_ctx, exits, deposit);
+
     for action in &actions {
-        apply_action(action, tx, resources, &auth_ctx)?;
+        apply_action(action, &mut cx, policy)?;
     }
 
     Ok(())
 }
 
-/// `M = SHA-256(Domain::SigMessage || rest_preimage || payload_presig)`: the
-/// 32-byte digest a BIP-340 schnorr signer commits to. Off-chain signers must
-/// produce the exact same domain-separated input. Exposed publicly so test
-/// harnesses sign against the same function the guest verifies (no drift).
+/// `M = SHA-256(Domain::SigMessage || len(rest_preimage) || rest_preimage || len(payload_presig) ||
+/// payload_presig)`, each `len` a little-endian `u32`: the 32-byte digest a BIP-340 schnorr signer
+/// commits to. Off-chain signers must produce the exact same domain-separated input. Exposed
+/// publicly so test harnesses sign against the same function the guest verifies (no drift).
+///
+/// Length-prefixing both halves makes the preimage injective: distinct `(rest_preimage,
+/// payload_presig)` pairs cannot share a digest, so a signature over one split is never valid for a
+/// shifted one.
 pub fn compute_sig_message(rest_preimage: &[u8], payload_presig: &[u8]) -> [u8; 32] {
-    Sha256::hash_parts_with_domain(&[Domain::SigMessage as u8], [rest_preimage, payload_presig])
+    // Guest `usize` is 32-bit, so neither cast can truncate.
+    let rest_len = (rest_preimage.len() as u32).to_le_bytes();
+    let presig_len = (payload_presig.len() as u32).to_le_bytes();
+
+    Sha256::hash_parts_with_domain(
+        &[Domain::SigMessage as u8],
+        [&rest_len[..], rest_preimage, &presig_len[..], payload_presig],
+    )
 }
 
 /// Walks parsed signers, calls `Signer::resolve` on each, and routes the
@@ -92,7 +111,7 @@ pub fn compute_sig_message(rest_preimage: &[u8], payload_presig: &[u8]) -> [u8; 
 /// multisig signers for the same resource lands in the same aggregated
 /// entry (no map lookup or sort).
 fn resolve_signers<'a>(
-    signers: &[(u8, SignerEnum<'a>)],
+    signers: &[(u8, SignerEnum)],
     ctx: &SignerResolveContext<'a>,
 ) -> AbiResult<AuthContext> {
     let mut auth = AuthContext::default();
@@ -115,17 +134,6 @@ fn resolve_signers<'a>(
             SignerEnum::MultisigPrevTxV1Witness(s) => {
                 let u = MultisigPrevTxV1WitnessSigner::resolve(s, resource_idx, ctx)?;
                 append_multisig_contrib(&mut auth.multisig, resource_idx, u);
-            }
-            #[cfg(feature = "experimental-image-lock")]
-            SignerEnum::ImageProof(s) => {
-                let u = ImageProofSigner::resolve(s, resource_idx, ctx)?;
-                auth.preimage.push((resource_idx, u));
-            }
-            SignerEnum::_Phantom(_) => {
-                // `_Phantom` is never constructed by `decode_signer`; this
-                // arm exists only to consume the lifetime parameter. Return
-                // a defensive error instead of panicking.
-                return Err(AbiError::Decode("runtime: phantom signer variant".into()));
             }
         }
     }
@@ -160,9 +168,9 @@ mod tests {
     // Sig-message digest
 
     #[test]
-    fn sig_msg_is_sha256_with_domain_of_concat() {
+    fn sig_msg_is_sha256_with_domain_of_length_prefixed_halves() {
         // Cross-check: compute_sig_message(rp, pp) ==
-        //   SHA-256(Domain::SigMessage || rp || pp).
+        //   SHA-256(Domain::SigMessage || len32(rp) || rp || len32(pp) || pp).
         let rp = b"rest-preimage";
         let pp = b"payload-presig-bytes";
 
@@ -170,7 +178,13 @@ mod tests {
 
         let want = Sha256::hash_with_domain(
             &[Domain::SigMessage as u8],
-            [rp.as_slice(), pp.as_slice()].concat(),
+            [
+                &(rp.len() as u32).to_le_bytes()[..],
+                rp.as_slice(),
+                &(pp.len() as u32).to_le_bytes()[..],
+                pp.as_slice(),
+            ]
+            .concat(),
         );
         assert_eq!(got, want);
     }
@@ -203,18 +217,13 @@ mod tests {
     }
 
     #[test]
-    fn sig_msg_split_invariance() {
-        // Splitting the second argument across two calls is forbidden; the
-        // function commits to (rp, pp) as two distinct fields. This is what
-        // lets the test harness keep `rest_preimage` and `payload_presig`
-        // separate without an ambiguity-prone glue byte.
-        let rp = b"r";
-        let split = compute_sig_message(rp, b"hello-world");
-        let combined = Sha256::hash_parts_with_domain(
-            &[Domain::SigMessage as u8],
-            [rp.as_slice(), b"hello-world"],
-        );
-        assert_eq!(split, combined);
+    fn sig_msg_distinguishes_shifted_splits() {
+        // The length prefixes commit to (rp, pp) as two distinct fields. Without them both
+        // pairs below hash `domain || "abc"`, and one signature would cover either split.
+        assert_ne!(compute_sig_message(b"ab", b"c"), compute_sig_message(b"a", b"bc"));
+
+        // The degenerate splits of the same concatenation are distinct too.
+        assert_ne!(compute_sig_message(b"", b"abc"), compute_sig_message(b"abc", b""));
     }
 
     // Multisig aggregator

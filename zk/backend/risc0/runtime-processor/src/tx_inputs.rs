@@ -71,13 +71,13 @@ pub struct OutputData<'a> {
 ///
 /// Currently only `tx_version == 1` is supported (V1 outputs include the
 /// `has_covenant` byte and optional covenant tail).
-pub fn parse_output_at_index_v1<'a>(
-    rest_preimage: &'a [u8],
+pub fn parse_output_at_index_v1(
+    rest_preimage: &[u8],
     output_index: u32,
-) -> CodecResult<OutputData<'a>> {
+) -> CodecResult<OutputData<'_>> {
     let mut buf = rest_preimage;
     let version = buf.le_u16("tx.version")?;
-    if version < 1 {
+    if version != 1 {
         return Err(Error::Decode("rest_preimage: unsupported tx version"));
     }
     let n_inputs = buf.le_u64("tx.n_inputs")?;

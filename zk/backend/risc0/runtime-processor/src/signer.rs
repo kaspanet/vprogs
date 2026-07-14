@@ -4,8 +4,6 @@
 
 use vprogs_core_codec::{Error, Reader, Result as CodecResult};
 
-#[cfg(feature = "experimental-image-lock")]
-use crate::signer_variants::ImageProofSigner;
 use crate::{
     signer_trait::Signer,
     signer_variants::{
@@ -17,25 +15,17 @@ use crate::{
 /// All known signer kinds. Each variant's `resolve` produces an `Unlocker` of
 /// some concrete type; `runtime::resolve_signers` routes the result into the
 /// matching `AuthContext` bucket.
-pub enum SignerEnum<'a> {
+pub enum SignerEnum {
     SchnorrSigPtr(SchnorrSigPtrSigner),
     PrevTxV1Witness(PrevTxV1WitnessSigner),
     MultisigSchnorrSigPtr(MultisigSchnorrSigPtrSigner),
     MultisigPrevTxV1Witness(MultisigPrevTxV1WitnessSigner),
-    /// **Unsound under the current threat model; gated.** See
-    /// `signer_variants::ImageProofSigner` for the rationale.
-    #[cfg(feature = "experimental-image-lock")]
-    ImageProof(ImageProofSigner),
-    /// Lifetime parameter is reserved for future signer variants that borrow
-    /// from the wire buffer; current variants are owned.
-    #[doc(hidden)]
-    _Phantom(core::marker::PhantomData<&'a ()>),
 }
 
 /// Decodes a single signer entry: `(resource_idx u8 || kind u8 || body)`.
 /// Returns `(resource_idx, signer)`; `resource_idx` lives outside the body
 /// because it's a shared field every signer carries.
-pub fn decode_signer<'a>(buf: &mut &'a [u8]) -> CodecResult<(u8, SignerEnum<'a>)> {
+pub fn decode_signer(buf: &mut &[u8]) -> CodecResult<(u8, SignerEnum)> {
     let resource_idx = buf.byte("signer.resource_idx")?;
     let kind = buf.byte("signer.kind")?;
     let body = match kind {
@@ -49,8 +39,6 @@ pub fn decode_signer<'a>(buf: &mut &'a [u8]) -> CodecResult<(u8, SignerEnum<'a>)
         MultisigPrevTxV1WitnessSigner::TAG => {
             SignerEnum::MultisigPrevTxV1Witness(MultisigPrevTxV1WitnessSigner::decode(buf)?)
         }
-        #[cfg(feature = "experimental-image-lock")]
-        ImageProofSigner::TAG => SignerEnum::ImageProof(ImageProofSigner::decode(buf)?),
         _ => return Err(Error::Decode("signer: unknown kind")),
     };
     Ok((resource_idx, body))

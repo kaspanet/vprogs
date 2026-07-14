@@ -25,6 +25,10 @@ pub struct SettlementArtifact<R> {
     pub new_seq_commit: Hash,
     /// Permission-tree exit-output hash, or all-zero when the bundle emitted no exits.
     pub permission_spk_hash: [u8; 32],
+    /// Deposit-address commitment (`delegate_entry_spk_hash(covenant_id)`) carried opaquely from
+    /// the bundle journal, or all-zero when the bundle credited no L1 deposit. The settlement
+    /// witness forwards it; the redeem script binds it to the delegate-entry address.
+    pub deposit_spk_hash: [u8; 32],
     /// Covenant id the bundle binds to.
     pub covenant_id: [u8; 32],
 }

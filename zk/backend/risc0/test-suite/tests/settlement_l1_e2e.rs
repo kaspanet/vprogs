@@ -103,8 +103,11 @@ async fn settlement_lands_in_real_block_succinct() {
                 },
             })
         },
-        make_witness: |receipt| {
-            RealProofWitness::Succinct(OwnedSuccinctWitness::from_receipt(receipt))
+        make_witness: |receipt, deposit_spk_hash| {
+            RealProofWitness::Succinct(OwnedSuccinctWitness::from_receipt(
+                receipt,
+                deposit_spk_hash,
+            ))
         },
         // OpZkPrecompile alone burns ~2500 budget units for the succinct precompile; ship
         // 10_000 for headroom.
@@ -151,8 +154,8 @@ async fn settlement_lands_in_real_block_groth16() {
                 },
             })
         },
-        make_witness: |receipt| {
-            RealProofWitness::Groth16(OwnedGroth16Witness::from_receipt(receipt))
+        make_witness: |receipt, deposit_spk_hash| {
+            RealProofWitness::Groth16(OwnedGroth16Witness::from_receipt(receipt, deposit_spk_hash))
         },
         // Groth16 precompile is cheaper than succinct (~1000*140 gram units per
         // `ZkTag::cost`); 10_000 is still ample headroom.
@@ -525,6 +528,9 @@ async fn run_one_dev_settlement(step: DevSettlementStep<'_>) -> DevSettlementOut
     let new_lane_tip = chain_seq_commit;
     let lane_key = test_lane_key();
     let settlement = Settlement::build_dev(&SettlementDevInput {
+        // This flow credits no L1 deposit, so the bundle carries the no-deposit sentinel and the
+        // dev script's deposit binding is skipped.
+        deposit_spk_hash: &[0u8; 32],
         covenant_id,
         prev_state: &prev_state,
         prev_lane_tip: &prev_lane_tip,
@@ -636,7 +642,7 @@ struct BuildPinsArgs<'a> {
 struct RealProofConfig<BuildPins, MakeWitness>
 where
     BuildPins: for<'a> Fn(BuildPinsArgs<'a>) -> RedeemPins<'a>,
-    MakeWitness: Fn(&Receipt) -> RealProofWitness,
+    MakeWitness: Fn(&Receipt, [u8; 32]) -> RealProofWitness,
 {
     proof_type: ProofType,
     build_pins: BuildPins,
@@ -665,7 +671,7 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
     config: RealProofConfig<BuildPins, MakeWitness>,
 ) where
     BuildPins: for<'a> Fn(BuildPinsArgs<'a>) -> RedeemPins<'a>,
-    MakeWitness: Fn(&Receipt) -> RealProofWitness,
+    MakeWitness: Fn(&Receipt, [u8; 32]) -> RealProofWitness,
 {
     use tempfile::TempDir;
     use vprogs_scheduling_scheduler::ExecutionConfig;
@@ -753,7 +759,12 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
     // scheduler advances per committed batch.
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-    let proving_config = BatchProverConfig { lane_key, covenant_id: Some(covenant_id) };
+    let proving_config = BatchProverConfig {
+        lane_key,
+        covenant_id,
+        // No deposits in this flow; every batch commits the no-deposit sentinel.
+        deposit_spk_hash: [0u8; 32],
+    };
     let proving = ProvingPipeline::batch(backend.clone(), storage.clone(), proving_config);
     let vm = Vm::new(backend.clone(), proving);
     let mut scheduler = Scheduler::new(
@@ -871,7 +882,7 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
 struct SettlementStep<'a, BuildPins, MakeWitness>
 where
     BuildPins: for<'b> Fn(BuildPinsArgs<'b>) -> RedeemPins<'b>,
-    MakeWitness: Fn(&Receipt) -> RealProofWitness,
+    MakeWitness: Fn(&Receipt, [u8; 32]) -> RealProofWitness,
 {
     l1: &'a L1Node,
     scheduler:
@@ -912,7 +923,7 @@ async fn run_one_settlement<BuildPins, MakeWitness>(
 ) -> SettlementOutcome
 where
     BuildPins: for<'b> Fn(BuildPinsArgs<'b>) -> RedeemPins<'b>,
-    MakeWitness: Fn(&Receipt) -> RealProofWitness,
+    MakeWitness: Fn(&Receipt, [u8; 32]) -> RealProofWitness,
 {
     use vprogs_core_codec::Reader;
     use vprogs_zk_abi::batch_aggregator::StateTransition;
@@ -1050,7 +1061,7 @@ where
     );
 
     // === c. build production settlement with the real witness ===
-    let owned_witness = (config.make_witness)(&settlement_receipt);
+    let owned_witness = (config.make_witness)(&settlement_receipt, parsed.deposit_spk_hash);
     let settlement = Settlement::build(&SettlementInput {
         covenant_id,
         pins: spend_pins,
