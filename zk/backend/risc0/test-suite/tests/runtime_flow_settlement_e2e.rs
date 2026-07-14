@@ -1,7 +1,7 @@
-//! Milestone 3: drive the deposit/transfer/withdraw runtime through the batch proving + settlement
-//! pipeline, and verify the settlement journal carries both the deposit-address commitment
+//! Drives the deposit/transfer/withdraw runtime through the batch proving + settlement pipeline,
+//! and verifies the settlement journal carries both the deposit-address commitment
 //! (`deposit_spk_hash`) and the permission-tree exit commitment (`permission_spk_hash`) produced by
-//! a withdrawal. This is "deposits + withdraw of permission-tree leaves, through to a settlement".
+//! a withdrawal.
 //!
 //! In dev mode (`RISC0_DEV_MODE=1`) the guest executes for real but the proof is faked, so the
 //! on-chain `OpZkPrecompile` script check (which needs a real CUDA proof) is skipped; we assert the

@@ -1,11 +1,11 @@
-//! Milestone 2: drive the deposit/transfer/withdraw runtime through the full L1 path on a real
-//! kaspad simnet, with TWO framework nodes following the same chain via their bridges and reaching
-//! identical committed state.
+//! Drives the deposit/transfer/withdraw runtime through the full L1 path on a real kaspad simnet,
+//! with TWO framework nodes following the same chain via their bridges and reaching identical
+//! committed state.
 //!
 //! Carriers ride the lane subnetwork ([`TEST_SUBNETWORK_ID`], `TX_VERSION_TOCCATA`) and are funded
 //! from the node's coinbase wallet (the deposit funding output locks real KAS to the covenant
-//! deposit address). Config `Init` is genesis-funded + witness-authorized (see
-//! flow-test-issues/01).
+//! deposit address). The config `Init` carrier is coinbase-funded and authorized by the genesis key
+//! baked into the runtime.
 //!
 //! Runs under dev mode (`RISC0_DEV_MODE=1`): the guest executes for real (only the proof is faked).
 

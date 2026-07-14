@@ -382,8 +382,8 @@ fn build_carrier(
 
 /// Builds an `Init` carrier that creates the singleton config resource, authorized by the genesis
 /// key via the [`GenesisSchnorrSigPtrSigner`] (the genesis pubkey is baked into the runtime, so no
-/// resource lock is read; the fix for flow-test-issues/01). `config_owner`'s key becomes the
-/// config's lock and authorizes future `Update`s.
+/// resource lock is read). `config_owner`'s key becomes the config's lock and authorizes future
+/// `Update`s.
 pub fn init_config_carrier(
     min_withdrawal: u64,
     covenant_id: [u8; 32],
@@ -510,7 +510,7 @@ pub fn rotate_user_lock_carrier(user: &RuntimeSigner, new_owner: &RuntimeSigner)
     build_carrier(access, actions, vec![(0, SchnorrSigPtrSigner::TAG, user.clone())], vec![])
 }
 
-// --- Unfunded `*_tx` wrappers (direct scheduling, Milestone 1) ---------------
+// --- Unfunded `*_tx` wrappers (direct scheduling) ----------------------------
 
 /// Unfunded `Init` carrier tx. See [`init_config_carrier`].
 pub fn init_config_tx(min_withdrawal: u64, cov: [u8; 32], owner: &RuntimeSigner) -> L1Transaction {

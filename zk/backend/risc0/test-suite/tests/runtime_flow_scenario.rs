@@ -1,4 +1,4 @@
-//! Milestone 4: a deterministic scenario engine with an expected-state model.
+//! A deterministic scenario engine with an expected-state model.
 //!
 //! A scenario is a list of [`Action`]s in SUBMISSION order (which may differ from logical order).
 //! An in-test [`Model`] predicts, action-by-action in execution order, whether each action is
@@ -7,8 +7,7 @@
 //! the whole tx reverts). The engine then drives the SAME sequence through the real runtime ELF via
 //! the scheduler and asserts the committed state matches the model exactly.
 //!
-//! This is the "deterministic set of txs verifies we handle everything, caring about the state that
-//! should be" tool. Run under `RISC0_DEV_MODE=1`.
+//! Runs under `RISC0_DEV_MODE=1`.
 
 use std::{
     collections::{BTreeMap, BTreeSet},

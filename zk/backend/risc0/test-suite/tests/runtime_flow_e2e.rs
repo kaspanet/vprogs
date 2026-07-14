@@ -1,4 +1,4 @@
-//! Milestone 1: drive the real deposit/transfer/withdraw `runtime-processor` guest through the
+//! Drives the real deposit/transfer/withdraw `runtime-processor` guest through the
 //! `Scheduler` + `Vm` + `Backend`, scheduling carrier transactions directly (no mempool, no L1
 //! node). This isolates the host->guest `Inputs::encode` seam: it proves the scheduler rebuilds the
 //! exact blob the guest expects, that the genesis-gated config `Init` works, and that
@@ -91,105 +91,6 @@ impl Harness {
     /// Decoded user balance for `signer`, or `None` if its resource is absent.
     fn balance(&self, signer: &RuntimeSigner) -> Option<u64> {
         self.resource(signer.user_id()).and_then(|b| user_balance(&b))
-    }
-}
-
-// --- Debug: run a single carrier tx through the guest with journal access ---
-
-/// Mirrors the scheduler's `Inputs::encode` for one tx + its resources, so a flow tx can be run
-/// through the bare executor and its journal (the `OutputCommitment`, hidden by the Vm) inspected.
-fn build_inputs_blob(
-    tx: &vprogs_l1_types::L1Transaction,
-    resources: &[(bool, Vec<u8>)],
-) -> Vec<u8> {
-    use kaspa_consensus_core::hashing::tx::transaction_v1_rest_preimage;
-    let rest = transaction_v1_rest_preimage(tx);
-    let mut out = Vec::new();
-    out.extend_from_slice(&tx.version.to_le_bytes());
-    out.extend_from_slice(tx.id().as_bytes().as_slice());
-    out.extend_from_slice(&0u32.to_le_bytes()); // merge_idx
-    out.extend_from_slice(&[0u8; 32]); // context_hash (guest ignores)
-    let mut body = Vec::new();
-    body.extend_from_slice(&(tx.payload.len() as u32).to_le_bytes());
-    body.extend_from_slice(&tx.payload);
-    body.extend_from_slice(&(rest.len() as u32).to_le_bytes());
-    body.extend_from_slice(&rest);
-    out.extend_from_slice(&(body.len() as u32).to_le_bytes());
-    out.extend_from_slice(&body);
-    for (is_new, data) in resources {
-        out.push(if *is_new { 1 } else { 0 });
-        out.extend_from_slice(&0u32.to_le_bytes()); // index
-        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
-        out.extend_from_slice(data);
-    }
-    out
-}
-
-/// Runs the runtime ELF over `inputs` in the bare executor, returning `(stdout, journal_bytes)`.
-fn exec_with_journal(inputs: &[u8]) -> (Vec<u8>, Vec<u8>) {
-    let raw = runtime_processor_elf();
-    let elf = risc0_binfmt::ProgramBinary::new(&raw, risc0_zkos_v1compat::V1COMPAT_ELF).encode();
-    let mut stdout = Vec::new();
-    let env = risc0_zkvm::ExecutorEnv::builder()
-        .write_slice(&[inputs.len() as u32])
-        .write_slice(inputs)
-        .stdout(&mut stdout)
-        .build()
-        .expect("env");
-    let info = risc0_zkvm::default_executor().execute(env, &elf).expect("execute");
-    (stdout, info.journal.bytes)
-}
-
-#[test]
-fn debug_init_guest_error() {
-    use vprogs_zk_abi::transaction_processor::{JournalEntries, OutputCommitment, Outputs};
-    let owner = RuntimeSigner::genesis();
-    let tx = init_config_tx(100, EXAMPLE_DEPOSIT_COVENANT_ID, &owner);
-    let inputs = build_inputs_blob(&tx, &[(true, Vec::new())]);
-    let (stdout, journal) = exec_with_journal(&inputs);
-    let je = JournalEntries::decode(&journal).expect("journal");
-    match je.output_commitment {
-        OutputCommitment::Success { .. } => eprintln!("[debug_init] SUCCESS"),
-        OutputCommitment::Error(e) => eprintln!("[debug_init] ERROR: {e:?}"),
-    }
-    eprintln!(
-        "[debug_init] outputs decode: {:?}",
-        Outputs::decode(&stdout, 1).map(|o| o.storage_ops.len())
-    );
-}
-
-#[test]
-fn debug_deposit_guest_error() {
-    use vprogs_zk_abi::transaction_processor::{JournalEntries, OutputCommitment, Outputs};
-    let cov = EXAMPLE_DEPOSIT_COVENANT_ID;
-    let owner = RuntimeSigner::genesis();
-    let alice = RuntimeSigner::user(1);
-
-    // Get committed config bytes by running Init through the guest.
-    let init = init_config_tx(100, cov, &owner);
-    let (init_out, _) = exec_with_journal(&build_inputs_blob(&init, &[(true, Vec::new())]));
-    let config_bytes =
-        Outputs::decode(&init_out, 1).unwrap().storage_ops[0].clone().expect("config written");
-
-    // Deposit accesses [user(Write), config(Read)] in id-sorted order.
-    let dep = deposit_tx(cov, &alice, 5_000);
-    let resources = if alice.user_id() < config_id() {
-        vec![(true, Vec::new()), (false, config_bytes)]
-    } else {
-        vec![(false, config_bytes), (true, Vec::new())]
-    };
-    let (out, journal) = exec_with_journal(&build_inputs_blob(&dep, &resources));
-    match JournalEntries::decode(&journal).unwrap().output_commitment {
-        OutputCommitment::Success { deposit_spk_hash, .. } => {
-            eprintln!("[debug_deposit] SUCCESS deposit_spk_hash={:02x?}", &deposit_spk_hash[..4]);
-            let outs = Outputs::decode(&out, resources.len()).unwrap();
-            let user_idx = if alice.user_id() < config_id() { 0 } else { 1 };
-            eprintln!(
-                "[debug_deposit] user balance = {:?}",
-                outs.storage_ops[user_idx].as_ref().and_then(|d| user_balance(d))
-            );
-        }
-        OutputCommitment::Error(e) => eprintln!("[debug_deposit] ERROR: {e:?}"),
     }
 }
 

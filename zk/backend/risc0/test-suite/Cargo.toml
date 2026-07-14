@@ -40,9 +40,6 @@ vprogs-zk-batch-prover.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]
-risc0-binfmt                           = "3.0.4"
-risc0-zkos-v1compat                    = "2.2.2"
-risc0-zkvm                             = { version = "3.0", features = ["std"] }
 tempfile.workspace                     = true
 tokio                                  = { workspace = true, features = ["rt-multi-thread"] }
 vprogs-core-hashing.workspace          = true
