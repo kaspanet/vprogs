@@ -18,7 +18,6 @@
 //!   transaction_v1_rest_preimage(tx)` excludes the payload, so it is stable across the signature
 //!   splice.
 
-use k256::schnorr::{Signature, SigningKey};
 use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus_core::{
     constants::TX_VERSION_TOCCATA,
@@ -27,8 +26,7 @@ use kaspa_consensus_core::{
     tx::{Transaction, TransactionOutput},
 };
 use kaspa_txscript::standard::pay_to_script_hash_script;
-use secp256k1::{Keypair, SECP256K1};
-use signature::Signer as _;
+use secp256k1::{Keypair, Message, SECP256K1};
 use tap::Tap;
 use vprogs_core_codec::Writer;
 use vprogs_core_types::{AccessMetadata, ResourceId};
@@ -85,7 +83,6 @@ pub fn config_id() -> ResourceId {
 /// from an RNG, so a given scenario always yields the same resource ids and signatures.
 #[derive(Clone)]
 pub struct RuntimeSigner {
-    sk: SigningKey,
     secret: [u8; 32],
     pubkey: [u8; 32],
 }
@@ -97,14 +94,15 @@ impl RuntimeSigner {
         assert!(scalar != 0, "secret scalar must be nonzero");
         let mut secret = [0u8; 32];
         secret[24..32].copy_from_slice(&scalar.to_be_bytes());
-        let sk = SigningKey::from_bytes(&k256::FieldBytes::from(secret))
+        let keypair = Keypair::from_seckey_slice(SECP256K1, &secret)
             .expect("a small nonzero scalar is a valid BIP-340 secret key");
-        let pubkey = sk.verifying_key().to_bytes().into();
-        Self { sk, secret, pubkey }
+        let pubkey = keypair.x_only_public_key().0.serialize();
+        Self { secret, pubkey }
     }
 
-    /// The secp256k1 keypair for the same secret scalar, for L1-signing P2PK inputs (kaspa P2PK is
-    /// BIP-340 Schnorr over the x-only key, which equals [`Self::pubkey`]).
+    /// The secp256k1 keypair for the same secret scalar, used to sign both L1 P2PK inputs and
+    /// runtime sig-messages (kaspa P2PK is BIP-340 Schnorr over the x-only key, which equals
+    /// [`Self::pubkey`]).
     pub fn secp_keypair(&self) -> Keypair {
         Keypair::from_seckey_slice(SECP256K1, &self.secret).expect("valid secp256k1 secret")
     }
@@ -145,9 +143,9 @@ impl RuntimeSigner {
     }
 
     /// Signs `msg` with this key's BIP-340 Schnorr key.
-    fn sign(&self, msg: &[u8]) -> [u8; SIG_LEN] {
-        let sig: Signature = self.sk.sign(msg);
-        sig.to_bytes()
+    fn sign(&self, msg: [u8; 32]) -> [u8; SIG_LEN] {
+        let message = Message::from_digest(msg);
+        SECP256K1.sign_schnorr(&message, &self.secp_keypair()).serialize()
     }
 }
 
@@ -310,7 +308,7 @@ impl RuntimeCarrier {
         let sig_msg = compute_sig_message(rest_preimage, &self.payload_presig);
         let mut payload = self.payload_presig.clone();
         for s in &self.signers {
-            payload.extend_from_slice(&s.sign(&sig_msg));
+            payload.extend_from_slice(&s.sign(sig_msg));
         }
         payload
     }

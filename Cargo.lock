@@ -2116,7 +2116,6 @@ dependencies = [
  "digest 0.10.7",
  "elliptic-curve",
  "signature",
- "spki",
 ]
 
 [[package]]
@@ -2155,7 +2154,6 @@ dependencies = [
  "ff",
  "generic-array",
  "group",
- "pkcs8",
  "rand_core 0.6.4",
  "sec1",
  "subtle",
@@ -3402,7 +3400,6 @@ dependencies = [
  "cfg-if",
  "ecdsa",
  "elliptic-curve",
- "once_cell",
  "sha2",
  "signature",
 ]
@@ -7087,7 +7084,6 @@ dependencies = [
  "base16ct",
  "der",
  "generic-array",
- "pkcs8",
  "subtle",
  "zeroize",
 ]
@@ -9295,7 +9291,6 @@ dependencies = [
 name = "vprogs-zk-backend-risc0-test-suite"
 version = "0.1.0"
 dependencies = [
- "k256",
  "kaspa-addresses",
  "kaspa-consensus-core",
  "kaspa-grpc-client",
@@ -9304,7 +9299,6 @@ dependencies = [
  "kaspa-seq-commit",
  "kaspa-txscript",
  "secp256k1",
- "signature",
  "tap",
  "tempfile",
  "tokio",

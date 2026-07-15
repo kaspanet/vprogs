@@ -45,24 +45,19 @@ vprogs-zk-backend-risc0-api = { path = "../api", default-features = false, featu
 # Backend, which would drag in the covenant/vm crates and their kaspa-consensus
 # transitive deps. The abi crate needs `host` for Outputs::decode.
 blake3              = "1"
-k256                = { version = "0.13", features = ["schnorr"] }
 rand                = "0.8"
 risc0-binfmt        = "3.0.4"
 risc0-zkos-v1compat = "2.2.2"
 risc0-zkvm          = { version = "3.0", features = ["std", "prove"] }
-signature           = "2"
+secp256k1           = { version = "0.29.1", features = ["rand-std"] }
 vprogs-core-types   = { path = "../../../../core/types" }
 vprogs-l1-utils     = { path = "../../../../l1/utils" }
 vprogs-zk-abi       = { path = "../../../abi", features = ["host"] }
 
 # Kaspa types used to build a real V1 prev-tx fixture in the witness e2e
-# test. Pinned to the same git rev as the workspace (see /vprogs/Cargo.toml).
+# test.
 # Using `transaction_v1_rest_preimage` from kaspa-consensus-core avoids
 # hand-rolling the rest_preimage encoding — and matches the format the
 # runtime's `tx_inputs` parser expects.
-kaspa-consensus-core = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof" }
-kaspa-txscript       = { git = "https://github.com/biryukovmaxim/rusty-kaspa", branch = "zk-rollup-covenant-example-rpc-lane-proof" }
-
-# Match the workspace's pinned git source — the published 0.2.5/0.2.6 are yanked.
-[patch.crates-io]
-serde_nested_with = { git = "https://github.com/murar8/serde_nested_with", tag = "0.2.6" }
+kaspa-consensus-core = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
+kaspa-txscript       = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "master" }
