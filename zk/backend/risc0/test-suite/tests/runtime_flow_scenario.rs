@@ -368,8 +368,6 @@ fn comprehensive_deterministic_scenario() {
         // Raise the withdrawal minimum, then a withdraw that the new min rejects.
         UpdateConfig { new_min_withdrawal: 2_500 },
         Withdraw { user: 1, amount: 2_000 }, // rejected: below new min (2500)
-        Withdraw { user: 1, amount: 2_000 }, /* accepted again? bal 2000 < 2500 min -> still
-                                              * rejected */
         // Top up u3 and withdraw above the new min.
         Deposit { user: 3, value: 1_000 },   // u3: 3000
         Withdraw { user: 3, amount: 2_600 }, // u3: 400
