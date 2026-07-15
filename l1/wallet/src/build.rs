@@ -260,6 +260,12 @@ pub fn signed_carrier_transaction<F: Fn(&[u8]) -> Vec<u8>>(
     let change_spk = pay_to_address_script(args.change_address);
     let entries = vec![args.entry.clone()];
     let extra_value: u64 = args.extra_outputs.iter().map(|o| o.value).sum();
+    assert!(
+        args.entry.amount > extra_value,
+        "funding UTXO amount {} too small for extra outputs {}",
+        args.entry.amount,
+        extra_value,
+    );
 
     let build = |fee: u64, payload: Vec<u8>| {
         let mut outputs = args.extra_outputs.clone();
