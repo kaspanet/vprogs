@@ -132,9 +132,12 @@ impl<'a> Signer<'a> for GenesisSchnorrSigPtrSigner {
 
     fn resolve(
         &self,
-        _resource_idx: u8,
+        resource_idx: u8,
         ctx: &SignerResolveContext<'a>,
     ) -> CodecResult<SchnorrUnlocker> {
+        ctx.resources
+            .get(resource_idx as usize)
+            .ok_or(Error::Decode("signer.genesis_schnorr: resource_idx out of range"))?;
         let sig = read_sig_at_offset(self.sig_offset, ctx)?;
         if !verify_k256_schnorr_sig(&GENESIS_SCHNORR_BYTES, sig, ctx.sig_msg()) {
             return Err(Error::Decode("signer.genesis_schnorr: invalid signature"));
