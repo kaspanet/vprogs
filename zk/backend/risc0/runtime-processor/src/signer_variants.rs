@@ -5,6 +5,7 @@
 //! Default-build kinds, grouped by the unlocker type they produce:
 //! - [`SchnorrSigPtrSigner`] (TAG=0x01) → `SchnorrUnlocker` for Schnorr locks.
 //! - [`PrevTxV1WitnessSigner`] (TAG=0x02) → `SchnorrUnlocker` for Schnorr locks.
+//! - [`GenesisSchnorrSigPtrSigner`] (TAG=0x05) → `SchnorrUnlocker` from the baked-in genesis key.
 //! - [`MultisigSchnorrSigPtrSigner`] (TAG=0x03) → `MultisigUnlocker` contribution.
 //! - [`MultisigPrevTxV1WitnessSigner`] (TAG=0x04) → `MultisigUnlocker` contribution.
 
@@ -108,15 +109,14 @@ impl<'a> Signer<'a> for PrevTxV1WitnessSigner {
     }
 }
 
-/// Genesis-authority Schnorr signer for the bootstrap `Init` action. Unlike
-/// [`SchnorrSigPtrSigner`], the pubkey is the runtime's baked-in
-/// [`GENESIS_SCHNORR_BYTES`] rather than read from the target resource's lock:
-/// at `Init` the config slot is still empty, so there is no lock to read. Body:
-/// `u32 sig_offset`, offset into `payload_bytes` of the 64-byte BIP-340 signature.
+/// Genesis-authority Schnorr signer: resolves to a `SchnorrUnlocker` carrying the runtime's
+/// baked-in [`GENESIS_SCHNORR_BYTES`] rather than a pubkey read from the target resource's lock.
+/// Body: `u32 sig_offset`, offset into `payload_bytes` of the 64-byte BIP-340 signature.
 ///
-/// This is the self-contained bootstrap path: the genesis key signs the runtime
-/// sig-message directly, with no on-chain UTXO / witness coupling. `apply_init`
-/// still gates on the resolved unlocker carrying exactly `GENESIS_SCHNORR_BYTES`.
+/// Reading no lock lets it authorize a resource whose slot is still empty. Nothing in `resolve`
+/// ties it to a specific action or resource; the effective restriction to `Init` is emergent, since
+/// `apply_init` is the only action that authorizes against a resource with no readable lock. The
+/// genesis key signs the runtime sig-message directly, with no on-chain UTXO / witness coupling.
 pub struct GenesisSchnorrSigPtrSigner {
     pub sig_offset: u32,
 }
