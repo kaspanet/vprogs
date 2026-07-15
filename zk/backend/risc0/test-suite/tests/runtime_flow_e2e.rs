@@ -23,7 +23,7 @@ use vprogs_zk_backend_risc0_test_suite::{
     runtime_flow::{
         EXAMPLE_DEPOSIT_COVENANT_ID, RuntimeSigner, config_id, config_min_withdrawal, deposit_tx,
         init_config_tx, rotate_user_lock_tx, transfer_create_tx, transfer_tx, update_config_tx,
-        user_balance, withdraw_tx,
+        user_balance, withdraw_tx, withdraw_tx_as,
     },
     runtime_processor_elf,
 };
@@ -167,6 +167,14 @@ fn rotate_user_lock_preserves_balance() {
     // Rotate alice's controlling key to alice_new. The resource stays at alice.user_id().
     h.commit(rotate_user_lock_tx(&alice, &alice_new));
     assert_eq!(h.balance(&alice), Some(5_000), "rotation must preserve balance + identity");
+
+    // The new key controls Alice's original resource after rotation.
+    h.commit(withdraw_tx_as(alice.user_id(), &alice_new, 1_000, &[0xAA; 32]));
+    assert_eq!(h.balance(&alice), Some(4_000), "new owner must authorize Alice's resource");
+
+    // Alice's old key no longer authorizes the resource, so this withdrawal leaves it unchanged.
+    h.commit(withdraw_tx_as(alice.user_id(), &alice, 1_000, &[0xAA; 32]));
+    assert_eq!(h.balance(&alice), Some(4_000), "old owner must be rejected after rotation");
 }
 
 /// A transfer whose source has never been funded must be rejected by the runtime (the whole tx

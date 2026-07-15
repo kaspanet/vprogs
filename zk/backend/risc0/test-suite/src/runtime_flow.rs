@@ -486,14 +486,28 @@ pub fn withdraw_carrier(
     amount: u64,
     dest_pubkey: &[u8; 32],
 ) -> RuntimeCarrier {
+    withdraw_carrier_as(user.user_id(), user, amount, dest_pubkey)
+}
+
+/// Builds a `Withdraw` carrier for `user_id`, authorized by its current `owner`.
+pub fn withdraw_carrier_as(
+    user_id: ResourceId,
+    owner: &RuntimeSigner,
+    amount: u64,
+    dest_pubkey: &[u8; 32],
+) -> RuntimeCarrier {
     let config_id = ResourceId::from(*config_resource_id());
-    let user_id = user.user_id();
     let access = sort_access(vec![AccessMetadata::write(user_id), AccessMetadata::read(config_id)]);
     let user_idx = index_of(&access, user_id);
     let dest = StandardSpk::PubKey(dest_pubkey);
     let action = encode_withdraw_action(user_idx, amount, &dest);
     let actions = encode_actions_section(&[action]);
-    build_carrier(access, actions, vec![(user_idx, SchnorrSigPtrSigner::TAG, user.clone())], vec![])
+    build_carrier(
+        access,
+        actions,
+        vec![(user_idx, SchnorrSigPtrSigner::TAG, owner.clone())],
+        vec![],
+    )
 }
 
 /// Builds an `UpdateUserLock` carrier rotating `user`'s lock to `new_owner`'s key.
@@ -540,6 +554,16 @@ pub fn transfer_create_tx(
 /// Unfunded `Withdraw` carrier tx. See [`withdraw_carrier`].
 pub fn withdraw_tx(user: &RuntimeSigner, amount: u64, dest_pubkey: &[u8; 32]) -> L1Transaction {
     withdraw_carrier(user, amount, dest_pubkey).into_unfunded()
+}
+
+/// Unfunded `Withdraw` carrier for `user_id`, authorized by its current `owner`.
+pub fn withdraw_tx_as(
+    user_id: ResourceId,
+    owner: &RuntimeSigner,
+    amount: u64,
+    dest_pubkey: &[u8; 32],
+) -> L1Transaction {
+    withdraw_carrier_as(user_id, owner, amount, dest_pubkey).into_unfunded()
 }
 
 /// Unfunded `UpdateUserLock` carrier tx. See [`rotate_user_lock_carrier`].
