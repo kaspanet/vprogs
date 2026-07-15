@@ -21,6 +21,7 @@
 use k256::schnorr::{Signature, SigningKey};
 use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus_core::{
+    constants::TX_VERSION_TOCCATA,
     hashing::tx::transaction_v1_rest_preimage,
     subnets::SUBNETWORK_ID_NATIVE,
     tx::{Transaction, TransactionOutput},
@@ -116,7 +117,7 @@ impl RuntimeSigner {
     /// The genesis authority key (secp256k1 scalar `3`), the only key allowed to `Init` the config.
     pub fn genesis() -> Self {
         let s = Self::from_scalar(3);
-        debug_assert_eq!(
+        assert_eq!(
             s.pubkey, GENESIS_SCHNORR_BYTES,
             "scalar-3 pubkey must match the runtime's baked-in genesis pubkey",
         );
@@ -260,9 +261,6 @@ fn encode_update_user_lock_action(user_idx: u8, new_lock: &LockEnum<'_>) -> Vec<
 
 // --- Assembly ---------------------------------------------------------------
 
-/// The carrier tx version the ABI decodes as `Transaction::V1`. `TX_VERSION_TOCCATA == 1`.
-const L1_TX_VERSION: u16 = 1;
-
 /// Sorts access entries strictly-ascending by resource id (the order the ABI re-decodes).
 fn sort_access(mut entries: Vec<AccessMetadata>) -> Vec<AccessMetadata> {
     entries.sort_unstable_by_key(|m| m.resource_id);
@@ -322,7 +320,7 @@ impl RuntimeCarrier {
     /// not L1-validate the tx.
     pub fn into_unfunded(self) -> L1Transaction {
         let mut tx = Transaction::new(
-            L1_TX_VERSION,
+            TX_VERSION_TOCCATA,
             Vec::new(),
             self.extra_outputs.clone(),
             0,
