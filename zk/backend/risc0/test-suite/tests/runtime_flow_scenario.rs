@@ -21,16 +21,21 @@ use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler};
 use vprogs_state_version::StateVersion;
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
+use vprogs_zk_abi::{
+    transaction_processor::{JournalEntries, OutputCommitment},
+    withdrawal::StandardSpk,
+};
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_test_suite::{
     L1TransactionExt, batch_aggregator_elf, batch_processor_elf,
     runtime_flow::{
-        EXAMPLE_DEPOSIT_COVENANT_ID, EXAMPLE_MIN_CREATE_BALANCE, RuntimeSigner, deposit_tx,
-        init_config_tx, transfer_create_tx, transfer_tx, update_config_tx, user_balance,
-        withdraw_tx,
+        EXAMPLE_DEPOSIT_COVENANT_ID, EXAMPLE_MIN_CREATE_BALANCE, RuntimeSigner, config_id,
+        config_min_withdrawal, deposit_tx, init_config_tx, transfer_create_tx, transfer_tx,
+        update_config_tx, user_balance, withdraw_tx,
     },
     runtime_processor_elf,
 };
+use vprogs_zk_batch_prover::Backend as _;
 use vprogs_zk_vm::{ProvingPipeline, Vm};
 
 /// A runtime action in a scenario. User handles are deterministic seeds (`RuntimeSigner::user`).
@@ -194,8 +199,8 @@ fn build_tx(action: &Action) -> L1Transaction {
 
 type FlowVm = Vm<Backend, RocksDbStore>;
 
-/// Runs `actions` in order through the real runtime via the scheduler (one batch each), then
-/// asserts the committed balances match the model, including that rejected actions left no trace.
+/// Runs `actions` through the real runtime and asserts each verdict, emitted exit, and final state
+/// match the model.
 fn run_scenario(actions: &[Action]) {
     let temp = TempDir::new().unwrap();
     let storage: RocksDbStore = RocksDbStore::open(temp.path());
@@ -205,7 +210,7 @@ fn run_scenario(actions: &[Action]) {
         &batch_aggregator_elf(),
         ProofType::Succinct,
     );
-    let vm = Vm::new(backend, ProvingPipeline::None);
+    let vm = Vm::new(backend.clone(), ProvingPipeline::transaction(backend.clone()));
     let mut scheduler: Scheduler<RocksDbStore, FlowVm> = Scheduler::new(
         ExecutionConfig::default().with_processor(vm),
         StorageConfig::default().with_store(storage.clone()),
@@ -228,6 +233,29 @@ fn run_scenario(actions: &[Action]) {
         };
         let batch = scheduler.schedule(meta, vec![build_tx(action).into_scheduler_tx(0)]);
         batch.wait_committed_blocking();
+        batch.wait_tx_artifacts_published_blocking();
+
+        // Compare the runtime's journaled verdict and exits with this action's prediction.
+        let artifact = batch.tx_artifacts().next().expect("one transaction artifact per action");
+        let journal = Backend::journal_bytes(&artifact);
+        let entries = JournalEntries::decode(&journal).expect("valid transaction journal");
+        let (runtime_accepted, emitted_exits) = match entries.output_commitment {
+            OutputCommitment::Success { exits, .. } => {
+                (true, exits.iter().collect::<Result<Vec<_>, _>>().expect("valid exits"))
+            }
+            OutputCommitment::Error(_) => (false, Vec::new()),
+        };
+        assert_eq!(
+            runtime_accepted, accepted,
+            "action #{i} {action:?}: accept/reject mismatch (runtime vs model)"
+        );
+        let expected_exits = match action {
+            Action::Withdraw { amount, .. } if accepted => {
+                vec![(StandardSpk::PubKey(&[0xAA; 32]), *amount)]
+            }
+            _ => Vec::new(),
+        };
+        assert_eq!(emitted_exits, expected_exits, "action #{i} {action:?}: exits mismatch");
         if verbose {
             eprintln!("[scenario] #{i} {action:?} -> accepted={accepted}");
         }
@@ -243,6 +271,13 @@ fn run_scenario(actions: &[Action]) {
         let expected = model.balances.get(&user).copied();
         assert_eq!(got, expected, "user {user}: balance mismatch (model vs runtime)");
     }
+
+    let config = StateVersion::from_latest_data(&storage, config_id()).data().clone();
+    let got_min_withdrawal = if config.is_empty() { None } else { config_min_withdrawal(&config) };
+    assert_eq!(
+        got_min_withdrawal, model.config_min_withdrawal,
+        "config min_withdrawal mismatch (runtime vs model)"
+    );
 
     let total_balance: u64 = model.balances.values().sum();
     eprintln!(
