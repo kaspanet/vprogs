@@ -322,8 +322,6 @@ fn aggregator_commits_unchanged_state_with_an_advanced_lane_tip() {
 /// sees `new_state == prev_state`, and publishes `None`, dropping a bundle that advanced the lane
 /// and must be settled to keep the covenant's `lane_tip` in step with the lane.
 #[test]
-#[ignore = "repro: the wrapper classifies an advanced lane tip as a no-op on state-root equality \
-            alone and drops the bundle"]
 fn bundle_advancing_only_the_lane_tip_is_settled() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     {
