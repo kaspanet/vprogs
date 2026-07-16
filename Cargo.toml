@@ -83,9 +83,12 @@ resolver = "3"
   tempfile              = "3.23.0"
   thiserror             = { version = "2", default-features = false }
   tokio                 = { version = "1", features = ["rt", "sync"] }
+  tokio-tungstenite     = "0.23"
   tokio-util            = "0.7.17"
   toml                  = "0.8"
   workflow-core         = "0.18.0"
+  workflow-rpc          = { version = "0.18.0", default-features = false, features = ["rustls-tls-webpki-roots"] }
+  workflow-serializer   = "0.18.0"
   zerocopy              = { version = "0.8", default-features = false }
   # jemalloc is intentionally omitted here: it does not build on Windows, so it is enabled
   # per-target in storage/rocksdb-store and propagated to the build via Cargo feature unification.
