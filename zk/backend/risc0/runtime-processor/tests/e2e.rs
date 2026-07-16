@@ -22,9 +22,10 @@ use vprogs_zk_backend_risc0_api::{build_delegate_entry_script, delegate_entry_sp
 use vprogs_zk_backend_risc0_runtime_processor::{
     config::{ConfigView, config_total_len, write_config},
     deposit_policy::{EXAMPLE_DEPOSIT_COVENANT_ID, EXAMPLE_MIN_CREATE_BALANCE},
+    genesis::GENESIS_SCHNORR_BYTES,
     ix::{
-        ACTION_TAG_DEPOSIT, ACTION_TAG_TRANSFER, ACTION_TAG_UPDATE, ACTION_TAG_UPDATE_USER_LOCK,
-        ACTION_TAG_WITHDRAW,
+        ACTION_TAG_DEPOSIT, ACTION_TAG_INIT, ACTION_TAG_TRANSFER, ACTION_TAG_UPDATE,
+        ACTION_TAG_UPDATE_USER_LOCK, ACTION_TAG_WITHDRAW,
     },
     lock::LockEnum,
     lock_trait::Lock,
@@ -769,6 +770,61 @@ fn prev_tx_v1_witness_unlocks_schnorr_locked_config() {
         LockEnum::Schnorr(SchnorrLockView { pubkey }) => assert_eq!(pubkey, &owner.pubkey),
         _ => panic!("expected Schnorr lock"),
     }
+}
+
+/// A live, non-empty config cannot legitimately be a new resource. The guest must reject a host
+/// input that preserves the committed bytes but flips only the uncommitted `is_new` flag.
+#[test]
+fn live_config_falsely_marked_new_is_rejected() {
+    let existing_owner = TestSigner::new();
+    let initial_data = build_schnorr_locked_config(&existing_owner.pubkey, 100);
+    let resource_id_bytes: [u8; 32] = *config_resource_id();
+
+    // Init is authorized through a previous transaction paying the baked-in genesis key. This
+    // signer path deliberately does not read the live config's current lock.
+    let prev_tx = build_prev_tx_v1_with_p2pk(&GENESIS_SCHNORR_BYTES);
+    let prev_rest_preimage = transaction_v1_rest_preimage(&prev_tx);
+    let prev_payload_digest: [u8; 32] =
+        *blake3::Hasher::new_keyed(&PAYLOAD_DIGEST_KEY).update(&[]).finalize().as_bytes();
+    let prev_tx_id = tx_id_v1(&[], &prev_rest_preimage);
+    let current_tx = build_current_tx_v1_spending(&prev_tx_id);
+    let current_rest_preimage = transaction_v1_rest_preimage(&current_tx);
+
+    let replacement_owner = TestSigner::new();
+    let replacement_lock = LockEnum::Schnorr(SchnorrLockView { pubkey: &replacement_owner.pubkey });
+    let action = encode_config_action(ACTION_TAG_INIT, 0, 999, &COVENANT_ID, &replacement_lock);
+    let actions_section = encode_actions_section(&[action]);
+    let access_meta = encode_access_metadata(&[(resource_id_bytes, AccessType::Write)]);
+
+    let probe = encode_witness_signer(0, 0, 0, 0, 0);
+    let probe_section = encode_signers_section(&[probe]);
+    let payload_presig_len = access_meta.len() + probe_section.len() + actions_section.len();
+    let rp_offset = payload_presig_len;
+    let pd_offset = rp_offset + prev_rest_preimage.len();
+    let signers_section = encode_signers_section(&[encode_witness_signer(
+        0,
+        0,
+        rp_offset as u32,
+        prev_rest_preimage.len() as u32,
+        pd_offset as u32,
+    )]);
+
+    let mut payload = access_meta;
+    payload.extend_from_slice(&signers_section);
+    payload.extend_from_slice(&actions_section);
+    payload.extend_from_slice(&prev_rest_preimage);
+    payload.extend_from_slice(&prev_payload_digest);
+
+    let tx_bytes = encode_v1_transaction(&payload, &current_rest_preimage);
+    // The data is the real live config bytes; only `is_new` is forged.
+    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(true, 0, initial_data)]);
+
+    let elf = wrapped_runtime_processor_elf();
+    let outputs_bytes = execute_guest(&elf, &inputs);
+    assert!(
+        Outputs::decode(&outputs_bytes, 1).is_err(),
+        "guest accepted Init over a live config when only is_new was forged"
+    );
 }
 
 /// Same `KEY_PAYLOAD_DIGEST` constant as `vprogs_l1_utils::tx_id` (re-stated
