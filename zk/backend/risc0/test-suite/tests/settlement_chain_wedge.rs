@@ -7,9 +7,9 @@
 //! built by the same lane and correctly chains its `prev_lane_tip` to the advanced tip, so the
 //! settler's chain check compares a tip the covenant never took and rejects it.
 //!
-//! Nothing recovers: the covenant only advances by settling, and settling requires the chain check
-//! this test shows failing. The lane keeps producing bundles chained past the stale tip, so every
-//! one of them is rejected the same way.
+//! These tests cover the first bundle after the drop. The wedge holds for every later one by the
+//! same argument, which they do not enumerate: the covenant only advances by settling, and every
+//! bundle the lane goes on to produce chains past the tip the covenant is stuck on.
 
 use kaspa_consensus_core::tx::{ScriptPublicKey, TransactionOutpoint};
 use kaspa_hashes::Hash;
@@ -44,8 +44,7 @@ fn next_lane_tip() -> Hash {
     Hash::from_bytes([0x60; 32])
 }
 
-/// Backend over the committed guest ELFs. The chain checks precede every use of it, so this
-/// settlement never reaches the proving or witness path.
+/// Backend over the committed guest ELFs, supplying the redeem pins the settlement binds to.
 fn backend() -> Backend {
     Backend::new(
         &transaction_processor_elf(),
@@ -55,8 +54,8 @@ fn backend() -> Backend {
     )
 }
 
-/// A receipt standing in for the bundle's aggregate proof. The chain checks run before the receipt
-/// is read, so its contents never matter here.
+/// A receipt standing in for the bundle's aggregate proof. Neither case verifies a proof: the
+/// rejected settlement stops at the chain checks, the accepted one at this receipt's format.
 fn stub_receipt() -> Receipt {
     let journal = Vec::new();
     let claim = ReceiptClaim::ok([0u8; 32], journal.clone());
@@ -116,17 +115,21 @@ fn bundle_after_a_dropped_one_cannot_settle() {
     build_settlement(&backend, &test_lane_key(), &cov, &artifact);
 }
 
-/// Tests that the same bundle settles cleanly against a covenant that did advance, isolating the
-/// dropped lane-tip advance as the sole cause of the rejection above.
+/// Tests that the missed lane-tip advance is the sole cause of the rejection above: against a
+/// covenant the dropped bundle would have advanced, the same artifact clears every chain check and
+/// reaches the witness step, which only the stub receipt's format stops.
+///
+/// Only `lane_tip` differs from the rejected case, so the drop is what wedges the settlement, not
+/// the artifact. Reaching the witness step is what pins the chain checks as cleared; this asserts
+/// nothing about whether a real receipt then settles.
 #[test]
+#[should_panic(expected = "expected succinct receipt")]
 fn bundle_after_a_settled_one_passes_the_chain_check() {
+    let backend = backend();
     let cov = CovenantState { lane_tip: advanced_lane_tip(), ..stale_covenant() };
     let artifact = next_artifact();
 
-    // The chain check the settler runs, on a covenant the dropped bundle would have advanced.
-    assert_eq!(artifact.prev_state, cov.state);
-    assert_eq!(
-        artifact.prev_lane_tip, cov.lane_tip,
-        "settling the dropped bundle would have left the covenant on the lane's real tip",
-    );
+    // Settling the dropped bundle would have left the covenant on the lane's real tip, which is
+    // the tip this artifact chains from.
+    build_settlement(&backend, &test_lane_key(), &cov, &artifact);
 }

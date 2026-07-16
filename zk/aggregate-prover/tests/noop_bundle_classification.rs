@@ -17,6 +17,7 @@
 
 use std::{
     future::Future,
+    sync::atomic::{AtomicUsize, Ordering},
     thread,
     time::{Duration, Instant},
 };
@@ -51,6 +52,11 @@ const AGGREGATOR_IMAGE_ID: [u8; 32] = [2u8; 32];
 
 /// Covenant the bundle's journal binds to.
 const COVENANT_ID: [u8; 32] = [0xCC; 32];
+
+/// Counts the wrapper's calls into the aggregator backend. A bundle filtered out by the earlier
+/// tx-count guard is consumed without proving, so a non-zero count pins that the bundle reached the
+/// journal parse and was dropped by the state-root branch rather than by that guard.
+static AGGREGATOR_PROVE_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 /// The lane's SMT state root. The batch's only transaction failed, so it writes no resource and
 /// this root is both the bundle's `prev_state` and its `new_state`.
@@ -208,6 +214,7 @@ impl vprogs_zk_aggregate_prover::Backend for JournalBackend {
         _inputs: &[u8],
         _batch_receipts: Vec<Self::Receipt>,
     ) -> impl Future<Output = Self::Receipt> + Send + 'static {
+        AGGREGATOR_PROVE_CALLS.fetch_add(1, Ordering::SeqCst);
         async { settlement_journal() }
     }
 
@@ -362,9 +369,18 @@ fn bundle_advancing_only_the_lane_tip_is_settled() {
         );
         prover.submit(&batch);
 
-        let bundle = next_bundle(&settlement_queue, Duration::from_secs(10))
-            .expect("the batch must bundle");
+        let bundle =
+            next_bundle(&settlement_queue, Duration::from_secs(10)).expect("the batch must bundle");
         bundle.wait_artifact_published_blocking();
+
+        // Discriminates the branch under test from the other paths that publish no artifact: the
+        // bundle was proved, so the tx-count guard passed and the wrapper parsed this journal.
+        assert_eq!(
+            AGGREGATOR_PROVE_CALLS.load(Ordering::SeqCst),
+            1,
+            "the bundle must reach the aggregator: an unproved bundle would mean the tx-count \
+             guard consumed it, not the state-root branch",
+        );
 
         let artifact = bundle.artifact().expect(
             "a bundle whose lane tip advanced must be settled, not discarded as a no-op: its \
