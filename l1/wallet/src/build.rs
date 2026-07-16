@@ -283,11 +283,16 @@ pub fn settlement_transaction(args: SettlementTx<'_>) -> Transaction {
 /// re-pricing the rebuilt transaction. Paying the fee shrinks the change output, and under KIP-0009
 /// a smaller output carries *more* storage mass (the `C/v` term). When storage mass is the binding
 /// mass, the rebuilt transaction therefore needs a strictly larger fee than the probe was priced
-/// for, and the builder emits a transaction the mempool's own floor rejects. The `assert!` in each
-/// builder cannot catch this: it prices the probe, not the result.
+/// for. The `assert!` in each builder cannot catch this: it prices the probe, not the result.
 ///
-/// Each test below runs a builder and re-prices its output with the same [`min_fee`] the builder
-/// used, asserting the built transaction pays at least what it now costs.
+/// The three underpricing tests re-price each builder's output with the same [`min_fee`] the
+/// builder used and fail, pinning the non-convergence.
+///
+/// [`fee_probe_underpricing_stays_above_the_mempool_floor`] pins the scope limit: the underpayment
+/// is measured against [`min_fee`], which is this crate's own policy and is far stricter than what
+/// a node actually enforces. The mempool's floor is [`MEMPOOL_MIN_RELAY_FEE_PER_KILOGRAM`] against
+/// *compute mass alone*, so these transactions clear it by roughly two orders of magnitude and no
+/// shape here is rejected. That test passes today and must keep passing after a fix.
 #[cfg(test)]
 mod tests {
     use kaspa_addresses::{Prefix, Version};
@@ -327,8 +332,31 @@ mod tests {
             - tx.outputs.iter().map(|output| output.value).sum::<u64>()
     }
 
-    /// Fails when `tx` pays less than the node's floor for `tx` itself, which is exactly what the
-    /// mempool checks on submit. Reports the binding mass so a failure shows which term binds.
+    /// The mempool's minimum relay fee, in sompi per 1000 grams of mass, from rusty-kaspa's
+    /// `DEFAULT_MINIMUM_RELAY_TRANSACTION_FEE`. Mirrored here because the node's mempool config is
+    /// crate-private and this crate does not depend on `kaspa-mining`.
+    const MEMPOOL_MIN_RELAY_FEE_PER_KILOGRAM: u64 = 1000;
+
+    /// The sompi fee a default-configured node's mempool actually requires for `tx`.
+    ///
+    /// The mempool prices against compute mass only and deliberately ignores storage mass, so this
+    /// is strictly weaker than [`min_fee`], which charges [`MIN_FEERATE_PER_GRAM`] against
+    /// `compute.max(storage)`.
+    fn mempool_min_fee(params: &Params, tx: &Transaction) -> u64 {
+        let calc = MassCalculator::new(
+            params.mass_per_tx_byte,
+            params.mass_per_script_pub_key_byte,
+            params.storage_mass_parameter,
+        );
+        let compute = calc.calc_non_contextual_masses(tx).compute_mass;
+        (compute * MEMPOOL_MIN_RELAY_FEE_PER_KILOGRAM) / 1000
+    }
+
+    /// Fails when `tx` pays less than [`min_fee`] asks for `tx` itself.
+    ///
+    /// This is the builders' own pricing policy, not the node's admission rule; see
+    /// [`fee_probe_underpricing_stays_above_the_mempool_floor`]. Reports the binding mass so a
+    /// failure shows which term binds.
     fn assert_fee_covers_final(params: &Params, tx: &Transaction, entries: &[UtxoEntry]) {
         let calc = MassCalculator::new(
             params.mass_per_tx_byte,
@@ -378,22 +406,19 @@ mod tests {
         tx
     }
 
-    /// A dev-mode settlement is storage-mass-dominated, so [`settlement_transaction`] underprices
-    /// it: its own covenant and permission outputs put storage mass far above compute mass, and
-    /// deducting the probe-priced fee shrinks the change output enough to raise storage mass past
-    /// what was paid.
+    /// A transaction a builder produced, with the entries its inputs spend.
+    struct BuiltShape {
+        tx: Transaction,
+        entries: Vec<UtxoEntry>,
+    }
+
+    /// A dev-mode settlement, built through [`settlement_transaction`].
     ///
     /// Every value here is one the repo already uses: a `FUND_VALUE` fee UTXO, the default
     /// permission output value, and the dev covenant budget. Only the witness length is a stand-in;
     /// it sets compute mass, and a real dev witness must merely stay under the storage mass this
     /// shape already carries for the underpay to hold.
-    ///
-    /// This refutes [`min_fee`]'s claim that "storage mass is ~0 for the simple shapes here".
-    #[test]
-    #[ignore = "repro: the settlement fee is priced from a fee=0 probe, so deducting it shrinks the \
-                change output and raises the storage mass past the fee that was paid"]
-    fn settlement_fee_must_cover_the_final_transactions_storage_mass() {
-        let params = &SIMNET_PARAMS;
+    fn settlement_shape(params: &Params) -> BuiltShape {
         let keypair = keypair();
         let address = address(&keypair, params);
         let covenant_id = Hash::from_bytes([9u8; 32]);
@@ -420,20 +445,16 @@ mod tests {
             params,
         });
 
-        assert_fee_covers_final(params, &tx, &[covenant_entry, fee_entry]);
+        BuiltShape { tx, entries: vec![covenant_entry, fee_entry] }
     }
 
-    /// [`pay_to_address_transaction`] underprices whenever the change left over above the payout is
-    /// small enough that its `C/v` term dominates compute mass.
+    /// A payout leaving change small enough that its `C/v` term dominates compute mass, built
+    /// through [`pay_to_address_transaction`].
     ///
     /// The change value here is smaller than the coinbase-funded change the repo's own callers
     /// leave, so this shape is reachable through the public builder but is not what `Wallet`
     /// currently produces.
-    #[test]
-    #[ignore = "repro: the payout fee is priced from a fee=0 probe, so deducting it shrinks the \
-                change output and raises the storage mass past the fee that was paid"]
-    fn pay_to_address_fee_must_cover_the_final_changes_storage_mass() {
-        let params = &SIMNET_PARAMS;
+    fn pay_to_address_shape(params: &Params) -> BuiltShape {
         let keypair = keypair();
         let address = address(&keypair, params);
         let payout = FUND_VALUE;
@@ -452,21 +473,16 @@ mod tests {
             params,
         });
 
-        assert_fee_covers_final(params, &tx, &[entry]);
+        BuiltShape { tx, entries: vec![entry] }
     }
 
-    /// [`activity_transaction`] underprices once the funding UTXO is small enough that the `C/v`
-    /// term on the single output dominates compute mass. Its probe pays the whole input back out,
-    /// so the probe's storage mass is exactly zero and the fee is always priced on compute alone.
+    /// An activity transaction whose funding UTXO is small enough that the `C/v` term on its single
+    /// output dominates compute mass, built through [`activity_transaction`].
     ///
     /// 0.1 KAS is around the smallest output KIP-0009 keeps relayable, and `Wallet` spends its
     /// largest UTXO first, so this shape is reachable through the public builder (which the
     /// simulation calls directly with its own UTXOs) but is not one `Wallet` currently selects.
-    #[test]
-    #[ignore = "repro: the activity fee is priced from a fee=0 probe whose storage mass is zero, so \
-                deducting the fee raises the final output's storage mass past the fee that was paid"]
-    fn activity_fee_must_cover_the_final_outputs_storage_mass() {
-        let params = &SIMNET_PARAMS;
+    fn activity_shape(params: &Params) -> BuiltShape {
         let keypair = keypair();
         let address = address(&keypair, params);
         let entry = UtxoEntry::new(10_000_000, pay_to_address_script(&address), 0, false, None);
@@ -482,6 +498,60 @@ mod tests {
             params,
         });
 
-        assert_fee_covers_final(params, &tx, &[entry]);
+        BuiltShape { tx, entries: vec![entry] }
+    }
+
+    /// A dev-mode settlement is storage-mass-dominated, so [`settlement_transaction`] underprices
+    /// it: its own covenant and permission outputs put storage mass far above compute mass, and
+    /// deducting the probe-priced fee shrinks the change output enough to raise storage mass past
+    /// what was paid.
+    ///
+    /// This refutes [`min_fee`]'s claim that "storage mass is ~0 for the simple shapes here".
+    #[test]
+    fn settlement_fee_must_cover_the_final_transactions_storage_mass() {
+        let params = &SIMNET_PARAMS;
+        let shape = settlement_shape(params);
+        assert_fee_covers_final(params, &shape.tx, &shape.entries);
+    }
+
+    /// [`pay_to_address_transaction`] underprices whenever the change left over above the payout is
+    /// small enough that its `C/v` term dominates compute mass.
+    #[test]
+    fn pay_to_address_fee_must_cover_the_final_changes_storage_mass() {
+        let params = &SIMNET_PARAMS;
+        let shape = pay_to_address_shape(params);
+        assert_fee_covers_final(params, &shape.tx, &shape.entries);
+    }
+
+    /// [`activity_transaction`] underprices once the funding UTXO is small enough that the `C/v`
+    /// term on the single output dominates compute mass. Its probe pays the whole input back out,
+    /// so the probe's storage mass is exactly zero and the fee is always priced on compute alone.
+    #[test]
+    fn activity_fee_must_cover_the_final_outputs_storage_mass() {
+        let params = &SIMNET_PARAMS;
+        let shape = activity_shape(params);
+        assert_fee_covers_final(params, &shape.tx, &shape.entries);
+    }
+
+    /// The scope limit on the three underpricing tests above: none of those shapes is rejected by a
+    /// node, because the fee they do pay still clears the mempool's floor by a wide margin.
+    ///
+    /// The margin is structural, not incidental. [`min_fee`] pays
+    /// `MIN_FEERATE_PER_GRAM * max(compute, storage)`, while the mempool asks
+    /// `MEMPOOL_MIN_RELAY_FEE_PER_KILOGRAM / 1000 * compute`, i.e. one sompi per gram of compute
+    /// mass with storage mass deliberately excluded. Since the probe and the rebuild share a byte
+    /// layout and therefore a compute mass, every builder pays at least `MIN_FEERATE_PER_GRAM`
+    /// times what the mempool asks, whatever the shape. The single-round probe cannot erode a
+    /// hundredfold cushion, so the underpricing is latent rather than reachable.
+    #[test]
+    fn fee_probe_underpricing_stays_above_the_mempool_floor() {
+        let params = &SIMNET_PARAMS;
+        for shape in
+            [activity_shape(params), pay_to_address_shape(params), settlement_shape(params)]
+        {
+            let paid = fee_paid(&shape.tx, &shape.entries);
+            let floor = mempool_min_fee(params, &shape.tx);
+            assert!(paid >= floor, "built tx pays {paid} but the mempool floor is {floor}");
+        }
     }
 }
