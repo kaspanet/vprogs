@@ -276,3 +276,212 @@ pub fn settlement_transaction(args: SettlementTx<'_>) -> Transaction {
     assert!(args.fee_entry.amount > fee, "fee UTXO amount {} ≤ fee {fee}", args.fee_entry.amount);
     build(fee)
 }
+
+/// Repros for the single-round fee probe.
+///
+/// Every builder in this file prices its fee from a `fee = 0` probe and rebuilds once, without
+/// re-pricing the rebuilt transaction. Paying the fee shrinks the change output, and under KIP-0009
+/// a smaller output carries *more* storage mass (the `C/v` term). When storage mass is the binding
+/// mass, the rebuilt transaction therefore needs a strictly larger fee than the probe was priced
+/// for, and the builder emits a transaction the mempool's own floor rejects. The `assert!` in each
+/// builder cannot catch this: it prices the probe, not the result.
+///
+/// Each test below runs a builder and re-prices its output with the same [`min_fee`] the builder
+/// used, asserting the built transaction pays at least what it now costs.
+#[cfg(test)]
+mod tests {
+    use kaspa_addresses::{Prefix, Version};
+    use kaspa_consensus_core::config::params::SIMNET_PARAMS;
+
+    use super::*;
+
+    /// The value `Wallet::pay_to_address` is asked for when seeding a prover's fee address in
+    /// `examples/tn10-flow/tests/two_provers_contend.rs`, i.e. the size of a real fee UTXO.
+    const FUND_VALUE: u64 = 100_000_000;
+
+    /// `zk::backend::risc0::covenant::script::DEFAULT_PERMISSION_OUTPUT_VALUE`, the value a real
+    /// settlement pays to its permission output.
+    const PERMISSION_OUTPUT_VALUE: u64 = 50_000_000;
+
+    /// `sim::driver::l2_driver::DEV_COVENANT_BUDGET`, the budget a dev-mode settlement commits on
+    /// its covenant input.
+    const DEV_COVENANT_BUDGET: ComputeBudget = ComputeBudget(100);
+
+    fn keypair() -> Keypair {
+        Keypair::from_seckey_slice(secp256k1::SECP256K1, &[7u8; 32])
+            .expect("static secret key is valid")
+    }
+
+    fn address(keypair: &Keypair, params: &Params) -> Address {
+        let (xonly, _parity) = keypair.x_only_public_key();
+        Address::new(Prefix::from(params.net.network_type()), Version::PubKey, &xonly.serialize())
+    }
+
+    fn outpoint(seed: u8) -> TransactionOutpoint {
+        TransactionOutpoint::new(Hash::from_bytes([seed; 32]), 0)
+    }
+
+    /// The fee `tx` actually pays: what its inputs bring in, less what its outputs pay out.
+    fn fee_paid(tx: &Transaction, entries: &[UtxoEntry]) -> u64 {
+        entries.iter().map(|entry| entry.amount).sum::<u64>()
+            - tx.outputs.iter().map(|output| output.value).sum::<u64>()
+    }
+
+    /// Fails when `tx` pays less than the node's floor for `tx` itself, which is exactly what the
+    /// mempool checks on submit. Reports the binding mass so a failure shows which term binds.
+    fn assert_fee_covers_final(params: &Params, tx: &Transaction, entries: &[UtxoEntry]) {
+        let calc = MassCalculator::new(
+            params.mass_per_tx_byte,
+            params.mass_per_script_pub_key_byte,
+            params.storage_mass_parameter,
+        );
+        let compute = calc.calc_non_contextual_masses(tx).compute_mass;
+        let populated = PopulatedTransaction::new(tx, entries.to_vec());
+        let storage = calc.calc_contextual_masses(&populated).map_or(0, |m| m.storage_mass);
+        let paid = fee_paid(tx, entries);
+        let required = min_fee(params, tx, entries);
+        assert!(
+            paid >= required,
+            "built tx pays {paid} but its own min_fee is {required} \
+             (compute mass {compute}, storage mass {storage})",
+        );
+    }
+
+    /// A settlement skeleton with `witness_len` bytes of covenant witness on input 0, a
+    /// continuation covenant output, and the permission output. Stands in for what the settler
+    /// hands [`settlement_transaction`]; only its size and output values reach the mass
+    /// calculation.
+    fn settlement_skeleton(
+        covenant_spk: &kaspa_consensus_core::tx::ScriptPublicKey,
+        covenant_id: Hash,
+        continuation_value: u64,
+        recipient: &Address,
+        witness_len: usize,
+    ) -> Transaction {
+        let mut tx = Transaction::new(
+            TX_VERSION_TOCCATA,
+            vec![TransactionInput::new(outpoint(2), vec![0x51u8; witness_len], 0, 1)],
+            vec![
+                TransactionOutput::with_covenant(
+                    continuation_value,
+                    covenant_spk.clone(),
+                    Some(CovenantBinding::new(0, covenant_id)),
+                ),
+                TransactionOutput::new(PERMISSION_OUTPUT_VALUE, pay_to_address_script(recipient)),
+            ],
+            0,
+            SUBNETWORK_ID_NATIVE,
+            0,
+            Vec::new(),
+        );
+        tx.finalize();
+        tx
+    }
+
+    /// A dev-mode settlement is storage-mass-dominated, so [`settlement_transaction`] underprices
+    /// it: its own covenant and permission outputs put storage mass far above compute mass, and
+    /// deducting the probe-priced fee shrinks the change output enough to raise storage mass past
+    /// what was paid.
+    ///
+    /// Every value here is one the repo already uses: a `FUND_VALUE` fee UTXO, the default
+    /// permission output value, and the dev covenant budget. Only the witness length is a stand-in;
+    /// it sets compute mass, and a real dev witness must merely stay under the storage mass this
+    /// shape already carries for the underpay to hold.
+    ///
+    /// This refutes [`min_fee`]'s claim that "storage mass is ~0 for the simple shapes here".
+    #[test]
+    #[ignore = "repro: the settlement fee is priced from a fee=0 probe, so deducting it shrinks the \
+                change output and raises the storage mass past the fee that was paid"]
+    fn settlement_fee_must_cover_the_final_transactions_storage_mass() {
+        let params = &SIMNET_PARAMS;
+        let keypair = keypair();
+        let address = address(&keypair, params);
+        let covenant_id = Hash::from_bytes([9u8; 32]);
+        let covenant_spk = pay_to_script_hash_script(&[0xABu8; 64]);
+        let covenant_value = 100_000_000;
+        let covenant_entry =
+            UtxoEntry::new(covenant_value, covenant_spk.clone(), 0, false, Some(covenant_id));
+        let fee_entry = UtxoEntry::new(FUND_VALUE, pay_to_address_script(&address), 0, false, None);
+
+        let tx = settlement_transaction(SettlementTx {
+            settlement_tx: settlement_skeleton(
+                &covenant_spk,
+                covenant_id,
+                covenant_value - PERMISSION_OUTPUT_VALUE,
+                &address,
+                2_000,
+            ),
+            covenant_entry: covenant_entry.clone(),
+            covenant_compute_budget: DEV_COVENANT_BUDGET,
+            fee_outpoint: outpoint(3),
+            fee_entry: fee_entry.clone(),
+            keypair,
+            address: &address,
+            params,
+        });
+
+        assert_fee_covers_final(params, &tx, &[covenant_entry, fee_entry]);
+    }
+
+    /// [`pay_to_address_transaction`] underprices whenever the change left over above the payout is
+    /// small enough that its `C/v` term dominates compute mass.
+    ///
+    /// The change value here is smaller than the coinbase-funded change the repo's own callers
+    /// leave, so this shape is reachable through the public builder but is not what `Wallet`
+    /// currently produces.
+    #[test]
+    #[ignore = "repro: the payout fee is priced from a fee=0 probe, so deducting it shrinks the \
+                change output and raises the storage mass past the fee that was paid"]
+    fn pay_to_address_fee_must_cover_the_final_changes_storage_mass() {
+        let params = &SIMNET_PARAMS;
+        let keypair = keypair();
+        let address = address(&keypair, params);
+        let payout = FUND_VALUE;
+        let change = 50_000_000;
+        let entry =
+            UtxoEntry::new(payout + change, pay_to_address_script(&address), 0, false, None);
+
+        let tx = pay_to_address_transaction(PayToAddressTx {
+            outpoint: outpoint(1),
+            entry: entry.clone(),
+            recipient: &address,
+            value: payout,
+            count: 1,
+            keypair,
+            change_address: &address,
+            params,
+        });
+
+        assert_fee_covers_final(params, &tx, &[entry]);
+    }
+
+    /// [`activity_transaction`] underprices once the funding UTXO is small enough that the `C/v`
+    /// term on the single output dominates compute mass. Its probe pays the whole input back out,
+    /// so the probe's storage mass is exactly zero and the fee is always priced on compute alone.
+    ///
+    /// 0.1 KAS is around the smallest output KIP-0009 keeps relayable, and `Wallet` spends its
+    /// largest UTXO first, so this shape is reachable through the public builder (which the
+    /// simulation calls directly with its own UTXOs) but is not one `Wallet` currently selects.
+    #[test]
+    #[ignore = "repro: the activity fee is priced from a fee=0 probe whose storage mass is zero, so \
+                deducting the fee raises the final output's storage mass past the fee that was paid"]
+    fn activity_fee_must_cover_the_final_outputs_storage_mass() {
+        let params = &SIMNET_PARAMS;
+        let keypair = keypair();
+        let address = address(&keypair, params);
+        let entry = UtxoEntry::new(10_000_000, pay_to_address_script(&address), 0, false, None);
+
+        let tx = activity_transaction(ActivityTx {
+            payload: vec![0u8; 64],
+            outpoint: outpoint(1),
+            entry: entry.clone(),
+            keypair,
+            address: &address,
+            subnetwork_id: SUBNETWORK_ID_NATIVE,
+            tx_version: TX_VERSION_TOCCATA,
+            params,
+        });
+
+        assert_fee_covers_final(params, &tx, &[entry]);
+    }
+}
