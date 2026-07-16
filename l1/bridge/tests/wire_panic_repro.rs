@@ -1,19 +1,21 @@
-//! Reproduction: the bridge worker `expect`/`unwrap`s fields carried on the RPC wire, so a peer
-//! that elides one kills the worker thread with a panic. The worker runs on a bare `thread::spawn`
-//! with no `catch_unwind`, so the panic is not converted into an [`L1Event::Fatal`]: the thread
-//! dies and consumers parked in `wait_and_pop` block forever with no indication.
+//! Reproduction: the bridge worker `expect`/`unwrap`s fields the RPC peer carries as `Option`, so a
+//! peer that elides one panics the worker thread. The worker runs on a bare `thread::spawn` with no
+//! `catch_unwind`, so the panic never becomes an [`L1Event::Fatal`]: the thread dies, the sink stops
+//! advancing, and consumers parked in `wait_and_pop` block forever with no indication.
 //!
-//! Each test drives a real L1 node through a proxy that elides exactly one field from the
-//! `GetVirtualChainFromBlockV2` response, then asserts the bridge surfaces `Fatal`. Every test
-//! fails by timing out, which is the defect: the parked consumer is never woken.
+//! Each test drives a real L1 node through a proxy that elides exactly one field from every
+//! `GetVirtualChainFromBlockV2` response, then asserts the bridge reports the malformed response.
 //!
 //! `L1BridgeConfig::default()` reaches the public community resolver, so the peer serving these
 //! responses is untrusted and this is a remote liveness kill.
 
 use std::{
-    collections::HashSet,
-    sync::{Arc, Mutex},
-    time::Duration,
+    panic,
+    sync::{
+        Arc, Mutex, Once,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 use borsh::BorshDeserialize;
@@ -31,17 +33,53 @@ use vprogs_l1_types::{ChainBlockMetadata, ConnectStrategy, L1Transaction, Networ
 use vprogs_node_test_utils::{L1BridgeExt, L1Node};
 use vprogs_storage_canonical_chain::CanonicalChainManager;
 use workflow_rpc::{
+    error::ServerError,
     id::Id64,
-    messages::borsh::{BorshReqHeader, BorshServerMessage, BorshServerMessageHeader},
+    messages::borsh::{BorshServerMessage, BorshServerMessageHeader, ServerMessageKind},
 };
 use workflow_serializer::prelude::Serializable;
 
-/// Time allowed for the node to start, the bridge to connect, and blocks to reach the sink.
+/// Time allowed for the node to start, the bridge to connect, and a tampered response to be served.
 const TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Time a consumer waits for the `Fatal` the worker owes it after the panic. The worker reaches the
-/// panic within milliseconds of the tampered response, so exceeding this means no event is coming.
+/// Time a consumer waits for the event the worker owes it after the tampered response. The worker
+/// reaches the site within milliseconds of the response, so exceeding this means none is coming.
 const FATAL_TIMEOUT: Duration = Duration::from_secs(15);
+
+// ============================================================================
+// Panic recording
+// ============================================================================
+
+/// Panic reports from every thread in this binary, including the bridge worker's. Each entry
+/// carries the panicking source location, which names the site that consumed the elided field.
+static PANICS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Installs a hook recording every panic report while keeping the default one. Idempotent.
+fn record_panics() {
+    static INSTALLED: Once = Once::new();
+    INSTALLED.call_once(|| {
+        let default = panic::take_hook();
+        panic::set_hook(Box::new(move |info| {
+            PANICS.lock().expect("panic log poisoned").push(info.to_string());
+            default(info);
+        }));
+    });
+}
+
+/// The recorded panic reports raised at `site`, a `file.rs:line` location under `l1/bridge/src`.
+///
+/// Matching the location rather than the whole report keeps a sibling test's assert text, which
+/// quotes these same sites, out of the result.
+fn panics_at(site: &str) -> Vec<String> {
+    let location = format!("panicked at l1/bridge/src/{site}:");
+    PANICS
+        .lock()
+        .expect("panic log poisoned")
+        .iter()
+        .filter(|p| p.starts_with(&location))
+        .cloned()
+        .collect()
+}
 
 // ============================================================================
 // The tampered field, one per panic site
@@ -57,31 +95,33 @@ enum Elide {
     /// `worker.rs:460` - `header.daa_score.expect("missing daa_score")`.
     HeaderDaaScore,
     /// `worker.rs:470` - `L1Transaction::try_from(tx.clone()).expect("missing tx fields")`.
-    TxMass,
+    TxStorageMass,
     /// `worker.rs:505` - `ChainBlockMetadata::try_from(header).unwrap()`, which also requires
-    /// `timestamp`. Reached only when the fields checked earlier are present.
+    /// `timestamp`. Reached only once the fields checked earlier in the loop are present.
     HeaderTimestamp,
     /// `worker.rs:526` - `header.blue_score.expect("missing blue_score")` in `lane_state`.
     HeaderBlueScore,
 }
 
 impl Elide {
-    /// Removes this variant's field from every chain block in `response`.
-    fn apply(self, response: &mut GetVirtualChainFromBlockV2Response) {
-        for block in response.chain_block_accepted_transactions.iter_mut() {
+    /// Removes this variant's field throughout `response`, returning how many were removed.
+    fn apply(self, response: &mut GetVirtualChainFromBlockV2Response) -> usize {
+        let mut elided = 0;
+        for block in Arc::make_mut(&mut response.chain_block_accepted_transactions) {
             let header = &mut block.chain_block_header;
-            match self {
-                Elide::HeaderHash => header.hash = None,
-                Elide::HeaderDaaScore => header.daa_score = None,
-                Elide::HeaderTimestamp => header.timestamp = None,
-                Elide::HeaderBlueScore => header.blue_score = None,
-                Elide::TxMass => {
-                    for tx in block.accepted_transactions.iter_mut() {
-                        tx.mass = None;
-                    }
-                }
-            }
+            elided += match self {
+                Elide::HeaderHash => header.hash.take().is_some() as usize,
+                Elide::HeaderDaaScore => header.daa_score.take().is_some() as usize,
+                Elide::HeaderTimestamp => header.timestamp.take().is_some() as usize,
+                Elide::HeaderBlueScore => header.blue_score.take().is_some() as usize,
+                Elide::TxStorageMass => block
+                    .accepted_transactions
+                    .iter_mut()
+                    .map(|tx| tx.storage_mass.take().is_some() as usize)
+                    .sum::<usize>(),
+            };
         }
+        elided
     }
 }
 
@@ -91,13 +131,14 @@ impl Elide {
 
 /// A wRPC proxy between the bridge and a real L1 node.
 ///
-/// It forwards every frame verbatim except the responses to `GetVirtualChainFromBlockV2`, from
-/// which it elides one field. Requests carry `BorshReqHeader { id, op }` and responses carry
-/// `BorshServerMessageHeader { id, kind, op }`; the response header's `op` is not populated for
-/// method replies, so the proxy tracks which request ids it must tamper by their op.
+/// It forwards every frame verbatim except successful replies to `GetVirtualChainFromBlockV2`, from
+/// which it elides one field, and counts what it removed so a test can establish that the worker
+/// was actually served a malformed response.
 struct TamperProxy {
     /// URL the bridge connects to, standing in for the node's own wRPC URL.
     url: String,
+    /// Fields removed from responses so far.
+    elided: Arc<AtomicUsize>,
 }
 
 impl TamperProxy {
@@ -105,10 +146,13 @@ impl TamperProxy {
     async fn start(upstream: String, elide: Elide) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("proxy failed to bind");
         let port = listener.local_addr().expect("proxy has no local address").port();
+        let elided = Arc::new(AtomicUsize::new(0));
 
+        let counter = elided.clone();
         tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
                 let upstream = upstream.clone();
+                let counter = counter.clone();
                 tokio::spawn(async move {
                     let downstream = tokio_tungstenite::accept_async(stream)
                         .await
@@ -116,17 +160,33 @@ impl TamperProxy {
                     let (node, _) = tokio_tungstenite::connect_async(&upstream)
                         .await
                         .expect("proxy failed to reach the node");
-                    pump(downstream, node, elide).await;
+                    pump(downstream, node, elide, counter).await;
                 });
             }
         });
 
-        Self { url: format!("ws://127.0.0.1:{port}") }
+        Self { url: format!("ws://127.0.0.1:{port}"), elided }
     }
 
     /// The proxy's wRPC URL.
     fn url(&self) -> String {
         self.url.clone()
+    }
+
+    /// Waits until the proxy has removed a field from a response the node actually served.
+    ///
+    /// Every later assert is about how the worker handles that response, so reaching it without a
+    /// single elision would make those asserts say nothing about the sites they name.
+    async fn wait_for_elision(&self, timeout: Duration) {
+        let start = Instant::now();
+        while self.elided.load(Ordering::Relaxed) == 0 {
+            assert!(
+                start.elapsed() <= timeout,
+                "the proxy elided no field, so no tampered response ever reached the worker and \
+                 this test would prove nothing about the site it names",
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 }
 
@@ -135,24 +195,15 @@ async fn pump(
     downstream: WebSocketStream<TcpStream>,
     upstream: WebSocketStream<MaybeTlsStream<TcpStream>>,
     elide: Elide,
+    elided: Arc<AtomicUsize>,
 ) {
     let (mut down_tx, mut down_rx) = downstream.split();
     let (mut up_tx, mut up_rx) = upstream.split();
 
-    // Ids of in-flight virtual-chain requests, recorded on the way out and consumed on the way
-    // back. Shared because the two directions are pumped concurrently.
-    let pending: Arc<Mutex<HashSet<Id64>>> = Arc::new(Mutex::new(HashSet::new()));
-
-    let to_node = {
-        let pending = pending.clone();
-        async move {
-            while let Some(Ok(msg)) = down_rx.next().await {
-                if let Message::Binary(bytes) = &msg {
-                    record_virtual_chain_request(bytes, &pending);
-                }
-                if up_tx.send(msg).await.is_err() {
-                    return;
-                }
+    let to_node = async move {
+        while let Some(Ok(msg)) = down_rx.next().await {
+            if up_tx.send(msg).await.is_err() {
+                return;
             }
         }
     };
@@ -160,7 +211,7 @@ async fn pump(
     let to_client = async move {
         while let Some(Ok(msg)) = up_rx.next().await {
             let msg = match &msg {
-                Message::Binary(bytes) => tamper(bytes, &pending, elide).unwrap_or(msg),
+                Message::Binary(bytes) => tamper(bytes, elide, &elided).unwrap_or(msg),
                 _ => msg,
             };
             if down_tx.send(msg).await.is_err() {
@@ -174,37 +225,27 @@ async fn pump(
     futures::future::select(to_node, to_client).await;
 }
 
-/// Records `bytes`' request id if it is a virtual-chain request, so its reply can be tampered.
-fn record_virtual_chain_request(bytes: &[u8], pending: &Mutex<HashSet<Id64>>) {
-    let header = match BorshReqHeader::<RpcApiOps, Id64>::deserialize(&mut &bytes[..]) {
-        Ok(header) => header,
-        Err(_) => return,
-    };
-    if header.op != RpcApiOps::GetVirtualChainFromBlockV2 {
-        return;
-    }
-    if let Some(id) = header.id {
-        pending.lock().expect("pending set poisoned").insert(id);
-    }
-}
+/// A virtual-chain method reply's payload: the handler's `Result`, as the wRPC server frames it.
+type VccReply = Result<Serializable<GetVirtualChainFromBlockV2Response>, ServerError>;
 
-/// Rewrites `bytes` with the field elided, or `None` if the frame is not a virtual-chain response.
-fn tamper(bytes: &[u8], pending: &Mutex<HashSet<Id64>>, elide: Elide) -> Option<Message> {
+/// Rewrites `bytes` with `elide`'s field removed, or `None` if the frame is not a successful
+/// virtual-chain reply.
+fn tamper(bytes: &[u8], elide: Elide, elided: &AtomicUsize) -> Option<Message> {
     let message = BorshServerMessage::<RpcApiOps, Id64>::try_from(bytes).ok()?;
-    let id = message.header.id?;
-    if !pending.lock().expect("pending set poisoned").remove(&id) {
+    if !matches!(message.header.kind, ServerMessageKind::Success)
+        || message.header.op != Some(RpcApiOps::GetVirtualChainFromBlockV2)
+    {
         return None;
     }
 
-    // A tracked id whose payload does not decode is an error reply, which is passed through.
-    let mut response =
-        Serializable::<GetVirtualChainFromBlockV2Response>::deserialize(&mut &message.payload[..])
-            .ok()?
-            .into_inner();
-    elide.apply(&mut response);
+    // Only the `Ok` arm carries a response; an error reply is forwarded untouched.
+    let mut response = VccReply::deserialize(&mut &message.payload[..]).ok()?.ok()?.into_inner();
+    elided.fetch_add(elide.apply(&mut response), Ordering::Relaxed);
 
-    let payload = borsh::to_vec(&Serializable(response)).expect("response must reserialize");
-    let header = BorshServerMessageHeader::new(message.header.id, message.header.kind, message.header.op);
+    let payload = borsh::to_vec::<VccReply>(&Ok(Serializable(response)))
+        .expect("response must reserialize");
+    let header =
+        BorshServerMessageHeader::new(message.header.id, message.header.kind, message.header.op);
     let rewritten =
         BorshServerMessage::new(header, &payload).try_to_vec().expect("frame must reserialize");
     Some(Message::Binary(rewritten))
@@ -281,8 +322,19 @@ impl ChainSink<ChainBlockMetadata, L1Transaction> for RecordingSink {
 /// Keeps the API command channel's sender alive so the worker's command branch stays open.
 type ApiGuard = mpsc::Sender<Command<RecordingSink>>;
 
-/// Starts a node, a proxy eliding `elide`, and a connected bridge behind the proxy.
-async fn setup(elide: Elide) -> (L1Node, L1Bridge, RecordingSink, ApiGuard) {
+/// A node, a proxy eliding one field in front of it, and a bridge connected through the proxy.
+struct Harness {
+    node: L1Node,
+    bridge: L1Bridge,
+    sink: RecordingSink,
+    proxy: TamperProxy,
+    _api: ApiGuard,
+}
+
+/// Starts a node, a proxy eliding `elide`, and a bridge connected behind the proxy.
+async fn setup(elide: Elide) -> Harness {
+    record_panics();
+
     let node = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
     let proxy = TamperProxy::start(node.wrpc_borsh_url(), elide).await;
 
@@ -296,32 +348,36 @@ async fn setup(elide: Elide) -> (L1Node, L1Bridge, RecordingSink, ApiGuard) {
     let bridge = L1Bridge::new(config, sink.clone(), api_rx);
 
     // Drain `Connected` so a later `wait_and_pop` parks on the queue, as a consumer would.
-    bridge.wait_for(TIMEOUT, |e| matches!(e, L1Event::Connected)).await;
+    let events = bridge.wait_for(TIMEOUT, |e| matches!(e, L1Event::Connected)).await;
+    assert_eq!(events.len(), 1, "the bridge queued {events:?} before connecting");
 
-    (node, bridge, sink, api_tx)
+    Harness { node, bridge, sink, proxy, _api: api_tx }
 }
 
-/// Mines a block whose tampered response reaches the worker, then asserts the bridge reports the
+/// Mines until a tampered response reaches the worker, then asserts the bridge reports the
 /// malformed response as `Fatal`.
 ///
-/// The bridge owes every consumer either progress or a terminal event. Panicking on the worker
-/// thread delivers neither.
+/// The bridge owes every consumer either progress or a terminal event. A peer that elides a
+/// required field can never yield progress, so `Fatal` is the only outcome left. Panicking on the
+/// worker thread delivers neither.
 async fn assert_fatal_on_elided_field(elide: Elide, site: &str) {
-    let (node, bridge, sink, _api) = setup(elide).await;
+    let h = setup(elide).await;
 
-    // Two blocks: Kaspa accepts a block's transactions on the next chain block, so the second
-    // makes the first's txs (and header) land in a virtual-chain response the proxy tampers.
-    node.mine_blocks(2).await;
+    // Kaspa accepts a block's transactions on the next chain block, so the second block puts the
+    // first's header and transactions into a virtual-chain response the proxy tampers.
+    h.node.mine_blocks(2).await;
+    h.proxy.wait_for_elision(TIMEOUT).await;
 
-    let event = tokio::time::timeout(FATAL_TIMEOUT, bridge.wait_and_pop()).await;
+    let event = tokio::time::timeout(FATAL_TIMEOUT, h.bridge.wait_and_pop()).await;
     assert!(
         matches!(event, Ok(L1Event::Fatal { .. })),
-        "{site}: expected Fatal on the elided field, got {event:?} \
-         (worker scheduled {} blocks before dying)",
-        sink.scheduled(),
+        "{site}: expected Fatal on the elided field, got {event:?}. The worker scheduled {} \
+         blocks, and panicked at: {:?}",
+        h.sink.scheduled(),
+        panics_at(site),
     );
 
-    node.shutdown().await;
+    h.node.shutdown().await;
 }
 
 // ============================================================================
@@ -329,71 +385,70 @@ async fn assert_fatal_on_elided_field(elide: Elide, site: &str) {
 // ============================================================================
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "repro: worker.rs:459 panics on an elided header hash, killing the thread with no Fatal"]
 async fn elided_header_hash_reports_fatal() {
     assert_fatal_on_elided_field(Elide::HeaderHash, "worker.rs:459").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "repro: worker.rs:460 panics on an elided daa_score, killing the thread with no Fatal"]
 async fn elided_header_daa_score_reports_fatal() {
     assert_fatal_on_elided_field(Elide::HeaderDaaScore, "worker.rs:460").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "repro: worker.rs:470 panics on an elided tx field, killing the thread with no Fatal"]
-async fn elided_transaction_field_reports_fatal() {
-    assert_fatal_on_elided_field(Elide::TxMass, "worker.rs:470").await;
+async fn elided_transaction_storage_mass_reports_fatal() {
+    assert_fatal_on_elided_field(Elide::TxStorageMass, "worker.rs:470").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "repro: worker.rs:505 panics on an elided timestamp, killing the thread with no Fatal"]
 async fn elided_header_timestamp_reports_fatal() {
     assert_fatal_on_elided_field(Elide::HeaderTimestamp, "worker.rs:505").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "repro: worker.rs:526 panics on an elided blue_score, killing the thread with no Fatal"]
 async fn elided_header_blue_score_reports_fatal() {
     assert_fatal_on_elided_field(Elide::HeaderBlueScore, "worker.rs:526").await;
 }
 
 // `worker.rs:543` (`header.daa_score.expect("missing daa_score")` in `lane_state`) has no case of
-// its own: it reads the same `Option` on the same header that `worker.rs:460` already unwrapped
-// earlier in the loop, so any response that would trip it trips `:460` first. It is unreachable
-// while `:460` stands, and `elided_header_daa_score_reports_fatal` covers the field.
+// its own, and no response can give it one. It reads the same `Option` on the same header that
+// `worker.rs:460` unwraps earlier in the same loop iteration, so every response that would trip it
+// trips `:460` first. `elided_header_daa_score_reports_fatal` covers the field; a fix to `:543`
+// alone is unobservable, and a fix to `:460` alone leaves `:543` reachable and must be checked by
+// review rather than by this test.
 
 // ============================================================================
 // The consequence: a dead worker and a parked consumer
 // ============================================================================
 
-/// Verifies the worker survives a malformed response well enough to keep serving the chain, or
-/// else reports that it cannot.
+/// Verifies the bridge stays observable after a malformed response: it either keeps scheduling or
+/// says why it stopped.
 ///
-/// After the panic the thread is gone: no further block is ever scheduled and no event is ever
-/// queued, so a consumer in `wait_and_pop` parks forever. Nothing observable distinguishes this
-/// from a quiet chain.
+/// After the panic the worker thread is gone, so no further block is scheduled and no event is ever
+/// queued. Nothing observable distinguishes that from a quiet chain, and a consumer in
+/// `wait_and_pop` parks forever.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "repro: the panicked worker thread dies silently, freezing the sink and parking consumers"]
-async fn worker_survives_or_reports_a_malformed_response() {
-    let (node, bridge, sink, _api) = setup(Elide::HeaderDaaScore).await;
+async fn malformed_response_leaves_the_bridge_observable() {
+    let h = setup(Elide::HeaderDaaScore).await;
 
-    node.mine_blocks(2).await;
+    h.node.mine_blocks(2).await;
+    h.proxy.wait_for_elision(TIMEOUT).await;
 
-    // Give the worker time to reach the tampered response and die.
+    // Let the worker reach the tampered response.
     tokio::time::sleep(Duration::from_secs(5)).await;
-    let scheduled_at_death = sink.scheduled();
+    let scheduled_before = h.sink.scheduled();
 
-    // Keep mining: a live worker would schedule these.
-    node.mine_blocks(5).await;
+    // Keep mining: a live worker schedules these.
+    h.node.mine_blocks(5).await;
     tokio::time::sleep(Duration::from_secs(5)).await;
 
+    let progressed = h.sink.scheduled() > scheduled_before;
+    let events = h.bridge.drain();
     assert!(
-        sink.scheduled() > scheduled_at_death,
-        "worker stopped scheduling after the malformed response (stuck at {scheduled_at_death} \
-         blocks) and queued no event to say so: {:?}",
-        bridge.drain(),
+        progressed || !events.is_empty(),
+        "after the malformed response the bridge neither scheduled a block (stuck at \
+         {scheduled_before}) nor queued an event to say why; its worker panicked at: {:?}",
+        panics_at("worker.rs:460"),
     );
 
-    node.shutdown().await;
+    h.node.shutdown().await;
 }
