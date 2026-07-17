@@ -2223,7 +2223,7 @@ fn witness_mismatch_carrier(encode_signer: impl Fn(u8, u8, u32, u32, u32) -> Vec
     payload.extend_from_slice(&junk_payload_digest);
 
     let tx_bytes = encode_v1_transaction(&payload, &current_rest_preimage);
-    encode_inputs(0, [0u8; 32], &tx_bytes, &[(false, 0, initial_data)])
+    encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, initial_data)])
 }
 
 /// Runs `inputs` through the guest and asserts the transaction is journaled as
@@ -2244,7 +2244,6 @@ fn assert_journaled_as_error(inputs: &[u8]) {
 /// Single-key witness signer (kind 0x02) whose pointer names payload bytes that
 /// do not hash to the outpoint.
 #[test]
-#[ignore = "repro: the guest aborts on the witness assert instead of journaling an error; un-ignore with the fix"]
 fn witness_not_matching_outpoint_is_journaled_as_error() {
     assert_journaled_as_error(&witness_mismatch_carrier(encode_witness_signer));
 }
@@ -2252,7 +2251,6 @@ fn witness_not_matching_outpoint_is_journaled_as_error() {
 /// The multisig twin (kind 0x04) shares `recover_witness_pubkey` and therefore
 /// the same exit.
 #[test]
-#[ignore = "repro: the guest aborts on the witness assert instead of journaling an error; un-ignore with the fix"]
 fn multisig_witness_not_matching_outpoint_is_journaled_as_error() {
     assert_journaled_as_error(&witness_mismatch_carrier(encode_multisig_witness_signer));
 }
