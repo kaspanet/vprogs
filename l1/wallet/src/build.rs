@@ -286,17 +286,15 @@ pub fn activity_transaction(args: ActivityTx<'_>) -> Result<Transaction, BuildEr
 
 /// Inputs to [`pay_to_address_transaction`].
 pub struct PayToAddressTx<'a> {
-    /// The funding outpoint to spend.
-    pub outpoint: TransactionOutpoint,
-    /// The funding outpoint's entry (amount, spk, ...).
-    pub entry: UtxoEntry,
+    /// Funding UTXOs in preference order; the builder spends a prefix of this list.
+    pub candidates: Vec<(TransactionOutpoint, UtxoEntry)>,
     /// Recipient address each of the `count` outputs pays.
     pub recipient: &'a Address,
     /// Sompi paid to each recipient output.
     pub value: u64,
     /// Number of equal-value outputs to the recipient.
     pub count: usize,
-    /// Key that funds the input and receives the change.
+    /// Key that funds the inputs and receives the change.
     pub keypair: Keypair,
     /// Address the remainder (after the recipient outputs and the fee) is paid back to.
     pub change_address: &'a Address,
@@ -304,53 +302,41 @@ pub struct PayToAddressTx<'a> {
     pub params: &'a Params,
 }
 
-/// Builds one signed transaction spending `args.outpoint` that pays `args.count` outputs of
-/// `args.value` sompi each to `args.recipient`, returning the remainder (after those outputs and
-/// the node's minimum mass-based fee) as change to `args.change_address`. Used to seed a distinct
-/// prover's funding address from a coinbase wallet.
-pub fn pay_to_address_transaction(args: PayToAddressTx<'_>) -> Transaction {
-    let input = TransactionInput::new(args.outpoint, vec![], 0, 1);
+/// Builds one signed transaction paying `args.count` outputs of `args.value` sompi each to
+/// `args.recipient`, funded from a prefix of `args.candidates`, returning the remainder
+/// (after those outputs and the node's minimum mass-based fee) as change to
+/// `args.change_address` when the remainder is storage-viable, and folding it into the fee
+/// otherwise. Used to seed a distinct prover's funding address from a coinbase wallet.
+pub fn pay_to_address_transaction(args: PayToAddressTx<'_>) -> Result<Transaction, BuildError> {
     let recipient_spk = pay_to_address_script(args.recipient);
     let change_spk = pay_to_address_script(args.change_address);
-    let payout: u64 = args.value.checked_mul(args.count as u64).expect("recipient payout overflow");
-    assert!(
-        args.entry.amount > payout,
-        "funding UTXO amount {} too small for payout {}",
-        args.entry.amount,
-        payout,
-    );
-    let entries = vec![args.entry.clone()];
-
-    let build = |fee: u64| {
+    args.value.checked_mul(args.count as u64).expect("recipient payout overflow");
+    let mut build = |n: usize, change: Option<u64>| {
+        let inputs = args.candidates[..n]
+            .iter()
+            .map(|(outpoint, _)| TransactionInput::new(*outpoint, vec![], 0, 1))
+            .collect();
         let mut outputs: Vec<TransactionOutput> = (0..args.count)
             .map(|_| TransactionOutput::new(args.value, recipient_spk.clone()))
             .collect();
-        outputs.push(TransactionOutput::new(args.entry.amount - payout - fee, change_spk.clone()));
+        outputs.extend(change.map(|value| TransactionOutput::new(value, change_spk.clone())));
         let tx = Transaction::new(
             TX_VERSION_TOCCATA,
-            vec![input.clone()],
+            inputs,
             outputs,
             0,
             SUBNETWORK_ID_NATIVE,
             0,
             Vec::new(),
         );
-        let signed = sign(MutableTransaction::with_entries(tx, entries.clone()), args.keypair).tx;
-        commit_storage_mass(args.params, &signed, &entries);
-        signed
+        let entries: Vec<UtxoEntry> =
+            args.candidates[..n].iter().map(|(_, entry)| entry.clone()).collect();
+        (sign(MutableTransaction::with_entries(tx, entries.clone()), args.keypair).tx, entries)
     };
-
-    // Zero-fee probe to learn the signed mass, price it at the node floor, then rebuild funded.
-    let probe = build(0);
-    let fee = min_fee(args.params, &probe);
-    assert!(
-        args.entry.amount > payout + fee,
-        "funding UTXO amount {} too small for payout {} + fee {}",
-        args.entry.amount,
-        payout,
-        fee,
-    );
-    build(fee)
+    let funding = fund(args.params, &args.candidates, false, &mut build)?;
+    let (tx, entries) = build(funding.inputs, funding.change);
+    commit_storage_mass(args.params, &tx, &entries);
+    Ok(tx)
 }
 
 /// Builds a signed bootstrap transaction whose single output is P2SH(`redeem_script`) with a
@@ -628,15 +614,15 @@ mod tests {
             UtxoEntry::new(payout + change, pay_to_address_script(&address), 0, false, None);
 
         let tx = pay_to_address_transaction(PayToAddressTx {
-            outpoint: outpoint(1),
-            entry: entry.clone(),
+            candidates: vec![(outpoint(1), entry.clone())],
             recipient: &address,
             value: payout,
             count: 1,
             keypair,
             change_address: &address,
             params,
-        });
+        })
+        .expect("payout is fundable");
 
         BuiltShape { tx, entries: vec![entry] }
     }
@@ -976,5 +962,32 @@ mod tests {
 
         let err = fund(params, &candidates, false, &mut probe).expect_err("infeasible");
         assert!(matches!(err, BuildError::StorageInfeasible { .. }), "got {err:?}");
+    }
+
+    /// A funding UTXO whose slack above the payout covers the fee but not a storage-viable
+    /// change: the change output is dropped and the slack folds into the fee.
+    #[test]
+    fn pay_to_address_drops_an_unviable_change() {
+        let params = &SIMNET_PARAMS;
+        let keypair = keypair();
+        let address = address(&keypair, params);
+        let payout = 50_000_000;
+        // 400_000 sompi of slack: above the fee, far below the ~2M viable-change floor.
+        let entry =
+            UtxoEntry::new(payout + 400_000, pay_to_address_script(&address), 0, false, None);
+
+        let tx = pay_to_address_transaction(PayToAddressTx {
+            candidates: vec![(outpoint(1), entry.clone())],
+            recipient: &address,
+            value: payout,
+            count: 1,
+            keypair,
+            change_address: &address,
+            params,
+        })
+        .expect("fundable without a change output");
+
+        assert_eq!(tx.outputs.len(), 1, "change output must be dropped");
+        assert_eq!(fee_paid(&tx, &[entry]), 400_000);
     }
 }
