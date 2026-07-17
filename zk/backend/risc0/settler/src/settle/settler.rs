@@ -104,10 +104,10 @@ impl<F: FeeSource, K: SettlementSink> Settler<F, K> {
                 SubmitOutcome::Accepted(txid) => break txid,
                 SubmitOutcome::FeeRejected => {
                     log::warn!(
-                        "settlement-worker: fee UTXO {} rejected, retrying with another UTXO",
-                        funded.fee_outpoint,
+                        "settlement-worker: fee UTXOs {:?} rejected, retrying with others",
+                        funded.fee_outpoints,
                     );
-                    excluded.insert(funded.fee_outpoint);
+                    excluded.extend(funded.fee_outpoints.iter().copied());
                 }
                 SubmitOutcome::Superseded => {
                     log::info!(

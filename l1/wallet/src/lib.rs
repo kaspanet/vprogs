@@ -126,9 +126,10 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
         )
     }
 
-    /// Funds and signs a settlement transaction without submitting it: appends a fee input + change
-    /// output, signs only the fee input, preserves the covenant input's witness, sets the covenant
-    /// input's compute budget, and commits the storage-mass field. The result is ready to submit.
+    /// Funds and signs a settlement transaction without submitting it: appends fee inputs from a
+    /// prefix of the spendable UTXOs plus a change output, signs the fee inputs, preserves the
+    /// covenant input's witness, sets the covenant input's compute budget, and commits the
+    /// storage-mass field. The result is ready to submit.
     pub async fn prepare_settlement_transaction(
         &self,
         settlement_tx: Transaction,
@@ -146,33 +147,38 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
         .0
     }
 
-    /// Like [`Wallet::prepare_settlement_transaction`], but funds the fee from the largest
-    /// spendable UTXO **not** in `excluded`, and also returns the fee outpoint it spent.
-    /// Returns `None` when every spendable UTXO is excluded.
+    /// Like [`Wallet::prepare_settlement_transaction`], but funds the fee from spendable UTXOs
+    /// **not** in `excluded`, and also returns the fee outpoints it spent. Returns `None` when
+    /// every spendable UTXO is excluded, or the free ones cannot fund the fee.
     ///
     /// The node can reject a settlement as an orphan when its fee input references an output it has
     /// not yet accepted into its DAG. The caller re-prepares with that outpoint added to `excluded`
-    /// so the retry funds from a different, settled UTXO.
+    /// so the retry funds from different, settled UTXOs.
     pub async fn prepare_settlement_excluding(
         &self,
         settlement_tx: Transaction,
         covenant_entry: UtxoEntry,
         covenant_compute_budget: ComputeBudget,
         excluded: &std::collections::HashSet<TransactionOutpoint>,
-    ) -> Option<(Transaction, TransactionOutpoint)> {
+    ) -> Option<(Transaction, Vec<TransactionOutpoint>)> {
         let utxos = self.fetch_spendable_utxos().await.expect("fetch spendable utxos");
-        let (fee_outpoint, fee_entry) = utxos.into_iter().find(|(o, _)| !excluded.contains(o))?;
+        let fee_candidates: Vec<_> =
+            utxos.into_iter().filter(|(outpoint, _)| !excluded.contains(outpoint)).collect();
+        if fee_candidates.is_empty() {
+            return None;
+        }
         let tx = build::settlement_transaction(build::SettlementTx {
             settlement_tx,
             covenant_entry,
             covenant_compute_budget,
-            fee_outpoint,
-            fee_entry,
+            fee_candidates,
             keypair: self.keypair,
             address: &self.address,
             params: self.params,
-        });
-        Some((tx, fee_outpoint))
+        })
+        .ok()?;
+        let fee_outpoints = tx.inputs[1..].iter().map(|input| input.previous_outpoint).collect();
+        Some((tx, fee_outpoints))
     }
 
     /// Builds and signs (without submitting) a transaction paying `count` outputs of `value` sompi

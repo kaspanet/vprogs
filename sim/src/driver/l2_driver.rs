@@ -659,12 +659,12 @@ impl L2Driver {
             settlement_tx: settlement.transaction,
             covenant_entry,
             covenant_compute_budget: DEV_COVENANT_BUDGET,
-            fee_outpoint: *fee_outpoint,
-            fee_entry: fee_entry.clone(),
+            fee_candidates: vec![(*fee_outpoint, fee_entry.clone())],
             keypair: ctx.keypair,
             address: &address,
             params: ctx.params,
-        });
+        })
+        .expect("sim settlement is coinbase-funded");
         let txid = tx.id();
 
         self.pending = Some(PendingCovenant {
@@ -833,11 +833,10 @@ impl L2Driver {
     }
 }
 
-/// The sim's [`FeeSource`]: funds a settlement fee from the miner's in-memory spendable set, the
-/// counterpart to the production `WalletFeeSource` (which fetches over wRPC). Built per block over
-/// the [`ProduceCtx`]'s spendable snapshot, key, and address. The sim is the sole miner, so there
-/// is no fee contention: nothing is ever excluded and the first spendable output always funds the
-/// fee.
+/// The sim's [`FeeSource`]: funds a settlement fee from a prefix of the miner's in-memory
+/// spendable set, the counterpart to the production `WalletFeeSource` (which fetches over
+/// wRPC). Built per block over the [`ProduceCtx`]'s spendable snapshot, key, and address. The
+/// sim is the sole miner, so there is no fee contention: nothing is ever excluded.
 struct SimFeeSource<'a> {
     /// Matured outpoints (with entries) the miner can spend this block, in insertion order.
     spendable: &'a [(TransactionOutpoint, UtxoEntry)],
@@ -856,19 +855,27 @@ impl FeeSource for SimFeeSource<'_> {
         covenant_entry: UtxoEntry,
         excluded: &HashSet<TransactionOutpoint>,
     ) -> Option<FundedSettlement> {
-        let (fee_outpoint, fee_entry) =
-            self.spendable.iter().find(|(outpoint, _)| !excluded.contains(outpoint))?;
+        let fee_candidates: Vec<_> = self
+            .spendable
+            .iter()
+            .filter(|(outpoint, _)| !excluded.contains(outpoint))
+            .cloned()
+            .collect();
+        if fee_candidates.is_empty() {
+            return None;
+        }
         let tx = build::settlement_transaction(build::SettlementTx {
             settlement_tx: built.transaction.clone(),
             covenant_entry,
             covenant_compute_budget: built.compute_budget,
-            fee_outpoint: *fee_outpoint,
-            fee_entry: fee_entry.clone(),
+            fee_candidates,
             keypair: self.keypair,
             address: &self.address,
             params: self.params,
-        });
-        Some(FundedSettlement { tx, fee_outpoint: *fee_outpoint })
+        })
+        .expect("sim settlement is coinbase-funded");
+        let fee_outpoints = tx.inputs[1..].iter().map(|input| input.previous_outpoint).collect();
+        Some(FundedSettlement { tx, fee_outpoints })
     }
 }
 

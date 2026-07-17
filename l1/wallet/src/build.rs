@@ -388,53 +388,49 @@ pub struct SettlementTx<'a> {
     pub covenant_entry: UtxoEntry,
     /// Compute budget to set on the covenant input.
     pub covenant_compute_budget: ComputeBudget,
-    /// Funding outpoint that pays the fee.
-    pub fee_outpoint: TransactionOutpoint,
-    /// The fee outpoint's entry.
-    pub fee_entry: UtxoEntry,
-    /// Key that signs the fee input.
+    /// Fee-funding UTXOs in preference order; the builder spends a prefix of this list.
+    pub fee_candidates: Vec<(TransactionOutpoint, UtxoEntry)>,
+    /// Key that signs the fee inputs.
     pub keypair: Keypair,
     /// Address the change is paid back to.
     pub address: &'a Address,
-    /// Consensus params, for storage mass.
+    /// Consensus params, for the mass-based fee and storage mass.
     pub params: &'a Params,
 }
 
-/// Funds and signs a settlement transaction without submitting it: appends a fee input + change
-/// output, signs only the fee input, preserves the covenant input's witness, sets the covenant
-/// input's compute budget, and commits the storage-mass field. The result is ready to submit.
-pub fn settlement_transaction(args: SettlementTx<'_>) -> Transaction {
+/// Funds and signs a settlement transaction without submitting it: appends fee inputs from a
+/// prefix of `args.fee_candidates` plus a change output when the remainder is storage-viable
+/// (folding it into the fee otherwise), signs the fee inputs, preserves the covenant input's
+/// witness, sets the covenant input's compute budget, and commits the storage-mass field.
+/// The result is ready to submit.
+pub fn settlement_transaction(args: SettlementTx<'_>) -> Result<Transaction, BuildError> {
     // Snapshot the covenant witness before signing - `sign` overwrites all signature scripts.
     let covenant_sig_script = args.settlement_tx.inputs[0].signature_script.clone();
     let change_spk = pay_to_address_script(args.address);
-    let entries = vec![args.covenant_entry.clone(), args.fee_entry.clone()];
-
-    // Build the fully-funded, signed tx for a given fee: append the fee input + change output, sign
-    // only the fee input, restore the covenant witness, set its compute budget, and commit storage
-    // mass. The succinct witness makes this tx large, so its fee is mass-dominated; well past the
-    // old flat 100_000.
-    let build = |fee: u64| {
+    let mut build = |n: usize, change: Option<u64>| {
         let mut tx = args.settlement_tx.clone();
-        tx.inputs.push(TransactionInput::new(args.fee_outpoint, vec![], 0, 1));
-        tx.outputs.push(TransactionOutput::with_covenant(
-            args.fee_entry.amount - fee,
-            change_spk.clone(),
-            None,
-        ));
+        tx.inputs.extend(
+            args.fee_candidates[..n]
+                .iter()
+                .map(|(outpoint, _)| TransactionInput::new(*outpoint, vec![], 0, 1)),
+        );
+        tx.outputs.extend(
+            change.map(|value| TransactionOutput::with_covenant(value, change_spk.clone(), None)),
+        );
+        let entries: Vec<UtxoEntry> = std::iter::once(args.covenant_entry.clone())
+            .chain(args.fee_candidates[..n].iter().map(|(_, entry)| entry.clone()))
+            .collect();
         let mut tx = sign(MutableTransaction::with_entries(tx, entries.clone()), args.keypair).tx;
         tx.inputs[0].signature_script = covenant_sig_script.clone();
         tx.inputs[0].compute_commit = args.covenant_compute_budget.into();
-        commit_storage_mass(args.params, &tx, &entries);
-        // The signature script on input 0 changed, so recompute the on-the-wire id.
-        tx.finalize();
-        tx
+        (tx, entries)
     };
-
-    // Probe at fee 0 to learn the mass, price it at the node's floor, then rebuild funded.
-    let probe = build(0);
-    let fee = min_fee(args.params, &probe);
-    assert!(args.fee_entry.amount > fee, "fee UTXO amount {} ≤ fee {fee}", args.fee_entry.amount);
-    build(fee)
+    let funding = fund(args.params, &args.fee_candidates, false, &mut build)?;
+    let (mut tx, entries) = build(funding.inputs, funding.change);
+    commit_storage_mass(args.params, &tx, &entries);
+    // The signature script on input 0 changed, so recompute the on-the-wire id.
+    tx.finalize();
+    Ok(tx)
 }
 
 /// Repros for the single-round fee probe, closed by pricing on byte-layout-only masses.
@@ -589,12 +585,12 @@ mod tests {
             ),
             covenant_entry: covenant_entry.clone(),
             covenant_compute_budget: DEV_COVENANT_BUDGET,
-            fee_outpoint: outpoint(3),
-            fee_entry: fee_entry.clone(),
+            fee_candidates: vec![(outpoint(3), fee_entry.clone())],
             keypair,
             address: &address,
             params,
-        });
+        })
+        .expect("settlement is fundable");
 
         BuiltShape { tx, entries: vec![covenant_entry, fee_entry] }
     }
@@ -700,6 +696,43 @@ mod tests {
             let floor = mempool_min_fee(params, &shape.tx);
             assert!(paid >= floor, "built tx pays {paid} but the mempool floor is {floor}");
         }
+    }
+
+    /// A settlement with a large covenant witness is transient-mass-dominated (2 grams per
+    /// byte against compute's ~1): the fee must be priced on normalized transient mass.
+    #[test]
+    fn witness_heavy_settlement_fee_covers_the_transient_floor() {
+        let params = &SIMNET_PARAMS;
+        let keypair = keypair();
+        let address = address(&keypair, params);
+        let covenant_id = Hash::from_bytes([9u8; 32]);
+        let covenant_spk = pay_to_script_hash_script(&[0xABu8; 64]);
+        let covenant_value = 100_000_000;
+        let covenant_entry =
+            UtxoEntry::new(covenant_value, covenant_spk.clone(), 0, false, Some(covenant_id));
+        let fee_entry = UtxoEntry::new(FUND_VALUE, pay_to_address_script(&address), 0, false, None);
+
+        let tx = settlement_transaction(SettlementTx {
+            settlement_tx: settlement_skeleton(
+                &covenant_spk,
+                covenant_id,
+                covenant_value - PERMISSION_OUTPUT_VALUE,
+                &address,
+                100_000,
+            ),
+            covenant_entry: covenant_entry.clone(),
+            covenant_compute_budget: DEV_COVENANT_BUDGET,
+            fee_candidates: vec![(outpoint(3), fee_entry.clone())],
+            keypair,
+            address: &address,
+            params,
+        })
+        .expect("settlement is fundable");
+
+        let entries = vec![covenant_entry, fee_entry];
+        let paid = fee_paid(&tx, &entries);
+        let floor = mempool_min_fee(params, &tx);
+        assert!(paid >= floor, "built tx pays {paid} but the node's floor is {floor}");
     }
 
     /// A payload-heavy activity tx is transient-mass-dominated: normalized transient mass is

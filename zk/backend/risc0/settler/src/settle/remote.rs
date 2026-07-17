@@ -49,7 +49,7 @@ impl FeeSource for WalletFeeSource {
                 excluded,
             )
             .await
-            .map(|(tx, fee_outpoint)| FundedSettlement { tx, fee_outpoint })
+            .map(|(tx, fee_outpoints)| FundedSettlement { tx, fee_outpoints })
     }
 }
 
