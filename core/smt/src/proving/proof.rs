@@ -1,7 +1,7 @@
 use alloc::{vec, vec::Vec};
 
 use tap::Tap;
-use vprogs_core_codec::{Bits, Error, Reader, Result, Writer};
+use vprogs_core_codec::{Bits, Error, Reader, Result, SortUnique, Writer};
 use vprogs_core_hashing::Hasher;
 
 use crate::{
@@ -33,6 +33,14 @@ impl<'a> Proof<'a> {
             topology: buf.slice_as::<u8>("topology")?,
             memberships: buf.slice_as::<Membership>("memberships")?,
         })
+    }
+
+    /// Errs unless the keys table interns every key exactly once.
+    ///
+    /// The wire format itself does not forbid a duplicate, and a key appearing at two indices holds
+    /// two independent membership slots.
+    pub fn check_unique_keys(&self) -> Result<()> {
+        self.keys.sort_unique().map(|_| ())
     }
 
     /// Returns the [`Member`] at caller-input position `idx`, or an error if it doesn't exist.
