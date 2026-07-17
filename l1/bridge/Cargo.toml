@@ -23,10 +23,15 @@ vprogs-l1-types.workspace      = true
 workflow-core.workspace        = true
 
 [dev-dependencies]
-borsh.workspace                          = true
-tokio                                    = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net"] }
-tokio-tungstenite.workspace              = true
-vprogs-node-test-utils.workspace         = true
+borsh.workspace = true
+tokio = { workspace = true, features = [
+  "rt-multi-thread",
+  "macros",
+  "time",
+  "net",
+] }
+tokio-tungstenite.workspace = true
+vprogs-node-test-utils.workspace = true
 vprogs-storage-canonical-chain.workspace = true
-workflow-rpc.workspace                   = true
-workflow-serializer.workspace            = true
+workflow-rpc.workspace = true
+workflow-serializer.workspace = true

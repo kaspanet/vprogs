@@ -54,42 +54,44 @@ resolver = "3"
 
   [workspace.dependencies]
   # External dependencies
-  arc-swap              = "1.7"
-  borsh                 = { version = "1.6.0", default-features = false, features = ["derive"] }
-  clap                  = { version = "4", features = ["derive"] }
-  crossbeam-deque       = "0.8.6"
-  crossbeam-queue       = "0.3.12"
-  crossbeam-utils       = "0.8.21"
-  ctrlc                 = { version = "3", features = ["termination"] }
-  env_logger            = "0.11"
-  faster-hex            = "0.9"
-  fastrand              = "2.3.0"
-  figment               = { version = "0.10", features = ["toml", "env"] }
-  futures               = "0.3.31"
-  indexmap              = "2"
+  arc-swap = "1.7"
+  borsh = { version = "1.6.0", default-features = false, features = ["derive"] }
+  clap = { version = "4", features = ["derive"] }
+  crossbeam-deque = "0.8.6"
+  crossbeam-queue = "0.3.12"
+  crossbeam-utils = "0.8.21"
+  ctrlc = { version = "3", features = ["termination"] }
+  env_logger = "0.11"
+  faster-hex = "0.9"
+  fastrand = "2.3.0"
+  figment = { version = "0.10", features = ["toml", "env"] }
+  futures = "0.3.31"
+  indexmap = "2"
   intrusive-collections = "0.9.7"
-  log                   = "0.4"
-  num_cpus              = "1.17.0"
-  pin-project-lite      = "0.2"
-  proc-macro2           = "1.0.103"
-  quote                 = "1.0.42"
-  rand                  = "0.8"
-  rand_distr            = "0.4"
-  secp256k1             = { version = "0.29.1", features = ["rand-std"] }
-  serde                 = { version = "1", features = ["derive"] }
-  serde_json            = "1"
-  syn                   = { version = "2.0.111", features = ["full"] }
-  tap                   = "1.0.1"
-  tempfile              = "3.23.0"
-  thiserror             = { version = "2", default-features = false }
-  tokio                 = { version = "1", features = ["rt", "sync"] }
-  tokio-tungstenite     = "0.23"
-  tokio-util            = "0.7.17"
-  toml                  = "0.8"
-  workflow-core         = "0.18.0"
-  workflow-rpc          = { version = "0.18.0", default-features = false, features = ["rustls-tls-webpki-roots"] }
-  workflow-serializer   = "0.18.0"
-  zerocopy              = { version = "0.8", default-features = false }
+  log = "0.4"
+  num_cpus = "1.17.0"
+  pin-project-lite = "0.2"
+  proc-macro2 = "1.0.103"
+  quote = "1.0.42"
+  rand = "0.8"
+  rand_distr = "0.4"
+  secp256k1 = { version = "0.29.1", features = ["rand-std"] }
+  serde = { version = "1", features = ["derive"] }
+  serde_json = "1"
+  syn = { version = "2.0.111", features = ["full"] }
+  tap = "1.0.1"
+  tempfile = "3.23.0"
+  thiserror = { version = "2", default-features = false }
+  tokio = { version = "1", features = ["rt", "sync"] }
+  tokio-tungstenite = "0.23"
+  tokio-util = "0.7.17"
+  toml = "0.8"
+  workflow-core = "0.18.0"
+  workflow-rpc = { version = "0.18.0", default-features = false, features = [
+    "rustls-tls-webpki-roots",
+  ] }
+  workflow-serializer = "0.18.0"
+  zerocopy = { version = "0.8", default-features = false }
   # jemalloc is intentionally omitted here: it does not build on Windows, so it is enabled
   # per-target in storage/rocksdb-store and propagated to the build via Cargo feature unification.
   rocksdb = { version = "0.24.0", default-features = false, features = [
