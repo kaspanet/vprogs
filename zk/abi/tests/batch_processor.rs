@@ -106,7 +106,7 @@ fn verifier_rejects_two_withdrawals_aliasing_one_account_key() {
     );
     let input_bytes = batch_inputs(&evil_proof, &[tx1, tx2]);
 
-    let Ok(settled) = catch_unwind(AssertUnwindSafe(|| settle(&input_bytes))) else {
+    let Ok(settled) = settle(&input_bytes) else {
         return;
     };
 
@@ -139,7 +139,6 @@ fn verifier_rejects_two_withdrawals_aliasing_one_account_key() {
 /// Control for [`verifier_rejects_two_withdrawals_aliasing_one_account_key`]: the per-resource hash
 /// chaining does catch an intra-batch double-spend, so the alias is what defeats it.
 #[test]
-#[should_panic(expected = "resource hash mismatch")]
 fn two_withdrawals_against_one_membership_index_are_rejected() {
     let (_dir, store) = funded_store();
     let proof =
@@ -164,19 +163,30 @@ fn two_withdrawals_against_one_membership_index_are_rejected() {
         &[Some(ALICE_DEBITED)],
     );
 
-    settle(&batch_inputs(&proof, &[tx1, tx2]));
+    let Err(err) = settle(&batch_inputs(&proof, &[tx1, tx2])) else {
+        panic!("batch settled instead of being rejected");
+    };
+    assert!(
+        err.contains("resource hash mismatch"),
+        "expected a resource hash mismatch rejection, got: {err}"
+    );
 }
 
 /// A batch proved with Bob's key queried before Alice's: the queried keys are not in the canonical
 /// ascending order the prover delivers.
 #[test]
-#[should_panic(expected = "queried keys not strictly ascending")]
 fn verifier_rejects_unsorted_queried_keys() {
     let (_dir, store) = funded_store();
     let proof =
         store.prove(&[ResourceId::from(BOB_KEY), ResourceId::from(ALICE_KEY)], VERSION).unwrap();
 
-    settle(&batch_inputs(&proof, &[]));
+    let Err(err) = settle(&batch_inputs(&proof, &[])) else {
+        panic!("batch settled instead of being rejected");
+    };
+    assert!(
+        err.contains("queried keys not strictly ascending"),
+        "expected a queried-keys-ascending rejection, got: {err}"
+    );
 }
 
 /// A success journal committing more output resources than it declared input resources.
@@ -200,7 +210,7 @@ fn verifier_rejects_a_success_journal_with_more_outputs_than_input_resources() {
     );
     let input_bytes = batch_inputs(&proof, &[tx]);
 
-    if catch_unwind(AssertUnwindSafe(|| settle(&input_bytes))).is_err() {
+    if settle(&input_bytes).is_err() {
         return;
     }
 
@@ -224,22 +234,36 @@ fn funded_store() -> (TempDir, RocksDbStore) {
     (dir, store)
 }
 
-/// Runs the batch through the real verifier and reports what it settled.
-fn settle(input_bytes: &[u8]) -> Settled {
-    let mut verifier = Verifier::new(input_bytes, |_image_id: &[u8; 32], _journal: &[u8]| {});
-    let (new_lane_tip, new_lane_blue_score) = verifier.verify_batch();
+/// Runs the batch through the real verifier and returns what it settled, or Err with the panic
+/// message if the verifier rejects the batch.
+fn settle(input_bytes: &[u8]) -> Result<Settled, String> {
+    catch_unwind(AssertUnwindSafe(|| {
+        let mut verifier = Verifier::new(input_bytes, |_image_id: &[u8; 32], _journal: &[u8]| {});
+        let (new_lane_tip, new_lane_blue_score) = verifier.verify_batch();
 
-    let mut journal = Vec::new();
-    verifier.commit_batch_transition::<Sha256>(&mut journal, &new_lane_tip, new_lane_blue_score);
-    let transition = BatchTransition::ref_from_bytes(&journal).unwrap();
-    let exits: Vec<_> = transition.exits.iter().map(|e| e.unwrap()).collect();
+        let mut journal = Vec::new();
+        verifier.commit_batch_transition::<Sha256>(
+            &mut journal,
+            &new_lane_tip,
+            new_lane_blue_score,
+        );
+        let transition = BatchTransition::ref_from_bytes(&journal).unwrap();
+        let exits: Vec<_> = transition.exits.iter().map(|e| e.unwrap()).collect();
 
-    Settled {
-        prev_state: transition.prev_state,
-        new_state: transition.new_state,
-        exits_paid: exits.iter().map(|&(_, amount)| amount).sum(),
-        exit_count: exits.len(),
-    }
+        Settled {
+            prev_state: transition.prev_state,
+            new_state: transition.new_state,
+            exits_paid: exits.iter().map(|&(_, amount)| amount).sum(),
+            exit_count: exits.len(),
+        }
+    }))
+    .map_err(|payload| {
+        payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&'static str>().map(|s| s.to_string()))
+            .unwrap_or_else(|| "non-string panic payload".to_string())
+    })
 }
 
 /// Re-encodes `proof` with `keys[0]` appended to the keys table and `memberships[0]` appended to
