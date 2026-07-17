@@ -13,7 +13,6 @@ use kaspa_notify::scope::{PruningPointUtxoSetOverrideScope, Scope, VirtualChainC
 use kaspa_rpc_core::{
     GetVirtualChainFromBlockV2Response, Notification,
     RpcDataVerbosityLevel::Full,
-    RpcOptionalHeader,
     api::{ctl::RpcState, rpc::RpcApi},
 };
 use kaspa_seq_commit::{
@@ -453,41 +452,42 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
 
         // Schedule each new block, threading its parent from the current tip.
         for chain_block in response.chain_block_accepted_transactions.iter() {
+            // Validate the peer-controlled header up front; an elided field fails the sync and
+            // downstream code sees only the validated metadata.
+            let block = ChainBlockMetadata::try_from(&chain_block.chain_block_header)
+                .map_err(|field| Error::MalformedResponse(field.into()))?;
+
             // The block's parent; its `last_settlement` carries forward, updated per tx below.
-            let header = &chain_block.chain_block_header;
             let parent = self.tip_metadata();
-            let block_hash = header.hash.expect("missing hash");
-            let block_daa = header.daa_score.expect("missing daa_score");
             let mut last_settlement = parent.last_settlement;
 
             // Enumerate before filtering so kept txs keep their block-wide positions.
-            let txs: Vec<SchedulerTransaction<L1Transaction>> = chain_block
-                .accepted_transactions
-                .iter()
-                .enumerate()
-                .filter_map(|(idx, tx)| {
-                    // Carry forward the last settlement.
-                    let tx = L1Transaction::try_from(tx.clone()).expect("missing tx fields");
-                    if let Some(id) = self.covenant_id {
-                        last_settlement =
-                            tx.settlement_info(id, block_hash, block_daa).or(last_settlement);
-                    }
+            let mut txs: Vec<SchedulerTransaction<L1Transaction>> =
+                Vec::with_capacity(chain_block.accepted_transactions.len());
+            for (idx, tx) in chain_block.accepted_transactions.iter().enumerate() {
+                // Same trust boundary as the header: elided tx fields fail the sync.
+                let tx = L1Transaction::try_from(tx.clone())
+                    .map_err(|e| Error::MalformedResponse(e.to_string()))?;
 
-                    // Parse access metadata; marlformed = no dependencies and prover attests.
-                    match self.subnetwork_filter.as_ref() {
-                        Some(want) if tx.subnetwork_id != *want => None,
-                        _ => Some(SchedulerTransaction::new(
-                            idx as u32,
-                            AccessMetadata::decode_vec(&mut tx.payload.as_slice())
-                                .unwrap_or_default(),
-                            tx,
-                        )),
-                    }
-                })
-                .collect();
+                // Carry forward the last settlement.
+                if let Some(id) = self.covenant_id {
+                    last_settlement =
+                        tx.settlement_info(id, block.hash, block.daa_score).or(last_settlement);
+                }
+
+                // Parse access metadata; malformed = no dependencies and prover attests.
+                match self.subnetwork_filter.as_ref() {
+                    Some(want) if tx.subnetwork_id != *want => {}
+                    _ => txs.push(SchedulerTransaction::new(
+                        idx as u32,
+                        AccessMetadata::decode_vec(&mut tx.payload.as_slice()).unwrap_or_default(),
+                        tx,
+                    )),
+                }
+            }
 
             // Determine the lane tip over the block's accepted txs.
-            let (lane_tip, lane_blue_score, lane_expired) = self.lane_state(&parent, &txs, header);
+            let (lane_tip, lane_blue_score, lane_expired) = self.lane_state(&parent, &txs, &block);
 
             // Append the block's parent-threaded metadata and its txs to the sink.
             self.sink.append(
@@ -502,7 +502,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
                     lane_tip,
                     lane_expired,
                     last_settlement,
-                    ..ChainBlockMetadata::try_from(header).unwrap()
+                    ..block
                 },
                 txs,
             );
@@ -520,10 +520,10 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         &self,
         parent: &ChainBlockMetadata,
         txs: &[SchedulerTransaction<L1Transaction>],
-        header: &RpcOptionalHeader,
+        block: &ChainBlockMetadata,
     ) -> (Hash, u64, bool) {
         // Check whether the lane has gone silent past the finality window and needs to reset.
-        let blue_score = header.blue_score.expect("missing blue_score");
+        let blue_score = block.blue_score;
         let lane_expired = blue_score.saturating_sub(parent.lane_blue_score) > self.finality_depth;
 
         // No lane configured or no activity this block -> carry parent state forward unchanged.
@@ -540,7 +540,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         // Context hash of the current chain block.
         let context_hash = mergeset_context_hash(&MergesetContext {
             timestamp: parent.timestamp,
-            daa_score: header.daa_score.expect("missing daa_score"),
+            daa_score: block.daa_score,
             blue_score,
         });
 

@@ -16,6 +16,10 @@ pub(crate) enum Error {
     #[error("reorg below finalization boundary: fork block {0} is finalized")]
     ReorgBelowFinality(Hash),
 
+    /// The peer elided a response field required at `Full` verbosity - retrying cannot help.
+    #[error("malformed RPC response: {0}")]
+    MalformedResponse(String),
+
     /// An internal channel closed unexpectedly.
     #[error("notification channel closed: {0}")]
     ChannelClosed(String),

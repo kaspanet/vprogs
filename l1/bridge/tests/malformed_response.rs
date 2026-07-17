@@ -1,13 +1,11 @@
-//! Reproduction: the bridge worker `expect`/`unwrap`s fields the RPC peer carries as `Option`, so a
-//! peer that elides one panics the worker thread. The worker runs on a bare `thread::spawn` with no
-//! `catch_unwind`, so the panic never becomes an [`L1Event::Fatal`]: the thread dies, the sink stops
-//! advancing, and consumers parked in `wait_and_pop` block forever with no indication.
+//! Malformed-response handling: the RPC peer carries header and transaction fields as `Option`,
+//! and `L1BridgeConfig::default()` reaches the public community resolver, so the peer serving them
+//! is untrusted. A peer that elides a required field can never yield progress, so the bridge owes
+//! its consumers a terminal [`L1Event::Fatal`]. A worker panic instead would kill the worker
+//! thread silently, stop the sink, and park `wait_and_pop` consumers forever with no indication.
 //!
 //! Each test drives a real L1 node through a proxy that elides exactly one field from every
 //! `GetVirtualChainFromBlockV2` response, then asserts the bridge reports the malformed response.
-//!
-//! `L1BridgeConfig::default()` reaches the public community resolver, so the peer serving these
-//! responses is untrusted and this is a remote liveness kill.
 
 use std::{
     panic,
@@ -43,15 +41,17 @@ use workflow_serializer::prelude::Serializable;
 const TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Time a consumer waits for the event the worker owes it after the tampered response. The worker
-/// reaches the site within milliseconds of the response, so exceeding this means none is coming.
+/// reaches the elided field within milliseconds of the response, so exceeding this means none is
+/// coming.
 const FATAL_TIMEOUT: Duration = Duration::from_secs(15);
 
 // ============================================================================
 // Panic recording
 // ============================================================================
 
-/// Panic reports from every thread in this binary, including the bridge worker's. Each entry
-/// carries the panicking source location, which names the site that consumed the elided field.
+/// Panic reports from every thread in this binary, including the bridge worker's. A recorded
+/// worker panic is the diagnostic when an assert below fails: its source location names the code
+/// that consumed the elided field instead of surfacing an error.
 static PANICS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// Installs a hook recording every panic report while keeping the default one. Idempotent.
@@ -66,17 +66,16 @@ fn record_panics() {
     });
 }
 
-/// The recorded panic reports raised at `site`, a `file.rs:line` location under `l1/bridge/src`.
+/// The recorded panic reports raised under `l1/bridge/src`, where the worker consumes wire fields.
 ///
-/// Matching the location rather than the whole report keeps a sibling test's assert text, which
-/// quotes these same sites, out of the result.
-fn panics_at(site: &str) -> Vec<String> {
-    let location = format!("panicked at l1/bridge/src/{site}:");
+/// Matching the location keeps this binary's own panics, such as a sibling test's assert, out of
+/// the result.
+fn bridge_panics() -> Vec<String> {
     PANICS
         .lock()
         .expect("panic log poisoned")
         .iter()
-        .filter(|p| p.starts_with(&location))
+        .filter(|p| p.starts_with("panicked at l1/bridge/src/"))
         .cloned()
         .collect()
 }
@@ -85,21 +84,19 @@ fn panics_at(site: &str) -> Vec<String> {
 // The tampered field, one per panic site
 // ============================================================================
 
-/// A single field elided from every `GetVirtualChainFromBlockV2` response, named for the worker
-/// site that consumes it without checking. An honest node at `Full` verbosity always populates
-/// these; a malicious one is free not to.
+/// A single field elided from every `GetVirtualChainFromBlockV2` response. An honest node at
+/// `Full` verbosity always populates these; a malicious one is free not to.
 #[derive(Clone, Copy, Debug)]
 enum Elide {
-    /// `worker.rs:459` - `header.hash.expect("missing hash")`.
+    /// The chain-block header's `hash`.
     HeaderHash,
-    /// `worker.rs:460` - `header.daa_score.expect("missing daa_score")`.
+    /// The chain-block header's `daa_score`.
     HeaderDaaScore,
-    /// `worker.rs:470` - `L1Transaction::try_from(tx.clone()).expect("missing tx fields")`.
+    /// An accepted transaction's `storage_mass`, required by the L1 transaction conversion.
     TxStorageMass,
-    /// `worker.rs:505` - `ChainBlockMetadata::try_from(header).unwrap()`, which also requires
-    /// `timestamp`. Reached only once the fields checked earlier in the loop are present.
+    /// The chain-block header's `timestamp`.
     HeaderTimestamp,
-    /// `worker.rs:526` - `header.blue_score.expect("missing blue_score")` in `lane_state`.
+    /// The chain-block header's `blue_score`.
     HeaderBlueScore,
 }
 
@@ -242,8 +239,8 @@ fn tamper(bytes: &[u8], elide: Elide, elided: &AtomicUsize) -> Option<Message> {
     let mut response = VccReply::deserialize(&mut &message.payload[..]).ok()?.ok()?.into_inner();
     elided.fetch_add(elide.apply(&mut response), Ordering::Relaxed);
 
-    let payload = borsh::to_vec::<VccReply>(&Ok(Serializable(response)))
-        .expect("response must reserialize");
+    let payload =
+        borsh::to_vec::<VccReply>(&Ok(Serializable(response))).expect("response must reserialize");
     let header =
         BorshServerMessageHeader::new(message.header.id, message.header.kind, message.header.op);
     let rewritten =
@@ -360,7 +357,7 @@ async fn setup(elide: Elide) -> Harness {
 /// The bridge owes every consumer either progress or a terminal event. A peer that elides a
 /// required field can never yield progress, so `Fatal` is the only outcome left. Panicking on the
 /// worker thread delivers neither.
-async fn assert_fatal_on_elided_field(elide: Elide, site: &str) {
+async fn assert_fatal_on_elided_field(elide: Elide) {
     let h = setup(elide).await;
 
     // Kaspa accepts a block's transactions on the next chain block, so the second block puts the
@@ -371,61 +368,54 @@ async fn assert_fatal_on_elided_field(elide: Elide, site: &str) {
     let event = tokio::time::timeout(FATAL_TIMEOUT, h.bridge.wait_and_pop()).await;
     assert!(
         matches!(event, Ok(L1Event::Fatal { .. })),
-        "{site}: expected Fatal on the elided field, got {event:?}. The worker scheduled {} \
+        "{elide:?}: expected Fatal on the elided field, got {event:?}. The worker scheduled {} \
          blocks, and panicked at: {:?}",
         h.sink.scheduled(),
-        panics_at(site),
+        bridge_panics(),
     );
 
     h.node.shutdown().await;
 }
 
 // ============================================================================
-// One case per panic site
+// One case per elidable field
 // ============================================================================
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn elided_header_hash_reports_fatal() {
-    assert_fatal_on_elided_field(Elide::HeaderHash, "worker.rs:459").await;
+    assert_fatal_on_elided_field(Elide::HeaderHash).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn elided_header_daa_score_reports_fatal() {
-    assert_fatal_on_elided_field(Elide::HeaderDaaScore, "worker.rs:460").await;
+    assert_fatal_on_elided_field(Elide::HeaderDaaScore).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn elided_transaction_storage_mass_reports_fatal() {
-    assert_fatal_on_elided_field(Elide::TxStorageMass, "worker.rs:470").await;
+    assert_fatal_on_elided_field(Elide::TxStorageMass).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn elided_header_timestamp_reports_fatal() {
-    assert_fatal_on_elided_field(Elide::HeaderTimestamp, "worker.rs:505").await;
+    assert_fatal_on_elided_field(Elide::HeaderTimestamp).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn elided_header_blue_score_reports_fatal() {
-    assert_fatal_on_elided_field(Elide::HeaderBlueScore, "worker.rs:526").await;
+    assert_fatal_on_elided_field(Elide::HeaderBlueScore).await;
 }
 
-// `worker.rs:543` (`header.daa_score.expect("missing daa_score")` in `lane_state`) has no case of
-// its own, and no response can give it one. It reads the same `Option` on the same header that
-// `worker.rs:460` unwraps earlier in the same loop iteration, so every response that would trip it
-// trips `:460` first. `elided_header_daa_score_reports_fatal` covers the field; a fix to `:543`
-// alone is unobservable, and a fix to `:460` alone leaves `:543` reachable and must be checked by
-// review rather than by this test.
-
 // ============================================================================
-// The consequence: a dead worker and a parked consumer
+// Observability: progress or a terminal event, never silence
 // ============================================================================
 
 /// Verifies the bridge stays observable after a malformed response: it either keeps scheduling or
 /// says why it stopped.
 ///
-/// After the panic the worker thread is gone, so no further block is scheduled and no event is ever
-/// queued. Nothing observable distinguishes that from a quiet chain, and a consumer in
-/// `wait_and_pop` parks forever.
+/// A worker that panicked instead would be gone: no further block scheduled, no event ever queued,
+/// nothing observable to distinguish it from a quiet chain, and a consumer in `wait_and_pop`
+/// parked forever.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn malformed_response_leaves_the_bridge_observable() {
     let h = setup(Elide::HeaderDaaScore).await;
@@ -447,7 +437,7 @@ async fn malformed_response_leaves_the_bridge_observable() {
         progressed || !events.is_empty(),
         "after the malformed response the bridge neither scheduled a block (stuck at \
          {scheduled_before}) nor queued an event to say why; its worker panicked at: {:?}",
-        panics_at("worker.rs:460"),
+        bridge_panics(),
     );
 
     h.node.shutdown().await;
