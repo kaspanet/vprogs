@@ -1,7 +1,7 @@
 use alloc::{vec, vec::Vec};
 
 use tap::Tap;
-use vprogs_core_codec::{Bits, Error, Reader, Result, SortUnique, Writer};
+use vprogs_core_codec::{Bits, Error, Reader, Result, Writer};
 use vprogs_core_hashing::Hasher;
 
 use crate::{
@@ -35,12 +35,20 @@ impl<'a> Proof<'a> {
         })
     }
 
-    /// Errs unless the keys table interns every key exactly once.
+    /// Errs unless every membership has a key and the queried keys are strictly ascending.
     ///
-    /// The wire format itself does not forbid a duplicate, and a key appearing at two indices holds
-    /// two independent membership slots.
-    pub fn check_unique_keys(&self) -> Result<()> {
-        self.keys.sort_unique().map(|_| ())
+    /// Strict ascent also rules out a key interned at two queried indices, so no key can back two
+    /// membership slots.
+    pub fn check_sorted_queried_keys(&self) -> Result<()> {
+        let queried = self
+            .keys
+            .get(..self.memberships.len())
+            .ok_or(Error::Decode("membership without key"))?;
+        if queried.is_sorted_by(|a, b| a < b) {
+            Ok(())
+        } else {
+            Err(Error::Decode("queried keys not strictly ascending"))
+        }
     }
 
     /// Returns the [`Member`] at caller-input position `idx`, or an error if it doesn't exist.

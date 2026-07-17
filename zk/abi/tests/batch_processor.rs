@@ -167,6 +167,18 @@ fn two_withdrawals_against_one_membership_index_are_rejected() {
     settle(&batch_inputs(&proof, &[tx1, tx2]));
 }
 
+/// A batch proved with Bob's key queried before Alice's: the queried keys are not in the canonical
+/// ascending order the prover delivers.
+#[test]
+#[should_panic(expected = "queried keys not strictly ascending")]
+fn verifier_rejects_unsorted_queried_keys() {
+    let (_dir, store) = funded_store();
+    let proof =
+        store.prove(&[ResourceId::from(BOB_KEY), ResourceId::from(ALICE_KEY)], VERSION).unwrap();
+
+    settle(&batch_inputs(&proof, &[]));
+}
+
 /// A success journal committing more output resources than it declared input resources.
 ///
 /// The verifier must reject: the journal's output commitments must be one-to-one with its inputs.
