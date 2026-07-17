@@ -1,12 +1,15 @@
-use std::sync::{
-    Arc, Weak,
-    atomic::{AtomicU64, Ordering},
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use arc_swap::ArcSwapOption;
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_macros::smart_pointer;
-use vprogs_core_types::{BatchMetadata, SchedulerTransaction};
+use vprogs_core_types::{BatchMetadata, ResourceId, SchedulerTransaction};
 use vprogs_state_proof_receipt::{Prefix, TxKey};
 use vprogs_storage_types::Store;
 
@@ -100,11 +103,11 @@ impl<S: Store, P: Processor<S>> ScheduledTransaction<S, P> {
         batch: ScheduledBatchRef<S, P>,
         batch_position: u32,
         tx: SchedulerTransaction<P::Transaction>,
-        resource_index: &mut u32,
+        resource_indices: &BTreeMap<ResourceId, u32>,
     ) -> Self {
         Self(Arc::new_cyclic(|this: &Weak<ScheduledTransactionData<S, P>>| {
             let this = ScheduledTransactionRef(this.clone());
-            let resources = scheduler.resources(&tx, this, &batch, state_diffs, resource_index);
+            let resources = scheduler.resources(&tx, this, &batch, state_diffs, resource_indices);
             ScheduledTransactionData {
                 processor: scheduler.processor().clone(),
                 pending_resources: AtomicU64::new(resources.len() as u64),

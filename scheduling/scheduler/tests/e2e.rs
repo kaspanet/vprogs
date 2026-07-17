@@ -93,6 +93,48 @@ pub fn test_scheduler() {
     }
 }
 
+/// Batch-local resource indices follow ascending resource-id order rather than first-touch order,
+/// so the batch proof's queried keys arrive sorted.
+#[test]
+pub fn test_batch_resource_indices_sorted() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(Processor),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // First-touch order is 5, 1, 9; assignment must re-order to ascending ids.
+        let batch = scheduler.schedule(
+            1,
+            vec![
+                SchedulerTransaction::new(
+                    0,
+                    vec![AccessMetadata::write(ResourceId::for_test(5))],
+                    0,
+                ),
+                SchedulerTransaction::new(
+                    1,
+                    vec![
+                        AccessMetadata::write(ResourceId::for_test(1)),
+                        AccessMetadata::write(ResourceId::for_test(9)),
+                    ],
+                    1,
+                ),
+            ],
+        );
+        batch.wait_committed_blocking();
+
+        assert_eq!(batch.resource_ids(), [1, 5, 9].map(ResourceId::for_test).to_vec());
+        for (position, diff) in batch.state_diffs().iter().enumerate() {
+            assert_eq!(diff.index(), position as u32, "state diff out of index order");
+        }
+
+        scheduler.shutdown();
+    }
+}
+
 /// Tests rollback of committed batches.
 #[test]
 pub fn test_rollback_committed() {
