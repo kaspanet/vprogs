@@ -256,13 +256,14 @@ fn tx_id_of(tx_blob: &[u8]) -> [u8; 32] {
 
 /// Builds the full `Inputs` host blob the guest reads:
 /// `version(2) || tx_id(32) || merge_idx(4) || context_hash(32) || tx_blob ||
-/// resources`, where each resource is `is_new(1) || index(4) || data_len(4) ||
-/// data` (one per access-metadata entry, in the same order).
+/// resources`, where each resource is `index(4) || data_len(4) || data` (one per
+/// access-metadata entry, in the same order). A resource is new iff its data is empty; the wire
+/// carries no separate lifecycle flag.
 fn encode_inputs(
     merge_idx: u32,
     context_hash: [u8; 32],
     tx_bytes: &[u8],
-    resources: &[(bool, u32, Vec<u8>)],
+    resources: &[(u32, Vec<u8>)],
 ) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&Transaction::V1.to_le_bytes());
@@ -270,8 +271,7 @@ fn encode_inputs(
     out.extend_from_slice(&merge_idx.to_le_bytes());
     out.extend_from_slice(&context_hash);
     out.extend_from_slice(tx_bytes);
-    for (is_new, idx, data) in resources {
-        out.push(if *is_new { 1 } else { 0 });
+    for (idx, data) in resources {
         out.extend_from_slice(&idx.to_le_bytes());
         out.extend_from_slice(&(data.len() as u32).to_le_bytes());
         out.extend_from_slice(data);
@@ -369,7 +369,7 @@ fn update_rotates_min_withdrawal_amount() {
     let mut payload = payload_presig;
     payload.extend_from_slice(&sig_bytes);
     let tx_bytes = encode_v1_transaction(&payload, rest_preimage);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(false, 0, initial_data)]);
+    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, initial_data)]);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -418,7 +418,7 @@ fn update_rejected_with_wrong_signer() {
     let mut payload = payload_presig;
     payload.extend_from_slice(&attacker_sig);
     let tx_bytes = encode_v1_transaction(&payload, &[]);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(false, 0, initial_data)]);
+    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, initial_data)]);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -494,7 +494,7 @@ fn multisig_2_of_3_unlocks_with_two_distinct_signers() {
     payload.extend_from_slice(&sig1);
 
     let tx_bytes = encode_v1_transaction(&payload, rest_preimage);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(false, 0, initial_data)]);
+    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, initial_data)]);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -571,7 +571,7 @@ fn multisig_rejected_with_below_threshold_signers() {
     let mut payload = payload_presig;
     payload.extend_from_slice(&sig);
     let tx_bytes = encode_v1_transaction(&payload, &[]);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(false, 0, initial_data)]);
+    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, initial_data)]);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -753,7 +753,7 @@ fn prev_tx_v1_witness_unlocks_schnorr_locked_config() {
     payload.extend_from_slice(&prev_payload_digest);
 
     let tx_bytes = encode_v1_transaction(&payload, &current_rest_preimage);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(false, 0, initial_data)]);
+    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, initial_data)]);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -772,12 +772,10 @@ fn prev_tx_v1_witness_unlocks_schnorr_locked_config() {
     }
 }
 
-/// A live, non-empty config cannot legitimately be a new resource. The guest must reject a host
-/// input that preserves the committed bytes but flips only the uncommitted `is_new` flag.
-#[test]
-fn live_config_falsely_marked_new_is_rejected() {
-    let existing_owner = TestSigner::new();
-    let initial_data = build_schnorr_locked_config(&existing_owner.pubkey, 100);
+/// Builds the guest input blob for a genesis-authorized `Init` of the config resource, with the
+/// config slot carrying `config_data`. The slot's lifecycle is the only thing that varies between
+/// the two `Init` tests, so everything else here is held identical.
+fn init_config_inputs(config_data: Vec<u8>) -> Vec<u8> {
     let resource_id_bytes: [u8; 32] = *config_resource_id();
 
     // Init is authorized through a previous transaction paying the baked-in genesis key. This
@@ -816,15 +814,37 @@ fn live_config_falsely_marked_new_is_rejected() {
     payload.extend_from_slice(&prev_payload_digest);
 
     let tx_bytes = encode_v1_transaction(&payload, &current_rest_preimage);
-    // The data is the real live config bytes; only `is_new` is forged.
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(true, 0, initial_data)]);
+    encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, config_data)])
+}
+
+/// A live, non-empty config cannot be re-initialized. Newness is derived from the resource data,
+/// which the journal's data hash binds to the old root, so a prover cannot present these committed
+/// bytes as a new slot; `Init` sees `Live` and must reject.
+#[test]
+fn live_config_falsely_marked_new_is_rejected() {
+    let existing_owner = TestSigner::new();
+    let live_data = build_schnorr_locked_config(&existing_owner.pubkey, 100);
 
     let elf = wrapped_runtime_processor_elf();
-    let outputs_bytes = execute_guest(&elf, &inputs);
-    assert!(
-        Outputs::decode(&outputs_bytes, 1).is_err(),
-        "guest accepted Init over a live config when only is_new was forged"
-    );
+    let outputs_bytes = execute_guest(&elf, &init_config_inputs(live_data));
+    assert!(Outputs::decode(&outputs_bytes, 1).is_err(), "guest accepted Init over a live config");
+}
+
+/// The same genesis-authorized `Init` over an empty slot must succeed. Paired with the rejection
+/// above, this pins that rejection to the slot's lifecycle rather than to the auth path or the
+/// action encoding.
+#[test]
+fn init_creates_config_when_slot_is_empty() {
+    let elf = wrapped_runtime_processor_elf();
+    let outputs_bytes = execute_guest(&elf, &init_config_inputs(Vec::new()));
+    let decoded = Outputs::decode(&outputs_bytes, 1).expect("guest succeeded");
+
+    assert_eq!(decoded.storage_ops.len(), 1);
+    let Some(data) = &decoded.storage_ops[0] else {
+        panic!("expected the config slot to be written, got {:?}", decoded.storage_ops[0]);
+    };
+    let view = ConfigView::from_bytes(data).expect("valid config bytes");
+    assert_eq!(view.min_withdrawal_amount(), 999);
 }
 
 /// Same `KEY_PAYLOAD_DIGEST` constant as `vprogs_l1_utils::tx_id` (re-stated
@@ -891,13 +911,9 @@ fn update_addresses_config_at_lex_position_1_in_two_resource_tx() {
     let tx_bytes = encode_v1_transaction(&payload, rest_preimage);
 
     // Resources passed in the same lex order as access_metadata: decoy first
-    // (empty data, read-only, not new), config second (existing config bytes).
-    let inputs = encode_inputs(
-        0,
-        [0u8; 32],
-        &tx_bytes,
-        &[(false, 0, Vec::new()), (false, 1, initial_config_data)],
-    );
+    // (empty data, read-only, so it reads as new), config second (existing config bytes).
+    let inputs =
+        encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, Vec::new()), (1, initial_config_data)]);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -983,11 +999,10 @@ fn deposit_credits_new_user() {
     payload.extend_from_slice(&actions_section);
 
     let tx_bytes = encode_v1_transaction(&payload, &rest_preimage);
-    // user slot starts empty (is_new = true); config is an existing resource.
+    // The user slot is left empty, which is what makes it new; config is an existing resource.
     let n_resources = access_entries.len();
-    let mut resources = vec![(false, 0u32, Vec::new()); n_resources];
-    resources[user_lex_idx as usize] = (true, 0, Vec::new());
-    resources[config_lex_idx as usize] = (false, 0, config_data);
+    let mut resources = vec![(0u32, Vec::new()); n_resources];
+    resources[config_lex_idx as usize] = (0, config_data);
     let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
@@ -1049,11 +1064,11 @@ fn deposit_credits_existing_user() {
     payload.extend_from_slice(&actions_section);
 
     let tx_bytes = encode_v1_transaction(&payload, &rest_preimage);
-    // user exists (is_new = false); config supplies the deposit address.
+    // The user slot carries data, so it reads as live; config supplies the deposit address.
     let n_resources = access_entries.len();
-    let mut resources = vec![(false, 0u32, Vec::new()); n_resources];
-    resources[user_lex_idx as usize] = (false, 0, existing_data);
-    resources[config_lex_idx as usize] = (false, 0, config_data);
+    let mut resources = vec![(0u32, Vec::new()); n_resources];
+    resources[user_lex_idx as usize] = (0, existing_data);
+    resources[config_lex_idx as usize] = (0, config_data);
     let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
@@ -1097,9 +1112,8 @@ fn deposit_spk_mismatch_rejected() {
 
     let tx_bytes = encode_v1_transaction(&payload, &rest_preimage);
     let n_resources = access_entries.len();
-    let mut resources = vec![(false, 0u32, Vec::new()); n_resources];
-    resources[user_lex_idx as usize] = (true, 0, Vec::new());
-    resources[config_lex_idx as usize] = (false, 0, config_data);
+    let mut resources = vec![(0u32, Vec::new()); n_resources];
+    resources[config_lex_idx as usize] = (0, config_data);
     let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
@@ -1141,9 +1155,8 @@ fn deposit_double_credit_same_output_rejected() {
 
     let tx_bytes = encode_v1_transaction(&payload, &rest_preimage);
     let n_resources = access_entries.len();
-    let mut resources = vec![(false, 0u32, Vec::new()); n_resources];
-    resources[user_lex_idx as usize] = (true, 0, Vec::new());
-    resources[config_lex_idx as usize] = (false, 0, config_data);
+    let mut resources = vec![(0u32, Vec::new()); n_resources];
+    resources[config_lex_idx as usize] = (0, config_data);
     let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
@@ -1201,10 +1214,8 @@ fn deposit_two_distinct_outputs_both_credit() {
 
     let tx_bytes = encode_v1_transaction(&payload, &rest_preimage);
     let n_resources = entries.len();
-    let mut resources = vec![(false, 0u32, Vec::new()); n_resources];
-    resources[user0_lex as usize] = (true, 0, Vec::new());
-    resources[user1_lex as usize] = (true, 0, Vec::new());
-    resources[config_lex as usize] = (false, 0, config_data);
+    let mut resources = vec![(0u32, Vec::new()); n_resources];
+    resources[config_lex as usize] = (0, config_data);
     let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
@@ -1264,11 +1275,10 @@ fn deposit_create_then_credit_same_user() {
     payload.extend_from_slice(&actions_section);
 
     let tx_bytes = encode_v1_transaction(&payload, &rest_preimage);
-    // user slot starts empty (is_new = true); the first deposit creates it.
+    // The user slot is left empty, so it starts new; the first deposit creates it.
     let n_resources = access_entries.len();
-    let mut resources = vec![(false, 0u32, Vec::new()); n_resources];
-    resources[user_lex_idx as usize] = (true, 0, Vec::new());
-    resources[config_lex_idx as usize] = (false, 0, config_data);
+    let mut resources = vec![(0u32, Vec::new()); n_resources];
+    resources[config_lex_idx as usize] = (0, config_data);
     let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
@@ -1325,9 +1335,8 @@ fn deposit_wrong_covenant_delegate_address_rejected() {
 
     let tx_bytes = encode_v1_transaction(&payload, &rest_preimage);
     let n_resources = access_entries.len();
-    let mut resources = vec![(false, 0u32, Vec::new()); n_resources];
-    resources[user_lex_idx as usize] = (true, 0, Vec::new());
-    resources[config_lex_idx as usize] = (false, 0, config_data);
+    let mut resources = vec![(0u32, Vec::new()); n_resources];
+    resources[config_lex_idx as usize] = (0, config_data);
     let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
@@ -1376,7 +1385,7 @@ fn update_rejects_covenant_id_change() {
     let mut payload = payload_presig;
     payload.extend_from_slice(&sig_bytes);
     let tx_bytes = encode_v1_transaction(&payload, &[]);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(false, 0, initial_data)]);
+    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, initial_data)]);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -1450,9 +1459,9 @@ fn withdraw_debits_and_emits_exit() {
 
     // Build the resource list in lex order matching access_entries.
     let n_resources = access_entries.len();
-    let mut resources = vec![(false, 0u32, Vec::new()); n_resources];
-    resources[user_lex_idx as usize] = (false, 0, user_data);
-    resources[config_lex_idx as usize] = (false, 0, config_data);
+    let mut resources = vec![(0u32, Vec::new()); n_resources];
+    resources[user_lex_idx as usize] = (0, user_data);
+    resources[config_lex_idx as usize] = (0, config_data);
 
     let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
 
@@ -1603,9 +1612,9 @@ fn withdraw_with_multisig_locked_user() {
 
     let tx_bytes = encode_v1_transaction(&payload, rest_preimage);
     let n_resources = access_entries.len();
-    let mut resources = vec![(false, 0u32, Vec::new()); n_resources];
-    resources[user_lex_idx as usize] = (false, 0, user_data);
-    resources[config_lex_idx as usize] = (false, 0, config_data);
+    let mut resources = vec![(0u32, Vec::new()); n_resources];
+    resources[user_lex_idx as usize] = (0, user_data);
+    resources[config_lex_idx as usize] = (0, config_data);
 
     let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
 
@@ -1673,9 +1682,9 @@ fn withdraw_below_min_rejected() {
     let tx_bytes = encode_v1_transaction(&payload, &[]);
 
     let n_resources = access_entries.len();
-    let mut resources = vec![(false, 0u32, Vec::new()); n_resources];
-    resources[user_lex_idx as usize] = (false, 0, user_data);
-    resources[config_lex_idx as usize] = (false, 0, config_data);
+    let mut resources = vec![(0u32, Vec::new()); n_resources];
+    resources[user_lex_idx as usize] = (0, user_data);
+    resources[config_lex_idx as usize] = (0, config_data);
 
     let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
 
@@ -1727,9 +1736,9 @@ fn withdraw_over_balance_rejected() {
     let tx_bytes = encode_v1_transaction(&payload, &[]);
 
     let n_resources = access_entries.len();
-    let mut resources = vec![(false, 0u32, Vec::new()); n_resources];
-    resources[user_lex_idx as usize] = (false, 0, user_data);
-    resources[config_lex_idx as usize] = (false, 0, config_data);
+    let mut resources = vec![(0u32, Vec::new()); n_resources];
+    resources[user_lex_idx as usize] = (0, user_data);
+    resources[config_lex_idx as usize] = (0, config_data);
 
     let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
 
@@ -1785,12 +1794,8 @@ fn update_at_wrong_lex_position_is_rejected() {
     let mut payload = payload_presig;
     payload.extend_from_slice(&sig_bytes);
     let tx_bytes = encode_v1_transaction(&payload, &[]);
-    let inputs = encode_inputs(
-        0,
-        [0u8; 32],
-        &tx_bytes,
-        &[(false, 0, Vec::new()), (false, 1, initial_config_data)],
-    );
+    let inputs =
+        encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, Vec::new()), (1, initial_config_data)]);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -1845,9 +1850,8 @@ fn deposit_below_creation_minimum_rejected() {
 
     let tx_bytes = encode_v1_transaction(&payload, &rest_preimage);
     let n_resources = access_entries.len();
-    let mut resources = vec![(false, 0u32, Vec::new()); n_resources];
-    resources[user_lex_idx as usize] = (true, 0, Vec::new());
-    resources[config_lex_idx as usize] = (false, 0, config_data);
+    let mut resources = vec![(0u32, Vec::new()); n_resources];
+    resources[config_lex_idx as usize] = (0, config_data);
     let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
@@ -1889,9 +1893,8 @@ fn deposit_create_rejected_when_address_does_not_match_initial_lock() {
 
     let tx_bytes = encode_v1_transaction(&payload, &rest_preimage);
     let n_resources = access_entries.len();
-    let mut resources = vec![(false, 0u32, Vec::new()); n_resources];
-    resources[user_lex_idx as usize] = (true, 0, Vec::new());
-    resources[config_lex_idx as usize] = (false, 0, config_data);
+    let mut resources = vec![(0u32, Vec::new()); n_resources];
+    resources[config_lex_idx as usize] = (0, config_data);
     let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
@@ -1954,8 +1957,7 @@ fn transfer_moves_balance_between_two_users() {
     let mut payload = payload_presig;
     payload.extend_from_slice(&sig_bytes);
     let tx_bytes = encode_v1_transaction(&payload, &[]);
-    let inputs =
-        encode_inputs(0, [0u8; 32], &tx_bytes, &[(false, 0, source_buf), (false, 1, dest_buf)]);
+    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, source_buf), (1, dest_buf)]);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -2018,9 +2020,8 @@ fn run_new_dest_transfer(
     let tx_bytes = encode_v1_transaction(&payload, &[]);
 
     let (_, source_buf) = build_schnorr_locked_user(&source.pubkey, source_balance);
-    let mut resources = vec![(false, 0u32, Vec::new()); 2];
-    resources[source_idx as usize] = (false, 0, source_buf);
-    resources[dest_idx as usize] = (true, 0, Vec::new());
+    let mut resources = vec![(0u32, Vec::new()); 2];
+    resources[source_idx as usize] = (0, source_buf);
     let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
@@ -2112,7 +2113,7 @@ fn update_user_lock_rotates_lock_and_preserves_initial_lock_hash() {
     let mut payload = payload_presig;
     payload.extend_from_slice(&sig_bytes);
     let tx_bytes = encode_v1_transaction(&payload, &[]);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(false, 0, initial_data)]);
+    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, initial_data)]);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
