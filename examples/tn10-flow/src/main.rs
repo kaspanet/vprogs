@@ -521,8 +521,9 @@ fn spawn_issuer(
                 Ok(Some(tx)) => tx,
                 Ok(None) => {
                     log::warn!(
-                        "issuer: no free spendable UTXOs for {} ({} in flight); fund it or wait \
-                         for change to confirm",
+                        "issuer: no fundable transaction for {} ({} in flight); either no free \
+                         spendable UTXOs are left, or the candidates cannot cover the fee; fund \
+                         it or wait for change to confirm",
                         wallet.address(),
                         in_flight.len(),
                     );

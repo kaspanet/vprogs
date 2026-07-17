@@ -19,7 +19,7 @@ pub struct FundedSettlement {
 
 /// Funds and signs a built settlement's fee, excluding previously-rejected fee outpoints.
 pub trait FeeSource {
-    /// Funds `built`'s fee from a spendable UTXO not in `excluded`, or returns `None` when no
+    /// Funds `built`'s fee from spendable UTXOs not in `excluded`, or returns `None` when no
     /// candidate is left.
     fn fund(
         &self,

@@ -1,9 +1,10 @@
-//! Pure L1 transaction construction over an already-chosen funding UTXO.
+//! Pure L1 transaction construction over a candidate list of funding UTXOs.
 //!
-//! Every function here is RPC-free: the caller supplies the spendable `(outpoint, entry)` it
-//! picked, and gets back a signed, finalized transaction (with storage mass committed where
-//! required). [`crate::Wallet`] wraps these with UTXO fetching and submission; an in-process
-//! simulation calls them directly with UTXOs it already holds.
+//! Every function here is RPC-free: the caller supplies a preference-ordered candidate list of
+//! spendable `(outpoint, entry)` pairs, and gets back a signed, finalized transaction whose fee
+//! and change the builder chose by spending a prefix of that list (with storage mass committed).
+//! [`crate::Wallet`] wraps these with UTXO fetching and submission; an in-process simulation
+//! calls them directly with UTXOs it already holds.
 
 use kaspa_addresses::Address;
 use kaspa_consensus_core::{
@@ -433,20 +434,17 @@ pub fn settlement_transaction(args: SettlementTx<'_>) -> Result<Transaction, Bui
     Ok(tx)
 }
 
-/// Repros for the single-round fee probe, closed by pricing on byte-layout-only masses.
+/// Regression tests for the builders' fee pricing and funding policy.
 ///
-/// Every builder in this file prices its fee from a `fee = 0` probe and rebuilds once, without
-/// re-pricing the rebuilt transaction. Under the old storage-mass-based [`min_fee`], this could
-/// underprice: paying the fee shrinks the change output, and under KIP-0009 a smaller output
-/// carries *more* storage mass (the `C/v` term), so the rebuilt transaction could need a strictly
-/// larger fee than the probe was priced for. [`min_fee`] now prices compute mass and normalized
-/// transient mass instead, both of which depend only on the serialized byte layout and cannot
-/// change with the fee value, so the probe's mass is exact for the final transaction; the three
-/// tests below confirm it holds for shapes that used to underprice.
+/// Every builder prices its fee from a signed zero-fee probe. The fee floor mirrors the node's
+/// post-Toccata admission rule ([`MIN_FEERATE_PER_GRAM`] over the larger of compute mass and
+/// normalized transient mass), both of which depend only on the byte layout the fee value
+/// cannot change, so the probe prices the final transaction exactly. Storage mass never enters
+/// the fee; it bounds validity through the block-fit limit, which the funding loop keeps by
+/// requiring a storage-viable change output, dropping the change, or adding inputs.
 ///
-/// [`fee_probe_underpricing_stays_above_the_mempool_floor`] confirms [`min_fee`] now mirrors the
-/// node's actual admission rule: every builder's paid fee meets the mempool floor with no residual
-/// margin, where it used to clear by roughly two orders of magnitude under the old, looser mirror.
+/// The shape tests assert each built transaction pays at least the mirrored node floor
+/// ([`mempool_min_fee`]) and stays within the block-fit storage limit.
 #[cfg(test)]
 mod tests {
     use kaspa_addresses::{Prefix, Version};
@@ -500,18 +498,22 @@ mod tests {
         (fee_mass * MEMPOOL_MIN_RELAY_FEE_PER_KILOGRAM) / 1000
     }
 
-    /// Fails when `tx` pays less than [`min_fee`] asks for `tx` itself.
+    /// Fails when `tx` pays less than [`min_fee`] asks for `tx` itself, or when its committed
+    /// storage mass is above the block-fit limit.
     ///
-    /// This is the builders' own pricing policy, not the node's admission rule; see
-    /// [`fee_probe_underpricing_stays_above_the_mempool_floor`]. Reports the binding mass so a
-    /// failure shows which term binds.
+    /// The fee check is the builders' own pricing policy, not the node's admission rule; see
+    /// [`built_shapes_meet_the_mempool_floor`]. Reports every mass term so a failure shows which
+    /// one binds.
     fn assert_fee_covers_final(params: &Params, tx: &Transaction, entries: &[UtxoEntry]) {
         let calc = MassCalculator::new(
             params.mass_per_tx_byte,
             params.mass_per_script_pub_key_byte,
             params.storage_mass_parameter,
         );
-        let compute = calc.calc_non_contextual_masses(tx).compute_mass;
+        let masses = calc.calc_non_contextual_masses(tx);
+        let compute = masses.compute_mass;
+        let cofactors = params.block_mass_limits().raw_post().cofactors();
+        let transient = masses.normalized_transient(&cofactors);
         let populated = PopulatedTransaction::new(tx, entries.to_vec());
         let storage = calc.calc_contextual_masses(&populated).map_or(0, |m| m.storage_mass);
         let paid = fee_paid(tx, entries);
@@ -519,7 +521,12 @@ mod tests {
         assert!(
             paid >= required,
             "built tx pays {paid} but its own min_fee is {required} \
-             (compute mass {compute}, storage mass {storage})",
+             (compute mass {compute}, normalized transient mass {transient}, storage mass {storage})",
+        );
+        let limit = params.block_mass_limits().raw_post().storage;
+        assert!(
+            storage <= limit,
+            "built tx carries storage mass {storage}, above the block-fit limit {limit}",
         );
     }
 
@@ -648,46 +655,64 @@ mod tests {
         BuiltShape { tx, entries: vec![entry] }
     }
 
-    /// A dev-mode settlement whose covenant and permission outputs put storage mass far above
-    /// compute mass, built through [`settlement_transaction`]. Under the old storage-mass-based
-    /// [`min_fee`], deducting the probe-priced fee shrank the change output enough to raise
-    /// storage mass past what was paid; [`min_fee`] no longer prices storage mass, so this holds.
+    /// A storage-dominated dev-mode settlement, built through [`settlement_transaction`]: its
+    /// covenant and permission outputs put storage mass far above compute mass, pinning that
+    /// [`min_fee`] still covers the final transaction and stays block-fit even when storage mass
+    /// is the larger term.
     #[test]
-    fn settlement_fee_must_cover_the_final_transactions_storage_mass() {
+    fn settlement_fee_covers_the_built_transactions_floor() {
         let params = &SIMNET_PARAMS;
         let shape = settlement_shape(params);
         assert_fee_covers_final(params, &shape.tx, &shape.entries);
     }
 
-    /// A payout leaving change small enough that its `C/v` term dominates compute mass, built
-    /// through [`pay_to_address_transaction`]. Under the old storage-mass-based [`min_fee`] this
-    /// underpriced; [`min_fee`] no longer prices storage mass, so this holds.
+    /// A small-change payout, built through [`pay_to_address_transaction`], where the change's
+    /// `C/v` term dominates compute mass, pinning that [`min_fee`] still covers the final
+    /// transaction and stays block-fit for that shape.
     #[test]
-    fn pay_to_address_fee_must_cover_the_final_changes_storage_mass() {
+    fn pay_to_address_fee_covers_the_built_transactions_floor() {
         let params = &SIMNET_PARAMS;
         let shape = pay_to_address_shape(params);
         assert_fee_covers_final(params, &shape.tx, &shape.entries);
     }
 
-    /// A funding UTXO small enough that the single output's `C/v` term dominates compute mass,
-    /// built through [`activity_transaction`]. Under the old storage-mass-based [`min_fee`] this
-    /// underpriced; [`min_fee`] no longer prices storage mass, so this holds.
+    /// A small-UTXO activity transaction, built through [`activity_transaction`], where the
+    /// single output's `C/v` term dominates compute mass, pinning that [`min_fee`] still covers
+    /// the final transaction and stays block-fit for that shape. Also pins that the tx's
+    /// committed `storage_mass()` field matches the value
+    /// [`MassCalculator::calc_contextual_masses`] recomputes on the populated tx, confirming
+    /// [`commit_storage_mass`] took effect.
     #[test]
-    fn activity_fee_must_cover_the_final_outputs_storage_mass() {
+    fn activity_fee_covers_the_built_transactions_floor() {
         let params = &SIMNET_PARAMS;
         let shape = activity_shape(params);
         assert_fee_covers_final(params, &shape.tx, &shape.entries);
+
+        let calc = MassCalculator::new(
+            params.mass_per_tx_byte,
+            params.mass_per_script_pub_key_byte,
+            params.storage_mass_parameter,
+        );
+        let populated = PopulatedTransaction::new(&shape.tx, shape.entries.clone());
+        let recomputed = calc
+            .calc_contextual_masses(&populated)
+            .expect("contextual mass calculation must succeed for a populated transaction")
+            .storage_mass;
+        assert_eq!(
+            shape.tx.storage_mass(),
+            recomputed,
+            "committed storage mass must match the value recomputed on the populated tx",
+        );
     }
 
-    /// The scope limit on the three underpricing tests above: none of those shapes is rejected by
-    /// a node, because [`min_fee`] now mirrors the mempool floor exactly.
+    /// None of the three shapes above is rejected by a node: [`min_fee`] mirrors the mempool
+    /// floor exactly, so every builder's paid fee equals the floor for every shape here.
     ///
     /// [`min_fee`] pays `MIN_FEERATE_PER_GRAM * max(compute, normalized_transient)`, and
     /// [`mempool_min_fee`] mirrors the node's `MEMPOOL_MIN_RELAY_FEE_PER_KILOGRAM / 1000 *
-    /// max(compute, normalized_transient)` at the same rate, so every builder's paid fee equals
-    /// the floor for every shape here.
+    /// max(compute, normalized_transient)` at the same rate.
     #[test]
-    fn fee_probe_underpricing_stays_above_the_mempool_floor() {
+    fn built_shapes_meet_the_mempool_floor() {
         let params = &SIMNET_PARAMS;
         for shape in
             [activity_shape(params), pay_to_address_shape(params), settlement_shape(params)]

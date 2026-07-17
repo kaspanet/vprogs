@@ -6,9 +6,10 @@
 //! or remote.
 //!
 //! The actual tx construction (sign, fee, storage mass, covenant binding, witness restore) lives in
-//! [`build`] as pure functions over an already-chosen `(outpoint, entry)`. [`Wallet`] is the thin
-//! RPC layer that fetches spendable UTXOs and submits; a caller that already holds its spendable
-//! set (e.g. an in-process simulation) reuses [`build`] directly without any RPC.
+//! [`build`] as pure functions over a preference-ordered candidate list of spendable `(outpoint,
+//! entry)` pairs. [`Wallet`] is the thin RPC layer that fetches spendable UTXOs and submits; a
+//! caller that already holds its spendable set (e.g. an in-process simulation) reuses [`build`]
+//! directly without any RPC.
 //!
 //! TODO: this is a POC wallet. UTXO selection avoids re-spending unconfirmed outputs with a
 //! caller-threaded in-flight set ([`Wallet::build_activity_excluding`]); a production issuer should
