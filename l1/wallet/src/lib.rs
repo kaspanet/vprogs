@@ -144,7 +144,7 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
             &std::collections::HashSet::new(),
         )
         .await
-        .expect("no spendable UTXO for fee")
+        .expect("no spendable UTXO can fund the settlement fee")
         .0
     }
 
@@ -177,6 +177,7 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
             address: &self.address,
             params: self.params,
         })
+        .inspect_err(|e| log::warn!("settlement fee funding failed: {e}"))
         .ok()?;
         let fee_outpoints = tx.inputs[1..].iter().map(|input| input.previous_outpoint).collect();
         Some((tx, fee_outpoints))
@@ -250,6 +251,7 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
             tx_version,
             params: self.params,
         })
+        .inspect_err(|e| log::warn!("activity funding failed: {e}"))
         .ok())
     }
 

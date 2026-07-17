@@ -9,6 +9,7 @@ kaspa-consensus-core.workspace = true
 kaspa-hashes.workspace         = true
 kaspa-rpc-core.workspace       = true
 kaspa-txscript.workspace       = true
+log.workspace                  = true
 secp256k1.workspace            = true
 tap.workspace                  = true
 vprogs-core-codec.workspace    = true

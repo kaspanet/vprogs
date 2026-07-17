@@ -8606,6 +8606,7 @@ dependencies = [
  "kaspa-hashes",
  "kaspa-rpc-core",
  "kaspa-txscript",
+ "log",
  "secp256k1",
  "tap",
  "vprogs-core-codec",
