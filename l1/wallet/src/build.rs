@@ -25,23 +25,26 @@ use secp256k1::Keypair;
 /// mempool floor: a transaction's fee must be at least this many sompi per mass gram.
 const MIN_FEERATE_PER_GRAM: u64 = 100;
 
-/// The minimum sompi fee the node's mempool requires for `tx`: [`MIN_FEERATE_PER_GRAM`] times the
-/// binding mass: the larger of the tx's compute mass and its KIP-0009 storage mass.
+/// The minimum sompi fee the node's mempool requires for `tx`: [`MIN_FEERATE_PER_GRAM`] times
+/// the fee-binding mass, the larger of the tx's compute mass and its normalized transient
+/// mass. Storage mass never enters the node's fee floor; it is bounded separately by the
+/// block-fit storage limit.
 ///
-/// Call this on the *final, signed* tx so the signature scripts are counted (an unsigned tx has
-/// empty sig scripts and undercounts compute mass). The fee value itself doesn't change the byte
-/// layout, so a zero-fee probe yields the same compute mass; storage mass is ~0 for the simple
-/// shapes here, so it stays compute-dominated.
-fn min_fee(params: &Params, tx: &Transaction, entries: &[UtxoEntry]) -> u64 {
+/// Both terms depend only on the serialized byte layout, which the fee value cannot change,
+/// so pricing a zero-fee probe of the same layout is exact for the final transaction. Call
+/// this on a *signed* layout so the signature scripts are counted (an unsigned tx has empty
+/// sig scripts and undercounts both masses).
+fn min_fee(params: &Params, tx: &Transaction) -> u64 {
     let calc = MassCalculator::new(
         params.mass_per_tx_byte,
         params.mass_per_script_pub_key_byte,
         params.storage_mass_parameter,
     );
-    let compute = calc.calc_non_contextual_masses(tx).compute_mass;
-    let populated = PopulatedTransaction::new(tx, entries.to_vec());
-    let storage = calc.calc_contextual_masses(&populated).map_or(0, |m| m.storage_mass);
-    MIN_FEERATE_PER_GRAM * compute.max(storage)
+    let masses = calc.calc_non_contextual_masses(tx);
+    // raw_post: the mempool prices standardness with the post-Toccata cofactors on every
+    // network, activation-independent (check_transaction_standard.rs).
+    let cofactors = params.block_mass_limits().raw_post().cofactors();
+    MIN_FEERATE_PER_GRAM * masses.compute_mass.max(masses.normalized_transient(&cofactors))
 }
 
 /// Commits KIP-0009 storage mass on `tx` (Toccata txs must carry it for the node to accept them).
@@ -104,7 +107,7 @@ pub fn activity_transaction(args: ActivityTx<'_>) -> Transaction {
         args.keypair,
     )
     .tx;
-    let fee = min_fee(args.params, &probe, &entries);
+    let fee = min_fee(args.params, &probe);
     assert!(args.entry.amount > fee, "UTXO amount {} too small for fee {}", args.entry.amount, fee);
 
     sign(MutableTransaction::with_entries(build(args.entry.amount - fee), entries), args.keypair).tx
@@ -168,7 +171,7 @@ pub fn pay_to_address_transaction(args: PayToAddressTx<'_>) -> Transaction {
 
     // Zero-fee probe to learn the signed mass, price it at the node floor, then rebuild funded.
     let probe = build(0);
-    let fee = min_fee(args.params, &probe, &entries);
+    let fee = min_fee(args.params, &probe);
     assert!(
         args.entry.amount > payout + fee,
         "funding UTXO amount {} too small for payout {} + fee {}",
@@ -272,27 +275,25 @@ pub fn settlement_transaction(args: SettlementTx<'_>) -> Transaction {
 
     // Probe at fee 0 to learn the mass, price it at the node's floor, then rebuild funded.
     let probe = build(0);
-    let fee = min_fee(args.params, &probe, &entries);
+    let fee = min_fee(args.params, &probe);
     assert!(args.fee_entry.amount > fee, "fee UTXO amount {} ≤ fee {fee}", args.fee_entry.amount);
     build(fee)
 }
 
-/// Repros for the single-round fee probe.
+/// Repros for the single-round fee probe, closed by pricing on byte-layout-only masses.
 ///
 /// Every builder in this file prices its fee from a `fee = 0` probe and rebuilds once, without
-/// re-pricing the rebuilt transaction. Paying the fee shrinks the change output, and under KIP-0009
-/// a smaller output carries *more* storage mass (the `C/v` term). When storage mass is the binding
-/// mass, the rebuilt transaction therefore needs a strictly larger fee than the probe was priced
-/// for. The `assert!` in each builder cannot catch this: it prices the probe, not the result.
+/// re-pricing the rebuilt transaction. Under the old storage-mass-based [`min_fee`], this could
+/// underprice: paying the fee shrinks the change output, and under KIP-0009 a smaller output
+/// carries *more* storage mass (the `C/v` term), so the rebuilt transaction could need a strictly
+/// larger fee than the probe was priced for. [`min_fee`] now prices compute mass and normalized
+/// transient mass instead, both of which depend only on the serialized byte layout and cannot
+/// change with the fee value, so the probe's mass is exact for the final transaction; the three
+/// tests below confirm it holds for shapes that used to underprice.
 ///
-/// The three underpricing tests re-price each builder's output with the same [`min_fee`] the
-/// builder used and fail, pinning the non-convergence.
-///
-/// [`fee_probe_underpricing_stays_above_the_mempool_floor`] pins the scope limit: the underpayment
-/// is measured against [`min_fee`], which is this crate's own policy and is far stricter than what
-/// a node actually enforces. The mempool's floor is [`MEMPOOL_MIN_RELAY_FEE_PER_KILOGRAM`] against
-/// *compute mass alone*, so these transactions clear it by roughly two orders of magnitude and no
-/// shape here is rejected. That test passes today and must keep passing after a fix.
+/// [`fee_probe_underpricing_stays_above_the_mempool_floor`] confirms [`min_fee`] now mirrors the
+/// node's actual admission rule: every builder's paid fee meets the mempool floor with no residual
+/// margin, where it used to clear by roughly two orders of magnitude under the old, looser mirror.
 #[cfg(test)]
 mod tests {
     use kaspa_addresses::{Prefix, Version};
@@ -333,23 +334,23 @@ mod tests {
     }
 
     /// The mempool's minimum relay fee, in sompi per 1000 grams of mass, from rusty-kaspa's
-    /// `DEFAULT_MINIMUM_RELAY_TRANSACTION_FEE`. Mirrored here because the node's mempool config is
-    /// crate-private and this crate does not depend on `kaspa-mining`.
-    const MEMPOOL_MIN_RELAY_FEE_PER_KILOGRAM: u64 = 1000;
+    /// post-Toccata `DEFAULT_MINIMUM_RELAY_TRANSACTION_FEE`. Mirrored here because the node's
+    /// mempool config is crate-private and this crate does not depend on `kaspa-mining`.
+    const MEMPOOL_MIN_RELAY_FEE_PER_KILOGRAM: u64 = 100_000;
 
-    /// The sompi fee a default-configured node's mempool actually requires for `tx`.
-    ///
-    /// The mempool prices against compute mass only and deliberately ignores storage mass, so this
-    /// is strictly weaker than [`min_fee`], which charges [`MIN_FEERATE_PER_GRAM`] against
-    /// `compute.max(storage)`.
+    /// The sompi fee a default-configured node's mempool requires for `tx` once Toccata is
+    /// active: the relay fee rate over the larger of compute mass and normalized transient
+    /// mass. Storage mass never enters the node's fee floor.
     fn mempool_min_fee(params: &Params, tx: &Transaction) -> u64 {
         let calc = MassCalculator::new(
             params.mass_per_tx_byte,
             params.mass_per_script_pub_key_byte,
             params.storage_mass_parameter,
         );
-        let compute = calc.calc_non_contextual_masses(tx).compute_mass;
-        (compute * MEMPOOL_MIN_RELAY_FEE_PER_KILOGRAM) / 1000
+        let masses = calc.calc_non_contextual_masses(tx);
+        let cofactors = params.block_mass_limits().raw_post().cofactors();
+        let fee_mass = masses.compute_mass.max(masses.normalized_transient(&cofactors));
+        (fee_mass * MEMPOOL_MIN_RELAY_FEE_PER_KILOGRAM) / 1000
     }
 
     /// Fails when `tx` pays less than [`min_fee`] asks for `tx` itself.
@@ -367,7 +368,7 @@ mod tests {
         let populated = PopulatedTransaction::new(tx, entries.to_vec());
         let storage = calc.calc_contextual_masses(&populated).map_or(0, |m| m.storage_mass);
         let paid = fee_paid(tx, entries);
-        let required = min_fee(params, tx, entries);
+        let required = min_fee(params, tx);
         assert!(
             paid >= required,
             "built tx pays {paid} but its own min_fee is {required} \
@@ -415,9 +416,8 @@ mod tests {
     /// A dev-mode settlement, built through [`settlement_transaction`].
     ///
     /// Every value here is one the repo already uses: a `FUND_VALUE` fee UTXO, the default
-    /// permission output value, and the dev covenant budget. Only the witness length is a stand-in;
-    /// it sets compute mass, and a real dev witness must merely stay under the storage mass this
-    /// shape already carries for the underpay to hold.
+    /// permission output value, and the dev covenant budget. Only the witness length is a
+    /// stand-in for compute mass.
     fn settlement_shape(params: &Params) -> BuiltShape {
         let keypair = keypair();
         let address = address(&keypair, params);
@@ -501,12 +501,10 @@ mod tests {
         BuiltShape { tx, entries: vec![entry] }
     }
 
-    /// A dev-mode settlement is storage-mass-dominated, so [`settlement_transaction`] underprices
-    /// it: its own covenant and permission outputs put storage mass far above compute mass, and
-    /// deducting the probe-priced fee shrinks the change output enough to raise storage mass past
-    /// what was paid.
-    ///
-    /// This refutes [`min_fee`]'s claim that "storage mass is ~0 for the simple shapes here".
+    /// A dev-mode settlement whose covenant and permission outputs put storage mass far above
+    /// compute mass, built through [`settlement_transaction`]. Under the old storage-mass-based
+    /// [`min_fee`], deducting the probe-priced fee shrank the change output enough to raise
+    /// storage mass past what was paid; [`min_fee`] no longer prices storage mass, so this holds.
     #[test]
     fn settlement_fee_must_cover_the_final_transactions_storage_mass() {
         let params = &SIMNET_PARAMS;
@@ -514,8 +512,9 @@ mod tests {
         assert_fee_covers_final(params, &shape.tx, &shape.entries);
     }
 
-    /// [`pay_to_address_transaction`] underprices whenever the change left over above the payout is
-    /// small enough that its `C/v` term dominates compute mass.
+    /// A payout leaving change small enough that its `C/v` term dominates compute mass, built
+    /// through [`pay_to_address_transaction`]. Under the old storage-mass-based [`min_fee`] this
+    /// underpriced; [`min_fee`] no longer prices storage mass, so this holds.
     #[test]
     fn pay_to_address_fee_must_cover_the_final_changes_storage_mass() {
         let params = &SIMNET_PARAMS;
@@ -523,9 +522,9 @@ mod tests {
         assert_fee_covers_final(params, &shape.tx, &shape.entries);
     }
 
-    /// [`activity_transaction`] underprices once the funding UTXO is small enough that the `C/v`
-    /// term on the single output dominates compute mass. Its probe pays the whole input back out,
-    /// so the probe's storage mass is exactly zero and the fee is always priced on compute alone.
+    /// A funding UTXO small enough that the single output's `C/v` term dominates compute mass,
+    /// built through [`activity_transaction`]. Under the old storage-mass-based [`min_fee`] this
+    /// underpriced; [`min_fee`] no longer prices storage mass, so this holds.
     #[test]
     fn activity_fee_must_cover_the_final_outputs_storage_mass() {
         let params = &SIMNET_PARAMS;
@@ -533,16 +532,13 @@ mod tests {
         assert_fee_covers_final(params, &shape.tx, &shape.entries);
     }
 
-    /// The scope limit on the three underpricing tests above: none of those shapes is rejected by a
-    /// node, because the fee they do pay still clears the mempool's floor by a wide margin.
+    /// The scope limit on the three underpricing tests above: none of those shapes is rejected by
+    /// a node, because [`min_fee`] now mirrors the mempool floor exactly.
     ///
-    /// The margin is structural, not incidental. [`min_fee`] pays
-    /// `MIN_FEERATE_PER_GRAM * max(compute, storage)`, while the mempool asks
-    /// `MEMPOOL_MIN_RELAY_FEE_PER_KILOGRAM / 1000 * compute`, i.e. one sompi per gram of compute
-    /// mass with storage mass deliberately excluded. Since the probe and the rebuild share a byte
-    /// layout and therefore a compute mass, every builder pays at least `MIN_FEERATE_PER_GRAM`
-    /// times what the mempool asks, whatever the shape. The single-round probe cannot erode a
-    /// hundredfold cushion, so the underpricing is latent rather than reachable.
+    /// [`min_fee`] pays `MIN_FEERATE_PER_GRAM * max(compute, normalized_transient)`, and
+    /// [`mempool_min_fee`] mirrors the node's `MEMPOOL_MIN_RELAY_FEE_PER_KILOGRAM / 1000 *
+    /// max(compute, normalized_transient)` at the same rate, so every builder's paid fee equals
+    /// the floor for every shape here.
     #[test]
     fn fee_probe_underpricing_stays_above_the_mempool_floor() {
         let params = &SIMNET_PARAMS;
@@ -553,5 +549,31 @@ mod tests {
             let floor = mempool_min_fee(params, &shape.tx);
             assert!(paid >= floor, "built tx pays {paid} but the mempool floor is {floor}");
         }
+    }
+
+    /// A payload-heavy activity tx is transient-mass-dominated: normalized transient mass is
+    /// 2 grams per serialized byte against compute's ~1, so a large payload puts the node's
+    /// fee floor above what compute-only pricing pays.
+    #[test]
+    fn payload_heavy_activity_fee_covers_the_transient_floor() {
+        let params = &SIMNET_PARAMS;
+        let keypair = keypair();
+        let address = address(&keypair, params);
+        let entry = UtxoEntry::new(100_000_000, pay_to_address_script(&address), 0, false, None);
+
+        let tx = activity_transaction(ActivityTx {
+            payload: vec![0u8; 10_000],
+            outpoint: outpoint(1),
+            entry: entry.clone(),
+            keypair,
+            address: &address,
+            subnetwork_id: SUBNETWORK_ID_NATIVE,
+            tx_version: TX_VERSION_TOCCATA,
+            params,
+        });
+
+        let paid = fee_paid(&tx, &[entry]);
+        let floor = mempool_min_fee(params, &tx);
+        assert!(paid >= floor, "built tx pays {paid} but the node's floor is {floor}");
     }
 }
