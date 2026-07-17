@@ -32,7 +32,10 @@ use vprogs_zk_backend_risc0_runtime_processor::{
     resource_id::{config_resource_id, derive_user_resource},
     runtime::compute_sig_message,
     signer_trait::Signer,
-    signer_variants::{MultisigSchnorrSigPtrSigner, PrevTxV1WitnessSigner, SchnorrSigPtrSigner},
+    signer_variants::{
+        MultisigPrevTxV1WitnessSigner, MultisigSchnorrSigPtrSigner, PrevTxV1WitnessSigner,
+        SchnorrSigPtrSigner,
+    },
     user::{UserView, user_total_len, write_user},
 };
 
@@ -2138,4 +2141,118 @@ fn update_user_lock_rotates_lock_and_preserves_initial_lock_hash() {
     }
     // Address still derives from the (immutable) initial_lock_hash.
     assert_eq!(*derive_user_resource(view.initial_lock_hash()), user_id_bytes);
+}
+
+// Prev-tx witness pointers over payload bytes
+
+/// Encodes a single multisig PrevTxV1Witness signer. Same body as
+/// [`encode_witness_signer`]; only the kind byte differs.
+fn encode_multisig_witness_signer(
+    resource_idx: u8,
+    input_idx: u8,
+    rp_offset: u32,
+    rp_len: u32,
+    pd_offset: u32,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.push(resource_idx);
+    out.push(MultisigPrevTxV1WitnessSigner::TAG);
+    out.push(input_idx);
+    out.extend_from_slice(&rp_offset.to_le_bytes());
+    out.extend_from_slice(&rp_len.to_le_bytes());
+    out.extend_from_slice(&pd_offset.to_le_bytes());
+    out
+}
+
+/// The outpoint the carrier's input 0 spends. The witness bytes below do not
+/// hash to it, which is the whole point of the carrier.
+const UNMATCHED_PREV_TX_ID: [u8; 32] = [0xAA; 32];
+
+/// Fixed lock pubkey for the carrier's config resource. Never consulted: the
+/// witness signers ignore `resource_idx` and recover their pubkey from the
+/// witness, so the resource only has to decode.
+const CARRIER_LOCK_PUBKEY: [u8; 32] = [0x02; 32];
+
+/// Builds the `Inputs` blob for an L1 carrier that reaches the witness path and
+/// nothing else: one input, one declared resource, zero actions, and one
+/// witness signer whose in-range offsets point at payload bytes that do not
+/// hash to input 0's prev_tx_id. `encode_signer` selects the single-key
+/// (kind 0x02) or multisig (kind 0x04) twin, which share this wire body.
+///
+/// Every byte here is authored by the L1 transaction: the offsets come from the
+/// signer body in `ix_data`, and the bytes they name come from the payload.
+fn witness_mismatch_carrier(encode_signer: impl Fn(u8, u8, u32, u32, u32) -> Vec<u8>) -> Vec<u8> {
+    let initial_data = build_schnorr_locked_config(&CARRIER_LOCK_PUBKEY, 100);
+    let resource_id_bytes: [u8; 32] = *config_resource_id();
+
+    let current_tx = build_current_tx_v1_spending(&UNMATCHED_PREV_TX_ID);
+    let current_rest_preimage = transaction_v1_rest_preimage(&current_tx);
+
+    // Zero actions: signers resolve before any action applies, so the carrier
+    // needs no valid action and no live resource to fire.
+    let actions_section = encode_actions_section(&[]);
+    let access_meta = encode_access_metadata(&[(resource_id_bytes, AccessType::Write)]);
+
+    // Probe the signers section to learn its size, then place the witness tail
+    // immediately after it, exactly as the honest witness test does.
+    let probe_section = encode_signers_section(&[encode_signer(0, 0, 0, 0, 0)]);
+    let payload_presig_len = access_meta.len() + probe_section.len() + actions_section.len();
+
+    // The tail is in range and readable; it is simply not a prev-tx preimage,
+    // so it cannot hash to UNMATCHED_PREV_TX_ID.
+    let junk_rest_preimage = [0x00u8; 64];
+    let junk_payload_digest = [0x00u8; 32];
+    let rp_offset = payload_presig_len;
+    let rp_len = junk_rest_preimage.len();
+    let pd_offset = rp_offset + rp_len;
+
+    let signers_section = encode_signers_section(&[encode_signer(
+        0,
+        0,
+        rp_offset as u32,
+        rp_len as u32,
+        pd_offset as u32,
+    )]);
+    assert_eq!(signers_section.len(), probe_section.len(), "probe must size the real section");
+
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&access_meta);
+    payload.extend_from_slice(&signers_section);
+    payload.extend_from_slice(&actions_section);
+    payload.extend_from_slice(&junk_rest_preimage);
+    payload.extend_from_slice(&junk_payload_digest);
+
+    let tx_bytes = encode_v1_transaction(&payload, &current_rest_preimage);
+    encode_inputs(0, [0u8; 32], &tx_bytes, &[(false, 0, initial_data)])
+}
+
+/// Runs `inputs` through the guest and asserts the transaction is journaled as
+/// an error. A malformed witness pointer is user input, so it must produce an
+/// `OutputCommitment::Error` journal the batch can fold. Aborting the guest
+/// instead yields no journal at all, and a tx with no journal cannot be skipped
+/// without breaking the lane's activity digest.
+fn assert_journaled_as_error(inputs: &[u8]) {
+    let elf = wrapped_runtime_processor_elf();
+    let (_stdout, journal_bytes) = execute_guest_with_journal(&elf, inputs);
+    let journal_entries = JournalEntries::decode(&journal_bytes).expect("valid journal");
+    match journal_entries.output_commitment {
+        OutputCommitment::Error(_) => {}
+        OutputCommitment::Success { .. } => panic!("expected Error journal, got Success"),
+    }
+}
+
+/// Single-key witness signer (kind 0x02) whose pointer names payload bytes that
+/// do not hash to the outpoint.
+#[test]
+#[ignore = "repro: the guest aborts on the witness assert instead of journaling an error; un-ignore with the fix"]
+fn witness_not_matching_outpoint_is_journaled_as_error() {
+    assert_journaled_as_error(&witness_mismatch_carrier(encode_witness_signer));
+}
+
+/// The multisig twin (kind 0x04) shares `recover_witness_pubkey` and therefore
+/// the same exit.
+#[test]
+#[ignore = "repro: the guest aborts on the witness assert instead of journaling an error; un-ignore with the fix"]
+fn multisig_witness_not_matching_outpoint_is_journaled_as_error() {
+    assert_journaled_as_error(&witness_mismatch_carrier(encode_multisig_witness_signer));
 }

@@ -85,3 +85,46 @@ pub fn verify_k256_schnorr_sig(
     let Ok(sig) = Signature::try_from(&signature[..]) else { return false };
     vk.verify_prehash(message, &sig).is_ok()
 }
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+
+    use super::*;
+
+    /// Builds a minimal V1 `rest_preimage` whose input 0 spends `prev_tx_id`:0.
+    /// `parse_input_outpoint_at` reads `version(2) || n_inputs(8) ||
+    /// prev_tx_id(32) || prev_index(4)` and returns at that point, so the
+    /// remaining transaction fields are not needed to name the outpoint.
+    fn rest_preimage_with_one_input(prev_tx_id: &[u8; 32]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&1u64.to_le_bytes());
+        out.extend_from_slice(prev_tx_id);
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out
+    }
+
+    /// Both the witness preimage and the witness payload digest reach this
+    /// function from `ctx.payload_bytes`, the user-authored L1 tx payload, via
+    /// offsets that are themselves user-authored. A witness that does not hash
+    /// to the named outpoint is therefore malformed user input, and the
+    /// contract for malformed user input is `Err`: the guest must not panic on
+    /// bytes an L1 transaction chooses.
+    #[test]
+    #[ignore = "repro: recover_prev_tx_v1_p2pk_pubkey asserts instead of returning Err; un-ignore with the fix"]
+    fn witness_not_matching_outpoint_returns_err_rather_than_panicking() {
+        let current_rest_preimage = rest_preimage_with_one_input(&[0xAA; 32]);
+        let witness_rest_preimage = b"witness bytes that do not hash to the named outpoint";
+        let witness_payload_digest = [0u8; 32];
+
+        let result = recover_prev_tx_v1_p2pk_pubkey(
+            &current_rest_preimage,
+            0,
+            witness_rest_preimage,
+            &witness_payload_digest,
+        );
+
+        assert!(result.is_err(), "mismatched prev-tx witness must be rejected with Err");
+    }
+}
