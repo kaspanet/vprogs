@@ -8,9 +8,9 @@
 use kaspa_addresses::Address;
 use kaspa_consensus_core::{
     config::params::Params,
-    constants::TX_VERSION_TOCCATA,
+    constants::{MAX_SOMPI, TX_VERSION_TOCCATA},
     hashing::covenant_id::covenant_id,
-    mass::{MassCalculator, units::ComputeBudget},
+    mass::{MassCalculator, UtxoCell, calc_storage_mass, units::ComputeBudget},
     sign::sign,
     subnets::{SUBNETWORK_ID_NATIVE, SubnetworkId},
     tx::{
@@ -61,15 +61,187 @@ pub fn commit_storage_mass(params: &Params, tx: &Transaction, entries: &[UtxoEnt
     tx.set_storage_mass(masses.storage_mass);
 }
 
+/// The smallest value the change output can carry while the transaction's KIP-0009 storage
+/// mass stays within the block-fit storage limit, the only storage ceiling once Toccata is
+/// active (fees cannot buy past it). `inputs` are the final layout's input cells; `outputs`
+/// its output cells with the change slot last (that cell's amount is ignored). `None` when no
+/// change value fits: the fixed outputs alone already exceed the limit.
+fn min_viable_change(params: &Params, inputs: &[UtxoCell], outputs: &[UtxoCell]) -> Option<u64> {
+    debug_assert!(!outputs.is_empty(), "outputs must carry the change slot last");
+    let limit = params.block_mass_limits().raw_post().storage;
+    let (fixed, change_slot) = outputs.split_at(outputs.len() - 1);
+    let storage = |change: u64| {
+        let outs = fixed
+            .iter()
+            .copied()
+            .chain(std::iter::once(UtxoCell::new(change_slot[0].plurality, change)));
+        calc_storage_mass(false, inputs.iter().copied(), outs, params.storage_mass_parameter)
+            .unwrap_or(u64::MAX)
+    };
+    // Storage mass is non-increasing in the change value; binary-search the smallest fit.
+    (storage(MAX_SOMPI) <= limit).then(|| {
+        let (mut lo, mut hi) = (1u64, MAX_SOMPI);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if storage(mid) <= limit { hi = mid } else { lo = mid + 1 }
+        }
+        lo
+    })
+}
+
+/// Why a builder could not fund its transaction from the given candidates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildError {
+    /// The candidates cannot cover the node's minimum fee (plus a storage-viable change
+    /// output where the layout requires one). `available` is what the deepest attempt
+    /// brought in beyond the fixed outputs; `required` what it needed.
+    InsufficientFunds { available: u64, required: u64 },
+    /// Every funding attempt's fixed outputs exceeded the block-fit storage limit for any
+    /// change value. `storage_mass` and `limit` are from one such attempt.
+    StorageInfeasible { storage_mass: u64, limit: u64 },
+}
+
+impl std::fmt::Display for BuildError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InsufficientFunds { available, required } => {
+                write!(f, "candidate UTXOs bring {available} sompi but funding requires {required}")
+            }
+            Self::StorageInfeasible { storage_mass, limit } => {
+                write!(
+                    f,
+                    "fixed outputs alone carry storage mass {storage_mass}, above the block-fit limit {limit}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for BuildError {}
+
+/// The fee `tx` pays given the entries its inputs spend: input total minus output total.
+fn fee_paid(tx: &Transaction, entries: &[UtxoEntry]) -> u64 {
+    entries.iter().map(|entry| entry.amount).sum::<u64>()
+        - tx.outputs.iter().map(|output| output.value).sum::<u64>()
+}
+
+/// How the funding loop decided to pay for one transaction layout.
+#[derive(Debug)]
+struct Funding {
+    /// How many leading candidates are spent as funding inputs.
+    inputs: usize,
+    /// Total fee the final transaction pays.
+    fee: u64,
+    /// Change output value, or `None` when the change output is dropped and its remainder
+    /// folds into the fee.
+    change: Option<u64>,
+}
+
+/// Chooses how many leading `candidates` to spend, the fee, and whether the change output
+/// survives, so the built transaction meets the node's fee floor and stays block-fit.
+///
+/// `probe(n, change)` must return the signed layout spending the first `n` candidates (plus
+/// any builder-fixed inputs), with the change output last when `change` is `Some` and omitted
+/// when `None`, together with the entries all inputs spend, in input order. Probes must not
+/// commit storage mass. `change_required` marks layouts whose change output cannot be
+/// dropped (it is the transaction's only output).
+fn fund(
+    params: &Params,
+    candidates: &[(TransactionOutpoint, UtxoEntry)],
+    change_required: bool,
+    probe: &mut dyn FnMut(usize, Option<u64>) -> (Transaction, Vec<UtxoEntry>),
+) -> Result<Funding, BuildError> {
+    assert!(!candidates.is_empty(), "funding needs at least one candidate UTXO");
+    let limit = params.block_mass_limits().raw_post().storage;
+    // (available, required) from the deepest storage-feasible attempt that still fell short.
+    let mut shortfall: Option<(u64, u64)> = None;
+    // The error from the deepest storage-infeasible attempt, returned only if no attempt ever
+    // recorded a shortfall. Storage feasibility depends on the input set (the KIP-0009 credit
+    // changes with n), so an attempt that is infeasible at one n can still be feasible deeper
+    // in the candidate list, and an early infeasibility must not end the search.
+    let mut infeasible: Option<BuildError> = None;
+    for n in 1..=candidates.len() {
+        let (tx, entries) = probe(n, Some(0));
+        let entries_total: u64 = entries.iter().map(|entry| entry.amount).sum();
+        let outputs_total: u64 = tx.outputs.iter().map(|output| output.value).sum();
+        // A short prefix's entries can fall short of the fixed outputs alone; saturate to
+        // zero instead of underflowing so the loop keeps adding inputs.
+        let available = entries_total.saturating_sub(outputs_total);
+        let fee = min_fee(params, &tx);
+        let input_cells: Vec<UtxoCell> = entries.iter().map(UtxoCell::from).collect();
+        let output_cells: Vec<UtxoCell> = tx.outputs.iter().map(UtxoCell::from).collect();
+
+        if available < fee {
+            // The with-change layout is unaffordable; without the change output the layout
+            // shrinks and so does its fee, which the slack may still cover.
+            if !change_required {
+                let (dropped, dropped_entries) = probe(n, None);
+                let dropped_fee = min_fee(params, &dropped);
+                if available >= dropped_fee {
+                    let storage = calc_storage_mass(
+                        false,
+                        dropped_entries.iter().map(UtxoCell::from),
+                        dropped.outputs.iter().map(UtxoCell::from),
+                        params.storage_mass_parameter,
+                    )
+                    .unwrap_or(u64::MAX);
+                    if storage > limit {
+                        infeasible =
+                            Some(BuildError::StorageInfeasible { storage_mass: storage, limit });
+                        continue;
+                    }
+                    return Ok(Funding { inputs: n, fee: available, change: None });
+                }
+                // Dropping the change still doesn't cover its own, tighter fee.
+                shortfall = Some((available, dropped_fee));
+                continue;
+            }
+            shortfall = Some((available, fee));
+            continue;
+        }
+
+        let change = available - fee;
+        match min_viable_change(params, &input_cells, &output_cells) {
+            Some(viable) if change >= viable => {
+                return Ok(Funding { inputs: n, fee, change: Some(change) });
+            }
+            Some(viable) if change_required => {
+                shortfall = Some((available, fee + viable));
+            }
+            Some(_) => {
+                // A feasible shape with an unviable change: fold the remainder into the fee.
+                // Dropping the change only shrinks the layout, so the slack covers its fee.
+                let (dropped, _) = probe(n, None);
+                debug_assert!(min_fee(params, &dropped) <= available);
+                return Ok(Funding { inputs: n, fee: available, change: None });
+            }
+            None => {
+                let storage = calc_storage_mass(
+                    false,
+                    input_cells.iter().copied(),
+                    output_cells[..output_cells.len() - 1].iter().copied(),
+                    params.storage_mass_parameter,
+                )
+                .unwrap_or(u64::MAX);
+                infeasible = Some(BuildError::StorageInfeasible { storage_mass: storage, limit });
+            }
+        }
+    }
+    match shortfall {
+        Some((available, required)) => Err(BuildError::InsufficientFunds { available, required }),
+        None => Err(infeasible.expect(
+            "candidates is non-empty: every attempt records a shortfall or an infeasibility",
+        )),
+    }
+}
+
 /// Inputs to [`activity_transaction`].
 pub struct ActivityTx<'a> {
     /// Payload carried by the transaction (e.g. an encoded activity instruction).
     pub payload: Vec<u8>,
-    /// The funding outpoint to spend.
-    pub outpoint: TransactionOutpoint,
-    /// The funding outpoint's entry (amount, spk, ...).
-    pub entry: UtxoEntry,
-    /// Key that signs the input.
+    /// Funding UTXOs in preference order; the builder spends a prefix of this list.
+    pub candidates: Vec<(TransactionOutpoint, UtxoEntry)>,
+    /// Key that signs the inputs.
     pub keypair: Keypair,
     /// Address the remainder (after fee) is paid back to.
     pub address: &'a Address,
@@ -81,36 +253,35 @@ pub struct ActivityTx<'a> {
     pub params: &'a Params,
 }
 
-/// Builds one signed activity transaction spending `args.outpoint`, paying the remainder (after the
-/// node's minimum mass-based fee) back to `args.address`, carrying `args.payload` on
-/// `args.subnetwork_id`.
-pub fn activity_transaction(args: ActivityTx<'_>) -> Transaction {
-    let input = TransactionInput::new(args.outpoint, vec![], 0, 1);
+/// Builds one signed activity transaction funded from a prefix of `args.candidates`, paying
+/// the remainder (after the node's minimum mass-based fee) back to `args.address`, carrying
+/// `args.payload` on `args.subnetwork_id`.
+pub fn activity_transaction(args: ActivityTx<'_>) -> Result<Transaction, BuildError> {
     let spk = pay_to_address_script(args.address);
-    let entries = vec![args.entry.clone()];
-    let build = |out_amount: u64| {
-        Transaction::new(
+    let mut build = |n: usize, change: Option<u64>| {
+        let inputs = args.candidates[..n]
+            .iter()
+            .map(|(outpoint, _)| TransactionInput::new(*outpoint, vec![], 0, 1))
+            .collect();
+        let out_amount = change.expect("the activity output is required");
+        let tx = Transaction::new(
             args.tx_version,
-            vec![input.clone()],
+            inputs,
             vec![TransactionOutput::new(out_amount, spk.clone())],
             0,
             args.subnetwork_id,
             0,
             args.payload.clone(),
-        )
+        );
+        let entries: Vec<UtxoEntry> =
+            args.candidates[..n].iter().map(|(_, entry)| entry.clone()).collect();
+        (sign(MutableTransaction::with_entries(tx, entries.clone()), args.keypair).tx, entries)
     };
-
-    // Sign a zero-fee probe to learn the signed tx's mass (the fee amount doesn't change the byte
-    // layout), price it at the node's floor, then re-sign with the funded output.
-    let probe = sign(
-        MutableTransaction::with_entries(build(args.entry.amount), entries.clone()),
-        args.keypair,
-    )
-    .tx;
-    let fee = min_fee(args.params, &probe);
-    assert!(args.entry.amount > fee, "UTXO amount {} too small for fee {}", args.entry.amount, fee);
-
-    sign(MutableTransaction::with_entries(build(args.entry.amount - fee), entries), args.keypair).tx
+    let funding = fund(args.params, &args.candidates, true, &mut build)?;
+    let (tx, entries) = build(funding.inputs, funding.change);
+    debug_assert_eq!(fee_paid(&tx, &entries), funding.fee, "tx must pay what `fund` computed");
+    commit_storage_mass(args.params, &tx, &entries);
+    Ok(tx)
 }
 
 /// Inputs to [`pay_to_address_transaction`].
@@ -327,12 +498,6 @@ mod tests {
         TransactionOutpoint::new(Hash::from_bytes([seed; 32]), 0)
     }
 
-    /// The fee `tx` actually pays: what its inputs bring in, less what its outputs pay out.
-    fn fee_paid(tx: &Transaction, entries: &[UtxoEntry]) -> u64 {
-        entries.iter().map(|entry| entry.amount).sum::<u64>()
-            - tx.outputs.iter().map(|output| output.value).sum::<u64>()
-    }
-
     /// The mempool's minimum relay fee, in sompi per 1000 grams of mass, from rusty-kaspa's
     /// post-Toccata `DEFAULT_MINIMUM_RELAY_TRANSACTION_FEE`. Mirrored here because the node's
     /// mempool config is crate-private and this crate does not depend on `kaspa-mining`.
@@ -489,14 +654,14 @@ mod tests {
 
         let tx = activity_transaction(ActivityTx {
             payload: vec![0u8; 64],
-            outpoint: outpoint(1),
-            entry: entry.clone(),
+            candidates: vec![(outpoint(1), entry.clone())],
             keypair,
             address: &address,
             subnetwork_id: SUBNETWORK_ID_NATIVE,
             tx_version: TX_VERSION_TOCCATA,
             params,
-        });
+        })
+        .expect("activity is fundable");
 
         BuiltShape { tx, entries: vec![entry] }
     }
@@ -563,17 +728,253 @@ mod tests {
 
         let tx = activity_transaction(ActivityTx {
             payload: vec![0u8; 10_000],
-            outpoint: outpoint(1),
-            entry: entry.clone(),
+            candidates: vec![(outpoint(1), entry.clone())],
             keypair,
             address: &address,
             subnetwork_id: SUBNETWORK_ID_NATIVE,
             tx_version: TX_VERSION_TOCCATA,
             params,
-        });
+        })
+        .expect("activity is fundable");
 
         let paid = fee_paid(&tx, &[entry]);
         let floor = mempool_min_fee(params, &tx);
         assert!(paid >= floor, "built tx pays {paid} but the node's floor is {floor}");
+    }
+
+    /// [`min_viable_change`] is exact: storage mass fits the block-fit limit at the returned
+    /// value and exceeds it one sompi below.
+    #[test]
+    fn min_viable_change_is_exact_at_the_boundary() {
+        let params = &SIMNET_PARAMS;
+        let limit = params.block_mass_limits().raw_post().storage;
+        let inputs = [UtxoCell::new(1, 100_000_000)];
+        let outputs = [UtxoCell::new(1, 50_000_000), UtxoCell::new(1, 0)];
+        let storage = |change: u64| {
+            let outs = [outputs[0], UtxoCell::new(1, change)];
+            calc_storage_mass(
+                false,
+                inputs.iter().copied(),
+                outs.iter().copied(),
+                params.storage_mass_parameter,
+            )
+            .expect("no overflow for these values")
+        };
+
+        let mvc = min_viable_change(params, &inputs, &outputs).expect("shape is feasible");
+        assert!(
+            storage(mvc) <= limit,
+            "storage {} at mvc {mvc} exceeds limit {limit}",
+            storage(mvc)
+        );
+        assert!(
+            storage(mvc - 1) > limit,
+            "storage {} at mvc-1 still fits limit {limit}",
+            storage(mvc - 1)
+        );
+    }
+
+    /// A fixed output so small that its own storage term exceeds the limit is infeasible for
+    /// every change value.
+    #[test]
+    fn min_viable_change_reports_infeasible_fixed_outputs() {
+        let params = &SIMNET_PARAMS;
+        let inputs = [UtxoCell::new(1, 100_000_000)];
+        // 1000 sompi fixed output: C/v = 10^9 grams, far above the 500k block-fit limit.
+        let outputs = [UtxoCell::new(1, 1_000), UtxoCell::new(1, 0)];
+        assert_eq!(min_viable_change(params, &inputs, &outputs), None);
+    }
+
+    /// Candidate entries of the given amounts, all P2PK to `address`, with distinct outpoints.
+    fn candidates_of(amounts: &[u64], address: &Address) -> Vec<(TransactionOutpoint, UtxoEntry)> {
+        amounts
+            .iter()
+            .enumerate()
+            .map(|(i, &amount)| {
+                (
+                    outpoint(i as u8 + 1),
+                    UtxoEntry::new(amount, pay_to_address_script(address), 0, false, None),
+                )
+            })
+            .collect()
+    }
+
+    /// A `fund` probe closure for a layout with one fixed `payout` output and an optional
+    /// trailing change output, spending the first `n` candidates.
+    fn payout_probe<'a>(
+        candidates: &'a [(TransactionOutpoint, UtxoEntry)],
+        payout: u64,
+        spk: &'a kaspa_consensus_core::tx::ScriptPublicKey,
+        keypair: &'a Keypair,
+    ) -> impl FnMut(usize, Option<u64>) -> (Transaction, Vec<UtxoEntry>) + 'a {
+        let keypair = *keypair;
+        move |n, change| {
+            let inputs = candidates[..n]
+                .iter()
+                .map(|(o, _)| TransactionInput::new(*o, vec![], 0, 1))
+                .collect();
+            let mut outputs = vec![TransactionOutput::new(payout, spk.clone())];
+            outputs.extend(change.map(|v| TransactionOutput::new(v, spk.clone())));
+            let tx = Transaction::new(
+                TX_VERSION_TOCCATA,
+                inputs,
+                outputs,
+                0,
+                SUBNETWORK_ID_NATIVE,
+                0,
+                Vec::new(),
+            );
+            let entries: Vec<UtxoEntry> = candidates[..n].iter().map(|(_, e)| e.clone()).collect();
+            (sign(MutableTransaction::with_entries(tx, entries.clone()), keypair).tx, entries)
+        }
+    }
+
+    /// One large candidate covers payout, fee, and a viable change: `fund` keeps the change
+    /// and prices the fee exactly.
+    #[test]
+    fn fund_keeps_a_viable_change() {
+        let params = &SIMNET_PARAMS;
+        let keypair = keypair();
+        let address = address(&keypair, params);
+        let spk = pay_to_address_script(&address);
+        let candidates = candidates_of(&[100_000_000], &address);
+        let mut probe = payout_probe(&candidates, 50_000_000, &spk, &keypair);
+
+        let funding = fund(params, &candidates, false, &mut probe).expect("fundable");
+        assert_eq!(funding.inputs, 1);
+        let (tx, _) = probe(funding.inputs, Some(0));
+        assert_eq!(funding.fee, min_fee(params, &tx));
+        let change = funding.change.expect("change survives");
+        assert_eq!(change, 100_000_000 - 50_000_000 - funding.fee);
+    }
+
+    /// Slack above the fee but below the viable-change floor: the change output is dropped
+    /// and the remainder folds into the fee (bounded overpay).
+    #[test]
+    fn fund_drops_an_unviable_change() {
+        let params = &SIMNET_PARAMS;
+        let keypair = keypair();
+        let address = address(&keypair, params);
+        let spk = pay_to_address_script(&address);
+        // 400_000 sompi of slack: above the fee, far below the ~2M-sompi viable-change floor.
+        let candidates = candidates_of(&[50_000_000 + 400_000], &address);
+        let mut probe = payout_probe(&candidates, 50_000_000, &spk, &keypair);
+
+        let funding = fund(params, &candidates, false, &mut probe).expect("fundable");
+        assert_eq!(funding.change, None);
+        assert_eq!(funding.fee, 400_000);
+        let (tx, _) = probe(funding.inputs, None);
+        assert!(funding.fee >= min_fee(params, &tx));
+    }
+
+    /// When the layout requires a change output (nothing to drop), `fund` walks down the
+    /// candidate list until one more input makes the change viable.
+    #[test]
+    fn fund_adds_an_input_when_change_is_required() {
+        let params = &SIMNET_PARAMS;
+        let keypair = keypair();
+        let address = address(&keypair, params);
+        let spk = pay_to_address_script(&address);
+        // First candidate alone leaves an unviable change; the second fixes it.
+        let candidates = candidates_of(&[50_000_000 + 400_000, 100_000_000], &address);
+        let mut probe = payout_probe(&candidates, 50_000_000, &spk, &keypair);
+
+        let funding = fund(params, &candidates, true, &mut probe).expect("fundable");
+        assert_eq!(funding.inputs, 2);
+        assert!(funding.change.is_some());
+    }
+
+    /// A change landing exactly on the viable floor is kept, not dropped: the boundary
+    /// belongs to the keep side.
+    #[test]
+    fn fund_keeps_a_change_exactly_at_the_viable_floor() {
+        let params = &SIMNET_PARAMS;
+        let keypair = keypair();
+        let address = address(&keypair, params);
+        let spk = pay_to_address_script(&address);
+        let payout = 50_000_000;
+
+        // The layout (and so the fee) does not depend on the candidate's amount, but the
+        // viable floor does (single-input KIP-0009 credit is C/amount): scout the fee and an
+        // initial floor from a throwaway amount, then iterate to the fixed point where
+        // building the candidate at `payout + fee + viable` reproduces that same `viable`.
+        let scout = candidates_of(&[100_000_000], &address);
+        let (tx, entries) = payout_probe(&scout, payout, &spk, &keypair)(1, Some(0));
+        let fee = min_fee(params, &tx);
+        let mut viable = {
+            let inputs: Vec<UtxoCell> = entries.iter().map(UtxoCell::from).collect();
+            let outputs: Vec<UtxoCell> = tx.outputs.iter().map(UtxoCell::from).collect();
+            min_viable_change(params, &inputs, &outputs).expect("shape is feasible")
+        };
+
+        let mut converged = false;
+        for _ in 0..20 {
+            let amount = payout + fee + viable;
+            let candidates = candidates_of(&[amount], &address);
+            let (tx, entries) = payout_probe(&candidates, payout, &spk, &keypair)(1, Some(0));
+            let inputs: Vec<UtxoCell> = entries.iter().map(UtxoCell::from).collect();
+            let outputs: Vec<UtxoCell> = tx.outputs.iter().map(UtxoCell::from).collect();
+            let next_viable =
+                min_viable_change(params, &inputs, &outputs).expect("shape is feasible");
+            if amount == payout + fee + next_viable {
+                viable = next_viable;
+                converged = true;
+                break;
+            }
+            viable = next_viable;
+        }
+        assert!(converged, "viable-floor fixed point did not converge within 20 iterations");
+
+        let candidates = candidates_of(&[payout + fee + viable], &address);
+        let mut probe = payout_probe(&candidates, payout, &spk, &keypair);
+        let funding = fund(params, &candidates, false, &mut probe).expect("fundable");
+        assert_eq!(funding.change, Some(viable));
+        assert_eq!(funding.fee, fee);
+    }
+
+    /// Candidates that only cover the fixed outputs together: the loop walks past a prefix
+    /// whose entries fall short of the payout instead of underflowing.
+    #[test]
+    fn fund_accumulates_inputs_past_a_payout_shortfall() {
+        let params = &SIMNET_PARAMS;
+        let keypair = keypair();
+        let address = address(&keypair, params);
+        let spk = pay_to_address_script(&address);
+        // The first candidate alone cannot even cover the payout.
+        let candidates = candidates_of(&[60_000_000, 60_000_000], &address);
+        let mut probe = payout_probe(&candidates, 100_000_000, &spk, &keypair);
+
+        let funding = fund(params, &candidates, false, &mut probe).expect("fundable with both");
+        assert_eq!(funding.inputs, 2);
+        assert!(funding.change.is_some());
+    }
+
+    /// Candidates exhausted below the requirement: a typed insufficiency, not a panic.
+    #[test]
+    fn fund_reports_insufficient_candidates() {
+        let params = &SIMNET_PARAMS;
+        let keypair = keypair();
+        let address = address(&keypair, params);
+        let spk = pay_to_address_script(&address);
+        let candidates = candidates_of(&[50_000_000 + 1_000], &address);
+        let mut probe = payout_probe(&candidates, 50_000_000, &spk, &keypair);
+
+        let err = fund(params, &candidates, true, &mut probe).expect_err("not fundable");
+        assert!(matches!(err, BuildError::InsufficientFunds { .. }), "got {err:?}");
+    }
+
+    /// A fixed output whose storage term alone exceeds the block-fit limit can never be
+    /// funded, whatever the change: a typed infeasibility.
+    #[test]
+    fn fund_reports_storage_infeasible_fixed_outputs() {
+        let params = &SIMNET_PARAMS;
+        let keypair = keypair();
+        let address = address(&keypair, params);
+        let spk = pay_to_address_script(&address);
+        let candidates = candidates_of(&[100_000_000], &address);
+        let mut probe = payout_probe(&candidates, 1_000, &spk, &keypair);
+
+        let err = fund(params, &candidates, false, &mut probe).expect_err("infeasible");
+        assert!(matches!(err, BuildError::StorageInfeasible { .. }), "got {err:?}");
     }
 }

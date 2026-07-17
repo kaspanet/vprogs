@@ -820,14 +820,14 @@ impl L2Driver {
             .map(|(outpoint, entry)| {
                 build::activity_transaction(build::ActivityTx {
                     payload: payload.clone(),
-                    outpoint: *outpoint,
-                    entry: entry.clone(),
+                    candidates: vec![(*outpoint, entry.clone())],
                     keypair: ctx.keypair,
                     address: &address,
                     subnetwork_id: self.lane_subnet,
                     tx_version: TX_VERSION_TOCCATA,
                     params: ctx.params,
                 })
+                .expect("sim activity is coinbase-funded")
             })
             .collect()
     }

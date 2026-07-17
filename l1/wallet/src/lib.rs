@@ -85,28 +85,24 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
             "non-native subnetwork requires tx_version >= TX_VERSION_TOCCATA",
         );
 
-        let utxos = self.fetch_spendable_utxos().await.expect("fetch spendable utxos");
-        assert!(
-            utxos.len() >= payloads.len(),
-            "not enough spendable UTXOs: found {} but need {}",
-            utxos.len(),
-            payloads.len(),
-        );
-
+        let mut utxos = self.fetch_spendable_utxos().await.expect("fetch spendable utxos");
         payloads
             .into_iter()
-            .zip(utxos)
-            .map(|(payload, (outpoint, entry))| {
-                build::activity_transaction(build::ActivityTx {
+            .map(|payload| {
+                let tx = build::activity_transaction(build::ActivityTx {
                     payload,
-                    outpoint,
-                    entry,
+                    candidates: utxos.clone(),
                     keypair: self.keypair,
                     address: &self.address,
                     subnetwork_id,
                     tx_version,
                     params: self.params,
                 })
+                .expect("spendable UTXOs must fund the activity fee");
+                let spent: std::collections::HashSet<TransactionOutpoint> =
+                    tx.inputs.iter().map(|input| input.previous_outpoint).collect();
+                utxos.retain(|(outpoint, _)| !spent.contains(outpoint));
+                tx
             })
             .collect()
     }
@@ -210,9 +206,9 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
         Ok(tx.id())
     }
 
-    /// Builds one signed `subnetwork_id` activity tx spending the largest spendable UTXO **not** in
-    /// `in_flight`, returning the tx and the outpoint it spends. Returns `Ok(None)` when every
-    /// spendable UTXO is in flight, and the RPC error if the spendable-set fetch fails (so a
+    /// Builds one signed `subnetwork_id` activity tx funded from the spendable UTXOs **not** in
+    /// `in_flight`. Returns `Ok(None)` when every spendable UTXO is in flight, or the free ones
+    /// cannot cover the fee, and the RPC error if the spendable-set fetch fails (so a
     /// long-running issuer can log and retry instead of crashing).
     ///
     /// `get_utxos_by_addresses` reports the confirmed UTXO set, which still includes a UTXO already
@@ -221,34 +217,34 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
     /// the double spend. The caller threads the set of outpoints it has spent this session through
     /// `in_flight`: this method first prunes that set to the outpoints the node still reports (so a
     /// UTXO that has since been mined away, and replaced by a fresh change outpoint, becomes
-    /// selectable again), then skips the rest to pick the next-largest free UTXO. The caller
-    /// inserts the returned outpoint on a successful (or double-spend-rejected) submit.
+    /// selectable again), then funds from the rest. The caller extends `in_flight` with the
+    /// returned tx's spent outpoints on a successful (or double-spend-rejected) submit.
     pub async fn build_activity_excluding(
         &self,
         payload: Vec<u8>,
         subnetwork_id: SubnetworkId,
         tx_version: u16,
         in_flight: &mut std::collections::HashSet<TransactionOutpoint>,
-    ) -> Result<Option<(Transaction, TransactionOutpoint)>, RpcError> {
+    ) -> Result<Option<Transaction>, RpcError> {
         let utxos = self.fetch_spendable_utxos().await?;
         let present: std::collections::HashSet<TransactionOutpoint> =
             utxos.iter().map(|(o, _)| *o).collect();
         in_flight.retain(|o| present.contains(o));
-        let Some((outpoint, entry)) = utxos.into_iter().find(|(o, _)| !in_flight.contains(o))
-        else {
+        let candidates: Vec<(TransactionOutpoint, UtxoEntry)> =
+            utxos.into_iter().filter(|(o, _)| !in_flight.contains(o)).collect();
+        if candidates.is_empty() {
             return Ok(None);
-        };
-        let tx = build::activity_transaction(build::ActivityTx {
+        }
+        Ok(build::activity_transaction(build::ActivityTx {
             payload,
-            outpoint,
-            entry,
+            candidates,
             keypair: self.keypair,
             address: &self.address,
             subnetwork_id,
             tx_version,
             params: self.params,
-        });
-        Ok(Some((tx, outpoint)))
+        })
+        .ok())
     }
 
     /// Spendable UTXOs for the issuer address (matured coinbases only), largest first. Requires the
