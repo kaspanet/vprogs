@@ -8609,6 +8609,7 @@ dependencies = [
  "log",
  "secp256k1",
  "tap",
+ "thiserror 2.0.18",
  "vprogs-core-codec",
  "vprogs-core-types",
 ]

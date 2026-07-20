@@ -12,5 +12,6 @@ kaspa-txscript.workspace       = true
 log.workspace                  = true
 secp256k1.workspace            = true
 tap.workspace                  = true
+thiserror.workspace            = true
 vprogs-core-codec.workspace    = true
 vprogs-core-types.workspace    = true

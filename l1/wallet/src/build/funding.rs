@@ -16,34 +16,20 @@ use super::{
 };
 
 /// Why a builder could not fund its transaction from the given candidates.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum BuildError {
     /// The candidates cannot cover the node's minimum fee (plus a storage-viable change
     /// output where the layout requires one). `available` is what the deepest attempt
     /// brought in beyond the fixed outputs; `required` what it needed.
+    #[error("candidate UTXOs bring {available} sompi but funding requires {required}")]
     InsufficientFunds { available: u64, required: u64 },
     /// Every funding attempt's fixed outputs exceeded the block-fit storage limit for any
     /// change value. `storage_mass` and `limit` are from one such attempt.
+    #[error(
+        "fixed outputs alone carry storage mass {storage_mass}, above the block-fit limit {limit}"
+    )]
     StorageInfeasible { storage_mass: u64, limit: u64 },
 }
-
-impl std::fmt::Display for BuildError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::InsufficientFunds { available, required } => {
-                write!(f, "candidate UTXOs bring {available} sompi but funding requires {required}")
-            }
-            Self::StorageInfeasible { storage_mass, limit } => {
-                write!(
-                    f,
-                    "fixed outputs alone carry storage mass {storage_mass}, above the block-fit limit {limit}"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for BuildError {}
 
 /// The fee `tx` pays given the entries its inputs spend: input total minus output total.
 pub(super) fn fee_paid(tx: &Transaction, entries: &[UtxoEntry]) -> u64 {
