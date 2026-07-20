@@ -6,12 +6,11 @@
 //! Build the ELF first: `./zk/backend/risc0/build-guests.sh runtime-processor`
 //! Run with dev mode: `RISC0_DEV_MODE=1 cargo test -p ... --test e2e`
 
-use k256::schnorr::{Signature, SigningKey};
 use rand::rngs::OsRng;
 use risc0_binfmt::ProgramBinary;
 use risc0_zkos_v1compat::V1COMPAT_ELF;
 use risc0_zkvm::{ExecutorEnv, ProverOpts, default_executor, default_prover};
-use signature::Signer as SignerTrait;
+use secp256k1::{Keypair, Message, SECP256K1};
 use vprogs_core_types::AccessType;
 use vprogs_l1_utils::tx_id_v1;
 use vprogs_zk_abi::{
@@ -282,20 +281,20 @@ fn encode_inputs(
 
 /// Bundles the cryptographic state for a single test signer.
 struct TestSigner {
-    sk: SigningKey,
+    keypair: Keypair,
     pubkey: [u8; 32],
 }
 
 impl TestSigner {
     fn new() -> Self {
-        let sk = SigningKey::random(&mut OsRng);
-        let pubkey: [u8; 32] = sk.verifying_key().to_bytes().into();
-        Self { sk, pubkey }
+        let keypair = Keypair::new(SECP256K1, &mut OsRng);
+        let pubkey = keypair.x_only_public_key().0.serialize();
+        Self { keypair, pubkey }
     }
 
     fn sign(&self, msg: &[u8]) -> [u8; 64] {
-        let sig: Signature = self.sk.sign(msg);
-        sig.to_bytes()
+        let message = Message::from_digest(msg.try_into().expect("sig message is 32 bytes"));
+        SECP256K1.sign_schnorr(&message, &self.keypair).serialize()
     }
 }
 

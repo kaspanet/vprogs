@@ -16,7 +16,7 @@
 //! - schnorr signature invalid.
 
 use k256::schnorr::{Signature, VerifyingKey};
-use signature::Verifier;
+use signature::hazmat::PrehashVerifier;
 use vprogs_core_codec::Result as CodecResult;
 use vprogs_l1_utils::tx_id_v1_from_digest;
 
@@ -83,5 +83,5 @@ pub fn verify_k256_schnorr_sig(
 ) -> bool {
     let Ok(vk) = VerifyingKey::from_bytes(pubkey) else { return false };
     let Ok(sig) = Signature::try_from(&signature[..]) else { return false };
-    vk.verify(message, &sig).is_ok()
+    vk.verify_prehash(message, &sig).is_ok()
 }
