@@ -25,15 +25,23 @@
 
 use std::time::Duration;
 
-use kaspa_consensus_core::config::params::Params;
+use kaspa_consensus_core::{
+    config::params::Params,
+    subnets::SubnetworkId,
+    tx::{Transaction, TransactionOutpoint, UtxoEntry},
+};
 use kaspa_hashes::Hash;
+use kaspa_wrpc_client::prelude::RpcApi;
 use secp256k1::{Keypair, SECP256K1};
 use vprogs_example_tn10_runtime::{
     actions::{self, TestSigner},
     config::Config,
     deposit::{self, DepositTx, GenesisInitTx, LaneActionTx},
 };
-use vprogs_l1_wallet::Wallet;
+use vprogs_l1_wallet::{
+    Wallet,
+    build::{PayToAddressTx, pay_to_address_transaction},
+};
 use vprogs_runner::{Elfs, connect_wrpc, start_runner};
 use vprogs_zk_abi::withdrawal::StandardSpk;
 use vprogs_zk_backend_risc0_api::delegate_entry_spk_hash;
@@ -117,7 +125,7 @@ fn spawn_driver(
     client: kaspa_wrpc_client::prelude::KaspaRpcClient,
     params: Params,
     keypair: Keypair,
-    lane_subnet: kaspa_consensus_core::subnets::SubnetworkId,
+    lane_subnet: SubnetworkId,
     covenant_id: [u8; 32],
     cfg: Config,
 ) {
@@ -163,11 +171,24 @@ fn spawn_driver(
         // 2) Distribute KAS to each account's L1 address so it can fund its own deposit.
         let funding = cfg.deposit_amount + 50_000_000;
         for (i, account) in accounts.iter().enumerate() {
-            let account_wallet = Wallet::new(&client, &params, account.l1);
-            let tx = wallet.pay_to_address(account_wallet.address(), funding, 1).await;
-            match wallet.submit_transaction(&tx).await {
-                Ok(id) => log::info!("distributed {funding} sompi to account {i} (tx {id})"),
-                Err(e) => log::warn!("distribution to account {i} failed: {e}"),
+            let recipient = Wallet::new(&client, &params, account.l1).address().clone();
+            let label = format!("distribution to account {i}");
+            let submitted = fund_and_submit(&label, &wallet, |outpoint, entry| {
+                pay_to_address_transaction(PayToAddressTx {
+                    outpoint,
+                    entry,
+                    recipient: &recipient,
+                    value: funding,
+                    count: 1,
+                    keypair,
+                    change_address: wallet.address(),
+                    params: &params,
+                })
+            })
+            .await;
+            match submitted {
+                Some(id) => log::info!("distributed {funding} sompi to account {i} (tx {id})"),
+                None => log::warn!("distribution to account {i} did not confirm"),
             }
             tokio::time::sleep(step).await;
         }
@@ -224,54 +245,111 @@ fn spawn_driver(
     });
 }
 
-/// Builds and submits a signed lane-action tx (Init/Transfer/Withdraw), funding the fee from the
-/// largest spendable UTXO of `wallet`. Panics on no spendable UTXO or submit failure (POC).
-async fn submit_lane_action<C: kaspa_wrpc_client::prelude::RpcApi + ?Sized>(
+/// Transient-rejection submit retries before a driver step is abandoned.
+const MAX_SUBMIT_ATTEMPTS: u32 = 8;
+/// Back-off between submit retries; a rejected carrier's funding parent needs a block or two to
+/// land.
+const SUBMIT_RETRY_DELAY: Duration = Duration::from_millis(2000);
+
+/// Whether an L1 submit rejection is transient: an orphan waiting on its funding parent, or a wRPC
+/// timeout. The driver and the settlement worker fund from the same wallet, so a carrier can spend
+/// a UTXO the other just spent and be rejected until that spend is mined.
+fn is_transient_submit_error(err: &impl std::fmt::Display) -> bool {
+    let msg = err.to_string();
+    msg.contains("orphan") || msg.contains("timed out") || msg.contains("timeout")
+}
+
+/// Fetches the wallet's largest spendable UTXO, builds a tx from it with `build`, and submits,
+/// retrying a transient rejection with back-off. Re-fetches and rebuilds each attempt so a carrier
+/// rejected against a stale UTXO selects a currently-valid one once the contending spend is mined.
+/// Returns the accepted tx id, or `None` when the wallet has no spendable UTXO or the rejection
+/// outlives [`MAX_SUBMIT_ATTEMPTS`].
+async fn fund_and_submit<C: RpcApi + ?Sized>(
+    label: &str,
+    wallet: &Wallet<'_, C>,
+    build: impl Fn(TransactionOutpoint, UtxoEntry) -> Transaction,
+) -> Option<Hash> {
+    for attempt in 1..=MAX_SUBMIT_ATTEMPTS {
+        let utxos = match wallet.fetch_spendable_utxos().await {
+            Ok(utxos) => utxos,
+            Err(e) => {
+                log::warn!("{label}: spendable-utxo fetch failed: {e}");
+                return None;
+            }
+        };
+        let (outpoint, entry) = utxos.into_iter().next()?;
+
+        let tx = build(outpoint, entry);
+        match wallet.submit_transaction(&tx).await {
+            Ok(id) => return Some(id),
+            // Transient rejection with attempts left: wait for the contending spend to mine, then
+            // re-fetch and rebuild against a fresh UTXO.
+            Err(e) if is_transient_submit_error(&e) && attempt < MAX_SUBMIT_ATTEMPTS => {
+                log::warn!(
+                    "{label} rejected (attempt {attempt}/{MAX_SUBMIT_ATTEMPTS}, retrying): {e}"
+                );
+                tokio::time::sleep(SUBMIT_RETRY_DELAY).await;
+            }
+            Err(e) => {
+                log::warn!("{label} not submitted: {e}");
+                return None;
+            }
+        }
+    }
+    None
+}
+
+/// Builds and submits a signed lane-action tx (Transfer/Withdraw), funding the fee from `wallet`'s
+/// largest spendable UTXO. Retries a transient rejection; panics if the tx has not confirmed after
+/// the retries or the wallet has no spendable UTXO (POC).
+async fn submit_lane_action<C: RpcApi + ?Sized>(
     wallet: &Wallet<'_, C>,
     keypair: Keypair,
     params: &Params,
-    lane_subnet: kaspa_consensus_core::subnets::SubnetworkId,
+    lane_subnet: SubnetworkId,
     presig: Vec<u8>,
     signer: &TestSigner,
 ) -> Hash {
-    let utxos = wallet.fetch_spendable_utxos().await.expect("fetch spendable utxos");
-    let (outpoint, entry) = utxos.into_iter().next().expect("no spendable UTXO for lane action");
-    let tx = deposit::build_lane_action_transaction(LaneActionTx {
-        presig,
-        signer,
-        outpoint,
-        entry,
-        keypair,
-        change_address: wallet.address(),
-        subnetwork_id: lane_subnet,
-        params,
-    });
-    wallet.submit_transaction(&tx).await.expect("submit lane action")
+    fund_and_submit("lane action", wallet, |outpoint, entry| {
+        deposit::build_lane_action_transaction(LaneActionTx {
+            presig: presig.clone(),
+            signer,
+            outpoint,
+            entry,
+            keypair,
+            change_address: wallet.address(),
+            subnetwork_id: lane_subnet,
+            params,
+        })
+    })
+    .await
+    .expect("lane action did not confirm after retries")
 }
 
-/// Builds and submits a deposit tx from `account_wallet`'s largest spendable UTXO. Returns the tx
-/// id, or `None` when the account has no spendable UTXO yet.
-async fn submit_deposit<C: kaspa_wrpc_client::prelude::RpcApi + ?Sized>(
+/// Builds and submits a deposit tx from `account_wallet`'s largest spendable UTXO, retrying a
+/// transient rejection. Returns the tx id, or `None` when the account has no spendable UTXO or the
+/// rejection persists.
+async fn submit_deposit<C: RpcApi + ?Sized>(
     account_wallet: &Wallet<'_, C>,
     keypair: Keypair,
     params: &Params,
-    lane_subnet: kaspa_consensus_core::subnets::SubnetworkId,
+    lane_subnet: SubnetworkId,
     covenant_id: [u8; 32],
     deposit_amount: u64,
     payload: Vec<u8>,
 ) -> Option<Hash> {
-    let utxos = account_wallet.fetch_spendable_utxos().await.expect("fetch spendable utxos");
-    let (outpoint, entry) = utxos.into_iter().next()?;
-    let tx = deposit::build_deposit_transaction(DepositTx {
-        payload,
-        covenant_id,
-        deposit_value: deposit_amount,
-        outpoint,
-        entry,
-        keypair,
-        change_address: account_wallet.address(),
-        subnetwork_id: lane_subnet,
-        params,
-    });
-    Some(account_wallet.submit_transaction(&tx).await.expect("submit deposit"))
+    fund_and_submit("deposit", account_wallet, |outpoint, entry| {
+        deposit::build_deposit_transaction(DepositTx {
+            payload: payload.clone(),
+            covenant_id,
+            deposit_value: deposit_amount,
+            outpoint,
+            entry,
+            keypair,
+            change_address: account_wallet.address(),
+            subnetwork_id: lane_subnet,
+            params,
+        })
+    })
+    .await
 }
