@@ -97,6 +97,7 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
                     address: &self.address,
                     subnetwork_id,
                     tx_version,
+                    fee_policy: build::FeePolicy::Floor,
                     params: self.params,
                 })
                 .expect("spendable UTXOs must fund the activity fee");
@@ -175,6 +176,7 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
             fee_candidates,
             keypair: self.keypair,
             address: &self.address,
+            fee_policy: build::FeePolicy::Floor,
             params: self.params,
         })
         .inspect_err(|e| log::warn!("settlement fee funding failed: {e}"))
@@ -249,6 +251,7 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
             address: &self.address,
             subnetwork_id,
             tx_version,
+            fee_policy: build::FeePolicy::Floor,
             params: self.params,
         })
         .inspect_err(|e| log::warn!("activity funding failed: {e}"))

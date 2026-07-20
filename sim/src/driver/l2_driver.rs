@@ -662,6 +662,7 @@ impl L2Driver {
             fee_candidates: vec![(*fee_outpoint, fee_entry.clone())],
             keypair: ctx.keypair,
             address: &address,
+            fee_policy: build::FeePolicy::Floor,
             params: ctx.params,
         })
         .expect("sim settlement is coinbase-funded");
@@ -825,6 +826,7 @@ impl L2Driver {
                     address: &address,
                     subnetwork_id: self.lane_subnet,
                     tx_version: TX_VERSION_TOCCATA,
+                    fee_policy: build::FeePolicy::Floor,
                     params: ctx.params,
                 })
                 .expect("sim activity is coinbase-funded")
@@ -871,6 +873,7 @@ impl FeeSource for SimFeeSource<'_> {
             fee_candidates,
             keypair: self.keypair,
             address: &self.address,
+            fee_policy: build::FeePolicy::Floor,
             params: self.params,
         })
         .expect("sim settlement is coinbase-funded");

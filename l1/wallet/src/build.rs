@@ -11,7 +11,9 @@ use kaspa_consensus_core::{
     config::params::Params,
     constants::{MAX_SOMPI, TX_VERSION_TOCCATA},
     hashing::covenant_id::covenant_id,
-    mass::{MassCalculator, UtxoCell, calc_storage_mass, units::ComputeBudget},
+    mass::{
+        ContextualMasses, Mass, MassCalculator, UtxoCell, calc_storage_mass, units::ComputeBudget,
+    },
     sign::sign,
     subnets::{SUBNETWORK_ID_NATIVE, SubnetworkId},
     tx::{
@@ -25,6 +27,17 @@ use secp256k1::Keypair;
 
 /// mempool floor: a transaction's fee must be at least this many sompi per mass gram.
 const MIN_FEERATE_PER_GRAM: u64 = 100;
+
+/// How a builder prices its fee.
+#[derive(Debug, Clone, Copy)]
+pub enum FeePolicy {
+    /// Pay exactly the node's mempool admission floor.
+    Floor,
+    /// Target this many sompi per gram of the node's priority mass (which, unlike the
+    /// admission floor, includes storage mass), never paying below the floor. The builder
+    /// degrades to the closest affordable rate when the candidates cannot reach the target.
+    TargetFeerate(f64),
+}
 
 /// The minimum sompi fee the node's mempool requires for `tx`: [`MIN_FEERATE_PER_GRAM`] times
 /// the fee-binding mass, the larger of the tx's compute mass and its normalized transient
@@ -68,14 +81,13 @@ pub fn commit_storage_mass(params: &Params, tx: &Transaction, entries: &[UtxoEnt
 /// its output cells with the change slot last (that cell's amount is ignored). `None` when no
 /// change value fits: the fixed outputs alone already exceed the limit.
 fn min_viable_change(params: &Params, inputs: &[UtxoCell], outputs: &[UtxoCell]) -> Option<u64> {
-    debug_assert!(!outputs.is_empty(), "outputs must carry the change slot last");
     let limit = params.block_mass_limits().raw_post().storage;
-    let (fixed, change_slot) = outputs.split_at(outputs.len() - 1);
+    let (change_slot, fixed) = outputs.split_last()?;
     let storage = |change: u64| {
         let outs = fixed
             .iter()
             .copied()
-            .chain(std::iter::once(UtxoCell::new(change_slot[0].plurality, change)));
+            .chain(std::iter::once(UtxoCell::new(change_slot.plurality, change)));
         calc_storage_mass(false, inputs.iter().copied(), outs, params.storage_mass_parameter)
             .unwrap_or(u64::MAX)
     };
@@ -88,6 +100,128 @@ fn min_viable_change(params: &Params, inputs: &[UtxoCell], outputs: &[UtxoCell])
         }
         lo
     })
+}
+
+/// The node's feerate-ordering mass for a layout ([`Mass::normalized_max`]): the non-contextual
+/// masses of `tx` combined with [`calc_storage_mass`] on `input_cells`/`output_cells` (change
+/// slot last) at change value `change`. Never commits storage mass; `tx` and the cells come from
+/// a zero-value change probe. `change` must be positive: [`calc_storage_mass`] divides by each
+/// output's value.
+fn priority_mass(
+    params: &Params,
+    tx: &Transaction,
+    input_cells: &[UtxoCell],
+    output_cells: &[UtxoCell],
+    change: u64,
+) -> u64 {
+    debug_assert!(!output_cells.is_empty(), "output_cells must carry the change slot last");
+    debug_assert!(change > 0, "change must be positive: calc_storage_mass divides by it");
+    let calc = MassCalculator::new(
+        params.mass_per_tx_byte,
+        params.mass_per_script_pub_key_byte,
+        params.storage_mass_parameter,
+    );
+    let non_contextual = calc.calc_non_contextual_masses(tx);
+    let (fixed, change_slot) = output_cells.split_at(output_cells.len() - 1);
+    let outputs = fixed
+        .iter()
+        .copied()
+        .chain(std::iter::once(UtxoCell::new(change_slot[0].plurality, change)));
+    let storage = calc_storage_mass(
+        false,
+        input_cells.iter().copied(),
+        outputs,
+        params.storage_mass_parameter,
+    )
+    .unwrap_or(u64::MAX);
+    let cofactors = params.block_mass_limits().raw_post().cofactors();
+    Mass::new(non_contextual, ContextualMasses::new(storage)).normalized_max(&cofactors)
+}
+
+/// The least fee that pays at least `rate` sompi per gram of `pm`, never below `floor`, exact
+/// against the node's own `fee as f64 / mass as f64 >= rate` comparison: `ceil(rate * pm)` alone
+/// can round the f64 product down to an integer that misses that comparison by one or more
+/// float rounding steps (the gap between adjacent representable `f64` values grows past
+/// `2^53`), so this corrects one sompi at a time until the comparison holds.
+fn rate_fee(rate: f64, floor: u64, pm: u64) -> u64 {
+    let mut fee = floor.max((rate * pm as f64).ceil() as u64);
+    while (fee as f64) / (pm as f64) < rate && fee < u64::MAX {
+        fee += 1;
+    }
+    fee
+}
+
+/// A change-dropped layout's fee requirement.
+struct DroppedRequirement {
+    /// `tx`'s own mempool floor, independent of `policy` (what `FeePolicy::Floor` would pay).
+    floor: u64,
+    /// `policy`'s requirement: `floor` for [`FeePolicy::Floor`], `rate`-adjusted (never below
+    /// `floor`) for [`FeePolicy::TargetFeerate`].
+    required: u64,
+}
+
+/// `tx`'s requirement under `policy`. `tx` has no change slot, so its priority mass is a fixed
+/// value, not a fixpoint.
+fn dropped_required_fee(
+    policy: FeePolicy,
+    params: &Params,
+    tx: &Transaction,
+    entries: &[UtxoEntry],
+) -> DroppedRequirement {
+    let floor = min_fee(params, tx);
+    let FeePolicy::TargetFeerate(rate) = policy else {
+        return DroppedRequirement { floor, required: floor };
+    };
+    let calc = MassCalculator::new(
+        params.mass_per_tx_byte,
+        params.mass_per_script_pub_key_byte,
+        params.storage_mass_parameter,
+    );
+    let non_contextual = calc.calc_non_contextual_masses(tx);
+    let storage = calc_storage_mass(
+        false,
+        entries.iter().map(UtxoCell::from),
+        tx.outputs.iter().map(UtxoCell::from),
+        params.storage_mass_parameter,
+    )
+    .unwrap_or(u64::MAX);
+    let cofactors = params.block_mass_limits().raw_post().cofactors();
+    let pm = Mass::new(non_contextual, ContextualMasses::new(storage)).normalized_max(&cofactors);
+    DroppedRequirement { floor, required: rate_fee(rate, floor, pm) }
+}
+
+/// Runs the per-prefix fee fixpoint under `policy`, `pm(change)` giving the layout's priority
+/// mass at that change value. `cap` (the largest fee keeping the change viable) is rejected
+/// before any priority-mass probe: a fixpoint that starts above `cap` can never converge, and
+/// probing a change below the viable floor risks a zero-value change, which
+/// [`calc_storage_mass`] cannot price. [`FeePolicy::Floor`] evaluates `floor` once.
+/// [`FeePolicy::TargetFeerate`] iterates `f' = rate_fee(rate, floor, pm(available - f))` from
+/// `f = floor` (monotone non-decreasing, since `pm` is non-increasing in the change value) until
+/// it converges (`Ok`, the least sufficient fee) or a step would exceed `cap` (`Err`, carrying
+/// the fee that crossed it). 256 steps without convergence is treated as crossing `cap`.
+fn required_fee(
+    policy: FeePolicy,
+    floor: u64,
+    available: u64,
+    cap: u64,
+    pm: impl Fn(u64) -> u64,
+) -> Result<u64, u64> {
+    if floor > cap {
+        return Err(floor);
+    }
+    let FeePolicy::TargetFeerate(rate) = policy else { return Ok(floor) };
+    let mut fee = floor;
+    for _ in 0..256 {
+        let required = rate_fee(rate, floor, pm(available - fee));
+        if required > cap {
+            return Err(required);
+        }
+        if required == fee {
+            return Ok(fee);
+        }
+        fee = required;
+    }
+    Err(fee)
 }
 
 /// Why a builder could not fund its transaction from the given candidates.
@@ -138,8 +272,60 @@ struct Funding {
     change: Option<u64>,
 }
 
+/// Outcome of probing prefix `n`'s change-dropped layout (`probe(n, None)`) against `policy`'s
+/// requirement and the block-fit storage limit. Storage mass is computed only once `available`
+/// covers the layout's own floor: below that, neither an `Ok` funding nor a degraded candidate
+/// is reachable, so storage feasibility is irrelevant, and probing it risks a zero-valued fixed
+/// output dividing by zero in [`calc_storage_mass`] for no benefit.
+enum DroppedProbe {
+    /// `available` covers `policy`'s requirement and the layout is storage-feasible: the whole
+    /// remainder becomes the fee.
+    Funded(Funding),
+    /// `available` covers the layout's own floor, but its storage mass exceeds the block-fit
+    /// limit for any fee.
+    StorageInfeasible { storage_mass: u64 },
+    /// `available` covers the layout's own floor and its storage is feasible, but not `policy`'s
+    /// (target-level) `required`: eligible as a degraded candidate.
+    ShortOfTarget { required: u64 },
+    /// `available` falls short of even the layout's own floor: storage was never computed, and
+    /// this prefix can never be an `Ok` funding or a degraded candidate.
+    Unaffordable { required: u64 },
+}
+
+/// Probes prefix `n`'s change-dropped layout and evaluates it against `policy`'s requirement and
+/// the block-fit storage limit.
+fn try_dropped_funding(
+    params: &Params,
+    policy: FeePolicy,
+    limit: u64,
+    n: usize,
+    available: u64,
+    probe: &mut dyn FnMut(usize, Option<u64>) -> (Transaction, Vec<UtxoEntry>),
+) -> DroppedProbe {
+    let (dropped, dropped_entries) = probe(n, None);
+    let DroppedRequirement { floor, required } =
+        dropped_required_fee(policy, params, &dropped, &dropped_entries);
+    if available < floor {
+        return DroppedProbe::Unaffordable { required };
+    }
+    let storage_mass = calc_storage_mass(
+        false,
+        dropped_entries.iter().map(UtxoCell::from),
+        dropped.outputs.iter().map(UtxoCell::from),
+        params.storage_mass_parameter,
+    )
+    .unwrap_or(u64::MAX);
+    if storage_mass > limit {
+        return DroppedProbe::StorageInfeasible { storage_mass };
+    }
+    if available < required {
+        return DroppedProbe::ShortOfTarget { required };
+    }
+    DroppedProbe::Funded(Funding { inputs: n, fee: available, change: None })
+}
+
 /// Chooses how many leading `candidates` to spend, the fee, and whether the change output
-/// survives, so the built transaction meets the node's fee floor and stays block-fit.
+/// survives, so the built transaction meets `policy`'s fee requirement and stays block-fit.
 ///
 /// `probe(n, change)` must return the signed layout spending the first `n` candidates (plus
 /// any builder-fixed inputs), with the change output last when `change` is `Some` and omitted
@@ -148,6 +334,7 @@ struct Funding {
 /// dropped (it is the transaction's only output).
 fn fund(
     params: &Params,
+    policy: FeePolicy,
     candidates: &[(TransactionOutpoint, UtxoEntry)],
     change_required: bool,
     probe: &mut dyn FnMut(usize, Option<u64>) -> (Transaction, Vec<UtxoEntry>),
@@ -161,6 +348,11 @@ fn fund(
     // changes with n), so an attempt that is infeasible at one n can still be feasible deeper
     // in the candidate list, and an early infeasibility must not end the search.
     let mut infeasible: Option<BuildError> = None;
+    // Under a target policy, the deepest prefix that could pay its floor (with-change or
+    // dropped-change, whichever this prefix reaches) but not the target rate; returned if the
+    // walk finds no target success (unreachable-target degrade). `n` only grows across the
+    // walk, so each recording is deeper than the last.
+    let mut degraded: Option<Funding> = None;
     for n in 1..=candidates.len() {
         let (tx, entries) = probe(n, Some(0));
         let entries_total: u64 = entries.iter().map(|entry| entry.amount).sum();
@@ -168,65 +360,87 @@ fn fund(
         // A short prefix's entries can fall short of the fixed outputs alone; saturate to
         // zero instead of underflowing so the loop keeps adding inputs.
         let available = entries_total.saturating_sub(outputs_total);
-        let fee = min_fee(params, &tx);
+        let floor = min_fee(params, &tx);
         let input_cells: Vec<UtxoCell> = entries.iter().map(UtxoCell::from).collect();
         let output_cells: Vec<UtxoCell> = tx.outputs.iter().map(UtxoCell::from).collect();
 
-        if available < fee {
-            // The with-change layout is unaffordable; without the change output the layout
-            // shrinks and so does its fee, which the slack may still cover.
+        if available < floor {
+            // The with-change layout is unaffordable even at the floor; without the change
+            // output the layout shrinks and so does its requirement, which the slack may cover.
             if !change_required {
-                let (dropped, dropped_entries) = probe(n, None);
-                let dropped_fee = min_fee(params, &dropped);
-                if available >= dropped_fee {
-                    let storage = calc_storage_mass(
-                        false,
-                        dropped_entries.iter().map(UtxoCell::from),
-                        dropped.outputs.iter().map(UtxoCell::from),
-                        params.storage_mass_parameter,
-                    )
-                    .unwrap_or(u64::MAX);
-                    if storage > limit {
-                        infeasible =
-                            Some(BuildError::StorageInfeasible { storage_mass: storage, limit });
+                match try_dropped_funding(params, policy, limit, n, available, probe) {
+                    DroppedProbe::Funded(funding) => return Ok(funding),
+                    DroppedProbe::StorageInfeasible { storage_mass } => {
+                        infeasible = Some(BuildError::StorageInfeasible { storage_mass, limit });
                         continue;
                     }
-                    return Ok(Funding { inputs: n, fee: available, change: None });
+                    DroppedProbe::ShortOfTarget { required } => {
+                        if matches!(policy, FeePolicy::TargetFeerate(_)) {
+                            degraded = Some(Funding { inputs: n, fee: available, change: None });
+                        }
+                        shortfall = Some((available, required));
+                        continue;
+                    }
+                    DroppedProbe::Unaffordable { required } => {
+                        shortfall = Some((available, required));
+                        continue;
+                    }
                 }
-                // Dropping the change still doesn't cover its own, tighter fee.
-                shortfall = Some((available, dropped_fee));
-                continue;
             }
-            shortfall = Some((available, fee));
+            shortfall = Some((available, floor));
             continue;
         }
 
-        let change = available - fee;
-        match min_viable_change(params, &input_cells, &output_cells) {
-            Some(viable) if change >= viable => {
-                return Ok(Funding { inputs: n, fee, change: Some(change) });
-            }
-            Some(viable) if change_required => {
-                shortfall = Some((available, fee + viable));
-            }
-            Some(_) => {
-                // A feasible shape with an unviable change: fold the remainder into the fee.
-                // Dropping the change only shrinks the layout, so the slack covers its fee.
-                let (dropped, _) = probe(n, None);
-                debug_assert!(min_fee(params, &dropped) <= available);
-                return Ok(Funding { inputs: n, fee: available, change: None });
-            }
-            None => {
-                let storage = calc_storage_mass(
-                    false,
-                    input_cells.iter().copied(),
-                    output_cells[..output_cells.len() - 1].iter().copied(),
-                    params.storage_mass_parameter,
-                )
-                .unwrap_or(u64::MAX);
-                infeasible = Some(BuildError::StorageInfeasible { storage_mass: storage, limit });
+        let Some(viable) = min_viable_change(params, &input_cells, &output_cells) else {
+            let storage = calc_storage_mass(
+                false,
+                input_cells.iter().copied(),
+                output_cells[..output_cells.len() - 1].iter().copied(),
+                params.storage_mass_parameter,
+            )
+            .unwrap_or(u64::MAX);
+            infeasible = Some(BuildError::StorageInfeasible { storage_mass: storage, limit });
+            continue;
+        };
+        let cap = available.saturating_sub(viable);
+        let pm = |change: u64| priority_mass(params, &tx, &input_cells, &output_cells, change);
+
+        match required_fee(policy, floor, available, cap, pm) {
+            Ok(fee) => return Ok(Funding { inputs: n, fee, change: Some(available - fee) }),
+            Err(crossing_fee) => {
+                if matches!(policy, FeePolicy::TargetFeerate(_)) && cap >= floor {
+                    degraded = Some(Funding { inputs: n, fee: cap, change: Some(viable) });
+                }
+                if !change_required {
+                    // The with-change layout can't reach the requirement; dropping the change
+                    // only shrinks the layout, so its own (lower) requirement may still fit.
+                    match try_dropped_funding(params, policy, limit, n, available, probe) {
+                        DroppedProbe::Funded(funding) => return Ok(funding),
+                        DroppedProbe::StorageInfeasible { storage_mass } => {
+                            infeasible =
+                                Some(BuildError::StorageInfeasible { storage_mass, limit });
+                            continue;
+                        }
+                        DroppedProbe::ShortOfTarget { required } => {
+                            if matches!(policy, FeePolicy::TargetFeerate(_)) {
+                                degraded =
+                                    Some(Funding { inputs: n, fee: available, change: None });
+                            }
+                            shortfall = Some((available, required));
+                            continue;
+                        }
+                        DroppedProbe::Unaffordable { required } => {
+                            shortfall = Some((available, required));
+                            continue;
+                        }
+                    }
+                }
+                shortfall = Some((available, crossing_fee.saturating_add(viable)));
             }
         }
+    }
+    if let Some(funding) = degraded {
+        return Ok(funding);
     }
     match shortfall {
         Some((available, required)) => Err(BuildError::InsufficientFunds { available, required }),
@@ -250,6 +464,8 @@ pub struct ActivityTx<'a> {
     pub subnetwork_id: SubnetworkId,
     /// Transaction version; [`TX_VERSION_TOCCATA`] or newer for non-native subnetworks.
     pub tx_version: u16,
+    /// How the fee is priced.
+    pub fee_policy: FeePolicy,
     /// Consensus params, for the mass-based fee.
     pub params: &'a Params,
 }
@@ -278,7 +494,7 @@ pub fn activity_transaction(args: ActivityTx<'_>) -> Result<Transaction, BuildEr
             args.candidates[..n].iter().map(|(_, entry)| entry.clone()).collect();
         (sign(MutableTransaction::with_entries(tx, entries.clone()), args.keypair).tx, entries)
     };
-    let funding = fund(args.params, &args.candidates, true, &mut build)?;
+    let funding = fund(args.params, args.fee_policy, &args.candidates, true, &mut build)?;
     let (tx, entries) = build(funding.inputs, funding.change);
     debug_assert_eq!(fee_paid(&tx, &entries), funding.fee, "tx must pay what `fund` computed");
     commit_storage_mass(args.params, &tx, &entries);
@@ -334,7 +550,7 @@ pub fn pay_to_address_transaction(args: PayToAddressTx<'_>) -> Result<Transactio
             args.candidates[..n].iter().map(|(_, entry)| entry.clone()).collect();
         (sign(MutableTransaction::with_entries(tx, entries.clone()), args.keypair).tx, entries)
     };
-    let funding = fund(args.params, &args.candidates, false, &mut build)?;
+    let funding = fund(args.params, FeePolicy::Floor, &args.candidates, false, &mut build)?;
     let (tx, entries) = build(funding.inputs, funding.change);
     commit_storage_mass(args.params, &tx, &entries);
     Ok(tx)
@@ -395,6 +611,8 @@ pub struct SettlementTx<'a> {
     pub keypair: Keypair,
     /// Address the change is paid back to.
     pub address: &'a Address,
+    /// How the fee is priced.
+    pub fee_policy: FeePolicy,
     /// Consensus params, for the mass-based fee and storage mass.
     pub params: &'a Params,
 }
@@ -426,7 +644,7 @@ pub fn settlement_transaction(args: SettlementTx<'_>) -> Result<Transaction, Bui
         tx.inputs[0].compute_commit = args.covenant_compute_budget.into();
         (tx, entries)
     };
-    let funding = fund(args.params, &args.fee_candidates, false, &mut build)?;
+    let funding = fund(args.params, args.fee_policy, &args.fee_candidates, false, &mut build)?;
     let (mut tx, entries) = build(funding.inputs, funding.change);
     commit_storage_mass(args.params, &tx, &entries);
     // The signature script on input 0 changed, so recompute the on-the-wire id.
@@ -445,6 +663,13 @@ pub fn settlement_transaction(args: SettlementTx<'_>) -> Result<Transaction, Bui
 ///
 /// The shape tests assert each built transaction pays at least the mirrored node floor
 /// ([`mempool_min_fee`]) and stays within the block-fit storage limit.
+///
+/// Under [`FeePolicy::TargetFeerate`] the fee is raised to the requested rate over the
+/// node's priority mass ([`priority_mass_mirror`]), which includes storage mass, so the
+/// fee and the change value feed back into each other; the target tests pin the least
+/// sufficient fee at convergence, the add-input / drop-change restructuring when a prefix
+/// cannot absorb the target fee, and the degrade-to-deepest-affordable rule when no
+/// candidate set reaches the target.
 #[cfg(test)]
 mod tests {
     use kaspa_addresses::{Prefix, Version};
@@ -496,6 +721,39 @@ mod tests {
         let cofactors = params.block_mass_limits().raw_post().cofactors();
         let fee_mass = masses.compute_mass.max(masses.normalized_transient(&cofactors));
         (fee_mass * MEMPOOL_MIN_RELAY_FEE_PER_KILOGRAM) / 1000
+    }
+
+    /// The node's priority mass for `tx`: the feerate-ordering mass from the mempool's
+    /// feerate key, the normalized max of compute, transient, and storage mass. Recomputed
+    /// from the cofactors here rather than through the production pricing path, so the two
+    /// sides check each other.
+    fn priority_mass_mirror(params: &Params, tx: &Transaction, entries: &[UtxoEntry]) -> u64 {
+        let calc = MassCalculator::new(
+            params.mass_per_tx_byte,
+            params.mass_per_script_pub_key_byte,
+            params.storage_mass_parameter,
+        );
+        let masses = calc.calc_non_contextual_masses(tx);
+        let populated = PopulatedTransaction::new(tx, entries.to_vec());
+        let storage = calc
+            .calc_contextual_masses(&populated)
+            .expect("contextual mass calculation must succeed for a populated transaction")
+            .storage_mass;
+        let cofactors = params.block_mass_limits().raw_post().cofactors();
+        let storage_normalized = (storage as f64 * cofactors.storage).ceil() as u64;
+        masses.compute_mass.max(masses.normalized_transient(&cofactors)).max(storage_normalized)
+    }
+
+    /// The least fee paying `rate` sompi per gram of `tx`'s priority mass without dropping
+    /// below the mempool floor.
+    fn target_fee_mirror(
+        params: &Params,
+        rate: f64,
+        tx: &Transaction,
+        entries: &[UtxoEntry],
+    ) -> u64 {
+        let target = (rate * priority_mass_mirror(params, tx, entries) as f64).ceil() as u64;
+        mempool_min_fee(params, tx).max(target)
     }
 
     /// Fails when `tx` pays less than [`min_fee`] asks for `tx` itself, or when its committed
@@ -595,6 +853,7 @@ mod tests {
             fee_candidates: vec![(outpoint(3), fee_entry.clone())],
             keypair,
             address: &address,
+            fee_policy: FeePolicy::Floor,
             params,
         })
         .expect("settlement is fundable");
@@ -648,6 +907,7 @@ mod tests {
             address: &address,
             subnetwork_id: SUBNETWORK_ID_NATIVE,
             tx_version: TX_VERSION_TOCCATA,
+            fee_policy: FeePolicy::Floor,
             params,
         })
         .expect("activity is fundable");
@@ -750,6 +1010,7 @@ mod tests {
             fee_candidates: vec![(outpoint(3), fee_entry.clone())],
             keypair,
             address: &address,
+            fee_policy: FeePolicy::Floor,
             params,
         })
         .expect("settlement is fundable");
@@ -777,6 +1038,7 @@ mod tests {
             address: &address,
             subnetwork_id: SUBNETWORK_ID_NATIVE,
             tx_version: TX_VERSION_TOCCATA,
+            fee_policy: FeePolicy::Floor,
             params,
         })
         .expect("activity is fundable");
@@ -884,7 +1146,8 @@ mod tests {
         let candidates = candidates_of(&[100_000_000], &address);
         let mut probe = payout_probe(&candidates, 50_000_000, &spk, &keypair);
 
-        let funding = fund(params, &candidates, false, &mut probe).expect("fundable");
+        let funding =
+            fund(params, FeePolicy::Floor, &candidates, false, &mut probe).expect("fundable");
         assert_eq!(funding.inputs, 1);
         let (tx, _) = probe(funding.inputs, Some(0));
         assert_eq!(funding.fee, min_fee(params, &tx));
@@ -904,7 +1167,8 @@ mod tests {
         let candidates = candidates_of(&[50_000_000 + 400_000], &address);
         let mut probe = payout_probe(&candidates, 50_000_000, &spk, &keypair);
 
-        let funding = fund(params, &candidates, false, &mut probe).expect("fundable");
+        let funding =
+            fund(params, FeePolicy::Floor, &candidates, false, &mut probe).expect("fundable");
         assert_eq!(funding.change, None);
         assert_eq!(funding.fee, 400_000);
         let (tx, _) = probe(funding.inputs, None);
@@ -923,7 +1187,8 @@ mod tests {
         let candidates = candidates_of(&[50_000_000 + 400_000, 100_000_000], &address);
         let mut probe = payout_probe(&candidates, 50_000_000, &spk, &keypair);
 
-        let funding = fund(params, &candidates, true, &mut probe).expect("fundable");
+        let funding =
+            fund(params, FeePolicy::Floor, &candidates, true, &mut probe).expect("fundable");
         assert_eq!(funding.inputs, 2);
         assert!(funding.change.is_some());
     }
@@ -971,7 +1236,8 @@ mod tests {
 
         let candidates = candidates_of(&[payout + fee + viable], &address);
         let mut probe = payout_probe(&candidates, payout, &spk, &keypair);
-        let funding = fund(params, &candidates, false, &mut probe).expect("fundable");
+        let funding =
+            fund(params, FeePolicy::Floor, &candidates, false, &mut probe).expect("fundable");
         assert_eq!(funding.change, Some(viable));
         assert_eq!(funding.fee, fee);
     }
@@ -988,7 +1254,8 @@ mod tests {
         let candidates = candidates_of(&[60_000_000, 60_000_000], &address);
         let mut probe = payout_probe(&candidates, 100_000_000, &spk, &keypair);
 
-        let funding = fund(params, &candidates, false, &mut probe).expect("fundable with both");
+        let funding = fund(params, FeePolicy::Floor, &candidates, false, &mut probe)
+            .expect("fundable with both");
         assert_eq!(funding.inputs, 2);
         assert!(funding.change.is_some());
     }
@@ -1003,7 +1270,8 @@ mod tests {
         let candidates = candidates_of(&[50_000_000 + 1_000], &address);
         let mut probe = payout_probe(&candidates, 50_000_000, &spk, &keypair);
 
-        let err = fund(params, &candidates, true, &mut probe).expect_err("not fundable");
+        let err = fund(params, FeePolicy::Floor, &candidates, true, &mut probe)
+            .expect_err("not fundable");
         assert!(matches!(err, BuildError::InsufficientFunds { .. }), "got {err:?}");
     }
 
@@ -1018,7 +1286,8 @@ mod tests {
         let candidates = candidates_of(&[100_000_000], &address);
         let mut probe = payout_probe(&candidates, 1_000, &spk, &keypair);
 
-        let err = fund(params, &candidates, false, &mut probe).expect_err("infeasible");
+        let err =
+            fund(params, FeePolicy::Floor, &candidates, false, &mut probe).expect_err("infeasible");
         assert!(matches!(err, BuildError::StorageInfeasible { .. }), "got {err:?}");
     }
 
@@ -1047,5 +1316,431 @@ mod tests {
 
         assert_eq!(tx.outputs.len(), 1, "change output must be dropped");
         assert_eq!(fee_paid(&tx, &[entry]), 400_000);
+    }
+
+    /// With a storage-dominated priority mass, raising the fee shrinks the change and
+    /// raises the mass again: the funding converges on the least fee covering the target
+    /// rate over its own final layout, exactly.
+    #[test]
+    fn target_feerate_prices_a_storage_dominated_layout_exactly() {
+        let params = &SIMNET_PARAMS;
+        let keypair = keypair();
+        let address = address(&keypair, params);
+        let spk = pay_to_address_script(&address);
+        let candidates = candidates_of(&[100_000_000], &address);
+        let mut probe = payout_probe(&candidates, 50_000_000, &spk, &keypair);
+        let rate = 500.0;
+
+        let funding = fund(params, FeePolicy::TargetFeerate(rate), &candidates, false, &mut probe)
+            .expect("fundable at the target rate");
+        let change = funding.change.expect("change survives");
+        let (tx, entries) = probe(funding.inputs, Some(change));
+        assert_eq!(change, 100_000_000 - 50_000_000 - funding.fee);
+        assert_eq!(funding.fee, target_fee_mirror(params, rate, &tx, &entries));
+        let priority = priority_mass_mirror(params, &tx, &entries);
+        assert!(
+            priority > mempool_min_fee(params, &tx) / (MEMPOOL_MIN_RELAY_FEE_PER_KILOGRAM / 1000),
+            "storage mass must dominate this shape's priority mass",
+        );
+        assert!(funding.fee as f64 / priority as f64 >= rate);
+    }
+
+    /// When byte mass dominates the priority mass at every reachable change value, the
+    /// target rate prices without feedback: fee = ceil(rate x priority mass), exactly.
+    #[test]
+    fn target_feerate_prices_a_byte_dominated_layout_exactly() {
+        let params = &SIMNET_PARAMS;
+        let keypair = keypair();
+        let address = address(&keypair, params);
+        let spk = pay_to_address_script(&address);
+        let candidates = candidates_of(&[10_000_000_000], &address);
+        let mut probe = payout_probe(&candidates, 5_000_000_000, &spk, &keypair);
+        let rate = 250.0;
+
+        let funding = fund(params, FeePolicy::TargetFeerate(rate), &candidates, false, &mut probe)
+            .expect("fundable at the target rate");
+        let change = funding.change.expect("change survives");
+        let (tx, entries) = probe(funding.inputs, Some(change));
+        assert_eq!(funding.fee, target_fee_mirror(params, rate, &tx, &entries));
+        assert_eq!(
+            priority_mass_mirror(params, &tx, &entries),
+            mempool_min_fee(params, &tx) / (MEMPOOL_MIN_RELAY_FEE_PER_KILOGRAM / 1000),
+            "byte mass must dominate this shape's priority mass",
+        );
+    }
+
+    /// A single candidate whose change cannot absorb the target-rate fee is walked past:
+    /// the second input restores a viable change and the target is met.
+    #[test]
+    fn target_feerate_adds_an_input_when_the_fee_eats_the_change() {
+        let params = &SIMNET_PARAMS;
+        let keypair = keypair();
+        let address = address(&keypair, params);
+        let spk = pay_to_address_script(&address);
+        let candidates = candidates_of(&[52_800_000, 100_000_000], &address);
+        let mut probe = payout_probe(&candidates, 50_000_000, &spk, &keypair);
+        let rate = 200.0;
+
+        let funding = fund(params, FeePolicy::TargetFeerate(rate), &candidates, true, &mut probe)
+            .expect("fundable at the target rate with both candidates");
+        assert_eq!(funding.inputs, 2);
+        let change = funding.change.expect("change survives");
+        let (tx, entries) = probe(funding.inputs, Some(change));
+        assert_eq!(funding.fee, target_fee_mirror(params, rate, &tx, &entries));
+    }
+
+    /// When no viable change can absorb the target-rate fee but the layout can drop its
+    /// change, the remainder folds into the fee and the dropped layout still meets the
+    /// rate.
+    #[test]
+    fn target_feerate_drops_an_unviable_change() {
+        let params = &SIMNET_PARAMS;
+        let keypair = keypair();
+        let address = address(&keypair, params);
+        let spk = pay_to_address_script(&address);
+        let candidates = candidates_of(&[52_500_000], &address);
+        let mut probe = payout_probe(&candidates, 50_000_000, &spk, &keypair);
+        let rate = 200.0;
+
+        let funding = fund(params, FeePolicy::TargetFeerate(rate), &candidates, false, &mut probe)
+            .expect("fundable by dropping the change");
+        assert_eq!(funding.change, None);
+        assert_eq!(funding.fee, 2_500_000);
+        let (tx, entries) = probe(funding.inputs, None);
+        assert!(funding.fee >= target_fee_mirror(params, rate, &tx, &entries));
+    }
+
+    /// A target-policy prefix whose `available` equals its floor exactly must not probe a
+    /// zero-value change: [`calc_storage_mass`] divides by each output's value. With the change
+    /// output required, no drop is possible, so this must report a typed insufficiency.
+    #[test]
+    fn target_feerate_at_exact_floor_availability_does_not_panic_with_change_required() {
+        let params = &SIMNET_PARAMS;
+        let keypair = keypair();
+        let address = address(&keypair, params);
+        let spk = pay_to_address_script(&address);
+        let payout = 50_000_000;
+
+        // The with-change layout's floor is constant regardless of the exact candidate amount;
+        // scout it, then build a candidate that leaves exactly that much available.
+        let scout = candidates_of(&[100_000_000], &address);
+        let (scout_tx, _) = payout_probe(&scout, payout, &spk, &keypair)(1, Some(0));
+        let floor = min_fee(params, &scout_tx);
+
+        let candidates = candidates_of(&[payout + floor], &address);
+        let mut probe = payout_probe(&candidates, payout, &spk, &keypair);
+
+        let err = fund(params, FeePolicy::TargetFeerate(200.0), &candidates, true, &mut probe)
+            .expect_err("a single candidate at exactly the floor cannot also fund a viable change");
+        assert!(matches!(err, BuildError::InsufficientFunds { .. }), "got {err:?}");
+    }
+
+    /// The same exact-floor availability as above, but with a droppable change: the fixpoint
+    /// still must not probe a zero-value change, and the walk must fall through to dropping the
+    /// change instead of panicking.
+    #[test]
+    fn target_feerate_at_exact_floor_availability_drops_change_instead_of_panicking() {
+        let params = &SIMNET_PARAMS;
+        let keypair = keypair();
+        let address = address(&keypair, params);
+        let spk = pay_to_address_script(&address);
+        let payout = 50_000_000;
+
+        let scout = candidates_of(&[100_000_000], &address);
+        let (scout_tx, _) = payout_probe(&scout, payout, &spk, &keypair)(1, Some(0));
+        let floor = min_fee(params, &scout_tx);
+
+        let candidates = candidates_of(&[payout + floor], &address);
+        let mut probe = payout_probe(&candidates, payout, &spk, &keypair);
+
+        let funding = fund(params, FeePolicy::TargetFeerate(200.0), &candidates, false, &mut probe)
+            .expect("dropping the unreachable change still funds at the floor");
+        assert_eq!(funding.change, None);
+        assert_eq!(funding.fee, floor);
+    }
+
+    /// A droppable layout whose change is unviable even at the floor (so `FeePolicy::Floor`
+    /// already drops it) must degrade to that same dropped funding under an unreachable target
+    /// rate, not error: the degrade must consider fundings the with-change fixpoint never even
+    /// attempts to keep.
+    #[test]
+    fn unreachable_target_degrades_to_a_dropped_change_funding() {
+        let params = &SIMNET_PARAMS;
+        let keypair = keypair();
+        let address = address(&keypair, params);
+        let spk = pay_to_address_script(&address);
+        // Same shape as `fund_drops_an_unviable_change`: 400_000 sompi of slack, far below the
+        // viable-change floor, so `FeePolicy::Floor` already drops the change here.
+        let candidates = candidates_of(&[50_000_000 + 400_000], &address);
+        let mut probe = payout_probe(&candidates, 50_000_000, &spk, &keypair);
+
+        let funding =
+            fund(params, FeePolicy::TargetFeerate(1_000_000.0), &candidates, false, &mut probe)
+                .expect("degrades to the dropped funding instead of erroring");
+
+        let floor_funding =
+            fund(params, FeePolicy::Floor, &candidates, false, &mut probe).expect("floor-fundable");
+        assert_eq!(funding.inputs, floor_funding.inputs);
+        assert_eq!(funding.fee, floor_funding.fee);
+        assert_eq!(funding.change, floor_funding.change);
+    }
+
+    /// A zero-valued fixed output (which `PayToAddressTx` accepts) below the dropped layout's
+    /// floor must not probe storage mass at all: [`calc_storage_mass`] divides by each output's
+    /// value, and below the floor neither an `Ok` funding nor a degraded candidate is reachable,
+    /// so storage feasibility is irrelevant there. Pre-round-2 `Floor` behavior: a typed
+    /// insufficiency, not a panic.
+    #[test]
+    fn floor_policy_reports_insufficient_funds_for_a_zero_value_output_below_the_dropped_floor() {
+        let params = &SIMNET_PARAMS;
+        let keypair = keypair();
+        let address = address(&keypair, params);
+        let spk = pay_to_address_script(&address);
+        let payout = 0;
+
+        // The dropped layout's floor depends only on its byte layout, not the candidate amount:
+        // scout it from a throwaway input, then fund one sompi short of it.
+        let scout = candidates_of(&[100_000_000], &address);
+        let (dropped_scout, _) = payout_probe(&scout, payout, &spk, &keypair)(1, None);
+        let dropped_floor = min_fee(params, &dropped_scout);
+
+        let candidates = candidates_of(&[dropped_floor - 1], &address);
+        let mut probe = payout_probe(&candidates, payout, &spk, &keypair);
+
+        let err = fund(params, FeePolicy::Floor, &candidates, false, &mut probe)
+            .expect_err("below the dropped floor, funding must fail, not panic");
+        assert!(matches!(err, BuildError::InsufficientFunds { .. }), "got {err:?}");
+    }
+
+    /// A degraded dropped funding must be storage-feasible: a droppable fixed-output layout
+    /// whose storage mass exceeds the block-fit limit must not be recorded as a degraded
+    /// candidate just because it is floor-affordable and the target rate is unreachable there.
+    #[test]
+    fn unreachable_target_never_degrades_to_a_storage_infeasible_dropped_funding() {
+        let params = &SIMNET_PARAMS;
+        let keypair = keypair();
+        let address = address(&keypair, params);
+        let spk = pay_to_address_script(&address);
+        // 1_000 sompi payout: C/v is far above the block-fit storage limit, so the dropped
+        // layout (this output alone, no change) is storage-infeasible regardless of the fee it
+        // pays or the funding input's amount.
+        let payout = 1_000;
+
+        // The dropped layout's floor depends only on its byte layout, not the candidate amount:
+        // scout it from a throwaway large input, then build a candidate that leaves exactly that
+        // much available. That covers what `FeePolicy::Floor` would have paid there (ignoring
+        // storage), but stays below the with-change layout's (larger, extra-output) floor, so
+        // the walk takes the early unaffordable-with-change branch straight into the
+        // dropped-layout probe.
+        let scout = candidates_of(&[100_000_000], &address);
+        let (dropped_scout, _) = payout_probe(&scout, payout, &spk, &keypair)(1, None);
+        let dropped_floor = min_fee(params, &dropped_scout);
+
+        let candidates = candidates_of(&[payout + dropped_floor], &address);
+        let mut probe = payout_probe(&candidates, payout, &spk, &keypair);
+        let (dropped, dropped_entries) = probe(1, None);
+        let dropped_storage = calc_storage_mass(
+            false,
+            dropped_entries.iter().map(UtxoCell::from),
+            dropped.outputs.iter().map(UtxoCell::from),
+            params.storage_mass_parameter,
+        )
+        .unwrap_or(u64::MAX);
+        let limit = params.block_mass_limits().raw_post().storage;
+        assert!(
+            dropped_storage > limit,
+            "fixture no longer reproduces a storage-infeasible dropped layout"
+        );
+
+        let err =
+            fund(params, FeePolicy::TargetFeerate(1_000_000.0), &candidates, false, &mut probe)
+                .expect_err("a storage-infeasible dropped layout must not be a degraded funding");
+        assert!(
+            matches!(err, BuildError::StorageInfeasible { .. }),
+            "storage, not target-unreachability, is what blocks this prefix; got {err:?}"
+        );
+    }
+
+    /// The Floor-policy `fund` outcome (spent inputs, fee, and change) for the keep-change,
+    /// drop-change, and add-input shapes, pinned exactly: the estimator coupling must not
+    /// perturb any of the three, not just the fee.
+    #[test]
+    fn floor_policy_funding_outcome_is_pinned_for_every_shape() {
+        let params = &SIMNET_PARAMS;
+        let keypair = keypair();
+        let address = address(&keypair, params);
+        let spk = pay_to_address_script(&address);
+        let payout = 50_000_000;
+
+        // Keep-change: one large candidate, fee is the mirrored floor, change is the remainder.
+        let keep_candidates = candidates_of(&[100_000_000], &address);
+        let mut keep_probe = payout_probe(&keep_candidates, payout, &spk, &keypair);
+        let keep = fund(params, FeePolicy::Floor, &keep_candidates, false, &mut keep_probe)
+            .expect("fundable");
+        let (keep_tx, _) = keep_probe(keep.inputs, Some(0));
+        let keep_floor = min_fee(params, &keep_tx);
+        assert_eq!(keep.inputs, 1);
+        assert_eq!(keep.fee, keep_floor);
+        assert_eq!(keep.change, Some(100_000_000 - payout - keep_floor));
+
+        // Drop-change: slack above the fee but below the viable-change floor.
+        let drop_candidates = candidates_of(&[payout + 400_000], &address);
+        let mut drop_probe = payout_probe(&drop_candidates, payout, &spk, &keypair);
+        let drop = fund(params, FeePolicy::Floor, &drop_candidates, false, &mut drop_probe)
+            .expect("fundable");
+        assert_eq!(drop.inputs, 1);
+        assert_eq!(drop.fee, 400_000);
+        assert_eq!(drop.change, None);
+
+        // Add-input: the first candidate alone leaves an unviable change; change_required forces
+        // a second input.
+        let add_candidates = candidates_of(&[payout + 400_000, 100_000_000], &address);
+        let mut add_probe = payout_probe(&add_candidates, payout, &spk, &keypair);
+        let add = fund(params, FeePolicy::Floor, &add_candidates, true, &mut add_probe)
+            .expect("fundable");
+        let (add_tx, add_entries) = add_probe(add.inputs, Some(0));
+        let add_floor = min_fee(params, &add_tx);
+        let add_input_cells: Vec<UtxoCell> = add_entries.iter().map(UtxoCell::from).collect();
+        let add_output_cells: Vec<UtxoCell> = add_tx.outputs.iter().map(UtxoCell::from).collect();
+        let add_viable = min_viable_change(params, &add_input_cells, &add_output_cells)
+            .expect("shape is feasible");
+        let add_available = payout + 400_000 + 100_000_000 - payout;
+        assert_eq!(add.inputs, 2);
+        assert_eq!(add.fee, add_floor);
+        assert_eq!(add.change, Some(add_available - add_floor));
+        assert!(add_available - add_floor >= add_viable, "change must be viable at n=2");
+    }
+
+    /// Floor-policy builder shapes that keep their change pay exactly the mempool floor:
+    /// the estimator coupling leaves the floor path's fees unchanged.
+    #[test]
+    fn floor_policy_pays_exactly_the_mempool_floor() {
+        let params = &SIMNET_PARAMS;
+        for shape in [activity_shape(params), settlement_shape(params)] {
+            let paid = fee_paid(&shape.tx, &shape.entries);
+            assert_eq!(paid, mempool_min_fee(params, &shape.tx));
+        }
+    }
+
+    /// A target no candidate set can reach degrades to the deepest affordable funding, not
+    /// merely the first one recorded: two floor-affordable prefixes are both individually
+    /// viable-with-change, so only checking `funding.change`/`funding.fee` against the
+    /// shallowest one would pass even if the deepest-wins overwrite were broken.
+    #[test]
+    fn unreachable_target_degrades_to_the_deepest_affordable_funding() {
+        let params = &SIMNET_PARAMS;
+        let keypair = keypair();
+        let address = address(&keypair, params);
+        let spk = pay_to_address_script(&address);
+        let candidates = candidates_of(&[100_000_000, 100_000_000], &address);
+        let mut probe = payout_probe(&candidates, 50_000_000, &spk, &keypair);
+        let rate = 1_000_000.0;
+
+        let funding = fund(params, FeePolicy::TargetFeerate(rate), &candidates, true, &mut probe)
+            .expect("degrades instead of erroring");
+        assert_eq!(funding.inputs, candidates.len(), "must fall back to the deepest prefix");
+
+        let (layout, entries) = probe(funding.inputs, Some(0));
+        let input_cells: Vec<UtxoCell> = entries.iter().map(UtxoCell::from).collect();
+        let output_cells: Vec<UtxoCell> = layout.outputs.iter().map(UtxoCell::from).collect();
+        let viable =
+            min_viable_change(params, &input_cells, &output_cells).expect("shape is feasible");
+        let entries_total: u64 = entries.iter().map(|entry| entry.amount).sum();
+        let outputs_total: u64 = layout.outputs.iter().map(|output| output.value).sum();
+        let available = entries_total - outputs_total;
+        assert_eq!(funding.change, Some(viable));
+        assert_eq!(funding.fee, available - viable);
+        let (tx, entries) = probe(funding.inputs, Some(viable));
+        assert!(funding.fee >= mempool_min_fee(params, &tx));
+        assert!(
+            (funding.fee as f64 / priority_mass_mirror(params, &tx, &entries) as f64) < rate,
+            "the degraded funding stays below the requested rate",
+        );
+    }
+
+    /// Candidates that cannot even pay the admission floor are a typed insufficiency
+    /// under a target policy too, not a degraded funding.
+    #[test]
+    fn target_feerate_reports_insufficient_candidates() {
+        let params = &SIMNET_PARAMS;
+        let keypair = keypair();
+        let address = address(&keypair, params);
+        let spk = pay_to_address_script(&address);
+        let candidates = candidates_of(&[50_001_000], &address);
+        let mut probe = payout_probe(&candidates, 50_000_000, &spk, &keypair);
+
+        let err =
+            fund(params, FeePolicy::TargetFeerate(1_000_000.0), &candidates, true, &mut probe)
+                .expect_err("not fundable");
+        assert!(matches!(err, BuildError::InsufficientFunds { .. }), "got {err:?}");
+    }
+
+    /// A fractional target rate rounds the fee up: the paid rate over the final priority
+    /// mass never falls below the requested rate.
+    #[test]
+    fn target_feerate_rounds_the_fee_up_to_the_node_rate() {
+        let params = &SIMNET_PARAMS;
+        let keypair = keypair();
+        let address = address(&keypair, params);
+        let spk = pay_to_address_script(&address);
+        let candidates = candidates_of(&[10_000_000_000], &address);
+        let mut probe = payout_probe(&candidates, 5_000_000_000, &spk, &keypair);
+        let rate = 100.25;
+
+        let funding = fund(params, FeePolicy::TargetFeerate(rate), &candidates, false, &mut probe)
+            .expect("fundable at the target rate");
+        let change = funding.change.expect("change survives");
+        let (tx, entries) = probe(funding.inputs, Some(change));
+        assert_eq!(funding.fee, target_fee_mirror(params, rate, &tx, &entries));
+        assert_ne!(
+            funding.fee,
+            mempool_min_fee(params, &tx),
+            "the fractional rate must out-bid the floor",
+        );
+        let priority = priority_mass_mirror(params, &tx, &entries);
+        assert!(funding.fee as f64 / priority as f64 >= rate);
+    }
+
+    /// `ceil(rate * pm)` alone can round the f64 product down to an integer that misses the
+    /// node's own `fee as f64 / pm as f64 >= rate` comparison by one float rounding step:
+    /// `rate = 100.76515732924022` and `pm = 1303` round to `131297.0`, but
+    /// `131297.0 / 1303.0 == 100.76515732924021 < rate`. [`rate_fee`] must correct for this.
+    #[test]
+    fn rate_fee_never_rounds_below_the_requested_rate_at_an_f64_boundary() {
+        let rate = 100.76515732924022;
+        let pm = 1303u64;
+        let naive = (rate * pm as f64).ceil() as u64;
+        assert!(
+            (naive as f64 / pm as f64) < rate,
+            "test fixture no longer reproduces the boundary"
+        );
+
+        let fee = rate_fee(rate, 0, pm);
+        assert_eq!(fee, naive + 1, "the single +1 correction must fire for this boundary case");
+        assert!(fee as f64 / pm as f64 >= rate, "fee {fee} at pm {pm} rate {rate} falls short");
+    }
+
+    /// Above `2^53`, adjacent `u64` values can round to the same `f64`, so a single `+1`
+    /// correction is not always enough: `rate = 6_924_528_884_886.104` and `pm = 1303` round to
+    /// `9_022_661_137_006_592`, and `9_022_661_137_006_593` (the naive `+1`) still rounds back to
+    /// the same `f64` and still falls short; only `9_022_661_137_006_594` clears the comparison.
+    /// [`rate_fee`] must keep correcting until it does.
+    #[test]
+    fn rate_fee_corrects_past_a_single_sompi_above_the_f64_integer_range() {
+        let rate = 6_924_528_884_886.104;
+        let pm = 1303u64;
+        let naive = (rate * pm as f64).ceil() as u64;
+        assert!(
+            (naive as f64 / pm as f64) < rate,
+            "test fixture no longer reproduces the boundary"
+        );
+        assert!(
+            ((naive + 1) as f64 / pm as f64) < rate,
+            "test fixture no longer reproduces the single-+1 shortfall"
+        );
+
+        let fee = rate_fee(rate, 0, pm);
+        assert_eq!(fee, naive + 2, "must correct past the single-sompi rounding plateau");
+        assert!(fee as f64 / pm as f64 >= rate, "fee {fee} at pm {pm} rate {rate} falls short");
     }
 }
