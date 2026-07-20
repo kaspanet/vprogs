@@ -41,8 +41,8 @@ use vprogs_zk_backend_risc0_test_suite::{
     batch_aggregator_elf, batch_processor_elf, runtime_processor_elf,
 };
 
-/// One L2 account: an L1 funding keypair (secp256k1) and an L2 lock key (k256 BIP-340). The deposit
-/// funds the covenant from the L1 key; the resulting L2 user is controlled by the lock key.
+/// One L2 account: an L1 funding keypair (secp256k1) and an L2 lock key (secp256k1 BIP-340). The
+/// deposit funds the covenant from the L1 key; the resulting L2 user is controlled by the lock key.
 struct Account {
     l1: Keypair,
     l2: TestSigner,

@@ -18,9 +18,7 @@
 //! "pre-signature" prefix). The 64-byte BIP-340 signature is appended as the payload tail and a
 //! signer entry points at it by absolute offset within `payload.bytes`.
 
-use k256::schnorr::{Signature, SigningKey};
-use rand::rngs::OsRng;
-use signature::Signer as SignerTrait;
+use secp256k1::{Keypair, Message, SECP256K1};
 use vprogs_core_types::AccessType;
 use vprogs_l1_utils::tx_id_v1;
 use vprogs_zk_abi::{transaction_processor::Transaction, withdrawal::StandardSpk};
@@ -246,10 +244,10 @@ pub fn encode_inputs(
 
 // Signer helpers.
 
-/// Bundles the cryptographic state for a single BIP-340 (k256 Schnorr) signer, used both for L2
-/// user locks and for the genesis Init authorization.
+/// Bundles the cryptographic state for a single BIP-340 (secp256k1 Schnorr) signer, used both for
+/// L2 user locks and for the genesis Init authorization.
 pub struct TestSigner {
-    sk: SigningKey,
+    keypair: Keypair,
     /// X-only public key; this is the value a `SchnorrLockView` carries.
     pub pubkey: [u8; 32],
 }
@@ -257,15 +255,15 @@ pub struct TestSigner {
 impl TestSigner {
     /// A fresh random signer.
     pub fn new() -> Self {
-        let sk = SigningKey::random(&mut OsRng);
-        let pubkey: [u8; 32] = sk.verifying_key().to_bytes().into();
-        Self { sk, pubkey }
+        let keypair = Keypair::new(SECP256K1, &mut rand::thread_rng());
+        let pubkey = keypair.x_only_public_key().0.serialize();
+        Self { keypair, pubkey }
     }
 
     /// Signs `msg` (already a 32-byte digest), returning the 64-byte BIP-340 signature.
     pub fn sign(&self, msg: &[u8]) -> [u8; 64] {
-        let sig: Signature = self.sk.sign(msg);
-        sig.to_bytes()
+        let digest: [u8; 32] = msg.try_into().expect("sig message must be a 32-byte digest");
+        SECP256K1.sign_schnorr(&Message::from_digest(digest), &self.keypair).serialize()
     }
 }
 

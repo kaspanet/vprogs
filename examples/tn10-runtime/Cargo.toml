@@ -42,11 +42,9 @@ kaspa-wrpc-client    = { workspace = true }
 
 # external
 ctrlc     = { workspace = true }
-k256      = { workspace = true, features = ["schnorr"] }
 log       = { workspace = true }
 rand      = { workspace = true }
 secp256k1 = { workspace = true }
-signature = { workspace = true }
 tokio     = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 
 [dev-dependencies]

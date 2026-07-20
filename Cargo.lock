@@ -8619,7 +8619,6 @@ name = "vprogs-example-tn10-runtime"
 version = "0.1.0"
 dependencies = [
  "ctrlc",
- "k256",
  "kaspa-addresses",
  "kaspa-consensus-core",
  "kaspa-core",
@@ -8632,7 +8631,6 @@ dependencies = [
  "risc0-zkos-v1compat",
  "risc0-zkvm",
  "secp256k1",
- "signature",
  "tokio",
  "vprogs-core-types",
  "vprogs-l1-utils",

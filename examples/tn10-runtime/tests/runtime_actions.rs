@@ -200,7 +200,7 @@ fn full_lifecycle_init_deposit_transfer_withdraw() {
         assert_eq!(view.covenant_id(), &COVENANT_ID);
     }
 
-    // Two L2 accounts (k256 lock keys).
+    // Two L2 accounts (secp256k1 lock keys).
     let alice = actions::TestSigner::new();
     let bob = actions::TestSigner::new();
     let alice_id = actions::user_resource_id(&alice.pubkey);
