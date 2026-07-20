@@ -61,6 +61,26 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
         &self.address
     }
 
+    /// The fee policy for a new build: [`build::FeePolicy::TargetFeerate`] at the node's
+    /// sub-minute (`normal_buckets[0]`) rate, falling back to the priority bucket if the vector
+    /// is unexpectedly empty, or to [`build::FeePolicy::Floor`] when the estimate RPC fails
+    /// (estimator unavailability must not stall issuance).
+    async fn fee_policy(&self) -> build::FeePolicy {
+        match self.client.get_fee_estimate().await {
+            Ok(estimate) => {
+                let feerate = estimate
+                    .normal_buckets
+                    .first()
+                    .map_or(estimate.priority_bucket.feerate, |bucket| bucket.feerate);
+                build::FeePolicy::TargetFeerate(feerate)
+            }
+            Err(e) => {
+                log::warn!("fee estimate fetch failed, falling back to the floor policy: {e}");
+                build::FeePolicy::Floor
+            }
+        }
+    }
+
     /// Builds signed native-subnetwork transactions, each carrying one payload.
     pub async fn build_payload_transactions(&self, payloads: Vec<Vec<u8>>) -> Vec<Transaction> {
         self.build_subnet_payload_transactions(payloads, SUBNETWORK_ID_NATIVE, TX_VERSION).await
@@ -169,6 +189,7 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
         if fee_candidates.is_empty() {
             return None;
         }
+        let fee_policy = self.fee_policy().await;
         let tx = build::settlement_transaction(build::SettlementTx {
             settlement_tx,
             covenant_entry,
@@ -176,7 +197,7 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
             fee_candidates,
             keypair: self.keypair,
             address: &self.address,
-            fee_policy: build::FeePolicy::Floor,
+            fee_policy,
             params: self.params,
         })
         .inspect_err(|e| log::warn!("settlement fee funding failed: {e}"))
@@ -244,6 +265,7 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
         if candidates.is_empty() {
             return Ok(None);
         }
+        let fee_policy = self.fee_policy().await;
         Ok(build::activity_transaction(build::ActivityTx {
             payload,
             candidates,
@@ -251,7 +273,7 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
             address: &self.address,
             subnetwork_id,
             tx_version,
-            fee_policy: build::FeePolicy::Floor,
+            fee_policy,
             params: self.params,
         })
         .inspect_err(|e| log::warn!("activity funding failed: {e}"))
