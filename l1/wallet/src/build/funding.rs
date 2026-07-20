@@ -91,7 +91,7 @@ fn try_dropped_funding(
     limit: u64,
     n: usize,
     available: u64,
-    probe: &mut dyn FnMut(usize, Option<u64>) -> (Transaction, Vec<UtxoEntry>),
+    probe: &mut impl FnMut(usize, Option<u64>) -> (Transaction, Vec<UtxoEntry>),
 ) -> DroppedProbe {
     let (dropped, dropped_entries) = probe(n, None);
     let DroppedRequirement { floor, required } =
@@ -128,7 +128,7 @@ pub(super) fn fund(
     policy: FeePolicy,
     candidates: &[(TransactionOutpoint, UtxoEntry)],
     change_required: bool,
-    probe: &mut dyn FnMut(usize, Option<u64>) -> (Transaction, Vec<UtxoEntry>),
+    probe: &mut impl FnMut(usize, Option<u64>) -> (Transaction, Vec<UtxoEntry>),
 ) -> Result<Funding, BuildError> {
     assert!(!candidates.is_empty(), "funding needs at least one candidate UTXO");
     let limit = params.block_mass_limits().raw_post().storage;
