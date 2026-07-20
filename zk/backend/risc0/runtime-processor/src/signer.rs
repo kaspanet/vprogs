@@ -7,8 +7,8 @@ use vprogs_core_codec::{Error, Reader, Result as CodecResult};
 use crate::{
     signer_trait::Signer,
     signer_variants::{
-        MultisigPrevTxV1WitnessSigner, MultisigSchnorrSigPtrSigner, PrevTxV1WitnessSigner,
-        SchnorrSigPtrSigner,
+        GenesisSchnorrSigPtrSigner, MultisigPrevTxV1WitnessSigner, MultisigSchnorrSigPtrSigner,
+        PrevTxV1WitnessSigner, SchnorrSigPtrSigner,
     },
 };
 
@@ -20,6 +20,7 @@ pub enum SignerEnum {
     PrevTxV1Witness(PrevTxV1WitnessSigner),
     MultisigSchnorrSigPtr(MultisigSchnorrSigPtrSigner),
     MultisigPrevTxV1Witness(MultisigPrevTxV1WitnessSigner),
+    GenesisSchnorrSigPtr(GenesisSchnorrSigPtrSigner),
 }
 
 /// Decodes a single signer entry: `(resource_idx u8 || kind u8 || body)`.
@@ -38,6 +39,9 @@ pub fn decode_signer(buf: &mut &[u8]) -> CodecResult<(u8, SignerEnum)> {
         }
         MultisigPrevTxV1WitnessSigner::TAG => {
             SignerEnum::MultisigPrevTxV1Witness(MultisigPrevTxV1WitnessSigner::decode(buf)?)
+        }
+        GenesisSchnorrSigPtrSigner::TAG => {
+            SignerEnum::GenesisSchnorrSigPtr(GenesisSchnorrSigPtrSigner::decode(buf)?)
         }
         _ => return Err(Error::Decode("signer: unknown kind")),
     };

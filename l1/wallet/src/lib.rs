@@ -22,7 +22,7 @@ use kaspa_consensus_core::{
     constants::{TX_VERSION, TX_VERSION_TOCCATA},
     mass::units::ComputeBudget,
     subnets::{SUBNETWORK_ID_NATIVE, SubnetworkId},
-    tx::{Transaction, TransactionOutpoint, UtxoEntry},
+    tx::{Transaction, TransactionOutpoint, TransactionOutput, UtxoEntry},
 };
 use kaspa_hashes::Hash;
 use kaspa_rpc_core::{RpcError, RpcTransaction, api::rpc::RpcApi};
@@ -109,6 +109,33 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
                 })
             })
             .collect()
+    }
+
+    /// Builds a signed carrier transaction on `subnetwork_id` whose L2 payload is produced by
+    /// `finalize_payload` over the carrier's `rest_preimage`, funded from the wallet's largest
+    /// spendable UTXO. `extra_outputs` are prepended before the change (e.g. a deposit funding
+    /// output). Use this for runtime carriers whose payload signature commits to the post-funding
+    /// outputs. The returned tx is ready to `mine_block` or `submit_transaction`.
+    pub async fn build_signed_carrier<F: Fn(&[u8]) -> Vec<u8>>(
+        &self,
+        extra_outputs: Vec<TransactionOutput>,
+        subnetwork_id: SubnetworkId,
+        tx_version: u16,
+        finalize_payload: F,
+    ) -> Transaction {
+        let utxos = self.fetch_spendable_utxos().await.expect("fetch spendable utxos");
+        let (outpoint, entry) = utxos.into_iter().next().expect("no spendable UTXO for carrier");
+        build::signed_carrier_transaction(build::SignedCarrierTx {
+            outpoint,
+            entry,
+            keypair: self.keypair,
+            change_address: &self.address,
+            subnetwork_id,
+            tx_version,
+            params: self.params,
+            extra_outputs,
+            finalize_payload,
+        })
     }
 
     /// Builds a signed bootstrap transaction whose single output is P2SH(`redeem_script`) with a
