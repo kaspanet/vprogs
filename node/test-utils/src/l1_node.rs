@@ -219,8 +219,9 @@ impl L1Node {
     }
 
     /// A [`Wallet`] view over this node's client, params, and key. The wallet derives its address
-    /// prefix from `params`, matching this node's network.
-    fn wallet(&self) -> Wallet<'_, GrpcClient> {
+    /// prefix from `params`, matching this node's network. Public so flow tests can build funded
+    /// carrier transactions (deposit/transfer/withdraw) from the node's coinbase funds.
+    pub fn wallet(&self) -> Wallet<'_, GrpcClient> {
         Wallet::new(&self.grpc_client, &self.params, self.keypair)
     }
 

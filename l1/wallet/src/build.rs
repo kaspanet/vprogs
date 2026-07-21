@@ -8,6 +8,7 @@
 
 mod activity;
 mod bootstrap;
+mod carrier;
 mod funding;
 mod payout;
 mod pricing;
@@ -18,6 +19,7 @@ mod viability;
 
 pub use activity::{ActivityTx, activity_transaction};
 pub use bootstrap::covenant_bootstrap_transaction;
+pub use carrier::{SignedCarrierTx, signed_carrier_transaction};
 pub use funding::BuildError;
 pub use payout::{PayToAddressTx, pay_to_address_transaction};
 pub use pricing::FeePolicy;

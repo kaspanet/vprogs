@@ -5,6 +5,7 @@
 //! Default-build kinds, grouped by the unlocker type they produce:
 //! - [`SchnorrSigPtrSigner`] (TAG=0x01) → `SchnorrUnlocker` for Schnorr locks.
 //! - [`PrevTxV1WitnessSigner`] (TAG=0x02) → `SchnorrUnlocker` for Schnorr locks.
+//! - [`GenesisSchnorrSigPtrSigner`] (TAG=0x05) → `SchnorrUnlocker` from the baked-in genesis key.
 //! - [`MultisigSchnorrSigPtrSigner`] (TAG=0x03) → `MultisigUnlocker` contribution.
 //! - [`MultisigPrevTxV1WitnessSigner`] (TAG=0x04) → `MultisigUnlocker` contribution.
 
@@ -16,6 +17,7 @@ use crate::{
     auth::{recover_prev_tx_v1_p2pk_pubkey, verify_k256_schnorr_sig},
     auth_context::{MultisigUnlocker, SchnorrUnlocker},
     config::ConfigView,
+    genesis::GENESIS_SCHNORR_BYTES,
     kind::{KIND_CONFIG, KIND_USER, kind_of},
     lock::LockEnum,
     lock_variants::SchnorrLockView,
@@ -104,6 +106,43 @@ impl<'a> Signer<'a> for PrevTxV1WitnessSigner {
             ctx,
         )?;
         Ok(SchnorrUnlocker { pubkey })
+    }
+}
+
+/// Genesis-authority Schnorr signer: resolves to a `SchnorrUnlocker` carrying the runtime's
+/// baked-in [`GENESIS_SCHNORR_BYTES`] rather than a pubkey read from the target resource's lock.
+/// Body: `u32 sig_offset`, offset into `payload_bytes` of the 64-byte BIP-340 signature.
+///
+/// Reading no lock lets it authorize a resource whose slot is still empty. Nothing in `resolve`
+/// ties it to a specific action or resource; the effective restriction to `Init` is emergent, since
+/// `apply_init` is the only action that authorizes against a resource with no readable lock. The
+/// genesis key signs the runtime sig-message directly, with no on-chain UTXO / witness coupling.
+pub struct GenesisSchnorrSigPtrSigner {
+    pub sig_offset: u32,
+}
+
+impl<'a> Signer<'a> for GenesisSchnorrSigPtrSigner {
+    const TAG: u8 = 0x05;
+    type Unlocker = SchnorrUnlocker;
+
+    fn decode(buf: &mut &'a [u8]) -> CodecResult<Self> {
+        let sig_offset = buf.le_u32("signer.genesis_schnorr.sig_offset")?;
+        Ok(Self { sig_offset })
+    }
+
+    fn resolve(
+        &self,
+        resource_idx: u8,
+        ctx: &SignerResolveContext<'a>,
+    ) -> CodecResult<SchnorrUnlocker> {
+        ctx.resources
+            .get(resource_idx as usize)
+            .ok_or(Error::Decode("signer.genesis_schnorr: resource_idx out of range"))?;
+        let sig = read_sig_at_offset(self.sig_offset, ctx)?;
+        if !verify_k256_schnorr_sig(&GENESIS_SCHNORR_BYTES, sig, ctx.sig_msg()) {
+            return Err(Error::Decode("signer.genesis_schnorr: invalid signature"));
+        }
+        Ok(SchnorrUnlocker { pubkey: GENESIS_SCHNORR_BYTES })
     }
 }
 

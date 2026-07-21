@@ -17,8 +17,8 @@ use crate::{
     signer::SignerEnum,
     signer_trait::{Signer, SignerResolveContext},
     signer_variants::{
-        MultisigPrevTxV1WitnessSigner, MultisigSchnorrSigPtrSigner, PrevTxV1WitnessSigner,
-        SchnorrSigPtrSigner,
+        GenesisSchnorrSigPtrSigner, MultisigPrevTxV1WitnessSigner, MultisigSchnorrSigPtrSigner,
+        PrevTxV1WitnessSigner, SchnorrSigPtrSigner,
     },
 };
 
@@ -121,6 +121,10 @@ fn resolve_signers<'a>(
         match signer {
             SignerEnum::SchnorrSigPtr(s) => {
                 let u = SchnorrSigPtrSigner::resolve(s, resource_idx, ctx)?;
+                auth.schnorr.push((resource_idx, u));
+            }
+            SignerEnum::GenesisSchnorrSigPtr(s) => {
+                let u = GenesisSchnorrSigPtrSigner::resolve(s, resource_idx, ctx)?;
                 auth.schnorr.push((resource_idx, u));
             }
             SignerEnum::PrevTxV1Witness(s) => {

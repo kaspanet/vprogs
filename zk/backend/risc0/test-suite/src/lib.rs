@@ -22,6 +22,7 @@ use vprogs_zk_backend_risc0_api::{Backend, Receipt};
 use vprogs_zk_batch_prover::{LaneProofRequest, LaneProofSource};
 
 mod l1_transaction_ext;
+pub mod runtime_flow;
 
 pub use l1_transaction_ext::L1TransactionExt;
 
@@ -97,6 +98,22 @@ pub fn transaction_processor_with_exits_elf() -> Vec<u8> {
         panic!(
             "transaction-processor-with-exits ELF not found at {elf_path}: {e}\n\
              Run `./zk/backend/risc0/build-guests.sh transaction-processor-with-exits` to rebuild it."
+        )
+    })
+}
+
+/// Loads the pre-built deposit/transfer/withdraw runtime-processor ELF from the repository.
+///
+/// This is the real L2 program (config Init, Deposit, Transfer, Withdraw, lock rotation), as
+/// opposed to the dummy counter [`transaction_processor_elf`]. Pass it as the `tx_elf` to
+/// [`Backend::new`] to drive the runtime through the scheduler.
+pub fn runtime_processor_elf() -> Vec<u8> {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let elf_path = format!("{manifest_dir}/../runtime-processor/compiled/program.elf");
+    std::fs::read(&elf_path).unwrap_or_else(|e| {
+        panic!(
+            "runtime processor ELF not found at {elf_path}: {e}\n\
+             Run `./zk/backend/risc0/build-guests.sh runtime-processor` to rebuild it."
         )
     })
 }
