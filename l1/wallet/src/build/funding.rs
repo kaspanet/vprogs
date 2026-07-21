@@ -2,6 +2,8 @@
 //! fee, and whether the change output survives, so a builder's layout meets its [`FeePolicy`]
 //! and stays block-fit.
 
+use std::ops::ControlFlow;
+
 use kaspa_consensus_core::{
     config::params::Params,
     mass::{UtxoCell, calc_storage_mass},
@@ -20,7 +22,8 @@ use super::{
 pub enum BuildError {
     /// The candidates cannot cover the node's minimum fee (plus a storage-viable change
     /// output where the layout requires one). `available` is what the deepest attempt
-    /// brought in beyond the fixed outputs; `required` what it needed.
+    /// brought in beyond the fixed outputs; `required` what it needed. With no candidates
+    /// at all, `available` is zero and `required` the zero-prefix layout's floor.
     #[error("candidate UTXOs bring {available} sompi but funding requires {required}")]
     InsufficientFunds { available: u64, required: u64 },
     /// Every funding attempt's fixed outputs exceeded the block-fit storage limit for any
@@ -49,56 +52,145 @@ pub(super) struct Funding {
     pub(super) change: Option<u64>,
 }
 
-/// Outcome of probing prefix `n`'s change-dropped layout (`probe(n, None)`) against `policy`'s
-/// requirement and the block-fit storage limit. Storage mass is computed only once `available`
-/// covers the layout's own floor: below that, neither an `Ok` funding nor a degraded candidate
-/// is reachable, so storage feasibility is irrelevant, and probing it risks a zero-valued fixed
-/// output dividing by zero in [`calc_storage_mass`] for no benefit.
-enum DroppedProbe {
-    /// `available` covers `policy`'s requirement and the layout is storage-feasible: the whole
-    /// remainder becomes the fee.
-    Funded(Funding),
-    /// `available` covers the layout's own floor, but its storage mass exceeds the block-fit
-    /// limit for any fee.
-    StorageInfeasible { storage_mass: u64 },
-    /// `available` covers the layout's own floor and its storage is feasible, but not `policy`'s
-    /// (target-level) `required`: eligible as a degraded candidate.
-    ShortOfTarget { required: u64 },
-    /// `available` falls short of even the layout's own floor: storage was never computed, and
-    /// this prefix can never be an `Ok` funding or a degraded candidate.
-    Unaffordable { required: u64 },
+/// One pass over the candidate prefixes: the per-prefix funding attempts plus the bookkeeping
+/// that decides what [`fund`] returns when no prefix meets `policy`'s requirement.
+struct Walk<'a, P> {
+    /// Consensus params, for the mass-based fee and storage math.
+    params: &'a Params,
+    /// How the fee is priced.
+    policy: FeePolicy,
+    /// The block-fit storage limit every funded layout must stay under.
+    limit: u64,
+    /// Whether the layout's change output cannot be dropped.
+    change_required: bool,
+    /// The builder's layout probe (see [`fund`]).
+    probe: &'a mut P,
+    /// (available, required) from the deepest storage-feasible attempt that still fell short.
+    shortfall: Option<(u64, u64)>,
+    /// The error from the deepest storage-infeasible attempt, returned only if no attempt ever
+    /// recorded a shortfall. Storage feasibility depends on the input set (the KIP-0009 credit
+    /// changes with n), so an attempt that is infeasible at one n can still be feasible deeper
+    /// in the candidate list, and an early infeasibility must not end the walk.
+    infeasible: Option<BuildError>,
+    /// Under a target policy, the deepest prefix that could pay its floor (with-change or
+    /// dropped-change, whichever this prefix reaches) but not the target rate; returned if the
+    /// walk finds no target success (unreachable-target degrade). `n` only grows across the
+    /// walk, so each recording is deeper than the last.
+    degraded: Option<Funding>,
 }
 
-/// Probes prefix `n`'s change-dropped layout and evaluates it against `policy`'s requirement and
-/// the block-fit storage limit.
-fn try_dropped_funding(
-    params: &Params,
-    policy: FeePolicy,
-    limit: u64,
-    n: usize,
-    available: u64,
-    probe: &mut impl FnMut(usize, Option<u64>) -> (Transaction, Vec<UtxoEntry>),
-) -> DroppedProbe {
-    let (dropped, dropped_entries) = probe(n, None);
-    let DroppedRequirement { floor, required } =
-        dropped_required_fee(policy, params, &dropped, &dropped_entries);
-    if available < floor {
-        return DroppedProbe::Unaffordable { required };
+impl<P: FnMut(usize, Option<u64>) -> (Transaction, Vec<UtxoEntry>)> Walk<'_, P> {
+    /// Attempts prefix `n`: breaks with its funding when the with-change layout (or, where the
+    /// change is droppable, the change-dropped one) meets the policy's requirement; records the
+    /// shortfall, degraded candidate, or infeasibility and continues otherwise.
+    fn attempt(&mut self, n: usize) -> ControlFlow<Funding> {
+        let (tx, entries) = (self.probe)(n, Some(0));
+        let entries_total: u64 = entries.iter().map(|entry| entry.amount).sum();
+        let outputs_total: u64 = tx.outputs.iter().map(|output| output.value).sum();
+        // A short prefix's entries can fall short of the fixed outputs alone; saturate to
+        // zero instead of underflowing so the walk keeps adding inputs.
+        let available = entries_total.saturating_sub(outputs_total);
+        let floor = min_fee(self.params, &tx);
+
+        if available < floor {
+            // The with-change layout is unaffordable even at the floor; without the change
+            // output the layout shrinks and so does its requirement, which the slack may cover.
+            if !self.change_required {
+                return self.try_dropped(n, available);
+            }
+            self.shortfall = Some((available, floor));
+            return ControlFlow::Continue(());
+        }
+
+        let input_cells: Vec<UtxoCell> = entries.iter().map(UtxoCell::from).collect();
+        let output_cells: Vec<UtxoCell> = tx.outputs.iter().map(UtxoCell::from).collect();
+        let Some(viable) = min_viable_change(self.params, &input_cells, &output_cells) else {
+            let storage = calc_storage_mass(
+                false,
+                input_cells.iter().copied(),
+                output_cells[..output_cells.len() - 1].iter().copied(),
+                self.params.storage_mass_parameter,
+            )
+            .unwrap_or(u64::MAX);
+            self.infeasible =
+                Some(BuildError::StorageInfeasible { storage_mass: storage, limit: self.limit });
+            return ControlFlow::Continue(());
+        };
+        let cap = available.saturating_sub(viable);
+        let params = self.params;
+        let pm = |change: u64| priority_mass(params, &tx, &input_cells, &output_cells, change);
+
+        match required_fee(self.policy, floor, available, cap, pm) {
+            Ok(fee) => {
+                ControlFlow::Break(Funding { inputs: n, fee, change: Some(available - fee) })
+            }
+            Err(crossing_fee) => {
+                if matches!(self.policy, FeePolicy::TargetFeerate(_)) && cap >= floor {
+                    self.degraded = Some(Funding { inputs: n, fee: cap, change: Some(viable) });
+                }
+                // The with-change layout can't reach the requirement; dropping the change
+                // only shrinks the layout, so its own (lower) requirement may still fit.
+                if !self.change_required {
+                    return self.try_dropped(n, available);
+                }
+                self.shortfall = Some((available, crossing_fee.saturating_add(viable)));
+                ControlFlow::Continue(())
+            }
+        }
     }
-    let storage_mass = calc_storage_mass(
-        false,
-        dropped_entries.iter().map(UtxoCell::from),
-        dropped.outputs.iter().map(UtxoCell::from),
-        params.storage_mass_parameter,
-    )
-    .unwrap_or(u64::MAX);
-    if storage_mass > limit {
-        return DroppedProbe::StorageInfeasible { storage_mass };
+
+    /// Probes prefix `n`'s change-dropped layout: breaks with the whole remainder as the fee
+    /// when it meets the policy's requirement and the block-fit storage limit; records the
+    /// shortfall, degraded candidate, or infeasibility and continues otherwise. Storage mass is
+    /// computed only once `available` covers the layout's own floor: below that, neither a
+    /// funded break nor a degraded candidate is reachable, so storage feasibility is
+    /// irrelevant, and probing it risks a zero-valued fixed output dividing by zero in
+    /// [`calc_storage_mass`] for no benefit.
+    fn try_dropped(&mut self, n: usize, available: u64) -> ControlFlow<Funding> {
+        let (dropped, dropped_entries) = (self.probe)(n, None);
+        let DroppedRequirement { floor, required } =
+            dropped_required_fee(self.policy, self.params, &dropped, &dropped_entries);
+        if available < floor {
+            self.shortfall = Some((available, required));
+            return ControlFlow::Continue(());
+        }
+        let storage_mass = calc_storage_mass(
+            false,
+            dropped_entries.iter().map(UtxoCell::from),
+            dropped.outputs.iter().map(UtxoCell::from),
+            self.params.storage_mass_parameter,
+        )
+        .unwrap_or(u64::MAX);
+        if storage_mass > self.limit {
+            self.infeasible =
+                Some(BuildError::StorageInfeasible { storage_mass, limit: self.limit });
+            return ControlFlow::Continue(());
+        }
+        if available < required {
+            if matches!(self.policy, FeePolicy::TargetFeerate(_)) {
+                self.degraded = Some(Funding { inputs: n, fee: available, change: None });
+            }
+            self.shortfall = Some((available, required));
+            return ControlFlow::Continue(());
+        }
+        ControlFlow::Break(Funding { inputs: n, fee: available, change: None })
     }
-    if available < required {
-        return DroppedProbe::ShortOfTarget { required };
+
+    /// What the walk resolves to when no prefix met the requirement: the deepest degraded
+    /// funding, else the deepest shortfall, else the deepest infeasibility.
+    fn conclude(self) -> Result<Funding, BuildError> {
+        if let Some(funding) = self.degraded {
+            return Ok(funding);
+        }
+        match self.shortfall {
+            Some((available, required)) => {
+                Err(BuildError::InsufficientFunds { available, required })
+            }
+            None => Err(self.infeasible.expect(
+                "candidates is non-empty: every attempt records a shortfall or an infeasibility",
+            )),
+        }
     }
-    DroppedProbe::Funded(Funding { inputs: n, fee: available, change: None })
 }
 
 /// Chooses how many leading `candidates` to spend, the fee, and whether the change output
@@ -108,7 +200,8 @@ fn try_dropped_funding(
 /// any builder-fixed inputs), with the change output last when `change` is `Some` and omitted
 /// when `None`, together with the entries all inputs spend, in input order. Probes must not
 /// commit storage mass. `change_required` marks layouts whose change output cannot be
-/// dropped (it is the transaction's only output).
+/// dropped (it is the transaction's only output). Empty `candidates` return
+/// [`BuildError::InsufficientFunds`], not a panic.
 pub(super) fn fund(
     params: &Params,
     policy: FeePolicy,
@@ -116,115 +209,26 @@ pub(super) fn fund(
     change_required: bool,
     probe: &mut impl FnMut(usize, Option<u64>) -> (Transaction, Vec<UtxoEntry>),
 ) -> Result<Funding, BuildError> {
-    assert!(!candidates.is_empty(), "funding needs at least one candidate UTXO");
-    let limit = params.block_mass_limits().raw_post().storage;
-    // (available, required) from the deepest storage-feasible attempt that still fell short.
-    let mut shortfall: Option<(u64, u64)> = None;
-    // The error from the deepest storage-infeasible attempt, returned only if no attempt ever
-    // recorded a shortfall. Storage feasibility depends on the input set (the KIP-0009 credit
-    // changes with n), so an attempt that is infeasible at one n can still be feasible deeper
-    // in the candidate list, and an early infeasibility must not end the search.
-    let mut infeasible: Option<BuildError> = None;
-    // Under a target policy, the deepest prefix that could pay its floor (with-change or
-    // dropped-change, whichever this prefix reaches) but not the target rate; returned if the
-    // walk finds no target success (unreachable-target degrade). `n` only grows across the
-    // walk, so each recording is deeper than the last.
-    let mut degraded: Option<Funding> = None;
+    if candidates.is_empty() {
+        let (tx, _) = probe(0, change_required.then_some(0));
+        return Err(BuildError::InsufficientFunds { available: 0, required: min_fee(params, &tx) });
+    }
+    let mut walk = Walk {
+        params,
+        policy,
+        limit: params.block_mass_limits().raw_post().storage,
+        change_required,
+        probe,
+        shortfall: None,
+        infeasible: None,
+        degraded: None,
+    };
     for n in 1..=candidates.len() {
-        let (tx, entries) = probe(n, Some(0));
-        let entries_total: u64 = entries.iter().map(|entry| entry.amount).sum();
-        let outputs_total: u64 = tx.outputs.iter().map(|output| output.value).sum();
-        // A short prefix's entries can fall short of the fixed outputs alone; saturate to
-        // zero instead of underflowing so the loop keeps adding inputs.
-        let available = entries_total.saturating_sub(outputs_total);
-        let floor = min_fee(params, &tx);
-        let input_cells: Vec<UtxoCell> = entries.iter().map(UtxoCell::from).collect();
-        let output_cells: Vec<UtxoCell> = tx.outputs.iter().map(UtxoCell::from).collect();
-
-        if available < floor {
-            // The with-change layout is unaffordable even at the floor; without the change
-            // output the layout shrinks and so does its requirement, which the slack may cover.
-            if !change_required {
-                match try_dropped_funding(params, policy, limit, n, available, probe) {
-                    DroppedProbe::Funded(funding) => return Ok(funding),
-                    DroppedProbe::StorageInfeasible { storage_mass } => {
-                        infeasible = Some(BuildError::StorageInfeasible { storage_mass, limit });
-                        continue;
-                    }
-                    DroppedProbe::ShortOfTarget { required } => {
-                        if matches!(policy, FeePolicy::TargetFeerate(_)) {
-                            degraded = Some(Funding { inputs: n, fee: available, change: None });
-                        }
-                        shortfall = Some((available, required));
-                        continue;
-                    }
-                    DroppedProbe::Unaffordable { required } => {
-                        shortfall = Some((available, required));
-                        continue;
-                    }
-                }
-            }
-            shortfall = Some((available, floor));
-            continue;
-        }
-
-        let Some(viable) = min_viable_change(params, &input_cells, &output_cells) else {
-            let storage = calc_storage_mass(
-                false,
-                input_cells.iter().copied(),
-                output_cells[..output_cells.len() - 1].iter().copied(),
-                params.storage_mass_parameter,
-            )
-            .unwrap_or(u64::MAX);
-            infeasible = Some(BuildError::StorageInfeasible { storage_mass: storage, limit });
-            continue;
-        };
-        let cap = available.saturating_sub(viable);
-        let pm = |change: u64| priority_mass(params, &tx, &input_cells, &output_cells, change);
-
-        match required_fee(policy, floor, available, cap, pm) {
-            Ok(fee) => return Ok(Funding { inputs: n, fee, change: Some(available - fee) }),
-            Err(crossing_fee) => {
-                if matches!(policy, FeePolicy::TargetFeerate(_)) && cap >= floor {
-                    degraded = Some(Funding { inputs: n, fee: cap, change: Some(viable) });
-                }
-                if !change_required {
-                    // The with-change layout can't reach the requirement; dropping the change
-                    // only shrinks the layout, so its own (lower) requirement may still fit.
-                    match try_dropped_funding(params, policy, limit, n, available, probe) {
-                        DroppedProbe::Funded(funding) => return Ok(funding),
-                        DroppedProbe::StorageInfeasible { storage_mass } => {
-                            infeasible =
-                                Some(BuildError::StorageInfeasible { storage_mass, limit });
-                            continue;
-                        }
-                        DroppedProbe::ShortOfTarget { required } => {
-                            if matches!(policy, FeePolicy::TargetFeerate(_)) {
-                                degraded =
-                                    Some(Funding { inputs: n, fee: available, change: None });
-                            }
-                            shortfall = Some((available, required));
-                            continue;
-                        }
-                        DroppedProbe::Unaffordable { required } => {
-                            shortfall = Some((available, required));
-                            continue;
-                        }
-                    }
-                }
-                shortfall = Some((available, crossing_fee.saturating_add(viable)));
-            }
+        if let ControlFlow::Break(funding) = walk.attempt(n) {
+            return Ok(funding);
         }
     }
-    if let Some(funding) = degraded {
-        return Ok(funding);
-    }
-    match shortfall {
-        Some((available, required)) => Err(BuildError::InsufficientFunds { available, required }),
-        None => Err(infeasible.expect(
-            "candidates is non-empty: every attempt records a shortfall or an infeasibility",
-        )),
-    }
+    walk.conclude()
 }
 
 /// Regression tests for the funding search's fee/change/input-count decisions under
@@ -382,6 +386,32 @@ mod tests {
         let err = fund(params, FeePolicy::Floor, &candidates, true, &mut probe)
             .expect_err("not fundable");
         assert!(matches!(err, BuildError::InsufficientFunds { .. }), "got {err:?}");
+    }
+
+    /// No candidates at all: a typed insufficiency carrying the zero-prefix layout's floor,
+    /// not a panic, for both the droppable and the change-required layout.
+    #[test]
+    fn fund_reports_insufficient_funds_for_empty_candidates() {
+        let params = &SIMNET_PARAMS;
+        let keypair = keypair();
+        let address = address(&keypair, params);
+        let spk = pay_to_address_script(&address);
+        let candidates = candidates_of(&[], &address);
+        let mut probe = payout_probe(&candidates, 50_000_000, &spk, &keypair);
+
+        let err = fund(params, FeePolicy::Floor, &candidates, false, &mut probe)
+            .expect_err("nothing to fund a droppable layout from");
+        let (dropped, _) = probe(0, None);
+        let expected =
+            BuildError::InsufficientFunds { available: 0, required: min_fee(params, &dropped) };
+        assert_eq!(err, expected);
+
+        let err = fund(params, FeePolicy::Floor, &candidates, true, &mut probe)
+            .expect_err("nothing to fund a change-required layout from");
+        let (with_change, _) = probe(0, Some(0));
+        let expected =
+            BuildError::InsufficientFunds { available: 0, required: min_fee(params, &with_change) };
+        assert_eq!(err, expected);
     }
 
     /// A fixed output whose storage term alone exceeds the block-fit limit can never be
