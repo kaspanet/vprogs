@@ -139,8 +139,10 @@ pub(super) fn dropped_required_fee(
 /// [`calc_storage_mass`] cannot price. [`FeePolicy::Floor`] evaluates `floor` once.
 /// [`FeePolicy::TargetFeerate`] iterates `f' = rate_fee(rate, floor, pm(available - f))` from
 /// `f = floor` (monotone non-decreasing, since `pm` is non-increasing in the change value) until
-/// it converges (`Ok`, the least sufficient fee) or a step would exceed `cap` (`Err`, carrying
-/// the fee that crossed it). 256 steps without convergence is treated as crossing `cap`.
+/// a step no longer raises the fee (`Ok`: the least sufficient fee under a monotone `pm`, and in
+/// any case a fee covering its own final layout's requirement, so it pays at least the target rate)
+/// or a step would exceed `cap` (`Err`, carrying the fee that crossed it). 256 steps without
+/// convergence is treated as crossing `cap`.
 pub(super) fn required_fee(
     policy: FeePolicy,
     floor: u64,
@@ -158,7 +160,7 @@ pub(super) fn required_fee(
         if required > cap {
             return Err(required);
         }
-        if required == fee {
+        if required <= fee {
             return Ok(fee);
         }
         fee = required;
@@ -187,6 +189,19 @@ mod tests {
         let fee = rate_fee(rate, 0, pm);
         assert_eq!(fee, naive + 1, "the single +1 correction must fire for this boundary case");
         assert!(fee as f64 / pm as f64 >= rate, "fee {fee} at pm {pm} rate {rate} falls short");
+    }
+
+    /// A non-monotone `pm` (which the storage model should never produce) must not oscillate
+    /// the fixpoint into the 256-step bailout: a fee whose next step no longer raises it pays
+    /// at least its own layout's requirement and is accepted, merely a shade above the target.
+    #[test]
+    fn required_fee_accepts_a_fee_a_non_monotone_pm_no_longer_raises() {
+        // pm dips once the change drops below 9_850: fee 100 prices to 200, fee 200 prices
+        // back to 150, and a strict-equality fixpoint would bounce between them forever.
+        let pm = |change: u64| if change >= 9_850 { 200 } else { 150 };
+        let fee = required_fee(FeePolicy::TargetFeerate(1.0), 100, 10_000, 5_000, pm)
+            .expect("a non-raising step must converge, not bail out");
+        assert_eq!(fee, 200);
     }
 
     /// Above `2^53`, adjacent `u64` values can round to the same `f64`, so a single `+1`
