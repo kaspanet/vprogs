@@ -29,7 +29,7 @@ impl<'a, S: Store, P: Processor<S>> AccessHandle<'a, S, P> {
         self.access
     }
 
-    /// Returns the current version number of this resource (0 if new).
+    /// Returns the current version number of this resource.
     pub fn version(&self) -> u64 {
         self.state_version.version()
     }
@@ -50,12 +50,6 @@ impl<'a, S: Store, P: Processor<S>> AccessHandle<'a, S, P> {
     #[inline]
     pub fn set_data(&mut self, data: Vec<u8>) {
         self.state_version.set_data(self.batch_index, data)
-    }
-
-    /// Returns true if this resource was created by the current transaction (version 0).
-    #[inline]
-    pub fn is_new(&self) -> bool {
-        self.state_version.version() == 0
     }
 
     pub(crate) fn new(access: &'a ResourceAccess<S, P>, batch_index: u64) -> Self {

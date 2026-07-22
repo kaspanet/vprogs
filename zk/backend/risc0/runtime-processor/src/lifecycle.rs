@@ -1,15 +1,20 @@
 //! Per-resource lifecycle state machine, tracked by the runtime as a transaction's actions apply.
 //!
-//! The ABI's `Resource` is deliberately lifecycle-agnostic: it only knows the host's `is_new`
-//! snapshot, its current bytes, and a dirty flag, which is all the journal needs (a changed
-//! resource commits `hash(data)`, an emptied one commits `EMPTY_HASH`). *Whether* a slot may be
-//! created, credited, or deleted is an application concern, so the lifecycle lives here and in
+//! The ABI's `Resource` is deliberately lifecycle-agnostic: it only knows whether the slot started
+//! empty, its current bytes, and a dirty flag, which is all the journal needs (a changed resource
+//! commits `hash(data)`, an emptied one commits `EMPTY_HASH`). *Whether* a slot may be created,
+//! credited, or deleted is an application concern, so the lifecycle lives here and in
 //! [`ApplyContext`](crate::action::ApplyContext), not in the ABI.
 //!
 //! The state advances *within* a single transaction (`New -> Live -> Deleted`), so an action reads
 //! the effect of an earlier same-tx action rather than the stale input snapshot; the create-vs-
 //! credit decision is made from the live state. `Deleted` is terminal and distinct from `New`, so a
-//! torn-down slot can be told apart from a never-created one and re-creation is rejected.
+//! slot torn down earlier in this tx can be told apart from a never-created one and re-creation is
+//! rejected.
+//!
+//! Committed state has no `Deleted`: emptying a resource removes its SMT leaf, so a torn-down slot
+//! proves identically to one that never existed. A transaction therefore starts every empty slot at
+//! `New`, and `Deleted` is only ever reached by this tx's own delete transition.
 
 use vprogs_zk_abi::transaction_processor::Resource;
 
@@ -22,21 +27,15 @@ pub enum Lifecycle {
     /// Slot holds live data: either committed prior state, or a resource created earlier in this
     /// tx. Reads and writes are valid; it may be deleted ([`Lifecycle::deleted`]).
     Live,
-    /// Slot was torn down: committed-empty, or deleted earlier in this tx. Terminal: both reads
-    /// and re-creation are rejected.
+    /// Slot was torn down by this tx. Terminal: both reads and re-creation are rejected.
     Deleted,
 }
 
 impl Lifecycle {
-    /// Maps a freshly decoded resource to its starting lifecycle: a new slot is `New`; an existing
-    /// slot with data is `Live`; an existing-but-empty slot is `Deleted` (torn down before this
-    /// tx).
+    /// Maps a freshly decoded resource to its starting lifecycle: an empty slot is `New`, a slot
+    /// with committed data is `Live`. No resource starts `Deleted`.
     pub fn from_resource(r: &Resource<'_>) -> Self {
-        match (r.is_new(), r.data().is_empty()) {
-            (true, _) => Self::New,
-            (false, false) => Self::Live,
-            (false, true) => Self::Deleted,
-        }
+        if r.is_new() { Self::New } else { Self::Live }
     }
 
     /// Create transition `New -> Live`. Errors for any other source state, so a same-tx double
