@@ -14,7 +14,7 @@ use kaspa_hashes::Hash;
 use kaspa_seq_commit::{hashing::mergeset_context_hash, types::MergesetContext};
 use tempfile::TempDir;
 use vprogs_core_hashing::Sha256;
-use vprogs_core_smt::{Commitment, Tree, proving::Proof};
+use vprogs_core_smt::{Commitment, Tree};
 use vprogs_core_types::ResourceId;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_storage_types::Store;
@@ -61,6 +61,8 @@ const SIBLING_SIZE: usize = 33;
 const KEY_SIZE: usize = 32;
 
 /// What the verifier settled for one batch.
+#[allow(dead_code, reason = "fields are printed when an expected rejection settles")]
+#[derive(Debug)]
 struct Settled {
     /// `prev_state` the covenant checks against its on-chain state.
     prev_state: [u8; 32],
@@ -81,8 +83,6 @@ fn verifier_rejects_two_withdrawals_aliasing_one_account_key() {
     let (_dir, store) = funded_store();
     let honest_proof =
         store.prove(&[ResourceId::from(ALICE_KEY), ResourceId::from(BOB_KEY)], VERSION).unwrap();
-    let on_chain_root = store.root(VERSION);
-
     // The honest proof interns Alice once; the malicious prover appends a second entry for her.
     let evil_proof = with_aliased_first_key(&honest_proof);
 
@@ -106,31 +106,10 @@ fn verifier_rejects_two_withdrawals_aliasing_one_account_key() {
     );
     let input_bytes = batch_inputs(&evil_proof, &[tx1, tx2]);
 
-    let Ok(settled) = settle(&input_bytes) else {
-        return;
-    };
-
-    // Reference roots from the honest proof with Alice's single debit applied.
-    let honest = Proof::decode(&honest_proof).unwrap();
-    let (honest_prev_root, single_debit_root) = honest
-        .compute_roots::<Sha256>(|i| {
-            if honest_key(&honest, i) == ALICE_KEY { &ALICE_DEBITED } else { &BOB_VALUE }
-        })
-        .unwrap();
-
-    panic!(
-        "batch settled instead of being rejected\n  \
-         exits: {} payouts totalling {} against a balance funding one payout of {}\n  \
-         prev_state: {} (on-chain root {}, honest proof {}) -- the alias is invisible to the covenant\n  \
-         new_state: {} (root folding a single debit {}) -- one debit reached the root, two were paid",
-        settled.exit_count,
-        settled.exits_paid,
-        WITHDRAW_AMOUNT,
-        hex(&settled.prev_state),
-        hex(&on_chain_root),
-        hex(&honest_prev_root),
-        hex(&settled.new_state),
-        hex(&single_debit_root),
+    let err = settle(&input_bytes).expect_err("batch settled with aliased proof keys");
+    assert!(
+        err.contains("canonical proof keys"),
+        "expected a canonical-proof-keys rejection, got: {err}"
     );
 }
 
@@ -210,11 +189,11 @@ fn verifier_rejects_a_success_journal_with_more_outputs_than_input_resources() {
     );
     let input_bytes = batch_inputs(&proof, &[tx]);
 
-    if settle(&input_bytes).is_err() {
-        return;
-    }
-
-    panic!("batch settled: the journal's two unconsumed output-resource commitments were ignored");
+    let err = settle(&input_bytes).expect_err("batch settled with excess output commitments");
+    assert!(
+        err.contains("more output commitments than input resources"),
+        "expected an excess-output-commitments rejection, got: {err}"
+    );
 }
 
 /// Opens a store holding Alice's funded account and Bob's account at [`VERSION`].
@@ -306,11 +285,6 @@ fn write_section(out: &mut Vec<u8>, count: u32, bytes: &[u8]) {
     out.extend_from_slice(bytes);
 }
 
-/// The key the honest proof's membership `idx` queries.
-fn honest_key(proof: &Proof<'_>, idx: usize) -> [u8; 32] {
-    *proof.member(idx).unwrap().key
-}
-
 /// Mergeset context hash of the batch's chain block, as the verifier derives it.
 fn context_hash() -> Hash {
     mergeset_context_hash(&MergesetContext {
@@ -398,9 +372,4 @@ fn batch_inputs(proof: &[u8], tx_journals: &[Vec<u8>]) -> Vec<u8> {
     buf.extend_from_slice(&journals);
 
     buf
-}
-
-/// Renders the first eight bytes of a hash for failure messages.
-fn hex(bytes: &[u8; 32]) -> String {
-    bytes[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
