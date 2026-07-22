@@ -29,7 +29,7 @@ impl<'a, S: Store, P: Processor<S>> AccessHandle<'a, S, P> {
         self.access
     }
 
-    /// Returns the current version number of this resource (0 if new).
+    /// Returns the current version number of this resource.
     pub fn version(&self) -> u64 {
         self.state_version.version()
     }

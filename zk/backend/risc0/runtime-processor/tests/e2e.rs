@@ -820,7 +820,7 @@ fn init_config_inputs(config_data: Vec<u8>) -> Vec<u8> {
 /// which the journal's data hash binds to the old root, so a prover cannot present these committed
 /// bytes as a new slot; `Init` sees `Live` and must reject.
 #[test]
-fn live_config_falsely_marked_new_is_rejected() {
+fn init_over_live_config_rejected() {
     let existing_owner = TestSigner::new();
     let live_data = build_schnorr_locked_config(&existing_owner.pubkey, 100);
 
