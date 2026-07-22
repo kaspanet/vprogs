@@ -35,6 +35,22 @@ impl<'a> Proof<'a> {
         })
     }
 
+    /// Errs unless every membership has a key and the queried keys are strictly ascending.
+    ///
+    /// Strict ascent also rules out a key interned at two queried indices, so no key can back two
+    /// membership slots.
+    pub fn check_sorted_queried_keys(&self) -> Result<()> {
+        let queried = self
+            .keys
+            .get(..self.memberships.len())
+            .ok_or(Error::Decode("membership without key"))?;
+        if queried.is_sorted_by(|a, b| a < b) {
+            Ok(())
+        } else {
+            Err(Error::Decode("queried keys not strictly ascending"))
+        }
+    }
+
     /// Returns the [`Member`] at caller-input position `idx`, or an error if it doesn't exist.
     pub fn member(&self, idx: usize) -> Result<Member<'a>> {
         match *self.memberships.get(idx).ok_or(Error::Decode("membership out of range"))? {

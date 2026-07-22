@@ -1,6 +1,9 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use arc_swap::ArcSwapOption;
@@ -281,8 +284,32 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
                 artifact_published.open();
             }
 
+            // Batch-local resource indices follow ascending resource-id order: the batch proof's
+            // queried keys inherit this order, and the batch verifier rejects any other.
+            let mut resource_indices: BTreeMap<ResourceId, u32> =
+                txs.iter().flat_map(|tx| tx.resources.iter()).map(|a| (a.resource_id, 0)).collect();
+            resource_indices.values_mut().enumerate().for_each(|(i, idx)| *idx = i as u32);
+
+            let tx_count = txs.len() as u64;
             let mut state_diffs = Vec::new();
-            let mut resource_index = 0u32;
+            let txs: Vec<_> = txs
+                .into_iter()
+                .enumerate()
+                .map(|(i, tx)| {
+                    ScheduledTransaction::new(
+                        scheduler,
+                        &mut state_diffs,
+                        ScheduledBatchRef(this.clone()),
+                        i as u32,
+                        tx,
+                        &resource_indices,
+                    )
+                })
+                .collect();
+
+            // State diffs are created on first touch; put them in index order so positions match
+            // the assigned indices.
+            state_diffs.sort_unstable_by_key(StateDiff::index);
 
             ScheduledBatchData {
                 cancellation: scheduler.cancellation().clone(),
@@ -290,22 +317,9 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
                 state: scheduler.state().clone(),
                 checkpoint,
                 restored,
-                pending_txs: AtomicU64::new(txs.len() as u64),
-                pending_tx_artifacts: AtomicU64::new(txs.len() as u64),
-                txs: txs
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, tx)| {
-                        ScheduledTransaction::new(
-                            scheduler,
-                            &mut state_diffs,
-                            ScheduledBatchRef(this.clone()),
-                            i as u32,
-                            tx,
-                            &mut resource_index,
-                        )
-                    })
-                    .collect(),
+                pending_txs: AtomicU64::new(tx_count),
+                pending_tx_artifacts: AtomicU64::new(tx_count),
+                txs,
                 state_diffs,
                 available_txs: Injector::new(),
                 processed,

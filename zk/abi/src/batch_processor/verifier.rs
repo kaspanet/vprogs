@@ -38,6 +38,11 @@ impl<'a, V: FnMut(&[u8; 32], &[u8])> Verifier<'a, V> {
     pub fn new(input_bytes: &'a [u8], verify_tx_journal: V) -> Self {
         let inputs = Inputs::decode(input_bytes).expect("decode batch inputs");
 
+        // The proof is prover-supplied: enforcing the canonical strictly-ascending queried-key
+        // order rejects a keys table interning one key twice, which would give that key two
+        // membership slots and let txs alias one resource past the per-resource hash chain.
+        inputs.proof.check_sorted_queried_keys().expect("canonical proof keys");
+
         Self {
             latest_value_hashes: inputs.proof.members().map(|m| m.unwrap().value_hash()).collect(),
             inputs,
@@ -159,6 +164,14 @@ impl<'a, V: FnMut(&[u8; 32], &[u8])> Verifier<'a, V> {
                                 self.latest_value_hashes[batch_idx] = hash;
                             }
                         }
+                    }
+
+                    // Output commitments are one-to-one with the declared input resources.
+                    if let Some(mut outputs) = output_resources {
+                        assert!(
+                            outputs.next().is_none(),
+                            "more output commitments than input resources"
+                        );
                     }
                 }
 

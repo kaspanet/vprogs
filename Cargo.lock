@@ -9168,6 +9168,7 @@ dependencies = [
  "kaspa-seq-commit",
  "kaspa-smt",
  "tap",
+ "tempfile",
  "thiserror 2.0.18",
  "vprogs-core-codec",
  "vprogs-core-hashing",
@@ -9176,6 +9177,7 @@ dependencies = [
  "vprogs-l1-types",
  "vprogs-l1-utils",
  "vprogs-scheduling-scheduler",
+ "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
  "zerocopy",
 ]
