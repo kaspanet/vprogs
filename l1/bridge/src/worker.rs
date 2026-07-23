@@ -325,12 +325,14 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         // Lowest verbosity (no txs): we need each block's selected parent, then the landing header.
         let mut hash = sink;
         for _ in 0..depth {
+            // Same trust boundary as the sync path: the peer carries verbose data as an `Option`,
+            // and without it there is no parent to walk to.
             let parent = self
                 .client
                 .get_block(hash, false)
                 .await?
                 .verbose_data
-                .expect("get_block returns verbose data")
+                .ok_or(Error::MalformedResponse("missing block verbose_data".into()))?
                 .selected_parent_hash;
             if parent == hash {
                 break;

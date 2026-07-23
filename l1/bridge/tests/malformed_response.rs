@@ -4,8 +4,8 @@
 //! its consumers a terminal [`L1Event::Fatal`]. A worker panic instead would kill the worker
 //! thread silently, stop the sink, and park `wait_and_pop` consumers forever with no indication.
 //!
-//! Each test drives a real L1 node through a proxy that elides exactly one field from every
-//! `GetVirtualChainFromBlockV2` response, then asserts the bridge reports the malformed response.
+//! Each test drives a real L1 node through a proxy that elides exactly one field from every reply
+//! carrying it, then asserts the bridge reports the malformed response.
 
 use std::{
     panic,
@@ -19,7 +19,7 @@ use std::{
 use borsh::BorshDeserialize;
 use futures::{SinkExt, StreamExt};
 use kaspa_consensus_core::network::NetworkId;
-use kaspa_rpc_core::{GetVirtualChainFromBlockV2Response, api::ops::RpcApiOps};
+use kaspa_rpc_core::{GetBlockResponse, GetVirtualChainFromBlockV2Response, api::ops::RpcApiOps};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::mpsc,
@@ -84,10 +84,19 @@ fn bridge_panics() -> Vec<String> {
 // The tampered field, one per panic site
 // ============================================================================
 
-/// A single field elided from every `GetVirtualChainFromBlockV2` response. An honest node at
-/// `Full` verbosity always populates these; a malicious one is free not to.
+/// A single field elided from every reply carrying it. An honest node at `Full` verbosity always
+/// populates these; a malicious one is free not to.
 #[derive(Clone, Copy, Debug)]
 enum Elide {
+    /// A field of the virtual-chain reply, read while syncing.
+    Chain(ChainField),
+    /// A block's `verbose_data`, read while seeding the genesis anchor below the sink.
+    BlockVerboseData,
+}
+
+/// A field of a `GetVirtualChainFromBlockV2` response the worker reads.
+#[derive(Clone, Copy, Debug)]
+enum ChainField {
     /// The chain-block header's `hash`.
     HeaderHash,
     /// The chain-block header's `daa_score`.
@@ -101,17 +110,50 @@ enum Elide {
 }
 
 impl Elide {
-    /// Removes this variant's field throughout `response`, returning how many were removed.
+    /// The reply this field is elided from.
+    fn op(self) -> RpcApiOps {
+        match self {
+            Elide::Chain(_) => RpcApiOps::GetVirtualChainFromBlockV2,
+            Elide::BlockVerboseData => RpcApiOps::GetBlock,
+        }
+    }
+
+    /// Rewrites `payload` without this field, returning the rewritten payload and how many fields
+    /// it removed, or `None` if the payload is not the reply's success arm.
+    fn apply(self, payload: &[u8]) -> Option<(Vec<u8>, usize)> {
+        match self {
+            Elide::Chain(field) => {
+                let mut response =
+                    VccReply::deserialize(&mut &payload[..]).ok()?.ok()?.into_inner();
+                let elided = field.apply(&mut response);
+                let payload = borsh::to_vec::<VccReply>(&Ok(Serializable(response)))
+                    .expect("response must reserialize");
+                Some((payload, elided))
+            }
+            Elide::BlockVerboseData => {
+                let mut response =
+                    BlockReply::deserialize(&mut &payload[..]).ok()?.ok()?.into_inner();
+                let elided = response.block.verbose_data.take().is_some() as usize;
+                let payload = borsh::to_vec::<BlockReply>(&Ok(Serializable(response)))
+                    .expect("response must reserialize");
+                Some((payload, elided))
+            }
+        }
+    }
+}
+
+impl ChainField {
+    /// Removes this field throughout `response`, returning how many were removed.
     fn apply(self, response: &mut GetVirtualChainFromBlockV2Response) -> usize {
         let mut elided = 0;
         for block in Arc::make_mut(&mut response.chain_block_accepted_transactions) {
             let header = &mut block.chain_block_header;
             elided += match self {
-                Elide::HeaderHash => header.hash.take().is_some() as usize,
-                Elide::HeaderDaaScore => header.daa_score.take().is_some() as usize,
-                Elide::HeaderTimestamp => header.timestamp.take().is_some() as usize,
-                Elide::HeaderBlueScore => header.blue_score.take().is_some() as usize,
-                Elide::TxStorageMass => block
+                ChainField::HeaderHash => header.hash.take().is_some() as usize,
+                ChainField::HeaderDaaScore => header.daa_score.take().is_some() as usize,
+                ChainField::HeaderTimestamp => header.timestamp.take().is_some() as usize,
+                ChainField::HeaderBlueScore => header.blue_score.take().is_some() as usize,
+                ChainField::TxStorageMass => block
                     .accepted_transactions
                     .iter_mut()
                     .map(|tx| tx.storage_mass.take().is_some() as usize)
@@ -128,9 +170,9 @@ impl Elide {
 
 /// A wRPC proxy between the bridge and a real L1 node.
 ///
-/// It forwards every frame verbatim except successful replies to `GetVirtualChainFromBlockV2`, from
-/// which it elides one field, and counts what it removed so a test can establish that the worker
-/// was actually served a malformed response.
+/// It forwards every frame verbatim except the successful replies carrying the tampered field, from
+/// which it elides that one field, and counts what it removed so a test can establish that the
+/// worker was actually served a malformed response.
 struct TamperProxy {
     /// URL the bridge connects to, standing in for the node's own wRPC URL.
     url: String,
@@ -187,7 +229,7 @@ impl TamperProxy {
     }
 }
 
-/// Relays frames both ways, eliding a field from every virtual-chain response.
+/// Relays frames both ways, eliding a field from every response carrying it.
 async fn pump(
     downstream: WebSocketStream<TcpStream>,
     upstream: WebSocketStream<MaybeTlsStream<TcpStream>>,
@@ -225,22 +267,23 @@ async fn pump(
 /// A virtual-chain method reply's payload: the handler's `Result`, as the wRPC server frames it.
 type VccReply = Result<Serializable<GetVirtualChainFromBlockV2Response>, ServerError>;
 
-/// Rewrites `bytes` with `elide`'s field removed, or `None` if the frame is not a successful
-/// virtual-chain reply.
+/// A `GetBlock` reply's payload, framed the same way.
+type BlockReply = Result<Serializable<GetBlockResponse>, ServerError>;
+
+/// Rewrites `bytes` with `elide`'s field removed, or `None` if the frame is not the successful
+/// reply carrying it.
 fn tamper(bytes: &[u8], elide: Elide, elided: &AtomicUsize) -> Option<Message> {
     let message = BorshServerMessage::<RpcApiOps, Id64>::try_from(bytes).ok()?;
     if !matches!(message.header.kind, ServerMessageKind::Success)
-        || message.header.op != Some(RpcApiOps::GetVirtualChainFromBlockV2)
+        || message.header.op != Some(elide.op())
     {
         return None;
     }
 
     // Only the `Ok` arm carries a response; an error reply is forwarded untouched.
-    let mut response = VccReply::deserialize(&mut &message.payload[..]).ok()?.ok()?.into_inner();
-    elided.fetch_add(elide.apply(&mut response), Ordering::Relaxed);
+    let (payload, count) = elide.apply(message.payload)?;
+    elided.fetch_add(count, Ordering::Relaxed);
 
-    let payload =
-        borsh::to_vec::<VccReply>(&Ok(Serializable(response))).expect("response must reserialize");
     let header =
         BorshServerMessageHeader::new(message.header.id, message.header.kind, message.header.op);
     let rewritten =
@@ -328,8 +371,9 @@ struct Harness {
     _api: ApiGuard,
 }
 
-/// Starts a node, a proxy eliding `elide`, and a bridge connected behind the proxy.
-async fn setup(elide: Elide) -> Harness {
+/// Starts a node, a proxy eliding `elide`, and a bridge behind the proxy that anchors its fresh
+/// chain as `seed_depth` says.
+async fn spawn(elide: Elide, seed_depth: Option<u64>) -> Harness {
     record_panics();
 
     let node = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
@@ -338,17 +382,26 @@ async fn setup(elide: Elide) -> Harness {
     let config = L1BridgeConfig::default()
         .with_url(Some(proxy.url()))
         .with_network_type(NetworkType::Simnet)
-        .with_connect_strategy(ConnectStrategy::Fallback);
+        .with_connect_strategy(ConnectStrategy::Fallback)
+        .with_seed_depth(seed_depth);
 
     let sink = RecordingSink::new();
     let (api_tx, api_rx) = mpsc::channel(1);
     let bridge = L1Bridge::new(config, sink.clone(), api_rx);
 
+    Harness { node, bridge, sink, proxy, _api: api_tx }
+}
+
+/// Spawns a harness anchored at the pruning point and waits for it to connect, leaving the sync
+/// path as the only place the elided field is read.
+async fn setup(elide: Elide) -> Harness {
+    let h = spawn(elide, None).await;
+
     // Drain `Connected` so a later `wait_and_pop` parks on the queue, as a consumer would.
-    let events = bridge.wait_for(TIMEOUT, |e| matches!(e, L1Event::Connected)).await;
+    let events = h.bridge.wait_for(TIMEOUT, |e| matches!(e, L1Event::Connected)).await;
     assert_eq!(events.len(), 1, "the bridge queued {events:?} before connecting");
 
-    Harness { node, bridge, sink, proxy, _api: api_tx }
+    h
 }
 
 /// Mines until a tampered response reaches the worker, then asserts the bridge reports the
@@ -383,27 +436,47 @@ async fn assert_fatal_on_elided_field(elide: Elide) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn elided_header_hash_reports_fatal() {
-    assert_fatal_on_elided_field(Elide::HeaderHash).await;
+    assert_fatal_on_elided_field(Elide::Chain(ChainField::HeaderHash)).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn elided_header_daa_score_reports_fatal() {
-    assert_fatal_on_elided_field(Elide::HeaderDaaScore).await;
+    assert_fatal_on_elided_field(Elide::Chain(ChainField::HeaderDaaScore)).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn elided_transaction_storage_mass_reports_fatal() {
-    assert_fatal_on_elided_field(Elide::TxStorageMass).await;
+    assert_fatal_on_elided_field(Elide::Chain(ChainField::TxStorageMass)).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn elided_header_timestamp_reports_fatal() {
-    assert_fatal_on_elided_field(Elide::HeaderTimestamp).await;
+    assert_fatal_on_elided_field(Elide::Chain(ChainField::HeaderTimestamp)).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn elided_header_blue_score_reports_fatal() {
-    assert_fatal_on_elided_field(Elide::HeaderBlueScore).await;
+    assert_fatal_on_elided_field(Elide::Chain(ChainField::HeaderBlueScore)).await;
+}
+
+/// The walk in `seed_from_recent` reads `verbose_data` before the bridge announces `Connected`, so
+/// a peer eliding it there kills the worker at startup, before any of the sync-path reads above
+/// runs. The walk has no parent to follow and can never yield progress, so the consumer is still
+/// owed `Fatal`, and this is the only case where nothing at all precedes it in the queue.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn elided_block_verbose_data_reports_fatal() {
+    // One step below the sink is enough: the walk's first `get_block` reply carries the field.
+    let h = spawn(Elide::BlockVerboseData, Some(1)).await;
+    h.proxy.wait_for_elision(TIMEOUT).await;
+
+    let event = tokio::time::timeout(FATAL_TIMEOUT, h.bridge.wait_and_pop()).await;
+    assert!(
+        matches!(event, Ok(L1Event::Fatal { .. })),
+        "expected Fatal while seeding below the sink, got {event:?}. The worker panicked at: {:?}",
+        bridge_panics(),
+    );
+
+    h.node.shutdown().await;
 }
 
 // ============================================================================
@@ -418,7 +491,7 @@ async fn elided_header_blue_score_reports_fatal() {
 /// parked forever.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn malformed_response_leaves_the_bridge_observable() {
-    let h = setup(Elide::HeaderDaaScore).await;
+    let h = setup(Elide::Chain(ChainField::HeaderDaaScore)).await;
 
     h.node.mine_blocks(2).await;
     h.proxy.wait_for_elision(TIMEOUT).await;
