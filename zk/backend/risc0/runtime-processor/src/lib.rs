@@ -1,7 +1,8 @@
 #![cfg_attr(not(test), no_std)]
 // Guest must never panic; a panicking tx is un-provable. Forbid the common
-// panic-producing constructs in non-test builds; lib-internal `#[cfg(test)]`
-// modules and the `tests/` integration crate are unaffected. Truly
+// panic-producing constructs in non-test builds; `panic_in_result_fn` extends
+// the net to `assert*` inside `Result`-returning functions. Lib-internal
+// `#[cfg(test)]` modules and the `tests/` integration crate are unaffected. Truly
 // unreachable-by-construction sites use a localized `#[allow]` with a
 // comment explaining the invariant.
 #![cfg_attr(
@@ -10,6 +11,7 @@
         clippy::unwrap_used,
         clippy::expect_used,
         clippy::panic,
+        clippy::panic_in_result_fn,
         clippy::unreachable,
         clippy::todo,
         clippy::unimplemented,
