@@ -29,3 +29,8 @@ CLAUDE.md
 
 # Agent coordination scratch
 .agent-work/
+
+# Local secrets
+.env
+.env.*
+!.env.example

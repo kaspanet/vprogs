@@ -238,8 +238,9 @@ where
     /// final block's lane proof, encodes the aggregator inputs over the per-batch journals, proves
     /// (with the per-batch receipts as composition assumptions) or reuses the cached receipt, then
     /// fills the published handle with the proved [`SettlementArtifact`]. An all-empty or no-op
-    /// bundle (one that advances no state) publishes a resolved no-op handle instead. The same body
-    /// serves the normal front-of-queue bundle and a re-aggregated superseded suffix.
+    /// bundle (one whose committed transition is unchanged) publishes a resolved no-op handle
+    /// instead. The same body serves the normal front-of-queue bundle and a re-aggregated
+    /// superseded suffix.
     async fn prove_bundle(&self, bundle: &[ScheduledBatch<S, P>]) {
         let take = bundle.len();
         let last_checkpoint = bundle.last().unwrap().checkpoint();
@@ -332,10 +333,15 @@ where
             .array_as::<StateTransition>("state_transition")
             .expect("aggregator journal");
 
-        // A no-op bundle (no lane activity in its blocks) leaves the state unchanged: nothing to
-        // settle. Resolve the published handle as a no-op so a paced consumer accounts for these
-        // batches.
-        if st.new_state == st.prev_state {
+        // A no-op bundle leaves the whole committed transition unchanged: same state root, same
+        // lane tip, no exits, no deposit. The parts move independently (a failed tx advances the
+        // lane activity digest without writing a resource), so each is checked. Nothing to settle:
+        // resolve the published handle as a no-op so a paced consumer accounts for these batches.
+        if st.new_state == st.prev_state
+            && st.new_lane_tip == st.prev_lane_tip
+            && st.permission_spk_hash == [0u8; 32]
+            && st.deposit_spk_hash == [0u8; 32]
+        {
             handle.publish_artifact(None);
             return;
         }
