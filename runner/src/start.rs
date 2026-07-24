@@ -171,8 +171,9 @@ where
     }
 }
 
-/// Builds the execution-only node: resolve or dev-bootstrap a covenant per the start mode, then a
-/// `Node` with no proving. The bridge tracks the covenant's settlements; nothing here settles.
+/// Builds the execution-only node per the start mode: fresh bootstrap (dev-pins under
+/// `RISC0_DEV_MODE`, real-pins otherwise), resume from persisted identity, or catch up to an
+/// existing covenant. The bridge tracks the covenant's settlements; nothing here settles.
 async fn start_exec<F>(ctx: StartContext<'_, F>) -> Result<(RunnerNode, Hash), StartError> {
     // Exec mode runs no prover, so the deposit-address derivation is dropped unused.
     let StartContext {
@@ -216,9 +217,19 @@ async fn start_exec<F>(ctx: StartContext<'_, F>) -> Result<(RunnerNode, Hash), S
             // the deploy.
             let seed_block = client.get_block_dag_info().await.expect("get_block_dag_info").sink;
             let wallet = Wallet::new(client, params, keypair);
-            log::info!("bootstrapping dev covenant; issuer address {}", wallet.address());
-            let (covenant, bootstrap_txid) =
-                bootstrap_dev_covenant(&wallet, lane_key, COVENANT_VALUE).await;
+            // Pin the redeem the way `start_settlement` does: a later `--prove` restart of this
+            // data dir rebuilds it from `dev_mode_enabled()`, so pins minted under the other mode
+            // yield an SPK that silently mismatches the on-chain UTXO until the first settlement
+            // asserts.
+            let (covenant, bootstrap_txid) = if dev_mode_enabled() {
+                log::info!("bootstrapping dev-pins covenant; issuer address {}", wallet.address());
+                bootstrap_dev_covenant(&wallet, lane_key, COVENANT_VALUE).await
+            } else {
+                log::info!("bootstrapping real-pins covenant; issuer address {}", wallet.address());
+                let backend =
+                    Backend::new(elfs.program, elfs.batch, elfs.aggregator, ProofType::Succinct);
+                bootstrap_real_covenant(&wallet, &backend, lane_key, COVENANT_VALUE).await
+            };
             persisted.bootstrap_txid = Some(bootstrap_txid.to_string());
             log::info!("covenant {} bootstrapped (tx {})", covenant.covenant_id, bootstrap_txid);
             (covenant.covenant_id, Some(seed_block))
