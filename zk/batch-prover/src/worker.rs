@@ -71,7 +71,8 @@ where
         }
     }
 
-    /// Proves one scheduled batch and publishes the receipt as the batch's artifact.
+    /// Publishes the batch's artifact: a proof receipt for a non-empty batch, or an empty artifact
+    /// (no proving) when the batch carries no txs.
     async fn process_batch(&mut self, batch: ScheduledBatch<S, P>) {
         // Wait for tx artifacts on the batch before proving (composition needs them). Stay
         // shutdown-escapable so a wedged latch during teardown cannot hang the worker join.
@@ -81,6 +82,18 @@ where
             () = batch.wait_tx_artifacts_published() => {}
         }
         if batch.canceled() {
+            return;
+        }
+
+        // Skip proving an empty batch (a chain block with no lane txs): it advances no L2 state and
+        // the aggregate prover composes only non-empty batch journals (filtering on this same
+        // `txs().is_empty()` predicate), so its receipt is never read. Proving every empty backfill
+        // block in order is O(chain-length) dead work that stalls a deep-seeded node before it can
+        // form its first bundle. Publish an empty artifact so the aggregate prover's ready-prefix
+        // wait resolves, then wait for the commit so the next batch sees the committed prev_state.
+        if batch.txs().is_empty() {
+            batch.publish_artifact(None);
+            batch.wait_committed().await;
             return;
         }
 

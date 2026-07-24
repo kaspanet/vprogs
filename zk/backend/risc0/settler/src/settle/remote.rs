@@ -41,15 +41,40 @@ impl FeeSource for WalletFeeSource {
         excluded: &HashSet<TransactionOutpoint>,
     ) -> Option<FundedSettlement> {
         let wallet = Wallet::new(&self.client, &self.params, self.keypair);
-        wallet
-            .prepare_settlement_excluding(
-                built.transaction.clone(),
-                covenant_entry,
-                built.compute_budget,
-                excluded,
-            )
-            .await
-            .map(|(tx, fee_outpoint)| FundedSettlement { tx, fee_outpoint })
+        // A transient wRPC error (request timeout, dropped connection) while fetching the spendable
+        // set is expected against a live node; retry with backoff instead of surfacing it as
+        // `None`, which the settler treats as "every fee UTXO rejected" and panics on. Only
+        // a persistent failure gives up (returns `None`) after the bounded retries.
+        const MAX_ATTEMPTS: u32 = 10;
+        const RETRY_DELAY: Duration = Duration::from_millis(500);
+        for attempt in 1..=MAX_ATTEMPTS {
+            match wallet
+                .prepare_settlement_excluding(
+                    built.transaction.clone(),
+                    covenant_entry.clone(),
+                    built.compute_budget,
+                    excluded,
+                )
+                .await
+            {
+                Ok(funded) => {
+                    return funded.map(|(tx, fee_outpoint)| FundedSettlement { tx, fee_outpoint });
+                }
+                Err(e) if attempt < MAX_ATTEMPTS => {
+                    log::warn!(
+                        "settlement funding: spendable-utxo fetch failed (attempt {attempt}/{MAX_ATTEMPTS}, retrying): {e}"
+                    );
+                    tokio::time::sleep(RETRY_DELAY).await;
+                }
+                Err(e) => {
+                    log::error!(
+                        "settlement funding: spendable-utxo fetch failed after {MAX_ATTEMPTS} attempts: {e}"
+                    );
+                    return None;
+                }
+            }
+        }
+        None
     }
 }
 

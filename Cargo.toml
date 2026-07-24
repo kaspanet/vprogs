@@ -2,8 +2,10 @@
 default-members = [
   "core/*",
   "examples/tn10-flow",
+  "examples/tn10-runtime",
   "l1/*",
   "node/*",
+  "runner",
   "scheduling/*",
   "sim",
   "state/*",
@@ -29,8 +31,10 @@ exclude = [
 members = [
   "core/*",
   "examples/tn10-flow",
+  "examples/tn10-runtime",
   "l1/*",
   "node/*",
+  "runner",
   "scheduling/*",
   "sim",
   "state/*",
@@ -110,14 +114,18 @@ resolver = "3"
   bincode = { version = "1.3.3", default-features = false }
   blake2b_simd = { version = "1.0.2", default-features = false }
   blake3 = { version = "1", default-features = false }
+  k256 = { version = "0.13", default-features = false, features = ["schnorr"] }
+  risc0-binfmt = "3.0.4"
   risc0-circuit-recursion = { version = "4.0", default-features = false }
   risc0-groth16 = "3.0.3"
+  risc0-zkos-v1compat = "2.2.2"
   risc0-zkvm = { version = "3.0", default-features = false }
   rkyv = { version = "0.8", default-features = false, features = [
     "alloc",
     "bytecheck",
   ] }
   sha2 = { version = "0.10", default-features = false }
+  signature = { version = "2", default-features = false }
 
   # Kaspa dependencies — pinned to `kaspanet/rusty-kaspa` master (v2.0.x). Master now carries
   # `fix(rpc/vspcv2): covenant field was missing from tx outputs` (#1056), which populates the
@@ -165,6 +173,7 @@ resolver = "3"
   vprogs-node-framework                           = { path = "node/framework" }
   vprogs-node-test-utils                          = { path = "node/test-utils" }
   vprogs-node-vm                                  = { path = "node/vm" }
+  vprogs-runner                                   = { path = "runner" }
   vprogs-scheduling-execution-workers             = { path = "scheduling/execution-workers" }
   vprogs-scheduling-scheduler                     = { path = "scheduling/scheduler" }
   vprogs-scheduling-test-utils                    = { path = "scheduling/test-utils" }
@@ -201,6 +210,7 @@ resolver = "3"
   vprogs-zk-aggregate-prover                      = { path = "zk/aggregate-prover" }
   vprogs-zk-backend-risc0-api                     = { path = "zk/backend/risc0/api", default-features = false }
   vprogs-zk-backend-risc0-covenant                = { path = "zk/backend/risc0/covenant" }
+  vprogs-zk-backend-risc0-runtime-processor       = { path = "zk/backend/risc0/runtime-processor", default-features = false }
   vprogs-zk-backend-risc0-settler                 = { path = "zk/backend/risc0/settler" }
   vprogs-zk-backend-risc0-test-suite              = { path = "zk/backend/risc0/test-suite" }
   vprogs-zk-batch-prover                          = { path = "zk/batch-prover" }

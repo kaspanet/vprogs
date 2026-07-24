@@ -1,13 +1,14 @@
 //! Tiny JSON state file holding the lane id and covenant id so they survive restarts and can be
-//! reused. Load precedence (resolved in `main`): storage > env > (random for lane / bootstrap for
-//! covenant). Kept separate from the RocksDB dir so it stays human-inspectable.
+//! reused. Load precedence (resolved in [`start`](crate::start)): storage > config > (random for
+//! lane / bootstrap for covenant). Kept separate from the RocksDB dir so it stays
+//! human-inspectable.
 
 use std::path::{Path, PathBuf};
 
 use kaspa_hashes::Hash;
 use serde::{Deserialize, Serialize};
 
-const FILE_NAME: &str = "tn10-flow-state.json";
+const FILE_NAME: &str = "vprun-state.json";
 
 /// Persisted identifiers and the covenant bootstrap anchor.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -33,7 +34,7 @@ impl PersistedState {
     /// Loads the state file, returning defaults if it doesn't exist yet.
     pub fn load(data_dir: &Path) -> Self {
         match std::fs::read(Self::path(data_dir)) {
-            Ok(bytes) => serde_json::from_slice(&bytes).expect("corrupt tn10-flow-state.json"),
+            Ok(bytes) => serde_json::from_slice(&bytes).expect("corrupt vprun-state.json"),
             Err(_) => Self::default(),
         }
     }
@@ -43,6 +44,12 @@ impl PersistedState {
         std::fs::create_dir_all(data_dir).expect("create data dir");
         let json = serde_json::to_vec_pretty(self).expect("serialize state");
         std::fs::write(Self::path(data_dir), json).expect("write state file");
+    }
+
+    /// Whether a populated state file already exists in `data_dir` (used to default the start mode
+    /// to resume rather than fresh).
+    pub fn exists(data_dir: &Path) -> bool {
+        Self::path(data_dir).exists()
     }
 
     /// Decoded covenant id, if set.

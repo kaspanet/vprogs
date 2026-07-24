@@ -14,8 +14,8 @@ cargo clippy --tests -- -D warnings
 # --- Feature-gated code ---
 # The default workspace pass leaves test-only features off, so check the settler's `test-utils`
 # alternation code (and the contention test it gates) explicitly, lest it rot unnoticed.
-echo ":: checking tn10-flow with test-utils"
-cargo clippy -p vprogs-example-tn10-flow --features test-utils --tests -- -D warnings
+echo ":: checking runner with test-utils"
+cargo clippy -p vprogs-runner --features test-utils --tests -- -D warnings
 
 # --- Excluded crates ---
 excluded=$(python3 -c "

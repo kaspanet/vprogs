@@ -173,13 +173,15 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
             &std::collections::HashSet::new(),
         )
         .await
+        .expect("fetch spendable utxos")
         .expect("no spendable UTXO for fee")
         .0
     }
 
     /// Like [`Wallet::prepare_settlement_transaction`], but funds the fee from the largest
-    /// spendable UTXO **not** in `excluded`, and also returns the fee outpoint it spent.
-    /// Returns `None` when every spendable UTXO is excluded.
+    /// spendable UTXO **not** in `excluded`, and also returns the fee outpoint it spent. Returns
+    /// `Ok(None)` when every spendable UTXO is excluded, or the RPC error when the spendable set
+    /// cannot be fetched (a transient node timeout the caller retries, rather than a hard failure).
     ///
     /// The node can reject a settlement as an orphan when its fee input references an output it has
     /// not yet accepted into its DAG. The caller re-prepares with that outpoint added to `excluded`
@@ -190,9 +192,13 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
         covenant_entry: UtxoEntry,
         covenant_compute_budget: ComputeBudget,
         excluded: &std::collections::HashSet<TransactionOutpoint>,
-    ) -> Option<(Transaction, TransactionOutpoint)> {
-        let utxos = self.fetch_spendable_utxos().await.expect("fetch spendable utxos");
-        let (fee_outpoint, fee_entry) = utxos.into_iter().find(|(o, _)| !excluded.contains(o))?;
+    ) -> Result<Option<(Transaction, TransactionOutpoint)>, RpcError> {
+        let utxos = self.fetch_spendable_utxos().await?;
+        let Some((fee_outpoint, fee_entry)) =
+            utxos.into_iter().find(|(o, _)| !excluded.contains(o))
+        else {
+            return Ok(None);
+        };
         let tx = build::settlement_transaction(build::SettlementTx {
             settlement_tx,
             covenant_entry,
@@ -203,7 +209,7 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
             address: &self.address,
             params: self.params,
         });
-        Some((tx, fee_outpoint))
+        Ok(Some((tx, fee_outpoint)))
     }
 
     /// Builds and signs (without submitting) a transaction paying `count` outputs of `value` sompi

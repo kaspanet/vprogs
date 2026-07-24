@@ -15,7 +15,7 @@
 #   TN10_KEY1, TN10_KEY2  (required)  two funded testnet-10 private keys (32-byte hex)
 #   TN10_WRPC_URL         (required)  wRPC node URL, e.g. ws://HOST:PORT
 #   ACT_INTERVAL_MS       (optional)  activity cadence in ms (default 2000)
-#   SEED_DEPTH            (optional)  bridge seed head-room (default 50)
+#   SEED_DEPTH            (optional)  bridge seed head-room in DAA + reorg tolerance (default 500)
 
 set -u
 
@@ -45,13 +45,14 @@ LOG_B="$HERE/logB.txt"
 # so lane blocks appear quickly, but not so tight it starves settlement-fee UTXOs.
 # Overridable via env so re-runs can tune without editing the script.
 ACT_INTERVAL_MS="${ACT_INTERVAL_MS:-2000}"
-# Seed head-room. A deep seed (hundreds) means hundreds of sequential get_block
-# RPCs at startup, which can stall the bridge / trip a ws reconnect on a slow
-# remote node; the chain then never advances past the seed root. A modest depth
-# seeds close to the tip so the bridge tracks the live chain promptly.
-SEED_DEPTH="${SEED_DEPTH:-50}"
+# Bridge seed head-room, in DAA below the sink (also the reorg tolerance). The runner resolves an
+# explicit root this many DAA below the tip once at startup (a bounded selected-parent walk, ~1
+# get_block per chain-block of depth) and seeds the bridge there via the fast seed_from_block path.
+# Deeper survives larger reorgs but lengthens the startup walk (thousands of DAA stalls it); a few
+# hundred DAA seeds promptly and clears any normal reorg.
+SEED_DEPTH="${SEED_DEPTH:-500}"
 
-RUST_LOG_VAL="info,tn10_flow=info,vprogs_node_framework=info"
+RUST_LOG_VAL="info,tn10_flow=info,vprogs_node_framework=info,vprogs_zk_batch_prover=debug,vprogs_zk_aggregate_prover=debug,vprogs_runner=debug"
 
 PIDA=""; PIDB=""
 

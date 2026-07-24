@@ -2,4 +2,4 @@
 
 mod tx_id;
 
-pub use tx_id::{tx_id_v1, tx_id_v1_from_digest};
+pub use tx_id::{payload_digest_v1, tx_id_v1, tx_id_v1_from_digest};
