@@ -4,6 +4,9 @@
 //! `--config <path>` TOML file, then built-in defaults. The daemon follows a lane, executes the
 //! given guest program, and (with `--prove`) proves and settles each bundle. It never issues action
 //! transactions.
+//!
+//! Supply the fee / bootstrap key through `VPRUN_PRIVATE_KEY` or the config file; `--private-key`
+//! leaks it into shell history and every `ps` listing, so keep that form for throwaway dev keys.
 
 use clap::Parser;
 use vprogs_runner::{RawConfig, RunnerConfig, StartMode, run};
@@ -20,7 +23,8 @@ struct Cli {
     /// Borsh wRPC URL of the node, e.g. `ws://host:17210`.
     #[arg(long)]
     wrpc_url: Option<String>,
-    /// Fee / bootstrap secp256k1 secret key (32-byte hex).
+    /// Fee / bootstrap secp256k1 secret key (32-byte hex). Prefer `VPRUN_PRIVATE_KEY` or the
+    /// config file; a flag leaks the key into shell history and `ps`.
     #[arg(long)]
     private_key: Option<String>,
     /// Kaspa network: `mainnet` | `testnet-N` | `tn10` | `devnet` | `simnet`.
