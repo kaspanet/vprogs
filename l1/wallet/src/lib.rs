@@ -107,6 +107,7 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
         );
 
         let mut utxos = self.fetch_spendable_utxos().await.expect("fetch spendable utxos");
+        let fee_policy = self.fee_policy().await;
         payloads
             .into_iter()
             .map(|payload| {
@@ -117,7 +118,7 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
                     address: &self.address,
                     subnetwork_id,
                     tx_version,
-                    fee_policy: build::FeePolicy::Floor,
+                    fee_policy,
                     params: self.params,
                 })
                 .expect("spendable UTXOs must fund the activity fee");

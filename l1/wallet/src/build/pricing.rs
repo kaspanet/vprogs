@@ -9,6 +9,13 @@ use kaspa_consensus_core::{
 };
 
 /// mempool floor: a transaction's fee must be at least this many sompi per mass gram.
+///
+/// This mirrors the node's default minimum relay fee (100_000 sompi per 1000 grams), which is
+/// mempool configuration rather than a consensus rule and is reported by no RPC, so a node whose
+/// mempool raises it rejects every fee priced on this constant. That is [`FeePolicy::Floor`] and
+/// the degraded fundings where [`FeePolicy::TargetFeerate`] cannot reach its target, but never a
+/// target rate actually paid: the node clamps its own fee-estimate buckets to its configured
+/// minimum, and priority mass is never below the fee-binding mass.
 pub(super) const MIN_FEERATE_PER_GRAM: u64 = 100;
 
 /// How a builder prices its fee.
