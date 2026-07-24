@@ -6,9 +6,10 @@
 //! or remote.
 //!
 //! The actual tx construction (sign, fee, storage mass, covenant binding, witness restore) lives in
-//! [`build`] as pure functions over an already-chosen `(outpoint, entry)`. [`Wallet`] is the thin
-//! RPC layer that fetches spendable UTXOs and submits; a caller that already holds its spendable
-//! set (e.g. an in-process simulation) reuses [`build`] directly without any RPC.
+//! [`build`] as pure functions over a preference-ordered candidate list of spendable `(outpoint,
+//! entry)` pairs. [`Wallet`] is the thin RPC layer that fetches spendable UTXOs and submits; a
+//! caller that already holds its spendable set (e.g. an in-process simulation) reuses [`build`]
+//! directly without any RPC.
 //!
 //! TODO: this is a POC wallet. UTXO selection avoids re-spending unconfirmed outputs with a
 //! caller-threaded in-flight set ([`Wallet::build_activity_excluding`]); a production issuer should
@@ -60,6 +61,26 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
         &self.address
     }
 
+    /// The fee policy for a new build: [`build::FeePolicy::TargetFeerate`] at the node's
+    /// sub-minute (`normal_buckets[0]`) rate, falling back to the priority bucket if the vector
+    /// is unexpectedly empty, or to [`build::FeePolicy::Floor`] when the estimate RPC fails
+    /// (estimator unavailability must not stall issuance).
+    async fn fee_policy(&self) -> build::FeePolicy {
+        match self.client.get_fee_estimate().await {
+            Ok(estimate) => {
+                let feerate = estimate
+                    .normal_buckets
+                    .first()
+                    .map_or(estimate.priority_bucket.feerate, |bucket| bucket.feerate);
+                build::FeePolicy::TargetFeerate(feerate)
+            }
+            Err(e) => {
+                log::warn!("fee estimate fetch failed, falling back to the floor policy: {e}");
+                build::FeePolicy::Floor
+            }
+        }
+    }
+
     /// Builds signed native-subnetwork transactions, each carrying one payload.
     pub async fn build_payload_transactions(&self, payloads: Vec<Vec<u8>>) -> Vec<Transaction> {
         self.build_subnet_payload_transactions(payloads, SUBNETWORK_ID_NATIVE, TX_VERSION).await
@@ -85,28 +106,26 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
             "non-native subnetwork requires tx_version >= TX_VERSION_TOCCATA",
         );
 
-        let utxos = self.fetch_spendable_utxos().await.expect("fetch spendable utxos");
-        assert!(
-            utxos.len() >= payloads.len(),
-            "not enough spendable UTXOs: found {} but need {}",
-            utxos.len(),
-            payloads.len(),
-        );
-
+        let mut utxos = self.fetch_spendable_utxos().await.expect("fetch spendable utxos");
+        let fee_policy = self.fee_policy().await;
         payloads
             .into_iter()
-            .zip(utxos)
-            .map(|(payload, (outpoint, entry))| {
-                build::activity_transaction(build::ActivityTx {
+            .map(|payload| {
+                let tx = build::activity_transaction(build::ActivityTx {
                     payload,
-                    outpoint,
-                    entry,
+                    candidates: utxos.clone(),
                     keypair: self.keypair,
                     address: &self.address,
                     subnetwork_id,
                     tx_version,
+                    fee_policy,
                     params: self.params,
                 })
+                .expect("spendable UTXOs must fund the activity fee");
+                let spent: std::collections::HashSet<TransactionOutpoint> =
+                    tx.inputs.iter().map(|input| input.previous_outpoint).collect();
+                utxos.retain(|(outpoint, _)| !spent.contains(outpoint));
+                tx
             })
             .collect()
     }
@@ -157,9 +176,10 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
         )
     }
 
-    /// Funds and signs a settlement transaction without submitting it: appends a fee input + change
-    /// output, signs only the fee input, preserves the covenant input's witness, sets the covenant
-    /// input's compute budget, and commits the storage-mass field. The result is ready to submit.
+    /// Funds and signs a settlement transaction without submitting it: appends fee inputs from a
+    /// prefix of the spendable UTXOs plus a change output, signs the fee inputs, preserves the
+    /// covenant input's witness, sets the covenant input's compute budget, and commits the
+    /// storage-mass field. The result is ready to submit.
     pub async fn prepare_settlement_transaction(
         &self,
         settlement_tx: Transaction,
@@ -173,42 +193,51 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
             &std::collections::HashSet::new(),
         )
         .await
-        .expect("no spendable UTXO for fee")
+        .expect("no spendable UTXO can fund the settlement fee")
         .0
     }
 
-    /// Like [`Wallet::prepare_settlement_transaction`], but funds the fee from the largest
-    /// spendable UTXO **not** in `excluded`, and also returns the fee outpoint it spent.
-    /// Returns `None` when every spendable UTXO is excluded.
+    /// Like [`Wallet::prepare_settlement_transaction`], but funds the fee from spendable UTXOs
+    /// **not** in `excluded`, and also returns the fee outpoints it spent. Returns `None` when
+    /// every spendable UTXO is excluded, or the free ones cannot fund the fee.
     ///
     /// The node can reject a settlement as an orphan when its fee input references an output it has
     /// not yet accepted into its DAG. The caller re-prepares with that outpoint added to `excluded`
-    /// so the retry funds from a different, settled UTXO.
+    /// so the retry funds from different, settled UTXOs.
     pub async fn prepare_settlement_excluding(
         &self,
         settlement_tx: Transaction,
         covenant_entry: UtxoEntry,
         covenant_compute_budget: ComputeBudget,
         excluded: &std::collections::HashSet<TransactionOutpoint>,
-    ) -> Option<(Transaction, TransactionOutpoint)> {
+    ) -> Option<(Transaction, Vec<TransactionOutpoint>)> {
         let utxos = self.fetch_spendable_utxos().await.expect("fetch spendable utxos");
-        let (fee_outpoint, fee_entry) = utxos.into_iter().find(|(o, _)| !excluded.contains(o))?;
+        let fee_candidates: Vec<_> =
+            utxos.into_iter().filter(|(outpoint, _)| !excluded.contains(outpoint)).collect();
+        if fee_candidates.is_empty() {
+            return None;
+        }
+        let fee_policy = self.fee_policy().await;
         let tx = build::settlement_transaction(build::SettlementTx {
             settlement_tx,
             covenant_entry,
             covenant_compute_budget,
-            fee_outpoint,
-            fee_entry,
+            fee_candidates,
             keypair: self.keypair,
             address: &self.address,
+            fee_policy,
             params: self.params,
-        });
-        Some((tx, fee_outpoint))
+        })
+        .inspect_err(|e| log::warn!("settlement fee funding failed: {e}"))
+        .ok()?;
+        let fee_outpoints = tx.inputs[1..].iter().map(|input| input.previous_outpoint).collect();
+        Some((tx, fee_outpoints))
     }
 
     /// Builds and signs (without submitting) a transaction paying `count` outputs of `value` sompi
-    /// each to `recipient`, funded from the largest spendable UTXO, with the remainder returned as
-    /// change to this wallet's own address. Used to seed a distinct funding address (e.g. another
+    /// each to `recipient`, funded from a prefix of the spendable UTXOs, with the remainder
+    /// returned as change to this wallet's own address when the remainder is storage-viable, and
+    /// folded into the fee otherwise. Used to seed a distinct funding address (e.g. another
     /// prover's fee key) from this wallet's coinbase.
     pub async fn pay_to_address(
         &self,
@@ -217,11 +246,8 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
         count: usize,
     ) -> Transaction {
         let utxos = self.fetch_spendable_utxos().await.expect("fetch spendable utxos");
-        let (outpoint, entry) =
-            utxos.into_iter().next().expect("no spendable UTXO for pay_to_address");
         build::pay_to_address_transaction(build::PayToAddressTx {
-            outpoint,
-            entry,
+            candidates: utxos,
             recipient,
             value,
             count,
@@ -229,6 +255,7 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
             change_address: &self.address,
             params: self.params,
         })
+        .expect("spendable UTXOs must fund the payout")
     }
 
     /// Submits `tx` through the node's mempool, returning its id (or the RPC error).
@@ -237,9 +264,9 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
         Ok(tx.id())
     }
 
-    /// Builds one signed `subnetwork_id` activity tx spending the largest spendable UTXO **not** in
-    /// `in_flight`, returning the tx and the outpoint it spends. Returns `Ok(None)` when every
-    /// spendable UTXO is in flight, and the RPC error if the spendable-set fetch fails (so a
+    /// Builds one signed `subnetwork_id` activity tx funded from the spendable UTXOs **not** in
+    /// `in_flight`. Returns `Ok(None)` when every spendable UTXO is in flight, or the free ones
+    /// cannot cover the fee, and the RPC error if the spendable-set fetch fails (so a
     /// long-running issuer can log and retry instead of crashing).
     ///
     /// `get_utxos_by_addresses` reports the confirmed UTXO set, which still includes a UTXO already
@@ -248,34 +275,37 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
     /// the double spend. The caller threads the set of outpoints it has spent this session through
     /// `in_flight`: this method first prunes that set to the outpoints the node still reports (so a
     /// UTXO that has since been mined away, and replaced by a fresh change outpoint, becomes
-    /// selectable again), then skips the rest to pick the next-largest free UTXO. The caller
-    /// inserts the returned outpoint on a successful (or double-spend-rejected) submit.
+    /// selectable again), then funds from the rest. The caller extends `in_flight` with the
+    /// returned tx's spent outpoints on a successful (or double-spend-rejected) submit.
     pub async fn build_activity_excluding(
         &self,
         payload: Vec<u8>,
         subnetwork_id: SubnetworkId,
         tx_version: u16,
         in_flight: &mut std::collections::HashSet<TransactionOutpoint>,
-    ) -> Result<Option<(Transaction, TransactionOutpoint)>, RpcError> {
+    ) -> Result<Option<Transaction>, RpcError> {
         let utxos = self.fetch_spendable_utxos().await?;
         let present: std::collections::HashSet<TransactionOutpoint> =
             utxos.iter().map(|(o, _)| *o).collect();
         in_flight.retain(|o| present.contains(o));
-        let Some((outpoint, entry)) = utxos.into_iter().find(|(o, _)| !in_flight.contains(o))
-        else {
+        let candidates: Vec<(TransactionOutpoint, UtxoEntry)> =
+            utxos.into_iter().filter(|(o, _)| !in_flight.contains(o)).collect();
+        if candidates.is_empty() {
             return Ok(None);
-        };
-        let tx = build::activity_transaction(build::ActivityTx {
+        }
+        let fee_policy = self.fee_policy().await;
+        Ok(build::activity_transaction(build::ActivityTx {
             payload,
-            outpoint,
-            entry,
+            candidates,
             keypair: self.keypair,
             address: &self.address,
             subnetwork_id,
             tx_version,
+            fee_policy,
             params: self.params,
-        });
-        Ok(Some((tx, outpoint)))
+        })
+        .inspect_err(|e| log::warn!("activity funding failed: {e}"))
+        .ok())
     }
 
     /// Spendable UTXOs for the issuer address (matured coinbases only), largest first. Requires the

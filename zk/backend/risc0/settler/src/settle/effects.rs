@@ -13,13 +13,13 @@ use crate::{confirm::OutpointAt, covenant::BuiltSettlement};
 pub struct FundedSettlement {
     /// The settlement transaction with its fee input funded and all inputs signed.
     pub tx: Transaction,
-    /// The fee outpoint this funding spent, excluded on a refund retry.
-    pub fee_outpoint: TransactionOutpoint,
+    /// The fee outpoints this funding spent, excluded on a refund retry.
+    pub fee_outpoints: Vec<TransactionOutpoint>,
 }
 
 /// Funds and signs a built settlement's fee, excluding previously-rejected fee outpoints.
 pub trait FeeSource {
-    /// Funds `built`'s fee from a spendable UTXO not in `excluded`, or returns `None` when no
+    /// Funds `built`'s fee from spendable UTXOs not in `excluded`, or returns `None` when no
     /// candidate is left.
     fn fund(
         &self,

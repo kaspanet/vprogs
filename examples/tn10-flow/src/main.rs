@@ -514,15 +514,16 @@ fn spawn_issuer(
                 break;
             }
             let payload = encode_activity_payload(&[AccessMetadata::write(tracked)], &[1, 2, 3]);
-            let (tx, outpoint) = match wallet
+            let tx = match wallet
                 .build_activity_excluding(payload, lane_subnet, TX_VERSION_TOCCATA, &mut in_flight)
                 .await
             {
-                Ok(Some(built)) => built,
+                Ok(Some(tx)) => tx,
                 Ok(None) => {
                     log::warn!(
-                        "issuer: no free spendable UTXOs for {} ({} in flight); fund it or wait \
-                         for change to confirm",
+                        "issuer: no fundable transaction for {} ({} in flight); either no free \
+                         spendable UTXOs are left, or the candidates cannot cover the fee; fund \
+                         it or wait for change to confirm",
                         wallet.address(),
                         in_flight.len(),
                     );
@@ -537,16 +538,16 @@ fn spawn_issuer(
             };
             match wallet.submit_transaction(&tx).await {
                 Ok(id) => {
-                    // Don't respend this UTXO until its change confirms.
-                    in_flight.insert(outpoint);
+                    // Don't respend these UTXOs until the change confirms.
+                    in_flight.extend(tx.inputs.iter().map(|input| input.previous_outpoint));
                     log::info!("issued activity tx {id} on lane {lane_id}");
                     issued += 1;
                 }
                 Err(e) => {
-                    // Mark it spent regardless: a double-spend rejection means it is already gone,
-                    // and any other failure is more likely to recur on the same UTXO than a fresh
-                    // one. The next iteration picks the next-largest free UTXO.
-                    in_flight.insert(outpoint);
+                    // Mark them spent regardless: a double-spend rejection means they are already
+                    // gone, and any other failure is more likely to recur on the same UTXOs than
+                    // fresh ones. The next iteration picks the next-largest free UTXOs.
+                    in_flight.extend(tx.inputs.iter().map(|input| input.previous_outpoint));
                     log::warn!("activity submit failed (retrying with another UTXO): {e}");
                 }
             }
