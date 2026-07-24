@@ -256,11 +256,14 @@ fn canceled_batch_is_not_swept_into_a_bundle() {
 
 /// Tests that the worker evicts an entirely-canceled queue and keeps bundling afterwards.
 ///
-/// The queue holds two canceled batches in the two shapes a rollback produces: the front finished
-/// executing while live, so its artifact latch never opens (only the cancellation can release the
-/// worker's front wait), and the batch behind it finished after the cancellation, so its latch was
-/// force-opened without a receipt. Both must be evicted, never bundled, and a live batch submitted
-/// afterwards must still bundle.
+/// The queue holds two canceled batches: the front finished executing before the rollback, and the
+/// one behind it parked inside execution so the rollback landed mid-flight, force-opening its
+/// artifact latch without a receipt. Both must be evicted, never bundled, and a live batch
+/// submitted afterwards must still bundle.
+///
+/// Only one direction is guaranteed, and only it is asserted: a force-opened latch always belongs
+/// to a canceled batch. The converse does not hold, so the front's latch may be open or closed
+/// depending on how the rollback interleaves with its final `decrease_pending_txs`.
 #[test]
 fn whole_canceled_queue_is_evicted() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
@@ -280,8 +283,9 @@ fn whole_canceled_queue_is_evicted() {
         let anchor = scheduler.schedule(block(1, 0), vec![]);
         anchor.wait_committed_blocking();
 
-        // The future front executes fully while live: its artifact latch stays closed, so only
-        // the cancellation can release the worker's wait on it.
+        // The future front finishes executing before the rollback. Its artifact latch is left
+        // unasserted: `decrease_pending_txs` opens `processed` before it reads `canceled()`, so a
+        // rollback landing in that gap force-opens the latch of a batch that had already finished.
         let never_published = scheduler.schedule(
             block(2, 1),
             vec![SchedulerTransaction::new(
@@ -307,10 +311,6 @@ fn whole_canceled_queue_is_evicted() {
         scheduler.rollback_to(1).expect("rollback should succeed");
         assert!(never_published.canceled(), "the processed batch should be canceled");
         assert!(force_opened.canceled(), "the in-flight batch should be canceled");
-        assert!(
-            !never_published.artifact_published(),
-            "a batch that finished while live keeps its artifact latch closed",
-        );
 
         release.open();
         let deadline = Instant::now() + Duration::from_secs(5);
