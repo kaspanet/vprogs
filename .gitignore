@@ -33,3 +33,5 @@ docs/superpowers/
 
 # Local secrets (node URL + funded keys); never committed.
 .env
+.env.*
+!.env.example

@@ -216,16 +216,18 @@ pub fn tx_id_of(tx_blob: &[u8]) -> [u8; 32] {
     tx_id_v1(payload, &rest[4..4 + rest_len])
 }
 
-/// Builds the full `Inputs` host blob the guest reads:
-/// `version(2) || tx_id(32) || merge_idx(4) || context_hash(32) || tx_blob || resources`, where
-/// each resource is `is_new(1) || index(4) || data_len(4) || data` (one per access-metadata entry,
-/// in the same lex order). The scheduler assembles this for the daemon; the direct-guest test
-/// hand-rolls it with the resource bytes it is threading between steps.
+/// Builds the full `Inputs` host blob the guest reads: `version(2) || tx_id(32) || merge_idx(4) ||
+/// context_hash(32) || tx_blob || resources`, where each resource is `index(4) || data_len(4) ||
+/// data` (one per access-metadata entry, in the same lex order). The scheduler assembles this for
+/// the daemon; the direct-guest test hand-rolls it with the resource bytes it is threading between
+/// steps.
+///
+/// A slot is new iff its `data` is empty; newness is never carried on the wire.
 pub fn encode_inputs(
     merge_idx: u32,
     context_hash: [u8; 32],
     tx_bytes: &[u8],
-    resources: &[(bool, u32, Vec<u8>)],
+    resources: &[(u32, Vec<u8>)],
 ) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&Transaction::V1.to_le_bytes());
@@ -233,8 +235,7 @@ pub fn encode_inputs(
     out.extend_from_slice(&merge_idx.to_le_bytes());
     out.extend_from_slice(&context_hash);
     out.extend_from_slice(tx_bytes);
-    for (is_new, idx, data) in resources {
-        out.push(if *is_new { 1 } else { 0 });
+    for (idx, data) in resources {
         out.extend_from_slice(&idx.to_le_bytes());
         out.extend_from_slice(&(data.len() as u32).to_le_bytes());
         out.extend_from_slice(data);

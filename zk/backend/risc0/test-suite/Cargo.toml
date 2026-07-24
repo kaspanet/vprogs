@@ -35,6 +35,7 @@ vprogs-zk-batch-prover.workspace          = true
 zerocopy.workspace                        = true
 
 [dev-dependencies]
+risc0-zkvm                             = { workspace = true, default-features = false }
 tempfile.workspace                     = true
 tokio                                  = { workspace = true, features = ["rt-multi-thread"] }
 vprogs-core-hashing.workspace          = true
@@ -44,5 +45,6 @@ vprogs-node-framework.workspace        = true
 vprogs-node-test-utils.workspace       = true
 vprogs-state-metadata.workspace        = true
 vprogs-storage-rocksdb-store.workspace = true
+vprogs-zk-backend-risc0-settler        = { path = "../settler" }
 vprogs-zk-transaction-prover           = { path = "../../../transaction-prover" }
 vprogs-zk-vm                           = { path = "../../../vm" }

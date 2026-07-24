@@ -80,9 +80,9 @@ fn run_deposit(
     let payload = actions::deposit_payload(user_pubkey, 0);
     let tx = actions::encode_v1_transaction(&payload, &rest);
 
-    let mut resources = vec![(false, 0u32, Vec::new()); entries.len()];
-    resources[user_idx as usize] = (true, 0, Vec::new()); // new user slot
-    resources[config_idx as usize] = (false, 0, config_bytes.to_vec());
+    let mut resources = vec![(0u32, Vec::new()); entries.len()];
+    resources[user_idx as usize] = (0, Vec::new()); // new user slot: empty data marks it
+    resources[config_idx as usize] = (0, config_bytes.to_vec());
 
     let out = execute_guest(elf, &actions::encode_inputs(0, [0u8; 32], &tx, &resources));
     let decoded = Outputs::decode(&out, entries.len()).expect("Deposit succeeded");
@@ -156,7 +156,7 @@ fn genesis_init_via_witness_on_empty_slot() {
         0,
     );
     let tx = actions::encode_v1_transaction(&payload, &current_rest_preimage);
-    let inputs = actions::encode_inputs(0, [0u8; 32], &tx, &[(true, 0, Vec::new())]);
+    let inputs = actions::encode_inputs(0, [0u8; 32], &tx, &[(0, Vec::new())]);
 
     let out = execute_guest(&elf, &inputs);
     let config_bytes = Outputs::decode(&out, 1).expect("Init succeeded").storage_ops[0]
@@ -189,7 +189,7 @@ fn full_lifecycle_init_deposit_transfer_withdraw() {
         0,
     );
     let init_tx = actions::encode_v1_transaction(&init_payload, &current_rest_preimage);
-    let init_inputs = actions::encode_inputs(0, [0u8; 32], &init_tx, &[(true, 0, Vec::new())]);
+    let init_inputs = actions::encode_inputs(0, [0u8; 32], &init_tx, &[(0, Vec::new())]);
     let init_out = execute_guest(&elf, &init_inputs);
     let config_bytes = Outputs::decode(&init_out, 1).expect("Init succeeded").storage_ops[0]
         .clone()
@@ -219,9 +219,9 @@ fn full_lifecycle_init_deposit_transfer_withdraw() {
     let payload = actions::finish_signed_payload(presig, &alice, &[]);
     let tx = actions::encode_v1_transaction(&payload, &[]);
     let (src_idx, dst_idx, _) = actions::sorted_two_user_positions(alice_id, bob_id);
-    let mut resources = vec![(false, 0u32, Vec::new()); 2];
-    resources[src_idx as usize] = (false, 0, alice_bytes.clone());
-    resources[dst_idx as usize] = (false, 0, bob_bytes.clone());
+    let mut resources = vec![(0u32, Vec::new()); 2];
+    resources[src_idx as usize] = (0, alice_bytes.clone());
+    resources[dst_idx as usize] = (0, bob_bytes.clone());
     let out = execute_guest(&elf, &actions::encode_inputs(0, [0u8; 32], &tx, &resources));
     let decoded = Outputs::decode(&out, 2).expect("Transfer succeeded");
     let alice_after = decoded.storage_ops[src_idx as usize].clone().expect("source changed");
@@ -243,9 +243,9 @@ fn full_lifecycle_init_deposit_transfer_withdraw() {
     let payload = actions::finish_signed_payload(presig, &bob, &[]);
     let tx = actions::encode_v1_transaction(&payload, &[]);
     let (user_idx, config_idx, _) = actions::sorted_user_config_positions(bob_id);
-    let mut resources = vec![(false, 0u32, Vec::new()); 2];
-    resources[user_idx as usize] = (false, 0, bob_after.clone());
-    resources[config_idx as usize] = (false, 0, config_bytes.clone());
+    let mut resources = vec![(0u32, Vec::new()); 2];
+    resources[user_idx as usize] = (0, bob_after.clone());
+    resources[config_idx as usize] = (0, config_bytes.clone());
     let withdraw_inputs = actions::encode_inputs(0, [0u8; 32], &tx, &resources);
 
     let (out, journal) = execute_guest_with_journal(&elf, &withdraw_inputs);

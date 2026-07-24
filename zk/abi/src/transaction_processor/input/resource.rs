@@ -26,7 +26,7 @@ pub struct Resource<'a> {
     promoted: Option<Vec<u8>>,
     /// Per-batch resource index assigned when the resource is first accessed.
     index: u32,
-    /// Whether this resource was created by the current transaction.
+    /// Whether the slot held no committed data when this transaction started.
     is_new: bool,
     /// Whether the resource data has been modified.
     dirty: bool,
@@ -43,7 +43,8 @@ impl<'a> Resource<'a> {
         self.access_metadata.access_type
     }
 
-    /// Returns `true` if this resource was created by the current transaction.
+    /// Returns `true` if the slot held no committed data when this transaction started. Writing
+    /// data does not clear it.
     pub fn is_new(&self) -> bool {
         self.is_new
     }
@@ -106,14 +107,15 @@ impl<'a> Resource<'a> {
 
     /// Decodes a resource, splitting off its backing from `buf`.
     pub fn decode(buf: &mut &'a mut [u8], access_metadata: &'a AccessMetadata) -> Result<Self> {
-        Ok(Self {
-            access_metadata,
-            is_new: buf.bool("is_new")?,
-            index: buf.le_u32("index")?,
-            backing: buf.blob_mut("data")?,
-            promoted: None,
-            dirty: false,
-        })
+        let index = buf.le_u32("index")?;
+        let backing = buf.blob_mut("data")?;
+
+        // Newness is derived, never read from the wire. An empty slot commits `EMPTY_HASH`, the
+        // same value hash an absent key proves against, so the journal's data-hash check against
+        // the old root already binds it. A wire flag would be unbound and freely forgeable.
+        let is_new = backing.is_empty();
+
+        Ok(Self { access_metadata, index, is_new, backing, promoted: None, dirty: false })
     }
 
     /// Encodes a single resource to the journal.
@@ -123,8 +125,60 @@ impl<'a> Resource<'a> {
         S: Store,
         P: Processor<S>,
     {
-        w.write(&[r.is_new() as u8]);
         w.write(&r.resource_index().to_le_bytes());
         w.write_blob(r.data());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use vprogs_core_types::{AccessMetadata, AccessType, ResourceId};
+
+    use super::*;
+
+    fn access_metadata() -> AccessMetadata {
+        AccessMetadata { resource_id: ResourceId::from([7u8; 32]), access_type: AccessType::Write }
+    }
+
+    fn wire(index: u32, data: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&index.to_le_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(data);
+        out
+    }
+
+    /// An empty slot is the absent-key state the old root proves against, so it decodes as new.
+    #[test]
+    fn empty_data_decodes_as_new() {
+        let meta = access_metadata();
+        let mut buf = wire(3, &[]);
+        let r = Resource::decode(&mut buf.as_mut_slice(), &meta).unwrap();
+        assert!(r.is_new());
+        assert_eq!(r.index(), 3);
+    }
+
+    /// Committed bytes pin the slot to live: there is no wire flag that could present them as new.
+    #[test]
+    fn non_empty_data_decodes_as_live() {
+        let meta = access_metadata();
+        let mut buf = wire(0, &[1, 2, 3]);
+        let r = Resource::decode(&mut buf.as_mut_slice(), &meta).unwrap();
+        assert!(!r.is_new());
+        assert_eq!(r.data(), &[1, 2, 3]);
+    }
+
+    /// Newness is a decode-time snapshot: writing data does not retroactively make the slot live,
+    /// so an action that created a slot still sees the creation it performed.
+    #[test]
+    fn is_new_is_a_snapshot_and_survives_writes() {
+        let meta = access_metadata();
+        let mut buf = wire(0, &[]);
+        let mut r = Resource::decode(&mut buf.as_mut_slice(), &meta).unwrap();
+        assert!(r.is_new());
+
+        r.resize(4);
+        r.data_mut().copy_from_slice(&[9, 9, 9, 9]);
+        assert!(r.is_new(), "is_new must not flip once the slot is written");
     }
 }

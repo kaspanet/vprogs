@@ -21,9 +21,10 @@ use vprogs_zk_backend_risc0_api::{build_delegate_entry_script, delegate_entry_sp
 use vprogs_zk_backend_risc0_runtime_processor::{
     config::{ConfigView, config_total_len, write_config},
     deposit_policy::{EXAMPLE_DEPOSIT_COVENANT_ID, EXAMPLE_MIN_CREATE_BALANCE},
+    genesis::GENESIS_SCHNORR_BYTES,
     ix::{
-        ACTION_TAG_DEPOSIT, ACTION_TAG_TRANSFER, ACTION_TAG_UPDATE, ACTION_TAG_UPDATE_USER_LOCK,
-        ACTION_TAG_WITHDRAW,
+        ACTION_TAG_DEPOSIT, ACTION_TAG_INIT, ACTION_TAG_TRANSFER, ACTION_TAG_UPDATE,
+        ACTION_TAG_UPDATE_USER_LOCK, ACTION_TAG_WITHDRAW,
     },
     lock::LockEnum,
     lock_trait::Lock,
@@ -31,7 +32,10 @@ use vprogs_zk_backend_risc0_runtime_processor::{
     resource_id::{config_resource_id, derive_user_resource},
     runtime::compute_sig_message,
     signer_trait::Signer,
-    signer_variants::{MultisigSchnorrSigPtrSigner, PrevTxV1WitnessSigner, SchnorrSigPtrSigner},
+    signer_variants::{
+        MultisigPrevTxV1WitnessSigner, MultisigSchnorrSigPtrSigner, PrevTxV1WitnessSigner,
+        SchnorrSigPtrSigner,
+    },
     user::{UserView, user_total_len, write_user},
 };
 
@@ -254,13 +258,14 @@ fn tx_id_of(tx_blob: &[u8]) -> [u8; 32] {
 
 /// Builds the full `Inputs` host blob the guest reads:
 /// `version(2) || tx_id(32) || merge_idx(4) || context_hash(32) || tx_blob ||
-/// resources`, where each resource is `is_new(1) || index(4) || data_len(4) ||
-/// data` (one per access-metadata entry, in the same order).
+/// resources`, where each resource is `index(4) || data_len(4) || data` (one per
+/// access-metadata entry, in the same order). A resource is new iff its data is empty; the wire
+/// carries no separate lifecycle flag.
 fn encode_inputs(
     merge_idx: u32,
     context_hash: [u8; 32],
     tx_bytes: &[u8],
-    resources: &[(bool, u32, Vec<u8>)],
+    resources: &[(u32, Vec<u8>)],
 ) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&Transaction::V1.to_le_bytes());
@@ -268,8 +273,7 @@ fn encode_inputs(
     out.extend_from_slice(&merge_idx.to_le_bytes());
     out.extend_from_slice(&context_hash);
     out.extend_from_slice(tx_bytes);
-    for (is_new, idx, data) in resources {
-        out.push(if *is_new { 1 } else { 0 });
+    for (idx, data) in resources {
         out.extend_from_slice(&idx.to_le_bytes());
         out.extend_from_slice(&(data.len() as u32).to_le_bytes());
         out.extend_from_slice(data);
@@ -367,7 +371,7 @@ fn update_rotates_min_withdrawal_amount() {
     let mut payload = payload_presig;
     payload.extend_from_slice(&sig_bytes);
     let tx_bytes = encode_v1_transaction(&payload, rest_preimage);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(false, 0, initial_data)]);
+    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, initial_data)]);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -416,7 +420,7 @@ fn update_rejected_with_wrong_signer() {
     let mut payload = payload_presig;
     payload.extend_from_slice(&attacker_sig);
     let tx_bytes = encode_v1_transaction(&payload, &[]);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(false, 0, initial_data)]);
+    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, initial_data)]);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -492,7 +496,7 @@ fn multisig_2_of_3_unlocks_with_two_distinct_signers() {
     payload.extend_from_slice(&sig1);
 
     let tx_bytes = encode_v1_transaction(&payload, rest_preimage);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(false, 0, initial_data)]);
+    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, initial_data)]);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -569,7 +573,7 @@ fn multisig_rejected_with_below_threshold_signers() {
     let mut payload = payload_presig;
     payload.extend_from_slice(&sig);
     let tx_bytes = encode_v1_transaction(&payload, &[]);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(false, 0, initial_data)]);
+    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, initial_data)]);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -751,7 +755,7 @@ fn prev_tx_v1_witness_unlocks_schnorr_locked_config() {
     payload.extend_from_slice(&prev_payload_digest);
 
     let tx_bytes = encode_v1_transaction(&payload, &current_rest_preimage);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(false, 0, initial_data)]);
+    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, initial_data)]);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -768,6 +772,81 @@ fn prev_tx_v1_witness_unlocks_schnorr_locked_config() {
         LockEnum::Schnorr(SchnorrLockView { pubkey }) => assert_eq!(pubkey, &owner.pubkey),
         _ => panic!("expected Schnorr lock"),
     }
+}
+
+/// Builds the guest input blob for a genesis-authorized `Init` of the config resource, with the
+/// config slot carrying `config_data`. The slot's lifecycle is the only thing that varies between
+/// the two `Init` tests, so everything else here is held identical.
+fn init_config_inputs(config_data: Vec<u8>) -> Vec<u8> {
+    let resource_id_bytes: [u8; 32] = *config_resource_id();
+
+    // Init is authorized through a previous transaction paying the baked-in genesis key. This
+    // signer path deliberately does not read the live config's current lock.
+    let prev_tx = build_prev_tx_v1_with_p2pk(&GENESIS_SCHNORR_BYTES);
+    let prev_rest_preimage = transaction_v1_rest_preimage(&prev_tx);
+    let prev_payload_digest: [u8; 32] =
+        *blake3::Hasher::new_keyed(&PAYLOAD_DIGEST_KEY).update(&[]).finalize().as_bytes();
+    let prev_tx_id = tx_id_v1(&[], &prev_rest_preimage);
+    let current_tx = build_current_tx_v1_spending(&prev_tx_id);
+    let current_rest_preimage = transaction_v1_rest_preimage(&current_tx);
+
+    let replacement_owner = TestSigner::new();
+    let replacement_lock = LockEnum::Schnorr(SchnorrLockView { pubkey: &replacement_owner.pubkey });
+    let action = encode_config_action(ACTION_TAG_INIT, 0, 999, &COVENANT_ID, &replacement_lock);
+    let actions_section = encode_actions_section(&[action]);
+    let access_meta = encode_access_metadata(&[(resource_id_bytes, AccessType::Write)]);
+
+    let probe = encode_witness_signer(0, 0, 0, 0, 0);
+    let probe_section = encode_signers_section(&[probe]);
+    let payload_presig_len = access_meta.len() + probe_section.len() + actions_section.len();
+    let rp_offset = payload_presig_len;
+    let pd_offset = rp_offset + prev_rest_preimage.len();
+    let signers_section = encode_signers_section(&[encode_witness_signer(
+        0,
+        0,
+        rp_offset as u32,
+        prev_rest_preimage.len() as u32,
+        pd_offset as u32,
+    )]);
+
+    let mut payload = access_meta;
+    payload.extend_from_slice(&signers_section);
+    payload.extend_from_slice(&actions_section);
+    payload.extend_from_slice(&prev_rest_preimage);
+    payload.extend_from_slice(&prev_payload_digest);
+
+    let tx_bytes = encode_v1_transaction(&payload, &current_rest_preimage);
+    encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, config_data)])
+}
+
+/// A live, non-empty config cannot be re-initialized. Newness is derived from the resource data,
+/// which the journal's data hash binds to the old root, so a prover cannot present these committed
+/// bytes as a new slot; `Init` sees `Live` and must reject.
+#[test]
+fn init_over_live_config_rejected() {
+    let existing_owner = TestSigner::new();
+    let live_data = build_schnorr_locked_config(&existing_owner.pubkey, 100);
+
+    let elf = wrapped_runtime_processor_elf();
+    let outputs_bytes = execute_guest(&elf, &init_config_inputs(live_data));
+    assert!(Outputs::decode(&outputs_bytes, 1).is_err(), "guest accepted Init over a live config");
+}
+
+/// The same genesis-authorized `Init` over an empty slot must succeed. Paired with the rejection
+/// above, this pins that rejection to the slot's lifecycle rather than to the auth path or the
+/// action encoding.
+#[test]
+fn init_creates_config_when_slot_is_empty() {
+    let elf = wrapped_runtime_processor_elf();
+    let outputs_bytes = execute_guest(&elf, &init_config_inputs(Vec::new()));
+    let decoded = Outputs::decode(&outputs_bytes, 1).expect("guest succeeded");
+
+    assert_eq!(decoded.storage_ops.len(), 1);
+    let Some(data) = &decoded.storage_ops[0] else {
+        panic!("expected the config slot to be written, got {:?}", decoded.storage_ops[0]);
+    };
+    let view = ConfigView::from_bytes(data).expect("valid config bytes");
+    assert_eq!(view.min_withdrawal_amount(), 999);
 }
 
 /// Same `KEY_PAYLOAD_DIGEST` constant as `vprogs_l1_utils::tx_id` (re-stated
@@ -834,13 +913,9 @@ fn update_addresses_config_at_lex_position_1_in_two_resource_tx() {
     let tx_bytes = encode_v1_transaction(&payload, rest_preimage);
 
     // Resources passed in the same lex order as access_metadata: decoy first
-    // (empty data, read-only, not new), config second (existing config bytes).
-    let inputs = encode_inputs(
-        0,
-        [0u8; 32],
-        &tx_bytes,
-        &[(false, 0, Vec::new()), (false, 1, initial_config_data)],
-    );
+    // (empty data, read-only, so it reads as new), config second (existing config bytes).
+    let inputs =
+        encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, Vec::new()), (1, initial_config_data)]);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -926,11 +1001,10 @@ fn deposit_credits_new_user() {
     payload.extend_from_slice(&actions_section);
 
     let tx_bytes = encode_v1_transaction(&payload, &rest_preimage);
-    // user slot starts empty (is_new = true); config is an existing resource.
+    // The user slot is left empty, which is what makes it new; config is an existing resource.
     let n_resources = access_entries.len();
-    let mut resources = vec![(false, 0u32, Vec::new()); n_resources];
-    resources[user_lex_idx as usize] = (true, 0, Vec::new());
-    resources[config_lex_idx as usize] = (false, 0, config_data);
+    let mut resources = vec![(0u32, Vec::new()); n_resources];
+    resources[config_lex_idx as usize] = (0, config_data);
     let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
@@ -992,11 +1066,11 @@ fn deposit_credits_existing_user() {
     payload.extend_from_slice(&actions_section);
 
     let tx_bytes = encode_v1_transaction(&payload, &rest_preimage);
-    // user exists (is_new = false); config supplies the deposit address.
+    // The user slot carries data, so it reads as live; config supplies the deposit address.
     let n_resources = access_entries.len();
-    let mut resources = vec![(false, 0u32, Vec::new()); n_resources];
-    resources[user_lex_idx as usize] = (false, 0, existing_data);
-    resources[config_lex_idx as usize] = (false, 0, config_data);
+    let mut resources = vec![(0u32, Vec::new()); n_resources];
+    resources[user_lex_idx as usize] = (0, existing_data);
+    resources[config_lex_idx as usize] = (0, config_data);
     let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
@@ -1040,9 +1114,8 @@ fn deposit_spk_mismatch_rejected() {
 
     let tx_bytes = encode_v1_transaction(&payload, &rest_preimage);
     let n_resources = access_entries.len();
-    let mut resources = vec![(false, 0u32, Vec::new()); n_resources];
-    resources[user_lex_idx as usize] = (true, 0, Vec::new());
-    resources[config_lex_idx as usize] = (false, 0, config_data);
+    let mut resources = vec![(0u32, Vec::new()); n_resources];
+    resources[config_lex_idx as usize] = (0, config_data);
     let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
@@ -1084,9 +1157,8 @@ fn deposit_double_credit_same_output_rejected() {
 
     let tx_bytes = encode_v1_transaction(&payload, &rest_preimage);
     let n_resources = access_entries.len();
-    let mut resources = vec![(false, 0u32, Vec::new()); n_resources];
-    resources[user_lex_idx as usize] = (true, 0, Vec::new());
-    resources[config_lex_idx as usize] = (false, 0, config_data);
+    let mut resources = vec![(0u32, Vec::new()); n_resources];
+    resources[config_lex_idx as usize] = (0, config_data);
     let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
@@ -1144,10 +1216,8 @@ fn deposit_two_distinct_outputs_both_credit() {
 
     let tx_bytes = encode_v1_transaction(&payload, &rest_preimage);
     let n_resources = entries.len();
-    let mut resources = vec![(false, 0u32, Vec::new()); n_resources];
-    resources[user0_lex as usize] = (true, 0, Vec::new());
-    resources[user1_lex as usize] = (true, 0, Vec::new());
-    resources[config_lex as usize] = (false, 0, config_data);
+    let mut resources = vec![(0u32, Vec::new()); n_resources];
+    resources[config_lex as usize] = (0, config_data);
     let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
@@ -1207,11 +1277,10 @@ fn deposit_create_then_credit_same_user() {
     payload.extend_from_slice(&actions_section);
 
     let tx_bytes = encode_v1_transaction(&payload, &rest_preimage);
-    // user slot starts empty (is_new = true); the first deposit creates it.
+    // The user slot is left empty, so it starts new; the first deposit creates it.
     let n_resources = access_entries.len();
-    let mut resources = vec![(false, 0u32, Vec::new()); n_resources];
-    resources[user_lex_idx as usize] = (true, 0, Vec::new());
-    resources[config_lex_idx as usize] = (false, 0, config_data);
+    let mut resources = vec![(0u32, Vec::new()); n_resources];
+    resources[config_lex_idx as usize] = (0, config_data);
     let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
@@ -1268,9 +1337,8 @@ fn deposit_wrong_covenant_delegate_address_rejected() {
 
     let tx_bytes = encode_v1_transaction(&payload, &rest_preimage);
     let n_resources = access_entries.len();
-    let mut resources = vec![(false, 0u32, Vec::new()); n_resources];
-    resources[user_lex_idx as usize] = (true, 0, Vec::new());
-    resources[config_lex_idx as usize] = (false, 0, config_data);
+    let mut resources = vec![(0u32, Vec::new()); n_resources];
+    resources[config_lex_idx as usize] = (0, config_data);
     let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
@@ -1319,7 +1387,7 @@ fn update_rejects_covenant_id_change() {
     let mut payload = payload_presig;
     payload.extend_from_slice(&sig_bytes);
     let tx_bytes = encode_v1_transaction(&payload, &[]);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(false, 0, initial_data)]);
+    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, initial_data)]);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -1393,9 +1461,9 @@ fn withdraw_debits_and_emits_exit() {
 
     // Build the resource list in lex order matching access_entries.
     let n_resources = access_entries.len();
-    let mut resources = vec![(false, 0u32, Vec::new()); n_resources];
-    resources[user_lex_idx as usize] = (false, 0, user_data);
-    resources[config_lex_idx as usize] = (false, 0, config_data);
+    let mut resources = vec![(0u32, Vec::new()); n_resources];
+    resources[user_lex_idx as usize] = (0, user_data);
+    resources[config_lex_idx as usize] = (0, config_data);
 
     let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
 
@@ -1546,9 +1614,9 @@ fn withdraw_with_multisig_locked_user() {
 
     let tx_bytes = encode_v1_transaction(&payload, rest_preimage);
     let n_resources = access_entries.len();
-    let mut resources = vec![(false, 0u32, Vec::new()); n_resources];
-    resources[user_lex_idx as usize] = (false, 0, user_data);
-    resources[config_lex_idx as usize] = (false, 0, config_data);
+    let mut resources = vec![(0u32, Vec::new()); n_resources];
+    resources[user_lex_idx as usize] = (0, user_data);
+    resources[config_lex_idx as usize] = (0, config_data);
 
     let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
 
@@ -1616,9 +1684,9 @@ fn withdraw_below_min_rejected() {
     let tx_bytes = encode_v1_transaction(&payload, &[]);
 
     let n_resources = access_entries.len();
-    let mut resources = vec![(false, 0u32, Vec::new()); n_resources];
-    resources[user_lex_idx as usize] = (false, 0, user_data);
-    resources[config_lex_idx as usize] = (false, 0, config_data);
+    let mut resources = vec![(0u32, Vec::new()); n_resources];
+    resources[user_lex_idx as usize] = (0, user_data);
+    resources[config_lex_idx as usize] = (0, config_data);
 
     let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
 
@@ -1670,9 +1738,9 @@ fn withdraw_over_balance_rejected() {
     let tx_bytes = encode_v1_transaction(&payload, &[]);
 
     let n_resources = access_entries.len();
-    let mut resources = vec![(false, 0u32, Vec::new()); n_resources];
-    resources[user_lex_idx as usize] = (false, 0, user_data);
-    resources[config_lex_idx as usize] = (false, 0, config_data);
+    let mut resources = vec![(0u32, Vec::new()); n_resources];
+    resources[user_lex_idx as usize] = (0, user_data);
+    resources[config_lex_idx as usize] = (0, config_data);
 
     let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
 
@@ -1728,12 +1796,8 @@ fn update_at_wrong_lex_position_is_rejected() {
     let mut payload = payload_presig;
     payload.extend_from_slice(&sig_bytes);
     let tx_bytes = encode_v1_transaction(&payload, &[]);
-    let inputs = encode_inputs(
-        0,
-        [0u8; 32],
-        &tx_bytes,
-        &[(false, 0, Vec::new()), (false, 1, initial_config_data)],
-    );
+    let inputs =
+        encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, Vec::new()), (1, initial_config_data)]);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -1788,9 +1852,8 @@ fn deposit_below_creation_minimum_rejected() {
 
     let tx_bytes = encode_v1_transaction(&payload, &rest_preimage);
     let n_resources = access_entries.len();
-    let mut resources = vec![(false, 0u32, Vec::new()); n_resources];
-    resources[user_lex_idx as usize] = (true, 0, Vec::new());
-    resources[config_lex_idx as usize] = (false, 0, config_data);
+    let mut resources = vec![(0u32, Vec::new()); n_resources];
+    resources[config_lex_idx as usize] = (0, config_data);
     let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
@@ -1832,9 +1895,8 @@ fn deposit_create_rejected_when_address_does_not_match_initial_lock() {
 
     let tx_bytes = encode_v1_transaction(&payload, &rest_preimage);
     let n_resources = access_entries.len();
-    let mut resources = vec![(false, 0u32, Vec::new()); n_resources];
-    resources[user_lex_idx as usize] = (true, 0, Vec::new());
-    resources[config_lex_idx as usize] = (false, 0, config_data);
+    let mut resources = vec![(0u32, Vec::new()); n_resources];
+    resources[config_lex_idx as usize] = (0, config_data);
     let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
@@ -1897,8 +1959,7 @@ fn transfer_moves_balance_between_two_users() {
     let mut payload = payload_presig;
     payload.extend_from_slice(&sig_bytes);
     let tx_bytes = encode_v1_transaction(&payload, &[]);
-    let inputs =
-        encode_inputs(0, [0u8; 32], &tx_bytes, &[(false, 0, source_buf), (false, 1, dest_buf)]);
+    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, source_buf), (1, dest_buf)]);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -1961,9 +2022,8 @@ fn run_new_dest_transfer(
     let tx_bytes = encode_v1_transaction(&payload, &[]);
 
     let (_, source_buf) = build_schnorr_locked_user(&source.pubkey, source_balance);
-    let mut resources = vec![(false, 0u32, Vec::new()); 2];
-    resources[source_idx as usize] = (false, 0, source_buf);
-    resources[dest_idx as usize] = (true, 0, Vec::new());
+    let mut resources = vec![(0u32, Vec::new()); 2];
+    resources[source_idx as usize] = (0, source_buf);
     let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
@@ -2055,7 +2115,7 @@ fn update_user_lock_rotates_lock_and_preserves_initial_lock_hash() {
     let mut payload = payload_presig;
     payload.extend_from_slice(&sig_bytes);
     let tx_bytes = encode_v1_transaction(&payload, &[]);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(false, 0, initial_data)]);
+    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, initial_data)]);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -2081,4 +2141,116 @@ fn update_user_lock_rotates_lock_and_preserves_initial_lock_hash() {
     }
     // Address still derives from the (immutable) initial_lock_hash.
     assert_eq!(*derive_user_resource(view.initial_lock_hash()), user_id_bytes);
+}
+
+// Prev-tx witness pointers over payload bytes
+
+/// Encodes a single multisig PrevTxV1Witness signer. Same body as
+/// [`encode_witness_signer`]; only the kind byte differs.
+fn encode_multisig_witness_signer(
+    resource_idx: u8,
+    input_idx: u8,
+    rp_offset: u32,
+    rp_len: u32,
+    pd_offset: u32,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.push(resource_idx);
+    out.push(MultisigPrevTxV1WitnessSigner::TAG);
+    out.push(input_idx);
+    out.extend_from_slice(&rp_offset.to_le_bytes());
+    out.extend_from_slice(&rp_len.to_le_bytes());
+    out.extend_from_slice(&pd_offset.to_le_bytes());
+    out
+}
+
+/// The outpoint the carrier's input 0 spends. The witness bytes below do not
+/// hash to it, which is the whole point of the carrier.
+const UNMATCHED_PREV_TX_ID: [u8; 32] = [0xAA; 32];
+
+/// Fixed lock pubkey for the carrier's config resource. Never consulted: the
+/// witness signers ignore `resource_idx` and recover their pubkey from the
+/// witness, so the resource only has to decode.
+const CARRIER_LOCK_PUBKEY: [u8; 32] = [0x02; 32];
+
+/// Builds the `Inputs` blob for an L1 carrier that reaches the witness path and
+/// nothing else: one input, one declared resource, zero actions, and one
+/// witness signer whose in-range offsets point at payload bytes that do not
+/// hash to input 0's prev_tx_id. `encode_signer` selects the single-key
+/// (kind 0x02) or multisig (kind 0x04) twin, which share this wire body.
+///
+/// Every byte here is authored by the L1 transaction: the offsets come from the
+/// signer body in `ix_data`, and the bytes they name come from the payload.
+fn witness_mismatch_carrier(encode_signer: impl Fn(u8, u8, u32, u32, u32) -> Vec<u8>) -> Vec<u8> {
+    let initial_data = build_schnorr_locked_config(&CARRIER_LOCK_PUBKEY, 100);
+    let resource_id_bytes: [u8; 32] = *config_resource_id();
+
+    let current_tx = build_current_tx_v1_spending(&UNMATCHED_PREV_TX_ID);
+    let current_rest_preimage = transaction_v1_rest_preimage(&current_tx);
+
+    // Zero actions: signers resolve before any action applies, so the carrier
+    // needs no valid action and no live resource to fire.
+    let actions_section = encode_actions_section(&[]);
+    let access_meta = encode_access_metadata(&[(resource_id_bytes, AccessType::Write)]);
+
+    // Probe the signers section to learn its size, then place the witness tail
+    // immediately after it, exactly as the honest witness test does.
+    let probe_section = encode_signers_section(&[encode_signer(0, 0, 0, 0, 0)]);
+    let payload_presig_len = access_meta.len() + probe_section.len() + actions_section.len();
+
+    // The tail is in range and readable; it is simply not a prev-tx preimage,
+    // so it cannot hash to UNMATCHED_PREV_TX_ID.
+    let junk_rest_preimage = [0x00u8; 64];
+    let junk_payload_digest = [0x00u8; 32];
+    let rp_offset = payload_presig_len;
+    let rp_len = junk_rest_preimage.len();
+    let pd_offset = rp_offset + rp_len;
+
+    let signers_section = encode_signers_section(&[encode_signer(
+        0,
+        0,
+        rp_offset as u32,
+        rp_len as u32,
+        pd_offset as u32,
+    )]);
+    assert_eq!(signers_section.len(), probe_section.len(), "probe must size the real section");
+
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&access_meta);
+    payload.extend_from_slice(&signers_section);
+    payload.extend_from_slice(&actions_section);
+    payload.extend_from_slice(&junk_rest_preimage);
+    payload.extend_from_slice(&junk_payload_digest);
+
+    let tx_bytes = encode_v1_transaction(&payload, &current_rest_preimage);
+    encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, initial_data)])
+}
+
+/// Runs `inputs` through the guest and asserts the transaction is journaled as
+/// an error. A malformed witness pointer is user input, so it must produce an
+/// `OutputCommitment::Error` journal the batch can fold. Aborting the guest
+/// instead yields no journal at all, and a tx with no journal cannot be skipped
+/// without breaking the lane's activity digest.
+fn assert_journaled_as_error(inputs: &[u8]) {
+    let elf = wrapped_runtime_processor_elf();
+    let (_stdout, journal_bytes) = execute_guest_with_journal(&elf, inputs);
+    let journal_entries = JournalEntries::decode(&journal_bytes).expect("valid journal");
+    match journal_entries.output_commitment {
+        OutputCommitment::Error(_) => {}
+        OutputCommitment::Success { .. } => panic!("expected Error journal, got Success"),
+    }
+}
+
+/// Single-key witness signer (kind 0x02) whose pointer names payload bytes that
+/// do not hash to the outpoint.
+#[test]
+fn witness_not_matching_outpoint_is_journaled_as_error() {
+    assert_journaled_as_error(&witness_mismatch_carrier(encode_witness_signer));
+}
+
+/// The multisig twin (kind 0x04) shares `recover_witness_pubkey` and therefore
+/// the same exit.
+#[test]
+fn multisig_witness_not_matching_outpoint_is_journaled_as_error() {
+    assert_journaled_as_error(&witness_mismatch_carrier(encode_multisig_witness_signer));
 }

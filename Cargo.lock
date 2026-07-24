@@ -8647,6 +8647,7 @@ name = "vprogs-l1-bridge"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
+ "borsh",
  "crossbeam-queue",
  "futures",
  "kaspa-consensus-core",
@@ -8658,6 +8659,7 @@ dependencies = [
  "tap",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-tungstenite",
  "vprogs-core-atomics",
  "vprogs-core-macros",
  "vprogs-core-types",
@@ -8665,6 +8667,8 @@ dependencies = [
  "vprogs-node-test-utils",
  "vprogs-storage-canonical-chain",
  "workflow-core",
+ "workflow-rpc",
+ "workflow-serializer",
 ]
 
 [[package]]
@@ -9218,6 +9222,7 @@ dependencies = [
  "kaspa-seq-commit",
  "kaspa-smt",
  "tap",
+ "tempfile",
  "thiserror 2.0.18",
  "vprogs-core-codec",
  "vprogs-core-hashing",
@@ -9226,6 +9231,7 @@ dependencies = [
  "vprogs-l1-types",
  "vprogs-l1-utils",
  "vprogs-scheduling-scheduler",
+ "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
  "zerocopy",
 ]
@@ -9351,6 +9357,7 @@ dependencies = [
  "kaspa-rpc-core",
  "kaspa-seq-commit",
  "kaspa-txscript",
+ "risc0-zkvm",
  "secp256k1",
  "tap",
  "tempfile",
@@ -9377,6 +9384,7 @@ dependencies = [
  "vprogs-zk-backend-risc0-api",
  "vprogs-zk-backend-risc0-covenant",
  "vprogs-zk-backend-risc0-runtime-processor",
+ "vprogs-zk-backend-risc0-settler",
  "vprogs-zk-batch-prover",
  "vprogs-zk-transaction-prover",
  "vprogs-zk-vm",
