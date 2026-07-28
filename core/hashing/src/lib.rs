@@ -9,5 +9,5 @@ pub(crate) mod hasher;
 pub(crate) mod sha256;
 
 pub use blake3::Blake3;
-pub use hasher::Hasher;
+pub use hasher::{Hasher, IncrementalHasher};
 pub use sha256::Sha256;

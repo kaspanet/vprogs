@@ -13,7 +13,7 @@ use crate::{
 /// A RocksDB-backed [`Store`], with one column family per [`StateSpace`].
 pub struct RocksDbStore<C: Config = DefaultConfig> {
     /// The shared RocksDB handle.
-    db: Arc<DB>,
+    pub(crate) db: Arc<DB>,
     /// Write options applied to every commit.
     write_opts: Arc<rocksdb::WriteOptions>,
     /// In-memory canonical-chain oracle, shared by clones; driven by the restored writer.
@@ -46,8 +46,27 @@ impl<C: Config> RocksDbStore<C> {
         }
     }
 
+    /// Opens an existing store read-only: sees data committed at open time, not writes made
+    /// through another handle afterward. Can be opened while a separate read-write handle holds the
+    /// same store open.
+    pub fn open_read_only<P: AsRef<Path>>(path: P) -> Result<Self, rocksdb::Error> {
+        let db_opts = C::db_opts();
+        let db = DB::open_cf_descriptors_read_only(
+            &db_opts,
+            path,
+            <StateSpace as StateSpaceExt<C>>::all_descriptors(),
+            false,
+        )?;
+        Ok(Self {
+            db: Arc::new(db),
+            write_opts: Arc::new(C::write_opts()),
+            canonical: CanonicalChain::default(),
+            _marker: PhantomData,
+        })
+    }
+
     /// The column-family handle for `ns`; panics if the CF is missing.
-    fn cf(&self, ns: &StateSpace) -> &rocksdb::ColumnFamily {
+    pub(crate) fn cf(&self, ns: &StateSpace) -> &rocksdb::ColumnFamily {
         let cf_name = <StateSpace as StateSpaceExt<C>>::cf_name;
         match self.db.cf_handle(cf_name(ns)) {
             Some(cf) => cf,
@@ -159,5 +178,37 @@ impl Iterator for RocksDbPrefixIter<'_> {
             Ok((k, v)) => (k.to_vec(), v.to_vec()),
             Err(e) => panic!("rocksdb prefix iteration failed: {e}"),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use vprogs_storage_types::{StateSpace, Store, WriteBatch as _};
+
+    use super::*;
+
+    #[test]
+    fn open_read_only_sees_committed_writes() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Write a value with a normal read-write handle, then drop it.
+        {
+            let store = RocksDbStore::<DefaultConfig>::open(dir.path());
+            let mut wb = store.write_batch();
+            wb.put(StateSpace::Metadata, b"k", b"v");
+            store.commit(wb);
+        }
+
+        // Re-open read-only and confirm the value is visible.
+        let ro = RocksDbStore::<DefaultConfig>::open_read_only(dir.path())
+            .expect("read-only open should succeed for an existing db");
+        assert_eq!(ro.get(StateSpace::Metadata, b"k"), Some(b"v".to_vec()));
+    }
+
+    #[test]
+    fn open_read_only_missing_db_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("does-not-exist");
+        assert!(RocksDbStore::<DefaultConfig>::open_read_only(&missing).is_err());
     }
 }

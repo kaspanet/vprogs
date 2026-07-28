@@ -17,3 +17,5 @@ vprogs-storage-types.workspace           = true
 # else. Cargo feature unification then turns it on for the whole non-Windows build.
 [target.'cfg(not(windows))'.dependencies]
 rocksdb = { workspace = true, features = ["jemalloc"] }
+[dev-dependencies]
+tempfile.workspace = true

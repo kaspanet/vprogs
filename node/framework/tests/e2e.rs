@@ -37,18 +37,25 @@ fn create_node(l1: &L1Node, temp_dir: &TempDir) -> Node<RocksDbStore, TestNodeVm
 /// Returns the L1 tx hash for each payload block, where `hashes[i]` wrote to resource `i+1`.
 /// Total blocks mined is `count + 1` (the extra block accepts the last payload).
 async fn mine_payload_blocks(l1: &L1Node, count: usize) -> Vec<Hash> {
-    let mut tx_hashes = Vec::with_capacity(count);
-    for i in 1..=count {
-        let txs = l1
-            .build_payload_transactions(vec![Vec::new().tap_mut(|p| {
+    let payloads = (1..=count)
+        .map(|i| {
+            Vec::new().tap_mut(|p| {
                 p.write_many(
                     [&AccessMetadata::write(ResourceId::for_test(i))],
                     AccessMetadata::as_bytes,
                 );
-            })])
-            .await;
-        tx_hashes.push(txs[0].id());
-        l1.mine_block(&txs).await;
+            })
+        })
+        .collect();
+    // Build every payload transaction from one read of the wallet's spendable set. The builder
+    // subtracts what each transaction spends, so no read has to wait on the node's UTXO index
+    // catching up with the block mined for the previous payload.
+    let txs = l1.build_payload_transactions(payloads).await;
+
+    let mut tx_hashes = Vec::with_capacity(count);
+    for tx in &txs {
+        tx_hashes.push(tx.id());
+        l1.mine_block(std::slice::from_ref(tx)).await;
     }
     // In Kaspa DAG consensus, a block's transactions are accepted by the next chain
     // block. Mine one more so the last payload gets accepted.
