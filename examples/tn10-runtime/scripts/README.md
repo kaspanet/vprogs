@@ -67,6 +67,28 @@ runs the monitor for the window, then tears both nodes down on exit.
 [consistency] covenantA=<hex> covenantB=<hex> match=yes  settleA=N settleB=N
 ```
 
+## Boot a node from a snapshot (`DEMO_SNAPSHOT`)
+
+With `DEMO_SNAPSHOT=1`, after the monitor window the script snapshots node A and brings up a third
+node C from that snapshot instead of catching up from the covenant deploy. This exercises the
+state-sync path a node whose lane is older than the L1 pruning horizon must use.
+
+```sh
+DEMO_SNAPSHOT=1 \
+TN10RT_KEY1=<funded-key-1> TN10RT_KEY2=<funded-key-2> TN10RT_KEY3=<funded-key-3> \
+TN10RT_WRPC_URL=ws://HOST:PORT \
+  bash examples/tn10-runtime/scripts/run-demo.sh [seconds]
+```
+
+Requires the `vprun` CLI (`cargo build -p vprogs-runner`) and a third funded key for C's own
+settlements. The stage runs `vprun snapshot save --data-dir dataA --out nodeA.vpsnap`, then `vprun
+snapshot restore --data-dir dataC --snapshot nodeA.vpsnap --wrpc-url <url> --network testnet-10`
+(which confirms the snapshot's settlement against the L1 node), then starts C from `dataC` with no
+covenant env so the runner auto-resumes from the restored store and settles on top. `snapshot save`
+needs A to have settled at least once in the window; on a transient
+`RootMismatch`/`SettlementNotRetained`, rerun with a longer window or against a stopped (quiesced) A.
+Live-only: like the rest of this demo it runs against a real testnet-10 node, not in CI.
+
 - **acts** counts runtime actions issued (Init/Deposit/Transfer/Withdraw); only node A issues.
 - **[consistency] match=yes** means both nodes resolved the same covenant id (B joined A's covenant
   rather than forking its own). A final `=== final verdict ===` prints PASS/FAIL per node and a
