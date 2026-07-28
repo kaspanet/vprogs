@@ -14,7 +14,7 @@ use vprogs_state_metadata::StateMetadata;
 use vprogs_state_ptr_rollback::StatePtrRollback;
 use vprogs_state_snapshot::SnapshotWriter;
 use vprogs_storage_rocksdb_store::{DefaultConfig, RocksDbStore};
-use vprogs_storage_types::StateSpace;
+use vprogs_storage_types::{StateSpace, Store};
 
 use crate::{
     persistence::PersistedState,
@@ -80,6 +80,11 @@ pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveErr
     // Read-only open: see the staleness contract on `save_snapshot` above.
     let store = RocksDbStore::<DefaultConfig>::open_read_only(data_dir.join("db"))
         .map_err(SaveError::OpenStore)?;
+
+    // A fresh handle's canonical-chain oracle is empty, which reads every stored node version as
+    // canonical. Replay the persisted batch log into it, as a live node does at start-up, so the
+    // root check below steps over versions a reorg orphaned.
+    let _canonical = store.canonical_chain_manager::<ChainBlockMetadata>();
 
     // Identity comes from the JSON file, not the DB.
     let identity = PersistedState::load(data_dir);
@@ -274,6 +279,7 @@ mod tests {
         // in a snapshot pinned to batch 1's state.
         let m2 = ChainBlockMetadata {
             hash: Hash::from_bytes([22u8; 32]),
+            parent_id: 1,
             ..ChainBlockMetadata::default()
         };
         {
@@ -295,6 +301,7 @@ mod tests {
         };
         let m3 = ChainBlockMetadata {
             hash: Hash::from_bytes([33u8; 32]),
+            parent_id: 2,
             last_settlement: Some(settlement),
             ..ChainBlockMetadata::default()
         };
@@ -415,5 +422,75 @@ mod tests {
         }
         reader.finish().unwrap();
         assert_eq!(ids, vec![[1u8; 32]]);
+    }
+
+    // A reorg leaves orphaned node versions on disk below the settled batch. The save handle must
+    // read them as orphaned, not as the newest version, or its root self-check fails on a store
+    // that is perfectly healthy.
+    #[test]
+    fn save_ignores_versions_orphaned_by_a_reorg() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RocksDbStore::<DefaultConfig>::open(dir.path().join("db"));
+        let mut chain = store.canonical_chain_manager::<ChainBlockMetadata>();
+
+        let r1 = ResourceId::from([1u8; 32]);
+
+        // Batch 1 is canonical and holds the only surviving value of r1.
+        let m1 = ChainBlockMetadata {
+            hash: Hash::from_bytes([11u8; 32]),
+            ..ChainBlockMetadata::default()
+        };
+        chain.append(m1);
+        let root1 = commit_batch(&store, 1, &[(r1, 1, b"alpha")], m1, true);
+
+        // Batch 2 rewrites r1, then the chain reorgs it away. Its node versions stay on disk.
+        let m2 = ChainBlockMetadata {
+            hash: Hash::from_bytes([22u8; 32]),
+            parent_id: 1,
+            ..ChainBlockMetadata::default()
+        };
+        chain.append(m2);
+        let root2 = commit_batch(&store, 2, &[(r1, 2, b"orphan")], m2, false);
+        assert_ne!(root1, root2);
+        chain.rollback(1);
+        {
+            let mut wb = store.write_batch();
+            StatePtrLatest::put(&mut wb, &r1, 1); // rollback restores r1's pre-batch-2 pointer
+            store.commit(wb);
+        }
+
+        // Batch 3 is canonical, settles, and changes no state, so it writes no node of its own.
+        // Its root is batch 1's, and resolving it means stepping over batch 2's orphaned nodes.
+        let settlement = SettlementInfo {
+            block_prove_to: Hash::from_bytes([33u8; 32]),
+            containing_block: Hash::from_bytes([33u8; 32]),
+            new_state: root1,
+            ..SettlementInfo::default()
+        };
+        let m3 = ChainBlockMetadata {
+            hash: Hash::from_bytes([33u8; 32]),
+            parent_id: 1, // extends batch 1: batch 2 was reorged out
+            last_settlement: Some(settlement),
+            ..ChainBlockMetadata::default()
+        };
+        chain.append(m3);
+        assert_eq!(commit_batch(&store, 3, &[], m3, false), root1);
+
+        PersistedState {
+            lane_id: Some(9),
+            covenant_id: Some(Hash::from_bytes([7u8; 32]).to_string()),
+            bootstrap_txid: Some(Hash::from_bytes([8u8; 32]).to_string()),
+            bootstrap_block_hash: None,
+        }
+        .save(dir.path());
+
+        drop(chain);
+        drop(store);
+
+        let out = dir.path().join("snap.vpsnap");
+        let summary = save_snapshot(dir.path(), &out).expect("save should succeed");
+        assert_eq!(summary.committed_index, 3);
+        assert_eq!(summary.settlement_new_state, root1);
+        assert_eq!(summary.record_count, 1);
     }
 }
