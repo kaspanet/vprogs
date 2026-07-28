@@ -390,6 +390,73 @@ mod tests {
         assert_eq!(id.bootstrap_block(), Some(block_prove_to));
     }
 
+    // The restored store carries exactly one batch-metadata entry, so the canonical chain a node
+    // replays from it has the anchor as both its base and its tip. Every SMT node the snapshot
+    // wrote sits at that one version, and a batch above it only resolves them while the anchor
+    // reads canonical.
+    #[test]
+    fn restored_state_stays_canonical_as_the_chain_extends() {
+        let records = vec![rec(1, b"alpha"), rec(2, b"beta")];
+        let new_state = settlement_root(&records, 4242);
+
+        let block_prove_to = Hash::from_bytes([11u8; 32]);
+        let settlement = SettlementInfo {
+            block_prove_to,
+            containing_block: Hash::from_bytes([33u8; 32]),
+            new_state,
+            ..SettlementInfo::default()
+        };
+        // The source node threaded this block onto a parent the restored log does not carry.
+        let meta = ChainBlockMetadata {
+            hash: block_prove_to,
+            parent_id: 4241,
+            last_settlement: Some(settlement),
+            ..ChainBlockMetadata::default()
+        };
+        let header = SnapshotHeader {
+            covenant_id: Hash::from_bytes([7u8; 32]),
+            lane_id: 9,
+            bootstrap_txid: Hash::from_bytes([8u8; 32]),
+            committed_index: 4242,
+            chain_block_metadata: meta,
+        };
+
+        let bytes = write_test_snapshot(&header.encode(), &records);
+        let (header_bytes, reader) =
+            SnapshotReader::<_, Sha256, VpsnapFormat>::open(bytes.as_slice()).unwrap();
+        let header = SnapshotHeader::decode(&header_bytes).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        restore_into_store(dir.path(), &header, reader).expect("restore should succeed");
+
+        // Start-up replay: the ancestry walk stops at the anchor rather than at a live parent.
+        let store = RocksDbStore::<DefaultConfig>::open(dir.path().join("db"));
+        let mut chain = store.canonical_chain_manager::<ChainBlockMetadata>();
+        assert_eq!(chain.chain().tip(), 4242);
+        assert!(chain.chain().snapshot().is_canonical(4242));
+        assert_eq!(store.root(4242), new_state);
+
+        // The next chain block threads onto the anchor, the way the bridge threads onto its sink.
+        let next = ChainBlockMetadata {
+            hash: Hash::from_bytes([12u8; 32]),
+            parent_id: chain.chain().tip(),
+            ..ChainBlockMetadata::default()
+        };
+        assert_eq!(chain.append(next).id, 4243);
+        let mut wb = store.write_batch();
+        StoredBatchMetadata::set(&mut wb, 4243, &next);
+        store.commit(wb);
+
+        // Restart with both entries: the anchor is still canonical, so a read at the newer batch
+        // still resolves the nodes the snapshot wrote.
+        drop(chain);
+        let chain = store.canonical_chain_manager::<ChainBlockMetadata>();
+        let snapshot = chain.chain().snapshot();
+        assert!(snapshot.is_canonical(4242));
+        assert!(snapshot.is_canonical(4243));
+        assert_eq!(store.root(4243), new_state);
+    }
+
     #[test]
     fn restore_refuses_existing_store() {
         let dir = tempfile::tempdir().unwrap();
