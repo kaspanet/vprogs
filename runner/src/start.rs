@@ -19,8 +19,9 @@ use secp256k1::Keypair;
 use tokio::{sync::watch, task::JoinHandle};
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_smt::EMPTY_HASH;
-use vprogs_l1_types::SettlementInfo;
+use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_l1_wallet::Wallet;
+use vprogs_state_metadata::StateMetadata;
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_settler::{
     CovenantState, SettlementMode, SettlementWorkerConfig, bootstrap_dev_covenant,
@@ -421,8 +422,12 @@ where
     let tip_daa_obs = Arc::new(AtomicU64::new(0));
     // Live settlement channel: the bridge (writer) publishes the covenant's last on-chain
     // settlement here; the settler (reader) detects a competitor advancing past its in-memory
-    // tip.
-    let (settlement_tx, settlement_rx) = watch::channel(None::<SettlementInfo>);
+    // tip. Seeded from the store's own persisted settlement (`None` on a fresh bootstrap store) so
+    // a restored or resumed store's settler adopts the covenant tip without waiting on the bridge
+    // to re-observe a settlement that may reference a since-pruned deploy block.
+    let seed_settlement =
+        StateMetadata::last_committed::<ChainBlockMetadata, _>(&store).metadata().last_settlement;
+    let (settlement_tx, settlement_rx) = watch::channel(seed_settlement);
     // Seed the bridge with reorg headroom: pin the anchor only if it is already deep, else seed
     // seed_depth below the sink. The settler keeps the unmodified `start_from` (its own
     // resume/adopt semantics), so this only affects where the bridge roots its chain.

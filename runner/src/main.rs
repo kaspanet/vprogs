@@ -6,7 +6,8 @@
 //! transactions.
 //!
 //! With no subcommand, `vprun` runs the daemon directly from its flags (back-compat with earlier
-//! releases). `vprun snapshot save` instead exports the local node's L2 state to a file.
+//! releases). `vprun snapshot save` exports the local node's L2 state to a file; `vprun snapshot
+//! restore` seeds a fresh data dir from one after confirming it against local L1.
 //!
 //! Supply the fee / bootstrap key through `VPRUN_PRIVATE_KEY` or the config file; `--private-key`
 //! leaks it into shell history and every `ps` listing, so keep that form for throwaway dev keys.
@@ -28,7 +29,7 @@ struct Cli {
 /// Subcommands beyond the default daemon run.
 #[derive(clap::Subcommand)]
 enum Command {
-    /// Save or (later) restore L2 state snapshots.
+    /// Save or restore L2 state snapshots.
     Snapshot {
         #[command(subcommand)]
         action: SnapshotAction,
@@ -46,6 +47,21 @@ enum SnapshotAction {
         /// Path to write the snapshot file to.
         #[arg(long)]
         out: std::path::PathBuf,
+    },
+    /// Restore L2 state from a snapshot file into a fresh data dir, validating against local L1.
+    Restore {
+        /// RocksDB + state-file directory to seed. Must not already hold a store or identity.
+        #[arg(long)]
+        data_dir: std::path::PathBuf,
+        /// Path to the snapshot file to restore from.
+        #[arg(long)]
+        snapshot: std::path::PathBuf,
+        /// Borsh wRPC URL of the local node to confirm the snapshot's settlement against.
+        #[arg(long)]
+        wrpc_url: String,
+        /// Kaspa network: `mainnet` | `testnet-N` | `tn10` | `devnet` | `simnet`.
+        #[arg(long, default_value = "testnet-10")]
+        network: String,
     },
 }
 
@@ -153,6 +169,37 @@ async fn main() {
                 }
                 Err(e) => {
                     eprintln!("snapshot save failed: {e}");
+                    std::process::exit(2);
+                }
+            }
+        }
+        Some(Command::Snapshot {
+            action: SnapshotAction::Restore { data_dir, snapshot, wrpc_url, network },
+        }) => {
+            let network_id = match vprogs_runner::parse_network(&network) {
+                Ok(n) => n,
+                Err(e) => {
+                    eprintln!("vprun: configuration error: {e}");
+                    std::process::exit(2);
+                }
+            };
+            match vprogs_runner::snapshot::restore::restore_snapshot(
+                &data_dir, &snapshot, &wrpc_url, network_id,
+            )
+            .await
+            {
+                Ok(s) => {
+                    eprintln!(
+                        "restored {} records at index {}; run `vprun --data-dir {} ...` to resume \
+                         from {}",
+                        s.record_count,
+                        s.committed_index,
+                        data_dir.display(),
+                        s.resume_from
+                    );
+                }
+                Err(e) => {
+                    eprintln!("snapshot restore failed: {e}");
                     std::process::exit(2);
                 }
             }
