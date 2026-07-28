@@ -20,6 +20,7 @@ mod lane;
 mod node;
 mod persistence;
 mod report;
+pub mod snapshot;
 mod start;
 mod wrpc;
 

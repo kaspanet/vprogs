@@ -118,6 +118,12 @@ impl<C: Config> Store for RocksDbStore<C> {
     fn canonical_chain(&self) -> CanonicalChain {
         self.canonical.clone()
     }
+
+    fn scan(&self, state_space: StateSpace) -> PrefixIterator<'_> {
+        let cf = self.cf(&state_space);
+        let iter = self.db.iterator_cf(cf, IteratorMode::Start);
+        Box::new(RocksDbPrefixIter { inner: iter })
+    }
 }
 
 impl<C: Config> Tree for RocksDbStore<C> {

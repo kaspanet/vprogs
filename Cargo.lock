@@ -8804,8 +8804,10 @@ dependencies = [
 name = "vprogs-runner"
 version = "0.1.0"
 dependencies = [
+ "borsh",
  "clap",
  "ctrlc",
+ "faster-hex",
  "fastrand",
  "figment",
  "kaspa-addresses",
@@ -8817,6 +8819,7 @@ dependencies = [
  "kaspa-txscript",
  "kaspa-wrpc-client",
  "log",
+ "rocksdb",
  "secp256k1",
  "serde",
  "serde_json",
@@ -8824,6 +8827,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "vprogs-core-atomics",
+ "vprogs-core-hashing",
  "vprogs-core-smt",
  "vprogs-core-test-utils",
  "vprogs-core-types",
@@ -8833,14 +8837,22 @@ dependencies = [
  "vprogs-node-framework",
  "vprogs-node-test-utils",
  "vprogs-scheduling-scheduler",
+ "vprogs-state-batch-metadata",
+ "vprogs-state-metadata",
+ "vprogs-state-ptr-latest",
+ "vprogs-state-ptr-rollback",
+ "vprogs-state-snapshot",
+ "vprogs-state-version",
  "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
+ "vprogs-storage-types",
  "vprogs-zk-aggregate-prover",
  "vprogs-zk-backend-risc0-api",
  "vprogs-zk-backend-risc0-settler",
  "vprogs-zk-backend-risc0-test-suite",
  "vprogs-zk-batch-prover",
  "vprogs-zk-vm",
+ "zerocopy",
 ]
 
 [[package]]
@@ -8984,7 +8996,9 @@ name = "vprogs-state-ptr-latest"
 version = "0.1.0"
 dependencies = [
  "borsh",
+ "tempfile",
  "vprogs-core-types",
+ "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
 ]
 

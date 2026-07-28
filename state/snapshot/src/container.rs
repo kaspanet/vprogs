@@ -1,9 +1,15 @@
 //! Streaming snapshot codec: an opaque header plus a stream of `(resource_id, value)` records,
-//! framed with a trailing digest over everything before it.
+//! framed with a trailing digest.
 //!
 //! Wire layout (little-endian integers):
 //! `MAGIC[8] | version:u16 | header_len:u32 | header[header_len] | record_count:u64 |
 //! { id[32] | value_len:u32 | value[value_len] }*record_count | digest[32]`
+//!
+//! `record_count` sits before the records so a forward-only reader knows how many to expect, but
+//! its value is not known until they have all been written. The digest therefore folds
+//! `record_count` last, after the records rather than at its physical position, so the writer can
+//! stream against a placeholder and backpatch the true count on `finish` (hence its `Seek` bound).
+//! Every other byte is folded in physical order.
 //!
 //! `MAGIC` and the format version are pinned by the caller's [`SnapshotFormat`] implementation
 //! rather than hardcoded here: the container is generic over both `F: SnapshotFormat` (framing
@@ -19,7 +25,7 @@
 //! requires a second pass over the body.
 
 use std::{
-    io::{Read, Write},
+    io::{Read, Seek, SeekFrom, Write},
     marker::PhantomData,
 };
 
@@ -107,29 +113,31 @@ impl<W: Write, Inc: IncrementalHasher> Write for HashingWriter<'_, W, Inc> {
 ///
 /// Generic over `H` (the digest algorithm folded over every byte written) and `F` (the framing
 /// identity: [`SnapshotFormat::MAGIC`] and [`SnapshotFormat::FORMAT_VERSION`]).
-pub struct SnapshotWriter<'w, W: Write, H: Hasher, F: SnapshotFormat> {
+pub struct SnapshotWriter<'w, W: Write + Seek, H: Hasher, F: SnapshotFormat> {
     /// Sink for every byte written, folding it into the running digest.
     hw: HashingWriter<'w, W, H::Incremental>,
+    /// Byte offset of the `record_count` field, captured at [`open`](Self::open) so
+    /// [`finish`](Self::finish) can seek back and overwrite its placeholder with the true count.
+    count_offset: u64,
     /// Previously written id, to debug-assert non-decreasing order. Compiled out in release
     /// builds along with the check it feeds.
     #[cfg(debug_assertions)]
     prev_id: Option<[u8; 32]>,
     /// Records written so far via [`write_record`](Self::write_record).
     written: u64,
-    /// `record_count` declared at [`open`](Self::open) time.
-    expected: u64,
     /// Binds the framing identity without storing a value.
     _format: PhantomData<F>,
 }
 
-impl<'w, W: Write, H: Hasher, F: SnapshotFormat> SnapshotWriter<'w, W, H, F> {
-    /// Writes the fixed prefix (`F::MAGIC`, `F::FORMAT_VERSION`, `header_len`, `header`,
-    /// `record_count`) and starts the running digest over everything written from here on.
+impl<'w, W: Write + Seek, H: Hasher, F: SnapshotFormat> SnapshotWriter<'w, W, H, F> {
+    /// Writes the fixed prefix (`F::MAGIC`, `F::FORMAT_VERSION`, `header_len`, `header`, and a
+    /// placeholder `record_count`) and starts the running digest. The count is backpatched by
+    /// [`finish`](Self::finish), so the caller need not know it up front.
     ///
     /// `header` is opaque; interpreting it is the caller's responsibility (e.g. the runner's
     /// encoded typed header). Returns [`SnapshotError::FieldTooLarge`] if `header` is longer than
     /// `u32::MAX`, rather than silently truncating the on-wire length prefix.
-    pub fn open(w: &'w mut W, header: &[u8], record_count: u64) -> Result<Self, SnapshotError> {
+    pub fn open(w: &'w mut W, header: &[u8]) -> Result<Self, SnapshotError> {
         let header_len: u32 = header.len().try_into().map_err(|_| SnapshotError::FieldTooLarge)?;
 
         let mut hw = HashingWriter::<_, H::Incremental> { inner: w, hasher: H::incremental() };
@@ -137,14 +145,18 @@ impl<'w, W: Write, H: Hasher, F: SnapshotFormat> SnapshotWriter<'w, W, H, F> {
         hw.write_all(&F::FORMAT_VERSION.to_le_bytes())?;
         hw.write_all(&header_len.to_le_bytes())?;
         hw.write_all(header)?;
-        hw.write_all(&record_count.to_le_bytes())?;
+        // Reserve the count slot: record where it goes and write 8 unfolded placeholder bytes.
+        // `finish` seeks back here to patch the true count and folds it into the digest after the
+        // records, so the writer never needs the count up front.
+        let count_offset = hw.inner.stream_position()?;
+        hw.inner.write_all(&0u64.to_le_bytes())?;
 
         Ok(Self {
             hw,
+            count_offset,
             #[cfg(debug_assertions)]
             prev_id: None,
             written: 0,
-            expected: record_count,
             _format: PhantomData,
         })
     }
@@ -179,16 +191,21 @@ impl<'w, W: Write, H: Hasher, F: SnapshotFormat> SnapshotWriter<'w, W, H, F> {
         Ok(())
     }
 
-    /// Writes the trailing digest over every byte written since [`open`](Self::open).
-    pub fn finish(self) -> Result<(), SnapshotError> {
-        // Debug-only: the number of records written must match the count declared at open.
-        debug_assert_eq!(
-            self.written, self.expected,
-            "write_record call count disagreed with record_count declared at open"
-        );
-        let HashingWriter { inner, hasher } = self.hw;
+    /// Writes the trailing digest and backpatches the true `record_count`, completing the file.
+    /// Returns the number of records written.
+    pub fn finish(self) -> Result<u64, SnapshotError> {
+        let count = self.written;
+        let count_offset = self.count_offset;
+        // Fold the count after every record so it is authenticated despite being written to the
+        // file before them.
+        let HashingWriter { inner, mut hasher } = self.hw;
+        hasher.update(&count.to_le_bytes());
         inner.write_all(&hasher.finalize())?;
-        Ok(())
+        // Overwrite the placeholder in place; these bytes are already folded above, so write them
+        // straight to the sink without re-folding.
+        inner.seek(SeekFrom::Start(count_offset))?;
+        inner.write_all(&count.to_le_bytes())?;
+        Ok(count)
     }
 }
 
@@ -250,7 +267,11 @@ impl<R: Read, H: Hasher, F: SnapshotFormat> SnapshotReader<R, H, F> {
         let mut header = vec![0u8; header_len as usize];
         read_exact_fold(&mut r, &mut header, &mut hasher)?;
 
-        let record_count = read_u64_fold(&mut r, &mut hasher)?;
+        // Read `record_count` without folding it: the writer folds it last (after the records), so
+        // [`finish`](Self::finish) mirrors that by folding it just before comparing the digest.
+        let mut count_bytes = [0u8; 8];
+        r.read_exact(&mut count_bytes).map_err(|_| SnapshotError::Truncated)?;
+        let record_count = u64::from_le_bytes(count_bytes);
 
         Ok((
             header,
@@ -315,10 +336,12 @@ impl<R: Read, H: Hasher, F: SnapshotFormat> SnapshotReader<R, H, F> {
     /// the whole snapshot. Also rejects (`Malformed`) any bytes left in the reader once the
     /// digest has been consumed, so a file with a correct digest but junk appended after it does
     /// not "verify".
-    pub fn finish(self) -> Result<(), SnapshotError> {
+    pub fn finish(mut self) -> Result<(), SnapshotError> {
         if self.remaining != 0 {
             return Err(SnapshotError::Malformed("finish called before all records were read"));
         }
+        // Fold the count last, matching the writer, before comparing the digest.
+        self.hasher.update(&self.record_count.to_le_bytes());
         let mut reader = self.reader;
         let mut digest = [0u8; 32];
         reader.read_exact(&mut digest).map_err(|_| SnapshotError::Truncated)?;
@@ -366,16 +389,6 @@ fn read_u32_fold<R: Read, Inc: IncrementalHasher>(
     Ok(u32::from_le_bytes(b))
 }
 
-/// Reads a little-endian `u64`, folding it into `hasher`.
-fn read_u64_fold<R: Read, Inc: IncrementalHasher>(
-    r: &mut R,
-    hasher: &mut Inc,
-) -> Result<u64, SnapshotError> {
-    let mut b = [0u8; 8];
-    read_exact_fold(r, &mut b, hasher)?;
-    Ok(u64::from_le_bytes(b))
-}
-
 #[cfg(test)]
 mod tests {
     use vprogs_core_hashing::Sha256;
@@ -400,17 +413,15 @@ mod tests {
             ([3u8; 32], b"gamma-value".to_vec()),
         ];
 
-        let mut buf = Vec::new();
-        let mut writer =
-            SnapshotWriter::<_, Sha256, TestFormat>::open(&mut buf, &header, records.len() as u64)
-                .unwrap();
+        let mut buf = std::io::Cursor::new(Vec::new());
+        let mut writer = SnapshotWriter::<_, Sha256, TestFormat>::open(&mut buf, &header).unwrap();
         for (id, value) in &records {
             writer.write_record(id, value).unwrap();
         }
-        writer.finish().unwrap();
+        assert_eq!(writer.finish().unwrap(), records.len() as u64);
 
         let (got_header, mut reader) =
-            SnapshotReader::<_, Sha256, TestFormat>::open(buf.as_slice()).unwrap();
+            SnapshotReader::<_, Sha256, TestFormat>::open(buf.get_ref().as_slice()).unwrap();
         assert_eq!(got_header, header);
         assert_eq!(reader.record_count(), records.len() as u64);
 
@@ -430,8 +441,8 @@ mod tests {
     #[should_panic(expected = "records not sorted by resource_id")]
     #[cfg_attr(not(debug_assertions), ignore = "debug_assert is compiled out in release builds")]
     fn unsorted_records_trip_debug_assert() {
-        let mut buf = Vec::new();
-        let mut writer = SnapshotWriter::<_, Sha256, TestFormat>::open(&mut buf, b"h", 2).unwrap();
+        let mut buf = std::io::Cursor::new(Vec::new());
+        let mut writer = SnapshotWriter::<_, Sha256, TestFormat>::open(&mut buf, b"h").unwrap();
         writer.write_record(&[2u8; 32], b"beta").unwrap();
         writer.write_record(&[1u8; 32], b"alpha").unwrap();
     }
@@ -441,29 +452,52 @@ mod tests {
     /// been consumed and reject the trailing junk instead.
     #[test]
     fn trailing_bytes_after_digest_are_rejected() {
-        let mut buf = Vec::new();
-        let mut writer = SnapshotWriter::<_, Sha256, TestFormat>::open(&mut buf, b"h", 1).unwrap();
+        let mut buf = std::io::Cursor::new(Vec::new());
+        let mut writer = SnapshotWriter::<_, Sha256, TestFormat>::open(&mut buf, b"h").unwrap();
         writer.write_record(&[9u8; 32], b"x").unwrap();
         writer.finish().unwrap();
-        buf.extend_from_slice(b"junk-appended-after-digest");
+        let mut bytes = buf.into_inner();
+        bytes.extend_from_slice(b"junk-appended-after-digest");
 
         let (_hdr, mut reader) =
-            SnapshotReader::<_, Sha256, TestFormat>::open(buf.as_slice()).unwrap();
+            SnapshotReader::<_, Sha256, TestFormat>::open(bytes.as_slice()).unwrap();
         while reader.next().unwrap().is_some() {}
         assert!(matches!(reader.finish(), Err(SnapshotError::Malformed(_))));
     }
 
     #[test]
     fn corrupted_digest_is_rejected() {
-        let mut buf = Vec::new();
-        let mut writer = SnapshotWriter::<_, Sha256, TestFormat>::open(&mut buf, b"h", 1).unwrap();
+        let mut buf = std::io::Cursor::new(Vec::new());
+        let mut writer = SnapshotWriter::<_, Sha256, TestFormat>::open(&mut buf, b"h").unwrap();
         writer.write_record(&[9u8; 32], b"x").unwrap();
         writer.finish().unwrap();
-        let last = buf.len() - 1;
-        buf[last] ^= 0xff; // flip a digest byte
+        let mut bytes = buf.into_inner();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0xff; // flip a digest byte
 
         let (_hdr, mut reader) =
-            SnapshotReader::<_, Sha256, TestFormat>::open(buf.as_slice()).unwrap();
+            SnapshotReader::<_, Sha256, TestFormat>::open(bytes.as_slice()).unwrap();
+        while reader.next().unwrap().is_some() {}
+        assert!(matches!(reader.finish(), Err(SnapshotError::DigestMismatch)));
+    }
+
+    /// The writer backpatches `record_count` after streaming and folds it into the digest last, so
+    /// the field stays authenticated: forging it to a smaller value makes the reader stop short and
+    /// read a record's bytes where the digest should be, which must fail rather than "verify".
+    #[test]
+    fn tampered_record_count_is_rejected() {
+        let mut buf = std::io::Cursor::new(Vec::new());
+        let mut writer = SnapshotWriter::<_, Sha256, TestFormat>::open(&mut buf, b"").unwrap();
+        writer.write_record(&[1u8; 32], b"a").unwrap();
+        writer.write_record(&[2u8; 32], b"b").unwrap();
+        assert_eq!(writer.finish().unwrap(), 2);
+        let mut bytes = buf.into_inner();
+        // The count field is the u64 right after magic[8] | version[2] | header_len[4] | header[0].
+        bytes[8 + 2 + 4] = 1; // claim 1 record where 2 were written
+
+        let (_hdr, mut reader) =
+            SnapshotReader::<_, Sha256, TestFormat>::open(bytes.as_slice()).unwrap();
+        assert_eq!(reader.record_count(), 1);
         while reader.next().unwrap().is_some() {}
         assert!(matches!(reader.finish(), Err(SnapshotError::DigestMismatch)));
     }
