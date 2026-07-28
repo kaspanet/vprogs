@@ -9,7 +9,9 @@
 
 use std::{io::Read, path::Path};
 
-use kaspa_rpc_core::{RpcDataVerbosityLevel::Full, api::rpc::RpcApi};
+use kaspa_rpc_core::{
+    GetVirtualChainFromBlockV2Response, RpcDataVerbosityLevel::Full, api::rpc::RpcApi,
+};
 use vprogs_core_hashing::{Hasher, Sha256};
 use vprogs_core_smt::StreamingBuilder;
 use vprogs_core_types::{Checkpoint, ResourceId};
@@ -54,9 +56,13 @@ pub enum RestoreError {
     /// The local L1 node's RPC failed or otherwise could not be used to confirm the snapshot.
     #[error("L1 validation failed: {0}")]
     L1(String),
-    /// The local L1's reachable selected chain does not confirm the snapshot's settlement.
-    #[error("settlement not confirmed on the local L1's reachable chain")]
-    NotOnChain,
+    /// The snapshot's resume point is pruned, unknown, or on a chain this node has not selected.
+    #[error("snapshot resume point is not an unpruned selected-chain block on this node")]
+    ResumePointNotOnChain,
+    /// The resume point checks out, but the containing block carries no covenant settlement
+    /// committing this snapshot's root.
+    #[error("containing block accepted no covenant settlement committing this snapshot's root")]
+    SettlementNotAccepted,
     /// I/O failure while reading the snapshot file or writing the store.
     #[error("restore io error: {0}")]
     Io(#[from] std::io::Error),
@@ -160,10 +166,10 @@ pub fn restore_into_store<R: Read, H: Hasher, F: SnapshotFormat>(
 }
 
 /// Confirms `header`'s pinned settlement against the local L1 node: the resume point
-/// (`block_prove_to`, this header's own block) is a reachable selected-chain block reported from
-/// the pruning point, and a covenant settlement transaction committing `new_state` is among
-/// `containing_block`'s accepted transactions. Trust-minimized: a snapshot file that only
-/// self-verifies but was never actually confirmed by a settlement on this L1 fails here.
+/// (`block_prove_to`, this header's own block) is an unpruned selected-chain block, and a covenant
+/// settlement transaction committing `new_state` is among `containing_block`'s accepted
+/// transactions. Trust-minimized: a snapshot file that only self-verifies but was never actually
+/// confirmed by a settlement on this L1 fails here.
 pub async fn validate_against_l1<R: RpcApi>(
     client: &R,
     header: &SnapshotHeader,
@@ -184,44 +190,52 @@ pub async fn validate_against_l1<R: RpcApi>(
         )));
     }
 
-    // Chain from the pruning point: membership + reachability + at-or-after pruning in one call.
-    // Full verbosity so the response also carries accepted transactions per block.
-    let vc = client
-        .get_virtual_chain_from_block_v2(dag.pruning_point_hash, Some(Full), None)
-        .await
-        .map_err(|e| RestoreError::L1(format!("get_virtual_chain_from_block_v2: {e}")))?;
-
-    // The resume point (block_prove_to, this header's own block) must be a reachable chain block.
+    // Anchored on the resume point, not the pruning point: the node answers only for a block it
+    // still holds and reports an empty rollback only for one already on the selected chain, so a
+    // single response settles both, without walking the history a snapshot exists to skip.
     let resume_point = header.chain_block_metadata.hash;
-    if !vc.added_chain_block_hashes.contains(&resume_point) {
-        return Err(RestoreError::NotOnChain);
+    let mut page = chain_page(client, resume_point).await?;
+    if !page.removed_chain_block_hashes.is_empty() {
+        return Err(RestoreError::ResumePointNotOnChain);
     }
 
-    // Confirm a covenant settlement committing exactly this root, accepted in containing_block.
-    let mut confirmed = false;
-    for cb in vc.chain_block_accepted_transactions.iter() {
-        let bh = match cb.chain_block_header.hash {
-            Some(h) if h == s.containing_block => h,
-            _ => continue,
-        };
-        for tx in cb.accepted_transactions.iter() {
-            let l1tx = match L1Transaction::try_from(tx.clone()) {
-                Ok(tx) => tx,
-                Err(_) => continue,
-            };
-            if let Some(info) = l1tx.settlement_info(header.covenant_id, bh, s.daa_score.get()) {
-                if info.new_state == s.new_state && info.tx_id == s.tx_id {
-                    confirmed = true;
-                    break;
-                }
-            }
+    // Walk forward to the block the settlement transaction landed in. The node caps each response
+    // at its own batch size, so that block routinely sits past the first page and a single call
+    // cannot decide the question.
+    loop {
+        if let Some(cb) = page
+            .chain_block_accepted_transactions
+            .iter()
+            .find(|cb| cb.chain_block_header.hash == Some(s.containing_block))
+        {
+            let confirmed = cb.accepted_transactions.iter().any(|tx| {
+                L1Transaction::try_from(tx.clone()).is_ok_and(|l1tx| {
+                    l1tx.settlement_info(header.covenant_id, s.containing_block, s.daa_score.get())
+                        .is_some_and(|info| info.new_state == s.new_state && info.tx_id == s.tx_id)
+                })
+            });
+            return if confirmed { Ok(()) } else { Err(RestoreError::SettlementNotAccepted) };
         }
-        break;
+
+        // An empty page means the walk reached virtual without ever seeing the containing block.
+        let Some(cursor) = page.added_chain_block_hashes.last().copied() else {
+            return Err(RestoreError::SettlementNotAccepted);
+        };
+        page = chain_page(client, cursor).await?;
     }
-    if !confirmed {
-        return Err(RestoreError::NotOnChain);
-    }
-    Ok(())
+}
+
+/// One page of the selected chain after `start`, carrying each chain block's accepted transactions.
+async fn chain_page<R: RpcApi>(
+    client: &R,
+    start: Hash,
+) -> Result<GetVirtualChainFromBlockV2Response, RestoreError> {
+    // Full verbosity is load-bearing: below it the node returns no acceptance entries and
+    // truncates the chain-block list to match, so a cheaper level pages through an empty list.
+    client
+        .get_virtual_chain_from_block_v2(start, Some(Full), None)
+        .await
+        .map_err(|e| RestoreError::L1(format!("get_virtual_chain_from_block_v2: {e}")))
 }
 
 /// Outcome of a successful [`restore_snapshot`] call.
