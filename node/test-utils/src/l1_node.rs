@@ -203,14 +203,37 @@ impl L1Node {
         hashes
     }
 
-    /// Mines enough blocks so that `num_utxos` coinbase UTXOs become spendable.
+    /// Mines enough blocks for `num_utxos` coinbase UTXOs to become spendable, returning once a
+    /// UTXO query against this node reports at least that many. Panics if they never show up.
     ///
     /// Each block produces one coinbase UTXO that matures after `coinbase_maturity` blocks. The
     /// genesis child starts at `daa_score = 2`, so we add a small offset to ensure the requested
     /// UTXOs are fully mature.
     pub async fn mine_utxos(&self, num_utxos: usize) -> Vec<Hash> {
         // +2 accounts for the genesis daa_score offset.
-        self.mine_blocks(self.params.blockrate.coinbase_maturity as usize + num_utxos + 2).await
+        let hashes = self
+            .mine_blocks(self.params.blockrate.coinbase_maturity as usize + num_utxos + 2)
+            .await;
+
+        // The node's UTXO index is fed by consensus notifications on its own task, so submit_block
+        // returning says nothing about what a UTXO query sees. Poll until the mined coinbases are
+        // visible; otherwise a wallet build issued right after mining can find no candidates.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let spendable =
+                self.wallet().fetch_spendable_utxos().await.expect("fetch spendable utxos");
+            if spendable.len() >= num_utxos {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for {num_utxos} spendable UTXOs, index reports {}",
+                spendable.len()
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        hashes
     }
 
     /// Disconnects the gRPC client. The daemon shuts down on drop.
