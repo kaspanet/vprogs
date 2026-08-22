@@ -103,7 +103,7 @@ impl<'a, 'cx> ApplyContext<'a, 'cx> {
 
 /// Applies a single decoded action against the context. Generic over the deposit policy `P`; all
 /// non-deposit arms ignore it.
-pub fn apply_action<'a, P: DepositPolicy>(
+pub fn apply_action<'a, P: DepositPolicy<Lock<'a> = LockEnum<'a>>>(
     action: &ActionView<'a>,
     cx: &mut ApplyContext<'a, '_>,
     policy: &P,

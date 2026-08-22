@@ -14,6 +14,7 @@ use crate::{
     deposit_policy::DepositPolicy,
     domain::Domain,
     ix::{DecodedIx, decode_ix},
+    lock::LockEnum,
     signer::SignerEnum,
     signer_trait::{Signer, SignerResolveContext},
     signer_variants::{
@@ -28,11 +29,12 @@ use crate::{
 /// emitted by `Withdraw` actions; `deposit` receives the deposit-address commitment written by a
 /// `Deposit` action; `merge_idx` and `context_hash` are unused.
 ///
-/// Generic over `P: DepositPolicy` so a different runtime can supply its own deposit rules in
+/// Generic over `P: DepositPolicy` (lock pinned to this runtime's `LockEnum`) so a different
+/// runtime can supply its own deposit rules in
 /// `main.rs` without touching this file.
 ///
 /// [`TransactionHandler`]: vprogs_zk_abi::transaction_processor::TransactionHandler
-pub fn run<'a, P: DepositPolicy>(
+pub fn run<'a, P: DepositPolicy<Lock<'a> = LockEnum<'a>>>(
     tx: &Transaction<'a>,
     resources: &mut [Resource<'a>],
     exits: &mut ExitSink,
