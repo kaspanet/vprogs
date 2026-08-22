@@ -2,8 +2,9 @@
 //!
 //! [`ApplyContext`] bundles everything an apply fn may need so the dispatch signature stays stable
 //! as capabilities grow. Apply fns take `&mut ApplyContext` and borrow only the fields they
-//! actually use, keeping their real dependencies visible. The sole generic parameter (`P:
-//! DepositPolicy`) is monomorphized at the `main.rs` call site; non-deposit fns are agnostic to it.
+//! actually use, keeping their real dependencies visible. The generic parameters are the deposit
+//! policy (`P: DepositPolicy`, monomorphized at the `main.rs` call site; non-deposit fns are
+//! agnostic to it) and the auth context type `A` (set by the host runtime's instantiation).
 //!
 //! Apply fns are grouped by the resource lifecycle they drive: [`config`] (config init/update),
 //! [`user`] (transfer/lock rotation), [`withdraw`] (L2-to-L1 exit), and [`deposit`] (L1-to-L2
@@ -41,11 +42,16 @@ use crate::{
 ///
 /// Plain typed fields, passed by `&mut`; no dynamic dispatch, no extractor magic.
 ///
+/// Generic over `A`, the auth context the host runtime resolved its signers into. The context
+/// stores it opaquely; only the app's lock dispatch and apply fns read it, so `A` is unconstrained
+/// and each program decides what it can have as auth. Defaults to this battery's own
+/// [`AuthContext`] for the example runtime in this crate.
+///
 /// `'a` is the transaction/resource data lifetime; every buffer borrow lives here. `'cx` is the
 /// shorter borrow lifetime for the mutable references (`resources`, `exits`, `deposit`) and for
 /// `auth_ctx`, which is computed inside `run` and does not outlive it. The two lifetimes are
 /// independent: `'cx: 'a` is not required.
-pub struct ApplyContext<'a, 'cx> {
+pub struct ApplyContext<'a, 'cx, A = AuthContext> {
     /// Decoded transaction; its `rest_preimage` is the L1 source of truth for deposit output
     /// values.
     pub tx: &'cx Transaction<'a>,
@@ -55,8 +61,8 @@ pub struct ApplyContext<'a, 'cx> {
     /// this tx so create-vs-credit is decided from the live state rather than the input
     /// snapshot.
     pub lifecycle: Vec<Lifecycle>,
-    /// Resolved signer authority, consulted via `LockEnum::unlock`.
-    pub auth_ctx: &'cx AuthContext,
+    /// Resolved signer authority, consulted via the app's lock dispatch.
+    pub auth_ctx: &'cx A,
     /// L2-to-L1 exit accumulator.
     pub exits: &'cx mut ExitSink,
     /// Deposit-address commitment sink, written by `apply_deposit`.
@@ -66,12 +72,12 @@ pub struct ApplyContext<'a, 'cx> {
     pub consumed_outputs: Vec<u32>,
 }
 
-impl<'a, 'cx> ApplyContext<'a, 'cx> {
+impl<'a, 'cx, A> ApplyContext<'a, 'cx, A> {
     /// Builds the context, seeding each resource's starting lifecycle from its decoded snapshot.
     pub fn new(
         tx: &'cx Transaction<'a>,
         resources: &'cx mut [Resource<'a>],
-        auth_ctx: &'cx AuthContext,
+        auth_ctx: &'cx A,
         exits: &'cx mut ExitSink,
         deposit: &'cx mut DepositSink,
     ) -> Self {
