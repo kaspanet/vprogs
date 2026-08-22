@@ -73,6 +73,7 @@ pub mod transaction_processor {
     pub(crate) mod input {
         pub(crate) mod execution_input;
         pub(crate) mod inputs;
+        pub(crate) mod mergeset_context;
         pub(crate) mod payload;
         pub(crate) mod resource;
         pub(crate) mod transaction;
@@ -101,8 +102,8 @@ pub mod transaction_processor {
     pub use abi::process_transaction;
     pub use effects::Effects;
     pub use input::{
-        execution_input::ExecutionInput, inputs::Inputs, payload::Payload, resource::Resource,
-        transaction::Transaction,
+        execution_input::ExecutionInput, inputs::Inputs, mergeset_context::MergesetContext,
+        payload::Payload, resource::Resource, transaction::Transaction,
     };
     pub use journal::{
         entries::JournalEntries,

@@ -21,7 +21,10 @@
 use secp256k1::{Keypair, Message, SECP256K1};
 use vprogs_core_types::AccessType;
 use vprogs_l1_utils::tx_id_v1;
-use vprogs_zk_abi::{transaction_processor::Transaction, withdrawal::StandardSpk};
+use vprogs_zk_abi::{
+    transaction_processor::{MergesetContext, Transaction},
+    withdrawal::StandardSpk,
+};
 use vprogs_zk_backend_risc0_runtime_processor::{
     genesis::GENESIS_SCHNORR_BYTES,
     ix::{ACTION_TAG_DEPOSIT, ACTION_TAG_INIT, ACTION_TAG_TRANSFER, ACTION_TAG_WITHDRAW},
@@ -217,15 +220,15 @@ pub fn tx_id_of(tx_blob: &[u8]) -> [u8; 32] {
 }
 
 /// Builds the full `Inputs` host blob the guest reads: `version(2) || tx_id(32) || merge_idx(4) ||
-/// context_hash(32) || tx_blob || resources`, where each resource is `index(4) || data_len(4) ||
-/// data` (one per access-metadata entry, in the same lex order). The scheduler assembles this for
-/// the daemon; the direct-guest test hand-rolls it with the resource bytes it is threading between
-/// steps.
+/// context(24: timestamp, daa_score, blue_score as u64 LE) || tx_blob || resources`, where each
+/// resource is `index(4) || data_len(4) || data` (one per access-metadata entry, in the same lex
+/// order). The scheduler assembles this for the daemon; the direct-guest test hand-rolls it with
+/// the resource bytes it is threading between steps.
 ///
 /// A slot is new iff its `data` is empty; newness is never carried on the wire.
 pub fn encode_inputs(
     merge_idx: u32,
-    context_hash: [u8; 32],
+    context: MergesetContext,
     tx_bytes: &[u8],
     resources: &[(u32, Vec<u8>)],
 ) -> Vec<u8> {
@@ -233,7 +236,9 @@ pub fn encode_inputs(
     out.extend_from_slice(&Transaction::V1.to_le_bytes());
     out.extend_from_slice(&tx_id_of(tx_bytes));
     out.extend_from_slice(&merge_idx.to_le_bytes());
-    out.extend_from_slice(&context_hash);
+    out.extend_from_slice(&context.timestamp.get().to_le_bytes());
+    out.extend_from_slice(&context.daa_score.get().to_le_bytes());
+    out.extend_from_slice(&context.blue_score.get().to_le_bytes());
     out.extend_from_slice(tx_bytes);
     for (idx, data) in resources {
         out.extend_from_slice(&idx.to_le_bytes());

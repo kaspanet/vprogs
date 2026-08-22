@@ -24,9 +24,10 @@ impl<'a> ExecutionContext<'a> {
         })
     }
 
-    /// Encodes an execution context segment to the journal, hashing resource data with `H`.
+    /// Encodes an execution context segment to the journal: the mergeset context committed as
+    /// its digest, resources hashed with `H`.
     pub fn encode<H: Hasher>(w: &mut impl Writer, exec: &ExecutionInput<'_>) {
-        w.write(exec.context_hash.as_slice());
+        w.write(exec.context.hash().as_slice());
         w.encode_many(&exec.resources, InputResourceCommitment::encode::<H>);
     }
 }
