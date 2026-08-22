@@ -23,7 +23,7 @@ use user::{apply_transfer, apply_update_user_lock};
 use vprogs_core_types::ResourceId;
 use vprogs_zk_abi::{
     Error as AbiError, Result as AbiResult,
-    transaction_processor::{Resource, Transaction},
+    transaction_processor::{MergesetContext, Resource, Transaction},
     withdrawal::{DepositSink, ExitSink},
 };
 use withdraw::apply_withdraw;
@@ -61,6 +61,9 @@ pub struct ApplyContext<'a, 'cx, A = AuthContext> {
     /// this tx so create-vs-credit is decided from the live state rather than the input
     /// snapshot.
     pub lifecycle: Vec<Lifecycle>,
+    /// Mergeset context of the chain block this tx executes against; the L2 clock for
+    /// time-dependent actions (e.g. expiring state).
+    pub context: &'cx MergesetContext,
     /// Resolved signer authority, consulted via the app's lock dispatch.
     pub auth_ctx: &'cx A,
     /// L2-to-L1 exit accumulator.
@@ -77,12 +80,22 @@ impl<'a, 'cx, A> ApplyContext<'a, 'cx, A> {
     pub fn new(
         tx: &'cx Transaction<'a>,
         resources: &'cx mut [Resource<'a>],
+        context: &'cx MergesetContext,
         auth_ctx: &'cx A,
         exits: &'cx mut ExitSink,
         deposit: &'cx mut DepositSink,
     ) -> Self {
         let lifecycle = resources.iter().map(Lifecycle::from_resource).collect();
-        Self { tx, resources, lifecycle, auth_ctx, exits, deposit, consumed_outputs: Vec::new() }
+        Self {
+            tx,
+            resources,
+            lifecycle,
+            context,
+            auth_ctx,
+            exits,
+            deposit,
+            consumed_outputs: Vec::new(),
+        }
     }
 
     /// Current lifecycle state of the resource at `idx`.
