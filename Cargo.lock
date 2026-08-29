@@ -8655,7 +8655,6 @@ dependencies = [
  "kaspa-notify",
  "kaspa-rpc-core",
  "kaspa-seq-commit",
- "kaspa-txscript",
  "kaspa-wrpc-client",
  "log",
  "tap",
@@ -8668,9 +8667,6 @@ dependencies = [
  "vprogs-l1-types",
  "vprogs-node-test-utils",
  "vprogs-storage-canonical-chain",
- "vprogs-zk-abi",
- "vprogs-zk-backend-risc0-api",
- "vprogs-zk-backend-risc0-app-kit",
  "workflow-core",
  "workflow-rpc",
  "workflow-serializer",
@@ -8808,7 +8804,6 @@ dependencies = [
 name = "vprogs-runner"
 version = "0.1.0"
 dependencies = [
- "borsh",
  "clap",
  "ctrlc",
  "fastrand",
@@ -8838,11 +8833,8 @@ dependencies = [
  "vprogs-node-framework",
  "vprogs-node-test-utils",
  "vprogs-scheduling-scheduler",
- "vprogs-state-settlement-journal",
  "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
- "vprogs-storage-types",
- "vprogs-zk-abi",
  "vprogs-zk-aggregate-prover",
  "vprogs-zk-backend-risc0-api",
  "vprogs-zk-backend-risc0-settler",
@@ -9007,19 +8999,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "vprogs-state-settlement-journal"
-version = "0.1.0"
-dependencies = [
- "borsh",
- "kaspa-hashes",
- "tempfile",
- "vprogs-l1-types",
- "vprogs-state-batch-metadata",
- "vprogs-storage-rocksdb-store",
- "vprogs-storage-types",
-]
-
-[[package]]
 name = "vprogs-state-version"
 version = "0.1.0"
 dependencies = [
@@ -9048,9 +9027,7 @@ version = "0.1.0"
 dependencies = [
  "crossbeam-queue",
  "crossbeam-utils",
- "tempfile",
  "vprogs-core-macros",
- "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
 ]
 
@@ -9061,7 +9038,6 @@ dependencies = [
  "num_cpus",
  "rocksdb",
  "tap",
- "tempfile",
  "vprogs-core-codec",
  "vprogs-core-hashing",
  "vprogs-core-smt",
@@ -9283,14 +9259,12 @@ dependencies = [
  "vprogs-scheduling-scheduler",
  "vprogs-scheduling-test-utils",
  "vprogs-state-proof-receipt",
- "vprogs-state-settlement-journal",
  "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
  "vprogs-zk-abi",
  "vprogs-zk-batch-prover",
  "vprogs-zk-transaction-prover",
- "zerocopy",
 ]
 
 [[package]]
@@ -9331,7 +9305,9 @@ dependencies = [
  "rand 0.8.5",
  "secp256k1",
  "tokio",
+ "vprogs-core-codec",
  "vprogs-core-types",
+ "vprogs-l1-utils",
  "vprogs-l1-wallet",
  "vprogs-zk-abi",
  "vprogs-zk-backend-risc0-api",
@@ -9411,7 +9387,6 @@ dependencies = [
  "tap",
  "tempfile",
  "tokio",
- "vprogs-core-atomics",
  "vprogs-core-codec",
  "vprogs-core-hashing",
  "vprogs-core-smt",
@@ -9445,6 +9420,7 @@ dependencies = [
 name = "vprogs-zk-batch-prover"
 version = "0.1.0"
 dependencies = [
+ "kaspa-grpc-client",
  "kaspa-hashes",
  "kaspa-rpc-core",
  "tap",
@@ -9481,10 +9457,8 @@ version = "0.1.0"
 dependencies = [
  "faster-hex",
  "log",
- "tokio",
  "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
- "vprogs-state-settlement-journal",
  "vprogs-storage-types",
  "vprogs-zk-abi",
  "vprogs-zk-aggregate-prover",

@@ -17,8 +17,10 @@ log                                       = { workspace = true }
 rand                                      = { workspace = true }
 secp256k1                                 = { workspace = true }
 tokio                                     = { workspace = true, features = ["time"] }
+vprogs-core-codec                         = { workspace = true }
 vprogs-core-types                         = { workspace = true }
+vprogs-l1-utils                           = { workspace = true }
 vprogs-l1-wallet                          = { workspace = true }
-vprogs-zk-abi                             = { workspace = true }
+vprogs-zk-abi                             = { workspace = true, features = ["host"] }
 vprogs-zk-backend-risc0-api               = { workspace = true }
 vprogs-zk-backend-risc0-runtime-processor = { workspace = true }
