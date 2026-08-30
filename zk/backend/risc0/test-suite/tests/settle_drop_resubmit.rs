@@ -9,19 +9,15 @@ use std::sync::{
 
 use kaspa_consensus_core::tx::Transaction;
 use kaspa_hashes::Hash;
-use kaspa_txscript::standard::pay_to_script_hash_script;
 use risc0_zkvm::{FakeReceipt, InnerReceipt, Receipt, ReceiptClaim};
 use tokio::sync::{mpsc, watch};
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_l1_types::SettlementInfo;
 use vprogs_zk_aggregate_prover::SettlementArtifact;
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
-use vprogs_zk_backend_risc0_covenant::{
-    DEFAULT_PERMISSION_OUTPUT_VALUE, build_dev_redeem_script, dev_redeem_script_len,
-};
 use vprogs_zk_backend_risc0_settler::{
-    ConfirmProbe, CovenantState, FeeSource, FundedSettlement, SettleOutcome, SettlementMode,
-    SettlementSink, Settler, SubmitOutcome,
+    CovenantState, FeeSource, FundedSettlement, SettleOutcome, SettlementMode, SettlementSink,
+    Settler, SubmitOutcome,
 };
 use vprogs_zk_backend_risc0_test_suite::{
     batch_aggregator_elf, batch_processor_elf, test_lane_key, transaction_processor_elf,
@@ -63,15 +59,7 @@ fn covenant() -> CovenantState {
             Hash::from_bytes([0x77; 32]),
             0,
         ),
-        // The real P2SH of the dev redeem this bundle spends (prefix STATE/LANE_TIP), which the
-        // builder's SPK guard compares its rebuilt redeem against.
-        spk: pay_to_script_hash_script(&build_dev_redeem_script(
-            &STATE,
-            &Hash::from_bytes(LANE_TIP),
-            &test_lane_key(),
-            dev_redeem_script_len(&STATE, &test_lane_key(), DEFAULT_PERMISSION_OUTPUT_VALUE),
-            DEFAULT_PERMISSION_OUTPUT_VALUE,
-        )),
+        spk: Default::default(),
         value: 100_000_000,
         daa_score: 0,
     }
@@ -131,18 +119,14 @@ impl SettlementSink for DroppingSink {
         SubmitOutcome::Accepted(id)
     }
 
-    async fn probe(
+    async fn dropped(
         &self,
         _txid: Hash,
-        _covenant: vprogs_zk_backend_risc0_settler::OutpointAt<'_>,
-        _continuation: vprogs_zk_backend_risc0_settler::OutpointAt<'_>,
-    ) -> ConfirmProbe {
+        _spk: kaspa_consensus_core::tx::ScriptPublicKey,
+        _outpoint: kaspa_consensus_core::tx::TransactionOutpoint,
+    ) -> bool {
         // One silent drop, then live forever after.
-        if self.report_drop_once.swap(false, Ordering::SeqCst) {
-            ConfirmProbe::Dropped
-        } else {
-            ConfirmProbe::Pending
-        }
+        self.report_drop_once.swap(false, Ordering::SeqCst)
     }
 }
 
@@ -188,9 +172,6 @@ async fn dropped_settlement_is_resubmitted_and_confirmed() {
         block_prove_to: bundle_block_prove_to(),
         new_state: NEW_STATE,
         new_lane_tip: Hash::from_bytes([0x60; 32]),
-        continuation_spk_hash: [0u8; 32],
-        permission_spk_hash: [0u8; 32],
-        chain_idx: 0.into(),
     }));
 
     match task.await.expect("settle_one task") {
@@ -205,63 +186,4 @@ async fn dropped_settlement_is_resubmitted_and_confirmed() {
 /// The bundle's `block_prove_to`, captured before the artifact moved into the task.
 fn bundle_block_prove_to() -> Hash {
     Hash::from_bytes([0x02; 32])
-}
-
-/// The confirm wait's warn tick must survive settlement-watch churn: the bridge's observer
-/// republishes the tip's settlement on every processed chain batch (~1/s on an active chain), so
-/// a sleep recreated on each pass would be reset by the churn before ever completing and the drop
-/// probe would starve. Under churn the probe still has to fire and resubmit.
-#[tokio::test(start_paused = true)]
-async fn drop_probe_fires_despite_settlement_watch_churn() {
-    use std::time::Duration;
-
-    let (settlement_tx, settlement_rx) = watch::channel(None::<SettlementInfo>);
-    // Churn publisher: republish a never-matching settlement every second of virtual time
-    // (`new_state` equals the covenant's current state, so the confirm predicate never fires).
-    let churn = tokio::spawn(async move {
-        let mut daa = 1u64;
-        loop {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            daa += 1;
-            settlement_tx.send_replace(Some(SettlementInfo {
-                tx_id: Hash::from_bytes([0x41; 32]),
-                containing_block: Hash::from_bytes([0x42; 32]),
-                daa_score: daa.into(),
-                block_prove_to: Hash::from_bytes([0x43; 32]),
-                new_state: STATE,
-                new_lane_tip: Hash::from_bytes([0x44; 32]),
-                continuation_spk_hash: [0u8; 32],
-                permission_spk_hash: [0u8; 32],
-                chain_idx: 0.into(),
-            }));
-        }
-    });
-
-    let (submitted_tx, mut submitted_rx) = mpsc::unbounded_channel();
-    let sink = DroppingSink {
-        submits: Arc::new(AtomicUsize::new(0)),
-        report_drop_once: Arc::new(AtomicBool::new(true)),
-        last_txid: Arc::new(Mutex::new(None)),
-        submitted_tx,
-    };
-    let settler = Settler::new(
-        VerbatimFunder,
-        sink.clone(),
-        backend(),
-        test_lane_key(),
-        SettlementMode::Dev,
-        settlement_rx,
-    );
-    let shutdown = AtomicAsyncLatch::new();
-    let cov = covenant();
-    let bundle = artifact();
-    let task = tokio::spawn(async move { settler.settle_one(&cov, &bundle, &shutdown).await });
-
-    // The submission lands; the 30s warn tick must still fire through the per-second churn and
-    // trigger the drop probe's resubmission.
-    let first = submitted_rx.recv().await.expect("first submission");
-    let second = submitted_rx.recv().await.expect("resubmission under churn");
-    assert_eq!(first, second, "the resubmission must be the same transaction");
-    churn.abort();
-    let _ = task.await;
 }

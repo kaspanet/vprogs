@@ -1,25 +1,11 @@
 use std::{
-    collections::HashMap,
-    sync::{Arc, RwLock, atomic::AtomicU64},
+    sync::{Arc, atomic::AtomicU64},
     time::Duration,
 };
 
-use kaspa_consensus_core::{
-    config::params::Params, subnets::SubnetworkId, tx::TransactionOutpoint,
-};
-use tokio::sync::{mpsc, watch};
-use vprogs_l1_types::{
-    ConnectStrategy, Hash, NetworkId, NetworkType, SettlementInfo, SettlementMsg, SpendMsg,
-};
-
-/// Hooks for watching and emitting permission-output spends.
-#[derive(Clone, Debug)]
-pub struct PermissionSpendHooks {
-    /// Channel sender for the permission-spend stream (spends and rollback markers).
-    pub events: mpsc::UnboundedSender<SpendMsg>,
-    /// Tracked permission outpoints mapped to their committed Merkle roots.
-    pub registry: Arc<RwLock<HashMap<TransactionOutpoint, [u8; 32]>>>,
-}
+use kaspa_consensus_core::{config::params::Params, subnets::SubnetworkId};
+use tokio::sync::watch;
+use vprogs_l1_types::{ConnectStrategy, Hash, NetworkId, NetworkType, SettlementInfo};
 
 /// Configuration for the L1 bridge.
 #[derive(Clone, Debug)]
@@ -58,20 +44,11 @@ pub struct L1BridgeConfig {
     /// confirmation is notification-based, awaits) to reconcile against the canonical settlement
     /// without a confirm RTT. `None` disables publishing.
     pub settlement_observer: Option<watch::Sender<Option<SettlementInfo>>>,
-    /// Lower bound on the `min_confirmation_count` for the chain-follow queries, in blue-score
-    /// confirmations below the sink; the adaptive reorg filter may still raise the threshold above
-    /// this floor. `None` uses the adaptive threshold alone.
+    /// Fixed `min_confirmation_count` for the chain-follow queries: the bridge processes blocks
+    /// only once they are this many blue-score confirmations below the sink, so reorgs shallower
+    /// than it never surface and every published settlement is at least this buried. `None` keeps
+    /// the adaptive reorg filter's threshold instead.
     pub min_confirmations: Option<u64>,
-    /// Switches the adaptive reorg filter off: the follow threshold becomes exactly
-    /// `min_confirmations` (zero when unset), so blocks render at the tip and reorgs surface as
-    /// rollbacks instead of confirmation latency.
-    pub adaptive_filter_disabled: bool,
-    /// Optional hooks for watching and emitting permission-output spends on accepted L1
-    /// transactions.
-    pub permission_spends: Option<PermissionSpendHooks>,
-    /// Optional channel sender the bridge publishes the settlement stream into (observations
-    /// and rollback markers, in per-channel FIFO order).
-    pub settlement_events: Option<mpsc::UnboundedSender<SettlementMsg>>,
 }
 
 impl Default for L1BridgeConfig {
@@ -91,9 +68,6 @@ impl Default for L1BridgeConfig {
             tip_daa: None,
             settlement_observer: None,
             min_confirmations: None, // Adaptive reorg-filter threshold by default.
-            adaptive_filter_disabled: false,
-            permission_spends: None,
-            settlement_events: None,
         }
     }
 }
@@ -177,18 +151,10 @@ impl L1BridgeConfig {
         self
     }
 
-    /// Sets the lower bound on `min_confirmation_count` for chain-follow queries, under the
-    /// adaptive reorg filter's threshold. `None` uses the adaptive threshold alone.
+    /// Sets the fixed `min_confirmation_count` for chain-follow queries, overriding the adaptive
+    /// reorg filter. `None` restores the adaptive threshold.
     pub fn with_min_confirmations(mut self, min_confirmations: Option<u64>) -> Self {
         self.min_confirmations = min_confirmations;
-        self
-    }
-
-    /// Switches the adaptive reorg filter off: the follow threshold becomes exactly
-    /// `min_confirmations` (zero when unset), so a latency-critical follow renders at the tip
-    /// and takes reorgs as rollbacks instead of confirmation latency.
-    pub fn with_adaptive_filter_disabled(mut self, disabled: bool) -> Self {
-        self.adaptive_filter_disabled = disabled;
         self
     }
 
@@ -199,22 +165,6 @@ impl L1BridgeConfig {
         settlement_observer: Option<watch::Sender<Option<SettlementInfo>>>,
     ) -> Self {
         self.settlement_observer = settlement_observer;
-        self
-    }
-
-    /// Sets the hooks for watching and emitting permission-output spends. `None` disables watching.
-    pub fn with_permission_spends(mut self, hooks: Option<PermissionSpendHooks>) -> Self {
-        self.permission_spends = hooks;
-        self
-    }
-
-    /// Sets the channel sender the bridge publishes the settlement stream into (observations
-    /// and rollback markers). `None` disables publishing.
-    pub fn with_settlement_events(
-        mut self,
-        settlement_events: Option<mpsc::UnboundedSender<SettlementMsg>>,
-    ) -> Self {
-        self.settlement_events = settlement_events;
         self
     }
 }

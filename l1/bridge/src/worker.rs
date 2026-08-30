@@ -8,12 +8,11 @@ use std::{
 
 use crossbeam_queue::SegQueue;
 use futures::{FutureExt, select_biased};
-use kaspa_consensus_core::{subnets::SubnetworkId, tx::TransactionOutpoint};
+use kaspa_consensus_core::subnets::SubnetworkId;
 use kaspa_notify::scope::{PruningPointUtxoSetOverrideScope, Scope, VirtualChainChangedScope};
 use kaspa_rpc_core::{
     GetVirtualChainFromBlockV2Response, Notification,
     RpcDataVerbosityLevel::Full,
-    RpcLaneEntry,
     api::{ctl::RpcState, rpc::RpcApi},
 };
 use kaspa_seq_commit::{
@@ -27,15 +26,13 @@ use tokio::sync::{Notify, mpsc, watch};
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_types::{AccessMetadata, ChainSink, SchedulerTransaction};
 use vprogs_l1_types::{
-    ChainBlockMetadata, Hash, L1Transaction, L1TransactionCovenantExt, PermissionSpend,
-    SettlementInfo, SettlementMsg, SpendMsg,
+    ChainBlockMetadata, Hash, L1Transaction, L1TransactionCovenantExt, SettlementInfo,
 };
 use workflow_core::channel::{Channel, MultiplexerChannel};
 
 use crate::{
-    Command, L1BridgeConfig, L1Event, PermissionSpendHooks,
-    error::{Error, Result, lane_walk_reached_genesis},
-    permission_watch::check_claim_spend,
+    Command, L1BridgeConfig, L1Event,
+    error::{Error, Result},
     reorg_filter::ReorgFilter,
 };
 
@@ -45,12 +42,6 @@ use crate::{
 const RPC_RETRY_MAX_ATTEMPTS: u32 = 10;
 /// Delay between virtual-chain RPC retries.
 const RPC_RETRY_DELAY: Duration = Duration::from_millis(500);
-
-/// Bounded retries for the lane-proof seeding RPC before the seed fails; an unseeded genesis
-/// must not be followed, as its derived lane tips diverge from consensus.
-const LANE_PROOF_MAX_ATTEMPTS: u32 = 10;
-/// Delay between lane-proof seeding retries.
-const LANE_PROOF_RETRY_DELAY: Duration = Duration::from_millis(500);
 
 /// Bridges an L1 node's chain to a [`ChainSink`] over RPC, high-pass filtering reorgs.
 pub(crate) struct BridgeWorker<T: ChainSink<ChainBlockMetadata, L1Transaction>> {
@@ -95,22 +86,9 @@ pub(crate) struct BridgeWorker<T: ChainSink<ChainBlockMetadata, L1Transaction>> 
     /// the single writer), so each settler can read the canonical settlement without a confirm
     /// RTT.
     settlement: Option<watch::Sender<Option<SettlementInfo>>>,
-    /// Lower bound on the `min_confirmation_count` for chain-follow queries; the adaptive reorg
-    /// filter may still exceed it after observed reorgs. `None` uses the adaptive threshold alone.
+    /// Fixed `min_confirmation_count` for chain-follow queries; `None` uses the reorg filter's
+    /// adaptive threshold.
     min_confirmations: Option<u64>,
-    /// Switches the adaptive reorg filter off: the follow threshold becomes exactly
-    /// `min_confirmations` (zero when unset), so blocks render at the tip and reorgs surface as
-    /// rollbacks instead of confirmation latency.
-    adaptive_filter_disabled: bool,
-    /// Optional hooks for watching and emitting permission-output spends.
-    permission_spends: Option<PermissionSpendHooks>,
-    /// Journal of applied registry transitions, one `(sink idx, spent outpoint, pre-spend root,
-    /// continuation outpoint)` entry per detected spend. A rollback pops entries above the new
-    /// tip newest-first and undoes each transition, keeping the watcher registry canonical.
-    spend_journal: Vec<(u64, TransactionOutpoint, [u8; 32], Option<TransactionOutpoint>)>,
-    /// Optional channel sender the settlement stream is published into (observations and
-    /// rollback markers).
-    settlement_events: Option<mpsc::UnboundedSender<SettlementMsg>>,
 }
 
 impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
@@ -184,10 +162,6 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             tip_daa: config.tip_daa.clone(),
             settlement: config.settlement_observer.clone(),
             min_confirmations: config.min_confirmations,
-            adaptive_filter_disabled: config.adaptive_filter_disabled,
-            permission_spends: config.permission_spends.clone(),
-            spend_journal: Vec::new(),
-            settlement_events: config.settlement_events.clone(),
         }
         .run()
         .await;
@@ -286,23 +260,19 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             return;
         }
 
-        // Step 2: Establish the tip we thread from. A non-empty sink keeps its genesis unused
-        // (the tip threads from the sink's own metadata), so the anchor is established - and its
-        // lane state seeded - only while the sink is fresh.
-        if self.sink.tip() == 0 {
-            let init_result = match (self.start_from, self.seed_depth) {
+        // Step 2: Establish the tip we thread from.
+        let init_result = if self.sink.tip() > 0 {
+            Ok(())
+        } else {
+            match (self.start_from, self.seed_depth) {
                 (Some(hash), _) => self.seed_from_block(hash).await,
                 (None, Some(depth)) => self.seed_from_recent(depth).await,
                 (None, None) => self.seed_from_pruning_point().await,
-            };
-            if let Err(e) = init_result {
-                self.fatal_error(format!("chain init failed: {}", e));
-                return;
             }
-            if let Err(e) = self.seed_lane_tip().await {
-                self.fatal_error(format!("lane seed failed: {}", e));
-                return;
-            }
+        };
+        if let Err(e) = init_result {
+            self.fatal_error(format!("chain init failed: {}", e));
+            return;
         }
 
         // Step 3: publish the tip as a progress baseline, then announce Connected and sync.
@@ -395,68 +365,6 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         Ok(())
     }
 
-    /// Seeds the genesis lane state from the node's authoritative lane entry at the freshly
-    /// established anchor, so a bridge joining an already-live lane chains from the real tip
-    /// instead of anchoring its first post-join carrier at the parent seq commit (a mis-anchor
-    /// that diverges every derived tip from consensus). Exhausted retries are an error, never
-    /// a silent zero seed. A lane with no live entry at the anchor keeps the zero seed, which
-    /// the first-activation rule handles; so does a walk that bottoms out at the chain's
-    /// genesis, where no lane state can exist.
-    async fn seed_lane_tip(&mut self) -> Result<()> {
-        let Some(lane_key) = self.lane_key else { return Ok(()) };
-
-        for attempt in 1..=LANE_PROOF_MAX_ATTEMPTS {
-            match self.client.get_seq_commit_lane_proof(self.genesis.hash, lane_key).await {
-                Ok(response) => {
-                    match &response.lane {
-                        Some(entry) => log::info!(
-                            "L1 bridge: seeded authoritative lane tip {} (blue score {}) at \
-                             anchor {}",
-                            entry.tip,
-                            entry.blue_score,
-                            self.genesis.hash
-                        ),
-                        None => log::info!(
-                            "L1 bridge: lane holds no live entry at anchor {}; keeping the zero \
-                             seed",
-                            self.genesis.hash
-                        ),
-                    }
-                    Self::apply_lane_seed(&mut self.genesis, response.lane);
-                    return Ok(());
-                }
-                Err(e) if lane_walk_reached_genesis(&e) => {
-                    log::info!(
-                        "L1 bridge: lane state bottoms out at the chain's genesis below anchor \
-                         {}; keeping the zero seed",
-                        self.genesis.hash
-                    );
-                    return Ok(());
-                }
-                Err(e) if attempt < LANE_PROOF_MAX_ATTEMPTS => {
-                    log::warn!(
-                        "L1 bridge: get_seq_commit_lane_proof failed \
-                         (attempt {attempt}/{LANE_PROOF_MAX_ATTEMPTS}, retrying): {e}"
-                    );
-                    tokio::time::sleep(LANE_PROOF_RETRY_DELAY).await;
-                }
-                Err(e) => {
-                    return Err(Error::from(e));
-                }
-            }
-        }
-        unreachable!("lane-seed retry loop returns on the final attempt")
-    }
-
-    /// Applies an authoritative lane entry to the genesis metadata; `None` leaves the zero seed,
-    /// which the first-activation rule handles.
-    fn apply_lane_seed(genesis: &mut ChainBlockMetadata, entry: Option<RpcLaneEntry>) {
-        if let Some(entry) = entry {
-            genesis.lane_tip = entry.tip;
-            genesis.lane_blue_score = entry.blue_score;
-        }
-    }
-
     /// Notifies observers that the connection was lost and tears the worker down.
     fn handle_disconnected(&mut self) {
         log::info!("L1 bridge disconnected");
@@ -534,17 +442,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             // the tip and the (mutably-computed) reorg threshold first so the shared borrow taken
             // by the retry helper doesn't overlap them.
             let from = self.tip_metadata().hash;
-            // The configured value is a floor under the adaptive filter, not a replacement: at
-            // startup the filter has observed no reorgs (threshold zero), so the floor alone
-            // protects the follow until observed reorgs build a larger threshold. With the
-            // filter switched off, the adaptive contribution is always zero: a latency-critical
-            // follow renders at the tip and takes reorgs as rollbacks instead of latency.
-            let adaptive =
-                if self.adaptive_filter_disabled { None } else { self.reorg_filter.threshold() };
-            let threshold = match self.min_confirmations {
-                Some(floor) => Some(floor.max(adaptive.unwrap_or(0))),
-                None => adaptive,
-            };
+            let threshold = self.min_confirmations.or_else(|| self.reorg_filter.threshold());
             let response = Self::get_vcc_with_retry(
                 self.client.clone(),
                 self.shutdown.clone(),
@@ -564,8 +462,6 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
                     reseeded = true;
                     let stale = self.tip_metadata().hash;
                     self.seed_from_pruning_point().await?;
-                    // The anchor changed, so the lane seed must be re-fetched for it.
-                    self.seed_lane_tip().await?;
                     log::info!(
                         "L1 bridge: seed block {stale} orphaned by a reorg below it; re-anchored \
                          at the pruning point, replaying"
@@ -602,15 +498,6 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             let parent = self.tip_metadata();
             let mut last_settlement = parent.last_settlement;
 
-            // The block's chain events, collected during the tx scan and emitted only after the
-            // block lands, so each carries the sink idx a rollback can revert above.
-            let mut settlements: Vec<SettlementInfo> = Vec::new();
-            let mut spends: Vec<(
-                PermissionSpend,
-                TransactionOutpoint,
-                Option<TransactionOutpoint>,
-            )> = Vec::new();
-
             // Enumerate before filtering so kept txs keep their block-wide positions.
             let mut txs: Vec<SchedulerTransaction<L1Transaction>> =
                 Vec::with_capacity(chain_block.accepted_transactions.len());
@@ -619,28 +506,10 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
                 let tx = L1Transaction::try_from(tx.clone())
                     .map_err(|e| Error::MalformedResponse(e.to_string()))?;
 
-                // Carry forward the last settlement; collect new ones for post-append emission.
+                // Carry forward the last settlement.
                 if let Some(id) = self.covenant_id {
-                    if let Some(info) = tx.settlement_info(id, block.hash, block.daa_score) {
-                        log::info!(
-                            "L1 bridge: chain block {} (daa {}) contains settlement {}",
-                            block.hash,
-                            block.daa_score,
-                            info.tx_id,
-                        );
-                        last_settlement = Some(info);
-                        settlements.push(info);
-                    }
-                }
-
-                if let Some(hooks) = &self.permission_spends {
-                    let txid_bytes = tx.id().as_bytes();
-                    let cov_id = self.covenant_id.map(|h| h.as_bytes()).unwrap_or_default();
-                    if let Some(detected) =
-                        check_claim_spend(&hooks.registry, &tx, txid_bytes, cov_id)
-                    {
-                        spends.push(detected);
-                    }
+                    last_settlement =
+                        tx.settlement_info(id, block.hash, block.daa_score).or(last_settlement);
                 }
 
                 // Parse access metadata; malformed = no dependencies and prover attests.
@@ -658,7 +527,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             let (lane_tip, lane_blue_score, lane_expired) = self.lane_state(&parent, &txs, &block);
 
             // Append the block's parent-threaded metadata and its txs to the sink.
-            let block_idx = self.sink.append(
+            self.sink.append(
                 ChainBlockMetadata {
                     parent_id: self.sink.tip(),
                     prev_seq_commit: parent.seq_commit,
@@ -674,27 +543,6 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
                 },
                 txs,
             );
-
-            // Stamp the block's sink idx onto its chain events and emit them; the journal
-            // records each registry transition so a rollback strictly below this idx undoes it.
-            for mut info in settlements {
-                info.chain_idx = block_idx.into();
-                if let Some(sender) = &self.settlement_events {
-                    let _ = sender.send(SettlementMsg::Observed(info));
-                }
-            }
-            if let Some(hooks) = &self.permission_spends {
-                for (mut spend, spent_outpoint, cont_outpoint) in spends {
-                    spend.chain_idx = block_idx;
-                    self.spend_journal.push((
-                        block_idx,
-                        spent_outpoint,
-                        spend.old_root,
-                        cont_outpoint,
-                    ));
-                    let _ = hooks.events.send(SpendMsg::Spent(spend));
-                }
-            }
         }
 
         // Publish the batch's new tip so the progress reporter advances as catch-up proceeds.
@@ -711,17 +559,9 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         txs: &[SchedulerTransaction<L1Transaction>],
         block: &ChainBlockMetadata,
     ) -> (Hash, u64, bool) {
-        // Consensus anchors a lane re-activation at `parent.seq_commit` whenever the lane holds no
-        // live SMT entry at the parent: on the first activation (nothing folded into the lane yet,
-        // `lane_blue_score` still at its zero seed) or after going silent past the finality window.
-        // The gap check alone never trips before the first activation under a real finality depth,
-        // so the zero seed would anchor the lane and every derived tip would diverge from
-        // consensus. A fresh-sink bridge seeds the authoritative lane tip from
-        // `get_seq_commit_lane_proof` at its anchor, so joining an already-live lane derives
-        // correctly; the zero seed remains only for lanes with no live entry at the anchor.
+        // Check whether the lane has gone silent past the finality window and needs to reset.
         let blue_score = block.blue_score;
-        let lane_expired = parent.lane_blue_score == 0
-            || blue_score.saturating_sub(parent.lane_blue_score) > self.finality_depth;
+        let lane_expired = blue_score.saturating_sub(parent.lane_blue_score) > self.finality_depth;
 
         // No lane configured or no activity this block -> carry parent state forward unchanged.
         let Some(lane_key) = self.lane_key.as_ref().filter(|_| !txs.is_empty()) else {
@@ -779,28 +619,6 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         );
         self.sink.rollback(new_tip);
 
-        // Mark both event streams at the surviving tip: the duplicate idx across the channels,
-        // combined with per-channel FIFO, lets consumers revert everything above it and
-        // self-heal any pre-reorg events still in flight.
-        if let Some(sender) = &self.settlement_events {
-            let _ = sender.send(SettlementMsg::Rollback(new_tip));
-        }
-        if let Some(hooks) = &self.permission_spends {
-            let _ = hooks.events.send(SpendMsg::Rollback(new_tip));
-
-            // Undo the rolled-back registry transitions, newest first: restore the spent
-            // outpoint's pre-spend root and drop the continuation it installed.
-            let mut guard = hooks.registry.write().expect("poisoned lock");
-            while self.spend_journal.last().is_some_and(|&(idx, ..)| idx > new_tip) {
-                let (_, spent_outpoint, old_root, cont_outpoint) =
-                    self.spend_journal.pop().expect("journal non-empty by the loop condition");
-                guard.insert(spent_outpoint, old_root);
-                if let Some(cont_outpoint) = cont_outpoint {
-                    guard.remove(&cont_outpoint);
-                }
-            }
-        }
-
         Ok(())
     }
 
@@ -814,443 +632,5 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         }
 
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::{
-        collections::HashMap,
-        sync::{Arc, RwLock},
-    };
-
-    use crossbeam_queue::SegQueue;
-    use kaspa_consensus_core::{
-        network::{NetworkId, NetworkType},
-        subnets::SUBNETWORK_ID_NATIVE,
-        tx::{
-            CovenantBinding, ScriptPublicKey, Transaction, TransactionInput, TransactionOutpoint,
-            TransactionOutput,
-        },
-    };
-    use kaspa_rpc_core::{
-        GetVirtualChainFromBlockV2Response, RpcChainBlockAcceptedTransactions, RpcOptionalHeader,
-        RpcOptionalTransaction,
-    };
-    use kaspa_wrpc_client::prelude::{KaspaRpcClient, WrpcEncoding};
-    use tokio::sync::{Notify, mpsc};
-    use vprogs_core_atomics::AtomicAsyncLatch;
-    use vprogs_core_types::{ChainSink, SchedulerTransaction};
-    use vprogs_l1_types::{ChainBlockMetadata, Hash, L1Transaction, SettlementMsg, SpendMsg};
-    use vprogs_zk_abi::withdrawal::{ExitLeaf, StandardSpk};
-    use vprogs_zk_backend_risc0_api::{PermissionTreeAccumulator, PermissionTreeView};
-    use vprogs_zk_backend_risc0_app_kit::{
-        PermissionSpendArgs, build_permission_spend, claim_siblings,
-    };
-    use workflow_core::channel::Channel;
-
-    use super::*;
-
-    #[derive(Default)]
-    struct TestSink {
-        blocks: Vec<ChainBlockMetadata>,
-    }
-
-    impl ChainSink<ChainBlockMetadata, L1Transaction> for TestSink {
-        fn append(
-            &mut self,
-            metadata: ChainBlockMetadata,
-            _txs: Vec<SchedulerTransaction<L1Transaction>>,
-        ) -> u64 {
-            self.blocks.push(metadata);
-            self.blocks.len() as u64
-        }
-        fn rollback(&mut self, _new_tip: u64) {}
-        fn finalize(&mut self, _below: u64) {}
-        fn tip(&self) -> u64 {
-            self.blocks.len() as u64
-        }
-        fn metadata(&self, id: u64) -> Option<ChainBlockMetadata> {
-            if id == 0 { None } else { self.blocks.get((id - 1) as usize).copied() }
-        }
-        fn id(&self, block_hash: &[u8; 32]) -> Option<u64> {
-            self.blocks
-                .iter()
-                .position(|b| b.hash.as_bytes() == *block_hash)
-                .map(|i| (i + 1) as u64)
-        }
-        fn shutdown(self) {}
-    }
-
-    fn make_settlement_tx(covenant_id: Hash, new_state: [u8; 32]) -> L1Transaction {
-        let prev_redeem = [0xcc; 32];
-        let mut sig_script = Vec::new();
-        for data in [&[0x11; 32], &new_state, &[0x33; 32], &prev_redeem] {
-            sig_script.push(0x20); // OpData32
-            sig_script.extend_from_slice(data);
-        }
-        Transaction::new(
-            0,
-            vec![TransactionInput::new(
-                TransactionOutpoint::new(Hash::from_bytes([0x66; 32]), 0),
-                sig_script,
-                0,
-                1,
-            )],
-            vec![TransactionOutput::with_covenant(
-                100_000_000,
-                kaspa_txscript::standard::pay_to_script_hash_script(&prev_redeem),
-                Some(CovenantBinding::new(0, covenant_id)),
-            )],
-            0,
-            SUBNETWORK_ID_NATIVE,
-            0,
-            Vec::new(),
-        )
-    }
-
-    fn test_worker(
-        sink: TestSink,
-        covenant_id: Hash,
-        settlement_events: mpsc::UnboundedSender<SettlementMsg>,
-        permission_spends: Option<PermissionSpendHooks>,
-    ) -> BridgeWorker<TestSink> {
-        let client = Arc::new(
-            KaspaRpcClient::new_with_args(
-                WrpcEncoding::Borsh,
-                Some("ws://127.0.0.1:0"),
-                None,
-                Some(NetworkId::new(NetworkType::Simnet)),
-                None,
-            )
-            .unwrap(),
-        );
-        let rpc_ctl_channel = client.rpc_ctl().multiplexer().channel();
-        BridgeWorker {
-            sink,
-            client,
-            subnetwork_filter: None,
-            api_requests: mpsc::channel(1).1,
-            events: Arc::new(SegQueue::new()),
-            event_signal: Arc::new(Notify::new()),
-            shutdown: Arc::new(AtomicAsyncLatch::new()),
-            notification_channel: Channel::unbounded(),
-            rpc_ctl_channel,
-            genesis: ChainBlockMetadata::default(),
-            stopping: false,
-            reorg_filter: ReorgFilter::new(Duration::ZERO),
-            lane_key: None,
-            finality_depth: 100,
-            covenant_id: Some(covenant_id),
-            seed_depth: None,
-            start_from: None,
-            tip_daa: None,
-            settlement: None,
-            min_confirmations: None,
-            adaptive_filter_disabled: false,
-            permission_spends,
-            spend_journal: Vec::new(),
-            settlement_events: Some(settlement_events),
-        }
-    }
-
-    #[tokio::test]
-    async fn settlement_events_emitted_per_detection_without_coalescing_or_flood() {
-        let covenant_id = Hash::from_bytes([0xAA; 32]);
-        let (settlement_events_tx, mut settlement_events_rx) = mpsc::unbounded_channel();
-        let sink = TestSink::default();
-        let mut worker = test_worker(sink, covenant_id, settlement_events_tx, None);
-
-        let tx1 = make_settlement_tx(covenant_id, [0x11; 32]);
-        let tx2 = make_settlement_tx(covenant_id, [0x22; 32]);
-
-        // Batch 1: contains two settlements in one batch.
-        let block1_hash = Hash::from_bytes([0x01; 32]);
-        let block2_hash = Hash::from_bytes([0x02; 32]);
-        let batch1 = GetVirtualChainFromBlockV2Response {
-            removed_chain_block_hashes: Arc::new(vec![]),
-            added_chain_block_hashes: Arc::new(vec![block1_hash, block2_hash]),
-            chain_block_accepted_transactions: Arc::new(vec![
-                RpcChainBlockAcceptedTransactions {
-                    chain_block_header: RpcOptionalHeader {
-                        hash: Some(block1_hash),
-                        blue_score: Some(1),
-                        daa_score: Some(10),
-                        timestamp: Some(1000),
-                        accepted_id_merkle_root: Some(Hash::default()),
-                        ..Default::default()
-                    },
-                    accepted_transactions: vec![RpcOptionalTransaction::from(&tx1)],
-                },
-                RpcChainBlockAcceptedTransactions {
-                    chain_block_header: RpcOptionalHeader {
-                        hash: Some(block2_hash),
-                        blue_score: Some(2),
-                        daa_score: Some(20),
-                        timestamp: Some(2000),
-                        accepted_id_merkle_root: Some(Hash::default()),
-                        ..Default::default()
-                    },
-                    accepted_transactions: vec![RpcOptionalTransaction::from(&tx2)],
-                },
-            ]),
-        };
-
-        worker.fetch_chain_updates_tail(batch1).await.unwrap();
-
-        // Exactly two events emitted in order; no coalescing.
-        let SettlementMsg::Observed(e1) =
-            settlement_events_rx.try_recv().expect("first settlement event")
-        else {
-            panic!("expected an observation, not a rollback marker");
-        };
-        assert_eq!(e1.new_state, [0x11; 32]);
-        let SettlementMsg::Observed(e2) =
-            settlement_events_rx.try_recv().expect("second settlement event")
-        else {
-            panic!("expected an observation, not a rollback marker");
-        };
-        assert_eq!(e2.new_state, [0x22; 32]);
-        assert!(settlement_events_rx.try_recv().is_err());
-
-        // Batch 2: follow-up block without settlements.
-        let block3_hash = Hash::from_bytes([0x03; 32]);
-        let batch2 = GetVirtualChainFromBlockV2Response {
-            removed_chain_block_hashes: Arc::new(vec![]),
-            added_chain_block_hashes: Arc::new(vec![block3_hash]),
-            chain_block_accepted_transactions: Arc::new(vec![RpcChainBlockAcceptedTransactions {
-                chain_block_header: RpcOptionalHeader {
-                    hash: Some(block3_hash),
-                    blue_score: Some(3),
-                    daa_score: Some(30),
-                    timestamp: Some(3000),
-                    accepted_id_merkle_root: Some(Hash::default()),
-                    ..Default::default()
-                },
-                accepted_transactions: vec![],
-            }]),
-        };
-
-        worker.fetch_chain_updates_tail(batch2).await.unwrap();
-
-        // No new settlement events emitted on settlement-less block; no flood.
-        assert!(settlement_events_rx.try_recv().is_err());
-    }
-
-    /// Builds a valid claim spend against `perm_outpoint` over a two-leaf tree (partial deduct on
-    /// leaf 0), mirroring the `permission_watch` test fixtures: exits remain unclaimed afterwards,
-    /// so the registry advance installs a continuation outpoint.
-    fn make_claim_spend_tx(
-        covenant_id: Hash,
-        perm_outpoint: TransactionOutpoint,
-        tree: &PermissionTreeView,
-        leaves: &[ExitLeaf],
-    ) -> Transaction {
-        let fold_leaf =
-            PermissionTreeAccumulator::hash_leaf(StandardSpk::PubKey(&[0x01; 32]), 3_000);
-        let collateral_pk = [0xEE; 32];
-        let collateral_bytes = StandardSpk::PubKey(&collateral_pk).to_script_bytes();
-        let collateral_spk: [u8; 34] = collateral_bytes.as_slice().try_into().unwrap();
-
-        let args = PermissionSpendArgs {
-            covenant_id: covenant_id.as_bytes(),
-            permission_outpoint: perm_outpoint,
-            permission_rent: 50_000_000,
-            old_root: tree.root(),
-            old_unclaimed: 2,
-            depth: tree.depth(),
-            leaf_index: 0,
-            leaf_spk: leaves[0].script_bytes(),
-            leaf_amount: 5_000,
-            deduct: 2_000,
-            siblings: claim_siblings(leaves, 0),
-            new_root: tree.root_with_leaf(0, fold_leaf),
-            new_unclaimed: 2,
-            delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(20), 1), 2_000)],
-            collateral_input: (TransactionOutpoint::new(Hash::from_u64_word(30), 0), 10_000_000),
-            collateral_spk: ScriptPublicKey::new(0, collateral_spk.to_vec().into()),
-            fee: 0,
-            collateral_sig: Vec::new(),
-        };
-        build_permission_spend(&args).expect("valid claim spend").0
-    }
-
-    /// Chain events carry the containing block's sink idx, and a reorg that rolls the block back
-    /// marks both streams at the surviving tip and reverts the watcher registry to its
-    /// pre-spend state.
-    #[tokio::test]
-    async fn chain_events_carry_block_idx_and_rollback_reverts_streams_and_registry() {
-        let covenant_id = Hash::from_bytes([0xAA; 32]);
-        let (settlement_events_tx, mut settlement_events_rx) = mpsc::unbounded_channel();
-        let (spend_events_tx, mut spend_events_rx) = mpsc::unbounded_channel();
-
-        let leaves = vec![
-            ExitLeaf::from_pair(StandardSpk::PubKey(&[0x01; 32]), 5_000),
-            ExitLeaf::from_pair(StandardSpk::PubKey(&[0x02; 32]), 6_000),
-        ];
-        let tree = PermissionTreeView::from_leaves(&leaves);
-        let perm_outpoint = TransactionOutpoint::new(Hash::from_u64_word(10), 0);
-        let registry = Arc::new(RwLock::new(HashMap::from([(perm_outpoint, tree.root())])));
-        let hooks = PermissionSpendHooks { events: spend_events_tx, registry: registry.clone() };
-
-        let mut worker =
-            test_worker(TestSink::default(), covenant_id, settlement_events_tx, Some(hooks));
-
-        let claim_tx = make_claim_spend_tx(covenant_id, perm_outpoint, &tree, &leaves);
-        let settlement_tx = make_settlement_tx(covenant_id, [0x11; 32]);
-
-        let block1_hash = Hash::from_bytes([0x01; 32]);
-        let batch = GetVirtualChainFromBlockV2Response {
-            removed_chain_block_hashes: Arc::new(vec![]),
-            added_chain_block_hashes: Arc::new(vec![block1_hash]),
-            chain_block_accepted_transactions: Arc::new(vec![RpcChainBlockAcceptedTransactions {
-                chain_block_header: RpcOptionalHeader {
-                    hash: Some(block1_hash),
-                    blue_score: Some(1),
-                    daa_score: Some(10),
-                    timestamp: Some(1000),
-                    accepted_id_merkle_root: Some(Hash::default()),
-                    ..Default::default()
-                },
-                accepted_transactions: vec![
-                    RpcOptionalTransaction::from(&settlement_tx),
-                    RpcOptionalTransaction::from(&claim_tx),
-                ],
-            }]),
-        };
-
-        worker.fetch_chain_updates_tail(batch).await.unwrap();
-
-        // Both chain events carry the appended block's sink idx (the first block lands at 1).
-        let SettlementMsg::Observed(settlement) =
-            settlement_events_rx.try_recv().expect("settlement observed")
-        else {
-            panic!("expected an observation, not a rollback marker");
-        };
-        assert_eq!(settlement.chain_idx.get(), 1);
-        assert_eq!(settlement.new_state, [0x11; 32]);
-        let SpendMsg::Spent(spend) = spend_events_rx.try_recv().expect("spend observed") else {
-            panic!("expected a spend, not a rollback marker");
-        };
-        assert_eq!(spend.chain_idx, 1);
-        assert_eq!(spend.spend_txid, claim_tx.id().as_bytes());
-
-        // The registry advanced: spent outpoint gone, continuation tracked.
-        let cont_outpoint = TransactionOutpoint::new(claim_tx.id(), 1);
-        {
-            let reg = registry.read().unwrap();
-            assert!(!reg.contains_key(&perm_outpoint));
-            assert!(reg.contains_key(&cont_outpoint));
-        }
-
-        // Reorg the block away: the removed tip is the fork child, so the surviving tip is its
-        // parent (the empty sink's anchor, id 0).
-        let reorg = GetVirtualChainFromBlockV2Response {
-            removed_chain_block_hashes: Arc::new(vec![block1_hash]),
-            added_chain_block_hashes: Arc::new(vec![]),
-            chain_block_accepted_transactions: Arc::new(vec![]),
-        };
-        worker.handle_reorg(&reorg).unwrap();
-
-        // Both streams got the duplicate rollback marker at the surviving tip's idx.
-        assert!(matches!(settlement_events_rx.try_recv(), Ok(SettlementMsg::Rollback(0))));
-        assert!(matches!(spend_events_rx.try_recv(), Ok(SpendMsg::Rollback(0))));
-
-        // The registry reverted: original entry restored, continuation dropped.
-        {
-            let reg = registry.read().unwrap();
-            assert_eq!(reg.get(&perm_outpoint), Some(&tree.root()));
-            assert!(!reg.contains_key(&cont_outpoint));
-        }
-        assert!(worker.spend_journal.is_empty(), "reverted entries are popped off the journal");
-    }
-
-    /// `lane_state` anchors a lane re-activation at the parent seq commit whenever the lane holds
-    /// no live entry at the parent, and chains from the parent lane tip otherwise. The first
-    /// activation must take the seq-commit anchor even when the blue-score gap to the zero seed is
-    /// well inside the finality window; before that rule landed the zero seed anchored the lane
-    /// and every derived tip diverged from consensus.
-    #[test]
-    fn lane_state_anchors_first_activation_and_reactivation_at_seq_commit() {
-        let covenant_id = Hash::from_bytes([0xAA; 32]);
-        let (settlement_events_tx, _settlement_events_rx) = mpsc::unbounded_channel();
-        let mut worker = test_worker(TestSink::default(), covenant_id, settlement_events_tx, None);
-        let lane_key = Hash::from_bytes([0xEE; 32]);
-        worker.lane_key = Some(lane_key);
-
-        let tx = make_settlement_tx(covenant_id, [0x44; 32]);
-        let txs = vec![SchedulerTransaction::new(0, Default::default(), tx.clone())];
-        let block = ChainBlockMetadata { blue_score: 530, daa_score: 531, ..Default::default() };
-        let parent_seq_commit = Hash::from_bytes([0x5C; 32]);
-        let parent_lane_tip = Hash::from_bytes([0x7D; 32]);
-        let context_hash = mergeset_context_hash(&MergesetContext {
-            timestamp: block.timestamp,
-            daa_score: block.daa_score,
-            blue_score: block.blue_score,
-        });
-        let mut activity = ActivityDigestBuilder::new();
-        activity.add_leaf(activity_leaf(&tx.id(), tx.version, 0));
-        let activity_digest = activity.finalize();
-        let expected_tip = |parent_ref: &Hash| {
-            lane_tip_next(&LaneTipInput {
-                lane_key: &lane_key,
-                parent_ref,
-                activity_digest: &activity_digest,
-                context_hash: &context_hash,
-            })
-        };
-
-        // First activation: the parent carries the zero seed (never folded activity), the gap to
-        // it is far inside the finality window, yet the anchor must be the parent seq commit.
-        let parent = ChainBlockMetadata { seq_commit: parent_seq_commit, ..Default::default() };
-        let (tip, _, expired) = worker.lane_state(&parent, &txs, &block);
-        assert!(expired, "first activation counts as no live entry");
-        assert_eq!(tip, expected_tip(&parent_seq_commit), "first activation anchors at seq commit");
-
-        // Live lane: the parent carries a real tip one blue score below; the anchor is that tip.
-        let parent = ChainBlockMetadata {
-            seq_commit: parent_seq_commit,
-            lane_tip: parent_lane_tip,
-            lane_blue_score: 529,
-            ..Default::default()
-        };
-        let (tip, _, expired) = worker.lane_state(&parent, &txs, &block);
-        assert!(!expired, "a live lane within the window is not expired");
-        assert_eq!(tip, expected_tip(&parent_lane_tip), "live lane chains from the lane tip");
-
-        // Silence past the finality window re-anchors at the parent seq commit.
-        let parent = ChainBlockMetadata {
-            seq_commit: parent_seq_commit,
-            lane_tip: parent_lane_tip,
-            lane_blue_score: 100,
-            ..Default::default()
-        };
-        let (tip, _, expired) = worker.lane_state(&parent, &txs, &block);
-        assert!(expired, "silence past the finality window expires the lane");
-        assert_eq!(tip, expected_tip(&parent_seq_commit), "re-activation anchors at seq commit");
-    }
-
-    /// Authoritative seeding applies the node's lane entry to the genesis metadata, and a lane
-    /// with no live entry at the anchor keeps the zero seed.
-    #[test]
-    fn lane_seed_applies_authoritative_entry_and_keeps_zero_on_none() {
-        let tip = Hash::from_bytes([0x9A; 32]);
-
-        let mut genesis = ChainBlockMetadata::default();
-        BridgeWorker::<TestSink>::apply_lane_seed(
-            &mut genesis,
-            Some(RpcLaneEntry { tip, blue_score: 4321 }),
-        );
-        assert_eq!(genesis.lane_tip, tip, "an authoritative entry seeds the genesis tip");
-        assert_eq!(genesis.lane_blue_score, 4321, "an authoritative entry seeds the blue score");
-
-        BridgeWorker::<TestSink>::apply_lane_seed(&mut genesis, None);
-        assert_eq!(genesis.lane_tip, tip, "no live entry leaves the seeded state untouched");
-        assert_eq!(genesis.lane_blue_score, 4321);
-
-        let mut genesis = ChainBlockMetadata::default();
-        BridgeWorker::<TestSink>::apply_lane_seed(&mut genesis, None);
-        assert_eq!(genesis.lane_tip, Hash::default(), "no live entry keeps the zero seed");
-        assert_eq!(genesis.lane_blue_score, 0);
     }
 }
