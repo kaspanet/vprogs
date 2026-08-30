@@ -64,6 +64,10 @@ pub struct RunnerConfig {
     pub start_from: Option<Hash>,
     /// Reorg head-room, in DAA, the bridge seeds below the sink for a fresh lane.
     pub seed_depth: u64,
+    /// Fixed `min_confirmation_count` for the bridge's chain-follow queries: settlements surface
+    /// only once buried this many blue-score confirmations, so reorgs shallower than it never
+    /// reach the confirm signal. `None` keeps the bridge's adaptive reorg filter.
+    pub min_confirmations: Option<u64>,
     /// Run the proving + settlement path. Off = execution-only daemon.
     pub prove: bool,
     /// Explicit start mode, or `None` to auto-select (resume if the data dir is populated, else
@@ -144,6 +148,8 @@ pub struct RawConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seed_depth: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_confirmations: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub prove: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_mode: Option<StartMode>,
@@ -177,6 +183,7 @@ impl RawConfig {
             bootstrap_txid: parse_opt_hash(self.bootstrap_txid, "bootstrap_txid")?,
             start_from: parse_opt_hash(self.start_from, "start_from")?,
             seed_depth: self.seed_depth.unwrap_or(500),
+            min_confirmations: self.min_confirmations,
             prove: self.prove.unwrap_or(false),
             start_mode: self.start_mode,
         })

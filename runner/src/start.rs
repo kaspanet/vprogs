@@ -574,6 +574,7 @@ fn bridge_params(
         finality_depth: params.finality_depth(),
         seed_depth: cfg.seed_depth,
         start_from: bridge_seed,
+        min_confirmations: cfg.min_confirmations,
         observers,
     }
 }
