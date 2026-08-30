@@ -151,7 +151,7 @@ impl SettlementSink for RpcSink {
         // Still pending in the mempool or orphan pool: not dropped. Any error other than an
         // authoritative "not found" is treated as live so a transient RPC blip never triggers a
         // resubmit; the probe simply retries on the next confirm-warn tick.
-        match self.client.get_mempool_entry(txid.into(), true, false).await {
+        match self.client.get_mempool_entry(txid, true, false).await {
             Ok(_) => return false,
             Err(RpcError::TransactionNotFound(_)) => {}
             Err(_) => return false,
