@@ -163,6 +163,13 @@ impl<F: FeeSource, K: SettlementSink> Settler<F, K> {
             // CONFIRM_WARN_INTERVAL and keep waiting; shutdown still wins the biased select. Each
             // tick also probes for a silent node drop and, on one, resubmits through the loop
             // above (same transaction, so the same txid keeps waiting on the watch).
+            //
+            // The warn tick is pinned and self-resetting, NOT recreated per pass: the watch fires
+            // on every chain batch the bridge processes (the observer republishes per fetch, ~1/s
+            // on an active chain), so a fresh `sleep` in each pass would be reset by the churn
+            // before ever completing and the tick - warning and drop probe alike - would starve.
+            let mut warn_tick = tokio::time::sleep(CONFIRM_WARN_INTERVAL);
+            tokio::pin!(warn_tick);
             let mut confirmed: Option<SettlementInfo> = None;
             while confirmed.is_none() {
                 if let Some(s) = (*rx.borrow())
@@ -180,7 +187,7 @@ impl<F: FeeSource, K: SettlementSink> Settler<F, K> {
                             return SettleOutcome::Shutdown;
                         }
                     }
-                    () = tokio::time::sleep(CONFIRM_WARN_INTERVAL) => {
+                    () = &mut warn_tick => {
                         waited += CONFIRM_WARN_INTERVAL;
                         if self
                             .sink
@@ -198,6 +205,9 @@ impl<F: FeeSource, K: SettlementSink> Settler<F, K> {
                              waiting",
                             waited.as_secs(),
                         );
+                        warn_tick
+                            .as_mut()
+                            .reset(tokio::time::Instant::now() + CONFIRM_WARN_INTERVAL);
                     }
                 }
             }

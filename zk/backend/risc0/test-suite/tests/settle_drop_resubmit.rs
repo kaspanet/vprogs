@@ -187,3 +187,59 @@ async fn dropped_settlement_is_resubmitted_and_confirmed() {
 fn bundle_block_prove_to() -> Hash {
     Hash::from_bytes([0x02; 32])
 }
+
+/// The confirm wait's warn tick must survive settlement-watch churn: the bridge's observer
+/// republishes the tip's settlement on every processed chain batch (~1/s on an active chain), so
+/// a sleep recreated on each pass would be reset by the churn before ever completing and the drop
+/// probe would starve. Under churn the probe still has to fire and resubmit.
+#[tokio::test(start_paused = true)]
+async fn drop_probe_fires_despite_settlement_watch_churn() {
+    use std::time::Duration;
+
+    let (settlement_tx, settlement_rx) = watch::channel(None::<SettlementInfo>);
+    // Churn publisher: republish a never-matching settlement every second of virtual time
+    // (`new_state` equals the covenant's current state, so the confirm predicate never fires).
+    let churn = tokio::spawn(async move {
+        let mut daa = 1u64;
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            daa += 1;
+            settlement_tx.send_replace(Some(SettlementInfo {
+                tx_id: Hash::from_bytes([0x41; 32]),
+                containing_block: Hash::from_bytes([0x42; 32]),
+                daa_score: daa.into(),
+                block_prove_to: Hash::from_bytes([0x43; 32]),
+                new_state: STATE,
+                new_lane_tip: Hash::from_bytes([0x44; 32]),
+            }));
+        }
+    });
+
+    let (submitted_tx, mut submitted_rx) = mpsc::unbounded_channel();
+    let sink = DroppingSink {
+        submits: Arc::new(AtomicUsize::new(0)),
+        report_drop_once: Arc::new(AtomicBool::new(true)),
+        last_txid: Arc::new(Mutex::new(None)),
+        submitted_tx,
+    };
+    let settler = Settler::new(
+        VerbatimFunder,
+        sink.clone(),
+        backend(),
+        test_lane_key(),
+        SettlementMode::Dev,
+        settlement_rx,
+    );
+    let shutdown = AtomicAsyncLatch::new();
+    let cov = covenant();
+    let bundle = artifact();
+    let task = tokio::spawn(async move { settler.settle_one(&cov, &bundle, &shutdown).await });
+
+    // The submission lands; the 30s warn tick must still fire through the per-second churn and
+    // trigger the drop probe's resubmission.
+    let first = submitted_rx.recv().await.expect("first submission");
+    let second = submitted_rx.recv().await.expect("resubmission under churn");
+    assert_eq!(first, second, "the resubmission must be the same transaction");
+    churn.abort();
+    let _ = task.await;
+}
