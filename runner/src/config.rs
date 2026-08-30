@@ -40,8 +40,9 @@ pub enum StartMode {
 pub struct RunnerConfig {
     /// Borsh wRPC URL of the remote node, e.g. `ws://1.2.3.4:17210`.
     pub wrpc_url: String,
-    /// Fee / bootstrap key. Bootstrap (and, in the examples, action issuing) spend from it.
-    pub private_key: SecretKey,
+    /// Fee / bootstrap key. Required for Fresh bootstrap and prove/settlement; `None` for keyless
+    /// observer mode (exec + resume or catch-up).
+    pub private_key: Option<SecretKey>,
     /// Kaspa network to connect to. No default: the operator/example chooses it.
     pub network_id: NetworkId,
     /// Per-transaction program guest ELF (the arbitrary program under execution). Required by the
@@ -160,10 +161,19 @@ impl RawConfig {
     /// Applies defaults and typed parsing, validating required fields.
     fn resolve(self) -> Result<RunnerConfig, ConfigError> {
         let wrpc_url = self.wrpc_url.ok_or(ConfigError::Missing("wrpc_url"))?;
-        let private_key = {
-            let hex = self.private_key.ok_or(ConfigError::Missing("private_key"))?;
-            SecretKey::from_str(hex.trim())
-                .map_err(|_| ConfigError::Invalid("private_key", "32-byte hex secp256k1 key"))?
+        let private_key = match self.private_key {
+            Some(hex) => {
+                let trimmed = hex.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(
+                        SecretKey::from_str(trimmed)
+                            .map_err(|_| ConfigError::Invalid("private_key", "32-byte hex secp256k1 key"))?,
+                    )
+                }
+            }
+            None => None,
         };
         let network_id = match self.network {
             Some(n) => parse_network(&n)?,
@@ -277,6 +287,19 @@ mod tests {
     #[test]
     fn resolve_reports_missing_required() {
         assert!(matches!(RawConfig::default().resolve(), Err(ConfigError::Missing("wrpc_url"))));
+    }
+
+    #[test]
+    fn keyless_config_valid() {
+        let raw = RawConfig { private_key: None, ..minimal_raw() };
+        let cfg = raw.resolve().unwrap();
+        assert!(cfg.private_key.is_none());
+    }
+
+    #[test]
+    fn resolve_rejects_bad_private_key() {
+        let bad = RawConfig { private_key: Some("not_a_key".into()), ..minimal_raw() };
+        assert!(matches!(bad.resolve(), Err(ConfigError::Invalid("private_key", _))));
     }
 
     #[test]

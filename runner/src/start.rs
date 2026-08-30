@@ -5,29 +5,22 @@
 //! the runner only fetches, executes, and optionally proves + settles. Issuing action transactions
 //! is left to the caller (the examples).
 
-use std::sync::{Arc, RwLock, atomic::AtomicU64};
+use std::sync::{Arc, atomic::AtomicU64};
 
 use kaspa_consensus_core::{
     config::params::Params, constants::SOMPI_PER_KASPA, subnets::SubnetworkId,
     tx::TransactionOutpoint,
 };
 use kaspa_hashes::Hash;
-use kaspa_rpc_core::{RpcBlock, RpcError, api::rpc::RpcApi};
+use kaspa_rpc_core::{RpcBlock, api::rpc::RpcApi};
 use kaspa_seq_commit::hashing::lane_key;
 use kaspa_wrpc_client::prelude::KaspaRpcClient;
 use secp256k1::Keypair;
-use tokio::{
-    sync::{mpsc, watch},
-    task::JoinHandle,
-};
+use tokio::{sync::watch, task::JoinHandle};
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_smt::EMPTY_HASH;
-use vprogs_l1_bridge::{PermissionSpendHooks, lane_walk_reached_genesis};
 use vprogs_l1_types::SettlementInfo;
 use vprogs_l1_wallet::Wallet;
-use vprogs_scheduling_scheduler::Indexer;
-use vprogs_zk_abi::withdrawal::ExitLeaf;
-use vprogs_zk_aggregate_prover::ExitsForBundle;
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_settler::{
     CovenantState, SettlementMode, SettlementWorkerConfig, bootstrap_dev_covenant,
@@ -37,7 +30,6 @@ use vprogs_zk_backend_risc0_test_suite::dev_mode_enabled;
 
 use crate::{
     config::{RunnerConfig, StartMode},
-    exit_index::{ExitIndexer, load_registry, run_exec_exits_joiner, run_exit_indexer},
     node::{
         BridgeObservers, BridgeParams, CovenantIdBytes, DepositSpkHash, Elfs, ProvingParams,
         RunnerNode, RunnerStore, SettlementQueue, build_exec_node, build_proving_node,
@@ -62,16 +54,6 @@ pub struct RunnerHandles {
     pub lane_subnet: SubnetworkId,
     /// The resolved covenant id the runner follows / settles.
     pub covenant_id: Hash,
-    /// Receiver on the per-bundle exit leaves channel.
-    ///
-    /// Delivers exits per bundle in order with no coalescing, in both modes. In prove mode
-    /// publication means the bundle artifact was published, not confirmed on L1: confirmations
-    /// come from the settlement watch, joined on `new_state` / `permission_spk_hash`. In exec
-    /// mode leaves come from local tx-journal extraction and are attributed to observed
-    /// settlements by permission-commitment equality, so publication means the settlement was
-    /// already seen on L1. When `exit_indexer` is wired, the exit-index task owns this stream;
-    /// the returned receiver is closed (`recv()` -> `None`).
-    pub exits_rx: mpsc::UnboundedReceiver<Arc<ExitsForBundle>>,
 }
 
 /// Operator-facing start-up failure, as opposed to `ConfigError` (which is about parsing the
@@ -106,11 +88,6 @@ pub enum StartError {
          for keyless observer mode, join an existing covenant via covenant_id and start_from"
     )]
     MissingKeyForFresh,
-    /// The lane-tip lookup at a fresh deploy's anchor failed. Pinning the zero tip onto an
-    /// already-live lane would wedge the covenant's first settlement, so the start aborts to be
-    /// retried whole (e.g. with a different anchor) instead.
-    #[error("fresh deploy could not resolve the lane tip at anchor {1}: {0}")]
-    LaneTipLookup(Box<RpcError>, Hash),
 }
 
 /// Resolves the effective start mode: explicit when set, else resume if the data dir already holds
@@ -141,10 +118,6 @@ struct StartContext<'a, F> {
     elfs: Elfs<'a>,
     /// The program's deposit-address derivation, applied once to the resolved covenant id.
     deposit_spk_hash: F,
-    /// Optional app indexer fed by the node's state writes.
-    indexer: Option<Indexer>,
-    /// Optional exit indexer fed by committed exit bundles and permission spends.
-    exit_indexer: Option<Arc<dyn ExitIndexer>>,
     /// Resolved start mode: fresh bootstrap, resume, or catch-up.
     mode: StartMode,
     /// Persisted identity and bootstrap anchors, updated as start-up resolves them.
@@ -174,8 +147,6 @@ pub async fn start_runner<F>(
     params: &Params,
     elfs: Elfs<'_>,
     deposit_spk_hash: F,
-    indexer: Option<Indexer>,
-    exit_indexer: Option<Arc<dyn ExitIndexer>>,
 ) -> Result<RunnerHandles, StartError>
 where
     F: FnOnce(&CovenantIdBytes) -> DepositSpkHash,
@@ -191,8 +162,10 @@ where
         return Err(StartError::MissingKeyForFresh);
     }
 
-    let keypair =
-        cfg.private_key.as_ref().map(|sk| Keypair::from_secret_key(secp256k1::SECP256K1, sk));
+    let keypair = cfg
+        .private_key
+        .as_ref()
+        .map(|sk| Keypair::from_secret_key(secp256k1::SECP256K1, sk));
 
     let lane_id = persisted.lane_id.or(cfg.lane_id).unwrap_or_else(|| fastrand::u32(1000..));
     persisted.lane_id = Some(lane_id);
@@ -209,33 +182,22 @@ where
         lane_key,
         elfs,
         deposit_spk_hash,
-        indexer,
-        exit_indexer,
         mode,
         persisted: &mut persisted,
     };
     if cfg.prove {
-        let (node, settler, covenant_id, exits_rx) = start_settlement(ctx).await?;
-        Ok(RunnerHandles {
-            node,
-            settler: Some(settler),
-            lane_id,
-            lane_subnet,
-            covenant_id,
-            exits_rx,
-        })
+        let (node, settler, covenant_id) = start_settlement(ctx).await?;
+        Ok(RunnerHandles { node, settler: Some(settler), lane_id, lane_subnet, covenant_id })
     } else {
-        let (node, covenant_id, exits_rx) = start_exec(ctx).await?;
-        Ok(RunnerHandles { node, settler: None, lane_id, lane_subnet, covenant_id, exits_rx })
+        let (node, covenant_id) = start_exec(ctx).await?;
+        Ok(RunnerHandles { node, settler: None, lane_id, lane_subnet, covenant_id })
     }
 }
 
 /// Builds the execution-only node per the start mode: fresh bootstrap (dev-pins under
 /// `RISC0_DEV_MODE`, real-pins otherwise), resume from persisted identity, or catch up to an
 /// existing covenant. The bridge tracks the covenant's settlements; nothing here settles.
-async fn start_exec<F>(
-    ctx: StartContext<'_, F>,
-) -> Result<(RunnerNode, Hash, mpsc::UnboundedReceiver<Arc<ExitsForBundle>>), StartError> {
+async fn start_exec<F>(ctx: StartContext<'_, F>) -> Result<(RunnerNode, Hash), StartError> {
     // Exec mode runs no prover, so the deposit-address derivation is dropped unused.
     let StartContext {
         cfg,
@@ -246,8 +208,6 @@ async fn start_exec<F>(
         lane_key,
         elfs,
         deposit_spk_hash: _,
-        indexer,
-        exit_indexer,
         mode,
         persisted,
     } = ctx;
@@ -287,20 +247,12 @@ async fn start_exec<F>(
             // asserts.
             let (covenant, bootstrap_txid) = if dev_mode_enabled() {
                 log::info!("bootstrapping dev-pins covenant; issuer address {}", wallet.address());
-                // Exec mode settles nothing, so the deploy pins the fresh-lane (zero) tip.
-                bootstrap_dev_covenant(&wallet, lane_key, Hash::default(), COVENANT_VALUE).await
+                bootstrap_dev_covenant(&wallet, lane_key, COVENANT_VALUE).await
             } else {
                 log::info!("bootstrapping real-pins covenant; issuer address {}", wallet.address());
                 let backend =
                     Backend::new(elfs.program, elfs.batch, elfs.aggregator, ProofType::Succinct);
-                bootstrap_real_covenant(
-                    &wallet,
-                    &backend,
-                    lane_key,
-                    Hash::default(),
-                    COVENANT_VALUE,
-                )
-                .await
+                bootstrap_real_covenant(&wallet, &backend, lane_key, COVENANT_VALUE).await
             };
             persisted.bootstrap_txid = Some(bootstrap_txid.to_string());
             log::info!("covenant {} bootstrapped (tx {})", covenant.covenant_id, bootstrap_txid);
@@ -326,54 +278,6 @@ async fn start_exec<F>(
     let bridge_seed = resolve_bridge_seed(client, start_from, cfg.seed_depth, tip_daa).await;
 
     let store = RunnerStore::open(cfg.data_dir.join("db"));
-
-    // Exec-mode exits feed: the Vm taps each tx's journal-committed exits, and the joiner task
-    // attributes buffered leaves to observed settlements by permission-commitment equality,
-    // publishing the same per-bundle `ExitsForBundle` stream the proving node's aggregate prover
-    // publishes. The bridge's settlement events feed the joiner directly (even without an
-    // indexer, where prove mode leaves them unwired): attribution needs them.
-    let (exits_tx, exits_rx) = mpsc::unbounded_channel::<Arc<ExitsForBundle>>();
-    let (settlement_events_tx, settlement_events_rx) = mpsc::unbounded_channel();
-    let (tx_exits_tx, tx_exits_rx) = mpsc::unbounded_channel::<Vec<ExitLeaf>>();
-
-    // Same exit-indexer wiring as prove mode: when an indexer is wired (and the covenant id is
-    // non-zero) it owns the exits stream and the receiver handed to the caller is closed.
-    let (permission_spends, exits_handles_rx, settle_fwd_tx) = if let Some(indexer) = exit_indexer {
-        if covenant_id == Hash::default() {
-            log::warn!("covenant_id is zero; skipping permission spend watcher and exit indexer");
-            (None, exits_rx, None)
-        } else {
-            let initial_registry = load_registry(&store);
-            let shared_registry = Arc::new(RwLock::new(initial_registry));
-            let (spend_tx, spend_rx) = mpsc::unbounded_channel();
-            let hooks =
-                PermissionSpendHooks { events: spend_tx, registry: shared_registry.clone() };
-            // The joiner forwards each matched settlement so the indexer can pair it with the
-            // emitted bundle (the indexer's exits-first biased select makes the joiner's
-            // bundle-then-settlement send order safe).
-            let (settle_fwd_tx, settle_fwd_rx) = mpsc::unbounded_channel();
-            tokio::spawn(run_exit_indexer(
-                indexer,
-                store.clone(),
-                exits_rx,
-                settle_fwd_rx,
-                spend_rx,
-                shared_registry,
-            ));
-            // When exit_indexer is wired, the exit-index task owns this stream; the returned
-            // receiver is closed (recv() -> None).
-            let (_tx, rx) = mpsc::unbounded_channel();
-            (Some(hooks), rx, Some(settle_fwd_tx))
-        }
-    } else {
-        (None, exits_rx, None)
-    };
-
-    // Attribution task runs in every exec configuration: with no indexer it feeds the caller's
-    // live `exits_rx`; both of its input channels die with the node, so its exit shuts the
-    // exits stream down in turn.
-    tokio::spawn(run_exec_exits_joiner(tx_exits_rx, settlement_events_rx, exits_tx, settle_fwd_tx));
-
     let node = build_exec_node(
         elfs,
         store,
@@ -383,16 +287,10 @@ async fn start_exec<F>(
             covenant_id,
             params,
             bridge_seed,
-            BridgeObservers {
-                settlement_events: Some(settlement_events_tx),
-                permission_spends,
-                ..BridgeObservers::default()
-            },
+            BridgeObservers::default(),
         ),
-        indexer,
-        Some(tx_exits_tx),
     );
-    Ok((node, covenant_id, exits_handles_rx))
+    Ok((node, covenant_id))
 }
 
 /// Builds the proving + settlement node per the start mode: fresh bootstrap (dev-pins under
@@ -401,15 +299,7 @@ async fn start_exec<F>(
 /// node and spawns the settler on the node's batch sink.
 async fn start_settlement<F>(
     ctx: StartContext<'_, F>,
-) -> Result<
-    (
-        RunnerNode,
-        (JoinHandle<()>, AtomicAsyncLatch),
-        Hash,
-        mpsc::UnboundedReceiver<Arc<ExitsForBundle>>,
-    ),
-    StartError,
->
+) -> Result<(RunnerNode, (JoinHandle<()>, AtomicAsyncLatch), Hash), StartError>
 where
     F: FnOnce(&CovenantIdBytes) -> DepositSpkHash,
 {
@@ -422,8 +312,6 @@ where
         lane_key,
         elfs,
         deposit_spk_hash,
-        indexer,
-        exit_indexer,
         mode,
         persisted,
     } = ctx;
@@ -479,32 +367,13 @@ where
         }
     };
 
-    // A fresh deploy onto a lane that is already live (e.g. a re-deploy over lanes warmed by
-    // previous runs) must pin the lane's authoritative tip at the deploy anchor: the first
-    // settlement chains from that tip, matching the tip the bridge seeds its genesis from (both
-    // lookups resolve at `seed_block`). A failed lookup aborts the start: pinning the zero tip
-    // onto a live lane would wedge the covenant's first settlement forever, while an aborted
-    // start is retried whole. A lane with no live entry pins the zero tip, the fresh-lane
-    // deploy. A resolved (resumed or caught-up) covenant reconstructs the zero tip, which is
-    // wrong only for a covenant that itself deployed onto a live lane with a wiped store: its
-    // pin is not recoverable without the deploy-time lookup, and the first settlement's SPK
-    // assert fails.
-    let initial_lane_tip = if resolved.is_some() {
-        Hash::default()
-    } else {
-        lane_tip_with_retry(client, seed_block, lane_key)
-            .await
-            .map_err(|e| StartError::LaneTipLookup(Box::new(e), seed_block))?
-            .unwrap_or_default()
-    };
-
     let (covenant, bootstrap_txid) = if let Some((covenant_id, _seed, bootstrap_txid)) = resolved {
         // Same redeem builder bootstrap uses, so the reconstructed P2SH SPK matches the on-chain
         // covenant UTXO (asserted at the first settlement).
         let (_redeem, spk) = if dev {
-            dev_bootstrap_redeem(&lane_key, &initial_lane_tip)
+            dev_bootstrap_redeem(&lane_key)
         } else {
-            bootstrap_redeem(&backend, &lane_key, &initial_lane_tip)
+            bootstrap_redeem(&backend, &lane_key)
         };
         // Real bootstrap outpoint if known, so a resumed never-settled covenant still confirms its
         // real bootstrap UTXO; else a placeholder the settler replaces on adoption when the
@@ -525,7 +394,7 @@ where
         let covenant = CovenantState {
             covenant_id,
             state: EMPTY_HASH,
-            lane_tip: initial_lane_tip,
+            lane_tip: Hash::default(),
             outpoint,
             spk,
             value: COVENANT_VALUE,
@@ -537,8 +406,7 @@ where
             "settlement mode (dev): bootstrapping dev-pins covenant; issuer {}",
             wallet.address()
         );
-        let (covenant, txid) =
-            bootstrap_dev_covenant(&wallet, lane_key, initial_lane_tip, COVENANT_VALUE).await;
+        let (covenant, txid) = bootstrap_dev_covenant(&wallet, lane_key, COVENANT_VALUE).await;
         (covenant, Some(txid))
     } else {
         log::info!(
@@ -546,8 +414,7 @@ where
             wallet.address()
         );
         let (covenant, txid) =
-            bootstrap_real_covenant(&wallet, &backend, lane_key, initial_lane_tip, COVENANT_VALUE)
-                .await;
+            bootstrap_real_covenant(&wallet, &backend, lane_key, COVENANT_VALUE).await;
         (covenant, Some(txid))
     };
     let covenant_id = covenant.covenant_id;
@@ -581,44 +448,10 @@ where
     // settlement here; the settler (reader) detects a competitor advancing past its in-memory
     // tip.
     let (settlement_tx, settlement_rx) = watch::channel(None::<SettlementInfo>);
-    let (exits_tx, exits_rx) = mpsc::unbounded_channel();
-    let (settlement_events_tx, settlement_events_rx) = mpsc::unbounded_channel();
     // Seed the bridge with reorg headroom: pin the anchor only if it is already deep, else seed
     // seed_depth below the sink. The settler keeps the unmodified `start_from` (its own
     // resume/adopt semantics), so this only affects where the bridge roots its chain.
     let bridge_seed = resolve_bridge_seed(client, start_from, cfg.seed_depth, tip_daa).await;
-
-    let (permission_spends, exits_handles_rx, bridge_settlement_events) = if let Some(indexer) =
-        exit_indexer
-    {
-        if covenant_id == Hash::default() {
-            log::warn!("covenant_id is zero; skipping permission spend watcher and exit indexer");
-            (None, exits_rx, None)
-        } else {
-            let initial_registry = load_registry(&store);
-            let shared_registry = Arc::new(RwLock::new(initial_registry));
-            let (spend_tx, spend_rx) = mpsc::unbounded_channel();
-            let hooks =
-                PermissionSpendHooks { events: spend_tx, registry: shared_registry.clone() };
-            // Auxiliary exit-indexer task runs alongside node and terminates when exits/settlement
-            // channels close.
-            tokio::spawn(run_exit_indexer(
-                indexer,
-                store.clone(),
-                exits_rx,
-                settlement_events_rx,
-                spend_rx,
-                shared_registry,
-            ));
-            // When exit_indexer is wired, the exit-index task owns this stream; the returned
-            // receiver is closed (recv() -> None).
-            let (_tx, rx) = mpsc::unbounded_channel();
-            (Some(hooks), rx, Some(settlement_events_tx))
-        }
-    } else {
-        (None, exits_rx, None)
-    };
-
     let node = build_proving_node(
         elfs,
         store,
@@ -628,12 +461,7 @@ where
             covenant_id,
             params,
             bridge_seed,
-            BridgeObservers {
-                tip_daa: Some(tip_daa_obs.clone()),
-                settlement: Some(settlement_tx),
-                settlement_events: bridge_settlement_events,
-                permission_spends,
-            },
+            BridgeObservers { tip_daa: Some(tip_daa_obs.clone()), settlement: Some(settlement_tx) },
         ),
         ProvingParams {
             covenant_id,
@@ -645,9 +473,7 @@ where
             sink: queue.clone(),
             bundle_size: 1..=usize::MAX,
             settlement_rx: Some(settlement_rx.clone()),
-            exits_tx: Some(exits_tx),
         },
-        indexer,
     );
     // Target the bridge replays toward: the node's virtual DAA captured before bootstrap. The
     // reporter loop only reads the tip atomic.
@@ -675,7 +501,7 @@ where
         covenant,
         shutdown.clone(),
     ));
-    Ok((node, (settler, shutdown), covenant_id, exits_handles_rx))
+    Ok((node, (settler, shutdown), covenant_id))
 }
 
 /// Resolves the explicit block the bridge roots its fresh chain at, decoupled from the settler's
@@ -754,55 +580,6 @@ async fn get_block_with_retry<R: RpcApi>(client: &R, hash: Hash) -> Option<RpcBl
     None
 }
 
-/// Fetches the lane's authoritative tip at `anchor` with bounded retries, for pinning into a
-/// fresh covenant deploy. `Ok(None)` covers a lane with no live entry at the anchor (a fresh
-/// lane) and a walk that bottoms out at the chain's genesis; either way the deploy pins the
-/// zero tip. Exhausted retries are an error: the zero tip pinned onto an already-live lane
-/// would wedge the covenant's first settlement, so the deploy aborts and is retried whole
-/// instead.
-async fn lane_tip_with_retry<R: RpcApi>(
-    client: &R,
-    anchor: Hash,
-    lane_key: Hash,
-) -> Result<Option<Hash>, RpcError> {
-    const MAX_ATTEMPTS: u32 = 10;
-    const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
-    for attempt in 1..=MAX_ATTEMPTS {
-        match client.get_seq_commit_lane_proof(anchor, lane_key).await {
-            Ok(proof) => {
-                if let Some(entry) = proof.lane {
-                    log::info!(
-                        "covenant deploy: lane already live at anchor {anchor}; pinning \
-                         authoritative tip {}",
-                        entry.tip
-                    );
-                    return Ok(Some(entry.tip));
-                }
-                log::info!("covenant deploy: lane holds no live entry at anchor {anchor}");
-                return Ok(None);
-            }
-            Err(e) if lane_walk_reached_genesis(&e) => {
-                log::info!(
-                    "covenant deploy: lane state bottoms out at the chain's genesis below \
-                     anchor {anchor}"
-                );
-                return Ok(None);
-            }
-            Err(e) if attempt < MAX_ATTEMPTS => {
-                log::warn!(
-                    "covenant deploy: get_seq_commit_lane_proof failed \
-                     (attempt {attempt}/{MAX_ATTEMPTS}, retrying): {e}"
-                );
-                tokio::time::sleep(RETRY_DELAY).await;
-            }
-            Err(e) => {
-                return Err(e);
-            }
-        }
-    }
-    unreachable!("lane-tip retry loop returns on the final attempt")
-}
-
 /// The bridge wiring for either mode, pointed at the remote node's lane + covenant. `bridge_seed`
 /// is the resolved root block ([`resolve_bridge_seed`]): an explicit reorg-safe root to pin, or
 /// `None` (no anchor at all) to fall back to the bridge's own `seed_depth`-below-sink seeding.
@@ -823,7 +600,6 @@ fn bridge_params(
         seed_depth: cfg.seed_depth,
         start_from: bridge_seed,
         min_confirmations: cfg.min_confirmations,
-        adaptive_filter_disabled: cfg.adaptive_filter_disabled,
         observers,
     }
 }
@@ -901,7 +677,6 @@ mod tests {
             start_from: Some(Hash::default()),
             seed_depth: 500,
             min_confirmations: None,
-            adaptive_filter_disabled: false,
             prove: true,
             start_mode: Some(StartMode::Catchup),
         };
@@ -915,7 +690,7 @@ mod tests {
         .unwrap();
         let params = Params::from(NetworkId::new(NetworkType::Simnet));
         let elfs = Elfs { program: &[], batch: &[], aggregator: &[] };
-        let res = start_runner(&cfg, &client, &params, elfs, |_| [0u8; 32], None, None).await;
+        let res = start_runner(&cfg, &client, &params, elfs, |_| [0u8; 32]).await;
         assert!(matches!(res, Err(StartError::MissingKeyForProve)));
     }
 
@@ -936,7 +711,6 @@ mod tests {
             start_from: None,
             seed_depth: 500,
             min_confirmations: None,
-            adaptive_filter_disabled: false,
             prove: false,
             start_mode: Some(StartMode::Fresh),
         };
@@ -950,7 +724,7 @@ mod tests {
         .unwrap();
         let params = Params::from(NetworkId::new(NetworkType::Simnet));
         let elfs = Elfs { program: &[], batch: &[], aggregator: &[] };
-        let res = start_runner(&cfg, &client, &params, elfs, |_| [0u8; 32], None, None).await;
+        let res = start_runner(&cfg, &client, &params, elfs, |_| [0u8; 32]).await;
         assert!(matches!(res, Err(StartError::MissingKeyForFresh)));
     }
 }
