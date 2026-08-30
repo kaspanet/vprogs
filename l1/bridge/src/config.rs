@@ -44,10 +44,12 @@ pub struct L1BridgeConfig {
     /// confirmation is notification-based, awaits) to reconcile against the canonical settlement
     /// without a confirm RTT. `None` disables publishing.
     pub settlement_observer: Option<watch::Sender<Option<SettlementInfo>>>,
-    /// Fixed `min_confirmation_count` for the chain-follow queries: the bridge processes blocks
-    /// only once they are this many blue-score confirmations below the sink, so reorgs shallower
-    /// than it never surface and every published settlement is at least this buried. `None` keeps
-    /// the adaptive reorg filter's threshold instead.
+    /// Lower bound on the `min_confirmation_count` for the chain-follow queries: the bridge
+    /// processes blocks only once they are this many blue-score confirmations below the sink, so
+    /// reorgs shallower than it never surface and every published settlement is at least this
+    /// buried. The adaptive reorg filter may still raise the threshold above this floor after
+    /// observed reorgs; at startup the filter is empty, so the floor alone applies. `None` uses
+    /// the adaptive threshold alone.
     pub min_confirmations: Option<u64>,
 }
 
@@ -151,8 +153,8 @@ impl L1BridgeConfig {
         self
     }
 
-    /// Sets the fixed `min_confirmation_count` for chain-follow queries, overriding the adaptive
-    /// reorg filter. `None` restores the adaptive threshold.
+    /// Sets the lower bound on `min_confirmation_count` for chain-follow queries, under the
+    /// adaptive reorg filter's threshold. `None` uses the adaptive threshold alone.
     pub fn with_min_confirmations(mut self, min_confirmations: Option<u64>) -> Self {
         self.min_confirmations = min_confirmations;
         self

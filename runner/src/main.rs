@@ -59,8 +59,9 @@ struct Cli {
     /// Chain-block head-room the bridge seeds below the sink for a fresh lane.
     #[arg(long)]
     seed_depth: Option<u64>,
-    /// Fixed blue-score confirmations a block needs before the bridge processes it, so reorgs
-    /// shallower than it never surface. Unset keeps the adaptive reorg filter.
+    /// Minimum blue-score confirmations a block needs before the bridge processes it, so reorgs
+    /// shallower than it never surface; the adaptive reorg filter may still exceed it. Unset
+    /// uses the adaptive filter alone.
     #[arg(long)]
     min_confirmations: Option<u64>,
 

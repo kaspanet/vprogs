@@ -86,8 +86,8 @@ pub(crate) struct BridgeWorker<T: ChainSink<ChainBlockMetadata, L1Transaction>> 
     /// the single writer), so each settler can read the canonical settlement without a confirm
     /// RTT.
     settlement: Option<watch::Sender<Option<SettlementInfo>>>,
-    /// Fixed `min_confirmation_count` for chain-follow queries; `None` uses the reorg filter's
-    /// adaptive threshold.
+    /// Lower bound on the `min_confirmation_count` for chain-follow queries; the adaptive reorg
+    /// filter may still exceed it after observed reorgs. `None` uses the adaptive threshold alone.
     min_confirmations: Option<u64>,
 }
 
@@ -442,7 +442,14 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             // the tip and the (mutably-computed) reorg threshold first so the shared borrow taken
             // by the retry helper doesn't overlap them.
             let from = self.tip_metadata().hash;
-            let threshold = self.min_confirmations.or_else(|| self.reorg_filter.threshold());
+            // The configured value is a floor under the adaptive filter, not a replacement: at
+            // startup the filter has observed no reorgs (threshold zero), so the floor alone
+            // protects the follow until observed reorgs build a larger threshold.
+            let adaptive = self.reorg_filter.threshold();
+            let threshold = match self.min_confirmations {
+                Some(floor) => Some(floor.max(adaptive.unwrap_or(0))),
+                None => adaptive,
+            };
             let response = Self::get_vcc_with_retry(
                 self.client.clone(),
                 self.shutdown.clone(),
