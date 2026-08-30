@@ -63,6 +63,8 @@ impl Config {
             bootstrap_txid,
             start_from,
             seed_depth: opt_u64("TN10_SEED_DEPTH", 500),
+            min_confirmations: opt("TN10_MIN_CONFIRMATIONS")
+                .map(|s| s.parse().expect("TN10_MIN_CONFIRMATIONS must be a u64")),
             prove: opt("TN10_SETTLE").is_some_and(|s| s != "0"),
             start_mode,
         };
