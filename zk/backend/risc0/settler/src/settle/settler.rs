@@ -165,9 +165,7 @@ impl<F: FeeSource, K: SettlementSink> Settler<F, K> {
             // above (same transaction, so the same txid keeps waiting on the watch).
             let mut confirmed: Option<SettlementInfo> = None;
             while confirmed.is_none() {
-                if let Some(s) = rx
-                    .borrow()
-                    .clone()
+                if let Some(s) = (*rx.borrow())
                     .filter(|s| s.new_state != target_state && s.daa_score.get() >= min_daa)
                 {
                     confirmed = Some(s);
