@@ -70,11 +70,7 @@ async fn main() {
     let client = connect_wrpc(&cfg.runner.wrpc_url, network_id).await;
     log::info!("connected to {}", cfg.runner.wrpc_url);
 
-    let keypair = cfg
-        .runner
-        .private_key
-        .as_ref()
-        .map(|sk| Keypair::from_secret_key(SECP256K1, sk));
+    let keypair = cfg.runner.private_key.as_ref().map(|sk| Keypair::from_secret_key(SECP256K1, sk));
 
     // The account model lives in the runtime-processor guest; batch + aggregator complete the
     // stack.
