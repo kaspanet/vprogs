@@ -168,7 +168,7 @@ impl<F: FeeSource, K: SettlementSink> Settler<F, K> {
             // on every chain batch the bridge processes (the observer republishes per fetch, ~1/s
             // on an active chain), so a fresh `sleep` in each pass would be reset by the churn
             // before ever completing and the tick - warning and drop probe alike - would starve.
-            let mut warn_tick = tokio::time::sleep(CONFIRM_WARN_INTERVAL);
+            let warn_tick = tokio::time::sleep(CONFIRM_WARN_INTERVAL);
             tokio::pin!(warn_tick);
             let mut confirmed: Option<SettlementInfo> = None;
             while confirmed.is_none() {
