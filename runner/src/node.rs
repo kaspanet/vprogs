@@ -88,8 +88,8 @@ pub struct BridgeParams {
     /// catch-up node rebuilds state forward from there. Takes precedence over `seed_depth`. `None`
     /// defers to `seed_depth`.
     pub start_from: Option<Hash>,
-    /// Fixed `min_confirmation_count` for the bridge's chain-follow queries: settlements surface
-    /// only once buried this many blue-score confirmations. `None` keeps the adaptive reorg filter.
+    /// Lower bound on the `min_confirmation_count` for the bridge's chain-follow queries; the
+    /// adaptive reorg filter may still exceed it. `None` uses the adaptive threshold alone.
     pub min_confirmations: Option<u64>,
     /// Observer handles the bridge publishes progress into.
     pub observers: BridgeObservers,
