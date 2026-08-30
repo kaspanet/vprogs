@@ -26,6 +26,12 @@ pub struct SettlementInfo {
     pub new_state: [u8; 32],
     /// Lane tip after this settlement.
     pub new_lane_tip: Hash,
+    /// Redeem-script hash committed by the settlement's continuation output (output 0), i.e. the
+    /// P2SH SPK the next spend must reproduce. Carried from the observed transaction rather than
+    /// rebuilt from the adopter's local redeem pins: a covenant pins its guest-ELF image ids at
+    /// bootstrap, and a prover whose ELFs differ must fail adoption checks loudly instead of
+    /// building a settlement the node's P2SH hash check rejects.
+    pub continuation_spk_hash: [u8; 32],
 }
 
 // Borsh is hand-rolled because the zerocopy `daa_score: U64` wrapper carries no Borsh impl; it is
@@ -37,7 +43,8 @@ impl BorshSerialize for SettlementInfo {
         self.daa_score.get().serialize(writer)?;
         self.block_prove_to.serialize(writer)?;
         self.new_state.serialize(writer)?;
-        self.new_lane_tip.serialize(writer)
+        self.new_lane_tip.serialize(writer)?;
+        self.continuation_spk_hash.serialize(writer)
     }
 }
 
@@ -50,6 +57,7 @@ impl BorshDeserialize for SettlementInfo {
             block_prove_to: Hash::deserialize_reader(reader)?,
             new_state: <[u8; 32]>::deserialize_reader(reader)?,
             new_lane_tip: Hash::deserialize_reader(reader)?,
+            continuation_spk_hash: <[u8; 32]>::deserialize_reader(reader)?,
         })
     }
 }
@@ -69,6 +77,7 @@ mod tests {
             block_prove_to: Hash::from_bytes([0x33; 32]),
             new_state: [0x44; 32],
             new_lane_tip: Hash::from_bytes([0x55; 32]),
+            continuation_spk_hash: [0x66; 32],
         };
         let bytes = borsh::to_vec(&info).expect("serialize");
         let decoded = SettlementInfo::try_from_slice(&bytes).expect("deserialize");
