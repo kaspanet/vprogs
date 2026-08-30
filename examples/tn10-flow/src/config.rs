@@ -28,11 +28,10 @@ impl Config {
     /// malformed required values.
     pub fn from_env() -> Self {
         let wrpc_url = req("TN10_WRPC_URL");
-        let private_key = {
-            let hex = req("TN10_PRIVATE_KEY");
+        let private_key = opt("TN10_PRIVATE_KEY").map(|hex| {
             SecretKey::from_str(hex.trim())
                 .expect("TN10_PRIVATE_KEY must be a 32-byte hex secp256k1 key")
-        };
+        });
         let lane_id = opt("TN10_LANE_ID").map(|s| s.parse().expect("TN10_LANE_ID must be a u32"));
         let covenant_id = opt("TN10_COVENANT_ID")
             .map(|s| Hash::from_str(s.trim()).expect("TN10_COVENANT_ID must be 32-byte hex"));
