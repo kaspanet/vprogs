@@ -16,6 +16,7 @@ kaspa-seq-commit.workspace                = true
 kaspa-txscript.workspace                  = true
 secp256k1.workspace                       = true
 tap.workspace                             = true
+vprogs-core-atomics.workspace            = true
 vprogs-core-codec.workspace               = true
 vprogs-core-smt.workspace                 = true
 vprogs-core-types.workspace               = true
@@ -37,7 +38,7 @@ zerocopy.workspace                        = true
 [dev-dependencies]
 risc0-zkvm                             = { workspace = true, default-features = false }
 tempfile.workspace                     = true
-tokio                                  = { workspace = true, features = ["rt-multi-thread"] }
+tokio                                  = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
 vprogs-core-hashing.workspace          = true
 vprogs-core-test-utils.workspace       = true
 vprogs-l1-bridge.workspace             = true
