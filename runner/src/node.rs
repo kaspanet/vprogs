@@ -20,18 +20,15 @@ use std::{
 use kaspa_consensus_core::{network::NetworkId, subnets::SubnetworkId};
 use kaspa_hashes::Hash;
 use kaspa_wrpc_client::prelude::KaspaRpcClient;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 use vprogs_core_atomics::AsyncQueue;
-use vprogs_l1_bridge::{L1BridgeConfig, PermissionSpendHooks};
-use vprogs_l1_types::{SettlementInfo, SettlementMsg};
+use vprogs_l1_bridge::L1BridgeConfig;
+use vprogs_l1_types::SettlementInfo;
 use vprogs_node_framework::{Node, NodeConfig};
-use vprogs_scheduling_scheduler::{ExecutionConfig, Indexer, SchedulerState};
+use vprogs_scheduling_scheduler::{ExecutionConfig, SchedulerState};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
-use vprogs_zk_abi::withdrawal::ExitLeaf;
-use vprogs_zk_aggregate_prover::{
-    AggregateProverConfig, ExitsForBundle, ScheduledBundle, SettlementArtifact,
-};
+use vprogs_zk_aggregate_prover::{AggregateProverConfig, ScheduledBundle, SettlementArtifact};
 use vprogs_zk_backend_risc0_api::{Backend, ProofType, Receipt};
 use vprogs_zk_batch_prover::BatchProverConfig;
 use vprogs_zk_vm::{ProvingPipeline, Vm};
@@ -60,7 +57,7 @@ pub struct Elfs<'a> {
     pub aggregator: &'a [u8],
 }
 
-/// Optional observer handles the bridge publishes into as it follows the chain. All default to
+/// Optional observer handles the bridge publishes into as it follows the chain. Both default to
 /// `None`, which disables publishing.
 #[derive(Default)]
 pub struct BridgeObservers {
@@ -71,12 +68,6 @@ pub struct BridgeObservers {
     /// settler holds a [`watch::Receiver`](tokio::sync::watch::Receiver) subscribed to it
     /// (reader). `None` disables publishing.
     pub settlement: Option<watch::Sender<Option<SettlementInfo>>>,
-    /// Optional channel sender the settlement stream is published into (observations and
-    /// rollback markers, in per-channel FIFO order).
-    pub settlement_events: Option<mpsc::UnboundedSender<SettlementMsg>>,
-    /// Optional hooks for watching and emitting permission-output spends. `None` disables
-    /// watching.
-    pub permission_spends: Option<PermissionSpendHooks>,
 }
 
 /// Everything the bridge needs to follow our lane on the remote node.
@@ -97,12 +88,9 @@ pub struct BridgeParams {
     /// catch-up node rebuilds state forward from there. Takes precedence over `seed_depth`. `None`
     /// defers to `seed_depth`.
     pub start_from: Option<Hash>,
-    /// Lower bound on the `min_confirmation_count` for the bridge's chain-follow queries; the
-    /// adaptive reorg filter may still exceed it. `None` uses the adaptive threshold alone.
+    /// Fixed `min_confirmation_count` for the bridge's chain-follow queries: settlements surface
+    /// only once buried this many blue-score confirmations. `None` keeps the adaptive reorg filter.
     pub min_confirmations: Option<u64>,
-    /// Switches the bridge's adaptive reorg filter off: the follow threshold becomes exactly
-    /// `min_confirmations` (zero when unset), rendering at the tip with reorgs as rollbacks.
-    pub adaptive_filter_disabled: bool,
     /// Observer handles the bridge publishes progress into.
     pub observers: BridgeObservers,
 }
@@ -144,32 +132,16 @@ pub struct ProvingParams {
     /// Receiver on the bridge's covenant `last_settlement` watch, cloned for the aggregate prover
     /// so it re-aggregates a superseded suffix, or `None` to run without re-forming.
     pub settlement_rx: Option<watch::Receiver<Option<SettlementInfo>>>,
-    /// Sender on the exit-leaf channel driving client Merkle-path proof generation, or `None` if
-    /// exit publishing is disabled.
-    pub exits_tx: Option<mpsc::UnboundedSender<Arc<ExitsForBundle>>>,
 }
 
 /// Builds and starts an execution-only [`RunnerNode`]: a zk `Vm` with no proving, the given store,
 /// and a bridge pointed at the remote node's lane + covenant. [`Node::new`] immediately starts the
 /// bridge, scheduler, and event loop on a dedicated thread. The batch and aggregator ELFs are
 /// loaded only so the backend can pin their image ids; they are never executed in exec mode.
-/// `exits_tap`, when supplied, receives each executed tx's journal-committed exit leaves (see
-/// [`Vm::with_exits_tap`]); exec mode attributes them to observed settlements downstream, while
-/// proving mode leaves it unwired (its aggregate prover already publishes per-bundle exits).
-pub fn build_exec_node(
-    elfs: Elfs,
-    store: RunnerStore,
-    params: BridgeParams,
-    indexer: Option<Indexer>,
-    exits_tap: Option<mpsc::UnboundedSender<Vec<ExitLeaf>>>,
-) -> RunnerNode {
+pub fn build_exec_node(elfs: Elfs, store: RunnerStore, params: BridgeParams) -> RunnerNode {
     let backend = Backend::new(elfs.program, elfs.batch, elfs.aggregator, ProofType::Succinct);
     let vm = Vm::new(backend, ProvingPipeline::None);
-    let vm = match exits_tap {
-        Some(tap) => vm.with_exits_tap(tap),
-        None => vm,
-    };
-    Node::new(base_config(vm, store, params, indexer))
+    Node::new(base_config(vm, store, params))
 }
 
 /// Builds and starts a proving [`RunnerNode`]: a zk `Vm` driving the full proving stack
@@ -183,7 +155,6 @@ pub fn build_proving_node(
     store: RunnerStore,
     bridge: BridgeParams,
     proving: ProvingParams,
-    indexer: Option<Indexer>,
 ) -> RunnerNode {
     let backend = Backend::new(elfs.program, elfs.batch, elfs.aggregator, ProofType::Succinct);
     // Build the shared scheduler state first so the aggregate prover and the scheduler operate over
@@ -206,12 +177,10 @@ pub fn build_proving_node(
             settlement_queue: Some(proving.sink),
             settlement: proving.settlement_rx,
             bundle_size: proving.bundle_size,
-            exits: proving.exits_tx,
         },
-        Some(vprogs_state_settlement_journal::StoreJournal::new(store.clone())),
     );
     let vm = Vm::new(backend, pipeline);
-    Node::with_state(base_config(vm, store, bridge, indexer), state)
+    Node::with_state(base_config(vm, store, bridge), state)
 }
 
 /// The bridge + execution + storage config shared by both node modes; the proving mode supplies a
@@ -220,12 +189,10 @@ fn base_config(
     vm: RunnerVm,
     store: RunnerStore,
     params: BridgeParams,
-    indexer: Option<Indexer>,
 ) -> NodeConfig<RunnerStore, RunnerVm> {
     NodeConfig::default()
         .with_execution_config(ExecutionConfig::default().with_processor(vm))
         .with_storage_config(StorageConfig::default().with_store(store))
-        .with_indexer(indexer)
         .with_l1_bridge_config(
             L1BridgeConfig::default()
                 .with_url(Some(params.url))
@@ -236,10 +203,7 @@ fn base_config(
                 .with_seed_depth(Some(params.seed_depth))
                 .with_start_from(params.start_from)
                 .with_min_confirmations(params.min_confirmations)
-                .with_adaptive_filter_disabled(params.adaptive_filter_disabled)
                 .with_tip_daa_observer(params.observers.tip_daa)
-                .with_settlement_observer(params.observers.settlement)
-                .with_settlement_events(params.observers.settlement_events)
-                .with_permission_spends(params.observers.permission_spends),
+                .with_settlement_observer(params.observers.settlement),
         )
 }
