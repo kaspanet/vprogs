@@ -9,12 +9,16 @@ use std::sync::{
 
 use kaspa_consensus_core::tx::Transaction;
 use kaspa_hashes::Hash;
+use kaspa_txscript::standard::pay_to_script_hash_script;
 use risc0_zkvm::{FakeReceipt, InnerReceipt, Receipt, ReceiptClaim};
 use tokio::sync::{mpsc, watch};
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_l1_types::SettlementInfo;
 use vprogs_zk_aggregate_prover::SettlementArtifact;
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
+use vprogs_zk_backend_risc0_covenant::{
+    DEFAULT_PERMISSION_OUTPUT_VALUE, build_dev_redeem_script, dev_redeem_script_len,
+};
 use vprogs_zk_backend_risc0_settler::{
     CovenantState, FeeSource, FundedSettlement, SettleOutcome, SettlementMode, SettlementSink,
     Settler, SubmitOutcome,
@@ -59,7 +63,15 @@ fn covenant() -> CovenantState {
             Hash::from_bytes([0x77; 32]),
             0,
         ),
-        spk: Default::default(),
+        // The real P2SH of the dev redeem this bundle spends (prefix STATE/LANE_TIP), which the
+        // builder's SPK guard compares its rebuilt redeem against.
+        spk: pay_to_script_hash_script(&build_dev_redeem_script(
+            &STATE,
+            &Hash::from_bytes(LANE_TIP),
+            &test_lane_key(),
+            dev_redeem_script_len(&STATE, &test_lane_key(), DEFAULT_PERMISSION_OUTPUT_VALUE),
+            DEFAULT_PERMISSION_OUTPUT_VALUE,
+        )),
         value: 100_000_000,
         daa_score: 0,
     }
@@ -172,6 +184,7 @@ async fn dropped_settlement_is_resubmitted_and_confirmed() {
         block_prove_to: bundle_block_prove_to(),
         new_state: NEW_STATE,
         new_lane_tip: Hash::from_bytes([0x60; 32]),
+        continuation_spk_hash: [0u8; 32],
     }));
 
     match task.await.expect("settle_one task") {
@@ -211,6 +224,7 @@ async fn drop_probe_fires_despite_settlement_watch_churn() {
                 block_prove_to: Hash::from_bytes([0x43; 32]),
                 new_state: STATE,
                 new_lane_tip: Hash::from_bytes([0x44; 32]),
+                continuation_spk_hash: [0u8; 32],
             }));
         }
     });

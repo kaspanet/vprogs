@@ -56,7 +56,8 @@ pub async fn run(
     // watch the bridge writes - never by scanning L1. The bridge replays the chain from the deploy
     // block and publishes the tip's `last_settlement`, so when the covenant has already advanced
     // the watch carries the canonical continuation; reconstruct the tip from it directly
-    // (outpoint `tx_id:0`, SPK rebuilt from the seeded redeem) without an on-chain confirm.
+    // (outpoint `tx_id:0`, SPK from the observed settlement's continuation hash) without an
+    // on-chain confirm.
     // This is the exact `last_settlement` a chain scan would derive, with no RPC.
     //
     // When the watch is empty (a fresh deploy, or the bridge has not yet replayed a settlement),
@@ -72,7 +73,7 @@ pub async fn run(
     if let Some(s) =
         initial.filter(|s| s.new_state != cov.state && s.daa_score.get() >= cov.daa_score)
     {
-        *cov = covenant_from_settlement(cfg.mode, &cfg.backend, &cfg.lane_key, &cov, &s);
+        *cov = covenant_from_settlement(&cov, &s);
         log::info!(
             "settlement-worker: starting covenant {} from live settlement {} (tip daa {})",
             cov.covenant_id,
@@ -141,8 +142,7 @@ pub async fn run(
             let latest = *cfg.settlement.borrow();
             if let Some(s) = latest {
                 if s.new_state != cov.state && s.daa_score.get() >= cov.daa_score {
-                    *cov =
-                        covenant_from_settlement(cfg.mode, &cfg.backend, &cfg.lane_key, &cov, &s);
+                    *cov = covenant_from_settlement(&cov, &s);
                     log::info!(
                         "settlement-worker: adopted external settlement {} (covenant advanced to daa {})",
                         s.tx_id,
