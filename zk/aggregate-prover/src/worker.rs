@@ -414,15 +414,39 @@ where
             return;
         };
 
-        // Re-form only on a boundary that lands on one of our retained blocks: the competitor (or
-        // our own settler) covered it and everything before it. An unmatched boundary drops
+        // The settlement covers everything through its `block_prove_to`. Wherever that boundary
+        // sits, the covered batches must never reach a bundle: a bundle that starts before it
+        // chains its own lane-tip sequence, and the first bundle to extend past the boundary then
+        // carries a `prev_lane_tip` the covenant never took, which the settler's build rejects
+        // (the catch-up wedge: the follower's bundling boundaries need not match the settler's).
+        // Split both windows at the boundary: drop the covered retained prefix as before, and the
+        // covered queued prefix too, so the next bundle formed from the queue starts strictly
+        // after the boundary. Its first batch then enters with the settlement's own state and
+        // lane tip, chaining cleanly off the adopted covenant. An unmatched boundary (the whole
+        // covered range already behind both windows, or a block that scheduled no batch) drops
         // nothing, so an unsettled suffix is never silently lost.
-        let blocks: Vec<Hash> =
+        let boundary = settlement.block_prove_to;
+        let queued_blocks: Vec<Hash> =
+            self.queued.iter().map(|b| b.checkpoint().metadata().hash).collect();
+        let queued_drain = settled_prefix(&queued_blocks, boundary);
+        let retained_blocks: Vec<Hash> =
             self.retained.iter().map(|b| b.checkpoint().metadata().hash).collect();
-        let Some(drain) = settled_prefix(&blocks, settlement.block_prove_to) else {
+        let retained_drain = settled_prefix(&retained_blocks, boundary);
+        if queued_drain.is_none() && retained_drain.is_none() {
+            log::debug!(
+                "aggregate-prover: settlement {} boundary {} matches no window block; nothing \
+                 to drop",
+                settlement.tx_id,
+                boundary,
+            );
             return;
-        };
-        self.retained.drain(0..drain);
+        }
+        if let Some(drain) = queued_drain {
+            self.queued.drain(0..drain);
+        }
+        if let Some(drain) = retained_drain {
+            self.retained.drain(0..drain);
+        }
 
         // Re-form the surviving suffix: take up to a full bundle's worth from the front of the
         // retained remainder. Its first batch's `prev_state` already equals the adopted tip, so the
