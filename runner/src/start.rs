@@ -162,10 +162,8 @@ where
         return Err(StartError::MissingKeyForFresh);
     }
 
-    let keypair = cfg
-        .private_key
-        .as_ref()
-        .map(|sk| Keypair::from_secret_key(secp256k1::SECP256K1, sk));
+    let keypair =
+        cfg.private_key.as_ref().map(|sk| Keypair::from_secret_key(secp256k1::SECP256K1, sk));
 
     let lane_id = persisted.lane_id.or(cfg.lane_id).unwrap_or_else(|| fastrand::u32(1000..));
     persisted.lane_id = Some(lane_id);

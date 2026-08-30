@@ -167,10 +167,9 @@ impl RawConfig {
                 if trimmed.is_empty() {
                     None
                 } else {
-                    Some(
-                        SecretKey::from_str(trimmed)
-                            .map_err(|_| ConfigError::Invalid("private_key", "32-byte hex secp256k1 key"))?,
-                    )
+                    Some(SecretKey::from_str(trimmed).map_err(|_| {
+                        ConfigError::Invalid("private_key", "32-byte hex secp256k1 key")
+                    })?)
                 }
             }
             None => None,
