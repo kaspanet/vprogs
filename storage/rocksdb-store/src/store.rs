@@ -111,6 +111,17 @@ impl<C: Config> Store for RocksDbStore<C> {
         Box::new(RocksDbPrefixIter { inner: iter })
     }
 
+    fn range_iter(&self, state_space: StateSpace, start: &[u8], end: &[u8]) -> PrefixIterator<'_> {
+        let cf = self.cf(&state_space);
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_iterate_lower_bound(start.to_vec());
+        read_opts.set_iterate_upper_bound(end.to_vec());
+        read_opts.set_total_order_seek(true);
+        let mode = IteratorMode::From(start, Direction::Forward);
+        let iter = self.db.iterator_cf_opt(cf, read_opts, mode);
+        Box::new(RocksDbPrefixIter { inner: iter })
+    }
+
     fn canonical_chain(&self) -> CanonicalChain {
         self.canonical.clone()
     }
