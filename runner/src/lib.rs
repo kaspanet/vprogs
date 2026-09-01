@@ -31,6 +31,7 @@ pub use node::{
 };
 pub use persistence::PersistedState;
 pub use start::{RunnerHandles, StartError, start_runner};
+pub use vprogs_scheduling_scheduler::{Indexer, ResourceIndexer};
 pub use wrpc::connect_wrpc;
 
 /// Top-level runner entry point for the binary: connect, load the guest ELFs named by `config`, and
@@ -48,7 +49,8 @@ pub async fn run(config: RunnerConfig) -> Result<RunnerHandles, RunError> {
     // The CLI runs an arbitrary program ELF and cannot know its deposit policy, so it declares the
     // no-deposit sentinel. A deposit-crediting program calls `start_runner` directly with its own
     // derivation.
-    let handles = start_runner(&config, &client, &params, elfs.as_elfs(), |_| [0u8; 32]).await?;
+    let handles =
+        start_runner(&config, &client, &params, elfs.as_elfs(), |_| [0u8; 32], None).await?;
     Ok(handles)
 }
 

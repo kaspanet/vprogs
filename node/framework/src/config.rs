@@ -1,5 +1,5 @@
 use vprogs_l1_bridge::L1BridgeConfig;
-use vprogs_scheduling_scheduler::ExecutionConfig;
+use vprogs_scheduling_scheduler::{ExecutionConfig, Indexer};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_types::Store;
 
@@ -19,6 +19,8 @@ pub struct NodeConfig<S: Store, P: Processor<S>> {
     pub storage_config: StorageConfig<S>,
     /// L1 bridge connection and sync configuration.
     pub l1_bridge_config: L1BridgeConfig,
+    /// Optional app indexer fed by the node's state writes.
+    pub indexer: Option<Indexer>,
 }
 
 impl<S: Store, P: Processor<S>> Default for NodeConfig<S, P> {
@@ -28,6 +30,7 @@ impl<S: Store, P: Processor<S>> Default for NodeConfig<S, P> {
             execution_config: ExecutionConfig::default(),
             storage_config: StorageConfig::default(),
             l1_bridge_config: L1BridgeConfig::default(),
+            indexer: None,
         }
     }
 }
@@ -50,6 +53,11 @@ impl<S: Store, P: Processor<S>> NodeConfig<S, P> {
 
     pub fn with_l1_bridge_config(mut self, config: L1BridgeConfig) -> Self {
         self.l1_bridge_config = config;
+        self
+    }
+
+    pub fn with_indexer(mut self, indexer: Option<Indexer>) -> Self {
+        self.indexer = indexer;
         self
     }
 }

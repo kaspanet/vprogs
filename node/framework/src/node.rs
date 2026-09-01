@@ -27,6 +27,10 @@ impl<S: Store, P: Processor<S>> Node<S, P> {
     /// [`ReceiptStore`](vprogs_scheduling_scheduler::ReceiptStore) derived from this same state, so
     /// the state must exist before that processor and hence before the node.
     pub fn with_state(config: NodeConfig<S, P>, state: SchedulerState<S, P>) -> Self {
+        if let Some(indexer) = &config.indexer {
+            state.set_indexer(indexer.0.clone());
+        }
+
         // Build the scheduler over the shared state - state reads the last checkpoint from store.
         let scheduler = Scheduler::with_state(config.execution_config, state);
         let (tx, rx) = mpsc::channel(config.api_channel_capacity);
