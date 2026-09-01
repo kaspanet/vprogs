@@ -26,6 +26,12 @@ pub trait Store: Tree + Clone + Send + Sync + 'static {
     /// Panics if the underlying storage operation fails.
     fn prefix_iter(&self, state_space: StateSpace, prefix: &[u8]) -> PrefixIterator<'_>;
 
+    /// Iterates `(key, value)` pairs whose keys start with `prefix`, in reverse key order.
+    ///
+    /// # Panics
+    /// Panics if the underlying storage operation fails.
+    fn prefix_iter_rev(&self, state_space: StateSpace, prefix: &[u8]) -> PrefixIterator<'_>;
+
     /// Returns the store's shared canonical-chain read oracle.
     fn canonical_chain(&self) -> CanonicalChain;
 
