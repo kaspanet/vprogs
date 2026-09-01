@@ -108,8 +108,7 @@ impl<S: Store, P: Processor<S>> StateDiff<S, P> {
                     (!read_state.data().is_empty()).then_some(read_state.data().as_slice());
                 let new_data =
                     (!written_state.data().is_empty()).then_some(written_state.data().as_slice());
-                indexer.index_events(&self.resource_id, old_data, new_data, version, wb);
-                indexer.index_state(&self.resource_id, old_data, new_data, version, wb);
+                indexer.index_diff(&self.resource_id, old_data, new_data, version, wb);
             }
         }
     }
