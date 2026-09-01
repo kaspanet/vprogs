@@ -11,9 +11,9 @@ use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_storage_types::{StateSpace, Store, WriteBatch};
 
 /// Toy indexer maintaining two indexes in `StateSpace::Index`:
-/// - Index A (`0xAA` discriminator): append-style event entries keyed by `0xAA || version_be[8] ||
-///   resource_id[32]`.
-/// - Index B (`0xBB` discriminator): snapshot-style latest state keyed by `0xBB ||
+/// - Event index (`0xAA` discriminator): append-style event entries keyed by `0xAA || version_be[8]
+///   || resource_id[32]`.
+/// - Snapshot index (`0xBB` discriminator): snapshot-style latest state keyed by `0xBB ||
 ///   resource_id[32]`, with value `version_be[8]`.
 struct ToyIndexer;
 
@@ -27,21 +27,21 @@ impl ResourceIndexer for ToyIndexer {
         wb: &mut dyn WriteBatch,
     ) {
         if new.is_some() {
-            // Index A: append event for this version.
-            let mut key_a = vec![0xaa];
-            key_a.extend_from_slice(&version.to_be_bytes());
-            key_a.extend_from_slice(id.as_slice());
-            wb.put(StateSpace::Index, &key_a, b"");
+            // Event index: append event for this version.
+            let mut event_key = vec![0xaa];
+            event_key.extend_from_slice(&version.to_be_bytes());
+            event_key.extend_from_slice(id.as_slice());
+            wb.put(StateSpace::Index, &event_key, b"");
 
-            // Index B: update snapshot to this version.
-            let mut key_b = vec![0xbb];
-            key_b.extend_from_slice(id.as_slice());
-            wb.put(StateSpace::Index, &key_b, &version.to_be_bytes());
+            // Snapshot index: update snapshot to this version.
+            let mut snapshot_key = vec![0xbb];
+            snapshot_key.extend_from_slice(id.as_slice());
+            wb.put(StateSpace::Index, &snapshot_key, &version.to_be_bytes());
         } else {
-            // Index B: deleted resource removes snapshot entry.
-            let mut key_b = vec![0xbb];
-            key_b.extend_from_slice(id.as_slice());
-            wb.delete(StateSpace::Index, &key_b);
+            // Snapshot index: deleted resource removes snapshot entry.
+            let mut snapshot_key = vec![0xbb];
+            snapshot_key.extend_from_slice(id.as_slice());
+            wb.delete(StateSpace::Index, &snapshot_key);
         }
     }
 
@@ -54,21 +54,22 @@ impl ResourceIndexer for ToyIndexer {
         restored_version: u64,
         wb: &mut dyn WriteBatch,
     ) {
-        // Index A: delete the entry written at the reverted version.
+        // Event index: delete the entry written at the reverted version.
         if written.is_some() {
-            let mut key_a = vec![0xaa];
-            key_a.extend_from_slice(&reverted_version.to_be_bytes());
-            key_a.extend_from_slice(id.as_slice());
-            wb.delete(StateSpace::Index, &key_a);
+            let mut event_key = vec![0xaa];
+            event_key.extend_from_slice(&reverted_version.to_be_bytes());
+            event_key.extend_from_slice(id.as_slice());
+            wb.delete(StateSpace::Index, &event_key);
         }
 
-        // Index B: restore the snapshot entry to the restored version, or delete if absent before.
-        let mut key_b = vec![0xbb];
-        key_b.extend_from_slice(id.as_slice());
+        // Snapshot index: restore the snapshot entry to the restored version, or delete if absent
+        // before.
+        let mut snapshot_key = vec![0xbb];
+        snapshot_key.extend_from_slice(id.as_slice());
         if restored.is_some() {
-            wb.put(StateSpace::Index, &key_b, &restored_version.to_be_bytes());
+            wb.put(StateSpace::Index, &snapshot_key, &restored_version.to_be_bytes());
         } else {
-            wb.delete(StateSpace::Index, &key_b);
+            wb.delete(StateSpace::Index, &snapshot_key);
         }
     }
 }
@@ -125,19 +126,20 @@ fn diff_feeds_both_indexes() {
         .schedule(1, vec![SchedulerTransaction::new(10, vec![AccessMetadata::write(rid)], 0)]);
     batch.wait_committed_blocking();
 
-    let a_entries: Vec<_> = storage.range_iter(StateSpace::Index, &[0xaa], &[0xab]).collect();
-    assert_eq!(a_entries.len(), 1);
-    let mut expected_a = vec![0xaa];
-    expected_a.extend_from_slice(&1u64.to_be_bytes());
-    expected_a.extend_from_slice(rid.as_slice());
-    assert_eq!(a_entries[0].0, expected_a);
+    let event_entries: Vec<_> = storage.range_iter(StateSpace::Index, &[0xaa], &[0xab]).collect();
+    assert_eq!(event_entries.len(), 1);
+    let mut expected_event_key = vec![0xaa];
+    expected_event_key.extend_from_slice(&1u64.to_be_bytes());
+    expected_event_key.extend_from_slice(rid.as_slice());
+    assert_eq!(event_entries[0].0, expected_event_key);
 
-    let b_entries: Vec<_> = storage.range_iter(StateSpace::Index, &[0xbb], &[0xbc]).collect();
-    assert_eq!(b_entries.len(), 1);
-    let mut expected_b = vec![0xbb];
-    expected_b.extend_from_slice(rid.as_slice());
-    assert_eq!(b_entries[0].0, expected_b);
-    assert_eq!(b_entries[0].1, 1u64.to_be_bytes());
+    let snapshot_entries: Vec<_> =
+        storage.range_iter(StateSpace::Index, &[0xbb], &[0xbc]).collect();
+    assert_eq!(snapshot_entries.len(), 1);
+    let mut expected_snapshot_key = vec![0xbb];
+    expected_snapshot_key.extend_from_slice(rid.as_slice());
+    assert_eq!(snapshot_entries[0].0, expected_snapshot_key);
+    assert_eq!(snapshot_entries[0].1, 1u64.to_be_bytes());
 
     scheduler.shutdown();
 }
@@ -156,10 +158,11 @@ fn unchanged_resource_writes_nothing() {
         .schedule(1, vec![SchedulerTransaction::new(0, vec![AccessMetadata::read(rid)], 0)]);
     batch.wait_committed_blocking();
 
-    let a_entries: Vec<_> = storage.range_iter(StateSpace::Index, &[0xaa], &[0xab]).collect();
-    assert!(a_entries.is_empty(), "expected no index A entries for read-only access");
-    let b_entries: Vec<_> = storage.range_iter(StateSpace::Index, &[0xbb], &[0xbc]).collect();
-    assert!(b_entries.is_empty(), "expected no index B entries for read-only access");
+    let event_entries: Vec<_> = storage.range_iter(StateSpace::Index, &[0xaa], &[0xab]).collect();
+    assert!(event_entries.is_empty(), "expected no event entries for read-only access");
+    let snapshot_entries: Vec<_> =
+        storage.range_iter(StateSpace::Index, &[0xbb], &[0xbc]).collect();
+    assert!(snapshot_entries.is_empty(), "expected no snapshot entries for read-only access");
 
     scheduler.shutdown();
 }
@@ -181,29 +184,35 @@ fn revert_deletes_fork_entries_and_restores_snapshot() {
     batch1.wait_committed_blocking();
     batch2.wait_committed_blocking();
 
-    let a_entries_before: Vec<_> =
+    let event_entries_before: Vec<_> =
         storage.range_iter(StateSpace::Index, &[0xaa], &[0xab]).collect();
-    assert_eq!(a_entries_before.len(), 2, "expected 2 index A entries before rollback");
+    assert_eq!(event_entries_before.len(), 2, "expected 2 event entries before rollback");
 
-    let b_entries_before: Vec<_> =
+    let snapshot_entries_before: Vec<_> =
         storage.range_iter(StateSpace::Index, &[0xbb], &[0xbc]).collect();
-    assert_eq!(b_entries_before.len(), 1);
-    assert_eq!(b_entries_before[0].1, 2u64.to_be_bytes(), "expected snapshot at version 2");
+    assert_eq!(snapshot_entries_before.len(), 1);
+    assert_eq!(snapshot_entries_before[0].1, 2u64.to_be_bytes(), "expected snapshot at version 2");
 
     scheduler.rollback_to(1).expect("rollback should succeed");
 
-    // Index A: version 2 entry must be deleted; version 1 remains.
-    let a_entries_after: Vec<_> = storage.range_iter(StateSpace::Index, &[0xaa], &[0xab]).collect();
-    assert_eq!(a_entries_after.len(), 1, "expected version 2 entry deleted");
-    let mut expected_a1 = vec![0xaa];
-    expected_a1.extend_from_slice(&1u64.to_be_bytes());
-    expected_a1.extend_from_slice(rid.as_slice());
-    assert_eq!(a_entries_after[0].0, expected_a1);
+    // Event index: version 2 entry must be deleted; version 1 remains.
+    let event_entries_after: Vec<_> =
+        storage.range_iter(StateSpace::Index, &[0xaa], &[0xab]).collect();
+    assert_eq!(event_entries_after.len(), 1, "expected version 2 entry deleted");
+    let mut expected_event_key_v1 = vec![0xaa];
+    expected_event_key_v1.extend_from_slice(&1u64.to_be_bytes());
+    expected_event_key_v1.extend_from_slice(rid.as_slice());
+    assert_eq!(event_entries_after[0].0, expected_event_key_v1);
 
-    // Index B: snapshot must be restored to version 1.
-    let b_entries_after: Vec<_> = storage.range_iter(StateSpace::Index, &[0xbb], &[0xbc]).collect();
-    assert_eq!(b_entries_after.len(), 1);
-    assert_eq!(b_entries_after[0].1, 1u64.to_be_bytes(), "expected snapshot restored to version 1");
+    // Snapshot index must be restored to version 1.
+    let snapshot_entries_after: Vec<_> =
+        storage.range_iter(StateSpace::Index, &[0xbb], &[0xbc]).collect();
+    assert_eq!(snapshot_entries_after.len(), 1);
+    assert_eq!(
+        snapshot_entries_after[0].1,
+        1u64.to_be_bytes(),
+        "expected snapshot restored to version 1"
+    );
 
     scheduler.shutdown();
 }
@@ -240,7 +249,7 @@ fn ghost_entries_reused_version_regression() {
     let snapshot = storage.canonical_chain().snapshot();
     assert!(snapshot.is_canonical(2), "version 2 is canonical on winner fork");
 
-    // Regression check: Fork 1's entry for r1 at version 2 must NOT exist in index A.
+    // Regression check: Fork 1's entry for r1 at version 2 must NOT exist in the event index.
     let mut stale_r1_v2_key = vec![0xaa];
     stale_r1_v2_key.extend_from_slice(&2u64.to_be_bytes());
     stale_r1_v2_key.extend_from_slice(r1.as_slice());
@@ -259,14 +268,14 @@ fn ghost_entries_reused_version_regression() {
         "winner entry for r2 at version 2 must exist"
     );
 
-    // Index B: r1 is at version 1; r2 is at version 2.
-    let mut b_r1_key = vec![0xbb];
-    b_r1_key.extend_from_slice(r1.as_slice());
-    assert_eq!(storage.get(StateSpace::Index, &b_r1_key), Some(1u64.to_be_bytes().to_vec()));
+    // Snapshot index: r1 is at version 1; r2 is at version 2.
+    let mut snapshot_r1_key = vec![0xbb];
+    snapshot_r1_key.extend_from_slice(r1.as_slice());
+    assert_eq!(storage.get(StateSpace::Index, &snapshot_r1_key), Some(1u64.to_be_bytes().to_vec()));
 
-    let mut b_r2_key = vec![0xbb];
-    b_r2_key.extend_from_slice(r2.as_slice());
-    assert_eq!(storage.get(StateSpace::Index, &b_r2_key), Some(2u64.to_be_bytes().to_vec()));
+    let mut snapshot_r2_key = vec![0xbb];
+    snapshot_r2_key.extend_from_slice(r2.as_slice());
+    assert_eq!(storage.get(StateSpace::Index, &snapshot_r2_key), Some(2u64.to_be_bytes().to_vec()));
 
     scheduler.shutdown();
 }
@@ -287,11 +296,12 @@ fn rollback_to_genesis_restores_none() {
 
     scheduler.rollback_to(0).expect("rollback should succeed");
 
-    let a_entries: Vec<_> = storage.range_iter(StateSpace::Index, &[0xaa], &[0xab]).collect();
-    assert!(a_entries.is_empty(), "expected index A empty after genesis rollback");
+    let event_entries: Vec<_> = storage.range_iter(StateSpace::Index, &[0xaa], &[0xab]).collect();
+    assert!(event_entries.is_empty(), "expected event index empty after genesis rollback");
 
-    let b_entries: Vec<_> = storage.range_iter(StateSpace::Index, &[0xbb], &[0xbc]).collect();
-    assert!(b_entries.is_empty(), "expected index B empty after genesis rollback");
+    let snapshot_entries: Vec<_> =
+        storage.range_iter(StateSpace::Index, &[0xbb], &[0xbc]).collect();
+    assert!(snapshot_entries.is_empty(), "expected snapshot index empty after genesis rollback");
 
     scheduler.shutdown();
 }
@@ -326,32 +336,32 @@ fn restore_committed_re_derives_index_entries() {
     b2.wait_committed_blocking();
 
     // Verify index entries are present before rollback.
-    let mut r1_v2_key_a = vec![0xaa];
-    r1_v2_key_a.extend_from_slice(&2u64.to_be_bytes());
-    r1_v2_key_a.extend_from_slice(r1.as_slice());
-    assert!(storage.get(StateSpace::Index, &r1_v2_key_a).is_some());
+    let mut r1_v2_event_key = vec![0xaa];
+    r1_v2_event_key.extend_from_slice(&2u64.to_be_bytes());
+    r1_v2_event_key.extend_from_slice(r1.as_slice());
+    assert!(storage.get(StateSpace::Index, &r1_v2_event_key).is_some());
 
-    let mut r2_v2_key_a = vec![0xaa];
-    r2_v2_key_a.extend_from_slice(&2u64.to_be_bytes());
-    r2_v2_key_a.extend_from_slice(r2.as_slice());
-    assert!(storage.get(StateSpace::Index, &r2_v2_key_a).is_some());
+    let mut r2_v2_event_key = vec![0xaa];
+    r2_v2_event_key.extend_from_slice(&2u64.to_be_bytes());
+    r2_v2_event_key.extend_from_slice(r2.as_slice());
+    assert!(storage.get(StateSpace::Index, &r2_v2_event_key).is_some());
 
-    let mut r1_key_b = vec![0xbb];
-    r1_key_b.extend_from_slice(r1.as_slice());
-    assert_eq!(storage.get(StateSpace::Index, &r1_key_b), Some(2u64.to_be_bytes().to_vec()));
+    let mut r1_snapshot_key = vec![0xbb];
+    r1_snapshot_key.extend_from_slice(r1.as_slice());
+    assert_eq!(storage.get(StateSpace::Index, &r1_snapshot_key), Some(2u64.to_be_bytes().to_vec()));
 
-    let mut r2_key_b = vec![0xbb];
-    r2_key_b.extend_from_slice(r2.as_slice());
-    assert_eq!(storage.get(StateSpace::Index, &r2_key_b), Some(2u64.to_be_bytes().to_vec()));
+    let mut r2_snapshot_key = vec![0xbb];
+    r2_snapshot_key.extend_from_slice(r2.as_slice());
+    assert_eq!(storage.get(StateSpace::Index, &r2_snapshot_key), Some(2u64.to_be_bytes().to_vec()));
 
     // Reorg: rollback to batch 1.
     scheduler.rollback_to(1).expect("rollback should succeed");
 
     // Entries for version 2 are reverted.
-    assert_eq!(storage.get(StateSpace::Index, &r1_v2_key_a), None);
-    assert_eq!(storage.get(StateSpace::Index, &r2_v2_key_a), None);
-    assert_eq!(storage.get(StateSpace::Index, &r1_key_b), Some(1u64.to_be_bytes().to_vec()));
-    assert_eq!(storage.get(StateSpace::Index, &r2_key_b), None);
+    assert_eq!(storage.get(StateSpace::Index, &r1_v2_event_key), None);
+    assert_eq!(storage.get(StateSpace::Index, &r2_v2_event_key), None);
+    assert_eq!(storage.get(StateSpace::Index, &r1_snapshot_key), Some(1u64.to_be_bytes().to_vec()));
+    assert_eq!(storage.get(StateSpace::Index, &r2_snapshot_key), None);
 
     // Re-reorg: the same block (metadata 200) returns and is restored, not re-executed.
     let b2_restored = scheduler.schedule(
@@ -366,22 +376,22 @@ fn restore_committed_re_derives_index_entries() {
 
     // Index entries must be re-derived and present again.
     assert!(
-        storage.get(StateSpace::Index, &r1_v2_key_a).is_some(),
-        "index A entry for r1 in restored batch must be re-derived"
+        storage.get(StateSpace::Index, &r1_v2_event_key).is_some(),
+        "event entry for r1 in restored batch must be re-derived"
     );
     assert!(
-        storage.get(StateSpace::Index, &r2_v2_key_a).is_some(),
-        "index A entry for r2 in restored batch must be re-derived"
+        storage.get(StateSpace::Index, &r2_v2_event_key).is_some(),
+        "event entry for r2 in restored batch must be re-derived"
     );
     assert_eq!(
-        storage.get(StateSpace::Index, &r1_key_b),
+        storage.get(StateSpace::Index, &r1_snapshot_key),
         Some(2u64.to_be_bytes().to_vec()),
-        "index B snapshot entry for r1 in restored batch must be updated to version 2"
+        "snapshot entry for r1 in restored batch must be updated to version 2"
     );
     assert_eq!(
-        storage.get(StateSpace::Index, &r2_key_b),
+        storage.get(StateSpace::Index, &r2_snapshot_key),
         Some(2u64.to_be_bytes().to_vec()),
-        "index B snapshot entry for r2 in restored batch must be re-derived"
+        "snapshot entry for r2 in restored batch must be re-derived"
     );
 
     scheduler.shutdown();
@@ -399,8 +409,9 @@ fn indexer_double_apply_is_idempotent() {
     indexer.index_diff(&rid, None, Some(b"data"), 1, &mut wb);
     storage.commit(wb);
 
-    let a_entries: Vec<_> = storage.range_iter(StateSpace::Index, &[0xaa], &[0xab]).collect();
-    assert_eq!(a_entries.len(), 1);
-    let b_entries: Vec<_> = storage.range_iter(StateSpace::Index, &[0xbb], &[0xbc]).collect();
-    assert_eq!(b_entries.len(), 1);
+    let event_entries: Vec<_> = storage.range_iter(StateSpace::Index, &[0xaa], &[0xab]).collect();
+    assert_eq!(event_entries.len(), 1);
+    let snapshot_entries: Vec<_> =
+        storage.range_iter(StateSpace::Index, &[0xbb], &[0xbc]).collect();
+    assert_eq!(snapshot_entries.len(), 1);
 }
