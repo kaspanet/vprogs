@@ -6,6 +6,7 @@ use vprogs_core_types::{Checkpoint, ResourceId};
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_ptr_latest::StatePtrLatest;
 use vprogs_state_ptr_rollback::StatePtrRollback;
+use vprogs_state_version::StateVersion;
 use vprogs_storage_canonical_chain::CanonicalChainSnapshot;
 use vprogs_storage_types::Store;
 
@@ -73,6 +74,20 @@ impl<S: Store, P: Processor<S>> Rollback<S, P> {
                         let resource_id: ResourceId = borsh::from_slice(&resource_id)
                             .expect("corrupted store: unrecoverable");
                         self.restore_latest_ptr::<ST>(wb, resource_id, old_version);
+                        // Feed the snapshot index the restored bytes, stamped at the rollback
+                        // target (advisory ordering only; self-corrects on the next transition).
+                        if let Some(indexer) = self.state.indexer() {
+                            let restored = (old_version != 0)
+                                .then(|| StateVersion::get(store, old_version, &resource_id))
+                                .flatten()
+                                .filter(|data| !data.is_empty());
+                            indexer.revert_state(
+                                &resource_id,
+                                restored.as_deref(),
+                                self.target.index(),
+                                wb,
+                            );
+                        }
                     }
                 }
             }
