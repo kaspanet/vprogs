@@ -74,17 +74,21 @@ impl<S: Store, P: Processor<S>> Rollback<S, P> {
                         let resource_id: ResourceId = borsh::from_slice(&resource_id)
                             .expect("corrupted store: unrecoverable");
                         self.restore_latest_ptr::<ST>(wb, resource_id, old_version);
-                        // Feed the snapshot index the restored bytes, stamped at the rollback
-                        // target (advisory ordering only; self-corrects on the next transition).
                         if let Some(indexer) = self.state.indexer() {
+                            // The fork's bytes at the reverted version; prunable only below root,
+                            // and rollback targets never go below root, so this read always hits.
+                            let written = StateVersion::get(store, index, &resource_id)
+                                .filter(|data| !data.is_empty());
                             let restored = (old_version != 0)
                                 .then(|| StateVersion::get(store, old_version, &resource_id))
                                 .flatten()
                                 .filter(|data| !data.is_empty());
-                            indexer.revert_state(
+                            indexer.revert_diff(
                                 &resource_id,
+                                written.as_deref(),
                                 restored.as_deref(),
-                                self.target.index(),
+                                index,
+                                old_version,
                                 wb,
                             );
                         }

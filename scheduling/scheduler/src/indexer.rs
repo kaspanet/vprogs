@@ -10,14 +10,14 @@ use std::sync::Arc;
 use vprogs_core_types::ResourceId;
 use vprogs_storage_types::WriteBatch;
 
-/// Hook surface for secondary indexes over the resource store.
-///
-/// All methods run on the storage write worker. `old`/`new`/`restored` carry the resource's
-/// wire bytes before/after the diff (`None` = absent); `version` is the committing batch's
-/// checkpoint index.
+/// Hook surface for app-defined secondary indexes over the resource store.
+/// Runs on the storage write worker, inside the state WriteBatch.
 pub trait ResourceIndexer: Send + Sync + 'static {
-    /// Append-only event entries for a resource diff (index A).
-    fn index_events(
+    /// Feed one resource diff; maintain any number of indexes from it.
+    /// `old`/`new` are the resource's wire bytes before/after the diff
+    /// (`None` = absent); `version` is the committing batch's checkpoint
+    /// index.
+    fn index_diff(
         &self,
         _id: &ResourceId,
         _old: Option<&[u8]>,
@@ -27,23 +27,19 @@ pub trait ResourceIndexer: Send + Sync + 'static {
     ) {
     }
 
-    /// Current-snapshot bucket rewrite for a resource diff (index B).
-    fn index_state(
+    /// Undo the index effects of one reverted resource write.
+    ///
+    /// The forward diff was (`restored` -> `written`) at `reverted_version`;
+    /// delete the entries it inserted and re-put the entries the restored
+    /// state implies, stamped `restored_version` (0 with `restored = None`
+    /// when the resource did not exist before the fork).
+    fn revert_diff(
         &self,
         _id: &ResourceId,
-        _old: Option<&[u8]>,
-        _new: Option<&[u8]>,
-        _version: u64,
-        _wb: &mut dyn WriteBatch,
-    ) {
-    }
-
-    /// Snapshot-index rollback: clear and restore `id`'s entries given the restored bytes.
-    fn revert_state(
-        &self,
-        _id: &ResourceId,
+        _written: Option<&[u8]>,
         _restored: Option<&[u8]>,
-        _version: u64,
+        _reverted_version: u64,
+        _restored_version: u64,
         _wb: &mut dyn WriteBatch,
     ) {
     }
