@@ -62,7 +62,8 @@ fn prefix_iter_rev_edge_cases() {
     }
     store.commit(wb);
 
-    // Prefix "prefix" should match "prefix", "prefix\x00", "prefix\x01", "prefix\xff", "prefix2" in reverse order.
+    // Prefix "prefix" should match "prefix", "prefix\x00", "prefix\x01", "prefix\xff", "prefix2" in
+    // reverse order.
     let keys: Vec<Vec<u8>> =
         store.prefix_iter_rev(StateSpace::Index, b"prefix").map(|(k, _)| k).collect();
     assert_eq!(
