@@ -119,3 +119,58 @@ fn indexer_double_apply_is_idempotent() {
     let evt_entries: Vec<_> = storage.prefix_iter(StateSpace::Index, b"events__").collect();
     assert_eq!(evt_entries.len(), 1);
 }
+
+#[test]
+fn rollback_restores_snapshot_index() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+    let state = SchedulerState::new(StorageConfig::default().with_store(storage.clone()));
+    state.set_indexer(Arc::new(ToyIndexer));
+    let mut scheduler =
+        Scheduler::with_state(ExecutionConfig::default().with_processor(Processor), state);
+
+    let rid = ResourceId::for_test(1);
+    let batch1 = scheduler
+        .schedule(1, vec![SchedulerTransaction::new(10, vec![AccessMetadata::write(rid)], 10)]);
+    let batch2 = scheduler
+        .schedule(2, vec![SchedulerTransaction::new(20, vec![AccessMetadata::write(rid)], 20)]);
+    batch1.wait_committed_blocking();
+    batch2.wait_committed_blocking();
+
+    let rev_entries_before: Vec<_> = storage.prefix_iter(StateSpace::Index, b"revert__").collect();
+    assert!(rev_entries_before.is_empty(), "expected no revert entries before rollback");
+
+    scheduler.rollback_to(1).expect("rollback should succeed");
+
+    let rev_entries: Vec<_> = storage.prefix_iter(StateSpace::Index, b"revert__").collect();
+    assert_eq!(rev_entries.len(), 1, "expected exactly one revert marker");
+
+    let expected_restored = 10usize.to_be_bytes();
+    let expected_key = [b"revert__".as_slice(), rid.as_slice(), &expected_restored].concat();
+    assert_eq!(rev_entries[0].0, expected_key);
+
+    scheduler.shutdown();
+}
+
+#[test]
+fn rollback_to_genesis_restores_none() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+    let state = SchedulerState::new(StorageConfig::default().with_store(storage.clone()));
+    state.set_indexer(Arc::new(ToyIndexer));
+    let mut scheduler =
+        Scheduler::with_state(ExecutionConfig::default().with_processor(Processor), state);
+
+    let rid = ResourceId::for_test(4);
+    let batch1 = scheduler
+        .schedule(1, vec![SchedulerTransaction::new(10, vec![AccessMetadata::write(rid)], 10)]);
+    batch1.wait_committed_blocking();
+
+    scheduler.rollback_to(0).expect("rollback should succeed");
+
+    let rev_entries: Vec<_> = storage.prefix_iter(StateSpace::Index, b"revert__").collect();
+    assert_eq!(rev_entries.len(), 1, "expected exactly one revert marker");
+    assert_eq!(rev_entries[0].0, [b"revert__".as_slice(), rid.as_slice()].concat());
+
+    scheduler.shutdown();
+}
