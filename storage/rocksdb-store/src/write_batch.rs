@@ -39,14 +39,6 @@ impl<C: Config> vprogs_storage_types::WriteBatch for WriteBatch<C> {
         };
         self.inner.delete_cf(cf, key)
     }
-
-    fn delete_range(&mut self, ns: StateSpace, start: &[u8], end: &[u8]) {
-        let cf_handle = <StateSpace as StateSpaceExt<C>>::cf_name(&ns);
-        let Some(cf) = self.db.cf_handle(cf_handle) else {
-            panic!("missing column family '{}'", cf_handle)
-        };
-        self.inner.delete_range_cf(cf, start, end)
-    }
 }
 
 impl<C: Config> SmtWriteBatch for WriteBatch<C> {
