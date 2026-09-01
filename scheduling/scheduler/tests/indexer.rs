@@ -1,11 +1,16 @@
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use tempfile::TempDir;
 use vprogs_core_test_utils::ResourceIdExt;
-use vprogs_core_types::{AccessMetadata, AccessType, ResourceId, SchedulerTransaction};
+use vprogs_core_types::{AccessMetadata, AccessType, ChainSink, ResourceId, SchedulerTransaction};
 use vprogs_scheduling_scheduler::{
     ExecutionConfig, Processor, ResourceIndexer, Scheduler, SchedulerState, TransactionContext,
 };
+use vprogs_scheduling_test_utils::SchedulerExt;
+use vprogs_state_metadata::StateMetadata;
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_storage_types::{StateSpace, Store, WriteBatch};
@@ -110,6 +115,26 @@ impl<S: Store> Processor<S> for TestForkProcessor {
     type AggregatorArtifact = Vec<u8>;
     type BatchMetadata = u64;
     type Error = ();
+}
+
+/// Waits until the batch at `index` has committed (last_committed reaches it on disk).
+///
+/// `ChainSink::append` returns only the batch id, so sink-driven tests synchronize on the
+/// persisted commit pointer rather than a batch handle.
+fn wait_last_committed(storage: &RocksDbStore, index: u64) {
+    let start = Instant::now();
+    loop {
+        let last = StateMetadata::last_committed::<u64, _>(storage);
+        if last.index() >= index {
+            return;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "timeout waiting for batch {index} to commit; last committed is {}",
+            last.index()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 #[test]
@@ -393,6 +418,139 @@ fn restore_committed_re_derives_index_entries() {
         Some(2u64.to_be_bytes().to_vec()),
         "snapshot entry for r2 in restored batch must be re-derived"
     );
+
+    scheduler.shutdown();
+}
+
+/// Drives a full reorg cycle through the `ChainSink` surface only: chain A grows, a competing
+/// fork B replaces it past a rollback, then chain A's blocks return through the restore path.
+/// The event and snapshot indexes must match each stage exactly.
+#[test]
+fn chain_sink_reorg_competing_forks_and_returning_blocks() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+    let state = SchedulerState::new(StorageConfig::default().with_store(storage.clone()));
+    state.set_indexer(Arc::new(ToyIndexer));
+    let mut scheduler = Scheduler::with_state(
+        ExecutionConfig::default().with_processor(vprogs_scheduling_test_utils::Processor),
+        state,
+    );
+
+    let r1 = ResourceId::for_test(1);
+    let r2 = ResourceId::for_test(2);
+
+    let event_entry = |version: u64, id: &ResourceId| {
+        let mut key = vec![0xaa];
+        key.extend_from_slice(&version.to_be_bytes());
+        key.extend_from_slice(id.as_slice());
+        (key, Vec::new())
+    };
+    let snapshot_entry = |id: &ResourceId, version: u64| {
+        let mut key = vec![0xbb];
+        key.extend_from_slice(id.as_slice());
+        (key, version.to_be_bytes().to_vec())
+    };
+    let event_entries = || -> Vec<(Vec<u8>, Vec<u8>)> {
+        storage.range_iter(StateSpace::Index, &[0xaa], &[0xab]).collect()
+    };
+    let snapshot_entries = || -> Vec<(Vec<u8>, Vec<u8>)> {
+        storage.range_iter(StateSpace::Index, &[0xbb], &[0xbc]).collect()
+    };
+
+    // Stage 1: chain A grows. Block 10 creates r1 (id 1), block 11 rewrites it (id 2),
+    // block 12 rewrites it again and creates r2 (id 3).
+    scheduler.append(10, vec![SchedulerTransaction::new(0, vec![AccessMetadata::write(r1)], 10)]);
+    scheduler.append(11, vec![SchedulerTransaction::new(0, vec![AccessMetadata::write(r1)], 11)]);
+    scheduler.append(
+        12,
+        vec![
+            SchedulerTransaction::new(0, vec![AccessMetadata::write(r1)], 12),
+            SchedulerTransaction::new(1, vec![AccessMetadata::write(r2)], 13),
+        ],
+    );
+    wait_last_committed(&storage, 3);
+    assert_eq!(scheduler.tip(), 3);
+
+    assert_eq!(
+        event_entries(),
+        vec![event_entry(1, &r1), event_entry(2, &r1), event_entry(3, &r1), event_entry(3, &r2)]
+    );
+    assert_eq!(snapshot_entries(), vec![snapshot_entry(&r1, 3), snapshot_entry(&r2, 3)]);
+
+    // Stage 2: reorg at the split point (id 1). The multi-version walk reverts r1's rewrites
+    // (v3 -> v2 -> v1, inverse diffs composing) and r2's creation.
+    scheduler.rollback(1);
+    assert_eq!(scheduler.tip(), 1);
+    let oracle = storage.canonical_chain().snapshot();
+    assert!(oracle.is_canonical(1));
+    assert!(!oracle.is_canonical(2), "orphaned fork A version must not be canonical");
+    assert!(!oracle.is_canonical(3), "orphaned fork A version must not be canonical");
+
+    assert_eq!(event_entries(), vec![event_entry(1, &r1)]);
+    assert_eq!(snapshot_entries(), vec![snapshot_entry(&r1, 1)]);
+
+    // Stage 3: fork B extends the split point with unseen blocks; their ids continue past the
+    // orphans (never reused), leaving a canonical gap at 2 and 3.
+    let b1 = scheduler
+        .append(20, vec![SchedulerTransaction::new(0, vec![AccessMetadata::write(r2)], 20)]);
+    let b2 = scheduler
+        .append(21, vec![SchedulerTransaction::new(0, vec![AccessMetadata::write(r1)], 21)]);
+    assert_eq!(b1, 4, "new blocks continue past orphaned ids");
+    assert_eq!(b2, 5, "new blocks continue past orphaned ids");
+    wait_last_committed(&storage, 5);
+    assert_eq!(scheduler.tip(), 5);
+    let oracle = storage.canonical_chain().snapshot();
+    assert!(oracle.is_canonical(4) && oracle.is_canonical(5));
+    assert!(!oracle.is_canonical(2) && !oracle.is_canonical(3));
+
+    assert_eq!(
+        event_entries(),
+        vec![event_entry(1, &r1), event_entry(4, &r2), event_entry(5, &r1)]
+    );
+    assert_eq!(snapshot_entries(), vec![snapshot_entry(&r1, 5), snapshot_entry(&r2, 4)]);
+
+    // Stage 4: reorg back to the split point; fork B's committed batches revert (the walk
+    // hits 5 then 4, skipping the already-orphaned 3 and 2), reproducing stage 2 exactly.
+    scheduler.rollback(1);
+    assert_eq!(scheduler.tip(), 1);
+    let oracle = storage.canonical_chain().snapshot();
+    assert!(!oracle.is_canonical(4), "orphaned fork B version must not be canonical");
+    assert!(!oracle.is_canonical(5), "orphaned fork B version must not be canonical");
+
+    assert_eq!(event_entries(), vec![event_entry(1, &r1)]);
+    assert_eq!(snapshot_entries(), vec![snapshot_entry(&r1, 1)]);
+
+    // Stage 5: chain A returns. The same block hashes reuse ids 2 and 3, restore from committed
+    // disk state (ignoring the 999 payloads), and re-derive their index entries.
+    let a2 = scheduler
+        .append(11, vec![SchedulerTransaction::new(0, vec![AccessMetadata::write(r1)], 999)]);
+    assert_eq!(a2, 2, "returning block reuses its id");
+    wait_last_committed(&storage, 2);
+    scheduler.assert_written_state(r1, vec![10, 11]);
+
+    let a3 = scheduler.append(
+        12,
+        vec![
+            SchedulerTransaction::new(0, vec![AccessMetadata::write(r1)], 999),
+            SchedulerTransaction::new(1, vec![AccessMetadata::write(r2)], 999),
+        ],
+    );
+    assert_eq!(a3, 3, "returning block reuses its id");
+    wait_last_committed(&storage, 3);
+    assert_eq!(scheduler.tip(), 3);
+    let oracle = storage.canonical_chain().snapshot();
+    assert!(oracle.is_canonical(2) && oracle.is_canonical(3));
+    assert!(!oracle.is_canonical(4) && !oracle.is_canonical(5));
+
+    assert_eq!(
+        event_entries(),
+        vec![event_entry(1, &r1), event_entry(2, &r1), event_entry(3, &r1), event_entry(3, &r2)]
+    );
+    assert_eq!(snapshot_entries(), vec![snapshot_entry(&r1, 3), snapshot_entry(&r2, 3)]);
+
+    // The restored chain's state matches the original chain A, not the 999 re-execution.
+    scheduler.assert_written_state(r1, vec![10, 11, 12]);
+    scheduler.assert_written_state(r2, vec![13]);
 
     scheduler.shutdown();
 }
