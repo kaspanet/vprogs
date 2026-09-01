@@ -297,6 +297,97 @@ fn rollback_to_genesis_restores_none() {
 }
 
 #[test]
+fn restore_committed_re_derives_index_entries() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+    let state = SchedulerState::new(StorageConfig::default().with_store(storage.clone()));
+    state.set_indexer(Arc::new(ToyIndexer));
+    let mut scheduler = Scheduler::with_state(
+        ExecutionConfig::default().with_processor(vprogs_scheduling_test_utils::Processor),
+        state,
+    );
+
+    let r1 = ResourceId::for_test(1);
+    let r2 = ResourceId::for_test(2);
+
+    // Batch 1 (block metadata 100): writes r1.
+    let b1 = scheduler
+        .schedule(100, vec![SchedulerTransaction::new(10, vec![AccessMetadata::write(r1)], 10)]);
+    b1.wait_committed_blocking();
+
+    // Batch 2 (block metadata 200): updates r1 and writes new resource r2.
+    let b2 = scheduler.schedule(
+        200,
+        vec![
+            SchedulerTransaction::new(20, vec![AccessMetadata::write(r1)], 20),
+            SchedulerTransaction::new(30, vec![AccessMetadata::write(r2)], 30),
+        ],
+    );
+    b2.wait_committed_blocking();
+
+    // Verify index entries are present before rollback.
+    let mut r1_v2_key_a = vec![0xaa];
+    r1_v2_key_a.extend_from_slice(&2u64.to_be_bytes());
+    r1_v2_key_a.extend_from_slice(r1.as_slice());
+    assert!(storage.get(StateSpace::Index, &r1_v2_key_a).is_some());
+
+    let mut r2_v2_key_a = vec![0xaa];
+    r2_v2_key_a.extend_from_slice(&2u64.to_be_bytes());
+    r2_v2_key_a.extend_from_slice(r2.as_slice());
+    assert!(storage.get(StateSpace::Index, &r2_v2_key_a).is_some());
+
+    let mut r1_key_b = vec![0xbb];
+    r1_key_b.extend_from_slice(r1.as_slice());
+    assert_eq!(storage.get(StateSpace::Index, &r1_key_b), Some(2u64.to_be_bytes().to_vec()));
+
+    let mut r2_key_b = vec![0xbb];
+    r2_key_b.extend_from_slice(r2.as_slice());
+    assert_eq!(storage.get(StateSpace::Index, &r2_key_b), Some(2u64.to_be_bytes().to_vec()));
+
+    // Reorg: rollback to batch 1.
+    scheduler.rollback_to(1).expect("rollback should succeed");
+
+    // Entries for version 2 are reverted.
+    assert_eq!(storage.get(StateSpace::Index, &r1_v2_key_a), None);
+    assert_eq!(storage.get(StateSpace::Index, &r2_v2_key_a), None);
+    assert_eq!(storage.get(StateSpace::Index, &r1_key_b), Some(1u64.to_be_bytes().to_vec()));
+    assert_eq!(storage.get(StateSpace::Index, &r2_key_b), None);
+
+    // Re-reorg: the same block (metadata 200) returns and is restored, not re-executed.
+    let b2_restored = scheduler.schedule(
+        200,
+        vec![
+            SchedulerTransaction::new(20, vec![AccessMetadata::write(r1)], 20),
+            SchedulerTransaction::new(30, vec![AccessMetadata::write(r2)], 30),
+        ],
+    );
+    assert!(b2_restored.restored(), "returning block must follow the restore path");
+    b2_restored.wait_committed_blocking();
+
+    // Index entries must be re-derived and present again.
+    assert!(
+        storage.get(StateSpace::Index, &r1_v2_key_a).is_some(),
+        "index A entry for r1 in restored batch must be re-derived"
+    );
+    assert!(
+        storage.get(StateSpace::Index, &r2_v2_key_a).is_some(),
+        "index A entry for r2 in restored batch must be re-derived"
+    );
+    assert_eq!(
+        storage.get(StateSpace::Index, &r1_key_b),
+        Some(2u64.to_be_bytes().to_vec()),
+        "index B snapshot entry for r1 in restored batch must be updated to version 2"
+    );
+    assert_eq!(
+        storage.get(StateSpace::Index, &r2_key_b),
+        Some(2u64.to_be_bytes().to_vec()),
+        "index B snapshot entry for r2 in restored batch must be re-derived"
+    );
+
+    scheduler.shutdown();
+}
+
+#[test]
 fn indexer_double_apply_is_idempotent() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());

@@ -411,7 +411,8 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
                 state_diff.written_state().write_latest_ptr(wb);
             }
 
-            // A fresh batch updates the SMT and persists its metadata.
+            // A fresh batch updates the SMT and persists its metadata; a restored batch
+            // re-derives index entries that were wiped during rollback.
             if !self.restored {
                 StoredBatchMetadata::set(wb, self.checkpoint.index(), self.checkpoint.metadata());
                 store.update(
@@ -419,6 +420,17 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
                     updated.into_iter().map(Commitment::from).collect(),
                     self.checkpoint.index(),
                 );
+            } else if let Some(indexer) = self.indexer() {
+                let version = self.checkpoint.index();
+                for state_diff in &updated {
+                    let read_state = state_diff.read_state();
+                    let written_state = state_diff.written_state();
+                    let old_data =
+                        (!read_state.data().is_empty()).then_some(read_state.data().as_slice());
+                    let new_data = (!written_state.data().is_empty())
+                        .then_some(written_state.data().as_slice());
+                    indexer.index_diff(state_diff.resource_id(), old_data, new_data, version, wb);
+                }
             }
 
             // Record the last-committed pointer.
