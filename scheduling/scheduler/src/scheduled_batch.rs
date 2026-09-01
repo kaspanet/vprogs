@@ -19,8 +19,9 @@ use vprogs_state_proof_receipt::{BatchKey, Prefix};
 use vprogs_storage_types::{ReadStore, Store};
 
 use crate::{
-    CancellationContext, ReceiptRead, ScheduledTransaction, Scheduler, StateDiff, Write,
-    cpu_task::ManagerTask, processor::Processor, state::SchedulerState, storage_cmd::ReceiptLookup,
+    CancellationContext, ReceiptRead, ResourceIndexer, ScheduledTransaction, Scheduler, StateDiff,
+    Write, cpu_task::ManagerTask, processor::Processor, state::SchedulerState,
+    storage_cmd::ReceiptLookup,
 };
 
 /// A batch of transactions progressing through the scheduler's lifecycle.
@@ -82,6 +83,11 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
     #[inline(always)]
     pub fn state_diffs(&self) -> &[StateDiff<S, P>] {
         &self.state_diffs
+    }
+
+    /// The app indexer this batch's state writes feed, if any.
+    pub(crate) fn indexer(&self) -> Option<Arc<dyn ResourceIndexer>> {
+        self.state.indexer()
     }
 
     /// Returns the state diffs whose written version advanced past the read version.
