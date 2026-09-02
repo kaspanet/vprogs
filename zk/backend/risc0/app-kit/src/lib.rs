@@ -1,11 +1,15 @@
 //! Host-side issuer kit over the runtime battery and the L1 wallet: lane-payload
 //! assembly, carrier composition, submit retries; the runner stays issuer-free.
 
+pub mod claim;
 pub mod genesis;
 pub mod lane;
 pub mod payload;
 pub mod signer;
 
+pub use claim::{
+    PermissionSpendArgs, build_permission_spend, claim_siblings, permission_sig_script,
+};
 pub use genesis::{dev_genesis_keypair, p2pk_address};
 pub use lane::{
     CarrierTxArgs, DEFAULT_MAX_SUBMIT_ATTEMPTS, DEFAULT_SUBMIT_RETRY_DELAY,
