@@ -37,7 +37,7 @@ pub struct AggregateProverConfig<L: LaneProofSource, R: Send + Sync + 'static> {
     pub bundle_size: RangeInclusive<usize>,
     /// Sender on the exit-leaf watch driving client Merkle-path proof generation, or `None` if
     /// exit publishing is disabled.
-    pub exits: Option<watch::Sender<Arc<ExitsForBundle>>>,
+    pub exits: Option<watch::Sender<Option<Arc<ExitsForBundle>>>>,
 }
 
 impl<L: LaneProofSource, R: Send + Sync + 'static> AggregateProverConfig<L, R> {
@@ -45,7 +45,7 @@ impl<L: LaneProofSource, R: Send + Sync + 'static> AggregateProverConfig<L, R> {
     /// disables publishing.
     pub fn with_exits_observer(
         mut self,
-        exits: impl Into<Option<watch::Sender<Arc<ExitsForBundle>>>>,
+        exits: impl Into<Option<watch::Sender<Option<Arc<ExitsForBundle>>>>>,
     ) -> Self {
         self.exits = exits.into();
         self
