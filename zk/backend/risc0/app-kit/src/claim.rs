@@ -74,14 +74,13 @@ pub struct PermissionSpendArgs<'a> {
     pub new_root: [u8; 32],
     /// Post-claim unclaimed exit count derived by the caller.
     pub new_unclaimed: u64,
-    /// Delegate funding inputs paying into the spend and covering transaction fees.
+    /// Delegate funding inputs paying into the spend.
     pub delegate_inputs: Vec<(TransactionOutpoint, u64)>,
-    /// Transaction fee in sompis. Admission-only and not subtracted from outputs; built
-    /// transactions are zero-fee on-chain and may fail min-relay-fee policy outside simnet.
-    pub fee: u64,
 }
 
 /// Builds a permission spend transaction and its matched UTXO entries.
+///
+/// Built transactions are zero-fee on-chain; may fail min-relay-fee policy outside simnet.
 pub fn build_permission_spend(
     args: &PermissionSpendArgs<'_>,
 ) -> Result<(Transaction, Vec<UtxoEntry>), &'static str> {
@@ -354,7 +353,6 @@ mod tests {
             new_root: tree.root_with_leaf(0, leaf_hash(&spk, 5_000 - 2_000)),
             new_unclaimed: 2,
             delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(2), 1), 2_000)],
-            fee: 1_000,
         };
         let (tx, utxos) = build_permission_spend(&args).unwrap();
         run_spend(&tx, &utxos).expect("partial deduct spend verifies");
@@ -380,12 +378,42 @@ mod tests {
             new_root: tree.root_with_leaf(0, PermissionTreeAccumulator::hash_empty()),
             new_unclaimed: 0,
             delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(2), 1), 7_000)],
-            fee: 1_000,
         };
         let (tx, utxos) = build_permission_spend(&args).unwrap();
         assert_eq!(tx.outputs.len(), 1);
         assert_eq!(tx.outputs[0].value, 7_000 + 50_000_000);
         run_spend(&tx, &utxos).expect("full claim verifies");
+    }
+
+    #[test]
+    fn builder_full_claim_with_delegate_change_passes_script_engine() {
+        let spk = test_spk(3);
+        let leaves = vec![(spk, 7_000u64)];
+        let tree = TestTree::new(leaves.clone());
+        let args = PermissionSpendArgs {
+            covenant_id: [0xFF; 32],
+            permission_outpoint: TransactionOutpoint::new(Hash::from_u64_word(1), 0),
+            permission_rent: 50_000_000,
+            old_root: tree.root(),
+            old_unclaimed: 1,
+            depth: tree.depth,
+            leaf_index: 0,
+            leaf_spk: &spk,
+            leaf_amount: 7_000,
+            deduct: 7_000,
+            siblings: tree.siblings(0),
+            new_root: tree.root_with_leaf(0, PermissionTreeAccumulator::hash_empty()),
+            new_unclaimed: 0,
+            delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(2), 1), 10_000)],
+        };
+        let (tx, utxos) = build_permission_spend(&args).unwrap();
+        // 2 outputs: payout (7000 + 50_000_000 rent folded in) at index 0,
+        // delegate change (10_000 - 7_000 = 3_000) at index 1 (1 + CovOutCount where CovOutCount ==
+        // 0).
+        assert_eq!(tx.outputs.len(), 2);
+        assert_eq!(tx.outputs[0].value, 7_000 + 50_000_000);
+        assert_eq!(tx.outputs[1].value, 3_000);
+        run_spend(&tx, &utxos).expect("full claim with delegate change verifies");
     }
 
     #[test]
@@ -447,7 +475,6 @@ mod tests {
             new_root: tree.root_with_leaf(0, leaf_hash(&spk, 5_000 - 2_000)),
             new_unclaimed: 2,
             delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(2), 1), 3_000)],
-            fee: 1_000,
         };
         let (tx, utxos) = build_permission_spend(&args).unwrap();
         // 3 outputs: payout (2000), continuation (50_000_000), delegate change (1000)
@@ -474,7 +501,6 @@ mod tests {
             new_root: [0; 32],
             new_unclaimed: 0,
             delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(2), 1), 6_000)],
-            fee: 1_000,
         };
         assert_eq!(build_permission_spend(&args).unwrap_err(), "deduct exceeds leaf amount");
     }
@@ -497,7 +523,6 @@ mod tests {
             new_root: [0; 32],
             new_unclaimed: 1,
             delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(2), 1), 1_500)],
-            fee: 0,
         };
         assert_eq!(
             build_permission_spend(&args).unwrap_err(),
