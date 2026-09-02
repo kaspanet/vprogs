@@ -1551,7 +1551,11 @@ async fn spawn_prover(
             seed_depth: 0,
             min_confirmations: None,
             start_from,
-            observers: BridgeObservers { tip_daa: None, settlement: Some(settlement_tx) },
+            observers: BridgeObservers {
+                tip_daa: None,
+                settlement: Some(settlement_tx),
+                permission_spends: None,
+            },
         },
         ProvingParams {
             covenant_id,

@@ -80,9 +80,10 @@ async fn main() {
     let elfs = Elfs { program: &program_elf, batch: &batch_elf, aggregator: &aggregator_elf };
 
     // The runner pins this program's deposit address on every batch once it resolves the covenant.
-    let handles = start_runner(&cfg.runner, &client, &params, elfs, delegate_entry_spk_hash, None)
-        .await
-        .unwrap_or_else(|e| panic!("runner start failed: {e}"));
+    let handles =
+        start_runner(&cfg.runner, &client, &params, elfs, delegate_entry_spk_hash, None, None)
+            .await
+            .unwrap_or_else(|e| panic!("runner start failed: {e}"));
 
     // The config commits this at Init; deposits must pay
     // `P2SH(delegate_entry_script(covenant_id))`.

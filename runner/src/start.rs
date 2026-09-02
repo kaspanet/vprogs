@@ -5,7 +5,7 @@
 //! the runner only fetches, executes, and optionally proves + settles. Issuing action transactions
 //! is left to the caller (the examples).
 
-use std::sync::{Arc, atomic::AtomicU64};
+use std::sync::{Arc, RwLock, atomic::AtomicU64};
 
 use kaspa_consensus_core::{
     config::params::Params, constants::SOMPI_PER_KASPA, subnets::SubnetworkId,
@@ -22,6 +22,7 @@ use tokio::{
 };
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_smt::EMPTY_HASH;
+use vprogs_l1_bridge::PermissionSpendHooks;
 use vprogs_l1_types::SettlementInfo;
 use vprogs_l1_wallet::Wallet;
 use vprogs_scheduling_scheduler::Indexer;
@@ -35,6 +36,7 @@ use vprogs_zk_backend_risc0_test_suite::dev_mode_enabled;
 
 use crate::{
     config::{RunnerConfig, StartMode},
+    exit_index::{ExitIndexer, load_registry, run_exit_indexer},
     node::{
         BridgeObservers, BridgeParams, CovenantIdBytes, DepositSpkHash, Elfs, ProvingParams,
         RunnerNode, RunnerStore, SettlementQueue, build_exec_node, build_proving_node,
@@ -133,6 +135,8 @@ struct StartContext<'a, F> {
     deposit_spk_hash: F,
     /// Optional app indexer fed by the node's state writes.
     indexer: Option<Indexer>,
+    /// Optional exit indexer fed by committed exit bundles and permission spends.
+    exit_indexer: Option<Arc<dyn ExitIndexer>>,
     /// Resolved start mode: fresh bootstrap, resume, or catch-up.
     mode: StartMode,
     /// Persisted identity and bootstrap anchors, updated as start-up resolves them.
@@ -163,6 +167,7 @@ pub async fn start_runner<F>(
     elfs: Elfs<'_>,
     deposit_spk_hash: F,
     indexer: Option<Indexer>,
+    exit_indexer: Option<Arc<dyn ExitIndexer>>,
 ) -> Result<RunnerHandles, StartError>
 where
     F: FnOnce(&CovenantIdBytes) -> DepositSpkHash,
@@ -197,6 +202,7 @@ where
         elfs,
         deposit_spk_hash,
         indexer,
+        exit_indexer,
         mode,
         persisted: &mut persisted,
     };
@@ -233,6 +239,7 @@ async fn start_exec<F>(
         elfs,
         deposit_spk_hash: _,
         indexer,
+        exit_indexer: _,
         mode,
         persisted,
     } = ctx;
@@ -348,6 +355,7 @@ where
         elfs,
         deposit_spk_hash,
         indexer,
+        exit_indexer,
         mode,
         persisted,
     } = ctx;
@@ -489,6 +497,34 @@ where
     // seed_depth below the sink. The settler keeps the unmodified `start_from` (its own
     // resume/adopt semantics), so this only affects where the bridge roots its chain.
     let bridge_seed = resolve_bridge_seed(client, start_from, cfg.seed_depth, tip_daa).await;
+
+    let (permission_spends, exits_handles_rx) = if let Some(indexer) = exit_indexer {
+        if covenant_id == Hash::default() {
+            log::warn!("covenant_id is zero; skipping permission spend watcher and exit indexer");
+            (None, exits_rx)
+        } else {
+            let initial_registry = load_registry(&store);
+            let shared_registry = Arc::new(RwLock::new(initial_registry));
+            let (spend_tx, spend_rx) = mpsc::unbounded_channel();
+            let hooks =
+                PermissionSpendHooks { events: spend_tx, registry: shared_registry.clone() };
+            // Auxiliary exit-indexer task runs alongside node and terminates when exits/settlement
+            // channels close.
+            tokio::spawn(run_exit_indexer(
+                indexer,
+                store.clone(),
+                exits_rx,
+                settlement_rx.clone(),
+                spend_rx,
+                shared_registry,
+            ));
+            let (_tx, rx) = mpsc::unbounded_channel();
+            (Some(hooks), rx)
+        }
+    } else {
+        (None, exits_rx)
+    };
+
     let node = build_proving_node(
         elfs,
         store,
@@ -498,7 +534,11 @@ where
             covenant_id,
             params,
             bridge_seed,
-            BridgeObservers { tip_daa: Some(tip_daa_obs.clone()), settlement: Some(settlement_tx) },
+            BridgeObservers {
+                tip_daa: Some(tip_daa_obs.clone()),
+                settlement: Some(settlement_tx),
+                permission_spends,
+            },
         ),
         ProvingParams {
             covenant_id,
@@ -540,7 +580,7 @@ where
         covenant,
         shutdown.clone(),
     ));
-    Ok((node, (settler, shutdown), covenant_id, exits_rx))
+    Ok((node, (settler, shutdown), covenant_id, exits_handles_rx))
 }
 
 /// Resolves the explicit block the bridge roots its fresh chain at, decoupled from the settler's
@@ -729,7 +769,7 @@ mod tests {
         .unwrap();
         let params = Params::from(NetworkId::new(NetworkType::Simnet));
         let elfs = Elfs { program: &[], batch: &[], aggregator: &[] };
-        let res = start_runner(&cfg, &client, &params, elfs, |_| [0u8; 32], None).await;
+        let res = start_runner(&cfg, &client, &params, elfs, |_| [0u8; 32], None, None).await;
         assert!(matches!(res, Err(StartError::MissingKeyForProve)));
     }
 
@@ -763,7 +803,7 @@ mod tests {
         .unwrap();
         let params = Params::from(NetworkId::new(NetworkType::Simnet));
         let elfs = Elfs { program: &[], batch: &[], aggregator: &[] };
-        let res = start_runner(&cfg, &client, &params, elfs, |_| [0u8; 32], None).await;
+        let res = start_runner(&cfg, &client, &params, elfs, |_| [0u8; 32], None, None).await;
         assert!(matches!(res, Err(StartError::MissingKeyForFresh)));
     }
 }
