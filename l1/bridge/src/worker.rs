@@ -92,6 +92,8 @@ pub(crate) struct BridgeWorker<T: ChainSink<ChainBlockMetadata, L1Transaction>> 
     min_confirmations: Option<u64>,
     /// Optional hooks for watching and emitting permission-output spends.
     permission_spends: Option<PermissionSpendHooks>,
+    /// Optional channel sender every observed covenant settlement is published into.
+    settlement_events: Option<mpsc::UnboundedSender<SettlementInfo>>,
 }
 
 impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
@@ -166,6 +168,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             settlement: config.settlement_observer.clone(),
             min_confirmations: config.min_confirmations,
             permission_spends: config.permission_spends.clone(),
+            settlement_events: config.settlement_events.clone(),
         }
         .run()
         .await;
@@ -305,10 +308,15 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
     /// Publishes the tip's last covenant settlement to the optional `watch` sender, so each settler
     /// reads the canonical settlement. Sends `None` when the tip carries no settlement yet or a
     /// reorg has rolled past the last one. `send_replace` never errors, even with no live
-    /// receivers, so a settler-less bridge still publishes harmlessly.
+    /// receivers, so a settler-less bridge still publishes harmlessly. Also publishes each observed
+    /// settlement to `settlement_events` when configured.
     fn publish_settlement(&self) {
+        let last_settlement = self.tip_metadata().last_settlement;
         if let Some(sender) = &self.settlement {
-            sender.send_replace(self.tip_metadata().last_settlement);
+            sender.send_replace(last_settlement);
+        }
+        if let (Some(sender), Some(info)) = (&self.settlement_events, &last_settlement) {
+            let _ = sender.send(*info);
         }
     }
 

@@ -67,7 +67,8 @@ pub struct RunnerHandles {
     /// artifact was published, not confirmed on L1: confirmations come from the settlement
     /// watch, joined on `new_state` / `permission_spk_hash`. In exec mode the sender is
     /// dropped at startup, closing the channel: `recv()` yields `None` (treat that as terminal
-    /// silence).
+    /// silence). When `exit_indexer` is wired, the exit-index task owns this stream; the returned
+    /// receiver is closed (`recv()` -> `None`).
     pub exits_rx: mpsc::UnboundedReceiver<Arc<ExitsForBundle>>,
 }
 
@@ -493,15 +494,18 @@ where
     // tip.
     let (settlement_tx, settlement_rx) = watch::channel(None::<SettlementInfo>);
     let (exits_tx, exits_rx) = mpsc::unbounded_channel();
+    let (settlement_events_tx, settlement_events_rx) = mpsc::unbounded_channel();
     // Seed the bridge with reorg headroom: pin the anchor only if it is already deep, else seed
     // seed_depth below the sink. The settler keeps the unmodified `start_from` (its own
     // resume/adopt semantics), so this only affects where the bridge roots its chain.
     let bridge_seed = resolve_bridge_seed(client, start_from, cfg.seed_depth, tip_daa).await;
 
-    let (permission_spends, exits_handles_rx) = if let Some(indexer) = exit_indexer {
+    let (permission_spends, exits_handles_rx, bridge_settlement_events) = if let Some(indexer) =
+        exit_indexer
+    {
         if covenant_id == Hash::default() {
             log::warn!("covenant_id is zero; skipping permission spend watcher and exit indexer");
-            (None, exits_rx)
+            (None, exits_rx, None)
         } else {
             let initial_registry = load_registry(&store);
             let shared_registry = Arc::new(RwLock::new(initial_registry));
@@ -514,15 +518,17 @@ where
                 indexer,
                 store.clone(),
                 exits_rx,
-                settlement_rx.clone(),
+                settlement_events_rx,
                 spend_rx,
                 shared_registry,
             ));
+            // When exit_indexer is wired, the exit-index task owns this stream; the returned
+            // receiver is closed (recv() -> None).
             let (_tx, rx) = mpsc::unbounded_channel();
-            (Some(hooks), rx)
+            (Some(hooks), rx, Some(settlement_events_tx))
         }
     } else {
-        (None, exits_rx)
+        (None, exits_rx, None)
     };
 
     let node = build_proving_node(
@@ -537,6 +543,7 @@ where
             BridgeObservers {
                 tip_daa: Some(tip_daa_obs.clone()),
                 settlement: Some(settlement_tx),
+                settlement_events: bridge_settlement_events,
                 permission_spends,
             },
         ),

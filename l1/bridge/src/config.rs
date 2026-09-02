@@ -65,6 +65,8 @@ pub struct L1BridgeConfig {
     /// Optional hooks for watching and emitting permission-output spends on accepted L1
     /// transactions.
     pub permission_spends: Option<PermissionSpendHooks>,
+    /// Optional channel sender the bridge publishes every observed settlement into.
+    pub settlement_events: Option<mpsc::UnboundedSender<SettlementInfo>>,
 }
 
 impl Default for L1BridgeConfig {
@@ -85,6 +87,7 @@ impl Default for L1BridgeConfig {
             settlement_observer: None,
             min_confirmations: None, // Adaptive reorg-filter threshold by default.
             permission_spends: None,
+            settlement_events: None,
         }
     }
 }
@@ -188,6 +191,16 @@ impl L1BridgeConfig {
     /// Sets the hooks for watching and emitting permission-output spends. `None` disables watching.
     pub fn with_permission_spends(mut self, hooks: Option<PermissionSpendHooks>) -> Self {
         self.permission_spends = hooks;
+        self
+    }
+
+    /// Sets the channel sender the bridge publishes every observed settlement into. `None`
+    /// disables publishing.
+    pub fn with_settlement_events(
+        mut self,
+        settlement_events: Option<mpsc::UnboundedSender<SettlementInfo>>,
+    ) -> Self {
+        self.settlement_events = settlement_events;
         self
     }
 }

@@ -70,6 +70,8 @@ pub struct BridgeObservers {
     /// settler holds a [`watch::Receiver`](tokio::sync::watch::Receiver) subscribed to it
     /// (reader). `None` disables publishing.
     pub settlement: Option<watch::Sender<Option<SettlementInfo>>>,
+    /// Optional channel sender every observed covenant settlement is published into.
+    pub settlement_events: Option<mpsc::UnboundedSender<SettlementInfo>>,
     /// Optional hooks for watching and emitting permission-output spends. `None` disables
     /// watching.
     pub permission_spends: Option<PermissionSpendHooks>,
@@ -222,6 +224,7 @@ fn base_config(
                 .with_min_confirmations(params.min_confirmations)
                 .with_tip_daa_observer(params.observers.tip_daa)
                 .with_settlement_observer(params.observers.settlement)
+                .with_settlement_events(params.observers.settlement_events)
                 .with_permission_spends(params.observers.permission_spends),
         )
 }

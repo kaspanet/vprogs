@@ -62,6 +62,7 @@ impl L1BridgeParams {
             settlement_observer: None,
             min_confirmations: None,
             permission_spends: None,
+            settlement_events: None,
         }
     }
 }

@@ -1554,6 +1554,7 @@ async fn spawn_prover(
             observers: BridgeObservers {
                 tip_daa: None,
                 settlement: Some(settlement_tx),
+                settlement_events: None,
                 permission_spends: None,
             },
         },
