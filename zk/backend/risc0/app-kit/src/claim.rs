@@ -196,8 +196,8 @@ pub fn claim_siblings(leaves: &[ExitLeaf], index: usize) -> Vec<[u8; 32]> {
     }
     let mut out = Vec::with_capacity(depth);
     let mut idx = index;
-    for level in 0..depth {
-        out.push(nodes[level][idx ^ 1]);
+    for level in nodes.iter().take(depth) {
+        out.push(level[idx ^ 1]);
         idx /= 2;
     }
     out
