@@ -76,7 +76,8 @@ pub struct PermissionSpendArgs<'a> {
     pub new_unclaimed: u64,
     /// Delegate funding inputs paying into the spend and covering transaction fees.
     pub delegate_inputs: Vec<(TransactionOutpoint, u64)>,
-    /// Transaction fee in sompis.
+    /// Transaction fee in sompis. Admission-only and not subtracted from outputs; built
+    /// transactions are zero-fee on-chain and may fail min-relay-fee policy outside simnet.
     pub fee: u64,
 }
 
@@ -89,8 +90,8 @@ pub fn build_permission_spend(
     }
 
     let total_delegate: u64 = args.delegate_inputs.iter().map(|(_, a)| *a).sum();
-    if total_delegate + args.permission_rent < args.deduct + args.fee {
-        return Err("insufficient input value for deduct and fee");
+    if total_delegate < args.deduct {
+        return Err("insufficient delegate input value for deduct");
     }
     if args.delegate_inputs.len() > MAX_DELEGATE_INPUTS {
         return Err("too many delegate inputs");
@@ -175,6 +176,8 @@ pub fn build_permission_spend(
 }
 
 /// Computes sibling paths against the padded permission tree for a leaf index.
+///
+/// Requires `index < 1 << required_depth(leaves.len())` (panics otherwise).
 pub fn claim_siblings(leaves: &[ExitLeaf], index: usize) -> Vec<[u8; 32]> {
     let depth = PermissionTreeAccumulator::required_depth(leaves.len());
     let capacity = 1usize << depth;
@@ -380,6 +383,8 @@ mod tests {
             fee: 1_000,
         };
         let (tx, utxos) = build_permission_spend(&args).unwrap();
+        assert_eq!(tx.outputs.len(), 1);
+        assert_eq!(tx.outputs[0].value, 7_000 + 50_000_000);
         run_spend(&tx, &utxos).expect("full claim verifies");
     }
 
@@ -475,7 +480,7 @@ mod tests {
     }
 
     #[test]
-    fn builder_rejects_insufficient_value() {
+    fn builder_rejects_delegate_shortfall() {
         let spk = test_spk(7);
         let args = PermissionSpendArgs {
             covenant_id: [0xFF; 32],
@@ -491,12 +496,12 @@ mod tests {
             siblings: vec![[0; 32]],
             new_root: [0; 32],
             new_unclaimed: 1,
-            delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(2), 1), 1_000)],
-            fee: 50_000_000,
+            delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(2), 1), 1_500)],
+            fee: 0,
         };
         assert_eq!(
             build_permission_spend(&args).unwrap_err(),
-            "insufficient input value for deduct and fee"
+            "insufficient delegate input value for deduct"
         );
     }
 }
