@@ -20,7 +20,10 @@ use alloc::vec::Vec;
 
 pub use vprogs_zk_abi::{DELEGATE_SCRIPT_LEN, DELEGATE_SCRIPT_PREFIX, DELEGATE_SCRIPT_SUFFIX};
 
-use crate::permission_tags::PermNode;
+use crate::{permission_tags::PermNode, permission_tree::PermissionTreeAccumulator};
+
+/// Maximum permission tree depth supported by the redeem script builder and decoder.
+pub const PERM_MAX_DEPTH: usize = PermissionTreeAccumulator::MAX_DEPTH;
 
 /// Maximum number of *delegate inputs* the permission script will sum over.
 ///
@@ -702,6 +705,9 @@ pub fn decode_permission_redeem(bytes: &[u8]) -> Result<([u8; 32], u64, usize), 
         return Err("script length does not match any valid permission tree depth");
     }
     let depth = delta / step_len;
+    if depth > PERM_MAX_DEPTH {
+        return Err("permission tree depth exceeds PERM_MAX_DEPTH");
+    }
     if perm_redeem_script_len(depth) != bytes.len() {
         return Err("perm_redeem_script_len disagrees with script length");
     }
@@ -933,5 +939,10 @@ mod tests {
         let last = bad_trailer.len() - 1;
         bad_trailer[last] = 0x00;
         assert!(decode_permission_redeem(&bad_trailer).is_err());
+
+        // Over-max depth.
+        let over_depth_len = perm_redeem_script_len(PERM_MAX_DEPTH + 1);
+        let over_depth = vec![0u8; over_depth_len];
+        assert!(decode_permission_redeem(&over_depth).is_err());
     }
 }
