@@ -54,7 +54,7 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend, L: LaneProofSour
     last_reformed_from: Option<u64>,
     /// Sender on the exit-leaf watch driving client Merkle-path proof generation, or `None` if
     /// exit publishing is disabled.
-    exits: Option<watch::Sender<Arc<ExitsForBundle>>>,
+    exits: Option<watch::Sender<Option<Arc<ExitsForBundle>>>>,
 }
 
 impl<S, P, B, L> Worker<S, P, B, L>
@@ -387,11 +387,11 @@ where
             if st.permission_spk_hash != [0u8; 32] {
                 let leaves =
                     Arc::new(extract_bundle_exits(&journals).expect("decode bundle exits"));
-                sender.send_replace(Arc::new(ExitsForBundle {
+                sender.send_replace(Some(Arc::new(ExitsForBundle {
                     new_state: st.new_state,
                     permission_spk_hash: st.permission_spk_hash,
                     leaves,
-                }));
+                })));
             }
         }
     }
