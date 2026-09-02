@@ -22,7 +22,7 @@ use kaspa_hashes::Hash;
 use kaspa_wrpc_client::prelude::KaspaRpcClient;
 use tokio::sync::{mpsc, watch};
 use vprogs_core_atomics::AsyncQueue;
-use vprogs_l1_bridge::L1BridgeConfig;
+use vprogs_l1_bridge::{L1BridgeConfig, PermissionSpendHooks};
 use vprogs_l1_types::SettlementInfo;
 use vprogs_node_framework::{Node, NodeConfig};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Indexer, SchedulerState};
@@ -59,7 +59,7 @@ pub struct Elfs<'a> {
     pub aggregator: &'a [u8],
 }
 
-/// Optional observer handles the bridge publishes into as it follows the chain. Both default to
+/// Optional observer handles the bridge publishes into as it follows the chain. All default to
 /// `None`, which disables publishing.
 #[derive(Default)]
 pub struct BridgeObservers {
@@ -70,6 +70,9 @@ pub struct BridgeObservers {
     /// settler holds a [`watch::Receiver`](tokio::sync::watch::Receiver) subscribed to it
     /// (reader). `None` disables publishing.
     pub settlement: Option<watch::Sender<Option<SettlementInfo>>>,
+    /// Optional hooks for watching and emitting permission-output spends. `None` disables
+    /// watching.
+    pub permission_spends: Option<PermissionSpendHooks>,
 }
 
 /// Everything the bridge needs to follow our lane on the remote node.
@@ -218,6 +221,7 @@ fn base_config(
                 .with_start_from(params.start_from)
                 .with_min_confirmations(params.min_confirmations)
                 .with_tip_daa_observer(params.observers.tip_daa)
-                .with_settlement_observer(params.observers.settlement),
+                .with_settlement_observer(params.observers.settlement)
+                .with_permission_spends(params.observers.permission_spends),
         )
 }
