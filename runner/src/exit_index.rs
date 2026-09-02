@@ -7,7 +7,7 @@ use std::{
 
 use kaspa_consensus_core::tx::TransactionOutpoint;
 use kaspa_hashes::Hash;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 use vprogs_l1_types::{PermissionSpend, SettlementInfo};
 use vprogs_storage_types::{StateSpace, Store, WriteBatch};
 use vprogs_zk_aggregate_prover::ExitsForBundle;
@@ -56,7 +56,11 @@ pub fn load_registry<S: Store>(store: &S) -> HashMap<TransactionOutpoint, [u8; 3
         if let Some(outpoint) = parse_perm_out_key(&key) {
             if let Ok(root) = borsh::from_slice::<[u8; 32]>(&val) {
                 registry.insert(outpoint, root);
+            } else {
+                log::warn!("undecodable permission root in metadata: {key:?}");
             }
+        } else {
+            log::warn!("undecodable permission outpoint key in metadata: {key:?}");
         }
     }
     registry
@@ -83,20 +87,17 @@ pub fn handle_pairing<S: Store>(
 
 /// Attempts to pair an observed settlement with a parked bundle.
 ///
-/// Returns `true` if a matching parked bundle was found and committed, or `false` if no match
-/// exists. Parked bundles are left untouched when there is no match.
+/// If a matching parked bundle is found, commits it via the indexer and stores the metadata mirror
+/// entry. Parked bundles are left untouched when there is no match.
 pub fn handle_settlement<S: Store>(
     parked: &mut HashMap<[u8; 32], Arc<ExitsForBundle>>,
     settlement: &SettlementInfo,
     indexer: &dyn ExitIndexer,
     store: &S,
     registry: &RwLock<HashMap<TransactionOutpoint, [u8; 32]>>,
-) -> bool {
+) {
     if let Some(bundle) = parked.remove(&settlement.new_state) {
         handle_pairing(&bundle, settlement, indexer, store, registry);
-        true
-    } else {
-        false
     }
 }
 
@@ -142,7 +143,7 @@ pub async fn run_exit_indexer<S: Store>(
     indexer: Arc<dyn ExitIndexer>,
     store: S,
     mut exits_rx: mpsc::UnboundedReceiver<Arc<ExitsForBundle>>,
-    mut settlement_rx: watch::Receiver<Option<SettlementInfo>>,
+    mut settlement_rx: mpsc::UnboundedReceiver<SettlementInfo>,
     mut spend_rx: mpsc::UnboundedReceiver<PermissionSpend>,
     registry: Arc<RwLock<HashMap<TransactionOutpoint, [u8; 32]>>>,
 ) {
@@ -150,15 +151,10 @@ pub async fn run_exit_indexer<S: Store>(
 
     loop {
         tokio::select! {
+            biased;
             maybe_bundle = exits_rx.recv() => {
                 match maybe_bundle {
                     Some(bundle) => {
-                        if let Some(settlement) = *settlement_rx.borrow() {
-                            if settlement.new_state == bundle.new_state {
-                                handle_pairing(&bundle, &settlement, &*indexer, &store, &registry);
-                                continue;
-                            }
-                        }
                         parked_bundles.insert(bundle.new_state, bundle);
                     }
                     None => {
@@ -167,14 +163,15 @@ pub async fn run_exit_indexer<S: Store>(
                     }
                 }
             }
-            res = settlement_rx.changed() => {
-                if res.is_err() {
-                    log::debug!("exit indexer: settlement channel closed");
-                    break;
-                }
-                let settlement_opt = *settlement_rx.borrow_and_update();
-                if let Some(settlement) = settlement_opt {
-                    handle_settlement(&mut parked_bundles, &settlement, &*indexer, &store, &registry);
+            maybe_settlement = settlement_rx.recv() => {
+                match maybe_settlement {
+                    Some(settlement) => {
+                        handle_settlement(&mut parked_bundles, &settlement, &*indexer, &store, &registry);
+                    }
+                    None => {
+                        log::debug!("exit indexer: settlement channel closed");
+                        break;
+                    }
                 }
             }
             maybe_spend = spend_rx.recv() => {
@@ -245,9 +242,7 @@ mod tests {
 
         // Wrong-state settlement is ignored; bundle stays parked.
         let wrong_settlement = SettlementInfo { new_state: [0x99; 32], ..Default::default() };
-        let matched =
-            handle_settlement(&mut parked, &wrong_settlement, &*indexer, &store, &registry);
-        assert!(!matched);
+        handle_settlement(&mut parked, &wrong_settlement, &*indexer, &store, &registry);
         assert_eq!(parked.len(), 1);
         assert!(parked.contains_key(&bundle.new_state));
         assert!(indexer.committed.lock().unwrap().is_empty());
@@ -259,9 +254,7 @@ mod tests {
             new_state: [0x11; 32],
             ..Default::default()
         };
-        let matched =
-            handle_settlement(&mut parked, &matching_settlement, &*indexer, &store, &registry);
-        assert!(matched);
+        handle_settlement(&mut parked, &matching_settlement, &*indexer, &store, &registry);
         assert!(parked.is_empty());
         assert_eq!(indexer.committed.lock().unwrap().len(), 1);
 
@@ -339,7 +332,7 @@ mod tests {
         let registry = Arc::new(RwLock::new(HashMap::new()));
 
         let (exits_tx, exits_rx) = mpsc::unbounded_channel();
-        let (settlement_tx, settlement_rx) = watch::channel(None::<SettlementInfo>);
+        let (settlement_tx, settlement_rx) = mpsc::unbounded_channel();
         let (spend_tx, spend_rx) = mpsc::unbounded_channel();
 
         let indexer_handle = tokio::spawn(run_exit_indexer(
@@ -365,15 +358,15 @@ mod tests {
             new_state: [0x11; 32],
             ..Default::default()
         };
-        settlement_tx.send(Some(settlement)).unwrap();
+        settlement_tx.send(settlement).unwrap();
 
         // Wait for commit.
         let outpoint = TransactionOutpoint::new(settlement.tx_id, 1);
-        for _ in 0..50 {
+        for _ in 0..200 {
             if registry.read().unwrap().contains_key(&outpoint) {
                 break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
         assert_eq!(registry.read().unwrap().get(&outpoint), Some(&[0x22; 32]));
         assert_eq!(indexer.committed.lock().unwrap().len(), 1);
@@ -396,11 +389,11 @@ mod tests {
 
         let cont_txid = Hash::from_bytes(spend.spend_txid);
         let cont_outpoint = TransactionOutpoint::new(cont_txid, spend.new_outpoint_index);
-        for _ in 0..50 {
+        for _ in 0..200 {
             if registry.read().unwrap().contains_key(&cont_outpoint) {
                 break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
         assert_eq!(registry.read().unwrap().get(&cont_outpoint), Some(&[0x33; 32]));
         assert!(!registry.read().unwrap().contains_key(&outpoint));
@@ -410,6 +403,77 @@ mod tests {
         drop(exits_tx);
         drop(spend_tx);
         drop(settlement_tx);
+        indexer_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn two_back_to_back_settlements_both_commit() {
+        let dir = tempdir().unwrap();
+        let store: RocksDbStore = RocksDbStore::open(dir.path());
+        let indexer = Arc::new(FakeExitIndexer::new());
+        let registry = Arc::new(RwLock::new(HashMap::new()));
+
+        let (exits_tx, exits_rx) = mpsc::unbounded_channel();
+        let (settlement_tx, settlement_rx) = mpsc::unbounded_channel();
+        let (_spend_tx, spend_rx) = mpsc::unbounded_channel();
+
+        let indexer_handle = tokio::spawn(run_exit_indexer(
+            indexer.clone(),
+            store.clone(),
+            exits_rx,
+            settlement_rx,
+            spend_rx,
+            registry.clone(),
+        ));
+
+        // Park two bundles.
+        let b1 = Arc::new(ExitsForBundle {
+            new_state: [0x11; 32],
+            permission_spk_hash: [0x21; 32],
+            leaves: Arc::new(vec![]),
+        });
+        let b2 = Arc::new(ExitsForBundle {
+            new_state: [0x12; 32],
+            permission_spk_hash: [0x22; 32],
+            leaves: Arc::new(vec![]),
+        });
+        exits_tx.send(b1).unwrap();
+        exits_tx.send(b2).unwrap();
+
+        // Deliver two settlements back-to-back over the mpsc channel.
+        let s1 = SettlementInfo {
+            tx_id: Hash::from_bytes([0xa1; 32]),
+            new_state: [0x11; 32],
+            ..Default::default()
+        };
+        let s2 = SettlementInfo {
+            tx_id: Hash::from_bytes([0xa2; 32]),
+            new_state: [0x12; 32],
+            ..Default::default()
+        };
+        settlement_tx.send(s1).unwrap();
+        settlement_tx.send(s2).unwrap();
+
+        let out1 = TransactionOutpoint::new(s1.tx_id, 1);
+        let out2 = TransactionOutpoint::new(s2.tx_id, 1);
+        for _ in 0..200 {
+            let ready = {
+                let guard = registry.read().unwrap();
+                guard.contains_key(&out1) && guard.contains_key(&out2)
+            };
+            if ready {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+
+        assert_eq!(registry.read().unwrap().get(&out1), Some(&[0x21; 32]));
+        assert_eq!(registry.read().unwrap().get(&out2), Some(&[0x22; 32]));
+        assert_eq!(indexer.committed.lock().unwrap().len(), 2);
+
+        drop(exits_tx);
+        drop(settlement_tx);
+        drop(_spend_tx);
         indexer_handle.await.unwrap();
     }
 }
