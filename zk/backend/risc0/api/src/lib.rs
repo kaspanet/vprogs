@@ -5,6 +5,7 @@ extern crate alloc;
 mod permission_script;
 mod permission_tags;
 mod permission_tree;
+mod permission_tree_view;
 mod proof_type;
 
 #[cfg(feature = "host")]
@@ -35,6 +36,7 @@ pub use permission_script::{
     delegate_entry_spk_hash, perm_redeem_script_len,
 };
 pub use permission_tree::PermissionTreeAccumulator;
+pub use permission_tree_view::{PermissionTreeView, fold_path};
 pub use proof_type::ProofType;
 /// Re-exported so downstream test code can refer to the receipt type without taking a
 /// direct dep on `risc0-zkvm`.
