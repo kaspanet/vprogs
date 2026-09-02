@@ -22,39 +22,38 @@ fn decode_small_int(opcode: u8, data: &[u8]) -> Option<i64> {
     } else if (0x51..=0x60).contains(&opcode) {
         Some((opcode - 0x50) as i64)
     } else if !data.is_empty() {
-        kaspa_txscript::deserialize_i64(data).ok()
+        kaspa_txscript::deserialize_i64(data, false).ok()
     } else {
         None
     }
 }
 
-/// Updates the tracked permission outpoint registry after a verified claim spend: removes the
-/// spent outpoint and installs the continuation (`None` when nothing remains unclaimed).
+/// Updates the tracked permission outpoint registry after a verified claim spend.
 pub(crate) fn apply_registry_update(
     registry: &RwLock<HashMap<TransactionOutpoint, [u8; 32]>>,
     spent_outpoint: TransactionOutpoint,
-    cont_outpoint: Option<TransactionOutpoint>,
+    spend_txid: [u8; 32],
+    new_unclaimed: u64,
     new_root: [u8; 32],
 ) {
     let mut guard = registry.write().expect("poisoned lock");
     guard.remove(&spent_outpoint);
-    if let Some(cont_outpoint) = cont_outpoint {
-        guard.insert(cont_outpoint, new_root);
+    if new_unclaimed > 0 {
+        let continuation_outpoint = TransactionOutpoint::new(Hash::from_bytes(spend_txid), 1);
+        guard.insert(continuation_outpoint, new_root);
     }
 }
 
 /// Checks whether `tx` spends a tracked permission UTXO from `registry`.
 ///
-/// Returns the [`PermissionSpend`] event, the matched spent outpoint, and the continuation
-/// outpoint installed into `registry` (`None` when nothing remains unclaimed), so the bridge
-/// can journal and later revert the transition on rollback. Returns `None` if the transaction
-/// is not a tracked claim spend or is malformed.
+/// Returns [`PermissionSpend`] and updates `registry` on a valid claim spend, or `None` if
+/// the transaction is not a tracked claim spend or is malformed.
 pub(crate) fn check_claim_spend(
     registry: &RwLock<HashMap<TransactionOutpoint, [u8; 32]>>,
     tx: &Transaction,
     txid_bytes: [u8; 32],
     covenant_id: [u8; 32],
-) -> Option<(PermissionSpend, TransactionOutpoint, Option<TransactionOutpoint>)> {
+) -> Option<PermissionSpend> {
     // 1. Identify which input spends a tracked permission outpoint.
     let (matched_outpoint, matched_old_root, sig_script) = {
         let guard = registry.read().ok()?;
@@ -238,39 +237,30 @@ pub(crate) fn check_claim_spend(
     let new_root = fold_path(fold_leaf, &siblings, leaf_index);
     let new_unclaimed = old_unclaimed.saturating_sub(u64::from(amount == deduct));
 
-    // 9. Apply registry update; the continuation outpoint rides out for the bridge's rollback
-    // journal, mirroring the install condition above.
-    let cont_outpoint =
-        (new_unclaimed > 0).then(|| TransactionOutpoint::new(Hash::from_bytes(txid_bytes), 1));
-    apply_registry_update(registry, matched_outpoint, cont_outpoint, new_root);
+    // 9. Apply registry update.
+    apply_registry_update(registry, matched_outpoint, txid_bytes, new_unclaimed, new_root);
 
     // 10. Emit PermissionSpend event.
-    Some((
-        PermissionSpend {
-            covenant_id,
-            old_root,
-            old_unclaimed,
-            depth,
-            leaf_index,
-            leaf_spk_bytes: spk_bytes,
-            leaf_amount: amount,
-            deduct,
-            new_root,
-            spend_txid: txid_bytes,
-            new_outpoint_index: 1,
-            // Decoded before the bridge stamps the containing sink idx at append time.
-            chain_idx: 0,
-        },
-        matched_outpoint,
-        cont_outpoint,
-    ))
+    Some(PermissionSpend {
+        covenant_id,
+        old_root,
+        old_unclaimed,
+        depth,
+        leaf_index,
+        leaf_spk_bytes: spk_bytes,
+        leaf_amount: amount,
+        deduct,
+        new_root,
+        spend_txid: txid_bytes,
+        new_outpoint_index: 1,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use std::{collections::HashMap, sync::RwLock};
 
-    use kaspa_consensus_core::tx::{ScriptPublicKey, TransactionInput, TransactionOutpoint};
+    use kaspa_consensus_core::tx::{TransactionInput, TransactionOutpoint};
     use vprogs_l1_types::Hash;
     use vprogs_zk_abi::withdrawal::{ExitLeaf, StandardSpk};
     use vprogs_zk_backend_risc0_api::{
@@ -286,18 +276,6 @@ mod tests {
         let pk = [pk_byte; 32];
         let spk = StandardSpk::PubKey(&pk);
         (ExitLeaf::from_pair(spk, amount), pk)
-    }
-
-    /// A zero-fee collateral fixture: a plain P2PK UTXO at a throwaway key. The watcher only
-    /// parses the permission input's witness, so the collateral signature stays empty here.
-    fn collateral_args() -> ((TransactionOutpoint, u64), ScriptPublicKey) {
-        let pk = [0xEE; 32];
-        let bytes = StandardSpk::PubKey(&pk).to_script_bytes();
-        let spk_bytes: [u8; 34] = bytes.as_slice().try_into().unwrap();
-        (
-            (TransactionOutpoint::new(Hash::from_u64_word(30), 0), 10_000_000),
-            ScriptPublicKey::new(0, spk_bytes.to_vec().into()),
-        )
     }
 
     #[test]
@@ -330,10 +308,6 @@ mod tests {
             new_root: expected_new_root,
             new_unclaimed: 2,
             delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(20), 1), deduct)],
-            collateral_input: collateral_args().0,
-            collateral_spk: collateral_args().1,
-            fee: 0,
-            collateral_sig: Vec::new(),
         };
 
         let (tx, _utxos) = build_permission_spend(&args).expect("valid spend");
@@ -341,9 +315,8 @@ mod tests {
 
         let registry = RwLock::new(HashMap::from([(perm_outpoint, tree.root())]));
 
-        let (spend, spent_outpoint, cont_outpoint) =
-            check_claim_spend(&registry, &tx, txid_bytes, covenant_id)
-                .expect("should detect claim spend");
+        let spend = check_claim_spend(&registry, &tx, txid_bytes, covenant_id)
+            .expect("should detect claim spend");
 
         assert_eq!(spend.covenant_id, covenant_id);
         assert_eq!(spend.old_root, tree.root());
@@ -356,12 +329,11 @@ mod tests {
         assert_eq!(spend.new_root, expected_new_root);
         assert_eq!(spend.spend_txid, txid_bytes);
         assert_eq!(spend.new_outpoint_index, 1);
-        assert_eq!(spent_outpoint, perm_outpoint, "matched outpoint threads out");
 
         let reg = registry.read().unwrap();
         assert!(!reg.contains_key(&perm_outpoint), "spent outpoint must be removed");
-        assert_eq!(cont_outpoint, Some(TransactionOutpoint::new(tx.id(), 1)));
-        assert_eq!(reg.get(&cont_outpoint.unwrap()), Some(&expected_new_root));
+        let cont_outpoint = TransactionOutpoint::new(tx.id(), 1);
+        assert_eq!(reg.get(&cont_outpoint), Some(&expected_new_root));
     }
 
     #[test]
@@ -393,10 +365,6 @@ mod tests {
             new_root: expected_new_root,
             new_unclaimed: 1,
             delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(21), 1), deduct)],
-            collateral_input: collateral_args().0,
-            collateral_spk: collateral_args().1,
-            fee: 0,
-            collateral_sig: Vec::new(),
         };
 
         let (tx, _utxos) = build_permission_spend(&args).expect("valid spend");
@@ -404,7 +372,7 @@ mod tests {
 
         let registry = RwLock::new(HashMap::from([(perm_outpoint, tree.root())]));
 
-        let (spend, ..) = check_claim_spend(&registry, &tx, txid_bytes, covenant_id)
+        let spend = check_claim_spend(&registry, &tx, txid_bytes, covenant_id)
             .expect("should detect claim spend");
 
         assert_eq!(spend.covenant_id, covenant_id);
@@ -453,10 +421,6 @@ mod tests {
             new_root: expected_new_root,
             new_unclaimed: 0,
             delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(22), 1), deduct)],
-            collateral_input: collateral_args().0,
-            collateral_spk: collateral_args().1,
-            fee: 0,
-            collateral_sig: Vec::new(),
         };
 
         let (tx, _utxos) = build_permission_spend(&args).expect("valid spend");
@@ -464,20 +428,17 @@ mod tests {
 
         let registry = RwLock::new(HashMap::from([(perm_outpoint, tree.root())]));
 
-        let (spend, _, cont_outpoint) = check_claim_spend(&registry, &tx, txid_bytes, covenant_id)
+        let spend = check_claim_spend(&registry, &tx, txid_bytes, covenant_id)
             .expect("should detect claim spend");
 
         assert_eq!(spend.covenant_id, covenant_id);
         assert_eq!(spend.old_root, tree.root());
         assert_eq!(spend.old_unclaimed, 1);
-        // The single-leaf redeem embeds depth 1: leaf paired with the empty hash.
-        assert_eq!(spend.depth, 1);
         assert_eq!(spend.new_root, expected_new_root);
         assert_eq!(spend.spend_txid, txid_bytes);
 
         let reg = registry.read().unwrap();
         assert!(!reg.contains_key(&perm_outpoint), "spent outpoint must be removed");
-        assert!(cont_outpoint.is_none(), "no continuation when all claimed");
         assert!(reg.is_empty(), "no continuation outpoint when all claimed");
     }
 
@@ -547,7 +508,7 @@ mod tests {
         let siblings = claim_siblings(&leaves, 0);
 
         let mut b = kaspa_txscript::script_builder::ScriptBuilder::with_flags(
-            kaspa_txscript::EngineFlags::default(),
+            kaspa_txscript::EngineFlags { covenants_enabled: true, ..Default::default() },
         );
         // Walk 0 (corrupted sibling data)
         for level in (0..siblings.len()).rev() {
