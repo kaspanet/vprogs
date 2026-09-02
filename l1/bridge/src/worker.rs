@@ -31,8 +31,9 @@ use vprogs_l1_types::{
 use workflow_core::channel::{Channel, MultiplexerChannel};
 
 use crate::{
-    Command, L1BridgeConfig, L1Event,
+    Command, L1BridgeConfig, L1Event, PermissionSpendHooks,
     error::{Error, Result},
+    permission_watch::check_claim_spend,
     reorg_filter::ReorgFilter,
 };
 
@@ -89,6 +90,8 @@ pub(crate) struct BridgeWorker<T: ChainSink<ChainBlockMetadata, L1Transaction>> 
     /// Lower bound on the `min_confirmation_count` for chain-follow queries; the adaptive reorg
     /// filter may still exceed it after observed reorgs. `None` uses the adaptive threshold alone.
     min_confirmations: Option<u64>,
+    /// Optional hooks for watching and emitting permission-output spends.
+    permission_spends: Option<PermissionSpendHooks>,
 }
 
 impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
@@ -162,6 +165,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             tip_daa: config.tip_daa.clone(),
             settlement: config.settlement_observer.clone(),
             min_confirmations: config.min_confirmations,
+            permission_spends: config.permission_spends.clone(),
         }
         .run()
         .await;
@@ -517,6 +521,15 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
                 if let Some(id) = self.covenant_id {
                     last_settlement =
                         tx.settlement_info(id, block.hash, block.daa_score).or(last_settlement);
+                }
+
+                if let Some(hooks) = &self.permission_spends {
+                    let txid_bytes = tx.id().as_bytes();
+                    let cov_id = self.covenant_id.map(|h| h.as_bytes()).unwrap_or_default();
+                    if let Some(spend) = check_claim_spend(&hooks.registry, &tx, txid_bytes, cov_id)
+                    {
+                        let _ = hooks.events.send(spend);
+                    }
                 }
 
                 // Parse access metadata; malformed = no dependencies and prover attests.
