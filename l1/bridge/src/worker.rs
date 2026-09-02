@@ -308,15 +308,10 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
     /// Publishes the tip's last covenant settlement to the optional `watch` sender, so each settler
     /// reads the canonical settlement. Sends `None` when the tip carries no settlement yet or a
     /// reorg has rolled past the last one. `send_replace` never errors, even with no live
-    /// receivers, so a settler-less bridge still publishes harmlessly. Also publishes each observed
-    /// settlement to `settlement_events` when configured.
+    /// receivers, so a settler-less bridge still publishes harmlessly.
     fn publish_settlement(&self) {
-        let last_settlement = self.tip_metadata().last_settlement;
         if let Some(sender) = &self.settlement {
-            sender.send_replace(last_settlement);
-        }
-        if let (Some(sender), Some(info)) = (&self.settlement_events, &last_settlement) {
-            let _ = sender.send(*info);
+            sender.send_replace(self.tip_metadata().last_settlement);
         }
     }
 
@@ -525,10 +520,14 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
                 let tx = L1Transaction::try_from(tx.clone())
                     .map_err(|e| Error::MalformedResponse(e.to_string()))?;
 
-                // Carry forward the last settlement.
+                // Carry forward the last settlement; emit new ones over settlement_events.
                 if let Some(id) = self.covenant_id {
-                    last_settlement =
-                        tx.settlement_info(id, block.hash, block.daa_score).or(last_settlement);
+                    if let Some(info) = tx.settlement_info(id, block.hash, block.daa_score) {
+                        last_settlement = Some(info);
+                        if let Some(sender) = &self.settlement_events {
+                            let _ = sender.send(info);
+                        }
+                    }
                 }
 
                 if let Some(hooks) = &self.permission_spends {
@@ -668,5 +667,206 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use crossbeam_queue::SegQueue;
+    use kaspa_consensus_core::{
+        network::{NetworkId, NetworkType},
+        subnets::SUBNETWORK_ID_NATIVE,
+        tx::{
+            CovenantBinding, Transaction, TransactionInput, TransactionOutpoint, TransactionOutput,
+        },
+    };
+    use kaspa_rpc_core::{
+        GetVirtualChainFromBlockV2Response, RpcChainBlockAcceptedTransactions, RpcOptionalHeader,
+        RpcOptionalTransaction,
+    };
+    use kaspa_wrpc_client::prelude::{KaspaRpcClient, WrpcEncoding};
+    use tokio::sync::{Notify, mpsc};
+    use vprogs_core_atomics::AtomicAsyncLatch;
+    use vprogs_core_types::{ChainSink, SchedulerTransaction};
+    use vprogs_l1_types::{ChainBlockMetadata, Hash, L1Transaction, SettlementInfo};
+    use workflow_core::channel::Channel;
+
+    use super::*;
+
+    #[derive(Default)]
+    struct TestSink {
+        blocks: Vec<ChainBlockMetadata>,
+    }
+
+    impl ChainSink<ChainBlockMetadata, L1Transaction> for TestSink {
+        fn append(
+            &mut self,
+            metadata: ChainBlockMetadata,
+            _txs: Vec<SchedulerTransaction<L1Transaction>>,
+        ) -> u64 {
+            self.blocks.push(metadata);
+            self.blocks.len() as u64
+        }
+        fn rollback(&mut self, _new_tip: u64) {}
+        fn finalize(&mut self, _below: u64) {}
+        fn tip(&self) -> u64 {
+            self.blocks.len() as u64
+        }
+        fn metadata(&self, id: u64) -> Option<ChainBlockMetadata> {
+            if id == 0 { None } else { self.blocks.get((id - 1) as usize).copied() }
+        }
+        fn id(&self, block_hash: &[u8; 32]) -> Option<u64> {
+            self.blocks
+                .iter()
+                .position(|b| b.hash.as_bytes() == *block_hash)
+                .map(|i| (i + 1) as u64)
+        }
+        fn shutdown(self) {}
+    }
+
+    fn make_settlement_tx(covenant_id: Hash, new_state: [u8; 32]) -> L1Transaction {
+        let prev_redeem = [0xcc; 32];
+        let mut sig_script = Vec::new();
+        for data in [&[0x11; 32], &new_state, &[0x33; 32], &prev_redeem] {
+            sig_script.push(0x20); // OpData32
+            sig_script.extend_from_slice(data);
+        }
+        Transaction::new(
+            0,
+            vec![TransactionInput::new(
+                TransactionOutpoint::new(Hash::from_bytes([0x66; 32]), 0),
+                sig_script,
+                0,
+                1,
+            )],
+            vec![TransactionOutput::with_covenant(
+                100_000_000,
+                kaspa_txscript::standard::pay_to_script_hash_script(&prev_redeem),
+                Some(CovenantBinding::new(0, covenant_id)),
+            )],
+            0,
+            SUBNETWORK_ID_NATIVE,
+            0,
+            Vec::new(),
+        )
+    }
+
+    fn test_worker(
+        sink: TestSink,
+        covenant_id: Hash,
+        settlement_events: mpsc::UnboundedSender<SettlementInfo>,
+    ) -> BridgeWorker<TestSink> {
+        let client = Arc::new(
+            KaspaRpcClient::new_with_args(
+                WrpcEncoding::Borsh,
+                Some("ws://127.0.0.1:0"),
+                None,
+                Some(NetworkId::new(NetworkType::Simnet)),
+                None,
+            )
+            .unwrap(),
+        );
+        let rpc_ctl_channel = client.rpc_ctl().multiplexer().channel();
+        BridgeWorker {
+            sink,
+            client,
+            subnetwork_filter: None,
+            api_requests: mpsc::channel(1).1,
+            events: Arc::new(SegQueue::new()),
+            event_signal: Arc::new(Notify::new()),
+            shutdown: Arc::new(AtomicAsyncLatch::new()),
+            notification_channel: Channel::unbounded(),
+            rpc_ctl_channel,
+            genesis: ChainBlockMetadata::default(),
+            stopping: false,
+            reorg_filter: ReorgFilter::new(Duration::ZERO),
+            lane_key: None,
+            finality_depth: 100,
+            covenant_id: Some(covenant_id),
+            seed_depth: None,
+            start_from: None,
+            tip_daa: None,
+            settlement: None,
+            min_confirmations: None,
+            permission_spends: None,
+            settlement_events: Some(settlement_events),
+        }
+    }
+
+    #[tokio::test]
+    async fn settlement_events_emitted_per_detection_without_coalescing_or_flood() {
+        let covenant_id = Hash::from_bytes([0xAA; 32]);
+        let (settlement_events_tx, mut settlement_events_rx) = mpsc::unbounded_channel();
+        let sink = TestSink::default();
+        let mut worker = test_worker(sink, covenant_id, settlement_events_tx);
+
+        let tx1 = make_settlement_tx(covenant_id, [0x11; 32]);
+        let tx2 = make_settlement_tx(covenant_id, [0x22; 32]);
+
+        // Batch 1: contains two settlements in one batch.
+        let block1_hash = Hash::from_bytes([0x01; 32]);
+        let block2_hash = Hash::from_bytes([0x02; 32]);
+        let batch1 = GetVirtualChainFromBlockV2Response {
+            removed_chain_block_hashes: Arc::new(vec![]),
+            added_chain_block_hashes: Arc::new(vec![block1_hash, block2_hash]),
+            chain_block_accepted_transactions: Arc::new(vec![
+                RpcChainBlockAcceptedTransactions {
+                    chain_block_header: RpcOptionalHeader {
+                        hash: Some(block1_hash),
+                        blue_score: Some(1),
+                        daa_score: Some(10),
+                        timestamp: Some(1000),
+                        accepted_id_merkle_root: Some(Hash::default()),
+                        ..Default::default()
+                    },
+                    accepted_transactions: vec![RpcOptionalTransaction::from(&tx1)],
+                },
+                RpcChainBlockAcceptedTransactions {
+                    chain_block_header: RpcOptionalHeader {
+                        hash: Some(block2_hash),
+                        blue_score: Some(2),
+                        daa_score: Some(20),
+                        timestamp: Some(2000),
+                        accepted_id_merkle_root: Some(Hash::default()),
+                        ..Default::default()
+                    },
+                    accepted_transactions: vec![RpcOptionalTransaction::from(&tx2)],
+                },
+            ]),
+        };
+
+        worker.fetch_chain_updates_tail(batch1).await.unwrap();
+
+        // Exactly two events emitted in order; no coalescing.
+        let e1 = settlement_events_rx.try_recv().expect("first settlement event");
+        assert_eq!(e1.new_state, [0x11; 32]);
+        let e2 = settlement_events_rx.try_recv().expect("second settlement event");
+        assert_eq!(e2.new_state, [0x22; 32]);
+        assert!(settlement_events_rx.try_recv().is_err());
+
+        // Batch 2: follow-up block without settlements.
+        let block3_hash = Hash::from_bytes([0x03; 32]);
+        let batch2 = GetVirtualChainFromBlockV2Response {
+            removed_chain_block_hashes: Arc::new(vec![]),
+            added_chain_block_hashes: Arc::new(vec![block3_hash]),
+            chain_block_accepted_transactions: Arc::new(vec![RpcChainBlockAcceptedTransactions {
+                chain_block_header: RpcOptionalHeader {
+                    hash: Some(block3_hash),
+                    blue_score: Some(3),
+                    daa_score: Some(30),
+                    timestamp: Some(3000),
+                    accepted_id_merkle_root: Some(Hash::default()),
+                    ..Default::default()
+                },
+                accepted_transactions: vec![],
+            }]),
+        };
+
+        worker.fetch_chain_updates_tail(batch2).await.unwrap();
+
+        // No new settlement events emitted on settlement-less block; no flood.
+        assert!(settlement_events_rx.try_recv().is_err());
     }
 }
