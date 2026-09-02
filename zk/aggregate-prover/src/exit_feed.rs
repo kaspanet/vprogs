@@ -13,7 +13,9 @@ pub struct ExitsForBundle {
     pub new_state: [u8; 32],
     /// Hash of the permission redeem script, or `[0u8; 32]` if no exits were emitted.
     pub permission_spk_hash: [u8; 32],
-    /// Owned exit leaves extracted in batch and journal order.
+    /// Owned exit leaves extracted in batch and journal order. The bundle's complete canonical
+    /// leaf list for that root (per-bundle tree; never empty when published: the worker suppresses
+    /// zero-hash bundles).
     pub leaves: Arc<Vec<ExitLeaf>>,
 }
 

@@ -39,15 +39,3 @@ pub struct AggregateProverConfig<L: LaneProofSource, R: Send + Sync + 'static> {
     /// exit publishing is disabled.
     pub exits: Option<mpsc::UnboundedSender<Arc<ExitsForBundle>>>,
 }
-
-impl<L: LaneProofSource, R: Send + Sync + 'static> AggregateProverConfig<L, R> {
-    /// Sets the `watch` sender the aggregate worker publishes per-bundle exit leaves into. `None`
-    /// disables publishing.
-    pub fn with_exits_observer(
-        mut self,
-        exits: impl Into<Option<watch::Sender<Option<Arc<ExitsForBundle>>>>>,
-    ) -> Self {
-        self.exits = exits.into();
-        self
-    }
-}

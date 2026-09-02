@@ -1,10 +1,10 @@
 //! Owned exit-leaf form for host-side channels. `StandardSpk<'a>` borrows its buffer, which
 //! cannot cross an `await` point or a `watch` channel; this is the owned mirror. The canonical
-//! leaf preimage stays `StandardSpk::to_script_bytes()` -- `script_bytes` re-slices it verbatim.
+//! leaf preimage stays `StandardSpk::to_script_bytes()`; `script_bytes` re-slices it verbatim.
 
 use crate::withdrawal::standard_spk::StandardSpk;
 
-/// Owned exit-leaf form for host-side channels.
+/// Owned exit leaf pairing an on-chain destination script with a sompi payout amount.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExitLeaf {
     /// On-chain script bytes buffer sized for the largest supported script.
