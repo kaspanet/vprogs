@@ -3,7 +3,7 @@
 
 use vprogs_zk_abi::{
     Result as AbiResult,
-    transaction_processor::{Resource, Transaction},
+    transaction_processor::{MergesetContext, Resource, Transaction},
     withdrawal::{DepositSink, ExitSink},
 };
 use vprogs_zk_backend_risc0_api::{Hasher, Sha256};
@@ -14,6 +14,7 @@ use crate::{
     deposit_policy::DepositPolicy,
     domain::Domain,
     ix::{DecodedIx, decode_ix},
+    lock::LockEnum,
     signer::SignerEnum,
     signer_trait::{Signer, SignerResolveContext},
     signer_variants::{
@@ -26,14 +27,17 @@ use crate::{
 ///
 /// `main` adapts this into the ABI [`TransactionHandler`] shape. `exits` receives L2-to-L1 exits
 /// emitted by `Withdraw` actions; `deposit` receives the deposit-address commitment written by a
-/// `Deposit` action; `merge_idx` and `context_hash` are unused.
+/// `Deposit` action; `merge_idx` is unused. `context` is the chain-block clock, exposed to
+/// time-dependent actions through [`ApplyContext`].
 ///
-/// Generic over `P: DepositPolicy` so a different runtime can supply its own deposit rules in
+/// Generic over `P: DepositPolicy` (lock pinned to this runtime's `LockEnum`) so a different
+/// runtime can supply its own deposit rules in
 /// `main.rs` without touching this file.
 ///
 /// [`TransactionHandler`]: vprogs_zk_abi::transaction_processor::TransactionHandler
-pub fn run<'a, P: DepositPolicy>(
+pub fn run<'a, P: DepositPolicy<Lock<'a> = LockEnum<'a>>>(
     tx: &Transaction<'a>,
+    context: &MergesetContext,
     resources: &mut [Resource<'a>],
     exits: &mut ExitSink,
     deposit: &mut DepositSink,
@@ -64,7 +68,7 @@ pub fn run<'a, P: DepositPolicy>(
         &SignerResolveContext::new(payload.bytes, current_rest_preimage, payload_presig, resources),
     )?;
 
-    let mut cx = ApplyContext::new(tx, resources, &auth_ctx, exits, deposit);
+    let mut cx = ApplyContext::new(tx, resources, context, &auth_ctx, exits, deposit);
 
     for action in &actions {
         apply_action(action, &mut cx, policy)?;

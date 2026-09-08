@@ -14,7 +14,9 @@ use secp256k1::{Keypair, Message, SECP256K1};
 use vprogs_core_types::AccessType;
 use vprogs_l1_utils::tx_id_v1;
 use vprogs_zk_abi::{
-    transaction_processor::{JournalEntries, OutputCommitment, Outputs, Transaction},
+    transaction_processor::{
+        JournalEntries, MergesetContext, OutputCommitment, Outputs, Transaction,
+    },
     withdrawal::StandardSpk,
 };
 use vprogs_zk_backend_risc0_api::{build_delegate_entry_script, delegate_entry_spk_hash};
@@ -257,13 +259,13 @@ fn tx_id_of(tx_blob: &[u8]) -> [u8; 32] {
 }
 
 /// Builds the full `Inputs` host blob the guest reads:
-/// `version(2) || tx_id(32) || merge_idx(4) || context_hash(32) || tx_blob ||
-/// resources`, where each resource is `index(4) || data_len(4) || data` (one per
-/// access-metadata entry, in the same order). A resource is new iff its data is empty; the wire
-/// carries no separate lifecycle flag.
+/// `version(2) || tx_id(32) || merge_idx(4) || context(24: timestamp, daa_score,
+/// blue_score as u64 LE) || tx_blob || resources`, where each resource is `index(4) ||
+/// data_len(4) || data` (one per access-metadata entry, in the same order). A resource is new
+/// iff its data is empty; the wire carries no separate lifecycle flag.
 fn encode_inputs(
     merge_idx: u32,
-    context_hash: [u8; 32],
+    context: MergesetContext,
     tx_bytes: &[u8],
     resources: &[(u32, Vec<u8>)],
 ) -> Vec<u8> {
@@ -271,7 +273,9 @@ fn encode_inputs(
     out.extend_from_slice(&Transaction::V1.to_le_bytes());
     out.extend_from_slice(&tx_id_of(tx_bytes));
     out.extend_from_slice(&merge_idx.to_le_bytes());
-    out.extend_from_slice(&context_hash);
+    out.extend_from_slice(&context.timestamp.get().to_le_bytes());
+    out.extend_from_slice(&context.daa_score.get().to_le_bytes());
+    out.extend_from_slice(&context.blue_score.get().to_le_bytes());
     out.extend_from_slice(tx_bytes);
     for (idx, data) in resources {
         out.extend_from_slice(&idx.to_le_bytes());
@@ -371,7 +375,7 @@ fn update_rotates_min_withdrawal_amount() {
     let mut payload = payload_presig;
     payload.extend_from_slice(&sig_bytes);
     let tx_bytes = encode_v1_transaction(&payload, rest_preimage);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, initial_data)]);
+    let inputs = encode_inputs(0, MergesetContext::ZERO, &tx_bytes, &[(0, initial_data)]);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -420,7 +424,7 @@ fn update_rejected_with_wrong_signer() {
     let mut payload = payload_presig;
     payload.extend_from_slice(&attacker_sig);
     let tx_bytes = encode_v1_transaction(&payload, &[]);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, initial_data)]);
+    let inputs = encode_inputs(0, MergesetContext::ZERO, &tx_bytes, &[(0, initial_data)]);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -496,7 +500,7 @@ fn multisig_2_of_3_unlocks_with_two_distinct_signers() {
     payload.extend_from_slice(&sig1);
 
     let tx_bytes = encode_v1_transaction(&payload, rest_preimage);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, initial_data)]);
+    let inputs = encode_inputs(0, MergesetContext::ZERO, &tx_bytes, &[(0, initial_data)]);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -573,7 +577,7 @@ fn multisig_rejected_with_below_threshold_signers() {
     let mut payload = payload_presig;
     payload.extend_from_slice(&sig);
     let tx_bytes = encode_v1_transaction(&payload, &[]);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, initial_data)]);
+    let inputs = encode_inputs(0, MergesetContext::ZERO, &tx_bytes, &[(0, initial_data)]);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -755,7 +759,7 @@ fn prev_tx_v1_witness_unlocks_schnorr_locked_config() {
     payload.extend_from_slice(&prev_payload_digest);
 
     let tx_bytes = encode_v1_transaction(&payload, &current_rest_preimage);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, initial_data)]);
+    let inputs = encode_inputs(0, MergesetContext::ZERO, &tx_bytes, &[(0, initial_data)]);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -816,7 +820,7 @@ fn init_config_inputs(config_data: Vec<u8>) -> Vec<u8> {
     payload.extend_from_slice(&prev_payload_digest);
 
     let tx_bytes = encode_v1_transaction(&payload, &current_rest_preimage);
-    encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, config_data)])
+    encode_inputs(0, MergesetContext::ZERO, &tx_bytes, &[(0, config_data)])
 }
 
 /// A live, non-empty config cannot be re-initialized. Newness is derived from the resource data,
@@ -914,8 +918,12 @@ fn update_addresses_config_at_lex_position_1_in_two_resource_tx() {
 
     // Resources passed in the same lex order as access_metadata: decoy first
     // (empty data, read-only, so it reads as new), config second (existing config bytes).
-    let inputs =
-        encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, Vec::new()), (1, initial_config_data)]);
+    let inputs = encode_inputs(
+        0,
+        MergesetContext::ZERO,
+        &tx_bytes,
+        &[(0, Vec::new()), (1, initial_config_data)],
+    );
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -1005,7 +1013,7 @@ fn deposit_credits_new_user() {
     let n_resources = access_entries.len();
     let mut resources = vec![(0u32, Vec::new()); n_resources];
     resources[config_lex_idx as usize] = (0, config_data);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
+    let inputs = encode_inputs(0, MergesetContext::ZERO, &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
     let (outputs_bytes, journal_bytes) = execute_guest_with_journal(&elf, &inputs);
@@ -1071,7 +1079,7 @@ fn deposit_credits_existing_user() {
     let mut resources = vec![(0u32, Vec::new()); n_resources];
     resources[user_lex_idx as usize] = (0, existing_data);
     resources[config_lex_idx as usize] = (0, config_data);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
+    let inputs = encode_inputs(0, MergesetContext::ZERO, &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -1116,7 +1124,7 @@ fn deposit_spk_mismatch_rejected() {
     let n_resources = access_entries.len();
     let mut resources = vec![(0u32, Vec::new()); n_resources];
     resources[config_lex_idx as usize] = (0, config_data);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
+    let inputs = encode_inputs(0, MergesetContext::ZERO, &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -1159,7 +1167,7 @@ fn deposit_double_credit_same_output_rejected() {
     let n_resources = access_entries.len();
     let mut resources = vec![(0u32, Vec::new()); n_resources];
     resources[config_lex_idx as usize] = (0, config_data);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
+    let inputs = encode_inputs(0, MergesetContext::ZERO, &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -1218,7 +1226,7 @@ fn deposit_two_distinct_outputs_both_credit() {
     let n_resources = entries.len();
     let mut resources = vec![(0u32, Vec::new()); n_resources];
     resources[config_lex as usize] = (0, config_data);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
+    let inputs = encode_inputs(0, MergesetContext::ZERO, &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -1281,7 +1289,7 @@ fn deposit_create_then_credit_same_user() {
     let n_resources = access_entries.len();
     let mut resources = vec![(0u32, Vec::new()); n_resources];
     resources[config_lex_idx as usize] = (0, config_data);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
+    let inputs = encode_inputs(0, MergesetContext::ZERO, &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
     let (outputs_bytes, journal_bytes) = execute_guest_with_journal(&elf, &inputs);
@@ -1339,7 +1347,7 @@ fn deposit_wrong_covenant_delegate_address_rejected() {
     let n_resources = access_entries.len();
     let mut resources = vec![(0u32, Vec::new()); n_resources];
     resources[config_lex_idx as usize] = (0, config_data);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
+    let inputs = encode_inputs(0, MergesetContext::ZERO, &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -1387,7 +1395,7 @@ fn update_rejects_covenant_id_change() {
     let mut payload = payload_presig;
     payload.extend_from_slice(&sig_bytes);
     let tx_bytes = encode_v1_transaction(&payload, &[]);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, initial_data)]);
+    let inputs = encode_inputs(0, MergesetContext::ZERO, &tx_bytes, &[(0, initial_data)]);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -1465,7 +1473,7 @@ fn withdraw_debits_and_emits_exit() {
     resources[user_lex_idx as usize] = (0, user_data);
     resources[config_lex_idx as usize] = (0, config_data);
 
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
+    let inputs = encode_inputs(0, MergesetContext::ZERO, &tx_bytes, &resources);
 
     // Build a ProgramBinary from the raw ELF so the image id and the encoded
     // ELF bytes come from the same object -- mirrors api/src/elf_binary.rs.
@@ -1618,7 +1626,7 @@ fn withdraw_with_multisig_locked_user() {
     resources[user_lex_idx as usize] = (0, user_data);
     resources[config_lex_idx as usize] = (0, config_data);
 
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
+    let inputs = encode_inputs(0, MergesetContext::ZERO, &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
     let (stdout_bytes, journal_bytes) = execute_guest_with_journal(&elf, &inputs);
@@ -1688,7 +1696,7 @@ fn withdraw_below_min_rejected() {
     resources[user_lex_idx as usize] = (0, user_data);
     resources[config_lex_idx as usize] = (0, config_data);
 
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
+    let inputs = encode_inputs(0, MergesetContext::ZERO, &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -1742,7 +1750,7 @@ fn withdraw_over_balance_rejected() {
     resources[user_lex_idx as usize] = (0, user_data);
     resources[config_lex_idx as usize] = (0, config_data);
 
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
+    let inputs = encode_inputs(0, MergesetContext::ZERO, &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -1796,8 +1804,12 @@ fn update_at_wrong_lex_position_is_rejected() {
     let mut payload = payload_presig;
     payload.extend_from_slice(&sig_bytes);
     let tx_bytes = encode_v1_transaction(&payload, &[]);
-    let inputs =
-        encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, Vec::new()), (1, initial_config_data)]);
+    let inputs = encode_inputs(
+        0,
+        MergesetContext::ZERO,
+        &tx_bytes,
+        &[(0, Vec::new()), (1, initial_config_data)],
+    );
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -1854,7 +1866,7 @@ fn deposit_below_creation_minimum_rejected() {
     let n_resources = access_entries.len();
     let mut resources = vec![(0u32, Vec::new()); n_resources];
     resources[config_lex_idx as usize] = (0, config_data);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
+    let inputs = encode_inputs(0, MergesetContext::ZERO, &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -1897,7 +1909,7 @@ fn deposit_create_rejected_when_address_does_not_match_initial_lock() {
     let n_resources = access_entries.len();
     let mut resources = vec![(0u32, Vec::new()); n_resources];
     resources[config_lex_idx as usize] = (0, config_data);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
+    let inputs = encode_inputs(0, MergesetContext::ZERO, &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -1959,7 +1971,8 @@ fn transfer_moves_balance_between_two_users() {
     let mut payload = payload_presig;
     payload.extend_from_slice(&sig_bytes);
     let tx_bytes = encode_v1_transaction(&payload, &[]);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, source_buf), (1, dest_buf)]);
+    let inputs =
+        encode_inputs(0, MergesetContext::ZERO, &tx_bytes, &[(0, source_buf), (1, dest_buf)]);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -2024,7 +2037,7 @@ fn run_new_dest_transfer(
     let (_, source_buf) = build_schnorr_locked_user(&source.pubkey, source_balance);
     let mut resources = vec![(0u32, Vec::new()); 2];
     resources[source_idx as usize] = (0, source_buf);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &resources);
+    let inputs = encode_inputs(0, MergesetContext::ZERO, &tx_bytes, &resources);
 
     let elf = wrapped_runtime_processor_elf();
     (execute_guest(&elf, &inputs), source_idx, dest_idx)
@@ -2115,7 +2128,7 @@ fn update_user_lock_rotates_lock_and_preserves_initial_lock_hash() {
     let mut payload = payload_presig;
     payload.extend_from_slice(&sig_bytes);
     let tx_bytes = encode_v1_transaction(&payload, &[]);
-    let inputs = encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, initial_data)]);
+    let inputs = encode_inputs(0, MergesetContext::ZERO, &tx_bytes, &[(0, initial_data)]);
 
     let elf = wrapped_runtime_processor_elf();
     let outputs_bytes = execute_guest(&elf, &inputs);
@@ -2223,7 +2236,7 @@ fn witness_mismatch_carrier(encode_signer: impl Fn(u8, u8, u32, u32, u32) -> Vec
     payload.extend_from_slice(&junk_payload_digest);
 
     let tx_bytes = encode_v1_transaction(&payload, &current_rest_preimage);
-    encode_inputs(0, [0u8; 32], &tx_bytes, &[(0, initial_data)])
+    encode_inputs(0, MergesetContext::ZERO, &tx_bytes, &[(0, initial_data)])
 }
 
 /// Runs `inputs` through the guest and asserts the transaction is journaled as

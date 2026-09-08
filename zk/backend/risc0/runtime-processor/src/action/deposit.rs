@@ -6,7 +6,7 @@ use vprogs_zk_backend_risc0_api::delegate_entry_spk_hash;
 
 use super::{ApplyContext, validate_user_create};
 use crate::{
-    deposit_policy::{CreditTarget, DepositBody, DepositPolicy, DepositSubject},
+    deposit_policy::{DepositBody, DepositPolicy, DepositSubject},
     lifecycle::Lifecycle,
     lock::LockEnum,
     resource_ext::ResourceExt,
@@ -23,7 +23,7 @@ use crate::{
 ///
 /// All reads and authorization checks complete before any state mutation, so a failed check never
 /// leaves a partially-applied deposit.
-pub(super) fn apply_deposit<'a, P: DepositPolicy>(
+pub(super) fn apply_deposit<'a, P: DepositPolicy<Lock<'a> = LockEnum<'a>>>(
     user_idx: u8,
     output_idx: u32,
     initial_lock: &LockEnum<'a>,
@@ -65,8 +65,7 @@ pub(super) fn apply_deposit<'a, P: DepositPolicy>(
     }
 
     // Resolve credit target via policy (which user, create-or-credit).
-    let target_decision: CreditTarget<'_> =
-        policy.credit_target(&body).map_err(|m| AbiError::Decode(m.into()))?;
+    let target_decision = policy.credit_target(&body).map_err(|m| AbiError::Decode(m.into()))?;
     let idx = target_decision.user_idx as usize;
     // The policy may return an out-of-range idx.
     if idx >= cx.resources.len() {

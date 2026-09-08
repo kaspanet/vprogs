@@ -156,9 +156,9 @@ impl<'a> Lock<'a> for MultisigLockView<'a> {
         // on equality. O(N + M).
         let mut matched: u8 = 0;
         let mut c_idx = 0usize;
-        for lock_pk in self.pubkeys.chunks_exact(32) {
+        for lock_pk in self.iter_pubkeys() {
             while c_idx < contrib.len() {
-                match contrib[c_idx].as_slice().cmp(lock_pk) {
+                match contrib[c_idx].cmp(lock_pk) {
                     Ordering::Less => c_idx += 1,
                     Ordering::Equal => {
                         matched += 1;
