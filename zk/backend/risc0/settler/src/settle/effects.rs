@@ -3,7 +3,7 @@
 
 use std::{collections::HashSet, future::Future};
 
-use kaspa_consensus_core::tx::{Transaction, TransactionOutpoint, UtxoEntry};
+use kaspa_consensus_core::tx::{ScriptPublicKey, Transaction, TransactionOutpoint, UtxoEntry};
 use kaspa_hashes::Hash;
 use vprogs_core_atomics::AtomicAsyncLatch;
 
@@ -53,4 +53,17 @@ pub trait SettlementSink {
         covenant: OutpointAt<'_>,
         shutdown: &AtomicAsyncLatch,
     ) -> impl Future<Output = SubmitOutcome>;
+
+    /// Diagnoses whether the node silently dropped a submitted settlement: gone from its mempool
+    /// and orphan pool while the covenant outpoint `spk`/`outpoint` describe is still unspent. The
+    /// confirm wait probes this periodically and resubmits the same transaction when it returns
+    /// `true`. Defaults to `false` (assume live) for sinks without node visibility.
+    fn dropped(
+        &self,
+        _txid: Hash,
+        _spk: ScriptPublicKey,
+        _outpoint: TransactionOutpoint,
+    ) -> impl Future<Output = bool> + '_ {
+        std::future::ready(false)
+    }
 }

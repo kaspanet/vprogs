@@ -5,9 +5,10 @@ use std::{collections::HashSet, ops::Range, time::Duration};
 
 use kaspa_consensus_core::{
     config::params::Params,
-    tx::{Transaction, TransactionOutpoint, UtxoEntry},
+    tx::{ScriptPublicKey, Transaction, TransactionOutpoint, UtxoEntry},
 };
-use kaspa_rpc_core::RpcError;
+use kaspa_hashes::Hash;
+use kaspa_rpc_core::{RpcError, api::rpc::RpcApi};
 use kaspa_wrpc_client::prelude::KaspaRpcClient;
 use secp256k1::Keypair;
 use vprogs_core_atomics::AtomicAsyncLatch;
@@ -139,6 +140,36 @@ impl SettlementSink for RpcSink {
                 RejectionClass::Fatal => SubmitOutcome::Fatal(e.to_string()),
             },
         }
+    }
+
+    async fn dropped(
+        &self,
+        txid: Hash,
+        spk: ScriptPublicKey,
+        outpoint: TransactionOutpoint,
+    ) -> bool {
+        // Still pending in the mempool or orphan pool: not dropped. Any error other than an
+        // authoritative "not found" is treated as live so a transient RPC blip never triggers a
+        // resubmit; the probe simply retries on the next confirm-warn tick.
+        match self.client.get_mempool_entry(txid, true, false).await {
+            Ok(_) => return false,
+            Err(RpcError::TransactionNotFound(_)) => {}
+            Err(_) => return false,
+        }
+
+        // Absent from both pools. A spent covenant outpoint means some settlement landed (ours
+        // or a competitor's) and the bridge will publish it; only a vanished transaction over a
+        // still-unspent covenant is a genuine drop. Mirrors `covenant_liveness` with a tolerant
+        // failure mode: this periodic probe must never take the settle worker down.
+        let prefix = kaspa_addresses::Prefix::from(self.params.net.network_type());
+        let Ok(address) = kaspa_txscript::standard::extract_script_pub_key_address(&spk, prefix)
+        else {
+            return false;
+        };
+        let Ok(utxos) = self.client.get_utxos_by_addresses(vec![address]).await else {
+            return false;
+        };
+        utxos.into_iter().any(|e| TransactionOutpoint::from(e.outpoint) == outpoint)
     }
 }
 

@@ -328,6 +328,46 @@ async fn test_bridge_reorgs_to_longer_chain() {
     node1.shutdown().await;
 }
 
+/// Verifies a catch-up bridge whose explicit seed block is orphaned by a deeper reorg re-anchors
+/// at the pruning point and replays the surviving chain instead of fatally stopping. With the
+/// sink still empty the removed segment sits entirely below the bridge's anchor: a stale seed,
+/// not the finality violation the rollback reports.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_bridge_recovers_when_seed_orphaned_by_reorg() {
+    let node1 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
+    let node0 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
+
+    // The seed chain on the watched node; the bridge anchors at its tip. The bridge schedules
+    // nothing above it, so its sink stays empty until the reorg.
+    let seed_hashes = node1.mine_blocks(3).await;
+    let start_from = *seed_hashes.last().unwrap();
+
+    let sink = RecordingSink::new();
+    let config = L1BridgeConfig::default()
+        .with_url(Some(node1.wrpc_borsh_url()))
+        .with_network_type(NetworkType::Simnet)
+        .with_connect_strategy(ConnectStrategy::Fallback)
+        .with_filter_half_life(Duration::ZERO)
+        .with_start_from(Some(start_from));
+    let (api_tx, api_rx) = mpsc::channel(1);
+    let bridge = L1Bridge::new(config, sink.clone(), api_rx);
+    let _api = api_tx;
+    bridge.wait_for(TIMEOUT, |e| matches!(e, L1Event::Connected)).await;
+
+    // A longer divergent chain takes over, orphaning the seed block and its chain.
+    let winner_hashes = node0.mine_blocks(8).await;
+    let winner_tip = *winner_hashes.last().unwrap();
+    node1.connect_to(&node0).await;
+
+    // The orphaned seed never returns, so reaching the winner tip proves the bridge re-anchored
+    // and replayed the surviving chain rather than stopping on the below-root reorg.
+    sink.wait_for_block(winner_tip, TIMEOUT).await;
+
+    bridge.shutdown();
+    node0.shutdown().await;
+    node1.shutdown().await;
+}
+
 /// Verifies the reorg filter causes a bridge to lag behind the chain tip after a reorg.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_reorg_filter_causes_lag() {

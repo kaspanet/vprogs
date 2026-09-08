@@ -1568,6 +1568,7 @@ async fn spawn_prover(
             covenant_id,
             finality_depth: LANE_FINALITY_DEPTH,
             seed_depth: 0,
+            min_confirmations: None,
             start_from,
             observers: BridgeObservers { tip_daa: None, settlement: Some(settlement_tx) },
         },

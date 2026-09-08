@@ -13,7 +13,7 @@ use crate::{
     SettlementMode,
     confirm::OutpointAt,
     covenant::{CovenantState, build_settlement_for_mode},
-    settle::effects::{FeeSource, SettlementSink, SubmitOutcome},
+    settle::effects::{FeeSource, FundedSettlement, SettlementSink, SubmitOutcome},
 };
 
 /// How long a submitted settlement may stay unconfirmed before the confirm wait WARN-logs and keeps
@@ -88,85 +88,125 @@ impl<F: FeeSource, K: SettlementSink> Settler<F, K> {
 
         // The network can reject a settlement for a transient reason that funding the fee from a
         // different UTXO resolves. Re-fund from another settled UTXO, excluding each rejected one,
-        // until one is accepted or every spendable UTXO is exhausted.
+        // until one is accepted or every spendable UTXO is exhausted. The last accepted funding is
+        // kept so the confirm wait below can resubmit the same transaction byte-for-byte after the
+        // node silently drops it (observed: mempool-accepted, never mined, gone from the pools).
         let mut excluded = HashSet::new();
-        let txid = loop {
-            // Re-funding from another UTXO each rejection is the one unbounded wait here; bail on
-            // shutdown so teardown is not held up retrying a doomed submission to exhaustion.
-            if shutdown.is_open() {
-                return SettleOutcome::Shutdown;
-            }
-            let Some(funded) = self.funder.fund(&built, covenant_entry.clone(), &excluded).await
-            else {
-                return SettleOutcome::FeeExhausted;
-            };
-            match self.sink.submit(&funded.tx, covenant, shutdown).await {
-                SubmitOutcome::Accepted(txid) => break txid,
-                SubmitOutcome::FeeRejected => {
-                    log::warn!(
-                        "settlement-worker: fee UTXOs {:?} rejected, retrying with others",
-                        funded.fee_outpoints,
-                    );
-                    excluded.extend(funded.fee_outpoints.iter().copied());
-                }
-                SubmitOutcome::Superseded => {
-                    log::info!(
-                        "settlement-worker: covenant outpoint {} already spent by a competitor; \
-                         skipping superseded bundle",
-                        cov.outpoint,
-                    );
-                    return SettleOutcome::Superseded;
-                }
-                SubmitOutcome::Fatal(reason) => {
-                    return SettleOutcome::Failed(format!(
-                        "node rejected the settlement: {reason}"
-                    ));
-                }
-                SubmitOutcome::Shutdown => return SettleOutcome::Shutdown,
-            }
-        };
-        log::info!(
-            "settlement-worker: submitted settlement {txid} (block {})",
-            artifact.block_prove_to,
-        );
-
-        // Confirm by awaiting the settlement watch rather than polling: the chain observer
-        // publishes the covenant's last settlement, so a change past `cov` is exactly the
-        // confirmation signal. The predicate gates on the published settlement advancing
-        // the state (`new_state` differs) and being forward-only (`daa_score` at or past
-        // `cov`), so a stale handle one settlement behind never matches. `wait_for` returns
-        // immediately if the current value already satisfies it (our settlement may have
-        // landed before we started awaiting).
-        let target_state = cov.state;
-        let min_daa = cov.daa_score;
-        let mut rx = self.settlement.clone();
-        let confirmed = rx.wait_for(|opt| {
-            opt.is_some_and(|s| s.new_state != target_state && s.daa_score.get() >= min_daa)
-        });
-        tokio::pin!(confirmed);
-        // The confirm has no natural deadline: without a competitor nothing advances the covenant,
-        // so a settlement stuck in the mempool would park here silently. WARN every
-        // CONFIRM_WARN_INTERVAL and keep waiting; shutdown still wins the biased select.
+        let mut resubmittable: Option<FundedSettlement> = None;
+        // Cumulative wait across (re)submissions of this settlement, for the periodic warning.
         let mut waited = Duration::ZERO;
-        let matched = loop {
-            tokio::select! {
-                biased;
-                () = shutdown.wait() => return SettleOutcome::Shutdown,
-                res = &mut confirmed => break res,
-                () = tokio::time::sleep(CONFIRM_WARN_INTERVAL) => {
-                    waited += CONFIRM_WARN_INTERVAL;
-                    log::warn!(
-                        "settlement-worker: settlement {txid} unconfirmed after {}s, still waiting",
-                        waited.as_secs(),
-                    );
+        let (txid, info) = 'settle: loop {
+            let txid = loop {
+                // Re-funding from another UTXO each rejection is the one unbounded wait here; bail
+                // on shutdown so teardown is not held up retrying a doomed submission to
+                // exhaustion.
+                if shutdown.is_open() {
+                    return SettleOutcome::Shutdown;
+                }
+                // After a drop, resubmit the exact transaction; otherwise fund fresh.
+                let funded = match resubmittable.take() {
+                    Some(funded) => funded,
+                    None => {
+                        let Some(funded) =
+                            self.funder.fund(&built, covenant_entry.clone(), &excluded).await
+                        else {
+                            return SettleOutcome::FeeExhausted;
+                        };
+                        funded
+                    }
+                };
+                match self.sink.submit(&funded.tx, covenant, shutdown).await {
+                    SubmitOutcome::Accepted(txid) => {
+                        resubmittable = Some(funded);
+                        break txid;
+                    }
+                    SubmitOutcome::FeeRejected => {
+                        log::warn!(
+                            "settlement-worker: fee UTXOs {:?} rejected, retrying with others",
+                            funded.fee_outpoints,
+                        );
+                        excluded.extend(funded.fee_outpoints.iter().copied());
+                    }
+                    SubmitOutcome::Superseded => {
+                        log::info!(
+                            "settlement-worker: covenant outpoint {} already spent by a \
+                             competitor; skipping superseded bundle",
+                            cov.outpoint,
+                        );
+                        return SettleOutcome::Superseded;
+                    }
+                    SubmitOutcome::Fatal(reason) => {
+                        return SettleOutcome::Failed(format!(
+                            "node rejected the settlement: {reason}"
+                        ));
+                    }
+                    SubmitOutcome::Shutdown => return SettleOutcome::Shutdown,
+                }
+            };
+            log::info!(
+                "settlement-worker: submitted settlement {txid} (block {})",
+                artifact.block_prove_to,
+            );
+
+            // Confirm by awaiting the settlement watch rather than polling: the observer
+            // publishes the covenant's last settlement, so a change past `cov` is exactly the
+            // confirmation signal. The predicate (advanced state, DAA score at or past `cov`'s)
+            // keeps a stale handle one settlement behind from matching; the value is copied out
+            // of the `Ref` before any await, the current one checked first in case ours already
+            // landed.
+            let target_state = cov.state;
+            let min_daa = cov.daa_score;
+            let mut rx = self.settlement.clone();
+            // The confirm has no natural deadline (without a competitor nothing advances the
+            // covenant), so the tick WARNs every CONFIRM_WARN_INTERVAL and probes for a silent
+            // node drop, resubmitting the same transaction on one. The tick is pinned and
+            // self-resetting, not recreated per pass: the watch fires on every chain fetch (~1/s
+            // on an active chain), and a fresh sleep would be reset by that churn before ever
+            // completing, starving the tick.
+            let warn_tick = tokio::time::sleep(CONFIRM_WARN_INTERVAL);
+            tokio::pin!(warn_tick);
+            let mut confirmed: Option<SettlementInfo> = None;
+            while confirmed.is_none() {
+                if let Some(s) = (*rx.borrow())
+                    .filter(|s| s.new_state != target_state && s.daa_score.get() >= min_daa)
+                {
+                    confirmed = Some(s);
+                    break;
+                }
+                tokio::select! {
+                    biased;
+                    () = shutdown.wait() => return SettleOutcome::Shutdown,
+                    // A dropped sender is the shutdown signal.
+                    res = rx.changed() => {
+                        if res.is_err() {
+                            return SettleOutcome::Shutdown;
+                        }
+                    }
+                    () = &mut warn_tick => {
+                        waited += CONFIRM_WARN_INTERVAL;
+                        if self
+                            .sink
+                            .dropped(txid, cov.spk.clone(), cov.outpoint)
+                            .await
+                        {
+                            log::warn!(
+                                "settlement-worker: settlement {txid} dropped by the node; \
+                                 resubmitting"
+                            );
+                            continue 'settle;
+                        }
+                        log::warn!(
+                            "settlement-worker: settlement {txid} unconfirmed after {}s, still \
+                             waiting",
+                            waited.as_secs(),
+                        );
+                        warn_tick
+                            .as_mut()
+                            .reset(tokio::time::Instant::now() + CONFIRM_WARN_INTERVAL);
+                    }
                 }
             }
-        };
-        // Copy the settlement out of the borrow and drop the `Ref` promptly so the sender is not
-        // blocked. A dropped sender (`Err`) is the shutdown signal.
-        let info = match matched {
-            Ok(r) => (*r).expect("wait_for predicate matched a Some"),
-            Err(_) => return SettleOutcome::Shutdown,
+            break 'settle (txid, confirmed.expect("loop exited with a settlement"));
         };
 
         if info.tx_id == txid {

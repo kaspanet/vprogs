@@ -10,7 +10,10 @@
 //! another prover" without inspecting on-chain UTXO state.
 
 use kaspa_consensus_core::{hashing::sighash::SigHashReusedValuesUnsync, tx::PopulatedTransaction};
-use kaspa_txscript::parse_script;
+use kaspa_txscript::{
+    opcodes::codes::{OpBlake2b, OpData32, OpEqual},
+    parse_script,
+};
 
 use crate::{Hash, L1Transaction, SettlementInfo};
 
@@ -38,6 +41,11 @@ impl L1TransactionCovenantExt for L1Transaction {
             return None;
         }
 
+        // Capture the redeem-script hash the continuation output commits to, so an adopter pins
+        // the exact on-chain script bytes instead of rebuilding them from its local redeem pins
+        // (which drift when the guest ELFs are rebuilt between covenant bootstrap and adoption).
+        let continuation_spk_hash = p2sh_redeem_hash(&self.outputs.first()?.script_public_key)?;
+
         // Decode the three 32-byte values pushed before the redeem in input 0's sig_script.
         let (new_lane_tip, new_state, block_prove_to) =
             parse_settlement_tail(&self.inputs.first()?.signature_script)?;
@@ -49,8 +57,21 @@ impl L1TransactionCovenantExt for L1Transaction {
             block_prove_to,
             new_state,
             new_lane_tip,
+            continuation_spk_hash,
         })
     }
+}
+
+/// Returns the 32-byte redeem-script hash a P2SH `ScriptPublicKey` commits to, or `None` for any
+/// other script shape. Layout: `OpBlake2b | OpData32 | hash(32) | OpEqual`.
+fn p2sh_redeem_hash(spk: &kaspa_consensus_core::tx::ScriptPublicKey) -> Option<[u8; 32]> {
+    let script = spk.script();
+    (script.len() == 35
+        && script[0] == OpBlake2b
+        && script[1] == OpData32
+        && script[34] == OpEqual
+        && spk.version() == 0)
+        .then(|| script[2..34].try_into().unwrap())
 }
 
 /// Returns `(new_lane_tip, new_state, block_prove_to)` from the three 32-byte pushes preceding the
@@ -82,8 +103,7 @@ mod tests {
         constants::TX_VERSION_TOCCATA,
         subnets::SUBNETWORK_ID_NATIVE,
         tx::{
-            CovenantBinding, ScriptPublicKey, Transaction, TransactionInput, TransactionOutpoint,
-            TransactionOutput,
+            CovenantBinding, Transaction, TransactionInput, TransactionOutpoint, TransactionOutput,
         },
     };
 
@@ -146,7 +166,9 @@ mod tests {
             )],
             vec![TransactionOutput::with_covenant(
                 100_000_000,
-                ScriptPublicKey::default(),
+                // A real continuation output pays the next redeem's P2SH; the hash it commits
+                // to is what `settlement_info` captures for adopters.
+                kaspa_txscript::standard::pay_to_script_hash_script(PREV_REDEEM),
                 Some(CovenantBinding::new(0, covenant_id)),
             )],
             0,
@@ -154,6 +176,21 @@ mod tests {
             0,
             Vec::new(),
         )
+    }
+
+    /// Raw blake2b-256 over the redeem script, matching what `pay_to_script_hash_script`
+    /// commits to (unkeyed, unlike the domain-separated kaspa_hashes hashers).
+    fn blake2b(data: &[u8]) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        out.copy_from_slice(
+            kaspa_hashes::blake2b_simd::Params::new()
+                .hash_length(32)
+                .to_state()
+                .update(data)
+                .finalize()
+                .as_bytes(),
+        );
+        out
     }
 
     #[test]
@@ -190,6 +227,12 @@ mod tests {
         assert_eq!(settlement.block_prove_to, Hash::from_bytes(BLOCK_PROVE_TO));
         assert_eq!(settlement.containing_block, CONTAINING_BLOCK);
         assert_eq!(settlement.daa_score.get(), CONTAINING_DAA);
+        // The continuation hash pins the observed output-0 P2SH, not a local-pin rebuild.
+        assert_eq!(
+            settlement.continuation_spk_hash,
+            blake2b(PREV_REDEEM),
+            "continuation hash must pin the observed output-0 redeem",
+        );
     }
 
     #[test]
