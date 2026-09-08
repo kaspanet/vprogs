@@ -148,26 +148,21 @@ impl<F: FeeSource, K: SettlementSink> Settler<F, K> {
                 artifact.block_prove_to,
             );
 
-            // Confirm by awaiting the settlement watch rather than polling: the chain observer
+            // Confirm by awaiting the settlement watch rather than polling: the observer
             // publishes the covenant's last settlement, so a change past `cov` is exactly the
-            // confirmation signal. The predicate gates on the published settlement advancing
-            // the state (`new_state` differs) and being forward-only (`daa_score` at or past
-            // `cov`), so a stale handle one settlement behind never matches. Each pass copies
-            // the value out and drops the `Ref` before any await, and the current value is
-            // checked first (our settlement may have landed before we started waiting).
+            // confirmation signal. The predicate (advanced state, DAA score at or past `cov`'s)
+            // keeps a stale handle one settlement behind from matching; the value is copied out
+            // of the `Ref` before any await, the current one checked first in case ours already
+            // landed.
             let target_state = cov.state;
             let min_daa = cov.daa_score;
             let mut rx = self.settlement.clone();
-            // The confirm has no natural deadline: without a competitor nothing advances the
-            // covenant, so a settlement stuck in the mempool would park here silently. WARN every
-            // CONFIRM_WARN_INTERVAL and keep waiting; shutdown still wins the biased select. Each
-            // tick also probes for a silent node drop and, on one, resubmits through the loop
-            // above (same transaction, so the same txid keeps waiting on the watch).
-            //
-            // The warn tick is pinned and self-resetting, NOT recreated per pass: the watch fires
-            // on every chain batch the bridge processes (the observer republishes per fetch, ~1/s
-            // on an active chain), so a fresh `sleep` in each pass would be reset by the churn
-            // before ever completing and the tick - warning and drop probe alike - would starve.
+            // The confirm has no natural deadline (without a competitor nothing advances the
+            // covenant), so the tick WARNs every CONFIRM_WARN_INTERVAL and probes for a silent
+            // node drop, resubmitting the same transaction on one. The tick is pinned and
+            // self-resetting, not recreated per pass: the watch fires on every chain fetch (~1/s
+            // on an active chain), and a fresh sleep would be reset by that churn before ever
+            // completing, starving the tick.
             let warn_tick = tokio::time::sleep(CONFIRM_WARN_INTERVAL);
             tokio::pin!(warn_tick);
             let mut confirmed: Option<SettlementInfo> = None;
