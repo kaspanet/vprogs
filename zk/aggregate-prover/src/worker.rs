@@ -414,24 +414,17 @@ where
             return;
         };
 
-        // The settlement covers everything through its `block_prove_to`. Wherever that boundary
-        // sits, the covered batches must never reach a bundle: a bundle that starts before it
-        // chains its own lane-tip sequence, and the first bundle to extend past the boundary then
-        // carries a `prev_lane_tip` the covenant never took, which the settler's build rejects
-        // (the catch-up wedge: the follower's bundling boundaries need not match the settler's).
-        // Split both windows at the boundary: drop the covered retained prefix as before, and the
-        // covered queued prefix too, so the next bundle formed from the queue starts strictly
-        // after the boundary. Its first batch then enters with the settlement's own state and
-        // lane tip, chaining cleanly off the adopted covenant. An unmatched boundary (the whole
-        // covered range already behind both windows, or a block that scheduled no batch) drops
-        // nothing, so an unsettled suffix is never silently lost.
+        // A bundle that starts before the boundary chains its own lane-tip sequence, and the
+        // first one to extend past it would carry a `prev_lane_tip` the covenant never took,
+        // which the settler's build rejects (the catch-up wedge: the follower's bundling
+        // boundaries need not match the settler's). Drain the boundary's prefix from both
+        // windows so the next bundle formed from the queue starts strictly after it, its first
+        // batch entering with the settlement's own state and lane tip.
         let boundary = settlement.block_prove_to;
-        let queued_blocks: Vec<Hash> =
-            self.queued.iter().map(|b| b.checkpoint().metadata().hash).collect();
-        let queued_drain = settled_prefix(&queued_blocks, boundary);
-        let retained_blocks: Vec<Hash> =
-            self.retained.iter().map(|b| b.checkpoint().metadata().hash).collect();
-        let retained_drain = settled_prefix(&retained_blocks, boundary);
+        let queued_drain =
+            settled_prefix(self.queued.iter().map(|b| b.checkpoint().metadata().hash), boundary);
+        let retained_drain =
+            settled_prefix(self.retained.iter().map(|b| b.checkpoint().metadata().hash), boundary);
         if queued_drain.is_none() && retained_drain.is_none() {
             log::debug!(
                 "aggregate-prover: settlement {} boundary {} matches no window block; nothing \
@@ -514,17 +507,20 @@ async fn settlement_changed(rx: Option<&mut watch::Receiver<Option<SettlementInf
     }
 }
 
-/// How many leading retained blocks a settlement landing on `boundary` covers, given the retained
+/// How many leading window blocks a settlement landing on `boundary` covers, given the window's
 /// blocks in scheduling order.
 ///
-/// `Some(n)`: `boundary` is the `n`-th retained block, so the settlement covered the first `n`;
-/// drain that prefix and re-form the remainder. `None`: `boundary` is not one of our retained
+/// `Some(n)`: `boundary` is the `n`-th window block, so the settlement covered the first `n`;
+/// drain that prefix and re-form the remainder. `None`: `boundary` is not one of our window
 /// blocks, so drop nothing. Dropping on an unmatched boundary would risk discarding a still-
 /// unsettled suffix (the boundary may sit behind our window, or cover a range we never proved),
 /// which is the wedge [`Worker::reaggregate_superseded`] exists to prevent. The boundary is matched
-/// from the back: chain-block hashes are unique, so at most one retained block matches.
-fn settled_prefix(retained_blocks: &[Hash], boundary: Hash) -> Option<usize> {
-    retained_blocks.iter().rposition(|hash| *hash == boundary).map(|index| index + 1)
+/// from the back: chain-block hashes are unique, so at most one window block matches.
+fn settled_prefix(
+    mut blocks: impl DoubleEndedIterator<Item = Hash> + ExactSizeIterator,
+    boundary: Hash,
+) -> Option<usize> {
+    blocks.rposition(|hash| hash == boundary).map(|index| index + 1)
 }
 
 #[cfg(test)]
@@ -541,13 +537,13 @@ mod tests {
     fn boundary_inside_window_drains_through_it() {
         let blocks = [block(1), block(2), block(3), block(4)];
         // A competitor settled through block 2: drain blocks 1 and 2, leaving [3, 4] to re-form.
-        assert_eq!(settled_prefix(&blocks, block(2)), Some(2));
+        assert_eq!(settled_prefix(blocks.iter().copied(), block(2)), Some(2));
     }
 
     #[test]
     fn boundary_at_window_tip_drains_everything() {
         let blocks = [block(1), block(2), block(3)];
-        assert_eq!(settled_prefix(&blocks, block(3)), Some(3));
+        assert_eq!(settled_prefix(blocks.iter().copied(), block(3)), Some(3));
     }
 
     #[test]
@@ -555,11 +551,11 @@ mod tests {
         // The boundary is not one of our retained blocks: drop nothing rather than clear the
         // window, or an unsettled suffix is lost and the chain wedges.
         let blocks = [block(1), block(2), block(3)];
-        assert_eq!(settled_prefix(&blocks, block(9)), None);
+        assert_eq!(settled_prefix(blocks.iter().copied(), block(9)), None);
     }
 
     #[test]
     fn empty_window_drains_nothing() {
-        assert_eq!(settled_prefix(&[], block(1)), None);
+        assert_eq!(settled_prefix(std::iter::empty(), block(1)), None);
     }
 }

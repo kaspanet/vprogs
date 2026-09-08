@@ -65,10 +65,9 @@ pub struct RunnerConfig {
     pub start_from: Option<Hash>,
     /// Reorg head-room, in DAA, the bridge seeds below the sink for a fresh lane.
     pub seed_depth: u64,
-    /// Lower bound on the `min_confirmation_count` for the bridge's chain-follow queries:
-    /// settlements surface only once buried this many blue-score confirmations, so reorgs
-    /// shallower than it never reach the confirm signal. The bridge's adaptive reorg filter may
-    /// still raise the threshold above this floor. `None` uses the adaptive threshold alone.
+    /// Lower bound on the `min_confirmation_count` for the bridge's chain-follow queries, in
+    /// blue-score confirmations below the sink; the bridge's adaptive reorg filter may still raise
+    /// the threshold above this floor. `None` uses the adaptive threshold alone.
     pub min_confirmations: Option<u64>,
     /// Run the proving + settlement path. Off = execution-only daemon.
     pub prove: bool,
