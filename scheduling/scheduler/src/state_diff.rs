@@ -102,6 +102,14 @@ impl<S: Store, P: Processor<S>> StateDiff<S, P> {
         if !batch.canceled() && written_state.version() > read_state.version() {
             written_state.write_data(wb);
             read_state.write_rollback_ptr(wb, batch.checkpoint().index());
+            if let Some(indexer) = batch.indexer() {
+                let version = batch.checkpoint().index();
+                let old_data =
+                    (!read_state.data().is_empty()).then_some(read_state.data().as_slice());
+                let new_data =
+                    (!written_state.data().is_empty()).then_some(written_state.data().as_slice());
+                indexer.index_diff(&self.resource_id, old_data, new_data, version, wb);
+            }
         }
     }
 

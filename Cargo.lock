@@ -9037,6 +9037,7 @@ dependencies = [
  "num_cpus",
  "rocksdb",
  "tap",
+ "tempfile",
  "vprogs-core-codec",
  "vprogs-core-hashing",
  "vprogs-core-smt",

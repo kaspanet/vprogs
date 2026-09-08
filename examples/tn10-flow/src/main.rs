@@ -60,7 +60,7 @@ async fn main() {
     // bootstraps the covenant and spawns the settler.
     // The counter `transaction-processor` credits no L1 deposits, so every batch commits the
     // no-deposit sentinel.
-    let handles = start_runner(&cfg.runner, &client, &params, elfs, |_| [0u8; 32])
+    let handles = start_runner(&cfg.runner, &client, &params, elfs, |_| [0u8; 32], None)
         .await
         .unwrap_or_else(|e| panic!("runner start failed: {e}"));
 

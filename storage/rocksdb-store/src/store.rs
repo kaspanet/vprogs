@@ -96,6 +96,32 @@ impl<C: Config> Store for RocksDbStore<C> {
         Box::new(RocksDbPrefixIter { inner: iter })
     }
 
+    fn prefix_iter_rev(&self, state_space: StateSpace, prefix: &[u8]) -> PrefixIterator<'_> {
+        let cf = self.cf(&state_space);
+        let mut read_opts = rocksdb::ReadOptions::default();
+        // Hard stop at the prefix: reverse walking ends once keys fall below it.
+        read_opts.set_iterate_lower_bound(prefix.to_vec());
+        if let Some(upper) = prefix_end(prefix) {
+            read_opts.set_iterate_upper_bound(upper);
+        }
+        // Total order: the u64 prefix extractor installed on the CFs would otherwise
+        // bound iteration by its 8-byte slice, not our prefix.
+        read_opts.set_total_order_seek(true);
+        let iter = self.db.iterator_cf_opt(cf, read_opts, IteratorMode::End);
+        Box::new(RocksDbPrefixIter { inner: iter })
+    }
+
+    fn range_iter(&self, state_space: StateSpace, start: &[u8], end: &[u8]) -> PrefixIterator<'_> {
+        let cf = self.cf(&state_space);
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_iterate_lower_bound(start.to_vec());
+        read_opts.set_iterate_upper_bound(end.to_vec());
+        read_opts.set_total_order_seek(true);
+        let mode = IteratorMode::From(start, Direction::Forward);
+        let iter = self.db.iterator_cf_opt(cf, read_opts, mode);
+        Box::new(RocksDbPrefixIter { inner: iter })
+    }
+
     fn canonical_chain(&self) -> CanonicalChain {
         self.canonical.clone()
     }
@@ -144,6 +170,19 @@ impl<C: Config> Clone for RocksDbStore<C> {
             _marker: PhantomData,
         }
     }
+}
+
+/// Returns the lexicographical upper bound for keys with the given prefix, or `None` if the prefix
+/// is all 0xFF bytes (in which case keys with that prefix extend to the end of the key space).
+fn prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
+    let mut end = prefix.to_vec();
+    while let Some(last) = end.pop() {
+        if last < 0xff {
+            end.push(last + 1);
+            return Some(end);
+        }
+    }
+    None
 }
 
 /// Wrapper around RocksDB's prefix iterator that unwraps Results into panics.

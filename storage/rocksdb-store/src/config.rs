@@ -98,6 +98,12 @@ pub trait Config: Send + Sync + 'static {
             o.set_prefix_extractor(SliceTransform::create_fixed_prefix(U64_PREFIX_LEN));
         })
     }
+
+    /// Options for the app-index column family; the data options carry over since index
+    /// keys are small, immutable, and never read by consensus paths.
+    fn cf_index_opts() -> Options {
+        Self::cf_data_opts()
+    }
 }
 
 /// Default store configuration.
