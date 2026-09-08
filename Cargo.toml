@@ -17,6 +17,7 @@ default-members = [
   "zk/aggregate-prover",
   "zk/vm",
   "zk/backend/risc0/api",
+  "zk/backend/risc0/app-kit",
   "zk/backend/risc0/covenant",
   "zk/backend/risc0/settler",
   "zk/backend/risc0/test-suite",
@@ -42,6 +43,7 @@ members = [
   "transaction-runtime/*",
   "zk/abi",
   "zk/backend/risc0/api",
+  "zk/backend/risc0/app-kit",
   "zk/backend/risc0/covenant",
   "zk/backend/risc0/settler",
   "zk/backend/risc0/test-suite",
@@ -209,6 +211,7 @@ resolver = "3"
   vprogs-zk-abi                                   = { path = "zk/abi", default-features = false }
   vprogs-zk-aggregate-prover                      = { path = "zk/aggregate-prover" }
   vprogs-zk-backend-risc0-api                     = { path = "zk/backend/risc0/api", default-features = false }
+  vprogs-zk-backend-risc0-app-kit                 = { path = "zk/backend/risc0/app-kit" }
   vprogs-zk-backend-risc0-covenant                = { path = "zk/backend/risc0/covenant" }
   vprogs-zk-backend-risc0-runtime-processor       = { path = "zk/backend/risc0/runtime-processor", default-features = false }
   vprogs-zk-backend-risc0-settler                 = { path = "zk/backend/risc0/settler" }

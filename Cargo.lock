@@ -9292,6 +9292,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-zk-backend-risc0-app-kit"
+version = "0.1.0"
+dependencies = [
+ "kaspa-addresses",
+ "kaspa-consensus-core",
+ "kaspa-hashes",
+ "kaspa-rpc-core",
+ "kaspa-txscript",
+ "log",
+ "rand 0.8.5",
+ "secp256k1",
+ "tokio",
+ "vprogs-core-codec",
+ "vprogs-core-types",
+ "vprogs-l1-utils",
+ "vprogs-l1-wallet",
+ "vprogs-zk-abi",
+ "vprogs-zk-backend-risc0-api",
+ "vprogs-zk-backend-risc0-runtime-processor",
+]
+
+[[package]]
 name = "vprogs-zk-backend-risc0-covenant"
 version = "0.1.0"
 dependencies = [
