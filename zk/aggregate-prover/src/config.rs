@@ -1,7 +1,7 @@
 use std::{ops::RangeInclusive, sync::Arc};
 
 use kaspa_hashes::Hash;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use vprogs_core_atomics::AsyncQueue;
 use vprogs_l1_types::SettlementInfo;
 use vprogs_zk_batch_prover::LaneProofSource;
@@ -35,9 +35,9 @@ pub struct AggregateProverConfig<L: LaneProofSource, R: Send + Sync + 'static> {
     /// capped at `*end()`. `1..=usize::MAX` ("1..") is the greedy default: form as soon as the
     /// front is ready and extend over every consecutively-ready batch.
     pub bundle_size: RangeInclusive<usize>,
-    /// Sender on the exit-leaf watch driving client Merkle-path proof generation, or `None` if
+    /// Sender on the exit-leaf channel driving client Merkle-path proof generation, or `None` if
     /// exit publishing is disabled.
-    pub exits: Option<watch::Sender<Option<Arc<ExitsForBundle>>>>,
+    pub exits: Option<mpsc::UnboundedSender<Arc<ExitsForBundle>>>,
 }
 
 impl<L: LaneProofSource, R: Send + Sync + 'static> AggregateProverConfig<L, R> {

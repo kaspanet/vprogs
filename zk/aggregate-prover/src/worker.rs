@@ -6,7 +6,10 @@ use std::{
 };
 
 use kaspa_hashes::Hash;
-use tokio::{runtime::Builder, sync::watch};
+use tokio::{
+    runtime::Builder,
+    sync::{mpsc, watch},
+};
 use vprogs_core_atomics::AsyncQueue;
 use vprogs_core_codec::Reader;
 use vprogs_l1_types::{ChainBlockMetadata, SettlementInfo};
@@ -52,9 +55,9 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend, L: LaneProofSour
     /// First-batch checkpoint index of the most recently re-formed suffix, guarding against
     /// re-emitting it on every settlement wake. Reset by a rollback.
     last_reformed_from: Option<u64>,
-    /// Sender on the exit-leaf watch driving client Merkle-path proof generation, or `None` if
+    /// Sender on the exit-leaf channel driving client Merkle-path proof generation, or `None` if
     /// exit publishing is disabled.
-    exits: Option<watch::Sender<Option<Arc<ExitsForBundle>>>>,
+    exits: Option<mpsc::UnboundedSender<Arc<ExitsForBundle>>>,
 }
 
 impl<S, P, B, L> Worker<S, P, B, L>
@@ -387,11 +390,12 @@ where
             if st.permission_spk_hash != [0u8; 32] {
                 let leaves =
                     Arc::new(extract_bundle_exits(&journals).expect("decode bundle exits"));
-                sender.send_replace(Some(Arc::new(ExitsForBundle {
+                // Receiver dropped means no consumer is listening; silently ignore.
+                let _ = sender.send(Arc::new(ExitsForBundle {
                     new_state: st.new_state,
                     permission_spk_hash: st.permission_spk_hash,
                     leaves,
-                })));
+                }));
             }
         }
     }
