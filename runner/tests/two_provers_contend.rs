@@ -1585,6 +1585,7 @@ async fn spawn_prover(
             // settler reconciles against, so a bundle a shorter competitor superseded still
             // settles.
             settlement_rx: Some(settlement_rx.clone()),
+            exits_tx: None,
         },
         None,
     );

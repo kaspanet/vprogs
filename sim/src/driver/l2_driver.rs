@@ -251,6 +251,7 @@ fn build_exec(
                 // aggregate worker's park self-heals when the minimum (> 1 here) leaves the ready
                 // prefix short.
                 bundle_size: proof_bundle_size..=proof_bundle_size,
+                exits: None,
             },
         );
         (pipeline, Some(queue))
