@@ -19,16 +19,13 @@ pub struct PermissionTreeView {
 impl PermissionTreeView {
     /// Builds a padded permission tree from a slice of exit leaves.
     ///
-    /// For 0 or 1 leaves, produces a depth-0 tree (root is
-    /// [`PermissionTreeAccumulator::hash_empty()`] for 0 leaves, or the single leaf hash
-    /// for 1 leaf; siblings path is empty). For 2 or more leaves, pads to
-    /// `1 << required_depth(leaves.len())` with [`PermissionTreeAccumulator::hash_empty()`].
+    /// Always pads to `1 << required_depth(leaves.len())` with
+    /// [`PermissionTreeAccumulator::hash_empty()`], matching the depth the on-chain redeem
+    /// script embeds for the leaf count (`required_depth(1) == 1`: a single leaf pairs with
+    /// the empty hash). For 0 leaves this is the all-empty depth-1 tree rooted at
+    /// `hash_branch(empty, empty)`.
     pub fn from_leaves(leaves: &[ExitLeaf]) -> Self {
-        let depth = if leaves.len() <= 1 {
-            0
-        } else {
-            PermissionTreeAccumulator::required_depth(leaves.len())
-        };
+        let depth = PermissionTreeAccumulator::required_depth(leaves.len());
         let capacity = 1usize << depth;
         let empty = PermissionTreeAccumulator::hash_empty();
         let mut level0 = vec![empty; capacity];
@@ -59,8 +56,7 @@ impl PermissionTreeView {
 
     /// Sibling hashes for the leaf at `index`.
     ///
-    /// Requires `index < 1 << self.depth()` (returns empty for depth 0; panics if index is out
-    /// of bounds for `depth > 0`).
+    /// Requires `index < 1 << self.depth()` (panics if index is out of bounds).
     pub fn siblings(&self, index: usize) -> Vec<[u8; 32]> {
         let depth = self.depth();
         let mut out = Vec::with_capacity(depth);
@@ -74,7 +70,7 @@ impl PermissionTreeView {
 
     /// Computes the new root if the leaf at `index` is replaced with `leaf_hash`.
     ///
-    /// Requires `index < 1 << self.depth()` (returns `leaf_hash` for depth 0).
+    /// Requires `index < 1 << self.depth()`.
     pub fn root_with_leaf(&self, index: usize, leaf_hash: [u8; 32]) -> [u8; 32] {
         fold_path(leaf_hash, &self.siblings(index), index)
     }
@@ -166,16 +162,39 @@ mod tests {
     }
 
     #[test]
-    fn single_leaf_depth_zero_tree() {
+    fn single_leaf_pairs_with_empty_sibling() {
         let pk0 = [0x11u8; 32];
         let l0 = ExitLeaf::from_pair(StandardSpk::PubKey(&pk0), 100);
         let l0_hash = PermissionTreeAccumulator::hash_leaf(l0.to_standard_spk(), l0.amount);
+        let empty = PermissionTreeAccumulator::hash_empty();
         let tree = PermissionTreeView::from_leaves(&[l0]);
 
-        assert_eq!(tree.depth(), 0);
-        assert_eq!(tree.root(), l0_hash);
-        assert!(tree.siblings(0).is_empty());
-        assert_eq!(fold_path(l0_hash, &tree.siblings(0), 0), l0_hash);
-        assert_eq!(tree.root_with_leaf(0, l0_hash), l0_hash);
+        // The on-chain redeem for 1 leaf embeds depth 1: leaf paired with the empty hash.
+        assert_eq!(tree.depth(), PermissionTreeAccumulator::required_depth(1));
+        assert_eq!(tree.depth(), 1);
+        assert_eq!(tree.root(), PermissionTreeAccumulator::hash_branch(&l0_hash, &empty));
+        assert_eq!(tree.siblings(0), vec![empty]);
+        assert_eq!(fold_path(l0_hash, &tree.siblings(0), 0), tree.root());
+        assert_eq!(tree.root_with_leaf(0, l0_hash), tree.root());
+    }
+
+    #[test]
+    fn view_roots_match_accumulator_padded_roots() {
+        // The view must reproduce the accumulator's padded root (the value the on-chain
+        // redeem embeds) for every leaf count, including the single-leaf depth-1 fold.
+        for k in 1..=5usize {
+            let leaves: Vec<_> = (0..k)
+                .map(|i| {
+                    ExitLeaf::from_pair(StandardSpk::PubKey(&[i as u8 + 1; 32]), 100 + i as u64)
+                })
+                .collect();
+            let mut acc = PermissionTreeAccumulator::new();
+            for leaf in &leaves {
+                acc.add_exit(leaf.to_standard_spk(), leaf.amount);
+            }
+            let view = PermissionTreeView::from_leaves(&leaves);
+            assert_eq!(view.depth(), PermissionTreeAccumulator::required_depth(k));
+            assert_eq!(view.root(), acc.root());
+        }
     }
 }

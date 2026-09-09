@@ -427,6 +427,14 @@ mod tests {
         let tree = TestTree::new(tree_leaves);
         assert_eq!(claim_siblings(&leaves, 0), tree.siblings(0));
         assert_eq!(claim_siblings(&leaves, 1), tree.siblings(1));
+
+        // k = 1: the redeem embeds depth 1, so the claim carries the empty hash as its
+        // single sibling.
+        let single = vec![ExitLeaf::from_pair(spk_a, 100)];
+        let tree_single =
+            TestTree::new(vec![(spk_a.to_script_bytes().as_ref().try_into().unwrap(), 100u64)]);
+        assert_eq!(claim_siblings(&single, 0), tree_single.siblings(0));
+        assert_eq!(claim_siblings(&single, 0), vec![PermissionTreeAccumulator::hash_empty()]);
     }
 
     #[test]
