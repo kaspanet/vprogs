@@ -26,6 +26,7 @@ use vprogs_l1_bridge::PermissionSpendHooks;
 use vprogs_l1_types::SettlementInfo;
 use vprogs_l1_wallet::Wallet;
 use vprogs_scheduling_scheduler::Indexer;
+use vprogs_zk_abi::withdrawal::ExitLeaf;
 use vprogs_zk_aggregate_prover::ExitsForBundle;
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_settler::{
@@ -36,7 +37,7 @@ use vprogs_zk_backend_risc0_test_suite::dev_mode_enabled;
 
 use crate::{
     config::{RunnerConfig, StartMode},
-    exit_index::{ExitIndexer, load_registry, run_exit_indexer},
+    exit_index::{ExitIndexer, load_registry, run_exec_exits_joiner, run_exit_indexer},
     node::{
         BridgeObservers, BridgeParams, CovenantIdBytes, DepositSpkHash, Elfs, ProvingParams,
         RunnerNode, RunnerStore, SettlementQueue, build_exec_node, build_proving_node,
@@ -63,12 +64,13 @@ pub struct RunnerHandles {
     pub covenant_id: Hash,
     /// Receiver on the per-bundle exit leaves channel.
     ///
-    /// Delivers exits per bundle in order with no coalescing. Publication means the bundle
-    /// artifact was published, not confirmed on L1: confirmations come from the settlement
-    /// watch, joined on `new_state` / `permission_spk_hash`. In exec mode the sender is
-    /// dropped at startup, closing the channel: `recv()` yields `None` (treat that as terminal
-    /// silence). When `exit_indexer` is wired, the exit-index task owns this stream; the returned
-    /// receiver is closed (`recv()` -> `None`).
+    /// Delivers exits per bundle in order with no coalescing, in both modes. In prove mode
+    /// publication means the bundle artifact was published, not confirmed on L1: confirmations
+    /// come from the settlement watch, joined on `new_state` / `permission_spk_hash`. In exec
+    /// mode leaves come from local tx-journal extraction and are attributed to observed
+    /// settlements by permission-commitment equality, so publication means the settlement was
+    /// already seen on L1. When `exit_indexer` is wired, the exit-index task owns this stream;
+    /// the returned receiver is closed (`recv()` -> `None`).
     pub exits_rx: mpsc::UnboundedReceiver<Arc<ExitsForBundle>>,
 }
 
@@ -240,7 +242,7 @@ async fn start_exec<F>(
         elfs,
         deposit_spk_hash: _,
         indexer,
-        exit_indexer: _,
+        exit_indexer,
         mode,
         persisted,
     } = ctx;
@@ -311,6 +313,54 @@ async fn start_exec<F>(
     let bridge_seed = resolve_bridge_seed(client, start_from, cfg.seed_depth, tip_daa).await;
 
     let store = RunnerStore::open(cfg.data_dir.join("db"));
+
+    // Exec-mode exits feed: the Vm taps each tx's journal-committed exits, and the joiner task
+    // attributes buffered leaves to observed settlements by permission-commitment equality,
+    // publishing the same per-bundle `ExitsForBundle` stream the proving node's aggregate prover
+    // publishes. The bridge's settlement events feed the joiner directly (even without an
+    // indexer, where prove mode leaves them unwired): attribution needs them.
+    let (exits_tx, exits_rx) = mpsc::unbounded_channel::<Arc<ExitsForBundle>>();
+    let (settlement_events_tx, settlement_events_rx) = mpsc::unbounded_channel();
+    let (tx_exits_tx, tx_exits_rx) = mpsc::unbounded_channel::<Vec<ExitLeaf>>();
+
+    // Same exit-indexer wiring as prove mode: when an indexer is wired (and the covenant id is
+    // non-zero) it owns the exits stream and the receiver handed to the caller is closed.
+    let (permission_spends, exits_handles_rx, settle_fwd_tx) = if let Some(indexer) = exit_indexer {
+        if covenant_id == Hash::default() {
+            log::warn!("covenant_id is zero; skipping permission spend watcher and exit indexer");
+            (None, exits_rx, None)
+        } else {
+            let initial_registry = load_registry(&store);
+            let shared_registry = Arc::new(RwLock::new(initial_registry));
+            let (spend_tx, spend_rx) = mpsc::unbounded_channel();
+            let hooks =
+                PermissionSpendHooks { events: spend_tx, registry: shared_registry.clone() };
+            // The joiner forwards each matched settlement so the indexer can pair it with the
+            // emitted bundle (the indexer's exits-first biased select makes the joiner's
+            // bundle-then-settlement send order safe).
+            let (settle_fwd_tx, settle_fwd_rx) = mpsc::unbounded_channel();
+            tokio::spawn(run_exit_indexer(
+                indexer,
+                store.clone(),
+                exits_rx,
+                settle_fwd_rx,
+                spend_rx,
+                shared_registry,
+            ));
+            // When exit_indexer is wired, the exit-index task owns this stream; the returned
+            // receiver is closed (recv() -> None).
+            let (_tx, rx) = mpsc::unbounded_channel();
+            (Some(hooks), rx, Some(settle_fwd_tx))
+        }
+    } else {
+        (None, exits_rx, None)
+    };
+
+    // Attribution task runs in every exec configuration: with no indexer it feeds the caller's
+    // live `exits_rx`; both of its input channels die with the node, so its exit shuts the
+    // exits stream down in turn.
+    tokio::spawn(run_exec_exits_joiner(tx_exits_rx, settlement_events_rx, exits_tx, settle_fwd_tx));
+
     let node = build_exec_node(
         elfs,
         store,
@@ -320,12 +370,16 @@ async fn start_exec<F>(
             covenant_id,
             params,
             bridge_seed,
-            BridgeObservers::default(),
+            BridgeObservers {
+                settlement_events: Some(settlement_events_tx),
+                permission_spends,
+                ..BridgeObservers::default()
+            },
         ),
         indexer,
+        Some(tx_exits_tx),
     );
-    let (_exits_tx, exits_rx) = mpsc::unbounded_channel::<Arc<ExitsForBundle>>();
-    Ok((node, covenant_id, exits_rx))
+    Ok((node, covenant_id, exits_handles_rx))
 }
 
 /// Builds the proving + settlement node per the start mode: fresh bootstrap (dev-pins under
