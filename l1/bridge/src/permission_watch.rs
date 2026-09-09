@@ -434,6 +434,8 @@ mod tests {
         assert_eq!(spend.covenant_id, covenant_id);
         assert_eq!(spend.old_root, tree.root());
         assert_eq!(spend.old_unclaimed, 1);
+        // The single-leaf redeem embeds depth 1: leaf paired with the empty hash.
+        assert_eq!(spend.depth, 1);
         assert_eq!(spend.new_root, expected_new_root);
         assert_eq!(spend.spend_txid, txid_bytes);
 
