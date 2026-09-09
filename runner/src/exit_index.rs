@@ -1,7 +1,7 @@
 //! Runner exit-index task and secondary indexer trait over settled bundles and permission spends.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{Arc, RwLock},
 };
 
@@ -10,7 +10,9 @@ use kaspa_hashes::Hash;
 use tokio::sync::mpsc;
 use vprogs_l1_types::{PermissionSpend, SettlementInfo};
 use vprogs_storage_types::{StateSpace, Store, WriteBatch};
+use vprogs_zk_abi::withdrawal::ExitLeaf;
 use vprogs_zk_aggregate_prover::ExitsForBundle;
+use vprogs_zk_backend_risc0_api::PermissionTreeAccumulator;
 
 /// Prefix for permission outpoints in `StateSpace::Metadata`.
 pub const PERM_OUT_PREFIX: &[u8] = b"perm_out";
@@ -77,12 +79,19 @@ pub fn handle_pairing<S: Store>(
 ) {
     let mut wb = store.write_batch();
     indexer.on_exits_committed(bundle, settlement, &mut wb);
+    // Track the raw padded-tree root the watcher's redeem decode compares against — NOT
+    // `bundle.permission_spk_hash`, which lives in script-hash space.
+    let mut acc = PermissionTreeAccumulator::new();
+    for leaf in bundle.leaves.iter() {
+        acc.add_exit(leaf.to_standard_spk(), leaf.amount);
+    }
+    let root = acc.root();
     let key = perm_out_key(&settlement.tx_id, 1);
-    let val = borsh::to_vec(&bundle.permission_spk_hash).expect("serialize root");
+    let val = borsh::to_vec(&root).expect("serialize root");
     wb.put(StateSpace::Metadata, &key, &val);
     store.commit(wb);
     let outpoint = TransactionOutpoint::new(settlement.tx_id, 1);
-    registry.write().expect("poisoned lock").insert(outpoint, bundle.permission_spk_hash);
+    registry.write().expect("poisoned lock").insert(outpoint, root);
 }
 
 /// Attempts to pair an observed settlement with a parked bundle.
@@ -189,12 +198,113 @@ pub async fn run_exit_indexer<S: Store>(
     }
 }
 
+/// Permission commitment a settlement's exit output pins for a leaf list: the P2SH hash of the
+/// redeem script embedding the padded-tree root, leaf count, and depth, exactly what the guest's
+/// [`PermissionTreeAccumulator`] finalizes into the aggregate journal and the settlement's output-1
+/// SPK carries.
+pub fn permission_commitment(leaves: &[ExitLeaf]) -> [u8; 32] {
+    let mut acc = PermissionTreeAccumulator::new();
+    for leaf in leaves {
+        acc.add_exit(leaf.to_standard_spk(), leaf.amount);
+    }
+    acc.finalize()
+}
+
+/// Returns the length of the smallest leaf prefix whose permission commitment equals
+/// `commitment`, or `None` when no prefix matches. Settlements arrive with the commitment their
+/// output-1 SPK pins, so this attributes locally executed leaves to the settlement that paid them.
+// ponytail: O(n) full tree rebuilds per candidate settlement (O(n^2) over the buffer); fine at
+// demo scale (a handful of exits per bundle), an incremental accumulator scan if it ever matters.
+fn match_prefix(buf: &[ExitLeaf], commitment: [u8; 32]) -> Option<usize> {
+    (1..=buf.len()).find(|&k| permission_commitment(&buf[..k]) == commitment)
+}
+
+/// Background task joining the exec node's per-tx exit leaves with its observed L1 settlements.
+///
+/// Buffers the Vm's exits tap in arrival order; per settlement with a non-zero
+/// [`SettlementInfo::permission_spk_hash`], emits the smallest matching leaf prefix as an
+/// [`ExitsForBundle`] onto `exits_tx` and drains it. A settlement whose prefix has not fully
+/// arrived yet parks as pending and is retried as leaves arrive (bridge and scheduler delivery
+/// order is not guaranteed); a newer settlement arriving while an older one is pending is a
+/// desync, logged (both named) but not fatal, and both still match once their leaves land.
+/// Zero-commitment settlements emitted no exits and consume none. `settlement_fwd`, when wired,
+/// receives each matched settlement so a downstream [`run_exit_indexer`] can pair it with the
+/// emitted bundle; the bundle is sent first, matching the indexer's exits-first biased select.
+pub async fn run_exec_exits_joiner(
+    mut leaves_rx: mpsc::UnboundedReceiver<Vec<ExitLeaf>>,
+    mut settlement_rx: mpsc::UnboundedReceiver<SettlementInfo>,
+    exits_tx: mpsc::UnboundedSender<Arc<ExitsForBundle>>,
+    settlement_fwd: Option<mpsc::UnboundedSender<SettlementInfo>>,
+) {
+    let mut buf: Vec<ExitLeaf> = Vec::new();
+    let mut pending: VecDeque<SettlementInfo> = VecDeque::new();
+
+    /// Emits bundles for every pending settlement whose prefix is now complete.
+    fn drain_pending(
+        pending: &mut VecDeque<SettlementInfo>,
+        buf: &mut Vec<ExitLeaf>,
+        exits_tx: &mpsc::UnboundedSender<Arc<ExitsForBundle>>,
+        settlement_fwd: &Option<mpsc::UnboundedSender<SettlementInfo>>,
+    ) {
+        while let Some(settlement) = pending.front() {
+            let Some(k) = match_prefix(buf, settlement.permission_spk_hash) else { break };
+            // Receiver dropped means no consumer is listening; silently ignore.
+            let _ = exits_tx.send(Arc::new(ExitsForBundle {
+                new_state: settlement.new_state,
+                permission_spk_hash: settlement.permission_spk_hash,
+                leaves: Arc::new(buf[..k].to_vec()),
+            }));
+            if let Some(fwd) = settlement_fwd {
+                let _ = fwd.send(*settlement);
+            }
+            buf.drain(..k);
+            pending.pop_front();
+        }
+    }
+
+    loop {
+        tokio::select! {
+            biased;
+            maybe_leaves = leaves_rx.recv() => match maybe_leaves {
+                Some(leaves) => {
+                    buf.extend(leaves);
+                    drain_pending(&mut pending, &mut buf, &exits_tx, &settlement_fwd);
+                }
+                None => break,
+            },
+            maybe_settlement = settlement_rx.recv() => match maybe_settlement {
+                Some(settlement) => {
+                    if let Some(older) = pending.back() {
+                        log::error!(
+                            "exec exits desync: settlement {} (new_state {:?}) arrived while {} \
+                             (new_state {:?}) is still pending",
+                            settlement.tx_id,
+                            settlement.new_state,
+                            older.tx_id,
+                            older.new_state,
+                        );
+                    }
+                    if settlement.permission_spk_hash != [0u8; 32] {
+                        pending.push_back(settlement);
+                        drain_pending(&mut pending, &mut buf, &exits_tx, &settlement_fwd);
+                    }
+                }
+                None => break,
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
 
     use tempfile::tempdir;
     use vprogs_storage_rocksdb_store::RocksDbStore;
+    use vprogs_zk_abi::withdrawal::StandardSpk;
+    use vprogs_zk_backend_risc0_api::{
+        PermissionTreeView, blake2b_script_hash, build_permission_redeem_script,
+    };
 
     use super::*;
 
@@ -231,10 +341,12 @@ mod tests {
         let indexer = Arc::new(FakeExitIndexer::new());
         let registry = Arc::new(RwLock::new(HashMap::new()));
 
+        let leaves = vec![test_leaf(0x11, 100), test_leaf(0x22, 200)];
+        let expected_root = PermissionTreeView::from_leaves(&leaves).root();
         let bundle = Arc::new(ExitsForBundle {
             new_state: [0x11; 32],
-            permission_spk_hash: [0x22; 32],
-            leaves: Arc::new(vec![]),
+            permission_spk_hash: permission_commitment(&leaves),
+            leaves: Arc::new(leaves),
         });
 
         let mut parked = HashMap::new();
@@ -258,13 +370,16 @@ mod tests {
         assert!(parked.is_empty());
         assert_eq!(indexer.committed.lock().unwrap().len(), 1);
 
+        // The registry tracks the RAW padded root (what the watcher's redeem decode
+        // compares), never the script-hash commitment.
         let outpoint = TransactionOutpoint::new(matching_settlement.tx_id, 1);
-        assert_eq!(registry.read().unwrap().get(&outpoint), Some(&[0x22; 32]));
+        assert_eq!(registry.read().unwrap().get(&outpoint), Some(&expected_root));
+        assert_ne!(expected_root, bundle.permission_spk_hash);
 
         let key = perm_out_key(&matching_settlement.tx_id, 1);
         let val = store.get(StateSpace::Metadata, &key).expect("metadata entry present");
         let decoded: [u8; 32] = borsh::from_slice(&val).unwrap();
-        assert_eq!(decoded, [0x22; 32]);
+        assert_eq!(decoded, expected_root);
     }
 
     #[test]
@@ -274,10 +389,12 @@ mod tests {
         let indexer = Arc::new(FakeExitIndexer::new());
         let registry = Arc::new(RwLock::new(HashMap::new()));
 
+        let leaves = vec![test_leaf(0x11, 100)];
+        let initial_root = PermissionTreeView::from_leaves(&leaves).root();
         let initial_bundle = Arc::new(ExitsForBundle {
             new_state: [0x11; 32],
-            permission_spk_hash: [0x22; 32],
-            leaves: Arc::new(vec![]),
+            permission_spk_hash: permission_commitment(&leaves),
+            leaves: Arc::new(leaves),
         });
         let initial_settlement = SettlementInfo {
             tx_id: Hash::from_bytes([0xaa; 32]),
@@ -288,7 +405,7 @@ mod tests {
 
         let spend = PermissionSpend {
             covenant_id: [0x55; 32],
-            old_root: [0x22; 32],
+            old_root: initial_root,
             old_unclaimed: 2,
             depth: 1,
             leaf_index: 0,
@@ -345,10 +462,12 @@ mod tests {
         ));
 
         // 1. Send exit bundle.
+        let leaves = vec![test_leaf(0x77, 700)];
+        let root = PermissionTreeView::from_leaves(&leaves).root();
         let bundle = Arc::new(ExitsForBundle {
             new_state: [0x11; 32],
-            permission_spk_hash: [0x22; 32],
-            leaves: Arc::new(vec![]),
+            permission_spk_hash: permission_commitment(&leaves),
+            leaves: Arc::new(leaves),
         });
         exits_tx.send(bundle).unwrap();
 
@@ -368,13 +487,13 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
-        assert_eq!(registry.read().unwrap().get(&outpoint), Some(&[0x22; 32]));
+        assert_eq!(registry.read().unwrap().get(&outpoint), Some(&root));
         assert_eq!(indexer.committed.lock().unwrap().len(), 1);
 
         // 3. Send spend event.
         let spend = PermissionSpend {
             covenant_id: [0x55; 32],
-            old_root: [0x22; 32],
+            old_root: root,
             old_unclaimed: 2,
             depth: 1,
             leaf_index: 0,
@@ -426,16 +545,20 @@ mod tests {
             registry.clone(),
         ));
 
-        // Park two bundles.
+        // Park two bundles with distinct raw roots.
+        let leaves1 = vec![test_leaf(0x31, 100)];
+        let root1 = PermissionTreeView::from_leaves(&leaves1).root();
+        let leaves2 = vec![test_leaf(0x42, 200)];
+        let root2 = PermissionTreeView::from_leaves(&leaves2).root();
         let b1 = Arc::new(ExitsForBundle {
             new_state: [0x11; 32],
-            permission_spk_hash: [0x21; 32],
-            leaves: Arc::new(vec![]),
+            permission_spk_hash: permission_commitment(&leaves1),
+            leaves: Arc::new(leaves1),
         });
         let b2 = Arc::new(ExitsForBundle {
             new_state: [0x12; 32],
-            permission_spk_hash: [0x22; 32],
-            leaves: Arc::new(vec![]),
+            permission_spk_hash: permission_commitment(&leaves2),
+            leaves: Arc::new(leaves2),
         });
         exits_tx.send(b1).unwrap();
         exits_tx.send(b2).unwrap();
@@ -467,13 +590,128 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
 
-        assert_eq!(registry.read().unwrap().get(&out1), Some(&[0x21; 32]));
-        assert_eq!(registry.read().unwrap().get(&out2), Some(&[0x22; 32]));
+        assert_eq!(registry.read().unwrap().get(&out1), Some(&root1));
+        assert_eq!(registry.read().unwrap().get(&out2), Some(&root2));
         assert_eq!(indexer.committed.lock().unwrap().len(), 2);
 
         drop(exits_tx);
         drop(settlement_tx);
         drop(_spend_tx);
         indexer_handle.await.unwrap();
+    }
+
+    fn test_leaf(seed: u8, amount: u64) -> ExitLeaf {
+        ExitLeaf::from_pair(StandardSpk::PubKey(&[seed; 32]), amount)
+    }
+
+    /// Expected commitment for k leaves, cross-checked against `PermissionTreeView` (the
+    /// padded-tree root) wrapped in the redeem script the settlement pins.
+    fn manual_commitment(leaves: &[ExitLeaf]) -> [u8; 32] {
+        let view = PermissionTreeView::from_leaves(leaves);
+        blake2b_script_hash(&build_permission_redeem_script(
+            &view.root(),
+            leaves.len() as u64,
+            view.depth(),
+        ))
+    }
+
+    #[test]
+    fn match_prefix_finds_smallest_matching_prefix() {
+        let leaves = vec![test_leaf(0x11, 100), test_leaf(0x22, 200), test_leaf(0x33, 300)];
+
+        // k = 1, 2, and 3: the view's padded root (single leaf paired with the empty hash at
+        // depth 1) must equal the accumulator's, so the commitments agree for every k.
+        assert_eq!(permission_commitment(&leaves[..1]), manual_commitment(&leaves[..1]));
+        assert_eq!(match_prefix(&leaves, manual_commitment(&leaves[..1])), Some(1));
+        assert_eq!(permission_commitment(&leaves[..2]), manual_commitment(&leaves[..2]));
+        assert_eq!(match_prefix(&leaves, manual_commitment(&leaves[..2])), Some(2));
+        assert_eq!(match_prefix(&leaves, manual_commitment(&leaves)), Some(3));
+
+        // No-match and empty-buffer cases.
+        assert_eq!(match_prefix(&leaves, [0x99; 32]), None);
+        assert_eq!(match_prefix(&[], manual_commitment(&leaves)), None);
+    }
+
+    #[tokio::test]
+    async fn exec_joiner_leaves_then_settlement_emits_bundle_and_forwards() {
+        let (leaves_tx, leaves_rx) = mpsc::unbounded_channel();
+        let (settlement_tx, settlement_rx) = mpsc::unbounded_channel();
+        let (exits_tx, mut exits_rx) = mpsc::unbounded_channel();
+        let (fwd_tx, mut fwd_rx) = mpsc::unbounded_channel();
+
+        tokio::spawn(run_exec_exits_joiner(leaves_rx, settlement_rx, exits_tx, Some(fwd_tx)));
+
+        let leaves = vec![test_leaf(0x11, 100), test_leaf(0x22, 200)];
+        leaves_tx.send(leaves.clone()).unwrap();
+        let settlement = SettlementInfo {
+            tx_id: Hash::from_bytes([0xaa; 32]),
+            new_state: [0x51; 32],
+            permission_spk_hash: permission_commitment(&leaves),
+            ..Default::default()
+        };
+        settlement_tx.send(settlement).unwrap();
+
+        let bundle = exits_rx.recv().await.expect("bundle emitted");
+        assert_eq!(bundle.new_state, settlement.new_state);
+        assert_eq!(bundle.permission_spk_hash, settlement.permission_spk_hash);
+        assert_eq!(bundle.leaves.to_vec(), leaves);
+        assert_eq!(fwd_rx.recv().await.expect("settlement forwarded"), settlement);
+        assert!(exits_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn exec_joiner_zero_commitment_settlement_consumes_nothing() {
+        let (leaves_tx, leaves_rx) = mpsc::unbounded_channel();
+        let (settlement_tx, settlement_rx) = mpsc::unbounded_channel();
+        let (exits_tx, mut exits_rx) = mpsc::unbounded_channel();
+
+        tokio::spawn(run_exec_exits_joiner(leaves_rx, settlement_rx, exits_tx, None));
+
+        // Leaves land, then a no-exit settlement: nothing emitted, buffer retained (the following
+        // exit settlement still claims the full prefix).
+        let leaves = vec![test_leaf(0x33, 300), test_leaf(0x44, 400)];
+        leaves_tx.send(leaves.clone()).unwrap();
+        settlement_tx.send(SettlementInfo { new_state: [0x61; 32], ..Default::default() }).unwrap();
+
+        let settlement = SettlementInfo {
+            tx_id: Hash::from_bytes([0xbb; 32]),
+            new_state: [0x62; 32],
+            permission_spk_hash: permission_commitment(&leaves),
+            ..Default::default()
+        };
+        settlement_tx.send(settlement).unwrap();
+
+        let bundle = exits_rx.recv().await.expect("bundle emitted for the exit settlement");
+        assert_eq!(bundle.new_state, settlement.new_state);
+        assert_eq!(bundle.leaves.to_vec(), leaves);
+        assert!(exits_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn exec_joiner_pending_settlement_matched_after_later_leaves_arrive() {
+        let (leaves_tx, leaves_rx) = mpsc::unbounded_channel();
+        let (settlement_tx, settlement_rx) = mpsc::unbounded_channel();
+        let (exits_tx, mut exits_rx) = mpsc::unbounded_channel();
+
+        tokio::spawn(run_exec_exits_joiner(leaves_rx, settlement_rx, exits_tx, None));
+
+        let leaves = vec![test_leaf(0x55, 500), test_leaf(0x66, 600)];
+        let settlement = SettlementInfo {
+            tx_id: Hash::from_bytes([0xcc; 32]),
+            new_state: [0x71; 32],
+            permission_spk_hash: permission_commitment(&leaves),
+            ..Default::default()
+        };
+
+        // Settlement first, then a partial prefix: no match possible (the only commitment sent
+        // covers both leaves, so a premature 1-leaf bundle can never be emitted for it).
+        settlement_tx.send(settlement).unwrap();
+        leaves_tx.send(vec![leaves[0].clone()]).unwrap();
+        leaves_tx.send(vec![leaves[1].clone()]).unwrap();
+
+        let bundle = exits_rx.recv().await.expect("pending settlement matched once leaves landed");
+        assert_eq!(bundle.new_state, settlement.new_state);
+        assert_eq!(bundle.leaves.to_vec(), leaves);
+        assert!(exits_rx.try_recv().is_err());
     }
 }
