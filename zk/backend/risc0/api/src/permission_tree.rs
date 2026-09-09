@@ -54,6 +54,14 @@ impl PermissionTreeAccumulator {
         self.builder.add_leaf_parts([dest.to_script_bytes().as_slice(), &amount.to_le_bytes()]);
     }
 
+    /// Returns the padded tree's raw root, or `[0u8; 32]` when no exits were added.
+    pub fn root(&self) -> [u8; 32] {
+        if self.builder.leaf_count() == 0 {
+            return [0u8; 32];
+        }
+        self.builder.finalize(&Self::EMPTY_HASHES)
+    }
+
     /// Returns the permission tree's P2SH script-hash, or `[0u8; 32]` when no exits were added.
     pub fn finalize(&self) -> [u8; 32] {
         // Return early if no exits were added.
@@ -62,12 +70,9 @@ impl PermissionTreeAccumulator {
             return [0u8; 32];
         }
 
-        // Compute root of padded merkle tree.
-        let root = self.builder.finalize(&Self::EMPTY_HASHES);
-
-        // Wrap in the permission redeem script and return its P2SH script-hash.
+        // Wrap the padded root in the permission redeem script and return its P2SH script-hash.
         let depth = Builder::required_depth(count as usize);
-        let redeem = build_permission_redeem_script(&root, count as u64, depth);
+        let redeem = build_permission_redeem_script(&self.root(), count as u64, depth);
         blake2b_script_hash(&redeem)
     }
 

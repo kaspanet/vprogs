@@ -9467,6 +9467,7 @@ version = "0.1.0"
 dependencies = [
  "faster-hex",
  "log",
+ "tokio",
  "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
  "vprogs-storage-types",

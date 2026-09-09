@@ -28,6 +28,7 @@ use vprogs_node_framework::{Node, NodeConfig};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Indexer, SchedulerState};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
+use vprogs_zk_abi::withdrawal::ExitLeaf;
 use vprogs_zk_aggregate_prover::{
     AggregateProverConfig, ExitsForBundle, ScheduledBundle, SettlementArtifact,
 };
@@ -148,14 +149,22 @@ pub struct ProvingParams {
 /// and a bridge pointed at the remote node's lane + covenant. [`Node::new`] immediately starts the
 /// bridge, scheduler, and event loop on a dedicated thread. The batch and aggregator ELFs are
 /// loaded only so the backend can pin their image ids; they are never executed in exec mode.
+/// `exits_tap`, when supplied, receives each executed tx's journal-committed exit leaves (see
+/// [`Vm::with_exits_tap`]); exec mode attributes them to observed settlements downstream, while
+/// proving mode leaves it unwired (its aggregate prover already publishes per-bundle exits).
 pub fn build_exec_node(
     elfs: Elfs,
     store: RunnerStore,
     params: BridgeParams,
     indexer: Option<Indexer>,
+    exits_tap: Option<mpsc::UnboundedSender<Vec<ExitLeaf>>>,
 ) -> RunnerNode {
     let backend = Backend::new(elfs.program, elfs.batch, elfs.aggregator, ProofType::Succinct);
     let vm = Vm::new(backend, ProvingPipeline::None);
+    let vm = match exits_tap {
+        Some(tap) => vm.with_exits_tap(tap),
+        None => vm,
+    };
     Node::new(base_config(vm, store, params, indexer))
 }
 

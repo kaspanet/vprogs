@@ -27,7 +27,7 @@ mod wrpc;
 pub use config::{ConfigError, OwnedElfs, RawConfig, RunnerConfig, StartMode, parse_network};
 pub use exit_index::{
     ExitIndexer, handle_pairing, handle_permission_spend, handle_settlement, load_registry,
-    parse_perm_out_key, perm_out_key, run_exit_indexer,
+    parse_perm_out_key, perm_out_key, run_exec_exits_joiner, run_exit_indexer,
 };
 use kaspa_consensus_core::config::params::Params;
 pub use node::{
