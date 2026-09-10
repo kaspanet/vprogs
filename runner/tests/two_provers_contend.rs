@@ -67,19 +67,6 @@ const COVENANT_VALUE: u64 = SOMPI_PER_KASPA;
 /// lane_key match (see the e2e test's `L2_LANE_SUBNET` doc for the divergence this avoids).
 const LANE_SUBNET: SubnetworkId = TEST_SUBNETWORK_ID;
 
-/// Bridge lane-finality window. Consensus only falls back to the parent block's `seq_commit`
-/// (rather than the lane tip) as the lane parent-ref when the lane has no live SMT entry: on its
-/// FIRST activation, or after it has gone silent past the real finality window (~432k blocks, never
-/// reached in a test). The bridge models "no live entry" as `blue_score - parent.lane_blue_score >
-/// finality_depth`. With the real simnet finality_depth the first activation never trips that
-/// bound, so the bridge would pick the zero parent lane tip while consensus picks the parent
-/// seq_commit, and the guest's committed `new_seq_commit` diverges from the chain's
-/// `accepted_id_merkle_root`. A small window fixes this: the first carrier's blue score is well
-/// above it (parent `lane_blue_score` is 0, so first activation expires → seq_commit, matching
-/// consensus), while consecutive carriers stay within it (gap ~2 blue score → lane alive → lane
-/// tip, matching consensus, which never expires a re-touched lane in-test).
-const LANE_FINALITY_DEPTH: u64 = 10;
-
 /// Sompi each funding output carries, and how many each prover address is seeded with. A prover's
 /// settler funds every settlement fee from its own address, so it needs several spendable UTXOs to
 /// fund a chain of settlements under contention.
@@ -1566,7 +1553,7 @@ async fn spawn_prover(
             network_id,
             lane_subnet: LANE_SUBNET,
             covenant_id,
-            finality_depth: LANE_FINALITY_DEPTH,
+            finality_depth: params.finality_depth(),
             seed_depth: 0,
             min_confirmations: None,
             start_from,

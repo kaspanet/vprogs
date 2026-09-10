@@ -566,9 +566,17 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         txs: &[SchedulerTransaction<L1Transaction>],
         block: &ChainBlockMetadata,
     ) -> (Hash, u64, bool) {
-        // Check whether the lane has gone silent past the finality window and needs to reset.
+        // Consensus anchors a lane re-activation at `parent.seq_commit` whenever the lane holds no
+        // live SMT entry at the parent: on the first activation (nothing folded into the lane yet,
+        // `lane_blue_score` still at its zero seed) or after going silent past the finality window.
+        // The gap check alone never trips before the first activation under a real finality depth,
+        // so the zero seed would anchor the lane and every derived tip would diverge from
+        // consensus. A bridge joining an already-live lane still needs the authoritative tip seeded
+        // from `get_seq_commit_lane_proof` at startup; until then only lanes born after the bridge
+        // start derive correctly.
         let blue_score = block.blue_score;
-        let lane_expired = blue_score.saturating_sub(parent.lane_blue_score) > self.finality_depth;
+        let lane_expired = parent.lane_blue_score == 0
+            || blue_score.saturating_sub(parent.lane_blue_score) > self.finality_depth;
 
         // No lane configured or no activity this block -> carry parent state forward unchanged.
         let Some(lane_key) = self.lane_key.as_ref().filter(|_| !txs.is_empty()) else {
