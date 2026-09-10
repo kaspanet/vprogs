@@ -16,6 +16,7 @@
 //! persisted identity), `Catchup` (join an existing covenant from a known deploy block).
 
 mod config;
+mod exit_index;
 mod lane;
 mod node;
 mod persistence;
@@ -24,6 +25,10 @@ mod start;
 mod wrpc;
 
 pub use config::{ConfigError, OwnedElfs, RawConfig, RunnerConfig, StartMode, parse_network};
+pub use exit_index::{
+    ExitIndexer, handle_pairing, handle_permission_spend, handle_settlement, load_registry,
+    parse_perm_out_key, perm_out_key, run_exec_exits_joiner, run_exit_indexer,
+};
 use kaspa_consensus_core::config::params::Params;
 pub use node::{
     BridgeObservers, BridgeParams, CovenantIdBytes, DepositSpkHash, Elfs, ProvingParams,
@@ -52,7 +57,7 @@ pub async fn run(config: RunnerConfig) -> Result<RunnerHandles, RunError> {
     // no-deposit sentinel. A deposit-crediting program calls `start_runner` directly with its own
     // derivation.
     let handles =
-        start_runner(&config, &client, &params, elfs.as_elfs(), |_| [0u8; 32], None).await?;
+        start_runner(&config, &client, &params, elfs.as_elfs(), |_| [0u8; 32], None, None).await?;
     Ok(handles)
 }
 

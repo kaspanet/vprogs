@@ -13,9 +13,9 @@ use kaspa_txscript::{
     EngineFlags, script_builder::ScriptBuilder, standard::pay_to_script_hash_script,
 };
 use vprogs_zk_abi::withdrawal::ExitLeaf;
+pub use vprogs_zk_backend_risc0_api::PermissionTreeView;
 use vprogs_zk_backend_risc0_api::{
-    MAX_DELEGATE_INPUTS, PermissionTreeAccumulator, build_delegate_entry_script,
-    build_permission_redeem_script,
+    MAX_DELEGATE_INPUTS, build_delegate_entry_script, build_permission_redeem_script,
 };
 
 /// Assembles the permission input's signature script: the public withdrawal witness consumed
@@ -178,29 +178,7 @@ pub fn build_permission_spend(
 ///
 /// Requires `index < 1 << required_depth(leaves.len())` (panics otherwise).
 pub fn claim_siblings(leaves: &[ExitLeaf], index: usize) -> Vec<[u8; 32]> {
-    let depth = PermissionTreeAccumulator::required_depth(leaves.len());
-    let capacity = 1usize << depth;
-    let empty = PermissionTreeAccumulator::hash_empty();
-    let mut level0 = vec![empty; capacity];
-    for (i, leaf) in leaves.iter().enumerate() {
-        level0[i] = PermissionTreeAccumulator::hash_leaf(leaf.to_standard_spk(), leaf.amount);
-    }
-    let mut nodes = vec![level0];
-    for _ in 0..depth {
-        let prev = nodes.last().unwrap();
-        let mut next = Vec::with_capacity(prev.len() / 2);
-        for i in 0..prev.len() / 2 {
-            next.push(PermissionTreeAccumulator::hash_branch(&prev[2 * i], &prev[2 * i + 1]));
-        }
-        nodes.push(next);
-    }
-    let mut out = Vec::with_capacity(depth);
-    let mut idx = index;
-    for level in nodes.iter().take(depth) {
-        out.push(level[idx ^ 1]);
-        idx /= 2;
-    }
-    out
+    PermissionTreeView::from_leaves(leaves).siblings(index)
 }
 
 #[cfg(test)]
@@ -453,6 +431,14 @@ mod tests {
         let tree = TestTree::new(tree_leaves);
         assert_eq!(claim_siblings(&leaves, 0), tree.siblings(0));
         assert_eq!(claim_siblings(&leaves, 1), tree.siblings(1));
+
+        // k = 1: the redeem embeds depth 1, so the claim carries the empty hash as its
+        // single sibling.
+        let single = vec![ExitLeaf::from_pair(spk_a, 100)];
+        let tree_single =
+            TestTree::new(vec![(spk_a.to_script_bytes().as_ref().try_into().unwrap(), 100u64)]);
+        assert_eq!(claim_siblings(&single, 0), tree_single.siblings(0));
+        assert_eq!(claim_siblings(&single, 0), vec![PermissionTreeAccumulator::hash_empty()]);
     }
 
     #[test]

@@ -20,7 +20,10 @@ use alloc::vec::Vec;
 
 pub use vprogs_zk_abi::{DELEGATE_SCRIPT_LEN, DELEGATE_SCRIPT_PREFIX, DELEGATE_SCRIPT_SUFFIX};
 
-use crate::permission_tags::PermNode;
+use crate::{permission_tags::PermNode, permission_tree::PermissionTreeAccumulator};
+
+/// Maximum permission tree depth supported by the redeem script builder and decoder.
+pub const PERM_MAX_DEPTH: usize = PermissionTreeAccumulator::MAX_DEPTH;
 
 /// Maximum number of *delegate inputs* the permission script will sum over.
 ///
@@ -686,6 +689,50 @@ pub fn build_permission_redeem_script(
     script
 }
 
+/// Decodes a permission redeem script into `(root, unclaimed_count, depth)`.
+///
+/// Returns an error if the script length does not match any valid tree depth or if embedded
+/// push opcodes or trailer bytes are malformed.
+pub fn decode_permission_redeem(bytes: &[u8]) -> Result<([u8; 32], u64, usize), &'static str> {
+    let min_len = perm_redeem_script_len(0);
+    if bytes.len() < min_len {
+        return Err("permission redeem script is too short");
+    }
+
+    let step_len = 2 * <Vec<u8> as PermRedeemScript>::MERKLE_STEP_LEN;
+    let delta = bytes.len() - min_len;
+    if !delta.is_multiple_of(step_len) {
+        return Err("script length does not match any valid permission tree depth");
+    }
+    let depth = delta / step_len;
+    if depth > PERM_MAX_DEPTH {
+        return Err("permission tree depth exceeds PERM_MAX_DEPTH");
+    }
+    if perm_redeem_script_len(depth) != bytes.len() {
+        return Err("perm_redeem_script_len disagrees with script length");
+    }
+
+    if bytes[0] != 0x20 {
+        return Err("invalid root push opcode: expected 0x20 (OpData32)");
+    }
+    let mut root = [0u8; 32];
+    root.copy_from_slice(&bytes[1..33]);
+
+    if bytes[33] != 0x08 {
+        return Err("invalid unclaimed_count push opcode: expected 0x08 (OpData8)");
+    }
+    let mut unclaimed_bytes = [0u8; 8];
+    unclaimed_bytes.copy_from_slice(&bytes[34..42]);
+    let unclaimed_count = u64::from_le_bytes(unclaimed_bytes);
+
+    let trailer_len = <Vec<u8> as PermRedeemScript>::TRAILER_LEN;
+    if bytes[bytes.len() - trailer_len..] != [OP_TRUE, OP_TRUE, OP_DROP] {
+        return Err("invalid script trailer");
+    }
+
+    Ok((root, unclaimed_count, depth))
+}
+
 /// Builds the permission redeem script for a given embedded length.
 ///
 /// `redeem_script_len` must equal the returned script's length; [`perm_redeem_script_len`]
@@ -848,5 +895,54 @@ mod tests {
 
         // The hash helper agrees with hashing the assembled bytes directly.
         assert_eq!(delegate_entry_spk_hash(&covenant_id), blake2b_script_hash(&script));
+    }
+
+    #[test]
+    fn decode_permission_redeem_round_trips() {
+        for depth in [0, 1, 2] {
+            for unclaimed in [0, 1, 1 << 16] {
+                let root = [0x5A; 32];
+                let script = build_permission_redeem_script(&root, unclaimed, depth);
+                let decoded = decode_permission_redeem(&script).expect("decode failed");
+                assert_eq!(decoded, (root, unclaimed, depth));
+            }
+        }
+    }
+
+    #[test]
+    fn decode_permission_redeem_rejections() {
+        let valid = build_permission_redeem_script(&[0x11; 32], 10, 1);
+
+        // Empty / truncated scripts.
+        assert!(decode_permission_redeem(&[]).is_err());
+        assert!(decode_permission_redeem(&valid[..10]).is_err());
+        assert!(decode_permission_redeem(&valid[..perm_redeem_script_len(0) - 1]).is_err());
+        assert!(decode_permission_redeem(&valid[..valid.len() - 1]).is_err());
+
+        // Wrong length for depth (valid len + 1).
+        let mut corrupted_len = valid.clone();
+        corrupted_len.push(0x00);
+        assert!(decode_permission_redeem(&corrupted_len).is_err());
+
+        // Corrupted root opcode.
+        let mut bad_root_op = valid.clone();
+        bad_root_op[0] = 0x1f;
+        assert!(decode_permission_redeem(&bad_root_op).is_err());
+
+        // Corrupted unclaimed opcode.
+        let mut bad_unclaimed_op = valid.clone();
+        bad_unclaimed_op[33] = 0x07;
+        assert!(decode_permission_redeem(&bad_unclaimed_op).is_err());
+
+        // Corrupted trailer.
+        let mut bad_trailer = valid.clone();
+        let last = bad_trailer.len() - 1;
+        bad_trailer[last] = 0x00;
+        assert!(decode_permission_redeem(&bad_trailer).is_err());
+
+        // Over-max depth.
+        let over_depth_len = perm_redeem_script_len(PERM_MAX_DEPTH + 1);
+        let over_depth = vec![0u8; over_depth_len];
+        assert!(decode_permission_redeem(&over_depth).is_err());
     }
 }
