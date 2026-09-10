@@ -869,4 +869,69 @@ mod tests {
         // No new settlement events emitted on settlement-less block; no flood.
         assert!(settlement_events_rx.try_recv().is_err());
     }
+
+    /// `lane_state` anchors a lane re-activation at the parent seq commit whenever the lane holds
+    /// no live entry at the parent, and chains from the parent lane tip otherwise. The first
+    /// activation must take the seq-commit anchor even when the blue-score gap to the zero seed is
+    /// well inside the finality window; before that rule landed the zero seed anchored the lane
+    /// and every derived tip diverged from consensus.
+    #[test]
+    fn lane_state_anchors_first_activation_and_reactivation_at_seq_commit() {
+        let covenant_id = Hash::from_bytes([0xAA; 32]);
+        let (settlement_events_tx, _settlement_events_rx) = mpsc::unbounded_channel();
+        let mut worker = test_worker(TestSink::default(), covenant_id, settlement_events_tx);
+        let lane_key = Hash::from_bytes([0xEE; 32]);
+        worker.lane_key = Some(lane_key);
+
+        let tx = make_settlement_tx(covenant_id, [0x44; 32]);
+        let txs = vec![SchedulerTransaction::new(0, Default::default(), tx.clone())];
+        let block = ChainBlockMetadata { blue_score: 530, daa_score: 531, ..Default::default() };
+        let parent_seq_commit = Hash::from_bytes([0x5C; 32]);
+        let parent_lane_tip = Hash::from_bytes([0x7D; 32]);
+        let context_hash = mergeset_context_hash(&MergesetContext {
+            timestamp: block.timestamp,
+            daa_score: block.daa_score,
+            blue_score: block.blue_score,
+        });
+        let mut activity = ActivityDigestBuilder::new();
+        activity.add_leaf(activity_leaf(&tx.id(), tx.version, 0));
+        let activity_digest = activity.finalize();
+        let expected_tip = |parent_ref: &Hash| {
+            lane_tip_next(&LaneTipInput {
+                lane_key: &lane_key,
+                parent_ref,
+                activity_digest: &activity_digest,
+                context_hash: &context_hash,
+            })
+        };
+
+        // First activation: the parent carries the zero seed (never folded activity), the gap to
+        // it is far inside the finality window, yet the anchor must be the parent seq commit.
+        let parent = ChainBlockMetadata { seq_commit: parent_seq_commit, ..Default::default() };
+        let (tip, _, expired) = worker.lane_state(&parent, &txs, &block);
+        assert!(expired, "first activation counts as no live entry");
+        assert_eq!(tip, expected_tip(&parent_seq_commit), "first activation anchors at seq commit");
+
+        // Live lane: the parent carries a real tip one blue score below; the anchor is that tip.
+        let parent = ChainBlockMetadata {
+            seq_commit: parent_seq_commit,
+            lane_tip: parent_lane_tip,
+            lane_blue_score: 529,
+            ..Default::default()
+        };
+        let (tip, _, expired) = worker.lane_state(&parent, &txs, &block);
+        assert!(!expired, "a live lane within the window is not expired");
+        assert_eq!(tip, expected_tip(&parent_lane_tip), "live lane chains from the lane tip");
+
+        // Silence past the finality window re-anchors at the parent seq commit.
+        let parent = ChainBlockMetadata {
+            seq_commit: parent_seq_commit,
+            lane_tip: parent_lane_tip,
+            lane_blue_score: 100,
+            ..Default::default()
+        };
+        let (tip, _, expired) = worker.lane_state(&parent, &txs, &block);
+        assert!(expired, "silence past the finality window expires the lane");
+        assert_eq!(tip, expected_tip(&parent_seq_commit), "re-activation anchors at seq commit");
+    }
 }
