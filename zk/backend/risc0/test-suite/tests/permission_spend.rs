@@ -9,8 +9,12 @@
 //!   the on-chain 1-byte tag-domain (`PermNode::Leaf`/`Branch`/`Empty`) hashing produce the same
 //!   root. The happy-path spends are the missing self-checking test: before the #78 fix they would
 //!   fail at the old-root `OP_EQUALVERIFY`.
-//! - **#77 (payout amount):** output 0 must pay `>= deduct`. Underpayment is rejected; equal and
-//!   overpayment pass.
+//! - **#77 (payout floor):** output 0 must pay `>= deduct`; the exact pin (`== deduct`, `== deduct
+//!   + rent` on the terminal fold) makes the payout a zero-slack value sink, since delegate UTXOs
+//!   are permissionless inside the covenant. Under- and overpayment are both rejected.
+//! - **Fee burn:** the delegate change may fall below `expected_change` by at most `FEE_CAP` (the
+//!   claim fee), the output count is pinned exactly so freed value cannot ride a spare output, and
+//!   diversions of either kind are rejected.
 //!
 //! The permission redeem is proofless / anyone-can-spend (the sig_script carries only public data),
 //! so a genuine spend is built without a zk proof and the engine runs unconditionally in dev mode.
@@ -32,7 +36,7 @@ use kaspa_txscript::{
 };
 use vprogs_zk_abi::withdrawal::StandardSpk;
 use vprogs_zk_backend_risc0_api::{
-    MAX_DELEGATE_INPUTS, PermissionTreeAccumulator, build_delegate_entry_script,
+    FEE_CAP, MAX_DELEGATE_INPUTS, PermissionTreeAccumulator, build_delegate_entry_script,
     build_permission_redeem_script,
 };
 
@@ -192,6 +196,15 @@ struct Spend {
     out0: Option<u64>,
     /// Override output 1's continuation value (ELSE branch only; default: `PERM_RENT`).
     out1: Option<u64>,
+    /// Extra delegate funding beyond `deduct`, backing the delegate change output (default 0:
+    /// the delegate input funds exactly `deduct` and no change output exists).
+    delegate_fund: u64,
+    /// Fee burned from the delegate change output (default 0). The spend goes intentionally
+    /// unbalanced by this amount, the consensus-legal fee.
+    fee: u64,
+    /// Value moved from the delegate change to a trailing attacker output (default 0) — the
+    /// diversion the exact output count must reject even once the fee burn is allowed.
+    divert: u64,
 }
 
 /// Build a permission spend transaction + utxos for a withdrawal on leaf `index`.
@@ -226,8 +239,10 @@ fn build_spend(
 
     let id = cov_id();
 
-    // Total spendable value: delegate input funds `deduct`, the permission UTXO holds the rent.
-    let total_in = deduct + PERM_RENT;
+    // Total spendable value: the delegate input funds `deduct` plus any overfund, the
+    // permission UTXO holds the rent.
+    let delegate_amount = deduct + spend.delegate_fund;
+    let total_in = delegate_amount + PERM_RENT;
 
     // Honest output values: all-claimed folds the rent into output 0; otherwise output 0 pays
     // `deduct` and output 1 (continuation) carries the rent.
@@ -247,12 +262,28 @@ fn build_spend(
         ));
     }
 
+    // Delegate change: the overfunded delegate remainder (unbound, mirroring the app-kit
+    // builder), less the burned fee and any diverted value.
+    let change = spend.delegate_fund - spend.fee - spend.divert;
+    if change > 0 {
+        let (delegate_spk, _) = delegate_input();
+        outputs.push(TransactionOutput::with_covenant(change, delegate_spk, None));
+    }
+    if spend.divert > 0 {
+        let attacker_spk = ScriptPublicKey::new(0, test_spk(0xAB).to_vec().into());
+        outputs.push(TransactionOutput::with_covenant(spend.divert, attacker_spk, None));
+    }
+
     // Divert any value freed by an override to a trailing attacker output (no covenant binding), so
     // sum(outputs) == sum(inputs) and the engine's fee check can't be the cause of a rejection.
     let assigned: u64 = outputs.iter().map(|o| o.value).sum();
-    if assigned < total_in {
+    if assigned + spend.fee < total_in {
         let attacker_spk = ScriptPublicKey::new(0, test_spk(0xAB).to_vec().into());
-        outputs.push(TransactionOutput::with_covenant(total_in - assigned, attacker_spk, None));
+        outputs.push(TransactionOutput::with_covenant(
+            total_in - assigned - spend.fee,
+            attacker_spk,
+            None,
+        ));
     }
 
     let (delegate_spk, delegate_sig) = delegate_input();
@@ -281,7 +312,7 @@ fn build_spend(
 
     let utxos = vec![
         UtxoEntry::new(PERM_RENT, perm_p2sh, 0, false, Some(id)),
-        UtxoEntry::new(deduct, delegate_spk, 0, false, None),
+        UtxoEntry::new(delegate_amount, delegate_spk, 0, false, None),
     ];
     (tx, utxos)
 }
@@ -348,11 +379,18 @@ fn withdrawal_depth2_passes() {
 }
 
 #[test]
-fn overpayment_passes() {
-    // #77: output 0 pays MORE than deduct → still accepted (the check is `>=`, not `==`).
+fn overpayment_rejected() {
+    // #77 allowed output 0 to pay MORE than deduct (`>=`). That `>=` is a value sink: a claimer
+    // sweeping permissionless delegate UTXOs could ride the swept pool out through their own
+    // leaf's over-paid payout, so the payout is now pinned exact. Only output 0's amount
+    // differs from `withdrawal_partial_deduct_passes`.
     let leaves = vec![(test_spk(1), 1000), (test_spk(2), 500)];
     let (tx, utxos) = build_spend(leaves, 0, 300, Spend { out0: Some(301), ..Spend::default() });
-    run_spend(&tx, &utxos).expect("overpayment must verify (>= deduct)");
+    let result = run_spend(&tx, &utxos);
+    assert!(
+        result.is_err(),
+        "overpaid withdrawal (out0 > deduct) must be rejected by the exact-payout check; got {result:?}",
+    );
 }
 
 #[test]
@@ -424,21 +462,98 @@ fn all_claimed_rent_diversion_rejected() {
 }
 
 #[test]
-fn extra_unbound_output_alone_is_not_the_cause() {
-    // Proves the trailing attacker output in the diversion tests is not itself the reason they
-    // reject: a partial spend with HONEST out1 plus an extra unbound output (funded by burning a
-    // bit of the rightful payout, delegate balance untouched) still verifies. So the diversion
-    // tests' rejection is attributable to the changed output value, not the extra output.
+fn withdrawal_fee_from_delegate_change_passes() {
+    // Fee burn: the delegate pool overfunds past `deduct`, the change output pays
+    // `delegate_fund - fee`, and the difference burns as the tx fee (in > out). Must verify.
+    let leaves = vec![(test_spk(1), 1000), (test_spk(2), 500)];
+    let (tx, utxos) =
+        build_spend(leaves, 0, 300, Spend { delegate_fund: 3000, fee: 1000, ..Spend::default() });
+    assert_eq!(tx.outputs.len(), 3, "payout + continuation + delegate change");
+    assert_eq!(tx.outputs[2].value, 2000, "change must carry fund minus the burned fee");
+    run_spend(&tx, &utxos).expect("fee-bearing withdrawal must verify");
+}
+
+#[test]
+fn final_claim_fee_from_delegate_change_passes() {
+    // Fee burn on the terminal claim (rent folded into the payout, no continuation): outputs
+    // are payout + change, the fee burns from the change. Must verify.
+    let leaves = vec![(test_spk(1), 1000)];
+    let (tx, utxos) =
+        build_spend(leaves, 0, 1000, Spend { delegate_fund: 3000, fee: 1000, ..Spend::default() });
+    assert_eq!(tx.outputs.len(), 2, "folded payout + delegate change");
+    assert_eq!(tx.outputs[0].value, 1000 + PERM_RENT, "payout folds the rent");
+    assert_eq!(tx.outputs[1].value, 2000, "change must carry fund minus the burned fee");
+    run_spend(&tx, &utxos).expect("fee-bearing terminal claim must verify");
+}
+
+#[test]
+fn delegate_change_diversion_rejected() {
+    // The change output shrinks by `divert` and a trailing attacker output takes the freed
+    // value (balanced, every pinned output honest at its pinned index). Once the fee burn is
+    // allowed, only the exact output count keeps this rejected: freed delegate value may burn
+    // as fee, never pay a spare output.
+    let leaves = vec![(test_spk(1), 1000), (test_spk(2), 500)];
+    let (tx, utxos) = build_spend(
+        leaves,
+        0,
+        300,
+        Spend { delegate_fund: 3000, divert: 1000, ..Spend::default() },
+    );
+    assert_eq!(tx.outputs.len(), 4, "payout + continuation + shrunken change + attacker");
+    assert_eq!(tx.outputs[2].value, 2000, "change shrunk by the diverted value");
+    let result = run_spend(&tx, &utxos);
+    assert!(
+        result.is_err(),
+        "delegate change diversion to a trailing output must be rejected; got {result:?}",
+    );
+}
+
+#[test]
+fn extra_unbound_output_rejected() {
+    // The output count is pinned exactly (payout + continuation + optional change): a spare
+    // unbound output is the vehicle for diverting freed delegate value once fee burns are
+    // allowed, so it must reject on its own — even with honest values everywhere else and no
+    // delegate overfund at all.
     let leaves = vec![(test_spk(1), 1000), (test_spk(2), 500)];
     let (mut tx, utxos) = build_spend(leaves, 0, 300, Spend::default());
     assert_eq!(tx.outputs.len(), 2);
-    // Add an extra unbound output at index 2 (the engine enforces no fee/value balance), keeping
-    // out0/out1 honest and the delegate input funding exactly `deduct`, so expected_change stays 0
-    // and index 2 is never inspected by the delegate-balance phase.
     let attacker_spk = ScriptPublicKey::new(0, test_spk(0xAB).to_vec().into());
     tx.outputs.push(TransactionOutput::with_covenant(5, attacker_spk, None));
     assert_eq!(tx.outputs.len(), 3);
-    run_spend(&tx, &utxos).expect("extra unbound output with honest out1 must still verify");
+    let result = run_spend(&tx, &utxos);
+    assert!(result.is_err(), "extra unbound output must be rejected; got {result:?}");
+}
+
+#[test]
+fn fee_beyond_cap_rejected() {
+    // The fee burn is capped: burning more than FEE_CAP of delegate value destroys deposits
+    // (griefing), so a change output below `expected - FEE_CAP` must reject. The burn here is
+    // exactly FEE_CAP + 1; only the fee differs from
+    // `withdrawal_fee_from_delegate_change_passes` scaled to the same cap distance.
+    let leaves = vec![(test_spk(1), 1000), (test_spk(2), 500)];
+    let (tx, utxos) = build_spend(
+        leaves,
+        0,
+        300,
+        Spend { delegate_fund: FEE_CAP + 300, fee: FEE_CAP + 1, ..Spend::default() },
+    );
+    let result = run_spend(&tx, &utxos);
+    assert!(result.is_err(), "fee burn beyond FEE_CAP must be rejected; got {result:?}",);
+}
+
+#[test]
+fn fee_at_cap_passes() {
+    // Boundary twin of `fee_beyond_cap_rejected`: burning exactly FEE_CAP is the largest
+    // legal claim fee.
+    let leaves = vec![(test_spk(1), 1000), (test_spk(2), 500)];
+    let (tx, utxos) = build_spend(
+        leaves,
+        0,
+        300,
+        Spend { delegate_fund: FEE_CAP + 300, fee: FEE_CAP, ..Spend::default() },
+    );
+    assert_eq!(tx.outputs[2].value, 300, "change = fund - burned fee");
+    run_spend(&tx, &utxos).expect("fee burn of exactly FEE_CAP must verify");
 }
 
 #[test]
