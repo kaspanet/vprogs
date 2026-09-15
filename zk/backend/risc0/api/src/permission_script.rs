@@ -47,9 +47,9 @@ const MAX_OUTPUTS: i64 = 4;
 /// may sweep them — so the spend's only two value sinks (the payout, burned fee) are both
 /// pinned: the payout exactly (`== deduct`, `== deduct + rent` on the terminal claim) and the
 /// burn at this cap. Without the cap a swept pool could be destroyed one claim at a time.
-/// Realistic claim fees are compute mass at the default relay rate (hundreds to a few thousand
-/// sompi), so this leaves two orders of headroom while bounding griefing per spend.
-pub const FEE_CAP: u64 = 1_000_000;
+/// The default relay floor prices a claim's normalized transient mass (measured ~935k sompi
+/// for a typical spend), so this leaves an order of headroom while bounding griefing per spend.
+pub const FEE_CAP: u64 = 10_000_000;
 
 const OP_FALSE: u8 = 0x00;
 const OP_TRUE: u8 = 0x51;
@@ -145,7 +145,7 @@ trait PermRedeemScript {
     /// Byte count of `emit_verify_outputs`, excluding [`Self::EMBEDDED_LEN_PUSH`].
     const VERIFY_OUTPUTS_FIXED_LEN: usize = 91;
     /// Byte count of `emit_verify_delegate_balance` (`MAX_DELEGATE_INPUTS` fully unrolled).
-    const VERIFY_DELEGATE_BALANCE_LEN: usize = 237;
+    const VERIFY_DELEGATE_BALANCE_LEN: usize = 238;
     /// Byte count of `emit_trailer`.
     const TRAILER_LEN: usize = 3;
     /// Byte count of `emit_merkle_step`, emitted `2 * depth` times across the two Merkle walks.
@@ -848,9 +848,9 @@ mod tests {
 
     #[test]
     fn const_fn_length_is_linear_in_depth() {
-        // Closed form: 493 bytes at depth 1, +22 (two Merkle walks) per extra depth.
-        assert_eq!(perm_redeem_script_len(1), 493);
-        assert_eq!(perm_redeem_script_len(PERM_MAX_DEPTH), 493 + 22 * (PERM_MAX_DEPTH - 1));
+        // Closed form: 494 bytes at depth 1, +22 (two Merkle walks) per extra depth.
+        assert_eq!(perm_redeem_script_len(1), 494);
+        assert_eq!(perm_redeem_script_len(PERM_MAX_DEPTH), 494 + 22 * (PERM_MAX_DEPTH - 1));
         for depth in 1..PERM_MAX_DEPTH {
             assert_eq!(
                 perm_redeem_script_len(depth + 1) - perm_redeem_script_len(depth),
@@ -864,8 +864,8 @@ mod tests {
         // Proves it is genuinely a `const fn` (usable in const context, the whole point).
         const AT_MIN: usize = perm_redeem_script_len(1);
         const AT_MAX: usize = perm_redeem_script_len(PERM_MAX_DEPTH);
-        assert_eq!(AT_MIN, 493);
-        assert_eq!(AT_MAX, 1175); // 493 + 22 * 31
+        assert_eq!(AT_MIN, 494);
+        assert_eq!(AT_MAX, 1176); // 494 + 22 * 31
     }
 
     #[test]
