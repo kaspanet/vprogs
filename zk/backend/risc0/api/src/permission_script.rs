@@ -41,6 +41,16 @@ pub const MAX_DELEGATE_INPUTS: usize = 8;
 /// output at `1 + CovOutCount`. Four leaves one slot of headroom.
 const MAX_OUTPUTS: i64 = 4;
 
+/// Maximum delegate value a single permission spend may burn as fee, in sompi.
+///
+/// Delegate (deposit) UTXOs are permissionless inside the covenant — any claim of the covenant
+/// may sweep them — so the spend's only two value sinks (the payout, burned fee) are both
+/// pinned: the payout exactly (`== deduct`, `== deduct + rent` on the terminal claim) and the
+/// burn at this cap. Without the cap a swept pool could be destroyed one claim at a time.
+/// Realistic claim fees are compute mass at the default relay rate (hundreds to a few thousand
+/// sompi), so this leaves two orders of headroom while bounding griefing per spend.
+pub const FEE_CAP: u64 = 1_000_000;
+
 const OP_FALSE: u8 = 0x00;
 const OP_TRUE: u8 = 0x51;
 const OP_IF: u8 = 0x63;
@@ -133,9 +143,9 @@ trait PermRedeemScript {
     /// Byte count of `emit_compute_new_unclaimed`.
     const COMPUTE_NEW_UNCLAIMED_LEN: usize = 13;
     /// Byte count of `emit_verify_outputs`, excluding [`Self::EMBEDDED_LEN_PUSH`].
-    const VERIFY_OUTPUTS_FIXED_LEN: usize = 88;
+    const VERIFY_OUTPUTS_FIXED_LEN: usize = 91;
     /// Byte count of `emit_verify_delegate_balance` (`MAX_DELEGATE_INPUTS` fully unrolled).
-    const VERIFY_DELEGATE_BALANCE_LEN: usize = 214;
+    const VERIFY_DELEGATE_BALANCE_LEN: usize = 237;
     /// Byte count of `emit_trailer`.
     const TRAILER_LEN: usize = 3;
     /// Byte count of `emit_merkle_step`, emitted `2 * depth` times across the two Merkle walks.
@@ -408,7 +418,12 @@ impl PermRedeemScript for Vec<u8> {
     }
 
     fn emit_verify_outputs(&mut self, redeem_script_len: i64) {
-        // enforce output 0's payout >= deduct (#77). Main: [deduct, new_root, new_uncl_8b].
+        // enforce output 0's payout >= deduct (underpayment floor, #77). Main: [deduct,
+        // new_root, new_uncl_8b]. The exact payout pin is per-branch below (`== deduct` while
+        // exits remain, `== deduct + rent` on the terminal fold): the payout is one of the
+        // spend's only two value sinks (the other is the capped fee burn), and delegate UTXOs
+        // are permissionless inside the covenant, so any slack is a ride-out path for swept
+        // deposit value.
         self.push(OP_FALSE); // output index 0
         self.push(OP_TXOUTPUTAMOUNT); // [deduct, new_root, new_uncl_8b, out0_amount]
         self.push_i64(3);
@@ -442,15 +457,15 @@ impl PermRedeemScript for Vec<u8> {
             self.push(OP_EQUALVERIFY);
 
             // No continuation output holds the permission UTXO's residual rent, so fold it into the
-            // final payout: output 0 value >= deduct + input 0 value. Main in/out: [deduct].
+            // final payout: output 0 value == deduct + input 0 value, exact for the same
+            // no-value-sink reason as the non-terminal payout pin. Main in/out: [deduct].
             self.push(OP_FALSE); // output index 0
             self.push(OP_TXOUTPUTAMOUNT); // [deduct, out0]
             self.push(OP_OVER); // copy deduct -> [deduct, out0, deduct]
             self.push(OP_TXINPUTINDEX);
             self.push(OP_TXINPUTAMOUNT); // [deduct, out0, deduct, in0]
             self.push(OP_ADD); // [deduct, out0, deduct + in0]
-            self.push(OP_GREATERTHANOREQUAL); // out0 >= deduct + in0
-            self.push(OP_VERIFY); // back to [deduct]
+            self.push(OP_NUMEQUALVERIFY); // out0 == deduct + in0, back to [deduct]
         }
         self.push(OP_ELSE);
         {
@@ -510,6 +525,13 @@ impl PermRedeemScript for Vec<u8> {
             self.push_i64(1);
             self.push(OP_TXOUTPUTAMOUNT); // [deduct, in0, out1]
             self.push(OP_NUMEQUALVERIFY); // in0 == out1, back to [deduct]
+
+            // Non-terminal payout pin: output 0 pays exactly `deduct` (the shared preamble
+            // only floors it). Main in/out: [deduct].
+            self.push(OP_DUP); // [deduct, deduct]
+            self.push(OP_FALSE); // output index 0
+            self.push(OP_TXOUTPUTAMOUNT); // [deduct, deduct, out0]
+            self.push(OP_NUMEQUALVERIFY); // out0 == deduct, back to [deduct]
         }
         self.push(OP_ENDIF);
     }
@@ -603,8 +625,27 @@ impl PermRedeemScript for Vec<u8> {
             self.push(OP_TXOUTPUTSPK);
             self.push(OP_FROMALTSTACK);
             self.push(OP_EQUALVERIFY);
-            self.push(OP_TXOUTPUTAMOUNT);
-            self.push(OP_EQUALVERIFY);
+            // The change may fall below expected_change by at most FEE_CAP (the burn floor):
+            // expected - CAP <= actual. Anything larger freed from the pool must land in the
+            // change, since the payout is pinned exact and the output count below admits no
+            // spare output — the freed remainder can only be the tx fee.
+            self.push(OP_TXOUTPUTAMOUNT); // [expected, actual]
+            self.push(OP_SWAP); // [actual, expected]
+            self.push_i64(FEE_CAP as i64);
+            self.push(OP_SUB); // [actual, expected - FEE_CAP]
+            self.push(OP_GREATERTHANOREQUAL); // actual >= expected - FEE_CAP
+            self.push(OP_VERIFY);
+            // Exact output count with a change present: payout + cov continuations + change,
+            // nothing after it.
+            self.push(OP_TXINPUTINDEX);
+            self.push(OP_INPUTCOVENANTID);
+            self.push(OP_COVOUTCOUNT);
+            self.push_i64(1);
+            self.push(OP_ADD); // delegate_idx
+            self.push_i64(1);
+            self.push(OP_ADD); // delegate_idx + 1
+            self.push(OP_TXOUTPUTCOUNT);
+            self.push(OP_NUMEQUALVERIFY);
         }
         self.push(OP_ELSE);
         {
@@ -613,6 +654,14 @@ impl PermRedeemScript for Vec<u8> {
             self.push(OP_DROP); // expected_change
             self.push(OP_FROMALTSTACK);
             self.push(OP_DROP); // expected_spk
+            // Exact output count with no change: payout + cov continuations, nothing after.
+            self.push(OP_TXINPUTINDEX);
+            self.push(OP_INPUTCOVENANTID);
+            self.push(OP_COVOUTCOUNT);
+            self.push_i64(1);
+            self.push(OP_ADD); // delegate_idx
+            self.push(OP_TXOUTPUTCOUNT);
+            self.push(OP_NUMEQUALVERIFY);
         }
         self.push(OP_ENDIF);
     }
@@ -799,9 +848,9 @@ mod tests {
 
     #[test]
     fn const_fn_length_is_linear_in_depth() {
-        // Closed form: 467 bytes at depth 1, +22 (two Merkle walks) per extra depth.
-        assert_eq!(perm_redeem_script_len(1), 467);
-        assert_eq!(perm_redeem_script_len(PERM_MAX_DEPTH), 467 + 22 * (PERM_MAX_DEPTH - 1));
+        // Closed form: 493 bytes at depth 1, +22 (two Merkle walks) per extra depth.
+        assert_eq!(perm_redeem_script_len(1), 493);
+        assert_eq!(perm_redeem_script_len(PERM_MAX_DEPTH), 493 + 22 * (PERM_MAX_DEPTH - 1));
         for depth in 1..PERM_MAX_DEPTH {
             assert_eq!(
                 perm_redeem_script_len(depth + 1) - perm_redeem_script_len(depth),
@@ -815,8 +864,8 @@ mod tests {
         // Proves it is genuinely a `const fn` (usable in const context, the whole point).
         const AT_MIN: usize = perm_redeem_script_len(1);
         const AT_MAX: usize = perm_redeem_script_len(PERM_MAX_DEPTH);
-        assert_eq!(AT_MIN, 467);
-        assert_eq!(AT_MAX, 1149); // 467 + 22 * 31
+        assert_eq!(AT_MIN, 493);
+        assert_eq!(AT_MAX, 1175); // 493 + 22 * 31
     }
 
     #[test]
