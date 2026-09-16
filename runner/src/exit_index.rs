@@ -79,7 +79,7 @@ pub fn handle_pairing<S: Store>(
 ) {
     let mut wb = store.write_batch();
     indexer.on_exits_committed(bundle, settlement, &mut wb);
-    // Track the raw padded-tree root the watcher's redeem decode compares against — NOT
+    // Track the raw padded-tree root the watcher's redeem decode compares against. Not
     // `bundle.permission_spk_hash`, which lives in script-hash space.
     let mut acc = PermissionTreeAccumulator::new();
     for leaf in bundle.leaves.iter() {
@@ -118,7 +118,7 @@ pub fn handle_permission_spend<S: Store>(
     store: &S,
     registry: &RwLock<HashMap<TransactionOutpoint, [u8; 32]>>,
 ) {
-    // ponytail: no reorg-revert of claims in v1 — spec defers it.
+    // Claim reversion during a reorganization is not implemented in this first version.
     let mut wb = store.write_batch();
     indexer.on_permission_spent(spend, &mut wb);
 
