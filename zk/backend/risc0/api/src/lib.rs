@@ -31,8 +31,8 @@ pub use host::Host;
 #[cfg(feature = "guest")]
 pub use journal::Journal;
 pub use permission_script::{
-    DELEGATE_SCRIPT_LEN, DELEGATE_SCRIPT_PREFIX, DELEGATE_SCRIPT_SUFFIX, FEE_CAP,
-    MAX_DELEGATE_INPUTS, PERM_MAX_DEPTH, blake2b_script_hash, build_delegate_entry_script,
+    DELEGATE_SCRIPT_LEN, DELEGATE_SCRIPT_PREFIX, DELEGATE_SCRIPT_SUFFIX, MAX_DELEGATE_INPUTS,
+    PERM_MAX_DEPTH, blake2b_script_hash, build_delegate_entry_script,
     build_permission_redeem_script, decode_permission_redeem, delegate_entry_spk_hash,
     perm_redeem_script_len,
 };

@@ -260,7 +260,7 @@ pub(crate) fn check_claim_spend(
 mod tests {
     use std::{collections::HashMap, sync::RwLock};
 
-    use kaspa_consensus_core::tx::{TransactionInput, TransactionOutpoint};
+    use kaspa_consensus_core::tx::{ScriptPublicKey, TransactionInput, TransactionOutpoint};
     use vprogs_l1_types::Hash;
     use vprogs_zk_abi::withdrawal::{ExitLeaf, StandardSpk};
     use vprogs_zk_backend_risc0_api::{
@@ -276,6 +276,18 @@ mod tests {
         let pk = [pk_byte; 32];
         let spk = StandardSpk::PubKey(&pk);
         (ExitLeaf::from_pair(spk, amount), pk)
+    }
+
+    /// A zero-fee collateral fixture: a plain P2PK UTXO at a throwaway key. The watcher only
+    /// parses the permission input's witness, so the collateral signature stays empty here.
+    fn collateral_args() -> ((TransactionOutpoint, u64), ScriptPublicKey) {
+        let pk = [0xEE; 32];
+        let bytes = StandardSpk::PubKey(&pk).to_script_bytes();
+        let spk_bytes: [u8; 34] = bytes.as_slice().try_into().unwrap();
+        (
+            (TransactionOutpoint::new(Hash::from_u64_word(30), 0), 10_000_000),
+            ScriptPublicKey::new(0, spk_bytes.to_vec().into()),
+        )
     }
 
     #[test]
@@ -308,6 +320,10 @@ mod tests {
             new_root: expected_new_root,
             new_unclaimed: 2,
             delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(20), 1), deduct)],
+            collateral_input: collateral_args().0,
+            collateral_spk: collateral_args().1,
+            fee: 0,
+            collateral_sig: Vec::new(),
         };
 
         let (tx, _utxos) = build_permission_spend(&args).expect("valid spend");
@@ -365,6 +381,10 @@ mod tests {
             new_root: expected_new_root,
             new_unclaimed: 1,
             delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(21), 1), deduct)],
+            collateral_input: collateral_args().0,
+            collateral_spk: collateral_args().1,
+            fee: 0,
+            collateral_sig: Vec::new(),
         };
 
         let (tx, _utxos) = build_permission_spend(&args).expect("valid spend");
@@ -421,6 +441,10 @@ mod tests {
             new_root: expected_new_root,
             new_unclaimed: 0,
             delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(22), 1), deduct)],
+            collateral_input: collateral_args().0,
+            collateral_spk: collateral_args().1,
+            fee: 0,
+            collateral_sig: Vec::new(),
         };
 
         let (tx, _utxos) = build_permission_spend(&args).expect("valid spend");
