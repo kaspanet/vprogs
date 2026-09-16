@@ -9,9 +9,10 @@
 //!   the on-chain 1-byte tag-domain (`PermNode::Leaf`/`Branch`/`Empty`) hashing produce the same
 //!   root. The happy-path spends are the missing self-checking test: before the #78 fix they would
 //!   fail at the old-root `OP_EQUALVERIFY`.
-//! - **#77 (payout floor):** output 0 must pay `>= deduct`; the exact pin (`== deduct`, `== deduct
-//!   + rent` on the terminal fold) makes the payout a zero-slack value sink, since delegate UTXOs
-//!   are permissionless inside the covenant. Under- and overpayment are both rejected.
+//! - **#77 (payout floor):** output 0 must pay `>= deduct`; the exact pin (`== deduct` while exits
+//!   remain, `== deduct + rent` on the terminal fold) makes the payout a zero-slack value sink,
+//!   since delegate UTXOs are permissionless inside the covenant. Under- and overpayment are both
+//!   rejected.
 //! - **Fee collateral:** the claim fee is funded by a trailing non-delegate collateral input (the
 //!   claimer's own money) whose unburned remainder returns as the trailing change output; the burn
 //!   is uncapped (claim fees ride the node's feerate estimation) and delegates are conserved exact
@@ -241,8 +242,8 @@ struct Spend {
     /// Fee burned from the collateral change output (default 0). The spend goes intentionally
     /// unbalanced by this amount, the consensus-legal fee.
     fee: u64,
-    /// Value moved from the delegate change to a trailing attacker output (default 0); the
-    /// diversion the exact output count must reject even once the fee burn is allowed.
+    /// Value moved from the delegate change to an attacker output (default 0); the diversion
+    /// the exact output count must reject even once the fee burn is allowed.
     divert: u64,
     /// The collateral input's amount (default [`DEFAULT_COLLATERAL`]).
     collateral: u64,
@@ -268,7 +269,7 @@ impl Default for Spend {
 /// test key so the engine verifies it). Output 0 is the withdrawal payout; output 1 (when exits
 /// remain) is the re-committed continuation carrying the rent forward; the trailing output is the
 /// collateral change (`collateral - fee`). Any value freed by an `out0`/`out1` override is
-/// diverted to a trailing attacker output so the tx stays balanced.
+/// diverted to an attacker output so the tx stays balanced.
 fn build_spend(
     leaves: Vec<([u8; 34], u64)>,
     index: usize,
@@ -333,7 +334,7 @@ fn build_spend(
     // Collateral change: the unburned remainder, always the trailing output.
     let collateral_change = spend.collateral - spend.fee;
 
-    // Divert any value freed by an override to a trailing attacker output (no covenant binding), so
+    // Divert any value freed by an override to an attacker output (no covenant binding), so
     // sum(outputs) == sum(inputs) - fee and the engine's fee check can't be the cause of a
     // rejection.
     let assigned: u64 = outputs.iter().map(|o| o.value).sum::<u64>() + collateral_change;
@@ -627,7 +628,7 @@ fn last_input_delegate_spk_rejected() {
 
 #[test]
 fn delegate_change_diversion_rejected() {
-    // The change output shrinks by `divert` and a trailing attacker output takes the freed
+    // The change output shrinks by `divert` and an attacker output takes the freed
     // value (balanced, every pinned output honest at its pinned index). Even with the fee burn
     // allowed, only the exact output count keeps this rejected: freed delegate value may never
     // pay a spare output.
