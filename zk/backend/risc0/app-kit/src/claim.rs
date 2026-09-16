@@ -180,8 +180,7 @@ pub fn build_permission_spend(
         ));
     }
 
-    // The collateral input carries its P2PK script's sigop compute mass (one schnorr
-    // CHECKSIG), mirroring how the wallet signs carrier inputs.
+    // The collateral input carries its P2PK script's sigop compute mass (one schnorr CHECKSIG).
     inputs.push(TransactionInput::new_with_compute_budget(
         args.collateral_input.0,
         args.collateral_sig.clone(),
@@ -359,6 +358,7 @@ mod tests {
         (tx, utxos)
     }
 
+    /// Executes one input's scripts through the engine; `Ok(())` on accept, `Err(msg)` on reject.
     fn run_input(tx: &Transaction, utxos: &[UtxoEntry], idx: usize) -> Result<(), String> {
         let sig_cache = Cache::new(10_000);
         let reused = SigHashReusedValuesUnsync::new();
