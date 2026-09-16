@@ -410,7 +410,7 @@ impl PermRedeemScript for Vec<u8> {
     }
 
     fn emit_verify_outputs(&mut self, redeem_script_len: i64) {
-        // enforce output 0's payout >= deduct (underpayment floor, #77). Main: [deduct,
+        // Enforce output 0's payout >= deduct. Main: [deduct,
         // new_root, new_uncl_8b]. The exact payout pin is per-branch below (`== deduct` while
         // exits remain, `== deduct + rent` on the terminal fold): delegates are conserved
         // exact and the only other value sink is the collateral-funded fee burn, so payout

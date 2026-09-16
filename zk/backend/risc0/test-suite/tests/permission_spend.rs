@@ -5,11 +5,10 @@
 //! data (leaf spk/amount, deduct, Merkle proof, redeem bytes), and execute the script.
 //!
 //! Coverage:
-//! - **#78 (domain match):** a valid withdrawal only verifies if the off-chain accumulator root and
-//!   the on-chain 1-byte tag-domain (`PermNode::Leaf`/`Branch`/`Empty`) hashing produce the same
-//!   root. The happy-path spends are the missing self-checking test: before the #78 fix they would
-//!   fail at the old-root `OP_EQUALVERIFY`.
-//! - **#77 (payout floor):** output 0 must pay `>= deduct`; the exact pin (`== deduct` while exits
+//! - **Domain match:** a valid withdrawal only verifies if the off-chain accumulator root and the
+//!   on-chain 1-byte tag-domain (`PermNode::Leaf`/`Branch`/`Empty`) hashing produce the same root.
+//!   The happy-path spends verify this agreement before the old-root `OP_EQUALVERIFY`.
+//! - **Payout floor:** output 0 must pay `>= deduct`; the exact pin (`== deduct` while exits
 //!   remain, `== deduct + rent` on the terminal fold) makes the payout a zero-slack value sink,
 //!   since delegate UTXOs are permissionless inside the covenant. Under- and overpayment are both
 //!   rejected.
@@ -422,7 +421,7 @@ fn run_spend(tx: &Transaction, utxos: &[UtxoEntry]) -> Result<(), String> {
 
 #[test]
 fn withdrawal_partial_deduct_passes() {
-    // #78: a valid partial withdrawal verifies, proving the off-chain root matches the on-chain
+    // A valid partial withdrawal verifies, proving the off-chain root matches the on-chain
     // string-domain recomputation. deduct < amount → leaf stays, unclaimed unchanged.
     let leaves = vec![(test_spk(1), 1000), (test_spk(2), 500)];
     let (tx, utxos) = build_spend(leaves, 0, 300, Spend::default());
@@ -431,7 +430,8 @@ fn withdrawal_partial_deduct_passes() {
 
 #[test]
 fn withdrawal_full_claim_passes() {
-    // #78: full claim of the only leaf (deduct == amount) → unclaimed 1→0, no continuation output.
+    // A full claim of the only leaf (deduct == amount) leaves no unclaimed value or continuation
+    // output.
     let leaves = vec![(test_spk(1), 1000)];
     let (tx, utxos) = build_spend(leaves, 0, 1000, Spend::default());
     assert_eq!(tx.outputs.len(), 2, "fully-claimed spend has payout + collateral change only");
@@ -458,9 +458,9 @@ fn withdrawal_depth2_passes() {
 
 #[test]
 fn overpayment_rejected() {
-    // #77 allowed output 0 to pay MORE than deduct (`>=`). That `>=` is a value sink: a claimer
-    // sweeping permissionless delegate UTXOs could ride the swept pool out through their own
-    // leaf's over-paid payout, so the payout is now pinned exact. Only output 0's amount
+    // A payout floor that allowed output 0 to pay MORE than deduct (`>=`) is a value sink. A
+    // claimer sweeping permissionless delegate UTXOs could ride the swept pool out through their
+    // own leaf's over-paid payout, so the payout is now pinned exact. Only output 0's amount
     // differs from `withdrawal_partial_deduct_passes`.
     let leaves = vec![(test_spk(1), 1000), (test_spk(2), 500)];
     let (tx, utxos) = build_spend(leaves, 0, 300, Spend { out0: Some(301), ..Spend::default() });
@@ -473,15 +473,15 @@ fn overpayment_rejected() {
 
 #[test]
 fn underpayment_rejected() {
-    // #77: output 0 pays LESS than deduct (dust) → the new payout check must reject the spend.
+    // Output 0 pays LESS than deduct (dust), so the payout check must reject the spend.
     // The Exact-payout sibling (`withdrawal_partial_deduct_passes`) uses the same leaves, index and
-    // deduct and passes; only output 0's amount differs, so the rejection is the #77 check.
+    // deduct and passes; only output 0's amount differs, so the payout check rejects this spend.
     let leaves = vec![(test_spk(1), 1000), (test_spk(2), 500)];
     let (tx, utxos) = build_spend(leaves, 0, 300, Spend { out0: Some(299), ..Spend::default() });
     let result = run_spend(&tx, &utxos);
     assert!(
         result.is_err(),
-        "underpaid withdrawal (out0 < deduct) must be rejected by the #77 payout check; got {result:?}",
+        "underpaid withdrawal (out0 < deduct) must be rejected by the payout check; got {result:?}",
     );
 }
 
