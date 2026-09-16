@@ -13,9 +13,9 @@ use kaspa_txscript::{
     EngineFlags, script_builder::ScriptBuilder, standard::pay_to_script_hash_script,
 };
 use vprogs_zk_abi::withdrawal::ExitLeaf;
+pub use vprogs_zk_backend_risc0_api::PermissionTreeView;
 use vprogs_zk_backend_risc0_api::{
-    MAX_DELEGATE_INPUTS, PermissionTreeAccumulator, build_delegate_entry_script,
-    build_permission_redeem_script,
+    MAX_DELEGATE_INPUTS, build_delegate_entry_script, build_permission_redeem_script,
 };
 
 /// Assembles the permission input's signature script: the public withdrawal witness consumed
@@ -76,11 +76,26 @@ pub struct PermissionSpendArgs<'a> {
     pub new_unclaimed: u64,
     /// Delegate funding inputs paying into the spend.
     pub delegate_inputs: Vec<(TransactionOutpoint, u64)>,
+    /// The claimer's collateral input funding the fee: a plain P2PK UTXO (its signature
+    /// script is [`Self::collateral_sig`]).
+    pub collateral_input: (TransactionOutpoint, u64),
+    /// Script public key of the collateral UTXO; the trailing change pays back to it.
+    pub collateral_spk: ScriptPublicKey,
+    /// Fee in sompi burned from the collateral input (strictly below its amount: a zero
+    /// change output is network dust).
+    pub fee: u64,
+    /// Schnorr P2PK signature script for the collateral input, signed by the claimer over
+    /// the final transaction. The sighash replaces this script with the prevout SPK, so it is
+    /// valid to sign over the build with the script empty and splice this in afterwards.
+    pub collateral_sig: Vec<u8>,
 }
 
 /// Builds a permission spend transaction and its matched UTXO entries.
 ///
-/// Built transactions are zero-fee on-chain; may fail min-relay-fee policy outside simnet.
+/// The trailing input is the claimer's collateral P2PK input and the trailing output its
+/// unburned change (`collateral - fee`); the fee is the consensus-legal burn (inputs minus
+/// outputs) that carries the spend through the mempool's relay-fee floor. Delegates are
+/// conserved exactly: their change output carries `Σdelegates - deduct` to the last sompi.
 pub fn build_permission_spend(
     args: &PermissionSpendArgs<'_>,
 ) -> Result<(Transaction, Vec<UtxoEntry>), &'static str> {
@@ -97,6 +112,9 @@ pub fn build_permission_spend(
     }
     if args.siblings.len() != args.depth {
         return Err("siblings count does not match tree depth");
+    }
+    if args.fee >= args.collateral_input.1 {
+        return Err("fee must be strictly below the collateral amount");
     }
 
     let is_done = args.new_unclaimed == 0;
@@ -127,6 +145,13 @@ pub fn build_permission_spend(
         ));
     }
 
+    // Collateral change: the fee input's unburned remainder, always the trailing output.
+    outputs.push(TransactionOutput::with_covenant(
+        args.collateral_input.1 - args.fee,
+        args.collateral_spk.clone(),
+        None,
+    ));
+
     let old_redeem = build_permission_redeem_script(&args.old_root, args.old_unclaimed, args.depth);
     let perm_sig = permission_sig_script(
         args.leaf_spk,
@@ -137,7 +162,7 @@ pub fn build_permission_spend(
         &old_redeem,
     );
 
-    let mut inputs = Vec::with_capacity(1 + args.delegate_inputs.len());
+    let mut inputs = Vec::with_capacity(2 + args.delegate_inputs.len());
     inputs.push(TransactionInput::new_with_compute_budget(
         args.permission_outpoint,
         perm_sig,
@@ -159,17 +184,32 @@ pub fn build_permission_spend(
         ));
     }
 
+    // The collateral input carries its P2PK script's sigop compute mass (one schnorr CHECKSIG).
+    inputs.push(TransactionInput::new_with_compute_budget(
+        args.collateral_input.0,
+        args.collateral_sig.clone(),
+        0,
+        10,
+    ));
+
     let tx =
         Transaction::new(TX_VERSION_TOCCATA, inputs, outputs, 0, SUBNETWORK_ID_NATIVE, 0, vec![]);
 
     let perm_spk = pay_to_script_hash_script(&old_redeem);
-    let mut utxos = Vec::with_capacity(1 + args.delegate_inputs.len());
+    let mut utxos = Vec::with_capacity(2 + args.delegate_inputs.len());
     utxos.push(UtxoEntry::new(args.permission_rent, perm_spk, 0, false, Some(covenant_id)));
 
     let delegate_spk = pay_to_script_hash_script(&delegate_redeem);
     for &(_, amount) in &args.delegate_inputs {
         utxos.push(UtxoEntry::new(amount, delegate_spk.clone(), 0, false, None));
     }
+    utxos.push(UtxoEntry::new(
+        args.collateral_input.1,
+        args.collateral_spk.clone(),
+        0,
+        false,
+        None,
+    ));
 
     Ok((tx, utxos))
 }
@@ -178,35 +218,14 @@ pub fn build_permission_spend(
 ///
 /// Requires `index < 1 << required_depth(leaves.len())` (panics otherwise).
 pub fn claim_siblings(leaves: &[ExitLeaf], index: usize) -> Vec<[u8; 32]> {
-    let depth = PermissionTreeAccumulator::required_depth(leaves.len());
-    let capacity = 1usize << depth;
-    let empty = PermissionTreeAccumulator::hash_empty();
-    let mut level0 = vec![empty; capacity];
-    for (i, leaf) in leaves.iter().enumerate() {
-        level0[i] = PermissionTreeAccumulator::hash_leaf(leaf.to_standard_spk(), leaf.amount);
-    }
-    let mut nodes = vec![level0];
-    for _ in 0..depth {
-        let prev = nodes.last().unwrap();
-        let mut next = Vec::with_capacity(prev.len() / 2);
-        for i in 0..prev.len() / 2 {
-            next.push(PermissionTreeAccumulator::hash_branch(&prev[2 * i], &prev[2 * i + 1]));
-        }
-        nodes.push(next);
-    }
-    let mut out = Vec::with_capacity(depth);
-    let mut idx = index;
-    for level in nodes.iter().take(depth) {
-        out.push(level[idx ^ 1]);
-        idx /= 2;
-    }
-    out
+    PermissionTreeView::from_leaves(leaves).siblings(index)
 }
 
 #[cfg(test)]
 mod tests {
     use kaspa_consensus_core::{
-        hashing::sighash::SigHashReusedValuesUnsync,
+        hashing::{sighash::SigHashReusedValuesUnsync, sighash_type::SIG_HASH_ALL},
+        sign::sign_input,
         tx::{PopulatedTransaction, TransactionOutpoint},
     };
     use kaspa_hashes::Hash;
@@ -215,6 +234,7 @@ mod tests {
         engine_context::EngineContext, script_builder::ScriptBuilder,
         seq_commit_accessor::SeqCommitAccessor,
     };
+    use secp256k1::{SECP256K1, SecretKey};
     use vprogs_zk_abi::withdrawal::{ExitLeaf, StandardSpk};
     use vprogs_zk_backend_risc0_api::{PermissionTreeAccumulator, build_permission_redeem_script};
 
@@ -310,7 +330,40 @@ mod tests {
         ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
     }
 
-    fn run_spend(tx: &Transaction, utxos: &[UtxoEntry]) -> Result<(), String> {
+    /// The fixed test key owning every test spend's collateral UTXO (secp256k1 scalar 7).
+    fn collateral_key() -> ([u8; 32], ScriptPublicKey) {
+        let mut secret = [0u8; 32];
+        secret[31] = 7;
+        let keypair = secp256k1::Keypair::from_secret_key(
+            SECP256K1,
+            &SecretKey::from_slice(&secret).unwrap(),
+        );
+        let pubkey = keypair.x_only_public_key().0.serialize();
+        let bytes = StandardSpk::PubKey(&pubkey).to_script_bytes();
+        let spk_bytes: [u8; 34] = bytes.as_slice().try_into().unwrap();
+        (secret, ScriptPublicKey::new(0, spk_bytes.to_vec().into()))
+    }
+
+    /// The collateral args every builder test shares: a plain funded UTXO at the test key.
+    fn collateral_args() -> ((TransactionOutpoint, u64), ScriptPublicKey) {
+        let (_, spk) = collateral_key();
+        ((TransactionOutpoint::new(Hash::from_u64_word(3), 2), 10_000_000), spk)
+    }
+
+    /// Builds the spend, signs its collateral input with the test key, and returns it.
+    fn built_and_signed(args: &PermissionSpendArgs<'_>) -> (Transaction, Vec<UtxoEntry>) {
+        let (mut tx, utxos) = build_permission_spend(args).expect("builder must accept the args");
+        let (secret, _) = collateral_key();
+        let idx = tx.inputs.len() - 1;
+        let sig =
+            sign_input(&PopulatedTransaction::new(&tx, utxos.clone()), idx, &secret, SIG_HASH_ALL);
+        tx.inputs[idx].signature_script = sig;
+        tx.finalize();
+        (tx, utxos)
+    }
+
+    /// Executes one input's scripts through the engine; `Ok(())` on accept, `Err(msg)` on reject.
+    fn run_input(tx: &Transaction, utxos: &[UtxoEntry], idx: usize) -> Result<(), String> {
         let sig_cache = Cache::new(10_000);
         let reused = SigHashReusedValuesUnsync::new();
         let flags = EngineFlags { covenants_enabled: true, ..Default::default() };
@@ -324,13 +377,20 @@ mod tests {
             .with_covenants_ctx(&cov_ctx);
         let mut vm = TxScriptEngine::from_transaction_input(
             &populated,
-            &tx.inputs[0],
-            0,
-            &utxos[0],
+            &tx.inputs[idx],
+            idx,
+            &utxos[idx],
             exec_ctx,
             flags,
         );
         vm.execute().map_err(|e| format!("{e:?}"))
+    }
+
+    /// Runs the permission input and the collateral input: the permission script enforces the
+    /// spend shape, the collateral input's P2PK sig commits to exactly the submitted outputs.
+    fn run_spend(tx: &Transaction, utxos: &[UtxoEntry]) -> Result<(), String> {
+        run_input(tx, utxos, 0)?;
+        run_input(tx, utxos, tx.inputs.len() - 1)
     }
 
     #[test]
@@ -353,8 +413,12 @@ mod tests {
             new_root: tree.root_with_leaf(0, leaf_hash(&spk, 5_000 - 2_000)),
             new_unclaimed: 2,
             delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(2), 1), 2_000)],
+            collateral_input: (TransactionOutpoint::new(Hash::from_u64_word(3), 2), 10_000_000),
+            collateral_spk: collateral_args().1,
+            fee: 0,
+            collateral_sig: Vec::new(),
         };
-        let (tx, utxos) = build_permission_spend(&args).unwrap();
+        let (tx, utxos) = built_and_signed(&args);
         run_spend(&tx, &utxos).expect("partial deduct spend verifies");
     }
 
@@ -378,9 +442,13 @@ mod tests {
             new_root: tree.root_with_leaf(0, PermissionTreeAccumulator::hash_empty()),
             new_unclaimed: 0,
             delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(2), 1), 7_000)],
+            collateral_input: (TransactionOutpoint::new(Hash::from_u64_word(3), 2), 10_000_000),
+            collateral_spk: collateral_args().1,
+            fee: 0,
+            collateral_sig: Vec::new(),
         };
-        let (tx, utxos) = build_permission_spend(&args).unwrap();
-        assert_eq!(tx.outputs.len(), 1);
+        let (tx, utxos) = built_and_signed(&args);
+        assert_eq!(tx.outputs.len(), 2, "folded payout + collateral change");
         assert_eq!(tx.outputs[0].value, 7_000 + 50_000_000);
         run_spend(&tx, &utxos).expect("full claim verifies");
     }
@@ -405,12 +473,16 @@ mod tests {
             new_root: tree.root_with_leaf(0, PermissionTreeAccumulator::hash_empty()),
             new_unclaimed: 0,
             delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(2), 1), 10_000)],
+            collateral_input: (TransactionOutpoint::new(Hash::from_u64_word(3), 2), 10_000_000),
+            collateral_spk: collateral_args().1,
+            fee: 0,
+            collateral_sig: Vec::new(),
         };
-        let (tx, utxos) = build_permission_spend(&args).unwrap();
-        // 2 outputs: payout (7000 + 50_000_000 rent folded in) at index 0,
-        // delegate change (10_000 - 7_000 = 3_000) at index 1 (1 + CovOutCount where CovOutCount ==
-        // 0).
-        assert_eq!(tx.outputs.len(), 2);
+        let (tx, utxos) = built_and_signed(&args);
+        // 3 outputs: payout (7000 + 50_000_000 rent folded in) at index 0, delegate change
+        // (10_000 - 7_000 = 3_000) at index 1 (1 + CovOutCount where CovOutCount == 0), and the
+        // trailing collateral change.
+        assert_eq!(tx.outputs.len(), 3);
         assert_eq!(tx.outputs[0].value, 7_000 + 50_000_000);
         assert_eq!(tx.outputs[1].value, 3_000);
         run_spend(&tx, &utxos).expect("full claim with delegate change verifies");
@@ -453,6 +525,14 @@ mod tests {
         let tree = TestTree::new(tree_leaves);
         assert_eq!(claim_siblings(&leaves, 0), tree.siblings(0));
         assert_eq!(claim_siblings(&leaves, 1), tree.siblings(1));
+
+        // k = 1: the redeem embeds depth 1, so the claim carries the empty hash as its
+        // single sibling.
+        let single = vec![ExitLeaf::from_pair(spk_a, 100)];
+        let tree_single =
+            TestTree::new(vec![(spk_a.to_script_bytes().as_ref().try_into().unwrap(), 100u64)]);
+        assert_eq!(claim_siblings(&single, 0), tree_single.siblings(0));
+        assert_eq!(claim_siblings(&single, 0), vec![PermissionTreeAccumulator::hash_empty()]);
     }
 
     #[test]
@@ -475,10 +555,14 @@ mod tests {
             new_root: tree.root_with_leaf(0, leaf_hash(&spk, 5_000 - 2_000)),
             new_unclaimed: 2,
             delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(2), 1), 3_000)],
+            collateral_input: (TransactionOutpoint::new(Hash::from_u64_word(3), 2), 10_000_000),
+            collateral_spk: collateral_args().1,
+            fee: 0,
+            collateral_sig: Vec::new(),
         };
-        let (tx, utxos) = build_permission_spend(&args).unwrap();
-        // 3 outputs: payout (2000), continuation (50_000_000), delegate change (1000)
-        assert_eq!(tx.outputs.len(), 3);
+        let (tx, utxos) = built_and_signed(&args);
+        // 4 outputs: payout (2000), continuation (50_000_000), delegate change (1000), collateral
+        assert_eq!(tx.outputs.len(), 4);
         assert_eq!(tx.outputs[2].value, 1_000);
         run_spend(&tx, &utxos).expect("spend with delegate change verifies");
     }
@@ -501,6 +585,10 @@ mod tests {
             new_root: [0; 32],
             new_unclaimed: 0,
             delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(2), 1), 6_000)],
+            collateral_input: (TransactionOutpoint::new(Hash::from_u64_word(3), 2), 10_000_000),
+            collateral_spk: collateral_args().1,
+            fee: 0,
+            collateral_sig: Vec::new(),
         };
         assert_eq!(build_permission_spend(&args).unwrap_err(), "deduct exceeds leaf amount");
     }
@@ -523,10 +611,76 @@ mod tests {
             new_root: [0; 32],
             new_unclaimed: 1,
             delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(2), 1), 1_500)],
+            collateral_input: (TransactionOutpoint::new(Hash::from_u64_word(3), 2), 10_000_000),
+            collateral_spk: collateral_args().1,
+            fee: 0,
+            collateral_sig: Vec::new(),
         };
         assert_eq!(
             build_permission_spend(&args).unwrap_err(),
             "insufficient delegate input value for deduct"
+        );
+    }
+
+    #[test]
+    fn builder_burns_fee_from_collateral_not_delegates() {
+        let spk = test_spk(1);
+        let leaves = vec![(spk, 5_000u64), (test_spk(2), 6_000)];
+        let tree = TestTree::new(leaves.clone());
+        let args = PermissionSpendArgs {
+            covenant_id: [0xFF; 32],
+            permission_outpoint: TransactionOutpoint::new(Hash::from_u64_word(1), 0),
+            permission_rent: 50_000_000,
+            old_root: tree.root(),
+            old_unclaimed: 2,
+            depth: tree.depth,
+            leaf_index: 0,
+            leaf_spk: &spk,
+            leaf_amount: 5_000,
+            deduct: 2_000,
+            siblings: tree.siblings(0),
+            new_root: tree.root_with_leaf(0, leaf_hash(&spk, 5_000 - 2_000)),
+            new_unclaimed: 2,
+            delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(2), 1), 3_000)],
+            collateral_input: (TransactionOutpoint::new(Hash::from_u64_word(3), 2), 10_000_000),
+            collateral_spk: collateral_args().1,
+            fee: 1_000,
+            collateral_sig: Vec::new(),
+        };
+        let (tx, utxos) = built_and_signed(&args);
+        // The delegate change carries the full overfund (conserved exact); the fee burns from
+        // the trailing collateral change.
+        assert_eq!(tx.outputs[2].value, 1_000, "delegate change is exact");
+        assert_eq!(tx.outputs[3].value, 9_999_000, "collateral change is net of the fee");
+        run_spend(&tx, &utxos).expect("fee-bearing spend verifies");
+    }
+
+    #[test]
+    fn builder_rejects_fee_not_below_collateral() {
+        let spk = test_spk(8);
+        let args = PermissionSpendArgs {
+            covenant_id: [0xFF; 32],
+            permission_outpoint: TransactionOutpoint::new(Hash::from_u64_word(1), 0),
+            permission_rent: 50_000_000,
+            old_root: [0; 32],
+            old_unclaimed: 1,
+            depth: 1,
+            leaf_index: 0,
+            leaf_spk: &spk,
+            leaf_amount: 5_000,
+            deduct: 2_000,
+            siblings: vec![[0; 32]],
+            new_root: [0; 32],
+            new_unclaimed: 1,
+            delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(2), 1), 2_000)],
+            collateral_input: (TransactionOutpoint::new(Hash::from_u64_word(3), 2), 1_000),
+            collateral_spk: collateral_args().1,
+            fee: 1_000,
+            collateral_sig: Vec::new(),
+        };
+        assert_eq!(
+            build_permission_spend(&args).unwrap_err(),
+            "fee must be strictly below the collateral amount"
         );
     }
 }

@@ -31,8 +31,9 @@ use vprogs_l1_types::{
 use workflow_core::channel::{Channel, MultiplexerChannel};
 
 use crate::{
-    Command, L1BridgeConfig, L1Event,
+    Command, L1BridgeConfig, L1Event, PermissionSpendHooks,
     error::{Error, Result},
+    permission_watch::check_claim_spend,
     reorg_filter::ReorgFilter,
 };
 
@@ -89,6 +90,10 @@ pub(crate) struct BridgeWorker<T: ChainSink<ChainBlockMetadata, L1Transaction>> 
     /// Lower bound on the `min_confirmation_count` for chain-follow queries; the adaptive reorg
     /// filter may still exceed it after observed reorgs. `None` uses the adaptive threshold alone.
     min_confirmations: Option<u64>,
+    /// Optional hooks for watching and emitting permission-output spends.
+    permission_spends: Option<PermissionSpendHooks>,
+    /// Optional channel sender every observed covenant settlement is published into.
+    settlement_events: Option<mpsc::UnboundedSender<SettlementInfo>>,
 }
 
 impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
@@ -162,6 +167,8 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             tip_daa: config.tip_daa.clone(),
             settlement: config.settlement_observer.clone(),
             min_confirmations: config.min_confirmations,
+            permission_spends: config.permission_spends.clone(),
+            settlement_events: config.settlement_events.clone(),
         }
         .run()
         .await;
@@ -513,10 +520,23 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
                 let tx = L1Transaction::try_from(tx.clone())
                     .map_err(|e| Error::MalformedResponse(e.to_string()))?;
 
-                // Carry forward the last settlement.
+                // Carry forward the last settlement; emit new ones over settlement_events.
                 if let Some(id) = self.covenant_id {
-                    last_settlement =
-                        tx.settlement_info(id, block.hash, block.daa_score).or(last_settlement);
+                    if let Some(info) = tx.settlement_info(id, block.hash, block.daa_score) {
+                        last_settlement = Some(info);
+                        if let Some(sender) = &self.settlement_events {
+                            let _ = sender.send(info);
+                        }
+                    }
+                }
+
+                if let Some(hooks) = &self.permission_spends {
+                    let txid_bytes = tx.id().as_bytes();
+                    let cov_id = self.covenant_id.map(|h| h.as_bytes()).unwrap_or_default();
+                    if let Some(spend) = check_claim_spend(&hooks.registry, &tx, txid_bytes, cov_id)
+                    {
+                        let _ = hooks.events.send(spend);
+                    }
                 }
 
                 // Parse access metadata; malformed = no dependencies and prover attests.
@@ -647,5 +667,271 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use crossbeam_queue::SegQueue;
+    use kaspa_consensus_core::{
+        network::{NetworkId, NetworkType},
+        subnets::SUBNETWORK_ID_NATIVE,
+        tx::{
+            CovenantBinding, Transaction, TransactionInput, TransactionOutpoint, TransactionOutput,
+        },
+    };
+    use kaspa_rpc_core::{
+        GetVirtualChainFromBlockV2Response, RpcChainBlockAcceptedTransactions, RpcOptionalHeader,
+        RpcOptionalTransaction,
+    };
+    use kaspa_wrpc_client::prelude::{KaspaRpcClient, WrpcEncoding};
+    use tokio::sync::{Notify, mpsc};
+    use vprogs_core_atomics::AtomicAsyncLatch;
+    use vprogs_core_types::{ChainSink, SchedulerTransaction};
+    use vprogs_l1_types::{ChainBlockMetadata, Hash, L1Transaction, SettlementInfo};
+    use workflow_core::channel::Channel;
+
+    use super::*;
+
+    #[derive(Default)]
+    struct TestSink {
+        blocks: Vec<ChainBlockMetadata>,
+    }
+
+    impl ChainSink<ChainBlockMetadata, L1Transaction> for TestSink {
+        fn append(
+            &mut self,
+            metadata: ChainBlockMetadata,
+            _txs: Vec<SchedulerTransaction<L1Transaction>>,
+        ) -> u64 {
+            self.blocks.push(metadata);
+            self.blocks.len() as u64
+        }
+        fn rollback(&mut self, _new_tip: u64) {}
+        fn finalize(&mut self, _below: u64) {}
+        fn tip(&self) -> u64 {
+            self.blocks.len() as u64
+        }
+        fn metadata(&self, id: u64) -> Option<ChainBlockMetadata> {
+            if id == 0 { None } else { self.blocks.get((id - 1) as usize).copied() }
+        }
+        fn id(&self, block_hash: &[u8; 32]) -> Option<u64> {
+            self.blocks
+                .iter()
+                .position(|b| b.hash.as_bytes() == *block_hash)
+                .map(|i| (i + 1) as u64)
+        }
+        fn shutdown(self) {}
+    }
+
+    fn make_settlement_tx(covenant_id: Hash, new_state: [u8; 32]) -> L1Transaction {
+        let prev_redeem = [0xcc; 32];
+        let mut sig_script = Vec::new();
+        for data in [&[0x11; 32], &new_state, &[0x33; 32], &prev_redeem] {
+            sig_script.push(0x20); // OpData32
+            sig_script.extend_from_slice(data);
+        }
+        Transaction::new(
+            0,
+            vec![TransactionInput::new(
+                TransactionOutpoint::new(Hash::from_bytes([0x66; 32]), 0),
+                sig_script,
+                0,
+                1,
+            )],
+            vec![TransactionOutput::with_covenant(
+                100_000_000,
+                kaspa_txscript::standard::pay_to_script_hash_script(&prev_redeem),
+                Some(CovenantBinding::new(0, covenant_id)),
+            )],
+            0,
+            SUBNETWORK_ID_NATIVE,
+            0,
+            Vec::new(),
+        )
+    }
+
+    fn test_worker(
+        sink: TestSink,
+        covenant_id: Hash,
+        settlement_events: mpsc::UnboundedSender<SettlementInfo>,
+    ) -> BridgeWorker<TestSink> {
+        let client = Arc::new(
+            KaspaRpcClient::new_with_args(
+                WrpcEncoding::Borsh,
+                Some("ws://127.0.0.1:0"),
+                None,
+                Some(NetworkId::new(NetworkType::Simnet)),
+                None,
+            )
+            .unwrap(),
+        );
+        let rpc_ctl_channel = client.rpc_ctl().multiplexer().channel();
+        BridgeWorker {
+            sink,
+            client,
+            subnetwork_filter: None,
+            api_requests: mpsc::channel(1).1,
+            events: Arc::new(SegQueue::new()),
+            event_signal: Arc::new(Notify::new()),
+            shutdown: Arc::new(AtomicAsyncLatch::new()),
+            notification_channel: Channel::unbounded(),
+            rpc_ctl_channel,
+            genesis: ChainBlockMetadata::default(),
+            stopping: false,
+            reorg_filter: ReorgFilter::new(Duration::ZERO),
+            lane_key: None,
+            finality_depth: 100,
+            covenant_id: Some(covenant_id),
+            seed_depth: None,
+            start_from: None,
+            tip_daa: None,
+            settlement: None,
+            min_confirmations: None,
+            permission_spends: None,
+            settlement_events: Some(settlement_events),
+        }
+    }
+
+    #[tokio::test]
+    async fn settlement_events_emitted_per_detection_without_coalescing_or_flood() {
+        let covenant_id = Hash::from_bytes([0xAA; 32]);
+        let (settlement_events_tx, mut settlement_events_rx) = mpsc::unbounded_channel();
+        let sink = TestSink::default();
+        let mut worker = test_worker(sink, covenant_id, settlement_events_tx);
+
+        let tx1 = make_settlement_tx(covenant_id, [0x11; 32]);
+        let tx2 = make_settlement_tx(covenant_id, [0x22; 32]);
+
+        // Batch 1: contains two settlements in one batch.
+        let block1_hash = Hash::from_bytes([0x01; 32]);
+        let block2_hash = Hash::from_bytes([0x02; 32]);
+        let batch1 = GetVirtualChainFromBlockV2Response {
+            removed_chain_block_hashes: Arc::new(vec![]),
+            added_chain_block_hashes: Arc::new(vec![block1_hash, block2_hash]),
+            chain_block_accepted_transactions: Arc::new(vec![
+                RpcChainBlockAcceptedTransactions {
+                    chain_block_header: RpcOptionalHeader {
+                        hash: Some(block1_hash),
+                        blue_score: Some(1),
+                        daa_score: Some(10),
+                        timestamp: Some(1000),
+                        accepted_id_merkle_root: Some(Hash::default()),
+                        ..Default::default()
+                    },
+                    accepted_transactions: vec![RpcOptionalTransaction::from(&tx1)],
+                },
+                RpcChainBlockAcceptedTransactions {
+                    chain_block_header: RpcOptionalHeader {
+                        hash: Some(block2_hash),
+                        blue_score: Some(2),
+                        daa_score: Some(20),
+                        timestamp: Some(2000),
+                        accepted_id_merkle_root: Some(Hash::default()),
+                        ..Default::default()
+                    },
+                    accepted_transactions: vec![RpcOptionalTransaction::from(&tx2)],
+                },
+            ]),
+        };
+
+        worker.fetch_chain_updates_tail(batch1).await.unwrap();
+
+        // Exactly two events emitted in order; no coalescing.
+        let e1 = settlement_events_rx.try_recv().expect("first settlement event");
+        assert_eq!(e1.new_state, [0x11; 32]);
+        let e2 = settlement_events_rx.try_recv().expect("second settlement event");
+        assert_eq!(e2.new_state, [0x22; 32]);
+        assert!(settlement_events_rx.try_recv().is_err());
+
+        // Batch 2: follow-up block without settlements.
+        let block3_hash = Hash::from_bytes([0x03; 32]);
+        let batch2 = GetVirtualChainFromBlockV2Response {
+            removed_chain_block_hashes: Arc::new(vec![]),
+            added_chain_block_hashes: Arc::new(vec![block3_hash]),
+            chain_block_accepted_transactions: Arc::new(vec![RpcChainBlockAcceptedTransactions {
+                chain_block_header: RpcOptionalHeader {
+                    hash: Some(block3_hash),
+                    blue_score: Some(3),
+                    daa_score: Some(30),
+                    timestamp: Some(3000),
+                    accepted_id_merkle_root: Some(Hash::default()),
+                    ..Default::default()
+                },
+                accepted_transactions: vec![],
+            }]),
+        };
+
+        worker.fetch_chain_updates_tail(batch2).await.unwrap();
+
+        // No new settlement events emitted on settlement-less block; no flood.
+        assert!(settlement_events_rx.try_recv().is_err());
+    }
+
+    /// `lane_state` anchors a lane re-activation at the parent seq commit whenever the lane holds
+    /// no live entry at the parent, and chains from the parent lane tip otherwise. The first
+    /// activation must take the seq-commit anchor even when the blue-score gap to the zero seed is
+    /// well inside the finality window; before that rule landed the zero seed anchored the lane
+    /// and every derived tip diverged from consensus.
+    #[test]
+    fn lane_state_anchors_first_activation_and_reactivation_at_seq_commit() {
+        let covenant_id = Hash::from_bytes([0xAA; 32]);
+        let (settlement_events_tx, _settlement_events_rx) = mpsc::unbounded_channel();
+        let mut worker = test_worker(TestSink::default(), covenant_id, settlement_events_tx);
+        let lane_key = Hash::from_bytes([0xEE; 32]);
+        worker.lane_key = Some(lane_key);
+
+        let tx = make_settlement_tx(covenant_id, [0x44; 32]);
+        let txs = vec![SchedulerTransaction::new(0, Default::default(), tx.clone())];
+        let block = ChainBlockMetadata { blue_score: 530, daa_score: 531, ..Default::default() };
+        let parent_seq_commit = Hash::from_bytes([0x5C; 32]);
+        let parent_lane_tip = Hash::from_bytes([0x7D; 32]);
+        let context_hash = mergeset_context_hash(&MergesetContext {
+            timestamp: block.timestamp,
+            daa_score: block.daa_score,
+            blue_score: block.blue_score,
+        });
+        let mut activity = ActivityDigestBuilder::new();
+        activity.add_leaf(activity_leaf(&tx.id(), tx.version, 0));
+        let activity_digest = activity.finalize();
+        let expected_tip = |parent_ref: &Hash| {
+            lane_tip_next(&LaneTipInput {
+                lane_key: &lane_key,
+                parent_ref,
+                activity_digest: &activity_digest,
+                context_hash: &context_hash,
+            })
+        };
+
+        // First activation: the parent carries the zero seed (never folded activity), the gap to
+        // it is far inside the finality window, yet the anchor must be the parent seq commit.
+        let parent = ChainBlockMetadata { seq_commit: parent_seq_commit, ..Default::default() };
+        let (tip, _, expired) = worker.lane_state(&parent, &txs, &block);
+        assert!(expired, "first activation counts as no live entry");
+        assert_eq!(tip, expected_tip(&parent_seq_commit), "first activation anchors at seq commit");
+
+        // Live lane: the parent carries a real tip one blue score below; the anchor is that tip.
+        let parent = ChainBlockMetadata {
+            seq_commit: parent_seq_commit,
+            lane_tip: parent_lane_tip,
+            lane_blue_score: 529,
+            ..Default::default()
+        };
+        let (tip, _, expired) = worker.lane_state(&parent, &txs, &block);
+        assert!(!expired, "a live lane within the window is not expired");
+        assert_eq!(tip, expected_tip(&parent_lane_tip), "live lane chains from the lane tip");
+
+        // Silence past the finality window re-anchors at the parent seq commit.
+        let parent = ChainBlockMetadata {
+            seq_commit: parent_seq_commit,
+            lane_tip: parent_lane_tip,
+            lane_blue_score: 100,
+            ..Default::default()
+        };
+        let (tip, _, expired) = worker.lane_state(&parent, &txs, &block);
+        assert!(expired, "silence past the finality window expires the lane");
+        assert_eq!(tip, expected_tip(&parent_seq_commit), "re-activation anchors at seq commit");
     }
 }

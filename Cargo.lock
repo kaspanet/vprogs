@@ -8654,6 +8654,7 @@ dependencies = [
  "kaspa-notify",
  "kaspa-rpc-core",
  "kaspa-seq-commit",
+ "kaspa-txscript",
  "kaspa-wrpc-client",
  "log",
  "tap",
@@ -8666,6 +8667,9 @@ dependencies = [
  "vprogs-l1-types",
  "vprogs-node-test-utils",
  "vprogs-storage-canonical-chain",
+ "vprogs-zk-abi",
+ "vprogs-zk-backend-risc0-api",
+ "vprogs-zk-backend-risc0-app-kit",
  "workflow-core",
  "workflow-rpc",
  "workflow-serializer",
@@ -8803,6 +8807,7 @@ dependencies = [
 name = "vprogs-runner"
 version = "0.1.0"
 dependencies = [
+ "borsh",
  "clap",
  "ctrlc",
  "fastrand",
@@ -8834,6 +8839,7 @@ dependencies = [
  "vprogs-scheduling-scheduler",
  "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
+ "vprogs-storage-types",
  "vprogs-zk-abi",
  "vprogs-zk-aggregate-prover",
  "vprogs-zk-backend-risc0-api",
@@ -9460,6 +9466,7 @@ version = "0.1.0"
 dependencies = [
  "faster-hex",
  "log",
+ "tokio",
  "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
  "vprogs-storage-types",
