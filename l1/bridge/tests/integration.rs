@@ -3,7 +3,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use kaspa_consensus_core::network::NetworkId;
+use kaspa_consensus_core::{
+    config::params::ForkActivation, constants::TX_VERSION_TOCCATA, header::Header,
+    merkle::calc_hash_merkle_root, network::NetworkId, subnets::SubnetworkId, tx::Transaction,
+};
+use kaspa_rpc_core::{GetBlockTemplateResponse, RpcTransaction, api::rpc::RpcApi};
+use kaspa_seq_commit::hashing::lane_key;
 use tokio::sync::mpsc;
 use vprogs_core_types::{ChainSink, SchedulerTransaction};
 use vprogs_l1_bridge::{Command, L1Bridge, L1BridgeConfig, L1Event};
@@ -26,8 +31,9 @@ struct RecordingSink(Arc<Mutex<SinkInner>>);
 struct SinkInner {
     /// The canonical chain the bridge drives, providing the ids/metadata it reads back.
     manager: CanonicalChainManager<ChainBlockMetadata>,
-    /// Each scheduled block as `(id, metadata, tx_count)`, in order.
-    scheduled: Vec<(u64, ChainBlockMetadata, usize)>,
+    /// Each scheduled block as `(id, metadata, merge_indices)`, in order. The indices are the
+    /// block-wide positions the bridge assigned to the scheduled transactions.
+    scheduled: Vec<(u64, ChainBlockMetadata, Vec<u32>)>,
     /// The `new_tip` of each reorg, in order.
     reorgs: Vec<u64>,
 }
@@ -46,11 +52,11 @@ impl RecordingSink {
     fn seed(&self, metadata: ChainBlockMetadata) {
         let mut inner = self.0.lock().unwrap();
         let id = inner.manager.append(metadata).id;
-        inner.scheduled.push((id, metadata, 0));
+        inner.scheduled.push((id, metadata, Vec::new()));
     }
 
-    /// The blocks scheduled so far, as `(id, metadata, tx_count)`.
-    fn scheduled(&self) -> Vec<(u64, ChainBlockMetadata, usize)> {
+    /// The blocks scheduled so far, as `(id, metadata, merge_indices)`.
+    fn scheduled(&self) -> Vec<(u64, ChainBlockMetadata, Vec<u32>)> {
         self.0.lock().unwrap().scheduled.clone()
     }
 
@@ -97,7 +103,7 @@ impl ChainSink<ChainBlockMetadata, L1Transaction> for RecordingSink {
     ) -> u64 {
         let mut inner = self.0.lock().unwrap();
         let id = inner.manager.append(metadata).id;
-        inner.scheduled.push((id, metadata, txs.len()));
+        inner.scheduled.push((id, metadata, txs.iter().map(|tx| tx.merge_idx).collect()));
         id
     }
 
@@ -197,10 +203,10 @@ async fn test_bridge_block_contains_transactions() {
 
     let blocks = sink.scheduled();
     assert_eq!(blocks.len(), 1);
-    let (id, metadata, tx_count) = &blocks[0];
+    let (id, metadata, merge_indices) = &blocks[0];
     assert_eq!(*id, 1);
     assert_eq!(metadata.hash, block_hash);
-    assert!(*tx_count > 0, "block should have accepted transactions");
+    assert!(!merge_indices.is_empty(), "block should have accepted transactions");
     assert!(metadata.timestamp > 0, "block should have timestamp > 0");
 
     bridge.shutdown();
@@ -431,4 +437,134 @@ async fn test_reorg_filter_causes_lag() {
     node2_bridge.shutdown();
     node1.shutdown().await;
     node2.shutdown().await;
+}
+
+/// Lane subnetwork the busy-DAG test's carriers ride: a non-reserved namespace (the one the
+/// e2e fixtures use) so the txs pass L1's subnetwork shape check, and the subnetwork the
+/// bridge derives its lane key from.
+const LANE_SUBNETWORK_ID: SubnetworkId = SubnetworkId::from_namespace(4444u32.to_be_bytes());
+
+/// Adds `tx` to a block template and recomputes the hash merkle root to cover it, mirroring
+/// `L1Node::mine_block`'s injection.
+fn inject_transaction(template: &mut GetBlockTemplateResponse, tx: &Transaction) {
+    template.block.transactions.push(RpcTransaction::from(tx));
+
+    let consensus_txs: Vec<Transaction> = template
+        .block
+        .transactions
+        .iter()
+        .map(|rpc_tx| Transaction::try_from(rpc_tx.clone()).unwrap())
+        .collect();
+    template.block.header.hash_merkle_root = calc_hash_merkle_root(consensus_txs.iter());
+}
+
+/// Submits a solved template and returns the mined block's hash.
+async fn submit_template(node: &L1Node, template: GetBlockTemplateResponse) -> Hash {
+    let header: Header = (&template.block.header).try_into().unwrap();
+    let hash = header.hash;
+    node.grpc_client().submit_block(template.block, false).await.unwrap();
+    hash
+}
+
+/// Mines a same-parent fork pair: fetches both block templates before submitting either block
+/// so each builds on the current tip, injects one of the txs into each, and submits both. The
+/// two blocks sit in each other's anticone until a later block merges them.
+async fn mine_fork_pair(node: &L1Node, first: &Transaction, second: &Transaction) -> (Hash, Hash) {
+    let address = node.wallet().address().clone();
+    let mut first_template =
+        node.grpc_client().get_block_template(address.clone(), vec![]).await.unwrap();
+    let mut second_template = node.grpc_client().get_block_template(address, vec![]).await.unwrap();
+
+    inject_transaction(&mut first_template, first);
+    inject_transaction(&mut second_template, second);
+
+    let first_hash = submit_template(node, first_template).await;
+    let second_hash = submit_template(node, second_template).await;
+    (first_hash, second_hash)
+}
+
+/// Verifies the bridge's lane-tip derivation matches the node's authoritative seq-commit SMT
+/// lane entry when a chain block's mergeset spans multiple blocks. Two same-parent forks each
+/// carry a lane payload transaction, and the merging chain block accepts both carriers: the
+/// selected-parent fork's behind the parent's coinbase, the merged fork's after it. The bridge
+/// numbers each carrier by its flat position in the merging block's accepted-transaction list,
+/// the position consensus folds into the lane tip, so a divergent numbering would derive a
+/// different tip than the proof the node commits in the merging block's header.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn busy_dag_mergeset_lane_tip_matches_node() {
+    // Toccata-always activates the seq-commit SMT (and its lane-proof RPC); instant coinbase
+    // maturity keeps the carrier funding to a handful of blocks.
+    let node = L1Node::new(
+        NetworkId::new(NetworkType::Simnet),
+        Some(|p| {
+            p.blockrate.coinbase_maturity = 1;
+            p.toccata_activation = ForkActivation::always();
+        }),
+    )
+    .await;
+
+    // A lane-filtered bridge, so the scheduled metadata carries the derived lane state.
+    let sink = RecordingSink::new();
+    let config = L1BridgeConfig::default()
+        .with_url(Some(node.wrpc_borsh_url()))
+        .with_network_type(NetworkType::Simnet)
+        .with_connect_strategy(ConnectStrategy::Fallback)
+        .with_filter_half_life(Duration::ZERO)
+        .with_subnetwork_id(Some(LANE_SUBNETWORK_ID));
+    let (api_tx, api_rx) = mpsc::channel(1);
+    let bridge = L1Bridge::new(config, sink.clone(), api_rx);
+    let _api = api_tx;
+    bridge.wait_for(TIMEOUT, |e| matches!(e, L1Event::Connected)).await;
+
+    // Mature coinbase UTXOs fund the two carriers, which spend disjoint inputs so the merging
+    // block accepts both.
+    node.mine_utxos(4).await;
+    let carriers = node
+        .build_subnet_payload_transactions(
+            vec![vec![1, 2, 3], vec![4, 5, 6]],
+            LANE_SUBNETWORK_ID,
+            TX_VERSION_TOCCATA,
+        )
+        .await;
+
+    // The fork pair: one carrier per block, both building on the common tip.
+    let (fork_a, fork_b) = mine_fork_pair(&node, &carriers[0], &carriers[1]).await;
+    assert_ne!(fork_a, fork_b, "the forks must be two distinct blocks");
+
+    // The merging block (empty payload); its mergeset spans both forks.
+    let merging = node.mine_block(&[]).await;
+    sink.wait_for_block(merging, TIMEOUT).await;
+
+    let blocks = sink.scheduled();
+    let (_, metadata, merge_indices) =
+        blocks.iter().find(|(_, m, _)| m.hash == merging).expect("the merging block is scheduled");
+
+    // The merging block's accepted list holds both forks' carriers behind the selected
+    // parent's coinbase at index 0, so the block-wide numbering is actually exercised (txs at
+    // first positions would hold under a block-local numbering too).
+    assert_eq!(merge_indices.len(), 2, "the merging block accepts both forks' lane carriers");
+    assert!(
+        merge_indices.iter().all(|idx| *idx > 0),
+        "the merged carriers must not sit at index 0 (merge indices {merge_indices:?})"
+    );
+
+    // The bridge-computed lane state equals the node's authoritative SMT lane entry at the
+    // merging block: the tip derived from the block-wide tx positions, and the blue score of
+    // the block that last touched the lane.
+    let lane_key = lane_key(LANE_SUBNETWORK_ID.as_bytes());
+    let entry = node
+        .grpc_client()
+        .get_seq_commit_lane_proof(merging, lane_key)
+        .await
+        .expect("the lane proof at the merging block")
+        .lane
+        .expect("the lane holds a live entry at the merging block");
+    assert_eq!(
+        metadata.lane_tip, entry.tip,
+        "bridge lane tip must match the node's SMT lane proof (merge indices {merge_indices:?})"
+    );
+    assert_eq!(metadata.lane_blue_score, entry.blue_score, "bridge lane blue score must match");
+
+    bridge.shutdown();
+    node.shutdown().await;
 }
