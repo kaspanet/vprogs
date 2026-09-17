@@ -87,6 +87,29 @@ impl BorshDeserialize for PermissionSpend {
     }
 }
 
+/// Marker-carrying settlement stream: chain events in per-channel FIFO order.
+// The marker variant is deliberately thin against a 240-byte payload; boxing would tax every
+// consumer for one variant that rides the same channel a handful of times per reorg.
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SettlementMsg {
+    /// A covenant settlement observed in an appended chain block.
+    Observed(SettlementInfo),
+    /// The chain rolled back to the given sink idx; revert everything above it.
+    Rollback(u64),
+}
+
+/// Marker-carrying permission-spend stream: chain events in per-channel FIFO order.
+// Same deliberate thin-marker shape as [`SettlementMsg`].
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SpendMsg {
+    /// A tracked permission output was spent in an appended chain block.
+    Spent(PermissionSpend),
+    /// The chain rolled back to the given sink idx; revert everything above it.
+    Rollback(u64),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
