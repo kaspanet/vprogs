@@ -33,7 +33,7 @@ use workflow_core::channel::{Channel, MultiplexerChannel};
 
 use crate::{
     Command, L1BridgeConfig, L1Event, PermissionSpendHooks,
-    error::{Error, Result},
+    error::{Error, Result, lane_walk_reached_genesis},
     permission_watch::check_claim_spend,
     reorg_filter::ReorgFilter,
 };
@@ -45,9 +45,8 @@ const RPC_RETRY_MAX_ATTEMPTS: u32 = 10;
 /// Delay between virtual-chain RPC retries.
 const RPC_RETRY_DELAY: Duration = Duration::from_millis(500);
 
-/// Bounded retries for the lane-proof seeding RPC before giving up on the seed. Exhaustion is a
-/// warning, not a fatal: a structurally unanswerable anchor (a `start_from` block below the
-/// pruning point) must not take the worker down.
+/// Bounded retries for the lane-proof seeding RPC before the seed fails; an unseeded genesis
+/// must not be followed, as its derived lane tips diverge from consensus.
 const LANE_PROOF_MAX_ATTEMPTS: u32 = 10;
 /// Delay between lane-proof seeding retries.
 const LANE_PROOF_RETRY_DELAY: Duration = Duration::from_millis(500);
@@ -288,7 +287,10 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
                 self.fatal_error(format!("chain init failed: {}", e));
                 return;
             }
-            self.seed_lane_tip().await;
+            if let Err(e) = self.seed_lane_tip().await {
+                self.fatal_error(format!("lane seed failed: {}", e));
+                return;
+            }
         }
 
         // Step 3: publish the tip as a progress baseline, then announce Connected and sync.
@@ -384,10 +386,12 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
     /// Seeds the genesis lane state from the node's authoritative lane entry at the freshly
     /// established anchor, so a bridge joining an already-live lane chains from the real tip
     /// instead of anchoring its first post-join carrier at the parent seq commit (a mis-anchor
-    /// that diverges every derived tip from consensus). Best effort: on exhausted retries the
-    /// worker keeps following the chain, with the derived tips at risk of divergence.
-    async fn seed_lane_tip(&mut self) {
-        let Some(lane_key) = self.lane_key else { return };
+    /// that diverges every derived tip from consensus). Exhausted retries are an error, never
+    /// a silent zero seed. A lane with no live entry at the anchor keeps the zero seed, which
+    /// the first-activation rule handles; so does a walk that bottoms out at the chain's
+    /// genesis, where no lane state can exist.
+    async fn seed_lane_tip(&mut self) -> Result<()> {
+        let Some(lane_key) = self.lane_key else { return Ok(()) };
 
         for attempt in 1..=LANE_PROOF_MAX_ATTEMPTS {
             match self.client.get_seq_commit_lane_proof(self.genesis.hash, lane_key).await {
@@ -407,7 +411,15 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
                         ),
                     }
                     Self::apply_lane_seed(&mut self.genesis, response.lane);
-                    return;
+                    return Ok(());
+                }
+                Err(e) if lane_walk_reached_genesis(&e) => {
+                    log::info!(
+                        "L1 bridge: lane state bottoms out at the chain's genesis below anchor \
+                         {}; keeping the zero seed",
+                        self.genesis.hash
+                    );
+                    return Ok(());
                 }
                 Err(e) if attempt < LANE_PROOF_MAX_ATTEMPTS => {
                     log::warn!(
@@ -417,13 +429,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
                     tokio::time::sleep(LANE_PROOF_RETRY_DELAY).await;
                 }
                 Err(e) => {
-                    log::warn!(
-                        "L1 bridge: lane tip seeding failed after {LANE_PROOF_MAX_ATTEMPTS} \
-                         attempts ({e}); lane tips derived from anchor {} may diverge from \
-                         consensus",
-                        self.genesis.hash
-                    );
-                    return;
+                    return Err(Error::from(e));
                 }
             }
         }
@@ -544,7 +550,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
                     let stale = self.tip_metadata().hash;
                     self.seed_from_pruning_point().await?;
                     // The anchor changed, so the lane seed must be re-fetched for it.
-                    self.seed_lane_tip().await;
+                    self.seed_lane_tip().await?;
                     log::info!(
                         "L1 bridge: seed block {stale} orphaned by a reorg below it; re-anchored \
                          at the pruning point, replaying"

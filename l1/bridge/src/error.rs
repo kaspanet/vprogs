@@ -44,5 +44,12 @@ impl From<RpcError> for Error {
     }
 }
 
+/// Whether `e` is the node's lane-proof error for a query that bottoms out at the chain's
+/// genesis, where no selected parent exists to walk and no lane state can have accumulated: the
+/// authoritative answer is the zero lane state, not a failure.
+pub fn lane_walk_reached_genesis(e: &RpcError) -> bool {
+    e.to_string().contains("is genesis and has no selected parent")
+}
+
 /// Convenience alias used throughout the bridge worker.
 pub(crate) type Result<T> = std::result::Result<T, Error>;
