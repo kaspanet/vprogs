@@ -263,10 +263,10 @@ impl JournalEntry {
 }
 
 /// Reorg-tracking state for the exit-index loop.
-// ponytail: in-memory journal; a restart inside a reorg window loses it, so hidden families
+// The journal lives in memory: a restart inside a reorg window loses it, so hidden families
 // stay hidden until their settlement re-confirms on chain, and entries below every applied
-// floor are never dropped (each pairing pins an Arc<ExitsForBundle>). Upgrade: persist under
-// StateSpace::Metadata and prune below the lowest applied floor.
+// floor are never dropped (each pairing pins an Arc<ExitsForBundle>). Persisting under
+// StateSpace::Metadata with pruning below the lowest applied floor is the upgrade path.
 struct ReorgState {
     /// Applied transitions in application order, reverted newest-first above a floor.
     journal: Vec<JournalEntry>,
@@ -440,8 +440,8 @@ pub fn permission_commitment(leaves: &[ExitLeaf]) -> [u8; 32] {
 /// Returns the length of the smallest leaf prefix whose permission commitment equals
 /// `commitment`, or `None` when no prefix matches. Settlements arrive with the commitment their
 /// output-1 SPK pins, so this attributes locally executed leaves to the settlement that paid them.
-// ponytail: O(n) full tree rebuilds per candidate settlement (O(n^2) over the buffer); fine at
-// demo scale (a handful of exits per bundle), an incremental accumulator scan if it ever matters.
+// O(n) full tree rebuilds per candidate settlement (O(n^2) over the buffer); fine at demo
+// scale (a handful of exits per bundle), an incremental accumulator scan if it ever matters.
 fn match_prefix(buf: &[ExitLeaf], commitment: [u8; 32]) -> Option<usize> {
     (1..=buf.len()).find(|&k| permission_commitment(&buf[..k]) == commitment)
 }
