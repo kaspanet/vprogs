@@ -374,6 +374,9 @@ pub async fn run_exit_indexer<S: Store>(
                             &store,
                             &registry,
                         ) {
+                            // Known ceiling: also drops a distinct reverted family with an identical leaf set
+                            // (equal winner key and payout), hiding it until its own re-confirmation; keying
+                            // the drop by txid-root pair would lift it.
                             reorg.reverted.retain(|_, (r, ..)| *r != root);
                             reorg.journal.push(JournalEntry::Pairing { root, bundle, settlement });
                         } else if let Some((root, bundle)) = reverted {

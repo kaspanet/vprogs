@@ -656,7 +656,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             );
 
             // Stamp the block's sink idx onto its chain events and emit them; the journal
-            // records each registry transition so a rollback to or below this idx undoes it.
+            // records each registry transition so a rollback strictly below this idx undoes it.
             for mut info in settlements {
                 info.chain_idx = block_idx.into();
                 if let Some(sender) = &self.settlement_events {
