@@ -6,6 +6,10 @@
 //! provers land settlements, and the covenant continuation chain stays a single contiguous
 //! spend-chain (the two provers cooperatively advance ONE covenant rather than forking it).
 //!
+//! The file also hosts the companion scenario tests sharing the same harness: catch-up joins,
+//! resumes after settlement, and the single-prover live-lane join (`prover_joins_live_lane`) that
+//! guards the bridge's authoritative lane-tip seeding at a fresh anchor.
+//!
 //! Runs only under `RISC0_DEV_MODE=1` (dev stub proofs + dev redeem; no GPU). The production /
 //! CUDA path is covered by `zk/backend/risc0/test-suite/tests/settlement_l1_e2e.rs`.
 
@@ -122,7 +126,7 @@ async fn two_provers_contend() {
     let lane_key = test_lane_key();
 
     // === Step 1: bootstrap the shared dev covenant ===
-    let (bootstrap_redeem, bootstrap_spk) = dev_bootstrap_redeem(&lane_key);
+    let (bootstrap_redeem, bootstrap_spk) = dev_bootstrap_redeem(&lane_key, &Hash::default());
     let (boot_tx, covenant_id) =
         l1.build_covenant_bootstrap_transaction(&bootstrap_redeem, COVENANT_VALUE).await;
     let boot_txid = boot_tx.id();
@@ -409,7 +413,7 @@ async fn two_provers_reform_superseded_suffix() {
     let lane_key = test_lane_key();
 
     // === Step 1: bootstrap the shared dev covenant ===
-    let (bootstrap_redeem, bootstrap_spk) = dev_bootstrap_redeem(&lane_key);
+    let (bootstrap_redeem, bootstrap_spk) = dev_bootstrap_redeem(&lane_key, &Hash::default());
     let (boot_tx, covenant_id) =
         l1.build_covenant_bootstrap_transaction(&bootstrap_redeem, COVENANT_VALUE).await;
     let boot_txid = boot_tx.id();
@@ -643,7 +647,7 @@ async fn prover_catches_up_to_existing_covenant() {
     let lane_key = test_lane_key();
 
     // === Step 1: bootstrap the dev covenant ===
-    let (bootstrap_redeem, bootstrap_spk) = dev_bootstrap_redeem(&lane_key);
+    let (bootstrap_redeem, bootstrap_spk) = dev_bootstrap_redeem(&lane_key, &Hash::default());
     let (boot_tx, covenant_id) =
         l1.build_covenant_bootstrap_transaction(&bootstrap_redeem, COVENANT_VALUE).await;
     let boot_txid = boot_tx.id();
@@ -712,7 +716,7 @@ async fn prover_catches_up_to_existing_covenant() {
     )
     .await;
 
-    let (_redeem, catchup_spk) = dev_bootstrap_redeem(&lane_key);
+    let (_redeem, catchup_spk) = dev_bootstrap_redeem(&lane_key, &Hash::default());
     let catchup_covenant = CovenantState {
         covenant_id,
         state: EMPTY_HASH,
@@ -866,7 +870,7 @@ async fn prover_catches_up_to_already_settled_covenant() {
     let lane_key = test_lane_key();
 
     // === Step 1: bootstrap the dev covenant ===
-    let (bootstrap_redeem, bootstrap_spk) = dev_bootstrap_redeem(&lane_key);
+    let (bootstrap_redeem, bootstrap_spk) = dev_bootstrap_redeem(&lane_key, &Hash::default());
     let (boot_tx, covenant_id) =
         l1.build_covenant_bootstrap_transaction(&bootstrap_redeem, COVENANT_VALUE).await;
     let boot_txid = boot_tx.id();
@@ -953,7 +957,7 @@ async fn prover_catches_up_to_already_settled_covenant() {
     // (covenant_id:0, exactly what main.rs's catch-up branch builds when no bootstrap txid is
     // supplied), and a bridge seeded at the deploy block. The bootstrap UTXO is already spent, so
     // B's settler must time the confirm out and adopt the on-chain tip rather than panic.
-    let (_redeem, catchup_spk) = dev_bootstrap_redeem(&lane_key);
+    let (_redeem, catchup_spk) = dev_bootstrap_redeem(&lane_key, &Hash::default());
     let catchup_covenant = CovenantState {
         covenant_id,
         state: EMPTY_HASH,
@@ -1087,7 +1091,7 @@ async fn prover_resumes_after_settlement() {
     let lane_key = test_lane_key();
 
     // === Bootstrap the dev covenant ===
-    let (bootstrap_redeem, bootstrap_spk) = dev_bootstrap_redeem(&lane_key);
+    let (bootstrap_redeem, bootstrap_spk) = dev_bootstrap_redeem(&lane_key, &Hash::default());
     let (boot_tx, covenant_id) =
         l1.build_covenant_bootstrap_transaction(&bootstrap_redeem, COVENANT_VALUE).await;
     let boot_txid = boot_tx.id();
@@ -1270,7 +1274,7 @@ async fn prover_resumes_after_settlement_contended() {
     let lane_key = test_lane_key();
 
     // === Bootstrap the dev covenant ===
-    let (bootstrap_redeem, bootstrap_spk) = dev_bootstrap_redeem(&lane_key);
+    let (bootstrap_redeem, bootstrap_spk) = dev_bootstrap_redeem(&lane_key, &Hash::default());
     let (boot_tx, covenant_id) =
         l1.build_covenant_bootstrap_transaction(&bootstrap_redeem, COVENANT_VALUE).await;
     let boot_txid = boot_tx.id();
@@ -1467,6 +1471,193 @@ async fn prover_resumes_after_settlement_contended() {
     );
 
     // No settlement landed on a DAG side-branch across the restart.
+    assert_no_fork(&l1, block_deploy, bootstrap_outpoint, covenant_id).await;
+
+    l1.shutdown().await;
+}
+
+/// A single prover joins an ALREADY-LIVE lane, modeling a re-deploy over a lane warmed by
+/// previous runs: the lane is warmed with carrier txs BEFORE the covenant is deployed, the
+/// bootstrap pins the lane's authoritative tip (resolved via `get_seq_commit_lane_proof` at the
+/// sink) into its redeem, and only then does the prover (and its bridge) exist. The bridge
+/// anchors its fresh sink at the current sink block (the `seed_depth: 0`, no `start_from`
+/// path), where the lane is live.
+///
+/// This guards the bridge's authoritative lane-tip seeding: without it the genesis anchor
+/// carries the zero lane seed, the first post-join carrier anchors at the parent seq commit,
+/// and every derived tip diverges from the lane tip consensus chains from - the first
+/// artifact's prev tip mismatches the bootstrap's pinned tip, so the settler's redeem-prefix
+/// assert panics (or the node rejects the settlement with a seq-commit script failure) and the
+/// covenant chain never grows past the bootstrap. With the seeding, the prover proves and
+/// settles post-join ranges onto the single contiguous chain.
+#[tokio::test(flavor = "multi_thread")]
+async fn prover_joins_live_lane() {
+    if !dev_mode_enabled() {
+        eprintln!(
+            "skipping prover_joins_live_lane: RISC0_DEV_MODE!=1 - the live-lane join runs dev \
+             stub proofs + the dev redeem on CPU",
+        );
+        return;
+    }
+    let _serial = serialize_settlement_test().await;
+
+    // === Step 0: simnet L1 (same config as two_provers_contend) ===
+    let l1 = L1Node::new(
+        NetworkId::new(NetworkType::Simnet),
+        Some(|p| {
+            p.blockrate.coinbase_maturity = 1;
+            p.toccata_activation = ForkActivation::always();
+            p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+        }),
+    )
+    .await;
+    l1.mine_utxos(30).await;
+
+    let network_id = NetworkId::new(NetworkType::Simnet);
+    let lane_key = test_lane_key();
+
+    // === Step 1: warm the lane BEFORE anything else exists ===
+    // Mine lane carriers with nobody watching, one per block, so the seq-commit SMT folds live
+    // tips no bridge ever observed. This models a re-deploy over a lane warmed by previous runs.
+    for i in 0..4 {
+        let payload =
+            encode_activity_payload(&[AccessMetadata::write(ResourceId::for_test(1))], &[1, 2, 3]);
+        let carrier = l1
+            .build_subnet_payload_transactions(vec![payload], LANE_SUBNET, TX_VERSION_TOCCATA)
+            .await
+            .into_iter()
+            .next()
+            .expect("carrier tx");
+        l1.mine_block(std::slice::from_ref(&carrier)).await;
+        eprintln!("live-lane warmup: mined carrier {i}");
+    }
+    l1.mine_blocks(2).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // === Step 2: resolve the lane's authoritative tip, then bootstrap onto it ===
+    // A covenant deployed onto an already-live lane must pin that lane's live tip into its
+    // redeem: the first settlement chains from the tip the bridge seeds its genesis with, so a
+    // zero pin would mismatch at the settler's redeem-prefix assert. No lane activity lands
+    // between this lookup and the prover's spawn, so the pinned tip and the bridge's seeded
+    // genesis tip agree.
+    let client = connect_wrpc(&l1.wrpc_borsh_url(), network_id).await;
+    let sink = client.get_block_dag_info().await.expect("dag info").sink;
+    let live_tip = client
+        .get_seq_commit_lane_proof(sink, lane_key)
+        .await
+        .expect("lane proof at the warmed lane")
+        .lane
+        .expect("the warmed lane holds a live entry at the sink")
+        .tip;
+    eprintln!("live-lane join: authoritative tip at sink {sink} is {live_tip}");
+
+    let (bootstrap_redeem, bootstrap_spk) = dev_bootstrap_redeem(&lane_key, &live_tip);
+    let (boot_tx, covenant_id) =
+        l1.build_covenant_bootstrap_transaction(&bootstrap_redeem, COVENANT_VALUE).await;
+    let boot_txid = boot_tx.id();
+    let block_deploy = l1.mine_block(&[boot_tx]).await;
+    l1.mine_blocks(1).await;
+    eprintln!("dev covenant bootstrapped: covenant_id={covenant_id} block_deploy={block_deploy}");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let bootstrap_outpoint = TransactionOutpoint::new(boot_txid, 0);
+    let initial_covenant = CovenantState {
+        covenant_id,
+        state: EMPTY_HASH,
+        lane_tip: live_tip,
+        outpoint: bootstrap_outpoint,
+        spk: bootstrap_spk,
+        value: COVENANT_VALUE,
+        daa_score: 0,
+    };
+
+    // === Step 3: fund ONE prover, then spawn it onto the live lane ===
+    let kp = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
+    let addr = prover_address(&kp, network_id);
+    l1.fund_address(&addr, FUND_VALUE, FUND_COUNT).await;
+    eprintln!("funded live-lane prover address {addr}");
+
+    let tx_elf = transaction_processor_elf();
+    let batch_elf = batch_processor_elf();
+    let aggregator_elf = batch_aggregator_elf();
+    let elfs = Elfs { program: &tx_elf, batch: &batch_elf, aggregator: &aggregator_elf };
+    let params = Params::from(network_id);
+
+    // `start_from: None` puts the bridge on the `seed_depth: 0` path (anchor at the sink, where
+    // the lane is live) and the settler on the fresh-deploy path (nobody has settled yet, so the
+    // bootstrap outpoint IS unspent). No alternation partner, so the solo prover settles every
+    // range it forms: deterministic, no spend race.
+    let prover = spawn_prover(
+        &l1,
+        "P",
+        kp,
+        addr.clone(),
+        2..=4,
+        network_id,
+        &params,
+        lane_key,
+        covenant_id,
+        initial_covenant,
+        elfs,
+        None,
+        None,
+    )
+    .await;
+
+    // === Step 4: drive post-join ranges so the prover proves and settles them ===
+    for i in 0..4 {
+        eprintln!("live-lane driver: iteration {i}");
+        drive_range(&l1).await;
+    }
+
+    // === Step 5: drain in-flight settlements, then tear down ===
+    let mut prev_len = 0usize;
+    let mut stable_rounds = 0;
+    for round in 0..40 {
+        l1.mine_blocks(1).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let len = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+        if len == prev_len {
+            stable_rounds += 1;
+        } else {
+            stable_rounds = 0;
+        }
+        prev_len = len;
+        if stable_rounds >= 3 && len >= 2 {
+            break;
+        }
+        if round % 5 == 0 {
+            eprintln!("live-lane drain: round {round}, covenant chain length {len}");
+        }
+    }
+
+    prover.shutdown.open();
+    let join = prover.settler.await;
+    prover.node.shutdown();
+
+    // === Assertions ===
+    assert!(join.is_ok(), "live-lane prover settler panicked: {join:?}");
+
+    let chain = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await;
+    let mut expected_input = bootstrap_outpoint;
+    for (pos, link) in chain.iter().enumerate() {
+        assert_eq!(
+            link.covenant_input, expected_input,
+            "settlement #{pos} ({}) must spend the previous covenant output {expected_input}; the \
+             continuation chain forked",
+            link.tx_id,
+        );
+        expected_input = TransactionOutpoint::new(link.tx_id, 0);
+    }
+
+    eprintln!("live-lane join: final covenant chain length = {}", chain.len());
+    assert!(
+        chain.len() >= 2,
+        "expected a covenant chain of at least 2 settlements after joining the live lane, got {}",
+        chain.len(),
+    );
+
+    // No settlement landed on a DAG side-branch.
     assert_no_fork(&l1, block_deploy, bootstrap_outpoint, covenant_id).await;
 
     l1.shutdown().await;

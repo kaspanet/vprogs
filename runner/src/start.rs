@@ -12,7 +12,7 @@ use kaspa_consensus_core::{
     tx::TransactionOutpoint,
 };
 use kaspa_hashes::Hash;
-use kaspa_rpc_core::{RpcBlock, api::rpc::RpcApi};
+use kaspa_rpc_core::{RpcBlock, RpcError, api::rpc::RpcApi};
 use kaspa_seq_commit::hashing::lane_key;
 use kaspa_wrpc_client::prelude::KaspaRpcClient;
 use secp256k1::Keypair;
@@ -22,7 +22,7 @@ use tokio::{
 };
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_smt::EMPTY_HASH;
-use vprogs_l1_bridge::PermissionSpendHooks;
+use vprogs_l1_bridge::{PermissionSpendHooks, lane_walk_reached_genesis};
 use vprogs_l1_types::SettlementInfo;
 use vprogs_l1_wallet::Wallet;
 use vprogs_scheduling_scheduler::Indexer;
@@ -106,6 +106,11 @@ pub enum StartError {
          for keyless observer mode, join an existing covenant via covenant_id and start_from"
     )]
     MissingKeyForFresh,
+    /// The lane-tip lookup at a fresh deploy's anchor failed. Pinning the zero tip onto an
+    /// already-live lane would wedge the covenant's first settlement, so the start aborts to be
+    /// retried whole (e.g. with a different anchor) instead.
+    #[error("fresh deploy could not resolve the lane tip at anchor {1}: {0}")]
+    LaneTipLookup(Box<RpcError>, Hash),
 }
 
 /// Resolves the effective start mode: explicit when set, else resume if the data dir already holds
@@ -282,12 +287,20 @@ async fn start_exec<F>(
             // asserts.
             let (covenant, bootstrap_txid) = if dev_mode_enabled() {
                 log::info!("bootstrapping dev-pins covenant; issuer address {}", wallet.address());
-                bootstrap_dev_covenant(&wallet, lane_key, COVENANT_VALUE).await
+                // Exec mode settles nothing, so the deploy pins the fresh-lane (zero) tip.
+                bootstrap_dev_covenant(&wallet, lane_key, Hash::default(), COVENANT_VALUE).await
             } else {
                 log::info!("bootstrapping real-pins covenant; issuer address {}", wallet.address());
                 let backend =
                     Backend::new(elfs.program, elfs.batch, elfs.aggregator, ProofType::Succinct);
-                bootstrap_real_covenant(&wallet, &backend, lane_key, COVENANT_VALUE).await
+                bootstrap_real_covenant(
+                    &wallet,
+                    &backend,
+                    lane_key,
+                    Hash::default(),
+                    COVENANT_VALUE,
+                )
+                .await
             };
             persisted.bootstrap_txid = Some(bootstrap_txid.to_string());
             log::info!("covenant {} bootstrapped (tx {})", covenant.covenant_id, bootstrap_txid);
@@ -466,13 +479,32 @@ where
         }
     };
 
+    // A fresh deploy onto a lane that is already live (e.g. a re-deploy over lanes warmed by
+    // previous runs) must pin the lane's authoritative tip at the deploy anchor: the first
+    // settlement chains from that tip, matching the tip the bridge seeds its genesis from (both
+    // lookups resolve at `seed_block`). A failed lookup aborts the start: pinning the zero tip
+    // onto a live lane would wedge the covenant's first settlement forever, while an aborted
+    // start is retried whole. A lane with no live entry pins the zero tip, the fresh-lane
+    // deploy. A resolved (resumed or caught-up) covenant reconstructs the zero tip, which is
+    // wrong only for a covenant that itself deployed onto a live lane with a wiped store: its
+    // pin is not recoverable without the deploy-time lookup, and the first settlement's SPK
+    // assert fails.
+    let initial_lane_tip = if resolved.is_some() {
+        Hash::default()
+    } else {
+        lane_tip_with_retry(client, seed_block, lane_key)
+            .await
+            .map_err(|e| StartError::LaneTipLookup(Box::new(e), seed_block))?
+            .unwrap_or_default()
+    };
+
     let (covenant, bootstrap_txid) = if let Some((covenant_id, _seed, bootstrap_txid)) = resolved {
         // Same redeem builder bootstrap uses, so the reconstructed P2SH SPK matches the on-chain
         // covenant UTXO (asserted at the first settlement).
         let (_redeem, spk) = if dev {
-            dev_bootstrap_redeem(&lane_key)
+            dev_bootstrap_redeem(&lane_key, &initial_lane_tip)
         } else {
-            bootstrap_redeem(&backend, &lane_key)
+            bootstrap_redeem(&backend, &lane_key, &initial_lane_tip)
         };
         // Real bootstrap outpoint if known, so a resumed never-settled covenant still confirms its
         // real bootstrap UTXO; else a placeholder the settler replaces on adoption when the
@@ -493,7 +525,7 @@ where
         let covenant = CovenantState {
             covenant_id,
             state: EMPTY_HASH,
-            lane_tip: Hash::default(),
+            lane_tip: initial_lane_tip,
             outpoint,
             spk,
             value: COVENANT_VALUE,
@@ -505,7 +537,8 @@ where
             "settlement mode (dev): bootstrapping dev-pins covenant; issuer {}",
             wallet.address()
         );
-        let (covenant, txid) = bootstrap_dev_covenant(&wallet, lane_key, COVENANT_VALUE).await;
+        let (covenant, txid) =
+            bootstrap_dev_covenant(&wallet, lane_key, initial_lane_tip, COVENANT_VALUE).await;
         (covenant, Some(txid))
     } else {
         log::info!(
@@ -513,7 +546,8 @@ where
             wallet.address()
         );
         let (covenant, txid) =
-            bootstrap_real_covenant(&wallet, &backend, lane_key, COVENANT_VALUE).await;
+            bootstrap_real_covenant(&wallet, &backend, lane_key, initial_lane_tip, COVENANT_VALUE)
+                .await;
         (covenant, Some(txid))
     };
     let covenant_id = covenant.covenant_id;
@@ -718,6 +752,55 @@ async fn get_block_with_retry<R: RpcApi>(client: &R, hash: Hash) -> Option<RpcBl
         }
     }
     None
+}
+
+/// Fetches the lane's authoritative tip at `anchor` with bounded retries, for pinning into a
+/// fresh covenant deploy. `Ok(None)` covers a lane with no live entry at the anchor (a fresh
+/// lane) and a walk that bottoms out at the chain's genesis; either way the deploy pins the
+/// zero tip. Exhausted retries are an error: the zero tip pinned onto an already-live lane
+/// would wedge the covenant's first settlement, so the deploy aborts and is retried whole
+/// instead.
+async fn lane_tip_with_retry<R: RpcApi>(
+    client: &R,
+    anchor: Hash,
+    lane_key: Hash,
+) -> Result<Option<Hash>, RpcError> {
+    const MAX_ATTEMPTS: u32 = 10;
+    const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+    for attempt in 1..=MAX_ATTEMPTS {
+        match client.get_seq_commit_lane_proof(anchor, lane_key).await {
+            Ok(proof) => {
+                if let Some(entry) = proof.lane {
+                    log::info!(
+                        "covenant deploy: lane already live at anchor {anchor}; pinning \
+                         authoritative tip {}",
+                        entry.tip
+                    );
+                    return Ok(Some(entry.tip));
+                }
+                log::info!("covenant deploy: lane holds no live entry at anchor {anchor}");
+                return Ok(None);
+            }
+            Err(e) if lane_walk_reached_genesis(&e) => {
+                log::info!(
+                    "covenant deploy: lane state bottoms out at the chain's genesis below \
+                     anchor {anchor}"
+                );
+                return Ok(None);
+            }
+            Err(e) if attempt < MAX_ATTEMPTS => {
+                log::warn!(
+                    "covenant deploy: get_seq_commit_lane_proof failed \
+                     (attempt {attempt}/{MAX_ATTEMPTS}, retrying): {e}"
+                );
+                tokio::time::sleep(RETRY_DELAY).await;
+            }
+            Err(e) => {
+                return Err(e);
+            }
+        }
+    }
+    unreachable!("lane-tip retry loop returns on the final attempt")
 }
 
 /// The bridge wiring for either mode, pointed at the remote node's lane + covenant. `bridge_seed`
