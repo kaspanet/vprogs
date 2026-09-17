@@ -415,6 +415,7 @@ mod tests {
             new_root: [0x33; 32],
             spend_txid: [0xbb; 32],
             new_outpoint_index: 1,
+            chain_idx: 0,
         };
 
         handle_permission_spend(&spend, &*indexer, &store, &registry);
@@ -503,6 +504,7 @@ mod tests {
             new_root: [0x33; 32],
             spend_txid: [0xbb; 32],
             new_outpoint_index: 1,
+            chain_idx: 0,
         };
         spend_tx.send(spend.clone()).unwrap();
 

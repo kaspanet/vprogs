@@ -253,6 +253,8 @@ pub(crate) fn check_claim_spend(
         new_root,
         spend_txid: txid_bytes,
         new_outpoint_index: 1,
+        // Decoded before the bridge stamps the containing sink idx at append time.
+        chain_idx: 0,
     })
 }
 
