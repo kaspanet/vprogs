@@ -14,6 +14,7 @@ use kaspa_txscript::{
     opcodes::codes::{OpBlake2b, OpData32, OpEqual},
     parse_script,
 };
+use zerocopy::little_endian::U64;
 
 use crate::{Hash, L1Transaction, SettlementInfo};
 
@@ -68,6 +69,8 @@ impl L1TransactionCovenantExt for L1Transaction {
             new_lane_tip,
             continuation_spk_hash,
             permission_spk_hash,
+            // Decoded before the bridge stamps the containing sink idx at append time.
+            chain_idx: U64::new(0),
         })
     }
 }

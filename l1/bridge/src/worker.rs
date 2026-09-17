@@ -8,7 +8,7 @@ use std::{
 
 use crossbeam_queue::SegQueue;
 use futures::{FutureExt, select_biased};
-use kaspa_consensus_core::subnets::SubnetworkId;
+use kaspa_consensus_core::{subnets::SubnetworkId, tx::TransactionOutpoint};
 use kaspa_notify::scope::{PruningPointUtxoSetOverrideScope, Scope, VirtualChainChangedScope};
 use kaspa_rpc_core::{
     GetVirtualChainFromBlockV2Response, Notification,
@@ -27,7 +27,8 @@ use tokio::sync::{Notify, mpsc, watch};
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_types::{AccessMetadata, ChainSink, SchedulerTransaction};
 use vprogs_l1_types::{
-    ChainBlockMetadata, Hash, L1Transaction, L1TransactionCovenantExt, SettlementInfo,
+    ChainBlockMetadata, Hash, L1Transaction, L1TransactionCovenantExt, PermissionSpend,
+    SettlementInfo, SettlementMsg, SpendMsg,
 };
 use workflow_core::channel::{Channel, MultiplexerChannel};
 
@@ -99,8 +100,13 @@ pub(crate) struct BridgeWorker<T: ChainSink<ChainBlockMetadata, L1Transaction>> 
     min_confirmations: Option<u64>,
     /// Optional hooks for watching and emitting permission-output spends.
     permission_spends: Option<PermissionSpendHooks>,
-    /// Optional channel sender every observed covenant settlement is published into.
-    settlement_events: Option<mpsc::UnboundedSender<SettlementInfo>>,
+    /// Journal of applied registry transitions, one `(sink idx, spent outpoint, pre-spend root,
+    /// continuation outpoint)` entry per detected spend. A rollback pops entries above the new
+    /// tip newest-first and undoes each transition, keeping the watcher registry canonical.
+    spend_journal: Vec<(u64, TransactionOutpoint, [u8; 32], Option<TransactionOutpoint>)>,
+    /// Optional channel sender the settlement stream is published into (observations and
+    /// rollback markers).
+    settlement_events: Option<mpsc::UnboundedSender<SettlementMsg>>,
 }
 
 impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
@@ -175,6 +181,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             settlement: config.settlement_observer.clone(),
             min_confirmations: config.min_confirmations,
             permission_spends: config.permission_spends.clone(),
+            spend_journal: Vec::new(),
             settlement_events: config.settlement_events.clone(),
         }
         .run()
@@ -587,6 +594,15 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             let parent = self.tip_metadata();
             let mut last_settlement = parent.last_settlement;
 
+            // The block's chain events, collected during the tx scan and emitted only after the
+            // block lands, so each carries the sink idx a rollback can revert above.
+            let mut settlements: Vec<SettlementInfo> = Vec::new();
+            let mut spends: Vec<(
+                PermissionSpend,
+                TransactionOutpoint,
+                Option<TransactionOutpoint>,
+            )> = Vec::new();
+
             // Enumerate before filtering so kept txs keep their block-wide positions.
             let mut txs: Vec<SchedulerTransaction<L1Transaction>> =
                 Vec::with_capacity(chain_block.accepted_transactions.len());
@@ -595,22 +611,21 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
                 let tx = L1Transaction::try_from(tx.clone())
                     .map_err(|e| Error::MalformedResponse(e.to_string()))?;
 
-                // Carry forward the last settlement; emit new ones over settlement_events.
+                // Carry forward the last settlement; collect new ones for post-append emission.
                 if let Some(id) = self.covenant_id {
                     if let Some(info) = tx.settlement_info(id, block.hash, block.daa_score) {
                         last_settlement = Some(info);
-                        if let Some(sender) = &self.settlement_events {
-                            let _ = sender.send(info);
-                        }
+                        settlements.push(info);
                     }
                 }
 
                 if let Some(hooks) = &self.permission_spends {
                     let txid_bytes = tx.id().as_bytes();
                     let cov_id = self.covenant_id.map(|h| h.as_bytes()).unwrap_or_default();
-                    if let Some(spend) = check_claim_spend(&hooks.registry, &tx, txid_bytes, cov_id)
+                    if let Some(detected) =
+                        check_claim_spend(&hooks.registry, &tx, txid_bytes, cov_id)
                     {
-                        let _ = hooks.events.send(spend);
+                        spends.push(detected);
                     }
                 }
 
@@ -629,7 +644,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             let (lane_tip, lane_blue_score, lane_expired) = self.lane_state(&parent, &txs, &block);
 
             // Append the block's parent-threaded metadata and its txs to the sink.
-            self.sink.append(
+            let block_idx = self.sink.append(
                 ChainBlockMetadata {
                     parent_id: self.sink.tip(),
                     prev_seq_commit: parent.seq_commit,
@@ -645,6 +660,27 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
                 },
                 txs,
             );
+
+            // Stamp the block's sink idx onto its chain events and emit them; the journal
+            // records each registry transition so a rollback strictly below this idx undoes it.
+            for mut info in settlements {
+                info.chain_idx = block_idx.into();
+                if let Some(sender) = &self.settlement_events {
+                    let _ = sender.send(SettlementMsg::Observed(info));
+                }
+            }
+            if let Some(hooks) = &self.permission_spends {
+                for (mut spend, spent_outpoint, cont_outpoint) in spends {
+                    spend.chain_idx = block_idx;
+                    self.spend_journal.push((
+                        block_idx,
+                        spent_outpoint,
+                        spend.old_root,
+                        cont_outpoint,
+                    ));
+                    let _ = hooks.events.send(SpendMsg::Spent(spend));
+                }
+            }
         }
 
         // Publish the batch's new tip so the progress reporter advances as catch-up proceeds.
@@ -729,6 +765,28 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         );
         self.sink.rollback(new_tip);
 
+        // Mark both event streams at the surviving tip: the duplicate idx across the channels,
+        // combined with per-channel FIFO, lets consumers revert everything above it and
+        // self-heal any pre-reorg events still in flight.
+        if let Some(sender) = &self.settlement_events {
+            let _ = sender.send(SettlementMsg::Rollback(new_tip));
+        }
+        if let Some(hooks) = &self.permission_spends {
+            let _ = hooks.events.send(SpendMsg::Rollback(new_tip));
+
+            // Undo the rolled-back registry transitions, newest first: restore the spent
+            // outpoint's pre-spend root and drop the continuation it installed.
+            let mut guard = hooks.registry.write().expect("poisoned lock");
+            while self.spend_journal.last().is_some_and(|&(idx, ..)| idx > new_tip) {
+                let (_, spent_outpoint, old_root, cont_outpoint) =
+                    self.spend_journal.pop().expect("journal non-empty by the loop condition");
+                guard.insert(spent_outpoint, old_root);
+                if let Some(cont_outpoint) = cont_outpoint {
+                    guard.remove(&cont_outpoint);
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -747,14 +805,18 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{
+        collections::HashMap,
+        sync::{Arc, RwLock},
+    };
 
     use crossbeam_queue::SegQueue;
     use kaspa_consensus_core::{
         network::{NetworkId, NetworkType},
         subnets::SUBNETWORK_ID_NATIVE,
         tx::{
-            CovenantBinding, Transaction, TransactionInput, TransactionOutpoint, TransactionOutput,
+            CovenantBinding, ScriptPublicKey, Transaction, TransactionInput, TransactionOutpoint,
+            TransactionOutput,
         },
     };
     use kaspa_rpc_core::{
@@ -765,7 +827,12 @@ mod tests {
     use tokio::sync::{Notify, mpsc};
     use vprogs_core_atomics::AtomicAsyncLatch;
     use vprogs_core_types::{ChainSink, SchedulerTransaction};
-    use vprogs_l1_types::{ChainBlockMetadata, Hash, L1Transaction, SettlementInfo};
+    use vprogs_l1_types::{ChainBlockMetadata, Hash, L1Transaction, SettlementMsg, SpendMsg};
+    use vprogs_zk_abi::withdrawal::{ExitLeaf, StandardSpk};
+    use vprogs_zk_backend_risc0_api::{PermissionTreeAccumulator, PermissionTreeView};
+    use vprogs_zk_backend_risc0_app_kit::{
+        PermissionSpendArgs, build_permission_spend, claim_siblings,
+    };
     use workflow_core::channel::Channel;
 
     use super::*;
@@ -831,7 +898,8 @@ mod tests {
     fn test_worker(
         sink: TestSink,
         covenant_id: Hash,
-        settlement_events: mpsc::UnboundedSender<SettlementInfo>,
+        settlement_events: mpsc::UnboundedSender<SettlementMsg>,
+        permission_spends: Option<PermissionSpendHooks>,
     ) -> BridgeWorker<TestSink> {
         let client = Arc::new(
             KaspaRpcClient::new_with_args(
@@ -865,7 +933,8 @@ mod tests {
             tip_daa: None,
             settlement: None,
             min_confirmations: None,
-            permission_spends: None,
+            permission_spends,
+            spend_journal: Vec::new(),
             settlement_events: Some(settlement_events),
         }
     }
@@ -875,7 +944,7 @@ mod tests {
         let covenant_id = Hash::from_bytes([0xAA; 32]);
         let (settlement_events_tx, mut settlement_events_rx) = mpsc::unbounded_channel();
         let sink = TestSink::default();
-        let mut worker = test_worker(sink, covenant_id, settlement_events_tx);
+        let mut worker = test_worker(sink, covenant_id, settlement_events_tx, None);
 
         let tx1 = make_settlement_tx(covenant_id, [0x11; 32]);
         let tx2 = make_settlement_tx(covenant_id, [0x22; 32]);
@@ -915,9 +984,17 @@ mod tests {
         worker.fetch_chain_updates_tail(batch1).await.unwrap();
 
         // Exactly two events emitted in order; no coalescing.
-        let e1 = settlement_events_rx.try_recv().expect("first settlement event");
+        let SettlementMsg::Observed(e1) =
+            settlement_events_rx.try_recv().expect("first settlement event")
+        else {
+            panic!("expected an observation, not a rollback marker");
+        };
         assert_eq!(e1.new_state, [0x11; 32]);
-        let e2 = settlement_events_rx.try_recv().expect("second settlement event");
+        let SettlementMsg::Observed(e2) =
+            settlement_events_rx.try_recv().expect("second settlement event")
+        else {
+            panic!("expected an observation, not a rollback marker");
+        };
         assert_eq!(e2.new_state, [0x22; 32]);
         assert!(settlement_events_rx.try_recv().is_err());
 
@@ -945,6 +1022,134 @@ mod tests {
         assert!(settlement_events_rx.try_recv().is_err());
     }
 
+    /// Builds a valid claim spend against `perm_outpoint` over a two-leaf tree (partial deduct on
+    /// leaf 0), mirroring the `permission_watch` test fixtures: exits remain unclaimed afterwards,
+    /// so the registry advance installs a continuation outpoint.
+    fn make_claim_spend_tx(
+        covenant_id: Hash,
+        perm_outpoint: TransactionOutpoint,
+        tree: &PermissionTreeView,
+        leaves: &[ExitLeaf],
+    ) -> Transaction {
+        let fold_leaf =
+            PermissionTreeAccumulator::hash_leaf(StandardSpk::PubKey(&[0x01; 32]), 3_000);
+        let collateral_pk = [0xEE; 32];
+        let collateral_bytes = StandardSpk::PubKey(&collateral_pk).to_script_bytes();
+        let collateral_spk: [u8; 34] = collateral_bytes.as_slice().try_into().unwrap();
+
+        let args = PermissionSpendArgs {
+            covenant_id: covenant_id.as_bytes(),
+            permission_outpoint: perm_outpoint,
+            permission_rent: 50_000_000,
+            old_root: tree.root(),
+            old_unclaimed: 2,
+            depth: tree.depth(),
+            leaf_index: 0,
+            leaf_spk: leaves[0].script_bytes(),
+            leaf_amount: 5_000,
+            deduct: 2_000,
+            siblings: claim_siblings(leaves, 0),
+            new_root: tree.root_with_leaf(0, fold_leaf),
+            new_unclaimed: 2,
+            delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(20), 1), 2_000)],
+            collateral_input: (TransactionOutpoint::new(Hash::from_u64_word(30), 0), 10_000_000),
+            collateral_spk: ScriptPublicKey::new(0, collateral_spk.to_vec().into()),
+            fee: 0,
+            collateral_sig: Vec::new(),
+        };
+        build_permission_spend(&args).expect("valid claim spend").0
+    }
+
+    /// Chain events carry the containing block's sink idx, and a reorg that rolls the block back
+    /// marks both streams at the surviving tip and reverts the watcher registry to its
+    /// pre-spend state.
+    #[tokio::test]
+    async fn chain_events_carry_block_idx_and_rollback_reverts_streams_and_registry() {
+        let covenant_id = Hash::from_bytes([0xAA; 32]);
+        let (settlement_events_tx, mut settlement_events_rx) = mpsc::unbounded_channel();
+        let (spend_events_tx, mut spend_events_rx) = mpsc::unbounded_channel();
+
+        let leaves = vec![
+            ExitLeaf::from_pair(StandardSpk::PubKey(&[0x01; 32]), 5_000),
+            ExitLeaf::from_pair(StandardSpk::PubKey(&[0x02; 32]), 6_000),
+        ];
+        let tree = PermissionTreeView::from_leaves(&leaves);
+        let perm_outpoint = TransactionOutpoint::new(Hash::from_u64_word(10), 0);
+        let registry = Arc::new(RwLock::new(HashMap::from([(perm_outpoint, tree.root())])));
+        let hooks = PermissionSpendHooks { events: spend_events_tx, registry: registry.clone() };
+
+        let mut worker =
+            test_worker(TestSink::default(), covenant_id, settlement_events_tx, Some(hooks));
+
+        let claim_tx = make_claim_spend_tx(covenant_id, perm_outpoint, &tree, &leaves);
+        let settlement_tx = make_settlement_tx(covenant_id, [0x11; 32]);
+
+        let block1_hash = Hash::from_bytes([0x01; 32]);
+        let batch = GetVirtualChainFromBlockV2Response {
+            removed_chain_block_hashes: Arc::new(vec![]),
+            added_chain_block_hashes: Arc::new(vec![block1_hash]),
+            chain_block_accepted_transactions: Arc::new(vec![RpcChainBlockAcceptedTransactions {
+                chain_block_header: RpcOptionalHeader {
+                    hash: Some(block1_hash),
+                    blue_score: Some(1),
+                    daa_score: Some(10),
+                    timestamp: Some(1000),
+                    accepted_id_merkle_root: Some(Hash::default()),
+                    ..Default::default()
+                },
+                accepted_transactions: vec![
+                    RpcOptionalTransaction::from(&settlement_tx),
+                    RpcOptionalTransaction::from(&claim_tx),
+                ],
+            }]),
+        };
+
+        worker.fetch_chain_updates_tail(batch).await.unwrap();
+
+        // Both chain events carry the appended block's sink idx (the first block lands at 1).
+        let SettlementMsg::Observed(settlement) =
+            settlement_events_rx.try_recv().expect("settlement observed")
+        else {
+            panic!("expected an observation, not a rollback marker");
+        };
+        assert_eq!(settlement.chain_idx.get(), 1);
+        assert_eq!(settlement.new_state, [0x11; 32]);
+        let SpendMsg::Spent(spend) = spend_events_rx.try_recv().expect("spend observed") else {
+            panic!("expected a spend, not a rollback marker");
+        };
+        assert_eq!(spend.chain_idx, 1);
+        assert_eq!(spend.spend_txid, claim_tx.id().as_bytes());
+
+        // The registry advanced: spent outpoint gone, continuation tracked.
+        let cont_outpoint = TransactionOutpoint::new(claim_tx.id(), 1);
+        {
+            let reg = registry.read().unwrap();
+            assert!(!reg.contains_key(&perm_outpoint));
+            assert!(reg.contains_key(&cont_outpoint));
+        }
+
+        // Reorg the block away: the removed tip is the fork child, so the surviving tip is its
+        // parent (the empty sink's anchor, id 0).
+        let reorg = GetVirtualChainFromBlockV2Response {
+            removed_chain_block_hashes: Arc::new(vec![block1_hash]),
+            added_chain_block_hashes: Arc::new(vec![]),
+            chain_block_accepted_transactions: Arc::new(vec![]),
+        };
+        worker.handle_reorg(&reorg).unwrap();
+
+        // Both streams got the duplicate rollback marker at the surviving tip's idx.
+        assert!(matches!(settlement_events_rx.try_recv(), Ok(SettlementMsg::Rollback(0))));
+        assert!(matches!(spend_events_rx.try_recv(), Ok(SpendMsg::Rollback(0))));
+
+        // The registry reverted: original entry restored, continuation dropped.
+        {
+            let reg = registry.read().unwrap();
+            assert_eq!(reg.get(&perm_outpoint), Some(&tree.root()));
+            assert!(!reg.contains_key(&cont_outpoint));
+        }
+        assert!(worker.spend_journal.is_empty(), "reverted entries are popped off the journal");
+    }
+
     /// `lane_state` anchors a lane re-activation at the parent seq commit whenever the lane holds
     /// no live entry at the parent, and chains from the parent lane tip otherwise. The first
     /// activation must take the seq-commit anchor even when the blue-score gap to the zero seed is
@@ -954,7 +1159,7 @@ mod tests {
     fn lane_state_anchors_first_activation_and_reactivation_at_seq_commit() {
         let covenant_id = Hash::from_bytes([0xAA; 32]);
         let (settlement_events_tx, _settlement_events_rx) = mpsc::unbounded_channel();
-        let mut worker = test_worker(TestSink::default(), covenant_id, settlement_events_tx);
+        let mut worker = test_worker(TestSink::default(), covenant_id, settlement_events_tx, None);
         let lane_key = Hash::from_bytes([0xEE; 32]);
         worker.lane_key = Some(lane_key);
 
