@@ -1,11 +1,11 @@
 //! Runner exit-index task and secondary indexer trait over settled bundles and permission spends.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{Arc, RwLock},
 };
 
-use kaspa_consensus_core::tx::TransactionOutpoint;
+use kaspa_consensus_core::tx::{TransactionId, TransactionOutpoint};
 use kaspa_hashes::Hash;
 use tokio::sync::mpsc;
 use vprogs_l1_types::{PermissionSpend, SettlementInfo, SettlementMsg, SpendMsg};
@@ -29,6 +29,36 @@ pub trait ExitIndexer: Send + Sync + 'static {
 
     /// Feed one permission UTXO spend observed on L1.
     fn on_permission_spent(&self, spend: &PermissionSpend, wb: &mut dyn WriteBatch);
+
+    /// A permission spend was reverted by a reorg above `floor`. `spent_outpoint` is the
+    /// pre-spend anchor (the advance overwrote the record's anchor fields).
+    fn on_permission_spend_reverted(
+        &self,
+        _spend: &PermissionSpend,
+        _spent_outpoint: &TransactionOutpoint,
+        _wb: &mut dyn WriteBatch,
+    ) {
+    }
+
+    /// A paired settlement was orphaned by a reorg; hide the family from serving but keep
+    /// anchors (the resubmitted settlement keeps its txid).
+    fn on_exits_reverted(
+        &self,
+        _bundle: &ExitsForBundle,
+        _settlement: &SettlementInfo,
+        _wb: &mut dyn WriteBatch,
+    ) {
+    }
+
+    /// A previously reverted settlement re-confirmed; re-serve the family under the fresh
+    /// settlement anchor.
+    fn on_exits_recommitted(
+        &self,
+        _bundle: &ExitsForBundle,
+        _settlement: &SettlementInfo,
+        _wb: &mut dyn WriteBatch,
+    ) {
+    }
 }
 
 /// Builds the metadata key for a tracked permission outpoint: `b"perm_out" || txid(32) || index(be
@@ -69,14 +99,15 @@ pub fn load_registry<S: Store>(store: &S) -> HashMap<TransactionOutpoint, [u8; 3
 }
 
 /// Pure pairing commit: calls indexer, commits metadata mirror entry, and updates in-memory
-/// registry.
+/// registry. Returns the padded-tree root pinned at the settlement's outpoint, for the caller's
+/// journal.
 pub fn handle_pairing<S: Store>(
     bundle: &ExitsForBundle,
     settlement: &SettlementInfo,
     indexer: &dyn ExitIndexer,
     store: &S,
     registry: &RwLock<HashMap<TransactionOutpoint, [u8; 32]>>,
-) {
+) -> [u8; 32] {
     let mut wb = store.write_batch();
     indexer.on_exits_committed(bundle, settlement, &mut wb);
     // Track the raw padded-tree root the watcher's redeem decode compares against. Not
@@ -92,33 +123,35 @@ pub fn handle_pairing<S: Store>(
     store.commit(wb);
     let outpoint = TransactionOutpoint::new(settlement.tx_id, 1);
     registry.write().expect("poisoned lock").insert(outpoint, root);
+    root
 }
 
 /// Attempts to pair an observed settlement with a parked bundle.
 ///
 /// If a matching parked bundle is found, commits it via the indexer and stores the metadata mirror
-/// entry. Parked bundles are left untouched when there is no match.
+/// entry, returning the bundle and the root it pinned for the caller's journal. Parked bundles are
+/// left untouched (and `None` returned) when there is no match.
 pub fn handle_settlement<S: Store>(
     parked: &mut HashMap<[u8; 32], Arc<ExitsForBundle>>,
     settlement: &SettlementInfo,
     indexer: &dyn ExitIndexer,
     store: &S,
     registry: &RwLock<HashMap<TransactionOutpoint, [u8; 32]>>,
-) {
-    if let Some(bundle) = parked.remove(&settlement.new_state) {
-        handle_pairing(&bundle, settlement, indexer, store, registry);
-    }
+) -> Option<([u8; 32], Arc<ExitsForBundle>)> {
+    let bundle = parked.remove(&settlement.new_state)?;
+    let root = handle_pairing(&bundle, settlement, indexer, store, registry);
+    Some((root, bundle))
 }
 
 /// Applies a permission spend: calls indexer, deletes spent metadata entry, puts continuation
-/// entry, and mirrors changes to in-memory registry.
+/// entry, and mirrors changes to in-memory registry. Returns the pre-spend anchor it advanced
+/// (`None` when no tracked root matched), for the caller's journal.
 pub fn handle_permission_spend<S: Store>(
     spend: &PermissionSpend,
     indexer: &dyn ExitIndexer,
     store: &S,
     registry: &RwLock<HashMap<TransactionOutpoint, [u8; 32]>>,
-) {
-    // Claim reversion during a reorganization is not implemented in this first version.
+) -> Option<TransactionOutpoint> {
     let mut wb = store.write_batch();
     indexer.on_permission_spent(spend, &mut wb);
 
@@ -145,9 +178,161 @@ pub fn handle_permission_spend<S: Store>(
     }
     let cont_outpoint = TransactionOutpoint::new(cont_txid, spend.new_outpoint_index);
     guard.insert(cont_outpoint, spend.new_root);
+    spent_outpoint
 }
 
-/// Background task joining exit bundles, L1 settlements, and permission spends.
+/// Inverts [`handle_permission_spend`]: deletes the continuation entry, restores the pre-spend
+/// anchor (`spend.old_root` at `spent_outpoint`), notifies the indexer, and mirrors both changes
+/// in the in-memory registry. A spend that matched no tracked anchor (`None`) only drops its
+/// continuation entry.
+pub fn revert_permission_spend<S: Store>(
+    spend: &PermissionSpend,
+    spent_outpoint: Option<&TransactionOutpoint>,
+    indexer: &dyn ExitIndexer,
+    store: &S,
+    registry: &RwLock<HashMap<TransactionOutpoint, [u8; 32]>>,
+) {
+    let cont_txid = Hash::from_bytes(spend.spend_txid);
+    let mut wb = store.write_batch();
+    wb.delete(StateSpace::Metadata, &perm_out_key(&cont_txid, spend.new_outpoint_index));
+    let mut restored = None;
+    if let Some(spent) = spent_outpoint {
+        let val = borsh::to_vec(&spend.old_root).expect("serialize root");
+        wb.put(StateSpace::Metadata, &perm_out_key(&spent.transaction_id, spent.index), &val);
+        indexer.on_permission_spend_reverted(spend, spent, &mut wb);
+        restored = Some((*spent, spend.old_root));
+    }
+    store.commit(wb);
+
+    let mut guard = registry.write().expect("poisoned lock");
+    guard.remove(&TransactionOutpoint::new(cont_txid, spend.new_outpoint_index));
+    if let Some((spent, root)) = restored {
+        guard.insert(spent, root);
+    }
+}
+
+/// Re-serves a reverted settlement family under its re-confirmed anchor: notifies the indexer
+/// and, when the fresh confirmation carries a different txid than `old`, moves the `perm_out`
+/// anchor to `(fresh.tx_id, 1)`. A same-txid re-confirmation leaves metadata and registry
+/// untouched.
+pub fn handle_reanchor<S: Store>(
+    bundle: &ExitsForBundle,
+    old: &SettlementInfo,
+    fresh: &SettlementInfo,
+    root: [u8; 32],
+    indexer: &dyn ExitIndexer,
+    store: &S,
+    registry: &RwLock<HashMap<TransactionOutpoint, [u8; 32]>>,
+) {
+    let mut wb = store.write_batch();
+    indexer.on_exits_recommitted(bundle, fresh, &mut wb);
+    if fresh.tx_id != old.tx_id {
+        wb.delete(StateSpace::Metadata, &perm_out_key(&old.tx_id, 1));
+        let val = borsh::to_vec(&root).expect("serialize root");
+        wb.put(StateSpace::Metadata, &perm_out_key(&fresh.tx_id, 1), &val);
+        store.commit(wb);
+        let mut guard = registry.write().expect("poisoned lock");
+        guard.remove(&TransactionOutpoint::new(old.tx_id, 1));
+        guard.insert(TransactionOutpoint::new(fresh.tx_id, 1), root);
+    } else {
+        store.commit(wb);
+    }
+}
+
+/// One applied exit-index transition, journaled at the chain idx it applied at so a rollback
+/// marker can invert every entry above its floor.
+enum JournalEntry {
+    /// A parked bundle paired with its settlement, pinning `root` at the settlement outpoint
+    /// `(tx_id, 1)`.
+    Pairing { root: [u8; 32], bundle: Arc<ExitsForBundle>, settlement: SettlementInfo },
+    /// A permission spend advanced a tracked anchor (`None` when no tracked root matched) to
+    /// its continuation.
+    Spend { spend: PermissionSpend, spent_outpoint: Option<TransactionOutpoint> },
+}
+
+impl JournalEntry {
+    /// Chain idx the entry applied at; reverts invert entries strictly above the floor.
+    fn idx(&self) -> u64 {
+        match self {
+            JournalEntry::Pairing { settlement, .. } => settlement.chain_idx.get(),
+            JournalEntry::Spend { spend, .. } => spend.chain_idx,
+        }
+    }
+}
+
+/// Reorg-tracking state for the exit-index loop.
+// ponytail: in-memory journal; a restart inside a reorg window loses it, so hidden families
+// stay hidden until their settlement re-confirms on chain. Upgrade: persist entries under
+// StateSpace::Metadata.
+struct ReorgState {
+    /// Rollback floors already applied; a duplicate marker is a no-op.
+    seen_floors: HashSet<u64>,
+    /// Applied transitions in application order, reverted newest-first above a floor.
+    journal: Vec<JournalEntry>,
+    /// Pairings hidden by a revert and awaiting their settlement's re-confirmation, keyed by
+    /// settlement txid (which a resubmission keeps).
+    reverted: HashMap<TransactionId, ([u8; 32], Arc<ExitsForBundle>, SettlementInfo)>,
+}
+
+impl ReorgState {
+    /// Creates empty reorg-tracking state.
+    fn new() -> Self {
+        Self { seen_floors: HashSet::new(), journal: Vec::new(), reverted: HashMap::new() }
+    }
+
+    /// Applies a rollback marker: skips floors already applied (a duplicate marker must not
+    /// re-revert canonical events that legitimately sit above the old floor), then inverts
+    /// every journaled transition above `floor` newest-first. Spends restore their pre-spend
+    /// anchor; pairings are hidden from serving (anchors kept) and parked for re-anchor.
+    fn revert_above<S: Store>(
+        &mut self,
+        floor: u64,
+        indexer: &dyn ExitIndexer,
+        store: &S,
+        registry: &RwLock<HashMap<TransactionOutpoint, [u8; 32]>>,
+    ) {
+        if !self.seen_floors.insert(floor) {
+            return;
+        }
+        let mut above = Vec::new();
+        for entry in std::mem::take(&mut self.journal) {
+            if entry.idx() > floor {
+                above.push(entry);
+            } else {
+                self.journal.push(entry);
+            }
+        }
+        // Per-channel FIFO keeps appends near-ordered; sorting makes newest-first exact for
+        // interleaved cross-channel arrivals.
+        above.sort_by_key(|entry| std::cmp::Reverse(entry.idx()));
+        let n = above.len();
+        for entry in above {
+            match entry {
+                JournalEntry::Spend { spend, spent_outpoint } => {
+                    revert_permission_spend(
+                        &spend,
+                        spent_outpoint.as_ref(),
+                        indexer,
+                        store,
+                        registry,
+                    );
+                }
+                JournalEntry::Pairing { root, bundle, settlement, .. } => {
+                    let mut wb = store.write_batch();
+                    indexer.on_exits_reverted(&bundle, &settlement, &mut wb);
+                    store.commit(wb);
+                    self.reverted.insert(settlement.tx_id, (root, bundle, settlement));
+                }
+            }
+        }
+        log::info!("exit indexer: rollback to floor {floor} reverted {n} journal entries");
+    }
+}
+
+/// Background task joining exit bundles, L1 settlements, and permission spends. Every applied
+/// pairing and spend is journaled at its chain idx; a rollback marker on either stream inverts
+/// the journal above its floor, and a reverted settlement's re-confirmation re-anchors its
+/// family.
 pub async fn run_exit_indexer<S: Store>(
     indexer: Arc<dyn ExitIndexer>,
     store: S,
@@ -157,6 +342,7 @@ pub async fn run_exit_indexer<S: Store>(
     registry: Arc<RwLock<HashMap<TransactionOutpoint, [u8; 32]>>>,
 ) {
     let mut parked_bundles: HashMap<[u8; 32], Arc<ExitsForBundle>> = HashMap::new();
+    let mut reorg = ReorgState::new();
 
     loop {
         tokio::select! {
@@ -175,10 +361,37 @@ pub async fn run_exit_indexer<S: Store>(
             maybe_settlement = settlement_rx.recv() => {
                 match maybe_settlement {
                     Some(SettlementMsg::Observed(settlement)) => {
-                        handle_settlement(&mut parked_bundles, &settlement, &*indexer, &store, &registry);
+                        // A reverted family re-confirming re-anchors before the parked lookup;
+                        // when a parked bundle also matches, its fresh pairing overwrites the
+                        // same root, so the reverted entry is simply dropped.
+                        let reverted = reorg.reverted.remove(&settlement.tx_id);
+                        let paired = handle_settlement(
+                            &mut parked_bundles,
+                            &settlement,
+                            &*indexer,
+                            &store,
+                            &registry,
+                        )
+                        .or_else(|| {
+                            let (root, bundle, old) = reverted?;
+                            handle_reanchor(
+                                &bundle,
+                                &old,
+                                &settlement,
+                                root,
+                                &*indexer,
+                                &store,
+                                &registry,
+                            );
+                            Some((root, bundle))
+                        });
+                        if let Some((root, bundle)) = paired {
+                            reorg.journal.push(JournalEntry::Pairing { root, bundle, settlement });
+                        }
                     }
-                    // Rollback markers: journal/revert wiring is task 3's; markers are dropped here.
-                    Some(SettlementMsg::Rollback(_)) => {}
+                    Some(SettlementMsg::Rollback(floor)) => {
+                        reorg.revert_above(floor, &*indexer, &store, &registry);
+                    }
                     None => {
                         log::debug!("exit indexer: settlement channel closed");
                         break;
@@ -188,10 +401,13 @@ pub async fn run_exit_indexer<S: Store>(
             maybe_spend = spend_rx.recv() => {
                 match maybe_spend {
                     Some(SpendMsg::Spent(spend)) => {
-                        handle_permission_spend(&spend, &*indexer, &store, &registry);
+                        let spent_outpoint =
+                            handle_permission_spend(&spend, &*indexer, &store, &registry);
+                        reorg.journal.push(JournalEntry::Spend { spend, spent_outpoint });
                     }
-                    // Rollback markers: journal/revert wiring is task 3's; markers are dropped here.
-                    Some(SpendMsg::Rollback(_)) => {}
+                    Some(SpendMsg::Rollback(floor)) => {
+                        reorg.revert_above(floor, &*indexer, &store, &registry);
+                    }
                     None => {
                         log::debug!("exit indexer: spends channel closed");
                         break;
@@ -234,6 +450,8 @@ fn match_prefix(buf: &[ExitLeaf], commitment: [u8; 32]) -> Option<usize> {
 /// Zero-commitment settlements emitted no exits and consume none. `settlement_fwd`, when wired,
 /// receives each matched settlement so a downstream [`run_exit_indexer`] can pair it with the
 /// emitted bundle; the bundle is sent first, matching the indexer's exits-first biased select.
+/// Rollback markers drop pending settlements above the floor and forward the marker downstream
+/// so the indexer reverts what it already paired.
 pub async fn run_exec_exits_joiner(
     mut leaves_rx: mpsc::UnboundedReceiver<Vec<ExitLeaf>>,
     mut settlement_rx: mpsc::UnboundedReceiver<SettlementMsg>,
@@ -293,8 +511,14 @@ pub async fn run_exec_exits_joiner(
                         drain_pending(&mut pending, &mut buf, &exits_tx, &settlement_fwd);
                     }
                 }
-                // Rollback markers: journal/revert wiring is task 3's; markers are dropped here.
-                Some(SettlementMsg::Rollback(_)) => {}
+                // Pending settlements above the floor died with the reorg; forward the marker
+                // so the downstream indexer reverts what it already paired.
+                Some(SettlementMsg::Rollback(floor)) => {
+                    pending.retain(|settlement| settlement.chain_idx.get() <= floor);
+                    if let Some(fwd) = &settlement_fwd {
+                        let _ = fwd.send(SettlementMsg::Rollback(floor));
+                    }
+                }
                 None => break,
             },
         }
@@ -317,11 +541,20 @@ mod tests {
     struct FakeExitIndexer {
         committed: Mutex<Vec<(ExitsForBundle, SettlementInfo)>>,
         spends: Mutex<Vec<PermissionSpend>>,
+        spend_reverts: Mutex<Vec<(PermissionSpend, TransactionOutpoint)>>,
+        exits_reverted: Mutex<Vec<(ExitsForBundle, SettlementInfo)>>,
+        exits_recommitted: Mutex<Vec<(ExitsForBundle, SettlementInfo)>>,
     }
 
     impl FakeExitIndexer {
         fn new() -> Self {
-            Self { committed: Mutex::new(Vec::new()), spends: Mutex::new(Vec::new()) }
+            Self {
+                committed: Mutex::new(Vec::new()),
+                spends: Mutex::new(Vec::new()),
+                spend_reverts: Mutex::new(Vec::new()),
+                exits_reverted: Mutex::new(Vec::new()),
+                exits_recommitted: Mutex::new(Vec::new()),
+            }
         }
     }
 
@@ -337,6 +570,95 @@ mod tests {
 
         fn on_permission_spent(&self, spend: &PermissionSpend, _wb: &mut dyn WriteBatch) {
             self.spends.lock().unwrap().push(spend.clone());
+        }
+
+        fn on_permission_spend_reverted(
+            &self,
+            spend: &PermissionSpend,
+            spent_outpoint: &TransactionOutpoint,
+            _wb: &mut dyn WriteBatch,
+        ) {
+            self.spend_reverts.lock().unwrap().push((spend.clone(), *spent_outpoint));
+        }
+
+        fn on_exits_reverted(
+            &self,
+            bundle: &ExitsForBundle,
+            settlement: &SettlementInfo,
+            _wb: &mut dyn WriteBatch,
+        ) {
+            self.exits_reverted.lock().unwrap().push((bundle.clone(), *settlement));
+        }
+
+        fn on_exits_recommitted(
+            &self,
+            bundle: &ExitsForBundle,
+            settlement: &SettlementInfo,
+            _wb: &mut dyn WriteBatch,
+        ) {
+            self.exits_recommitted.lock().unwrap().push((bundle.clone(), *settlement));
+        }
+    }
+
+    /// Polls `cond` every 25ms for up to `tries` rounds; returns whether it ever held. Presence
+    /// waits use enough rounds to cover the task's scheduling delay; absence checks use a few
+    /// rounds to give a wrong implementation a window to misbehave in.
+    async fn becomes_true(tries: usize, cond: impl Fn() -> bool) -> bool {
+        for _ in 0..tries {
+            if cond() {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        false
+    }
+
+    /// A spawned `run_exit_indexer` plus the sender ends of its three input channels.
+    struct IndexerHarness {
+        exits_tx: mpsc::UnboundedSender<Arc<ExitsForBundle>>,
+        settlement_tx: mpsc::UnboundedSender<SettlementMsg>,
+        spend_tx: mpsc::UnboundedSender<SpendMsg>,
+        handle: tokio::task::JoinHandle<()>,
+        registry: Arc<RwLock<HashMap<TransactionOutpoint, [u8; 32]>>>,
+    }
+
+    impl IndexerHarness {
+        fn spawn(
+            store: RocksDbStore,
+            indexer: Arc<FakeExitIndexer>,
+            registry: Arc<RwLock<HashMap<TransactionOutpoint, [u8; 32]>>>,
+        ) -> Self {
+            let (exits_tx, exits_rx) = mpsc::unbounded_channel();
+            let (settlement_tx, settlement_rx) = mpsc::unbounded_channel();
+            let (spend_tx, spend_rx) = mpsc::unbounded_channel();
+            let handle = tokio::spawn(run_exit_indexer(
+                indexer,
+                store,
+                exits_rx,
+                settlement_rx,
+                spend_rx,
+                registry.clone(),
+            ));
+            Self { exits_tx, settlement_tx, spend_tx, handle, registry }
+        }
+
+        /// Parks `bundle`, pairs it with `settlement`, and waits for the registry entry.
+        async fn pair(&self, bundle: Arc<ExitsForBundle>, settlement: SettlementInfo) {
+            self.exits_tx.send(bundle).unwrap();
+            self.settlement_tx.send(SettlementMsg::Observed(settlement)).unwrap();
+            let outpoint = TransactionOutpoint::new(settlement.tx_id, 1);
+            assert!(
+                becomes_true(200, || self.registry.read().unwrap().contains_key(&outpoint)).await,
+                "pairing committed"
+            );
+        }
+
+        /// Drops the senders and waits for the task to wind down.
+        async fn shutdown(self) {
+            drop(self.exits_tx);
+            drop(self.settlement_tx);
+            drop(self.spend_tx);
+            self.handle.await.unwrap();
         }
     }
 
@@ -360,7 +682,10 @@ mod tests {
 
         // Wrong-state settlement is ignored; bundle stays parked.
         let wrong_settlement = SettlementInfo { new_state: [0x99; 32], ..Default::default() };
-        handle_settlement(&mut parked, &wrong_settlement, &*indexer, &store, &registry);
+        assert!(
+            handle_settlement(&mut parked, &wrong_settlement, &*indexer, &store, &registry)
+                .is_none()
+        );
         assert_eq!(parked.len(), 1);
         assert!(parked.contains_key(&bundle.new_state));
         assert!(indexer.committed.lock().unwrap().is_empty());
@@ -372,7 +697,10 @@ mod tests {
             new_state: [0x11; 32],
             ..Default::default()
         };
-        handle_settlement(&mut parked, &matching_settlement, &*indexer, &store, &registry);
+        assert!(
+            handle_settlement(&mut parked, &matching_settlement, &*indexer, &store, &registry)
+                .is_some()
+        );
         assert!(parked.is_empty());
         assert_eq!(indexer.committed.lock().unwrap().len(), 1);
 
@@ -424,7 +752,9 @@ mod tests {
             chain_idx: 0,
         };
 
-        handle_permission_spend(&spend, &*indexer, &store, &registry);
+        let spent =
+            handle_permission_spend(&spend, &*indexer, &store, &registry).expect("anchor matched");
+        assert_eq!(spent, TransactionOutpoint::new(initial_settlement.tx_id, 1));
         assert_eq!(indexer.spends.lock().unwrap().len(), 1);
 
         // Old outpoint removed from registry and metadata.
@@ -612,6 +942,303 @@ mod tests {
         ExitLeaf::from_pair(StandardSpk::PubKey(&[seed; 32]), amount)
     }
 
+    /// A one-leaf bundle for `new_state`, plus the padded-tree root the pairing pins.
+    fn test_bundle(new_state: [u8; 32], seed: u8, amount: u64) -> (Arc<ExitsForBundle>, [u8; 32]) {
+        let leaves = vec![test_leaf(seed, amount)];
+        let root = PermissionTreeView::from_leaves(&leaves).root();
+        let bundle = Arc::new(ExitsForBundle {
+            new_state,
+            permission_spk_hash: permission_commitment(&leaves),
+            leaves: Arc::new(leaves),
+        });
+        (bundle, root)
+    }
+
+    #[tokio::test]
+    async fn revert_restores_spend_state_exactly() {
+        let dir = tempdir().unwrap();
+        let store: RocksDbStore = RocksDbStore::open(dir.path());
+        let indexer = Arc::new(FakeExitIndexer::new());
+        let registry = Arc::new(RwLock::new(HashMap::new()));
+        let h = IndexerHarness::spawn(store.clone(), indexer.clone(), registry.clone());
+
+        let (bundle, root) = test_bundle([0x11; 32], 0x77, 700);
+        let settlement = SettlementInfo {
+            tx_id: Hash::from_bytes([0xaa; 32]),
+            new_state: [0x11; 32],
+            chain_idx: 3u64.into(),
+            ..Default::default()
+        };
+        h.pair(bundle, settlement).await;
+        let anchor = TransactionOutpoint::new(settlement.tx_id, 1);
+
+        let spend = PermissionSpend {
+            covenant_id: [0x55; 32],
+            old_root: root,
+            new_root: [0x33; 32],
+            spend_txid: [0xbb; 32],
+            new_outpoint_index: 1,
+            chain_idx: 5,
+            ..Default::default()
+        };
+        h.spend_tx.send(SpendMsg::Spent(spend.clone())).unwrap();
+        let cont =
+            TransactionOutpoint::new(Hash::from_bytes(spend.spend_txid), spend.new_outpoint_index);
+        assert!(becomes_true(200, || registry.read().unwrap().contains_key(&cont)).await);
+
+        // Floor 4 reverts the spend (idx 5) but keeps the pairing (idx 3).
+        h.spend_tx.send(SpendMsg::Rollback(4)).unwrap();
+        assert!(
+            becomes_true(200, || {
+                let guard = registry.read().unwrap();
+                guard.contains_key(&anchor) && !guard.contains_key(&cont)
+            })
+            .await
+        );
+
+        {
+            let guard = registry.read().unwrap();
+            assert_eq!(guard.get(&anchor), Some(&root), "pre-spend anchor restored");
+            assert!(!guard.contains_key(&cont), "continuation gone");
+        }
+        let anchor_key = perm_out_key(&settlement.tx_id, 1);
+        assert_eq!(
+            store.get(StateSpace::Metadata, &anchor_key),
+            Some(borsh::to_vec(&root).unwrap()),
+            "metadata mirror restored"
+        );
+        let cont_key = perm_out_key(&Hash::from_bytes(spend.spend_txid), spend.new_outpoint_index);
+        assert_eq!(store.get(StateSpace::Metadata, &cont_key), None, "continuation deleted");
+
+        assert_eq!(
+            indexer.spend_reverts.lock().unwrap().as_slice(),
+            &[(spend.clone(), anchor)],
+            "trait saw the revert with the original outpoint"
+        );
+        assert!(indexer.exits_reverted.lock().unwrap().is_empty(), "pairing below the floor kept");
+        assert_eq!(indexer.committed.lock().unwrap().len(), 1);
+
+        h.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn rollback_marker_is_idempotent_and_deduped() {
+        let dir = tempdir().unwrap();
+        let store: RocksDbStore = RocksDbStore::open(dir.path());
+        let indexer = Arc::new(FakeExitIndexer::new());
+        let registry = Arc::new(RwLock::new(HashMap::new()));
+        let h = IndexerHarness::spawn(store.clone(), indexer.clone(), registry.clone());
+
+        let (bundle, root) = test_bundle([0x11; 32], 0x77, 700);
+        let settlement = SettlementInfo {
+            tx_id: Hash::from_bytes([0xaa; 32]),
+            new_state: [0x11; 32],
+            chain_idx: 3u64.into(),
+            ..Default::default()
+        };
+        h.pair(bundle, settlement).await;
+        let anchor = TransactionOutpoint::new(settlement.tx_id, 1);
+
+        let spend = PermissionSpend {
+            covenant_id: [0x55; 32],
+            old_root: root,
+            new_root: [0x33; 32],
+            spend_txid: [0xbb; 32],
+            new_outpoint_index: 1,
+            chain_idx: 5,
+            ..Default::default()
+        };
+        h.spend_tx.send(SpendMsg::Spent(spend.clone())).unwrap();
+        let cont =
+            TransactionOutpoint::new(Hash::from_bytes(spend.spend_txid), spend.new_outpoint_index);
+        assert!(becomes_true(200, || registry.read().unwrap().contains_key(&cont)).await);
+        h.spend_tx.send(SpendMsg::Rollback(4)).unwrap();
+        assert!(becomes_true(200, || registry.read().unwrap().contains_key(&anchor)).await);
+
+        // A canonical pairing lands above the floor after the rollback.
+        let (bundle2, root2) = test_bundle([0x12; 32], 0x88, 800);
+        let settlement2 = SettlementInfo {
+            tx_id: Hash::from_bytes([0xa2; 32]),
+            new_state: [0x12; 32],
+            chain_idx: 6u64.into(),
+            ..Default::default()
+        };
+        h.pair(bundle2, settlement2).await;
+        let anchor2 = TransactionOutpoint::new(settlement2.tx_id, 1);
+
+        // Duplicate floor on the other arm: deduped, so the idx-6 pairing is not re-reverted
+        // (it never enters the reverted map) and the spend revert does not fire twice.
+        h.settlement_tx.send(SettlementMsg::Rollback(4)).unwrap();
+        h.settlement_tx
+            .send(SettlementMsg::Observed(SettlementInfo { chain_idx: 7u64.into(), ..settlement2 }))
+            .unwrap();
+        assert!(
+            !becomes_true(8, || !indexer.exits_recommitted.lock().unwrap().is_empty()).await,
+            "duplicate floor must not re-revert the idx-6 pairing"
+        );
+        assert_eq!(indexer.spend_reverts.lock().unwrap().len(), 1, "no second spend revert");
+        {
+            let guard = registry.read().unwrap();
+            assert_eq!(guard.get(&anchor), Some(&root));
+            assert_eq!(guard.get(&anchor2), Some(&root2), "canonical post-rollback pairing kept");
+        }
+
+        h.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn pairing_revert_hides_but_keeps_anchor_then_reanchors() {
+        let dir = tempdir().unwrap();
+        let store: RocksDbStore = RocksDbStore::open(dir.path());
+        let indexer = Arc::new(FakeExitIndexer::new());
+        let registry = Arc::new(RwLock::new(HashMap::new()));
+        let h = IndexerHarness::spawn(store.clone(), indexer.clone(), registry.clone());
+
+        let (bundle, root) = test_bundle([0x11; 32], 0x77, 700);
+        let settlement = SettlementInfo {
+            tx_id: Hash::from_bytes([0xaa; 32]),
+            new_state: [0x11; 32],
+            chain_idx: 3u64.into(),
+            ..Default::default()
+        };
+        h.pair(bundle, settlement).await;
+        let anchor = TransactionOutpoint::new(settlement.tx_id, 1);
+        let anchor_key = perm_out_key(&settlement.tx_id, 1);
+
+        // The pairing reverts, but anchors stay (the resubmitted settlement keeps its txid).
+        h.settlement_tx.send(SettlementMsg::Rollback(2)).unwrap();
+        assert!(
+            becomes_true(200, || indexer.exits_reverted.lock().unwrap().len() == 1).await,
+            "pairing reverted"
+        );
+        assert_eq!(indexer.exits_reverted.lock().unwrap()[0].1, settlement);
+        assert_eq!(
+            registry.read().unwrap().get(&anchor),
+            Some(&root),
+            "registry keeps the outpoint"
+        );
+        assert!(
+            store.get(StateSpace::Metadata, &anchor_key).is_some(),
+            "metadata keeps the outpoint"
+        );
+
+        // Re-confirmation under the same txid re-serves the family without touching anchors.
+        let fresh = SettlementInfo { chain_idx: 7u64.into(), ..settlement };
+        h.settlement_tx.send(SettlementMsg::Observed(fresh)).unwrap();
+        assert!(
+            becomes_true(200, || indexer.exits_recommitted.lock().unwrap().len() == 1).await,
+            "family re-served"
+        );
+        assert_eq!(indexer.exits_recommitted.lock().unwrap()[0].1, fresh);
+        assert_eq!(registry.read().unwrap().get(&anchor), Some(&root), "registry unchanged");
+        assert!(store.get(StateSpace::Metadata, &anchor_key).is_some(), "metadata unchanged");
+
+        // The pairing re-journals at the fresh idx: a rollback above 6 re-hides it again.
+        h.settlement_tx.send(SettlementMsg::Rollback(6)).unwrap();
+        assert!(
+            becomes_true(200, || indexer.exits_reverted.lock().unwrap().len() == 2).await,
+            "re-journaled pairing reverts with the fresh anchor"
+        );
+        assert_eq!(
+            registry.read().unwrap().get(&anchor),
+            Some(&root),
+            "anchors still kept through the second revert"
+        );
+        assert_eq!(indexer.committed.lock().unwrap().len(), 1, "no second on_exits_committed");
+
+        h.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn reverts_apply_newest_first() {
+        let dir = tempdir().unwrap();
+        let store: RocksDbStore = RocksDbStore::open(dir.path());
+        let indexer = Arc::new(FakeExitIndexer::new());
+        let registry = Arc::new(RwLock::new(HashMap::new()));
+        let h = IndexerHarness::spawn(store.clone(), indexer.clone(), registry.clone());
+
+        let (bundle, root0) = test_bundle([0x11; 32], 0x77, 700);
+        let settlement = SettlementInfo {
+            tx_id: Hash::from_bytes([0xaa; 32]),
+            new_state: [0x11; 32],
+            chain_idx: 2u64.into(),
+            ..Default::default()
+        };
+        h.pair(bundle, settlement).await;
+        let anchor = TransactionOutpoint::new(settlement.tx_id, 1);
+
+        // Two chained spends: root0 -> root1 -> root2.
+        let spend0 = PermissionSpend {
+            covenant_id: [0x55; 32],
+            old_root: root0,
+            new_root: [0x33; 32],
+            spend_txid: [0xb0; 32],
+            new_outpoint_index: 1,
+            chain_idx: 4,
+            ..Default::default()
+        };
+        let spend1 = PermissionSpend {
+            covenant_id: [0x55; 32],
+            old_root: [0x33; 32],
+            new_root: [0x34; 32],
+            spend_txid: [0xb1; 32],
+            new_outpoint_index: 1,
+            chain_idx: 5,
+            ..Default::default()
+        };
+        h.spend_tx.send(SpendMsg::Spent(spend0.clone())).unwrap();
+        let cont0 = TransactionOutpoint::new(
+            Hash::from_bytes(spend0.spend_txid),
+            spend0.new_outpoint_index,
+        );
+        assert!(becomes_true(200, || registry.read().unwrap().contains_key(&cont0)).await);
+        h.spend_tx.send(SpendMsg::Spent(spend1.clone())).unwrap();
+        let cont1 = TransactionOutpoint::new(
+            Hash::from_bytes(spend1.spend_txid),
+            spend1.new_outpoint_index,
+        );
+        assert!(becomes_true(200, || registry.read().unwrap().contains_key(&cont1)).await);
+
+        // Floor 3 reverts both spends, newest first, unwinding the chain back to root0.
+        h.spend_tx.send(SpendMsg::Rollback(3)).unwrap();
+        assert!(
+            becomes_true(200, || {
+                let guard = registry.read().unwrap();
+                guard.len() == 1 && guard.get(&anchor) == Some(&root0)
+            })
+            .await
+        );
+
+        {
+            let reverts = indexer.spend_reverts.lock().unwrap();
+            assert_eq!(reverts.len(), 2);
+            assert_eq!(reverts[0].0.spend_txid, spend1.spend_txid, "idx-5 spend reverts first");
+            assert_eq!(reverts[1].0.spend_txid, spend0.spend_txid, "idx-4 spend reverts second");
+        }
+        assert!(indexer.exits_reverted.lock().unwrap().is_empty(), "pairing at idx 2 untouched");
+        assert_eq!(
+            store.get(StateSpace::Metadata, &perm_out_key(&settlement.tx_id, 1)),
+            Some(borsh::to_vec(&root0).unwrap()),
+            "metadata unwound to the pairing anchor"
+        );
+        assert_eq!(
+            store.get(
+                StateSpace::Metadata,
+                &perm_out_key(&Hash::from_bytes(spend0.spend_txid), spend0.new_outpoint_index)
+            ),
+            None
+        );
+        assert_eq!(
+            store.get(
+                StateSpace::Metadata,
+                &perm_out_key(&Hash::from_bytes(spend1.spend_txid), spend1.new_outpoint_index)
+            ),
+            None
+        );
+
+        h.shutdown().await;
+    }
+
     /// Expected commitment for k leaves, cross-checked against `PermissionTreeView` (the
     /// padded-tree root) wrapped in the redeem script the settlement pins.
     fn manual_commitment(leaves: &[ExitLeaf]) -> [u8; 32] {
@@ -729,5 +1356,63 @@ mod tests {
         assert_eq!(bundle.new_state, settlement.new_state);
         assert_eq!(bundle.leaves.to_vec(), leaves);
         assert!(exits_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn exec_joiner_rollback_drops_pending_above_floor_and_forwards() {
+        let (leaves_tx, leaves_rx) = mpsc::unbounded_channel();
+        let (settlement_tx, settlement_rx) = mpsc::unbounded_channel();
+        let (exits_tx, mut exits_rx) = mpsc::unbounded_channel();
+        let (fwd_tx, mut fwd_rx) = mpsc::unbounded_channel();
+
+        tokio::spawn(run_exec_exits_joiner(leaves_rx, settlement_rx, exits_tx, Some(fwd_tx)));
+
+        // Two settlements park pending: B at idx 1 (below the floor) over leaf b, A at idx 5
+        // (above it) over leaf a.
+        let leaves_b = vec![test_leaf(0x22, 200)];
+        let leaves_a = vec![test_leaf(0x11, 100)];
+        let settlement_b = SettlementInfo {
+            tx_id: Hash::from_bytes([0xbb; 32]),
+            new_state: [0x52; 32],
+            permission_spk_hash: permission_commitment(&leaves_b),
+            chain_idx: 1u64.into(),
+            ..Default::default()
+        };
+        let settlement_a = SettlementInfo {
+            tx_id: Hash::from_bytes([0xaa; 32]),
+            new_state: [0x51; 32],
+            permission_spk_hash: permission_commitment(&leaves_a),
+            chain_idx: 5u64.into(),
+            ..Default::default()
+        };
+        settlement_tx.send(SettlementMsg::Observed(settlement_b)).unwrap();
+        settlement_tx.send(SettlementMsg::Observed(settlement_a)).unwrap();
+
+        settlement_tx.send(SettlementMsg::Rollback(3)).unwrap();
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_millis(500), fwd_rx.recv())
+                .await
+                .expect("marker forwarded")
+                .expect("forward channel open"),
+            SettlementMsg::Rollback(3)
+        );
+
+        // B survives the rollback and still matches once its leaf lands; A's leaf lands to
+        // silence (its settlement died with the reorg).
+        leaves_tx.send(leaves_b.clone()).unwrap();
+        let bundle = exits_rx.recv().await.expect("below-floor settlement still drains");
+        assert_eq!(bundle.leaves.to_vec(), leaves_b);
+        assert_eq!(
+            fwd_rx.recv().await.expect("below-floor settlement forwarded"),
+            SettlementMsg::Observed(settlement_b)
+        );
+
+        leaves_tx.send(leaves_a).unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(150), exits_rx.recv())
+                .await
+                .is_err(),
+            "above-floor settlement must not emit after the rollback"
+        );
     }
 }
