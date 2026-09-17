@@ -8,7 +8,7 @@ use std::{
 use kaspa_consensus_core::tx::TransactionOutpoint;
 use kaspa_hashes::Hash;
 use tokio::sync::mpsc;
-use vprogs_l1_types::{PermissionSpend, SettlementInfo};
+use vprogs_l1_types::{PermissionSpend, SettlementInfo, SettlementMsg, SpendMsg};
 use vprogs_storage_types::{StateSpace, Store, WriteBatch};
 use vprogs_zk_abi::withdrawal::ExitLeaf;
 use vprogs_zk_aggregate_prover::ExitsForBundle;
@@ -152,8 +152,8 @@ pub async fn run_exit_indexer<S: Store>(
     indexer: Arc<dyn ExitIndexer>,
     store: S,
     mut exits_rx: mpsc::UnboundedReceiver<Arc<ExitsForBundle>>,
-    mut settlement_rx: mpsc::UnboundedReceiver<SettlementInfo>,
-    mut spend_rx: mpsc::UnboundedReceiver<PermissionSpend>,
+    mut settlement_rx: mpsc::UnboundedReceiver<SettlementMsg>,
+    mut spend_rx: mpsc::UnboundedReceiver<SpendMsg>,
     registry: Arc<RwLock<HashMap<TransactionOutpoint, [u8; 32]>>>,
 ) {
     let mut parked_bundles: HashMap<[u8; 32], Arc<ExitsForBundle>> = HashMap::new();
@@ -174,9 +174,11 @@ pub async fn run_exit_indexer<S: Store>(
             }
             maybe_settlement = settlement_rx.recv() => {
                 match maybe_settlement {
-                    Some(settlement) => {
+                    Some(SettlementMsg::Observed(settlement)) => {
                         handle_settlement(&mut parked_bundles, &settlement, &*indexer, &store, &registry);
                     }
+                    // Rollback markers: journal/revert wiring is task 3's; markers are dropped here.
+                    Some(SettlementMsg::Rollback(_)) => {}
                     None => {
                         log::debug!("exit indexer: settlement channel closed");
                         break;
@@ -185,9 +187,11 @@ pub async fn run_exit_indexer<S: Store>(
             }
             maybe_spend = spend_rx.recv() => {
                 match maybe_spend {
-                    Some(spend) => {
+                    Some(SpendMsg::Spent(spend)) => {
                         handle_permission_spend(&spend, &*indexer, &store, &registry);
                     }
+                    // Rollback markers: journal/revert wiring is task 3's; markers are dropped here.
+                    Some(SpendMsg::Rollback(_)) => {}
                     None => {
                         log::debug!("exit indexer: spends channel closed");
                         break;
@@ -232,9 +236,9 @@ fn match_prefix(buf: &[ExitLeaf], commitment: [u8; 32]) -> Option<usize> {
 /// emitted bundle; the bundle is sent first, matching the indexer's exits-first biased select.
 pub async fn run_exec_exits_joiner(
     mut leaves_rx: mpsc::UnboundedReceiver<Vec<ExitLeaf>>,
-    mut settlement_rx: mpsc::UnboundedReceiver<SettlementInfo>,
+    mut settlement_rx: mpsc::UnboundedReceiver<SettlementMsg>,
     exits_tx: mpsc::UnboundedSender<Arc<ExitsForBundle>>,
-    settlement_fwd: Option<mpsc::UnboundedSender<SettlementInfo>>,
+    settlement_fwd: Option<mpsc::UnboundedSender<SettlementMsg>>,
 ) {
     let mut buf: Vec<ExitLeaf> = Vec::new();
     let mut pending: VecDeque<SettlementInfo> = VecDeque::new();
@@ -244,7 +248,7 @@ pub async fn run_exec_exits_joiner(
         pending: &mut VecDeque<SettlementInfo>,
         buf: &mut Vec<ExitLeaf>,
         exits_tx: &mpsc::UnboundedSender<Arc<ExitsForBundle>>,
-        settlement_fwd: &Option<mpsc::UnboundedSender<SettlementInfo>>,
+        settlement_fwd: &Option<mpsc::UnboundedSender<SettlementMsg>>,
     ) {
         while let Some(settlement) = pending.front() {
             let Some(k) = match_prefix(buf, settlement.permission_spk_hash) else { break };
@@ -255,7 +259,7 @@ pub async fn run_exec_exits_joiner(
                 leaves: Arc::new(buf[..k].to_vec()),
             }));
             if let Some(fwd) = settlement_fwd {
-                let _ = fwd.send(*settlement);
+                let _ = fwd.send(SettlementMsg::Observed(*settlement));
             }
             buf.drain(..k);
             pending.pop_front();
@@ -273,7 +277,7 @@ pub async fn run_exec_exits_joiner(
                 None => break,
             },
             maybe_settlement = settlement_rx.recv() => match maybe_settlement {
-                Some(settlement) => {
+                Some(SettlementMsg::Observed(settlement)) => {
                     if let Some(older) = pending.back() {
                         log::error!(
                             "exec exits desync: settlement {} (new_state {:?}) arrived while {} \
@@ -289,6 +293,8 @@ pub async fn run_exec_exits_joiner(
                         drain_pending(&mut pending, &mut buf, &exits_tx, &settlement_fwd);
                     }
                 }
+                // Rollback markers: journal/revert wiring is task 3's; markers are dropped here.
+                Some(SettlementMsg::Rollback(_)) => {}
                 None => break,
             },
         }
@@ -478,7 +484,7 @@ mod tests {
             new_state: [0x11; 32],
             ..Default::default()
         };
-        settlement_tx.send(settlement).unwrap();
+        settlement_tx.send(SettlementMsg::Observed(settlement)).unwrap();
 
         // Wait for commit.
         let outpoint = TransactionOutpoint::new(settlement.tx_id, 1);
@@ -506,7 +512,7 @@ mod tests {
             new_outpoint_index: 1,
             chain_idx: 0,
         };
-        spend_tx.send(spend.clone()).unwrap();
+        spend_tx.send(SpendMsg::Spent(spend.clone())).unwrap();
 
         let cont_txid = Hash::from_bytes(spend.spend_txid);
         let cont_outpoint = TransactionOutpoint::new(cont_txid, spend.new_outpoint_index);
@@ -576,8 +582,8 @@ mod tests {
             new_state: [0x12; 32],
             ..Default::default()
         };
-        settlement_tx.send(s1).unwrap();
-        settlement_tx.send(s2).unwrap();
+        settlement_tx.send(SettlementMsg::Observed(s1)).unwrap();
+        settlement_tx.send(SettlementMsg::Observed(s2)).unwrap();
 
         let out1 = TransactionOutpoint::new(s1.tx_id, 1);
         let out2 = TransactionOutpoint::new(s2.tx_id, 1);
@@ -651,13 +657,16 @@ mod tests {
             permission_spk_hash: permission_commitment(&leaves),
             ..Default::default()
         };
-        settlement_tx.send(settlement).unwrap();
+        settlement_tx.send(SettlementMsg::Observed(settlement)).unwrap();
 
         let bundle = exits_rx.recv().await.expect("bundle emitted");
         assert_eq!(bundle.new_state, settlement.new_state);
         assert_eq!(bundle.permission_spk_hash, settlement.permission_spk_hash);
         assert_eq!(bundle.leaves.to_vec(), leaves);
-        assert_eq!(fwd_rx.recv().await.expect("settlement forwarded"), settlement);
+        assert_eq!(
+            fwd_rx.recv().await.expect("settlement forwarded"),
+            SettlementMsg::Observed(settlement)
+        );
         assert!(exits_rx.try_recv().is_err());
     }
 
@@ -673,7 +682,12 @@ mod tests {
         // exit settlement still claims the full prefix).
         let leaves = vec![test_leaf(0x33, 300), test_leaf(0x44, 400)];
         leaves_tx.send(leaves.clone()).unwrap();
-        settlement_tx.send(SettlementInfo { new_state: [0x61; 32], ..Default::default() }).unwrap();
+        settlement_tx
+            .send(SettlementMsg::Observed(SettlementInfo {
+                new_state: [0x61; 32],
+                ..Default::default()
+            }))
+            .unwrap();
 
         let settlement = SettlementInfo {
             tx_id: Hash::from_bytes([0xbb; 32]),
@@ -681,7 +695,7 @@ mod tests {
             permission_spk_hash: permission_commitment(&leaves),
             ..Default::default()
         };
-        settlement_tx.send(settlement).unwrap();
+        settlement_tx.send(SettlementMsg::Observed(settlement)).unwrap();
 
         let bundle = exits_rx.recv().await.expect("bundle emitted for the exit settlement");
         assert_eq!(bundle.new_state, settlement.new_state);
@@ -707,7 +721,7 @@ mod tests {
 
         // Settlement first, then a partial prefix: no match possible (the only commitment sent
         // covers both leaves, so a premature 1-leaf bundle can never be emitted for it).
-        settlement_tx.send(settlement).unwrap();
+        settlement_tx.send(SettlementMsg::Observed(settlement)).unwrap();
         leaves_tx.send(vec![leaves[0].clone()]).unwrap();
         leaves_tx.send(vec![leaves[1].clone()]).unwrap();
 
