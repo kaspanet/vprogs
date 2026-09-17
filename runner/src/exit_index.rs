@@ -1,7 +1,7 @@
 //! Runner exit-index task and secondary indexer trait over settled bundles and permission spends.
 
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     sync::{Arc, RwLock},
 };
 
@@ -212,31 +212,17 @@ pub fn revert_permission_spend<S: Store>(
 }
 
 /// Re-serves a reverted settlement family under its re-confirmed anchor: notifies the indexer
-/// and, when the fresh confirmation carries a different txid than `old`, moves the `perm_out`
-/// anchor to `(fresh.tx_id, 1)`. A same-txid re-confirmation leaves metadata and registry
-/// untouched.
+/// only; anchors never move. A re-derived settlement (different txid, same root) recovers
+/// through the fresh-pairing path's same-root overwrite.
 pub fn handle_reanchor<S: Store>(
     bundle: &ExitsForBundle,
-    old: &SettlementInfo,
-    fresh: &SettlementInfo,
-    root: [u8; 32],
+    settlement: &SettlementInfo,
     indexer: &dyn ExitIndexer,
     store: &S,
-    registry: &RwLock<HashMap<TransactionOutpoint, [u8; 32]>>,
 ) {
     let mut wb = store.write_batch();
-    indexer.on_exits_recommitted(bundle, fresh, &mut wb);
-    if fresh.tx_id != old.tx_id {
-        wb.delete(StateSpace::Metadata, &perm_out_key(&old.tx_id, 1));
-        let val = borsh::to_vec(&root).expect("serialize root");
-        wb.put(StateSpace::Metadata, &perm_out_key(&fresh.tx_id, 1), &val);
-        store.commit(wb);
-        let mut guard = registry.write().expect("poisoned lock");
-        guard.remove(&TransactionOutpoint::new(old.tx_id, 1));
-        guard.insert(TransactionOutpoint::new(fresh.tx_id, 1), root);
-    } else {
-        store.commit(wb);
-    }
+    indexer.on_exits_recommitted(bundle, settlement, &mut wb);
+    store.commit(wb);
 }
 
 /// One applied exit-index transition, journaled at the chain idx it applied at so a rollback
@@ -250,7 +236,23 @@ enum JournalEntry {
     Spend { spend: PermissionSpend, spent_outpoint: Option<TransactionOutpoint> },
 }
 
+/// The stream a rollback marker arrived on; each stream reverts only its own journal family,
+/// so a delayed marker never pops entries the other stream journaled around it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum JournalFamily {
+    Pairing,
+    Spend,
+}
+
 impl JournalEntry {
+    /// The stream family this entry reverts under.
+    fn family(&self) -> JournalFamily {
+        match self {
+            JournalEntry::Pairing { .. } => JournalFamily::Pairing,
+            JournalEntry::Spend { .. } => JournalFamily::Spend,
+        }
+    }
+
     /// Chain idx the entry applied at; reverts invert entries strictly above the floor.
     fn idx(&self) -> u64 {
         match self {
@@ -262,41 +264,40 @@ impl JournalEntry {
 
 /// Reorg-tracking state for the exit-index loop.
 // ponytail: in-memory journal; a restart inside a reorg window loses it, so hidden families
-// stay hidden until their settlement re-confirms on chain. Upgrade: persist entries under
-// StateSpace::Metadata.
+// stay hidden until their settlement re-confirms on chain, and entries below every applied
+// floor are never dropped (each pairing pins an Arc<ExitsForBundle>). Upgrade: persist under
+// StateSpace::Metadata and prune below the lowest applied floor.
 struct ReorgState {
-    /// Rollback floors already applied; a duplicate marker is a no-op.
-    seen_floors: HashSet<u64>,
     /// Applied transitions in application order, reverted newest-first above a floor.
     journal: Vec<JournalEntry>,
     /// Pairings hidden by a revert and awaiting their settlement's re-confirmation, keyed by
     /// settlement txid (which a resubmission keeps).
-    reverted: HashMap<TransactionId, ([u8; 32], Arc<ExitsForBundle>, SettlementInfo)>,
+    reverted: HashMap<TransactionId, ([u8; 32], Arc<ExitsForBundle>)>,
 }
 
 impl ReorgState {
     /// Creates empty reorg-tracking state.
     fn new() -> Self {
-        Self { seen_floors: HashSet::new(), journal: Vec::new(), reverted: HashMap::new() }
+        Self { journal: Vec::new(), reverted: HashMap::new() }
     }
 
-    /// Applies a rollback marker: skips floors already applied (a duplicate marker must not
-    /// re-revert canonical events that legitimately sit above the old floor), then inverts
-    /// every journaled transition above `floor` newest-first. Spends restore their pre-spend
-    /// anchor; pairings are hidden from serving (anchors kept) and parked for re-anchor.
+    /// Applies one stream's rollback marker: inverts that stream's journal family above
+    /// `floor` newest-first. Per-channel FIFO positions each stream's marker behind its own
+    /// stale events, so scoping reverts to the marker's stream keeps a late-applied pre-reorg
+    /// event revertible while a post-rollback canonical event on the other stream stays safe.
+    /// Spends restore their pre-spend anchor; pairings are hidden from serving (anchors kept)
+    /// and parked for re-anchor.
     fn revert_above<S: Store>(
         &mut self,
         floor: u64,
+        family: JournalFamily,
         indexer: &dyn ExitIndexer,
         store: &S,
         registry: &RwLock<HashMap<TransactionOutpoint, [u8; 32]>>,
     ) {
-        if !self.seen_floors.insert(floor) {
-            return;
-        }
         let mut above = Vec::new();
         for entry in std::mem::take(&mut self.journal) {
-            if entry.idx() > floor {
+            if entry.idx() > floor && entry.family() == family {
                 above.push(entry);
             } else {
                 self.journal.push(entry);
@@ -317,11 +318,11 @@ impl ReorgState {
                         registry,
                     );
                 }
-                JournalEntry::Pairing { root, bundle, settlement, .. } => {
+                JournalEntry::Pairing { root, bundle, settlement } => {
                     let mut wb = store.write_batch();
                     indexer.on_exits_reverted(&bundle, &settlement, &mut wb);
                     store.commit(wb);
-                    self.reverted.insert(settlement.tx_id, (root, bundle, settlement));
+                    self.reverted.insert(settlement.tx_id, (root, bundle));
                 }
             }
         }
@@ -330,9 +331,9 @@ impl ReorgState {
 }
 
 /// Background task joining exit bundles, L1 settlements, and permission spends. Every applied
-/// pairing and spend is journaled at its chain idx; a rollback marker on either stream inverts
-/// the journal above its floor, and a reverted settlement's re-confirmation re-anchors its
-/// family.
+/// pairing and spend is journaled at its chain idx; a rollback marker on each stream inverts
+/// that stream's journal family above its floor, and a reverted settlement's re-confirmation
+/// re-anchors its family.
 pub async fn run_exit_indexer<S: Store>(
     indexer: Arc<dyn ExitIndexer>,
     store: S,
@@ -362,35 +363,32 @@ pub async fn run_exit_indexer<S: Store>(
                 match maybe_settlement {
                     Some(SettlementMsg::Observed(settlement)) => {
                         // A reverted family re-confirming re-anchors before the parked lookup;
-                        // when a parked bundle also matches, its fresh pairing overwrites the
-                        // same root, so the reverted entry is simply dropped.
+                        // a parked bundle's fresh pairing overwrites the same root and drops
+                        // the reverted entry it supersedes (a re-derived settlement may
+                        // re-confirm under a different txid).
                         let reverted = reorg.reverted.remove(&settlement.tx_id);
-                        let paired = handle_settlement(
+                        if let Some((root, bundle)) = handle_settlement(
                             &mut parked_bundles,
                             &settlement,
                             &*indexer,
                             &store,
                             &registry,
-                        )
-                        .or_else(|| {
-                            let (root, bundle, old) = reverted?;
-                            handle_reanchor(
-                                &bundle,
-                                &old,
-                                &settlement,
-                                root,
-                                &*indexer,
-                                &store,
-                                &registry,
-                            );
-                            Some((root, bundle))
-                        });
-                        if let Some((root, bundle)) = paired {
+                        ) {
+                            reorg.reverted.retain(|_, (r, ..)| *r != root);
+                            reorg.journal.push(JournalEntry::Pairing { root, bundle, settlement });
+                        } else if let Some((root, bundle)) = reverted {
+                            handle_reanchor(&bundle, &settlement, &*indexer, &store);
                             reorg.journal.push(JournalEntry::Pairing { root, bundle, settlement });
                         }
                     }
                     Some(SettlementMsg::Rollback(floor)) => {
-                        reorg.revert_above(floor, &*indexer, &store, &registry);
+                        reorg.revert_above(
+                            floor,
+                            JournalFamily::Pairing,
+                            &*indexer,
+                            &store,
+                            &registry,
+                        );
                     }
                     None => {
                         log::debug!("exit indexer: settlement channel closed");
@@ -406,7 +404,13 @@ pub async fn run_exit_indexer<S: Store>(
                         reorg.journal.push(JournalEntry::Spend { spend, spent_outpoint });
                     }
                     Some(SpendMsg::Rollback(floor)) => {
-                        reorg.revert_above(floor, &*indexer, &store, &registry);
+                        reorg.revert_above(
+                            floor,
+                            JournalFamily::Spend,
+                            &*indexer,
+                            &store,
+                            &registry,
+                        );
                     }
                     None => {
                         log::debug!("exit indexer: spends channel closed");
@@ -1022,7 +1026,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rollback_marker_is_idempotent_and_deduped() {
+    async fn stale_spend_between_markers_still_reverts() {
         let dir = tempdir().unwrap();
         let store: RocksDbStore = RocksDbStore::open(dir.path());
         let indexer = Arc::new(FakeExitIndexer::new());
@@ -1039,6 +1043,10 @@ mod tests {
         h.pair(bundle, settlement).await;
         let anchor = TransactionOutpoint::new(settlement.tx_id, 1);
 
+        // The spend queues with both rollback markers (no await between sends, so the task
+        // cannot run early); the biased select dequeues the settlement marker first, applying
+        // the stale spend between the two markers. Its own stream's marker must still revert
+        // it; the other stream's marker may not swallow that revert.
         let spend = PermissionSpend {
             covenant_id: [0x55; 32],
             old_root: root,
@@ -1048,14 +1056,52 @@ mod tests {
             chain_idx: 5,
             ..Default::default()
         };
-        h.spend_tx.send(SpendMsg::Spent(spend.clone())).unwrap();
         let cont =
             TransactionOutpoint::new(Hash::from_bytes(spend.spend_txid), spend.new_outpoint_index);
-        assert!(becomes_true(200, || registry.read().unwrap().contains_key(&cont)).await);
+        h.spend_tx.send(SpendMsg::Spent(spend.clone())).unwrap();
+        h.settlement_tx.send(SettlementMsg::Rollback(4)).unwrap();
         h.spend_tx.send(SpendMsg::Rollback(4)).unwrap();
-        assert!(becomes_true(200, || registry.read().unwrap().contains_key(&anchor)).await);
+        assert!(
+            becomes_true(200, || indexer.spend_reverts.lock().unwrap().len() == 1).await,
+            "stale spend reverted by its own stream's marker"
+        );
+        {
+            let guard = registry.read().unwrap();
+            assert!(guard.contains_key(&anchor), "pre-spend anchor restored");
+            assert!(!guard.contains_key(&cont), "continuation gone");
+        }
+        assert_eq!(
+            indexer.spend_reverts.lock().unwrap().as_slice(),
+            &[(spend.clone(), anchor)],
+            "trait saw the revert with the original outpoint"
+        );
+        assert!(indexer.exits_reverted.lock().unwrap().is_empty(), "pairing below the floor kept");
 
-        // A canonical pairing lands above the floor after the rollback.
+        h.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn fresh_pairing_between_markers_survives_delayed_spend_marker() {
+        let dir = tempdir().unwrap();
+        let store: RocksDbStore = RocksDbStore::open(dir.path());
+        let indexer = Arc::new(FakeExitIndexer::new());
+        let registry = Arc::new(RwLock::new(HashMap::new()));
+        let h = IndexerHarness::spawn(store.clone(), indexer.clone(), registry.clone());
+
+        let (bundle, root) = test_bundle([0x11; 32], 0x77, 700);
+        let settlement = SettlementInfo {
+            tx_id: Hash::from_bytes([0xaa; 32]),
+            new_state: [0x11; 32],
+            chain_idx: 3u64.into(),
+            ..Default::default()
+        };
+        h.pair(bundle, settlement).await;
+        let anchor = TransactionOutpoint::new(settlement.tx_id, 1);
+
+        // The settlement marker, a fresh canonical pairing at idx 6, and the delayed
+        // spend-stream marker queue together; biased dequeue applies the pairing between the
+        // two markers. The delayed spend marker must not pop the other stream's journal
+        // family: the idx-6 pairing survives it.
         let (bundle2, root2) = test_bundle([0x12; 32], 0x88, 800);
         let settlement2 = SettlementInfo {
             tx_id: Hash::from_bytes([0xa2; 32]),
@@ -1063,24 +1109,85 @@ mod tests {
             chain_idx: 6u64.into(),
             ..Default::default()
         };
-        h.pair(bundle2, settlement2).await;
         let anchor2 = TransactionOutpoint::new(settlement2.tx_id, 1);
-
-        // Duplicate floor on the other arm: deduped, so the idx-6 pairing is not re-reverted
-        // (it never enters the reverted map) and the spend revert does not fire twice.
+        h.exits_tx.send(bundle2).unwrap();
         h.settlement_tx.send(SettlementMsg::Rollback(4)).unwrap();
+        h.settlement_tx.send(SettlementMsg::Observed(settlement2)).unwrap();
+        h.spend_tx.send(SpendMsg::Rollback(4)).unwrap();
+        assert!(
+            becomes_true(200, || registry.read().unwrap().contains_key(&anchor2)).await,
+            "fresh pairing committed"
+        );
+
+        assert!(
+            indexer.exits_reverted.lock().unwrap().is_empty(),
+            "fresh pairing above the floor survives the delayed spend marker"
+        );
+        {
+            let guard = registry.read().unwrap();
+            assert_eq!(guard.get(&anchor), Some(&root), "pairing below the floor kept");
+            assert_eq!(guard.get(&anchor2), Some(&root2), "fresh pairing kept");
+        }
+        assert_eq!(indexer.committed.lock().unwrap().len(), 2);
+
+        h.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn stale_reverted_entry_dropped_on_same_root_repairing() {
+        let dir = tempdir().unwrap();
+        let store: RocksDbStore = RocksDbStore::open(dir.path());
+        let indexer = Arc::new(FakeExitIndexer::new());
+        let registry = Arc::new(RwLock::new(HashMap::new()));
+        let h = IndexerHarness::spawn(store.clone(), indexer.clone(), registry.clone());
+
+        let (bundle, root) = test_bundle([0x11; 32], 0x77, 700);
+        let settlement = SettlementInfo {
+            tx_id: Hash::from_bytes([0xaa; 32]),
+            new_state: [0x11; 32],
+            chain_idx: 3u64.into(),
+            ..Default::default()
+        };
+        h.pair(bundle, settlement).await;
+        let anchor = TransactionOutpoint::new(settlement.tx_id, 1);
+
+        h.settlement_tx.send(SettlementMsg::Rollback(2)).unwrap();
+        assert!(
+            becomes_true(200, || indexer.exits_reverted.lock().unwrap().len() == 1).await,
+            "pairing reverted"
+        );
+
+        // The settler re-derives the family: same leaves (same root, same new_state) under a
+        // fresh settlement txid, re-parked and freshly paired.
+        let (bundle2, root2) = test_bundle([0x11; 32], 0x77, 700);
+        assert_eq!(root2, root, "test setup: re-derived family pins the same root");
+        let fresh = SettlementInfo {
+            tx_id: Hash::from_bytes([0xa2; 32]),
+            new_state: [0x11; 32],
+            chain_idx: 6u64.into(),
+            ..Default::default()
+        };
+        h.exits_tx.send(bundle2).unwrap();
+        h.settlement_tx.send(SettlementMsg::Observed(fresh)).unwrap();
+        assert!(
+            becomes_true(200, || indexer.committed.lock().unwrap().len() == 2).await,
+            "fresh pairing committed"
+        );
+
+        // The superseded reverted entry is gone: re-observing the orphaned txid (no parked
+        // bundle) must not re-anchor it.
         h.settlement_tx
-            .send(SettlementMsg::Observed(SettlementInfo { chain_idx: 7u64.into(), ..settlement2 }))
+            .send(SettlementMsg::Observed(SettlementInfo { chain_idx: 7u64.into(), ..settlement }))
             .unwrap();
         assert!(
             !becomes_true(8, || !indexer.exits_recommitted.lock().unwrap().is_empty()).await,
-            "duplicate floor must not re-revert the idx-6 pairing"
+            "superseded reverted entry must not re-anchor"
         );
-        assert_eq!(indexer.spend_reverts.lock().unwrap().len(), 1, "no second spend revert");
+        assert_eq!(indexer.exits_reverted.lock().unwrap().len(), 1, "only the original revert");
         {
             let guard = registry.read().unwrap();
-            assert_eq!(guard.get(&anchor), Some(&root));
-            assert_eq!(guard.get(&anchor2), Some(&root2), "canonical post-rollback pairing kept");
+            assert_eq!(guard.get(&anchor), Some(&root), "orphaned anchor kept");
+            assert_eq!(guard.get(&TransactionOutpoint::new(fresh.tx_id, 1)), Some(&root2));
         }
 
         h.shutdown().await;
@@ -1104,6 +1211,13 @@ mod tests {
         h.pair(bundle, settlement).await;
         let anchor = TransactionOutpoint::new(settlement.tx_id, 1);
         let anchor_key = perm_out_key(&settlement.tx_id, 1);
+
+        // Strict boundary: the pairing sits AT idx 3, so a rollback to floor 3 spares it.
+        h.settlement_tx.send(SettlementMsg::Rollback(3)).unwrap();
+        assert!(
+            !becomes_true(8, || !indexer.exits_reverted.lock().unwrap().is_empty()).await,
+            "entry at exactly the floor survives"
+        );
 
         // The pairing reverts, but anchors stay (the resubmitted settlement keeps its txid).
         h.settlement_tx.send(SettlementMsg::Rollback(2)).unwrap();
