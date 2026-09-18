@@ -4,6 +4,7 @@ use kaspa_hashes::Hash;
 use tokio::sync::{mpsc, watch};
 use vprogs_core_atomics::AsyncQueue;
 use vprogs_l1_types::SettlementInfo;
+use vprogs_state_settlement_journal::SettlementJournal;
 use vprogs_zk_batch_prover::LaneProofSource;
 
 use crate::{ExitsForBundle, ScheduledBundle, SettlementArtifact};
@@ -30,6 +31,9 @@ pub struct AggregateProverConfig<L: LaneProofSource, R: Send + Sync + 'static> {
     /// Receiver on the bridge's covenant `last_settlement` watch driving re-aggregation of a
     /// suffix a competitor superseded, or `None` to run without re-forming.
     pub settlement: Option<watch::Receiver<Option<SettlementInfo>>>,
+    /// Journal recording each proved-but-unsettled bundle so a restart can resume settlement,
+    /// or `None` on paths that never settle across restarts (exec/test runs).
+    pub journal: Option<Arc<dyn SettlementJournal>>,
     /// Inclusive bound on how many scheduled batches one bundle may consume. A bundle forms only
     /// once at least `*start()` batches are consecutively ready (parking until then) and is
     /// capped at `*end()`. `1..=usize::MAX` ("1..") is the greedy default: form as soon as the

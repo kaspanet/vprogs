@@ -14,6 +14,7 @@ use vprogs_core_atomics::AsyncQueue;
 use vprogs_core_codec::Reader;
 use vprogs_l1_types::{ChainBlockMetadata, SettlementInfo};
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
+use vprogs_state_settlement_journal::{JournalEntry, SettlementJournal};
 use vprogs_storage_types::Store;
 use vprogs_zk_abi::batch_aggregator::{Inputs as AggregatorInputs, StateTransition};
 use vprogs_zk_batch_prover::{LaneProofRequest, LaneProofSource};
@@ -52,6 +53,8 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend, L: LaneProofSour
     /// [`reaggregate_superseded`](Self::reaggregate_superseded), or `None` to run without
     /// re-forming.
     settlement: Option<watch::Receiver<Option<SettlementInfo>>>,
+    /// Journal of proved-but-unsettled bundles; `None` disables resume.
+    journal: Option<Arc<dyn SettlementJournal>>,
     /// First-batch checkpoint index of the most recently re-formed suffix, guarding against
     /// re-emitting it on every settlement wake. Reset by a rollback.
     last_reformed_from: Option<u64>,
@@ -87,6 +90,7 @@ where
             lane_source,
             settlement_queue,
             settlement,
+            journal,
             bundle_size,
             exits,
         } = config;
@@ -96,6 +100,14 @@ where
         assert!(
             !bundle_size.is_empty(),
             "bundle_size must be a non-empty range (start <= end); got {bundle_size:?}",
+        );
+        // The journal is the restart-resume half of settlement: without the queue (the worker
+        // that settles) and the watch (compaction against the covenant tip) its entries would
+        // only accumulate.
+        assert!(
+            journal.is_none() || (settlement_queue.is_some() && settlement.is_some()),
+            "journal requires the full settling path (queue + watch); exec/test paths stay \
+             journal-free",
         );
         let this = Self {
             prover,
@@ -108,6 +120,7 @@ where
             queued: VecDeque::new(),
             retained: VecDeque::new(),
             settlement,
+            journal,
             last_reformed_from: None,
             exits,
         };
@@ -139,6 +152,9 @@ where
             if changed {
                 let latest = *self.settlement.as_mut().expect("settlement").borrow_and_update();
                 self.reaggregate_superseded(latest).await;
+                if let Some(tip) = &latest {
+                    self.compact_journal(tip);
+                }
                 if self.prover.shutdown.is_open() {
                     return;
                 }
@@ -399,6 +415,20 @@ where
         };
         handle.publish_artifact(Some(artifact));
 
+        // Record the published bundle's geometry so a restart can reload its receipt and re-feed
+        // the bundle to settlement.
+        if let Some(journal) = &self.journal {
+            journal.record(
+                checkpoint_index,
+                &JournalEntry {
+                    end_index: last_checkpoint.index(),
+                    from_block,
+                    block_prove_to,
+                    seq_commit: last_metadata.seq_commit,
+                },
+            );
+        }
+
         // Publish exit leaves for client Merkle-path generation when exits were emitted.
         if let Some(sender) = &self.exits {
             if st.permission_spk_hash != [0u8; 32] {
@@ -497,6 +527,34 @@ where
         }
         self.prove_bundle(&suffix).await;
         self.last_reformed_from = Some(suffix_from);
+    }
+
+    /// Deletes journal entries the settlement `tip` fully covers, mapping the tip's boundary
+    /// block to a checkpoint index through batch metadata bounded by the journal's own span.
+    /// An unmapped boundary (a competitor settling a fork block outside our metadata) deletes
+    /// nothing and logs: the same bounded residual the live re-aggregation path documents.
+    fn compact_journal(&self, tip: &SettlementInfo) {
+        let Some(journal) = &self.journal else { return };
+        let entries = journal.entries();
+        let Some((first_start, _)) = entries.first() else { return };
+        let Some((_, last)) = entries.last() else { return };
+        let Some(tip_index) =
+            journal.checkpoint_of_block(tip.block_prove_to, last.end_index, *first_start)
+        else {
+            log::warn!(
+                "aggregate-prover: settlement {} boundary {} maps to no batch in the journal \
+                 span; keeping {} entries",
+                tip.tx_id,
+                tip.block_prove_to,
+                entries.len(),
+            );
+            return;
+        };
+        for (start, entry) in entries {
+            if entry.end_index <= tip_index {
+                journal.delete(start);
+            }
+        }
     }
 
     /// Drops queued and retained batches rolled back by a reorg, and resets the re-form guard so
