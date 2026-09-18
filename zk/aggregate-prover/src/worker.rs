@@ -696,8 +696,12 @@ where
             block_prove_to: entry.block_prove_to,
             seq_commit: entry.seq_commit,
         };
-        journal.delete(start);
+        // Record the successor BEFORE deleting the original: record replaces by key and
+        // tolerates overlap, so a crash between the two commits leaves both entries
+        // (absorbed by the next resume's compact/split), never neither (which would
+        // silently lose the suffix).
         journal.record(first_index, &successor);
+        journal.delete(start);
         self.refeed_one(first_index, &receipt, &successor).await;
     }
 
