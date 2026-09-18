@@ -9006,6 +9006,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-state-settlement-journal"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "kaspa-hashes",
+ "tempfile",
+ "vprogs-core-types",
+ "vprogs-l1-types",
+ "vprogs-state-batch-metadata",
+ "vprogs-storage-rocksdb-store",
+ "vprogs-storage-types",
+]
+
+[[package]]
 name = "vprogs-state-version"
 version = "0.1.0"
 dependencies = [

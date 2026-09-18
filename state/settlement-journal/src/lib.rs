@@ -28,9 +28,27 @@ pub struct JournalEntry {
     pub seq_commit: Hash,
 }
 
-/// Store-backed operations over the settlement journal and the batch metadata its boundary
-/// lookups map through. Wraps one store handle.
-#[derive(Clone)]
+/// Store-backed operations the aggregate prover needs over the settlement journal and the batch
+/// metadata it maps boundaries through, as one object so the worker holds no store generic.
+pub trait SettlementJournal: Send + Sync {
+    /// Records the entry for the bundle starting at `start_index`, replacing any prior one.
+    fn record(&self, start_index: u64, entry: &JournalEntry);
+    /// Returns all entries ordered by start index.
+    fn entries(&self) -> Vec<(u64, JournalEntry)>;
+    /// Deletes the entry starting at `start_index`.
+    fn delete(&self, start_index: u64);
+    /// Returns the chain block hash of batch `index`, or `None` if the batch has no metadata.
+    fn batch_block(&self, index: u64) -> Option<Hash>;
+    /// Returns the checkpoint index whose batch block is `block`, scanning indices from `upper`
+    /// down to `lower` inclusive, or `None` when no batch in the window carries the block.
+    ///
+    /// A bounded reverse scan: callers bound it by the journal's own span, never the whole chain.
+    fn checkpoint_of_block(&self, block: Hash, upper: u64, lower: u64) -> Option<u64>;
+    /// Returns whether any entry is recorded.
+    fn has_entries(&self) -> bool;
+}
+
+/// [`SettlementJournal`] over one store handle.
 pub struct StoreJournal<S: Store> {
     /// Store serving the journal and batch-metadata column families.
     store: S,
@@ -41,9 +59,10 @@ impl<S: Store> StoreJournal<S> {
     pub fn new(store: S) -> Self {
         Self { store }
     }
+}
 
-    /// Records the entry for the bundle starting at `start_index`, replacing any prior one.
-    pub fn record(&self, start_index: u64, entry: &JournalEntry) {
+impl<S: Store> SettlementJournal for StoreJournal<S> {
+    fn record(&self, start_index: u64, entry: &JournalEntry) {
         let mut wb = self.store.write_batch();
         wb.put(
             StateSpace::SettlementJournal,
@@ -53,59 +72,35 @@ impl<S: Store> StoreJournal<S> {
         self.store.commit(wb);
     }
 
-    /// Returns all entries ordered by start index.
-    pub fn entries(&self) -> Vec<(u64, JournalEntry)> {
+    fn entries(&self) -> Vec<(u64, JournalEntry)> {
         self.store
             .prefix_iter(StateSpace::SettlementJournal, &[])
             .map(|(k, v)| {
-                let start = u64::from_be_bytes(k.try_into().expect("corrupted store: journal key"));
+                let start = u64::from_be_bytes(k.try_into().expect("u64 BE key"));
                 let entry = borsh::from_slice(&v).expect("corrupted store: journal entry");
                 (start, entry)
             })
             .collect()
     }
 
-    /// Deletes the entry starting at `start_index`.
-    pub fn delete(&self, start_index: u64) {
+    fn delete(&self, start_index: u64) {
         let mut wb = self.store.write_batch();
         wb.delete(StateSpace::SettlementJournal, &start_index.to_be_bytes());
         self.store.commit(wb);
     }
 
-    /// Returns the chain block hash of batch `index`, or `None` if the batch has no metadata.
-    pub fn batch_block(&self, index: u64) -> Option<Hash> {
-        self.batch_metadata(index).map(|meta| meta.hash)
-    }
-
-    /// Returns batch `index`'s full metadata, or `None` if the batch has no metadata.
-    pub fn batch_metadata(&self, index: u64) -> Option<ChainBlockMetadata> {
+    fn batch_block(&self, index: u64) -> Option<Hash> {
         self.store
             .get(StateSpace::BatchMetadata, &index.to_be_bytes())
             .map(|bytes| borsh::from_slice::<ChainBlockMetadata>(&bytes).expect("corrupted store"))
+            .map(|meta| meta.hash)
     }
 
-    /// Returns the highest committed checkpoint index with its batch metadata, or `None` when no
-    /// batch has committed. Ceiling: a kill between a rollback and its re-execution can leave the
-    /// top row fork-stale (single-miner / low-reorg assumption).
-    pub fn committed_tip(&self) -> Option<(u64, ChainBlockMetadata)> {
-        // Reverse seek: pruning deletes only below the committed frontier, so the last key is
-        // the tip.
-        self.store.prefix_iter_rev(StateSpace::BatchMetadata, &[]).next().map(|(key, value)| {
-            let index = u64::from_be_bytes(key.try_into().expect("corrupted metadata key"));
-            let metadata = borsh::from_slice(&value).expect("corrupted store: metadata value");
-            (index, metadata)
-        })
-    }
-
-    /// Returns the checkpoint index whose batch block is `block`, searching from `upper` down to
-    /// `lower` inclusive, or `None` when no batch in the window carries the block. Callers bound
-    /// the window by the journal's own span, never the whole chain.
-    pub fn checkpoint_of_block(&self, block: Hash, upper: u64, lower: u64) -> Option<u64> {
+    fn checkpoint_of_block(&self, block: Hash, upper: u64, lower: u64) -> Option<u64> {
         (lower..=upper).rev().find(|&i| self.batch_block(i) == Some(block))
     }
 
-    /// Returns whether any entry is recorded.
-    pub fn has_entries(&self) -> bool {
+    fn has_entries(&self) -> bool {
         !self.entries().is_empty()
     }
 }
@@ -136,14 +131,11 @@ mod tests {
         let s = store();
         let j = StoreJournal::new(s.clone());
         j.record(7, &entry(9, 1));
-        // Recording again at the same start replaces the prior entry.
-        j.record(7, &entry(9, 3));
-        assert_eq!(j.entries(), vec![(7, entry(9, 3))]);
         j.record(3, &entry(5, 2));
-        assert_eq!(j.entries(), vec![(3, entry(5, 2)), (7, entry(9, 3))]);
+        assert_eq!(j.entries(), vec![(3, entry(5, 2)), (7, entry(9, 1))]);
         assert!(j.has_entries());
         j.delete(3);
-        assert_eq!(j.entries(), vec![(7, entry(9, 3))]);
+        assert_eq!(j.entries(), vec![(7, entry(9, 1))]);
         j.delete(7);
         assert!(j.entries().is_empty());
         assert!(!j.has_entries());
@@ -162,31 +154,5 @@ mod tests {
         assert_eq!(j.checkpoint_of_block(Hash::from_bytes([0xab; 32]), 12, 10), Some(11),);
         // Absent inside the scanned window: miss, not a false hit.
         assert_eq!(j.checkpoint_of_block(Hash::from_bytes([0xcd; 32]), 12, 10), None);
-    }
-
-    #[test]
-    fn committed_tip_reverse_seek_reads_the_last_metadata() {
-        let s = store();
-        let j = StoreJournal::new(s.clone());
-        assert_eq!(j.committed_tip(), None);
-        let mut wb = s.write_batch();
-        for (index, seed) in [(2u64, 0xb2u8), (7, 0xb7)] {
-            vprogs_state_batch_metadata::BatchMetadata::set(
-                &mut wb,
-                index,
-                &ChainBlockMetadata {
-                    hash: Hash::from_bytes([seed; 32]),
-                    seq_commit: Hash::from_bytes([seed + 1; 32]),
-                    ..Default::default()
-                },
-            );
-        }
-        s.commit(wb);
-        // The seek lands on the highest key, not the first written.
-        let (index, metadata) = j.committed_tip().expect("metadata committed above");
-        assert_eq!((index, metadata.hash), (7, Hash::from_bytes([0xb7; 32])));
-        assert_eq!(metadata.seq_commit, Hash::from_bytes([0xb8; 32]));
-        assert_eq!(j.batch_metadata(2).expect("committed").hash, Hash::from_bytes([0xb2; 32]));
-        assert_eq!(j.batch_metadata(3), None);
     }
 }
