@@ -98,6 +98,23 @@ impl RpcSink {
     ) -> Self {
         Self { client, params, keypair, submit_jitter }
     }
+
+    /// Probes whether `covenant`'s outpoint is still spendable on chain, the same address-UTXO
+    /// pattern [`RpcSink::dropped`] polls. A probe error or an unextractable address reads as
+    /// live: the submission that follows is the authority, and its rejection classification
+    /// remains the backstop.
+    async fn covenant_spent(&self, covenant: OutpointAt<'_>) -> bool {
+        let prefix = kaspa_addresses::Prefix::from(self.params.net.network_type());
+        let Ok(address) =
+            kaspa_txscript::standard::extract_script_pub_key_address(covenant.spk, prefix)
+        else {
+            return false;
+        };
+        let Ok(utxos) = self.client.get_utxos_by_addresses(vec![address]).await else {
+            return false;
+        };
+        !utxos.into_iter().any(|e| TransactionOutpoint::from(e.outpoint) == covenant.outpoint)
+    }
 }
 
 impl SettlementSink for RpcSink {
@@ -107,6 +124,17 @@ impl SettlementSink for RpcSink {
         covenant: OutpointAt<'_>,
         shutdown: &AtomicAsyncLatch,
     ) -> SubmitOutcome {
+        // Settled-ness is chain-derived, checked before submitting: a settlement whose covenant
+        // input the chain already spent (this run's own pre-restart submission mined during
+        // downtime, or a competitor's landed settlement) can never land, so the probe reports
+        // superseded without paying for the doomed submission; the bridge will publish the
+        // landed settlement and adoption aligns. A probe error submits as before.
+        if shutdown.is_open() {
+            return SubmitOutcome::Shutdown;
+        }
+        if self.covenant_spent(covenant).await {
+            return SubmitOutcome::Superseded;
+        }
         // Jitter the submission so competing provers don't deterministically lose the spend race.
         if let Some(window) = &self.submit_jitter {
             if !window.is_empty() {
