@@ -132,10 +132,16 @@ where
     /// Main loop: drain commands into local state, prove every ready bundle in arrival order, and
     /// re-aggregate a superseded suffix whenever the settlement watch advances.
     async fn run(mut self) {
-        // Resume before any proving: if the journal holds pending bundles, wait for the
-        // bridge's first tip publication (chain replay republishes the covenant's last
-        // settlement), then re-feed the tail ahead of new work. A journal-free or empty
-        // journal skips straight through.
+        // Resume before any proving: if the journal holds pending bundles, wait for the bridge's
+        // first tip publication (chain replay republishes the covenant's last settlement),
+        // snapshot the pre-restart tail's span, and re-feed the tail ahead of new work. The
+        // snapshot scopes the multi-pass resume: the first publication is the bridge's
+        // PRE-downtime baseline (the persisted tip's last settlement), so a competitor that
+        // settled during the downtime reaches the watch only as a later advance, and each
+        // settlement advance below re-runs the resume pass against the snapshot until the
+        // pre-restart tail is settled or dropped. A journal-free or empty journal snapshots 0
+        // (no scope) and skips straight through.
+        let mut resume_max_end = 0u64;
         if self.journal.as_ref().is_some_and(|j| j.has_entries()) {
             let tip = loop {
                 let settlement = self.settlement.as_mut().expect("journal implies watch");
@@ -150,7 +156,16 @@ where
                     break tip;
                 }
             };
-            self.resume_pending(&tip).await;
+            resume_max_end = self
+                .journal
+                .as_ref()
+                .expect("journal checked present above")
+                .entries()
+                .last()
+                .expect("has_entries checked above")
+                .1
+                .end_index;
+            self.resume_pending(&tip, resume_max_end).await;
             if self.prover.shutdown.is_open() {
                 return;
             }
@@ -179,6 +194,10 @@ where
                 self.reaggregate_superseded(latest).await;
                 if let Some(tip) = &latest {
                     self.compact_journal(tip);
+                    // The advance pass of the multi-pass resume: acts only while the
+                    // pre-restart snapshot still holds unsettled entries, and self-gates to a
+                    // no-op once the snapshot scope is empty or the journal is unwired.
+                    self.resume_pending(tip, resume_max_end).await;
                 }
                 if self.prover.shutdown.is_open() {
                     return;
@@ -589,22 +608,32 @@ where
         }
     }
 
-    /// Resumes settlement after a restart: waits for nothing (the caller already holds the
-    /// bridge's first tip publication), deletes journal entries the on-chain tip covers,
+    /// Resumes settlement after a restart: deletes journal entries the on-chain tip covers,
     /// re-aggregates the one entry a competitor's boundary lands inside from cached per-batch
     /// receipts, and re-feeds every surviving entry onto the settlement queue ahead of new
     /// work. Re-fed bundles chain exactly like fresh ones; the settlement worker's existing
     /// adopt/skip/superseded paths land them.
+    ///
+    /// The pass applies only to entries with `end_index <= max_end`. The startup call snapshots
+    /// the pre-restart journal's last end index and every settlement-watch advance re-runs the
+    /// pass with that snapshot: the bridge's first startup publication is the pre-downtime
+    /// baseline, so a competitor that settled during the downtime reaches the journal only as a
+    /// later advance. Entries beyond the snapshot are the live pipeline's (recorded by the
+    /// proving path, compacted vintage-agnostically, re-aggregated in memory), so the advance
+    /// pass never re-feeds them; a zero or empty scope is a no-op.
     ///
     /// Ceiling: resumed bundles require the same guest ELF image ids as the run that proved
     /// them (image id is part of every receipt key). An entry whose receipt cannot be reloaded
     /// is dropped with a logged warning; that range settles again only through new activity.
     /// Reorgs during downtime inherit the single-miner / low-reorg assumption: an unmapped
     /// boundary compacts nothing and the tail re-feeds as-is, which the settler then skips or
-    /// settles per its own reconcile rules.
-    async fn resume_pending(&mut self, tip: &SettlementInfo) {
+    /// settles per its own reconcile rules. While the pre-restart tail drains, an advance pass
+    /// may re-feed an entry an earlier pass already fed; the settler's adopt/skip/superseded
+    /// paths absorb the duplicate without landing anything twice.
+    async fn resume_pending(&mut self, tip: &SettlementInfo, max_end: u64) {
         let Some(journal) = self.journal.clone() else { return };
-        let entries = journal.entries();
+        let entries: Vec<(u64, JournalEntry)> =
+            journal.entries().into_iter().filter(|(_, entry)| entry.end_index <= max_end).collect();
         if entries.is_empty() {
             return;
         }
