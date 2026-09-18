@@ -1946,6 +1946,336 @@ async fn warm_restart_after_competitor_sweeps_tail() {
     l1.shutdown().await;
 }
 
+/// A warm-restart resume into a competitor split: run 1 (bundle size 4) proves at least two
+/// pending bundles over a persistent store; its settler confirms one settlement at a time, so
+/// only the first is submitted before the prover is killed, leaving the last (a 4-batch
+/// straddler) journaled but never submitted. The submitted settlement is mined in alone, then a
+/// per-batch competitor (bundle size 1) lands a settlement whose proving boundary falls STRICTLY
+/// inside the straddler's span while the first prover stays down. Run 2 reopens the store: the
+/// bridge's startup publication is the pre-downtime baseline, the competitor's interior boundary
+/// reaches the watch only as a later advance, and the advance pass of the resume must SPLIT the
+/// straddled entry at that boundary, re-aggregating the suffix from cached per-batch receipts.
+/// NO new carriers are driven in run 2, so a chain advance past the competitor is precisely the
+/// split suffix landing. Also asserts the straddle itself (the competitor's boundary maps
+/// through run 1's own batch metadata into the entry's interior), the no-fork invariant, and
+/// that the pre-restart journal scope compacted away.
+#[tokio::test(flavor = "multi_thread")]
+async fn warm_restart_splits_at_competitor_boundary() {
+    if !dev_mode_enabled() {
+        eprintln!(
+            "skipping warm_restart_splits_at_competitor_boundary: RISC0_DEV_MODE!=1 - the warm \
+             restart runs dev stub proofs + the dev redeem on CPU",
+        );
+        return;
+    }
+    let _serial = serialize_settlement_test().await;
+
+    let l1 = L1Node::new(
+        NetworkId::new(NetworkType::Simnet),
+        Some(|p| {
+            p.blockrate.coinbase_maturity = 1;
+            p.toccata_activation = ForkActivation::always();
+            p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+        }),
+    )
+    .await;
+    l1.mine_utxos(30).await;
+
+    let network_id = NetworkId::new(NetworkType::Simnet);
+    let lane_key = test_lane_key();
+
+    // === Bootstrap the dev covenant ===
+    let (bootstrap_redeem, bootstrap_spk) = dev_bootstrap_redeem(&lane_key, &Hash::default());
+    let (boot_tx, covenant_id) =
+        l1.build_covenant_bootstrap_transaction(&bootstrap_redeem, COVENANT_VALUE).await;
+    let boot_txid = boot_tx.id();
+    let block_deploy = l1.mine_block(&[boot_tx]).await;
+    l1.mine_blocks(1).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let bootstrap_outpoint = TransactionOutpoint::new(boot_txid, 0);
+    let bootstrap_state = CovenantState {
+        covenant_id,
+        state: EMPTY_HASH,
+        lane_tip: Hash::default(),
+        outpoint: bootstrap_outpoint,
+        spk: bootstrap_spk,
+        value: COVENANT_VALUE,
+        daa_score: 0,
+    };
+
+    let kp_a = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
+    let kp_b = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
+    let addr_a = prover_address(&kp_a, network_id);
+    let addr_b = prover_address(&kp_b, network_id);
+    l1.fund_address(&addr_a, FUND_VALUE, FUND_COUNT).await;
+    l1.fund_address(&addr_b, FUND_VALUE, FUND_COUNT).await;
+
+    let tx_elf = transaction_processor_elf();
+    let batch_elf = batch_processor_elf();
+    let aggregator_elf = batch_aggregator_elf();
+    let elfs = Elfs { program: &tx_elf, batch: &batch_elf, aggregator: &aggregator_elf };
+    let params = Params::from(network_id);
+
+    // === Run 1: settle one range, then prove several pending 4-batch bundles. The settler
+    // submits only the first (it confirms one settlement at a time and nothing mines), so the
+    // journal's last entry, the straddler, is never submitted. ===
+    let db_dir = TempDir::new().expect("persistent store dir");
+    let prover_a1 = spawn_prover_over_store(
+        &l1,
+        "A1",
+        kp_a,
+        addr_a.clone(),
+        4..=4,
+        network_id,
+        &params,
+        lane_key,
+        covenant_id,
+        bootstrap_state.clone(),
+        elfs,
+        None,
+        Some(block_deploy),
+        db_dir.path(),
+    )
+    .await;
+
+    let mut settled = 0usize;
+    for i in 0..10 {
+        drive_range(&l1).await;
+        settled = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+        eprintln!("split run1 driver: iteration {i}, covenant chain length {settled}");
+        if settled >= 1 {
+            break;
+        }
+    }
+    // Land any straggler settlement before building the straddler, as in the other warm-restart
+    // tests, so the pending-tail construction keys off the last landed tip.
+    await_mempool_settlement_free(&l1, covenant_id).await;
+    settled = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+    assert!(settled >= 1, "run 1 must land >=1 settlement before the split setup, got {settled}");
+
+    // Eight carriers form at least two 4-batch bundles past whatever residual batches the drive
+    // loop left, so the journal holds a submitted predecessor plus the unsubmitted straddler.
+    mine_lane_carriers(&l1, 8).await;
+    let chain = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await;
+    let tip_outpoint = TransactionOutpoint::new(chain.last().expect("run 1 settled tip").tx_id, 0);
+    await_mempool_spender(&l1, tip_outpoint).await;
+    // Drain before the kill: the eight-carrier wave leaves a backlog of batch lifecycles plus
+    // the straddler's own proof in flight, and the kill must land on an idle pipeline so its
+    // aggregate receipt write has flushed (a write queued when the node shuts down is dropped by
+    // the storage write worker, wedging the proving worker on the write's confirmation latch and
+    // leaking the store lock) and the straddler's batch commits are durable for the restart's
+    // boundary mapping.
+    tokio::time::sleep(Duration::from_secs(6)).await;
+
+    prover_a1.shutdown.open();
+    let join_a1 = prover_a1.settler.await;
+    prover_a1.node.shutdown();
+    assert!(join_a1.is_ok(), "split run 1 settler panicked: {join_a1:?}");
+    // The eight-carrier wave leaves a backlog of batch lifecycles mid-flight at the kill, and
+    // the scheduler's execution workers trail the shutdown for seconds; let them finish so the
+    // store lock is released before reopening.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // The straddler is the journal's last entry: a 4-batch bundle whose interior checkpoints a
+    // per-batch competitor can settle into. The blocks of every interior checkpoint drive the
+    // competitor's kill signal below.
+    let (straddle_start, straddle_end, interior_blocks) = {
+        let journal = StoreJournal::new(open_store_retrying(db_dir.path()));
+        let entries = journal.entries();
+        for (start, entry) in &entries {
+            eprintln!("split journal after run 1: bundle {start}..={}", entry.end_index);
+        }
+        assert!(
+            entries.len() >= 2,
+            "run 1 must journal a submitted predecessor plus the straddler",
+        );
+        let (start, entry) = *entries.last().expect("checked non-empty");
+        assert_eq!(
+            entry.end_index,
+            start + 3,
+            "the straddler must be one 4-batch bundle, got {start}..={}",
+            entry.end_index,
+        );
+        let blocks =
+            (start..entry.end_index).filter_map(|i| journal.batch_block(i)).collect::<Vec<_>>();
+        (start, entry.end_index, blocks)
+    };
+    assert_eq!(
+        interior_blocks.len(),
+        (straddle_end - straddle_start) as usize,
+        "every interior checkpoint must have batch metadata",
+    );
+
+    // === Land run 1's one submitted settlement alone: it is the only settlement in the mempool,
+    // so a single mined block confirms it deterministically. ===
+    let pre_land = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+    l1.mine_blocks(1).await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let after_first =
+        covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+    assert_eq!(
+        after_first,
+        pre_land + 1,
+        "the single mined block must confirm run 1's one pending settlement",
+    );
+
+    // === Competitor B (bundle size 1) lands a settlement proving through an interior
+    // checkpoint while A stays down. Its settler confirms one settlement at a time, so killing
+    // it while its interior submission sits unconfirmed keeps its later bundles unsubmitted; the
+    // poll interleaves sparse mining so B's bridge pages its replay forward. ===
+    let (_redeem, catchup_spk) = dev_bootstrap_redeem(&lane_key, &Hash::default());
+    let catchup_covenant = CovenantState {
+        covenant_id,
+        state: EMPTY_HASH,
+        lane_tip: Hash::default(),
+        outpoint: bootstrap_outpoint,
+        spk: catchup_spk,
+        value: COVENANT_VALUE,
+        daa_score: 0,
+    };
+    let prover_b = spawn_prover(
+        &l1,
+        "B",
+        kp_b,
+        addr_b.clone(),
+        1..=1,
+        network_id,
+        &params,
+        lane_key,
+        covenant_id,
+        catchup_covenant,
+        elfs,
+        None,
+        Some(block_deploy),
+    )
+    .await;
+    await_mempool_proving_through(&l1, covenant_id, &interior_blocks).await;
+    prover_b.shutdown.open();
+    let join_b = prover_b.settler.await;
+    prover_b.node.shutdown();
+    assert!(join_b.is_ok(), "split competitor B settler panicked: {join_b:?}");
+
+    // Land whatever B submitted (its interior settlement, at most the few that sneaked into the
+    // poll loop's sparse blocks), then pin the competitor's boundary on chain.
+    let mut after_b = after_first;
+    for round in 0..40 {
+        l1.mine_blocks(1).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        after_b = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+        if round % 5 == 0 {
+            eprintln!("split competitor drain: round {round}, covenant chain length {after_b}");
+        }
+        if after_b > after_first {
+            break;
+        }
+    }
+    assert!(
+        after_b > after_first,
+        "the competitor's interior settlement must land past run 1's tail",
+    );
+    let chain = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await;
+    let b_link = chain.last().expect("competitor settlement link");
+    assert!(
+        b_link.change_spks.contains(&pay_to_address_script(&addr_b)),
+        "the interior settlement must attribute to the competitor",
+    );
+
+    // The straddle itself: the competitor's boundary maps, through run 1's own batch metadata,
+    // to a checkpoint strictly inside the straddler's span.
+    let boundary = {
+        let journal = StoreJournal::new(open_store_retrying(db_dir.path()));
+        journal
+            .checkpoint_of_block(b_link.block_prove_to, straddle_end, straddle_start)
+            .expect("the competitor's boundary must map into the straddler's span")
+    };
+    assert!(
+        straddle_start <= boundary && boundary < straddle_end,
+        "the competitor's boundary {boundary} must fall strictly inside the straddled entry \
+         {straddle_start}..={straddle_end}",
+    );
+
+    // === Run 2 over the SAME store, driving NO new carriers: the only settleable work is the
+    // straddled entry's suffix, so a chain advance past the competitor is exactly the advance
+    // pass splitting the entry at the competitor's boundary, re-aggregating the suffix from
+    // cached per-batch receipts, and landing it. ===
+    let kp_a2 = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
+    let addr_a2 = prover_address(&kp_a2, network_id);
+    l1.fund_address(&addr_a2, FUND_VALUE, FUND_COUNT).await;
+    let prover_a2 = spawn_prover_over_store(
+        &l1,
+        "A2",
+        kp_a2,
+        addr_a2.clone(),
+        4..=4,
+        network_id,
+        &params,
+        lane_key,
+        covenant_id,
+        bootstrap_state,
+        elfs,
+        None,
+        Some(block_deploy),
+        db_dir.path(),
+    )
+    .await;
+
+    let mut final_len = after_b;
+    for round in 0..60 {
+        l1.mine_blocks(1).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        final_len = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+        if round % 5 == 0 {
+            eprintln!("split run2 drain: round {round}, covenant chain length {final_len}");
+        }
+        if final_len > after_b {
+            break;
+        }
+    }
+    // Compaction window: the split successor's entry deletes on a later publication.
+    for _ in 0..10 {
+        l1.mine_blocks(1).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    prover_a2.shutdown.open();
+    let join_a2 = prover_a2.settler.await;
+    prover_a2.node.shutdown();
+    assert!(join_a2.is_ok(), "split run 2 settler panicked: {join_a2:?}");
+
+    assert!(
+        final_len > after_b,
+        "the split suffix must settle past the competitor's boundary ({after_b} -> {final_len}); \
+         no other work exists to advance the chain",
+    );
+    let chain = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await;
+    let suffix_link = chain.last().expect("split suffix settlement link");
+    assert!(
+        suffix_link.change_spks.contains(&pay_to_address_script(&addr_a2)),
+        "the post-split settlement must attribute to the resumed prover",
+    );
+    assert_no_fork(&l1, block_deploy, bootstrap_outpoint, covenant_id).await;
+
+    // The pre-restart journal scope compacted away: the straddler and its split successor both
+    // end at or below the straddler's end, so no snapshot-scoped entry may survive (run 2
+    // stragglers above the scope are tolerated, as in the other warm-restart tests).
+    let compacted = {
+        let journal = StoreJournal::new(open_store_retrying(db_dir.path()));
+        let entries = journal.entries();
+        for (start, entry) in &entries {
+            eprintln!("split journal after run 2: bundle {start}..={}", entry.end_index);
+        }
+        entries.iter().all(|(_, entry)| entry.end_index > straddle_end)
+    };
+    assert!(
+        compacted,
+        "the pre-restart journal scope (<= {straddle_end}) must compact after the split suffix \
+         settles",
+    );
+
+    l1.shutdown().await;
+}
+
 /// A single prover joins an ALREADY-LIVE lane, modeling a re-deploy over a lane warmed by
 /// previous runs: the lane is warmed with carrier txs BEFORE the covenant is deployed, the
 /// bootstrap pins the lane's authoritative tip (resolved via `get_seq_commit_lane_proof` at the
@@ -2217,8 +2547,66 @@ async fn await_mempool_settlement_free(l1: &L1Node, covenant_id: Hash) {
     panic!("the mempool still holds a settlement after the bounded wait");
 }
 
+/// Polls until the node's mempool holds a settlement of `covenant_id` proving through one of
+/// `blocks`, mining one block every `mine_every` rounds so a joining prover's bridge keeps
+/// paging its replay forward (the initial chain fetch is server-capped, and a static chain
+/// produces no notifications to page it). The poll runs BEFORE each mined block, so a
+/// submission observed here is still unconfirmed. Panics on timeout.
+async fn await_mempool_proving_through(l1: &L1Node, covenant_id: Hash, blocks: &[Hash]) {
+    for round in 0..160 {
+        let entries =
+            l1.grpc_client().get_mempool_entries(false, false).await.expect("get_mempool_entries");
+        let found = entries.iter().any(|entry| {
+            let Ok(tx) = Transaction::try_from(entry.transaction.clone()) else {
+                return false;
+            };
+            tx.settlement_info(covenant_id, Hash::default(), 0)
+                .is_some_and(|info| blocks.contains(&info.block_prove_to))
+        });
+        if found {
+            eprintln!("mempool: settlement proving through an interior block (round {round})");
+            return;
+        }
+        if round % 6 == 5 {
+            l1.mine_blocks(1).await;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    panic!("no settlement proving through the given blocks appeared within the bounded wait");
+}
+
+/// Opens the store at `dir`, retrying while the just-killed prover's trailing work still holds
+/// the RocksDB lock (an in-flight lane-proof fetch parked in its RPC timeout, or a trailing
+/// batch execution, keeps the store Arc alive past the node's shutdown; the fetch's timeout is
+/// ten seconds, so the bound covers it). Panics once the bounded wait passes.
+fn open_store_retrying(dir: &std::path::Path) -> RunnerStore {
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let mut last_err = None;
+    for attempt in 0..400 {
+        let opened =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| RunnerStore::open(dir)));
+        match opened {
+            Ok(store) => {
+                std::panic::set_hook(prev_hook);
+                if attempt > 0 {
+                    eprintln!("store: lock released after {attempt} retries");
+                }
+                return store;
+            }
+            Err(err) => {
+                last_err = Some(err);
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+    }
+    std::panic::set_hook(prev_hook);
+    std::panic::resume_unwind(last_err.expect("at least one failed attempt"));
+}
+
 /// One link in the covenant continuation chain: a settlement tx, the covenant outpoint its input 0
-/// spends, and the SPKs of all its outputs (so attribution can match a prover's change SPK).
+/// spends, the SPKs of all its outputs (so attribution can match a prover's change SPK), and the
+/// L1 block the settlement proves through (the boundary a competitor can straddle).
 struct CovenantLink {
     /// The settlement transaction's id.
     tx_id: Hash,
@@ -2226,6 +2614,8 @@ struct CovenantLink {
     covenant_input: TransactionOutpoint,
     /// SPKs of all outputs, used to attribute the settlement to a prover by its change SPK.
     change_spks: Vec<kaspa_consensus_core::tx::ScriptPublicKey>,
+    /// L1 block hash this settlement proves up to, decoded from its settlement tail.
+    block_prove_to: Hash,
 }
 
 /// Derives a prover's P2PK funding address from its keypair under the network's prefix, matching
@@ -2413,15 +2803,20 @@ async fn covenant_chain(
             // A settlement of this covenant binds output 0 to it and ends input 0 with the
             // settlement tail; `settlement_info` returns Some only for those.
             // Only the structural match matters here, so the daa_score argument is irrelevant.
-            if tx.settlement_info(covenant_id, cursor, 0).is_none() {
+            let Some(info) = tx.settlement_info(covenant_id, cursor, 0) else {
                 continue;
-            }
+            };
             let covenant_input = tx.inputs.first().expect("settlement input").previous_outpoint;
             let change_spks =
                 tx.outputs.iter().map(|o| o.script_public_key.clone()).collect::<Vec<_>>();
             by_input.insert(
                 covenant_input,
-                CovenantLink { tx_id: tx.id(), covenant_input, change_spks },
+                CovenantLink {
+                    tx_id: tx.id(),
+                    covenant_input,
+                    change_spks,
+                    block_prove_to: info.block_prove_to,
+                },
             );
         }
         if cursor == block_deploy {
