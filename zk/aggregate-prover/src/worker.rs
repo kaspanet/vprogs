@@ -14,6 +14,7 @@ use vprogs_core_atomics::AsyncQueue;
 use vprogs_core_codec::Reader;
 use vprogs_l1_types::{ChainBlockMetadata, SettlementInfo};
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
+use vprogs_state_proof_receipt::{AggregatorKey, BatchKey, Prefix};
 use vprogs_state_settlement_journal::{JournalEntry, SettlementJournal};
 use vprogs_storage_types::Store;
 use vprogs_zk_abi::batch_aggregator::{Inputs as AggregatorInputs, StateTransition};
@@ -131,6 +132,30 @@ where
     /// Main loop: drain commands into local state, prove every ready bundle in arrival order, and
     /// re-aggregate a superseded suffix whenever the settlement watch advances.
     async fn run(mut self) {
+        // Resume before any proving: if the journal holds pending bundles, wait for the
+        // bridge's first tip publication (chain replay republishes the covenant's last
+        // settlement), then re-feed the tail ahead of new work. A journal-free or empty
+        // journal skips straight through.
+        if self.journal.as_ref().is_some_and(|j| j.has_entries()) {
+            let tip = loop {
+                let settlement = self.settlement.as_mut().expect("journal implies watch");
+                // `Ok` only: an errored `changed` (the bridge dropped the sender, node teardown)
+                // disables the arm, parking until shutdown rather than treating teardown as a tip.
+                tokio::select! {
+                    biased;
+                    () = self.prover.shutdown.wait() => return,
+                    Ok(()) = settlement.changed() => {}
+                }
+                if let Some(tip) = *settlement.borrow() {
+                    break tip;
+                }
+            };
+            self.resume_pending(&tip).await;
+            if self.prover.shutdown.is_open() {
+                return;
+            }
+        }
+
         loop {
             // Draining only accumulates: a bundle spans many batches and depends on which receipts
             // are ready, so bundle formation happens after the drain, not per command.
@@ -316,54 +341,13 @@ where
         // the prover's own cache handle (bound by the scheduler at construction).
         let seq_commit = last_metadata.seq_commit.as_bytes();
         let agg_key = handle.agg_key(*self.backend.aggregator_image_id(), seq_commit);
-        let receipt_store = &self.prover.receipt_store;
         let journals: Vec<Vec<u8>> = receipts.iter().map(|r| B::journal_bytes(r)).collect();
-        let receipt = match receipt_store.read_agg_receipt(agg_key).resolve().await {
-            Some(receipt) => receipt,
-            None => {
-                // Aggregate the bundle: fetch the final block's lane proof, encode the aggregator
-                // inputs over the per-batch journals, and prove with the per-batch receipts as
-                // composition assumptions.
-                //
-                // Stay cancelable while fetching: the remote source retries a dead node for up to
-                // ~105s and each in-flight wRPC request holds the node's store Arc, so an
-                // uncanceled fetch would wedge the shutdown join and keep a restarting node from
-                // reopening its store. Dropping the fetch future aborts the request in
-                // milliseconds instead.
-                let lane_proof = tokio::select! {
-                    biased;
-                    () = self.prover.shutdown.wait() => {
-                        // Shutting down: the fetch was abandoned, so resolve the published handle
-                        // as a no-op (a consumer awaiting its artifact is released rather than
-                        // blocked on a latch that never opens) and drop the bundle, the same
-                        // discard-on-shutdown behavior as a proof abandoned mid-flight below.
-                        handle.publish_artifact(None);
-                        return;
-                    }
-                    proof = self.lane_source.fetch_lane_proof(LaneProofRequest {
-                        block: block_prove_to,
-                        lane_key: self.lane_key,
-                    }) => proof,
-                };
-                let inputs = AggregatorInputs::encode(
-                    self.backend.batch_image_id(),
-                    &lane_proof,
-                    journals.iter().map(|j| j.as_slice()),
-                );
-                let receipt = self.backend.prove_aggregator(&inputs, receipts).await;
-                if self.prover.shutdown.is_open() {
-                    // Shutting down: resolve the published handle as a no-op so a consumer awaiting
-                    // its artifact is released rather than blocked on a latch that never opens, and
-                    // drop the proved bundle (the same discard-on-shutdown behavior as before).
-                    handle.publish_artifact(None);
-                    return;
-                }
-
-                // Wait for the receipt to be durable before publishing the artifact, so a crash
-                // never leaves a consumed-but-uncached settlement receipt.
-                receipt_store.write_agg_receipt(agg_key, receipt.clone()).wait().await;
-                receipt
-            }
+        let Some(receipt) = self.prove_or_cache(agg_key, block_prove_to, receipts).await else {
+            // Shutting down: resolve the published handle as a no-op so a consumer awaiting its
+            // artifact is released rather than blocked on a latch that never opens, and drop the
+            // proved bundle (the same discard-on-shutdown behavior as before).
+            handle.publish_artifact(None);
+            return;
         };
 
         // Parse the settlement journal.
@@ -417,8 +401,8 @@ where
 
         // Record the published bundle's geometry so a restart can reload its receipt and re-feed
         // the bundle to settlement.
-        if let Some(journal) = &self.journal {
-            journal.record(
+        if let Some(settlement_journal) = &self.journal {
+            settlement_journal.record(
                 checkpoint_index,
                 &JournalEntry {
                     end_index: last_checkpoint.index(),
@@ -442,6 +426,54 @@ where
                 }));
             }
         }
+    }
+
+    /// Proves (or reloads from cache) the aggregate receipt for a bundle proving through
+    /// `block_prove_to` over the non-empty `receipts`, keying the cache at `agg_key`. Returns
+    /// `None` only on shutdown mid-proof (the caller discards the bundle). Shared by the live
+    /// front-of-queue path and the restart resume path.
+    async fn prove_or_cache(
+        &self,
+        agg_key: AggregatorKey,
+        block_prove_to: Hash,
+        receipts: Vec<B::Receipt>,
+    ) -> Option<B::Receipt> {
+        let receipt_store = &self.prover.receipt_store;
+        if let Some(receipt) = receipt_store.read_agg_receipt(agg_key).resolve().await {
+            return Some(receipt);
+        }
+        // Aggregate the bundle: fetch the final block's lane proof, encode the aggregator inputs
+        // over the per-batch journals, and prove with the per-batch receipts as composition
+        // assumptions.
+        //
+        // Stay cancelable while fetching: the remote source retries a dead node for up to ~105s
+        // and each in-flight wRPC request holds the node's store Arc, so an uncanceled fetch
+        // would wedge the shutdown join and keep a restarting node from reopening its store.
+        // Dropping the fetch future aborts the request in milliseconds instead; None makes the
+        // caller discard the bundle the same way as a proof abandoned mid-proof below.
+        let journals: Vec<Vec<u8>> = receipts.iter().map(|r| B::journal_bytes(r)).collect();
+        let lane_proof = tokio::select! {
+            biased;
+            () = self.prover.shutdown.wait() => return None,
+            proof = self.lane_source.fetch_lane_proof(LaneProofRequest {
+                block: block_prove_to,
+                lane_key: self.lane_key,
+            }) => proof,
+        };
+        let inputs = AggregatorInputs::encode(
+            self.backend.batch_image_id(),
+            &lane_proof,
+            journals.iter().map(|j| j.as_slice()),
+        );
+        let receipt = self.backend.prove_aggregator(&inputs, receipts).await;
+        if self.prover.shutdown.is_open() {
+            return None;
+        }
+
+        // Wait for the receipt to be durable before publishing the artifact, so a crash never
+        // leaves a consumed-but-uncached settlement receipt.
+        receipt_store.write_agg_receipt(agg_key, receipt.clone()).wait().await;
+        Some(receipt)
     }
 
     /// Publishes a formed bundle's handle onto the settlement queue, if one is wired. With no queue
@@ -555,6 +587,184 @@ where
                 journal.delete(start);
             }
         }
+    }
+
+    /// Resumes settlement after a restart: waits for nothing (the caller already holds the
+    /// bridge's first tip publication), deletes journal entries the on-chain tip covers,
+    /// re-aggregates the one entry a competitor's boundary lands inside from cached per-batch
+    /// receipts, and re-feeds every surviving entry onto the settlement queue ahead of new
+    /// work. Re-fed bundles chain exactly like fresh ones; the settlement worker's existing
+    /// adopt/skip/superseded paths land them.
+    ///
+    /// Ceiling: resumed bundles require the same guest ELF image ids as the run that proved
+    /// them (image id is part of every receipt key). An entry whose receipt cannot be reloaded
+    /// is dropped with a logged warning; that range settles again only through new activity.
+    /// Reorgs during downtime inherit the single-miner / low-reorg assumption: an unmapped
+    /// boundary compacts nothing and the tail re-feeds as-is, which the settler then skips or
+    /// settles per its own reconcile rules.
+    async fn resume_pending(&mut self, tip: &SettlementInfo) {
+        let Some(journal) = self.journal.clone() else { return };
+        let entries = journal.entries();
+        if entries.is_empty() {
+            return;
+        }
+        let first_start = entries.first().expect("checked non-empty").0;
+        let last_end = entries.last().expect("checked non-empty").1.end_index;
+        let Some(tip_index) =
+            journal.checkpoint_of_block(tip.block_prove_to, last_end, first_start)
+        else {
+            log::warn!(
+                "aggregate-prover: resume tip boundary {} maps to no batch in the journal span \
+                 ({} entries); re-feeding the tail unchanged",
+                tip.block_prove_to,
+                entries.len(),
+            );
+            self.refeed_all(entries).await;
+            return;
+        };
+
+        let mut pending: Vec<(u64, JournalEntry)> = Vec::new();
+        for (start, entry) in entries {
+            if entry.end_index <= tip_index {
+                journal.delete(start);
+                log::info!(
+                    "aggregate-prover: resume settled through checkpoint {tip_index}; dropping \
+                     covered bundle {start}..={}",
+                    entry.end_index
+                );
+            } else if start <= tip_index {
+                self.split_straddler(start, entry, tip_index).await;
+            } else {
+                pending.push((start, entry));
+            }
+        }
+        self.refeed_all(pending).await;
+    }
+
+    /// Re-aggregates the suffix of the straddled entry `(start..=entry.end_index)` that lies
+    /// strictly after `tip_index`, from the persisted batch metadata and cached per-batch
+    /// receipts, records the successor entry, and re-feeds it. A missing per-batch receipt
+    /// (image change or corruption) drops the entry with a warning instead of wedging.
+    async fn split_straddler(&mut self, start: u64, entry: JournalEntry, tip_index: u64) {
+        let Some(journal) = self.journal.clone() else { return };
+        let mut suffix: Vec<(u64, B::Receipt)> = Vec::new();
+        for index in (tip_index + 1)..=entry.end_index {
+            let Some(block) = journal.batch_block(index) else {
+                log::warn!(
+                    "aggregate-prover: resume split lacks batch {index} metadata; dropping \
+                     bundle {start}"
+                );
+                journal.delete(start);
+                return;
+            };
+            let key = BatchKey {
+                prefix: Prefix { checkpoint_index: index.into() },
+                block_hash: block.as_bytes(),
+                image_id: *self.backend.batch_image_id(),
+            };
+            let Some(receipt) = self.prover.receipt_store.read_batch_receipt(key).resolve().await
+            else {
+                log::warn!(
+                    "aggregate-prover: resume split lacks batch {index} receipt; dropping bundle \
+                     {start}"
+                );
+                journal.delete(start);
+                return;
+            };
+            suffix.push((index, receipt));
+        }
+        if suffix.is_empty() {
+            journal.delete(start);
+            return;
+        }
+        let first_index = suffix.first().expect("non-empty").0;
+        let from_block = journal.batch_block(first_index).expect("read above");
+        let receipts: Vec<B::Receipt> = suffix.iter().map(|(_, r)| r.clone()).collect();
+        let agg_key = AggregatorKey {
+            prefix: Prefix { checkpoint_index: first_index.into() },
+            block_hash: from_block.as_bytes(),
+            image_id: *self.backend.aggregator_image_id(),
+            seq_commit: entry.seq_commit.as_bytes(),
+        };
+        let Some(receipt) = self.prove_or_cache(agg_key, entry.block_prove_to, receipts).await
+        else {
+            return; // shutdown mid-proof; nothing to feed
+        };
+        let successor = JournalEntry {
+            end_index: entry.end_index,
+            from_block,
+            block_prove_to: entry.block_prove_to,
+            seq_commit: entry.seq_commit,
+        };
+        journal.delete(start);
+        journal.record(first_index, &successor);
+        self.refeed_one(first_index, &receipt, &successor).await;
+    }
+
+    /// Re-feeds ordered journal entries as pre-proved bundles: reload each aggregate receipt
+    /// by its journaled coordinates, rebuild the artifact from the receipt journal, publish the
+    /// handle, and push it; an entry that fails to reload is dropped with a warning.
+    async fn refeed_all(&mut self, entries: Vec<(u64, JournalEntry)>) {
+        for (start, entry) in entries {
+            let key = AggregatorKey {
+                prefix: Prefix { checkpoint_index: start.into() },
+                block_hash: entry.from_block.as_bytes(),
+                image_id: *self.backend.aggregator_image_id(),
+                seq_commit: entry.seq_commit.as_bytes(),
+            };
+            let Some(receipt) = self.prover.receipt_store.read_agg_receipt(key).resolve().await
+            else {
+                log::warn!(
+                    "aggregate-prover: resume cannot reload receipt for bundle {start}; dropping it"
+                );
+                if let Some(journal) = &self.journal {
+                    journal.delete(start);
+                }
+                continue;
+            };
+            self.refeed_one(start, &receipt, &entry).await;
+            if self.prover.shutdown.is_open() {
+                return;
+            }
+        }
+    }
+
+    /// Publishes one re-fed bundle from its reloaded receipt: decode the settlement transition,
+    /// assert the covenant when bound, fill the handle, and push it onto the settlement queue.
+    async fn refeed_one(&self, start: u64, receipt: &B::Receipt, entry: &JournalEntry) {
+        let journal = B::journal_bytes(receipt);
+        let st = (&mut &journal[..])
+            .array_as::<StateTransition>("state_transition")
+            .expect("aggregator journal");
+        if let Some(covenant_id) = self.covenant_id {
+            assert_eq!(
+                Hash::from_bytes(st.covenant_id),
+                covenant_id,
+                "resumed bundle journal covenant_id must match the configured covenant",
+            );
+        }
+        let handle = ScheduledBundle::new(
+            (entry.end_index - start + 1) as usize,
+            start,
+            BundleBlocks { from_block: entry.from_block, block_prove_to: entry.block_prove_to },
+        );
+        handle.publish_artifact(Some(SettlementArtifact {
+            receipt: receipt.clone(),
+            block_prove_to: entry.block_prove_to,
+            prev_state: st.prev_state,
+            prev_lane_tip: st.prev_lane_tip,
+            new_state: st.new_state,
+            new_lane_tip: st.new_lane_tip,
+            new_seq_commit: st.new_seq_commit,
+            permission_spk_hash: st.permission_spk_hash,
+            deposit_spk_hash: st.deposit_spk_hash,
+            covenant_id: st.covenant_id,
+        }));
+        self.emit(handle);
+        log::info!(
+            "aggregate-prover: resumed bundle {start}..={} onto the settlement queue",
+            entry.end_index
+        );
     }
 
     /// Drops queued and retained batches rolled back by a reorg, and resets the re-form guard so
