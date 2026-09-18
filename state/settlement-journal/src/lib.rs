@@ -76,7 +76,7 @@ impl<S: Store> SettlementJournal for StoreJournal<S> {
         self.store
             .prefix_iter(StateSpace::SettlementJournal, &[])
             .map(|(k, v)| {
-                let start = u64::from_be_bytes(k.try_into().expect("u64 BE key"));
+                let start = u64::from_be_bytes(k.try_into().expect("corrupted store: journal key"));
                 let entry = borsh::from_slice(&v).expect("corrupted store: journal entry");
                 (start, entry)
             })
@@ -131,11 +131,14 @@ mod tests {
         let s = store();
         let j = StoreJournal::new(s.clone());
         j.record(7, &entry(9, 1));
+        // Recording again at the same start replaces the prior entry.
+        j.record(7, &entry(9, 3));
+        assert_eq!(j.entries(), vec![(7, entry(9, 3))]);
         j.record(3, &entry(5, 2));
-        assert_eq!(j.entries(), vec![(3, entry(5, 2)), (7, entry(9, 1))]);
+        assert_eq!(j.entries(), vec![(3, entry(5, 2)), (7, entry(9, 3))]);
         assert!(j.has_entries());
         j.delete(3);
-        assert_eq!(j.entries(), vec![(7, entry(9, 1))]);
+        assert_eq!(j.entries(), vec![(7, entry(9, 3))]);
         j.delete(7);
         assert!(j.entries().is_empty());
         assert!(!j.has_entries());
