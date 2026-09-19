@@ -44,8 +44,11 @@ pub trait SettlementJournal: Send + Sync {
     /// Returns the highest committed checkpoint index with its batch metadata, or `None` when no
     /// batch has committed.
     ///
-    /// A reverse seek over the batch-metadata space: committed indexes are dense from 1, and
-    /// pruning deletes only below the frontier, so the last key is the committed tip.
+    /// A reverse seek over the batch-metadata space: pruning deletes only below the frontier, so
+    /// the last key is the committed tip. Ceiling: a rollback deletes no metadata rows, and
+    /// density past a rollback is restored only by re-execution overwriting the same indexes, so
+    /// a kill between a rollback and its re-execution can leave the top row fork-stale (the
+    /// single-miner / low-reorg assumption).
     fn committed_tip(&self) -> Option<(u64, ChainBlockMetadata)>;
     /// Returns the checkpoint index whose batch block is `block`, scanning indices from `upper`
     /// down to `lower` inclusive, or `None` when no batch in the window carries the block.
