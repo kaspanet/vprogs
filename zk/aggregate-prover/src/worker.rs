@@ -145,6 +145,10 @@ where
         // journal tail; an empty journal over committed work reaches it too (the kill preceded
         // every journal record).
         let mut resume_max_end = 0u64;
+        // The committed-gap entry this run records (0 when none); the advance pass's scope
+        // extends to it below, so a settlement boundary observed only after the gap pass
+        // re-splits that entry exactly as it re-splits the pre-restart tail.
+        let mut gap_end = 0u64;
         if self.journal.as_ref().is_some_and(|j| j.has_entries()) {
             let tip = loop {
                 let settlement = self.settlement.as_mut().expect("journal implies watch");
@@ -172,7 +176,7 @@ where
             if self.prover.shutdown.is_open() {
                 return;
             }
-            self.reform_committed_gap(Some(&tip), resume_max_end).await;
+            gap_end = self.reform_committed_gap(Some(&tip), resume_max_end).await;
             if self.prover.shutdown.is_open() {
                 return;
             }
@@ -183,6 +187,9 @@ where
             // first scheduled batch: a covenant no settlement ever reached publishes no tip, and
             // the bridge publishes its startup baseline (the persisted tip's last settlement)
             // before feeding any block, so the escape reads a boundary that is already current.
+            // With no tip and no batch ever arriving (a bridge-only deployment, a dead lane) the
+            // wait parks until shutdown, holding a re-formable gap that settles no earlier than
+            // the first new activity, which is also the pre-fix behavior.
             let tip = loop {
                 let settlement = self.settlement.as_mut().expect("journal implies watch");
                 if let Some(tip) = *settlement.borrow() {
@@ -195,7 +202,7 @@ where
                     Ok(()) = settlement.changed() => {}
                 }
             };
-            self.reform_committed_gap(tip.as_ref(), 0).await;
+            gap_end = self.reform_committed_gap(tip.as_ref(), 0).await;
             if self.prover.shutdown.is_open() {
                 return;
             }
@@ -226,8 +233,11 @@ where
                     self.compact_journal(tip);
                     // The advance pass of the multi-pass resume: acts only while the
                     // pre-restart snapshot still holds unsettled entries, and self-gates to a
-                    // no-op once the snapshot scope is empty or the journal is unwired.
-                    self.resume_pending(tip, resume_max_end).await;
+                    // no-op once the snapshot scope is empty or the journal is unwired. The
+                    // scope extends to this run's gap entry (its end exceeds the snapshot),
+                    // so a boundary the gap pass could not yet observe re-splits it in
+                    // process instead of wedging until the next restart.
+                    self.resume_pending(tip, resume_max_end.max(gap_end)).await;
                 }
                 if self.prover.shutdown.is_open() {
                     return;
@@ -650,7 +660,9 @@ where
     /// baseline, so a competitor that settled during the downtime reaches the journal only as a
     /// later advance. Entries beyond the snapshot are the live pipeline's (recorded by the
     /// proving path, compacted vintage-agnostically, re-aggregated in memory), so the advance
-    /// pass never re-feeds them; a zero or empty scope is a no-op.
+    /// pass never re-feeds them, with one deliberate exception: this run's committed-gap entry,
+    /// whose end the caller adds to the scope so a boundary the startup pass could not yet
+    /// observe re-splits that entry in process. A zero or empty scope is a no-op.
     ///
     /// Ceiling: resumed bundles require the same guest ELF image ids as the run that proved
     /// them (image id is part of every receipt key). An entry whose receipt cannot be reloaded
@@ -707,25 +719,31 @@ where
     /// the settler would skip it forever (the restarted-prover-idle wedge). Re-forms one bundle
     /// over the range from the persisted batch metadata and cached per-batch receipts (the same
     /// recipe as [`split_straddler`](Self::split_straddler)), records its entry, and feeds it after
-    /// the pending journal tail, ahead of new work.
+    /// the pending journal tail, ahead of new work. Returns the recorded entry's end index for
+    /// the advance pass's scope, so a settlement boundary observed only after this pass re-splits
+    /// the entry there; 0 when nothing was recorded.
     ///
     /// `tip` bounds the re-formation below: a settlement boundary landing inside the range
     /// splits it exactly as the straddled journal entry is split, since a re-formed bundle
     /// starting at or below the boundary carries a `prev_state` the covenant already passed and
     /// the settler would skip it. An unmapped boundary (a competitor's fork block outside our
-    /// metadata) keeps the whole range, inheriting the same re-feed-unchanged residual as
+    /// metadata) keeps the whole range: the settler then skips or settles the re-fed bundle per
+    /// its own reconcile rules, the same unmapped-boundary residual as
     /// [`resume_pending`](Self::resume_pending).
     ///
     /// Ceiling: an empty batch (its block carried no lane tx, so the lane tip carried forward
     /// unchanged) proves no receipt and joins no aggregate; the live bundle path filters those
-    /// the same way. A non-empty gap batch missing its metadata or receipt leaves the pre-fix
-    /// wedge, so it logs at error and aborts the pass with the journal untouched. Reorgs during
+    /// the same way. The bundle covers the contiguously-durable prefix of the range: the first
+    /// non-empty batch whose metadata or receipt is missing bounds it (the receipt of a freshly
+    /// committed batch may still be in flight), and the range above a miss logs at error and
+    /// stays uncovered until the next startup's pass re-runs over it (an in-flight batch
+    /// journals live; a genuinely lost one leaves the loud pre-fix wedge). Reorgs during
     /// downtime inherit the single-miner / low-reorg assumption.
-    async fn reform_committed_gap(&mut self, tip: Option<&SettlementInfo>, tail_end: u64) {
-        let Some(journal) = self.journal.clone() else { return };
-        let Some((committed_tip, tip_metadata)) = journal.committed_tip() else { return };
+    async fn reform_committed_gap(&mut self, tip: Option<&SettlementInfo>, tail_end: u64) -> u64 {
+        let Some(journal) = self.journal.clone() else { return 0 };
+        let Some((committed_tip, _)) = journal.committed_tip() else { return 0 };
         if committed_tip <= tail_end {
-            return;
+            return 0;
         }
         let boundary = match tip {
             Some(tip) => journal
@@ -735,23 +753,98 @@ where
         };
         // The on-chain tip already covers the whole range; new work chains from it directly.
         if boundary >= committed_tip {
-            return;
+            return 0;
         }
         let first = boundary + 1;
-        let Some(from_block) = journal.batch_metadata(first).map(|metadata| metadata.hash) else {
+        let Some(first_metadata) = journal.batch_metadata(first) else {
             log::error!(
                 "aggregate-prover: committed batch {first} above the journal tail lacks metadata; \
                  leaving its range uncovered"
             );
-            return;
+            return 0;
         };
+        // The bundle covers the contiguously-durable prefix: an empty batch is durable as-is,
+        // and the first non-empty batch without metadata or a receipt bounds the range. The
+        // entry's end fields derive from the last covered batch's own metadata, as the live
+        // record derives them from the bundle's final batch.
         let mut receipts: Vec<B::Receipt> = Vec::new();
+        let mut end_metadata = first_metadata;
+        let mut covered_end = first;
+        let mut miss = None;
         for index in first..=committed_tip {
             let Some(metadata) = journal.batch_metadata(index) else {
-                log::error!(
-                    "aggregate-prover: committed batch {index} above the journal tail lacks \
-                     metadata; leaving its range uncovered"
+                miss = Some(index);
+                break;
+            };
+            if metadata.lane_tip != metadata.prev_lane_tip {
+                let key = BatchKey {
+                    prefix: Prefix { checkpoint_index: index.into() },
+                    block_hash: metadata.hash.as_bytes(),
+                    image_id: *self.backend.batch_image_id(),
+                };
+                let Some(receipt) =
+                    self.prover.receipt_store.read_batch_receipt(key).resolve().await
+                else {
+                    miss = Some(index);
+                    break;
+                };
+                receipts.push(receipt);
+            }
+            end_metadata = metadata;
+            covered_end = index;
+        }
+        if let Some(miss) = miss {
+            log::error!(
+                "aggregate-prover: committed batch {miss} above the journal tail lacks its \
+                 metadata or receipt; covering only through {covered_end} and leaving \
+                 {miss}..={committed_tip} uncovered"
+            );
+        }
+        // No real work below the miss: nothing to compose, matching the live no-op path.
+        if receipts.is_empty() {
+            return 0;
+        }
+        let agg_key = AggregatorKey {
+            prefix: Prefix { checkpoint_index: first.into() },
+            block_hash: first_metadata.hash.as_bytes(),
+            image_id: *self.backend.aggregator_image_id(),
+            seq_commit: end_metadata.seq_commit.as_bytes(),
+        };
+        let Some(receipt) = self.prove_or_cache(agg_key, end_metadata.hash, receipts).await else {
+            return 0; // shutdown mid-proof; the next startup re-runs the pass
+        };
+        let entry = JournalEntry {
+            end_index: covered_end,
+            from_block: first_metadata.hash,
+            block_prove_to: end_metadata.hash,
+            seq_commit: end_metadata.seq_commit,
+        };
+        journal.record(first, &entry);
+        self.refeed_one(first, &receipt, &entry).await;
+        log::info!(
+            "aggregate-prover: re-formed committed gap {first}..={covered_end} onto the \
+             settlement queue"
+        );
+        covered_end
+    }
+
+    /// Re-aggregates the suffix of the straddled entry `(start..=entry.end_index)` that lies
+    /// strictly after `tip_index`, from the persisted batch metadata and cached per-batch
+    /// receipts, records the successor entry, and re-feeds it. An empty batch (its block carried
+    /// no lane tx, so the lane tip carried forward unchanged) proves no receipt and composes
+    /// nothing; it is skipped, as the live bundle path filtered it. A missing per-batch receipt
+    /// (image change or corruption) drops the entry with a warning instead of wedging.
+    async fn split_straddler(&mut self, start: u64, entry: JournalEntry, tip_index: u64) {
+        let Some(journal) = self.journal.clone() else { return };
+        let successor_start = tip_index + 1;
+        let mut suffix: Vec<(u64, B::Receipt)> = Vec::new();
+        for index in successor_start..=entry.end_index {
+            let Some(metadata) = journal.batch_metadata(index) else {
+                log::warn!(
+                    "aggregate-prover: resume split lacks batch {index} metadata; dropping \
+                     bundle {start}"
                 );
+                journal.delete(start);
                 return;
             };
             if metadata.lane_tip == metadata.prev_lane_tip {
@@ -760,64 +853,6 @@ where
             let key = BatchKey {
                 prefix: Prefix { checkpoint_index: index.into() },
                 block_hash: metadata.hash.as_bytes(),
-                image_id: *self.backend.batch_image_id(),
-            };
-            let Some(receipt) = self.prover.receipt_store.read_batch_receipt(key).resolve().await
-            else {
-                log::error!(
-                    "aggregate-prover: committed batch {index} above the journal tail lacks its \
-                     receipt; leaving its range uncovered"
-                );
-                return;
-            };
-            receipts.push(receipt);
-        }
-        // An all-empty range composes nothing, matching the live no-op path: no entry, no feed.
-        if receipts.is_empty() {
-            return;
-        }
-        let agg_key = AggregatorKey {
-            prefix: Prefix { checkpoint_index: first.into() },
-            block_hash: from_block.as_bytes(),
-            image_id: *self.backend.aggregator_image_id(),
-            seq_commit: tip_metadata.seq_commit.as_bytes(),
-        };
-        let Some(receipt) = self.prove_or_cache(agg_key, tip_metadata.hash, receipts).await else {
-            return; // shutdown mid-proof; the next startup re-runs the pass
-        };
-        let entry = JournalEntry {
-            end_index: committed_tip,
-            from_block,
-            block_prove_to: tip_metadata.hash,
-            seq_commit: tip_metadata.seq_commit,
-        };
-        journal.record(first, &entry);
-        self.refeed_one(first, &receipt, &entry).await;
-        log::info!(
-            "aggregate-prover: re-formed committed gap {first}..={committed_tip} onto the \
-             settlement queue"
-        );
-    }
-
-    /// Re-aggregates the suffix of the straddled entry `(start..=entry.end_index)` that lies
-    /// strictly after `tip_index`, from the persisted batch metadata and cached per-batch
-    /// receipts, records the successor entry, and re-feeds it. A missing per-batch receipt
-    /// (image change or corruption) drops the entry with a warning instead of wedging.
-    async fn split_straddler(&mut self, start: u64, entry: JournalEntry, tip_index: u64) {
-        let Some(journal) = self.journal.clone() else { return };
-        let mut suffix: Vec<(u64, B::Receipt)> = Vec::new();
-        for index in (tip_index + 1)..=entry.end_index {
-            let Some(block) = journal.batch_block(index) else {
-                log::warn!(
-                    "aggregate-prover: resume split lacks batch {index} metadata; dropping \
-                     bundle {start}"
-                );
-                journal.delete(start);
-                return;
-            };
-            let key = BatchKey {
-                prefix: Prefix { checkpoint_index: index.into() },
-                block_hash: block.as_bytes(),
                 image_id: *self.backend.batch_image_id(),
             };
             let Some(receipt) = self.prover.receipt_store.read_batch_receipt(key).resolve().await
@@ -835,11 +870,10 @@ where
             journal.delete(start);
             return;
         }
-        let first_index = suffix.first().expect("non-empty").0;
-        let from_block = journal.batch_block(first_index).expect("read above");
+        let from_block = journal.batch_block(successor_start).expect("read above");
         let receipts: Vec<B::Receipt> = suffix.iter().map(|(_, r)| r.clone()).collect();
         let agg_key = AggregatorKey {
-            prefix: Prefix { checkpoint_index: first_index.into() },
+            prefix: Prefix { checkpoint_index: successor_start.into() },
             block_hash: from_block.as_bytes(),
             image_id: *self.backend.aggregator_image_id(),
             seq_commit: entry.seq_commit.as_bytes(),
@@ -858,9 +892,9 @@ where
         // tolerates overlap, so a crash between the two commits leaves both entries
         // (absorbed by the next resume's compact/split), never neither (which would
         // silently lose the suffix).
-        journal.record(first_index, &successor);
+        journal.record(successor_start, &successor);
         journal.delete(start);
-        self.refeed_one(first_index, &receipt, &successor).await;
+        self.refeed_one(successor_start, &receipt, &successor).await;
     }
 
     /// Re-feeds ordered journal entries as pre-proved bundles: reload each aggregate receipt
