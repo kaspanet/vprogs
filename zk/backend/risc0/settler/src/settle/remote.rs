@@ -114,9 +114,9 @@ impl RpcSink {
             .map(|e| e.utxo_entry.block_daa_score))
     }
 
-    /// Probes whether `covenant`'s outpoint is still spendable on chain, the same address-UTXO
+    /// Returns whether the chain already spent `covenant`'s outpoint, via the same address-UTXO
     /// read [`RpcSink::probe`] polls. A probe error or an unextractable address reads as
-    /// live: the submission that follows is the authority, and its rejection classification
+    /// unspent: the submission that follows is the authority, and its rejection classification
     /// remains the backstop.
     async fn covenant_spent(&self, covenant: OutpointAt<'_>) -> bool {
         matches!(self.outpoint_daa(covenant).await, Ok(None))

@@ -140,7 +140,7 @@ where
         // PRE-downtime baseline (the persisted tip's last settlement), so a competitor that
         // settled during the downtime reaches the watch only as a later advance, and each
         // settlement advance below re-runs the resume pass against the snapshot until the
-        // pre-restart tail is settled or dropped. A journal-free journal skips straight through.
+        // pre-restart tail is settled or dropped. A journal-free run skips straight through.
         //
         // After the tail resume, the committed-gap pass covers batches committed past the
         // journal tail; an empty journal over committed work reaches it too (the kill preceded
@@ -805,10 +805,14 @@ where
             covered_end = index;
         }
         if let Some(miss) = miss {
+            // `covered_end` still sits at `first` when the miss IS the first index, so say
+            // "nothing" rather than claim coverage through an index the loop never reached.
+            let covered =
+                if miss > first { format!("only through {covered_end}") } else { "nothing".into() };
             log::error!(
                 "aggregate-prover: committed batch {miss} above the journal tail lacks its \
-                 metadata or receipt; covering only through {covered_end} and leaving \
-                 {miss}..={committed_tip} uncovered"
+                 metadata or receipt; covering {covered} and leaving {miss}..={committed_tip} \
+                 uncovered"
             );
         }
         // No real work below the miss: nothing to compose, matching the live no-op path.
@@ -848,7 +852,7 @@ where
     async fn split_straddler(&mut self, start: u64, entry: JournalEntry, tip_index: u64) {
         let Some(journal) = self.journal.clone() else { return };
         let successor_start = tip_index + 1;
-        let mut suffix: Vec<(u64, B::Receipt)> = Vec::new();
+        let mut suffix: Vec<B::Receipt> = Vec::new();
         for index in successor_start..=entry.end_index {
             let Some(metadata) = journal.batch_metadata(index) else {
                 log::warn!(
@@ -875,14 +879,14 @@ where
                 journal.delete(start);
                 return;
             };
-            suffix.push((index, receipt));
+            suffix.push(receipt);
         }
         if suffix.is_empty() {
             journal.delete(start);
             return;
         }
         let from_block = journal.batch_block(successor_start).expect("read above");
-        let receipts: Vec<B::Receipt> = suffix.iter().map(|(_, r)| r.clone()).collect();
+        let receipts = suffix;
         let agg_key = AggregatorKey {
             prefix: Prefix { checkpoint_index: successor_start.into() },
             block_hash: from_block.as_bytes(),
