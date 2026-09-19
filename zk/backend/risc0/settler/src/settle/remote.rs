@@ -5,7 +5,7 @@ use std::{collections::HashSet, ops::Range, time::Duration};
 
 use kaspa_consensus_core::{
     config::params::Params,
-    tx::{ScriptPublicKey, Transaction, TransactionOutpoint, UtxoEntry},
+    tx::{Transaction, TransactionOutpoint, UtxoEntry},
 };
 use kaspa_hashes::Hash;
 use kaspa_rpc_core::{RpcError, api::rpc::RpcApi};
@@ -17,7 +17,7 @@ use vprogs_l1_wallet::Wallet;
 use crate::{
     confirm::{CovenantLiveness, OutpointAt, covenant_liveness},
     covenant::BuiltSettlement,
-    settle::effects::{FeeSource, FundedSettlement, SettlementSink, SubmitOutcome},
+    settle::effects::{ConfirmProbe, FeeSource, FundedSettlement, SettlementSink, SubmitOutcome},
 };
 
 /// Funds settlement fees from the current spendable wRPC wallet set.
@@ -99,21 +99,27 @@ impl RpcSink {
         Self { client, params, keypair, submit_jitter }
     }
 
+    /// Reads `target`'s unspent UTXO at its P2SH address from the node's utxoindex, returning its
+    /// block DAA score. `Ok(None)` means the outpoint is absent from the UTXO set (spent);
+    /// `Err(())` means the probe could not read the node (an RPC error or an unextractable
+    /// address), which every caller treats as unknown, never as spent or live.
+    async fn outpoint_daa(&self, target: OutpointAt<'_>) -> Result<Option<u64>, ()> {
+        let prefix = kaspa_addresses::Prefix::from(self.params.net.network_type());
+        let address = kaspa_txscript::standard::extract_script_pub_key_address(target.spk, prefix)
+            .map_err(|_| ())?;
+        let utxos = self.client.get_utxos_by_addresses(vec![address]).await.map_err(|_| ())?;
+        Ok(utxos
+            .into_iter()
+            .find(|e| TransactionOutpoint::from(e.outpoint) == target.outpoint)
+            .map(|e| e.utxo_entry.block_daa_score))
+    }
+
     /// Probes whether `covenant`'s outpoint is still spendable on chain, the same address-UTXO
-    /// pattern [`RpcSink::dropped`] polls. A probe error or an unextractable address reads as
+    /// read [`RpcSink::probe`] polls. A probe error or an unextractable address reads as
     /// live: the submission that follows is the authority, and its rejection classification
     /// remains the backstop.
     async fn covenant_spent(&self, covenant: OutpointAt<'_>) -> bool {
-        let prefix = kaspa_addresses::Prefix::from(self.params.net.network_type());
-        let Ok(address) =
-            kaspa_txscript::standard::extract_script_pub_key_address(covenant.spk, prefix)
-        else {
-            return false;
-        };
-        let Ok(utxos) = self.client.get_utxos_by_addresses(vec![address]).await else {
-            return false;
-        };
-        !utxos.into_iter().any(|e| TransactionOutpoint::from(e.outpoint) == covenant.outpoint)
+        matches!(self.outpoint_daa(covenant).await, Ok(None))
     }
 }
 
@@ -170,34 +176,43 @@ impl SettlementSink for RpcSink {
         }
     }
 
-    async fn dropped(
+    async fn probe(
         &self,
         txid: Hash,
-        spk: ScriptPublicKey,
-        outpoint: TransactionOutpoint,
-    ) -> bool {
-        // Still pending in the mempool or orphan pool: not dropped. Any error other than an
-        // authoritative "not found" is treated as live so a transient RPC blip never triggers a
-        // resubmit; the probe simply retries on the next confirm-warn tick.
-        match self.client.get_mempool_entry(txid, true, false).await {
-            Ok(_) => return false,
-            Err(RpcError::TransactionNotFound(_)) => {}
-            Err(_) => return false,
+        covenant: OutpointAt<'_>,
+        continuation: OutpointAt<'_>,
+    ) -> ConfirmProbe {
+        // Still pending in the mempool or orphan pool: not dropped. The authoritative not-found
+        // arrives as the typed variant over gRPC but as the subsystem's plain "not found" message
+        // over wRPC, so both shapes fall through to the chain reads. Any other error is treated
+        // as live so a transient RPC blip never triggers a resubmit or a false resolution; the
+        // probe simply retries on the next confirm-warn tick.
+        let not_found = match self.client.get_mempool_entry(txid, true, false).await {
+            Ok(_) => return ConfirmProbe::Pending,
+            Err(RpcError::TransactionNotFound(_)) => true,
+            Err(RpcError::RpcSubsystem(msg)) => msg.contains("not found"),
+            Err(_) => false,
+        };
+        if !not_found {
+            return ConfirmProbe::Pending;
         }
 
-        // Absent from both pools. A spent covenant outpoint means some settlement landed (ours
-        // or a competitor's) and the bridge will publish it; only a vanished transaction over a
-        // still-unspent covenant is a genuine drop. Mirrors `covenant_liveness` with a tolerant
-        // failure mode: this periodic probe must never take the settle worker down.
-        let prefix = kaspa_addresses::Prefix::from(self.params.net.network_type());
-        let Ok(address) = kaspa_txscript::standard::extract_script_pub_key_address(&spk, prefix)
-        else {
-            return false;
-        };
-        let Ok(utxos) = self.client.get_utxos_by_addresses(vec![address]).await else {
-            return false;
-        };
-        utxos.into_iter().any(|e| TransactionOutpoint::from(e.outpoint) == outpoint)
+        // Absent from both pools, so read the chain. A still-unspent covenant outpoint is a
+        // genuine drop (a vanished transaction that can be resubmitted); a spent one means some
+        // settlement landed, ours or a competitor's, and the watch should publish it. The
+        // continuation read below is the backstop for the watch never doing so: our own landing
+        // leaves exactly the UTXO our submission minted live on chain.
+        match self.outpoint_daa(covenant).await {
+            Ok(Some(_)) => ConfirmProbe::Dropped,
+            Ok(None) => match self.outpoint_daa(continuation).await {
+                Ok(Some(daa)) => ConfirmProbe::Landed(daa),
+                Ok(None) => ConfirmProbe::Superseded,
+                // A probe error leaves the wait running, exactly as before the tick.
+                Err(()) => ConfirmProbe::Pending,
+            },
+            // Same tolerance as above: an unreadable chain never resolves the confirm wait.
+            Err(()) => ConfirmProbe::Pending,
+        }
     }
 }
 
