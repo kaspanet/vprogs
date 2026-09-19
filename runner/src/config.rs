@@ -69,6 +69,10 @@ pub struct RunnerConfig {
     /// blue-score confirmations below the sink; the bridge's adaptive reorg filter may still raise
     /// the threshold above this floor. `None` uses the adaptive threshold alone.
     pub min_confirmations: Option<u64>,
+    /// Switches the bridge's adaptive reorg filter off: the follow threshold becomes exactly
+    /// `min_confirmations` (zero when unset), so blocks render at the tip and reorgs surface as
+    /// rollbacks instead of confirmation latency.
+    pub adaptive_filter_disabled: bool,
     /// Run the proving + settlement path. Off = execution-only daemon.
     pub prove: bool,
     /// Explicit start mode, or `None` to auto-select (resume if the data dir is populated, else
@@ -151,6 +155,8 @@ pub struct RawConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min_confirmations: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub adaptive_filter_disabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub prove: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_mode: Option<StartMode>,
@@ -193,6 +199,7 @@ impl RawConfig {
             start_from: parse_opt_hash(self.start_from, "start_from")?,
             seed_depth: self.seed_depth.unwrap_or(500),
             min_confirmations: self.min_confirmations,
+            adaptive_filter_disabled: self.adaptive_filter_disabled.unwrap_or(false),
             prove: self.prove.unwrap_or(false),
             start_mode: self.start_mode,
         })

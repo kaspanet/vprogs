@@ -100,6 +100,9 @@ pub struct BridgeParams {
     /// Lower bound on the `min_confirmation_count` for the bridge's chain-follow queries; the
     /// adaptive reorg filter may still exceed it. `None` uses the adaptive threshold alone.
     pub min_confirmations: Option<u64>,
+    /// Switches the bridge's adaptive reorg filter off: the follow threshold becomes exactly
+    /// `min_confirmations` (zero when unset), rendering at the tip with reorgs as rollbacks.
+    pub adaptive_filter_disabled: bool,
     /// Observer handles the bridge publishes progress into.
     pub observers: BridgeObservers,
 }
@@ -232,6 +235,7 @@ fn base_config(
                 .with_seed_depth(Some(params.seed_depth))
                 .with_start_from(params.start_from)
                 .with_min_confirmations(params.min_confirmations)
+                .with_adaptive_filter_disabled(params.adaptive_filter_disabled)
                 .with_tip_daa_observer(params.observers.tip_daa)
                 .with_settlement_observer(params.observers.settlement)
                 .with_settlement_events(params.observers.settlement_events)
