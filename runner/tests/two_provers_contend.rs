@@ -2307,8 +2307,8 @@ async fn warm_restart_after_own_settlement_lands() {
     .await;
     // Extra wallet UTXOs over the sibling tests: this test's two runs drive many more carrier
     // ranges (the run-2 growth loop keeps driving until new work settles), and the L1 wallet
-    // funds every carrier; the instrumentation round showed the late mined blocks carrying no
-    // lane activity once the spendable set thins out.
+    // funds every carrier; late mined blocks carry no lane activity at all once the spendable
+    // set thins out.
     l1.mine_utxos(90).await;
 
     let network_id = NetworkId::new(NetworkType::Simnet);
