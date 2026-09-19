@@ -133,9 +133,10 @@ where
     /// re-aggregate a superseded suffix whenever the settlement watch advances.
     async fn run(mut self) {
         // Resume before any proving: if the journal holds pending bundles, wait for the bridge's
-        // first tip publication (chain replay republishes the covenant's last settlement),
-        // snapshot the pre-restart tail's span, and re-feed the tail ahead of new work. The
-        // snapshot scopes the multi-pass resume: the first publication is the bridge's
+        // first tip publication (chain replay republishes the covenant's last settlement; a
+        // covenant that never settled escapes on the first scheduled batch instead, see the
+        // gate below), snapshot the pre-restart tail's span, and re-feed the tail ahead of new
+        // work. The snapshot scopes the multi-pass resume: the first publication is the bridge's
         // PRE-downtime baseline (the persisted tip's last settlement), so a competitor that
         // settled during the downtime reaches the watch only as a later advance, and each
         // settlement advance below re-runs the resume pass against the snapshot until the
@@ -149,47 +150,25 @@ where
         // extends to it below, so a settlement boundary observed only after the gap pass
         // re-splits that entry exactly as it re-splits the pre-restart tail.
         let mut gap_end = 0u64;
-        if self.journal.as_ref().is_some_and(|j| j.has_entries()) {
-            let tip = loop {
-                let settlement = self.settlement.as_mut().expect("journal implies watch");
-                // `Ok` only: an errored `changed` (the bridge dropped the sender, node teardown)
-                // disables the arm, parking until shutdown rather than treating teardown as a tip.
-                tokio::select! {
-                    biased;
-                    () = self.prover.shutdown.wait() => return,
-                    Ok(()) = settlement.changed() => {}
-                }
-                if let Some(tip) = *settlement.borrow() {
-                    break tip;
-                }
-            };
-            resume_max_end = self
-                .journal
-                .as_ref()
-                .expect("journal checked present above")
-                .entries()
-                .last()
-                .expect("has_entries checked above")
-                .1
-                .end_index;
-            self.resume_pending(&tip, resume_max_end).await;
-            if self.prover.shutdown.is_open() {
-                return;
-            }
-            gap_end = self.reform_committed_gap(Some(&tip), resume_max_end).await;
-            if self.prover.shutdown.is_open() {
-                return;
-            }
-        } else if self.journal.as_ref().is_some_and(|j| j.committed_tip().is_some()) {
-            // An empty journal over committed batches: the kill preceded every bundle's journal
-            // record, so the whole committed span is the gap (lower edge 0). The first tip
-            // publication gates the re-formation when one is coming, but the wait escapes on the
-            // first scheduled batch: a covenant no settlement ever reached publishes no tip, and
-            // the bridge publishes its startup baseline (the persisted tip's last settlement)
-            // before feeding any block, so the escape reads a boundary that is already current.
-            // With no tip and no batch ever arriving (a bridge-only deployment, a dead lane) the
-            // wait parks until shutdown, holding a re-formable gap that settles no earlier than
-            // the first new activity, which is also the pre-fix behavior.
+        let journal_holds_entries = self.journal.as_ref().is_some_and(|j| j.has_entries());
+        if journal_holds_entries
+            || self.journal.as_ref().is_some_and(|j| j.committed_tip().is_some())
+        {
+            // The gate escapes on the first scheduled batch when no tip ever comes: a covenant
+            // whose first-ever settlement never landed (a TN5-shaped eviction striking bundle
+            // one, a lane too fresh to have settled) has no last settlement for the bridge to
+            // republish, so without the escape the gate parks the whole worker until shutdown,
+            // holding both the tail re-feed and all new proving. The escape takes the no-tip
+            // path: nothing on chain covers any entry, so the tail re-feeds unchanged, the
+            // sibling of the unmapped-boundary path in [`resume_pending`](Self::resume_pending).
+            // The bridge publishes its startup baseline before feeding any block, so when a tip
+            // exists it is already current when the escape fires; a settlement racing the escape
+            // reaches the main loop's advance pass below, which re-runs the resume with the real
+            // tip. With no tip and no batch ever arriving (a bridge-only deployment, a dead
+            // lane) the wait parks until shutdown, holding a re-formable gap that settles no
+            // earlier than the first new activity, which is also the pre-fix behavior.
+            // `Ok` only: an errored `changed` (the bridge dropped the sender, node teardown)
+            // disables the arm, parking until shutdown rather than treating teardown as a tip.
             let tip = loop {
                 let settlement = self.settlement.as_mut().expect("journal implies watch");
                 if let Some(tip) = *settlement.borrow() {
@@ -202,7 +181,26 @@ where
                     Ok(()) = settlement.changed() => {}
                 }
             };
-            gap_end = self.reform_committed_gap(tip.as_ref(), 0).await;
+            if journal_holds_entries {
+                resume_max_end = self
+                    .journal
+                    .as_ref()
+                    .expect("journal checked present above")
+                    .entries()
+                    .last()
+                    .expect("has_entries checked above")
+                    .1
+                    .end_index;
+                self.resume_pending(tip.as_ref(), resume_max_end).await;
+                if self.prover.shutdown.is_open() {
+                    return;
+                }
+                gap_end = self.reform_committed_gap(tip.as_ref(), resume_max_end).await;
+            } else {
+                // An empty journal over committed batches: the kill preceded every bundle's
+                // journal record, so the whole committed span is the gap (lower edge 0).
+                gap_end = self.reform_committed_gap(tip.as_ref(), 0).await;
+            }
             if self.prover.shutdown.is_open() {
                 return;
             }
@@ -237,7 +235,7 @@ where
                     // scope extends to this run's gap entry (its end exceeds the snapshot),
                     // so a boundary the gap pass could not yet observe re-splits it in
                     // process instead of wedging until the next restart.
-                    self.resume_pending(tip, resume_max_end.max(gap_end)).await;
+                    self.resume_pending(Some(tip), resume_max_end.max(gap_end)).await;
                 }
                 if self.prover.shutdown.is_open() {
                     return;
@@ -672,13 +670,26 @@ where
     /// settles per its own reconcile rules. While the pre-restart tail drains, an advance pass
     /// may re-feed an entry an earlier pass already fed; the settler's adopt/skip/superseded
     /// paths absorb the duplicate without landing anything twice.
-    async fn resume_pending(&mut self, tip: &SettlementInfo, max_end: u64) {
+    ///
+    /// `tip: None` (no settlement ever landed, so the startup gate escaped on the inbox) is the
+    /// no-boundary sibling of the unmapped boundary: nothing covers any entry, and the whole
+    /// scoped tail re-feeds unchanged.
+    async fn resume_pending(&mut self, tip: Option<&SettlementInfo>, max_end: u64) {
         let Some(journal) = self.journal.clone() else { return };
         let entries: Vec<(u64, JournalEntry)> =
             journal.entries().into_iter().filter(|(_, entry)| entry.end_index <= max_end).collect();
         if entries.is_empty() {
             return;
         }
+        let Some(tip) = tip else {
+            log::info!(
+                "aggregate-prover: resume has no on-chain settlement to anchor on; re-feeding \
+                 the journal tail ({} entries) unchanged",
+                entries.len()
+            );
+            self.refeed_all(entries).await;
+            return;
+        };
         let first_start = entries.first().expect("checked non-empty").0;
         let last_end = entries.last().expect("checked non-empty").1.end_index;
         let Some(tip_index) =
