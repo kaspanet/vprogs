@@ -803,6 +803,7 @@ fn bridge_params(
         seed_depth: cfg.seed_depth,
         start_from: bridge_seed,
         min_confirmations: cfg.min_confirmations,
+        adaptive_filter_disabled: cfg.adaptive_filter_disabled,
         observers,
     }
 }
@@ -880,6 +881,7 @@ mod tests {
             start_from: Some(Hash::default()),
             seed_depth: 500,
             min_confirmations: None,
+            adaptive_filter_disabled: false,
             prove: true,
             start_mode: Some(StartMode::Catchup),
         };
@@ -914,6 +916,7 @@ mod tests {
             start_from: None,
             seed_depth: 500,
             min_confirmations: None,
+            adaptive_filter_disabled: false,
             prove: false,
             start_mode: Some(StartMode::Fresh),
         };
