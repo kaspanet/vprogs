@@ -1740,6 +1740,7 @@ async fn spawn_prover(
             finality_depth: params.finality_depth(),
             seed_depth: 0,
             min_confirmations: None,
+            adaptive_filter_disabled: false,
             start_from,
             observers: BridgeObservers {
                 tip_daa: None,
