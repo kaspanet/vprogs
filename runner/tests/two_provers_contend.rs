@@ -2597,6 +2597,7 @@ async fn warm_restart_covers_committed_gap() {
         None,
         Some(block_deploy),
         store.clone(),
+        false,
     )
     .await;
 
@@ -2738,6 +2739,7 @@ async fn warm_restart_covers_committed_gap() {
         None,
         Some(block_deploy),
         open_store_retrying(db_dir.path()),
+        false,
     )
     .await;
 
@@ -2782,6 +2784,131 @@ async fn warm_restart_covers_committed_gap() {
              settles",
         );
     }
+
+    l1.shutdown().await;
+}
+
+/// A settlement the chain already holds must confirm through the settler's own chain probe when
+/// the settlement watch never observes it. The production wedge (two tn10 incidents): the
+/// settlement was mined and accepted within a second, but the bridge's settlement watch stayed
+/// frozen below the accepting block, so the notification-based confirm wait never fired and the
+/// single-flight settler waited forever with nothing settling after it.
+///
+/// The blindness is injected directly (a settlement channel nobody writes, standing in for the
+/// frozen bridge): simnet cannot reproduce the multi-second chain fetch that froze the production
+/// bridge, and the settler's behavior under a never-advancing watch is identical. Every
+/// confirmation must then resolve on the confirm-wait warn tick's chain probe, the covenant must
+/// stay a single chain, and subsequent bundles must keep settling.
+#[tokio::test(flavor = "multi_thread")]
+async fn settler_confirms_with_blind_settlement_watch() {
+    if !dev_mode_enabled() {
+        eprintln!(
+            "skipping settler_confirms_with_blind_settlement_watch: RISC0_DEV_MODE!=1 - the \
+             blind-watch scenario runs dev stub proofs + the dev redeem on CPU",
+        );
+        return;
+    }
+    let _serial = serialize_settlement_test().await;
+
+    // === Step 0: simnet L1 + dev covenant bootstrap (same shape as the warm-restart tests) ===
+    let l1 = L1Node::new(
+        NetworkId::new(NetworkType::Simnet),
+        Some(|p| {
+            p.blockrate.coinbase_maturity = 1;
+            p.toccata_activation = ForkActivation::always();
+            p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+        }),
+    )
+    .await;
+    l1.mine_utxos(30).await;
+
+    let network_id = NetworkId::new(NetworkType::Simnet);
+    let lane_key = test_lane_key();
+    let (bootstrap_redeem, bootstrap_spk) = dev_bootstrap_redeem(&lane_key, &Hash::default());
+    let (boot_tx, covenant_id) =
+        l1.build_covenant_bootstrap_transaction(&bootstrap_redeem, COVENANT_VALUE).await;
+    let boot_txid = boot_tx.id();
+    let block_deploy = l1.mine_block(&[boot_tx]).await;
+    l1.mine_blocks(1).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let bootstrap_outpoint = TransactionOutpoint::new(boot_txid, 0);
+    let bootstrap_state = CovenantState {
+        covenant_id,
+        state: EMPTY_HASH,
+        lane_tip: Hash::default(),
+        outpoint: bootstrap_outpoint,
+        spk: bootstrap_spk,
+        value: COVENANT_VALUE,
+        daa_score: 0,
+    };
+
+    let kp_a = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
+    let addr_a = prover_address(&kp_a, network_id);
+    l1.fund_address(&addr_a, FUND_VALUE, FUND_COUNT).await;
+    let tx_elf = transaction_processor_elf();
+    let batch_elf = batch_processor_elf();
+    let aggregator_elf = batch_aggregator_elf();
+    let elfs = Elfs { program: &tx_elf, batch: &batch_elf, aggregator: &aggregator_elf };
+    let params = Params::from(network_id);
+
+    // === The blind-watch prover: the settler's only confirmation path is the warn tick's chain
+    // probe, exactly as in the incident. ===
+    let db_dir = TempDir::new().expect("persistent store dir");
+    let prover = spawn_prover_on_store(
+        &l1,
+        "A",
+        kp_a,
+        addr_a.clone(),
+        1..=4,
+        network_id,
+        &params,
+        lane_key,
+        covenant_id,
+        bootstrap_state,
+        elfs,
+        None,
+        Some(block_deploy),
+        RunnerStore::open(db_dir.path()),
+        true,
+    )
+    .await;
+
+    // === Drive work and watch the covenant chain grow. With the watch blind, every confirmation
+    // resolves on a warn tick, so the chain length is the observable: >= 2 proves the first
+    // settlement confirmed through the chain probe (without the backstop the single-flight
+    // settler parks forever at length 1) and a subsequent bundle settled on top. The deadline
+    // bounds the wait to a handful of warn ticks. ===
+    let started = std::time::Instant::now();
+    let deadline = started + Duration::from_secs(180);
+    let mut settled = 0usize;
+    let mut iteration = 0usize;
+    while std::time::Instant::now() < deadline {
+        drive_range(&l1).await;
+        settled = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+        eprintln!(
+            "blind-watch driver: iteration {iteration}, covenant chain length {settled} ({}s \
+             elapsed)",
+            started.elapsed().as_secs(),
+        );
+        if settled >= 2 {
+            break;
+        }
+        iteration += 1;
+    }
+    assert!(
+        settled >= 2,
+        "with a blind settlement watch the settler must confirm via the chain probe and keep \
+         settling; chain length {settled} after {}s (without the backstop the first confirm \
+         wedges the single-flight settler forever)",
+        started.elapsed().as_secs(),
+    );
+
+    prover.shutdown.open();
+    let join = prover.settler.await;
+    prover.node.shutdown();
+    assert!(join.is_ok(), "the settler stopped under the blind watch: {join:?}");
+    assert_no_fork(&l1, block_deploy, bootstrap_outpoint, covenant_id).await;
 
     l1.shutdown().await;
 }
@@ -3266,13 +3393,16 @@ async fn spawn_prover_over_store(
         alternation,
         start_from,
         RunnerStore::open(db_dir),
+        false,
     )
     .await
 }
 
 /// Same as [`spawn_prover_over_store`] over a caller-opened store handle: the caller keeps a clone
 /// of the handle for direct column-family reads while the node runs (the handle is shared, not
-/// reopened, so the RocksDB lock is never contended).
+/// reopened, so the RocksDB lock is never contended). `blind_settlement_watch` hands the prover
+/// and its settler a settlement channel nobody writes: the blind-watch incident shape, where the
+/// settler's only confirmation path is its own chain probe.
 #[allow(clippy::too_many_arguments)]
 async fn spawn_prover_on_store(
     l1: &L1Node,
@@ -3289,6 +3419,7 @@ async fn spawn_prover_on_store(
     alternation: Option<(u8, Arc<AlternationPacer>)>,
     start_from: Option<Hash>,
     store: RunnerStore,
+    blind_settlement_watch: bool,
 ) -> Prover {
     let wrpc_url = l1.wrpc_borsh_url();
     // Separate wRPC clients for the lane source and the settler so they own independent handles.
@@ -3300,6 +3431,17 @@ async fn spawn_prover_on_store(
     // channel: the bridge (writer) publishes settlements it observes (including the competitor's),
     // and this prover's settler (reader) reconciles against them.
     let (settlement_tx, settlement_rx) = watch::channel(None::<SettlementInfo>);
+    // The blind watch reproduces the production incident shape: the never-written channel stands
+    // in for a bridge whose settlement publication froze below the accepting block, leaving the
+    // settler's own chain probe as the only confirmation path. Its sender is leaked on purpose:
+    // dropping it would read as bridge teardown, which the settler treats as shutdown.
+    let watch_rx = if blind_settlement_watch {
+        let (blind_tx, blind_rx) = watch::channel(None::<SettlementInfo>);
+        std::mem::forget(blind_tx);
+        blind_rx
+    } else {
+        settlement_rx
+    };
     let node = build_proving_node(
         elfs,
         store,
@@ -3332,7 +3474,7 @@ async fn spawn_prover_on_store(
             // The aggregate prover re-forms a superseded suffix off the same settlement watch the
             // settler reconciles against, so a bundle a shorter competitor superseded still
             // settles.
-            settlement_rx: Some(settlement_rx.clone()),
+            settlement_rx: Some(watch_rx.clone()),
             exits_tx: None,
         },
         None,
@@ -3353,7 +3495,7 @@ async fn spawn_prover_on_store(
             start_from,
             backend,
             mode: SettlementMode::Dev,
-            settlement: settlement_rx,
+            settlement: watch_rx,
             // Jitter each submission so neither prover deterministically wins the spend race for
             // every range; without it the first-spawned prover lands every settlement. The window
             // is wide relative to the dev proving time so the per-range winner is a
