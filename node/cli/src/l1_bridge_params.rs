@@ -61,6 +61,7 @@ impl L1BridgeParams {
             tip_daa: None,
             settlement_observer: None,
             min_confirmations: None,
+            adaptive_filter_disabled: false,
             permission_spends: None,
             settlement_events: None,
         }
