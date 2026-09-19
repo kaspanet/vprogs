@@ -43,6 +43,7 @@ use vprogs_runner::{
     build_proving_node,
 };
 use vprogs_state_settlement_journal::{SettlementJournal, StoreJournal};
+use vprogs_storage_types::{StateSpace, Store};
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_settler::{
     AlternationPacer, CovenantState, SettlementMode, SettlementWorkerConfig, dev_bootstrap_redeem,
@@ -2510,6 +2511,281 @@ async fn warm_restart_after_own_settlement_lands() {
     l1.shutdown().await;
 }
 
+/// A kill between a batch's commit and its bundle's journal record must not wedge the covenant:
+/// run 1 leaves committed batches above the journal tail (their bundles never journaled) and is
+/// killed without quiescing the tail; run 2's startup must re-form the committed range from the
+/// cached per-batch receipts, settle it, and settle new work past it. Without the committed-gap
+/// pass run 2 proves every new bundle from a state root the covenant never took, the settler
+/// skips them forever, and the chain stalls with zero submissions (the restarted-prover-idle
+/// signature).
+#[tokio::test(flavor = "multi_thread")]
+async fn warm_restart_covers_committed_gap() {
+    if !dev_mode_enabled() {
+        eprintln!(
+            "skipping warm_restart_covers_committed_gap: RISC0_DEV_MODE!=1 - the warm restart \
+             runs dev stub proofs + the dev redeem on CPU",
+        );
+        return;
+    }
+    let _serial = serialize_settlement_test().await;
+
+    let l1 = L1Node::new(
+        NetworkId::new(NetworkType::Simnet),
+        Some(|p| {
+            p.blockrate.coinbase_maturity = 1;
+            p.toccata_activation = ForkActivation::always();
+            p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+        }),
+    )
+    .await;
+    l1.mine_utxos(90).await;
+
+    let network_id = NetworkId::new(NetworkType::Simnet);
+    let lane_key = test_lane_key();
+
+    // === Bootstrap the dev covenant (same shape as the own-lands sibling) ===
+    let (bootstrap_redeem, bootstrap_spk) = dev_bootstrap_redeem(&lane_key, &Hash::default());
+    let (boot_tx, covenant_id) =
+        l1.build_covenant_bootstrap_transaction(&bootstrap_redeem, COVENANT_VALUE).await;
+    let boot_txid = boot_tx.id();
+    let block_deploy = l1.mine_block(&[boot_tx]).await;
+    l1.mine_blocks(1).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let bootstrap_outpoint = TransactionOutpoint::new(boot_txid, 0);
+    let bootstrap_state = CovenantState {
+        covenant_id,
+        state: EMPTY_HASH,
+        lane_tip: Hash::default(),
+        outpoint: bootstrap_outpoint,
+        spk: bootstrap_spk,
+        value: COVENANT_VALUE,
+        daa_score: 0,
+    };
+
+    let kp_a = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
+    let addr_a = prover_address(&kp_a, network_id);
+    l1.fund_address(&addr_a, FUND_VALUE, FUND_COUNT).await;
+
+    let tx_elf = transaction_processor_elf();
+    let batch_elf = batch_processor_elf();
+    let aggregator_elf = batch_aggregator_elf();
+    let elfs = Elfs { program: &tx_elf, batch: &batch_elf, aggregator: &aggregator_elf };
+    let params = Params::from(network_id);
+
+    // === Run 1: drive landed settlements, then park committed-but-unbundled tail batches and
+    // kill mid-window. ===
+    // Bundle minimum 4, above the two tail carriers: with mining held after the carriers, the
+    // ready prefix stays below the minimum, so the tail batches commit (metadata + receipts
+    // durable) while their bundle provably cannot journal before the kill. Leftover parked
+    // batches from the drive loop may carry the prefix to the minimum when a carrier arrives;
+    // the kill-point loop below detects that journal growth and retries on a fresh window.
+    let db_dir = TempDir::new().expect("persistent store dir");
+    let store = RunnerStore::open(db_dir.path());
+    let prover_a1 = spawn_prover_on_store(
+        &l1,
+        "A1",
+        kp_a,
+        addr_a.clone(),
+        4..=4,
+        network_id,
+        &params,
+        lane_key,
+        covenant_id,
+        bootstrap_state.clone(),
+        elfs,
+        None,
+        Some(block_deploy),
+        store.clone(),
+    )
+    .await;
+
+    let mut settled = 0usize;
+    for i in 0..10 {
+        drive_range(&l1).await;
+        settled = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+        eprintln!("committed-gap run1 driver: iteration {i}, covenant chain length {settled}");
+        if settled >= 2 {
+            break;
+        }
+    }
+    assert!(settled >= 2, "run 1 must land >=2 settlements before the kill, got {settled}");
+
+    // The deterministic kill point: land stragglers, snapshot the journal, mine the tail
+    // carriers, then poll the store until the carriers' metadata and receipts are durable with
+    // the journal unchanged. The sub-minimum park makes that state stable (no bundle can form),
+    // so the poll cannot race a journal record.
+    let journal = StoreJournal::new(store.clone());
+    let mut kill = None;
+    for round in 0..6 {
+        await_mempool_settlement_free(&l1, covenant_id).await;
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+
+        let journal_max = journal.entries().last().map(|(_, entry)| entry.end_index).unwrap_or(0);
+        let Some((pre_carriers, _)) = journal.committed_tip() else {
+            panic!("run 1 committed no batches");
+        };
+        let chain = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await;
+        let boundary = journal
+            .checkpoint_of_block(
+                chain.last().expect("run 1 settled tip").block_prove_to,
+                pre_carriers,
+                1,
+            )
+            .expect("the settled boundary maps into committed metadata");
+
+        mine_lane_carriers(&l1, CATCHUP_CARRIERS).await;
+        for _poll in 0..600 {
+            let Some((committed, _)) = journal.committed_tip() else {
+                panic!("store lost metadata")
+            };
+            if journal.entries().iter().any(|(_, entry)| entry.end_index > journal_max) {
+                eprintln!(
+                    "committed-gap kill-point round {round}: a parked bundle reached the \
+                     minimum and journaled past {journal_max}; retrying on a fresh window",
+                );
+                break;
+            }
+            if committed >= pre_carriers + CATCHUP_CARRIERS as u64
+                && gap_batches_ready(&journal, &store, boundary + 1, committed)
+            {
+                // Read the fence fresh at the decision instant: a straggler settlement may have
+                // landed on a carrier block mid-poll, advancing the chain boundary and
+                // compacting the journal past the round's snapshots.
+                let chain =
+                    covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await;
+                let boundary_now = journal
+                    .checkpoint_of_block(
+                        chain.last().expect("run 1 settled tip").block_prove_to,
+                        committed,
+                        1,
+                    )
+                    .expect("the settled boundary maps into committed metadata");
+                let journal_now =
+                    journal.entries().last().map(|(_, entry)| entry.end_index).unwrap_or(0);
+                kill = Some((boundary_now, committed, journal_now));
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        if kill.is_some() {
+            break;
+        }
+    }
+    let Some((kill_boundary, kill_committed, kill_journal_max)) = kill else {
+        panic!("no deterministic committed-but-unjournaled kill point reached");
+    };
+    eprintln!(
+        "committed-gap kill point: boundary {kill_boundary}, committed tip {kill_committed}, \
+         journal max {kill_journal_max}",
+    );
+    // The defect's precondition: committed batches above both the journal tail and the on-chain
+    // boundary, at least one carrying real lane work for the re-formation to recover.
+    assert!(
+        kill_committed > kill_boundary.max(kill_journal_max),
+        "the kill point must hold committed batches past the journal tail {kill_journal_max} and \
+         boundary {kill_boundary}, got committed tip {kill_committed}",
+    );
+    assert!(
+        gap_real_batches(&journal, kill_boundary + 1, kill_committed) >= 1,
+        "the committed gap must carry real lane work",
+    );
+
+    prover_a1.shutdown.open();
+    let join_a1 = prover_a1.settler.await;
+    prover_a1.node.shutdown();
+    assert!(join_a1.is_ok(), "run 1 settler panicked: {join_a1:?}");
+    // The kill leaves the scheduler's execution workers trailing the shutdown for seconds; let
+    // them finish so the store lock is released before reopening (as in the sibling tests). The
+    // test's own handle clones must drop too: they hold the same RocksDB lock.
+    drop(journal);
+    drop(store);
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // The journal did not grow across the kill: every surviving entry was already recorded at
+    // the kill decision (late straggler landings may have compacted some away, which only
+    // widens the gap the restart must cover).
+    {
+        let journal = StoreJournal::new(open_store_retrying(db_dir.path()));
+        let entries = journal.entries();
+        for (start, entry) in &entries {
+            eprintln!("committed-gap journal after run 1: bundle {start}..={}", entry.end_index);
+        }
+        assert!(
+            entries.iter().all(|(start, _)| *start <= kill_journal_max),
+            "the kill must not journal the parked tail (journal max at kill {kill_journal_max})",
+        );
+    }
+    let kill_len = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+
+    // === Run 2 over the SAME store: the startup gap pass must re-form the committed range,
+    // settle it, and let new work chain past it. ===
+    let kp_a2 = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
+    let addr_a2 = prover_address(&kp_a2, network_id);
+    l1.fund_address(&addr_a2, FUND_VALUE, FUND_COUNT).await;
+    let prover_a2 = spawn_prover_on_store(
+        &l1,
+        "A2",
+        kp_a2,
+        addr_a2.clone(),
+        4..=4,
+        network_id,
+        &params,
+        lane_key,
+        covenant_id,
+        bootstrap_state,
+        elfs,
+        None,
+        Some(block_deploy),
+        open_store_retrying(db_dir.path()),
+    )
+    .await;
+
+    let mut final_len = kill_len;
+    for i in 0..20 {
+        drive_range(&l1).await;
+        final_len = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+        eprintln!("committed-gap run2 driver: iteration {i}, covenant chain length {final_len}");
+        if final_len > kill_len {
+            break;
+        }
+    }
+    // Compaction window for the re-formed gap entry and any in-flight tail, as in the siblings.
+    for _ in 0..30 {
+        l1.mine_blocks(1).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    prover_a2.shutdown.open();
+    let join_a2 = prover_a2.settler.await;
+    prover_a2.node.shutdown();
+    // No fatal settler stop across the re-formed gap bundle.
+    assert!(join_a2.is_ok(), "run 2 settler stopped on the re-formed gap: {join_a2:?}");
+
+    assert!(
+        final_len > kill_len,
+        "run 2 must settle the committed gap and new work past it ({kill_len} -> {final_len})",
+    );
+    assert_no_fork(&l1, block_deploy, bootstrap_outpoint, covenant_id).await;
+
+    // Run 1's journal entries and the re-formed gap entry compact away against the advanced
+    // tip; anything surviving starts strictly above the kill boundary.
+    {
+        let journal = StoreJournal::new(RunnerStore::open(db_dir.path()));
+        let entries = journal.entries();
+        for (start, entry) in &entries {
+            eprintln!("committed-gap journal after run 2: bundle {start}..={}", entry.end_index);
+        }
+        assert!(
+            entries.iter().all(|(start, _)| *start > kill_boundary),
+            "entries at or below the kill boundary {kill_boundary} must compact once the gap \
+             settles",
+        );
+    }
+
+    l1.shutdown().await;
+}
+
 /// A single prover joins an ALREADY-LIVE lane, modeling a re-deploy over a lane warmed by
 /// previous runs: the lane is warmed with carrier txs BEFORE the covenant is deployed, the
 /// bootstrap pins the lane's authoritative tip (resolved via `get_seq_commit_lane_proof` at the
@@ -2839,7 +3115,57 @@ fn open_store_retrying(dir: &std::path::Path) -> RunnerStore {
         }
     }
     std::panic::set_hook(prev_hook);
-    std::panic::resume_unwind(last_err.expect("at least one failed attempt"));
+    let err = last_err.expect("at least one failed attempt");
+    // `resume_unwind` re-raises the original panic without invoking the (restored) hook, and the
+    // original panic ran under the silent hook above, so without this line a real lock timeout
+    // fails the test with no message at all.
+    eprintln!(
+        "store: opening {} still failing after the bounded retries (lock held or unreadable): \
+         {:?}",
+        dir.display(),
+        err.downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| err.downcast_ref::<&str>().copied()),
+    );
+    std::panic::resume_unwind(err);
+}
+
+/// Returns whether checkpoint `index` holds a durable per-batch receipt in the proof-receipt
+/// column family. A per-batch receipt key is `checkpoint_index || block_hash || image_id` (72
+/// bytes), distinguished by length from the 76-byte per-tx and 104-byte aggregate keys that
+/// share the checkpoint prefix.
+fn batch_receipt_present(store: &RunnerStore, index: u64) -> bool {
+    store
+        .prefix_iter(StateSpace::ProofReceipt, &index.to_be_bytes())
+        .any(|(key, _)| key.len() == 72)
+}
+
+/// Returns whether every batch in `lower..=upper` has its metadata and, when it carries lane
+/// activity, a durable per-batch receipt: the exact inputs the startup gap re-formation reads.
+/// An empty batch (its block carried no lane tx, so the lane tip carried forward) proves no
+/// receipt and is skipped, matching the live bundle filter.
+fn gap_batches_ready(
+    journal: &StoreJournal<RunnerStore>,
+    store: &RunnerStore,
+    lower: u64,
+    upper: u64,
+) -> bool {
+    (lower..=upper).all(|index| {
+        let Some(metadata) = journal.batch_metadata(index) else { return false };
+        metadata.lane_tip == metadata.prev_lane_tip || batch_receipt_present(store, index)
+    })
+}
+
+/// Counts batches in `lower..=upper` that carry lane activity: the ones whose work the gap
+/// re-formation must recover for the restarted covenant to advance.
+fn gap_real_batches(journal: &StoreJournal<RunnerStore>, lower: u64, upper: u64) -> usize {
+    (lower..=upper)
+        .filter(|&index| {
+            journal
+                .batch_metadata(index)
+                .is_some_and(|metadata| metadata.lane_tip != metadata.prev_lane_tip)
+        })
+        .count()
 }
 
 /// One link in the covenant continuation chain: a settlement tx, the covenant outpoint its input 0
@@ -2925,12 +3251,49 @@ async fn spawn_prover_over_store(
     start_from: Option<Hash>,
     db_dir: &std::path::Path,
 ) -> Prover {
+    spawn_prover_on_store(
+        l1,
+        label,
+        keypair,
+        address,
+        bundle_size,
+        network_id,
+        params,
+        lane_key,
+        covenant_id,
+        covenant,
+        elfs,
+        alternation,
+        start_from,
+        RunnerStore::open(db_dir),
+    )
+    .await
+}
+
+/// Same as [`spawn_prover_over_store`] over a caller-opened store handle: the caller keeps a clone
+/// of the handle for direct column-family reads while the node runs (the handle is shared, not
+/// reopened, so the RocksDB lock is never contended).
+#[allow(clippy::too_many_arguments)]
+async fn spawn_prover_on_store(
+    l1: &L1Node,
+    label: &'static str,
+    keypair: Keypair,
+    address: Address,
+    bundle_size: RangeInclusive<usize>,
+    network_id: NetworkId,
+    params: &Params,
+    lane_key: Hash,
+    covenant_id: Hash,
+    covenant: CovenantState,
+    elfs: Elfs<'_>,
+    alternation: Option<(u8, Arc<AlternationPacer>)>,
+    start_from: Option<Hash>,
+    store: RunnerStore,
+) -> Prover {
     let wrpc_url = l1.wrpc_borsh_url();
     // Separate wRPC clients for the lane source and the settler so they own independent handles.
     let client_for_lane = connect_wrpc(&wrpc_url, network_id).await;
     let client_for_settler = connect_wrpc(&wrpc_url, network_id).await;
-
-    let store = RunnerStore::open(db_dir);
 
     let queue = SettlementQueue::new();
     // Each prover follows the same L1 through its own bridge, so each gets its own live settlement
