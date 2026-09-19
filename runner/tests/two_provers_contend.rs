@@ -2276,6 +2276,240 @@ async fn warm_restart_splits_at_competitor_boundary() {
     l1.shutdown().await;
 }
 
+/// A warm-restart resume whose own pending settlement LANDED during the downtime: run 1 leaves a
+/// settlement in the mempool and is killed; a mined block sweeps it in, so the chain has already
+/// spent the covenant input the journal still lists as pending when run 2 restarts. The restarted
+/// settler must derive settled-ness from the chain BEFORE submitting: its re-fed bundle is
+/// reported superseded without a submission, no fork lands, and new work settles on top of the
+/// landed settlement. Asserts the landed settlement is on the chain, no fatal settler stop, the
+/// chain advances past it with new carriers, no fork, and that the pre-restart journal scope
+/// compacted away.
+#[tokio::test(flavor = "multi_thread")]
+async fn warm_restart_after_own_settlement_lands() {
+    if !dev_mode_enabled() {
+        eprintln!(
+            "skipping warm_restart_after_own_settlement_lands: RISC0_DEV_MODE!=1 - the warm \
+             restart runs dev stub proofs + the dev redeem on CPU",
+        );
+        return;
+    }
+    let _serial = serialize_settlement_test().await;
+
+    let l1 = L1Node::new(
+        NetworkId::new(NetworkType::Simnet),
+        Some(|p| {
+            p.blockrate.coinbase_maturity = 1;
+            p.toccata_activation = ForkActivation::always();
+            p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+        }),
+    )
+    .await;
+    // Extra wallet UTXOs over the sibling tests: this test's two runs drive many more carrier
+    // ranges (the run-2 growth loop keeps driving until new work settles), and the L1 wallet
+    // funds every carrier; the instrumentation round showed the late mined blocks carrying no
+    // lane activity once the spendable set thins out.
+    l1.mine_utxos(90).await;
+
+    let network_id = NetworkId::new(NetworkType::Simnet);
+    let lane_key = test_lane_key();
+
+    // === Bootstrap the dev covenant ===
+    let (bootstrap_redeem, bootstrap_spk) = dev_bootstrap_redeem(&lane_key, &Hash::default());
+    let (boot_tx, covenant_id) =
+        l1.build_covenant_bootstrap_transaction(&bootstrap_redeem, COVENANT_VALUE).await;
+    let boot_txid = boot_tx.id();
+    let block_deploy = l1.mine_block(&[boot_tx]).await;
+    l1.mine_blocks(1).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let bootstrap_outpoint = TransactionOutpoint::new(boot_txid, 0);
+    let bootstrap_state = CovenantState {
+        covenant_id,
+        state: EMPTY_HASH,
+        lane_tip: Hash::default(),
+        outpoint: bootstrap_outpoint,
+        spk: bootstrap_spk,
+        value: COVENANT_VALUE,
+        daa_score: 0,
+    };
+
+    let kp_a = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
+    let addr_a = prover_address(&kp_a, network_id);
+    l1.fund_address(&addr_a, FUND_VALUE, FUND_COUNT).await;
+
+    let tx_elf = transaction_processor_elf();
+    let batch_elf = batch_processor_elf();
+    let aggregator_elf = batch_aggregator_elf();
+    let elfs = Elfs { program: &tx_elf, batch: &batch_elf, aggregator: &aggregator_elf };
+    let params = Params::from(network_id);
+
+    // === Run 1: drive work until a settlement sits submitted but unconfirmed in the mempool,
+    // and kill the prover. ===
+    // Bundle minimum 1 (unlike the sibling warm-restart tests' 2..=4): a carrier block can
+    // occasionally carry no lane tx (the L1 wallet's spendable set thins out late in the run), and
+    // with a minimum of 2 an empty block pairing off with another empty one strands a lone real
+    // batch below the bundle minimum forever, so the tail settlement never exists to await.
+    let db_dir = TempDir::new().expect("persistent store dir");
+    let prover_a1 = spawn_prover_over_store(
+        &l1,
+        "A1",
+        kp_a,
+        addr_a.clone(),
+        1..=4,
+        network_id,
+        &params,
+        lane_key,
+        covenant_id,
+        bootstrap_state.clone(),
+        elfs,
+        None,
+        Some(block_deploy),
+        db_dir.path(),
+    )
+    .await;
+
+    let mut settled = 0usize;
+    for i in 0..10 {
+        drive_range(&l1).await;
+        settled = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+        eprintln!("own-lands run1 driver: iteration {i}, covenant chain length {settled}");
+        if settled >= 2 {
+            break;
+        }
+    }
+    // Quiesce the pipeline before building the tail: land every straggler settlement AND let the
+    // aggregate worker finish every in-flight bundle, so no batch commits past the journal tail
+    // across the kill. A batch committed but never bundled (a straggler drive-loop carrier caught
+    // mid-pipeline) leaves the warm store's state chain past the last settlement with no journal
+    // entry covering the gap, and the resumed bundles then prove from a state the covenant never
+    // took, so the settler skips them forever. The mempool staying settlement-free across a quiet
+    // window is the observable of that drained pipeline: every proved bundle submits.
+    for round in 0..40 {
+        await_mempool_settlement_free(&l1, covenant_id).await;
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+        if mempool_settlement_free(&l1, covenant_id).await {
+            eprintln!("own-lands run1 quiesced (round {round})");
+            break;
+        }
+    }
+    settled = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+    assert!(settled >= 2, "run 1 must land >=2 settlements before the stall, got {settled}");
+
+    mine_lane_carriers(&l1, CATCHUP_CARRIERS).await;
+    let chain = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await;
+    let tip_outpoint = TransactionOutpoint::new(chain.last().expect("run 1 settled tip").tx_id, 0);
+    await_mempool_spender(&l1, tip_outpoint).await;
+    // Drain before the kill so the pipeline is idle and its batch commits are durable.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    prover_a1.shutdown.open();
+    let join_a1 = prover_a1.settler.await;
+    prover_a1.node.shutdown();
+    assert!(join_a1.is_ok(), "run 1 settler panicked: {join_a1:?}");
+    // The kill leaves the scheduler's execution workers trailing the shutdown for seconds; let
+    // them finish so the store lock is released before reopening (as in the sibling restart
+    // tests).
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // The journal still lists the submitted bundle as pending: the kill predates its landing.
+    // The landing assert below pins that exactly ONE settlement was pending (a second mempool
+    // settlement would land with it and grow the chain by two), so here only non-emptiness is
+    // asserted: a landed-but-not-yet-compacted entry may also survive the kill, and the resume
+    // deletes it against the baseline.
+    let run1_fence = {
+        let journal = StoreJournal::new(open_store_retrying(db_dir.path()));
+        let entries = journal.entries();
+        for (start, entry) in &entries {
+            eprintln!("own-lands journal after run 1: bundle {start}..={}", entry.end_index);
+        }
+        assert!(!entries.is_empty(), "the submitted tail bundle must be journaled across the kill",);
+        entries.last().expect("checked non-empty").1.end_index
+    };
+
+    // === The downtime landing: one mined block sweeps the mempool, confirming run 1's pending
+    // settlement (the only one in the mempool) while the prover is down. ===
+    let pre_land = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+    l1.mine_blocks(1).await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let after_land = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+    assert_eq!(
+        after_land,
+        pre_land + 1,
+        "the single mined block must confirm run 1's pending settlement during the downtime",
+    );
+
+    // === Run 2 over the SAME store: the journal lists the landed range as pending and the watch
+    // baseline predates it, so the re-fed bundle reaches the settler. It must be superseded
+    // WITHOUT a second submission spending the already-spent covenant input: with the watch
+    // caught up to the landing the settler's base-mismatch guard skips it, and on a lagging
+    // watch the pre-submit liveness probe reports the spent outpoint instead. The landed
+    // settlement is recognized once replayed, and new work settles on top of it. ===
+    let kp_a2 = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
+    let addr_a2 = prover_address(&kp_a2, network_id);
+    l1.fund_address(&addr_a2, FUND_VALUE, FUND_COUNT).await;
+    let prover_a2 = spawn_prover_over_store(
+        &l1,
+        "A2",
+        kp_a2,
+        addr_a2.clone(),
+        1..=4,
+        network_id,
+        &params,
+        lane_key,
+        covenant_id,
+        bootstrap_state,
+        elfs,
+        None,
+        Some(block_deploy),
+        db_dir.path(),
+    )
+    .await;
+
+    let mut final_len = after_land;
+    for i in 0..20 {
+        drive_range(&l1).await;
+        final_len = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+        eprintln!("own-lands run2 driver: iteration {i}, covenant chain length {final_len}");
+        if final_len > after_land {
+            break;
+        }
+    }
+    // Compaction window for the landed entry and any in-flight tail, as in the other tests.
+    for _ in 0..30 {
+        l1.mine_blocks(1).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    prover_a2.shutdown.open();
+    let join_a2 = prover_a2.settler.await;
+    prover_a2.node.shutdown();
+    // No fatal settler stop across the superseded re-feed.
+    assert!(join_a2.is_ok(), "run 2 settler stopped on the landed own settlement: {join_a2:?}");
+
+    assert!(
+        final_len > after_land,
+        "new work must settle on top of the landed settlement ({after_land} -> {final_len})",
+    );
+    assert_no_fork(&l1, block_deploy, bootstrap_outpoint, covenant_id).await;
+
+    // Run 1's journal entries compacted away against the landed tip (same fence rationale as the
+    // other warm-restart tests; run 2 stragglers above the fence are tolerated).
+    let compacted = {
+        let journal = StoreJournal::new(RunnerStore::open(db_dir.path()));
+        let entries = journal.entries();
+        for (start, entry) in &entries {
+            eprintln!("own-lands journal after run 2: bundle {start}..={}", entry.end_index);
+        }
+        entries.iter().all(|(start, _)| *start > run1_fence)
+    };
+    assert!(
+        compacted,
+        "run 1's journal entries (<= {run1_fence}) must compact against the landed tip",
+    );
+
+    l1.shutdown().await;
+}
+
 /// A single prover joins an ALREADY-LIVE lane, modeling a re-deploy over a lane warmed by
 /// previous runs: the lane is warmed with carrier txs BEFORE the covenant is deployed, the
 /// bootstrap pins the lane's authoritative tip (resolved via `get_seq_commit_lane_proof` at the
@@ -2521,6 +2755,18 @@ async fn await_mempool_spender(l1: &L1Node, outpoint: TransactionOutpoint) {
     panic!("no mempool transaction spending {outpoint} appeared within the bounded wait");
 }
 
+/// Returns whether the node's mempool holds no settlement of `covenant_id`.
+async fn mempool_settlement_free(l1: &L1Node, covenant_id: Hash) -> bool {
+    let entries =
+        l1.grpc_client().get_mempool_entries(false, false).await.expect("get_mempool_entries");
+    !entries.iter().any(|entry| {
+        let Ok(tx) = Transaction::try_from(entry.transaction.clone()) else {
+            return false;
+        };
+        tx.settlement_info(covenant_id, Hash::default(), 0).is_some()
+    })
+}
+
 /// Polls until the node's mempool holds no settlement of `covenant_id`, mining one block per
 /// round so a submitted-but-unconfirmed settlement lands and clears. With the mempool clean, the
 /// chain tip is the last landed settlement, and the next settlement to appear can only belong to
@@ -2529,15 +2775,7 @@ async fn await_mempool_spender(l1: &L1Node, outpoint: TransactionOutpoint) {
 /// mempool occupant at the kill. Panics on timeout.
 async fn await_mempool_settlement_free(l1: &L1Node, covenant_id: Hash) {
     for round in 0..80 {
-        let entries =
-            l1.grpc_client().get_mempool_entries(false, false).await.expect("get_mempool_entries");
-        let pending = entries.iter().any(|entry| {
-            let Ok(tx) = Transaction::try_from(entry.transaction.clone()) else {
-                return false;
-            };
-            tx.settlement_info(covenant_id, Hash::default(), 0).is_some()
-        });
-        if !pending {
+        if mempool_settlement_free(l1, covenant_id).await {
             eprintln!("mempool: settlement-free (round {round})");
             return;
         }
