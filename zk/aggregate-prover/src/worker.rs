@@ -139,8 +139,11 @@ where
         // PRE-downtime baseline (the persisted tip's last settlement), so a competitor that
         // settled during the downtime reaches the watch only as a later advance, and each
         // settlement advance below re-runs the resume pass against the snapshot until the
-        // pre-restart tail is settled or dropped. A journal-free or empty journal snapshots 0
-        // (no scope) and skips straight through.
+        // pre-restart tail is settled or dropped. A journal-free journal skips straight through.
+        //
+        // After the tail resume, the committed-gap pass covers batches committed past the
+        // journal tail; an empty journal over committed work reaches it too (the kill preceded
+        // every journal record).
         let mut resume_max_end = 0u64;
         if self.journal.as_ref().is_some_and(|j| j.has_entries()) {
             let tip = loop {
@@ -166,6 +169,33 @@ where
                 .1
                 .end_index;
             self.resume_pending(&tip, resume_max_end).await;
+            if self.prover.shutdown.is_open() {
+                return;
+            }
+            self.reform_committed_gap(Some(&tip), resume_max_end).await;
+            if self.prover.shutdown.is_open() {
+                return;
+            }
+        } else if self.journal.as_ref().is_some_and(|j| j.committed_tip().is_some()) {
+            // An empty journal over committed batches: the kill preceded every bundle's journal
+            // record, so the whole committed span is the gap (lower edge 0). The first tip
+            // publication gates the re-formation when one is coming, but the wait escapes on the
+            // first scheduled batch: a covenant no settlement ever reached publishes no tip, and
+            // the bridge publishes its startup baseline (the persisted tip's last settlement)
+            // before feeding any block, so the escape reads a boundary that is already current.
+            let tip = loop {
+                let settlement = self.settlement.as_mut().expect("journal implies watch");
+                if let Some(tip) = *settlement.borrow() {
+                    break Some(tip);
+                }
+                tokio::select! {
+                    biased;
+                    () = self.prover.shutdown.wait() => return,
+                    () = self.prover.inbox.notified() => break None,
+                    Ok(()) = settlement.changed() => {}
+                }
+            };
+            self.reform_committed_gap(tip.as_ref(), 0).await;
             if self.prover.shutdown.is_open() {
                 return;
             }
@@ -668,6 +698,105 @@ where
             }
         }
         self.refeed_all(pending).await;
+    }
+
+    /// Startup pass covering committed-but-unjournaled batches: a kill between a batch's commit
+    /// and its bundle's journal record leaves the checkpoint range above `tail_end` committed in
+    /// the store with no journal entry over it, and the scheduler never re-schedules committed
+    /// batches, so every later bundle would prove from a state root the covenant never took and
+    /// the settler would skip it forever (the restarted-prover-idle wedge). Re-forms one bundle
+    /// over the range from the persisted batch metadata and cached per-batch receipts (the same
+    /// recipe as [`split_straddler`](Self::split_straddler)), records its entry, and feeds it after
+    /// the pending journal tail, ahead of new work.
+    ///
+    /// `tip` bounds the re-formation below: a settlement boundary landing inside the range
+    /// splits it exactly as the straddled journal entry is split, since a re-formed bundle
+    /// starting at or below the boundary carries a `prev_state` the covenant already passed and
+    /// the settler would skip it. An unmapped boundary (a competitor's fork block outside our
+    /// metadata) keeps the whole range, inheriting the same re-feed-unchanged residual as
+    /// [`resume_pending`](Self::resume_pending).
+    ///
+    /// Ceiling: an empty batch (its block carried no lane tx, so the lane tip carried forward
+    /// unchanged) proves no receipt and joins no aggregate; the live bundle path filters those
+    /// the same way. A non-empty gap batch missing its metadata or receipt leaves the pre-fix
+    /// wedge, so it logs at error and aborts the pass with the journal untouched. Reorgs during
+    /// downtime inherit the single-miner / low-reorg assumption.
+    async fn reform_committed_gap(&mut self, tip: Option<&SettlementInfo>, tail_end: u64) {
+        let Some(journal) = self.journal.clone() else { return };
+        let Some((committed_tip, tip_metadata)) = journal.committed_tip() else { return };
+        if committed_tip <= tail_end {
+            return;
+        }
+        let boundary = match tip {
+            Some(tip) => journal
+                .checkpoint_of_block(tip.block_prove_to, committed_tip, tail_end + 1)
+                .map_or(tail_end, |index| index.max(tail_end)),
+            None => tail_end,
+        };
+        // The on-chain tip already covers the whole range; new work chains from it directly.
+        if boundary >= committed_tip {
+            return;
+        }
+        let first = boundary + 1;
+        let Some(from_block) = journal.batch_metadata(first).map(|metadata| metadata.hash) else {
+            log::error!(
+                "aggregate-prover: committed batch {first} above the journal tail lacks metadata; \
+                 leaving its range uncovered"
+            );
+            return;
+        };
+        let mut receipts: Vec<B::Receipt> = Vec::new();
+        for index in first..=committed_tip {
+            let Some(metadata) = journal.batch_metadata(index) else {
+                log::error!(
+                    "aggregate-prover: committed batch {index} above the journal tail lacks \
+                     metadata; leaving its range uncovered"
+                );
+                return;
+            };
+            if metadata.lane_tip == metadata.prev_lane_tip {
+                continue;
+            }
+            let key = BatchKey {
+                prefix: Prefix { checkpoint_index: index.into() },
+                block_hash: metadata.hash.as_bytes(),
+                image_id: *self.backend.batch_image_id(),
+            };
+            let Some(receipt) = self.prover.receipt_store.read_batch_receipt(key).resolve().await
+            else {
+                log::error!(
+                    "aggregate-prover: committed batch {index} above the journal tail lacks its \
+                     receipt; leaving its range uncovered"
+                );
+                return;
+            };
+            receipts.push(receipt);
+        }
+        // An all-empty range composes nothing, matching the live no-op path: no entry, no feed.
+        if receipts.is_empty() {
+            return;
+        }
+        let agg_key = AggregatorKey {
+            prefix: Prefix { checkpoint_index: first.into() },
+            block_hash: from_block.as_bytes(),
+            image_id: *self.backend.aggregator_image_id(),
+            seq_commit: tip_metadata.seq_commit.as_bytes(),
+        };
+        let Some(receipt) = self.prove_or_cache(agg_key, tip_metadata.hash, receipts).await else {
+            return; // shutdown mid-proof; the next startup re-runs the pass
+        };
+        let entry = JournalEntry {
+            end_index: committed_tip,
+            from_block,
+            block_prove_to: tip_metadata.hash,
+            seq_commit: tip_metadata.seq_commit,
+        };
+        journal.record(first, &entry);
+        self.refeed_one(first, &receipt, &entry).await;
+        log::info!(
+            "aggregate-prover: re-formed committed gap {first}..={committed_tip} onto the \
+             settlement queue"
+        );
     }
 
     /// Re-aggregates the suffix of the straddled entry `(start..=entry.end_index)` that lies
