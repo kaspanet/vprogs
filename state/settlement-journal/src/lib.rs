@@ -39,6 +39,14 @@ pub trait SettlementJournal: Send + Sync {
     fn delete(&self, start_index: u64);
     /// Returns the chain block hash of batch `index`, or `None` if the batch has no metadata.
     fn batch_block(&self, index: u64) -> Option<Hash>;
+    /// Returns batch `index`'s full metadata, or `None` if the batch has no metadata.
+    fn batch_metadata(&self, index: u64) -> Option<ChainBlockMetadata>;
+    /// Returns the highest committed checkpoint index with its batch metadata, or `None` when no
+    /// batch has committed.
+    ///
+    /// A reverse seek over the batch-metadata space: committed indexes are dense from 1, and
+    /// pruning deletes only below the frontier, so the last key is the committed tip.
+    fn committed_tip(&self) -> Option<(u64, ChainBlockMetadata)>;
     /// Returns the checkpoint index whose batch block is `block`, scanning indices from `upper`
     /// down to `lower` inclusive, or `None` when no batch in the window carries the block.
     ///
@@ -90,10 +98,21 @@ impl<S: Store> SettlementJournal for StoreJournal<S> {
     }
 
     fn batch_block(&self, index: u64) -> Option<Hash> {
+        self.batch_metadata(index).map(|meta| meta.hash)
+    }
+
+    fn batch_metadata(&self, index: u64) -> Option<ChainBlockMetadata> {
         self.store
             .get(StateSpace::BatchMetadata, &index.to_be_bytes())
             .map(|bytes| borsh::from_slice::<ChainBlockMetadata>(&bytes).expect("corrupted store"))
-            .map(|meta| meta.hash)
+    }
+
+    fn committed_tip(&self) -> Option<(u64, ChainBlockMetadata)> {
+        self.store.prefix_iter_rev(StateSpace::BatchMetadata, &[]).next().map(|(key, value)| {
+            let index = u64::from_be_bytes(key.try_into().expect("corrupted metadata key"));
+            let metadata = borsh::from_slice(&value).expect("corrupted store: metadata value");
+            (index, metadata)
+        })
     }
 
     fn checkpoint_of_block(&self, block: Hash, upper: u64, lower: u64) -> Option<u64> {
@@ -157,5 +176,31 @@ mod tests {
         assert_eq!(j.checkpoint_of_block(Hash::from_bytes([0xab; 32]), 12, 10), Some(11),);
         // Absent inside the scanned window: miss, not a false hit.
         assert_eq!(j.checkpoint_of_block(Hash::from_bytes([0xcd; 32]), 12, 10), None);
+    }
+
+    #[test]
+    fn committed_tip_reverse_seek_reads_the_last_metadata() {
+        let s = store();
+        let j = StoreJournal::new(s.clone());
+        assert_eq!(j.committed_tip(), None);
+        let mut wb = s.write_batch();
+        for (index, seed) in [(2u64, 0xb2u8), (7, 0xb7)] {
+            vprogs_state_batch_metadata::BatchMetadata::set(
+                &mut wb,
+                index,
+                &ChainBlockMetadata {
+                    hash: Hash::from_bytes([seed; 32]),
+                    seq_commit: Hash::from_bytes([seed + 1; 32]),
+                    ..Default::default()
+                },
+            );
+        }
+        s.commit(wb);
+        // The seek lands on the highest key, not the first written.
+        let (index, metadata) = j.committed_tip().expect("metadata committed above");
+        assert_eq!((index, metadata.hash), (7, Hash::from_bytes([0xb7; 32])));
+        assert_eq!(metadata.seq_commit, Hash::from_bytes([0xb8; 32]));
+        assert_eq!(j.batch_metadata(2).expect("committed").hash, Hash::from_bytes([0xb2; 32]));
+        assert_eq!(j.batch_metadata(3), None);
     }
 }
