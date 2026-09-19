@@ -98,6 +98,10 @@ pub(crate) struct BridgeWorker<T: ChainSink<ChainBlockMetadata, L1Transaction>> 
     /// Lower bound on the `min_confirmation_count` for chain-follow queries; the adaptive reorg
     /// filter may still exceed it after observed reorgs. `None` uses the adaptive threshold alone.
     min_confirmations: Option<u64>,
+    /// Switches the adaptive reorg filter off: the follow threshold becomes exactly
+    /// `min_confirmations` (zero when unset), so blocks render at the tip and reorgs surface as
+    /// rollbacks instead of confirmation latency.
+    adaptive_filter_disabled: bool,
     /// Optional hooks for watching and emitting permission-output spends.
     permission_spends: Option<PermissionSpendHooks>,
     /// Journal of applied registry transitions, one `(sink idx, spent outpoint, pre-spend root,
@@ -180,6 +184,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             tip_daa: config.tip_daa.clone(),
             settlement: config.settlement_observer.clone(),
             min_confirmations: config.min_confirmations,
+            adaptive_filter_disabled: config.adaptive_filter_disabled,
             permission_spends: config.permission_spends.clone(),
             spend_journal: Vec::new(),
             settlement_events: config.settlement_events.clone(),
@@ -531,8 +536,11 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             let from = self.tip_metadata().hash;
             // The configured value is a floor under the adaptive filter, not a replacement: at
             // startup the filter has observed no reorgs (threshold zero), so the floor alone
-            // protects the follow until observed reorgs build a larger threshold.
-            let adaptive = self.reorg_filter.threshold();
+            // protects the follow until observed reorgs build a larger threshold. With the
+            // filter switched off, the adaptive contribution is always zero: a latency-critical
+            // follow renders at the tip and takes reorgs as rollbacks instead of latency.
+            let adaptive =
+                if self.adaptive_filter_disabled { None } else { self.reorg_filter.threshold() };
             let threshold = match self.min_confirmations {
                 Some(floor) => Some(floor.max(adaptive.unwrap_or(0))),
                 None => adaptive,
@@ -933,6 +941,7 @@ mod tests {
             tip_daa: None,
             settlement: None,
             min_confirmations: None,
+            adaptive_filter_disabled: false,
             permission_spends,
             spend_journal: Vec::new(),
             settlement_events: Some(settlement_events),
