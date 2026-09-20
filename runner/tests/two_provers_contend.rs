@@ -1557,7 +1557,7 @@ async fn warm_restart_settles_pending_tail() {
     )
     .await;
 
-    let mut settled = 0usize;
+    let mut settled;
     for i in 0..10 {
         drive_range(&l1).await;
         settled = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
@@ -1766,7 +1766,7 @@ async fn warm_restart_after_competitor_sweeps_tail() {
     )
     .await;
 
-    let mut settled = 0usize;
+    let mut settled;
     for i in 0..10 {
         drive_range(&l1).await;
         settled = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
@@ -2040,7 +2040,7 @@ async fn warm_restart_splits_at_competitor_boundary() {
     )
     .await;
 
-    let mut settled = 0usize;
+    let mut settled;
     for i in 0..10 {
         drive_range(&l1).await;
         settled = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
@@ -2369,7 +2369,7 @@ async fn warm_restart_after_own_settlement_lands() {
     )
     .await;
 
-    let mut settled = 0usize;
+    let mut settled;
     for i in 0..10 {
         drive_range(&l1).await;
         settled = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
