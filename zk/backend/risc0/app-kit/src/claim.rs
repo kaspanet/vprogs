@@ -9,9 +9,7 @@ use kaspa_consensus_core::{
     },
 };
 use kaspa_hashes::Hash;
-use kaspa_txscript::{
-    EngineFlags, script_builder::ScriptBuilder, standard::pay_to_script_hash_script,
-};
+use kaspa_txscript::{script_builder::ScriptBuilder, standard::pay_to_script_hash_script};
 use vprogs_zk_abi::withdrawal::ExitLeaf;
 use vprogs_zk_backend_risc0_api::{
     MAX_DELEGATE_INPUTS, PermissionTreeAccumulator, build_delegate_entry_script,
@@ -31,8 +29,7 @@ pub fn permission_sig_script(
     siblings: &[[u8; 32]],
     redeem: &[u8],
 ) -> Vec<u8> {
-    let mut b =
-        ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() });
+    let mut b = ScriptBuilder::new();
     for _walk in 0..2 {
         for level in (0..siblings.len()).rev() {
             b.add_data(&siblings[level]).unwrap();
@@ -146,8 +143,7 @@ pub fn build_permission_spend(
     ));
 
     let delegate_redeem = build_delegate_entry_script(&args.covenant_id);
-    let mut cov_b =
-        ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() });
+    let mut cov_b = ScriptBuilder::new();
     let delegate_sig = cov_b.add_data(&delegate_redeem).unwrap().drain();
 
     for &(outpoint, _) in &args.delegate_inputs {
@@ -307,13 +303,13 @@ mod tests {
     }
 
     fn cov_builder() -> ScriptBuilder {
-        ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
+        ScriptBuilder::new()
     }
 
     fn run_spend(tx: &Transaction, utxos: &[UtxoEntry]) -> Result<(), String> {
         let sig_cache = Cache::new(10_000);
         let reused = SigHashReusedValuesUnsync::new();
-        let flags = EngineFlags { covenants_enabled: true, ..Default::default() };
+        let flags = EngineFlags::default();
         let populated = PopulatedTransaction::new(tx, utxos.to_vec());
         let cov_ctx =
             CovenantsContext::from_tx(&populated).expect("covenant continuity must succeed");
