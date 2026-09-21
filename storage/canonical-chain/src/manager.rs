@@ -22,7 +22,7 @@ pub struct CanonicalChainManager<M> {
 impl<M: BatchMetadata> CanonicalChainManager<M> {
     /// Creates a manager over `chain`, replaying persisted `(id, metadata)` entries in order.
     /// The ids may skip interiors: a reorg-canceled batch keeps its allocated id but never
-    /// persists metadata (vprogs#110), so the log carries holes that restore preserves.
+    /// persists metadata, so the log carries holes that restore preserves.
     pub fn new(chain: CanonicalChain, entries: impl IntoIterator<Item = (u64, M)>) -> Self {
         // Claim the sole-writer role and start with an empty log.
         chain.claim_writer();

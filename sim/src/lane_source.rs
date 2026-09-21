@@ -5,7 +5,6 @@ use std::sync::Weak;
 
 use kaspa_consensus::consensus::Consensus;
 use kaspa_consensus_core::api::ConsensusApi;
-use kaspa_hashes::Hash;
 use kaspa_rpc_core::{GetSeqCommitLaneProofResponse, RpcLaneEntry};
 use vprogs_zk_batch_prover::{LaneProofError, LaneProofRequest, LaneProofSource};
 
