@@ -1595,7 +1595,7 @@ async fn warm_restart_settles_pending_tail() {
     // continues checkpoint numbering upward, so any entry at or below this fence belongs to run
     // 1 and must compact away once the tail settles.
     let run1_fence = {
-        let journal = StoreJournal::new(RunnerStore::open(db_dir.path()));
+        let journal = StoreJournal::new(open_store_retrying(db_dir.path()));
         let entries = journal.entries();
         for (start, entry) in &entries {
             eprintln!("warm-restart journal after run 1: bundle {start}..={}", entry.end_index);
@@ -1666,7 +1666,7 @@ async fn warm_restart_settles_pending_tail() {
     // advanced, and such an entry can linger (a known leak shape), so only the fenced range is
     // asserted here.
     let compacted = {
-        let journal = StoreJournal::new(RunnerStore::open(db_dir.path()));
+        let journal = StoreJournal::new(open_store_retrying(db_dir.path()));
         let entries = journal.entries();
         for (start, entry) in &entries {
             eprintln!("warm-restart journal after run 2: bundle {start}..={}", entry.end_index);
@@ -1796,7 +1796,7 @@ async fn warm_restart_after_competitor_sweeps_tail() {
     // checkpoint numbering upward, so entries at or below the fence are run 1's and must
     // compact away against the swept tip.
     let run1_fence = {
-        let journal = StoreJournal::new(RunnerStore::open(db_dir.path()));
+        let journal = StoreJournal::new(open_store_retrying(db_dir.path()));
         let entries = journal.entries();
         for (start, entry) in &entries {
             eprintln!("sweep journal after run 1: bundle {start}..={}", entry.end_index);
@@ -1930,7 +1930,7 @@ async fn warm_restart_after_competitor_sweeps_tail() {
     // Run 1's journal entries must have compacted away against the swept tip (same fence
     // rationale as the pending-tail test; run 2 stragglers above the fence are tolerated).
     let compacted = {
-        let journal = StoreJournal::new(RunnerStore::open(db_dir.path()));
+        let journal = StoreJournal::new(open_store_retrying(db_dir.path()));
         let entries = journal.entries();
         for (start, entry) in &entries {
             eprintln!("sweep journal after run 2: bundle {start}..={}", entry.end_index);
@@ -2492,7 +2492,7 @@ async fn warm_restart_after_own_settlement_lands() {
     // Run 1's journal entries compacted away against the landed tip (same fence rationale as the
     // other warm-restart tests; run 2 stragglers above the fence are tolerated).
     let compacted = {
-        let journal = StoreJournal::new(RunnerStore::open(db_dir.path()));
+        let journal = StoreJournal::new(open_store_retrying(db_dir.path()));
         let entries = journal.entries();
         for (start, entry) in &entries {
             eprintln!("own-lands journal after run 2: bundle {start}..={}", entry.end_index);
@@ -2768,7 +2768,7 @@ async fn warm_restart_covers_committed_gap() {
     // Run 1's journal entries and the re-formed gap entry compact away against the advanced
     // tip; anything surviving starts strictly above the kill boundary.
     {
-        let journal = StoreJournal::new(RunnerStore::open(db_dir.path()));
+        let journal = StoreJournal::new(open_store_retrying(db_dir.path()));
         let entries = journal.entries();
         for (start, entry) in &entries {
             eprintln!("committed-gap journal after run 2: bundle {start}..={}", entry.end_index);
@@ -3386,7 +3386,7 @@ async fn spawn_prover_over_store(
         elfs,
         alternation,
         start_from,
-        RunnerStore::open(db_dir),
+        open_store_retrying(db_dir),
         false,
     )
     .await
