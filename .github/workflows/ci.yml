@@ -69,3 +69,6 @@ jobs:
 
       - name: Tests
         run: cargo test
+
+      - name: Simnet integration tests
+        run: RISC0_DEV_MODE=1 cargo test -p vprogs-runner --features test-utils -- --test-threads=1
