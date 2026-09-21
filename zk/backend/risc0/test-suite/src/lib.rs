@@ -1,5 +1,7 @@
 use kaspa_consensus_core::{hashing::tx::id as kaspa_tx_id, subnets::SubnetworkId};
+use kaspa_grpc_client::GrpcClient;
 use kaspa_hashes::Hash;
+use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_seq_commit::{
     hashing::{
         ActivityDigestBuilder, activity_leaf, lane_key, lane_tip_next, mergeset_context_hash,
@@ -15,7 +17,6 @@ use vprogs_storage_types::{ReadStore, Store};
 use vprogs_zk_abi::batch_aggregator::Inputs as AggregatorInputs;
 use vprogs_zk_aggregate_prover::Backend as AggregateBackend;
 use vprogs_zk_backend_risc0_api::{Backend, Receipt};
-use vprogs_zk_batch_prover::{LaneProofRequest, LaneProofSource};
 
 mod l1_transaction_ext;
 pub mod runtime_flow;
@@ -36,17 +37,19 @@ pub fn test_lane_key() -> Hash {
 ///
 /// The returned receipt's journal is a `vprogs_zk_abi::batch_aggregator::StateTransition`, ready
 /// for the settlement covenant.
-pub async fn aggregate_batches<L: LaneProofSource>(
+pub async fn aggregate_batches(
     backend: &Backend,
-    lane_source: &L,
+    grpc_client: &GrpcClient,
     lane_key: &Hash,
     last_block_hash: Hash,
     batch_receipts: Vec<Receipt>,
 ) -> Receipt {
-    // Fetch the lane proof for the bundle's final block from L1.
-    let lane_proof = lane_source
-        .fetch_lane_proof(LaneProofRequest { block: last_block_hash, lane_key: *lane_key })
-        .await;
+    // Fetch the lane proof for the bundle's final block from L1. A failed fetch has no bundle to
+    // defer (this helper proves exactly one bundle on demand), so fail loudly.
+    let lane_proof = grpc_client
+        .get_seq_commit_lane_proof(last_block_hash, *lane_key)
+        .await
+        .expect("get_seq_commit_lane_proof");
 
     // Encode the aggregator inputs over the per-batch journal bytes.
     let journals: Vec<Vec<u8>> = batch_receipts.iter().map(|r| r.journal.bytes.clone()).collect();
