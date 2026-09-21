@@ -1500,8 +1500,7 @@ async fn prover_joins_live_lane() {
         NetworkId::new(NetworkType::Simnet),
         Some(|p| {
             p.blockrate.coinbase_maturity = 1;
-            p.toccata_activation = ForkActivation::always();
-            p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+            p.block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
         }),
     )
     .await;
