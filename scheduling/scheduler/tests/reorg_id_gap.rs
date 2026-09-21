@@ -1,8 +1,8 @@
-//! Reproduction: a reorg-canceled tip batch leaves a permanent id gap that bricks restart.
+//! A reorg-canceled tip batch leaves a permanent interior id gap, and restart recovers.
 //!
 //! A canceled batch never persists its metadata, yet keeps its allocated id, so the next block
-//! takes a higher one. The resulting hole in the BatchMetadata column family is never backfilled,
-//! and every subsequent start replays a non-contiguous id sequence.
+//! takes a higher one. The resulting hole in the BatchMetadata column family is never backfilled;
+//! restore keeps the persisted ids instead of re-densifying, and the node starts again.
 
 use std::{
     path::Path,
@@ -111,26 +111,15 @@ fn open_scheduler(path: &Path, gate: Arc<Gate>) -> Scheduler<RocksDbStore, Gated
     )
 }
 
-/// A reorg canceling an in-flight tip batch strands its id, and the node never starts again.
+/// A reorg canceling an in-flight tip batch strands its id, and a restart replays the hole.
 ///
 /// The gap must be interior: `CanonicalChainManager::new` takes `base` from the first replayed
-/// entry, so a leading gap restores fine and only a hole above the base strands the tip.
+/// entry, so a leading gap restores fine and only a hole above the base exercises the defect.
 ///
 /// The second reorg target must be a fresh block hash. Flipping back onto the canceled block's
 /// hash would reuse its retained id through the manager's reverse index and refill the gap.
 #[test]
-#[allow(clippy::assertions_on_constants)]
-fn canceled_tip_batch_strands_an_id_and_bricks_restart() {
-    // The debug_assert_eq! in CanonicalChainManager::new catches the non-contiguous replay and
-    // aborts before the restart path runs, demonstrating a different failure than the one shipped
-    // to users. Only a debug-assertions-off build exercises the real defect. The condition is a
-    // compile-time constant on purpose: it must fail the run rather than silently skip it.
-    assert!(
-        !cfg!(debug_assertions),
-        "run this repro with debug assertions off (cargo test --release), otherwise the \
-         debug_assert_eq! in CanonicalChainManager::new masks the restart panic under test"
-    );
-
+fn canceled_tip_batch_leaves_a_gap_and_restart_recovers() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
 
     // Persist ids 1 and 3 while a reorg strands id 2.
@@ -165,12 +154,17 @@ fn canceled_tip_batch_strands_an_id_and_bricks_restart() {
         scheduler.shutdown();
     }
 
-    // Restart over the persisted metadata. The replay re-densifies id 3 onto id 2, so the tip has
-    // no live entry and the ancestry walk panics: the node cannot start.
+    // Restart over the persisted metadata: the interior gap replays without re-densifying, the
+    // tip stays live, and scheduling continues past the gap.
     {
         let gate = Arc::new(Gate::default());
         gate.open();
-        let scheduler = open_scheduler(temp_dir.path(), gate);
+        let mut scheduler = open_scheduler(temp_dir.path(), gate);
+
+        let batch4 = scheduler.schedule(4, write_tx(3, 4));
+        batch4.wait_committed_blocking();
+        assert_eq!(batch4.checkpoint().index(), 4, "the next block allocates past the gap");
+
         scheduler.shutdown();
     }
 }
