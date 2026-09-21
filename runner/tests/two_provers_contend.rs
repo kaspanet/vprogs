@@ -13,7 +13,7 @@ use std::{collections::HashMap, ops::RangeInclusive, sync::Arc, time::Duration};
 
 use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus_core::{
-    config::params::{ForkActivation, Params},
+    config::params::Params,
     constants::{SOMPI_PER_KASPA, TX_VERSION_TOCCATA},
     mass::BlockMassLimits,
     network::{NetworkId, NetworkType},
@@ -123,8 +123,7 @@ async fn two_provers_contend() {
         NetworkId::new(NetworkType::Simnet),
         Some(|p| {
             p.blockrate.coinbase_maturity = 1;
-            p.toccata_activation = ForkActivation::always();
-            p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+            p.block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
         }),
     )
     .await;
@@ -411,8 +410,7 @@ async fn two_provers_reform_superseded_suffix() {
         NetworkId::new(NetworkType::Simnet),
         Some(|p| {
             p.blockrate.coinbase_maturity = 1;
-            p.toccata_activation = ForkActivation::always();
-            p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+            p.block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
         }),
     )
     .await;
@@ -645,8 +643,7 @@ async fn prover_catches_up_to_existing_covenant() {
         NetworkId::new(NetworkType::Simnet),
         Some(|p| {
             p.blockrate.coinbase_maturity = 1;
-            p.toccata_activation = ForkActivation::always();
-            p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+            p.block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
         }),
     )
     .await;
@@ -868,8 +865,7 @@ async fn prover_catches_up_to_already_settled_covenant() {
         NetworkId::new(NetworkType::Simnet),
         Some(|p| {
             p.blockrate.coinbase_maturity = 1;
-            p.toccata_activation = ForkActivation::always();
-            p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+            p.block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
         }),
     )
     .await;
@@ -1089,8 +1085,7 @@ async fn prover_resumes_after_settlement() {
         NetworkId::new(NetworkType::Simnet),
         Some(|p| {
             p.blockrate.coinbase_maturity = 1;
-            p.toccata_activation = ForkActivation::always();
-            p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+            p.block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
         }),
     )
     .await;
@@ -1272,8 +1267,7 @@ async fn prover_resumes_after_settlement_contended() {
         NetworkId::new(NetworkType::Simnet),
         Some(|p| {
             p.blockrate.coinbase_maturity = 1;
-            p.toccata_activation = ForkActivation::always();
-            p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+            p.block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
         }),
     )
     .await;

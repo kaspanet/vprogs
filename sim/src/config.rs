@@ -9,7 +9,6 @@ use kaspa_consensus::{
     params::{DEVNET_PARAMS, ForkActivation, NETWORK_DELAY_BOUND, Params},
 };
 use kaspa_consensus_core::{config::bps::calculate_ghostdag_k, mass::BlockMassLimits};
-use vprogs_zk_backend_risc0_test_suite::force_covenant_forks;
 
 /// Finality depth used by the sim (also drives lane expiry).
 pub const FINALITY_DEPTH: u64 = 200;
@@ -36,7 +35,6 @@ pub fn sim_config(rate: SimRate) -> Arc<Config> {
 pub fn sim_config_with_maturity(rate: SimRate, coinbase_maturity: Option<u64>) -> Arc<Config> {
     let mut params = DEVNET_PARAMS;
     apply_sim_params(&mut params, rate, coinbase_maturity);
-    force_covenant_forks(&mut params);
     Arc::new(
         ConfigBuilder::new(params)
             .apply_args(|config| apply_perf_params(&mut config.perf))
@@ -84,7 +82,7 @@ fn apply_sim_params(params: &mut Params, rate: SimRate, coinbase_maturity: Optio
     // shared limits to 2M so a settlement plus its activity payload fits with headroom. Same
     // value `settlement_l1_e2e.rs` uses for its real-proof simnet. No effect on the dev /
     // execution-only modes (their txs are much smaller).
-    params.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+    params.block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
 }
 
 /// Two worker threads each for block and virtual processing, matching `smt_repro`.

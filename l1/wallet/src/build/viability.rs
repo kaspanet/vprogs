@@ -32,7 +32,7 @@ pub(super) fn min_viable_change(
     inputs: &[UtxoCell],
     outputs: &[UtxoCell],
 ) -> Option<u64> {
-    let limit = params.block_mass_limits().raw_post().storage;
+    let limit = params.block_mass_limits.storage;
     let (change_slot, fixed) = outputs.split_last()?;
     let storage = |change: u64| {
         let outs = fixed
@@ -66,7 +66,7 @@ mod tests {
     #[test]
     fn min_viable_change_is_exact_at_the_boundary() {
         let params = &SIMNET_PARAMS;
-        let limit = params.block_mass_limits().raw_post().storage;
+        let limit = params.block_mass_limits.storage;
         let inputs = [UtxoCell::new(1, 100_000_000)];
         let outputs = [UtxoCell::new(1, 50_000_000), UtxoCell::new(1, 0)];
         let storage = |change: u64| {
