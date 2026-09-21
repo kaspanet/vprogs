@@ -41,7 +41,7 @@ use vprogs_zk_abi::{
 use vprogs_zk_aggregate_prover::{
     AggregateProver, AggregateProverConfig, ScheduledBundle, SettlementArtifact,
 };
-use vprogs_zk_batch_prover::{LaneProofRequest, LaneProofSource};
+use vprogs_zk_batch_prover::{LaneProofError, LaneProofRequest, LaneProofSource};
 
 /// Transaction-guest image id. This repro proves nothing, so image ids only key receipt lookups.
 const TX_IMAGE_ID: [u8; 32] = [0u8; 32];
@@ -227,16 +227,19 @@ impl vprogs_zk_aggregate_prover::Backend for JournalBackend {
 struct FixedLaneProof;
 
 impl LaneProofSource for FixedLaneProof {
-    async fn fetch_lane_proof(&self, _req: LaneProofRequest) -> GetSeqCommitLaneProofResponse {
+    async fn fetch_lane_proof(
+        &self,
+        _req: LaneProofRequest,
+    ) -> Result<GetSeqCommitLaneProofResponse, LaneProofError> {
         let mut smt_proof = vec![0xFFu8; 33];
         smt_proof[32] = 0; // Full terminal tag
-        GetSeqCommitLaneProofResponse {
+        Ok(GetSeqCommitLaneProofResponse {
             smt_proof,
             lane: Some(RpcLaneEntry { tip: new_lane_tip(), blue_score: 200 }),
             payload_and_ctx_digest: Hash::default(),
             parent_seq_commit: Hash::default(),
             inactivity_shortcut: Hash::default(),
-        }
+        })
     }
 }
 
