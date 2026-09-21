@@ -1398,10 +1398,14 @@ async fn prover_resumes_after_settlement_contended() {
     }
 
     // Drain: keep offering fresh ranges (not just acceptance) so a transiently-stalled contention
-    // gets a new range to settle and cannot wedge the chain below the target under load.
+    // gets a new range to settle and cannot wedge the chain below the target under load. The
+    // deadline, not a round budget, bounds the drain: a slow machine needs more rounds than any
+    // fixed count, while a genuinely starved drain still surfaces in the chain-advance assert
+    // below once the deadline passes.
+    let drain_deadline = std::time::Instant::now() + Duration::from_secs(300);
     let mut prev_len = 0usize;
     let mut stable_rounds = 0;
-    for _ in 0..40 {
+    while std::time::Instant::now() < drain_deadline {
         drive_range(&l1).await;
         let len = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
         if len == prev_len {
@@ -2196,11 +2200,13 @@ async fn warm_restart_splits_at_competitor_boundary() {
     // === Run 2 over the SAME store, driving NO new carriers: the only settleable work is the
     // straddled entry's suffix, so a chain advance past the competitor is exactly the advance
     // pass splitting the entry at the competitor's boundary, re-aggregating the suffix from
-    // cached per-batch receipts, and landing it. ===
+    // cached per-batch receipts, and landing it. The test keeps a clone of the store handle so
+    // the compaction wait below can read the journal while the node runs. ===
     let kp_a2 = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
     let addr_a2 = prover_address(&kp_a2, network_id);
     l1.fund_address(&addr_a2, FUND_VALUE, FUND_COUNT).await;
-    let prover_a2 = spawn_prover_over_store(
+    let store_a2 = open_store_retrying(db_dir.path());
+    let prover_a2 = spawn_prover_on_store(
         &l1,
         "A2",
         kp_a2,
@@ -2214,9 +2220,11 @@ async fn warm_restart_splits_at_competitor_boundary() {
         elfs,
         None,
         Some(block_deploy),
-        db_dir.path(),
+        store_a2.clone(),
+        false,
     )
     .await;
+    let journal_a2 = StoreJournal::new(store_a2.clone());
 
     let mut final_len = after_b;
     for round in 0..60 {
@@ -2230,8 +2238,16 @@ async fn warm_restart_splits_at_competitor_boundary() {
             break;
         }
     }
-    // Compaction window: the split successor's entry deletes on a later publication.
-    for _ in 0..10 {
+    // Compaction window: the split successor's entry deletes on a later publication, and
+    // compaction only reruns once the bridge observes the covering settlement, so a fixed block
+    // budget can expire before the compaction pass on a slow machine. Wait for the deletion
+    // itself under a deadline while the node still runs, mining a block each round to force the
+    // publication that reruns compaction.
+    let compaction_deadline = std::time::Instant::now() + Duration::from_secs(300);
+    while std::time::Instant::now() < compaction_deadline {
+        if journal_a2.entries().iter().all(|(_, entry)| entry.end_index > straddle_end) {
+            break;
+        }
         l1.mine_blocks(1).await;
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
@@ -2256,10 +2272,10 @@ async fn warm_restart_splits_at_competitor_boundary() {
 
     // The pre-restart journal scope compacted away: the straddler and its split successor both
     // end at or below the straddler's end, so no snapshot-scoped entry may survive (run 2
-    // stragglers above the scope are tolerated, as in the other warm-restart tests).
+    // stragglers above the scope are tolerated, as in the other warm-restart tests). The handle
+    // is shared with the node, not reopened, so the read rides the same RocksDB lock.
     let compacted = {
-        let journal = StoreJournal::new(open_store_retrying(db_dir.path()));
-        let entries = journal.entries();
+        let entries = journal_a2.entries();
         for (start, entry) in &entries {
             eprintln!("split journal after run 2: bundle {start}..={}", entry.end_index);
         }
@@ -2647,7 +2663,10 @@ async fn warm_restart_covers_committed_gap() {
             {
                 // Read the fence fresh at the decision instant: a straggler settlement may have
                 // landed on a carrier block mid-poll, advancing the chain boundary and
-                // compacting the journal past the round's snapshots.
+                // compacting the journal past the round's snapshots. The gap's precondition
+                // (committed strictly past both fences) must hold at that same instant; a
+                // straggler that degraded the point cannot recover while mining is held, so the
+                // round retries on a fresh window instead of failing the later assert.
                 let chain =
                     covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await;
                 let boundary_now = journal
@@ -2659,7 +2678,15 @@ async fn warm_restart_covers_committed_gap() {
                     .expect("the settled boundary maps into committed metadata");
                 let journal_now =
                     journal.entries().last().map(|(_, entry)| entry.end_index).unwrap_or(0);
-                kill = Some((boundary_now, committed, journal_now));
+                if committed > boundary_now.max(journal_now) {
+                    kill = Some((boundary_now, committed, journal_now));
+                } else {
+                    eprintln!(
+                        "committed-gap kill-point round {round}: a straggler settlement degraded \
+                         the point (boundary {boundary_now}, journal max {journal_now}, committed \
+                         tip {committed}); retrying on a fresh window",
+                    );
+                }
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
