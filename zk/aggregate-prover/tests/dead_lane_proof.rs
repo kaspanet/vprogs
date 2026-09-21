@@ -1,7 +1,8 @@
-//! Reproduces the aggregate-prover death when a bundle's final block is reorged away
-//! mid-aggregation: the lane-proof fetch fails for the dead block and the worker thread
-//! panics (the production `RemoteLaneSource` panics after exhausting its retries), killing
-//! bundling and settlement for the rest of the process's life.
+//! Pins the aggregate prover's survival when a bundle's final block is reorged away
+//! mid-aggregation: the lane-proof fetch fails for the dead block, and the worker must defer
+//! the bundle (nothing emitted, batches re-queued for the next wake) rather than panic the way
+//! the production `RemoteLaneSource` used to after exhausting its retries. The reorg's rollback
+//! command then evicts the dead block and the replacement block's bundle settles.
 
 // The backend traits return `impl Future + 'static`, which an `async fn` cannot satisfy: its future
 // borrows `&self`.
@@ -27,7 +28,7 @@ use vprogs_zk_abi::batch_aggregator::{StateTransition, StateTransitionArgs};
 use vprogs_zk_aggregate_prover::{
     AggregateProver, AggregateProverConfig, ScheduledBundle, SettlementArtifact,
 };
-use vprogs_zk_batch_prover::{LaneProofRequest, LaneProofSource};
+use vprogs_zk_batch_prover::{LaneProofError, LaneProofRequest, LaneProofSource};
 
 /// Transaction-guest image id. This repro proves nothing real, so image ids only key receipt
 /// lookups.
@@ -139,21 +140,23 @@ struct DeadBlockLaneSource {
 }
 
 impl LaneProofSource for DeadBlockLaneSource {
-    async fn fetch_lane_proof(&self, req: LaneProofRequest) -> GetSeqCommitLaneProofResponse {
-        // RED STAGE: the trait is infallible, so the production failure shape for the dead
-        // block is the panic the RemoteLaneSource emits after exhausting retries. Live blocks
-        // must keep serving, or the red failure fires for the wrong reason (block 1 never
-        // settles). GREEN STAGE (Task 4): this arm returns Err and the test asserts deferral.
+    async fn fetch_lane_proof(
+        &self,
+        req: LaneProofRequest,
+    ) -> Result<GetSeqCommitLaneProofResponse, LaneProofError> {
+        // The dead block's fetch fails exactly the way the production source reports a
+        // reorged-away block: an error once its retries are exhausted. Live blocks keep serving,
+        // so block 1 settles and the failure is attributable to the dead block alone.
         if req.block == self.dead {
-            panic!("get_seq_commit_lane_proof failed after 10 attempts: block not found");
+            return Err(LaneProofError("block not found".into()));
         }
-        GetSeqCommitLaneProofResponse {
+        Ok(GetSeqCommitLaneProofResponse {
             smt_proof: Vec::new(),
             lane: None,
             payload_and_ctx_digest: Hash::default(),
             parent_seq_commit: Hash::default(),
             inactivity_shortcut: Hash::default(),
-        }
+        })
     }
 }
 
@@ -220,12 +223,13 @@ fn next_bundle(
 }
 
 /// Commits a one-transaction batch for `meta`, stands in for the batch prover by publishing its
-/// receipt, and feeds it to the aggregate prover.
+/// receipt, feeds it to the aggregate prover, and returns the batch handle.
 fn commit_and_submit<S, P>(
     scheduler: &mut Scheduler<S, P>,
     prover: &AggregateProver<S, P>,
     meta: ChainBlockMetadata,
-) where
+) -> vprogs_scheduling_scheduler::ScheduledBatch<S, P>
+where
     S: vprogs_storage_types::Store,
     P: vprogs_scheduling_scheduler::Processor<
             S,
@@ -238,14 +242,12 @@ fn commit_and_submit<S, P>(
     batch.wait_committed_blocking();
     batch.publish_artifact(Some(settlement_journal()));
     prover.submit(&batch);
+    batch
 }
 
 /// Tests that a bundle whose final block was reorged away mid-aggregation (its lane-proof fetch
-/// fails) does not kill the worker: the next block's bundle must still settle.
-///
-/// Today the lane-proof fetch is infallible, so the dead block's failure surfaces as the worker
-/// thread panicking inside the fetch, and bundling and settlement stop for the rest of the
-/// process's life.
+/// fails) does not kill the worker: the bundle is deferred with no handle published, the reorg's
+/// rollback command evicts it, and the replacement block's bundle settles.
 #[test]
 fn dead_lane_proof_fetch_does_not_kill_the_worker() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
@@ -275,7 +277,7 @@ fn dead_lane_proof_fetch_does_not_kill_the_worker() {
 
         // Block 1: commits and settles normally; the lane source serves every live block, so a
         // failure here would be the wrong reason for the test to fail.
-        commit_and_submit(&mut scheduler, &prover, block(1, 0));
+        let first = commit_and_submit(&mut scheduler, &prover, block(1, 0));
         let bundle = next_bundle(&settlement_queue, Duration::from_secs(10))
             .expect("the live block's bundle must settle");
         bundle.wait_artifact_published_blocking();
@@ -283,22 +285,37 @@ fn dead_lane_proof_fetch_does_not_kill_the_worker() {
         assert!(bundle.artifact().is_some(), "block 1's bundle carries a real artifact");
 
         // The dead block: a reorg orphaned it while its bundle was in flight, so its lane-proof
-        // fetch fails. Its bundle forms (the receipt is published), and the fetch kills the
-        // worker today.
+        // fetch fails. The worker must defer the bundle: publish no handle, re-queue the batch,
+        // and park until the reorg's rollback or new work wakes it.
         commit_and_submit(&mut scheduler, &prover, block(DEAD_BLOCK as u8, 1));
+        // Let the deferring attempt run before the reorg lands so the defer path itself is
+        // exercised, not only the rollback eviction; the assertions below hold under either
+        // interleaving.
+        thread::sleep(Duration::from_millis(250));
 
-        // The worker must survive and settle the next block's bundle.
+        // The reorg reaches the prover the way the bridge delivers it: a rollback command pushed
+        // through the public API, evicting the dead block's deferred batch.
+        prover.rollback(first.checkpoint().index());
+
+        // The replacement block the chain settled on after the reorg.
         commit_and_submit(&mut scheduler, &prover, block(REPLACEMENT_BLOCK as u8, 1));
         let bundle = next_bundle(&settlement_queue, Duration::from_secs(10))
-            .expect("the worker must survive the dead lane-proof fetch and keep settling");
+            .expect("the worker must defer the dead block's bundle and keep settling");
         assert_eq!(
             bundle.block_prove_to(),
             block_hash(REPLACEMENT_BLOCK as u8),
-            "the dead block's bundle killed the worker: its handle was emitted but never \
-             resolved, and the replacement block never settled",
+            "no handle may be published for the dead block: the queue must hold block 1's \
+             bundle and then the replacement's",
         );
         bundle.wait_artifact_published_blocking();
         assert!(bundle.artifact().is_some(), "the replacement's bundle carries a real artifact");
+
+        // Exactly two handles were ever published: block 1's and the replacement's. The dead
+        // block's deferral emitted none, so nothing further may arrive.
+        assert!(
+            next_bundle(&settlement_queue, Duration::from_millis(500)).is_none(),
+            "no further handle may arrive: the dead block's bundle stays deferred, never emitted",
+        );
 
         prover.shutdown();
         scheduler.shutdown();

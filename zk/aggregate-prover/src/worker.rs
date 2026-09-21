@@ -25,6 +25,25 @@ use crate::{
     SettlementArtifact, command::Command, extract_bundle_exits,
 };
 
+/// Outcome of one bundle prove attempt.
+enum BundleOutcome {
+    /// A handle was published onto the settlement queue (proved or resolved no-op).
+    Emitted,
+    /// The lane-proof fetch failed; the caller re-queues the bundle and retries after the next
+    /// wake. Nothing was emitted, so no settlement consumer is waiting on it.
+    Deferred,
+}
+
+/// Outcome of the prove-or-cache step inside one bundle attempt.
+enum ProveOutcome<R> {
+    /// The aggregate receipt (freshly proved or reloaded from cache).
+    Receipt(R),
+    /// Shutdown raced the proof; the caller discards the bundle.
+    Shutdown,
+    /// The lane-proof fetch failed for the bundle's final block.
+    LaneProofFailed,
+}
+
 /// Background worker that accumulates scheduled batches, forms bundles from the consecutively-ready
 /// prefix of their per-batch receipts, and proves one settlement-level receipt per bundle.
 pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend, L: LaneProofSource> {
@@ -275,8 +294,9 @@ where
     }
 
     /// Forms the next bundle from the consecutively-ready prefix of the queue and proves it.
-    /// Returns `true` when a bundle was consumed (proved, no-op, or empty), `false`
-    /// when there was nothing to do.
+    /// Returns `true` when progress was made (a bundle consumed, proved, no-op, or empty; a
+    /// canceled prefix evicted), `false` when there was nothing to do or the bundle's lane proof
+    /// was unavailable (deferred, its batches re-queued at the front).
     async fn try_prove_one_bundle(&mut self) -> bool {
         let Some(front) = self.queued.front().cloned() else {
             return false;
@@ -328,23 +348,42 @@ where
         let bundle: Vec<ScheduledBatch<S, P>> =
             (0..take).map(|_| self.queued.pop_front().unwrap()).collect();
 
-        self.prove_bundle(&bundle).await;
-        // Retain the consumed batches so a competitor settling a shorter range can re-aggregate the
-        // surviving suffix from them, but only when a settlement watch drives that re-aggregation:
-        // with no watch wired, `retained` is never read and would grow for the whole run. A
-        // shutdown-discard (the proof was abandoned mid-flight) skips retention, matching the
-        // discard-the-proved-bundle behavior in `prove_bundle`.
-        if self.settlement.is_some() && !self.prover.shutdown.is_open() {
-            self.retained.extend(bundle.iter().cloned());
+        match self.prove_bundle(&bundle).await {
+            BundleOutcome::Emitted => {
+                // Retain the consumed batches so a competitor settling a shorter range can
+                // re-aggregate the surviving suffix from them, but only when a settlement watch
+                // drives that re-aggregation: with no watch wired, `retained` is never read and
+                // would grow for the whole run. A shutdown-discard (the proof was abandoned
+                // mid-flight) skips retention, matching the discard-the-proved-bundle behavior in
+                // `prove_bundle`.
+                if self.settlement.is_some() && !self.prover.shutdown.is_open() {
+                    self.retained.extend(bundle.iter().cloned());
+                }
+                true
+            }
+            BundleOutcome::Deferred => {
+                // Put the bundle back at the front and park: the next wake (a new batch from a
+                // live L1, the rollback command a reorg is about to deliver, or shutdown)
+                // re-drives formation against whatever the chain looks like then. Returning false
+                // parks the loop instead of busy-spinning the fetch.
+                // ponytail: the retry cadence is bound to new L1 activity (inbox wakes), no
+                // dedicated timer; add one only if a stalled node must be re-polled while the
+                // lane is otherwise idle.
+                for batch in bundle.iter().rev() {
+                    self.queued.push_front(batch.clone());
+                }
+                false
+            }
         }
-        true
     }
 
     /// Proves one already-chosen bundle and publishes its handle with the settled
     /// [`SettlementArtifact`], or a resolved no-op handle when the bundle is all-empty or leaves
     /// the committed transition unchanged. A bundle whose coordinate has proved before reuses its
-    /// cached receipt instead of re-proving.
-    async fn prove_bundle(&self, bundle: &[ScheduledBatch<S, P>]) {
+    /// cached receipt instead of re-proving. The handle is emitted only once a receipt exists: a
+    /// bundle whose lane-proof fetch fails is returned as [`BundleOutcome::Deferred`] with nothing
+    /// emitted, so no settlement consumer is left waiting on it.
+    async fn prove_bundle(&self, bundle: &[ScheduledBatch<S, P>]) -> BundleOutcome {
         let take = bundle.len();
         let last_checkpoint = bundle.last().unwrap().checkpoint();
         let last_metadata = *last_checkpoint.metadata();
@@ -372,19 +411,17 @@ where
                 checkpoint_index,
                 BundleBlocks { from_block, block_prove_to },
             ));
-            return;
+            return BundleOutcome::Emitted;
         }
 
-        // Publish the (still unproven) bundle handle before proving, mirroring how the scheduler
-        // publishes a `ScheduledBatch` before the batch prover fills its receipt: the settlement
-        // worker can pop the handle and reconcile pacing now, then await the artifact. The retained
-        // `handle` is filled below once proving completes.
+        // The bundle's handle, emitted only after a receipt exists below: a fetch that fails (the
+        // final block was reorged away) defers the bundle without publishing a handle no consumer
+        // could ever see resolved.
         let handle = ScheduledBundle::new(
             take,
             checkpoint_index,
             BundleBlocks { from_block, block_prove_to },
         );
-        self.emit(handle.clone());
 
         // The bundle's `from -> to` coordinate (its start checkpoint + block, claimed tip
         // commitment) proves to the same settlement receipt, so a replay (including a flip reorg
@@ -395,13 +432,21 @@ where
         let seq_commit = last_metadata.seq_commit.as_bytes();
         let agg_key = handle.agg_key(*self.backend.aggregator_image_id(), seq_commit);
         let journals: Vec<Vec<u8>> = receipts.iter().map(|r| B::journal_bytes(r)).collect();
-        let Some(receipt) = self.prove_or_cache(agg_key, block_prove_to, receipts).await else {
-            // Shutting down: resolve the published handle as a no-op so a consumer awaiting its
-            // artifact is released rather than blocked on a latch that never opens, and drop the
-            // proved bundle (the same discard-on-shutdown behavior as before).
-            handle.publish_artifact(None);
-            return;
+        let receipt = match self.prove_or_cache(agg_key, block_prove_to, receipts).await {
+            ProveOutcome::Receipt(receipt) => receipt,
+            // Shutdown raced the proof or the final block's lane proof is unavailable (a reorg
+            // orphaned it): nothing was emitted, so no consumer can be waiting on a handle, and
+            // the caller discards or defers the bundle.
+            ProveOutcome::Shutdown | ProveOutcome::LaneProofFailed => {
+                return BundleOutcome::Deferred;
+            }
         };
+
+        // Publish the bundle handle now that its receipt exists, mirroring how the scheduler
+        // publishes a `ScheduledBatch` before the batch prover fills its receipt: the settlement
+        // worker can pop the handle and reconcile pacing, then await the artifact. The retained
+        // `handle` is filled below.
+        self.emit(handle.clone());
 
         // Parse the settlement journal.
         let journal = B::journal_bytes(&receipt);
@@ -419,7 +464,7 @@ where
             && st.deposit_spk_hash == [0u8; 32]
         {
             handle.publish_artifact(None);
-            return;
+            return BundleOutcome::Emitted;
         }
 
         if let Some(covenant_id) = self.covenant_id {
@@ -479,20 +524,23 @@ where
                 }));
             }
         }
+        BundleOutcome::Emitted
     }
 
     /// Proves (or reloads from cache) the aggregate receipt for a bundle proving through
     /// `block_prove_to` over the non-empty `receipts`, keying the cache at `agg_key`. Returns
-    /// `None` only on shutdown mid-proof (the caller discards the bundle).
+    /// [`ProveOutcome::Shutdown`] when shutdown races the proof (the caller discards the bundle)
+    /// or [`ProveOutcome::LaneProofFailed`] when the final block's lane proof cannot be fetched
+    /// (the caller defers or drops the bundle).
     async fn prove_or_cache(
         &self,
         agg_key: AggregatorKey,
         block_prove_to: Hash,
         receipts: Vec<B::Receipt>,
-    ) -> Option<B::Receipt> {
+    ) -> ProveOutcome<B::Receipt> {
         let receipt_store = &self.prover.receipt_store;
         if let Some(receipt) = receipt_store.read_agg_receipt(agg_key).resolve().await {
-            return Some(receipt);
+            return ProveOutcome::Receipt(receipt);
         }
         // Aggregate the bundle: fetch the final block's lane proof, encode the aggregator inputs
         // over the per-batch journals, and prove with the per-batch receipts as composition
@@ -501,16 +549,26 @@ where
         // Stay cancelable while fetching: the remote source retries a dead node for up to ~105s
         // and each in-flight wRPC request holds the node's store Arc, so an uncanceled fetch
         // would wedge the shutdown join and keep a restarting node from reopening its store.
-        // Dropping the fetch future aborts the request in milliseconds instead; None makes the
+        // Dropping the fetch future aborts the request in milliseconds instead; Shutdown makes the
         // caller discard the bundle the same way as a proof abandoned mid-proof below.
         let journals: Vec<Vec<u8>> = receipts.iter().map(|r| B::journal_bytes(r)).collect();
-        let lane_proof = tokio::select! {
+        let fetched = tokio::select! {
             biased;
-            () = self.prover.shutdown.wait() => return None,
+            () = self.prover.shutdown.wait() => return ProveOutcome::Shutdown,
             proof = self.lane_source.fetch_lane_proof(LaneProofRequest {
                 block: block_prove_to,
                 lane_key: self.lane_key,
             }) => proof,
+        };
+        let lane_proof = match fetched {
+            Ok(proof) => proof,
+            Err(e) => {
+                log::warn!(
+                    "aggregate-prover: lane proof for {block_prove_to} unavailable ({e}); \
+                     deferring the bundle until the chain or the node recovers"
+                );
+                return ProveOutcome::LaneProofFailed;
+            }
         };
         let inputs = AggregatorInputs::encode(
             self.backend.batch_image_id(),
@@ -519,13 +577,13 @@ where
         );
         let receipt = self.backend.prove_aggregator(&inputs, receipts).await;
         if self.prover.shutdown.is_open() {
-            return None;
+            return ProveOutcome::Shutdown;
         }
 
         // Wait for the receipt to be durable before publishing the artifact, so a crash never
         // leaves a consumed-but-uncached settlement receipt.
         receipt_store.write_agg_receipt(agg_key, receipt.clone()).wait().await;
-        Some(receipt)
+        ProveOutcome::Receipt(receipt)
     }
 
     /// Publishes a formed bundle's handle onto the settlement queue, if one is wired. With no queue
@@ -594,6 +652,9 @@ where
         if self.last_reformed_from == Some(suffix_from) {
             return;
         }
+        // A deferral here (the suffix's final block is dead) drops the re-formed bundle: the
+        // reorg's forthcoming rollback resets the re-form guard and truncates `retained`, so new
+        // work re-drives whatever range survives.
         self.prove_bundle(&suffix).await;
         self.last_reformed_from = Some(suffix_from);
     }
@@ -771,8 +832,17 @@ where
             image_id: *self.backend.aggregator_image_id(),
             seq_commit: end_metadata.seq_commit.as_bytes(),
         };
-        let Some(receipt) = self.prove_or_cache(agg_key, end_metadata.hash, receipts).await else {
-            return 0; // shutdown mid-proof; the next startup re-runs the pass
+        let receipt = match self.prove_or_cache(agg_key, end_metadata.hash, receipts).await {
+            ProveOutcome::Receipt(receipt) => receipt,
+            ProveOutcome::Shutdown => return 0, // next startup re-runs the pass
+            ProveOutcome::LaneProofFailed => {
+                log::warn!(
+                    "aggregate-prover: committed-gap bundle through {} has no live lane proof \
+                     (reorg during downtime); leaving the range for new work",
+                    end_metadata.hash
+                );
+                return 0;
+            }
         };
         let entry = JournalEntry {
             end_index: covered_end,
@@ -837,9 +907,18 @@ where
             image_id: *self.backend.aggregator_image_id(),
             seq_commit: entry.seq_commit.as_bytes(),
         };
-        let Some(receipt) = self.prove_or_cache(agg_key, entry.block_prove_to, receipts).await
-        else {
-            return; // shutdown mid-proof; nothing to feed
+        let receipt = match self.prove_or_cache(agg_key, entry.block_prove_to, receipts).await {
+            ProveOutcome::Receipt(receipt) => receipt,
+            ProveOutcome::Shutdown => return, /* shutdown mid-proof; the next startup re-runs
+                                                * the pass */
+            ProveOutcome::LaneProofFailed => {
+                log::warn!(
+                    "aggregate-prover: resume split for bundle {start} has no live lane proof \
+                     (reorg during downtime); dropping it"
+                );
+                journal.delete(start);
+                return;
+            }
         };
         let successor = JournalEntry {
             end_index: entry.end_index,
