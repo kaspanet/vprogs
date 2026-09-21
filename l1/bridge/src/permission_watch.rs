@@ -22,7 +22,7 @@ fn decode_small_int(opcode: u8, data: &[u8]) -> Option<i64> {
     } else if (0x51..=0x60).contains(&opcode) {
         Some((opcode - 0x50) as i64)
     } else if !data.is_empty() {
-        kaspa_txscript::deserialize_i64(data, false).ok()
+        kaspa_txscript::deserialize_i64(data).ok()
     } else {
         None
     }
@@ -534,7 +534,7 @@ mod tests {
         let siblings = claim_siblings(&leaves, 0);
 
         let mut b = kaspa_txscript::script_builder::ScriptBuilder::with_flags(
-            kaspa_txscript::EngineFlags { covenants_enabled: true, ..Default::default() },
+            kaspa_txscript::EngineFlags::default(),
         );
         // Walk 0 (corrupted sibling data)
         for level in (0..siblings.len()).rev() {
