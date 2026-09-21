@@ -46,9 +46,8 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend, L: LaneProofSour
     bundle_size: RangeInclusive<usize>,
     /// Batches accumulated but not yet bundled, in scheduling order.
     queued: VecDeque<ScheduledBatch<S, P>>,
-    /// Batches consumed into a proved bundle but not yet known to be settled, in scheduling order.
-    /// [`reaggregate_superseded`](Self::reaggregate_superseded) re-forms the suffix of these a
-    /// shorter competitor superseded; drained once a settlement covers them.
+    /// Batches consumed into a proved bundle but not yet covered by a settlement; re-formed by
+    /// [`reaggregate_superseded`](Self::reaggregate_superseded) when a competitor supersedes them.
     retained: VecDeque<ScheduledBatch<S, P>>,
     /// Receiver on the bridge's covenant `last_settlement` watch driving
     /// [`reaggregate_superseded`](Self::reaggregate_superseded), or `None` to run without
@@ -341,13 +340,10 @@ where
         true
     }
 
-    /// Aggregates one already-chosen bundle into a settlement receipt and publishes it: fetches the
-    /// final block's lane proof, encodes the aggregator inputs over the per-batch journals, proves
-    /// (with the per-batch receipts as composition assumptions) or reuses the cached receipt, then
-    /// fills the published handle with the proved [`SettlementArtifact`]. An all-empty or no-op
-    /// bundle (one whose committed transition is unchanged) publishes a resolved no-op handle
-    /// instead. The same body serves the normal front-of-queue bundle and a re-aggregated
-    /// superseded suffix.
+    /// Proves one already-chosen bundle and publishes its handle with the settled
+    /// [`SettlementArtifact`], or a resolved no-op handle when the bundle is all-empty or leaves
+    /// the committed transition unchanged. A bundle whose coordinate has proved before reuses its
+    /// cached receipt instead of re-proving.
     async fn prove_bundle(&self, bundle: &[ScheduledBatch<S, P>]) {
         let take = bundle.len();
         let last_checkpoint = bundle.last().unwrap().checkpoint();
@@ -487,8 +483,7 @@ where
 
     /// Proves (or reloads from cache) the aggregate receipt for a bundle proving through
     /// `block_prove_to` over the non-empty `receipts`, keying the cache at `agg_key`. Returns
-    /// `None` only on shutdown mid-proof (the caller discards the bundle). Shared by the live
-    /// front-of-queue path and the restart resume path.
+    /// `None` only on shutdown mid-proof (the caller discards the bundle).
     async fn prove_or_cache(
         &self,
         agg_key: AggregatorKey,
@@ -541,30 +536,11 @@ where
         }
     }
 
-    /// Re-aggregates the suffix of our retained batches that survives a competitor's settlement.
-    ///
-    /// `latest` is the bridge's newest covenant `last_settlement`. Both provers consume the same
-    /// bridge batch stream, so the settlement's `block_prove_to` is the final block of one of our
-    /// retained batches: drop that batch and every batch before it (the competitor covered them),
-    /// then re-form the surviving suffix into a fresh bundle whose first batch's `prev_state`
-    /// already equals the adopted tip, and prove it. The settler accepts that artifact directly
-    /// (its `prev_state == cov.state`), so two contending provers converge on one continuation
-    /// chain. Only the cheap aggregator STARK re-runs; the cached per-batch receipts are reused.
-    ///
-    /// Cases on the settlement boundary `block_prove_to`:
-    /// - matches a retained batch: prefix-drain `0..=k` (keeps the suffix consecutive for the
-    ///   verifier's `prev_state` chaining), then re-form the remainder.
-    /// - absent from our window (the boundary is not one of our retained blocks): drop nothing and
-    ///   re-form nothing. `block_prove_to` is a block hash with no orderable relation to our
-    ///   retained blocks, so we cannot tell "covered all of them" from "behind / not ours" without
-    ///   risking dropping batches that are still unsettled. Forward-only: a later settlement whose
-    ///   boundary does land on a retained block drains them, and a competitor settling past our
-    ///   whole window simply leaves a bounded residual that never re-forms (the same memory profile
-    ///   as the pre-existing unbounded-await case, under the single-miner / low-reorg assumption).
-    ///
-    /// `None` is a no-op: a reorg that orphaned the settlement publishes `None`, and the rollback
-    /// command truncates `retained` ahead of any re-form (single-miner / low-reorg assumption,
-    /// inherited from the settler).
+    /// Re-aggregates the suffix of our retained batches that survives a competitor's settlement,
+    /// so two contending provers converge on one continuation chain: drops the batches the
+    /// settlement covered, then re-proves the remainder as a fresh bundle chaining off the adopted
+    /// tip (only the cheap aggregator STARK re-runs; the cached per-batch receipts are reused).
+    /// `latest: None` (a reorg orphaned the settlement) is a no-op.
     async fn reaggregate_superseded(&mut self, latest: Option<SettlementInfo>) {
         let Some(settlement) = latest else {
             return;
@@ -581,6 +557,10 @@ where
             settled_prefix(self.queued.iter().map(|b| b.checkpoint().metadata().hash), boundary);
         let retained_drain =
             settled_prefix(self.retained.iter().map(|b| b.checkpoint().metadata().hash), boundary);
+        // An unmatched boundary drops nothing: with no orderable relation between the boundary
+        // and our window blocks we cannot tell "covered all" from "behind / not ours", and
+        // dropping would risk discarding a still-unsettled suffix. Forward-only, under the
+        // single-miner / low-reorg assumption.
         if queued_drain.is_none() && retained_drain.is_none() {
             log::debug!(
                 "aggregate-prover: settlement {} boundary {} matches no window block; nothing \
@@ -618,10 +598,9 @@ where
         self.last_reformed_from = Some(suffix_from);
     }
 
-    /// Deletes journal entries the settlement `tip` fully covers, mapping the tip's boundary
-    /// block to a checkpoint index through batch metadata bounded by the journal's own span.
-    /// An unmapped boundary (a competitor settling a fork block outside our metadata) deletes
-    /// nothing and logs: the same bounded residual the live re-aggregation path documents.
+    /// Deletes journal entries the on-chain settlement `tip` fully covers. A boundary mapping to
+    /// no batch in the journal's span (a competitor's fork block outside our metadata) deletes
+    /// nothing and logs.
     fn compact_journal(&self, tip: &SettlementInfo) {
         let Some(journal) = &self.journal else { return };
         let entries = journal.entries();
@@ -646,34 +625,18 @@ where
         }
     }
 
-    /// Resumes settlement after a restart: deletes journal entries the on-chain tip covers,
-    /// re-aggregates the one entry a competitor's boundary lands inside from cached per-batch
-    /// receipts, and re-feeds every surviving entry onto the settlement queue ahead of new
-    /// work. Re-fed bundles chain exactly like fresh ones; the settlement worker's existing
-    /// adopt/skip/superseded paths land them.
+    /// Resumes settlement after a restart: deletes journal entries the on-chain tip already
+    /// covers, splits the one entry a competitor's boundary lands inside, and re-feeds every
+    /// surviving entry onto the settlement queue ahead of new work. Re-fed bundles chain exactly
+    /// like fresh ones; the settlement worker's adopt/skip/superseded paths land them.
     ///
-    /// The pass applies only to entries with `end_index <= max_end`. The startup call snapshots
-    /// the pre-restart journal's last end index and every settlement-watch advance re-runs the
-    /// pass with that snapshot: the bridge's first startup publication is the pre-downtime
-    /// baseline, so a competitor that settled during the downtime reaches the journal only as a
-    /// later advance. Entries beyond the snapshot are the live pipeline's (recorded by the
-    /// proving path, compacted vintage-agnostically, re-aggregated in memory), so the advance
-    /// pass never re-feeds them, with one deliberate exception: this run's committed-gap entry,
-    /// whose end the caller adds to the scope so a boundary the startup pass could not yet
-    /// observe re-splits that entry in process. A zero or empty scope is a no-op.
-    ///
-    /// Ceiling: resumed bundles require the same guest ELF image ids as the run that proved
-    /// them (image id is part of every receipt key). An entry whose receipt cannot be reloaded
-    /// is dropped with a logged warning; that range settles again only through new activity.
-    /// Reorgs during downtime inherit the single-miner / low-reorg assumption: an unmapped
-    /// boundary compacts nothing and the tail re-feeds as-is, which the settler then skips or
-    /// settles per its own reconcile rules. While the pre-restart tail drains, an advance pass
-    /// may re-feed an entry an earlier pass already fed; the settler's adopt/skip/superseded
-    /// paths absorb the duplicate without landing anything twice.
-    ///
-    /// `tip: None` (no settlement ever landed, so the startup gate escaped on the inbox) is the
-    /// no-boundary sibling of the unmapped boundary: nothing covers any entry, and the whole
-    /// scoped tail re-feeds unchanged.
+    /// Scoped to entries with `end_index <= max_end`: startup snapshots the pre-restart journal
+    /// tail, and each settlement-watch advance re-runs the pass against that snapshot until the
+    /// tail settles (the bridge's first startup publication is the pre-downtime baseline, so a
+    /// competitor that settled during the downtime reaches the watch only as a later advance).
+    /// `tip: None` (no settlement ever landed) re-feeds the scoped tail unchanged. An entry
+    /// whose receipt cannot be reloaded is dropped with a warning; that range settles again only
+    /// through new activity.
     async fn resume_pending(&mut self, tip: Option<&SettlementInfo>, max_end: u64) {
         let Some(journal) = self.journal.clone() else { return };
         let entries: Vec<(u64, JournalEntry)> =
@@ -724,32 +687,15 @@ where
     }
 
     /// Startup pass covering committed-but-unjournaled batches: a kill between a batch's commit
-    /// and its bundle's journal record leaves the checkpoint range above `tail_end` committed in
-    /// the store with no journal entry over it, and the scheduler never re-schedules committed
-    /// batches, so every later bundle would prove from a state root the covenant never took and
-    /// the settler would skip it forever (the restarted-prover-idle wedge). Re-forms one bundle
-    /// over the range from the persisted batch metadata and cached per-batch receipts (the same
-    /// recipe as [`split_straddler`](Self::split_straddler)), records its entry, and feeds it after
-    /// the pending journal tail, ahead of new work. Returns the recorded entry's end index for
-    /// the advance pass's scope, so a settlement boundary observed only after this pass re-splits
-    /// the entry there; 0 when nothing was recorded.
+    /// and its bundle's journal record leaves a checkpoint range the scheduler never re-schedules,
+    /// so every later bundle would prove from a state root the covenant never took and the settler
+    /// would skip it forever (the restarted-prover-idle wedge). Re-forms one bundle over that
+    /// range from persisted batch metadata and cached per-batch receipts, records its entry, and
+    /// feeds it after the journal tail, ahead of new work. Returns the recorded entry's end index
+    /// for the advance pass's scope, or 0 when nothing was recorded.
     ///
-    /// `tip` bounds the re-formation below: a settlement boundary landing inside the range
-    /// splits it exactly as the straddled journal entry is split, since a re-formed bundle
-    /// starting at or below the boundary carries a `prev_state` the covenant already passed and
-    /// the settler would skip it. An unmapped boundary (a competitor's fork block outside our
-    /// metadata) keeps the whole range: the settler then skips or settles the re-fed bundle per
-    /// its own reconcile rules, the same unmapped-boundary residual as
-    /// [`resume_pending`](Self::resume_pending).
-    ///
-    /// Ceiling: an empty batch (its block carried no lane tx, so the lane tip carried forward
-    /// unchanged) proves no receipt and joins no aggregate; the live bundle path filters those
-    /// the same way. The bundle covers the contiguously-durable prefix of the range: the first
-    /// non-empty batch whose metadata or receipt is missing bounds it (the receipt of a freshly
-    /// committed batch may still be in flight), and the range above a miss logs at error and
-    /// stays uncovered until the next startup's pass re-runs over it (an in-flight batch
-    /// journals live; a genuinely lost one leaves the loud pre-fix wedge). Reorgs during
-    /// downtime inherit the single-miner / low-reorg assumption.
+    /// `tip` bounds the range below: a settlement boundary landing inside it splits the range
+    /// exactly as [`split_straddler`](Self::split_straddler) splits a journaled entry.
     async fn reform_committed_gap(&mut self, tip: Option<&SettlementInfo>, tail_end: u64) -> u64 {
         let Some(journal) = self.journal.clone() else { return 0 };
         let Some((committed_tip, _)) = journal.committed_tip() else { return 0 };
@@ -843,12 +789,10 @@ where
         covered_end
     }
 
-    /// Re-aggregates the suffix of the straddled entry `(start..=entry.end_index)` that lies
-    /// strictly after `tip_index`, from the persisted batch metadata and cached per-batch
-    /// receipts, records the successor entry, and re-feeds it. An empty batch (its block carried
-    /// no lane tx, so the lane tip carried forward unchanged) proves no receipt and composes
-    /// nothing; it is skipped, as the live bundle path filtered it. A missing per-batch receipt
-    /// (image change or corruption) drops the entry with a warning instead of wedging.
+    /// Splits the journal entry a settlement boundary lands inside: re-aggregates its suffix
+    /// strictly after `tip_index` from cached per-batch receipts, records the successor entry,
+    /// and re-feeds it. Empty batches compose nothing; a missing receipt drops the entry with a
+    /// warning instead of wedging.
     async fn split_straddler(&mut self, start: u64, entry: JournalEntry, tip_index: u64) {
         let Some(journal) = self.journal.clone() else { return };
         let successor_start = tip_index + 1;
@@ -912,9 +856,8 @@ where
         self.refeed_one(successor_start, &receipt, &successor).await;
     }
 
-    /// Re-feeds ordered journal entries as pre-proved bundles: reload each aggregate receipt
-    /// by its journaled coordinates, rebuild the artifact from the receipt journal, publish the
-    /// handle, and push it; an entry that fails to reload is dropped with a warning.
+    /// Re-feeds ordered journal entries as pre-proved bundles onto the settlement queue; an
+    /// entry whose receipt fails to reload is dropped with a warning.
     async fn refeed_all(&mut self, entries: Vec<(u64, JournalEntry)>) {
         for (start, entry) in entries {
             let key = AggregatorKey {
@@ -990,19 +933,15 @@ where
     }
 }
 
-/// Awaits the receipt publication of the first not-yet-published queued batch, the wake source the
-/// park needs beyond the inbox. With a configured minimum bundle size the ready prefix can be short
-/// of the minimum; a batch behind the front publishing its receipt is what extends it, yet that
-/// publication does not touch the inbox. Without this arm a formable min-size bundle would strand
-/// at an idle tip. Parks forever when every queued batch is already published or the queue is
-/// empty: then only a new command can grow the prefix, which the inbox arm already wakes on.
-///
-/// Canceled batches are skipped: a canceled batch's `wait_artifact_published` returns immediately,
-/// so awaiting one would busy-spin. The caller evicts a canceled front, so this arm parks past
-/// canceled batches until the rollback command arrives.
+/// Awaits the receipt publication of the first not-yet-published queued batch: the park arm
+/// that wakes the run loop when a min-size bundle's ready prefix can grow without a new command.
+/// Parks forever when every queued batch is already published or the queue is empty, leaving
+/// waking to the inbox arm.
 async fn next_queued_batch_published<S: Store, P: Processor<S>>(
     queued: &VecDeque<ScheduledBatch<S, P>>,
 ) {
+    // Canceled batches are skipped: their `wait_artifact_published` returns immediately, so
+    // awaiting one would busy-spin. The caller evicts a canceled front.
     match queued.iter().find(|batch| !batch.artifact_published() && !batch.canceled()) {
         Some(batch) => batch.wait_artifact_published().await,
         None => std::future::pending::<()>().await,
@@ -1024,14 +963,8 @@ async fn settlement_changed(rx: Option<&mut watch::Receiver<Option<SettlementInf
 }
 
 /// How many leading window blocks a settlement landing on `boundary` covers, given the window's
-/// blocks in scheduling order.
-///
-/// `Some(n)`: `boundary` is the `n`-th window block, so the settlement covered the first `n`;
-/// drain that prefix and re-form the remainder. `None`: `boundary` is not one of our window
-/// blocks, so drop nothing. Dropping on an unmatched boundary would risk discarding a still-
-/// unsettled suffix (the boundary may sit behind our window, or cover a range we never proved),
-/// which is the wedge [`Worker::reaggregate_superseded`] exists to prevent. The boundary is matched
-/// from the back: chain-block hashes are unique, so at most one window block matches.
+/// blocks in scheduling order: `Some(n)` when `boundary` is the `n`-th window block, `None` when
+/// it matches none of them.
 fn settled_prefix(
     mut blocks: impl DoubleEndedIterator<Item = Hash> + ExactSizeIterator,
     boundary: Hash,
