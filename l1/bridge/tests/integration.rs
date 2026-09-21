@@ -4,8 +4,8 @@ use std::{
 };
 
 use kaspa_consensus_core::{
-    config::params::ForkActivation, constants::TX_VERSION_TOCCATA, header::Header,
-    merkle::calc_hash_merkle_root, network::NetworkId, subnets::SubnetworkId, tx::Transaction,
+    constants::TX_VERSION_TOCCATA, header::Header, merkle::calc_hash_merkle_root,
+    network::NetworkId, subnets::SubnetworkId, tx::Transaction,
 };
 use kaspa_rpc_core::{GetBlockTemplateResponse, RpcTransaction, api::rpc::RpcApi};
 use kaspa_seq_commit::hashing::lane_key;
@@ -492,13 +492,11 @@ async fn mine_fork_pair(node: &L1Node, first: &Transaction, second: &Transaction
 /// different tip than the proof the node commits in the merging block's header.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn busy_dag_mergeset_lane_tip_matches_node() {
-    // Toccata-always activates the seq-commit SMT (and its lane-proof RPC); instant coinbase
-    // maturity keeps the carrier funding to a handful of blocks.
+    // Instant coinbase maturity keeps the carrier funding to a handful of blocks.
     let node = L1Node::new(
         NetworkId::new(NetworkType::Simnet),
         Some(|p| {
             p.blockrate.coinbase_maturity = 1;
-            p.toccata_activation = ForkActivation::always();
         }),
     )
     .await;
