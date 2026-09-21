@@ -1496,8 +1496,7 @@ async fn warm_restart_settles_pending_tail() {
         NetworkId::new(NetworkType::Simnet),
         Some(|p| {
             p.blockrate.coinbase_maturity = 1;
-            p.toccata_activation = ForkActivation::always();
-            p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+            p.block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
         }),
     )
     .await;
@@ -1703,8 +1702,7 @@ async fn warm_restart_after_competitor_sweeps_tail() {
         NetworkId::new(NetworkType::Simnet),
         Some(|p| {
             p.blockrate.coinbase_maturity = 1;
-            p.toccata_activation = ForkActivation::always();
-            p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+            p.block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
         }),
     )
     .await;
@@ -1975,8 +1973,7 @@ async fn warm_restart_splits_at_competitor_boundary() {
         NetworkId::new(NetworkType::Simnet),
         Some(|p| {
             p.blockrate.coinbase_maturity = 1;
-            p.toccata_activation = ForkActivation::always();
-            p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+            p.block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
         }),
     )
     .await;
@@ -2300,8 +2297,7 @@ async fn warm_restart_after_own_settlement_lands() {
         NetworkId::new(NetworkType::Simnet),
         Some(|p| {
             p.blockrate.coinbase_maturity = 1;
-            p.toccata_activation = ForkActivation::always();
-            p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+            p.block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
         }),
     )
     .await;
@@ -2533,8 +2529,7 @@ async fn warm_restart_covers_committed_gap() {
         NetworkId::new(NetworkType::Simnet),
         Some(|p| {
             p.blockrate.coinbase_maturity = 1;
-            p.toccata_activation = ForkActivation::always();
-            p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+            p.block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
         }),
     )
     .await;
@@ -2815,8 +2810,7 @@ async fn settler_confirms_with_blind_settlement_watch() {
         NetworkId::new(NetworkType::Simnet),
         Some(|p| {
             p.blockrate.coinbase_maturity = 1;
-            p.toccata_activation = ForkActivation::always();
-            p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+            p.block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
         }),
     )
     .await;
