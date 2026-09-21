@@ -214,7 +214,7 @@ fn snapshot_shared_across_threads() {
 #[test]
 fn restore_replays_an_interior_id_gap() {
     // A reorg-canceled batch never persists metadata but keeps its id, so the persisted log
-    // carries holes (vprogs#110). Restore must keep the persisted ids instead of
+    // carries holes. Restore must keep the persisted ids instead of
     // re-densifying, and the next append must allocate past the highest persisted id.
     let manager =
         CanonicalChainManager::<u64>::new(CanonicalChain::default(), [(1u64, 1u64), (3u64, 3u64)]);

@@ -365,10 +365,9 @@ where
                 // Put the bundle back at the front and park: the next wake (a new batch from a
                 // live L1, the rollback command a reorg is about to deliver, or shutdown)
                 // re-drives formation against whatever the chain looks like then. Returning false
-                // parks the loop instead of busy-spinning the fetch.
-                // ponytail: the retry cadence is bound to new L1 activity (inbox wakes), no
-                // dedicated timer; add one only if a stalled node must be re-polled while the
-                // lane is otherwise idle.
+                // parks the loop instead of busy-spinning the fetch. The retry cadence is bound
+                // to new L1 activity (inbox wakes) with no dedicated timer; add one only if a
+                // stalled node must be re-polled while the lane is otherwise idle.
                 for batch in bundle.iter().rev() {
                     self.queued.push_front(batch.clone());
                 }
@@ -909,8 +908,8 @@ where
         };
         let receipt = match self.prove_or_cache(agg_key, entry.block_prove_to, receipts).await {
             ProveOutcome::Receipt(receipt) => receipt,
-            ProveOutcome::Shutdown => return, /* shutdown mid-proof; the next startup re-runs
-                                                * the pass */
+            ProveOutcome::Shutdown => return, // shutdown mid-proof; the next startup re-runs
+            // the pass
             ProveOutcome::LaneProofFailed => {
                 log::warn!(
                     "aggregate-prover: resume split for bundle {start} has no live lane proof \
