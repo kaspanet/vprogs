@@ -28,8 +28,8 @@ pub struct JournalEntry {
     pub seq_commit: Hash,
 }
 
-/// Store-backed operations the aggregate prover needs over the settlement journal and the batch
-/// metadata it maps boundaries through, as one object so the worker holds no store generic.
+/// Store-backed operations over the settlement journal and the batch metadata its boundary
+/// lookups map through.
 pub trait SettlementJournal: Send + Sync {
     /// Records the entry for the bundle starting at `start_index`, replacing any prior one.
     fn record(&self, start_index: u64, entry: &JournalEntry);
@@ -42,18 +42,12 @@ pub trait SettlementJournal: Send + Sync {
     /// Returns batch `index`'s full metadata, or `None` if the batch has no metadata.
     fn batch_metadata(&self, index: u64) -> Option<ChainBlockMetadata>;
     /// Returns the highest committed checkpoint index with its batch metadata, or `None` when no
-    /// batch has committed.
-    ///
-    /// A reverse seek over the batch-metadata space: pruning deletes only below the frontier, so
-    /// the last key is the committed tip. Ceiling: a rollback deletes no metadata rows, and
-    /// density past a rollback is restored only by re-execution overwriting the same indexes, so
-    /// a kill between a rollback and its re-execution can leave the top row fork-stale (the
-    /// single-miner / low-reorg assumption).
+    /// batch has committed. Ceiling: a kill between a rollback and its re-execution can leave the
+    /// top row fork-stale (single-miner / low-reorg assumption).
     fn committed_tip(&self) -> Option<(u64, ChainBlockMetadata)>;
-    /// Returns the checkpoint index whose batch block is `block`, scanning indices from `upper`
-    /// down to `lower` inclusive, or `None` when no batch in the window carries the block.
-    ///
-    /// A bounded reverse scan: callers bound it by the journal's own span, never the whole chain.
+    /// Returns the checkpoint index whose batch block is `block`, searching from `upper` down to
+    /// `lower` inclusive, or `None` when no batch in the window carries the block. Callers bound
+    /// the window by the journal's own span, never the whole chain.
     fn checkpoint_of_block(&self, block: Hash, upper: u64, lower: u64) -> Option<u64>;
     /// Returns whether any entry is recorded.
     fn has_entries(&self) -> bool;
@@ -111,6 +105,8 @@ impl<S: Store> SettlementJournal for StoreJournal<S> {
     }
 
     fn committed_tip(&self) -> Option<(u64, ChainBlockMetadata)> {
+        // Reverse seek: pruning deletes only below the committed frontier, so the last key is
+        // the tip.
         self.store.prefix_iter_rev(StateSpace::BatchMetadata, &[]).next().map(|(key, value)| {
             let index = u64::from_be_bytes(key.try_into().expect("corrupted metadata key"));
             let metadata = borsh::from_slice(&value).expect("corrupted store: metadata value");
