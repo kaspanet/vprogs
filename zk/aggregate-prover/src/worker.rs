@@ -44,6 +44,22 @@ enum ProveOutcome<R> {
     LaneProofFailed,
 }
 
+/// Outcome of one committed-gap pass.
+enum GapOutcome {
+    /// A bundle was re-formed over (part of) the committed range and recorded through this end
+    /// index.
+    Covered(u64),
+    /// No re-formable range: nothing committed past the journal tail, the on-chain tip already
+    /// covers it, or a deterministic metadata or receipt miss leaves it uncovered. Terminal, so
+    /// the caller never retries.
+    Nothing,
+    /// The final block's lane proof could not be fetched (a dead block or a stalled node; the
+    /// error does not say which). Carries the committed tip this attempt was scoped to; the
+    /// caller retries on later loop wakes, re-bounded to it so the retry never grows over
+    /// batches committed after the restart (those belong to the live bundling path).
+    Deferred(u64),
+}
+
 /// Background worker that accumulates scheduled batches, forms bundles from the consecutively-ready
 /// prefix of their per-batch receipts, and proves one settlement-level receipt per bundle.
 pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend, L: LaneProofSource> {
@@ -162,12 +178,18 @@ where
         //
         // After the tail resume, the committed-gap pass covers batches committed past the
         // journal tail; an empty journal over committed work reaches it too (the kill preceded
-        // every journal record).
+        // every journal record). A pass whose lane-proof fetch fails defers: `gap_bound` below
+        // holds the committed tip it was scoped to, and the main loop retries against it.
         let mut resume_max_end = 0u64;
         // The committed-gap entry this run records (0 when none); the advance pass's scope
         // extends to it below, so a settlement boundary observed only after the gap pass
         // re-splits that entry exactly as it re-splits the pre-restart tail.
         let mut gap_end = 0u64;
+        // The committed tip a deferred gap pass stays bounded to (`None` when no retry is
+        // pending). The startup pass runs unbounded; every retry re-runs against the same
+        // bound so it can only shrink (a boundary observed meanwhile splits the range) and
+        // never grow over post-restart commits.
+        let mut gap_bound: Option<u64> = None;
         let journal_holds_entries = self.journal.as_ref().is_some_and(|j| j.has_entries());
         if journal_holds_entries
             || self.journal.as_ref().is_some_and(|j| j.committed_tip().is_some())
@@ -213,11 +235,14 @@ where
                 if self.prover.shutdown.is_open() {
                     return;
                 }
-                gap_end = self.reform_committed_gap(tip.as_ref(), resume_max_end).await;
-            } else {
-                // An empty journal over committed batches: the kill preceded every bundle's
-                // journal record, so the whole committed span is the gap (lower edge 0).
-                gap_end = self.reform_committed_gap(tip.as_ref(), 0).await;
+            }
+            // The pass derives the range's lower edge from the journal tail itself: with
+            // entries it is the tail's end, and an empty journal over committed batches (the
+            // kill preceded every bundle's journal record) starts the span at 0.
+            match self.reform_committed_gap(tip.as_ref(), u64::MAX).await {
+                GapOutcome::Covered(end) => gap_end = end,
+                GapOutcome::Deferred(bound) => gap_bound = Some(bound),
+                GapOutcome::Nothing => {}
             }
             if self.prover.shutdown.is_open() {
                 return;
@@ -254,6 +279,33 @@ where
                     // so a boundary the gap pass could not yet observe re-splits it in
                     // process instead of wedging until the next restart.
                     self.resume_pending(Some(tip), resume_max_end.max(gap_end)).await;
+                }
+                if self.prover.shutdown.is_open() {
+                    return;
+                }
+            }
+
+            // Retry a deferred committed-gap pass before forming any new bundle. The fetch
+            // error conflates a reorged-away block with a node that was merely stalled at
+            // startup, and nothing else ever re-schedules a committed batch, so giving up
+            // after one attempt leaves the range uncovered for the life of the process
+            // whenever the failure was the node: the same deferral a live bundle's dead lane
+            // proof gets, retried on every wake (a new batch, a settlement advance, or
+            // shutdown). The retry re-runs the whole pass against the current journal and
+            // tip, so a boundary that landed meanwhile splits the range, and it
+            // self-terminates without a fetch once the journal tail reaches the bound (the
+            // gap was covered, or new work settled past a genuinely dead block). Running
+            // before bundle formation keeps the recovered gap bundle ahead of new-work
+            // bundles on the settlement queue, the ordering the settler's skip path assumes.
+            if let Some(bound) = gap_bound {
+                let tip = self.settlement.as_ref().and_then(|rx| *rx.borrow());
+                match self.reform_committed_gap(tip.as_ref(), bound).await {
+                    GapOutcome::Covered(end) => {
+                        gap_end = gap_end.max(end);
+                        gap_bound = None;
+                    }
+                    GapOutcome::Nothing => gap_bound = None,
+                    GapOutcome::Deferred(bound) => gap_bound = Some(bound),
                 }
                 if self.prover.shutdown.is_open() {
                     return;
@@ -751,16 +803,27 @@ where
     /// so every later bundle would prove from a state root the covenant never took and the settler
     /// would skip it forever (the restarted-prover-idle wedge). Re-forms one bundle over that
     /// range from persisted batch metadata and cached per-batch receipts, records its entry, and
-    /// feeds it after the journal tail, ahead of new work. Returns the recorded entry's end index
-    /// for the advance pass's scope, or 0 when nothing was recorded.
+    /// feeds it after the journal tail, ahead of new work. Returns [`GapOutcome::Covered`] with
+    /// the recorded entry's end index for the advance pass's scope, [`GapOutcome::Nothing`] when
+    /// the range needs no cover, or [`GapOutcome::Deferred`] when the lane-proof fetch failed and
+    /// the caller should retry on later wakes.
     ///
     /// `tip` bounds the range below: a settlement boundary landing inside it splits the range
-    /// exactly as [`split_straddler`](Self::split_straddler) splits a journaled entry.
-    async fn reform_committed_gap(&mut self, tip: Option<&SettlementInfo>, tail_end: u64) -> u64 {
-        let Some(journal) = self.journal.clone() else { return 0 };
-        let Some((committed_tip, _)) = journal.committed_tip() else { return 0 };
+    /// exactly as [`split_straddler`](Self::split_straddler) splits a journaled entry. `bound`
+    /// caps the range above at the committed tip a prior attempt was scoped to (`u64::MAX` on a
+    /// first run), so a retry never grows over batches committed after the restart; the range's
+    /// lower edge is the journal tail, so coverage by any path advances it past the gap.
+    async fn reform_committed_gap(
+        &mut self,
+        tip: Option<&SettlementInfo>,
+        bound: u64,
+    ) -> GapOutcome {
+        let Some(journal) = self.journal.clone() else { return GapOutcome::Nothing };
+        let tail_end = journal.entries().last().map_or(0, |(_, entry)| entry.end_index);
+        let Some((committed_tip, _)) = journal.committed_tip() else { return GapOutcome::Nothing };
+        let committed_tip = committed_tip.min(bound);
         if committed_tip <= tail_end {
-            return 0;
+            return GapOutcome::Nothing;
         }
         let boundary = match tip {
             Some(tip) => journal
@@ -770,7 +833,7 @@ where
         };
         // The on-chain tip already covers the whole range; new work chains from it directly.
         if boundary >= committed_tip {
-            return 0;
+            return GapOutcome::Nothing;
         }
         let first = boundary + 1;
         let Some(first_metadata) = journal.batch_metadata(first) else {
@@ -778,7 +841,7 @@ where
                 "aggregate-prover: committed batch {first} above the journal tail lacks metadata; \
                  leaving its range uncovered"
             );
-            return 0;
+            return GapOutcome::Nothing;
         };
         // The bundle covers the contiguously-durable prefix: an empty batch is durable as-is,
         // and the first non-empty batch without metadata or a receipt bounds the range. The
@@ -823,7 +886,7 @@ where
         }
         // No real work below the miss: nothing to compose, matching the live no-op path.
         if receipts.is_empty() {
-            return 0;
+            return GapOutcome::Nothing;
         }
         let agg_key = AggregatorKey {
             prefix: Prefix { checkpoint_index: first.into() },
@@ -833,14 +896,16 @@ where
         };
         let receipt = match self.prove_or_cache(agg_key, end_metadata.hash, receipts).await {
             ProveOutcome::Receipt(receipt) => receipt,
-            ProveOutcome::Shutdown => return 0, // next startup re-runs the pass
+            // Shutdown raced the proof; the caller exits the loop and the next startup re-runs
+            // the pass.
+            ProveOutcome::Shutdown => return GapOutcome::Nothing,
             ProveOutcome::LaneProofFailed => {
                 log::warn!(
                     "aggregate-prover: committed-gap bundle through {} has no live lane proof \
-                     (reorg during downtime); leaving the range for new work",
+                     (a dead block or a stalled node); deferring the range to the next wake",
                     end_metadata.hash
                 );
-                return 0;
+                return GapOutcome::Deferred(committed_tip);
             }
         };
         let entry = JournalEntry {
@@ -855,7 +920,7 @@ where
             "aggregate-prover: re-formed committed gap {first}..={covered_end} onto the \
              settlement queue"
         );
-        covered_end
+        GapOutcome::Covered(covered_end)
     }
 
     /// Splits the journal entry a settlement boundary lands inside: re-aggregates its suffix
