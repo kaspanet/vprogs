@@ -28,6 +28,7 @@ std = ["vprogs-zk-abi/std"]
 
 [dependencies]
 blake2b_simd            = { workspace = true }
+log                     = { workspace = true }
 vprogs-core-codec       = { workspace = true }
 vprogs-core-hashing     = { workspace = true }
 vprogs-core-merkle-tree = { workspace = true }

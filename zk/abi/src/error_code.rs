@@ -10,6 +10,9 @@ pub enum ErrorCode {
     InvalidExitSpkTag = 2,
     /// `ScriptPublicKey` is not one of the supported variants (Schnorr P2PK / ECDSA P2PK / P2SH).
     InvalidExitSpk = 3,
+    /// Guest aborted without producing a journal; synthesized host-side when the executor call
+    /// fails.
+    GuestPanic = 4,
 }
 
 impl From<ErrorCode> for Error {

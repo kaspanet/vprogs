@@ -4,6 +4,7 @@ use risc0_zkvm::{
     Executor, ExecutorEnv, Prover, ProverOpts, Receipt, default_executor, default_prover,
 };
 use vprogs_core_macros::smart_pointer;
+use vprogs_zk_abi::{Error, ErrorCode, transaction_processor::Outputs};
 use vprogs_zk_vm::ExecOutcome;
 
 use crate::{ProofType, elf_binary::ElfBinary};
@@ -65,18 +66,25 @@ impl vprogs_zk_vm::Backend for Backend {
         let mut execution_result = Vec::new();
 
         let journal = EXECUTOR.with(|e| {
-            let session = e
-                .execute(
-                    ExecutorEnv::builder()
-                        .write_slice(&[wire_bytes.len() as u32])
-                        .write_slice(wire_bytes)
-                        .stdout(&mut execution_result)
-                        .build()
-                        .expect("failed to build executor environment"),
-                    &self.transaction_processor.elf,
-                )
-                .expect("executor failed");
-            session.journal.bytes
+            let env = ExecutorEnv::builder()
+                .write_slice(&[wire_bytes.len() as u32])
+                .write_slice(wire_bytes)
+                .stdout(&mut execution_result)
+                .build()
+                .expect("failed to build executor environment");
+
+            match e.execute(env, &self.transaction_processor.elf) {
+                Ok(session) => session.journal.bytes,
+                Err(err) => {
+                    // A guest abort ends the executor call with no journal; contain it to a
+                    // GuestPanic rejection so the batch keeps processing its other carriers.
+                    log::error!("transaction processor execution failed: {err}");
+                    execution_result.clear();
+                    execution_result.push(Outputs::ERR);
+                    Error::Guest(ErrorCode::GuestPanic as u32).encode(&mut execution_result);
+                    Vec::new()
+                }
+            }
         });
 
         ExecOutcome { stdout: execution_result, journal }
