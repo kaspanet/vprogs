@@ -28,32 +28,33 @@ fn decode_small_int(opcode: u8, data: &[u8]) -> Option<i64> {
     }
 }
 
-/// Updates the tracked permission outpoint registry after a verified claim spend.
+/// Updates the tracked permission outpoint registry after a verified claim spend: removes the
+/// spent outpoint and installs the continuation (`None` when nothing remains unclaimed).
 pub(crate) fn apply_registry_update(
     registry: &RwLock<HashMap<TransactionOutpoint, [u8; 32]>>,
     spent_outpoint: TransactionOutpoint,
-    spend_txid: [u8; 32],
-    new_unclaimed: u64,
+    cont_outpoint: Option<TransactionOutpoint>,
     new_root: [u8; 32],
 ) {
     let mut guard = registry.write().expect("poisoned lock");
     guard.remove(&spent_outpoint);
-    if new_unclaimed > 0 {
-        let continuation_outpoint = TransactionOutpoint::new(Hash::from_bytes(spend_txid), 1);
-        guard.insert(continuation_outpoint, new_root);
+    if let Some(cont_outpoint) = cont_outpoint {
+        guard.insert(cont_outpoint, new_root);
     }
 }
 
 /// Checks whether `tx` spends a tracked permission UTXO from `registry`.
 ///
-/// Returns [`PermissionSpend`] and updates `registry` on a valid claim spend, or `None` if
-/// the transaction is not a tracked claim spend or is malformed.
+/// Returns the [`PermissionSpend`] event, the matched spent outpoint, and the continuation
+/// outpoint installed into `registry` (`None` when nothing remains unclaimed), so the bridge
+/// can journal and later revert the transition on rollback. Returns `None` if the transaction
+/// is not a tracked claim spend or is malformed.
 pub(crate) fn check_claim_spend(
     registry: &RwLock<HashMap<TransactionOutpoint, [u8; 32]>>,
     tx: &Transaction,
     txid_bytes: [u8; 32],
     covenant_id: [u8; 32],
-) -> Option<PermissionSpend> {
+) -> Option<(PermissionSpend, TransactionOutpoint, Option<TransactionOutpoint>)> {
     // 1. Identify which input spends a tracked permission outpoint.
     let (matched_outpoint, matched_old_root, sig_script) = {
         let guard = registry.read().ok()?;
@@ -237,23 +238,32 @@ pub(crate) fn check_claim_spend(
     let new_root = fold_path(fold_leaf, &siblings, leaf_index);
     let new_unclaimed = old_unclaimed.saturating_sub(u64::from(amount == deduct));
 
-    // 9. Apply registry update.
-    apply_registry_update(registry, matched_outpoint, txid_bytes, new_unclaimed, new_root);
+    // 9. Apply registry update; the continuation outpoint rides out for the bridge's rollback
+    // journal, mirroring the install condition above.
+    let cont_outpoint =
+        (new_unclaimed > 0).then(|| TransactionOutpoint::new(Hash::from_bytes(txid_bytes), 1));
+    apply_registry_update(registry, matched_outpoint, cont_outpoint, new_root);
 
     // 10. Emit PermissionSpend event.
-    Some(PermissionSpend {
-        covenant_id,
-        old_root,
-        old_unclaimed,
-        depth,
-        leaf_index,
-        leaf_spk_bytes: spk_bytes,
-        leaf_amount: amount,
-        deduct,
-        new_root,
-        spend_txid: txid_bytes,
-        new_outpoint_index: 1,
-    })
+    Some((
+        PermissionSpend {
+            covenant_id,
+            old_root,
+            old_unclaimed,
+            depth,
+            leaf_index,
+            leaf_spk_bytes: spk_bytes,
+            leaf_amount: amount,
+            deduct,
+            new_root,
+            spend_txid: txid_bytes,
+            new_outpoint_index: 1,
+            // Decoded before the bridge stamps the containing sink idx at append time.
+            chain_idx: 0,
+        },
+        matched_outpoint,
+        cont_outpoint,
+    ))
 }
 
 #[cfg(test)]
@@ -331,8 +341,9 @@ mod tests {
 
         let registry = RwLock::new(HashMap::from([(perm_outpoint, tree.root())]));
 
-        let spend = check_claim_spend(&registry, &tx, txid_bytes, covenant_id)
-            .expect("should detect claim spend");
+        let (spend, spent_outpoint, cont_outpoint) =
+            check_claim_spend(&registry, &tx, txid_bytes, covenant_id)
+                .expect("should detect claim spend");
 
         assert_eq!(spend.covenant_id, covenant_id);
         assert_eq!(spend.old_root, tree.root());
@@ -345,11 +356,12 @@ mod tests {
         assert_eq!(spend.new_root, expected_new_root);
         assert_eq!(spend.spend_txid, txid_bytes);
         assert_eq!(spend.new_outpoint_index, 1);
+        assert_eq!(spent_outpoint, perm_outpoint, "matched outpoint threads out");
 
         let reg = registry.read().unwrap();
         assert!(!reg.contains_key(&perm_outpoint), "spent outpoint must be removed");
-        let cont_outpoint = TransactionOutpoint::new(tx.id(), 1);
-        assert_eq!(reg.get(&cont_outpoint), Some(&expected_new_root));
+        assert_eq!(cont_outpoint, Some(TransactionOutpoint::new(tx.id(), 1)));
+        assert_eq!(reg.get(&cont_outpoint.unwrap()), Some(&expected_new_root));
     }
 
     #[test]
@@ -392,7 +404,7 @@ mod tests {
 
         let registry = RwLock::new(HashMap::from([(perm_outpoint, tree.root())]));
 
-        let spend = check_claim_spend(&registry, &tx, txid_bytes, covenant_id)
+        let (spend, ..) = check_claim_spend(&registry, &tx, txid_bytes, covenant_id)
             .expect("should detect claim spend");
 
         assert_eq!(spend.covenant_id, covenant_id);
@@ -452,7 +464,7 @@ mod tests {
 
         let registry = RwLock::new(HashMap::from([(perm_outpoint, tree.root())]));
 
-        let spend = check_claim_spend(&registry, &tx, txid_bytes, covenant_id)
+        let (spend, _, cont_outpoint) = check_claim_spend(&registry, &tx, txid_bytes, covenant_id)
             .expect("should detect claim spend");
 
         assert_eq!(spend.covenant_id, covenant_id);
@@ -465,6 +477,7 @@ mod tests {
 
         let reg = registry.read().unwrap();
         assert!(!reg.contains_key(&perm_outpoint), "spent outpoint must be removed");
+        assert!(cont_outpoint.is_none(), "no continuation when all claimed");
         assert!(reg.is_empty(), "no continuation outpoint when all claimed");
     }
 

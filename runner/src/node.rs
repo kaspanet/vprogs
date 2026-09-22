@@ -23,7 +23,7 @@ use kaspa_wrpc_client::prelude::KaspaRpcClient;
 use tokio::sync::{mpsc, watch};
 use vprogs_core_atomics::AsyncQueue;
 use vprogs_l1_bridge::{L1BridgeConfig, PermissionSpendHooks};
-use vprogs_l1_types::SettlementInfo;
+use vprogs_l1_types::{SettlementInfo, SettlementMsg};
 use vprogs_node_framework::{Node, NodeConfig};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Indexer, SchedulerState};
 use vprogs_storage_manager::StorageConfig;
@@ -71,8 +71,9 @@ pub struct BridgeObservers {
     /// settler holds a [`watch::Receiver`](tokio::sync::watch::Receiver) subscribed to it
     /// (reader). `None` disables publishing.
     pub settlement: Option<watch::Sender<Option<SettlementInfo>>>,
-    /// Optional channel sender every observed covenant settlement is published into.
-    pub settlement_events: Option<mpsc::UnboundedSender<SettlementInfo>>,
+    /// Optional channel sender the settlement stream is published into (observations and
+    /// rollback markers, in per-channel FIFO order).
+    pub settlement_events: Option<mpsc::UnboundedSender<SettlementMsg>>,
     /// Optional hooks for watching and emitting permission-output spends. `None` disables
     /// watching.
     pub permission_spends: Option<PermissionSpendHooks>,
