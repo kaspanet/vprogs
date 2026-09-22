@@ -47,8 +47,8 @@ impl<'a> Inputs<'a> {
         })
     }
 
-    /// Decodes only the fixed header (`version`, `tx_id`, `merge_idx`). Used to attribute a
-    /// decode rejection to its transaction when the full decode fails past the header.
+    /// Decodes only the fixed header (`version`, `tx_id`, `merge_idx`); enough to attribute a
+    /// rejection when the full decode fails past the header.
     pub fn decode_header(mut buf: &[u8]) -> Result<(u16, &Hash, u32)> {
         let version = buf.le_u16("version")?;
         Ok((version, buf.array_as::<Hash>("tx_id")?, buf.le_u32("merge_idx")?))

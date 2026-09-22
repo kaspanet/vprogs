@@ -5,13 +5,13 @@
 //! the guest: in production those bytes are assembled host-side, but the payload, access
 //! metadata, resource data, and tx id they embed all originate in an L1 transaction any user
 //! can author. A decode failure must surface as `OutputCommitment::Error` + `Outputs::ERR`
-//! (the VersionIncompatible case below proves that machinery works), never as a panic: a
-//! panic aborts the executor call for every carrier in the batch, not just the offending one.
+//! (the unknown-version case proves that machinery works), never as a panic: a panic aborts
+//! the executor call for every carrier in the batch, not just the offending one.
 //!
 //! A decode-rejected V1 carrier journals version 0 with no execution context (a V1 journal
 //! entry without a context would not decode verifier-side) while keeping the header's tx id
-//! and merge_idx, so the rejection is attributed and the batch's strictly-increasing
-//! merge_idx ordering still holds.
+//! and merge_idx, so the rejection stays attributed and the strictly-increasing merge_idx
+//! ordering holds.
 
 use kaspa_hashes::Hash;
 use vprogs_core_codec::Writer;
