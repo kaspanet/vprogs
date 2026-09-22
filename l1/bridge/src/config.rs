@@ -58,13 +58,14 @@ pub struct L1BridgeConfig {
     /// confirmation is notification-based, awaits) to reconcile against the canonical settlement
     /// without a confirm RTT. `None` disables publishing.
     pub settlement_observer: Option<watch::Sender<Option<SettlementInfo>>>,
-    /// Lower bound on the `min_confirmation_count` for the chain-follow queries, in blue-score
+    /// Lower bound on the `min_confirmation_count` for the chain-follow queries and on the
+    /// confirmation window a pruning point must hold before finalization, in blue-score
     /// confirmations below the sink; the adaptive reorg filter may still raise the threshold above
     /// this floor. `None` uses the adaptive threshold alone.
     pub min_confirmations: Option<u64>,
-    /// Switches the adaptive reorg filter off: the follow threshold becomes exactly
-    /// `min_confirmations` (zero when unset), so blocks render at the tip and reorgs surface as
-    /// rollbacks instead of confirmation latency.
+    /// Switches the adaptive reorg filter off: the follow threshold and pruning-point
+    /// confirmation window become exactly `min_confirmations` (zero when unset), so blocks render
+    /// at the tip and reorgs surface as rollbacks instead of confirmation latency.
     pub adaptive_filter_disabled: bool,
     /// Optional hooks for watching and emitting permission-output spends on accepted L1
     /// transactions.
@@ -177,16 +178,18 @@ impl L1BridgeConfig {
         self
     }
 
-    /// Sets the lower bound on `min_confirmation_count` for chain-follow queries, under the
-    /// adaptive reorg filter's threshold. `None` uses the adaptive threshold alone.
+    /// Sets the lower bound on `min_confirmation_count` for chain-follow queries and
+    /// pruning-point finalization, under the adaptive reorg filter's threshold. `None` uses the
+    /// adaptive threshold alone.
     pub fn with_min_confirmations(mut self, min_confirmations: Option<u64>) -> Self {
         self.min_confirmations = min_confirmations;
         self
     }
 
-    /// Switches the adaptive reorg filter off: the follow threshold becomes exactly
-    /// `min_confirmations` (zero when unset), so a latency-critical follow renders at the tip
-    /// and takes reorgs as rollbacks instead of confirmation latency.
+    /// Switches the adaptive reorg filter off: the follow threshold and pruning-point
+    /// confirmation window become exactly `min_confirmations` (zero when unset), so a
+    /// latency-critical follow renders at the tip and takes reorgs as rollbacks instead of
+    /// confirmation latency.
     pub fn with_adaptive_filter_disabled(mut self, disabled: bool) -> Self {
         self.adaptive_filter_disabled = disabled;
         self
