@@ -8838,6 +8838,7 @@ dependencies = [
  "vprogs-node-framework",
  "vprogs-node-test-utils",
  "vprogs-scheduling-scheduler",
+ "vprogs-state-settlement-journal",
  "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
@@ -9002,6 +9003,19 @@ dependencies = [
  "borsh",
  "vprogs-core-types",
  "vprogs-storage-manager",
+ "vprogs-storage-types",
+]
+
+[[package]]
+name = "vprogs-state-settlement-journal"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "kaspa-hashes",
+ "tempfile",
+ "vprogs-l1-types",
+ "vprogs-state-batch-metadata",
+ "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
 ]
 
@@ -9269,6 +9283,7 @@ dependencies = [
  "vprogs-scheduling-scheduler",
  "vprogs-scheduling-test-utils",
  "vprogs-state-proof-receipt",
+ "vprogs-state-settlement-journal",
  "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",

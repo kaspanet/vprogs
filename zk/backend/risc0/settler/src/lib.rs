@@ -36,8 +36,8 @@ pub use covenant::{
     build_settlement_for_mode, covenant_from_settlement, dev_bootstrap_redeem,
 };
 pub use settle::{
-    FeeSource, FundedSettlement, RpcSink, SettleOutcome, SettlementSink, Settler, SubmitOutcome,
-    WalletFeeSource,
+    ConfirmProbe, FeeSource, FundedSettlement, RpcSink, SettleOutcome, SettlementSink, Settler,
+    SubmitOutcome, WalletFeeSource,
 };
 #[cfg(feature = "test-utils")]
 pub use worker::AlternationPacer;

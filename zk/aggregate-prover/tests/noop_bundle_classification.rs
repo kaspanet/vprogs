@@ -362,6 +362,7 @@ fn bundle_advancing_only_the_lane_tip_is_settled() {
                 lane_source: FixedLaneProof,
                 settlement_queue: Some(settlement_queue.clone()),
                 settlement: None,
+                journal: None,
                 bundle_size: 1..=usize::MAX,
                 exits: None,
             },

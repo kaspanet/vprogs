@@ -622,6 +622,12 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
                 // Carry forward the last settlement; collect new ones for post-append emission.
                 if let Some(id) = self.covenant_id {
                     if let Some(info) = tx.settlement_info(id, block.hash, block.daa_score) {
+                        log::info!(
+                            "L1 bridge: chain block {} (daa {}) contains settlement {}",
+                            block.hash,
+                            block.daa_score,
+                            info.tx_id,
+                        );
                         last_settlement = Some(info);
                         settlements.push(info);
                     }

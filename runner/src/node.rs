@@ -205,6 +205,9 @@ pub fn build_proving_node(
             lane_source: RemoteLaneSource::new(proving.client),
             settlement_queue: Some(proving.sink),
             settlement: proving.settlement_rx,
+            journal: Some(Arc::new(vprogs_state_settlement_journal::StoreJournal::new(
+                store.clone(),
+            ))),
             bundle_size: proving.bundle_size,
             exits: proving.exits_tx,
         },

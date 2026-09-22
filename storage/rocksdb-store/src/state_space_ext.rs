@@ -23,6 +23,7 @@ impl<C: Config> StateSpaceExt<C> for StateSpace {
             StateSpace::SmtStale => "smt_stale",
             StateSpace::ProofReceipt => "proof_receipt",
             StateSpace::Index => "index",
+            StateSpace::SettlementJournal => "settlement_journal",
         }
     }
 
@@ -39,6 +40,8 @@ impl<C: Config> StateSpaceExt<C> for StateSpace {
             ColumnFamilyDescriptor::new(cf_name(&SmtStale), C::cf_smt_stale_opts()),
             ColumnFamilyDescriptor::new(cf_name(&ProofReceipt), C::cf_proof_receipt_opts()),
             ColumnFamilyDescriptor::new(cf_name(&Index), C::cf_index_opts()),
+            // Journal keys are u64 BE like batch metadata, so its options carry over.
+            ColumnFamilyDescriptor::new(cf_name(&SettlementJournal), C::cf_batch_metadata_opts()),
         ]
     }
 }
