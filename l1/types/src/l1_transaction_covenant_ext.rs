@@ -50,6 +50,15 @@ impl L1TransactionCovenantExt for L1Transaction {
         let (new_lane_tip, new_state, block_prove_to) =
             parse_settlement_tail(&self.inputs.first()?.signature_script)?;
 
+        // The permission (exit) output's P2SH hash, present only in the two-output layout a
+        // settlement with exits mints (output 1). Absent or non-P2SH output 1 decodes as the
+        // zero no-exits sentinel.
+        let permission_spk_hash = self
+            .outputs
+            .get(1)
+            .and_then(|out| p2sh_redeem_hash(&out.script_public_key))
+            .unwrap_or_default();
+
         Some(SettlementInfo {
             tx_id: self.id(),
             containing_block,
@@ -58,6 +67,7 @@ impl L1TransactionCovenantExt for L1Transaction {
             new_state,
             new_lane_tip,
             continuation_spk_hash,
+            permission_spk_hash,
         })
     }
 }
@@ -103,7 +113,8 @@ mod tests {
         constants::TX_VERSION_TOCCATA,
         subnets::SUBNETWORK_ID_NATIVE,
         tx::{
-            CovenantBinding, Transaction, TransactionInput, TransactionOutpoint, TransactionOutput,
+            CovenantBinding, ScriptPublicKey, Transaction, TransactionInput, TransactionOutpoint,
+            TransactionOutput,
         },
     };
 
@@ -233,6 +244,56 @@ mod tests {
             blake2b(PREV_REDEEM),
             "continuation hash must pin the observed output-0 redeem",
         );
+    }
+
+    #[test]
+    fn captures_permission_output_hash_and_zero_when_absent() {
+        let sig_script = build_sig_script(&[]);
+
+        // Two-output settlement: output 1 pays the permission P2SH (`OpBlake2b | OpData32 |
+        // hash(32) | OpEqual`, version 0), the shape `permission_spk` mints on chain.
+        let perm_hash = [0x5A; 32];
+        let mut perm_script = Vec::with_capacity(35);
+        perm_script.push(OpBlake2b);
+        perm_script.push(OpData32);
+        perm_script.extend_from_slice(&perm_hash);
+        perm_script.push(OpEqual);
+        let tx = Transaction::new(
+            TX_VERSION_TOCCATA,
+            vec![TransactionInput::new(
+                TransactionOutpoint::new(Hash::from_bytes([0x66; 32]), 0),
+                sig_script.clone(),
+                0,
+                1,
+            )],
+            vec![
+                TransactionOutput::with_covenant(
+                    100_000_000,
+                    kaspa_txscript::standard::pay_to_script_hash_script(PREV_REDEEM),
+                    Some(CovenantBinding::new(0, COVENANT_ID)),
+                ),
+                TransactionOutput::with_covenant(
+                    50_000,
+                    ScriptPublicKey::new(0, perm_script.into()),
+                    Some(CovenantBinding::new(0, COVENANT_ID)),
+                ),
+            ],
+            0,
+            SUBNETWORK_ID_NATIVE,
+            0,
+            Vec::new(),
+        );
+
+        let settlement =
+            tx.settlement_info(COVENANT_ID, CONTAINING_BLOCK, CONTAINING_DAA).expect("settlement");
+        assert_eq!(settlement.permission_spk_hash, perm_hash);
+
+        // Single-output (no-exit) settlement decodes the zero no-exits sentinel.
+        let single = settlement_tx(sig_script, COVENANT_ID);
+        let settlement = single
+            .settlement_info(COVENANT_ID, CONTAINING_BLOCK, CONTAINING_DAA)
+            .expect("settlement");
+        assert_eq!(settlement.permission_spk_hash, [0u8; 32]);
     }
 
     #[test]
