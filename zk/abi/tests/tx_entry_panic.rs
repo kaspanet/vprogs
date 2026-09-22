@@ -1,5 +1,5 @@
-//! Reproducers for the guest-entry panic class: `process_transaction` panics on
-//! malformed wire input instead of committing a rejection to the journal.
+//! Reproducers for the guest-entry rejection contract: `process_transaction` rejects malformed
+//! wire input through the journal instead of panicking.
 //!
 //! Every input fed here is a length-prefixed blob exactly like the one the executor writes to
 //! the guest: in production those bytes are assembled host-side, but the payload, access
@@ -8,16 +8,19 @@
 //! (the VersionIncompatible case below proves that machinery works), never as a panic: a
 //! panic aborts the executor call for every carrier in the batch, not just the offending one.
 //!
-//! These tests pin today's defective behavior as a red/green edge for the fix: each
-//! `panics_today` case becomes a journal-Error assertion once `Inputs::decode` failures are
-//! converted to rejections.
+//! A decode-rejected V1 carrier journals version 0 with no execution context (a V1 journal
+//! entry without a context would not decode verifier-side) while keeping the header's tx id
+//! and merge_idx, so the rejection is attributed and the batch's strictly-increasing
+//! merge_idx ordering still holds.
 
-use std::panic::{AssertUnwindSafe, catch_unwind};
-
+use kaspa_hashes::Hash;
 use vprogs_core_codec::Writer;
 use vprogs_core_hashing::Sha256;
 use vprogs_l1_utils::tx_id_v1;
-use vprogs_zk_abi::transaction_processor::{JournalEntries, OutputCommitment, process_transaction};
+use vprogs_zk_abi::{
+    Error,
+    transaction_processor::{JournalEntries, OutputCommitment, process_transaction},
+};
 
 /// Native stand-in for the risc0 host ABI: serves the input blob, collects stdout.
 struct TestHost {
@@ -46,7 +49,13 @@ fn am(id: [u8; 32], write: bool) -> [u8; 33] {
 }
 
 /// Builds the host-input wire format around the given payload bytes and access metadata.
-fn wire(version: u16, tx_id: [u8; 32], access_metadata: &[[u8; 33]], ix_data: &[u8]) -> Vec<u8> {
+fn wire(
+    version: u16,
+    tx_id: [u8; 32],
+    merge_idx: u32,
+    access_metadata: &[[u8; 33]],
+    ix_data: &[u8],
+) -> Vec<u8> {
     // payload = access_metadata || ix_data
     let mut payload = Vec::new();
     payload.extend_from_slice(&(access_metadata.len() as u32).to_le_bytes());
@@ -70,7 +79,7 @@ fn wire(version: u16, tx_id: [u8; 32], access_metadata: &[[u8; 33]], ix_data: &[
     let mut buf = Vec::new();
     buf.extend_from_slice(&version.to_le_bytes());
     buf.extend_from_slice(&tx_id[..]);
-    buf.extend_from_slice(&0u32.to_le_bytes()); // merge_idx
+    buf.extend_from_slice(&merge_idx.to_le_bytes());
     // execution_input (V1)
     buf.extend_from_slice(&[0u8; 24]); // MergesetContext
     // tx blob
@@ -97,11 +106,21 @@ fn run(host_input: Vec<u8>) -> (TestHost, Vec<u8>) {
     (host, journal)
 }
 
+/// Asserts the guest rejected: stdout carries the ERR discriminant, the journal decodes, and
+/// the output commitment is the given error shape. Returns the decoded entries so callers can
+/// assert on the input commitment.
+fn rejected<'a>(host: &TestHost, journal: &'a [u8]) -> JournalEntries<'a> {
+    assert_eq!(host.stdout.first(), Some(&1), "stdout discriminant must be ERR");
+    let entries = JournalEntries::decode(journal).expect("journal decodes");
+    assert!(matches!(entries.output_commitment, OutputCommitment::Error(_)));
+    entries
+}
+
 /// Control case: a well-formed V1 input executes and commits Success. Proves the harness
-/// builds valid wire bytes, so the panic cases below fail on their specific defect.
+/// builds valid wire bytes, so the rejection cases below fail on their specific defect.
 #[test]
 fn well_formed_v1_commits_success() {
-    let (host, journal) = run(wire(1, [0xFF; 32], &[am([1; 32], false)], &[]));
+    let (host, journal) = run(wire(1, [0xFF; 32], 0, &[am([1; 32], false)], &[]));
     assert_eq!(host.stdout.first(), Some(&0), "stdout discriminant must be OK");
     let entries = JournalEntries::decode(&journal).expect("journal decodes");
     assert!(matches!(entries.output_commitment, OutputCommitment::Success { .. }));
@@ -111,40 +130,50 @@ fn well_formed_v1_commits_success() {
 /// the exact machinery a decode failure must also reach.
 #[test]
 fn unknown_version_commits_error_without_panicking() {
-    let (host, journal) = run(wire(2, [0xAB; 32], &[], &[]));
-    assert_eq!(host.stdout.first(), Some(&1), "stdout discriminant must be ERR");
-    let entries = JournalEntries::decode(&journal).expect("journal decodes");
-    assert!(matches!(entries.output_commitment, OutputCommitment::Error(_)));
+    let (host, journal) = run(wire(2, [0xAB; 32], 0, &[], &[]));
+    let entries = rejected(&host, &journal);
+    assert!(entries.input_commitment.execution_context.is_none());
 }
 
 /// The observed tn10 incident: an access list that is not strictly ascending (a web-built
-/// transfer to self) panics the guest instead of rejecting the tx.
+/// transfer to self) is rejected through the journal, with the rejection attributed to the
+/// header's real tx id and merge_idx.
 #[test]
-fn non_ascending_access_list_panics_today() {
-    let input = wire(
-        1,
-        [0xFF; 32],
-        &[am([5; 32], true), am([5; 32], true), am([9; 32], false)],
-        &[],
-    );
-    let outcome = catch_unwind(AssertUnwindSafe(|| run(input)));
-    assert!(outcome.is_err(), "decode failure must not panic; pin this red until the fix");
+fn non_ascending_access_list_commits_error() {
+    let input =
+        wire(1, [0x9A; 32], 3, &[am([5; 32], true), am([5; 32], true), am([9; 32], false)], &[]);
+    let (host, journal) = run(input);
+    let entries = rejected(&host, &journal);
+    assert!(matches!(entries.output_commitment, OutputCommitment::Error(Error::Decode(_))));
+    assert_eq!(entries.input_commitment.version, 0);
+    assert_eq!(entries.input_commitment.tx_id, &Hash::from_bytes([0x9A; 32]));
+    assert_eq!(entries.input_commitment.merge_idx, 3);
+    assert!(entries.input_commitment.execution_context.is_none());
 }
 
-/// A truncated wire buffer (resource section cut short) panics at the same expect.
+/// A truncated wire buffer (resource section cut short) is rejected the same way, keeping the
+/// header's tx id and merge_idx.
 #[test]
-fn truncated_input_panics_today() {
-    let mut input = wire(1, [0xFF; 32], &[am([1; 32], false), am([2; 32], false)], &[]);
+fn truncated_input_commits_error() {
+    let mut input = wire(1, [0x9B; 32], 7, &[am([1; 32], false), am([2; 32], false)], &[]);
     input.truncate(input.len() - 6);
-    let outcome = catch_unwind(AssertUnwindSafe(|| run(input)));
-    assert!(outcome.is_err(), "decode failure must not panic; pin this red until the fix");
+    let (host, journal) = run(input);
+    let entries = rejected(&host, &journal);
+    assert!(matches!(entries.output_commitment, OutputCommitment::Error(Error::Decode(_))));
+    assert_eq!(entries.input_commitment.version, 0);
+    assert_eq!(entries.input_commitment.tx_id, &Hash::from_bytes([0x9B; 32]));
+    assert_eq!(entries.input_commitment.merge_idx, 7);
+    assert!(entries.input_commitment.execution_context.is_none());
 }
 
-/// A host-supplied tx id that disagrees with the derived one hits the assert instead of
-/// rejecting. Host assembly bugs (and only those) reach this today.
+/// A host-supplied tx id that disagrees with the derived one rejects after the input
+/// commitment is journaled, with the execution context still present.
 #[test]
-fn tx_id_mismatch_panics_today() {
-    let input = wire(1, [0xEE; 32], &[am([1; 32], false)], &[]);
-    let outcome = catch_unwind(AssertUnwindSafe(|| run(input)));
-    assert!(outcome.is_err(), "tx-id mismatch must not panic; pin this red until the fix");
+fn tx_id_mismatch_commits_error() {
+    let (host, journal) = run(wire(1, [0xEE; 32], 0, &[am([1; 32], false)], &[]));
+    let entries = rejected(&host, &journal);
+    assert!(matches!(entries.output_commitment, OutputCommitment::Error(Error::Decode(_))));
+    assert_eq!(entries.input_commitment.version, 1);
+    assert_eq!(entries.input_commitment.tx_id, &Hash::from_bytes([0xEE; 32]));
+    assert!(entries.input_commitment.execution_context.is_some());
 }
