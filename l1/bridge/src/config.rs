@@ -44,6 +44,10 @@ pub struct L1BridgeConfig {
     /// confirmation is notification-based, awaits) to reconcile against the canonical settlement
     /// without a confirm RTT. `None` disables publishing.
     pub settlement_observer: Option<watch::Sender<Option<SettlementInfo>>>,
+    /// Lower bound on the `min_confirmation_count` for the chain-follow queries, in blue-score
+    /// confirmations below the sink; the adaptive reorg filter may still raise the threshold above
+    /// this floor. `None` uses the adaptive threshold alone.
+    pub min_confirmations: Option<u64>,
 }
 
 impl Default for L1BridgeConfig {
@@ -62,6 +66,7 @@ impl Default for L1BridgeConfig {
             start_from: None, // No explicit seed block; defer to seed_depth/pruning point.
             tip_daa: None,
             settlement_observer: None,
+            min_confirmations: None, // Adaptive reorg-filter threshold by default.
         }
     }
 }
@@ -142,6 +147,13 @@ impl L1BridgeConfig {
     /// disables publishing.
     pub fn with_tip_daa_observer(mut self, tip_daa: Option<Arc<AtomicU64>>) -> Self {
         self.tip_daa = tip_daa;
+        self
+    }
+
+    /// Sets the lower bound on `min_confirmation_count` for chain-follow queries, under the
+    /// adaptive reorg filter's threshold. `None` uses the adaptive threshold alone.
+    pub fn with_min_confirmations(mut self, min_confirmations: Option<u64>) -> Self {
+        self.min_confirmations = min_confirmations;
         self
     }
 

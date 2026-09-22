@@ -70,7 +70,7 @@ async fn main() {
     let client = connect_wrpc(&cfg.runner.wrpc_url, network_id).await;
     log::info!("connected to {}", cfg.runner.wrpc_url);
 
-    let keypair = Keypair::from_secret_key(SECP256K1, &cfg.runner.private_key);
+    let keypair = cfg.runner.private_key.as_ref().map(|sk| Keypair::from_secret_key(SECP256K1, sk));
 
     // The account model lives in the runtime-processor guest; batch + aggregator complete the
     // stack.
@@ -95,6 +95,10 @@ async fn main() {
     // accounts.
     let issue = std::env::var("TN10RT_ISSUE").map(|v| v != "0").unwrap_or(true);
     if issue {
+        let keypair = keypair.expect(
+            "TN10RT_PRIVATE_KEY is required to issue actions (set TN10RT_ISSUE=0 to follow \
+             without issuing)",
+        );
         spawn_driver(client.clone(), params.clone(), keypair, lane_subnet, covenant_id, cfg);
     } else {
         log::info!("follower mode (TN10RT_ISSUE=0): settling without issuing actions");

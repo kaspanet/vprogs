@@ -60,6 +60,7 @@ impl L1BridgeParams {
             start_from: None,
             tip_daa: None,
             settlement_observer: None,
+            min_confirmations: None,
         }
     }
 }

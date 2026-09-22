@@ -59,6 +59,10 @@ struct Cli {
     /// Chain-block head-room the bridge seeds below the sink for a fresh lane.
     #[arg(long)]
     seed_depth: Option<u64>,
+    /// Minimum blue-score confirmations a block needs below the sink before the bridge processes
+    /// it; the adaptive reorg filter may still exceed it. Unset uses the adaptive filter alone.
+    #[arg(long)]
+    min_confirmations: Option<u64>,
 
     /// Run the proving + settlement path. Off = execution-only.
     #[arg(long)]
@@ -86,6 +90,7 @@ impl Cli {
             bootstrap_txid: self.bootstrap_txid,
             start_from: self.start_from,
             seed_depth: self.seed_depth,
+            min_confirmations: self.min_confirmations,
             // A bare `--prove` flag means "set it"; absence leaves it to env/file/default.
             prove: self.prove.then_some(true),
             start_mode: self.start_mode,

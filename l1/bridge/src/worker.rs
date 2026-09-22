@@ -86,6 +86,9 @@ pub(crate) struct BridgeWorker<T: ChainSink<ChainBlockMetadata, L1Transaction>> 
     /// the single writer), so each settler can read the canonical settlement without a confirm
     /// RTT.
     settlement: Option<watch::Sender<Option<SettlementInfo>>>,
+    /// Lower bound on the `min_confirmation_count` for chain-follow queries; the adaptive reorg
+    /// filter may still exceed it after observed reorgs. `None` uses the adaptive threshold alone.
+    min_confirmations: Option<u64>,
 }
 
 impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
@@ -158,6 +161,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             start_from: config.start_from,
             tip_daa: config.tip_daa.clone(),
             settlement: config.settlement_observer.clone(),
+            min_confirmations: config.min_confirmations,
         }
         .run()
         .await;
@@ -430,20 +434,58 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
 
     /// Fetches chain updates from the current tip, handling reorgs and scheduling each new block.
     async fn fetch_chain_updates(&mut self) -> Result<()> {
-        // Fetch with Full verbosity to get complete headers and accepted transactions. Resolve the
-        // tip and the (mutably-computed) reorg threshold first so the shared borrow taken by the
-        // retry helper doesn't overlap them.
-        let from = self.tip_metadata().hash;
-        let threshold = self.reorg_filter.threshold();
-        let response =
-            Self::get_vcc_with_retry(self.client.clone(), self.shutdown.clone(), from, threshold)
-                .await?;
+        // The loop retries exactly once after a below-root re-seed, so a pruning-point anchor that
+        // still reports removals below it falls through to `handle_reorg`'s fatal.
+        let mut reseeded = false;
+        loop {
+            // Fetch with Full verbosity to get complete headers and accepted transactions. Resolve
+            // the tip and the (mutably-computed) reorg threshold first so the shared borrow taken
+            // by the retry helper doesn't overlap them.
+            let from = self.tip_metadata().hash;
+            // The configured value is a floor under the adaptive filter, not a replacement: at
+            // startup the filter has observed no reorgs (threshold zero), so the floor alone
+            // protects the follow until observed reorgs build a larger threshold.
+            let adaptive = self.reorg_filter.threshold();
+            let threshold = match self.min_confirmations {
+                Some(floor) => Some(floor.max(adaptive.unwrap_or(0))),
+                None => adaptive,
+            };
+            let response = Self::get_vcc_with_retry(
+                self.client.clone(),
+                self.shutdown.clone(),
+                from,
+                threshold,
+            )
+            .await?;
 
-        // Removed hashes indicate a reorg - roll back before processing additions.
-        if !response.removed_chain_block_hashes.is_empty() {
-            self.handle_reorg(&response)?;
+            // Removed hashes indicate a reorg - roll back before processing additions.
+            if !response.removed_chain_block_hashes.is_empty() {
+                // With an empty sink there is nothing to roll back: the whole removed segment sits
+                // below the anchor, meaning the seed block itself was orphaned by reorgs between
+                // it and the current chain (observed on reorg-heavy forks). That is a stale
+                // anchor, not the finality violation `handle_reorg` reports: re-anchor at the
+                // pruning point and replay the surviving chain from there.
+                if self.sink.tip() == 0 && !reseeded {
+                    reseeded = true;
+                    let stale = self.tip_metadata().hash;
+                    self.seed_from_pruning_point().await?;
+                    log::info!(
+                        "L1 bridge: seed block {stale} orphaned by a reorg below it; re-anchored \
+                         at the pruning point, replaying"
+                    );
+                    continue;
+                }
+                self.handle_reorg(&response)?;
+            }
+            return self.fetch_chain_updates_tail(response).await;
         }
+    }
 
+    /// Processes one fetched chain-update response into the sink and publishes the new tip.
+    async fn fetch_chain_updates_tail(
+        &mut self,
+        response: GetVirtualChainFromBlockV2Response,
+    ) -> Result<()> {
         // Emit log for progress tracing.
         if !response.chain_block_accepted_transactions.is_empty() {
             log::info!(

@@ -34,11 +34,10 @@ impl Config {
     /// malformed required values.
     pub fn from_env() -> Self {
         let wrpc_url = req("TN10RT_WRPC_URL");
-        let private_key = {
-            let hex = req("TN10RT_PRIVATE_KEY");
+        let private_key = opt("TN10RT_PRIVATE_KEY").map(|hex| {
             SecretKey::from_str(hex.trim())
                 .expect("TN10RT_PRIVATE_KEY must be a 32-byte hex secp256k1 key")
-        };
+        });
         let lane_id =
             opt("TN10RT_LANE_ID").map(|s| s.parse().expect("TN10RT_LANE_ID must be a u32"));
         let covenant_id = opt("TN10RT_COVENANT_ID")
@@ -70,6 +69,8 @@ impl Config {
             bootstrap_txid,
             start_from,
             seed_depth: opt_u64("TN10RT_SEED_DEPTH", 500),
+            min_confirmations: opt("TN10RT_MIN_CONFIRMATIONS")
+                .map(|s| s.parse().expect("TN10RT_MIN_CONFIRMATIONS must be a u64")),
             prove: opt("TN10RT_SETTLE").is_some_and(|s| s != "0"),
             start_mode,
         };

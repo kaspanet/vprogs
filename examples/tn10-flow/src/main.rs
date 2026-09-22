@@ -44,7 +44,11 @@ async fn main() {
     let client = connect_wrpc(&cfg.runner.wrpc_url, network_id).await;
     log::info!("connected to {}", cfg.runner.wrpc_url);
 
-    let keypair = Keypair::from_secret_key(secp256k1::SECP256K1, &cfg.runner.private_key);
+    let keypair = cfg
+        .runner
+        .private_key
+        .as_ref()
+        .map(|sk| Keypair::from_secret_key(secp256k1::SECP256K1, sk));
     // This example runs the trivial transaction-processor guest; a program-agnostic run uses
     // `vprun` with `--program-elf`.
     let tx_elf = transaction_processor_elf();
@@ -62,15 +66,19 @@ async fn main() {
 
     // The activity issuer is this example's reason to exist: it produces the lane transactions the
     // runner then executes/proves. The generic runner never issues any.
-    spawn_issuer(
-        client.clone(),
-        params.clone(),
-        keypair,
-        handles.lane_subnet,
-        handles.lane_id,
-        cfg.activity_interval_ms,
-        cfg.activity_count,
-    );
+    if let Some(keypair) = keypair {
+        spawn_issuer(
+            client.clone(),
+            params.clone(),
+            keypair,
+            handles.lane_subnet,
+            handles.lane_id,
+            cfg.activity_interval_ms,
+            cfg.activity_count,
+        );
+    } else {
+        log::info!("no private key supplied; activity issuer disabled (observer mode)");
+    }
 
     let mode = if cfg.runner.prove { "settlement" } else { "exec" };
     println!("== tn10-flow {mode} daemon: lane={} ==", handles.lane_id);

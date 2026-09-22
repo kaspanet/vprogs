@@ -9387,6 +9387,7 @@ dependencies = [
  "tap",
  "tempfile",
  "tokio",
+ "vprogs-core-atomics",
  "vprogs-core-codec",
  "vprogs-core-hashing",
  "vprogs-core-smt",

@@ -11,11 +11,16 @@
 //! same argument, which they do not enumerate: the covenant only advances by settling, and every
 //! bundle the lane goes on to produce chains past the tip the covenant is stuck on.
 
-use kaspa_consensus_core::tx::{ScriptPublicKey, TransactionOutpoint};
+use kaspa_consensus_core::tx::TransactionOutpoint;
 use kaspa_hashes::Hash;
+use kaspa_txscript::standard::pay_to_script_hash_script;
 use risc0_zkvm::{FakeReceipt, InnerReceipt, Receipt, ReceiptClaim};
 use vprogs_zk_aggregate_prover::SettlementArtifact;
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
+use vprogs_zk_backend_risc0_covenant::{
+    CommonPins, DEFAULT_PERMISSION_OUTPUT_VALUE, RedeemPins, SuccinctPins, build_redeem_script,
+    redeem_script_len,
+};
 use vprogs_zk_backend_risc0_settler::{CovenantState, build_settlement};
 use vprogs_zk_backend_risc0_test_suite::{
     batch_aggregator_elf, batch_processor_elf, test_lane_key, transaction_processor_elf,
@@ -64,13 +69,31 @@ fn stub_receipt() -> Receipt {
 
 /// The live covenant after the wrapper dropped the bundle: its state root is still correct (the
 /// failed transaction changed none), but its lane tip never advanced.
-fn stale_covenant() -> CovenantState {
+fn stale_covenant(backend: &Backend) -> CovenantState {
+    covenant_at(backend, stale_lane_tip())
+}
+
+/// The covenant holding `lane_tip`, with the SPK this settler's own settlements would pin for it
+/// (the redeem over the (STATE, lane_tip) prefix with the backend's pins): what the builder's SPK
+/// guard compares its rebuilt redeem against.
+fn covenant_at(backend: &Backend, lane_tip: Hash) -> CovenantState {
+    let lane_key = test_lane_key();
+    let pins = RedeemPins::Succinct(SuccinctPins {
+        common: CommonPins {
+            program_id: &backend.aggregator.id,
+            tx_image_id: &backend.transaction_processor.id,
+            batch_image_id: &backend.batch_processor.id,
+            lane_key: &lane_key,
+            permission_output_value: DEFAULT_PERMISSION_OUTPUT_VALUE,
+        },
+    });
+    let redeem = build_redeem_script(&STATE, &lane_tip, redeem_script_len(&STATE, &pins), &pins);
     CovenantState {
         covenant_id: Hash::from_bytes(COVENANT_ID),
         state: STATE,
-        lane_tip: stale_lane_tip(),
+        lane_tip,
         outpoint: TransactionOutpoint::new(Hash::from_bytes([0x77; 32]), 0),
-        spk: ScriptPublicKey::default(),
+        spk: pay_to_script_hash_script(&redeem),
         value: 100_000_000,
         daa_score: 0,
     }
@@ -103,7 +126,7 @@ fn next_artifact() -> SettlementArtifact<Receipt> {
 #[should_panic(expected = "settlement prev_lane_tip must match the spent covenant's redeem prefix")]
 fn bundle_after_a_dropped_one_cannot_settle() {
     let backend = backend();
-    let cov = stale_covenant();
+    let cov = stale_covenant(&backend);
     let artifact = next_artifact();
 
     assert_eq!(artifact.prev_state, cov.state, "the dropped bundle changed no state");
@@ -126,7 +149,7 @@ fn bundle_after_a_dropped_one_cannot_settle() {
 #[should_panic(expected = "expected succinct receipt")]
 fn bundle_after_a_settled_one_passes_the_chain_check() {
     let backend = backend();
-    let cov = CovenantState { lane_tip: advanced_lane_tip(), ..stale_covenant() };
+    let cov = covenant_at(&backend, advanced_lane_tip());
     let artifact = next_artifact();
 
     // Settling the dropped bundle would have left the covenant on the lane's real tip, which is
