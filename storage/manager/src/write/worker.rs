@@ -59,6 +59,9 @@ impl<K: Store, W: WriteCmd> WriteWorker<K, W> {
     }
 
     /// Drains the queue into batches, flushing on a flush-now command or a full or aged batch.
+    /// On shutdown, drains and commits everything still queued or accumulated: an accepted
+    /// write that never commits also never opens its confirmation latch, wedging any awaiter
+    /// (the proving worker parks on its receipt-write latches) and leaking the store lock.
     fn run(self) {
         // Accumulate commands into a batch and track its age for the flush backstop.
         let mut batch_cmds = Vec::with_capacity(self.config.batch_size);
@@ -86,6 +89,25 @@ impl<K: Store, W: WriteCmd> WriteWorker<K, W> {
                 }
                 _ => self.park(),
             }
+        }
+
+        // Shutdown drain. Ceiling: producers are torn down before the storage manager shuts
+        // down (the node stops its workers, then its managers), so draining to an empty queue
+        // here cannot race a further submission; a producer still pushing after its manager
+        // shut down is a teardown-ordering bug elsewhere, not a data-loss case here.
+        loop {
+            let mut drained_any = false;
+            while let (Some(cmd), _) = self.queue.pop() {
+                drained_any = true;
+                write_batch = cmd.exec(&*self.store, write_batch);
+                batch_cmds.push(cmd);
+            }
+            if !drained_any {
+                break;
+            }
+        }
+        if !batch_cmds.is_empty() {
+            self.flush(write_batch, &mut batch_cmds);
         }
     }
 
