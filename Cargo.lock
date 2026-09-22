@@ -8835,6 +8835,7 @@ dependencies = [
  "vprogs-scheduling-scheduler",
  "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
+ "vprogs-zk-abi",
  "vprogs-zk-aggregate-prover",
  "vprogs-zk-backend-risc0-api",
  "vprogs-zk-backend-risc0-settler",
@@ -9266,6 +9267,7 @@ dependencies = [
  "vprogs-zk-abi",
  "vprogs-zk-batch-prover",
  "vprogs-zk-transaction-prover",
+ "zerocopy",
 ]
 
 [[package]]

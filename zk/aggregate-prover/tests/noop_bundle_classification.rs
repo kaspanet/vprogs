@@ -363,6 +363,7 @@ fn bundle_advancing_only_the_lane_tip_is_settled() {
                 settlement_queue: Some(settlement_queue.clone()),
                 settlement: None,
                 bundle_size: 1..=usize::MAX,
+                exits: None,
             },
         );
         prover.submit(&batch);
