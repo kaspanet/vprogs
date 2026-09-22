@@ -18,6 +18,11 @@ impl Bucket {
         Self(from_fn(|_| AtomicU64::new(0)))
     }
 
+    /// Creates a bucket with every bit set (all ids canonical).
+    pub(crate) fn all_canonical() -> Self {
+        Self(from_fn(|_| AtomicU64::new(u64::MAX)))
+    }
+
     /// Returns whether the within-bucket bit `bit` is set.
     pub(crate) fn get(&self, bit: usize) -> bool {
         debug_assert!(bit < CAPACITY as usize);

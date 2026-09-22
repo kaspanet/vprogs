@@ -49,6 +49,8 @@ use crate::{bucket::Bucket, hot_zone::HotZone};
 pub struct CanonicalChainSnapshot {
     /// Highest canonical id and the upper bound for reads. `0` means empty.
     pub(crate) tip: u64,
+    /// Highest id ever assigned, monotonic across rollbacks; `0` means no id was ever assigned.
+    pub(crate) high_water: u64,
     /// The recent, copy-on-write buckets (the tail and the last-sealed bucket).
     pub(crate) hot_zone: HotZone,
     /// Sealed buckets `0 ..= tail_bucket - 2`; a bucket pruned off the head reads as canonical.
@@ -84,8 +86,18 @@ impl CanonicalChainSnapshot {
         self.tip
     }
 
+    /// Returns whether the chain has ever assigned an id; unlike `tip`, this never reverts.
+    pub fn ever_assigned(&self) -> bool {
+        self.high_water > 0
+    }
+
     /// The empty view: no canonical ids.
     pub(crate) fn empty() -> Self {
-        Self { tip: 0, hot_zone: HotZone::empty(), body: Arc::new(AtomicRing::new(0)) }
+        Self {
+            tip: 0,
+            high_water: 0,
+            hot_zone: HotZone::empty(),
+            body: Arc::new(AtomicRing::new(0)),
+        }
     }
 }

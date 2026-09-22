@@ -70,7 +70,8 @@ impl CanonicalChain {
         self.writer.store(false, Ordering::Release);
     }
 
-    /// Restores the `canonical` ids over `base..=tip` at startup.
+    /// Restores the `canonical` ids over `base..=tip` at startup. Ids below `base` read
+    /// canonical, matching a live chain finalized to `base`.
     pub(crate) fn restore(&self, base: u64, tip: u64, canonical: impl IntoIterator<Item = u64>) {
         // Nothing to restore for an empty chain.
         if tip == 0 {
@@ -89,9 +90,20 @@ impl CanonicalChain {
             buckets[(bucket - base_bucket) as usize].set(bit);
         }
 
+        // The base bucket spans ids below `base` too, and a live chain finalized to `base`
+        // keeps that bucket with those ids reading canonical. The persisted log carries no
+        // bits for them, so seed the sub-base range canonical instead of leaving it zeroed.
+        let (_, base_bit) = Bucket::locate(base);
+        for bit in 0..base_bit {
+            buckets[0].set(bit);
+        }
+
         // Peel the hot zone off the top; seal the rest into a ring at the live floor.
         let tail = Arc::new(buckets.pop().expect("live range has at least one bucket"));
-        let last_sealed = buckets.pop().map_or_else(|| Arc::new(Bucket::new()), Arc::new);
+
+        // A single-bucket live range leaves nothing to seal; the fabricated `last_sealed`
+        // covers ids entirely below `base`, so it reads canonical throughout.
+        let last_sealed = buckets.pop().map_or_else(|| Arc::new(Bucket::all_canonical()), Arc::new);
         let body = AtomicRing::new(base_bucket);
         for bucket in buckets {
             body.push(Arc::new(bucket));
@@ -100,6 +112,7 @@ impl CanonicalChain {
         // Publish the restored snapshot.
         self.current.store(Arc::new(CanonicalChainSnapshot {
             tip,
+            high_water: tip,
             hot_zone: HotZone { tail_bucket, tail, last_sealed },
             body: Arc::new(body),
         }));
@@ -118,7 +131,12 @@ impl CanonicalChain {
         hot_zone.tail.set(bit);
 
         // Publish the extended snapshot.
-        self.current.store(Arc::new(CanonicalChainSnapshot { tip: id, hot_zone, body }));
+        self.current.store(Arc::new(CanonicalChainSnapshot {
+            tip: id,
+            high_water: id.max(cur.high_water),
+            hot_zone,
+            body,
+        }));
     }
 
     /// Rolls the chain back to `new_tip`, flipping off every id above it.
@@ -150,8 +168,13 @@ impl CanonicalChain {
             }
         }
 
-        // Publish the rolled-back snapshot.
-        self.current.store(Arc::new(CanonicalChainSnapshot { tip: new_tip, hot_zone, body }));
+        // Publish the rolled-back snapshot; assigned ids stay assigned, so the high water holds.
+        self.current.store(Arc::new(CanonicalChainSnapshot {
+            tip: new_tip,
+            high_water: cur.high_water,
+            hot_zone,
+            body,
+        }));
     }
 
     /// Finalizes ids below `below`, which thereafter read as canonical.
