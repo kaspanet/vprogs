@@ -13,6 +13,7 @@ use kaspa_notify::scope::{PruningPointUtxoSetOverrideScope, Scope, VirtualChainC
 use kaspa_rpc_core::{
     GetVirtualChainFromBlockV2Response, Notification,
     RpcDataVerbosityLevel::Full,
+    RpcLaneEntry,
     api::{ctl::RpcState, rpc::RpcApi},
 };
 use kaspa_seq_commit::{
@@ -32,7 +33,7 @@ use workflow_core::channel::{Channel, MultiplexerChannel};
 
 use crate::{
     Command, L1BridgeConfig, L1Event, PermissionSpendHooks,
-    error::{Error, Result},
+    error::{Error, Result, lane_walk_reached_genesis},
     permission_watch::check_claim_spend,
     reorg_filter::ReorgFilter,
 };
@@ -43,6 +44,12 @@ use crate::{
 const RPC_RETRY_MAX_ATTEMPTS: u32 = 10;
 /// Delay between virtual-chain RPC retries.
 const RPC_RETRY_DELAY: Duration = Duration::from_millis(500);
+
+/// Bounded retries for the lane-proof seeding RPC before the seed fails; an unseeded genesis
+/// must not be followed, as its derived lane tips diverge from consensus.
+const LANE_PROOF_MAX_ATTEMPTS: u32 = 10;
+/// Delay between lane-proof seeding retries.
+const LANE_PROOF_RETRY_DELAY: Duration = Duration::from_millis(500);
 
 /// Bridges an L1 node's chain to a [`ChainSink`] over RPC, high-pass filtering reorgs.
 pub(crate) struct BridgeWorker<T: ChainSink<ChainBlockMetadata, L1Transaction>> {
@@ -267,19 +274,23 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             return;
         }
 
-        // Step 2: Establish the tip we thread from.
-        let init_result = if self.sink.tip() > 0 {
-            Ok(())
-        } else {
-            match (self.start_from, self.seed_depth) {
+        // Step 2: Establish the tip we thread from. A non-empty sink keeps its genesis unused
+        // (the tip threads from the sink's own metadata), so the anchor is established - and its
+        // lane state seeded - only while the sink is fresh.
+        if self.sink.tip() == 0 {
+            let init_result = match (self.start_from, self.seed_depth) {
                 (Some(hash), _) => self.seed_from_block(hash).await,
                 (None, Some(depth)) => self.seed_from_recent(depth).await,
                 (None, None) => self.seed_from_pruning_point().await,
+            };
+            if let Err(e) = init_result {
+                self.fatal_error(format!("chain init failed: {}", e));
+                return;
             }
-        };
-        if let Err(e) = init_result {
-            self.fatal_error(format!("chain init failed: {}", e));
-            return;
+            if let Err(e) = self.seed_lane_tip().await {
+                self.fatal_error(format!("lane seed failed: {}", e));
+                return;
+            }
         }
 
         // Step 3: publish the tip as a progress baseline, then announce Connected and sync.
@@ -370,6 +381,68 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         log::info!("L1 bridge: seeding from explicit block {hash}");
 
         Ok(())
+    }
+
+    /// Seeds the genesis lane state from the node's authoritative lane entry at the freshly
+    /// established anchor, so a bridge joining an already-live lane chains from the real tip
+    /// instead of anchoring its first post-join carrier at the parent seq commit (a mis-anchor
+    /// that diverges every derived tip from consensus). Exhausted retries are an error, never
+    /// a silent zero seed. A lane with no live entry at the anchor keeps the zero seed, which
+    /// the first-activation rule handles; so does a walk that bottoms out at the chain's
+    /// genesis, where no lane state can exist.
+    async fn seed_lane_tip(&mut self) -> Result<()> {
+        let Some(lane_key) = self.lane_key else { return Ok(()) };
+
+        for attempt in 1..=LANE_PROOF_MAX_ATTEMPTS {
+            match self.client.get_seq_commit_lane_proof(self.genesis.hash, lane_key).await {
+                Ok(response) => {
+                    match &response.lane {
+                        Some(entry) => log::info!(
+                            "L1 bridge: seeded authoritative lane tip {} (blue score {}) at \
+                             anchor {}",
+                            entry.tip,
+                            entry.blue_score,
+                            self.genesis.hash
+                        ),
+                        None => log::info!(
+                            "L1 bridge: lane holds no live entry at anchor {}; keeping the zero \
+                             seed",
+                            self.genesis.hash
+                        ),
+                    }
+                    Self::apply_lane_seed(&mut self.genesis, response.lane);
+                    return Ok(());
+                }
+                Err(e) if lane_walk_reached_genesis(&e) => {
+                    log::info!(
+                        "L1 bridge: lane state bottoms out at the chain's genesis below anchor \
+                         {}; keeping the zero seed",
+                        self.genesis.hash
+                    );
+                    return Ok(());
+                }
+                Err(e) if attempt < LANE_PROOF_MAX_ATTEMPTS => {
+                    log::warn!(
+                        "L1 bridge: get_seq_commit_lane_proof failed \
+                         (attempt {attempt}/{LANE_PROOF_MAX_ATTEMPTS}, retrying): {e}"
+                    );
+                    tokio::time::sleep(LANE_PROOF_RETRY_DELAY).await;
+                }
+                Err(e) => {
+                    return Err(Error::from(e));
+                }
+            }
+        }
+        unreachable!("lane-seed retry loop returns on the final attempt")
+    }
+
+    /// Applies an authoritative lane entry to the genesis metadata; `None` leaves the zero seed,
+    /// which the first-activation rule handles.
+    fn apply_lane_seed(genesis: &mut ChainBlockMetadata, entry: Option<RpcLaneEntry>) {
+        if let Some(entry) = entry {
+            genesis.lane_tip = entry.tip;
+            genesis.lane_blue_score = entry.blue_score;
+        }
     }
 
     /// Notifies observers that the connection was lost and tears the worker down.
@@ -476,6 +549,8 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
                     reseeded = true;
                     let stale = self.tip_metadata().hash;
                     self.seed_from_pruning_point().await?;
+                    // The anchor changed, so the lane seed must be re-fetched for it.
+                    self.seed_lane_tip().await?;
                     log::info!(
                         "L1 bridge: seed block {stale} orphaned by a reorg below it; re-anchored \
                          at the pruning point, replaying"
@@ -591,9 +666,9 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         // `lane_blue_score` still at its zero seed) or after going silent past the finality window.
         // The gap check alone never trips before the first activation under a real finality depth,
         // so the zero seed would anchor the lane and every derived tip would diverge from
-        // consensus. A bridge joining an already-live lane still needs the authoritative tip seeded
-        // from `get_seq_commit_lane_proof` at startup; until then only lanes born after the bridge
-        // start derive correctly.
+        // consensus. A fresh-sink bridge seeds the authoritative lane tip from
+        // `get_seq_commit_lane_proof` at its anchor, so joining an already-live lane derives
+        // correctly; the zero seed remains only for lanes with no live entry at the anchor.
         let blue_score = block.blue_score;
         let lane_expired = parent.lane_blue_score == 0
             || blue_score.saturating_sub(parent.lane_blue_score) > self.finality_depth;
@@ -933,5 +1008,29 @@ mod tests {
         let (tip, _, expired) = worker.lane_state(&parent, &txs, &block);
         assert!(expired, "silence past the finality window expires the lane");
         assert_eq!(tip, expected_tip(&parent_seq_commit), "re-activation anchors at seq commit");
+    }
+
+    /// Authoritative seeding applies the node's lane entry to the genesis metadata, and a lane
+    /// with no live entry at the anchor keeps the zero seed.
+    #[test]
+    fn lane_seed_applies_authoritative_entry_and_keeps_zero_on_none() {
+        let tip = Hash::from_bytes([0x9A; 32]);
+
+        let mut genesis = ChainBlockMetadata::default();
+        BridgeWorker::<TestSink>::apply_lane_seed(
+            &mut genesis,
+            Some(RpcLaneEntry { tip, blue_score: 4321 }),
+        );
+        assert_eq!(genesis.lane_tip, tip, "an authoritative entry seeds the genesis tip");
+        assert_eq!(genesis.lane_blue_score, 4321, "an authoritative entry seeds the blue score");
+
+        BridgeWorker::<TestSink>::apply_lane_seed(&mut genesis, None);
+        assert_eq!(genesis.lane_tip, tip, "no live entry leaves the seeded state untouched");
+        assert_eq!(genesis.lane_blue_score, 4321);
+
+        let mut genesis = ChainBlockMetadata::default();
+        BridgeWorker::<TestSink>::apply_lane_seed(&mut genesis, None);
+        assert_eq!(genesis.lane_tip, Hash::default(), "no live entry keeps the zero seed");
+        assert_eq!(genesis.lane_blue_score, 0);
     }
 }
