@@ -22,6 +22,7 @@ impl<C: Config> StateSpaceExt<C> for StateSpace {
             StateSpace::SmtNode => "smt_node",
             StateSpace::SmtStale => "smt_stale",
             StateSpace::ProofReceipt => "proof_receipt",
+            StateSpace::Index => "index",
         }
     }
 
@@ -37,6 +38,7 @@ impl<C: Config> StateSpaceExt<C> for StateSpace {
             ColumnFamilyDescriptor::new(cf_name(&SmtNode), C::cf_smt_node_opts()),
             ColumnFamilyDescriptor::new(cf_name(&SmtStale), C::cf_smt_stale_opts()),
             ColumnFamilyDescriptor::new(cf_name(&ProofReceipt), C::cf_proof_receipt_opts()),
+            ColumnFamilyDescriptor::new(cf_name(&Index), C::cf_index_opts()),
         ]
     }
 }

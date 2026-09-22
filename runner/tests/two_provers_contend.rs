@@ -1580,6 +1580,7 @@ async fn spawn_prover(
             // settles.
             settlement_rx: Some(settlement_rx.clone()),
         },
+        None,
     );
 
     // Backend is required by the settler config; in Dev mode it pins no image ids but the type is

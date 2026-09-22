@@ -6,6 +6,7 @@ use vprogs_core_types::{Checkpoint, ResourceId};
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_ptr_latest::StatePtrLatest;
 use vprogs_state_ptr_rollback::StatePtrRollback;
+use vprogs_state_version::StateVersion;
 use vprogs_storage_canonical_chain::CanonicalChainSnapshot;
 use vprogs_storage_types::Store;
 
@@ -73,6 +74,24 @@ impl<S: Store, P: Processor<S>> Rollback<S, P> {
                         let resource_id: ResourceId = borsh::from_slice(&resource_id)
                             .expect("corrupted store: unrecoverable");
                         self.restore_latest_ptr::<ST>(wb, resource_id, old_version);
+                        if let Some(indexer) = self.state.indexer() {
+                            // The fork's bytes at the reverted version; prunable only below root,
+                            // and rollback targets never go below root, so this read always hits.
+                            let written = StateVersion::get(store, index, &resource_id)
+                                .filter(|data| !data.is_empty());
+                            let restored = (old_version != 0)
+                                .then(|| StateVersion::get(store, old_version, &resource_id))
+                                .flatten()
+                                .filter(|data| !data.is_empty());
+                            indexer.revert_diff(
+                                &resource_id,
+                                written.as_deref(),
+                                restored.as_deref(),
+                                index,
+                                old_version,
+                                wb,
+                            );
+                        }
                     }
                 }
             }

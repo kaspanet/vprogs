@@ -21,6 +21,7 @@ use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_smt::EMPTY_HASH;
 use vprogs_l1_types::SettlementInfo;
 use vprogs_l1_wallet::Wallet;
+use vprogs_scheduling_scheduler::Indexer;
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_settler::{
     CovenantState, SettlementMode, SettlementWorkerConfig, bootstrap_dev_covenant,
@@ -118,6 +119,8 @@ struct StartContext<'a, F> {
     elfs: Elfs<'a>,
     /// The program's deposit-address derivation, applied once to the resolved covenant id.
     deposit_spk_hash: F,
+    /// Optional app indexer fed by the node's state writes.
+    indexer: Option<Indexer>,
     /// Resolved start mode: fresh bootstrap, resume, or catch-up.
     mode: StartMode,
     /// Persisted identity and bootstrap anchors, updated as start-up resolves them.
@@ -147,6 +150,7 @@ pub async fn start_runner<F>(
     params: &Params,
     elfs: Elfs<'_>,
     deposit_spk_hash: F,
+    indexer: Option<Indexer>,
 ) -> Result<RunnerHandles, StartError>
 where
     F: FnOnce(&CovenantIdBytes) -> DepositSpkHash,
@@ -180,6 +184,7 @@ where
         lane_key,
         elfs,
         deposit_spk_hash,
+        indexer,
         mode,
         persisted: &mut persisted,
     };
@@ -206,6 +211,7 @@ async fn start_exec<F>(ctx: StartContext<'_, F>) -> Result<(RunnerNode, Hash), S
         lane_key,
         elfs,
         deposit_spk_hash: _,
+        indexer,
         mode,
         persisted,
     } = ctx;
@@ -287,6 +293,7 @@ async fn start_exec<F>(ctx: StartContext<'_, F>) -> Result<(RunnerNode, Hash), S
             bridge_seed,
             BridgeObservers::default(),
         ),
+        indexer,
     );
     Ok((node, covenant_id))
 }
@@ -310,6 +317,7 @@ where
         lane_key,
         elfs,
         deposit_spk_hash,
+        indexer,
         mode,
         persisted,
     } = ctx;
@@ -472,6 +480,7 @@ where
             bundle_size: 1..=usize::MAX,
             settlement_rx: Some(settlement_rx.clone()),
         },
+        indexer,
     );
     // Target the bridge replays toward: the node's virtual DAA captured before bootstrap. The
     // reporter loop only reads the tip atomic.
@@ -688,7 +697,7 @@ mod tests {
         .unwrap();
         let params = Params::from(NetworkId::new(NetworkType::Simnet));
         let elfs = Elfs { program: &[], batch: &[], aggregator: &[] };
-        let res = start_runner(&cfg, &client, &params, elfs, |_| [0u8; 32]).await;
+        let res = start_runner(&cfg, &client, &params, elfs, |_| [0u8; 32], None).await;
         assert!(matches!(res, Err(StartError::MissingKeyForProve)));
     }
 
@@ -722,7 +731,7 @@ mod tests {
         .unwrap();
         let params = Params::from(NetworkId::new(NetworkType::Simnet));
         let elfs = Elfs { program: &[], batch: &[], aggregator: &[] };
-        let res = start_runner(&cfg, &client, &params, elfs, |_| [0u8; 32]).await;
+        let res = start_runner(&cfg, &client, &params, elfs, |_| [0u8; 32], None).await;
         assert!(matches!(res, Err(StartError::MissingKeyForFresh)));
     }
 }

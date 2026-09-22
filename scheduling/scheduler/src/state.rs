@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use crossbeam_queue::SegQueue;
 use vprogs_core_macros::smart_pointer;
 use vprogs_core_types::{Checkpoint, ResourceId};
@@ -8,7 +8,7 @@ use vprogs_state_metadata::StateMetadata;
 use vprogs_storage_manager::{StorageConfig, StorageManager};
 use vprogs_storage_types::Store;
 
-use crate::{Read, ReceiptStore, Write, processor::Processor};
+use crate::{Read, ReceiptStore, ResourceIndexer, Write, processor::Processor};
 
 /// Shared scheduler state accessible by all components.
 #[smart_pointer]
@@ -24,6 +24,8 @@ pub struct SchedulerState<S: Store, P: Processor<S>> {
     /// Most recently scheduled batch. Advanced by `next_checkpoint`, reset on rollback. Only
     /// mutated from `&mut Scheduler`.
     last_processed: ArcSwap<Checkpoint<P::BatchMetadata>>,
+    /// Optional app indexer fed by the state write path.
+    indexer: ArcSwapOption<Arc<dyn ResourceIndexer>>,
 }
 
 impl<S: Store, P: Processor<S>> SchedulerState<S, P> {
@@ -42,7 +44,19 @@ impl<S: Store, P: Processor<S>> SchedulerState<S, P> {
             root: ArcSwap::from_pointee(root),
             last_committed: ArcSwap::from_pointee(last_committed.clone()),
             last_processed: ArcSwap::from_pointee(last_committed),
+            indexer: ArcSwapOption::empty(),
         }))
+    }
+
+    /// Attaches `indexer`; state writes from then on feed it. Set once at node build,
+    /// before any batch is scheduled.
+    pub fn set_indexer(&self, indexer: Arc<dyn ResourceIndexer>) {
+        self.indexer.store(Some(Arc::new(indexer)));
+    }
+
+    /// The app indexer fed by the state write path, if configured.
+    pub fn indexer(&self) -> Option<Arc<dyn ResourceIndexer>> {
+        self.indexer.load_full().map(|arc| (*arc).clone())
     }
 
     /// Returns a reference to the storage manager.
