@@ -3,7 +3,7 @@
 
 use std::{sync::Arc, thread};
 
-use vprogs_storage_canonical_chain::{BUCKET_CAPACITY, CanonicalChainManager};
+use vprogs_storage_canonical_chain::{BUCKET_CAPACITY, CanonicalChain, CanonicalChainManager};
 
 /// Whether `id` is canonical in a fresh snapshot of the manager's chain.
 fn is_canon(manager: &CanonicalChainManager<u64>, id: u64) -> bool {
@@ -209,4 +209,22 @@ fn snapshot_shared_across_threads() {
     for h in handles {
         h.join().unwrap();
     }
+}
+
+#[test]
+fn restore_replays_an_interior_id_gap() {
+    // A reorg-canceled batch never persists metadata but keeps its id, so the persisted log
+    // carries holes. Restore must keep the persisted ids instead of
+    // re-densifying, and the next append must allocate past the highest persisted id.
+    let manager =
+        CanonicalChainManager::<u64>::new(CanonicalChain::default(), [(1u64, 1u64), (3u64, 3u64)]);
+
+    assert_eq!(manager.chain().tip(), 3);
+    assert!(manager.metadata(1).is_some());
+    assert!(manager.metadata(2).is_none(), "the canceled id stays a hole");
+    assert!(manager.metadata(3).is_some());
+
+    let mut manager = manager;
+    assert_eq!(manager.append(4u64).id, 4, "the next append allocates past the gap");
+    assert!(manager.metadata(4).is_some());
 }

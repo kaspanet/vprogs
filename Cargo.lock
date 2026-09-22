@@ -9447,7 +9447,6 @@ dependencies = [
 name = "vprogs-zk-batch-prover"
 version = "0.1.0"
 dependencies = [
- "kaspa-grpc-client",
  "kaspa-hashes",
  "kaspa-rpc-core",
  "tap",
