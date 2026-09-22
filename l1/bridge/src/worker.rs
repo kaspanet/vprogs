@@ -9,7 +9,7 @@ use std::{
 use crossbeam_queue::SegQueue;
 use futures::{FutureExt, select_biased};
 use kaspa_consensus_core::{subnets::SubnetworkId, tx::TransactionOutpoint};
-use kaspa_notify::scope::{PruningPointUtxoSetOverrideScope, Scope, VirtualChainChangedScope};
+use kaspa_notify::scope::{Scope, VirtualChainChangedScope};
 use kaspa_rpc_core::{
     GetVirtualChainFromBlockV2Response, Notification,
     RpcDataVerbosityLevel::Full,
@@ -68,7 +68,7 @@ pub(crate) struct BridgeWorker<T: ChainSink<ChainBlockMetadata, L1Transaction>> 
     event_signal: Arc<Notify>,
     /// Lock-free shutdown signal.
     shutdown: Arc<AtomicAsyncLatch>,
-    /// Receives L1 chain notifications (VCC, pruning point).
+    /// Receives L1 chain notifications (VCC).
     notification_channel: Channel<Notification>,
     /// Receives RPC connection state changes.
     rpc_ctl_channel: MultiplexerChannel<RpcState>,
@@ -95,12 +95,13 @@ pub(crate) struct BridgeWorker<T: ChainSink<ChainBlockMetadata, L1Transaction>> 
     /// the single writer), so each settler can read the canonical settlement without a confirm
     /// RTT.
     settlement: Option<watch::Sender<Option<SettlementInfo>>>,
-    /// Lower bound on the `min_confirmation_count` for chain-follow queries; the adaptive reorg
-    /// filter may still exceed it after observed reorgs. `None` uses the adaptive threshold alone.
+    /// Lower bound on the `min_confirmation_count` for chain-follow queries and on the
+    /// pruning-point confirmation window; the adaptive reorg filter may still exceed it after
+    /// observed reorgs. `None` uses the adaptive threshold alone.
     min_confirmations: Option<u64>,
-    /// Switches the adaptive reorg filter off: the follow threshold becomes exactly
-    /// `min_confirmations` (zero when unset), so blocks render at the tip and reorgs surface as
-    /// rollbacks instead of confirmation latency.
+    /// Switches the adaptive reorg filter off: the follow threshold and pruning-point
+    /// confirmation window become exactly `min_confirmations` (zero when unset), so blocks render
+    /// at the tip and reorgs surface as rollbacks instead of confirmation latency.
     adaptive_filter_disabled: bool,
     /// Optional hooks for watching and emitting permission-output spends.
     permission_spends: Option<PermissionSpendHooks>,
@@ -108,6 +109,9 @@ pub(crate) struct BridgeWorker<T: ChainSink<ChainBlockMetadata, L1Transaction>> 
     /// continuation outpoint)` entry per detected spend. A rollback pops entries above the new
     /// tip newest-first and undoes each transition, keeping the watcher registry canonical.
     spend_journal: Vec<(u64, TransactionOutpoint, [u8; 32], Option<TransactionOutpoint>)>,
+    /// Pruning point whose finalization is already applied to the sink, or `None` before the
+    /// first confirmed candidate.
+    finalized_pp: Option<Hash>,
     /// Optional channel sender the settlement stream is published into (observations and
     /// rollback markers).
     settlement_events: Option<mpsc::UnboundedSender<SettlementMsg>>,
@@ -187,6 +191,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             adaptive_filter_disabled: config.adaptive_filter_disabled,
             permission_spends: config.permission_spends.clone(),
             spend_journal: Vec::new(),
+            finalized_pp: None,
             settlement_events: config.settlement_events.clone(),
         }
         .run()
@@ -226,9 +231,6 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
                     let result = match notification {
                         Ok(Notification::VirtualChainChanged(_)) => {
                             self.fetch_chain_updates().await
-                        }
-                        Ok(Notification::PruningPointUtxoSetOverride(_)) => {
-                            self.handle_finalization().await
                         }
                         Ok(other) => {
                             log::warn!("L1 bridge: ignoring unexpected notification: {:?}", other);
@@ -464,7 +466,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         self.stopping = true;
     }
 
-    /// Registers listeners for VirtualChainChanged and PruningPointUtxoSetOverride (finalization).
+    /// Registers a listener for VirtualChainChanged notifications.
     async fn subscribe_to_notifications(&mut self) -> Result<()> {
         // Register a persistent listener that pipes notifications into our channel.
         let id = self.client.rpc_api().register_new_listener(ChannelConnection::new(
@@ -474,12 +476,10 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         ));
 
         // VCC subscribed without accepted_transaction_ids - only a "something changed" trigger.
-        for scope in [
-            Scope::VirtualChainChanged(VirtualChainChangedScope::new(false)),
-            Scope::PruningPointUtxoSetOverride(PruningPointUtxoSetOverrideScope {}),
-        ] {
-            self.client.rpc_api().start_notify(id, scope).await?;
-        }
+        self.client
+            .rpc_api()
+            .start_notify(id, Scope::VirtualChainChanged(VirtualChainChangedScope::new(false)))
+            .await?;
 
         Ok(())
     }
@@ -524,6 +524,18 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         unreachable!("retry loop returns on the final attempt")
     }
 
+    /// Returns the confirmation window shared by the chain-follow queries and pruning-point
+    /// finalization: `min_confirmations` as a floor under the adaptive reorg filter's threshold,
+    /// exactly `min_confirmations` with the filter disabled, and `None` to confirm immediately.
+    fn confirmation_threshold(&mut self) -> Option<u64> {
+        let adaptive =
+            if self.adaptive_filter_disabled { None } else { self.reorg_filter.threshold() };
+        match self.min_confirmations {
+            Some(floor) => Some(floor.max(adaptive.unwrap_or(0))),
+            None => adaptive,
+        }
+    }
+
     /// Fetches chain updates from the current tip, handling reorgs and scheduling each new block.
     async fn fetch_chain_updates(&mut self) -> Result<()> {
         // The loop retries exactly once after a below-root re-seed, so a pruning-point anchor that
@@ -539,12 +551,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             // protects the follow until observed reorgs build a larger threshold. With the
             // filter switched off, the adaptive contribution is always zero: a latency-critical
             // follow renders at the tip and takes reorgs as rollbacks instead of latency.
-            let adaptive =
-                if self.adaptive_filter_disabled { None } else { self.reorg_filter.threshold() };
-            let threshold = match self.min_confirmations {
-                Some(floor) => Some(floor.max(adaptive.unwrap_or(0))),
-                None => adaptive,
-            };
+            let threshold = self.confirmation_threshold();
             let response = Self::get_vcc_with_retry(
                 self.client.clone(),
                 self.shutdown.clone(),
@@ -697,6 +704,9 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             }
         }
 
+        // Finalize below a pruning point confirmed at the new tip.
+        self.finalize_confirmed_pp();
+
         // Publish the batch's new tip so the progress reporter advances as catch-up proceeds.
         self.publish_tip_daa();
         self.publish_settlement();
@@ -755,10 +765,10 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
 
     /// Rolls the sink back to the surviving block, recording the reorg's depth in the filter.
     fn handle_reorg(&mut self, response: &GetVirtualChainFromBlockV2Response) -> Result<()> {
-        // `removed` is tip-first: fork child is its last entry; an unknown one is below finality.
+        // `removed` is tip-first: fork child is its last entry; an unknown one is below the root.
         let fork_child_hash = response.removed_chain_block_hashes.last().expect("non-empty reorg");
         let Some(fork_child) = self.sink.id(&fork_child_hash.as_bytes()) else {
-            return Err(Error::ReorgBelowFinality(*fork_child_hash));
+            return Err(Error::ReorgBelowRoot(*fork_child_hash));
         };
         let new_tip = self.sink.metadata(fork_child).expect("a known id has metadata").parent_id;
 
@@ -804,16 +814,47 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         Ok(())
     }
 
-    /// Advances finalization to the L1 pruning point: finalizes the sink's ids below it.
-    async fn handle_finalization(&mut self) -> Result<()> {
-        let pruning_hash = self.client.get_block_dag_info().await?.pruning_point_hash;
-
-        if let Some(below) = self.sink.id(&pruning_hash.as_bytes()) {
-            self.sink.finalize(below);
-            log::info!("L1 bridge: pruning point advanced to id {} (hash {})", below, pruning_hash);
+    /// Finalizes the sink below the pruning point confirmed at the tip: the point cited by the
+    /// tip's recent blocks, once it has held across the confirmation window and differs from the
+    /// last finalized one.
+    ///
+    /// The candidate is derived from the sink's metadata rather than carried in worker state, so
+    /// a reorg rollback resets it with the sink. A candidate that flips before the window passes
+    /// is discarded simply by the next block citing the new point; a confirmed point below the
+    /// sink root (the seed anchor) leaves nothing to drop and only updates the marker.
+    fn finalize_confirmed_pp(&mut self) {
+        if self.sink.tip() == 0 {
+            return;
         }
 
-        Ok(())
+        // Count the consecutive blocks ending at the tip that cite one pruning point, bounded by
+        // the window: a longer run confirms the same point.
+        let window = self.confirmation_threshold().unwrap_or(0);
+        let mut id = self.sink.tip();
+        let pp = self.sink.metadata(id).expect("canonical tip metadata is live").pruning_point;
+        let mut run = 1;
+        while run <= window {
+            let parent_id = self.sink.metadata(id).expect("walked id is live").parent_id;
+            if parent_id == 0 || parent_id >= id {
+                break;
+            }
+            match self.sink.metadata(parent_id) {
+                Some(m) if m.pruning_point == pp => {
+                    run += 1;
+                    id = parent_id;
+                }
+                _ => break,
+            }
+        }
+
+        if run <= window || self.finalized_pp == Some(pp) {
+            return;
+        }
+        self.finalized_pp = Some(pp);
+        if let Some(below) = self.sink.id(&pp.as_bytes()) {
+            self.sink.finalize(below);
+            log::info!("L1 bridge: pruning point advanced to id {} (hash {})", below, pp);
+        }
     }
 }
 
@@ -854,6 +895,14 @@ mod tests {
     #[derive(Default)]
     struct TestSink {
         blocks: Vec<ChainBlockMetadata>,
+        finalized: Vec<u64>,
+    }
+
+    impl TestSink {
+        /// The `below` argument of each finalization, in order.
+        fn finalized(&self) -> Vec<u64> {
+            self.finalized.clone()
+        }
     }
 
     impl ChainSink<ChainBlockMetadata, L1Transaction> for TestSink {
@@ -865,8 +914,12 @@ mod tests {
             self.blocks.push(metadata);
             self.blocks.len() as u64
         }
-        fn rollback(&mut self, _new_tip: u64) {}
-        fn finalize(&mut self, _below: u64) {}
+        fn rollback(&mut self, new_tip: u64) {
+            self.blocks.truncate(new_tip as usize);
+        }
+        fn finalize(&mut self, below: u64) {
+            self.finalized.push(below);
+        }
         fn tip(&self) -> u64 {
             self.blocks.len() as u64
         }
@@ -950,6 +1003,7 @@ mod tests {
             adaptive_filter_disabled: false,
             permission_spends,
             spend_journal: Vec::new(),
+            finalized_pp: None,
             settlement_events: Some(settlement_events),
         }
     }
@@ -978,6 +1032,7 @@ mod tests {
                         daa_score: Some(10),
                         timestamp: Some(1000),
                         accepted_id_merkle_root: Some(Hash::default()),
+                        pruning_point: Some(Hash::default()),
                         ..Default::default()
                     },
                     accepted_transactions: vec![RpcOptionalTransaction::from(&tx1)],
@@ -989,6 +1044,7 @@ mod tests {
                         daa_score: Some(20),
                         timestamp: Some(2000),
                         accepted_id_merkle_root: Some(Hash::default()),
+                        pruning_point: Some(Hash::default()),
                         ..Default::default()
                     },
                     accepted_transactions: vec![RpcOptionalTransaction::from(&tx2)],
@@ -1025,6 +1081,7 @@ mod tests {
                     daa_score: Some(30),
                     timestamp: Some(3000),
                     accepted_id_merkle_root: Some(Hash::default()),
+                    pruning_point: Some(Hash::default()),
                     ..Default::default()
                 },
                 accepted_transactions: vec![],
@@ -1110,6 +1167,7 @@ mod tests {
                     daa_score: Some(10),
                     timestamp: Some(1000),
                     accepted_id_merkle_root: Some(Hash::default()),
+                    pruning_point: Some(Hash::default()),
                     ..Default::default()
                 },
                 accepted_transactions: vec![
@@ -1163,6 +1221,183 @@ mod tests {
             assert!(!reg.contains_key(&cont_outpoint));
         }
         assert!(worker.spend_journal.is_empty(), "reverted entries are popped off the journal");
+    }
+
+    /// Builds an empty chain block with header `hash` citing pruning point `pp`.
+    fn pp_block(hash: Hash, blue_score: u64, pp: Hash) -> RpcChainBlockAcceptedTransactions {
+        RpcChainBlockAcceptedTransactions {
+            chain_block_header: RpcOptionalHeader {
+                hash: Some(hash),
+                blue_score: Some(blue_score),
+                daa_score: Some(blue_score * 10),
+                timestamp: Some(blue_score * 1000),
+                accepted_id_merkle_root: Some(Hash::default()),
+                pruning_point: Some(pp),
+                ..Default::default()
+            },
+            accepted_transactions: vec![],
+        }
+    }
+
+    /// Builds a no-removals chain-update response over `blocks`.
+    fn pp_batch(
+        blocks: Vec<RpcChainBlockAcceptedTransactions>,
+    ) -> GetVirtualChainFromBlockV2Response {
+        let added = blocks.iter().map(|b| b.chain_block_header.hash.unwrap()).collect();
+        GetVirtualChainFromBlockV2Response {
+            removed_chain_block_hashes: Arc::new(vec![]),
+            added_chain_block_hashes: Arc::new(added),
+            chain_block_accepted_transactions: Arc::new(blocks),
+        }
+    }
+
+    /// Finalization waits for the confirmation window: a pruning point cited by the tip's recent
+    /// blocks finalizes the sink only once the citation has held across the window, and a
+    /// confirmed point never finalizes twice.
+    #[tokio::test]
+    async fn pruning_point_finalization_waits_for_the_confirmation_window() {
+        let (settlement_events_tx, _rx) = mpsc::unbounded_channel();
+        let mut worker = test_worker(
+            TestSink::default(),
+            Hash::from_bytes([0xAA; 32]),
+            settlement_events_tx,
+            None,
+        );
+        worker.min_confirmations = Some(2);
+
+        let pp0 = Hash::from_bytes([0xB0; 32]);
+        // The new point is itself a chain block, mined before the advance.
+        let pp1 = Hash::from_bytes([0x01; 32]);
+
+        // The point block predates the advance, so it still cites the old point.
+        worker.fetch_chain_updates_tail(pp_batch(vec![pp_block(pp1, 1, pp0)])).await.unwrap();
+        assert_eq!(worker.sink.finalized(), Vec::<u64>::new());
+
+        // Two citing blocks sit one confirmation short of the window.
+        let batch = pp_batch(vec![
+            pp_block(Hash::from_bytes([0x02; 32]), 2, pp1),
+            pp_block(Hash::from_bytes([0x03; 32]), 3, pp1),
+        ]);
+        worker.fetch_chain_updates_tail(batch).await.unwrap();
+        assert_eq!(worker.sink.finalized(), Vec::<u64>::new());
+
+        // The third citing block confirms: finalize below the point block's id.
+        let batch = pp_batch(vec![pp_block(Hash::from_bytes([0x04; 32]), 4, pp1)]);
+        worker.fetch_chain_updates_tail(batch).await.unwrap();
+        assert_eq!(worker.sink.finalized(), vec![1]);
+
+        // Further blocks citing the same point finalize nothing new.
+        let batch = pp_batch(vec![pp_block(Hash::from_bytes([0x05; 32]), 5, pp1)]);
+        worker.fetch_chain_updates_tail(batch).await.unwrap();
+        assert_eq!(worker.sink.finalized(), vec![1]);
+    }
+
+    /// A pruning point that flips before its window passes is discarded: the counter restarts at
+    /// the new citation, and only the replacement point finalizes once it confirms.
+    #[tokio::test]
+    async fn pruning_point_flip_resets_the_window() {
+        let (settlement_events_tx, _rx) = mpsc::unbounded_channel();
+        let mut worker = test_worker(
+            TestSink::default(),
+            Hash::from_bytes([0xAA; 32]),
+            settlement_events_tx,
+            None,
+        );
+        worker.min_confirmations = Some(1);
+
+        let pp0 = Hash::from_bytes([0xB0; 32]);
+        // Both points are themselves chain blocks, mined before their advances.
+        let pp1 = Hash::from_bytes([0x01; 32]);
+        let pp2 = Hash::from_bytes([0x02; 32]);
+
+        // Both point blocks cite the old point; one block cites pp1.
+        let batch = pp_batch(vec![
+            pp_block(pp1, 1, pp0),
+            pp_block(pp2, 2, pp0),
+            pp_block(Hash::from_bytes([0x03; 32]), 3, pp1),
+        ]);
+        worker.fetch_chain_updates_tail(batch).await.unwrap();
+        assert_eq!(worker.sink.finalized(), Vec::<u64>::new());
+
+        // The citation flips to pp2 before pp1's window passes, discarding the pp1 run.
+        let batch = pp_batch(vec![pp_block(Hash::from_bytes([0x04; 32]), 4, pp2)]);
+        worker.fetch_chain_updates_tail(batch).await.unwrap();
+        assert_eq!(worker.sink.finalized(), Vec::<u64>::new());
+
+        // One more pp2 citation confirms it; the pp1 candidate never finalizes.
+        let batch = pp_batch(vec![pp_block(Hash::from_bytes([0x05; 32]), 5, pp2)]);
+        worker.fetch_chain_updates_tail(batch).await.unwrap();
+        assert_eq!(worker.sink.finalized(), vec![2]);
+    }
+
+    /// The candidate is derived from the sink, so a rollback resets the confirmation count with
+    /// it: a run that was one block short of the window before a reorg does not survive the
+    /// rollback as stale worker state.
+    #[tokio::test]
+    async fn reorg_rollback_resets_the_derived_candidate() {
+        let (settlement_events_tx, _rx) = mpsc::unbounded_channel();
+        let mut worker = test_worker(
+            TestSink::default(),
+            Hash::from_bytes([0xAA; 32]),
+            settlement_events_tx,
+            None,
+        );
+        worker.min_confirmations = Some(2);
+
+        let pp0 = Hash::from_bytes([0xB0; 32]);
+        // The new point is itself a chain block, mined before the advance.
+        let pp1 = Hash::from_bytes([0x01; 32]);
+        let x1 = Hash::from_bytes([0x02; 32]);
+        let x2 = Hash::from_bytes([0x03; 32]);
+
+        // One confirmation short of the window when the reorg hits.
+        let batch =
+            pp_batch(vec![pp_block(pp1, 1, pp0), pp_block(x1, 2, pp1), pp_block(x2, 3, pp1)]);
+        worker.fetch_chain_updates_tail(batch).await.unwrap();
+        assert_eq!(worker.sink.finalized(), Vec::<u64>::new());
+
+        // Reorg both citing blocks away; the surviving tip is the point block citing pp0.
+        let reorg = GetVirtualChainFromBlockV2Response {
+            removed_chain_block_hashes: Arc::new(vec![x2, x1]),
+            added_chain_block_hashes: Arc::new(vec![]),
+            chain_block_accepted_transactions: Arc::new(vec![]),
+        };
+        worker.handle_reorg(&reorg).unwrap();
+
+        // A fresh citing block starts the run from one again, not from the stale pre-reorg run.
+        let batch = pp_batch(vec![pp_block(Hash::from_bytes([0x04; 32]), 4, pp1)]);
+        worker.fetch_chain_updates_tail(batch).await.unwrap();
+        assert_eq!(worker.sink.finalized(), Vec::<u64>::new());
+
+        // Two more citing blocks carry the fresh run through the window.
+        let batch = pp_batch(vec![
+            pp_block(Hash::from_bytes([0x05; 32]), 5, pp1),
+            pp_block(Hash::from_bytes([0x06; 32]), 6, pp1),
+        ]);
+        worker.fetch_chain_updates_tail(batch).await.unwrap();
+        assert_eq!(worker.sink.finalized(), vec![1]);
+    }
+
+    /// Without a window (no floor, adaptive filter empty) the first citation confirms: consensus
+    /// itself only advances the node's pruning point past finality, so the window is purely
+    /// reorg-flap defense.
+    #[tokio::test]
+    async fn pruning_point_confirms_immediately_without_a_window() {
+        let (settlement_events_tx, _rx) = mpsc::unbounded_channel();
+        let mut worker = test_worker(
+            TestSink::default(),
+            Hash::from_bytes([0xAA; 32]),
+            settlement_events_tx,
+            None,
+        );
+
+        // The new point is itself the first chain block; the second block cites it.
+        let batch = pp_batch(vec![
+            pp_block(Hash::from_bytes([0x01; 32]), 1, Hash::from_bytes([0xB0; 32])),
+            pp_block(Hash::from_bytes([0x02; 32]), 2, Hash::from_bytes([0x01; 32])),
+        ]);
+        worker.fetch_chain_updates_tail(batch).await.unwrap();
+        assert_eq!(worker.sink.finalized(), vec![1]);
     }
 
     /// `lane_state` anchors a lane re-activation at the parent seq commit whenever the lane holds
