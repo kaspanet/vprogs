@@ -1,0 +1,26 @@
+[package]
+edition.workspace = true
+name              = "vprogs-zk-backend-risc0-app-kit"
+version.workspace = true
+
+[lib]
+name = "vprogs_zk_backend_risc0_app_kit"
+path = "src/lib.rs"
+
+[dependencies]
+kaspa-addresses                           = { workspace = true }
+kaspa-consensus-core                      = { workspace = true }
+kaspa-hashes                              = { workspace = true }
+kaspa-rpc-core                            = { workspace = true }
+kaspa-txscript                            = { workspace = true }
+log                                       = { workspace = true }
+rand                                      = { workspace = true }
+secp256k1                                 = { workspace = true }
+tokio                                     = { workspace = true, features = ["time"] }
+vprogs-core-codec                         = { workspace = true }
+vprogs-core-types                         = { workspace = true }
+vprogs-l1-utils                           = { workspace = true }
+vprogs-l1-wallet                          = { workspace = true }
+vprogs-zk-abi                             = { workspace = true, features = ["host"] }
+vprogs-zk-backend-risc0-api               = { workspace = true }
+vprogs-zk-backend-risc0-runtime-processor = { workspace = true }
