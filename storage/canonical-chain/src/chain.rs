@@ -99,12 +99,14 @@ impl CanonicalChain {
     }
 
     /// Restores the `canonical` ids over `base..=tip` at startup, replaying `frozen` bits
-    /// below `base`. Ids whose bits were never persisted read canonical, like the pruned-bucket
-    /// fallback.
+    /// below `base`. `last_assigned` names the highest id the log ever allocated, including
+    /// entries orphaned above `tip`. Ids whose bits were never persisted read canonical, like
+    /// the pruned-bucket fallback.
     pub(crate) fn restore(
         &self,
         base: u64,
         tip: u64,
+        last_assigned: u64,
         canonical: impl IntoIterator<Item = u64>,
         frozen: &[FrozenBits],
     ) {
@@ -155,12 +157,24 @@ impl CanonicalChain {
             body.push(Arc::new(bucket));
         }
 
-        // Publish the restored snapshot.
+        // Publish the restored snapshot; ids orphaned above the tip stay assigned.
         self.current.store(Arc::new(CanonicalChainSnapshot {
             tip,
-            high_water: tip,
+            high_water: last_assigned,
             hot_zone: HotZone { tail_bucket, tail, last_sealed },
             body: Arc::new(body),
+        }));
+    }
+
+    /// Restores a chain rolled back to genesis with every persisted entry orphaned, so reads
+    /// keep filtering those ids.
+    pub(crate) fn restore_genesis(&self, last_assigned: u64) {
+        // The high water still names the highest id ever assigned; tip 0 reads nothing canonical.
+        self.current.store(Arc::new(CanonicalChainSnapshot {
+            tip: 0,
+            high_water: last_assigned,
+            hot_zone: HotZone::empty(),
+            body: Arc::new(AtomicRing::new(0)),
         }));
     }
 
