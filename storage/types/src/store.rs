@@ -46,8 +46,15 @@ pub trait Store: Tree + Clone + Send + Sync + 'static {
     /// Returns the store's shared canonical-chain read oracle.
     fn canonical_chain(&self) -> CanonicalChain;
 
-    /// Persists the canonical bits frozen by a finalization step, keyed by bucket number,
-    /// overwriting any earlier row for the same bucket.
+    /// Queues the frozen-bit rows into `wb`, keyed by bucket number, overwriting any earlier
+    /// row for the same bucket.
+    fn put_frozen_bits(&self, wb: &mut Self::WriteBatch, frozen: &[FrozenBits]) {
+        for row in frozen {
+            wb.put(StateSpace::CanonicalBits, &row.bucket.to_be_bytes(), &encode_words(&row.words));
+        }
+    }
+
+    /// Persists the canonical bits frozen by a finalization step in one commit.
     fn persist_frozen_bits(&self, frozen: &[FrozenBits]) {
         // An empty step freezes nothing; skip the commit.
         if frozen.is_empty() {
@@ -55,9 +62,7 @@ pub trait Store: Tree + Clone + Send + Sync + 'static {
         }
 
         let mut wb = self.write_batch();
-        for row in frozen {
-            wb.put(StateSpace::CanonicalBits, &row.bucket.to_be_bytes(), &encode_words(&row.words));
-        }
+        self.put_frozen_bits(&mut wb, frozen);
         self.commit(wb);
     }
 

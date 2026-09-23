@@ -165,7 +165,7 @@ fn frozen_bits_replay_orphaned_below_base_in_the_base_bucket() {
     }
 
     // Capture before finalize prunes, then restore from the surviving log plus the words.
-    let frozen = live.frozen_bits(5_000);
+    let frozen = live.chain().frozen_bits(5_000);
     live.finalize(5_000);
     let entries = std::iter::once((5_000, Meta { tag: 5_000, parent: 4_998 }))
         .chain((5_001..=9_000).map(|id| (id, Meta { tag: id, parent: id - 1 })));
@@ -204,7 +204,7 @@ fn frozen_bits_replay_the_fabricated_last_sealed() {
         live.append(Meta { tag: id, parent: id - 1 });
     }
 
-    let frozen = live.frozen_bits(5_000);
+    let frozen = live.chain().frozen_bits(5_000);
     live.finalize(5_000);
     let entries = std::iter::once((5_000, Meta { tag: 5_000, parent: 4_999 }))
         .chain((5_001..=5_100).map(|id| (id, Meta { tag: id, parent: id - 1 })));

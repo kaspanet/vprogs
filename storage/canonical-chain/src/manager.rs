@@ -82,15 +82,6 @@ impl<M: BatchMetadata> CanonicalChainManager<M> {
         self.chain.rollback(new_tip);
     }
 
-    /// Returns the canonical bits finalizing below `below` would freeze, for persisting before
-    /// [`finalize`](Self::finalize) prunes them; empty when `below` finalizes nothing new.
-    pub fn frozen_bits(&self, below: u64) -> Vec<FrozenBits> {
-        if below <= self.base {
-            return Vec::new();
-        }
-        self.chain.frozen_bits(below)
-    }
-
     /// Finalizes ids below `below`: the chain reads them as canonical and their log entries drop.
     pub fn finalize(&mut self, below: u64) {
         // Finalize the canonical bits below `below`.

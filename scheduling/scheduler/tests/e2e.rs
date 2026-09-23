@@ -2656,6 +2656,16 @@ pub fn test_finalize_past_orphan_bucket_keeps_predecessor() {
             "finalizing past the orphan's pruned bucket reclaimed R's canonical predecessor"
         );
 
+        // The pruning commit also froze bucket 0's real bits: id 1 canonical, the orphaned
+        // id 2 not.
+        use vprogs_storage_types::{StateSpace, Store};
+        let row = store
+            .prefix_iter(StateSpace::CanonicalBits, &0u64.to_be_bytes())
+            .next()
+            .expect("bucket 0's frozen bits persist with the pruning commit");
+        let word = u64::from_be_bytes(row.1[..8].try_into().unwrap());
+        assert_eq!(word & 0b11, 0b01, "id 1 canonical, orphaned id 2 not");
+
         scheduler.shutdown();
     }
 }

@@ -325,9 +325,10 @@ fn rollback_to_genesis_still_hides_orphaned_versions() {
     assert!(!snapshot.is_canonical(1), "the oracle orphans v1");
     assert!(!snapshot.is_canonical(2), "the oracle orphans v2");
 
-    // A read that serves an orphaned version's root proves the oracle was never consulted.
-    assert_ne!(store.root(2), root2, "orphaned v2 must not be served");
-    assert_ne!(store.root(1), root1, "orphaned v1 must not be served");
+    // With every version orphaned, both reads must resolve to the empty tree's root, not to
+    // any version stored on disk.
+    assert_eq!(store.root(2), EMPTY_HASH, "orphaned v2 must not be served");
+    assert_eq!(store.root(1), EMPTY_HASH, "orphaned v1 must not be served");
 }
 
 // -- Edge cases --

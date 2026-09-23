@@ -75,11 +75,10 @@ impl CanonicalChain {
         self.writer.store(false, Ordering::Release);
     }
 
-    /// Returns the canonical bits that finalizing below `below` freezes: full words for every
-    /// bucket the step fully crosses, plus the sub-base words of the bucket holding `below`.
-    /// Must run before `finalize` prunes those buckets; persisting the result lets a later
-    /// [`restore`](Self::restore) reproduce real orphaned bits below the base.
-    pub(crate) fn frozen_bits(&self, below: u64) -> Vec<FrozenBits> {
+    /// Returns the canonical bits frozen below `below`: full words for every bucket the range
+    /// fully crosses, plus the sub-base words of the bucket holding `below`. Valid while the
+    /// buckets are still live, before [`finalize`](Self::finalize) prunes them.
+    pub fn frozen_bits(&self, below: u64) -> Vec<FrozenBits> {
         // Read the current snapshot; crossed buckets must still be present in it.
         let cur = self.current.load();
         let (base_bucket, base_bit) = Bucket::locate(below);
