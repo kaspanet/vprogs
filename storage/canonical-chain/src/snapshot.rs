@@ -36,7 +36,10 @@ use std::sync::Arc;
 
 use vprogs_core_atomics::AtomicRing;
 
-use crate::{bucket::Bucket, hot_zone::HotZone};
+use crate::{
+    bucket::{Bucket, BucketWords},
+    hot_zone::HotZone,
+};
 
 /// A snapshot of the canonical bits, taken at publication.
 ///
@@ -79,6 +82,19 @@ impl CanonicalChainSnapshot {
 
         // Body: read the sealed bit; an absent (pruned-off, finalized) bucket reads canonical.
         self.body.with(bucket, |sealed| sealed.get(bit)).unwrap_or(true)
+    }
+
+    /// Returns the bucket's raw words, or `None` if the bucket sits below the body's base
+    /// (already pruned) or above the allocated hot zone.
+    pub fn bucket_words(&self, bucket: u64) -> Option<BucketWords> {
+        let hot = &self.hot_zone;
+        if bucket == hot.tail_bucket {
+            return Some(hot.tail.words());
+        }
+        if hot.tail_bucket >= 1 && bucket == hot.tail_bucket - 1 {
+            return Some(hot.last_sealed.words());
+        }
+        self.body.with(bucket, |sealed| sealed.words())
     }
 
     /// Returns the highest canonical id (the read bound).

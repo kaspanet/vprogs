@@ -12,7 +12,8 @@
 //!   rewrites only the copy-on-write hot buckets; a deep one that reaches a sealed bucket forks the
 //!   body ring first, so earlier snapshots are untouched.
 //! * [`finalize`](CanonicalChain::finalize) prunes the body buckets below the finalized id; once
-//!   pruned, those buckets read as canonical.
+//!   pruned, those buckets read as canonical. [`frozen_bits`](CanonicalChain::frozen_bits) captures
+//!   their words before the prune, so a restart can persist and replay them.
 //! * [`restore`](CanonicalChain::restore) rebuilds the whole layout from persisted ids at startup.
 //!
 //! One visibility wrinkle in the "older snapshots stay stable" guarantee, unique to `append`: it is
@@ -35,7 +36,11 @@ use std::{
 use arc_swap::ArcSwap;
 use vprogs_core_atomics::AtomicRing;
 
-use crate::{bucket::Bucket, hot_zone::HotZone, snapshot::CanonicalChainSnapshot};
+use crate::{
+    bucket::{Bucket, FrozenBits, WORDS, sub_base_words},
+    hot_zone::HotZone,
+    snapshot::CanonicalChainSnapshot,
+};
 
 /// The lock-free canonical-chain oracle; its sole writer is the `CanonicalChainManager`.
 #[derive(Clone)]
@@ -70,9 +75,40 @@ impl CanonicalChain {
         self.writer.store(false, Ordering::Release);
     }
 
-    /// Restores the `canonical` ids over `base..=tip` at startup. Ids below `base` read
-    /// canonical, matching a live chain finalized to `base`.
-    pub(crate) fn restore(&self, base: u64, tip: u64, canonical: impl IntoIterator<Item = u64>) {
+    /// Returns the canonical bits that finalizing below `below` freezes: full words for every
+    /// bucket the step fully crosses, plus the sub-base words of the bucket holding `below`.
+    /// Must run before `finalize` prunes those buckets; persisting the result lets a later
+    /// [`restore`](Self::restore) reproduce real orphaned bits below the base.
+    pub(crate) fn frozen_bits(&self, below: u64) -> Vec<FrozenBits> {
+        // Read the current snapshot; crossed buckets must still be present in it.
+        let cur = self.current.load();
+        let (base_bucket, base_bit) = Bucket::locate(below);
+
+        // Full words for each bucket the step crosses below the new base bucket.
+        let mut frozen = Vec::new();
+        for bucket in cur.body.base()..base_bucket {
+            if let Some(words) = cur.bucket_words(bucket) {
+                frozen.push(FrozenBits { bucket, words });
+            }
+        }
+
+        // The sub-base range of the new base bucket: masked words, so still-live bits stay out.
+        if let Some(words) = cur.bucket_words(base_bucket) {
+            frozen.push(FrozenBits { bucket: base_bucket, words: sub_base_words(words, base_bit) });
+        }
+        frozen
+    }
+
+    /// Restores the `canonical` ids over `base..=tip` at startup, replaying `frozen` bits
+    /// below `base`. Ids whose bits were never persisted read canonical, like the pruned-bucket
+    /// fallback.
+    pub(crate) fn restore(
+        &self,
+        base: u64,
+        tip: u64,
+        canonical: impl IntoIterator<Item = u64>,
+        frozen: &[FrozenBits],
+    ) {
         // Nothing to restore for an empty chain.
         if tip == 0 {
             return;
@@ -90,20 +126,31 @@ impl CanonicalChain {
             buckets[(bucket - base_bucket) as usize].set(bit);
         }
 
-        // The base bucket spans ids below `base` too, and a live chain finalized to `base`
-        // keeps that bucket with those ids reading canonical. The persisted log carries no
-        // bits for them, so seed the sub-base range canonical instead of leaving it zeroed.
+        // The base bucket spans ids below `base` too, where the persisted log carries no bits;
+        // a live chain finalized to `base` keeps that bucket, so replay its persisted words
+        // (or read canonical where none survived) instead of leaving the range orphaned.
         let (_, base_bit) = Bucket::locate(base);
+        let seed = frozen
+            .iter()
+            .find(|row| row.bucket == base_bucket)
+            .map_or([u64::MAX; WORDS], |row| row.words);
         for bit in 0..base_bit {
-            buckets[0].set(bit);
+            if seed[bit / 64] & (1 << (bit % 64)) != 0 {
+                buckets[0].set(bit);
+            }
         }
 
         // Peel the hot zone off the top; seal the rest into a ring at the live floor.
         let tail = Arc::new(buckets.pop().expect("live range has at least one bucket"));
 
-        // A single-bucket live range leaves nothing to seal; the fabricated `last_sealed`
-        // covers ids entirely below `base`, so it reads canonical throughout.
-        let last_sealed = buckets.pop().map_or_else(|| Arc::new(Bucket::all_canonical()), Arc::new);
+        // A single-bucket live range leaves nothing to seal; the fabricated `last_sealed` covers
+        // ids entirely below `base`, so it replays that bucket's persisted words, reading
+        // canonical throughout where none survived.
+        let fabricated = base_bucket
+            .checked_sub(1)
+            .and_then(|below| frozen.iter().find(|row| row.bucket == below))
+            .map_or_else(Bucket::all_canonical, |row| Bucket::from_words(row.words));
+        let last_sealed = buckets.pop().map_or_else(|| Arc::new(fabricated), Arc::new);
         let body = AtomicRing::new(base_bucket);
         for bucket in buckets {
             body.push(Arc::new(bucket));

@@ -337,8 +337,13 @@ impl<S: Store, P: Processor<S>> ChainSink<P::BatchMetadata, P::Transaction> for 
         // Set the pruning target.
         self.pruning().set_threshold(below);
 
-        // Finalize up to the point the pruning worker has reached; pruning needs canonical data.
-        self.canonical_chain_manager.finalize(self.state.root().index());
+        // Persist the bits this step freezes before finalizing prunes them, so a restart
+        // replays the real below-base bits. Finalize up to the point the pruning worker has
+        // reached; pruning needs canonical data.
+        let below = self.state.root().index();
+        let frozen = self.canonical_chain_manager.frozen_bits(below);
+        self.state.storage().store().persist_frozen_bits(&frozen);
+        self.canonical_chain_manager.finalize(below);
     }
 
     fn tip(&self) -> u64 {

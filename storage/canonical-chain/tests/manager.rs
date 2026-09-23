@@ -146,6 +146,80 @@ fn restore_agrees_with_live_when_the_live_range_is_a_single_bucket() {
     );
 }
 
+/// Frozen bits captured at finalization let a restored chain reproduce a live chain's orphaned
+/// below-base id in the base bucket, instead of reading the whole sub-base range canonical.
+#[test]
+fn frozen_bits_replay_orphaned_below_base_in_the_base_bucket() {
+    // ids 1..=4_998, an orphaned fork at 4_999, then the canonical line 5_000..=9_000. Live
+    // finalized to base 5_000 keeps the base bucket (39, ids 4_993..=5_120) with the fork's
+    // real orphaned bit; the restored chain replays it from the persisted words.
+    let mut live = CanonicalChainManager::new(CanonicalChain::default(), []);
+    for id in 1..=4_998 {
+        live.append(Meta { tag: id, parent: id - 1 });
+    }
+    live.append(Meta { tag: u64::MAX, parent: 4_998 });
+    live.rollback(4_998);
+    live.append(Meta { tag: 5_000, parent: 4_998 });
+    for id in 5_001..=9_000 {
+        live.append(Meta { tag: id, parent: id - 1 });
+    }
+
+    // Capture before finalize prunes, then restore from the surviving log plus the words.
+    let frozen = live.frozen_bits(5_000);
+    live.finalize(5_000);
+    let entries = std::iter::once((5_000, Meta { tag: 5_000, parent: 4_998 }))
+        .chain((5_001..=9_000).map(|id| (id, Meta { tag: id, parent: id - 1 })));
+    let restored =
+        CanonicalChainManager::new_with_frozen(CanonicalChain::default(), entries, frozen);
+
+    assert!(!is_canon(&live, 4_999), "live keeps the fork's real orphaned bit");
+    assert_eq!(
+        is_canon(&restored, 4_999),
+        is_canon(&live, 4_999),
+        "the orphaned below-base id in the base bucket"
+    );
+    assert!(is_canon(&restored, 4_995), "a canonical below-base id replays its persisted bit");
+    assert_eq!(
+        is_canon(&restored, 100),
+        is_canon(&live, 100),
+        "a crossed bucket reads canonical in both"
+    );
+}
+
+/// The single-bucket live range fabricates `last_sealed` below the base; frozen bits let the
+/// fabrication replay that bucket's real words, so a live orphan there survives the restart too.
+#[test]
+fn frozen_bits_replay_the_fabricated_last_sealed() {
+    // ids 1..=4_991, an orphaned fork at 4_992, then the canonical line 4_993..=5_100. Base
+    // 5_000 and tip 5_100 share bucket 39, so restore fabricates `last_sealed` at bucket 38
+    // (ids 4_865..=4_992), where live keeps the fork's real orphaned bit.
+    let mut live = CanonicalChainManager::new(CanonicalChain::default(), []);
+    for id in 1..=4_991 {
+        live.append(Meta { tag: id, parent: id - 1 });
+    }
+    live.append(Meta { tag: u64::MAX, parent: 4_991 });
+    live.rollback(4_991);
+    live.append(Meta { tag: 4_993, parent: 4_991 });
+    for id in 4_994..=5_100 {
+        live.append(Meta { tag: id, parent: id - 1 });
+    }
+
+    let frozen = live.frozen_bits(5_000);
+    live.finalize(5_000);
+    let entries = std::iter::once((5_000, Meta { tag: 5_000, parent: 4_999 }))
+        .chain((5_001..=5_100).map(|id| (id, Meta { tag: id, parent: id - 1 })));
+    let restored =
+        CanonicalChainManager::new_with_frozen(CanonicalChain::default(), entries, frozen);
+
+    assert!(!is_canon(&live, 4_992), "live keeps the fork's bit in the hot zone");
+    assert_eq!(
+        is_canon(&restored, 4_992),
+        is_canon(&live, 4_992),
+        "the fabricated last_sealed replays bucket 38's persisted words"
+    );
+    assert!(is_canon(&restored, 4_900), "a canonical id of bucket 38 replays its bit");
+}
+
 #[test]
 fn append_assigns_monotonic_ids_and_canonicalizes() {
     let mut manager = CanonicalChainManager::default();

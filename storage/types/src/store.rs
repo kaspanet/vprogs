@@ -1,6 +1,10 @@
+use std::array::from_fn;
+
 use vprogs_core_smt::Tree;
 use vprogs_core_types::BatchMetadata;
-use vprogs_storage_canonical_chain::{CanonicalChain, CanonicalChainManager};
+use vprogs_storage_canonical_chain::{
+    BucketWords, CanonicalChain, CanonicalChainManager, FrozenBits,
+};
 
 use crate::{StateSpace, WriteBatch};
 
@@ -42,6 +46,21 @@ pub trait Store: Tree + Clone + Send + Sync + 'static {
     /// Returns the store's shared canonical-chain read oracle.
     fn canonical_chain(&self) -> CanonicalChain;
 
+    /// Persists the canonical bits frozen by a finalization step, keyed by bucket number,
+    /// overwriting any earlier row for the same bucket.
+    fn persist_frozen_bits(&self, frozen: &[FrozenBits]) {
+        // An empty step freezes nothing; skip the commit.
+        if frozen.is_empty() {
+            return;
+        }
+
+        let mut wb = self.write_batch();
+        for row in frozen {
+            wb.put(StateSpace::CanonicalBits, &row.bucket.to_be_bytes(), &encode_words(&row.words));
+        }
+        self.commit(wb);
+    }
+
     /// Restores a single-owner manager over this store's oracle, each id being its stored index.
     fn canonical_chain_manager<M: BatchMetadata>(&self) -> CanonicalChainManager<M> {
         // Decode each committed batch, taking its id from the storage key.
@@ -51,7 +70,26 @@ pub trait Store: Tree + Clone + Send + Sync + 'static {
             (id, metadata)
         });
 
-        // Replay them into a manager over this store's oracle.
-        CanonicalChainManager::new(self.canonical_chain(), entries)
+        // Replay them, plus any frozen bits earlier finalizations persisted, into a manager.
+        let frozen =
+            self.prefix_iter(StateSpace::CanonicalBits, &[]).map(|(key, value)| FrozenBits {
+                bucket: u64::from_be_bytes(
+                    key[..8].try_into().expect("corrupted canonical-bits key"),
+                ),
+                words: decode_words(&value),
+            });
+        CanonicalChainManager::new_with_frozen(self.canonical_chain(), entries, frozen)
     }
+}
+
+/// Big-endian bytes of one bucket's words.
+fn encode_words(words: &BucketWords) -> Vec<u8> {
+    words.iter().flat_map(|word| word.to_be_bytes()).collect()
+}
+
+/// Decodes one bucket's words from big-endian bytes.
+fn decode_words(value: &[u8]) -> BucketWords {
+    let bytes: &[u8; size_of::<BucketWords>()] =
+        value.try_into().expect("corrupted canonical-bits value");
+    from_fn(|w| u64::from_be_bytes(bytes[w * 8..w * 8 + 8].try_into().expect("word slice")))
 }

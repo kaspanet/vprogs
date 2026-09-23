@@ -18,6 +18,7 @@ impl<C: Config> StateSpaceExt<C> for StateSpace {
             StateSpace::StatePtrLatest => "latest_ptr",
             StateSpace::StatePtrRollback => "rollback_ptr",
             StateSpace::BatchMetadata => "batch_metadata",
+            StateSpace::CanonicalBits => "canonical_bits",
             StateSpace::Metadata => "metas",
             StateSpace::SmtNode => "smt_node",
             StateSpace::SmtStale => "smt_stale",
@@ -35,6 +36,8 @@ impl<C: Config> StateSpaceExt<C> for StateSpace {
             ColumnFamilyDescriptor::new(cf_name(&StatePtrLatest), C::cf_latest_ptr_opts()),
             ColumnFamilyDescriptor::new(cf_name(&StatePtrRollback), C::cf_rollback_ptr_opts()),
             ColumnFamilyDescriptor::new(cf_name(&BatchMetadata), C::cf_batch_metadata_opts()),
+            // Frozen-bit keys are u64 BE like batch metadata, so its options carry over.
+            ColumnFamilyDescriptor::new(cf_name(&CanonicalBits), C::cf_batch_metadata_opts()),
             ColumnFamilyDescriptor::new(cf_name(&Metadata), C::cf_metas_opts()),
             ColumnFamilyDescriptor::new(cf_name(&SmtNode), C::cf_smt_node_opts()),
             ColumnFamilyDescriptor::new(cf_name(&SmtStale), C::cf_smt_stale_opts()),
