@@ -5,7 +5,7 @@ use std::{
 
 use vprogs_core_types::BatchMetadata;
 
-use crate::{append_outcome::AppendOutcome, chain::CanonicalChain};
+use crate::{append_outcome::AppendOutcome, bucket::FrozenBits, chain::CanonicalChain};
 
 /// Single-writer handle for the canonical chain, backed by an append-only batch-metadata log.
 pub struct CanonicalChainManager<M> {
@@ -24,9 +24,21 @@ impl<M: BatchMetadata> CanonicalChainManager<M> {
     /// The ids may skip interiors: a reorg-canceled batch keeps its allocated id but never
     /// persists metadata, so the log carries holes that restore preserves.
     pub fn new(chain: CanonicalChain, entries: impl IntoIterator<Item = (u64, M)>) -> Self {
+        Self::new_with_frozen(chain, entries, [])
+    }
+
+    /// Creates a manager over `chain`, additionally replaying the frozen canonical bits
+    /// persisted by earlier finalizations, so ids below the restored base keep their real bits
+    /// instead of reading canonical throughout.
+    pub fn new_with_frozen(
+        chain: CanonicalChain,
+        entries: impl IntoIterator<Item = (u64, M)>,
+        frozen: impl IntoIterator<Item = FrozenBits>,
+    ) -> Self {
         // Claim the sole-writer role and start with an empty log.
         chain.claim_writer();
         let mut manager = Self { chain, base: 1, entries: VecDeque::new(), index: HashMap::new() };
+        let frozen: Vec<FrozenBits> = frozen.into_iter().collect();
 
         // Replay each persisted batch into the log; the first id sets the base, the last the tip.
         let mut tip = None;
@@ -45,7 +57,7 @@ impl<M: BatchMetadata> CanonicalChainManager<M> {
 
         // Project the tip's canonical ancestry onto the oracle in a single publish.
         let canonical = manager.canonical_ancestry(tip);
-        manager.chain.restore(manager.base, tip, canonical);
+        manager.chain.restore(manager.base, tip, canonical, &frozen);
         manager
     }
 

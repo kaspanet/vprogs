@@ -12,7 +12,8 @@
 //!   rewrites only the copy-on-write hot buckets; a deep one that reaches a sealed bucket forks the
 //!   body ring first, so earlier snapshots are untouched.
 //! * [`finalize`](CanonicalChain::finalize) prunes the body buckets below the finalized id; once
-//!   pruned, those buckets read as canonical.
+//!   pruned, those buckets read as canonical. [`frozen_bits`](CanonicalChain::frozen_bits) captures
+//!   their words before the prune, so a restart can persist and replay them.
 //! * [`restore`](CanonicalChain::restore) rebuilds the whole layout from persisted ids at startup.
 //!
 //! One visibility wrinkle in the "older snapshots stay stable" guarantee, unique to `append`: it is
@@ -35,7 +36,11 @@ use std::{
 use arc_swap::ArcSwap;
 use vprogs_core_atomics::AtomicRing;
 
-use crate::{bucket::Bucket, hot_zone::HotZone, snapshot::CanonicalChainSnapshot};
+use crate::{
+    bucket::{Bucket, FrozenBits, WORDS, sub_base_words},
+    hot_zone::HotZone,
+    snapshot::CanonicalChainSnapshot,
+};
 
 /// The lock-free canonical-chain oracle; its sole writer is the `CanonicalChainManager`.
 #[derive(Clone)]
@@ -70,8 +75,39 @@ impl CanonicalChain {
         self.writer.store(false, Ordering::Release);
     }
 
-    /// Restores the `canonical` ids over `base..=tip` at startup.
-    pub(crate) fn restore(&self, base: u64, tip: u64, canonical: impl IntoIterator<Item = u64>) {
+    /// Returns the canonical bits frozen below `below`: full words for every bucket the range
+    /// fully crosses, plus the sub-base words of the bucket holding `below`. Valid while the
+    /// buckets are still live, before [`finalize`](Self::finalize) prunes them.
+    pub fn frozen_bits(&self, below: u64) -> Vec<FrozenBits> {
+        // Read the current snapshot; crossed buckets must still be present in it.
+        let cur = self.current.load();
+        let (base_bucket, base_bit) = Bucket::locate(below);
+
+        // Full words for each bucket the step crosses below the new base bucket.
+        let mut frozen = Vec::new();
+        for bucket in cur.body.base()..base_bucket {
+            if let Some(words) = cur.bucket_words(bucket) {
+                frozen.push(FrozenBits { bucket, words });
+            }
+        }
+
+        // The sub-base range of the new base bucket: masked words, so still-live bits stay out.
+        if let Some(words) = cur.bucket_words(base_bucket) {
+            frozen.push(FrozenBits { bucket: base_bucket, words: sub_base_words(words, base_bit) });
+        }
+        frozen
+    }
+
+    /// Restores the `canonical` ids over `base..=tip` at startup, replaying `frozen` bits
+    /// below `base`. Ids whose bits were never persisted read canonical, like the pruned-bucket
+    /// fallback.
+    pub(crate) fn restore(
+        &self,
+        base: u64,
+        tip: u64,
+        canonical: impl IntoIterator<Item = u64>,
+        frozen: &[FrozenBits],
+    ) {
         // Nothing to restore for an empty chain.
         if tip == 0 {
             return;
@@ -89,9 +125,31 @@ impl CanonicalChain {
             buckets[(bucket - base_bucket) as usize].set(bit);
         }
 
+        // The base bucket spans ids below `base` too, where the persisted log carries no bits;
+        // a live chain finalized to `base` keeps that bucket, so replay its persisted words
+        // (or read canonical where none survived) instead of leaving the range orphaned.
+        let (_, base_bit) = Bucket::locate(base);
+        let seed = frozen
+            .iter()
+            .find(|row| row.bucket == base_bucket)
+            .map_or([u64::MAX; WORDS], |row| row.words);
+        for bit in 0..base_bit {
+            if seed[bit / 64] & (1 << (bit % 64)) != 0 {
+                buckets[0].set(bit);
+            }
+        }
+
         // Peel the hot zone off the top; seal the rest into a ring at the live floor.
         let tail = Arc::new(buckets.pop().expect("live range has at least one bucket"));
-        let last_sealed = buckets.pop().map_or_else(|| Arc::new(Bucket::new()), Arc::new);
+
+        // A single-bucket live range leaves nothing to seal; the fabricated `last_sealed` covers
+        // ids entirely below `base`, so it replays that bucket's persisted words, reading
+        // canonical throughout where none survived.
+        let fabricated = base_bucket
+            .checked_sub(1)
+            .and_then(|below| frozen.iter().find(|row| row.bucket == below))
+            .map_or_else(Bucket::all_canonical, |row| Bucket::from_words(row.words));
+        let last_sealed = buckets.pop().map_or_else(|| Arc::new(fabricated), Arc::new);
         let body = AtomicRing::new(base_bucket);
         for bucket in buckets {
             body.push(Arc::new(bucket));
@@ -100,6 +158,7 @@ impl CanonicalChain {
         // Publish the restored snapshot.
         self.current.store(Arc::new(CanonicalChainSnapshot {
             tip,
+            high_water: tip,
             hot_zone: HotZone { tail_bucket, tail, last_sealed },
             body: Arc::new(body),
         }));
@@ -118,7 +177,12 @@ impl CanonicalChain {
         hot_zone.tail.set(bit);
 
         // Publish the extended snapshot.
-        self.current.store(Arc::new(CanonicalChainSnapshot { tip: id, hot_zone, body }));
+        self.current.store(Arc::new(CanonicalChainSnapshot {
+            tip: id,
+            high_water: id.max(cur.high_water),
+            hot_zone,
+            body,
+        }));
     }
 
     /// Rolls the chain back to `new_tip`, flipping off every id above it.
@@ -150,8 +214,13 @@ impl CanonicalChain {
             }
         }
 
-        // Publish the rolled-back snapshot.
-        self.current.store(Arc::new(CanonicalChainSnapshot { tip: new_tip, hot_zone, body }));
+        // Publish the rolled-back snapshot; assigned ids stay assigned, so the high water holds.
+        self.current.store(Arc::new(CanonicalChainSnapshot {
+            tip: new_tip,
+            high_water: cur.high_water,
+            hot_zone,
+            body,
+        }));
     }
 
     /// Finalizes ids below `below`, which thereafter read as canonical.
