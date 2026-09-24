@@ -4,7 +4,8 @@ use tokio::runtime::Builder;
 use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_storage_types::Store;
-use vprogs_zk_abi::batch_processor::{BatchPins, Inputs as BatchInputs};
+use vprogs_zk_abi::batch_processor::{BatchPins, BatchTransition, Inputs as BatchInputs};
+use zerocopy::FromBytes;
 
 use crate::{Backend, BatchProver, BatchProverConfig, command::Command};
 
@@ -136,6 +137,11 @@ where
             }
         };
 
+        // Decode the settled root before the receipt moves into the artifact slot.
+        let settled_root = BatchTransition::ref_from_bytes(&B::journal_bytes(&receipt))
+            .expect("batch receipt journal decodes")
+            .new_state;
+
         // Publish the receipt as the batch's artifact.
         batch.publish_artifact(Some(receipt));
 
@@ -146,5 +152,15 @@ where
             () = self.prover.shutdown.wait() => {}
             () = batch.wait_committed() => {}
         }
+
+        // The receipt is proven and the host commit is final, so this is where the settled root
+        // and the host root first become comparable. A disagreement is a guest/host state
+        // divergence: continuing would let the next bundle's prev_state assert wedge the lane,
+        // so fail loudly at the batch that caused it.
+        assert_eq!(
+            settled_root,
+            self.store.root(batch.checkpoint().index()),
+            "settled new_state diverges from the host store root"
+        );
     }
 }

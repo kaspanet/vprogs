@@ -1,6 +1,7 @@
 use kaspa_hashes::Hash;
 use vprogs_core_codec::Writer;
 use vprogs_core_hashing::Hasher;
+use vprogs_core_types::AccessType;
 
 use crate::{
     Error, ErrorCode, Read,
@@ -79,11 +80,25 @@ pub fn process_transaction<H: Hasher>(
                     &mut deposit,
                 );
                 deposit_hash = deposit.get();
-                result.map(|_| Effects {
-                    exits: &exits,
-                    deposit_spk_hash: &deposit_hash,
-                    resources: exec.resources.as_slice(),
-                })
+                // Declarations come from sender-supplied L1 payload, so a write past them is
+                // user-reachable, not a program bug. Reject rather than journal a write the
+                // host store (which honors the declaration) would silently drop: that
+                // divergence wedges every later bundle. A handler error wins as the more
+                // specific failure.
+                let undeclared_write = result.is_ok()
+                    && exec
+                        .resources
+                        .iter()
+                        .any(|r| r.is_dirty() && r.access_type() == AccessType::Read);
+                if undeclared_write {
+                    Err(ErrorCode::ReadDeclaredWrite.into())
+                } else {
+                    result.map(|_| Effects {
+                        exits: &exits,
+                        deposit_spk_hash: &deposit_hash,
+                        resources: exec.resources.as_slice(),
+                    })
+                }
             }
         }
         _ => Err(ErrorCode::VersionIncompatible.into()),

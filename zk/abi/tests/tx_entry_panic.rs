@@ -18,7 +18,7 @@ use vprogs_core_codec::Writer;
 use vprogs_core_hashing::Sha256;
 use vprogs_l1_utils::tx_id_v1;
 use vprogs_zk_abi::{
-    Error,
+    Error, ErrorCode,
     transaction_processor::{JournalEntries, OutputCommitment, process_transaction},
 };
 
@@ -106,6 +106,22 @@ fn run(host_input: Vec<u8>) -> (TestHost, Vec<u8>) {
     (host, journal)
 }
 
+/// `run` variant whose handler writes the first resource, like the dummy counter guest writes
+/// every resource regardless of declaration.
+fn run_writing(host_input: Vec<u8>) -> (TestHost, Vec<u8>) {
+    let mut host = TestHost { input: host_input, stdout: Vec::new() };
+    let mut journal = Vec::new();
+    process_transaction::<Sha256>(
+        &mut host,
+        &mut journal,
+        |_tx, _merge_idx, _context, resources, _exits, _deposit| {
+            resources[0].data_mut().copy_from_slice(&[9u8; 8]);
+            Ok(())
+        },
+    );
+    (host, journal)
+}
+
 /// Asserts the guest rejected: stdout carries the ERR discriminant, the journal decodes, and
 /// the output commitment is the given error shape. Returns the decoded entries so callers can
 /// assert on the input commitment.
@@ -176,4 +192,32 @@ fn tx_id_mismatch_commits_error() {
     assert_eq!(entries.input_commitment.version, 1);
     assert_eq!(entries.input_commitment.tx_id, &Hash::from_bytes([0xEE; 32]));
     assert!(entries.input_commitment.execution_context.is_some());
+}
+
+/// A handler that acquires mutable access to a `Read`-declared resource rejects the whole
+/// transaction (#107). Declarations come from sender-supplied L1 payload, so the mismatch is
+/// user-reachable, not a program bug: journaling the write would settle a root the host store
+/// (which honors the declaration) never records, permanently wedging every later bundle. The
+/// rejection stays attributed: the tx executed, so the execution context remains in the input
+/// commitment.
+#[test]
+fn writing_a_read_declared_resource_rejects() {
+    let (host, journal) = run_writing(wire(1, [0xFF; 32], 0, &[am([1; 32], false)], &[]));
+    let entries = rejected(&host, &journal);
+    assert!(matches!(
+        entries.output_commitment,
+        OutputCommitment::Error(Error::Guest(code)) if code == ErrorCode::ReadDeclaredWrite as u32
+    ));
+    assert_eq!(entries.input_commitment.version, 1);
+    assert!(entries.input_commitment.execution_context.is_some());
+}
+
+/// Control for the rejection above: the identical write under a `Write` declaration commits
+/// Success, so the rejection is attributable to the declaration, not the write itself.
+#[test]
+fn writing_a_write_declared_resource_commits_success() {
+    let (host, journal) = run_writing(wire(1, [0xFF; 32], 0, &[am([1; 32], true)], &[]));
+    assert_eq!(host.stdout.first(), Some(&0), "stdout discriminant must be OK");
+    let entries = JournalEntries::decode(&journal).expect("journal decodes");
+    assert!(matches!(entries.output_commitment, OutputCommitment::Success { .. }));
 }
