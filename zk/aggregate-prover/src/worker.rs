@@ -249,6 +249,9 @@ where
             }
         }
 
+        // Wake-only clone of the settlement watch for the park arm below.
+        let mut settlement_wake = self.settlement.clone();
+
         loop {
             // Draining only accumulates: a bundle spans many batches and depends on which receipts
             // are ready, so bundle formation happens after the drain, not per command.
@@ -331,10 +334,17 @@ where
             // prefix grows past a parked point only when a batch behind the front publishes, which
             // nothing else notifies the loop of. The settlement wake is low-priority (last): a
             // pending re-aggregation is cheap and can wait behind real proving work.
+            //
+            // The settlement arm parks on a dedicated wake receiver: `changed()` marks its
+            // receiver's value seen, so awaiting the worker's own receiver here would consume an
+            // advance that arrived while parked before the loop top's `has_changed` check could
+            // observe it, and a lone settlement on an otherwise quiet lane would never compact.
+            // The wake clone only parks the loop; the loop top reads the unseen flag off the
+            // worker's own receiver.
             let shutdown = &self.prover.shutdown;
             let inbox = &self.prover.inbox;
             let queued = &self.queued;
-            let settlement = self.settlement.as_mut();
+            let settlement = settlement_wake.as_mut();
             tokio::select! {
                 biased;
                 () = shutdown.wait() => break,
@@ -711,15 +721,17 @@ where
     }
 
     /// Deletes journal entries the on-chain settlement `tip` fully covers. A boundary mapping to
-    /// no batch in the journal's span (a competitor's fork block outside our metadata) deletes
-    /// nothing and logs.
+    /// no batch in the journal's span resolves through the journal's own record of the settled
+    /// bundle (an entry ending at the boundary block); a boundary resolving nowhere (a
+    /// competitor's fork block outside our metadata) deletes nothing and logs.
     fn compact_journal(&self, tip: &SettlementInfo) {
         let Some(journal) = &self.journal else { return };
         let entries = journal.entries();
         let Some((first_start, _)) = entries.first() else { return };
         let Some((_, last)) = entries.last() else { return };
-        let Some(tip_index) =
-            journal.checkpoint_of_block(tip.block_prove_to, last.end_index, *first_start)
+        let Some(tip_index) = journal
+            .checkpoint_of_block(tip.block_prove_to, last.end_index, *first_start)
+            .or_else(|| settled_entry_end(&entries, tip))
         else {
             log::warn!(
                 "aggregate-prover: settlement {} boundary {} maps to no batch in the journal \
@@ -767,8 +779,9 @@ where
         };
         let first_start = entries.first().expect("checked non-empty").0;
         let last_end = entries.last().expect("checked non-empty").1.end_index;
-        let Some(tip_index) =
-            journal.checkpoint_of_block(tip.block_prove_to, last_end, first_start)
+        let Some(tip_index) = journal
+            .checkpoint_of_block(tip.block_prove_to, last_end, first_start)
+            .or_else(|| settled_entry_end(&entries, tip))
         else {
             log::warn!(
                 "aggregate-prover: resume tip boundary {} maps to no batch in the journal span \
@@ -825,6 +838,8 @@ where
         if committed_tip <= tail_end {
             return GapOutcome::Nothing;
         }
+        // The boundary search covers only the gap range strictly above the journal tail; a
+        // journal entry cannot resolve it, because every entry ends at or below the tail.
         let boundary = match tip {
             Some(tip) => journal
                 .checkpoint_of_block(tip.block_prove_to, committed_tip, tail_end + 1)
@@ -1115,16 +1130,74 @@ fn settled_prefix(
     blocks.rposition(|hash| hash == boundary).map(|index| index + 1)
 }
 
+/// Resolves the checkpoint index a settlement proves through when its boundary block maps to no
+/// batch metadata: a reorg can cancel the boundary batch between its proof and its commit, so no
+/// row ever pins the block, but the journal's own record of the bundle that settled ends at that
+/// block and its `end_index` is the boundary. Two entries ending at the same block resolve to the
+/// higher one, mirroring the metadata search's preference for the highest checkpoint. `None`
+/// when no entry ends at the boundary either (the boundary predates the journal span or belongs
+/// to another prover's fork).
+fn settled_entry_end(entries: &[(u64, JournalEntry)], tip: &SettlementInfo) -> Option<u64> {
+    entries
+        .iter()
+        .rfind(|(_, entry)| entry.block_prove_to == tip.block_prove_to)
+        .map(|(_, entry)| entry.end_index)
+}
+
 #[cfg(test)]
 mod tests {
     use kaspa_hashes::Hash;
+    use vprogs_l1_types::SettlementInfo;
 
-    use super::settled_prefix;
+    use super::{JournalEntry, settled_entry_end, settled_prefix};
 
+    /// Block-hash helper keyed to the single byte every test block is built from.
     fn block(byte: u8) -> Hash {
         Hash::from_bytes([byte; 32])
     }
 
+    /// Journal entry ending at `end`, proving through the block built from `tail`.
+    fn entry(end: u64, tail: u8) -> (u64, JournalEntry) {
+        (
+            end,
+            JournalEntry {
+                end_index: end,
+                from_block: block(tail),
+                block_prove_to: block(tail),
+                seq_commit: Hash::default(),
+            },
+        )
+    }
+
+    /// Settlement proving through the block built from `boundary`.
+    fn tip(boundary: u8) -> SettlementInfo {
+        SettlementInfo { block_prove_to: block(boundary), ..Default::default() }
+    }
+
+    /// A boundary matching an entry's `block_prove_to` resolves to that entry's `end_index`.
+    #[test]
+    fn boundary_ending_an_entry_resolves_to_its_end() {
+        let entries = [entry(1, 1), entry(2, 2)];
+        assert_eq!(settled_entry_end(&entries, &tip(2)), Some(2));
+    }
+
+    /// Two entries ending at the same block resolve to the higher one, mirroring the metadata
+    /// search's highest-checkpoint preference.
+    #[test]
+    fn boundary_ending_two_entries_resolves_to_the_higher() {
+        let entries = [entry(1, 1), entry(3, 1)];
+        assert_eq!(settled_entry_end(&entries, &tip(1)), Some(3));
+    }
+
+    /// A boundary matching no entry resolves to `None`, as does an empty journal.
+    #[test]
+    fn boundary_matching_no_entry_resolves_to_none() {
+        let entries = [entry(1, 1), entry(2, 2)];
+        assert_eq!(settled_entry_end(&entries, &tip(9)), None);
+        assert_eq!(settled_entry_end(&[], &tip(1)), None);
+    }
+
+    /// A boundary inside the window drains through it.
     #[test]
     fn boundary_inside_window_drains_through_it() {
         let blocks = [block(1), block(2), block(3), block(4)];
@@ -1132,12 +1205,14 @@ mod tests {
         assert_eq!(settled_prefix(blocks.iter().copied(), block(2)), Some(2));
     }
 
+    /// A boundary at the window tip drains the whole window.
     #[test]
     fn boundary_at_window_tip_drains_everything() {
         let blocks = [block(1), block(2), block(3)];
         assert_eq!(settled_prefix(blocks.iter().copied(), block(3)), Some(3));
     }
 
+    /// A boundary matching no window block drains nothing.
     #[test]
     fn unmatched_boundary_drains_nothing() {
         // The boundary is not one of our retained blocks: drop nothing rather than clear the
@@ -1146,6 +1221,7 @@ mod tests {
         assert_eq!(settled_prefix(blocks.iter().copied(), block(9)), None);
     }
 
+    /// An empty window drains nothing.
     #[test]
     fn empty_window_drains_nothing() {
         assert_eq!(settled_prefix(std::iter::empty(), block(1)), None);
