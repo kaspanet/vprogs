@@ -170,7 +170,7 @@ fn frozen_bits_replay_orphaned_below_base_in_the_base_bucket() {
     let entries = std::iter::once((5_000, Meta { tag: 5_000, parent: 4_998 }))
         .chain((5_001..=9_000).map(|id| (id, Meta { tag: id, parent: id - 1 })));
     let restored =
-        CanonicalChainManager::new_with_frozen(CanonicalChain::default(), entries, frozen);
+        CanonicalChainManager::new_with_frozen(CanonicalChain::default(), entries, frozen, 9_000);
 
     assert!(!is_canon(&live, 4_999), "live keeps the fork's real orphaned bit");
     assert_eq!(
@@ -209,7 +209,7 @@ fn frozen_bits_replay_the_fabricated_last_sealed() {
     let entries = std::iter::once((5_000, Meta { tag: 5_000, parent: 4_999 }))
         .chain((5_001..=5_100).map(|id| (id, Meta { tag: id, parent: id - 1 })));
     let restored =
-        CanonicalChainManager::new_with_frozen(CanonicalChain::default(), entries, frozen);
+        CanonicalChainManager::new_with_frozen(CanonicalChain::default(), entries, frozen, 5_100);
 
     assert!(!is_canon(&live, 4_992), "live keeps the fork's bit in the hot zone");
     assert_eq!(
