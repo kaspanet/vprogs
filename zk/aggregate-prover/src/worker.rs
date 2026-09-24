@@ -838,10 +838,11 @@ where
         if committed_tip <= tail_end {
             return GapOutcome::Nothing;
         }
+        // The boundary search covers only the gap range strictly above the journal tail; a
+        // journal entry cannot resolve it, because every entry ends at or below the tail.
         let boundary = match tip {
             Some(tip) => journal
                 .checkpoint_of_block(tip.block_prove_to, committed_tip, tail_end + 1)
-                .or_else(|| settled_entry_end(&journal.entries(), tip))
                 .map_or(tail_end, |index| index.max(tail_end)),
             None => tail_end,
         };
@@ -1132,12 +1133,14 @@ fn settled_prefix(
 /// Resolves the checkpoint index a settlement proves through when its boundary block maps to no
 /// batch metadata: a reorg can cancel the boundary batch between its proof and its commit, so no
 /// row ever pins the block, but the journal's own record of the bundle that settled ends at that
-/// block and its `end_index` is the boundary. `None` when no entry ends at the boundary either
-/// (the boundary predates the journal span or belongs to another prover's fork).
+/// block and its `end_index` is the boundary. Two entries ending at the same block resolve to the
+/// higher one, mirroring the metadata search's preference for the highest checkpoint. `None`
+/// when no entry ends at the boundary either (the boundary predates the journal span or belongs
+/// to another prover's fork).
 fn settled_entry_end(entries: &[(u64, JournalEntry)], tip: &SettlementInfo) -> Option<u64> {
     entries
         .iter()
-        .find(|(_, entry)| entry.block_prove_to == tip.block_prove_to)
+        .rfind(|(_, entry)| entry.block_prove_to == tip.block_prove_to)
         .map(|(_, entry)| entry.end_index)
 }
 
@@ -1176,6 +1179,14 @@ mod tests {
     fn boundary_ending_an_entry_resolves_to_its_end() {
         let entries = [entry(1, 1), entry(2, 2)];
         assert_eq!(settled_entry_end(&entries, &tip(2)), Some(2));
+    }
+
+    /// Two entries ending at the same block resolve to the higher one, mirroring the metadata
+    /// search's highest-checkpoint preference.
+    #[test]
+    fn boundary_ending_two_entries_resolves_to_the_higher() {
+        let entries = [entry(1, 1), entry(3, 1)];
+        assert_eq!(settled_entry_end(&entries, &tip(1)), Some(3));
     }
 
     /// A boundary matching no entry resolves to `None`, as does an empty journal.
