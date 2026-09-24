@@ -97,7 +97,8 @@ fn settlement_journal() -> Vec<u8> {
 }
 
 /// Backend standing in for all three guests: the aggregator receipt is the settlement journal
-/// itself (identity `journal_bytes`), so the worker parses exactly the transition above.
+/// itself (identity `journal_bytes`), so the worker parses exactly the transition
+/// [`settlement_journal`] encodes.
 #[derive(Clone)]
 struct SyntheticBackend;
 

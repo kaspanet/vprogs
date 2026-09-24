@@ -25,8 +25,7 @@ use crate::{
 const FEE_EXHAUSTED_BACKOFF: Duration = Duration::from_secs(5);
 
 /// Reconciles the covenant against a bundle whose proving base may no longer match it, adopting
-/// the settlement watch's tip when it is ahead, and returns whether the artifact chains from the
-/// resulting position.
+/// `latest` when it is ahead, and returns whether the artifact chains from the resulting position.
 fn reconcile<R>(
     cov: &mut CovenantState,
     artifact: &SettlementArtifact<R>,
@@ -163,10 +162,10 @@ pub async fn run(
         // The watch is read, not the per-bundle snapshot: the settler advances `cov` optimistically
         // when it settles, but the bridge needs ≈RTT to observe that, so the watch lags `cov` by
         // one settlement. Adoption is therefore gated on the watch being *ahead* and forward-only
-        // (`s.daa_score` at or past `cov.daa_score`); a value behind `cov` (a competitor we
-        // already passed) is ignored. The continuation outpoint is adopted without an on-chain
-        // confirm: the bridge only publishes settlements from accepted chain blocks, so the UTXO
-        // existed, and the rare case it was already spent by a reorg/race is caught at
+        // (the settlement's `daa_score` at or past `cov.daa_score`); a value behind `cov` (a
+        // competitor we already passed) is ignored. The continuation outpoint is adopted without an
+        // on-chain confirm: the bridge only publishes settlements from accepted chain blocks, so
+        // the UTXO existed, and the rare case it was already spent by a reorg/race is caught at
         // settle time (the sink's `Superseded`), which skips the bundle.
         let latest = *cfg.settlement.borrow();
         if !reconcile(&mut cov, &artifact, latest) {

@@ -1148,10 +1148,12 @@ mod tests {
 
     use super::{JournalEntry, settled_entry_end, settled_prefix};
 
+    /// Block-hash helper keyed to the single byte every test block is built from.
     fn block(byte: u8) -> Hash {
         Hash::from_bytes([byte; 32])
     }
 
+    /// Journal entry ending at `end`, proving through the block built from `tail`.
     fn entry(end: u64, tail: u8) -> (u64, JournalEntry) {
         (
             end,
@@ -1164,16 +1166,19 @@ mod tests {
         )
     }
 
+    /// Settlement proving through the block built from `boundary`.
     fn tip(boundary: u8) -> SettlementInfo {
         SettlementInfo { block_prove_to: block(boundary), ..Default::default() }
     }
 
+    /// A boundary matching an entry's `block_prove_to` resolves to that entry's `end_index`.
     #[test]
     fn boundary_ending_an_entry_resolves_to_its_end() {
         let entries = [entry(1, 1), entry(2, 2)];
         assert_eq!(settled_entry_end(&entries, &tip(2)), Some(2));
     }
 
+    /// A boundary matching no entry resolves to `None`, as does an empty journal.
     #[test]
     fn boundary_matching_no_entry_resolves_to_none() {
         let entries = [entry(1, 1), entry(2, 2)];
@@ -1181,6 +1186,7 @@ mod tests {
         assert_eq!(settled_entry_end(&[], &tip(1)), None);
     }
 
+    /// A boundary inside the window drains through it.
     #[test]
     fn boundary_inside_window_drains_through_it() {
         let blocks = [block(1), block(2), block(3), block(4)];
@@ -1188,12 +1194,14 @@ mod tests {
         assert_eq!(settled_prefix(blocks.iter().copied(), block(2)), Some(2));
     }
 
+    /// A boundary at the window tip drains the whole window.
     #[test]
     fn boundary_at_window_tip_drains_everything() {
         let blocks = [block(1), block(2), block(3)];
         assert_eq!(settled_prefix(blocks.iter().copied(), block(3)), Some(3));
     }
 
+    /// A boundary matching no window block drains nothing.
     #[test]
     fn unmatched_boundary_drains_nothing() {
         // The boundary is not one of our retained blocks: drop nothing rather than clear the
@@ -1202,6 +1210,7 @@ mod tests {
         assert_eq!(settled_prefix(blocks.iter().copied(), block(9)), None);
     }
 
+    /// An empty window drains nothing.
     #[test]
     fn empty_window_drains_nothing() {
         assert_eq!(settled_prefix(std::iter::empty(), block(1)), None);
