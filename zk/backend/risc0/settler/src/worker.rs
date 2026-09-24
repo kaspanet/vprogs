@@ -32,12 +32,16 @@ fn reconcile<R>(
     artifact: &SettlementArtifact<R>,
     latest: Option<SettlementInfo>,
 ) -> bool {
-    let chains = |cov: &CovenantState| cov.state == artifact.prev_state;
+    let chains = |cov: &CovenantState| {
+        cov.state == artifact.prev_state && cov.lane_tip == artifact.prev_lane_tip
+    };
     if chains(cov) {
         return true;
     }
     if let Some(s) = latest {
-        if s.new_state != cov.state && s.daa_score.get() >= cov.daa_score {
+        if (s.new_state != cov.state || s.new_lane_tip != cov.lane_tip)
+            && s.daa_score.get() >= cov.daa_score
+        {
             *cov = covenant_from_settlement(cov, &s);
             log::info!(
                 "settlement-worker: adopted external settlement {} (covenant advanced to daa {})",
