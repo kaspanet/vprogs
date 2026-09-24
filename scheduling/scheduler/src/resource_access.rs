@@ -116,7 +116,10 @@ impl<S: Store, P: Processor<S>> ResourceAccess<S, P> {
     }
 
     /// Restores this access's state from the committed batch on disk, without executing.
-    pub(crate) fn restore_committed_data<R: ReadStore>(&self, store: &R, batch_index: u64) {
+    ///
+    /// Returns `false` when a read-only access must wait for its in-memory predecessor's written
+    /// state, leaving both states unresolved for a later retry of the batch restore.
+    pub(crate) fn restore_committed_data<R: ReadStore>(&self, store: &R, batch_index: u64) -> bool {
         // The rollback pointer's presence distinguishes a written resource from read-only.
         let resource_id = self.access_metadata.resource_id;
         let (read, written) = match StatePtrRollback::get(store, batch_index, &resource_id) {
@@ -125,11 +128,8 @@ impl<S: Store, P: Processor<S>> ResourceAccess<S, P> {
                 StateVersion::at_version(store, old_version, resource_id),
                 StateVersion::at_version(store, batch_index, resource_id),
             ),
-            // Read-only: unchanged, so both stay at the current latest.
-            None => {
-                let current = StateVersion::from_latest_data(store, resource_id);
-                (current.clone(), current)
-            }
+            // Read-only: unchanged, so both states come from the predecessor chain.
+            None => return self.restore_read_only_state(store),
         };
 
         // Read resolves the diff directly; on the access it would trigger execution.
@@ -137,6 +137,46 @@ impl<S: Store, P: Processor<S>> ResourceAccess<S, P> {
 
         // Written goes on the access, which forwards the value to the next batch.
         self.set_written_state(Arc::new(written));
+        true
+    }
+
+    /// Resolves a read-only restored access from its in-memory predecessor's written state.
+    ///
+    /// A rollback rewinds the disk latest pointer, and restored predecessors re-point it only at
+    /// their in-flight commits, so the pointer can hold a value the predecessor chain has already
+    /// superseded. With no predecessor, no batch this side of the rollback has touched the
+    /// resource and the disk latest pointer is authoritative.
+    fn restore_read_only_state<R: ReadStore>(&self, store: &R) -> bool {
+        let Some(prev) = self.prev_batch_access() else {
+            let state =
+                Arc::new(StateVersion::from_latest_data(store, self.access_metadata.resource_id));
+            self.state_diff.set_read_state(state.clone());
+            self.set_written_state(state);
+            return true;
+        };
+
+        let Some(state) = prev.written_state.load_full() else {
+            // The predecessor has not produced its written state yet; retry once it lands.
+            return false;
+        };
+
+        self.state_diff.set_read_state(state.clone());
+        self.set_written_state(state);
+        true
+    }
+
+    /// Returns the previous batch's last access to this resource, or `None` when this access
+    /// opens the in-memory chain.
+    fn prev_batch_access(&self) -> Option<Self> {
+        let mut prev = self.prev.load_full()?;
+
+        // Skip this batch's own earlier accesses: restored batches restore only tails, so
+        // non-tail predecessors never resolve.
+        while prev.state_diff == self.state_diff {
+            prev = prev.prev.load_full()?;
+        }
+
+        Some(Self(prev))
     }
 
     pub(crate) fn tx(&self) -> &ScheduledTransactionRef<S, P> {
