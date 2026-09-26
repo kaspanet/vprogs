@@ -26,6 +26,7 @@ use vprogs_l1_bridge::{L1BridgeConfig, PermissionSpendHooks};
 use vprogs_l1_types::{SettlementInfo, SettlementMsg};
 use vprogs_node_framework::{Node, NodeConfig};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Indexer, SchedulerState};
+use vprogs_state_settlement_journal::SettlementJournal;
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_abi::withdrawal::ExitLeaf;
@@ -144,6 +145,9 @@ pub struct ProvingParams {
     /// Receiver on the bridge's covenant `last_settlement` watch, cloned for the aggregate prover
     /// so it re-aggregates a superseded suffix, or `None` to run without re-forming.
     pub settlement_rx: Option<watch::Receiver<Option<SettlementInfo>>>,
+    /// Bundle journal the aggregate prover records each proved bundle into, shared with the
+    /// settlement worker so its supersede deletes are visible to the prover's resume path.
+    pub journal: Arc<dyn SettlementJournal>,
     /// Sender on the exit-leaf channel driving client Merkle-path proof generation, or `None` if
     /// exit publishing is disabled.
     pub exits_tx: Option<mpsc::UnboundedSender<Arc<ExitsForBundle>>>,
@@ -205,9 +209,7 @@ pub fn build_proving_node(
             lane_source: RemoteLaneSource::new(proving.client),
             settlement_queue: Some(proving.sink),
             settlement: proving.settlement_rx,
-            journal: Some(Arc::new(vprogs_state_settlement_journal::StoreJournal::new(
-                store.clone(),
-            ))),
+            journal: Some(proving.journal),
             bundle_size: proving.bundle_size,
             exits: proving.exits_tx,
         },

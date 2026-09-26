@@ -1,8 +1,8 @@
 //! Static settlement-worker configuration and test-only pacing helpers.
 
-use std::ops::Range;
 #[cfg(feature = "test-utils")]
 use std::time::Duration;
+use std::{ops::Range, sync::Arc};
 
 use kaspa_consensus_core::config::params::Params;
 use kaspa_hashes::Hash;
@@ -12,6 +12,7 @@ use tokio::sync::watch;
 #[cfg(feature = "test-utils")]
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_l1_types::SettlementInfo;
+use vprogs_state_settlement_journal::SettlementJournal;
 use vprogs_zk_backend_risc0_api::Backend;
 
 /// Which redeem variant the worker settles against.
@@ -45,6 +46,10 @@ pub struct SettlementWorkerConfig {
     pub settlement: watch::Receiver<Option<SettlementInfo>>,
     /// Optional millisecond window to jitter each submission by, or `None` to submit immediately.
     pub submit_jitter: Option<Range<u64>>,
+    /// Aggregate-prover bundle journal a chain-superseded bundle is deleted from at its start key
+    /// on the skip path (see the worker's supersede resolution), or `None` to leave every skip
+    /// un-resolved.
+    pub journal: Option<Arc<dyn SettlementJournal>>,
     /// Test-only alternation: `(this settler's id, pacer shared with the competitor)`.
     #[cfg(feature = "test-utils")]
     pub alternation: Option<(u8, std::sync::Arc<AlternationPacer>)>,

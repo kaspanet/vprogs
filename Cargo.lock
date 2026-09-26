@@ -9393,6 +9393,7 @@ dependencies = [
  "vprogs-core-smt",
  "vprogs-l1-types",
  "vprogs-l1-wallet",
+ "vprogs-state-settlement-journal",
  "vprogs-zk-aggregate-prover",
  "vprogs-zk-backend-risc0-api",
  "vprogs-zk-backend-risc0-covenant",

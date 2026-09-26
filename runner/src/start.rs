@@ -574,6 +574,11 @@ where
     // settlement worker pops from it and settles on chain.
     let queue = SettlementQueue::new();
     let store = RunnerStore::open(cfg.data_dir.join("db"));
+    // One journal over the settlement column family, shared by the aggregate prover (records each
+    // proved bundle) and the settlement worker (deletes a chain-superseded bundle on its skip
+    // path), so the two never observe divergent bundle sets.
+    let journal: Arc<dyn vprogs_state_settlement_journal::SettlementJournal> =
+        Arc::new(vprogs_state_settlement_journal::StoreJournal::new(store.clone()));
     // The bridge replays from the pruning point and publishes its tip DAA here; a reporter task
     // polls it against the bootstrap's DAA to log how far the catch-up has progressed.
     let tip_daa_obs = Arc::new(AtomicU64::new(0));
@@ -645,6 +650,7 @@ where
             sink: queue.clone(),
             bundle_size: 1..=usize::MAX,
             settlement_rx: Some(settlement_rx.clone()),
+            journal: journal.clone(),
             exits_tx: Some(exits_tx),
         },
         indexer,
@@ -669,6 +675,7 @@ where
             mode: settlement_mode,
             settlement: settlement_rx,
             submit_jitter: None,
+            journal: Some(journal),
             #[cfg(feature = "test-utils")]
             alternation: None,
         },

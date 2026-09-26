@@ -3463,6 +3463,9 @@ async fn spawn_prover_on_store(
     } else {
         settlement_rx
     };
+    // The prover's own journal over its own store, matching the pre-threading wiring; the settler
+    // below stays journal-free so this test's skip behavior is unchanged.
+    let journal: Arc<dyn SettlementJournal> = Arc::new(StoreJournal::new(store.clone()));
     let node = build_proving_node(
         elfs,
         store,
@@ -3496,6 +3499,7 @@ async fn spawn_prover_on_store(
             // settler reconciles against, so a bundle a shorter competitor superseded still
             // settles.
             settlement_rx: Some(watch_rx.clone()),
+            journal,
             exits_tx: None,
         },
         None,
@@ -3522,6 +3526,7 @@ async fn spawn_prover_on_store(
             // is wide relative to the dev proving time so the per-range winner is a
             // genuine coin flip.
             submit_jitter: Some(0..40),
+            journal: None,
             // Strictly alternate with the competing prover: after one lands a settlement it waits
             // for the other to land the next, so neither sweeps every range (and each settles at
             // half rate, letting its recycled fee-change UTXO confirm before reuse). This makes the
