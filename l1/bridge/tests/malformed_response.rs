@@ -104,6 +104,16 @@ enum Tamper {
     FailLaneProof,
 }
 
+/// What the proxy does to the replies it forwards.
+#[derive(Clone, Copy, Debug)]
+enum Tamper {
+    /// Elide a single field from every reply carrying it.
+    Elide(Elide),
+    /// Rewrite every successful lane-proof reply into an RPC error, the reply a node serves for
+    /// an anchor it cannot answer the lane state at.
+    FailLaneProof,
+}
+
 /// A field of a `GetVirtualChainFromBlockV2` response the worker reads.
 #[derive(Clone, Copy, Debug)]
 enum ChainField {

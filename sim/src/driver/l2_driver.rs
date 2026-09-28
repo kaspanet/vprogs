@@ -254,6 +254,7 @@ fn build_exec(
                 bundle_size: proof_bundle_size..=proof_bundle_size,
                 exits: None,
             },
+            None,
         );
         (pipeline, Some(queue))
     } else {
