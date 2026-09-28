@@ -208,6 +208,7 @@ pub fn build_proving_node(
             bundle_size: proving.bundle_size,
             exits: proving.exits_tx,
         },
+        Some(vprogs_state_settlement_journal::StoreJournal::new(store.clone())),
     );
     let vm = Vm::new(backend, pipeline);
     Node::with_state(base_config(vm, store, bridge, indexer), state)

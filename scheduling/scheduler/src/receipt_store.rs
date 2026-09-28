@@ -1,5 +1,5 @@
 use vprogs_core_atomics::AtomicAsyncLatch;
-use vprogs_state_proof_receipt::AggregatorKey;
+use vprogs_state_proof_receipt::{AggregatorKey, BatchKey};
 use vprogs_storage_manager::StorageManager;
 use vprogs_storage_types::Store;
 
@@ -56,6 +56,12 @@ impl<S: Store, P: Processor<S>> ReceiptStore<S, P> {
     /// Looks up the aggregate (settlement) receipt at `key`, resolving to the receipt or `None` on
     /// a cache miss.
     pub fn read_agg_receipt(&self, key: AggregatorKey) -> ReceiptRead<S, P, P::AggregatorArtifact> {
+        self.read(key)
+    }
+
+    /// Looks up the per-batch receipt at `key`, resolving to the receipt or `None` on a cache
+    /// miss.
+    pub fn read_batch_receipt(&self, key: BatchKey) -> ReceiptRead<S, P, P::BatchArtifact> {
         self.read(key)
     }
 
