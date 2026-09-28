@@ -29,31 +29,8 @@ pub struct JournalEntry {
 }
 
 /// Store-backed operations over the settlement journal and the batch metadata its boundary
-/// lookups map through.
-pub trait SettlementJournal: Send + Sync {
-    /// Records the entry for the bundle starting at `start_index`, replacing any prior one.
-    fn record(&self, start_index: u64, entry: &JournalEntry);
-    /// Returns all entries ordered by start index.
-    fn entries(&self) -> Vec<(u64, JournalEntry)>;
-    /// Deletes the entry starting at `start_index`.
-    fn delete(&self, start_index: u64);
-    /// Returns the chain block hash of batch `index`, or `None` if the batch has no metadata.
-    fn batch_block(&self, index: u64) -> Option<Hash>;
-    /// Returns batch `index`'s full metadata, or `None` if the batch has no metadata.
-    fn batch_metadata(&self, index: u64) -> Option<ChainBlockMetadata>;
-    /// Returns the highest committed checkpoint index with its batch metadata, or `None` when no
-    /// batch has committed. Ceiling: a kill between a rollback and its re-execution can leave the
-    /// top row fork-stale (single-miner / low-reorg assumption).
-    fn committed_tip(&self) -> Option<(u64, ChainBlockMetadata)>;
-    /// Returns the checkpoint index whose batch block is `block`, searching from `upper` down to
-    /// `lower` inclusive, or `None` when no batch in the window carries the block. Callers bound
-    /// the window by the journal's own span, never the whole chain.
-    fn checkpoint_of_block(&self, block: Hash, upper: u64, lower: u64) -> Option<u64>;
-    /// Returns whether any entry is recorded.
-    fn has_entries(&self) -> bool;
-}
-
-/// [`SettlementJournal`] over one store handle.
+/// lookups map through. Wraps one store handle.
+#[derive(Clone)]
 pub struct StoreJournal<S: Store> {
     /// Store serving the journal and batch-metadata column families.
     store: S,
@@ -64,10 +41,9 @@ impl<S: Store> StoreJournal<S> {
     pub fn new(store: S) -> Self {
         Self { store }
     }
-}
 
-impl<S: Store> SettlementJournal for StoreJournal<S> {
-    fn record(&self, start_index: u64, entry: &JournalEntry) {
+    /// Records the entry for the bundle starting at `start_index`, replacing any prior one.
+    pub fn record(&self, start_index: u64, entry: &JournalEntry) {
         let mut wb = self.store.write_batch();
         wb.put(
             StateSpace::SettlementJournal,
@@ -77,7 +53,8 @@ impl<S: Store> SettlementJournal for StoreJournal<S> {
         self.store.commit(wb);
     }
 
-    fn entries(&self) -> Vec<(u64, JournalEntry)> {
+    /// Returns all entries ordered by start index.
+    pub fn entries(&self) -> Vec<(u64, JournalEntry)> {
         self.store
             .prefix_iter(StateSpace::SettlementJournal, &[])
             .map(|(k, v)| {
@@ -88,23 +65,29 @@ impl<S: Store> SettlementJournal for StoreJournal<S> {
             .collect()
     }
 
-    fn delete(&self, start_index: u64) {
+    /// Deletes the entry starting at `start_index`.
+    pub fn delete(&self, start_index: u64) {
         let mut wb = self.store.write_batch();
         wb.delete(StateSpace::SettlementJournal, &start_index.to_be_bytes());
         self.store.commit(wb);
     }
 
-    fn batch_block(&self, index: u64) -> Option<Hash> {
+    /// Returns the chain block hash of batch `index`, or `None` if the batch has no metadata.
+    pub fn batch_block(&self, index: u64) -> Option<Hash> {
         self.batch_metadata(index).map(|meta| meta.hash)
     }
 
-    fn batch_metadata(&self, index: u64) -> Option<ChainBlockMetadata> {
+    /// Returns batch `index`'s full metadata, or `None` if the batch has no metadata.
+    pub fn batch_metadata(&self, index: u64) -> Option<ChainBlockMetadata> {
         self.store
             .get(StateSpace::BatchMetadata, &index.to_be_bytes())
             .map(|bytes| borsh::from_slice::<ChainBlockMetadata>(&bytes).expect("corrupted store"))
     }
 
-    fn committed_tip(&self) -> Option<(u64, ChainBlockMetadata)> {
+    /// Returns the highest committed checkpoint index with its batch metadata, or `None` when no
+    /// batch has committed. Ceiling: a kill between a rollback and its re-execution can leave the
+    /// top row fork-stale (single-miner / low-reorg assumption).
+    pub fn committed_tip(&self) -> Option<(u64, ChainBlockMetadata)> {
         // Reverse seek: pruning deletes only below the committed frontier, so the last key is
         // the tip.
         self.store.prefix_iter_rev(StateSpace::BatchMetadata, &[]).next().map(|(key, value)| {
@@ -114,11 +97,15 @@ impl<S: Store> SettlementJournal for StoreJournal<S> {
         })
     }
 
-    fn checkpoint_of_block(&self, block: Hash, upper: u64, lower: u64) -> Option<u64> {
+    /// Returns the checkpoint index whose batch block is `block`, searching from `upper` down to
+    /// `lower` inclusive, or `None` when no batch in the window carries the block. Callers bound
+    /// the window by the journal's own span, never the whole chain.
+    pub fn checkpoint_of_block(&self, block: Hash, upper: u64, lower: u64) -> Option<u64> {
         (lower..=upper).rev().find(|&i| self.batch_block(i) == Some(block))
     }
 
-    fn has_entries(&self) -> bool {
+    /// Returns whether any entry is recorded.
+    pub fn has_entries(&self) -> bool {
         !self.entries().is_empty()
     }
 }

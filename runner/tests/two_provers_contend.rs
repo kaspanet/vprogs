@@ -42,7 +42,7 @@ use vprogs_runner::{
     BridgeObservers, BridgeParams, Elfs, ProvingParams, RunnerNode, RunnerStore, SettlementQueue,
     build_proving_node,
 };
-use vprogs_state_settlement_journal::{SettlementJournal, StoreJournal};
+use vprogs_state_settlement_journal::StoreJournal;
 use vprogs_storage_types::{StateSpace, Store};
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_settler::{
