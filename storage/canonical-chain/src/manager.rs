@@ -13,14 +13,16 @@ pub struct CanonicalChainManager<M> {
     chain: CanonicalChain,
     /// Lowest live id; ids below it are finalized and their entries dropped.
     base: u64,
-    /// Metadata of each live id in order: `entries[i]` is the metadata of id `base + i`.
-    entries: VecDeque<M>,
+    /// Metadata of each live id in ascending id order; interior gaps hold no entry.
+    entries: VecDeque<(u64, M)>,
     /// Reverse lookup from block hash to its id.
     index: HashMap<[u8; 32], u64>,
 }
 
 impl<M: BatchMetadata> CanonicalChainManager<M> {
     /// Creates a manager over `chain`, replaying persisted `(id, metadata)` entries in order.
+    /// The ids may skip interiors: a reorg-canceled batch keeps its allocated id but never
+    /// persists metadata, so the log carries holes that restore preserves.
     pub fn new(chain: CanonicalChain, entries: impl IntoIterator<Item = (u64, M)>) -> Self {
         // Claim the sole-writer role and start with an empty log.
         chain.claim_writer();
@@ -32,8 +34,11 @@ impl<M: BatchMetadata> CanonicalChainManager<M> {
             if manager.entries.is_empty() {
                 manager.base = id;
             }
-            let assigned = manager.push(metadata);
-            debug_assert_eq!(assigned, id, "restore must be contiguous");
+            debug_assert!(
+                manager.entries.back().is_none_or(|(last, _)| *last < id),
+                "restore must be ascending"
+            );
+            manager.insert(id, metadata);
             tip = Some(id);
         }
         let Some(tip) = tip else { return manager };
@@ -70,11 +75,13 @@ impl<M: BatchMetadata> CanonicalChainManager<M> {
         // Finalize the canonical bits below `below`.
         self.chain.finalize(below);
 
-        // Drop the now-finalized log entries and their reverse-index keys.
+        // Drop the now-finalized log entries and their reverse-index keys. `base` tracks the
+        // popped id plus one, which equals the next live id when the log is dense and simply
+        // names the gap floor when one sits below the next live entry.
         while self.base < below {
-            let Some(metadata) = self.entries.pop_front() else { break };
+            let Some((id, metadata)) = self.entries.pop_front() else { break };
             self.index.remove(&metadata.block_hash());
-            self.base += 1;
+            self.base = id + 1;
         }
     }
 
@@ -88,17 +95,27 @@ impl<M: BatchMetadata> CanonicalChainManager<M> {
         self.index.get(block_hash).copied()
     }
 
-    /// Returns the metadata stored for `id`, or `None` if it is finalized or never assigned.
+    /// Returns the metadata stored for `id`, or `None` if it is finalized, never assigned, or
+    /// sits in an interior gap left by a reorg-canceled batch.
     pub fn metadata(&self, id: u64) -> Option<&M> {
-        self.entries.get(id.checked_sub(self.base)? as usize)
+        self.entries
+            .binary_search_by_key(&id, |(entry, _)| *entry)
+            .ok()
+            .map(|index| &self.entries[index].1)
     }
 
-    /// Appends `metadata` at the next dense id and returns it (the log's allocate primitive).
+    /// Appends `metadata` at the next free id above the log and returns it. Ids are never
+    /// reused: a rollback retains the orphaned entries, so the log only grows forward.
     fn push(&mut self, metadata: M) -> u64 {
-        let id = self.base + self.entries.len() as u64;
-        self.index.insert(metadata.block_hash(), id);
-        self.entries.push_back(metadata);
+        let id = self.entries.back().map_or(self.base, |(last, _)| last + 1);
+        self.insert(id, metadata);
         id
+    }
+
+    /// Places `metadata` at `id`, which must exceed every logged id.
+    fn insert(&mut self, id: u64, metadata: M) {
+        self.index.insert(metadata.block_hash(), id);
+        self.entries.push_back((id, metadata));
     }
 
     /// Walks `tip`'s ancestry via `parent_id` to the finalized floor, collecting the canonical ids.
