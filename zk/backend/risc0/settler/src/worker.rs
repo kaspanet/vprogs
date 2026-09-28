@@ -10,7 +10,8 @@ pub use config::AlternationPacer;
 pub use config::{SettlementMode, SettlementWorkerConfig};
 use vprogs_core_atomics::{AsyncQueue, AtomicAsyncLatch};
 use vprogs_l1_types::SettlementInfo;
-use vprogs_state_settlement_journal::SettlementJournal;
+use vprogs_state_settlement_journal::StoreJournal;
+use vprogs_storage_types::Store;
 use vprogs_zk_aggregate_prover::{ScheduledBundle, SettlementArtifact};
 use vprogs_zk_backend_risc0_api::Receipt;
 
@@ -66,14 +67,15 @@ fn reconcile<R>(
 /// by the caller before this call's adoption (a post-adoption `cov` names the competitor's
 /// still-unspent continuation); it is injected as a closure so the resolution is testable
 /// without a node.
-async fn resolve_superseded<R, L, Fut>(
+async fn resolve_superseded<S, R, L, Fut>(
     cov: &mut CovenantState,
     artifact: &SettlementArtifact<R>,
     bundle: &ScheduledBundle<SettlementArtifact<R>>,
-    journal: Option<&dyn SettlementJournal>,
+    journal: Option<&StoreJournal<S>>,
     latest: Option<SettlementInfo>,
     liveness: L,
 ) where
+    S: Store,
     L: FnOnce() -> Fut,
     Fut: std::future::Future<Output = CovenantLiveness>,
 {
@@ -100,9 +102,9 @@ async fn resolve_superseded<R, L, Fut>(
 ///
 /// Settlements are serialized: each queued bundle is awaited, skipped if it resolves without an
 /// artifact, or settled before the next bundle is processed.
-pub async fn run(
+pub async fn run<S: Store>(
     queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Receipt>>>,
-    cfg: SettlementWorkerConfig,
+    cfg: SettlementWorkerConfig<S>,
     covenant: CovenantState,
     shutdown: AtomicAsyncLatch,
 ) {
@@ -231,21 +233,14 @@ pub async fn run(
                 "settlement-worker: skipping superseded bundle (a competitor covered its range)"
             );
             let latest = *cfg.settlement.borrow();
-            resolve_superseded(
-                &mut cov,
-                &artifact,
-                &bundle,
-                cfg.journal.as_deref(),
-                latest,
-                || {
-                    covenant_liveness(
-                        &cfg.client,
-                        &cfg.params,
-                        OutpointAt { spk: &base_spk, outpoint: base_outpoint },
-                        &shutdown,
-                    )
-                },
-            )
+            resolve_superseded(&mut cov, &artifact, &bundle, cfg.journal.as_ref(), latest, || {
+                covenant_liveness(
+                    &cfg.client,
+                    &cfg.params,
+                    OutpointAt { spk: &base_spk, outpoint: base_outpoint },
+                    &shutdown,
+                )
+            })
             .await;
             continue;
         }
@@ -279,7 +274,7 @@ pub async fn run(
                         &mut cov,
                         &artifact,
                         &bundle,
-                        cfg.journal.as_deref(),
+                        cfg.journal.as_ref(),
                         latest,
                         || {
                             covenant_liveness(
@@ -330,12 +325,11 @@ pub async fn run(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
-
     use kaspa_consensus_core::tx::TransactionOutpoint;
     use kaspa_hashes::Hash;
-    use vprogs_l1_types::{ChainBlockMetadata, SettlementInfo, TransactionId};
-    use vprogs_state_settlement_journal::{JournalEntry, SettlementJournal};
+    use vprogs_l1_types::{SettlementInfo, TransactionId};
+    use vprogs_state_settlement_journal::{JournalEntry, StoreJournal};
+    use vprogs_storage_rocksdb_store::RocksDbStore;
     use vprogs_zk_aggregate_prover::{BundleBlocks, ScheduledBundle};
 
     use super::{CovenantState, SettlementArtifact, reconcile, resolve_superseded};
@@ -445,42 +439,23 @@ mod tests {
         assert_eq!(cov.lane_tip, Hash::from_bytes([3; 32]), "nothing was readopted");
     }
 
-    /// In-test journal recording deletes; every lookup the resolution never performs returns
-    /// empty, the smallest surface that satisfies the trait.
-    struct DeleteRecorder {
-        deleted: Mutex<Vec<u64>>,
+    /// Journal entry matching [`scheduled`]: the bundle `7..=8` the resume path would re-feed.
+    fn journaled_entry() -> JournalEntry {
+        JournalEntry {
+            end_index: 8,
+            from_block: Hash::from_bytes([0x01; 32]),
+            block_prove_to: Hash::from_bytes([0x02; 32]),
+            seq_commit: Hash::from_bytes([0x03; 32]),
+        }
     }
 
-    impl SettlementJournal for DeleteRecorder {
-        fn record(&self, _start_index: u64, _entry: &JournalEntry) {}
-
-        fn entries(&self) -> Vec<(u64, JournalEntry)> {
-            Vec::new()
-        }
-
-        fn delete(&self, start_index: u64) {
-            self.deleted.lock().unwrap().push(start_index);
-        }
-
-        fn batch_block(&self, _index: u64) -> Option<Hash> {
-            None
-        }
-
-        fn batch_metadata(&self, _index: u64) -> Option<ChainBlockMetadata> {
-            None
-        }
-
-        fn committed_tip(&self) -> Option<(u64, ChainBlockMetadata)> {
-            None
-        }
-
-        fn checkpoint_of_block(&self, _block: Hash, _upper: u64, _lower: u64) -> Option<u64> {
-            None
-        }
-
-        fn has_entries(&self) -> bool {
-            false
-        }
+    /// A journal over a throwaway store holding the scheduled bundle's entry, standing in for the
+    /// prover's persisted journal.
+    fn recorded_journal() -> (tempfile::TempDir, StoreJournal<RocksDbStore>) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let journal = StoreJournal::new(RocksDbStore::open(dir.path()));
+        journal.record(7, &journaled_entry());
+        (dir, journal)
     }
 
     /// A two-batch bundle whose first checkpoint is 7 (`7..=8`): the start key the resolution
@@ -501,7 +476,7 @@ mod tests {
     /// checkpoint index and the resume path stops re-feeding the range.
     #[tokio::test]
     async fn chain_spent_supersede_deletes_the_journal_entry() {
-        let journal = DeleteRecorder { deleted: Mutex::new(Vec::new()) };
+        let (_dir, journal) = recorded_journal();
         let mut cov = covenant(STATE, 1);
         let bundle = scheduled();
 
@@ -515,11 +490,7 @@ mod tests {
         )
         .await;
 
-        assert_eq!(
-            journal.deleted.lock().unwrap().as_slice(),
-            &[7],
-            "entry deleted at the bundle's checkpoint index"
-        );
+        assert!(journal.entries().is_empty(), "entry deleted at the bundle's checkpoint index");
     }
 
     /// A supersede whose spend is mempool-only (the covenant outpoint still unspent on chain)
@@ -527,7 +498,7 @@ mod tests {
     /// stay queued.
     #[tokio::test]
     async fn mempool_only_supersede_deletes_nothing() {
-        let journal = DeleteRecorder { deleted: Mutex::new(Vec::new()) };
+        let (_dir, journal) = recorded_journal();
         let mut cov = covenant(STATE, 1);
         let bundle = scheduled();
 
@@ -541,7 +512,7 @@ mod tests {
         )
         .await;
 
-        assert!(journal.deleted.lock().unwrap().is_empty(), "mempool spender may vanish");
+        assert_eq!(journal.entries().len(), 1, "mempool spender may vanish");
     }
 
     /// The resolution adopts a watch settlement ahead of `cov` even with no journal wired, so the
@@ -555,7 +526,7 @@ mod tests {
             &mut cov,
             &artifact(STATE, 2),
             &bundle,
-            None,
+            None::<&StoreJournal<RocksDbStore>>,
             Some(settlement(STATE, 2)),
             || async { CovenantLiveness::Spent },
         )

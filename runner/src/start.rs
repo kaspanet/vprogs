@@ -577,8 +577,7 @@ where
     // One journal over the settlement column family, shared by the aggregate prover (records each
     // proved bundle) and the settlement worker (deletes a chain-superseded bundle on its skip
     // path), so the two never observe divergent bundle sets.
-    let journal: Arc<dyn vprogs_state_settlement_journal::SettlementJournal> =
-        Arc::new(vprogs_state_settlement_journal::StoreJournal::new(store.clone()));
+    let journal = vprogs_state_settlement_journal::StoreJournal::new(store.clone());
     // The bridge replays from the pruning point and publishes its tip DAA here; a reporter task
     // polls it against the bootstrap's DAA to log how far the catch-up has progressed.
     let tip_daa_obs = Arc::new(AtomicU64::new(0));

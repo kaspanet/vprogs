@@ -42,7 +42,7 @@ use vprogs_runner::{
     BridgeObservers, BridgeParams, Elfs, ProvingParams, RunnerNode, RunnerStore, SettlementQueue,
     build_proving_node,
 };
-use vprogs_state_settlement_journal::{SettlementJournal, StoreJournal};
+use vprogs_state_settlement_journal::StoreJournal;
 use vprogs_storage_types::{StateSpace, Store};
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_settler::{
@@ -3465,7 +3465,7 @@ async fn spawn_prover_on_store(
     };
     // The prover's own journal over its own store, matching the pre-threading wiring; the settler
     // below stays journal-free so this test's skip behavior is unchanged.
-    let journal: Arc<dyn SettlementJournal> = Arc::new(StoreJournal::new(store.clone()));
+    let journal = StoreJournal::new(store.clone());
     let node = build_proving_node(
         elfs,
         store,
@@ -3526,7 +3526,7 @@ async fn spawn_prover_on_store(
             // is wide relative to the dev proving time so the per-range winner is a
             // genuine coin flip.
             submit_jitter: Some(0..40),
-            journal: None,
+            journal: None::<StoreJournal<RunnerStore>>,
             // Strictly alternate with the competing prover: after one lands a settlement it waits
             // for the other to land the next, so neither sweeps every range (and each settles at
             // half rate, letting its recycled fee-change UTXO confirm before reuse). This makes the
