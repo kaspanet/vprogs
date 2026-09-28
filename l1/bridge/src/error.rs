@@ -12,9 +12,10 @@ pub(crate) enum Error {
     #[error("starting block no longer in chain: {0}")]
     CheckpointLost(RpcError),
 
-    /// A reorg's fork point has been finalized away, so we cannot roll back to it.
-    #[error("reorg below finalization boundary: fork block {0} is finalized")]
-    ReorgBelowFinality(Hash),
+    /// A reorg's fork point sits below the sink root (the seed anchor or the finalized floor), so
+    /// there is no tracked block to roll back to.
+    #[error("reorg below the sink root: fork block {0} is not tracked")]
+    ReorgBelowRoot(Hash),
 
     /// The peer elided a response field required at `Full` verbosity - retrying cannot help.
     #[error("malformed RPC response: {0}")]

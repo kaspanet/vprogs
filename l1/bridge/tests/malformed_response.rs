@@ -117,6 +117,8 @@ enum ChainField {
     HeaderTimestamp,
     /// The chain-block header's `blue_score`.
     HeaderBlueScore,
+    /// The chain-block header's `pruning_point`.
+    HeaderPruningPoint,
 }
 
 impl Elide {
@@ -163,6 +165,7 @@ impl ChainField {
                 ChainField::HeaderDaaScore => header.daa_score.take().is_some() as usize,
                 ChainField::HeaderTimestamp => header.timestamp.take().is_some() as usize,
                 ChainField::HeaderBlueScore => header.blue_score.take().is_some() as usize,
+                ChainField::HeaderPruningPoint => header.pruning_point.take().is_some() as usize,
                 ChainField::TxStorageMass => block
                     .accepted_transactions
                     .iter_mut()
@@ -488,6 +491,11 @@ async fn elided_header_timestamp_reports_fatal() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn elided_header_blue_score_reports_fatal() {
     assert_fatal_on_elided_field(Elide::Chain(ChainField::HeaderBlueScore)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn elided_header_pruning_point_reports_fatal() {
+    assert_fatal_on_elided_field(Elide::Chain(ChainField::HeaderPruningPoint)).await;
 }
 
 /// The walk in `seed_from_recent` reads `verbose_data` before the bridge announces `Connected`, so
