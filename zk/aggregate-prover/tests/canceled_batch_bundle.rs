@@ -227,13 +227,13 @@ fn canceled_batch_is_not_swept_into_a_bundle() {
         let prover = AggregateProver::new(
             NoopBackend,
             scheduler.state().receipt_store(),
+            None,
             AggregateProverConfig {
                 lane_key: Hash::default(),
                 covenant_id: None,
                 lane_source: NoLaneProofs,
                 settlement_queue: Some(settlement_queue.clone()),
                 settlement: None,
-                journal: None,
                 bundle_size: 1..=usize::MAX,
                 exits: None,
             },
@@ -329,13 +329,13 @@ fn whole_canceled_queue_is_evicted() {
         let prover = AggregateProver::new(
             NoopBackend,
             scheduler.state().receipt_store(),
+            None,
             AggregateProverConfig {
                 lane_key: Hash::default(),
                 covenant_id: None,
                 lane_source: NoLaneProofs,
                 settlement_queue: Some(settlement_queue.clone()),
                 settlement: None,
-                journal: None,
                 bundle_size: 1..=usize::MAX,
                 exits: None,
             },

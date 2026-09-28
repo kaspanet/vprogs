@@ -263,13 +263,13 @@ fn dead_lane_proof_fetch_does_not_kill_the_worker() {
         let prover = AggregateProver::new(
             SyntheticBackend,
             scheduler.state().receipt_store(),
+            None,
             AggregateProverConfig {
                 lane_key: Hash::default(),
                 covenant_id: None,
                 lane_source: DeadBlockLaneSource { dead: block_hash(DEAD_BLOCK as u8) },
                 settlement_queue: Some(settlement_queue.clone()),
                 settlement: None,
-                journal: None,
                 bundle_size: 1..=1,
                 exits: None,
             },
