@@ -9487,6 +9487,7 @@ dependencies = [
  "tokio",
  "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
+ "vprogs-state-settlement-journal",
  "vprogs-storage-types",
  "vprogs-zk-abi",
  "vprogs-zk-aggregate-prover",
