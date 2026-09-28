@@ -65,7 +65,10 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
             resources: HashMap::new(),
             pending_batches: VecDeque::new(),
             cancellation: CancellationContext::new(state.root().index()),
-            canonical_chain_manager: state.storage().store().canonical_chain_manager(),
+            canonical_chain_manager: state
+                .storage()
+                .store()
+                .canonical_chain_manager(state.last_committed().index()),
             state,
             processor,
         }
