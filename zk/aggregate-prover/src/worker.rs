@@ -15,7 +15,7 @@ use vprogs_core_codec::Reader;
 use vprogs_l1_types::{ChainBlockMetadata, SettlementInfo};
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_state_proof_receipt::{AggregatorKey, BatchKey, Prefix};
-use vprogs_state_settlement_journal::{JournalEntry, SettlementJournal};
+use vprogs_state_settlement_journal::{JournalEntry, StoreJournal};
 use vprogs_storage_types::Store;
 use vprogs_zk_abi::batch_aggregator::{Inputs as AggregatorInputs, StateTransition};
 use vprogs_zk_batch_prover::{LaneProofRequest, LaneProofSource};
@@ -54,7 +54,7 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend, L: LaneProofSour
     /// re-forming.
     settlement: Option<watch::Receiver<Option<SettlementInfo>>>,
     /// Journal of proved-but-unsettled bundles; `None` disables resume.
-    journal: Option<Arc<dyn SettlementJournal>>,
+    journal: Option<StoreJournal<S>>,
     /// First-batch checkpoint index of the most recently re-formed suffix, guarding against
     /// re-emitting it on every settlement wake. Reset by a rollback.
     last_reformed_from: Option<u64>,
@@ -83,6 +83,7 @@ where
         prover: AggregateProver<S, P>,
         backend: B,
         config: AggregateProverConfig<L, B::Receipt>,
+        journal: Option<StoreJournal<S>>,
     ) -> JoinHandle<()> {
         let AggregateProverConfig {
             lane_key,
@@ -90,7 +91,6 @@ where
             lane_source,
             settlement_queue,
             settlement,
-            journal,
             bundle_size,
             exits,
         } = config;

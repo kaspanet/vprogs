@@ -7,6 +7,7 @@ use vprogs_core_atomics::{AsyncQueue, AtomicAsyncLatch};
 use vprogs_core_macros::smart_pointer;
 use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, ReceiptStore, ScheduledBatch};
+use vprogs_state_settlement_journal::StoreJournal;
 use vprogs_storage_types::Store;
 use vprogs_zk_batch_prover::LaneProofSource;
 
@@ -35,10 +36,13 @@ pub struct AggregateProver<S: Store, P: Processor<S>> {
 impl<S: Store, P: Processor<S>> AggregateProver<S, P> {
     /// Creates a new aggregate prover and spawns its worker thread. `receipt_store` is the prover's
     /// own handle into the proof-receipt cache (derived from the scheduler's shared state), through
-    /// which it caches and replays bundle settlement receipts.
+    /// which it caches and replays bundle settlement receipts. `journal` is the journal of
+    /// proved-but-unsettled bundles enabling settlement resume across restarts, or `None` on
+    /// journal-free paths (exec/test runs).
     pub fn new<B: Backend, L: LaneProofSource>(
         backend: B,
         receipt_store: ReceiptStore<S, P>,
+        journal: Option<StoreJournal<S>>,
         config: AggregateProverConfig<L, B::Receipt>,
     ) -> Self
     where
@@ -56,7 +60,7 @@ impl<S: Store, P: Processor<S>> AggregateProver<S, P> {
             receipt_store,
             worker: Mutex::new(None),
         }));
-        let handle = Worker::spawn(prover.clone(), backend, config);
+        let handle = Worker::spawn(prover.clone(), backend, config, journal);
         *prover.worker.lock().expect("worker mutex") = Some(handle);
         prover
     }
