@@ -241,6 +241,7 @@ pub(super) fn pay_to_address_shape(params: &Params) -> BuiltShape {
         count: 1,
         keypair,
         change_address: &address,
+        fee_policy: FeePolicy::Floor,
         params,
     })
     .expect("payout is fundable");

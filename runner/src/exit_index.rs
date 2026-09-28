@@ -27,6 +27,12 @@ pub trait ExitIndexer: Send + Sync + 'static {
         wb: &mut dyn WriteBatch,
     );
 
+    /// Feed one chain-observed settlement of the tracked covenant, paired or not, so an app can
+    /// serve the covenant tip on lanes where completed withdrawals are rare. Fires for every
+    /// recognized settlement before any pairing attempt; reverts follow the settlement stream's
+    /// rollback marker, which restores the newest surviving tip.
+    fn on_settlement_observed(&self, _settlement: &SettlementInfo, _wb: &mut dyn WriteBatch) {}
+
     /// Feed one permission UTXO spend observed on L1.
     fn on_permission_spent(&self, spend: &PermissionSpend, wb: &mut dyn WriteBatch);
 
@@ -225,12 +231,27 @@ pub fn handle_reanchor<S: Store>(
     store.commit(wb);
 }
 
+/// Serves the latest observed settlement tip: notifies the indexer in its own write batch and
+/// commit, so the tip row advances for every recognized settlement whether or not it pairs with
+/// a parked bundle.
+pub fn handle_observed_tip<S: Store>(
+    settlement: &SettlementInfo,
+    indexer: &dyn ExitIndexer,
+    store: &S,
+) {
+    let mut wb = store.write_batch();
+    indexer.on_settlement_observed(settlement, &mut wb);
+    store.commit(wb);
+}
+
 /// One applied exit-index transition, journaled at the chain idx it applied at so a rollback
 /// marker can invert every entry above its floor.
 enum JournalEntry {
     /// A parked bundle paired with its settlement, pinning `root` at the settlement outpoint
     /// `(tx_id, 1)`.
     Pairing { root: [u8; 32], bundle: Arc<ExitsForBundle>, settlement: SettlementInfo },
+    /// A settlement observed on chain, paired or not; the served tip row it advanced.
+    Observed { settlement: SettlementInfo },
     /// A permission spend advanced a tracked anchor (`None` when no tracked root matched) to
     /// its continuation.
     Spend { spend: PermissionSpend, spent_outpoint: Option<TransactionOutpoint> },
@@ -248,7 +269,7 @@ impl JournalEntry {
     /// The stream family this entry reverts under.
     fn family(&self) -> JournalFamily {
         match self {
-            JournalEntry::Pairing { .. } => JournalFamily::Pairing,
+            JournalEntry::Pairing { .. } | JournalEntry::Observed { .. } => JournalFamily::Pairing,
             JournalEntry::Spend { .. } => JournalFamily::Spend,
         }
     }
@@ -256,7 +277,9 @@ impl JournalEntry {
     /// Chain idx the entry applied at; reverts invert entries strictly above the floor.
     fn idx(&self) -> u64 {
         match self {
-            JournalEntry::Pairing { settlement, .. } => settlement.chain_idx.get(),
+            JournalEntry::Pairing { settlement, .. } | JournalEntry::Observed { settlement } => {
+                settlement.chain_idx.get()
+            }
             JournalEntry::Spend { spend, .. } => spend.chain_idx,
         }
     }
@@ -286,7 +309,8 @@ impl ReorgState {
     /// stale events, so scoping reverts to the marker's stream keeps a late-applied pre-reorg
     /// event revertible while a post-rollback canonical event on the other stream stays safe.
     /// Spends restore their pre-spend anchor; pairings are hidden from serving (anchors kept)
-    /// and parked for re-anchor.
+    /// and parked for re-anchor; the settlement stream's revert also restores the served tip to
+    /// the newest surviving observation.
     fn revert_above<S: Store>(
         &mut self,
         floor: u64,
@@ -324,16 +348,42 @@ impl ReorgState {
                     store.commit(wb);
                     self.reverted.insert(settlement.tx_id, (root, bundle));
                 }
+                JournalEntry::Observed { .. } => {
+                    // The tip row is re-served from the surviving journal below; nothing to
+                    // invert per-entry here.
+                }
             }
+        }
+        // Observed entries belong to the Pairing family, so only its marker can have dropped
+        // the tip the row holds; a Spend marker leaves every observation in place. The surviving
+        // journal spans both families (only the marker's family was reverted), and its highest-idx
+        // surviving Observed entry is the tip to serve again; selected by idx, not append order,
+        // because appends are only near-ordered across the streams.
+        if family == JournalFamily::Pairing {
+            if let Some(JournalEntry::Observed { settlement }) = self
+                .journal
+                .iter()
+                .filter(|entry| matches!(entry, JournalEntry::Observed { .. }))
+                .max_by_key(|entry| entry.idx())
+            {
+                handle_observed_tip(settlement, indexer, store);
+                log::info!(
+                    "exit indexer: rollback to floor {floor} restored settlement tip {}",
+                    settlement.tx_id
+                );
+            }
+            // No surviving Observed entry: the row stays at its last value until the next
+            // observation. Same ceiling as the in-memory journal above: a restart inside the
+            // reorg window loses the journal, so the restore cannot be reconstructed either.
         }
         log::info!("exit indexer: rollback to floor {floor} reverted {n} journal entries");
     }
 }
 
-/// Background task joining exit bundles, L1 settlements, and permission spends. Every applied
-/// pairing and spend is journaled at its chain idx; a rollback marker on each stream inverts
-/// that stream's journal family above its floor, and a reverted settlement's re-confirmation
-/// re-anchors its family.
+/// Background task joining exit bundles, L1 settlements, and permission spends. Every observed
+/// settlement, applied pairing, and spend is journaled at its chain idx; a rollback marker on
+/// each stream inverts that stream's journal family above its floor, and a reverted settlement's
+/// re-confirmation re-anchors its family.
 pub async fn run_exit_indexer<S: Store>(
     indexer: Arc<dyn ExitIndexer>,
     store: S,
@@ -362,6 +412,14 @@ pub async fn run_exit_indexer<S: Store>(
             maybe_settlement = settlement_rx.recv() => {
                 match maybe_settlement {
                     Some(SettlementMsg::Observed(settlement)) => {
+                        // Serve the observed tip before the pairing attempt: the row must
+                        // advance for every recognized settlement, so a lane whose settlements
+                        // carry no locally parked exits still advances its served tip. The
+                        // Observed journal entry sits below the same settlement's Pairing entry
+                        // (pushed first), so a newest-first revert un-hides the pairing and
+                        // then drops the tip.
+                        handle_observed_tip(&settlement, &*indexer, &store);
+                        reorg.journal.push(JournalEntry::Observed { settlement });
                         // A reverted family re-confirming re-anchors before the parked lookup;
                         // a parked bundle's fresh pairing overwrites the same root and drops
                         // the reverted entry it supersedes (a re-derived settlement may
@@ -547,6 +605,9 @@ mod tests {
 
     struct FakeExitIndexer {
         committed: Mutex<Vec<(ExitsForBundle, SettlementInfo)>>,
+        observed: Mutex<Vec<SettlementInfo>>,
+        /// Cross-hook call order, so tests can assert which hook fired first.
+        order: Mutex<Vec<&'static str>>,
         spends: Mutex<Vec<PermissionSpend>>,
         spend_reverts: Mutex<Vec<(PermissionSpend, TransactionOutpoint)>>,
         exits_reverted: Mutex<Vec<(ExitsForBundle, SettlementInfo)>>,
@@ -557,6 +618,8 @@ mod tests {
         fn new() -> Self {
             Self {
                 committed: Mutex::new(Vec::new()),
+                observed: Mutex::new(Vec::new()),
+                order: Mutex::new(Vec::new()),
                 spends: Mutex::new(Vec::new()),
                 spend_reverts: Mutex::new(Vec::new()),
                 exits_reverted: Mutex::new(Vec::new()),
@@ -573,6 +636,12 @@ mod tests {
             _wb: &mut dyn WriteBatch,
         ) {
             self.committed.lock().unwrap().push((bundle.clone(), *settlement));
+            self.order.lock().unwrap().push("committed");
+        }
+
+        fn on_settlement_observed(&self, settlement: &SettlementInfo, _wb: &mut dyn WriteBatch) {
+            self.observed.lock().unwrap().push(*settlement);
+            self.order.lock().unwrap().push("observed");
         }
 
         fn on_permission_spent(&self, spend: &PermissionSpend, _wb: &mut dyn WriteBatch) {
@@ -943,6 +1012,137 @@ mod tests {
         drop(settlement_tx);
         drop(_spend_tx);
         indexer_handle.await.unwrap();
+    }
+
+    /// A settlement with no parked bundle never pairs, yet its observation must serve the tip:
+    /// on a lane without completed withdrawals this is the only hook that advances the row.
+    #[tokio::test]
+    async fn observed_settlement_without_a_bundle_serves_the_tip_only() {
+        let dir = tempdir().unwrap();
+        let store: RocksDbStore = RocksDbStore::open(dir.path());
+        let indexer = Arc::new(FakeExitIndexer::new());
+        let registry = Arc::new(RwLock::new(HashMap::new()));
+        let h = IndexerHarness::spawn(store, indexer.clone(), registry.clone());
+
+        let settlement = SettlementInfo {
+            tx_id: Hash::from_bytes([0xaa; 32]),
+            new_state: [0x41; 32],
+            chain_idx: 3u64.into(),
+            ..Default::default()
+        };
+        h.settlement_tx.send(SettlementMsg::Observed(settlement)).unwrap();
+        assert!(
+            becomes_true(200, || indexer.observed.lock().unwrap().len() == 1).await,
+            "observation served"
+        );
+        assert_eq!(indexer.observed.lock().unwrap()[0], settlement);
+        assert!(indexer.committed.lock().unwrap().is_empty(), "no parked bundle, no pairing");
+        assert!(registry.read().unwrap().is_empty(), "no anchor pinned");
+
+        h.shutdown().await;
+    }
+
+    /// A newer observation overwrites the served tip: the row tracks the covenant's latest
+    /// settlement, not the first one it saw.
+    #[tokio::test]
+    async fn second_observed_settlement_overwrites_the_tip() {
+        let dir = tempdir().unwrap();
+        let store: RocksDbStore = RocksDbStore::open(dir.path());
+        let indexer = Arc::new(FakeExitIndexer::new());
+        let registry = Arc::new(RwLock::new(HashMap::new()));
+        let h = IndexerHarness::spawn(store, indexer.clone(), registry);
+
+        let first = SettlementInfo {
+            tx_id: Hash::from_bytes([0xa1; 32]),
+            new_state: [0x41; 32],
+            chain_idx: 3u64.into(),
+            ..Default::default()
+        };
+        let second = SettlementInfo {
+            tx_id: Hash::from_bytes([0xa2; 32]),
+            new_state: [0x42; 32],
+            chain_idx: 6u64.into(),
+            ..Default::default()
+        };
+        h.settlement_tx.send(SettlementMsg::Observed(first)).unwrap();
+        h.settlement_tx.send(SettlementMsg::Observed(second)).unwrap();
+        assert!(
+            becomes_true(200, || indexer.observed.lock().unwrap().len() == 2).await,
+            "both observations served"
+        );
+        assert_eq!(indexer.observed.lock().unwrap().as_slice(), &[first, second]);
+
+        h.shutdown().await;
+    }
+
+    /// A rollback below the newer observation's idx drops that tip with the reorg and restores
+    /// the newest surviving one, so the row never serves a settlement the chain no longer holds.
+    #[tokio::test]
+    async fn rollback_restores_the_previous_tip() {
+        let dir = tempdir().unwrap();
+        let store: RocksDbStore = RocksDbStore::open(dir.path());
+        let indexer = Arc::new(FakeExitIndexer::new());
+        let registry = Arc::new(RwLock::new(HashMap::new()));
+        let h = IndexerHarness::spawn(store, indexer.clone(), registry);
+
+        let first = SettlementInfo {
+            tx_id: Hash::from_bytes([0xa1; 32]),
+            new_state: [0x41; 32],
+            chain_idx: 3u64.into(),
+            ..Default::default()
+        };
+        let second = SettlementInfo {
+            tx_id: Hash::from_bytes([0xa2; 32]),
+            new_state: [0x42; 32],
+            chain_idx: 6u64.into(),
+            ..Default::default()
+        };
+        h.settlement_tx.send(SettlementMsg::Observed(first)).unwrap();
+        h.settlement_tx.send(SettlementMsg::Observed(second)).unwrap();
+        assert!(
+            becomes_true(200, || indexer.observed.lock().unwrap().len() == 2).await,
+            "both observations served"
+        );
+
+        // Floor 4 reverts the idx-6 tip (above it) and keeps the idx-3 one.
+        h.settlement_tx.send(SettlementMsg::Rollback(4)).unwrap();
+        assert!(
+            becomes_true(200, || indexer.observed.lock().unwrap().len() == 3).await,
+            "rollback restored the surviving tip"
+        );
+        assert_eq!(indexer.observed.lock().unwrap()[2], first, "row re-served at the old tip");
+
+        h.shutdown().await;
+    }
+
+    /// A settlement that pairs fires the observed hook before the pairing commit, so the tip row
+    /// advances even when the pairing itself fails to land.
+    #[tokio::test]
+    async fn paired_settlement_fires_observed_then_committed() {
+        let dir = tempdir().unwrap();
+        let store: RocksDbStore = RocksDbStore::open(dir.path());
+        let indexer = Arc::new(FakeExitIndexer::new());
+        let registry = Arc::new(RwLock::new(HashMap::new()));
+        let h = IndexerHarness::spawn(store, indexer.clone(), registry);
+
+        let (bundle, _root) = test_bundle([0x11; 32], 0x77, 700);
+        let settlement = SettlementInfo {
+            tx_id: Hash::from_bytes([0xaa; 32]),
+            new_state: [0x11; 32],
+            chain_idx: 3u64.into(),
+            ..Default::default()
+        };
+        h.pair(bundle, settlement).await;
+
+        assert_eq!(indexer.observed.lock().unwrap().as_slice(), &[settlement]);
+        assert_eq!(indexer.committed.lock().unwrap().len(), 1, "pairing also committed");
+        assert_eq!(
+            indexer.order.lock().unwrap().as_slice(),
+            &["observed", "committed"],
+            "tip served before the pairing"
+        );
+
+        h.shutdown().await;
     }
 
     fn test_leaf(seed: u8, amount: u64) -> ExitLeaf {

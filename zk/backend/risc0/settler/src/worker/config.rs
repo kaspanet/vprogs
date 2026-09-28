@@ -12,6 +12,8 @@ use tokio::sync::watch;
 #[cfg(feature = "test-utils")]
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_l1_types::SettlementInfo;
+use vprogs_state_settlement_journal::StoreJournal;
+use vprogs_storage_types::Store;
 use vprogs_zk_backend_risc0_api::Backend;
 
 /// Which redeem variant the worker settles against.
@@ -24,7 +26,7 @@ pub enum SettlementMode {
 }
 
 /// Everything the settlement worker needs that isn't carried per bundle.
-pub struct SettlementWorkerConfig {
+pub struct SettlementWorkerConfig<S: Store> {
     /// wRPC client for funding, submission, and confirmation polling.
     pub client: KaspaRpcClient,
     /// Consensus params (mass calc, network prefix).
@@ -45,6 +47,10 @@ pub struct SettlementWorkerConfig {
     pub settlement: watch::Receiver<Option<SettlementInfo>>,
     /// Optional millisecond window to jitter each submission by, or `None` to submit immediately.
     pub submit_jitter: Option<Range<u64>>,
+    /// Aggregate-prover bundle journal a chain-superseded bundle is deleted from at its start key
+    /// on the skip path (see the worker's supersede resolution), or `None` to leave every skip
+    /// un-resolved.
+    pub journal: Option<StoreJournal<S>>,
     /// Test-only alternation: `(this settler's id, pacer shared with the competitor)`.
     #[cfg(feature = "test-utils")]
     pub alternation: Option<(u8, std::sync::Arc<AlternationPacer>)>,
