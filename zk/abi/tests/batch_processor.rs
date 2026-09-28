@@ -196,6 +196,30 @@ fn verifier_rejects_a_success_journal_with_more_outputs_than_input_resources() {
     );
 }
 
+/// A decode-rejected carrier journals version 0 with no execution context; the lane must keep
+/// verifying the healthy traffic around it.
+#[test]
+fn a_decode_rejected_tx_keeps_the_batch_settleable() {
+    let (_dir, store) = funded_store();
+    let proof =
+        store.prove(&[ResourceId::from(ALICE_KEY), ResourceId::from(BOB_KEY)], VERSION).unwrap();
+
+    let context_hash = context_hash();
+    let healthy = tx_journal(
+        &Hash::from_bytes([0xE1; 32]),
+        5,
+        &context_hash,
+        &[(0, ALICE_KEY, ALICE_FUNDED)],
+        &[],
+        &[None],
+    );
+    let rejected = rejected_tx_journal(&Hash::from_bytes([0xE2; 32]), 9);
+
+    let settled = settle(&batch_inputs(&proof, &[healthy, rejected]))
+        .expect("batch with a decode-rejected carrier must settle");
+    assert_eq!(settled.exits_paid, 0);
+}
+
 /// Opens a store holding Alice's funded account and Bob's account at [`VERSION`].
 fn funded_store() -> (TempDir, RocksDbStore) {
     let dir = TempDir::new().unwrap();
@@ -338,6 +362,18 @@ fn tx_journal(
         }
     }
 
+    buf
+}
+
+/// Encodes one decode-rejection tx journal: version 0, no execution context, the header's real
+/// tx id and merge_idx, and a Decode error output.
+fn rejected_tx_journal(tx_id: &Hash, merge_idx: u32) -> Vec<u8> {
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&0u16.to_le_bytes());
+    buf.extend_from_slice(tx_id.as_slice());
+    buf.extend_from_slice(&merge_idx.to_le_bytes());
+    buf.push(OutputCommitment::ERROR);
+    vprogs_zk_abi::Error::Decode("access metadata not strictly ascending".into()).encode(&mut buf);
     buf
 }
 

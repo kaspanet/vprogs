@@ -205,14 +205,17 @@ impl<'a, V: FnMut(&[u8; 32], &[u8])> Verifier<'a, V> {
             assert!(entries.input_commitment.merge_idx > prev, "merge_idx not increasing");
         }
 
-        // Assert version-shape consistency (only incompatible versions may omit execution context).
+        // Assert version-shape consistency (only rejections that never executed may omit the
+        // execution context: an unsupported version or malformed input).
         if entries.input_commitment.execution_context.is_none() {
-            let OutputCommitment::Error(Error::Guest(code)) = entries.output_commitment else {
+            let OutputCommitment::Error(error) = &entries.output_commitment else {
                 panic!("missing execution_context with non-error output");
             };
-            if code != ErrorCode::VersionIncompatible as u32 {
-                panic!("missing execution_context with non-version-incompat error");
-            }
+            let never_executed = match error {
+                Error::Guest(code) => *code == ErrorCode::VersionIncompatible as u32,
+                Error::Decode(_) => true,
+            };
+            assert!(never_executed, "missing execution_context with a guest execution error");
         }
 
         entries

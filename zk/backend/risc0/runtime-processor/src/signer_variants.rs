@@ -70,8 +70,8 @@ impl<'a> Signer<'a> for SchnorrSigPtrSigner {
 /// u32 payload_digest_offset   # in payload_bytes (32-byte digest at offset)
 /// ```
 /// Resolve: parses the named current-tx input's outpoint, reconstructs the
-/// prev-tx id from the witness preimage, asserts on mismatch (host-cheating
-/// panic), extracts the spent output's P2PK pubkey, returns
+/// prev-tx id from the witness preimage, rejects with an Err on mismatch,
+/// extracts the spent output's P2PK pubkey, returns
 /// `SchnorrUnlocker { pubkey }`.
 pub struct PrevTxV1WitnessSigner {
     pub input_idx: u8,

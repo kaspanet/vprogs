@@ -88,7 +88,7 @@ impl<B: Backend, S: Store> Processor<S> for Vm<B, S> {
         self.proving_pipeline.submit_transaction(ctx.scheduled_tx(), input_bytes);
 
         // Decode and apply storage operations.
-        Outputs::decode(&outcome.stdout, ctx.resources().len()).map(|output| {
+        let decoded = Outputs::decode(&outcome.stdout, ctx.resources().len()).map(|output| {
             for (resource, op) in ctx.resources_mut().iter_mut().zip(output.storage_ops) {
                 if let Some(new_data) = op {
                     resource.set_data(new_data);
@@ -100,7 +100,15 @@ impl<B: Backend, S: Store> Processor<S> for Vm<B, S> {
                     );
                 }
             }
-        })
+        });
+        if let Err(err) = &decoded {
+            log::warn!(
+                "guest rejected tx {}: {:?}",
+                faster_hex::hex_string(ctx.scheduler_tx().tx.id().as_slice()),
+                err
+            );
+        }
+        decoded
     }
 
     fn on_batch_scheduled(&self, batch: &ScheduledBatch<S, Self>) {
