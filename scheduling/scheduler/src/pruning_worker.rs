@@ -202,8 +202,14 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
         // Pin one canonical view for the whole pass so every reclaim decision is consistent.
         let view = store.canonical_chain().snapshot();
 
+        // Freeze the deleted range's real bits in the same commit, so a crash cannot delete
+        // the metadata rows but lose the bits they froze.
+        let frozen = store.canonical_chain().frozen_bits(upper_bound + 1);
+
         // Commit all deletions and root update atomically.
         store.commit(store.write_batch().tap_mut(|wb| {
+            store.put_frozen_bits(wb, &frozen);
+
             // Walk batches from oldest to newest (order doesn't matter for pruning).
             for index in lower_bound..=upper_bound {
                 // Whether this finalized batch is on the canonical chain decides what to reclaim.

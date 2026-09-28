@@ -10,7 +10,7 @@ mod manager;
 mod snapshot;
 
 pub use append_outcome::AppendOutcome;
-pub use bucket::CAPACITY as BUCKET_CAPACITY;
+pub use bucket::{BucketWords, CAPACITY as BUCKET_CAPACITY, FrozenBits};
 pub use chain::CanonicalChain;
 pub use manager::CanonicalChainManager;
 pub use snapshot::CanonicalChainSnapshot;

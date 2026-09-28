@@ -136,7 +136,9 @@ impl<C: Config> Tree for RocksDbStore<C> {
     }
 
     fn node(&self, key: &Key, max_version: u64, snapshot: &Self::Snapshot) -> Option<(u64, Node)> {
-        let versions_tracked = snapshot.tip() > 0;
+        // A chain that never assigned an id tracks nothing to filter by; one rolled back to
+        // genesis has, and its snapshot then orphans every version on disk.
+        let versions_tracked = snapshot.ever_assigned();
 
         // Seek the latest canonical version below `max_version`.
         let iter = self.prefix_iter(StateSpace::SmtNode, &key.encode_with_version(max_version));

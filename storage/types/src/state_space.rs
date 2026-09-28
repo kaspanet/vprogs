@@ -8,6 +8,8 @@ pub enum StateSpace {
     StatePtrRollback,
     /// Committed batch metadata, keyed by batch index.
     BatchMetadata,
+    /// Canonical-chain bits frozen by finalization, keyed by bucket number.
+    CanonicalBits,
     /// Typed node metadata (state root, last-committed index).
     Metadata,
     /// SMT nodes, keyed by `(key, version)`.
