@@ -17,10 +17,14 @@ use crate::{
     settle::effects::{ConfirmProbe, FeeSource, FundedSettlement, SettlementSink, SubmitOutcome},
 };
 
-/// How long a submitted settlement may stay unconfirmed before the confirm wait WARN-logs and keeps
-/// waiting. A settlement with no competitor to advance the covenant can sit in the mempool
-/// indefinitely; the periodic warning makes that stall visible without abandoning the bundle.
-const CONFIRM_WARN_INTERVAL: Duration = Duration::from_secs(30);
+/// How long a submitted settlement may stay unconfirmed before the confirm wait WARN-logs, probes
+/// the chain, and keeps waiting. A settlement with no competitor to advance the covenant can sit
+/// in the mempool indefinitely; the periodic warning makes that stall visible without abandoning
+/// the bundle. The probe is also the backstop for a settlement watch that lags the chain (a
+/// reorg-inflated follow depth delays bridge observations well past a healthy window), so the
+/// interval doubles as the rescue cadence: a short tick bounds the serialized confirm latency
+/// that lag otherwise adds to every settlement behind it.
+const CONFIRM_WARN_INTERVAL: Duration = Duration::from_secs(5);
 
 /// The result of attempting to settle one bundle.
 pub enum SettleOutcome {

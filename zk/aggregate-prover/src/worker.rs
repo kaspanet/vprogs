@@ -577,6 +577,10 @@ where
             if st.permission_spk_hash != [0u8; 32] {
                 let leaves =
                     Arc::new(extract_bundle_exits(&journals).expect("decode bundle exits"));
+                log::info!(
+                    "aggregate-prover: bundle through {block_prove_to} carries {} exit leaves",
+                    leaves.len(),
+                );
                 // Receiver dropped means no consumer is listening; silently ignore.
                 let _ = sender.send(Arc::new(ExitsForBundle {
                     new_state: st.new_state,
@@ -679,7 +683,12 @@ where
         // An unmatched boundary drops nothing: with no orderable relation between the boundary
         // and our window blocks we cannot tell "covered all" from "behind / not ours", and
         // dropping would risk discarding a still-unsettled suffix. Forward-only, under the
-        // single-miner / low-reorg assumption.
+        // single-miner / low-reorg assumption. The pass still falls through to the re-form
+        // below: a boundary whose batches were already drained (the watch republishes the
+        // last settlement per block) leaves a surviving suffix that nothing else would ever
+        // re-drive once the lane goes quiet, stranding its exits until unrelated activity
+        // arrives. The re-form chains off the retained front and the guard keeps the
+        // fall-through idempotent.
         if queued_drain.is_none() && retained_drain.is_none() {
             log::debug!(
                 "aggregate-prover: settlement {} boundary {} matches no window block; nothing \
@@ -687,7 +696,6 @@ where
                 settlement.tx_id,
                 boundary,
             );
-            return;
         }
         if let Some(drain) = queued_drain {
             self.queued.drain(0..drain);
