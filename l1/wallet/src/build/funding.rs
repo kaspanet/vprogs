@@ -12,7 +12,8 @@ use kaspa_consensus_core::{
 
 use super::{
     pricing::{
-        DroppedRequirement, FeePolicy, dropped_required_fee, min_fee, priority_mass, required_fee,
+        DroppedRequirement, FeePolicy, dropped_required_fee, mass_overflow, min_fee, priority_mass,
+        required_fee,
     },
     viability::min_viable_change,
 };
@@ -32,6 +33,11 @@ pub enum BuildError {
         "fixed outputs alone carry storage mass {storage_mass}, above the block-fit limit {limit}"
     )]
     StorageInfeasible { storage_mass: u64, limit: u64 },
+    /// The layout's compute or transient mass exceeds the node's per-tx admission limit, so no
+    /// deeper candidate prefix can produce a transaction the node would accept (added inputs only
+    /// add mass). `mass` is the busting dimension's layout mass and `limit` the node's own limit.
+    #[error("layout mass {mass} exceeds the per-tx admission limit {limit}")]
+    MassOverflow { mass: u64, limit: u64 },
 }
 
 /// The fee `tx` pays given the entries its inputs spend: input total minus output total.
@@ -77,6 +83,12 @@ struct Walk<'a, P> {
     /// walk finds no target success (unreachable-target degrade). `n` only grows across the
     /// walk, so each recording is deeper than the last.
     degraded: Option<Funding>,
+    /// The per-tx admission overflow from the deepest attempt, set only when both the with-change
+    /// and the change-dropped layout at a prefix bust a limit. Deeper prefixes carry strictly
+    /// more input mass, so this halts the walk; it outranks the recorded shortfall at conclude
+    /// time (the shortfall's only remedy is more inputs) but not a degraded funding (that layout
+    /// is admissible and submittable).
+    overflow: Option<BuildError>,
 }
 
 impl<P: FnMut(usize, Option<u64>) -> (Transaction, Vec<UtxoEntry>)> Walk<'_, P> {
@@ -90,6 +102,18 @@ impl<P: FnMut(usize, Option<u64>) -> (Transaction, Vec<UtxoEntry>)> Walk<'_, P> 
         // A short prefix's entries can fall short of the fixed outputs alone; saturate to
         // zero instead of underflowing so the walk keeps adding inputs.
         let available = entries_total.saturating_sub(outputs_total);
+
+        // Per-tx admission: a layout above either non-contextual limit is rejected by the node
+        // before fee pricing, and deeper prefixes only add input mass. The change-dropped layout
+        // at this depth is strictly smaller, so it may still be admissible.
+        if let Some((mass, limit)) = mass_overflow(self.params, &tx) {
+            if !self.change_required {
+                return self.try_dropped(n, available);
+            }
+            self.overflow = Some(BuildError::MassOverflow { mass, limit });
+            return ControlFlow::Continue(());
+        }
+
         let floor = min_fee(self.params, &tx);
 
         if available < floor {
@@ -148,6 +172,13 @@ impl<P: FnMut(usize, Option<u64>) -> (Transaction, Vec<UtxoEntry>)> Walk<'_, P> 
     /// [`calc_storage_mass`] for no benefit.
     fn try_dropped(&mut self, n: usize, available: u64) -> ControlFlow<Funding> {
         let (dropped, dropped_entries) = (self.probe)(n, None);
+        // Same admission bound as the with-change layout: both layouts busting at this depth
+        // means every deeper prefix busts too (inputs only add mass), so the walk halts with the
+        // overflow rather than probing layouts the node would reject.
+        if let Some((mass, limit)) = mass_overflow(self.params, &dropped) {
+            self.overflow = Some(BuildError::MassOverflow { mass, limit });
+            return ControlFlow::Continue(());
+        }
         let DroppedRequirement { floor, required } =
             dropped_required_fee(self.policy, self.params, &dropped, &dropped_entries);
         if available < floor {
@@ -177,10 +208,14 @@ impl<P: FnMut(usize, Option<u64>) -> (Transaction, Vec<UtxoEntry>)> Walk<'_, P> 
     }
 
     /// What the walk resolves to when no prefix met the requirement: the deepest degraded
-    /// funding, else the deepest shortfall, else the deepest infeasibility.
+    /// funding, else the admission overflow that halted the walk, else the deepest shortfall,
+    /// else the deepest infeasibility.
     fn conclude(self) -> Result<Funding, BuildError> {
         if let Some(funding) = self.degraded {
             return Ok(funding);
+        }
+        if let Some(overflow) = self.overflow {
+            return Err(overflow);
         }
         match self.shortfall {
             Some((available, required)) => {
@@ -211,6 +246,11 @@ pub(super) fn fund(
 ) -> Result<Funding, BuildError> {
     if candidates.is_empty() {
         let (tx, _) = probe(0, change_required.then_some(0));
+        // The zero-prefix layout is the smallest this builder can produce; above a per-tx
+        // admission limit, no funding exists at any prefix depth.
+        if let Some((mass, limit)) = mass_overflow(params, &tx) {
+            return Err(BuildError::MassOverflow { mass, limit });
+        }
         return Err(BuildError::InsufficientFunds { available: 0, required: min_fee(params, &tx) });
     }
     let mut walk = Walk {
@@ -222,10 +262,16 @@ pub(super) fn fund(
         shortfall: None,
         infeasible: None,
         degraded: None,
+        overflow: None,
     };
     for n in 1..=candidates.len() {
         if let ControlFlow::Break(funding) = walk.attempt(n) {
             return Ok(funding);
+        }
+        // An admission overflow halts the walk: deeper prefixes only add input mass, so every
+        // further probe is a layout the node would reject outright.
+        if walk.overflow.is_some() {
+            break;
         }
     }
     walk.conclude()

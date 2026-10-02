@@ -289,10 +289,13 @@ impl<S: Store, P: Processor<S>> WriteCmd for Write<S, P> {
         wb
     }
 
-    /// Whole-batch commands (commit, rollback) flush immediately; diffs accumulate.
+    /// Whole-batch commands (commit, rollback) and receipt writes flush immediately; diffs
+    /// accumulate. A receipt write's latch is a durability barrier for its issuer (the proving
+    /// workers park on it before publishing the receipt as an artifact), so the write must reach
+    /// disk before the latch opens, exactly as a commit's does.
     #[inline(always)]
     fn flush_now(&self) -> bool {
-        matches!(self, Write::CommitBatch(_) | Write::Rollback(_))
+        matches!(self, Write::CommitBatch(_) | Write::Rollback(_) | Write::StoreReceipt(_))
     }
 
     /// Runs the variant's post-commit callback once its batch is flushed.
@@ -303,5 +306,77 @@ impl<S: Store, P: Processor<S>> WriteCmd for Write<S, P> {
             Write::StoreReceipt(receipt) => receipt.done(),
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use borsh::{BorshDeserialize, BorshSerialize};
+    use vprogs_core_atomics::AtomicAsyncLatch;
+    use vprogs_core_types::BatchMetadata;
+    use vprogs_state_proof_receipt::{BatchKey, Prefix};
+    use vprogs_storage_manager::WriteCmd;
+    use vprogs_storage_rocksdb_store::RocksDbStore;
+
+    use super::{Key, ReceiptValue, StoreReceipt, Write};
+    use crate::{TransactionContext, processor::Processor};
+
+    /// Metadata stub satisfying the processor's persistence bound.
+    #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Default)]
+    struct StubMetadata;
+
+    impl BatchMetadata for StubMetadata {
+        fn block_hash(&self) -> [u8; 32] {
+            [0u8; 32]
+        }
+
+        fn parent_id(&self) -> u64 {
+            0
+        }
+    }
+
+    /// Processor stub supplying the artifact types a receipt write carries.
+    #[derive(Clone)]
+    struct StubProcessor;
+
+    impl Processor<RocksDbStore> for StubProcessor {
+        fn process_transaction(
+            &self,
+            _ctx: &mut TransactionContext<RocksDbStore, Self>,
+        ) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn tx_image_id(&self) -> [u8; 32] {
+            [0u8; 32]
+        }
+
+        fn batch_image_id(&self) -> [u8; 32] {
+            [1u8; 32]
+        }
+
+        type Transaction = usize;
+        type TransactionArtifact = Vec<u8>;
+        type BatchArtifact = Vec<u8>;
+        type AggregatorArtifact = Vec<u8>;
+        type BatchMetadata = StubMetadata;
+        type Error = ();
+    }
+
+    /// A receipt write classifies as flush-now: its issuer parks on the write latch before
+    /// publishing the receipt as an artifact, so a receipt left in the accumulating batch would
+    /// let a crash lose bytes the publisher already treated as durable.
+    #[test]
+    fn receipt_writes_flush_now() {
+        let cmd: Write<RocksDbStore, StubProcessor> = Write::StoreReceipt(StoreReceipt::new(
+            Key::Batch(BatchKey {
+                prefix: Prefix { checkpoint_index: 1u64.into() },
+                block_hash: [0u8; 32],
+                image_id: [1u8; 32],
+            }),
+            ReceiptValue::Batch(Vec::new()),
+            AtomicAsyncLatch::new(),
+        ));
+        assert!(cmd.flush_now(), "a receipt write must flush with its own latch");
     }
 }
