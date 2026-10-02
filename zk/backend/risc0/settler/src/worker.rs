@@ -8,6 +8,7 @@ use std::time::Duration;
 #[cfg(feature = "test-utils")]
 pub use config::AlternationPacer;
 pub use config::{SettlementMode, SettlementWorkerConfig};
+use kaspa_hashes::Hash;
 use vprogs_core_atomics::{AsyncQueue, AtomicAsyncLatch};
 use vprogs_l1_types::SettlementInfo;
 use vprogs_state_settlement_journal::StoreJournal;
@@ -228,9 +229,19 @@ pub async fn run<S: Store>(
             // this bundle's range: it is superseded. Skip it rather than asserting in the
             // builder; a later bundle chaining from the adopted tip settles. Resolve it on the
             // way out, or the prover's resume re-feeds the same bundle on every pass with no
-            // settlement ever produced.
+            // settlement ever produced. The skip reason is not always a competitor: a bundle
+            // proving from a base the covenant never took (a wrong re-form, a stale
+            // continuation) mismatches the same way, so the log names both bases to tell the
+            // two apart.
             log::info!(
-                "settlement-worker: skipping superseded bundle (a competitor covered its range)"
+                "settlement-worker: skipping superseded bundle through {} (base mismatch: the \
+                 bundle chains from state {} and lane tip {}, the covenant tip is state {} and \
+                 lane tip {})",
+                artifact.block_prove_to,
+                Hash::from_bytes(artifact.prev_state),
+                artifact.prev_lane_tip,
+                Hash::from_bytes(cov.state),
+                cov.lane_tip,
             );
             let latest = *cfg.settlement.borrow();
             resolve_superseded(&mut cov, &artifact, &bundle, cfg.journal.as_ref(), latest, || {
