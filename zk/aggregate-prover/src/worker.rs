@@ -12,7 +12,7 @@ use tokio::{
 };
 use vprogs_core_atomics::AsyncQueue;
 use vprogs_core_codec::Reader;
-use vprogs_l1_types::{ChainBlockMetadata, SettlementInfo};
+use vprogs_l1_types::{ChainBlockMetadata, SettlementInfo, TransactionId};
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_state_proof_receipt::{AggregatorKey, BatchKey, Prefix};
 use vprogs_state_settlement_journal::{JournalEntry, StoreJournal};
@@ -93,6 +93,12 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend, L: LaneProofSour
     /// First-batch checkpoint index of the most recently re-formed suffix, guarding against
     /// re-emitting it on every settlement wake. Reset by a rollback.
     last_reformed_from: Option<u64>,
+    /// Transaction id of the settlement the advance passes last acted on; the bridge restamps the
+    /// last settlement per chain block, and those republications are skipped. Reset by a rollback.
+    handled_settlement: Option<TransactionId>,
+    /// Containing-block DAA score of the newest settlement the windows drained against; later
+    /// settlements scoring below it (a reorg flip republishing an older one) drain nothing.
+    settlement_daa: u64,
     /// Sender on the exit-leaf channel driving client Merkle-path proof generation, or `None` if
     /// exit publishing is disabled.
     exits: Option<mpsc::UnboundedSender<Arc<ExitsForBundle>>>,
@@ -157,6 +163,8 @@ where
             settlement,
             journal,
             last_reformed_from: None,
+            handled_settlement: None,
+            settlement_daa: 0,
             exits,
         };
         let runtime = Builder::new_current_thread().enable_all().build().expect("runtime");
@@ -268,23 +276,29 @@ where
             // Re-aggregate a superseded suffix when the settlement watch advances. `has_changed`
             // errors only once the bridge dropped the sender (node teardown), not on a fresh
             // settlement; `borrow_and_update` clears the flag so each settlement is acted on once.
+            // A republication of the settlement already acted on (the bridge restamps the last
+            // settlement per chain block) is skipped: its passes consumed their own evidence, so
+            // re-running them against the drained state only re-logs and re-emits duplicates.
             let changed =
                 self.settlement.as_ref().is_some_and(|rx| rx.has_changed().unwrap_or(false));
             if changed {
                 let latest = *self.settlement.as_mut().expect("settlement").borrow_and_update();
-                self.reaggregate_superseded(latest).await;
-                if let Some(tip) = &latest {
-                    self.compact_journal(tip);
-                    // The advance pass of the multi-pass resume: acts only while the
-                    // pre-restart snapshot still holds unsettled entries, and self-gates to a
-                    // no-op once the snapshot scope is empty or the journal is unwired. The
-                    // scope extends to this run's gap entry (its end exceeds the snapshot),
-                    // so a boundary the gap pass could not yet observe re-splits it in
-                    // process instead of wedging until the next restart.
-                    self.resume_pending(Some(tip), resume_max_end.max(gap_end)).await;
-                }
-                if self.prover.shutdown.is_open() {
-                    return;
+                if latest.map(|s| s.tx_id) != self.handled_settlement {
+                    self.handled_settlement = latest.map(|s| s.tx_id);
+                    self.reaggregate_superseded(latest).await;
+                    if let Some(tip) = &latest {
+                        self.compact_journal(tip);
+                        // The advance pass of the multi-pass resume: acts only while the
+                        // pre-restart snapshot still holds unsettled entries, and self-gates to a
+                        // no-op once the snapshot scope is empty or the journal is unwired. The
+                        // scope extends to this run's gap entry (its end exceeds the snapshot),
+                        // so a boundary the gap pass could not yet observe re-splits it in
+                        // process instead of wedging until the next restart.
+                        self.resume_pending(Some(tip), resume_max_end.max(gap_end)).await;
+                    }
+                    if self.prover.shutdown.is_open() {
+                        return;
+                    }
                 }
             }
 
@@ -556,10 +570,11 @@ where
             deposit_spk_hash: st.deposit_spk_hash,
             covenant_id: st.covenant_id,
         };
-        handle.publish_artifact(Some(artifact));
-
-        // Record the published bundle's geometry so a restart can reload its receipt and re-feed
-        // the bundle to settlement.
+        // Record the published bundle's geometry before the artifact becomes visible, so a
+        // settlement of this bundle (which the watch can report the moment the settler sees the
+        // artifact) never advances the compact passes ahead of the journal evidence they resolve
+        // through. A crash between the two leaves an entry no consumer saw, which the restart
+        // resume re-feeds.
         if let Some(settlement_journal) = &self.journal {
             settlement_journal.record(
                 checkpoint_index,
@@ -571,6 +586,7 @@ where
                 },
             );
         }
+        handle.publish_artifact(Some(artifact));
 
         // Publish exit leaves for client Merkle-path generation when exits were emitted.
         if let Some(sender) = &self.exits {
@@ -668,6 +684,14 @@ where
         let Some(settlement) = latest else {
             return;
         };
+        // Forward-only, matching the settlement worker's adoption gate: a settlement whose
+        // containing block scores below the newest one drained against cannot cover anything the
+        // windows still hold, and draining on it (the fallback below finds no chaining batch and
+        // drops everything) would discard unsettled work above its range.
+        if settlement.daa_score.get() < self.settlement_daa {
+            return;
+        }
+        self.settlement_daa = settlement.daa_score.get();
 
         // A bundle that starts before the boundary chains its own lane-tip sequence, and the
         // first one to extend past it would carry a `prev_lane_tip` the covenant never took,
@@ -680,21 +704,55 @@ where
             settled_prefix(self.queued.iter().map(|b| b.checkpoint().metadata().hash), boundary);
         let retained_drain =
             settled_prefix(self.retained.iter().map(|b| b.checkpoint().metadata().hash), boundary);
-        // An unmatched boundary drops nothing: with no orderable relation between the boundary
-        // and our window blocks we cannot tell "covered all" from "behind / not ours", and
-        // dropping would risk discarding a still-unsettled suffix. Forward-only, under the
-        // single-miner / low-reorg assumption. The pass still falls through to the re-form
-        // below: a boundary whose batches were already drained (the watch republishes the
-        // last settlement per block) leaves a surviving suffix that nothing else would ever
-        // re-drive once the lane goes quiet, stranding its exits until unrelated activity
-        // arrives. The re-form chains off the retained front and the guard keeps the
-        // fall-through idempotent.
+        // An unmatched boundary falls back to lane-tip chaining: the first batch the settlement
+        // left unsettled enters at its exit tip, so leading window batches entering elsewhere are
+        // covered or forked and can never chain onto the covenant again. Unlike the block-hash
+        // match above, this needs no orderable relation between the boundary and our window
+        // blocks, which is exactly what a reorg that re-derived the boundary block (and a journal
+        // entry already compacted away) leaves behind: without the drain, every later bundle
+        // re-folds the covered prefix from a stale base, the settler skips it, and the journal
+        // grows one entry per bundle with nothing ever compacted. Journal entries entirely below
+        // the surviving front belong to the same covered-or-forked prefix and go with it; with no
+        // survivor at all the windows sit fully behind the settlement (or on a fork nothing here
+        // can chain onto), so the journal empties and new work re-drives the lane.
         if queued_drain.is_none() && retained_drain.is_none() {
-            log::debug!(
-                "aggregate-prover: settlement {} boundary {} matches no window block; nothing \
-                 to drop",
+            let frontier = settlement.new_lane_tip;
+            // The two windows hold one chain in scheduling order (retained's batches precede
+            // queued's), so the drain walks the concatenation: only a fully-drained `retained`
+            // may consume `queued`, whose batches chain above whatever survived in `retained`.
+            while self
+                .retained
+                .front()
+                .is_some_and(|b| b.checkpoint().metadata().prev_lane_tip != frontier)
+            {
+                self.retained.pop_front();
+            }
+            if self.retained.is_empty() {
+                while self
+                    .queued
+                    .front()
+                    .is_some_and(|b| b.checkpoint().metadata().prev_lane_tip != frontier)
+                {
+                    self.queued.pop_front();
+                }
+            }
+            let surviving_front =
+                self.retained.front().or(self.queued.front()).map(|b| b.checkpoint().index());
+            if let Some(journal) = &self.journal {
+                for (start, entry) in journal.entries() {
+                    if surviving_front.is_none_or(|front| entry.end_index < front) {
+                        journal.delete(start);
+                    }
+                }
+            }
+            log::info!(
+                "aggregate-prover: settlement {} boundary {} matches no window block; drained \
+                 the covered prefix by lane tip{}",
                 settlement.tx_id,
                 boundary,
+                surviving_front.map_or("; no surviving batch".to_string(), |front| format!(
+                    " through {front}"
+                )),
             );
         }
         if let Some(drain) = queued_drain {
@@ -1096,6 +1154,8 @@ where
         self.queued.retain(|b| b.checkpoint().index() <= target_index);
         self.retained.retain(|b| b.checkpoint().index() <= target_index);
         self.last_reformed_from = None;
+        self.handled_settlement = None;
+        self.settlement_daa = 0;
     }
 }
 
