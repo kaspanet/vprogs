@@ -13,7 +13,10 @@
 
 use std::{
     future::Future,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -25,7 +28,7 @@ use tokio::sync::watch;
 use vprogs_core_atomics::{AsyncQueue, AtomicAsyncLatch};
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId, SchedulerTransaction};
-use vprogs_l1_types::{ChainBlockMetadata, SettlementInfo};
+use vprogs_l1_types::{ChainBlockMetadata, SettlementInfo, TransactionId};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler, TransactionContext};
 use vprogs_state_proof_receipt::{AggregatorKey, Prefix, put as put_receipt};
 use vprogs_state_settlement_journal::{JournalEntry, StoreJournal};
@@ -37,6 +40,7 @@ use vprogs_zk_aggregate_prover::{
     AggregateProver, AggregateProverConfig, ScheduledBundle, SettlementArtifact,
 };
 use vprogs_zk_batch_prover::{LaneProofError, LaneProofRequest, LaneProofSource};
+use zerocopy::little_endian::U64;
 
 /// Transaction payload whose execution parks until the test releases it.
 const GATE_TX: usize = 100;
@@ -170,12 +174,18 @@ impl LaneProofSource for ServeLaneProofs {
 /// Processor that parks the execution of [`GATE_TX`] until `release` opens, keeping its batch
 /// uncommitted (and therefore without a batch-metadata row) while the test drives the aggregate
 /// prover: the state a reorg leaves when it cancels a batch between its proof and its commit.
+/// `entered` opens only once `expected` gated transactions are parked, so a test gating several
+/// batches can wait for all of them.
 #[derive(Clone)]
 struct GateProcessor {
     /// Opened by the processor once the gated transaction is inside execution.
     entered: Arc<AtomicAsyncLatch>,
     /// Opened by the test to let the gated transaction finish.
     release: Arc<AtomicAsyncLatch>,
+    /// How many gated transactions must park before `entered` opens.
+    expected: u64,
+    /// Gated transactions parked so far.
+    parked: Arc<AtomicU64>,
 }
 
 impl vprogs_scheduling_scheduler::Processor<RocksDbStore> for GateProcessor {
@@ -184,7 +194,9 @@ impl vprogs_scheduling_scheduler::Processor<RocksDbStore> for GateProcessor {
         ctx: &mut TransactionContext<RocksDbStore, Self>,
     ) -> Result<(), Self::Error> {
         if ctx.scheduler_tx().tx == GATE_TX {
-            self.entered.open();
+            if self.parked.fetch_add(1, Ordering::SeqCst) + 1 == self.expected {
+                self.entered.open();
+            }
             self.release.wait_blocking();
         }
         Ok(())
@@ -204,6 +216,22 @@ impl vprogs_scheduling_scheduler::Processor<RocksDbStore> for GateProcessor {
     type AggregatorArtifact = Vec<u8>;
     type BatchMetadata = ChainBlockMetadata;
     type Error = ();
+}
+
+/// A `GateProcessor` parking `expected` gated transactions before `entered` opens.
+fn gate(expected: u64) -> (GateProcessor, Arc<AtomicAsyncLatch>, Arc<AtomicAsyncLatch>) {
+    let entered = Arc::new(AtomicAsyncLatch::new());
+    let release = Arc::new(AtomicAsyncLatch::new());
+    (
+        GateProcessor {
+            entered: entered.clone(),
+            release: release.clone(),
+            expected,
+            parked: Arc::new(AtomicU64::new(0)),
+        },
+        entered,
+        release,
+    )
 }
 
 /// Pops the next bundle the worker emits, or `None` once `timeout` elapses.
@@ -250,15 +278,11 @@ fn tip_through(block: u8) -> SettlementInfo {
 fn unmapped_boundary_still_compacts_the_journal() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     {
-        let entered = Arc::new(AtomicAsyncLatch::new());
-        let release = Arc::new(AtomicAsyncLatch::new());
+        let (processor, entered, release) = gate(1);
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let journal = StoreJournal::new(storage.clone());
         let mut scheduler = Scheduler::new(
-            ExecutionConfig::default().with_processor(GateProcessor {
-                entered: entered.clone(),
-                release: release.clone(),
-            }),
+            ExecutionConfig::default().with_processor(processor),
             StorageConfig::default().with_store(storage),
         );
 
@@ -387,6 +411,165 @@ fn unmapped_boundary_resume_does_not_refeed_the_settled_entry() {
             "the settled entry must not be re-fed onto the settlement queue",
         );
 
+        prover.shutdown();
+        scheduler.shutdown();
+    }
+}
+
+/// Chain-block metadata whose lane tip chains off `prev_tip`: the geometry every scheduled lane
+/// has, where batch `n + 1` enters at batch `n`'s exit tip.
+fn chained_block(hash: u8, prev_tip: Hash) -> ChainBlockMetadata {
+    ChainBlockMetadata {
+        hash: block_hash(hash),
+        prev_lane_tip: prev_tip,
+        lane_tip: block_hash(hash),
+        seq_commit: seq_commit(),
+        ..Default::default()
+    }
+}
+
+/// Tests that a settlement boundary mapping to no window block, no batch metadata row, and no
+/// journal entry still drains the covered prefix: the windows keep only batches chaining off the
+/// settlement's exit tip (`prev_lane_tip == new_lane_tip`), walking `retained` and `queued` as
+/// one chain so a match inside `retained` never consumes the queued work above it, and journal
+/// entries entirely below the surviving front are deleted. This is the state a reorg leaves when
+/// it replaces the boundary batch's block after the covering entry already went, the recurrence
+/// observed live as an ever-growing journal ("keeping N entries", one more per bundle) with every
+/// new bundle skipped by the settler as a stale-base duplicate.
+#[test]
+fn unmapped_boundary_drains_the_covered_prefix_by_lane_tip() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        // All four batches stay parked inside execution, so none commits while the test drives
+        // the worker: the startup committed-gap pass must see no committed batch to cover, or it
+        // would race the original bundles with a re-formed gap bundle.
+        let (processor, entered, release) = gate(4);
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let journal = StoreJournal::new(storage.clone());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(processor),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // Four batches whose lane tips chain. Batches 1-3 carry published artifacts; batch 4's
+        // stays unpublished until the test releases it, so after the first bundle ([1..2], the
+        // size cap) the worker parks with batch 3 queued: `retained` holds batches 1-2 and
+        // `queued` holds 3, the split the drain must walk as one chain.
+        let batches: Vec<_> =
+            [(1u8, Hash::default()), (2, block_hash(1)), (3, block_hash(2)), (4, block_hash(3))]
+                .into_iter()
+                .map(|(hash, prev_tip)| {
+                    scheduler.schedule(
+                        chained_block(hash, prev_tip),
+                        vec![SchedulerTransaction::new(
+                            0,
+                            vec![AccessMetadata::write(ResourceId::for_test(hash.into()))],
+                            GATE_TX,
+                        )],
+                    )
+                })
+                .collect();
+        entered.wait_blocking();
+
+        let settlement_queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Vec<u8>>>> =
+            AsyncQueue::new();
+        let (settlement_tx, settlement_rx) = watch::channel::<Option<SettlementInfo>>(None);
+        let prover = AggregateProver::new(
+            SyntheticBackend,
+            scheduler.state().receipt_store(),
+            Some(journal.clone()),
+            AggregateProverConfig {
+                lane_key: Hash::default(),
+                covenant_id: None,
+                lane_source: ServeLaneProofs,
+                settlement_queue: Some(settlement_queue.clone()),
+                settlement: Some(settlement_rx),
+                bundle_size: 2..=2,
+                exits: None,
+            },
+        );
+
+        for batch in &batches[..3] {
+            prover.submit(batch);
+            batch.write_batch_receipt(settlement_journal()).wait_blocking();
+            batch.publish_artifact(Some(settlement_journal()));
+        }
+        wait_for_entries(&journal, 1);
+        let bundle = next_bundle(&settlement_queue, Duration::from_secs(10))
+            .expect("the published pair must bundle");
+        bundle.wait_artifact_published_blocking();
+        assert_eq!(bundle.checkpoint_index(), 1);
+
+        // The settlement proves through a block no window batch, metadata row, or journal entry
+        // names, and covers only batch 1: its exit tip is batch 1's. The drain stops inside
+        // `retained` (batch 2 chains off the tip), so the queued batch 3 must survive it.
+        let tip = SettlementInfo {
+            tx_id: TransactionId::from([0xaa; 32]),
+            block_prove_to: block_hash(0xaa),
+            new_lane_tip: block_hash(1),
+            daa_score: U64::new(10),
+            ..Default::default()
+        };
+        settlement_tx.send_replace(Some(tip));
+        // The covered prefix is gone from the windows; the straddling original entry [1..2]
+        // stays (it spans the surviving front), and the re-formed suffix [2..2] records its own.
+        wait_for_entries(&journal, 2);
+        let starts: Vec<u64> = journal.entries().into_iter().map(|(start, _)| start).collect();
+        assert_eq!(starts, vec![1, 2], "the straddler and the re-formed entry remain");
+        let reformed = next_bundle(&settlement_queue, Duration::from_secs(10))
+            .expect("the surviving suffix must re-form");
+        reformed.wait_artifact_published_blocking();
+        assert_eq!(reformed.checkpoint_index(), 2);
+
+        // Republishing the same settlement re-runs nothing: the journal is unchanged and no
+        // further bundle is emitted.
+        settlement_tx.send_replace(Some(tip));
+        assert_eq!(journal.entries().len(), 2);
+        assert!(
+            next_bundle(&settlement_queue, Duration::from_millis(500)).is_none(),
+            "a republished settlement may not re-emit a bundle",
+        );
+
+        // A distinct but older settlement (a reorg flip republishing one the chain already
+        // passed, its containing block scoring below the drained one) drains nothing: no batch
+        // chains off its exit tip, and dropping the windows on it would discard the unsettled
+        // work above its range.
+        settlement_tx.send_replace(Some(SettlementInfo {
+            tx_id: TransactionId::from([0xad; 32]),
+            block_prove_to: block_hash(0xad),
+            new_lane_tip: Hash::default(),
+            daa_score: U64::new(5),
+            ..Default::default()
+        }));
+        assert_eq!(
+            journal.entries().len(),
+            2,
+            "a settlement below the drained one must not compact or drop anything",
+        );
+
+        // The queued work above the covered prefix still bundles once its pair completes: an
+        // independent per-window drain would have consumed batches 3-4 as if they were covered.
+        prover.submit(&batches[3]);
+        batches[3].write_batch_receipt(settlement_journal()).wait_blocking();
+        batches[3].publish_artifact(Some(settlement_journal()));
+        let bundle = next_bundle(&settlement_queue, Duration::from_secs(10))
+            .expect("the queued batches above the covered prefix must still bundle");
+        bundle.wait_artifact_published_blocking();
+        assert_eq!(bundle.checkpoint_index(), 3);
+        wait_for_entries(&journal, 3);
+
+        // A final settlement through batch 4's exit tip covers everything: no batch survives,
+        // and the journal empties instead of keeping the covered entries forever.
+        settlement_tx.send_replace(Some(SettlementInfo {
+            tx_id: TransactionId::from([0xab; 32]),
+            block_prove_to: block_hash(0xab),
+            new_lane_tip: block_hash(4),
+            daa_score: U64::new(20),
+            ..Default::default()
+        }));
+        wait_for_entries(&journal, 0);
+
+        release.open();
         prover.shutdown();
         scheduler.shutdown();
     }
