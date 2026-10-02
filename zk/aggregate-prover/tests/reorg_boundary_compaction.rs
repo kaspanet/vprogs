@@ -440,10 +440,10 @@ fn chained_block(hash: u8, prev_tip: Hash) -> ChainBlockMetadata {
 fn unmapped_boundary_drains_the_covered_prefix_by_lane_tip() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     {
-        // All four batches stay parked inside execution, so none commits while the test drives
+        // All five batches stay parked inside execution, so none commits while the test drives
         // the worker: the startup committed-gap pass must see no committed batch to cover, or it
         // would race the original bundles with a re-formed gap bundle.
-        let (processor, entered, release) = gate(4);
+        let (processor, entered, release) = gate(5);
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let journal = StoreJournal::new(storage.clone());
         let mut scheduler = Scheduler::new(
@@ -455,20 +455,25 @@ fn unmapped_boundary_drains_the_covered_prefix_by_lane_tip() {
         // stays unpublished until the test releases it, so after the first bundle ([1..2], the
         // size cap) the worker parks with batch 3 queued: `retained` holds batches 1-2 and
         // `queued` holds 3, the split the drain must walk as one chain.
-        let batches: Vec<_> =
-            [(1u8, Hash::default()), (2, block_hash(1)), (3, block_hash(2)), (4, block_hash(3))]
-                .into_iter()
-                .map(|(hash, prev_tip)| {
-                    scheduler.schedule(
-                        chained_block(hash, prev_tip),
-                        vec![SchedulerTransaction::new(
-                            0,
-                            vec![AccessMetadata::write(ResourceId::for_test(hash.into()))],
-                            GATE_TX,
-                        )],
-                    )
-                })
-                .collect();
+        let batches: Vec<_> = [
+            (1u8, Hash::default()),
+            (2, block_hash(1)),
+            (3, block_hash(2)),
+            (4, block_hash(3)),
+            (5, block_hash(4)),
+        ]
+        .into_iter()
+        .map(|(hash, prev_tip)| {
+            scheduler.schedule(
+                chained_block(hash, prev_tip),
+                vec![SchedulerTransaction::new(
+                    0,
+                    vec![AccessMetadata::write(ResourceId::for_test(hash.into()))],
+                    GATE_TX,
+                )],
+            )
+        })
+        .collect();
         entered.wait_blocking();
 
         let settlement_queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Vec<u8>>>> =
@@ -558,13 +563,36 @@ fn unmapped_boundary_drains_the_covered_prefix_by_lane_tip() {
         assert_eq!(bundle.checkpoint_index(), 3);
         wait_for_entries(&journal, 3);
 
-        // A final settlement through batch 4's exit tip covers everything: no batch survives,
-        // and the journal empties instead of keeping the covered entries forever.
+        // A final settlement through batch 4's exit tip covers everything, but no successor is
+        // scheduled yet: nothing drains, because empty-of-successor windows cannot tell covered
+        // batches from pending work above the tip (a restart's re-fed bundles live in the
+        // journal, not the windows, and wiping it on this tip would drop them).
         settlement_tx.send_replace(Some(SettlementInfo {
             tx_id: TransactionId::from([0xab; 32]),
             block_prove_to: block_hash(0xab),
             new_lane_tip: block_hash(4),
             daa_score: U64::new(20),
+            ..Default::default()
+        }));
+        // Give the worker a moment to (wrongly) act on it before asserting it did not: the
+        // no-successor branch leaves no trace of its own when correct.
+        thread::sleep(Duration::from_millis(500));
+        assert_eq!(
+            journal.entries().len(),
+            3,
+            "a settlement with no scheduled successor must not drain or wipe anything",
+        );
+
+        // The successor's arrival is what drains the residue: batch 5 chains off the settlement's
+        // exit tip, so a settlement advance finds it and drops the covered prefix ahead of it.
+        prover.submit(&batches[4]);
+        batches[4].write_batch_receipt(settlement_journal()).wait_blocking();
+        batches[4].publish_artifact(Some(settlement_journal()));
+        settlement_tx.send_replace(Some(SettlementInfo {
+            tx_id: TransactionId::from([0xae; 32]),
+            block_prove_to: block_hash(0xae),
+            new_lane_tip: block_hash(4),
+            daa_score: U64::new(25),
             ..Default::default()
         }));
         wait_for_entries(&journal, 0);

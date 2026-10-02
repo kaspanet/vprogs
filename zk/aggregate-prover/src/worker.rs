@@ -705,55 +705,58 @@ where
         let retained_drain =
             settled_prefix(self.retained.iter().map(|b| b.checkpoint().metadata().hash), boundary);
         // An unmatched boundary falls back to lane-tip chaining: the first batch the settlement
-        // left unsettled enters at its exit tip, so leading window batches entering elsewhere are
-        // covered or forked and can never chain onto the covenant again. Unlike the block-hash
-        // match above, this needs no orderable relation between the boundary and our window
-        // blocks, which is exactly what a reorg that re-derived the boundary block (and a journal
-        // entry already compacted away) leaves behind: without the drain, every later bundle
-        // re-folds the covered prefix from a stale base, the settler skips it, and the journal
-        // grows one entry per bundle with nothing ever compacted. Journal entries entirely below
-        // the surviving front belong to the same covered-or-forked prefix and go with it; with no
-        // survivor at all the windows sit fully behind the settlement (or on a fork nothing here
-        // can chain onto), so the journal empties and new work re-drives the lane.
+        // left unsettled enters at its exit tip, so when that batch is in the windows everything
+        // before it is covered or forked and can never chain onto the covenant again. Unlike the
+        // block-hash match above, this needs no orderable relation between the boundary and our
+        // window blocks, which is exactly what a reorg that re-derived the boundary block (and a
+        // journal entry already compacted away) leaves behind: without the drain, every later
+        // bundle re-folds the covered prefix from a stale base, the settler skips it, and the
+        // journal grows one entry per bundle with nothing ever compacted. Journal entries
+        // entirely below the surviving batch belong to the same covered-or-forked prefix and go
+        // with it.
+        //
+        // Without the successor in hand nothing drains: empty windows carry no knowledge of the
+        // chain (a restart's re-fed bundles live in the journal, not the windows, and wiping the
+        // journal on the republished tip would drop them), and windows holding only batches
+        // entering above the tip are pending work whose intermediate bundles may sit in the
+        // journal. Both shapes wait for the successor's scheduling, which the next settlement
+        // advance drains.
         if queued_drain.is_none() && retained_drain.is_none() {
             let frontier = settlement.new_lane_tip;
             // The two windows hold one chain in scheduling order (retained's batches precede
-            // queued's), so the drain walks the concatenation: only a fully-drained `retained`
-            // may consume `queued`, whose batches chain above whatever survived in `retained`.
-            while self
-                .retained
-                .front()
-                .is_some_and(|b| b.checkpoint().metadata().prev_lane_tip != frontier)
-            {
-                self.retained.pop_front();
-            }
-            if self.retained.is_empty() {
-                while self
-                    .queued
-                    .front()
-                    .is_some_and(|b| b.checkpoint().metadata().prev_lane_tip != frontier)
-                {
-                    self.queued.pop_front();
-                }
-            }
-            let surviving_front =
+            // queued's), so the successor search and the drain walk the concatenation: only a
+            // fully-drained `retained` may consume `queued`, whose batches chain above whatever
+            // survived in `retained`.
+            // The concatenation is one contiguous index run (batches enter at the queued back
+            // and leave only from the fronts), so the successor's offset from the run's first
+            // index is the number of batches to drop.
+            let run_start =
                 self.retained.front().or(self.queued.front()).map(|b| b.checkpoint().index());
-            if let Some(journal) = &self.journal {
-                for (start, entry) in journal.entries() {
-                    if surviving_front.is_none_or(|front| entry.end_index < front) {
-                        journal.delete(start);
+            let successor = self
+                .retained
+                .iter()
+                .chain(self.queued.iter())
+                .find(|b| b.checkpoint().metadata().prev_lane_tip == frontier)
+                .map(|b| b.checkpoint().index());
+            if let (Some(start), Some(front)) = (run_start, successor) {
+                let drain = (front - start) as usize;
+                let drain_retained = drain.min(self.retained.len());
+                self.retained.drain(..drain_retained);
+                self.queued.drain(..drain - drain_retained);
+                if let Some(journal) = &self.journal {
+                    for (start, entry) in journal.entries() {
+                        if entry.end_index < front {
+                            journal.delete(start);
+                        }
                     }
                 }
+                log::info!(
+                    "aggregate-prover: settlement {} boundary {} matches no window block; \
+                     drained the covered prefix by lane tip through {front}",
+                    settlement.tx_id,
+                    boundary,
+                );
             }
-            log::info!(
-                "aggregate-prover: settlement {} boundary {} matches no window block; drained \
-                 the covered prefix by lane tip{}",
-                settlement.tx_id,
-                boundary,
-                surviving_front.map_or("; no surviving batch".to_string(), |front| format!(
-                    " through {front}"
-                )),
-            );
         }
         if let Some(drain) = queued_drain {
             self.queued.drain(0..drain);
