@@ -440,10 +440,13 @@ fn chained_block(hash: u8, prev_tip: Hash) -> ChainBlockMetadata {
 fn unmapped_boundary_drains_the_covered_prefix_by_lane_tip() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     {
-        // All five batches stay parked inside execution, so none commits while the test drives
-        // the worker: the startup committed-gap pass must see no committed batch to cover, or it
-        // would race the original bundles with a re-formed gap bundle.
-        let (processor, entered, release) = gate(5);
+        // Every batch carries a gated transaction, so each is parked in execution or waiting for
+        // an executor slot: none commits while the test drives the worker, and the startup
+        // committed-gap pass must see no committed batch to cover, or it would race the original
+        // bundles with a re-formed gap bundle. Waiting for one park (not five) keeps the test
+        // independent of the executor pool width: the scheduler sizes it by physical CPU count,
+        // and a pool narrower than five would leave the fifth batch queued and this latch shut.
+        let (processor, entered, release) = gate(1);
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
         let journal = StoreJournal::new(storage.clone());
         let mut scheduler = Scheduler::new(
