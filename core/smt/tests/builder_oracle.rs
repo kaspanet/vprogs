@@ -53,7 +53,14 @@ struct Capture {
 
 impl WriteBatch for Capture {
     fn put_node(&mut self, key: &Key, version: u64, data: &Node) {
-        self.nodes.insert(key.encode(), (version, data.encode()));
+        // An empty-store build writes each node key exactly once. Allowing a silent overwrite
+        // here would compare last-write-wins end states and hide a regression that emits a bad
+        // write to a key later overwritten by the correct one, so assert the key is new.
+        assert!(
+            self.nodes.insert(key.encode(), (version, data.encode())).is_none(),
+            "builder wrote node key {:?} twice",
+            key.encode()
+        );
     }
 
     fn put_stale_node(&mut self, _stale: &StaleNode) {
@@ -227,6 +234,7 @@ fn builder_matches_updater_edge_cases() {
 /// A descending stream violates the ascending contract and must panic in debug builds.
 #[test]
 #[should_panic(expected = "strictly ascending")]
+#[cfg_attr(not(debug_assertions), ignore = "debug_assert is compiled out in release builds")]
 fn build_rejects_unsorted() {
     let mut cap = Capture::default();
     let leaves =
@@ -241,6 +249,7 @@ fn build_rejects_unsorted() {
 /// Duplicate ids violate the uniqueness contract and must panic in debug builds.
 #[test]
 #[should_panic(expected = "strictly ascending")]
+#[cfg_attr(not(debug_assertions), ignore = "debug_assert is compiled out in release builds")]
 fn build_rejects_duplicates() {
     let mut cap = Capture::default();
     let id = ResourceId::from([1u8; 32]);
@@ -250,6 +259,18 @@ fn build_rejects_duplicates() {
         1,
         leaves.into_iter().map(|(id, value_hash)| Leaf { id, value_hash }),
     );
+}
+
+/// An `EMPTY_HASH` value hash is the deletion marker on the update path; the live-leaf
+/// contract excludes it and a debug build must reject it rather than silently diverge from
+/// the `Updater` oracle.
+#[test]
+#[should_panic(expected = "EMPTY_HASH")]
+#[cfg_attr(not(debug_assertions), ignore = "debug_assert is compiled out in release builds")]
+fn build_rejects_empty_value_hash() {
+    let mut cap = Capture::default();
+    let leaves = core::iter::once(Leaf { id: ResourceId::from([1u8; 32]), value_hash: [0u8; 32] });
+    build_sorted::<_, Sha256>(&mut cap, 1, leaves);
 }
 
 /// Version 0 is reserved as pre-genesis.
@@ -267,18 +288,6 @@ fn build_rejects_version_zero() {
 
 // -- RocksDB integration --
 
-/// The left child key of `key` (bit 0 at the current level).
-fn left_child(key: &Key) -> Key {
-    Key { level: key.level + 1, path: key.path }
-}
-
-/// The right child key of `key` (bit 1 at the current level).
-fn right_child(key: &Key) -> Key {
-    let mut path = key.path;
-    path[..].set_msb(key.level as usize);
-    Key { level: key.level + 1, path }
-}
-
 /// Collects every node reachable from the root as (encoded key -> encoded node).
 ///
 /// On an empty store every written node is reachable from the root, so this enumerates the whole
@@ -290,8 +299,8 @@ fn reachable_nodes(store: &RocksDbStore, version: u64) -> BTreeMap<[u8; 34], Vec
     while let Some(key) = stack.pop() {
         if let Some((_v, node)) = store.node(&key, version, &snapshot) {
             if let Node::Internal { .. } = node {
-                stack.push(left_child(&key));
-                stack.push(right_child(&key));
+                stack.push(key.left_child());
+                stack.push(key.right_child());
             }
             out.insert(key.encode(), node.encode());
         }
