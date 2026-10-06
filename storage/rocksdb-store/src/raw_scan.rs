@@ -1,5 +1,11 @@
 //! Zero-copy scan and point-lookup primitives for streaming reads (e.g. snapshot export),
 //! which must not allocate per record.
+//!
+//! Consistency is per column family: a [`RawScanCursor`] pins one column family's view for its
+//! whole lifetime, while `get_pinned` reads the live database at call time. An export that walks
+//! one column family's cursor while fetching values from another must therefore run against a
+//! quiesced or read-only store, so a concurrent commit cannot mix states from two points in
+//! time.
 
 use rocksdb::{ColumnFamily, DB, DBPinnableSlice, DBRawIteratorWithThreadMode};
 use vprogs_storage_types::StateSpace;
@@ -22,14 +28,31 @@ pub struct RawScanCursor<'a> {
 impl<'a> RawScanCursor<'a> {
     /// Opens a raw iterator over `cf`, positioned at the first key.
     fn new(db: &'a DB, cf: &'a ColumnFamily) -> Self {
-        let mut iter = db.raw_iterator_cf(cf);
+        let mut read_opts = rocksdb::ReadOptions::default();
+        // Fixed-prefix column families iterate in prefix mode by default, which RocksDB only
+        // defines within one prefix; a scan (or seek) that must span prefixes needs total order,
+        // mirroring `prefix_iter`'s empty-prefix path.
+        read_opts.set_total_order_seek(true);
+        let mut iter = db.raw_iterator_cf_opt(cf, read_opts);
         iter.seek_to_first();
         Self { iter }
     }
 
-    /// Whether the cursor is positioned at a live key (not exhausted or errored).
+    /// Whether the cursor is positioned at a live key.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the scan has failed with a RocksDB error (corruption, I/O failure), matching
+    /// the store's panic-on-error convention: without this, the natural
+    /// `while cursor.valid()` loop silently truncates on error.
     pub fn valid(&self) -> bool {
-        self.iter.valid()
+        if self.iter.valid() {
+            return true;
+        }
+        if let Err(e) = self.status() {
+            panic!("rocksdb raw scan failed: {e}");
+        }
+        false
     }
 
     /// Borrowed key at the current position, or `None` if the cursor is invalid/exhausted. Valid
@@ -57,7 +80,8 @@ impl<'a> RawScanCursor<'a> {
         self.iter.seek(key);
     }
 
-    /// The underlying iterator's status; `Err` if a scan error occurred.
+    /// The underlying iterator's status; `Err` if a scan error occurred. [`valid`](Self::valid)
+    /// already panics on a failed scan, so this serves callers that prefer an explicit check.
     pub fn status(&self) -> Result<(), rocksdb::Error> {
         self.iter.status()
     }
@@ -143,6 +167,65 @@ mod tests {
         both(&raw, &cursor);
         assert!(!cursor.valid());
         assert!(cursor.status().is_ok());
+    }
+
+    /// A store configuration enabling a memtable prefix bloom on a fixed-prefix column
+    /// family: the configuration under which RocksDB's default prefix-mode iteration is
+    /// allowed to skip keys across prefix boundaries.
+    struct BloomConfig;
+
+    impl Config for BloomConfig {
+        fn cf_smt_node_opts() -> rocksdb::Options {
+            let mut opts = <DefaultConfig as Config>::cf_smt_node_opts();
+            opts.set_memtable_prefix_bloom_ratio(0.1);
+            opts
+        }
+    }
+
+    /// A full scan over a fixed-prefix column family must yield every key across prefixes, in
+    /// order, even with a memtable prefix bloom active: the freshly written (memtable-resident)
+    /// keys are exactly where a prefix-mode iterator may skip.
+    #[test]
+    fn scan_spans_prefixes_on_prefix_extractor_cf() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RocksDbStore::<BloomConfig>::open(dir.path());
+
+        // 37-byte keys in three distinct 34-byte prefix groups, ascending overall.
+        let mut keys: Vec<Vec<u8>> = Vec::new();
+        for group in [0x00u8, 0x7fu8, 0xffu8] {
+            for i in 0..5u8 {
+                let mut key = vec![group; 34];
+                key.extend_from_slice(&[i, 0xAB, 0xCD]);
+                keys.push(key);
+            }
+        }
+        keys.sort();
+        let mut wb = store.write_batch();
+        for key in &keys {
+            wb.put(StateSpace::SmtNode, key, b"v");
+        }
+        store.commit(wb);
+
+        let mut cursor = store.raw_scan(StateSpace::SmtNode);
+        let mut got = Vec::new();
+        while cursor.valid() {
+            got.push(cursor.key().expect("valid cursor has a key").to_vec());
+            cursor.next();
+        }
+        assert_eq!(got, keys, "full scan must span every prefix group");
+
+        // A seek into a later prefix must land within the total order, not skip to its end.
+        let mut mid = vec![0x7fu8; 34];
+        mid.extend_from_slice(&[2, 0x00, 0x00]);
+        cursor.seek(&mid);
+        let mut after = Vec::new();
+        while cursor.valid() {
+            after.push(cursor.key().expect("valid cursor has a key").to_vec());
+            cursor.next();
+        }
+        let expected: Vec<Vec<u8>> =
+            keys.iter().filter(|k| k.as_slice() >= mid.as_slice()).cloned().collect();
+        assert_eq!(after, expected, "seek must land within the total order");
     }
 
     #[test]
