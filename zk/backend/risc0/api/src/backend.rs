@@ -14,6 +14,49 @@ thread_local! {
     static PROVER: Rc<dyn Prover> = default_prover();
 }
 
+/// Attempts of one prove before giving up. The CUDA prover path intermittently emits an invalid
+/// proof segment at risc0-zkvm 3.0.5 (risc0/risc0#3760; 3.0.6 does not fix it), so a single
+/// attempt's failure is retried rather than treated as fatal.
+const PROVE_ATTEMPTS: u32 = 3;
+
+/// Proves `elf` under `image_id` with up to [`PROVE_ATTEMPTS`] attempts, verifying each receipt
+/// before returning it.
+///
+/// An environment is consumed by proving, so `build_env` runs once per attempt. An attempt
+/// fails on a prove error or on a receipt that does not verify against `image_id` (the invalid
+/// segments above), is logged, and is retried; after the final attempt the call panics, which
+/// the restart's executor rollback recovers from by re-executing and re-proving the range. The
+/// prove traits are infallible by contract, so a bad receipt is never returned or stored.
+fn prove_with_retries<'a>(
+    prover: &dyn Prover,
+    elf: &[u8],
+    image_id: [u8; 32],
+    opts: &ProverOpts,
+    build_env: impl Fn() -> ExecutorEnv<'a>,
+) -> Receipt {
+    for attempt in 1..=PROVE_ATTEMPTS {
+        let receipt = prover
+            .prove_with_opts(build_env(), elf, opts)
+            .map_err(|err| format!("prove error: {err}"))
+            .and_then(|info| {
+                info.receipt.verify(image_id).map_err(|err| format!("receipt rejected: {err}"))?;
+                Ok(info.receipt)
+            });
+        match receipt {
+            Ok(receipt) => return receipt,
+            Err(err) if attempt < PROVE_ATTEMPTS => {
+                log::warn!("proving attempt {attempt}/{PROVE_ATTEMPTS} failed ({err}); retrying");
+            }
+            Err(err) => panic!(
+                "proving failed after {PROVE_ATTEMPTS} attempts, last {err}; the CUDA prover \
+                 intermittently emits invalid proofs (risc0/risc0#3760), and a restart rolls the \
+                 executor back and re-proves the range"
+            ),
+        }
+    }
+    unreachable!("the loop returns or panics on the final attempt")
+}
+
 /// RISC-0 backend for execution and proving.
 ///
 /// In dev mode (`RISC0_DEV_MODE=1`), proving generates fake receipts suitable for testing.
@@ -103,17 +146,19 @@ impl vprogs_zk_transaction_prover::Backend for Backend {
         input_bytes: Vec<u8>,
     ) -> impl Future<Output = Receipt> + Send + 'static {
         future::ready(PROVER.with(|p| {
-            p.prove_with_opts(
-                ExecutorEnv::builder()
-                    .write_slice(&[input_bytes.len() as u32])
-                    .write_slice(&input_bytes)
-                    .build()
-                    .expect("failed to build prover environment"),
+            prove_with_retries(
+                p,
                 &self.transaction_processor.elf,
+                self.transaction_processor.id,
                 &ProverOpts::succinct(),
+                || {
+                    ExecutorEnv::builder()
+                        .write_slice(&[input_bytes.len() as u32])
+                        .write_slice(&input_bytes)
+                        .build()
+                        .expect("failed to build prover environment")
+                },
             )
-            .expect("proving failed")
-            .receipt
         }))
     }
 }
@@ -124,19 +169,24 @@ impl vprogs_zk_batch_prover::Backend for Backend {
         inputs: &[u8],
         receipts: Vec<Receipt>,
     ) -> impl Future<Output = Receipt> + Send + 'static {
-        let mut builder = ExecutorEnv::builder();
-        builder.write_slice(&[inputs.len() as u32]).write_slice(inputs);
-        for receipt in receipts {
-            builder.add_assumption(receipt);
-        }
-
-        let env = builder.build().expect("failed to build batch prover environment");
-
         // Per-batch receipts are always succinct; the aggregator composes them via assumptions.
+        // Each attempt rebuilds the environment, so the assumptions are cloned per build.
+        let assumptions = &receipts;
         future::ready(PROVER.with(|p| {
-            p.prove_with_opts(env, &self.batch_processor.elf, &ProverOpts::succinct())
-                .expect("batch proving failed")
-                .receipt
+            prove_with_retries(
+                p,
+                &self.batch_processor.elf,
+                self.batch_processor.id,
+                &ProverOpts::succinct(),
+                || {
+                    let mut builder = ExecutorEnv::builder();
+                    builder.write_slice(&[inputs.len() as u32]).write_slice(inputs);
+                    for receipt in assumptions {
+                        builder.add_assumption(receipt.clone());
+                    }
+                    builder.build().expect("failed to build batch prover environment")
+                },
+            )
         }))
     }
 
@@ -156,25 +206,21 @@ impl vprogs_zk_aggregate_prover::Backend for Backend {
         inputs: &[u8],
         batch_receipts: Vec<Receipt>,
     ) -> impl Future<Output = Receipt> + Send + 'static {
-        let mut builder = ExecutorEnv::builder();
-        builder.write_slice(&[inputs.len() as u32]).write_slice(inputs);
-        for receipt in batch_receipts {
-            builder.add_assumption(receipt);
-        }
-
-        let env = builder.build().expect("failed to build aggregator prover environment");
-
+        // Each attempt rebuilds the environment, so the assumptions are cloned per build.
+        let assumptions = &batch_receipts;
+        let opts = match self.settlement_proof_type {
+            ProofType::Succinct => ProverOpts::succinct(),
+            ProofType::Groth16 => ProverOpts::groth16(),
+        };
         future::ready(PROVER.with(|p| {
-            p.prove_with_opts(
-                env,
-                &self.aggregator.elf,
-                &match self.settlement_proof_type {
-                    ProofType::Succinct => ProverOpts::succinct(),
-                    ProofType::Groth16 => ProverOpts::groth16(),
-                },
-            )
-            .expect("aggregator proving failed")
-            .receipt
+            prove_with_retries(p, &self.aggregator.elf, self.aggregator.id, &opts, || {
+                let mut builder = ExecutorEnv::builder();
+                builder.write_slice(&[inputs.len() as u32]).write_slice(inputs);
+                for receipt in assumptions {
+                    builder.add_assumption(receipt.clone());
+                }
+                builder.build().expect("failed to build aggregator prover environment")
+            })
         }))
     }
 
