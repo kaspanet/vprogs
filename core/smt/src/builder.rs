@@ -83,14 +83,18 @@ impl<H: Hasher> StreamingBuilder<H> {
 
     /// Feeds the next leaf into the stream.
     ///
-    /// Ids must arrive strictly ascending and unique. The builder holds no borrow of `wb` after
-    /// this call returns, so the caller may commit `wb` and pass a fresh batch to the next `feed`.
+    /// Ids must arrive strictly ascending and unique, and every `value_hash` must differ from
+    /// [`EMPTY_HASH`] (the deletion marker on the update path; a live-leaf stream never carries
+    /// it). The builder holds no borrow of `wb` after this call returns, so the caller may
+    /// commit `wb` and pass a fresh batch to the next `feed`.
     ///
     /// # Panics
     ///
-    /// In debug builds, panics if `id` is not strictly greater than the previously fed id.
+    /// In debug builds, panics if `id` is not strictly greater than the previously fed id or
+    /// `value_hash` equals [`EMPTY_HASH`].
     pub fn feed<W: WriteBatch>(&mut self, wb: &mut W, id: ResourceId, value_hash: [u8; 32]) {
         let new_id: [u8; 32] = *id;
+        debug_assert!(value_hash != EMPTY_HASH, "fed leaf carries EMPTY_HASH, the deletion marker");
 
         // Seal the accumulated left side into the left child of the split with the incoming leaf.
         if let Some(prev) = self.prev {
