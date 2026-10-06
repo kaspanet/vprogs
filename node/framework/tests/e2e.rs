@@ -52,6 +52,15 @@ async fn mine_payload_blocks(l1: &L1Node, count: usize) -> Vec<Hash> {
     // catching up with the block mined for the previous payload.
     let txs = l1.build_payload_transactions(payloads).await;
 
+    // The wallet pool holds exactly `count` mined coinbases with subtract-only accounting and
+    // no replenishment, so the margin holds only while every payload consumes exactly one
+    // UTXO. Assert that here: a payload that needs a second input (fee-estimate change, small
+    // non-coinbase UTXOs entering the pool) would otherwise starve a later payload with a
+    // panic deep in the wallet builder instead of this clear failure.
+    for (i, tx) in txs.iter().enumerate() {
+        assert_eq!(tx.inputs.len(), 1, "payload {i} consumed {} UTXOs", tx.inputs.len());
+    }
+
     let mut tx_hashes = Vec::with_capacity(count);
     for tx in &txs {
         tx_hashes.push(tx.id());

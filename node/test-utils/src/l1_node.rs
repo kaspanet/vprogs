@@ -203,13 +203,20 @@ impl L1Node {
         hashes
     }
 
-    /// Mines enough blocks for `num_utxos` coinbase UTXOs to become spendable, returning once a
-    /// UTXO query against this node reports at least that many. Panics if they never show up.
+    /// Mines enough blocks for `num_utxos` coinbase UTXOs to become spendable, returning once
+    /// the node's UTXO index reports that many NEW mature coinbases. Panics if they never show
+    /// up.
     ///
     /// Each block produces one coinbase UTXO that matures after `coinbase_maturity` blocks. The
     /// genesis child starts at `daa_score = 2`, so we add a small offset to ensure the requested
     /// UTXOs are fully mature.
     pub async fn mine_utxos(&self, num_utxos: usize) -> Vec<Hash> {
+        // Count mature coinbases before mining: the poll below must observe `num_utxos` new
+        // coinbases, so spendable entries the wallet already holds (e.g. change from earlier
+        // spends in the same test) cannot satisfy it while the freshly mined ones are still
+        // unindexed.
+        let baseline = self.mature_coinbase_count().await;
+
         // +2 accounts for the genesis daa_score offset.
         let hashes = self
             .mine_blocks(self.params.blockrate.coinbase_maturity as usize + num_utxos + 2)
@@ -220,20 +227,31 @@ impl L1Node {
         // visible; otherwise a wallet build issued right after mining can find no candidates.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         loop {
-            let spendable =
-                self.wallet().fetch_spendable_utxos().await.expect("fetch spendable utxos");
-            if spendable.len() >= num_utxos {
+            let coinbases = self.mature_coinbase_count().await;
+            if coinbases >= baseline + num_utxos {
                 break;
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "timed out waiting for {num_utxos} spendable UTXOs, index reports {}",
-                spendable.len()
+                "timed out waiting for {num_utxos} new spendable coinbase UTXOs, \
+                 index reports {coinbases} (baseline {baseline})",
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
 
         hashes
+    }
+
+    /// The number of mature coinbase UTXOs the node's UTXO index currently reports for this
+    /// wallet's address.
+    async fn mature_coinbase_count(&self) -> usize {
+        self.wallet()
+            .fetch_spendable_utxos()
+            .await
+            .expect("fetch spendable utxos")
+            .into_iter()
+            .filter(|(_, entry)| entry.is_coinbase)
+            .count()
     }
 
     /// Disconnects the gRPC client. The daemon shuts down on drop.
