@@ -13,7 +13,7 @@ use crate::{
 /// A RocksDB-backed [`Store`], with one column family per [`StateSpace`].
 pub struct RocksDbStore<C: Config = DefaultConfig> {
     /// The shared RocksDB handle.
-    db: Arc<DB>,
+    pub(crate) db: Arc<DB>,
     /// Write options applied to every commit.
     write_opts: Arc<rocksdb::WriteOptions>,
     /// In-memory canonical-chain oracle, shared by clones; driven by the restored writer.
@@ -46,8 +46,33 @@ impl<C: Config> RocksDbStore<C> {
         }
     }
 
+    /// Opens an existing store read-only: sees data committed at open time, not writes made
+    /// through another handle afterward. Can be opened while a separate read-write handle holds
+    /// the same store open.
+    ///
+    /// Two contracts differ from a read-write handle: committing a write batch through this
+    /// handle panics (the database rejects writes), and the canonical-chain oracle stays empty,
+    /// so versioned SMT reads return the newest stored version at or below the requested one
+    /// regardless of canonicality. Raw-key reads (`get`) and scans (`raw_scan`) are unaffected;
+    /// use those for export and inspection.
+    pub fn open_read_only<P: AsRef<Path>>(path: P) -> Result<Self, rocksdb::Error> {
+        let db_opts = C::db_opts();
+        let db = DB::open_cf_descriptors_read_only(
+            &db_opts,
+            path,
+            <StateSpace as StateSpaceExt<C>>::all_descriptors(),
+            false,
+        )?;
+        Ok(Self {
+            db: Arc::new(db),
+            write_opts: Arc::new(C::write_opts()),
+            canonical: CanonicalChain::default(),
+            _marker: PhantomData,
+        })
+    }
+
     /// The column-family handle for `ns`; panics if the CF is missing.
-    fn cf(&self, ns: &StateSpace) -> &rocksdb::ColumnFamily {
+    pub(crate) fn cf(&self, ns: &StateSpace) -> &rocksdb::ColumnFamily {
         let cf_name = <StateSpace as StateSpaceExt<C>>::cf_name;
         match self.db.cf_handle(cf_name(ns)) {
             Some(cf) => cf,
@@ -159,5 +184,57 @@ impl Iterator for RocksDbPrefixIter<'_> {
             Ok((k, v)) => (k.to_vec(), v.to_vec()),
             Err(e) => panic!("rocksdb prefix iteration failed: {e}"),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use vprogs_storage_types::{StateSpace, Store, WriteBatch as _};
+
+    use super::*;
+
+    #[test]
+    fn open_read_only_sees_committed_writes() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Write a value with a normal read-write handle, then drop it.
+        {
+            let store = RocksDbStore::<DefaultConfig>::open(dir.path());
+            let mut wb = store.write_batch();
+            wb.put(StateSpace::Metadata, b"k", b"v");
+            store.commit(wb);
+        }
+
+        // Re-open read-only and confirm the value is visible.
+        let ro = RocksDbStore::<DefaultConfig>::open_read_only(dir.path())
+            .expect("read-only open should succeed for an existing db");
+        assert_eq!(ro.get(StateSpace::Metadata, b"k"), Some(b"v".to_vec()));
+    }
+
+    /// Committing through a read-only handle panics rather than corrupting or silently
+    /// no-oping: the underlying database rejects the write and the store surfaces it loudly,
+    /// matching its panic-on-error convention.
+    #[test]
+    #[should_panic(expected = "rocksdb write-batch commit failed")]
+    fn commit_through_read_only_handle_panics() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let store = RocksDbStore::<DefaultConfig>::open(dir.path());
+            let mut wb = store.write_batch();
+            wb.put(StateSpace::Metadata, b"k", b"v");
+            store.commit(wb);
+        }
+
+        let ro = RocksDbStore::<DefaultConfig>::open_read_only(dir.path()).unwrap();
+        let mut wb = ro.write_batch();
+        wb.put(StateSpace::Metadata, b"k2", b"v2");
+        ro.commit(wb);
+    }
+
+    #[test]
+    fn open_read_only_missing_db_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("does-not-exist");
+        assert!(RocksDbStore::<DefaultConfig>::open_read_only(&missing).is_err());
     }
 }

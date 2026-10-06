@@ -11,6 +11,8 @@ vprogs-core-types   = { workspace = true }
 zerocopy            = { workspace = true }
 
 [dev-dependencies]
+fastrand.workspace                     = true
 tempfile.workspace                     = true
+vprogs-core-types                      = { workspace = true, features = ["test-utils"] }
 vprogs-storage-rocksdb-store.workspace = true
 vprogs-storage-types.workspace         = true

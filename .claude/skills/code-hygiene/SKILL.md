@@ -189,6 +189,60 @@ The contract is what the function returns / does, not how it gets there.
 Whether a value is computed on-demand or pulled from a precomputed table
 is internal.
 
+### Doc comments name no files and no implementation
+
+`///` and `//!` state the caller-facing contract only. They must NOT:
+
+- reference another file (`build.rs`, `foo.rs`, a path);
+- name an internal type the caller never sees to explain behavior
+  ("mirrors `Updater::split_and_recurse`", "like `Updater::write_child`");
+- narrate the mechanism (the algorithm the body walks, "reads `id` then
+  `value_len` then `value`", "checked with a `debug_assert`", "precomputed
+  vs computed on demand", a short-write retry rationale).
+
+All of that goes in inline `//` comments inside the body. A doc comment
+coupled to the implementation has to be re-edited every time the impl
+changes and silently drifts when someone forgets; the contract is stable,
+the mechanism is not, and an internal-type or file name in a `///` also
+breaks on rename.
+
+Keep in the doc: inputs, outputs, error / edge-case returns, invariants the
+caller must uphold, and stable guarantees the caller relies on (bounded
+memory, "commit-safe: holds no borrow after return", ordering requirements,
+reject-before-allocate). Push everything else down to `//`.
+
+This applies to `//!` module docs too: a module doc states the module's
+role and its stable guarantees, not the step-by-step algorithm. That still
+lives inline in the bodies. (This narrows rule #3's module-doc exception:
+orientation and architecture are fine; algorithm narration is not.)
+
+**Before**:
+```rust
+/// Combines two sibling subtrees at the split where their ids first diverge.
+///
+/// Raises each child to the child level, writes both at their resting
+/// positions, and returns the unwritten parent `Node::internal`. Both
+/// children are non-empty, so this always takes
+/// `Updater::split_and_recurse`'s internal-forming arm.
+fn merge(&self, ...) -> Pending { ... }
+```
+
+**After**:
+```rust
+/// Combines two sibling subtrees into their parent internal node.
+fn merge(&self, ...) -> Pending {
+    // Raise both children to the child level below their split and write them at rest.
+    ...
+    // Both children are non-empty, so the parent is always an internal node.
+    ...
+}
+```
+
+This is a stricter form of rules #1 and #6: not just "keep implementation
+walkthroughs out", but "keep the impl-coupled *vocabulary* (internal type
+names, file names, mechanism verbs) out of the doc entirely so it survives
+a refactor."
+
 ### Don't name tests in doc comments
 
 `/// X_test verifies this` is implementation, not API. Inline comments in
@@ -521,6 +575,29 @@ site just uses the variable — no extra coalesce step needed.
 front (e.g., sort then process, check uniqueness then dedupe), two passes
 are the right answer. The rule targets cases where the second concern can
 be folded into the existing closure without changing semantics.
+
+### Fix clippy warnings; don't suppress them
+
+When clippy flags something, fix the underlying issue rather than silencing
+it with `#[allow(clippy::...)]`. A suppression is the last resort, not the
+reflex.
+
+Reach for `#[allow]` only when:
+
+- the human explicitly asks to suppress.
+
+Most warnings have a real fix that is also the cleaner code:
+
+- `clippy::type_complexity` on a return type → introduce a named type alias
+  (`type Record<'a> = (&'a [u8; 32], &'a [u8]);`), don't allow.
+- `clippy::too_many_arguments` → group the arguments into a struct (see the
+  same-typed-args rule), don't allow.
+- A lint you believe is a false positive → confirm with the human before
+  suppressing. A blanket crate-level `#![allow(...)]` is never the default.
+
+When a hygiene pass finds an existing `#[allow(clippy::...)]`, treat it the
+same way: fix it if there's a clean fix, otherwise ensure it carries a
+why-note and flag it for the human.
 
 ## Concrete examples from prior cleanups
 

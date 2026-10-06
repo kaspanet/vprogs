@@ -31,12 +31,12 @@ impl Key {
     }
 
     /// Returns the left child key (bit 0 at the current level).
-    pub(crate) fn left_child(&self) -> Self {
+    pub fn left_child(&self) -> Self {
         Self { level: self.level + 1, path: self.path }
     }
 
     /// Returns the right child key (bit 1 at the current level).
-    pub(crate) fn right_child(&self) -> Self {
+    pub fn right_child(&self) -> Self {
         Self {
             level: self.level + 1,
             path: self.path.tap_mut(|p| {

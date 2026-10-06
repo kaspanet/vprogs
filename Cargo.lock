@@ -8568,6 +8568,7 @@ dependencies = [
 name = "vprogs-core-smt"
 version = "0.1.0"
 dependencies = [
+ "fastrand",
  "tap",
  "tempfile",
  "vprogs-core-codec",
@@ -8998,6 +8999,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "vprogs-state-snapshot"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "thiserror 2.0.18",
+ "vprogs-core-hashing",
+ "vprogs-core-smt",
+ "vprogs-core-types",
+ "vprogs-storage-rocksdb-store",
+ "vprogs-storage-types",
+]
+
+[[package]]
 name = "vprogs-state-version"
 version = "0.1.0"
 dependencies = [
@@ -9037,6 +9051,7 @@ dependencies = [
  "num_cpus",
  "rocksdb",
  "tap",
+ "tempfile",
  "vprogs-core-codec",
  "vprogs-core-hashing",
  "vprogs-core-smt",
