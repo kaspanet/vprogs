@@ -129,9 +129,8 @@ impl<'w, W: Write, H: Hasher, F: SnapshotFormat> SnapshotWriter<'w, W, H, F> {
     /// `header` is opaque; interpreting it is the caller's responsibility (e.g. the runner's
     /// encoded typed header). Returns [`SnapshotError::FieldTooLarge`] if `header` is longer
     /// than `u32::MAX`, rather than silently truncating the on-wire length prefix, and
-    /// [`SnapshotError::Malformed`] if it is longer than [`MAX_HEADER_LEN`]: the paired reader
-    /// refuses longer headers, so writing one would produce a file that only fails at restore
-    /// time.
+    /// [`SnapshotError::Malformed`] if it exceeds [`MAX_HEADER_LEN`], matching the reader's
+    /// cap.
     pub fn open(w: &'w mut W, header: &[u8], record_count: u64) -> Result<Self, SnapshotError> {
         let header_len: u32 = header.len().try_into().map_err(|_| SnapshotError::FieldTooLarge)?;
         if header.len() > MAX_HEADER_LEN as usize {
@@ -157,8 +156,7 @@ impl<'w, W: Write, H: Hasher, F: SnapshotFormat> SnapshotWriter<'w, W, H, F> {
     ///
     /// Returns [`SnapshotError::FieldTooLarge`] if `value` is longer than `u32::MAX`, rather
     /// than silently truncating the on-wire length prefix, and [`SnapshotError::Malformed`] if
-    /// it is longer than [`MAX_VALUE_LEN`]: the paired reader refuses longer values, so
-    /// writing one would produce a file that only fails at restore time.
+    /// it exceeds [`MAX_VALUE_LEN`], matching the reader's cap.
     pub fn write_record(&mut self, id: &[u8; 32], value: &[u8]) -> Result<(), SnapshotError> {
         let value_len: u32 = value.len().try_into().map_err(|_| SnapshotError::FieldTooLarge)?;
         if value.len() > MAX_VALUE_LEN as usize {
@@ -794,8 +792,7 @@ mod tests {
         assert!(matches!(result, Err(SnapshotError::Io(_))), "expected Io, got {result:?}");
     }
 
-    /// Same requirement on the per-record path: a stream that fails mid-record yields `Io`, not
-    /// `Truncated`.
+    /// Same requirement on the per-record path: a stream failing mid-record yields `Io`.
     #[test]
     fn next_maps_io_error_to_io_not_truncated() {
         // A valid two-record snapshot cut right before the second record's id: the first record
