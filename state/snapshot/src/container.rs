@@ -65,10 +65,12 @@ pub enum SnapshotError {
     /// Stream ended before a fixed-size or declared-length field could be fully read.
     #[error("snapshot truncated")]
     Truncated,
-    /// A length-prefixed field declares a value this reader refuses on its face (e.g.
-    /// `header_len > MAX_HEADER_LEN` or `value_len > MAX_VALUE_LEN`), independent of how many
-    /// bytes the stream actually holds; also returned by [`SnapshotReader::finish`] for a
-    /// structurally invalid call (early finish, or trailing bytes after the digest).
+    /// A field or call this codec refuses on its face, independent of how many bytes the stream
+    /// actually holds: a length-prefixed field over its cap (`header_len > MAX_HEADER_LEN`,
+    /// `value_len > MAX_VALUE_LEN`) on either side, records not in strictly ascending id order
+    /// on either side, a [`SnapshotWriter::finish`] whose written count disagrees with the
+    /// declared one, or a structurally invalid [`SnapshotReader::finish`] call (early finish,
+    /// or trailing bytes after the digest).
     #[error("snapshot malformed: {0}")]
     Malformed(&'static str),
     /// [`SnapshotWriter::open`] or [`SnapshotWriter::write_record`] was asked to frame a header or
@@ -100,19 +102,17 @@ impl<W: Write, Inc: IncrementalHasher> Write for HashingWriter<'_, W, Inc> {
 }
 
 /// Push-style writer for a snapshot: the caller opens it once, calls
-/// [`write_record`](Self::write_record) for each record in ascending `id` order, then
-/// [`finish`](Self::finish). Every write goes straight through to the underlying `W` with no
-/// intermediate `Vec`, so a caller can stream borrowed slices (e.g. a RocksDB cursor's key and
-/// `get_pinned` value) straight to the file.
+/// [`write_record`](Self::write_record) for each record in strictly ascending `id` order,
+/// then [`finish`](Self::finish). Every write goes straight through to the underlying `W`
+/// with no intermediate `Vec`, so a caller can stream borrowed slices (e.g. a RocksDB
+/// cursor's key and `get_pinned` value) straight to the file.
 ///
 /// Generic over `H` (the digest algorithm folded over every byte written) and `F` (the framing
 /// identity: [`SnapshotFormat::MAGIC`] and [`SnapshotFormat::FORMAT_VERSION`]).
 pub struct SnapshotWriter<'w, W: Write, H: Hasher, F: SnapshotFormat> {
     /// Sink for every byte written, folding it into the running digest.
     hw: HashingWriter<'w, W, H::Incremental>,
-    /// Previously written id, to debug-assert non-decreasing order. Compiled out in release
-    /// builds along with the check it feeds.
-    #[cfg(debug_assertions)]
+    /// Previously written id, enforcing strictly ascending order.
     prev_id: Option<[u8; 32]>,
     /// Records written so far via [`write_record`](Self::write_record).
     written: u64,
@@ -127,10 +127,16 @@ impl<'w, W: Write, H: Hasher, F: SnapshotFormat> SnapshotWriter<'w, W, H, F> {
     /// `record_count`) and starts the running digest over everything written from here on.
     ///
     /// `header` is opaque; interpreting it is the caller's responsibility (e.g. the runner's
-    /// encoded typed header). Returns [`SnapshotError::FieldTooLarge`] if `header` is longer than
-    /// `u32::MAX`, rather than silently truncating the on-wire length prefix.
+    /// encoded typed header). Returns [`SnapshotError::FieldTooLarge`] if `header` is longer
+    /// than `u32::MAX`, rather than silently truncating the on-wire length prefix, and
+    /// [`SnapshotError::Malformed`] if it is longer than [`MAX_HEADER_LEN`]: the paired reader
+    /// refuses longer headers, so writing one would produce a file that only fails at restore
+    /// time.
     pub fn open(w: &'w mut W, header: &[u8], record_count: u64) -> Result<Self, SnapshotError> {
         let header_len: u32 = header.len().try_into().map_err(|_| SnapshotError::FieldTooLarge)?;
+        if header.len() > MAX_HEADER_LEN as usize {
+            return Err(SnapshotError::Malformed("header exceeds MAX_HEADER_LEN"));
+        }
 
         let mut hw = HashingWriter::<_, H::Incremental> { inner: w, hasher: H::incremental() };
         hw.write_all(&F::MAGIC)?;
@@ -139,38 +145,32 @@ impl<'w, W: Write, H: Hasher, F: SnapshotFormat> SnapshotWriter<'w, W, H, F> {
         hw.write_all(header)?;
         hw.write_all(&record_count.to_le_bytes())?;
 
-        Ok(Self {
-            hw,
-            #[cfg(debug_assertions)]
-            prev_id: None,
-            written: 0,
-            expected: record_count,
-            _format: PhantomData,
-        })
+        Ok(Self { hw, prev_id: None, written: 0, expected: record_count, _format: PhantomData })
     }
 
     /// Appends one record (`id[32] | value_len:u32 | value`), folding it into the running digest.
     ///
-    /// `id` MUST be non-decreasing across calls: the canonical on-wire order.
+    /// `id` MUST be strictly ascending across calls: the canonical on-wire order, and the order
+    /// the reader enforces on the way in. A duplicate or descending id is rejected with
+    /// [`SnapshotError::Malformed`] in every build profile rather than shipped in a
+    /// digest-valid file that a restore rejects.
     ///
-    /// Returns [`SnapshotError::FieldTooLarge`] if `value` is longer than `u32::MAX`, rather than
-    /// silently truncating the on-wire length prefix.
+    /// Returns [`SnapshotError::FieldTooLarge`] if `value` is longer than `u32::MAX`, rather
+    /// than silently truncating the on-wire length prefix, and [`SnapshotError::Malformed`] if
+    /// it is longer than [`MAX_VALUE_LEN`]: the paired reader refuses longer values, so
+    /// writing one would produce a file that only fails at restore time.
     pub fn write_record(&mut self, id: &[u8; 32], value: &[u8]) -> Result<(), SnapshotError> {
         let value_len: u32 = value.len().try_into().map_err(|_| SnapshotError::FieldTooLarge)?;
-
-        // Sortedness check against the previous record; compiled out entirely in release builds,
-        // where the caller controls the write order from the enumeration it sorted upstream.
-        #[cfg(debug_assertions)]
-        {
-            if let Some(prev) = self.prev_id {
-                debug_assert!(
-                    prev <= *id,
-                    "records not sorted by resource_id: {prev:?} appeared before {:?}",
-                    *id
-                );
-            }
-            self.prev_id = Some(*id);
+        if value.len() > MAX_VALUE_LEN as usize {
+            return Err(SnapshotError::Malformed("record value exceeds MAX_VALUE_LEN"));
         }
+
+        if let Some(prev) = self.prev_id {
+            if prev >= *id {
+                return Err(SnapshotError::Malformed("records not sorted by resource_id"));
+            }
+        }
+        self.prev_id = Some(*id);
 
         self.hw.write_all(id)?;
         self.hw.write_all(&value_len.to_le_bytes())?;
@@ -180,12 +180,16 @@ impl<'w, W: Write, H: Hasher, F: SnapshotFormat> SnapshotWriter<'w, W, H, F> {
     }
 
     /// Writes the trailing digest over every byte written since [`open`](Self::open).
+    ///
+    /// Returns [`SnapshotError::Malformed`] in every build profile if fewer records were
+    /// written than declared at open: a digest-valid but count-wrong snapshot surfaces only at
+    /// restore time, misdiagnosed as corruption.
     pub fn finish(self) -> Result<(), SnapshotError> {
-        // Debug-only: the number of records written must match the count declared at open.
-        debug_assert_eq!(
-            self.written, self.expected,
-            "write_record call count disagreed with record_count declared at open"
-        );
+        if self.written != self.expected {
+            return Err(SnapshotError::Malformed(
+                "write_record call count disagreed with record_count declared at open",
+            ));
+        }
         let HashingWriter { inner, hasher } = self.hw;
         inner.write_all(&hasher.finalize())?;
         Ok(())
@@ -219,6 +223,8 @@ pub struct SnapshotReader<R: Read, H: Hasher, F: SnapshotFormat> {
     /// Reused buffer for the current record's value, cleared and refilled by every
     /// [`next`](Self::next) call; never preallocated to the declared `value_len`.
     value_buf: Vec<u8>,
+    /// Previously yielded id, enforcing strictly ascending order.
+    prev_id: Option<[u8; 32]>,
     /// Binds the framing identity without storing a value.
     _format: PhantomData<F>,
 }
@@ -261,6 +267,7 @@ impl<R: Read, H: Hasher, F: SnapshotFormat> SnapshotReader<R, H, F> {
                 remaining: record_count,
                 id_buf: [0u8; 32],
                 value_buf: Vec::new(),
+                prev_id: None,
                 _format: PhantomData,
             },
         ))
@@ -279,6 +286,13 @@ impl<R: Read, H: Hasher, F: SnapshotFormat> SnapshotReader<R, H, F> {
     /// allocating anything sized by it, and never pre-allocates the declared length: a `value_len`
     /// the stream cannot back yields [`SnapshotError::Truncated`], not a buffer pre-sized to a
     /// length the file never delivers.
+    ///
+    /// Records must arrive in strictly ascending `id` order (the canonical on-wire order; the
+    /// writer enforces the same). A snapshot file is untrusted input and ordering is a framing
+    /// invariant the trailing digest cannot repair (whoever reorders the body recomputes the
+    /// digest just as easily), so a non-ascending or duplicate id is rejected with
+    /// [`SnapshotError::Malformed`] at the record boundary, before the value is read and before
+    /// a restore can act on the records.
     // Named `next`, not an `Iterator` impl: an `Iterator` cannot return a value borrowed from
     // `&mut self` (a lending iterator), so an `Iterator<Item = Result<..>>` here would force an
     // owned allocation per record, defeating the per-record streaming this type exists for. The
@@ -290,6 +304,12 @@ impl<R: Read, H: Hasher, F: SnapshotFormat> SnapshotReader<R, H, F> {
         }
 
         read_exact_fold(&mut self.reader, &mut self.id_buf, &mut self.hasher)?;
+        if let Some(prev) = self.prev_id {
+            if self.id_buf <= prev {
+                return Err(SnapshotError::Malformed("records not sorted by resource_id"));
+            }
+        }
+        self.prev_id = Some(self.id_buf);
 
         let value_len = read_u32_fold(&mut self.reader, &mut self.hasher)?;
         if value_len > MAX_VALUE_LEN {
@@ -321,27 +341,42 @@ impl<R: Read, H: Hasher, F: SnapshotFormat> SnapshotReader<R, H, F> {
         }
         let mut reader = self.reader;
         let mut digest = [0u8; 32];
-        reader.read_exact(&mut digest).map_err(|_| SnapshotError::Truncated)?;
+        // The digest itself is not folded into the running hash: it covers exactly the bytes
+        // before it.
+        reader.read_exact(&mut digest).map_err(|e| match e.kind() {
+            std::io::ErrorKind::UnexpectedEof => SnapshotError::Truncated,
+            _ => SnapshotError::Io(e),
+        })?;
         if self.hasher.finalize() != digest {
             return Err(SnapshotError::DigestMismatch);
         }
 
         let mut probe = [0u8; 1];
-        if reader.read(&mut probe)? != 0 {
-            return Err(SnapshotError::Malformed("trailing bytes after digest"));
+        loop {
+            match reader.read(&mut probe) {
+                Ok(0) => break,
+                Ok(_) => return Err(SnapshotError::Malformed("trailing bytes after digest")),
+                // A bare `read` must retry EINTR itself, like `read_exact`/`read_to_end` do.
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(SnapshotError::Io(e)),
+            }
         }
         Ok(())
     }
 }
 
-/// Fills `buf` completely and folds the bytes read into `hasher`, mapping any short read to
-/// [`SnapshotError::Truncated`].
+/// Fills `buf` completely and folds the bytes read into `hasher`. Only a genuine end of stream
+/// maps to [`SnapshotError::Truncated`]; any other I/O failure propagates as
+/// [`SnapshotError::Io`] so a failing disk is not misdiagnosed as a corrupt file.
 fn read_exact_fold<R: Read, Inc: IncrementalHasher>(
     r: &mut R,
     buf: &mut [u8],
     hasher: &mut Inc,
 ) -> Result<(), SnapshotError> {
-    r.read_exact(buf).map_err(|_| SnapshotError::Truncated)?;
+    r.read_exact(buf).map_err(|e| match e.kind() {
+        std::io::ErrorKind::UnexpectedEof => SnapshotError::Truncated,
+        _ => SnapshotError::Io(e),
+    })?;
     hasher.update(buf);
     Ok(())
 }
@@ -422,18 +457,71 @@ mod tests {
         assert_eq!(got, records);
     }
 
-    /// Records must be written in non-decreasing `id` order; feeding them out of order trips the
-    /// writer's `debug_assert` in debug builds rather than silently emitting an unsorted (and
-    /// hence unreadable-as-canonical) file. This test only runs meaningfully in debug builds
-    /// (`debug_assertions`), matching where the check is compiled in.
+    /// Records must be written in strictly ascending `id` order: the canonical on-wire order
+    /// and the order the restore path consumes. A descending id is rejected with an error in
+    /// every build profile, not merely tripped by a debug assertion.
     #[test]
-    #[should_panic(expected = "records not sorted by resource_id")]
-    #[cfg_attr(not(debug_assertions), ignore = "debug_assert is compiled out in release builds")]
-    fn unsorted_records_trip_debug_assert() {
+    fn writer_rejects_unsorted_records() {
         let mut buf = Vec::new();
         let mut writer = SnapshotWriter::<_, Sha256, TestFormat>::open(&mut buf, b"h", 2).unwrap();
         writer.write_record(&[2u8; 32], b"beta").unwrap();
-        writer.write_record(&[1u8; 32], b"alpha").unwrap();
+        assert!(matches!(
+            writer.write_record(&[1u8; 32], b"alpha"),
+            Err(SnapshotError::Malformed("records not sorted by resource_id"))
+        ));
+    }
+
+    /// A duplicate id re-fed on an exporter retry/resume satisfies a merely non-decreasing
+    /// check but still breaks strictly-ascending consumers; the writer must reject it like any
+    /// other ordering violation, in every build profile.
+    #[test]
+    fn writer_rejects_duplicate_records() {
+        let mut buf = Vec::new();
+        let mut writer = SnapshotWriter::<_, Sha256, TestFormat>::open(&mut buf, b"h", 2).unwrap();
+        writer.write_record(&[1u8; 32], b"once").unwrap();
+        assert!(matches!(
+            writer.write_record(&[1u8; 32], b"again"),
+            Err(SnapshotError::Malformed("records not sorted by resource_id"))
+        ));
+    }
+
+    /// The writer enforces the reader's caps symmetrically: a header over [`MAX_HEADER_LEN`]
+    /// is rejected at open time, not discovered at restore time when the snapshot may be the
+    /// only surviving copy of the state.
+    #[test]
+    fn writer_rejects_oversized_header() {
+        let mut buf = Vec::new();
+        let header = vec![0u8; MAX_HEADER_LEN as usize + 1];
+        let result =
+            SnapshotWriter::<_, Sha256, TestFormat>::open(&mut buf, &header, 0).map(|_| ());
+        assert!(
+            matches!(result, Err(SnapshotError::Malformed(_))),
+            "expected Malformed, got {result:?}"
+        );
+    }
+
+    /// Same symmetry for values: a value over [`MAX_VALUE_LEN`] is rejected by `write_record`
+    /// rather than shipped in a digest-valid file that every later restore rejects.
+    #[test]
+    fn writer_rejects_oversized_value() {
+        let mut buf = Vec::new();
+        let mut writer = SnapshotWriter::<_, Sha256, TestFormat>::open(&mut buf, b"h", 1).unwrap();
+        let value = vec![0u8; MAX_VALUE_LEN as usize + 1];
+        assert!(
+            matches!(writer.write_record(&[1u8; 32], &value), Err(SnapshotError::Malformed(_))),
+            "expected Malformed"
+        );
+    }
+
+    /// A producer bug that writes fewer records than declared at open must fail `finish` in
+    /// every build profile: a digest-valid but count-wrong snapshot surfaces only at restore,
+    /// misdiagnosed as `Truncated` or `DigestMismatch` corruption.
+    #[test]
+    fn finish_rejects_written_count_below_declared() {
+        let mut buf = Vec::new();
+        let mut writer = SnapshotWriter::<_, Sha256, TestFormat>::open(&mut buf, b"h", 3).unwrap();
+        writer.write_record(&[1u8; 32], b"one").unwrap();
+        assert!(matches!(writer.finish(), Err(SnapshotError::Malformed(_))), "expected Malformed");
     }
 
     /// A file with a correct digest but extra bytes appended after it must not silently
@@ -612,5 +700,167 @@ mod tests {
             matches!(result, Err(SnapshotError::Truncated)),
             "expected Truncated, got {result:?}"
         );
+    }
+
+    // -- Reader-side ordering and I/O-diagnosis coverage --
+
+    /// Frames `records` in the given order with a correct trailing digest, bypassing the writer
+    /// so a digest-valid file can probe reader-side validation.
+    fn digest_valid_body(records: &[([u8; 32], &[u8])]) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(&TestFormat::MAGIC);
+        body.extend_from_slice(&TestFormat::FORMAT_VERSION.to_le_bytes());
+        body.extend_from_slice(&0u32.to_le_bytes()); // header_len = 0
+        body.extend_from_slice(&(records.len() as u64).to_le_bytes());
+
+        let mut hasher = Sha256::incremental();
+        hasher.update(&body);
+        for (id, value) in records {
+            let value_len = value.len() as u32;
+            body.extend_from_slice(id);
+            body.extend_from_slice(&value_len.to_le_bytes());
+            body.extend_from_slice(value);
+            hasher.update(id);
+            hasher.update(&value_len.to_le_bytes());
+            hasher.update(value);
+        }
+        body.extend_from_slice(&hasher.finalize());
+        body
+    }
+
+    /// An unsorted snapshot whose digest is otherwise perfectly valid: the trailing digest
+    /// cannot catch it (whoever reorders the body recomputes the digest just as easily), so the
+    /// reader itself must reject the non-ascending id at the record boundary, before the value
+    /// is read and before a restore can persist garbage nodes.
+    #[test]
+    fn reader_rejects_digest_valid_unsorted_records() {
+        let body = digest_valid_body(&[([3u8; 32], b"three"), ([1u8; 32], b"one")]);
+        let (_hdr, mut reader) =
+            SnapshotReader::<_, Sha256, TestFormat>::open(body.as_slice()).unwrap();
+        assert!(reader.next().unwrap().is_some());
+        assert!(matches!(
+            reader.next(),
+            Err(SnapshotError::Malformed("records not sorted by resource_id"))
+        ));
+    }
+
+    /// The duplicate-id variant of the same forgery: the order contract is strictly ascending,
+    /// not non-decreasing.
+    #[test]
+    fn reader_rejects_digest_valid_duplicate_ids() {
+        let body = digest_valid_body(&[([1u8; 32], b"one"), ([1u8; 32], b"again")]);
+        let (_hdr, mut reader) =
+            SnapshotReader::<_, Sha256, TestFormat>::open(body.as_slice()).unwrap();
+        assert!(reader.next().unwrap().is_some());
+        assert!(matches!(
+            reader.next(),
+            Err(SnapshotError::Malformed("records not sorted by resource_id"))
+        ));
+    }
+
+    /// Yields its bytes, then fails forever with a non-EOF I/O error: a failing disk under an
+    /// otherwise good snapshot.
+    struct FailingRead {
+        good: Vec<u8>,
+        pos: usize,
+    }
+
+    impl FailingRead {
+        fn new(good: Vec<u8>) -> Self {
+            Self { good, pos: 0 }
+        }
+    }
+
+    impl Read for FailingRead {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.pos >= self.good.len() {
+                return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "failing disk"));
+            }
+            let n = buf.len().min(self.good.len() - self.pos);
+            buf[..n].copy_from_slice(&self.good[self.pos..self.pos + n]);
+            self.pos += n;
+            Ok(n)
+        }
+    }
+
+    /// A genuine I/O failure while reading the fixed prefix must surface as `Io`, not be
+    /// misdiagnosed as `Truncated` (which sends an operator re-downloading a good snapshot
+    /// instead of diagnosing the disk).
+    #[test]
+    fn open_maps_io_error_to_io_not_truncated() {
+        let good = digest_valid_body(&[]);
+        let mut failing = FailingRead::new(good[..4].to_vec());
+        let result = SnapshotReader::<_, Sha256, TestFormat>::open(&mut failing).map(|_| ());
+        assert!(matches!(result, Err(SnapshotError::Io(_))), "expected Io, got {result:?}");
+    }
+
+    /// Same requirement on the per-record path: a stream that fails mid-record yields `Io`, not
+    /// `Truncated`.
+    #[test]
+    fn next_maps_io_error_to_io_not_truncated() {
+        // A valid two-record snapshot cut right before the second record's id: the first record
+        // parses, then the stream fails mid-read.
+        let full = digest_valid_body(&[([1u8; 32], b"one"), ([2u8; 32], b"two")]);
+        let cut = full.len() - 32 /* digest */ - 32 - 4 - 3 /* record 2 */;
+        let mut failing = FailingRead::new(full[..cut].to_vec());
+        let (_hdr, mut reader) =
+            SnapshotReader::<_, Sha256, TestFormat>::open(&mut failing).unwrap();
+        assert!(reader.next().unwrap().is_some());
+        let result = reader.next();
+        assert!(matches!(result, Err(SnapshotError::Io(_))), "expected Io, got {result:?}");
+    }
+
+    /// Same requirement on the digest read in `finish`.
+    #[test]
+    fn finish_maps_io_error_to_io_not_truncated() {
+        let full = digest_valid_body(&[([1u8; 32], b"one")]);
+        let cut = full.len() - 32; // everything but the digest
+        let mut failing = FailingRead::new(full[..cut].to_vec());
+        let (_hdr, mut reader) =
+            SnapshotReader::<_, Sha256, TestFormat>::open(&mut failing).unwrap();
+        while reader.next().unwrap().is_some() {}
+        let result = reader.finish();
+        assert!(matches!(result, Err(SnapshotError::Io(_))), "expected Io, got {result:?}");
+    }
+
+    /// Yields its bytes, then reports `Interrupted` exactly once before a clean EOF.
+    struct InterruptedAtEof {
+        good: Vec<u8>,
+        pos: usize,
+        interrupted: bool,
+    }
+
+    impl InterruptedAtEof {
+        fn new(good: Vec<u8>) -> Self {
+            Self { good, pos: 0, interrupted: false }
+        }
+    }
+
+    impl Read for InterruptedAtEof {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.pos >= self.good.len() {
+                if !self.interrupted {
+                    self.interrupted = true;
+                    return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "signal"));
+                }
+                return Ok(0);
+            }
+            let n = buf.len().min(self.good.len() - self.pos);
+            buf[..n].copy_from_slice(&self.good[self.pos..self.pos + n]);
+            self.pos += n;
+            Ok(n)
+        }
+    }
+
+    /// The trailing-byte probe is a bare `read`, which unlike `read_exact` does not retry
+    /// `Interrupted` internally: a single EINTR at EOF must not fail verification of an
+    /// otherwise valid snapshot.
+    #[test]
+    fn finish_retries_interrupted_trailing_probe() {
+        let body = digest_valid_body(&[([1u8; 32], b"one")]);
+        let reader = InterruptedAtEof::new(body);
+        let (_hdr, mut reader) = SnapshotReader::<_, Sha256, TestFormat>::open(reader).unwrap();
+        while reader.next().unwrap().is_some() {}
+        reader.finish().unwrap();
     }
 }
