@@ -852,13 +852,33 @@ where
             .checkpoint_of_block(tip.block_prove_to, last_end, first_start)
             .or_else(|| settled_entry_end(&entries, tip))
         else {
-            log::warn!(
-                "aggregate-prover: resume tip boundary {} maps to no batch in the journal span \
-                 ({} entries); re-feeding the tail unchanged",
-                tip.block_prove_to,
-                entries.len(),
-            );
-            self.refeed_all(entries).await;
+            // The tip sits below the journal's span: either the normal pending tail (the first
+            // entry chains from the settled tip) or entries a dead settlement left behind (a
+            // funding-race double spend, a skipped base mismatch), which chain from a base the
+            // covenant never took and would re-fold forever. The first entry's own receipt
+            // tells them apart: it chains from the tip iff its proven transition starts at the
+            // tip's pins. Dead entries are dropped rather than re-fed, so the committed-gap
+            // pass re-covers their range as one bundle chaining from the tip.
+            if self.entry_chains_from(tip, entries.first().expect("checked non-empty")).await {
+                log::warn!(
+                    "aggregate-prover: resume tip boundary {} maps to no batch in the journal span \
+                     ({} entries); re-feeding the tail unchanged",
+                    tip.block_prove_to,
+                    entries.len(),
+                );
+                self.refeed_all(entries).await;
+            } else {
+                for (start, _) in &entries {
+                    journal.delete(*start);
+                }
+                log::warn!(
+                    "aggregate-prover: resume tip boundary {} maps to no batch in the journal \
+                     span and the {} entries chain from a base the covenant never took; dropping \
+                     them so the committed-gap pass re-covers their range from the tip",
+                    tip.block_prove_to,
+                    entries.len(),
+                );
+            }
             return;
         };
 
@@ -878,6 +898,30 @@ where
             }
         }
         self.refeed_all(pending).await;
+    }
+
+    /// Returns whether `entry`'s reloaded receipt chains from `tip`: its proven transition
+    /// starts at the tip's state and lane tip. An entry whose receipt cannot be reloaded
+    /// chains from nothing (the re-feed would drop it anyway).
+    async fn entry_chains_from(
+        &self,
+        tip: &SettlementInfo,
+        (start, entry): &(u64, JournalEntry),
+    ) -> bool {
+        let key = AggregatorKey {
+            prefix: Prefix { checkpoint_index: (*start).into() },
+            block_hash: entry.from_block.as_bytes(),
+            image_id: *self.backend.aggregator_image_id(),
+            seq_commit: entry.seq_commit.as_bytes(),
+        };
+        let Some(receipt) = self.prover.receipt_store.read_agg_receipt(key).resolve().await else {
+            return false;
+        };
+        let journal = B::journal_bytes(&receipt);
+        let st = (&mut &journal[..])
+            .array_as::<StateTransition>("state_transition")
+            .expect("aggregator journal");
+        st.prev_state == tip.new_state && st.prev_lane_tip == tip.new_lane_tip
     }
 
     /// Startup pass covering committed-but-unjournaled batches: a kill between a batch's commit
@@ -929,11 +973,9 @@ where
         };
         // The bundle covers the contiguously-durable prefix: an empty batch is durable as-is,
         // and the first non-empty batch without metadata or a receipt bounds the range. The
-        // entry's end fields derive from the last covered batch's own metadata, as the live
-        // record derives them from the bundle's final batch.
-        let mut receipts: Vec<B::Receipt> = Vec::new();
-        let mut end_metadata = first_metadata;
-        let mut covered_end = first;
+        // covered non-empty batches carry their own metadata, from which each candidate end
+        // derives its fields.
+        let mut covered: Vec<(u64, ChainBlockMetadata, B::Receipt)> = Vec::new();
         let mut miss = None;
         for index in first..=committed_tip {
             let Some(metadata) = journal.batch_metadata(index) else {
@@ -952,14 +994,13 @@ where
                     miss = Some(index);
                     break;
                 };
-                receipts.push(receipt);
+                covered.push((index, metadata, receipt));
             }
-            end_metadata = metadata;
-            covered_end = index;
         }
         if let Some(miss) = miss {
-            // `covered_end` still sits at `first` when the miss IS the first index, so say
+            // The covered prefix still sits empty when the miss IS the first index, so say
             // "nothing" rather than claim coverage through an index the loop never reached.
+            let covered_end = covered.last().map_or(first, |(index, _, _)| *index);
             let covered =
                 if miss > first { format!("only through {covered_end}") } else { "nothing".into() };
             log::error!(
@@ -969,28 +1010,43 @@ where
             );
         }
         // No real work below the miss: nothing to compose, matching the live no-op path.
-        if receipts.is_empty() {
+        if covered.is_empty() {
             return GapOutcome::Nothing;
         }
-        let agg_key = AggregatorKey {
-            prefix: Prefix { checkpoint_index: first.into() },
-            block_hash: first_metadata.hash.as_bytes(),
-            image_id: *self.backend.aggregator_image_id(),
-            seq_commit: end_metadata.seq_commit.as_bytes(),
-        };
-        let receipt = match self.prove_or_cache(agg_key, end_metadata.hash, receipts).await {
-            ProveOutcome::Receipt(receipt) => receipt,
-            // Shutdown raced the proof; the caller exits the loop and the next startup re-runs
-            // the pass.
-            ProveOutcome::Shutdown => return GapOutcome::Nothing,
-            ProveOutcome::LaneProofFailed => {
-                log::warn!(
-                    "aggregate-prover: committed-gap bundle through {} has no live lane proof \
-                     (a dead block or a stalled node); deferring the range to the next wake",
-                    end_metadata.hash
-                );
-                return GapOutcome::Deferred(committed_tip);
+        // The bundle's end walks down over dead final blocks: a block whose lane proof cannot
+        // be fetched must not pin the range (the deferral's bound would retry the same dead
+        // end forever), so each failed end retries through the previous non-empty batch until
+        // one proves. The still-dead suffix stays uncovered for a later pass, and the journal
+        // tail advancing past each covered prefix keeps the progress compounding.
+        let mut proven = None;
+        for pos in (0..covered.len()).rev() {
+            let (end_index, end_metadata, _) = covered[pos];
+            let receipts: Vec<B::Receipt> =
+                covered[..=pos].iter().map(|(_, _, receipt)| receipt.clone()).collect();
+            let agg_key = AggregatorKey {
+                prefix: Prefix { checkpoint_index: first.into() },
+                block_hash: first_metadata.hash.as_bytes(),
+                image_id: *self.backend.aggregator_image_id(),
+                seq_commit: end_metadata.seq_commit.as_bytes(),
+            };
+            match self.prove_or_cache(agg_key, end_metadata.hash, receipts).await {
+                ProveOutcome::Receipt(receipt) => {
+                    proven = Some((end_index, end_metadata, receipt));
+                    break;
+                }
+                // Shutdown raced the proof; the caller exits the loop and the next startup
+                // re-runs the pass.
+                ProveOutcome::Shutdown => return GapOutcome::Nothing,
+                ProveOutcome::LaneProofFailed => continue,
             }
+        }
+        let Some((covered_end, end_metadata, receipt)) = proven else {
+            log::warn!(
+                "aggregate-prover: committed-gap range {first}..={committed_tip} has no live \
+                 final block (every lane-proof fetch failed; dead blocks or a stalled node); \
+                 deferring the range to the next wake"
+            );
+            return GapOutcome::Deferred(committed_tip);
         };
         let entry = JournalEntry {
             end_index: covered_end,
