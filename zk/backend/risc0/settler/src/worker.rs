@@ -300,6 +300,26 @@ pub async fn run<S: Store>(
                     continue 'outer;
                 }
                 SettleOutcome::Shutdown => break 'outer,
+                // The bundle's anchor block is beyond the node's seq-commit verification depth
+                // (a deep catch-up proves through blocks far behind the L1 tip), so the
+                // artifact can never land: the anchor only gets deeper. Drop the bundle and
+                // delete its journal entry so the aggregate prover's committed-gap pass re-forms
+                // the range from the covenant tip over a later, shallower boundary; a competitor
+                // covering the range first resolves it through the usual adoption. Exit leaves
+                // ride along: the lane advances only through settlements covering every index,
+                // so whoever settles the range next pays its exits.
+                SettleOutcome::AnchorTooDeep => {
+                    log::warn!(
+                        "settlement-worker: dropping bundle through {} (anchor block beyond \
+                         the node's seq-commit verification depth); the range re-forms from \
+                         the tip",
+                        artifact.block_prove_to,
+                    );
+                    if let Some(journal) = cfg.journal.as_ref() {
+                        journal.delete(bundle.checkpoint_index());
+                    }
+                    continue 'outer;
+                }
                 // The node hard-rejected the submission; retrying the same bundle cannot recover
                 // it. Stop the settler with a logged reason rather than panicking
                 // the worker task.
