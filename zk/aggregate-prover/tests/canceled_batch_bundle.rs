@@ -86,7 +86,7 @@ impl vprogs_zk_aggregate_prover::Backend for NoopBackend {
         &self,
         _inputs: &[u8],
         _batch_receipts: Vec<Self::Receipt>,
-    ) -> impl Future<Output = Self::Receipt> + Send + 'static {
+    ) -> impl Future<Output = Result<Self::Receipt, String>> + Send + 'static {
         async { unreachable!("the repro proves no bundle") }
     }
 
