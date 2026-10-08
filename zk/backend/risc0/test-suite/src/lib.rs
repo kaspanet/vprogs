@@ -43,7 +43,7 @@ pub async fn aggregate_batches(
     lane_key: &Hash,
     last_block_hash: Hash,
     batch_receipts: Vec<Receipt>,
-) -> Receipt {
+) -> Result<Receipt, String> {
     // Fetch the lane proof for the bundle's final block from L1. A failed fetch has no bundle to
     // defer (this helper proves exactly one bundle on demand), so fail loudly.
     let lane_proof = grpc_client

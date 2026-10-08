@@ -267,12 +267,12 @@ impl vprogs_zk_batch_prover::Backend for Backend {
 }
 
 impl vprogs_zk_aggregate_prover::Backend for Backend {
-    /// Proves the aggregator over per-batch receipts in the configured `settlement_proof_type`.
+    /// One verified aggregator attempt; the worker's re-form loop is the retry.
     fn prove_aggregator(
         &self,
         inputs: &[u8],
         batch_receipts: Vec<Receipt>,
-    ) -> impl Future<Output = Receipt> + Send + 'static {
+    ) -> impl Future<Output = Result<Receipt, String>> + Send + 'static {
         let backend = self.clone();
         let opts = match self.settlement_proof_type {
             ProofType::Succinct => ProverOpts::succinct(),
@@ -280,7 +280,10 @@ impl vprogs_zk_aggregate_prover::Backend for Backend {
         };
         let inputs = inputs.to_vec();
         async move {
-            prove_with_retries(
+            prove_attempt(
+                |env, elf, opts| {
+                    PROVER.with(|p| p.prove_with_opts(env, elf, opts)).map(|info| info.receipt)
+                },
                 backend.aggregator.elf.clone(),
                 backend.aggregator.id,
                 opts,

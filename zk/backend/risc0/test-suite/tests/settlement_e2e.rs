@@ -292,7 +292,8 @@ async fn batch_proof_is_directly_settleable_single_batch() {
         block_hashes[0],
         vec![batch_receipt.clone()],
     )
-    .await;
+    .await
+    .expect("aggregator proof");
     if !dev_mode_enabled() {
         backend.verify_aggregator_receipt(&settlement_receipt);
     }
@@ -475,7 +476,8 @@ async fn batch_proof_groth16_is_directly_settleable_single_batch() {
         block_hashes[0],
         vec![batch_receipt.clone()],
     )
-    .await;
+    .await
+    .expect("aggregator proof");
     if !dev_mode_enabled() {
         backend.verify_aggregator_receipt(&settlement_receipt);
     }
@@ -664,7 +666,8 @@ async fn batch_proof_bundles_two_batches() {
         block_hashes[1],
         vec![r1.clone(), r2.clone()],
     )
-    .await;
+    .await
+    .expect("aggregator proof");
     if !dev_mode_enabled() {
         backend.verify_aggregator_receipt(&settlement_receipt);
     }
@@ -848,7 +851,8 @@ async fn batch_with_exits_takes_two_output_settlement_path() {
         block_hashes[1],
         vec![r1.clone(), r2.clone()],
     )
-    .await;
+    .await
+    .expect("aggregator proof");
     if !dev_mode_enabled() {
         backend.verify_aggregator_receipt(&settlement_receipt);
         // Same pin check as `proving_e2e.rs::batch_proof_two_transactions`, but for a

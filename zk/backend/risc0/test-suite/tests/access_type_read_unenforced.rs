@@ -235,7 +235,8 @@ async fn bundle_must_aggregate_after_a_read_declared_write() {
         fx.block_hashes[1],
         vec![offending, next],
     )
-    .await;
+    .await
+    .expect("aggregator proof");
     assert!(!Backend::journal_bytes(&bundle).is_empty(), "bundle receipt should carry a journal");
 
     fx.scheduler.shutdown();
