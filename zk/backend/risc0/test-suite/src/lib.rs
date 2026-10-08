@@ -33,7 +33,7 @@ pub fn test_lane_key() -> Hash {
 }
 
 /// Runs the aggregator on a sequence of per-batch receipts and returns the resulting bundle
-/// receipt.
+/// receipt, or `Err` when its single prove attempt fails.
 ///
 /// The returned receipt's journal is a `vprogs_zk_abi::batch_aggregator::StateTransition`, ready
 /// for the settlement covenant.
