@@ -1,12 +1,7 @@
-//! Pins the re-form of a retained suffix that survives a settlement the prover observes:
-//! a boundary matching window batches drains them and re-proves the remainder (the supersede
-//! convergence path), and a boundary matching nothing must still fall through to that re-form
-//! instead of returning early. The early return stranded the suffix whenever no later
-//! settlement ever matched again: the watch republishes the last settlement per block, so
-//! once that boundary's batches are drained every subsequent wake matched nothing and the
-//! surviving batches (and their exit leaves) waited for unrelated lane activity to be
-//! bundled again. The re-form guard keeps the fall-through idempotent under those
-//! republishes.
+//! Pins the worker's bundle escalation over a failed aggregator proof attempt: an attempt that
+//! fails (a prove error or a receipt the image id rejects) consumes nothing and counts as
+//! run-loop progress, so the bundle is re-formed from the consecutively-ready prefix: strictly
+//! longer when batches arrived while attempts kept failing, identical when none did.
 
 // The backend traits return `impl Future + 'static`, which an `async fn` cannot satisfy: its future
 // borrows `&self`.
@@ -14,6 +9,10 @@
 
 use std::{
     future::Future,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -30,7 +29,10 @@ use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler, TransactionContext
 use vprogs_state_settlement_journal::StoreJournal;
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
-use vprogs_zk_abi::batch_aggregator::{StateTransition, StateTransitionArgs};
+use vprogs_zk_abi::{
+    batch_aggregator::{StateTransition, StateTransitionArgs},
+    batch_processor::{BatchTransition, BatchTransitionArgs},
+};
 use vprogs_zk_aggregate_prover::{
     AggregateProver, AggregateProverConfig, ScheduledBundle, SettlementArtifact,
 };
@@ -91,13 +93,46 @@ fn settlement_journal() -> Vec<u8> {
     buf
 }
 
-/// Backend standing in for all three guests: the aggregator receipt is the settlement journal
-/// itself (identity `journal_bytes`), so the worker parses exactly the transition
-/// [`settlement_journal`] encodes.
-#[derive(Clone)]
-struct SyntheticBackend;
+/// Encodes the per-batch receipt journal for a committed block's metadata: the synthetic
+/// aggregator ignores its contents, so it only needs to exist for the batch to count as live.
+fn batch_receipt_from(metadata: &ChainBlockMetadata) -> Vec<u8> {
+    let hash = metadata.hash.as_bytes()[0];
+    let mut buf = Vec::new();
+    BatchTransition::encode(
+        &mut buf,
+        BatchTransitionArgs {
+            prev_state: &[0x11; 32],
+            prev_lane_tip: &Hash::from_bytes([hash.saturating_sub(1); 32]),
+            prev_lane_blue_score: 0,
+            new_state: &[0x11; 32],
+            new_lane_tip: &Hash::from_bytes([hash; 32]),
+            new_lane_blue_score: 0,
+            lane_key: &Hash::default(),
+            covenant_id: &[0u8; 32],
+            tx_image_id: &TX_IMAGE_ID,
+            deposit_spk_hash: &[0u8; 32],
+            lane_expired: false,
+            exits: b"",
+        },
+    );
+    buf
+}
 
-impl vprogs_zk_transaction_prover::Backend for SyntheticBackend {
+/// Backend whose aggregator attempts fail while `failing` is set or the span holds fewer than
+/// `succeed_from_len` batch receipts, counting attempts so a test can observe and release the
+/// failure. The span rule is what makes a re-form test deterministic: the worker never parks
+/// between failed attempts, so a time-based flag flip can land inside an in-flight formation
+/// taken before the new batch was drained, while a rule keyed to the span's own receipts
+/// fails that shorter formation no matter when it runs. Attempts never block the worker's
+/// single-threaded runtime.
+#[derive(Clone)]
+struct FlakyBackend {
+    attempts: Arc<AtomicUsize>,
+    failing: Arc<AtomicBool>,
+    succeed_from_len: usize,
+}
+
+impl vprogs_zk_transaction_prover::Backend for FlakyBackend {
     fn image_id(&self) -> &[u8; 32] {
         &TX_IMAGE_ID
     }
@@ -112,7 +147,7 @@ impl vprogs_zk_transaction_prover::Backend for SyntheticBackend {
     type Receipt = Vec<u8>;
 }
 
-impl vprogs_zk_batch_prover::Backend for SyntheticBackend {
+impl vprogs_zk_batch_prover::Backend for FlakyBackend {
     fn prove_batch(
         &self,
         _inputs: &[u8],
@@ -130,13 +165,23 @@ impl vprogs_zk_batch_prover::Backend for SyntheticBackend {
     }
 }
 
-impl vprogs_zk_aggregate_prover::Backend for SyntheticBackend {
+impl vprogs_zk_aggregate_prover::Backend for FlakyBackend {
     fn prove_aggregator(
         &self,
         _inputs: &[u8],
-        _batch_receipts: Vec<Self::Receipt>,
+        batch_receipts: Vec<Self::Receipt>,
     ) -> impl Future<Output = Result<Self::Receipt, String>> + Send + 'static {
-        async { Ok(settlement_journal()) }
+        let attempts = self.attempts.clone();
+        let failing = self.failing.clone();
+        let succeed_from_len = self.succeed_from_len;
+        async move {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            if failing.load(Ordering::SeqCst) || batch_receipts.len() < succeed_from_len {
+                Err("synthetic invalid proof".to_owned())
+            } else {
+                Ok(settlement_journal())
+            }
+        }
     }
 
     fn aggregator_image_id(&self) -> &[u8; 32] {
@@ -213,25 +258,38 @@ fn next_bundle(
     }
 }
 
-/// The on-chain settlement of a bundle proving through `block`.
-fn tip_through(block: u8) -> SettlementInfo {
-    SettlementInfo { block_prove_to: block_hash(block), ..Default::default() }
+/// Polls `pred` every 10ms until it holds, panicking with `desc` once `timeout` elapses.
+fn wait_until(desc: &str, timeout: Duration, mut pred: impl FnMut() -> bool) {
+    let deadline = Instant::now() + timeout;
+    while !pred() {
+        if Instant::now() >= deadline {
+            panic!("timed out waiting for {desc}");
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
 }
 
-/// Harness holding the live pieces a re-form test drives, plus the temp dir backing its store.
+/// Harness holding the live pieces an escalation test drives: the flaky backend (its flag shared
+/// with the worker), plus the temp dir backing its store.
 struct Harness {
+    /// Flaky backend clone sharing the attempt counter and failure flag with the worker.
+    backend: FlakyBackend,
+    /// Temp dir backing the harness's store.
     _temp: TempDir,
+    /// Scheduler committing each test's batches.
     scheduler: Scheduler<RocksDbStore, PlainProcessor>,
+    /// Prover whose worker re-forms the failed bundles.
     prover: AggregateProver<RocksDbStore, PlainProcessor>,
+    /// Queue the worker's emitted bundle handles land on.
     queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Vec<u8>>>>,
-    settlement_tx: watch::Sender<Option<SettlementInfo>>,
+    /// Sender keeping the settlement watch alive; the tests never publish a settlement.
+    _settlement_tx: watch::Sender<Option<SettlementInfo>>,
 }
 
-/// Builds the harness and emits one bundle per `blocks` entry, committing each batch, seeding
-/// its receipt, and submitting it, so every batch is proved and retained when the test's
-/// settlement arrives. The bundle cap leaves headroom for a re-formed suffix to span every
-/// batch at once.
-fn harness(blocks: &[(u8, u64)]) -> Harness {
+/// Opens the store, scheduler, and prover (bundle cap `1..=8`), sleeps out the worker's startup
+/// for boot determinism, then makes batch 1 live: committed, receipt written and published, and
+/// submitted, so the worker immediately starts failing attempts over it.
+fn setup(failing: bool, succeed_from_len: usize) -> Harness {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
     let journal = StoreJournal::new(storage.clone());
@@ -241,8 +299,13 @@ fn harness(blocks: &[(u8, u64)]) -> Harness {
     );
     let queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Vec<u8>>>> = AsyncQueue::new();
     let (settlement_tx, settlement_rx) = watch::channel::<Option<SettlementInfo>>(None);
+    let backend = FlakyBackend {
+        attempts: Arc::new(AtomicUsize::new(0)),
+        failing: Arc::new(AtomicBool::new(failing)),
+        succeed_from_len,
+    };
     let prover = AggregateProver::new(
-        SyntheticBackend,
+        backend.clone(),
         scheduler.state().receipt_store(),
         Some(journal),
         AggregateProverConfig {
@@ -257,73 +320,68 @@ fn harness(blocks: &[(u8, u64)]) -> Harness {
     );
 
     // Boot determinism: wait out the worker's startup so its committed-gap gate has passed
-    // (empty journal, nothing committed) before the first batch commits. A worker that boots
-    // after a commit treats the whole committed span as a restart gap and re-feeds it, which
-    // would emit duplicate bundles unrelated to the behavior under test.
+    // (empty journal, nothing committed) before the first batch commits.
     thread::sleep(Duration::from_millis(300));
 
-    for &(hash, parent) in blocks {
-        let batch = scheduler.schedule(block(hash, parent), vec![lane_tx()]);
-        batch.wait_committed_blocking();
-        batch.write_batch_receipt(settlement_journal()).wait_blocking();
-        batch.publish_artifact(Some(settlement_journal()));
-        prover.submit(&batch);
-        let bundle = next_bundle(&queue, Duration::from_secs(10)).expect("the batch must bundle");
-        bundle.wait_artifact_published_blocking();
-        assert_eq!(bundle.block_prove_to(), block_hash(hash));
-    }
+    let batch = scheduler.schedule(block(1, 0), vec![lane_tx()]);
+    batch.wait_committed_blocking();
+    batch.write_batch_receipt(batch_receipt_from(batch.checkpoint().metadata())).wait_blocking();
+    batch.publish_artifact(Some(settlement_journal()));
+    prover.submit(&batch);
 
-    Harness { _temp: temp_dir, scheduler, prover, queue, settlement_tx }
+    Harness { backend, _temp: temp_dir, scheduler, prover, queue, _settlement_tx: settlement_tx }
 }
 
-/// Tests that a settlement boundary matching a retained batch drains the covered prefix and
-/// re-proves the surviving suffix as one bundle, and that republishing the same settlement (the
-/// watch's per-block cadence) emits no duplicate.
+/// A failed bundle attempt consumes nothing: batches that arrive while attempts keep failing
+/// join the next formed span, so the retry proves a strictly longer bundle instead of failing
+/// on identical inputs.
 #[test]
-fn matched_boundary_drains_and_reforms_the_suffix() {
-    let harness = harness(&[(1, 0), (2, 1)]);
+fn a_failed_attempt_reforms_over_batches_that_arrived() {
+    // The flag stays clear: every attempt over the batch-1 span alone fails on the span rule,
+    // so no flag flip can race an in-flight short formation (the worker never parks between
+    // failed attempts).
+    let mut harness = setup(false, 2);
+    wait_until("first failed attempt", Duration::from_secs(10), || {
+        harness.backend.attempts.load(Ordering::SeqCst) >= 1
+    });
+    // Batch 2 becomes fully live (receipt published, command submitted), and the run loop
+    // drains commands before each formation, so the next re-formed span covers both batches
+    // and its attempt succeeds.
+    let batch2 = harness.scheduler.schedule(block(2, 1), vec![lane_tx()]);
+    batch2.wait_committed_blocking();
+    batch2.write_batch_receipt(batch_receipt_from(batch2.checkpoint().metadata())).wait_blocking();
+    batch2.publish_artifact(Some(settlement_journal()));
+    harness.prover.submit(&batch2);
 
-    // The settlement of the block-1 bundle: drains batch 1 and re-forms the batch-2 suffix.
-    harness.settlement_tx.send_replace(Some(tip_through(1)));
-    let reformed =
-        next_bundle(&harness.queue, Duration::from_secs(10)).expect("the suffix must re-form");
-    reformed.wait_artifact_published_blocking();
-    assert_eq!(reformed.block_prove_to(), block_hash(2));
-
-    // The per-block republish of the same tip must not re-form the same suffix again.
-    harness.settlement_tx.send_replace(Some(tip_through(1)));
-    assert!(
-        next_bundle(&harness.queue, Duration::from_millis(500)).is_none(),
-        "the re-formed suffix must not be re-proved under the republished tip",
+    let bundle =
+        next_bundle(&harness.queue, Duration::from_secs(10)).expect("the re-formed bundle");
+    bundle.wait_artifact_published_blocking();
+    assert_eq!(
+        bundle.block_prove_to(),
+        block_hash(2),
+        "the retry spans the batch that arrived during the failures",
     );
-
     harness.prover.shutdown();
     harness.scheduler.shutdown();
 }
 
-/// Tests that a settlement boundary matching no window batch (a foreign boundary, or one whose
-/// batches an earlier pass already drained) still re-forms the surviving suffix instead of
-/// stranding it until unrelated lane activity arrives, while the guard keeps repeated
-/// republishes from re-proving it.
+/// With nothing new arriving, a failed attempt retries the identical span (any retry fixes
+/// the random CUDA invalidity) and emits exactly one bundle for it.
 #[test]
-fn unmatched_boundary_still_reforms_the_suffix() {
-    let harness = harness(&[(1, 0), (2, 1)]);
+fn a_failed_attempt_retries_the_same_span_when_nothing_arrived() {
+    let harness = setup(true, 1);
+    wait_until("first failed attempt", Duration::from_secs(10), || {
+        harness.backend.attempts.load(Ordering::SeqCst) >= 1
+    });
+    harness.backend.failing.store(false, Ordering::SeqCst);
 
-    // A settlement on a block no test batch carries: nothing drains, but both retained batches
-    // are still unsettled, so the suffix must re-form and reach the settlement queue.
-    harness.settlement_tx.send_replace(Some(tip_through(0xff)));
-    let reformed = next_bundle(&harness.queue, Duration::from_secs(10))
-        .expect("the stranded suffix must re-form");
-    reformed.wait_artifact_published_blocking();
-    assert_eq!(reformed.block_prove_to(), block_hash(2));
-
-    // The republish is idempotent: the guard pins the suffix until something drains it.
-    harness.settlement_tx.send_replace(Some(tip_through(0xff)));
+    let bundle = next_bundle(&harness.queue, Duration::from_secs(10)).expect("the retried bundle");
+    bundle.wait_artifact_published_blocking();
+    assert_eq!(bundle.block_prove_to(), block_hash(1), "the same span is retried");
     assert!(
         next_bundle(&harness.queue, Duration::from_millis(500)).is_none(),
-        "the re-formed suffix must not be re-proved under the republished tip",
+        "the span emits exactly one bundle",
     );
-
     harness.prover.shutdown();
     harness.scheduler.shutdown();
 }

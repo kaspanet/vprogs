@@ -32,6 +32,11 @@ enum BundleOutcome {
     /// The lane-proof fetch failed; the caller re-queues the bundle and retries after the next
     /// wake. Nothing was emitted, so no settlement consumer is waiting on it.
     Deferred,
+    /// The proof attempt failed (a prove error or a receipt rejected against the image id);
+    /// nothing was consumed, emitted, journaled, or cached, so the caller counts it as
+    /// progress and re-forms the bundle from the consecutively-ready prefix: strictly longer
+    /// when batches arrived during the attempt, identical when none did.
+    AttemptFailed,
 }
 
 /// Outcome of the prove-or-cache step inside one bundle attempt.
@@ -42,6 +47,8 @@ enum ProveOutcome<R> {
     Shutdown,
     /// The lane-proof fetch failed for the bundle's final block.
     LaneProofFailed,
+    /// The aggregator proof attempt failed; nothing was cached or emitted.
+    AttemptFailed,
 }
 
 /// Outcome of one committed-gap pass.
@@ -369,10 +376,11 @@ where
         }
     }
 
-    /// Forms the next bundle from the consecutively-ready prefix of the queue and proves it.
-    /// Returns `true` when progress was made (a bundle consumed, proved, no-op, or empty; a
-    /// canceled prefix evicted), `false` when there was nothing to do or the bundle's lane proof
-    /// was unavailable (deferred, its batches re-queued at the front).
+    /// Forms the next bundle from the consecutively-ready prefix of the queue and proves it,
+    /// consuming the prefix only once a handle is emitted. Returns `true` when progress was made
+    /// (a bundle consumed, proved, no-op, or empty; a canceled prefix evicted; a failed proof
+    /// attempt re-formed by the next pass), `false` when there was nothing to do or the bundle's
+    /// lane proof was unavailable (deferred, its batches left queued at the front).
     async fn try_prove_one_bundle(&mut self) -> bool {
         let Some(front) = self.queued.front().cloned() else {
             return false;
@@ -421,34 +429,38 @@ where
         if take < *self.bundle_size.start() {
             return false;
         }
-        let bundle: Vec<ScheduledBatch<S, P>> =
-            (0..take).map(|_| self.queued.pop_front().unwrap()).collect();
-
-        match self.prove_bundle(&bundle).await {
+        // Prove before consuming: a failed attempt leaves the formed prefix queued so the next
+        // formation re-covers it; longer when batches arrived during the attempt (each new
+        // command is drained at the run loop's top before this re-forms), identical when none
+        // did. Only an emitted bundle consumes its prefix. The prove runs over a cloned
+        // snapshot (a `VecDeque` prefix is not indexable as one slice), so it holds no borrow
+        // of the queue the consume below needs.
+        let bundle: Vec<ScheduledBatch<S, P>> = self.queued.iter().take(take).cloned().collect();
+        let outcome = self.prove_bundle(&bundle).await;
+        match outcome {
             BundleOutcome::Emitted => {
                 // Retain the consumed batches so a competitor settling a shorter range can
                 // re-aggregate the surviving suffix from them, but only when a settlement watch
                 // drives that re-aggregation: with no watch wired, `retained` is never read and
                 // would grow for the whole run. A shutdown-discard (the proof was abandoned
-                // mid-flight) skips retention, matching the discard-the-proved-bundle behavior in
-                // `prove_bundle`.
+                // mid-flight) skips retention, matching the discard-the-proved-bundle behavior
+                // in `prove_bundle`.
+                let consumed: Vec<_> = self.queued.drain(..take).collect();
                 if self.settlement.is_some() && !self.prover.shutdown.is_open() {
-                    self.retained.extend(bundle.iter().cloned());
+                    self.retained.extend(consumed);
                 }
                 true
             }
             BundleOutcome::Deferred => {
-                // Put the bundle back at the front and park: the next wake (a new batch from a
+                // The formed prefix stays queued; park until the next wake (a new batch from a
                 // live L1, the rollback command a reorg is about to deliver, or shutdown)
-                // re-drives formation against whatever the chain looks like then. Returning false
-                // parks the loop instead of busy-spinning the fetch. The retry cadence is bound
-                // to new L1 activity (inbox wakes) with no dedicated timer; add one only if a
-                // stalled node must be re-polled while the lane is otherwise idle.
-                for batch in bundle.iter().rev() {
-                    self.queued.push_front(batch.clone());
-                }
+                // re-drives formation against whatever the chain looks like then. Returning
+                // false parks the loop instead of busy-spinning the fetch. The retry cadence is
+                // bound to new L1 activity (inbox wakes) with no dedicated timer; add one only
+                // if a stalled node must be re-polled while the lane is otherwise idle.
                 false
             }
+            BundleOutcome::AttemptFailed => true,
         }
     }
 
@@ -457,7 +469,8 @@ where
     /// the committed transition unchanged. A bundle whose coordinate has proved before reuses its
     /// cached receipt instead of re-proving. The handle is emitted only once a receipt exists: a
     /// bundle whose lane-proof fetch fails is returned as [`BundleOutcome::Deferred`] with nothing
-    /// emitted, so no settlement consumer is left waiting on it.
+    /// emitted, so no settlement consumer is left waiting on it, and a failed proof attempt as
+    /// [`BundleOutcome::AttemptFailed`] with nothing emitted or cached either.
     async fn prove_bundle(&self, bundle: &[ScheduledBatch<S, P>]) -> BundleOutcome {
         let take = bundle.len();
         let last_checkpoint = bundle.last().unwrap().checkpoint();
@@ -515,6 +528,7 @@ where
             ProveOutcome::Shutdown | ProveOutcome::LaneProofFailed => {
                 return BundleOutcome::Deferred;
             }
+            ProveOutcome::AttemptFailed => return BundleOutcome::AttemptFailed,
         };
 
         // Publish the bundle handle now that its receipt exists, mirroring how the scheduler
@@ -610,9 +624,10 @@ where
 
     /// Proves (or reloads from cache) the aggregate receipt for a bundle proving through
     /// `block_prove_to` over the non-empty `receipts`, keying the cache at `agg_key`. Returns
-    /// [`ProveOutcome::Shutdown`] when shutdown races the proof (the caller discards the bundle)
-    /// or [`ProveOutcome::LaneProofFailed`] when the final block's lane proof cannot be fetched
-    /// (the caller defers or drops the bundle).
+    /// [`ProveOutcome::Shutdown`] when shutdown races the proof (the caller discards the bundle),
+    /// [`ProveOutcome::LaneProofFailed`] when the final block's lane proof cannot be fetched
+    /// (the caller defers or drops the bundle), or [`ProveOutcome::AttemptFailed`] when the one
+    /// proof attempt fails (the caller re-forms the bundle; nothing was cached or emitted).
     async fn prove_or_cache(
         &self,
         agg_key: AggregatorKey,
@@ -656,7 +671,17 @@ where
             &lane_proof,
             journals.iter().map(|j| j.as_slice()),
         );
-        let receipt = self.backend.prove_aggregator(&inputs, receipts).await;
+        let start = agg_key.prefix.checkpoint_index.get();
+        let receipt = match self.backend.prove_aggregator(&inputs, receipts).await {
+            Ok(receipt) => receipt,
+            Err(err) => {
+                log::warn!(
+                    "aggregate-prover: bundle {start} (through {block_prove_to}) proof attempt \
+                     failed ({err}); re-forming the bundle"
+                );
+                return ProveOutcome::AttemptFailed;
+            }
+        };
         if self.prover.shutdown.is_open() {
             return ProveOutcome::Shutdown;
         }
@@ -1038,6 +1063,10 @@ where
                 // re-runs the pass.
                 ProveOutcome::Shutdown => return GapOutcome::Nothing,
                 ProveOutcome::LaneProofFailed => continue,
+                // A failed attempt consumed nothing, so this pass treats the end like a dead
+                // one and retries through the previous batch; if every end fails, the deferral
+                // below re-runs the whole range on later wakes.
+                ProveOutcome::AttemptFailed => continue,
             }
         }
         let Some((covered_end, end_metadata, receipt)) = proven else {
@@ -1115,6 +1144,9 @@ where
             ProveOutcome::Receipt(receipt) => receipt,
             ProveOutcome::Shutdown => return, // shutdown mid-proof; the next startup re-runs
             // the pass
+            // The attempt failed with nothing split or deleted, so the entry stays for the next
+            // resume pass to re-split.
+            ProveOutcome::AttemptFailed => return,
             ProveOutcome::LaneProofFailed => {
                 log::warn!(
                     "aggregate-prover: resume split for bundle {start} has no live lane proof \
