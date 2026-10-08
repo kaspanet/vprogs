@@ -92,12 +92,11 @@ where
 }
 
 /// Retry loop over [`prove_attempt`] for the prove paths that cannot hand a failure back to a
-/// caller: the transaction and batch proves. A failed attempt is logged with its count and
-/// retried; there is no attempt cap and no exhaustion panic. A deterministic failure retries
-/// identically and loudly until an operator's keepalive flags the stall; reset is the accepted
-/// recovery. Each attempt costs a real prove (minutes on CUDA), so the loop is naturally
-/// paced; no backoff knob. The guest-assert fast-panic is gone with the rollback it served:
-/// a "Guest panicked" error retries like any other.
+/// caller: the transaction and batch proves. A failed attempt is logged with its count and retried;
+/// there is no attempt cap and no exhaustion panic. A deterministic failure retries identically and
+/// loudly until an operator's keepalive flags the stall; reset is the accepted recovery. Each
+/// attempt costs a real prove (minutes on CUDA), so the loop is naturally paced; no backoff knob. A
+/// "Guest panicked" error retries like any other failure.
 async fn prove_with_prover<F>(
     prove: F,
     elf: Vec<u8>,
