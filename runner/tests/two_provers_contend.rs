@@ -3499,6 +3499,7 @@ async fn spawn_prover_on_store(
             // settler reconciles against, so a bundle a shorter competitor superseded still
             // settles.
             settlement_rx: Some(watch_rx.clone()),
+            re_root: None,
             journal,
             exits_tx: None,
         },

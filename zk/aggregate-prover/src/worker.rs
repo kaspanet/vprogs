@@ -109,6 +109,12 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend, L: LaneProofSour
     /// Sender on the exit-leaf channel driving client Merkle-path proof generation, or `None` if
     /// exit publishing is disabled.
     exits: Option<mpsc::UnboundedSender<Arc<ExitsForBundle>>>,
+    /// Sender notified with the covenant tip on a held off-tip fold, or `None` to disable the
+    /// request.
+    re_root: Option<mpsc::UnboundedSender<SettlementInfo>>,
+    /// Settlement the current re-root request was sent for, deduplicating republications of
+    /// the same tip; reset by a rollback, which resolves the request.
+    re_rooted_for: Option<TransactionId>,
 }
 
 impl<S, P, B, L> Worker<S, P, B, L>
@@ -139,6 +145,7 @@ where
             lane_source,
             settlement_queue,
             settlement,
+            re_root,
             bundle_size,
             exits,
         } = config;
@@ -173,6 +180,8 @@ where
             handled_settlement: None,
             settlement_daa: 0,
             exits,
+            re_root,
+            re_rooted_for: None,
         };
         let runtime = Builder::new_current_thread().enable_all().build().expect("runtime");
         spawn(move || runtime.block_on(this.run()))
@@ -405,6 +414,48 @@ where
                 self.queued.pop_front();
             }
             return true;
+        }
+
+        // With nothing unsettled in the journal, the window head is the batch the covenant tip
+        // waits on: it must enter at the tip's own exit, or the bundle folded from it starts
+        // mid-chain (a receipt-less committed range above the boundary) or on a lane the
+        // covenant never took (a fork below it). Either way the settler can only skip the
+        // bundle, no settlement ever advances, and the only drain trigger (the settlement-watch
+        // advance) never fires. Hold the fold and request a rollback of execution to the
+        // settlement boundary instead, so re-execution re-enters at the covenant's exit; the
+        // forthcoming rollback command clears the held batches. The head normally IS the tip's
+        // successor (its predecessor is the settlement's exit lane tip), so this fires only on
+        // the wedge. A journal holding entries keeps its own chain: its head bundles continue
+        // it, and the resume paths own the boundary.
+        // The watch carries the republished last settlement, not only advances: a reorg flip
+        // can restamp an older one, and honoring it would hold the fold against a tip the
+        // covenant already passed. Gate on the same forward-only DAA floor the re-aggregation
+        // drains against.
+        let off_tip = self
+            .settlement
+            .as_ref()
+            .and_then(|rx| *rx.borrow())
+            .filter(|tip| tip.daa_score.get() >= self.settlement_daa)
+            .filter(|tip| front.checkpoint().metadata().prev_lane_tip != tip.new_lane_tip);
+        let held_off_tip =
+            off_tip.filter(|_| self.journal.as_ref().is_none_or(|j| !j.has_entries()));
+        if let Some(tip) = held_off_tip {
+            if self.re_rooted_for.as_ref() != Some(&tip.tx_id) {
+                self.re_rooted_for = Some(tip.tx_id);
+                if let Some(re_root) = &self.re_root {
+                    let _ = re_root.send(tip);
+                }
+                log::info!(
+                    "aggregate-prover: holding the fold at batch {}: it enters at lane tip {} \
+                     but the covenant tip {} exited at {}; requesting a rollback to the \
+                     settlement boundary",
+                    front.checkpoint().index(),
+                    front.checkpoint().metadata().prev_lane_tip,
+                    tip.tx_id,
+                    tip.new_lane_tip,
+                );
+            }
+            return false;
         }
 
         // Greedily extend the bundle over the consecutively-ready prefix: include each following
@@ -1247,6 +1298,9 @@ where
         self.last_reformed_from = None;
         self.handled_settlement = None;
         self.settlement_daa = 0;
+        // A rollback is the re-root request's resolution: execution re-entered somewhere new,
+        // so the next off-tip head is a fresh wedge to report.
+        self.re_rooted_for = None;
     }
 }
 
