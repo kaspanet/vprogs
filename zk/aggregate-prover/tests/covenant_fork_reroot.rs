@@ -214,7 +214,7 @@ fn harness() -> Harness {
     );
     let queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Vec<u8>>>> = AsyncQueue::new();
     let (settlement_tx, settlement_rx) = watch::channel::<Option<SettlementInfo>>(None);
-    let (re_root_tx, re_root_rx) = mpsc::unbounded_channel();
+    let (re_root_tx, mut re_root_rx) = mpsc::unbounded_channel();
     let prover = AggregateProver::new(
         SyntheticBackend,
         scheduler.state().receipt_store(),
@@ -307,4 +307,70 @@ fn fork_below_the_settlement_requests_a_reroot_instead_of_folding_unlandable_bat
 
     harness.prover.shutdown();
     harness.scheduler.shutdown();
+}
+
+/// Pins the same hold on the committed-gap re-cover: a committed batch whose cached receipt
+/// enters off the covenant tip (a state fork below the boundary surviving in the receipts) must
+/// not be re-covered into a bundle; the re-cover is held and the rollback requested, leaving the
+/// journal clean instead of re-poisoning it with an unlandable entry. The live Oct 25 wedge
+/// reached the settler through exactly this path after the resume pass had dropped the dead
+/// entries.
+#[test]
+fn off_tip_gap_recover_holds_and_requests_reroot() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+    let journal = StoreJournal::new(storage.clone());
+    let mut scheduler = Scheduler::new(
+        ExecutionConfig::default().with_processor(PlainProcessor),
+        StorageConfig::default().with_store(storage),
+    );
+
+    // A committed batch with its receipt cached but no journal entry, entering at the synthetic
+    // default pins (state 0x00, zero lane tip): committed-but-unjournaled, the gap shape.
+    let batch = scheduler.schedule(block(1, 0, Hash::default()), vec![lane_tx()]);
+    batch.wait_committed_blocking();
+    batch.write_batch_receipt(settlement_journal()).wait_blocking();
+    batch.publish_artifact(Some(settlement_journal()));
+
+    let queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Vec<u8>>>> = AsyncQueue::new();
+    let (settlement_tx, settlement_rx) = watch::channel::<Option<SettlementInfo>>(None);
+    let (re_root_tx, mut re_root_rx) = mpsc::unbounded_channel();
+    let prover = AggregateProver::new(
+        SyntheticBackend,
+        scheduler.state().receipt_store(),
+        Some(journal.clone()),
+        AggregateProverConfig {
+            lane_key: Hash::default(),
+            covenant_id: None,
+            lane_source: ServeLaneProofs,
+            settlement_queue: Some(queue.clone()),
+            settlement: Some(settlement_rx),
+            re_root: Some(re_root_tx),
+            bundle_size: 1..=1,
+            exits: None,
+        },
+    );
+
+    // The covenant tip exited at pins the cached receipt does not enter at.
+    settlement_tx.send_replace(Some(SettlementInfo {
+        block_prove_to: block_hash(3),
+        new_state: [0x11; 32],
+        new_lane_tip: block_hash(3),
+        ..Default::default()
+    }));
+
+    // No bundle may be composed from the off-tip receipts, and the rollback must be requested.
+    assert!(
+        next_bundle(&queue, Duration::from_millis(750)).is_none(),
+        "an off-tip committed-gap re-cover must not reach the settlement queue",
+    );
+    let tip = re_root_rx
+        .try_recv()
+        .expect("the held re-cover must request a rollback to the covenant boundary");
+    assert_eq!(tip.block_prove_to, block_hash(3));
+    assert_eq!(tip.new_lane_tip, block_hash(3));
+    assert!(journal.entries().is_empty(), "no unlandable entry may be journaled");
+
+    prover.shutdown();
+    scheduler.shutdown();
 }
