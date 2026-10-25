@@ -18,7 +18,9 @@ use vprogs_state_proof_receipt::{AggregatorKey, BatchKey, Prefix};
 use vprogs_state_settlement_journal::{JournalEntry, StoreJournal};
 use vprogs_storage_types::Store;
 use vprogs_zk_abi::batch_aggregator::{Inputs as AggregatorInputs, StateTransition};
+use vprogs_zk_abi::batch_processor::BatchTransition;
 use vprogs_zk_batch_prover::{LaneProofRequest, LaneProofSource};
+use zerocopy::FromBytes;
 
 use crate::{
     AggregateProver, AggregateProverConfig, Backend, BundleBlocks, ExitsForBundle, ScheduledBundle,
@@ -1088,6 +1090,35 @@ where
         // No real work below the miss: nothing to compose, matching the live no-op path.
         if covered.is_empty() {
             return GapOutcome::Nothing;
+        }
+        // The re-cover must chain from the covenant tip exactly like a folded bundle: its first
+        // covered receipt enters at the tip's exit, or the composed bundle proves from a base the
+        // covenant never took (a state fork below the boundary surviving in the cached receipts),
+        // the settler skips it, and the entry re-poisons the journal the resume pass just
+        // cleaned. Leave the range uncovered and request the re-root: the rollback re-drives the
+        // range through the scheduler, whose re-execution rebuilds the receipts from whatever
+        // state the restored checkpoint actually holds.
+        if let Some(tip) = tip {
+            let journal = B::journal_bytes(&covered[0].2);
+            let st = BatchTransition::ref_from_bytes(&journal).expect("batch journal");
+            if st.prev_state != tip.new_state || st.prev_lane_tip != tip.new_lane_tip {
+                if self.re_rooted_for.as_ref() != Some(&tip.tx_id) {
+                    self.re_rooted_for = Some(tip.tx_id);
+                    if let Some(re_root) = &self.re_root {
+                        let _ = re_root.send(*tip);
+                    }
+                    log::info!(
+                        "aggregate-prover: holding the committed-gap re-cover at batch {first}: \
+                         it enters at state {} and lane tip {} but the covenant tip {} exited at \
+                         {}; requesting a rollback to the settlement boundary",
+                        Hash::from_bytes(st.prev_state),
+                        st.prev_lane_tip,
+                        tip.tx_id,
+                        tip.new_lane_tip,
+                    );
+                }
+                return GapOutcome::Nothing;
+            }
         }
         // The bundle's end walks down over dead final blocks: a block whose lane proof cannot
         // be fetched must not pin the range (the deferral's bound would retry the same dead
