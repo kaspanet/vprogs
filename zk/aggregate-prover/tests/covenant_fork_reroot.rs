@@ -214,7 +214,7 @@ fn harness() -> Harness {
     );
     let queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Vec<u8>>>> = AsyncQueue::new();
     let (settlement_tx, settlement_rx) = watch::channel::<Option<SettlementInfo>>(None);
-    let (re_root_tx, mut re_root_rx) = mpsc::unbounded_channel();
+    let (re_root_tx, re_root_rx) = mpsc::unbounded_channel();
     let prover = AggregateProver::new(
         SyntheticBackend,
         scheduler.state().receipt_store(),

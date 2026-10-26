@@ -17,8 +17,10 @@ use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_state_proof_receipt::{AggregatorKey, BatchKey, Prefix};
 use vprogs_state_settlement_journal::{JournalEntry, StoreJournal};
 use vprogs_storage_types::Store;
-use vprogs_zk_abi::batch_aggregator::{Inputs as AggregatorInputs, StateTransition};
-use vprogs_zk_abi::batch_processor::BatchTransition;
+use vprogs_zk_abi::{
+    batch_aggregator::{Inputs as AggregatorInputs, StateTransition},
+    batch_processor::BatchTransition,
+};
 use vprogs_zk_batch_prover::{LaneProofRequest, LaneProofSource};
 use zerocopy::FromBytes;
 
