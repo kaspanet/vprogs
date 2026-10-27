@@ -9310,6 +9310,7 @@ dependencies = [
  "tokio",
  "vprogs-core-types",
  "vprogs-l1-wallet",
+ "vprogs-zk-abi",
  "vprogs-zk-backend-risc0-api",
  "vprogs-zk-backend-risc0-runtime-processor",
 ]
