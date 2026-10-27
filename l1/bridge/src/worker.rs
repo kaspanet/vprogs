@@ -837,7 +837,7 @@ mod tests {
     use vprogs_core_types::{ChainSink, SchedulerTransaction};
     use vprogs_l1_types::{ChainBlockMetadata, Hash, L1Transaction, SettlementMsg, SpendMsg};
     use vprogs_zk_abi::withdrawal::{ExitLeaf, StandardSpk};
-    use vprogs_zk_backend_risc0_api::{PermissionTreeAccumulator, PermissionTreeView};
+    use vprogs_zk_backend_risc0_api::PermissionTreeView;
     use vprogs_zk_backend_risc0_app_kit::{
         PermissionSpendArgs, build_permission_spend, claim_siblings,
     };
@@ -1031,6 +1031,11 @@ mod tests {
         assert!(settlement_events_rx.try_recv().is_err());
     }
 
+    /// Live-view form of `leaves` for the tree view and sibling-path APIs.
+    fn live(leaves: &[ExitLeaf]) -> Vec<Option<ExitLeaf>> {
+        leaves.iter().cloned().map(Some).collect()
+    }
+
     /// Builds a valid claim spend against `perm_outpoint` over a two-leaf tree (partial deduct on
     /// leaf 0), mirroring the `permission_watch` test fixtures: exits remain unclaimed afterwards,
     /// so the registry advance installs a continuation outpoint.
@@ -1040,8 +1045,6 @@ mod tests {
         tree: &PermissionTreeView,
         leaves: &[ExitLeaf],
     ) -> Transaction {
-        let fold_leaf =
-            PermissionTreeAccumulator::hash_leaf(StandardSpk::PubKey(&[0x01; 32]), 3_000);
         let collateral_pk = [0xEE; 32];
         let collateral_bytes = StandardSpk::PubKey(&collateral_pk).to_script_bytes();
         let collateral_spk: [u8; 34] = collateral_bytes.as_slice().try_into().unwrap();
@@ -1057,9 +1060,7 @@ mod tests {
             leaf_spk: leaves[0].script_bytes(),
             leaf_amount: 5_000,
             deduct: 2_000,
-            siblings: claim_siblings(leaves, 0),
-            new_root: tree.root_with_leaf(0, fold_leaf),
-            new_unclaimed: 2,
+            siblings: claim_siblings(&live(leaves), 0),
             delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(20), 1), 2_000)],
             collateral_input: (TransactionOutpoint::new(Hash::from_u64_word(30), 0), 10_000_000),
             collateral_spk: ScriptPublicKey::new(0, collateral_spk.to_vec().into()),
@@ -1082,7 +1083,7 @@ mod tests {
             ExitLeaf::from_pair(StandardSpk::PubKey(&[0x01; 32]), 5_000),
             ExitLeaf::from_pair(StandardSpk::PubKey(&[0x02; 32]), 6_000),
         ];
-        let tree = PermissionTreeView::from_leaves(&leaves);
+        let tree = PermissionTreeView::from_leaves(&live(&leaves));
         let perm_outpoint = TransactionOutpoint::new(Hash::from_u64_word(10), 0);
         let registry = Arc::new(RwLock::new(HashMap::from([(perm_outpoint, tree.root())])));
         let hooks = PermissionSpendHooks { events: spend_events_tx, registry: registry.clone() };
