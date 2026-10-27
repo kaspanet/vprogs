@@ -78,21 +78,17 @@ impl<C: Config> Store for RocksDbStore<C> {
 
     fn prefix_iter(&self, state_space: StateSpace, prefix: &[u8]) -> PrefixIterator<'_> {
         let cf = self.cf(&state_space);
-
-        // Empty prefix = full scan; the fixed-prefix CFs need total-order seek to span all keys.
-        if prefix.is_empty() {
-            let mut read_opts = rocksdb::ReadOptions::default();
-            read_opts.set_total_order_seek(true);
-            let iter = self.db.iterator_cf_opt(cf, read_opts, IteratorMode::Start);
-            return Box::new(RocksDbPrefixIter { inner: iter });
-        }
-
         let mut read_opts = rocksdb::ReadOptions::default();
-        // Ensure iteration stops when keys no longer share the prefix.
-        read_opts.set_prefix_same_as_start(true);
-
-        let mode = IteratorMode::From(prefix, Direction::Forward);
-        let iter = self.db.iterator_cf_opt(cf, read_opts, mode);
+        // Hard stop at the prefix: forward walking ends once keys leave it.
+        read_opts.set_iterate_lower_bound(prefix.to_vec());
+        if let Some(upper) = prefix_end(prefix) {
+            read_opts.set_iterate_upper_bound(upper);
+        }
+        // Total order: the fixed prefix extractors installed on the CFs would otherwise
+        // bound iteration by their slice, not our prefix.
+        read_opts.set_total_order_seek(true);
+        let iter =
+            self.db.iterator_cf_opt(cf, read_opts, IteratorMode::From(prefix, Direction::Forward));
         Box::new(RocksDbPrefixIter { inner: iter })
     }
 
