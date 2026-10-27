@@ -641,7 +641,8 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             }
 
             // Determine the lane tip over the block's accepted txs.
-            let (lane_tip, lane_blue_score, lane_expired) = self.lane_state(&parent, &txs, &block);
+            let (lane_tip, lane_blue_score, lane_expired) =
+                lane_state(self.finality_depth, self.lane_key.as_ref(), &parent, &txs, &block);
 
             // Append the block's parent-threaded metadata and its txs to the sink.
             let block_idx = self.sink.append(
@@ -688,55 +689,6 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         self.publish_settlement();
 
         Ok(())
-    }
-
-    /// Returns the next `(lane_tip, lane_blue_score, lane_expired)` for this block.
-    fn lane_state(
-        &self,
-        parent: &ChainBlockMetadata,
-        txs: &[SchedulerTransaction<L1Transaction>],
-        block: &ChainBlockMetadata,
-    ) -> (Hash, u64, bool) {
-        // Consensus anchors a lane re-activation at `parent.seq_commit` whenever the lane holds no
-        // live SMT entry at the parent: on the first activation (nothing folded into the lane yet,
-        // `lane_blue_score` still at its zero seed) or after going silent past the finality window.
-        // The gap check alone never trips before the first activation under a real finality depth,
-        // so the zero seed would anchor the lane and every derived tip would diverge from
-        // consensus. A fresh-sink bridge seeds the authoritative lane tip from
-        // `get_seq_commit_lane_proof` at its anchor, so joining an already-live lane derives
-        // correctly; the zero seed remains only for lanes with no live entry at the anchor.
-        let blue_score = block.blue_score;
-        let lane_expired = parent.lane_blue_score == 0
-            || blue_score.saturating_sub(parent.lane_blue_score) > self.finality_depth;
-
-        // No lane configured or no activity this block -> carry parent state forward unchanged.
-        let Some(lane_key) = self.lane_key.as_ref().filter(|_| !txs.is_empty()) else {
-            return (parent.lane_tip, parent.lane_blue_score, lane_expired);
-        };
-
-        // Merkle root over this block's activity leaves.
-        let mut activity = ActivityDigestBuilder::new();
-        for tx in txs {
-            activity.add_leaf(activity_leaf(&tx.tx.id(), tx.tx.version, tx.merge_idx));
-        }
-
-        // Context hash of the current chain block.
-        let context_hash = mergeset_context_hash(&MergesetContext {
-            timestamp: parent.timestamp,
-            daa_score: block.daa_score,
-            blue_score,
-        });
-
-        // Construct the new lane tip.
-        let parent_ref = if lane_expired { parent.seq_commit } else { parent.lane_tip };
-        let tip = lane_tip_next(&LaneTipInput {
-            lane_key,
-            parent_ref: &parent_ref,
-            activity_digest: &activity.finalize(),
-            context_hash: &context_hash,
-        });
-
-        (tip, blue_score, lane_expired)
     }
 
     /// Rolls the sink back to the surviving block, recording the reorg's depth in the filter.
@@ -801,6 +753,55 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
 
         Ok(())
     }
+}
+/// Returns the next `(lane_tip, lane_blue_score, lane_expired)` for this block.
+fn lane_state(
+    finality_depth: u64,
+    lane_key: Option<&Hash>,
+    parent: &ChainBlockMetadata,
+    txs: &[SchedulerTransaction<L1Transaction>],
+    block: &ChainBlockMetadata,
+) -> (Hash, u64, bool) {
+    // Consensus anchors a lane re-activation at `parent.seq_commit` whenever the lane holds no
+    // live SMT entry at the parent: on the first activation (nothing folded into the lane yet,
+    // `lane_blue_score` still at its zero seed) or after going silent past the finality window.
+    // The gap check alone never trips before the first activation under a real finality depth,
+    // so the zero seed would anchor the lane and every derived tip would diverge from
+    // consensus. A fresh-sink bridge seeds the authoritative lane tip from
+    // `get_seq_commit_lane_proof` at its anchor, so joining an already-live lane derives
+    // correctly; the zero seed remains only for lanes with no live entry at the anchor.
+    let blue_score = block.blue_score;
+    let lane_expired = parent.lane_blue_score == 0
+        || blue_score.saturating_sub(parent.lane_blue_score) > finality_depth;
+
+    // No lane configured or no activity this block -> carry parent state forward unchanged.
+    let Some(lane_key) = lane_key.filter(|_| !txs.is_empty()) else {
+        return (parent.lane_tip, parent.lane_blue_score, lane_expired);
+    };
+
+    // Merkle root over this block's activity leaves.
+    let mut activity = ActivityDigestBuilder::new();
+    for tx in txs {
+        activity.add_leaf(activity_leaf(&tx.tx.id(), tx.tx.version, tx.merge_idx));
+    }
+
+    // Context hash of the current chain block.
+    let context_hash = mergeset_context_hash(&MergesetContext {
+        timestamp: parent.timestamp,
+        daa_score: block.daa_score,
+        blue_score,
+    });
+
+    // Construct the new lane tip.
+    let parent_ref = if lane_expired { parent.seq_commit } else { parent.lane_tip };
+    let tip = lane_tip_next(&LaneTipInput {
+        lane_key,
+        parent_ref: &parent_ref,
+        activity_digest: &activity.finalize(),
+        context_hash: &context_hash,
+    });
+
+    (tip, blue_score, lane_expired)
 }
 
 #[cfg(test)]
@@ -1029,10 +1030,8 @@ mod tests {
         covenant_id: Hash,
         perm_outpoint: TransactionOutpoint,
         tree: &PermissionTreeView,
-        leaves: &[ExitLeaf],
+        leaves: &[Option<ExitLeaf>],
     ) -> Transaction {
-        let fold_leaf =
-            PermissionTreeAccumulator::hash_leaf(StandardSpk::PubKey(&[0x01; 32]), 3_000);
         let collateral_pk = [0xEE; 32];
         let collateral_bytes = StandardSpk::PubKey(&collateral_pk).to_script_bytes();
         let collateral_spk: [u8; 34] = collateral_bytes.as_slice().try_into().unwrap();
@@ -1045,12 +1044,10 @@ mod tests {
             old_unclaimed: 2,
             depth: tree.depth(),
             leaf_index: 0,
-            leaf_spk: leaves[0].script_bytes(),
+            leaf_spk: leaves[0].as_ref().expect("leaf 0 is live").script_bytes(),
             leaf_amount: 5_000,
             deduct: 2_000,
             siblings: claim_siblings(leaves, 0),
-            new_root: tree.root_with_leaf(0, fold_leaf),
-            new_unclaimed: 2,
             delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(20), 1), 2_000)],
             collateral_input: (TransactionOutpoint::new(Hash::from_u64_word(30), 0), 10_000_000),
             collateral_spk: ScriptPublicKey::new(0, collateral_spk.to_vec().into()),
@@ -1070,8 +1067,8 @@ mod tests {
         let (spend_events_tx, mut spend_events_rx) = mpsc::unbounded_channel();
 
         let leaves = vec![
-            ExitLeaf::from_pair(StandardSpk::PubKey(&[0x01; 32]), 5_000),
-            ExitLeaf::from_pair(StandardSpk::PubKey(&[0x02; 32]), 6_000),
+            Some(ExitLeaf::from_pair(StandardSpk::PubKey(&[0x01; 32]), 5_000)),
+            Some(ExitLeaf::from_pair(StandardSpk::PubKey(&[0x02; 32]), 6_000)),
         ];
         let tree = PermissionTreeView::from_leaves(&leaves);
         let perm_outpoint = TransactionOutpoint::new(Hash::from_u64_word(10), 0);
@@ -1151,30 +1148,31 @@ mod tests {
     }
 
     /// `lane_state` anchors a lane re-activation at the parent seq commit whenever the lane holds
-    /// no live entry at the parent, and chains from the parent lane tip otherwise. The first
-    /// activation must take the seq-commit anchor even when the blue-score gap to the zero seed is
-    /// well inside the finality window; before that rule landed the zero seed anchored the lane
-    /// and every derived tip diverged from consensus.
+    /// no live entry at the parent, and chains from the parent lane tip otherwise.
+    ///
+    /// The first activation must take the seq-commit anchor even when the blue-score gap to the
+    /// zero seed is well inside the finality window; before that rule landed the zero seed anchored
+    /// the lane and every derived tip diverged from consensus.
     #[test]
     fn lane_state_anchors_first_activation_and_reactivation_at_seq_commit() {
-        let covenant_id = Hash::from_bytes([0xAA; 32]);
-        let (settlement_events_tx, _settlement_events_rx) = mpsc::unbounded_channel();
-        let mut worker = test_worker(TestSink::default(), covenant_id, settlement_events_tx, None);
         let lane_key = Hash::from_bytes([0xEE; 32]);
-        worker.lane_key = Some(lane_key);
+        let finality_depth = 432_000;
 
-        let tx = make_settlement_tx(covenant_id, [0x44; 32]);
-        let txs = vec![SchedulerTransaction::new(0, Default::default(), tx.clone())];
+        // One carrier tx: only its id, version, and merge index feed the lane tip.
+        let tx = Transaction::new(0, vec![], vec![], 0, SUBNETWORK_ID_NATIVE, 0, Vec::new());
+        let txs = vec![SchedulerTransaction::new(0, Vec::new(), tx)];
         let block = ChainBlockMetadata { blue_score: 530, daa_score: 531, ..Default::default() };
         let parent_seq_commit = Hash::from_bytes([0x5C; 32]);
         let parent_lane_tip = Hash::from_bytes([0x7D; 32]);
+
+        // The tip `lane_state` must derive for each anchor case, built the same way it builds it.
         let context_hash = mergeset_context_hash(&MergesetContext {
-            timestamp: block.timestamp,
+            timestamp: 0,
             daa_score: block.daa_score,
             blue_score: block.blue_score,
         });
         let mut activity = ActivityDigestBuilder::new();
-        activity.add_leaf(activity_leaf(&tx.id(), tx.version, 0));
+        activity.add_leaf(activity_leaf(&txs[0].tx.id(), txs[0].tx.version, txs[0].merge_idx));
         let activity_digest = activity.finalize();
         let expected_tip = |parent_ref: &Hash| {
             lane_tip_next(&LaneTipInput {
@@ -1188,7 +1186,7 @@ mod tests {
         // First activation: the parent carries the zero seed (never folded activity), the gap to
         // it is far inside the finality window, yet the anchor must be the parent seq commit.
         let parent = ChainBlockMetadata { seq_commit: parent_seq_commit, ..Default::default() };
-        let (tip, _, expired) = worker.lane_state(&parent, &txs, &block);
+        let (tip, _, expired) = lane_state(finality_depth, Some(&lane_key), &parent, &txs, &block);
         assert!(expired, "first activation counts as no live entry");
         assert_eq!(tip, expected_tip(&parent_seq_commit), "first activation anchors at seq commit");
 
@@ -1199,18 +1197,20 @@ mod tests {
             lane_blue_score: 529,
             ..Default::default()
         };
-        let (tip, _, expired) = worker.lane_state(&parent, &txs, &block);
+        let (tip, _, expired) = lane_state(finality_depth, Some(&lane_key), &parent, &txs, &block);
         assert!(!expired, "a live lane within the window is not expired");
         assert_eq!(tip, expected_tip(&parent_lane_tip), "live lane chains from the lane tip");
 
-        // Silence past the finality window re-anchors at the parent seq commit.
+        // Silence past the finality window re-anchors at the parent seq commit. The depth here is
+        // one the blue-score gap exceeds; a real depth never reaches this clause before the first
+        // activation, which is why the zero-seed rule above exists.
         let parent = ChainBlockMetadata {
             seq_commit: parent_seq_commit,
             lane_tip: parent_lane_tip,
             lane_blue_score: 100,
             ..Default::default()
         };
-        let (tip, _, expired) = worker.lane_state(&parent, &txs, &block);
+        let (tip, _, expired) = lane_state(400, Some(&lane_key), &parent, &txs, &block);
         assert!(expired, "silence past the finality window expires the lane");
         assert_eq!(tip, expected_tip(&parent_seq_commit), "re-activation anchors at seq commit");
     }

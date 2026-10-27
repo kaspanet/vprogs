@@ -957,7 +957,7 @@ mod tests {
     /// A one-leaf bundle for `new_state`, plus the padded-tree root the pairing pins.
     fn test_bundle(new_state: [u8; 32], seed: u8, amount: u64) -> (Arc<ExitsForBundle>, [u8; 32]) {
         let leaves = vec![test_leaf(seed, amount)];
-        let root = PermissionTreeView::from_leaves(&leaves).root();
+        let root = PermissionTreeView::from_leaves(&live(&leaves)).root();
         let bundle = Arc::new(ExitsForBundle {
             new_state,
             permission_spk_hash: permission_commitment(&leaves),
