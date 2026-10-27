@@ -10,10 +10,11 @@ use kaspa_consensus_core::{
 };
 use kaspa_hashes::Hash;
 use kaspa_txscript::{script_builder::ScriptBuilder, standard::pay_to_script_hash_script};
-use vprogs_zk_abi::withdrawal::ExitLeaf;
+use vprogs_zk_abi::withdrawal::{ExitLeaf, StandardSpk};
 pub use vprogs_zk_backend_risc0_api::PermissionTreeView;
 use vprogs_zk_backend_risc0_api::{
-    MAX_DELEGATE_INPUTS, build_delegate_entry_script, build_permission_redeem_script,
+    MAX_DELEGATE_INPUTS, PermissionTreeAccumulator, build_delegate_entry_script,
+    build_permission_redeem_script, fold_path,
 };
 
 /// Assembles the permission input's signature script: the public withdrawal witness consumed
@@ -67,10 +68,6 @@ pub struct PermissionSpendArgs<'a> {
     pub deduct: u64,
     /// Merkle sibling hashes from leaf level to root for `leaf_index` against `old_root`.
     pub siblings: Vec<[u8; 32]>,
-    /// Post-claim Merkle root derived by the caller.
-    pub new_root: [u8; 32],
-    /// Post-claim unclaimed exit count derived by the caller.
-    pub new_unclaimed: u64,
     /// Delegate funding inputs paying into the spend.
     pub delegate_inputs: Vec<(TransactionOutpoint, u64)>,
     /// The claimer's collateral input funding the fee: a plain P2PK UTXO (its signature
@@ -114,7 +111,22 @@ pub fn build_permission_spend(
         return Err("fee must be strictly below the collateral amount");
     }
 
-    let is_done = args.new_unclaimed == 0;
+    // Post-claim root and unclaimed count, derived to match the redeem script's own
+    // recomputation.
+    let full_claim = args.deduct == args.leaf_amount;
+    if full_claim && args.old_unclaimed == 0 {
+        return Err("full claim of a permission UTXO with no unclaimed exits");
+    }
+    let new_unclaimed = args.old_unclaimed - u64::from(full_claim);
+    let leaf_spk = StandardSpk::from_script(args.leaf_spk).map_err(|_| "undecodable exit spk")?;
+    let new_leaf_hash = if full_claim {
+        PermissionTreeAccumulator::hash_empty()
+    } else {
+        PermissionTreeAccumulator::hash_leaf(leaf_spk, args.leaf_amount - args.deduct)
+    };
+    let new_root = fold_path(new_leaf_hash, &args.siblings, args.leaf_index);
+
+    let is_done = new_unclaimed == 0;
     let honest_out0 = if is_done { args.deduct + args.permission_rent } else { args.deduct };
 
     let withdrawal_spk = ScriptPublicKey::new(0, args.leaf_spk.to_vec().into());
@@ -123,8 +135,7 @@ pub fn build_permission_spend(
     let covenant_id = Hash::from_bytes(args.covenant_id);
 
     if !is_done {
-        let new_redeem =
-            build_permission_redeem_script(&args.new_root, args.new_unclaimed, args.depth);
+        let new_redeem = build_permission_redeem_script(&new_root, new_unclaimed, args.depth);
         outputs.push(TransactionOutput::with_covenant(
             args.permission_rent,
             pay_to_script_hash_script(&new_redeem),
@@ -212,8 +223,12 @@ pub fn build_permission_spend(
 
 /// Computes sibling paths against the padded permission tree for a leaf index.
 ///
+/// `leaves` is the tree's current view: `Some` carries the live leaf (amount
+/// already reduced after a partial claim), `None` marks a claimed-out slot hashed as the
+/// empty leaf.
+///
 /// Requires `index < 1 << required_depth(leaves.len())` (panics otherwise).
-pub fn claim_siblings(leaves: &[ExitLeaf], index: usize) -> Vec<[u8; 32]> {
+pub fn claim_siblings(leaves: &[Option<ExitLeaf>], index: usize) -> Vec<[u8; 32]> {
     PermissionTreeView::from_leaves(leaves).siblings(index)
 }
 
@@ -406,8 +421,6 @@ mod tests {
             leaf_amount: 5_000,
             deduct: 2_000,
             siblings: tree.siblings(0),
-            new_root: tree.root_with_leaf(0, leaf_hash(&spk, 5_000 - 2_000)),
-            new_unclaimed: 2,
             delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(2), 1), 2_000)],
             collateral_input: (TransactionOutpoint::new(Hash::from_u64_word(3), 2), 10_000_000),
             collateral_spk: collateral_args().1,
@@ -435,8 +448,6 @@ mod tests {
             leaf_amount: 7_000,
             deduct: 7_000,
             siblings: tree.siblings(0),
-            new_root: tree.root_with_leaf(0, PermissionTreeAccumulator::hash_empty()),
-            new_unclaimed: 0,
             delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(2), 1), 7_000)],
             collateral_input: (TransactionOutpoint::new(Hash::from_u64_word(3), 2), 10_000_000),
             collateral_spk: collateral_args().1,
@@ -466,8 +477,6 @@ mod tests {
             leaf_amount: 7_000,
             deduct: 7_000,
             siblings: tree.siblings(0),
-            new_root: tree.root_with_leaf(0, PermissionTreeAccumulator::hash_empty()),
-            new_unclaimed: 0,
             delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(2), 1), 10_000)],
             collateral_input: (TransactionOutpoint::new(Hash::from_u64_word(3), 2), 10_000_000),
             collateral_spk: collateral_args().1,
@@ -513,7 +522,8 @@ mod tests {
         let pk_b = [0x22u8; 32];
         let spk_a = StandardSpk::PubKey(&pk_a);
         let spk_b = StandardSpk::PubKey(&pk_b);
-        let leaves = vec![ExitLeaf::from_pair(spk_a, 100), ExitLeaf::from_pair(spk_b, 200)];
+        let leaves =
+            vec![Some(ExitLeaf::from_pair(spk_a, 100)), Some(ExitLeaf::from_pair(spk_b, 200))];
         let tree_leaves = vec![
             (spk_a.to_script_bytes().as_ref().try_into().unwrap(), 100u64),
             (spk_b.to_script_bytes().as_ref().try_into().unwrap(), 200u64),
@@ -524,11 +534,58 @@ mod tests {
 
         // k = 1: the redeem embeds depth 1, so the claim carries the empty hash as its
         // single sibling.
-        let single = vec![ExitLeaf::from_pair(spk_a, 100)];
+        let single = vec![Some(ExitLeaf::from_pair(spk_a, 100))];
         let tree_single =
             TestTree::new(vec![(spk_a.to_script_bytes().as_ref().try_into().unwrap(), 100u64)]);
         assert_eq!(claim_siblings(&single, 0), tree_single.siblings(0));
         assert_eq!(claim_siblings(&single, 0), vec![PermissionTreeAccumulator::hash_empty()]);
+    }
+
+    #[test]
+    fn claim_siblings_hashes_claimed_out_leaf_as_empty() {
+        let pk_b = [0x22u8; 32];
+        let spk_b = StandardSpk::PubKey(&pk_b);
+        let spk_b_bytes: [u8; 34] = spk_b.to_script_bytes().as_ref().try_into().unwrap();
+        let tree = TestTree::new(vec![(test_spk(1), 100u64), (spk_b_bytes, 200)]);
+        // View after leaf 0 was fully claimed: slot 0 is empty, slot 1 still live.
+        let view = vec![None, Some(ExitLeaf::from_pair(spk_b, 200))];
+        let siblings = claim_siblings(&view, 1);
+        let mut root = leaf_hash(&spk_b_bytes, 200);
+        for (level, sibling) in siblings.iter().enumerate() {
+            if (1usize >> level) & 1 == 0 {
+                root = PermissionTreeAccumulator::hash_branch(&root, sibling);
+            } else {
+                root = PermissionTreeAccumulator::hash_branch(sibling, &root);
+            }
+        }
+        assert_eq!(root, tree.root_with_leaf(0, PermissionTreeAccumulator::hash_empty()));
+    }
+
+    #[test]
+    fn builder_rejects_full_claim_with_zero_unclaimed() {
+        let spk = test_spk(8);
+        let args = PermissionSpendArgs {
+            covenant_id: [0xFF; 32],
+            permission_outpoint: TransactionOutpoint::new(Hash::from_u64_word(1), 0),
+            permission_rent: 50_000_000,
+            old_root: [0; 32],
+            old_unclaimed: 0,
+            depth: 1,
+            leaf_index: 0,
+            leaf_spk: &spk,
+            leaf_amount: 5_000,
+            deduct: 5_000,
+            siblings: vec![[0; 32]],
+            delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(2), 1), 5_000)],
+            collateral_input: (TransactionOutpoint::new(Hash::from_u64_word(3), 2), 10_000_000),
+            collateral_spk: collateral_args().1,
+            fee: 0,
+            collateral_sig: Vec::new(),
+        };
+        assert_eq!(
+            build_permission_spend(&args).unwrap_err(),
+            "full claim of a permission UTXO with no unclaimed exits"
+        );
     }
 
     #[test]
@@ -548,8 +605,6 @@ mod tests {
             leaf_amount: 5_000,
             deduct: 2_000,
             siblings: tree.siblings(0),
-            new_root: tree.root_with_leaf(0, leaf_hash(&spk, 5_000 - 2_000)),
-            new_unclaimed: 2,
             delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(2), 1), 3_000)],
             collateral_input: (TransactionOutpoint::new(Hash::from_u64_word(3), 2), 10_000_000),
             collateral_spk: collateral_args().1,
@@ -578,8 +633,6 @@ mod tests {
             leaf_amount: 5_000,
             deduct: 6_000,
             siblings: vec![[0; 32]],
-            new_root: [0; 32],
-            new_unclaimed: 0,
             delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(2), 1), 6_000)],
             collateral_input: (TransactionOutpoint::new(Hash::from_u64_word(3), 2), 10_000_000),
             collateral_spk: collateral_args().1,
@@ -604,8 +657,6 @@ mod tests {
             leaf_amount: 5_000,
             deduct: 2_000,
             siblings: vec![[0; 32]],
-            new_root: [0; 32],
-            new_unclaimed: 1,
             delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(2), 1), 1_500)],
             collateral_input: (TransactionOutpoint::new(Hash::from_u64_word(3), 2), 10_000_000),
             collateral_spk: collateral_args().1,
@@ -635,8 +686,6 @@ mod tests {
             leaf_amount: 5_000,
             deduct: 2_000,
             siblings: tree.siblings(0),
-            new_root: tree.root_with_leaf(0, leaf_hash(&spk, 5_000 - 2_000)),
-            new_unclaimed: 2,
             delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(2), 1), 3_000)],
             collateral_input: (TransactionOutpoint::new(Hash::from_u64_word(3), 2), 10_000_000),
             collateral_spk: collateral_args().1,
@@ -666,8 +715,6 @@ mod tests {
             leaf_amount: 5_000,
             deduct: 2_000,
             siblings: vec![[0; 32]],
-            new_root: [0; 32],
-            new_unclaimed: 1,
             delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(2), 1), 2_000)],
             collateral_input: (TransactionOutpoint::new(Hash::from_u64_word(3), 2), 1_000),
             collateral_spk: collateral_args().1,

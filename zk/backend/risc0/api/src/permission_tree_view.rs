@@ -17,20 +17,27 @@ pub struct PermissionTreeView {
 }
 
 impl PermissionTreeView {
-    /// Builds a padded permission tree from a slice of exit leaves.
+    /// Builds a padded permission tree from the tree's current view: `Some` carries the
+    /// live leaf (amount already reduced after a partial claim), `None` marks a claimed-out
+    /// slot hashed as the empty leaf.
     ///
     /// Always pads to `1 << required_depth(leaves.len())` with
     /// [`PermissionTreeAccumulator::hash_empty()`], matching the depth the on-chain redeem
     /// script embeds for the leaf count (`required_depth(1) == 1`: a single leaf pairs with
     /// the empty hash). For 0 leaves this is the all-empty depth-1 tree rooted at
     /// `hash_branch(empty, empty)`.
-    pub fn from_leaves(leaves: &[ExitLeaf]) -> Self {
+    pub fn from_leaves(leaves: &[Option<ExitLeaf>]) -> Self {
         let depth = PermissionTreeAccumulator::required_depth(leaves.len());
         let capacity = 1usize << depth;
         let empty = PermissionTreeAccumulator::hash_empty();
         let mut level0 = vec![empty; capacity];
         for (i, leaf) in leaves.iter().enumerate() {
-            level0[i] = PermissionTreeAccumulator::hash_leaf(leaf.to_standard_spk(), leaf.amount);
+            level0[i] = match leaf {
+                Some(leaf) => {
+                    PermissionTreeAccumulator::hash_leaf(leaf.to_standard_spk(), leaf.amount)
+                }
+                None => empty,
+            };
         }
         let mut levels = vec![level0];
         for _ in 0..depth {
@@ -108,7 +115,7 @@ mod tests {
         let h1 = PermissionTreeAccumulator::hash_leaf(l1.to_standard_spk(), l1.amount);
         let manual_root = PermissionTreeAccumulator::hash_branch(&h0, &h1);
 
-        let tree = PermissionTreeView::from_leaves(&[l0.clone(), l1.clone()]);
+        let tree = PermissionTreeView::from_leaves(&[Some(l0.clone()), Some(l1.clone())]);
         assert_eq!(tree.depth(), PermissionTreeAccumulator::required_depth(2));
         assert_eq!(tree.root(), manual_root);
 
@@ -116,7 +123,7 @@ mod tests {
         let pk2 = [0x33u8; 32];
         let l2 = ExitLeaf::from_pair(StandardSpk::PubKey(&pk2), 300);
         let h2 = PermissionTreeAccumulator::hash_leaf(l2.to_standard_spk(), l2.amount);
-        let tree3 = PermissionTreeView::from_leaves(&[l0, l1, l2]);
+        let tree3 = PermissionTreeView::from_leaves(&[Some(l0), Some(l1), Some(l2)]);
         let empty = PermissionTreeAccumulator::hash_empty();
         let b0 = PermissionTreeAccumulator::hash_branch(&h0, &h1);
         let b1 = PermissionTreeAccumulator::hash_branch(&h2, &empty);
@@ -131,7 +138,7 @@ mod tests {
         let pk1 = [0x22u8; 32];
         let l0 = ExitLeaf::from_pair(StandardSpk::PubKey(&pk0), 100);
         let l1 = ExitLeaf::from_pair(StandardSpk::PubKey(&pk1), 200);
-        let tree = PermissionTreeView::from_leaves(&[l0, l1]);
+        let tree = PermissionTreeView::from_leaves(&[Some(l0), Some(l1)]);
 
         let s0 = tree.siblings(0);
         let s1 = tree.siblings(1);
@@ -151,7 +158,7 @@ mod tests {
 
         let l0_hash = PermissionTreeAccumulator::hash_leaf(l0.to_standard_spk(), l0.amount);
         let l1_hash = PermissionTreeAccumulator::hash_leaf(l1.to_standard_spk(), l1.amount);
-        let tree = PermissionTreeView::from_leaves(&[l0, l1]);
+        let tree = PermissionTreeView::from_leaves(&[Some(l0), Some(l1)]);
         let s0 = tree.siblings(0);
         assert_eq!(fold_path(l0_hash, &s0, 0), tree.root());
         let s1 = tree.siblings(1);
@@ -167,7 +174,7 @@ mod tests {
         let l0 = ExitLeaf::from_pair(StandardSpk::PubKey(&pk0), 100);
         let l0_hash = PermissionTreeAccumulator::hash_leaf(l0.to_standard_spk(), l0.amount);
         let empty = PermissionTreeAccumulator::hash_empty();
-        let tree = PermissionTreeView::from_leaves(&[l0]);
+        let tree = PermissionTreeView::from_leaves(&[Some(l0)]);
 
         // The on-chain redeem for 1 leaf embeds depth 1: leaf paired with the empty hash.
         assert_eq!(tree.depth(), PermissionTreeAccumulator::required_depth(1));
@@ -185,11 +192,14 @@ mod tests {
         for k in 1..=5usize {
             let leaves: Vec<_> = (0..k)
                 .map(|i| {
-                    ExitLeaf::from_pair(StandardSpk::PubKey(&[i as u8 + 1; 32]), 100 + i as u64)
+                    Some(ExitLeaf::from_pair(
+                        StandardSpk::PubKey(&[i as u8 + 1; 32]),
+                        100 + i as u64,
+                    ))
                 })
                 .collect();
             let mut acc = PermissionTreeAccumulator::new();
-            for leaf in &leaves {
+            for leaf in leaves.iter().flatten() {
                 acc.add_exit(leaf.to_standard_spk(), leaf.amount);
             }
             let view = PermissionTreeView::from_leaves(&leaves);
