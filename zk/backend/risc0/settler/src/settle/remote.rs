@@ -148,12 +148,15 @@ impl SettlementSink for RpcSink {
         spk: ScriptPublicKey,
         outpoint: TransactionOutpoint,
     ) -> bool {
-        // Still pending in the mempool or orphan pool: not dropped. Any error other than an
-        // authoritative "not found" is treated as live so a transient RPC blip never triggers a
-        // resubmit; the probe simply retries on the next confirm-warn tick.
+        // Still pending in the mempool or orphan pool: not dropped. The authoritative not-found
+        // arrives as the typed variant over gRPC but as the subsystem's plain "not found" message
+        // over wRPC, so both shapes fall through to the chain read. Any other error is treated as
+        // live so a transient RPC blip never triggers a resubmit; the probe simply retries on the
+        // next confirm-warn tick.
         match self.client.get_mempool_entry(txid, true, false).await {
             Ok(_) => return false,
             Err(RpcError::TransactionNotFound(_)) => {}
+            Err(RpcError::RpcSubsystem(msg)) if msg.contains("not found") => {}
             Err(_) => return false,
         }
 

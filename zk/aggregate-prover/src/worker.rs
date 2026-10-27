@@ -472,6 +472,10 @@ where
             return;
         }
         if let Some(drain) = queued_drain {
+            // The boundary sits above every retained batch (the windows hold one chain in
+            // scheduling order, `retained` preceding `queued`), so the covered prefix spans the
+            // whole retained window as well.
+            self.retained.clear();
             self.queued.drain(0..drain);
         }
         if let Some(drain) = retained_drain {
