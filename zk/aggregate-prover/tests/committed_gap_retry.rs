@@ -29,7 +29,7 @@ use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId, SchedulerTransaction};
 use vprogs_l1_types::{ChainBlockMetadata, SettlementInfo};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler, TransactionContext};
-use vprogs_state_settlement_journal::{SettlementJournal, StoreJournal};
+use vprogs_state_settlement_journal::StoreJournal;
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_abi::batch_aggregator::{StateTransition, StateTransitionArgs};
@@ -305,7 +305,7 @@ fn committed_gap_retries_after_a_transient_fetch_failure() {
         // The pre-restart half: block 1's batch is committed with its receipt cached but no
         // journal entry, the state a kill between commit and journal record leaves behind.
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-        let journal = Arc::new(StoreJournal::new(storage.clone()));
+        let journal = StoreJournal::new(storage.clone());
         let mut scheduler = Scheduler::new(
             ExecutionConfig::default().with_processor(PlainProcessor),
             StorageConfig::default().with_store(storage),
@@ -319,13 +319,13 @@ fn committed_gap_retries_after_a_transient_fetch_failure() {
         let prover = AggregateProver::new(
             SyntheticBackend,
             scheduler.state().receipt_store(),
+            Some(journal.clone()),
             AggregateProverConfig {
                 lane_key: Hash::default(),
                 covenant_id: None,
                 lane_source: StalledStartLaneSource { fetches: fetches.clone() },
                 settlement_queue: Some(settlement_queue.clone()),
                 settlement: Some(settlement_rx),
-                journal: Some(journal.clone()),
                 bundle_size: 1..=1,
                 exits: None,
             },
@@ -380,7 +380,7 @@ fn dead_gap_does_not_wedge_new_work() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     {
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-        let journal = Arc::new(StoreJournal::new(storage.clone()));
+        let journal = StoreJournal::new(storage.clone());
         let mut scheduler = Scheduler::new(
             ExecutionConfig::default().with_processor(PlainProcessor),
             StorageConfig::default().with_store(storage),
@@ -394,6 +394,7 @@ fn dead_gap_does_not_wedge_new_work() {
         let prover = AggregateProver::new(
             SyntheticBackend,
             scheduler.state().receipt_store(),
+            Some(journal.clone()),
             AggregateProverConfig {
                 lane_key: Hash::default(),
                 covenant_id: None,
@@ -403,7 +404,6 @@ fn dead_gap_does_not_wedge_new_work() {
                 },
                 settlement_queue: Some(settlement_queue.clone()),
                 settlement: Some(settlement_rx),
-                journal: Some(journal.clone()),
                 bundle_size: 1..=1,
                 exits: None,
             },
