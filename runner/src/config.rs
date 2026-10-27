@@ -40,8 +40,9 @@ pub enum StartMode {
 pub struct RunnerConfig {
     /// Borsh wRPC URL of the remote node, e.g. `ws://1.2.3.4:17210`.
     pub wrpc_url: String,
-    /// Fee / bootstrap key. Bootstrap (and, in the examples, action issuing) spend from it.
-    pub private_key: SecretKey,
+    /// Fee / bootstrap key. Required for Fresh bootstrap and prove/settlement; `None` for keyless
+    /// observer mode (exec + resume or catch-up).
+    pub private_key: Option<SecretKey>,
     /// Kaspa network to connect to. No default: the operator/example chooses it.
     pub network_id: NetworkId,
     /// Per-transaction program guest ELF (the arbitrary program under execution). Required by the
@@ -64,6 +65,10 @@ pub struct RunnerConfig {
     pub start_from: Option<Hash>,
     /// Reorg head-room, in DAA, the bridge seeds below the sink for a fresh lane.
     pub seed_depth: u64,
+    /// Lower bound on the `min_confirmation_count` for the bridge's chain-follow queries, in
+    /// blue-score confirmations below the sink; the bridge's adaptive reorg filter may still raise
+    /// the threshold above this floor. `None` uses the adaptive threshold alone.
+    pub min_confirmations: Option<u64>,
     /// Run the proving + settlement path. Off = execution-only daemon.
     pub prove: bool,
     /// Explicit start mode, or `None` to auto-select (resume if the data dir is populated, else
@@ -144,6 +149,8 @@ pub struct RawConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seed_depth: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_confirmations: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub prove: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_mode: Option<StartMode>,
@@ -153,10 +160,18 @@ impl RawConfig {
     /// Applies defaults and typed parsing, validating required fields.
     fn resolve(self) -> Result<RunnerConfig, ConfigError> {
         let wrpc_url = self.wrpc_url.ok_or(ConfigError::Missing("wrpc_url"))?;
-        let private_key = {
-            let hex = self.private_key.ok_or(ConfigError::Missing("private_key"))?;
-            SecretKey::from_str(hex.trim())
-                .map_err(|_| ConfigError::Invalid("private_key", "32-byte hex secp256k1 key"))?
+        let private_key = match self.private_key {
+            Some(hex) => {
+                let trimmed = hex.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(SecretKey::from_str(trimmed).map_err(|_| {
+                        ConfigError::Invalid("private_key", "32-byte hex secp256k1 key")
+                    })?)
+                }
+            }
+            None => None,
         };
         let network_id = match self.network {
             Some(n) => parse_network(&n)?,
@@ -177,6 +192,7 @@ impl RawConfig {
             bootstrap_txid: parse_opt_hash(self.bootstrap_txid, "bootstrap_txid")?,
             start_from: parse_opt_hash(self.start_from, "start_from")?,
             seed_depth: self.seed_depth.unwrap_or(500),
+            min_confirmations: self.min_confirmations,
             prove: self.prove.unwrap_or(false),
             start_mode: self.start_mode,
         })
@@ -269,6 +285,19 @@ mod tests {
     #[test]
     fn resolve_reports_missing_required() {
         assert!(matches!(RawConfig::default().resolve(), Err(ConfigError::Missing("wrpc_url"))));
+    }
+
+    #[test]
+    fn keyless_config_valid() {
+        let raw = RawConfig { private_key: None, ..minimal_raw() };
+        let cfg = raw.resolve().unwrap();
+        assert!(cfg.private_key.is_none());
+    }
+
+    #[test]
+    fn resolve_rejects_bad_private_key() {
+        let bad = RawConfig { private_key: Some("not_a_key".into()), ..minimal_raw() };
+        assert!(matches!(bad.resolve(), Err(ConfigError::Invalid("private_key", _))));
     }
 
     #[test]

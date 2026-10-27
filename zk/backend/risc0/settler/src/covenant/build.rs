@@ -135,11 +135,31 @@ pub fn build_settlement(
         "settlement covenant_id must match the live covenant",
     );
 
+    // The rebuilt redeem must reproduce the spent UTXO's actual SPK. The redeem pins the
+    // bootstrap guest-ELF image ids, and the node's P2SH entry check compares against the chain
+    // SPK, so a prover whose guests were rebuilt since the covenant's bootstrap builds a redeem
+    // with different bytes here: every chain check above still passes, the local pre-submit
+    // engine run still passes (it verifies against this same rebuilt redeem), and only the node
+    // rejects the settlement with an opaque `false stack entry at end of script execution`.
+    // Fail here instead, naming the drift.
+    let pins = redeem_pins(backend, lane_key);
+    let redeem_len = redeem_script_len(&artifact.prev_state, &pins);
+    let prev_redeem =
+        build_redeem_script(&artifact.prev_state, &artifact.prev_lane_tip, redeem_len, &pins);
+    assert_eq!(
+        pay_to_script_hash_script(&prev_redeem),
+        cov.spk,
+        "locally rebuilt redeem does not reproduce the covenant UTXO's SPK: the redeem pins \
+         (guest ELF image ids, lane key, permission value) differ from the ones this covenant \
+         was bootstrapped with, so the node would reject the settlement at its P2SH hash check; \
+         rejoin with the covenant's original guest ELFs or bootstrap a fresh covenant",
+    );
+
     let owned_witness =
         OwnedSuccinctWitness::from_receipt(&artifact.receipt, artifact.deposit_spk_hash);
     let settlement = Settlement::build(&SettlementInput {
         covenant_id: cov.covenant_id,
-        pins: redeem_pins(backend, lane_key),
+        pins,
         prev_state: &artifact.prev_state,
         prev_lane_tip: &artifact.prev_lane_tip,
         new_state: &artifact.new_state,
@@ -192,6 +212,24 @@ pub fn build_dev_settlement(
         cov.covenant_id,
         "dev settlement covenant_id must match the live covenant",
     );
+    // Same guard as the production builder: the rebuilt dev redeem must reproduce the spent
+    // UTXO's actual SPK, else the node's P2SH entry check rejects the settlement opaquely.
+    let dev_len =
+        dev_redeem_script_len(&artifact.prev_state, lane_key, DEFAULT_PERMISSION_OUTPUT_VALUE);
+    let prev_redeem = build_dev_redeem_script(
+        &artifact.prev_state,
+        &artifact.prev_lane_tip,
+        lane_key,
+        dev_len,
+        DEFAULT_PERMISSION_OUTPUT_VALUE,
+    );
+    assert_eq!(
+        pay_to_script_hash_script(&prev_redeem),
+        cov.spk,
+        "locally rebuilt dev redeem does not reproduce the covenant UTXO's SPK: the redeem pins \
+         (lane key, permission value) differ from the ones this covenant was bootstrapped with, \
+         so the node would reject the settlement at its P2SH hash check",
+    );
     let settlement = Settlement::build_dev(&SettlementDevInput {
         deposit_spk_hash: &artifact.deposit_spk_hash,
         covenant_id: cov.covenant_id,
@@ -223,42 +261,33 @@ pub fn build_dev_settlement(
 }
 
 /// Rebuilds the live [`CovenantState`] from an external settlement `s` that advanced the covenant.
-pub fn covenant_from_settlement(
-    mode: SettlementMode,
-    backend: &Backend,
-    lane_key: &Hash,
-    cov: &CovenantState,
-    s: &SettlementInfo,
-) -> CovenantState {
-    let spk = match mode {
-        SettlementMode::Dev => {
-            let len =
-                dev_redeem_script_len(&s.new_state, lane_key, DEFAULT_PERMISSION_OUTPUT_VALUE);
-            let redeem = build_dev_redeem_script(
-                &s.new_state,
-                &s.new_lane_tip,
-                lane_key,
-                len,
-                DEFAULT_PERMISSION_OUTPUT_VALUE,
-            );
-            pay_to_script_hash_script(&redeem)
-        }
-        SettlementMode::Production => {
-            let pins = redeem_pins(backend, lane_key);
-            let len = redeem_script_len(&s.new_state, &pins);
-            let redeem = build_redeem_script(&s.new_state, &s.new_lane_tip, len, &pins);
-            pay_to_script_hash_script(&redeem)
-        }
-    };
+///
+/// The continuation SPK comes from the observed transaction itself (`s.continuation_spk_hash`),
+/// never from a local-pin rebuild: the redeem script pins the bootstrap guest-ELF image ids, and
+/// a catch-up prover whose guests were rebuilt would otherwise adopt an SPK its own settlements
+/// can never reproduce, deferring the mismatch to an opaque node rejection.
+pub fn covenant_from_settlement(cov: &CovenantState, s: &SettlementInfo) -> CovenantState {
     CovenantState {
         covenant_id: cov.covenant_id,
         state: s.new_state,
         lane_tip: s.new_lane_tip,
         outpoint: TransactionOutpoint::new(s.tx_id, 0),
-        spk,
+        spk: p2sh_spk_from_hash(&s.continuation_spk_hash),
         value: cov.value,
         daa_score: s.daa_score.get(),
     }
+}
+
+/// Rebuilds the P2SH `ScriptPublicKey` a settlement's continuation output carried, from the
+/// redeem-script hash the bridge captured. Layout matches `pay_to_script_hash_script`:
+/// `OpBlake2b | OpData32 | hash(32) | OpEqual`.
+fn p2sh_spk_from_hash(hash: &[u8; 32]) -> ScriptPublicKey {
+    use kaspa_txscript::opcodes::codes::{OpBlake2b, OpData32, OpEqual};
+    let mut script = Vec::with_capacity(35);
+    script.extend_from_slice(&[OpBlake2b, OpData32]);
+    script.extend_from_slice(hash);
+    script.push(OpEqual);
+    ScriptPublicKey::new(0, script.into())
 }
 
 /// Returns the production redeem pins for this covenant.
