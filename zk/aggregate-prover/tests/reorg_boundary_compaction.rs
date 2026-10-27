@@ -28,7 +28,7 @@ use vprogs_core_types::{AccessMetadata, ResourceId, SchedulerTransaction};
 use vprogs_l1_types::{ChainBlockMetadata, SettlementInfo};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler, TransactionContext};
 use vprogs_state_proof_receipt::{AggregatorKey, Prefix, put as put_receipt};
-use vprogs_state_settlement_journal::{JournalEntry, SettlementJournal, StoreJournal};
+use vprogs_state_settlement_journal::{JournalEntry, StoreJournal};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_storage_types::Store;
@@ -253,7 +253,7 @@ fn unmapped_boundary_still_compacts_the_journal() {
         let entered = Arc::new(AtomicAsyncLatch::new());
         let release = Arc::new(AtomicAsyncLatch::new());
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-        let journal = Arc::new(StoreJournal::new(storage.clone()));
+        let journal = StoreJournal::new(storage.clone());
         let mut scheduler = Scheduler::new(
             ExecutionConfig::default().with_processor(GateProcessor {
                 entered: entered.clone(),
@@ -280,13 +280,13 @@ fn unmapped_boundary_still_compacts_the_journal() {
         let prover = AggregateProver::new(
             SyntheticBackend,
             scheduler.state().receipt_store(),
+            Some(journal.clone()),
             AggregateProverConfig {
                 lane_key: Hash::default(),
                 covenant_id: None,
                 lane_source: ServeLaneProofs,
                 settlement_queue: Some(settlement_queue.clone()),
                 settlement: Some(settlement_rx),
-                journal: Some(journal.clone()),
                 bundle_size: 1..=1,
                 exits: None,
             },
@@ -356,7 +356,7 @@ fn unmapped_boundary_resume_does_not_refeed_the_settled_entry() {
         // The restarted worker: the journal holds an entry, so the startup gate waits for the
         // bridge's tip publication; the boundary it publishes maps to no batch metadata.
         let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-        let journal = Arc::new(StoreJournal::new(storage.clone()));
+        let journal = StoreJournal::new(storage.clone());
         let scheduler = Scheduler::new(
             ExecutionConfig::default().with_processor(NoopProcessor),
             StorageConfig::default().with_store(storage),
@@ -367,13 +367,13 @@ fn unmapped_boundary_resume_does_not_refeed_the_settled_entry() {
         let prover = AggregateProver::new(
             SyntheticBackend,
             scheduler.state().receipt_store(),
+            Some(journal.clone()),
             AggregateProverConfig {
                 lane_key: Hash::default(),
                 covenant_id: None,
                 lane_source: ServeLaneProofs,
                 settlement_queue: Some(settlement_queue.clone()),
                 settlement: Some(settlement_rx),
-                journal: Some(journal.clone()),
                 bundle_size: 1..=1,
                 exits: None,
             },
