@@ -18,8 +18,8 @@ fn main() {
     process_transaction::<Sha256>(
         &mut Host,
         &mut Journal,
-        |tx, _merge_idx, _context_hash, resources, exits, deposit| {
-            runtime::run(tx, resources, exits, deposit, &POLICY)
+        |tx, _merge_idx, context, resources, exits, deposit| {
+            runtime::run(tx, context, resources, exits, deposit, &POLICY)
         },
     );
 }
