@@ -177,7 +177,7 @@ impl Settlement {
         );
         let sig_cache = Cache::new(1);
         let reused = SigHashReusedValuesUnsync::new();
-        let flags = EngineFlags { covenants_enabled: true, ..Default::default() };
+        let flags = EngineFlags::default();
         let populated = PopulatedTransaction::new(tx, vec![utxo.clone()]);
         let cov_ctx =
             CovenantsContext::from_tx(&populated).expect("covenant continuity validation");
@@ -321,9 +321,7 @@ pub fn permission_spk(script_hash: &[u8; 32]) -> ScriptPublicKey {
 /// and drops it. Production instead threads it between the proof blob and `new_lane_tip`, since
 /// there it must surface directly under the journal preimage.
 fn sig_script_dev(redeem: &[u8], input: &SettlementDevInput<'_>) -> Vec<u8> {
-    // Dev sig_script is small (no seal), but use the covenants-enabled flags for parity with
-    // the production sig_script builder.
-    ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
+    ScriptBuilder::new()
         .add_data(input.deposit_spk_hash)
         .unwrap()
         .add_data(input.claimed_seq_commit.as_slice())
@@ -363,11 +361,7 @@ fn sig_script_succinct(
     new_lane_tip: &Hash,
     witness: &SuccinctWitness<'_>,
 ) -> Vec<u8> {
-    // The R0Succinct seal is ~222 KB - well over the 10 KB pre-Toccata script cap that
-    // `ScriptBuilder::new()` (covenants_enabled=false) enforces. Building with
-    // covenants-enabled flags raises the cap to the 1 MB post-Toccata limit, which the
-    // settlement covenant requires anyway (it spends a Toccata covenant UTXO).
-    ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
+    ScriptBuilder::new()
         .add_data(witness.claim)
         .unwrap()
         .add_data(&witness.control_index.to_le_bytes())
@@ -410,7 +404,7 @@ fn sig_script_groth16(
     compressed_proof: &[u8],
     deposit_spk_hash: &[u8; 32],
 ) -> Vec<u8> {
-    ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
+    ScriptBuilder::new()
         .add_data(compressed_proof)
         .unwrap()
         .add_data(deposit_spk_hash)
@@ -786,7 +780,7 @@ mod engine_value_spend_tests {
         );
         let sig_cache = Cache::new(1);
         let reused = SigHashReusedValuesUnsync::new();
-        let flags = EngineFlags { covenants_enabled: true, ..Default::default() };
+        let flags = EngineFlags::default();
         let populated = PopulatedTransaction::new(tx, vec![utxo.clone()]);
         let cov_ctx =
             CovenantsContext::from_tx(&populated).expect("covenant continuity validation");
@@ -1109,7 +1103,7 @@ mod engine_deposit_binding_tests {
         );
         let sig_cache = Cache::new(1);
         let reused = SigHashReusedValuesUnsync::new();
-        let flags = EngineFlags { covenants_enabled: true, ..Default::default() };
+        let flags = EngineFlags::default();
         let populated = PopulatedTransaction::new(tx, vec![utxo.clone()]);
         let cov_ctx =
             CovenantsContext::from_tx(&populated).expect("covenant continuity validation");

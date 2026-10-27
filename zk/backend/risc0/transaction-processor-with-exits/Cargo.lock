@@ -806,7 +806,7 @@ dependencies = [
 [[package]]
 name = "kaspa-hashes"
 version = "2.0.1"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=master#9fdbaf1b1886fb5742783d2da73c36239bd6f272"
+source = "git+https://github.com/kaspanet/rusty-kaspa?rev=eb0a856d4e1ef9d884c5997bc43408091f5a5632#eb0a856d4e1ef9d884c5997bc43408091f5a5632"
 dependencies = [
  "blake2b_simd",
  "blake3",
@@ -825,7 +825,7 @@ dependencies = [
 [[package]]
 name = "kaspa-merkle"
 version = "2.0.1"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=master#9fdbaf1b1886fb5742783d2da73c36239bd6f272"
+source = "git+https://github.com/kaspanet/rusty-kaspa?rev=eb0a856d4e1ef9d884c5997bc43408091f5a5632#eb0a856d4e1ef9d884c5997bc43408091f5a5632"
 dependencies = [
  "kaspa-hashes",
 ]
@@ -833,7 +833,7 @@ dependencies = [
 [[package]]
 name = "kaspa-seq-commit"
 version = "2.0.1"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=master#9fdbaf1b1886fb5742783d2da73c36239bd6f272"
+source = "git+https://github.com/kaspanet/rusty-kaspa?rev=eb0a856d4e1ef9d884c5997bc43408091f5a5632#eb0a856d4e1ef9d884c5997bc43408091f5a5632"
 dependencies = [
  "kaspa-hashes",
  "kaspa-merkle",
@@ -844,7 +844,7 @@ dependencies = [
 [[package]]
 name = "kaspa-smt"
 version = "2.0.1"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=master#9fdbaf1b1886fb5742783d2da73c36239bd6f272"
+source = "git+https://github.com/kaspanet/rusty-kaspa?rev=eb0a856d4e1ef9d884c5997bc43408091f5a5632#eb0a856d4e1ef9d884c5997bc43408091f5a5632"
 dependencies = [
  "blake3",
  "kaspa-hashes",
@@ -855,7 +855,7 @@ dependencies = [
 [[package]]
 name = "kaspa-utils"
 version = "2.0.1"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=master#9fdbaf1b1886fb5742783d2da73c36239bd6f272"
+source = "git+https://github.com/kaspanet/rusty-kaspa?rev=eb0a856d4e1ef9d884c5997bc43408091f5a5632#eb0a856d4e1ef9d884c5997bc43408091f5a5632"
 dependencies = [
  "async-channel",
  "borsh",

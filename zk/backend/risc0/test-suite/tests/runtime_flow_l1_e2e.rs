@@ -30,7 +30,7 @@ use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_test_suite::{
-    TEST_SUBNETWORK_ID, batch_aggregator_elf, batch_processor_elf, force_covenant_forks,
+    TEST_SUBNETWORK_ID, batch_aggregator_elf, batch_processor_elf,
     runtime_flow::{
         EXAMPLE_DEPOSIT_COVENANT_ID, RuntimeSigner, deposit_carrier, init_config_carrier,
         transfer_carrier, transfer_create_carrier, user_balance, withdraw_carrier,
@@ -45,11 +45,9 @@ type FlowNode = Node<RocksDbStore, FlowVm>;
 const TIMEOUT: Duration = Duration::from_secs(120);
 const KAS: u64 = SOMPI_PER_KASPA;
 
-/// Simnet params: fast coinbase maturity + the forks that activate Toccata / covenants so lane
-/// (`TX_VERSION_TOCCATA`) carriers are accepted.
+/// Simnet params: fast coinbase maturity so matured coinbase appears within a few blocks.
 fn simnet_params(p: &mut Params) {
     p.blockrate.coinbase_maturity = 1;
-    force_covenant_forks(p);
 }
 
 /// Builds a framework node following `l1`, executing the deposit/transfer/withdraw runtime ELF and

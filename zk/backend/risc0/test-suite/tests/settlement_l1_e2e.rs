@@ -25,7 +25,6 @@
 use std::time::Duration;
 
 use kaspa_consensus_core::{
-    config::params::ForkActivation,
     constants::TX_VERSION_TOCCATA,
     mass::{BlockMassLimits, units::ComputeBudget},
     network::{NetworkId, NetworkType},
@@ -198,8 +197,7 @@ async fn settlement_lands_in_real_block_dev_redeem() {
         NetworkId::new(NetworkType::Simnet),
         Some(|p| {
             p.blockrate.coinbase_maturity = 1;
-            p.toccata_activation = ForkActivation::always();
-            p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+            p.block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
         }),
     )
     .await;
@@ -347,8 +345,7 @@ async fn settlement_with_exits_lands_in_real_block_dev_redeem() {
         NetworkId::new(NetworkType::Simnet),
         Some(|p| {
             p.blockrate.coinbase_maturity = 1;
-            p.toccata_activation = ForkActivation::always();
-            p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+            p.block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
         }),
     )
     .await;
@@ -694,8 +691,7 @@ async fn run_real_proof_settlement<BuildPins, MakeWitness>(
         NetworkId::new(NetworkType::Simnet),
         Some(|p| {
             p.blockrate.coinbase_maturity = 1;
-            p.toccata_activation = ForkActivation::always();
-            p.prior_block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+            p.block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
         }),
     )
     .await;

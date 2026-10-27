@@ -74,7 +74,7 @@ pub(super) fn mempool_min_fee(params: &Params, tx: &Transaction) -> u64 {
         params.storage_mass_parameter,
     );
     let masses = calc.calc_non_contextual_masses(tx);
-    let cofactors = params.block_mass_limits().raw_post().cofactors();
+    let cofactors = params.block_mass_limits.cofactors();
     let fee_mass = masses.compute_mass.max(masses.normalized_transient(&cofactors));
     (fee_mass * MEMPOOL_MIN_RELAY_FEE_PER_KILOGRAM) / 1000
 }
@@ -99,7 +99,7 @@ pub(super) fn priority_mass_mirror(
         .calc_contextual_masses(&populated)
         .expect("contextual mass calculation must succeed for a populated transaction")
         .storage_mass;
-    let cofactors = params.block_mass_limits().raw_post().cofactors();
+    let cofactors = params.block_mass_limits.cofactors();
     let storage_normalized = (storage as f64 * cofactors.storage).ceil() as u64;
     masses.compute_mass.max(masses.normalized_transient(&cofactors)).max(storage_normalized)
 }
@@ -130,7 +130,7 @@ pub(super) fn assert_fee_covers_final(params: &Params, tx: &Transaction, entries
     );
     let masses = calc.calc_non_contextual_masses(tx);
     let compute = masses.compute_mass;
-    let cofactors = params.block_mass_limits().raw_post().cofactors();
+    let cofactors = params.block_mass_limits.cofactors();
     let transient = masses.normalized_transient(&cofactors);
     let populated = PopulatedTransaction::new(tx, entries.to_vec());
     let storage = calc.calc_contextual_masses(&populated).map_or(0, |m| m.storage_mass);
@@ -141,7 +141,7 @@ pub(super) fn assert_fee_covers_final(params: &Params, tx: &Transaction, entries
         "built tx pays {paid} but its own min_fee is {required} \
          (compute mass {compute}, normalized transient mass {transient}, storage mass {storage})",
     );
-    let limit = params.block_mass_limits().raw_post().storage;
+    let limit = params.block_mass_limits.storage;
     assert!(
         storage <= limit,
         "built tx carries storage mass {storage}, above the block-fit limit {limit}",

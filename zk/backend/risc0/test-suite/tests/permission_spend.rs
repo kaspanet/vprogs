@@ -134,10 +134,10 @@ fn test_spk(seed: u8) -> [u8; 34] {
     bytes.as_slice().try_into().unwrap()
 }
 
-/// A `ScriptBuilder` with covenant flags, so pushes of the (>520-byte at depth >= 2) redeem script
-/// are allowed (the post-Toccata covenant element cap is 1,000,000, not 520).
+/// A `ScriptBuilder` admitting the (>520-byte at depth >= 2) redeem script pushes the covenant
+/// tests build (the script element cap is 1,000,000).
 fn cov_builder() -> ScriptBuilder {
-    ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
+    ScriptBuilder::new()
 }
 
 /// Delegate redeem bytes and its P2SH sig_script for the standard test covenant id.
@@ -291,7 +291,7 @@ fn build_spend(
 fn run_spend(tx: &Transaction, utxos: &[UtxoEntry]) -> Result<(), String> {
     let sig_cache = Cache::new(10_000);
     let reused = SigHashReusedValuesUnsync::new();
-    let flags = EngineFlags { covenants_enabled: true, ..Default::default() };
+    let flags = EngineFlags::default();
     let populated = PopulatedTransaction::new(tx, utxos.to_vec());
     let cov_ctx = CovenantsContext::from_tx(&populated).expect("covenant continuity must succeed");
     let accessor = NullAccessor;

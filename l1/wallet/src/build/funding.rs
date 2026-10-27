@@ -216,7 +216,7 @@ pub(super) fn fund(
     let mut walk = Walk {
         params,
         policy,
-        limit: params.block_mass_limits().raw_post().storage,
+        limit: params.block_mass_limits.storage,
         change_required,
         probe,
         shortfall: None,
@@ -658,7 +658,7 @@ mod tests {
             params.storage_mass_parameter,
         )
         .unwrap_or(u64::MAX);
-        let limit = params.block_mass_limits().raw_post().storage;
+        let limit = params.block_mass_limits.storage;
         assert!(
             dropped_storage > limit,
             "fixture no longer reproduces a storage-infeasible dropped layout"

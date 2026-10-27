@@ -87,7 +87,7 @@ fn verify_settlement_onchain(
 
     let sig_cache = Cache::new(10_000);
     let reused = SigHashReusedValuesUnsync::new();
-    let flags = EngineFlags { covenants_enabled: true, ..Default::default() };
+    let flags = EngineFlags::default();
 
     let populated = PopulatedTransaction::new(tx, vec![utxo.clone()]);
     let cov_ctx =
@@ -149,7 +149,7 @@ fn assert_settlement_compute_mass_within_limit(
     let calc = MassCalculator::new_with_consensus_params(&params);
     let compute_mass = calc.calc_non_contextual_masses(&tx).compute_mass;
     let budget_mass = u64::from(budget.value()) * 100;
-    let limit = params.block_mass_limits().after().compute;
+    let limit = params.block_mass_limits.compute;
 
     eprintln!(
         "[settlement mass] used_script_units={} -> compute_budget={} (budget mass={}), \
