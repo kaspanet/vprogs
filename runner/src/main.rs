@@ -141,6 +141,9 @@ async fn main() {
 
     // Keep the node alive for the lifetime of the process.
     let _node = handles.node;
+    // No consumer of the exits feed in this binary; close it so the worker's sends discard
+    // instead of queueing forever.
+    drop(handles.exits_rx);
     match handles.settler {
         // Settlement mode: the settler is the daemon's reason to live. Awaiting its handle means a
         // panic inside it (rejected settlement, confirmation timeout) surfaces here and exits the

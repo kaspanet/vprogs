@@ -752,7 +752,7 @@ mod tests {
         let registry = Arc::new(RwLock::new(HashMap::new()));
 
         let leaves = vec![test_leaf(0x11, 100), test_leaf(0x22, 200)];
-        let expected_root = PermissionTreeView::from_leaves(&leaves).root();
+        let expected_root = PermissionTreeView::from_leaves(&live(&leaves)).root();
         let bundle = Arc::new(ExitsForBundle {
             new_state: [0x11; 32],
             permission_spk_hash: permission_commitment(&leaves),
@@ -806,7 +806,7 @@ mod tests {
         let registry = Arc::new(RwLock::new(HashMap::new()));
 
         let leaves = vec![test_leaf(0x11, 100)];
-        let initial_root = PermissionTreeView::from_leaves(&leaves).root();
+        let initial_root = PermissionTreeView::from_leaves(&live(&leaves)).root();
         let initial_bundle = Arc::new(ExitsForBundle {
             new_state: [0x11; 32],
             permission_spk_hash: permission_commitment(&leaves),
@@ -882,7 +882,7 @@ mod tests {
 
         // 1. Send exit bundle.
         let leaves = vec![test_leaf(0x77, 700)];
-        let root = PermissionTreeView::from_leaves(&leaves).root();
+        let root = PermissionTreeView::from_leaves(&live(&leaves)).root();
         let bundle = Arc::new(ExitsForBundle {
             new_state: [0x11; 32],
             permission_spk_hash: permission_commitment(&leaves),
@@ -967,9 +967,9 @@ mod tests {
 
         // Park two bundles with distinct raw roots.
         let leaves1 = vec![test_leaf(0x31, 100)];
-        let root1 = PermissionTreeView::from_leaves(&leaves1).root();
+        let root1 = PermissionTreeView::from_leaves(&live(&leaves1)).root();
         let leaves2 = vec![test_leaf(0x42, 200)];
-        let root2 = PermissionTreeView::from_leaves(&leaves2).root();
+        let root2 = PermissionTreeView::from_leaves(&live(&leaves2)).root();
         let b1 = Arc::new(ExitsForBundle {
             new_state: [0x11; 32],
             permission_spk_hash: permission_commitment(&leaves1),
@@ -1151,6 +1151,11 @@ mod tests {
         h.shutdown().await;
     }
 
+    /// Live-view form of `leaves` for [`PermissionTreeView::from_leaves`].
+    fn live(leaves: &[ExitLeaf]) -> Vec<Option<ExitLeaf>> {
+        leaves.iter().cloned().map(Some).collect()
+    }
+
     fn test_leaf(seed: u8, amount: u64) -> ExitLeaf {
         ExitLeaf::from_pair(StandardSpk::PubKey(&[seed; 32]), amount)
     }
@@ -1158,7 +1163,7 @@ mod tests {
     /// A one-leaf bundle for `new_state`, plus the padded-tree root the pairing pins.
     fn test_bundle(new_state: [u8; 32], seed: u8, amount: u64) -> (Arc<ExitsForBundle>, [u8; 32]) {
         let leaves = vec![test_leaf(seed, amount)];
-        let root = PermissionTreeView::from_leaves(&leaves).root();
+        let root = PermissionTreeView::from_leaves(&live(&leaves)).root();
         let bundle = Arc::new(ExitsForBundle {
             new_state,
             permission_spk_hash: permission_commitment(&leaves),
@@ -1565,7 +1570,7 @@ mod tests {
     /// Expected commitment for k leaves, cross-checked against `PermissionTreeView` (the
     /// padded-tree root) wrapped in the redeem script the settlement pins.
     fn manual_commitment(leaves: &[ExitLeaf]) -> [u8; 32] {
-        let view = PermissionTreeView::from_leaves(leaves);
+        let view = PermissionTreeView::from_leaves(&live(leaves));
         blake2b_script_hash(&build_permission_redeem_script(
             &view.root(),
             leaves.len() as u64,
