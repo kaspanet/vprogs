@@ -51,6 +51,30 @@ pub fn min_fee(params: &Params, tx: &Transaction) -> u64 {
     MIN_FEERATE_PER_GRAM * masses.compute_mass.max(masses.normalized_transient(&cofactors))
 }
 
+/// The layout's per-tx admission verdict: `Some((mass, limit))` names the first mass dimension
+/// above the node's per-tx limit (compute before transient), or `None` when the layout is
+/// admissible on both. The mempool rejects a transaction whose compute mass exceeds the block
+/// compute limit or whose transient mass exceeds the transient limit, in isolation and before fee
+/// pricing, so every layout a funding walk builds must pass this. Computed from the signed layout
+/// with the same calculator [`min_fee`] uses: both dimensions depend only on the byte layout,
+/// which the fee value cannot change.
+pub(super) fn mass_overflow(params: &Params, tx: &Transaction) -> Option<(u64, u64)> {
+    let calc = MassCalculator::new(
+        params.mass_per_tx_byte,
+        params.mass_per_script_pub_key_byte,
+        params.storage_mass_parameter,
+    );
+    let masses = calc.calc_non_contextual_masses(tx);
+    let limits = params.block_mass_limits;
+    if masses.compute_mass > limits.compute {
+        Some((masses.compute_mass, limits.compute))
+    } else if masses.transient_mass > limits.transient {
+        Some((masses.transient_mass, limits.transient))
+    } else {
+        None
+    }
+}
+
 /// The node's feerate-ordering mass for a layout ([`Mass::normalized_max`]): the non-contextual
 /// masses of `tx` combined with [`calc_storage_mass`] on `input_cells`/`output_cells` (change
 /// slot last) at change value `change`. Never commits storage mass; `tx` and the cells come from
