@@ -62,6 +62,10 @@ pub struct L1BridgeConfig {
     /// confirmations below the sink; the adaptive reorg filter may still raise the threshold above
     /// this floor. `None` uses the adaptive threshold alone.
     pub min_confirmations: Option<u64>,
+    /// Switches the adaptive reorg filter off: the follow threshold becomes exactly
+    /// `min_confirmations` (zero when unset), so blocks render at the tip and reorgs surface as
+    /// rollbacks instead of confirmation latency.
+    pub adaptive_filter_disabled: bool,
     /// Optional hooks for watching and emitting permission-output spends on accepted L1
     /// transactions.
     pub permission_spends: Option<PermissionSpendHooks>,
@@ -87,6 +91,7 @@ impl Default for L1BridgeConfig {
             tip_daa: None,
             settlement_observer: None,
             min_confirmations: None, // Adaptive reorg-filter threshold by default.
+            adaptive_filter_disabled: false,
             permission_spends: None,
             settlement_events: None,
         }
@@ -176,6 +181,14 @@ impl L1BridgeConfig {
     /// adaptive reorg filter's threshold. `None` uses the adaptive threshold alone.
     pub fn with_min_confirmations(mut self, min_confirmations: Option<u64>) -> Self {
         self.min_confirmations = min_confirmations;
+        self
+    }
+
+    /// Switches the adaptive reorg filter off: the follow threshold becomes exactly
+    /// `min_confirmations` (zero when unset), so a latency-critical follow renders at the tip
+    /// and takes reorgs as rollbacks instead of confirmation latency.
+    pub fn with_adaptive_filter_disabled(mut self, disabled: bool) -> Self {
+        self.adaptive_filter_disabled = disabled;
         self
     }
 
