@@ -9,6 +9,7 @@ use std::time::Duration;
 pub use config::AlternationPacer;
 pub use config::{SettlementMode, SettlementWorkerConfig};
 use vprogs_core_atomics::{AsyncQueue, AtomicAsyncLatch};
+use vprogs_l1_types::SettlementInfo;
 use vprogs_zk_aggregate_prover::{ScheduledBundle, SettlementArtifact};
 use vprogs_zk_backend_risc0_api::Receipt;
 
@@ -22,6 +23,34 @@ use crate::{
 /// recoverable (a later deposit to the funder lets the same bundle settle), so the worker waits
 /// this long (shutdown-interruptible) and retries rather than dropping the bundle or stopping.
 const FEE_EXHAUSTED_BACKOFF: Duration = Duration::from_secs(5);
+
+/// Reconciles the covenant against a bundle whose proving base may no longer match it, adopting
+/// `latest` when it is ahead, and returns whether the artifact chains from the resulting position.
+fn reconcile<R>(
+    cov: &mut CovenantState,
+    artifact: &SettlementArtifact<R>,
+    latest: Option<SettlementInfo>,
+) -> bool {
+    let chains = |cov: &CovenantState| {
+        cov.state == artifact.prev_state && cov.lane_tip == artifact.prev_lane_tip
+    };
+    if chains(cov) {
+        return true;
+    }
+    if let Some(s) = latest {
+        if (s.new_state != cov.state || s.new_lane_tip != cov.lane_tip)
+            && s.daa_score.get() >= cov.daa_score
+        {
+            *cov = covenant_from_settlement(cov, &s);
+            log::info!(
+                "settlement-worker: adopted external settlement {} (covenant advanced to daa {})",
+                s.tx_id,
+                cov.daa_score,
+            );
+        }
+    }
+    chains(cov)
+}
 
 /// Runs the production settlement loop until `shutdown` opens or an unrecoverable settlement
 /// failure (a node hard-reject) stops it; temporary funding exhaustion is retried, not fatal.
@@ -122,40 +151,27 @@ pub async fn run(
             continue;
         };
 
-        // A competing settler may have advanced the covenant since our last settlement. If our
-        // in-memory covenant no longer matches this bundle's proving base, consult the settlement
-        // watch the bridge writes: it carries the covenant's last settlement the bridge observed in
-        // an accepted chain block, including its DAA score. When that settlement is ahead of `cov`,
-        // adopt it as the new optimistic tip so a later bundle that chains from it settles instead
-        // of leaving us permanently stuck behind.
+        // A competing settler may have advanced the covenant since our last settlement, so the
+        // bundle's proving base may no longer match `cov` on either pin (state root, lane tip).
+        // The reconcile consults the settlement watch the bridge writes: it carries the
+        // covenant's last settlement the bridge observed in an accepted chain block, including
+        // its DAA score. When that settlement is ahead of `cov`, adopt it as the new optimistic
+        // tip so a later bundle that chains from it settles instead of leaving us permanently
+        // stuck behind.
         //
         // The watch is read, not the per-bundle snapshot: the settler advances `cov` optimistically
         // when it settles, but the bridge needs ≈RTT to observe that, so the watch lags `cov` by
-        // one settlement. Adoption is therefore gated on the watch being *ahead*
-        // (`s.new_state` differs from `cov.state`) and forward-only (`s.daa_score` at or
-        // past `cov.daa_score`); a value behind `cov` (a competitor we already passed) is
-        // ignored. The continuation outpoint is adopted without an on-chain confirm: the
-        // bridge only publishes settlements from accepted chain blocks, so the UTXO
-        // existed, and the rare case it was already spent by a reorg/race is caught at
+        // one settlement. Adoption is therefore gated on the watch being *ahead* and forward-only
+        // (the settlement's `daa_score` at or past `cov.daa_score`); a value behind `cov` (a
+        // competitor we already passed) is ignored. The continuation outpoint is adopted without an
+        // on-chain confirm: the bridge only publishes settlements from accepted chain blocks, so
+        // the UTXO existed, and the rare case it was already spent by a reorg/race is caught at
         // settle time (the sink's `Superseded`), which skips the bundle.
-        if cov.state != artifact.prev_state {
-            let latest = *cfg.settlement.borrow();
-            if let Some(s) = latest {
-                if s.new_state != cov.state && s.daa_score.get() >= cov.daa_score {
-                    *cov = covenant_from_settlement(&cov, &s);
-                    log::info!(
-                        "settlement-worker: adopted external settlement {} (covenant advanced to daa {})",
-                        s.tx_id,
-                        cov.daa_score,
-                    );
-                }
-            }
-        }
-
-        // If the base still mismatches after adopting the tip, a competitor already covered this
-        // bundle's range: it is superseded. Skip it rather than asserting in the builder; a later
-        // bundle chaining from the adopted tip settles.
-        if cov.state != artifact.prev_state {
+        let latest = *cfg.settlement.borrow();
+        if !reconcile(&mut cov, &artifact, latest) {
+            // The base still mismatches after adopting the tip, so a competitor already covered
+            // this bundle's range: it is superseded. Skip it rather than asserting in the
+            // builder; a later bundle chaining from the adopted tip settles.
             log::info!(
                 "settlement-worker: skipping superseded bundle (a competitor covered its range)"
             );
@@ -216,4 +232,117 @@ pub async fn run(
         }
     }
     log::info!("settlement-worker: shut down");
+}
+
+#[cfg(test)]
+mod tests {
+    use kaspa_consensus_core::tx::TransactionOutpoint;
+    use kaspa_hashes::Hash;
+    use vprogs_l1_types::{SettlementInfo, TransactionId};
+
+    use super::{CovenantState, SettlementArtifact, reconcile};
+
+    /// State root every state-neutral settlement leaves unchanged: a lane range of guest-rejected
+    /// transactions writes no resource, so the root is identical on both sides of it.
+    const STATE: [u8; 32] = [0x11; 32];
+
+    /// A different state root, for pins that genuinely advanced the state.
+    const OTHER_STATE: [u8; 32] = [0x22; 32];
+
+    /// Covenant holding `(state, lane_tip)`, the pair its redeem prefix pins.
+    fn covenant(state: [u8; 32], lane_tip: u8) -> CovenantState {
+        CovenantState {
+            covenant_id: Hash::from_bytes([0xCC; 32]),
+            state,
+            lane_tip: Hash::from_bytes([lane_tip; 32]),
+            outpoint: TransactionOutpoint::new(Hash::from_bytes([0x77; 32]), 0),
+            spk: Default::default(),
+            value: 0,
+            daa_score: 0,
+        }
+    }
+
+    /// Bundle artifact chaining from `(prev_state, prev_lane_tip)`. The receipt never plays a role
+    /// in the reconcile, so the generic parameter is the unit type.
+    fn artifact(prev_state: [u8; 32], prev_lane_tip: u8) -> SettlementArtifact<()> {
+        SettlementArtifact {
+            receipt: (),
+            block_prove_to: Hash::from_bytes([0x02; 32]),
+            prev_state,
+            prev_lane_tip: Hash::from_bytes([prev_lane_tip; 32]),
+            new_state: OTHER_STATE,
+            new_lane_tip: Hash::from_bytes([0x60; 32]),
+            new_seq_commit: Hash::default(),
+            permission_spk_hash: [0u8; 32],
+            deposit_spk_hash: [0u8; 32],
+            covenant_id: [0xCC; 32],
+        }
+    }
+
+    /// The bridge-observed settlement advancing the covenant to `(new_state, new_lane_tip)`.
+    fn settlement(new_state: [u8; 32], new_lane_tip: u8) -> SettlementInfo {
+        SettlementInfo {
+            tx_id: TransactionId::from([0x99; 32]),
+            new_state,
+            new_lane_tip: Hash::from_bytes([new_lane_tip; 32]),
+            ..Default::default()
+        }
+    }
+
+    /// A state-neutral duplicate re-proved over an already-settled range chains its `prev_state`
+    /// from the flat root (the guard's state key alone cannot distinguish it) but its
+    /// `prev_lane_tip` from a tip the covenant already advanced past. The reconcile must reject
+    /// it: reaching the builder with a stale tip panics the settler task.
+    #[test]
+    fn state_neutral_duplicate_with_a_stale_lane_tip_is_superseded() {
+        let mut cov = covenant(STATE, 2);
+        let duplicate = artifact(STATE, 1);
+
+        assert!(!reconcile(&mut cov, &duplicate, None), "no watch to adopt from");
+
+        // The watch already carries the covenant's own position, the state-neutral settlement
+        // that advanced the tip: there is nothing newer to adopt, so the duplicate stays
+        // superseded.
+        let watch = settlement(STATE, 2);
+        assert!(!reconcile(&mut cov, &duplicate, Some(watch)));
+        assert_eq!(cov.lane_tip, Hash::from_bytes([2; 32]), "nothing was adopted");
+    }
+
+    /// A bundle chaining from a state-neutral external settlement advances only the lane tip, so
+    /// the watch settlement ahead of us matches our state root while differing in its tip. The
+    /// reconcile must adopt it, or every later bundle silently fails the lane-tip chain forever.
+    #[test]
+    fn state_neutral_external_advance_is_adopted() {
+        let mut cov = covenant(STATE, 1);
+        let next = artifact(STATE, 2);
+        let watch = settlement(STATE, 2);
+
+        assert!(reconcile(&mut cov, &next, Some(watch)));
+        assert_eq!(cov.lane_tip, Hash::from_bytes([2; 32]), "the watch tip was adopted");
+        assert_eq!(cov.state, STATE, "the state was carried over");
+    }
+
+    /// A bundle chaining from the covenant exactly settles without touching the watch.
+    #[test]
+    fn chaining_artifact_settles_without_adoption() {
+        let mut cov = covenant(STATE, 1);
+        let art = artifact(STATE, 1);
+
+        assert!(reconcile(&mut cov, &art, None));
+        assert_eq!(cov.lane_tip, Hash::from_bytes([1; 32]), "nothing was adopted");
+    }
+
+    /// A bundle whose state root the covenant already advanced past stays superseded, and a watch
+    /// holding the covenant's own position changes nothing: the next bundle chains from the
+    /// adopted tip instead.
+    #[test]
+    fn state_advancing_competitor_supersedes_without_readopting() {
+        let mut cov = covenant(OTHER_STATE, 3);
+        let stale = artifact(STATE, 1);
+        let watch = settlement(OTHER_STATE, 3);
+
+        assert!(!reconcile(&mut cov, &stale, Some(watch)));
+        assert_eq!(cov.state, OTHER_STATE);
+        assert_eq!(cov.lane_tip, Hash::from_bytes([3; 32]), "nothing was readopted");
+    }
 }
