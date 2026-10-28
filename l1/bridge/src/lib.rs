@@ -23,4 +23,5 @@ mod worker;
 pub use bridge::L1Bridge;
 pub use command::Command;
 pub use config::{L1BridgeConfig, PermissionSpendHooks};
+pub use error::lane_walk_reached_genesis;
 pub use event::L1Event;
