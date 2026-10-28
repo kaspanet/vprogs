@@ -16,4 +16,6 @@ pub enum StateSpace {
     SmtStale,
     /// Stored proof receipts.
     ProofReceipt,
+    /// App-defined secondary indexes over resources, written by the indexer hooks.
+    Index,
 }

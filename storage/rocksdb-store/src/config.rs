@@ -98,6 +98,12 @@ pub trait Config: Send + Sync + 'static {
             o.set_prefix_extractor(SliceTransform::create_fixed_prefix(U64_PREFIX_LEN));
         })
     }
+
+    /// Options for the app-index column family; index keys are app-defined with no shared
+    /// layout, so no prefix extractor applies.
+    fn cf_index_opts() -> Options {
+        Options::default()
+    }
 }
 
 /// Default store configuration.
