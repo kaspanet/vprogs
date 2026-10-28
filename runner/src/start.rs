@@ -22,9 +22,11 @@ use tokio::{
 };
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_smt::EMPTY_HASH;
+use vprogs_core_types::ChainSink;
 use vprogs_l1_bridge::{PermissionSpendHooks, lane_walk_reached_genesis};
 use vprogs_l1_types::SettlementInfo;
 use vprogs_l1_wallet::Wallet;
+use vprogs_node_framework::NodeApi;
 use vprogs_scheduling_scheduler::Indexer;
 use vprogs_zk_abi::withdrawal::ExitLeaf;
 use vprogs_zk_aggregate_prover::ExitsForBundle;
@@ -40,7 +42,7 @@ use crate::{
     exit_index::{ExitIndexer, load_registry, run_exec_exits_joiner, run_exit_indexer},
     node::{
         BridgeObservers, BridgeParams, CovenantIdBytes, DepositSpkHash, Elfs, ProvingParams,
-        RunnerNode, RunnerStore, SettlementQueue, build_exec_node, build_proving_node,
+        RunnerNode, RunnerStore, RunnerVm, SettlementQueue, build_exec_node, build_proving_node,
     },
     persistence::PersistedState,
     report::spawn_sync_reporter,
@@ -606,6 +608,10 @@ where
     // settlement here; the settler (reader) detects a competitor advancing past its in-memory
     // tip.
     let (settlement_tx, settlement_rx) = watch::channel(None::<SettlementInfo>);
+    // Re-root channel: the aggregate prover (writer) publishes the covenant tip when it holds a
+    // fold whose window head enters off the tip's exit; the drain task below (reader) rolls
+    // execution back to the settlement boundary.
+    let (re_root_tx, re_root_rx) = mpsc::unbounded_channel();
     let (exits_tx, exits_rx) = mpsc::unbounded_channel();
     let (settlement_events_tx, settlement_events_rx) = mpsc::unbounded_channel();
     // The bridge roots at `bridge_seed`, resolved once above at the same block the covenant pin
@@ -669,11 +675,13 @@ where
             sink: queue.clone(),
             bundle_size: 1..=usize::MAX,
             settlement_rx: Some(settlement_rx.clone()),
+            re_root: Some(re_root_tx),
             journal: journal.clone(),
             exits_tx: Some(exits_tx),
         },
         indexer,
     );
+    tokio::spawn(run_covenant_reroot(node.api().clone(), re_root_rx));
     // Target the bridge replays toward: the node's virtual DAA captured before bootstrap. The
     // reporter loop only reads the tip atomic.
     spawn_sync_reporter(tip_daa_obs, tip_daa);
@@ -851,6 +859,44 @@ fn bridge_params(
         min_confirmations: cfg.min_confirmations,
         adaptive_filter_disabled: cfg.adaptive_filter_disabled,
         observers,
+    }
+}
+
+/// Rolls execution back to a settlement's boundary when the aggregate prover holds a fold
+/// because its window head enters off the covenant tip's exit: the batches between the boundary
+/// and the head cannot chain onto the covenant (a receipt-less committed range, or a fork below
+/// the boundary), and only re-execution from the boundary re-enters at the tip's exit. The
+/// rollback re-drives the cancelled range through the scheduler, which re-proves and re-bundles
+/// it from the covenant's own state. A boundary mapping to no batch of ours (a competitor's fork
+/// block) has no rollback target; the re-form paths on the next settlement advance own that
+/// case.
+async fn run_covenant_reroot(
+    api: NodeApi<RunnerStore, RunnerVm>,
+    mut re_root_rx: mpsc::UnboundedReceiver<SettlementInfo>,
+) {
+    while let Some(tip) = re_root_rx.recv().await {
+        let boundary = tip.block_prove_to;
+        let settlement = tip.tx_id;
+        let result = api
+            .with_scheduler(move |scheduler| match scheduler.id(&boundary.as_bytes()) {
+                Some(id) => scheduler
+                    .rollback_to(id)
+                    .map(|checkpoint| checkpoint.index())
+                    .map_err(|err| format!("rollback to batch {id} failed: {err}")),
+                None => Err("the boundary block maps to no batch of ours".to_owned()),
+            })
+            .await
+            .map_err(|err| err.to_string())
+            .and_then(|outcome| outcome.map_err(|err| err.to_string()));
+        match result {
+            Ok(index) => log::info!(
+                "runner: covenant re-root rolled execution back to batch {index} \
+                 (settlement {settlement})"
+            ),
+            Err(err) => {
+                log::warn!("runner: covenant re-root for settlement {settlement} failed: {err}")
+            }
+        }
     }
 }
 

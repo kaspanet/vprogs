@@ -194,12 +194,17 @@ fn block(hash: u8, parent_id: u64) -> ChainBlockMetadata {
 /// the block metadata ([`block`] chains each block's lane tip onto the previous block's) and
 /// the state pins are flat, so adjacent receipts chain.
 fn batch_receipt(hash: u8) -> Vec<u8> {
+    batch_receipt_entering(hash, &[0x11; 32], &Hash::from_bytes([hash.saturating_sub(1); 32]))
+}
+
+/// [`batch_receipt`] with explicit entry pins, for the first gap batch chaining off the tip.
+fn batch_receipt_entering(hash: u8, prev_state: &[u8; 32], prev_lane_tip: &Hash) -> Vec<u8> {
     let mut buf = Vec::new();
     BatchTransition::encode(
         &mut buf,
         BatchTransitionArgs {
-            prev_state: &[0x11; 32],
-            prev_lane_tip: &Hash::from_bytes([hash.saturating_sub(1); 32]),
+            prev_state,
+            prev_lane_tip,
             prev_lane_blue_score: 0,
             new_state: &[0x11; 32],
             new_lane_tip: &Hash::from_bytes([hash; 32]),
@@ -249,6 +254,22 @@ fn commit_batch_with_receipt(
     batch.wait_committed_blocking();
     batch.write_batch_receipt(batch_receipt(meta.hash.as_bytes()[0])).wait_blocking();
     batch
+}
+
+/// [`commit_batch_with_receipt`] with the first gap batch's receipt entering at the tip's pins.
+fn commit_tip_chained_batch(
+    scheduler: &mut Scheduler<RocksDbStore, PlainProcessor>,
+    meta: ChainBlockMetadata,
+) {
+    let batch = scheduler.schedule(meta, vec![lane_tx()]);
+    batch.wait_committed_blocking();
+    batch.write_batch_receipt(tip_chained_batch_receipt(meta.hash.as_bytes()[0])).wait_blocking();
+}
+
+/// Receipt of the first gap batch, entering at the settled tip's own exit pins so the re-cover
+/// composes from the tip: the synthetic tip's pins are the state/lane defaults.
+fn tip_chained_batch_receipt(hash: u8) -> Vec<u8> {
+    batch_receipt_entering(hash, &[0u8; 32], &Hash::default())
 }
 
 /// A settlement tip proving through `block`, so the resume pass resolves it against the journal.
@@ -301,7 +322,7 @@ fn committed_gap_with_dead_settlement_entry_recovers() {
             StorageConfig::default().with_store(storage.clone()),
         );
         commit_batch_with_receipt(&mut scheduler, block(1, 0));
-        commit_batch_with_receipt(&mut scheduler, block(2, 1));
+        commit_tip_chained_batch(&mut scheduler, block(2, 1));
         commit_batch_with_receipt(&mut scheduler, block(3, 2));
         journal.record(
             3,
@@ -345,6 +366,7 @@ fn committed_gap_with_dead_settlement_entry_recovers() {
                 lane_source: ServeLaneProofs,
                 settlement_queue: Some(settlement_queue.clone()),
                 settlement: Some(settlement_rx),
+                re_root: None,
                 bundle_size: 1..=1,
                 exits: None,
             },
@@ -435,7 +457,7 @@ fn committed_gap_walks_end_down_over_a_dead_final_block() {
             StorageConfig::default().with_store(storage.clone()),
         );
         commit_batch_with_receipt(&mut scheduler, block(1, 0));
-        commit_batch_with_receipt(&mut scheduler, block(2, 1));
+        commit_tip_chained_batch(&mut scheduler, block(2, 1));
         commit_batch_with_receipt(&mut scheduler, block(3, 2));
         journal.record(
             1,
@@ -464,6 +486,7 @@ fn committed_gap_walks_end_down_over_a_dead_final_block() {
                 lane_source: DeadBlockLaneProofs { dead: block_hash(3) },
                 settlement_queue: Some(settlement_queue.clone()),
                 settlement: Some(settlement_rx),
+                re_root: None,
                 bundle_size: 1..=1,
                 exits: None,
             },

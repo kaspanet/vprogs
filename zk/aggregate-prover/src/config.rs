@@ -30,6 +30,10 @@ pub struct AggregateProverConfig<L: LaneProofSource, R: Send + Sync + 'static> {
     /// Receiver on the bridge's covenant `last_settlement` watch driving re-aggregation of a
     /// suffix a competitor superseded, or `None` to run without re-forming.
     pub settlement: Option<watch::Receiver<Option<SettlementInfo>>>,
+    /// Sender the worker notifies with the covenant tip when it holds a fold whose head enters
+    /// off the tip's exit, driving the runner's rollback of execution to the settlement
+    /// boundary, or `None` to run without the re-root path (the fold is still held).
+    pub re_root: Option<mpsc::UnboundedSender<SettlementInfo>>,
     /// Inclusive bound on how many scheduled batches one bundle may consume. A bundle forms only
     /// once at least `*start()` batches are consecutively ready (parking until then) and is
     /// capped at `*end()`. `1..=usize::MAX` ("1..") is the greedy default: form as soon as the

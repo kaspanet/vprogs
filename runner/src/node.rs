@@ -145,6 +145,10 @@ pub struct ProvingParams {
     /// Receiver on the bridge's covenant `last_settlement` watch, cloned for the aggregate prover
     /// so it re-aggregates a superseded suffix, or `None` to run without re-forming.
     pub settlement_rx: Option<watch::Receiver<Option<SettlementInfo>>>,
+    /// Sender the aggregate prover notifies with the covenant tip when it holds a fold whose
+    /// head enters off the tip's exit, driving the runner's rollback of execution to the
+    /// settlement boundary, or `None` to run without the re-root path.
+    pub re_root: Option<mpsc::UnboundedSender<SettlementInfo>>,
     /// Bundle journal the aggregate prover records each proved bundle into, shared with the
     /// settlement worker so its supersede deletes are visible to the prover's resume path.
     pub journal: StoreJournal<RunnerStore>,
@@ -209,6 +213,7 @@ pub fn build_proving_node(
             lane_source: RemoteLaneSource::new(proving.client),
             settlement_queue: Some(proving.sink),
             settlement: proving.settlement_rx,
+            re_root: proving.re_root,
             bundle_size: proving.bundle_size,
             exits: proving.exits_tx,
         },
