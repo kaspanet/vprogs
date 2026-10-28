@@ -304,7 +304,10 @@ impl ReorgState {
             }
         }
         // Per-channel FIFO keeps appends near-ordered; sorting makes newest-first exact for
-        // interleaved cross-channel arrivals.
+        // interleaved cross-channel arrivals. The stable sort preserves `above`'s order on
+        // equal idx, so reversing first keeps same-idx chained spends newest-first too;
+        // oldest-first would leave the older spend's continuation behind as a phantom.
+        above.reverse();
         above.sort_by_key(|entry| std::cmp::Reverse(entry.idx()));
         let n = above.len();
         for entry in above {
@@ -1356,6 +1359,95 @@ mod tests {
                 &perm_out_key(&Hash::from_bytes(spend1.spend_txid), spend1.new_outpoint_index)
             ),
             None
+        );
+
+        h.shutdown().await;
+    }
+
+    // Two chained spends journaled at one chain idx (a merged child block spending its
+    // parent's continuation) revert newest-first, leaving no phantom continuation.
+    #[tokio::test]
+    async fn same_idx_chained_spends_revert_newest_first() {
+        let dir = tempdir().unwrap();
+        let store: RocksDbStore = RocksDbStore::open(dir.path());
+        let indexer = Arc::new(FakeExitIndexer::new());
+        let registry = Arc::new(RwLock::new(HashMap::new()));
+        let h = IndexerHarness::spawn(store.clone(), indexer.clone(), registry.clone());
+
+        let (bundle, root0) = test_bundle([0x11; 32], 0x77, 700);
+        let settlement = SettlementInfo {
+            tx_id: Hash::from_bytes([0xaa; 32]),
+            new_state: [0x11; 32],
+            chain_idx: 2u64.into(),
+            ..Default::default()
+        };
+        h.pair(bundle, settlement).await;
+        let anchor = TransactionOutpoint::new(settlement.tx_id, 1);
+
+        // root0 -> root1 -> root2, both spends journaled at idx 5.
+        let spend0 = PermissionSpend {
+            covenant_id: [0x55; 32],
+            old_root: root0,
+            new_root: [0x33; 32],
+            spend_txid: [0xb0; 32],
+            new_outpoint_index: 1,
+            chain_idx: 5,
+            ..Default::default()
+        };
+        let spend1 = PermissionSpend {
+            covenant_id: [0x55; 32],
+            old_root: [0x33; 32],
+            new_root: [0x34; 32],
+            spend_txid: [0xb1; 32],
+            new_outpoint_index: 1,
+            chain_idx: 5,
+            ..Default::default()
+        };
+        h.spend_tx.send(SpendMsg::Spent(spend0.clone())).unwrap();
+        let cont0 = TransactionOutpoint::new(
+            Hash::from_bytes(spend0.spend_txid),
+            spend0.new_outpoint_index,
+        );
+        assert!(becomes_true(200, || registry.read().unwrap().contains_key(&cont0)).await);
+        h.spend_tx.send(SpendMsg::Spent(spend1.clone())).unwrap();
+        let cont1 = TransactionOutpoint::new(
+            Hash::from_bytes(spend1.spend_txid),
+            spend1.new_outpoint_index,
+        );
+        assert!(becomes_true(200, || registry.read().unwrap().contains_key(&cont1)).await);
+
+        h.spend_tx.send(SpendMsg::Rollback(3)).unwrap();
+        assert!(
+            becomes_true(200, || {
+                let guard = registry.read().unwrap();
+                guard.len() == 1 && guard.get(&anchor) == Some(&root0)
+            })
+            .await
+        );
+        // Reverting spend1 first restores cont0, and reverting spend0 then deletes it; the
+        // oldest-first order leaves cont0 behind, so this pins the tiebreak.
+        assert!(
+            registry.read().unwrap().get(&cont0).is_none(),
+            "no phantom continuation survives the unwind"
+        );
+        {
+            let reverts = indexer.spend_reverts.lock().unwrap();
+            assert_eq!(reverts.len(), 2);
+            assert_eq!(reverts[0].0.spend_txid, spend1.spend_txid, "later spend reverts first");
+            assert_eq!(reverts[1].0.spend_txid, spend0.spend_txid, "earlier spend reverts second");
+        }
+        assert_eq!(
+            store.get(StateSpace::Metadata, &perm_out_key(&settlement.tx_id, 1)),
+            Some(borsh::to_vec(&root0).unwrap()),
+            "metadata unwound to the pairing anchor"
+        );
+        assert_eq!(
+            store.get(
+                StateSpace::Metadata,
+                &perm_out_key(&Hash::from_bytes(spend0.spend_txid), spend0.new_outpoint_index)
+            ),
+            None,
+            "spend0's continuation gone from the metadata mirror"
         );
 
         h.shutdown().await;
