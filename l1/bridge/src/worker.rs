@@ -830,7 +830,7 @@ mod tests {
     use vprogs_core_types::{ChainSink, SchedulerTransaction};
     use vprogs_l1_types::{ChainBlockMetadata, Hash, L1Transaction, SettlementMsg, SpendMsg};
     use vprogs_zk_abi::withdrawal::{ExitLeaf, StandardSpk};
-    use vprogs_zk_backend_risc0_api::{PermissionTreeAccumulator, PermissionTreeView};
+    use vprogs_zk_backend_risc0_api::PermissionTreeView;
     use vprogs_zk_backend_risc0_app_kit::{
         PermissionSpendArgs, build_permission_spend, claim_siblings,
     };
