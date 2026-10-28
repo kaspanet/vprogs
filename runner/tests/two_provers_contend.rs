@@ -39,8 +39,8 @@ use vprogs_l1_types::{L1TransactionCovenantExt, SettlementInfo};
 use vprogs_l1_wallet::encode_activity_payload;
 use vprogs_node_test_utils::L1Node;
 use vprogs_runner::{
-    BridgeObservers, BridgeParams, Elfs, ProvingParams, RunnerNode, RunnerStore, SettlementQueue,
-    build_proving_node,
+    BridgeObservers, BridgeParams, Elfs, PersistedState, ProvingParams, RunnerConfig, RunnerNode,
+    RunnerStore, SettlementQueue, StartMode, build_proving_node, start_runner,
 };
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_settler::{
@@ -1653,6 +1653,181 @@ async fn prover_joins_live_lane() {
     // No settlement landed on a DAG side-branch.
     assert_no_fork(&l1, block_deploy, bootstrap_outpoint, covenant_id).await;
 
+    l1.shutdown().await;
+}
+
+/// A fresh deploy through the real start path onto a live lane with reorg headroom: the covenant
+/// pin and the bridge root must resolve at one block, or the first settlement wedges.
+///
+/// The bridge roots `seed_depth` DAA below the sink (not at it) and threads every carrier's lane
+/// tip from the entry at that root, while the bootstrap's redeem pins the covenant's initial lane
+/// tip. A pin resolved at the start sink instead mismatches the entry at the root whenever the
+/// lane accepted a carrier in between (the live lane this targets): the first bundle's
+/// `prev_lane_tip` fails the settler's redeem-prefix assert and the covenant chain never grows.
+/// The carrier stretch spans both sides of the root, so this fails unless the pin resolves at the
+/// root the bridge re-roots at. Also asserts the persistence contract a resume depends on: the
+/// state file records that root and the tip pinned into the redeem.
+#[tokio::test(flavor = "multi_thread")]
+async fn fresh_deploy_pins_lane_tip_at_the_bridge_root() {
+    if !dev_mode_enabled() {
+        eprintln!(
+            "skipping fresh_deploy_pins_lane_tip_at_the_bridge_root: RISC0_DEV_MODE!=1 - the \
+             live-lane deploy runs dev stub proofs + the dev redeem on CPU",
+        );
+        return;
+    }
+    let _serial = serialize_settlement_test().await;
+
+    // === Step 0: simnet L1 ===
+    let l1 = L1Node::new(
+        NetworkId::new(NetworkType::Simnet),
+        Some(|p| {
+            p.blockrate.coinbase_maturity = 1;
+            p.block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+        }),
+    )
+    .await;
+    l1.mine_utxos(30).await;
+
+    let network_id = NetworkId::new(NetworkType::Simnet);
+    let lane_key = test_lane_key();
+
+    // === Step 1: fund the deploy key, then warm the lane across a stretch longer than the seed
+    // depth, so the lane entry at the bridge root (seed_depth below the start sink) is a real
+    // folded tip while later carriers advanced the entry above it ===
+    // The bootstrap spends a single wallet UTXO into the covenant output with no change output,
+    // so each funding output must exceed COVENANT_VALUE to leave the fee.
+    let kp = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
+    let addr = prover_address(&kp, network_id);
+    l1.fund_address(&addr, 10 * SOMPI_PER_KASPA, FUND_COUNT).await;
+    for i in 0..12 {
+        let payload =
+            encode_activity_payload(&[AccessMetadata::write(ResourceId::for_test(1))], &[1, 2, 3]);
+        let carrier = l1
+            .build_subnet_payload_transactions(vec![payload], LANE_SUBNET, TX_VERSION_TOCCATA)
+            .await
+            .into_iter()
+            .next()
+            .expect("carrier tx");
+        l1.mine_block(std::slice::from_ref(&carrier)).await;
+        if i % 4 == 0 {
+            eprintln!("bridge-root pin: warmup carrier {i}");
+        }
+    }
+    l1.mine_blocks(1).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // === Step 2: fresh start through the real runner path, with reorg headroom ===
+    let data_dir = TempDir::new().expect("temp data dir");
+    // 4444 = TEST_SUBNETWORK_ID's namespace: the same lane the warmup carriers folded.
+    let cfg = RunnerConfig {
+        wrpc_url: l1.wrpc_borsh_url(),
+        private_key: Some(kp.secret_key()),
+        network_id,
+        program_elf: None,
+        batch_elf: None,
+        aggregator_elf: None,
+        data_dir: data_dir.path().to_path_buf(),
+        lane_id: Some(4444),
+        covenant_id: None,
+        bootstrap_txid: None,
+        start_from: None,
+        seed_depth: 10,
+        min_confirmations: None,
+        prove: true,
+        start_mode: Some(StartMode::Fresh),
+    };
+    let tx_elf = transaction_processor_elf();
+    let batch_elf = batch_processor_elf();
+    let aggregator_elf = batch_aggregator_elf();
+    let elfs = Elfs { program: &tx_elf, batch: &batch_elf, aggregator: &aggregator_elf };
+    let client = connect_wrpc(&l1.wrpc_borsh_url(), network_id).await;
+    let params = Params::from(network_id);
+    let handles = start_runner(&cfg, &client, &params, elfs, |_| [0u8; 32], None, None)
+        .await
+        .expect("fresh start onto the live lane");
+    let covenant_id = handles.covenant_id;
+
+    // === Step 3: drive post-deploy ranges so the prover proves and settles them ===
+    for i in 0..4 {
+        eprintln!("bridge-root pin: driving range {i}");
+        drive_range(&l1).await;
+    }
+
+    // === Step 4: drain in-flight settlements, then tear down ===
+    let state = PersistedState::load(data_dir.path());
+    let bootstrap_txid = state.bootstrap_txid().expect("persisted bootstrap txid");
+    let bootstrap_outpoint = TransactionOutpoint::new(bootstrap_txid, 0);
+    let root = state.bootstrap_block().expect("persisted bootstrap block");
+
+    let mut prev_len = 0usize;
+    let mut stable_rounds = 0;
+    for round in 0..40 {
+        l1.mine_blocks(1).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let len = covenant_chain(&l1, root, bootstrap_outpoint, covenant_id).await.len();
+        if len == prev_len {
+            stable_rounds += 1;
+        } else {
+            stable_rounds = 0;
+        }
+        prev_len = len;
+        if stable_rounds >= 3 && len >= 2 {
+            break;
+        }
+        if round % 5 == 0 {
+            eprintln!("bridge-root pin: round {round}, covenant chain length {len}");
+        }
+    }
+
+    let (settler, shutdown) = handles.settler.expect("prove mode spawns the settler");
+    shutdown.open();
+    let join = settler.await;
+    handles.node.shutdown();
+
+    // === Assertions ===
+    // The covenant chain grew: the first bundle's prev tip matched the bootstrap's pin, so the
+    // settler's redeem-prefix assert passed. A pin resolved at the start sink instead of the
+    // bridge root wedges here (chain stays at the bootstrap).
+    assert!(join.is_ok(), "fresh-deploy settler panicked: {join:?}");
+    let chain = covenant_chain(&l1, root, bootstrap_outpoint, covenant_id).await;
+    let mut expected_input = bootstrap_outpoint;
+    for (pos, link) in chain.iter().enumerate() {
+        assert_eq!(
+            link.covenant_input, expected_input,
+            "settlement #{pos} ({}) must spend the previous covenant output {expected_input}; the \
+             continuation chain forked",
+            link.tx_id,
+        );
+        expected_input = TransactionOutpoint::new(link.tx_id, 0);
+    }
+    assert!(
+        chain.len() >= 2,
+        "expected a covenant chain of at least 2 settlements after the live-lane deploy, got {}",
+        chain.len(),
+    );
+    assert_no_fork(&l1, root, bootstrap_outpoint, covenant_id).await;
+
+    // The pin and the bridge root resolve at one block: the lane entry the state file's root
+    // carries is exactly the persisted pin.
+    let pinned_tip = state.pinned_lane_tip().expect("persisted pinned tip");
+    let entry_at_root = client
+        .get_seq_commit_lane_proof(root, lane_key)
+        .await
+        .expect("lane proof at the persisted root")
+        .lane
+        .map(|entry| entry.tip);
+    assert_ne!(
+        entry_at_root, None,
+        "the lane holds no live entry at the persisted root; the warmup stretch never reached it",
+    );
+    assert_eq!(
+        entry_at_root,
+        Some(pinned_tip),
+        "the persisted pin is not the lane entry at the persisted bridge root",
+    );
+
+    drop(data_dir);
     l1.shutdown().await;
 }
 
