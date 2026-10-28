@@ -35,13 +35,15 @@ pub struct PayToAddressTx<'a> {
     pub keypair: Keypair,
     /// Address the remainder (after the recipient outputs and the fee) is paid back to.
     pub change_address: &'a Address,
+    /// How the fee is priced.
+    pub fee_policy: FeePolicy,
     /// Consensus params, for the mass-based fee and storage mass.
     pub params: &'a Params,
 }
 
 /// Builds one signed transaction paying `args.count` outputs of `args.value` sompi each to
 /// `args.recipient`, funded from a prefix of `args.candidates`, returning the remainder
-/// (after those outputs and the node's minimum mass-based fee) as change to
+/// (after those outputs and the fee priced under `args.fee_policy`) as change to
 /// `args.change_address` when the remainder is storage-viable, and folding it into the fee
 /// otherwise. Used to seed a distinct prover's funding address from a coinbase wallet.
 pub fn pay_to_address_transaction(args: PayToAddressTx<'_>) -> Result<Transaction, BuildError> {
@@ -70,7 +72,7 @@ pub fn pay_to_address_transaction(args: PayToAddressTx<'_>) -> Result<Transactio
             args.candidates[..n].iter().map(|(_, entry)| entry.clone()).collect();
         (sign(MutableTransaction::with_entries(tx, entries.clone()), args.keypair).tx, entries)
     };
-    let funding = fund(args.params, FeePolicy::Floor, &args.candidates, false, &mut build)?;
+    let funding = fund(args.params, args.fee_policy, &args.candidates, false, &mut build)?;
     let (tx, entries) = build(funding.inputs, funding.change);
     commit_storage_mass(args.params, &tx, &entries);
     Ok(tx)
@@ -85,7 +87,10 @@ mod tests {
     use super::*;
     use crate::build::{
         funding::fee_paid,
-        testing::{address, assert_fee_covers_final, keypair, outpoint, pay_to_address_shape},
+        testing::{
+            address, assert_fee_covers_final, keypair, outpoint, pay_to_address_shape,
+            priority_mass_mirror, target_fee_mirror,
+        },
     };
 
     /// A small-change payout, built through [`pay_to_address_transaction`], where the change's
@@ -117,11 +122,47 @@ mod tests {
             count: 1,
             keypair,
             change_address: &address,
+            fee_policy: FeePolicy::Floor,
             params,
         })
         .expect("fundable without a change output");
 
         assert_eq!(tx.outputs.len(), 1, "change output must be dropped");
         assert_eq!(fee_paid(&tx, &[entry]), 400_000);
+    }
+
+    /// A target feerate well above the floor rate prices the payout above what
+    /// [`FeePolicy::Floor`] pays for the same shape, and the paid fee covers the rate over
+    /// the final transaction's priority mass.
+    #[test]
+    fn pay_to_address_pays_a_target_feerate_above_the_floor() {
+        let params = &SIMNET_PARAMS;
+        let keypair = keypair();
+        let address = address(&keypair, params);
+        let payout = 5_000_000_000;
+        let entry =
+            UtxoEntry::new(payout + 5_000_000_000, pay_to_address_script(&address), 0, false, None);
+        let rate = 500.0;
+
+        let build = |fee_policy| {
+            pay_to_address_transaction(PayToAddressTx {
+                candidates: vec![(outpoint(1), entry.clone())],
+                recipient: &address,
+                value: payout,
+                count: 1,
+                keypair,
+                change_address: &address,
+                fee_policy,
+                params,
+            })
+            .expect("fundable with a generous candidate")
+        };
+        let floor_fee = fee_paid(&build(FeePolicy::Floor), std::slice::from_ref(&entry));
+        let tx = build(FeePolicy::TargetFeerate(rate));
+
+        let paid = fee_paid(&tx, std::slice::from_ref(&entry));
+        assert!(paid > floor_fee, "target fee {paid} must out-bid the floor fee {floor_fee}");
+        assert_eq!(paid, target_fee_mirror(params, rate, &tx, std::slice::from_ref(&entry)));
+        assert!(paid as f64 / priority_mass_mirror(params, &tx, &[entry]) as f64 >= rate);
     }
 }

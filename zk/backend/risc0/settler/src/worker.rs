@@ -10,11 +10,13 @@ pub use config::AlternationPacer;
 pub use config::{SettlementMode, SettlementWorkerConfig};
 use vprogs_core_atomics::{AsyncQueue, AtomicAsyncLatch};
 use vprogs_l1_types::SettlementInfo;
+use vprogs_state_settlement_journal::StoreJournal;
+use vprogs_storage_types::Store;
 use vprogs_zk_aggregate_prover::{ScheduledBundle, SettlementArtifact};
 use vprogs_zk_backend_risc0_api::Receipt;
 
 use crate::{
-    confirm::{OutpointAt, confirm_outpoint},
+    confirm::{CovenantLiveness, OutpointAt, confirm_outpoint, covenant_liveness},
     covenant::{CovenantState, covenant_from_settlement},
     settle::{RpcSink, SettleOutcome, Settler, WalletFeeSource},
 };
@@ -52,14 +54,57 @@ fn reconcile<R>(
     chains(cov)
 }
 
+/// Resolves one superseded bundle on its skip path so the skip terminates the bundle instead of
+/// re-arming it: adopts the spending settlement from a fresh settlement-watch read (the skip
+/// decision's read may predate the bridge publishing the competitor's landing; once adopted, the
+/// next bundle chains from the tip instead of skipping), then deletes the bundle's journal entry
+/// so the aggregate prover's resume stops re-feeding the same bundle.
+///
+/// The delete is gated on [`covenant_liveness`], not the raw already-spent rejection: that
+/// rejection also fires while the competitor's settlement only sits in the mempool, where it can
+/// still be evicted or reorged and the range must stay queued, while an outpoint spent in a chain
+/// block cannot revert. `liveness` reads the covenant outpoint the bundle chains from, captured
+/// by the caller before this call's adoption (a post-adoption `cov` names the competitor's
+/// still-unspent continuation); it is injected as a closure so the resolution is testable
+/// without a node.
+async fn resolve_superseded<S, R, L, Fut>(
+    cov: &mut CovenantState,
+    artifact: &SettlementArtifact<R>,
+    bundle: &ScheduledBundle<SettlementArtifact<R>>,
+    journal: Option<&StoreJournal<S>>,
+    latest: Option<SettlementInfo>,
+    liveness: L,
+) where
+    S: Store,
+    L: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = CovenantLiveness>,
+{
+    // Adoption first, on a fresh watch read; reconcile itself logs when it adopts.
+    let _ = reconcile(cov, artifact, latest);
+    let Some(journal) = journal else { return };
+    match liveness().await {
+        CovenantLiveness::Spent => {
+            let start = bundle.checkpoint_index();
+            journal.delete(start);
+            log::info!(
+                "settlement-worker: skipping superseded bundle {start}..={}; resolved on chain",
+                start + bundle.batches() as u64 - 1,
+            );
+        }
+        // Unspent: the spend is mempool-only and may still vanish, so the entry stays queued.
+        // Shutdown: the loop unwinds and the next run's resume re-feeds the bundle.
+        CovenantLiveness::Unspent | CovenantLiveness::Shutdown => {}
+    }
+}
+
 /// Runs the production settlement loop until `shutdown` opens or an unrecoverable settlement
 /// failure (a node hard-reject) stops it; temporary funding exhaustion is retried, not fatal.
 ///
 /// Settlements are serialized: each queued bundle is awaited, skipped if it resolves without an
 /// artifact, or settled before the next bundle is processed.
-pub async fn run(
+pub async fn run<S: Store>(
     queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Receipt>>>,
-    cfg: SettlementWorkerConfig,
+    cfg: SettlementWorkerConfig<S>,
     covenant: CovenantState,
     shutdown: AtomicAsyncLatch,
 ) {
@@ -167,14 +212,32 @@ pub async fn run(
         // on-chain confirm: the bridge only publishes settlements from accepted chain blocks, so
         // the UTXO existed, and the rare case it was already spent by a reorg/race is caught at
         // settle time (the sink's `Superseded`), which skips the bundle.
+        //
+        // The covenant UTXO this bundle chains from, captured before the reconcile below may
+        // adopt a competitor tip: the supersede resolution verifies the spend of THIS outpoint,
+        // never the adopted continuation's (which the competitor left unspent).
+        let base_spk = cov.spk.clone();
+        let base_outpoint = cov.outpoint;
         let latest = *cfg.settlement.borrow();
         if !reconcile(&mut cov, &artifact, latest) {
             // The base still mismatches after adopting the tip, so a competitor already covered
             // this bundle's range: it is superseded. Skip it rather than asserting in the
-            // builder; a later bundle chaining from the adopted tip settles.
+            // builder; a later bundle chaining from the adopted tip settles. Resolve it on the
+            // way out, or the prover's resume re-feeds the same bundle on every pass with no
+            // settlement ever produced.
             log::info!(
                 "settlement-worker: skipping superseded bundle (a competitor covered its range)"
             );
+            let latest = *cfg.settlement.borrow();
+            resolve_superseded(&mut cov, &artifact, &bundle, cfg.journal.as_ref(), latest, || {
+                covenant_liveness(
+                    &cfg.client,
+                    &cfg.params,
+                    OutpointAt { spk: &base_spk, outpoint: base_outpoint },
+                    &shutdown,
+                )
+            })
+            .await;
             continue;
         }
 
@@ -197,8 +260,30 @@ pub async fn run(
                 // A competitor's settlement is already spending this covenant outpoint, so ours can
                 // never land. Hold `cov` and drop the bundle: once that settlement confirms in a
                 // chain block, the bridge publishes it to the settlement watch and the reconcile
-                // block above adopts it.
-                SettleOutcome::Superseded => continue 'outer,
+                // block above adopts it. Resolve the bundle on the way out: the outpoint settle
+                // just failed to spend is the one whose chain spend retires the range.
+                SettleOutcome::Superseded => {
+                    let spent_spk = cov.spk.clone();
+                    let spent_outpoint = cov.outpoint;
+                    let latest = *cfg.settlement.borrow();
+                    resolve_superseded(
+                        &mut cov,
+                        &artifact,
+                        &bundle,
+                        cfg.journal.as_ref(),
+                        latest,
+                        || {
+                            covenant_liveness(
+                                &cfg.client,
+                                &cfg.params,
+                                OutpointAt { spk: &spent_spk, outpoint: spent_outpoint },
+                                &shutdown,
+                            )
+                        },
+                    )
+                    .await;
+                    continue 'outer;
+                }
                 SettleOutcome::Shutdown => break 'outer,
                 // The node hard-rejected the submission; retrying the same bundle cannot recover
                 // it. Stop the settler with a logged reason rather than panicking
@@ -239,8 +324,12 @@ mod tests {
     use kaspa_consensus_core::tx::TransactionOutpoint;
     use kaspa_hashes::Hash;
     use vprogs_l1_types::{SettlementInfo, TransactionId};
+    use vprogs_state_settlement_journal::{JournalEntry, StoreJournal};
+    use vprogs_storage_rocksdb_store::RocksDbStore;
+    use vprogs_zk_aggregate_prover::{BundleBlocks, ScheduledBundle};
 
-    use super::{CovenantState, SettlementArtifact, reconcile};
+    use super::{CovenantState, SettlementArtifact, reconcile, resolve_superseded};
+    use crate::confirm::CovenantLiveness;
 
     /// State root every state-neutral settlement leaves unchanged: a lane range of guest-rejected
     /// transactions writes no resource, so the root is identical on both sides of it.
@@ -344,5 +433,102 @@ mod tests {
         assert!(!reconcile(&mut cov, &stale, Some(watch)));
         assert_eq!(cov.state, OTHER_STATE);
         assert_eq!(cov.lane_tip, Hash::from_bytes([3; 32]), "nothing was readopted");
+    }
+
+    /// Journal entry matching [`scheduled`]: the bundle `7..=8` the resume path would re-feed.
+    fn journaled_entry() -> JournalEntry {
+        JournalEntry {
+            end_index: 8,
+            from_block: Hash::from_bytes([0x01; 32]),
+            block_prove_to: Hash::from_bytes([0x02; 32]),
+            seq_commit: Hash::from_bytes([0x03; 32]),
+        }
+    }
+
+    /// A journal over a throwaway store holding the scheduled bundle's entry, standing in for the
+    /// prover's persisted journal.
+    fn recorded_journal() -> (tempfile::TempDir, StoreJournal<RocksDbStore>) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let journal = StoreJournal::new(RocksDbStore::open(dir.path()));
+        journal.record(7, &journaled_entry());
+        (dir, journal)
+    }
+
+    /// A two-batch bundle whose first checkpoint is 7 (`7..=8`): the start key the resolution
+    /// must delete, matching the resume path's re-feed key.
+    fn scheduled() -> ScheduledBundle<SettlementArtifact<()>> {
+        ScheduledBundle::new(
+            2,
+            7,
+            BundleBlocks {
+                from_block: Hash::from_bytes([0x01; 32]),
+                block_prove_to: Hash::from_bytes([0x02; 32]),
+            },
+        )
+    }
+
+    /// The chain-confirmed supersede: the covenant outpoint gone from the UTXO set means the
+    /// competitor's settlement is in a block, so the bundle's journal entry dies at its
+    /// checkpoint index and the resume path stops re-feeding the range.
+    #[tokio::test]
+    async fn chain_spent_supersede_deletes_the_journal_entry() {
+        let (_dir, journal) = recorded_journal();
+        let mut cov = covenant(STATE, 1);
+        let bundle = scheduled();
+
+        resolve_superseded(
+            &mut cov,
+            &artifact(STATE, 2),
+            &bundle,
+            Some(&journal),
+            None,
+            || async { CovenantLiveness::Spent },
+        )
+        .await;
+
+        assert!(journal.entries().is_empty(), "entry deleted at the bundle's checkpoint index");
+    }
+
+    /// A supersede whose spend is mempool-only (the covenant outpoint still unspent on chain)
+    /// deletes nothing: the competitor's settlement can be evicted or reorged, and the range must
+    /// stay queued.
+    #[tokio::test]
+    async fn mempool_only_supersede_deletes_nothing() {
+        let (_dir, journal) = recorded_journal();
+        let mut cov = covenant(STATE, 1);
+        let bundle = scheduled();
+
+        resolve_superseded(
+            &mut cov,
+            &artifact(STATE, 2),
+            &bundle,
+            Some(&journal),
+            None,
+            || async { CovenantLiveness::Unspent },
+        )
+        .await;
+
+        assert_eq!(journal.entries().len(), 1, "mempool spender may vanish");
+    }
+
+    /// The resolution adopts a watch settlement ahead of `cov` even with no journal wired, so the
+    /// next bundle chains from the competitor's tip instead of skipping against it.
+    #[tokio::test]
+    async fn supersede_resolution_adopts_the_spending_tip() {
+        let mut cov = covenant(STATE, 1);
+        let bundle = scheduled();
+
+        resolve_superseded(
+            &mut cov,
+            &artifact(STATE, 2),
+            &bundle,
+            None::<&StoreJournal<RocksDbStore>>,
+            Some(settlement(STATE, 2)),
+            || async { CovenantLiveness::Spent },
+        )
+        .await;
+
+        assert_eq!(cov.lane_tip, Hash::from_bytes([2; 32]), "watch tip adopted on the skip");
+        assert_eq!(cov.state, STATE, "state carried over");
     }
 }
