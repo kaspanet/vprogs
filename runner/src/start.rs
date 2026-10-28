@@ -479,22 +479,35 @@ where
         }
     };
 
+    // The bridge roots its fresh chain at one block and threads every carrier's lane tip from
+    // the lane entry there, so the covenant's pin must resolve at that same block: resolve the
+    // root before the deploy and pin the lane entry it holds. A root resolved separately after
+    // the bootstrap (e.g. `seed_depth` DAA below `seed_block`) could carry an older entry than
+    // the block the lookup ran at, and any carrier the lane accepted in between wedges the first
+    // settlement's `prev_lane_tip` assert. The persisted deploy anchor (resume / catch-up) is
+    // pinned as-is by `resolve_bridge_seed` once deep enough, so a restart re-roots at the same
+    // block; `None` (no anchor at all) leaves the bridge on its own seeding paths.
+    let bridge_anchor = match &resolved {
+        Some((_, anchor, _)) => *anchor,
+        None => Some(seed_block),
+    };
+    let bridge_seed = resolve_bridge_seed(client, bridge_anchor, cfg.seed_depth, tip_daa).await;
+
     // A fresh deploy onto a lane that is already live (e.g. a re-deploy over lanes warmed by
-    // previous runs) must pin the lane's authoritative tip at the deploy anchor: the first
-    // settlement chains from that tip, matching the tip the bridge seeds its genesis from (both
-    // lookups resolve at `seed_block`). A failed lookup aborts the start: pinning the zero tip
-    // onto a live lane would wedge the covenant's first settlement forever, while an aborted
-    // start is retried whole. A lane with no live entry pins the zero tip, the fresh-lane
-    // deploy. A resolved (resumed or caught-up) covenant reconstructs the zero tip, which is
-    // wrong only for a covenant that itself deployed onto a live lane with a wiped store: its
-    // pin is not recoverable without the deploy-time lookup, and the first settlement's SPK
-    // assert fails.
+    // previous runs) pins the lane's authoritative tip at the resolved root: the first settlement
+    // chains from that tip, matching the tip the bridge seeds its genesis from (both lookups
+    // resolve at `bridge_seed`). A failed lookup aborts the start: pinning the zero tip onto a
+    // live lane would wedge the covenant's first settlement forever, while an aborted start is
+    // retried whole. A lane with no live entry pins the zero tip, the fresh-lane deploy. A
+    // resolved (resumed or caught-up) covenant rebuilds the pin from the state file instead: the
+    // deploy-time lookup's answer is exactly what it recorded, and it survives a wiped store.
     let initial_lane_tip = if resolved.is_some() {
-        Hash::default()
+        persisted.pinned_lane_tip().unwrap_or_default()
     } else {
-        lane_tip_with_retry(client, seed_block, lane_key)
+        let root = bridge_seed.expect("a Some anchor resolves to an explicit root");
+        lane_tip_with_retry(client, root, lane_key)
             .await
-            .map_err(|e| StartError::LaneTipLookup(Box::new(e), seed_block))?
+            .map_err(|e| StartError::LaneTipLookup(Box::new(e), root))?
             .unwrap_or_default()
     };
 
@@ -552,18 +565,26 @@ where
     };
     let covenant_id = covenant.covenant_id;
 
-    // Persist the resolved id, the bootstrap anchor (when known), and the seed block. A resolved
-    // covenant seeds from its deploy block; a fresh deploy seeds from the captured sink.
+    // Persist the resolved id, the bootstrap anchor (when known), and the root the bridge re-roots
+    // at. A resolved covenant keeps its persisted deploy anchor; a fresh deploy records the root
+    // the pin resolved at, so a restart re-roots the bridge at exactly that block instead of
+    // resolving a possibly different one. The pinned tip is recorded alongside, so a resolved
+    // covenant rebuilds its SPK from the pin that actually went into the redeem.
     persisted.covenant_id = Some(covenant_id.to_string());
     if let Some(txid) = bootstrap_txid {
         persisted.bootstrap_txid.get_or_insert_with(|| txid.to_string());
     }
-    let seed_for_resume = match &resolved {
-        Some((_, seed, _)) => *seed,
-        None => Some(seed_block),
-    };
-    if let Some(seed) = seed_for_resume {
-        persisted.bootstrap_block_hash.get_or_insert_with(|| seed.to_string());
+    match &resolved {
+        Some((_, anchor, _)) => {
+            if let Some(anchor) = anchor {
+                persisted.bootstrap_block_hash.get_or_insert_with(|| anchor.to_string());
+            }
+        }
+        None => {
+            persisted.bootstrap_block_hash =
+                Some(bridge_seed.expect("a Some anchor resolves to an explicit root").to_string());
+            persisted.pinned_lane_tip = Some(initial_lane_tip.to_string());
+        }
     }
     persisted.save(&cfg.data_dir);
     log::info!("covenant {covenant_id} ready (bootstrap tx {bootstrap_txid:?})");
@@ -583,10 +604,9 @@ where
     let (settlement_tx, settlement_rx) = watch::channel(None::<SettlementInfo>);
     let (exits_tx, exits_rx) = mpsc::unbounded_channel();
     let (settlement_events_tx, settlement_events_rx) = mpsc::unbounded_channel();
-    // Seed the bridge with reorg headroom: pin the anchor only if it is already deep, else seed
-    // seed_depth below the sink. The settler keeps the unmodified `start_from` (its own
-    // resume/adopt semantics), so this only affects where the bridge roots its chain.
-    let bridge_seed = resolve_bridge_seed(client, start_from, cfg.seed_depth, tip_daa).await;
+    // The bridge roots at `bridge_seed`, resolved once above at the same block the covenant pin
+    // resolved at. The settler keeps the unmodified `start_from` (its own resume/adopt
+    // semantics), so the two only share the persistence above.
 
     let (permission_spends, exits_handles_rx, bridge_settlement_events) = if let Some(indexer) =
         exit_indexer
