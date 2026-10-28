@@ -13,6 +13,8 @@ pub enum ErrorCode {
     /// Guest aborted without producing a journal; synthesized host-side when the executor call
     /// fails.
     GuestPanic = 4,
+    /// The transaction wrote a resource it declared `Read`.
+    ReadDeclaredWrite = 5,
 }
 
 impl From<ErrorCode> for Error {
