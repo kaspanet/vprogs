@@ -6971,6 +6971,7 @@ name = "vprogs-zk-backend-risc0-api"
 version = "0.1.0"
 dependencies = [
  "blake2b_simd",
+ "log",
  "risc0-zkvm",
  "vprogs-core-codec",
  "vprogs-core-hashing",

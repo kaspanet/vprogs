@@ -1,8 +1,9 @@
+use kaspa_hashes::Hash;
 use vprogs_core_codec::Writer;
 use vprogs_core_hashing::Hasher;
 
 use crate::{
-    ErrorCode, Read,
+    Error, ErrorCode, Read,
     transaction_processor::{
         Effects, InputCommitment, Inputs, OutputCommitment, Outputs, Transaction,
         TransactionHandler,
@@ -17,11 +18,34 @@ pub fn process_transaction<H: Hasher>(
     journal: &mut impl Writer,
     f: impl TransactionHandler,
 ) {
-    // Read and decode inputs from host.
+    // Read and decode inputs from host. The wire bytes embed L1 payload data any user can
+    // author, so a decode failure is journaled as a rejection rather than a panic: a panic
+    // aborts the executor call for every carrier in the batch, not just this one.
     let mut inputs_buf = host.read_blob();
-    let inputs = Inputs::decode(inputs_buf.as_mut_slice()).expect("malformed host input");
 
-    // Commit input commitment to journal.
+    // Commit input commitment to journal. A decode rejection still attributes the rejection:
+    // the header keeps the real tx id and merge_idx when it parsed, and version 0 is never a
+    // supported version, so the journal entry carries no execution context and stays decodable.
+    let inputs = match Inputs::decode(inputs_buf.as_mut_slice()) {
+        Ok(inputs) => inputs,
+        Err(err) => {
+            let zeros = Hash::from_bytes([0u8; 32]);
+            let (tx_id, merge_idx) = match Inputs::decode_header(&inputs_buf) {
+                Ok((_, tx_id, merge_idx)) => (tx_id, merge_idx),
+                // A buffer shorter than the header cannot be attributed; only a host assembly
+                // bug produces one.
+                Err(_) => (&zeros, 0),
+            };
+            InputCommitment::encode::<H>(
+                journal,
+                &Inputs { version: 0, tx_id, merge_idx, execution_input: None },
+            );
+            let rejection = Err(err);
+            OutputCommitment::encode::<H>(journal, &rejection);
+            Outputs::encode(&rejection, host);
+            return;
+        }
+    };
     InputCommitment::encode::<H>(journal, &inputs);
 
     // Execute guest closure (if version is supported).
@@ -37,19 +61,30 @@ pub fn process_transaction<H: Hasher>(
     let deposit_hash;
     let result = match version {
         Transaction::V1 => {
-            // Unwrap and verify host-supplied execution input.
+            // Decode guarantees the execution input is present for the supported version.
             let exec = execution_input.as_mut().expect("host omitted execution_input");
-            assert_eq!(tx_id.as_slice(), exec.tx.id(), "host tx_id does not match derived id");
-
-            // Run guest handler, bundling exits + deposit hash + resources into Effects on success.
-            let result =
-                f(&exec.tx, merge_idx, exec.context, &mut exec.resources, &mut exits, &mut deposit);
-            deposit_hash = deposit.get();
-            result.map(|_| Effects {
-                exits: &exits,
-                deposit_spk_hash: &deposit_hash,
-                resources: exec.resources.as_slice(),
-            })
+            if tx_id.as_slice() != exec.tx.id().as_slice() {
+                // The input commitment is already journaled; a mismatched host id rejects like
+                // any other failed execution.
+                Err(Error::Decode("host tx_id does not match derived id".into()))
+            } else {
+                // Run guest handler, bundling exits + deposit hash + resources into Effects on
+                // success.
+                let result = f(
+                    &exec.tx,
+                    merge_idx,
+                    exec.context,
+                    &mut exec.resources,
+                    &mut exits,
+                    &mut deposit,
+                );
+                deposit_hash = deposit.get();
+                result.map(|_| Effects {
+                    exits: &exits,
+                    deposit_spk_hash: &deposit_hash,
+                    resources: exec.resources.as_slice(),
+                })
+            }
         }
         _ => Err(ErrorCode::VersionIncompatible.into()),
     };
