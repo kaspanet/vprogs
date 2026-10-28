@@ -25,6 +25,8 @@ pub struct ChainBlockMetadata {
     pub seq_commit: Hash,
     /// Sequencing commitment carried by the previous block's header.
     pub prev_seq_commit: Hash,
+    /// Pruning point this block's header cites.
+    pub pruning_point: Hash,
     /// Blue score at which the lane was last active. Zero if never active.
     pub prev_lane_blue_score: u64,
     /// Blue score at which the lane was last active after applying this block's accepted txs.
@@ -58,6 +60,7 @@ impl From<&RpcHeader> for ChainBlockMetadata {
             daa_score: h.daa_score,
             timestamp: h.timestamp,
             seq_commit: h.accepted_id_merkle_root,
+            pruning_point: h.pruning_point,
             ..Default::default()
         }
     }
@@ -77,6 +80,7 @@ impl TryFrom<&RpcOptionalHeader> for ChainBlockMetadata {
             daa_score: h.daa_score.ok_or("missing daa_score")?,
             timestamp: h.timestamp.ok_or("missing timestamp")?,
             seq_commit: h.accepted_id_merkle_root.ok_or("missing seq_commit")?,
+            pruning_point: h.pruning_point.ok_or("missing pruning_point")?,
             ..Default::default()
         })
     }
