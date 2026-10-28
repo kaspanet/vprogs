@@ -1,11 +1,25 @@
 use std::{
-    sync::{Arc, atomic::AtomicU64},
+    collections::HashMap,
+    sync::{Arc, RwLock, atomic::AtomicU64},
     time::Duration,
 };
 
-use kaspa_consensus_core::{config::params::Params, subnets::SubnetworkId};
-use tokio::sync::watch;
-use vprogs_l1_types::{ConnectStrategy, Hash, NetworkId, NetworkType, SettlementInfo};
+use kaspa_consensus_core::{
+    config::params::Params, subnets::SubnetworkId, tx::TransactionOutpoint,
+};
+use tokio::sync::{mpsc, watch};
+use vprogs_l1_types::{
+    ConnectStrategy, Hash, NetworkId, NetworkType, PermissionSpend, SettlementInfo,
+};
+
+/// Hooks for watching and emitting permission-output spends.
+#[derive(Clone, Debug)]
+pub struct PermissionSpendHooks {
+    /// Channel sender for emitted permission spend events.
+    pub events: mpsc::UnboundedSender<PermissionSpend>,
+    /// Tracked permission outpoints mapped to their committed Merkle roots.
+    pub registry: Arc<RwLock<HashMap<TransactionOutpoint, [u8; 32]>>>,
+}
 
 /// Configuration for the L1 bridge.
 #[derive(Clone, Debug)]
@@ -48,6 +62,11 @@ pub struct L1BridgeConfig {
     /// confirmations below the sink; the adaptive reorg filter may still raise the threshold above
     /// this floor. `None` uses the adaptive threshold alone.
     pub min_confirmations: Option<u64>,
+    /// Optional hooks for watching and emitting permission-output spends on accepted L1
+    /// transactions.
+    pub permission_spends: Option<PermissionSpendHooks>,
+    /// Optional channel sender the bridge publishes every observed settlement into.
+    pub settlement_events: Option<mpsc::UnboundedSender<SettlementInfo>>,
 }
 
 impl Default for L1BridgeConfig {
@@ -67,6 +86,8 @@ impl Default for L1BridgeConfig {
             tip_daa: None,
             settlement_observer: None,
             min_confirmations: None, // Adaptive reorg-filter threshold by default.
+            permission_spends: None,
+            settlement_events: None,
         }
     }
 }
@@ -164,6 +185,22 @@ impl L1BridgeConfig {
         settlement_observer: Option<watch::Sender<Option<SettlementInfo>>>,
     ) -> Self {
         self.settlement_observer = settlement_observer;
+        self
+    }
+
+    /// Sets the hooks for watching and emitting permission-output spends. `None` disables watching.
+    pub fn with_permission_spends(mut self, hooks: Option<PermissionSpendHooks>) -> Self {
+        self.permission_spends = hooks;
+        self
+    }
+
+    /// Sets the channel sender the bridge publishes every observed settlement into. `None`
+    /// disables publishing.
+    pub fn with_settlement_events(
+        mut self,
+        settlement_events: Option<mpsc::UnboundedSender<SettlementInfo>>,
+    ) -> Self {
+        self.settlement_events = settlement_events;
         self
     }
 }
