@@ -547,13 +547,21 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
                 // pruning point and replay the surviving chain from there.
                 if self.sink.tip() == 0 && !reseeded {
                     reseeded = true;
-                    let stale = self.tip_metadata().hash;
+                    let stale = self.tip_metadata();
                     self.seed_from_pruning_point().await?;
-                    // The anchor changed, so the lane seed must be re-fetched for it.
-                    self.seed_lane_tip().await?;
+                    // The anchor changed, so the lane seed must be re-fetched for it. Keep the
+                    // stale anchor until that succeeds: the re-anchored genesis carries the zero
+                    // lane seed, and `handle_sync_result` only logs the failure, so the next
+                    // notification would follow the new anchor unseeded - the silent divergence
+                    // connect-time seeding rules out - instead of re-running this re-seed.
+                    if let Err(e) = self.seed_lane_tip().await {
+                        self.genesis = stale;
+                        return Err(e);
+                    }
                     log::info!(
-                        "L1 bridge: seed block {stale} orphaned by a reorg below it; re-anchored \
-                         at the pruning point, replaying"
+                        "L1 bridge: seed block {} orphaned by a reorg below it; re-anchored \
+                         at the pruning point, replaying",
+                        stale.hash
                     );
                     continue;
                 }
