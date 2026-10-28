@@ -24,6 +24,11 @@ pub struct PersistedState {
     /// re-supplying it. `None` for state files written before this field existed (back-compat: a
     /// missing optional reads as `None`).
     pub bootstrap_block_hash: Option<String>,
+    /// Lane tip (hex) the bootstrap redeem pins. Paired with
+    /// [`bootstrap_block_hash`](Self::bootstrap_block_hash), whose lane entry it records, so a
+    /// restart rebuilds the covenant SPK from the state file. `None` for state files written
+    /// before this field existed.
+    pub pinned_lane_tip: Option<String>,
 }
 
 impl PersistedState {
@@ -62,6 +67,13 @@ impl PersistedState {
         self.bootstrap_block_hash
             .as_ref()
             .map(|h| h.parse().expect("stored bootstrap_block_hash must be hex"))
+    }
+
+    /// Decoded lane tip pinned into the bootstrap redeem, if set.
+    pub fn pinned_lane_tip(&self) -> Option<Hash> {
+        self.pinned_lane_tip
+            .as_ref()
+            .map(|h| h.parse().expect("stored pinned_lane_tip must be hex"))
     }
 
     /// Decoded bootstrap transaction id, if set. The covenant UTXO's outpoint is `(this, 0)`.
