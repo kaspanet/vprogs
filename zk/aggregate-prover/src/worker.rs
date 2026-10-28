@@ -1,11 +1,15 @@
 use std::{
     collections::VecDeque,
     ops::RangeInclusive,
+    sync::Arc,
     thread::{JoinHandle, spawn},
 };
 
 use kaspa_hashes::Hash;
-use tokio::{runtime::Builder, sync::watch};
+use tokio::{
+    runtime::Builder,
+    sync::{mpsc, watch},
+};
 use vprogs_core_atomics::AsyncQueue;
 use vprogs_core_codec::Reader;
 use vprogs_l1_types::{ChainBlockMetadata, SettlementInfo};
@@ -15,8 +19,8 @@ use vprogs_zk_abi::batch_aggregator::{Inputs as AggregatorInputs, StateTransitio
 use vprogs_zk_batch_prover::{LaneProofRequest, LaneProofSource};
 
 use crate::{
-    AggregateProver, AggregateProverConfig, Backend, BundleBlocks, ScheduledBundle,
-    SettlementArtifact, command::Command,
+    AggregateProver, AggregateProverConfig, Backend, BundleBlocks, ExitsForBundle, ScheduledBundle,
+    SettlementArtifact, command::Command, extract_bundle_exits,
 };
 
 /// Background worker that accumulates scheduled batches, forms bundles from the consecutively-ready
@@ -51,6 +55,9 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend, L: LaneProofSour
     /// First-batch checkpoint index of the most recently re-formed suffix, guarding against
     /// re-emitting it on every settlement wake. Reset by a rollback.
     last_reformed_from: Option<u64>,
+    /// Sender on the exit-leaf channel driving client Merkle-path proof generation, or `None` if
+    /// exit publishing is disabled.
+    exits: Option<mpsc::UnboundedSender<Arc<ExitsForBundle>>>,
 }
 
 impl<S, P, B, L> Worker<S, P, B, L>
@@ -81,6 +88,7 @@ where
             settlement_queue,
             settlement,
             bundle_size,
+            exits,
         } = config;
         // Bundle formation parks while `take` is below the range start and caps `take` at the range
         // end, so an empty range (start > end) would never form a bundle. Reject it up front rather
@@ -101,6 +109,7 @@ where
             retained: VecDeque::new(),
             settlement,
             last_reformed_from: None,
+            exits,
         };
         let runtime = Builder::new_current_thread().enable_all().build().expect("runtime");
         spawn(move || runtime.block_on(this.run()))
@@ -292,6 +301,7 @@ where
         let seq_commit = last_metadata.seq_commit.as_bytes();
         let agg_key = handle.agg_key(*self.backend.aggregator_image_id(), seq_commit);
         let receipt_store = &self.prover.receipt_store;
+        let journals: Vec<Vec<u8>> = receipts.iter().map(|r| B::journal_bytes(r)).collect();
         let receipt = match receipt_store.read_agg_receipt(agg_key).resolve().await {
             Some(receipt) => receipt,
             None => {
@@ -305,7 +315,6 @@ where
                         lane_key: self.lane_key,
                     })
                     .await;
-                let journals: Vec<Vec<u8>> = receipts.iter().map(|r| B::journal_bytes(r)).collect();
                 let inputs = AggregatorInputs::encode(
                     self.backend.batch_image_id(),
                     &lane_proof,
@@ -375,6 +384,20 @@ where
             covenant_id: st.covenant_id,
         };
         handle.publish_artifact(Some(artifact));
+
+        // Publish exit leaves for client Merkle-path generation when exits were emitted.
+        if let Some(sender) = &self.exits {
+            if st.permission_spk_hash != [0u8; 32] {
+                let leaves =
+                    Arc::new(extract_bundle_exits(&journals).expect("decode bundle exits"));
+                // Receiver dropped means no consumer is listening; silently ignore.
+                let _ = sender.send(Arc::new(ExitsForBundle {
+                    new_state: st.new_state,
+                    permission_spk_hash: st.permission_spk_hash,
+                    leaves,
+                }));
+            }
+        }
     }
 
     /// Publishes a formed bundle's handle onto the settlement queue, if one is wired. With no queue

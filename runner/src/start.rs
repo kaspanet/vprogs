@@ -16,12 +16,16 @@ use kaspa_rpc_core::{RpcBlock, api::rpc::RpcApi};
 use kaspa_seq_commit::hashing::lane_key;
 use kaspa_wrpc_client::prelude::KaspaRpcClient;
 use secp256k1::Keypair;
-use tokio::{sync::watch, task::JoinHandle};
+use tokio::{
+    sync::{mpsc, watch},
+    task::JoinHandle,
+};
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_smt::EMPTY_HASH;
 use vprogs_l1_types::SettlementInfo;
 use vprogs_l1_wallet::Wallet;
 use vprogs_scheduling_scheduler::Indexer;
+use vprogs_zk_aggregate_prover::ExitsForBundle;
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_settler::{
     CovenantState, SettlementMode, SettlementWorkerConfig, bootstrap_dev_covenant,
@@ -55,6 +59,14 @@ pub struct RunnerHandles {
     pub lane_subnet: SubnetworkId,
     /// The resolved covenant id the runner follows / settles.
     pub covenant_id: Hash,
+    /// Receiver on the per-bundle exit leaves channel.
+    ///
+    /// Delivers exits per bundle in order with no coalescing. Publication means the bundle
+    /// artifact was published, not confirmed on L1: confirmations come from the settlement
+    /// watch, joined on `new_state` / `permission_spk_hash`. In exec mode the sender is
+    /// dropped at startup, closing the channel: `recv()` yields `None` (treat that as terminal
+    /// silence).
+    pub exits_rx: mpsc::UnboundedReceiver<Arc<ExitsForBundle>>,
 }
 
 /// Operator-facing start-up failure, as opposed to `ConfigError` (which is about parsing the
@@ -189,18 +201,27 @@ where
         persisted: &mut persisted,
     };
     if cfg.prove {
-        let (node, settler, covenant_id) = start_settlement(ctx).await?;
-        Ok(RunnerHandles { node, settler: Some(settler), lane_id, lane_subnet, covenant_id })
+        let (node, settler, covenant_id, exits_rx) = start_settlement(ctx).await?;
+        Ok(RunnerHandles {
+            node,
+            settler: Some(settler),
+            lane_id,
+            lane_subnet,
+            covenant_id,
+            exits_rx,
+        })
     } else {
-        let (node, covenant_id) = start_exec(ctx).await?;
-        Ok(RunnerHandles { node, settler: None, lane_id, lane_subnet, covenant_id })
+        let (node, covenant_id, exits_rx) = start_exec(ctx).await?;
+        Ok(RunnerHandles { node, settler: None, lane_id, lane_subnet, covenant_id, exits_rx })
     }
 }
 
 /// Builds the execution-only node per the start mode: fresh bootstrap (dev-pins under
 /// `RISC0_DEV_MODE`, real-pins otherwise), resume from persisted identity, or catch up to an
 /// existing covenant. The bridge tracks the covenant's settlements; nothing here settles.
-async fn start_exec<F>(ctx: StartContext<'_, F>) -> Result<(RunnerNode, Hash), StartError> {
+async fn start_exec<F>(
+    ctx: StartContext<'_, F>,
+) -> Result<(RunnerNode, Hash, mpsc::UnboundedReceiver<Arc<ExitsForBundle>>), StartError> {
     // Exec mode runs no prover, so the deposit-address derivation is dropped unused.
     let StartContext {
         cfg,
@@ -295,7 +316,8 @@ async fn start_exec<F>(ctx: StartContext<'_, F>) -> Result<(RunnerNode, Hash), S
         ),
         indexer,
     );
-    Ok((node, covenant_id))
+    let (_exits_tx, exits_rx) = mpsc::unbounded_channel::<Arc<ExitsForBundle>>();
+    Ok((node, covenant_id, exits_rx))
 }
 
 /// Builds the proving + settlement node per the start mode: fresh bootstrap (dev-pins under
@@ -304,7 +326,15 @@ async fn start_exec<F>(ctx: StartContext<'_, F>) -> Result<(RunnerNode, Hash), S
 /// node and spawns the settler on the node's batch sink.
 async fn start_settlement<F>(
     ctx: StartContext<'_, F>,
-) -> Result<(RunnerNode, (JoinHandle<()>, AtomicAsyncLatch), Hash), StartError>
+) -> Result<
+    (
+        RunnerNode,
+        (JoinHandle<()>, AtomicAsyncLatch),
+        Hash,
+        mpsc::UnboundedReceiver<Arc<ExitsForBundle>>,
+    ),
+    StartError,
+>
 where
     F: FnOnce(&CovenantIdBytes) -> DepositSpkHash,
 {
@@ -454,6 +484,7 @@ where
     // settlement here; the settler (reader) detects a competitor advancing past its in-memory
     // tip.
     let (settlement_tx, settlement_rx) = watch::channel(None::<SettlementInfo>);
+    let (exits_tx, exits_rx) = mpsc::unbounded_channel();
     // Seed the bridge with reorg headroom: pin the anchor only if it is already deep, else seed
     // seed_depth below the sink. The settler keeps the unmodified `start_from` (its own
     // resume/adopt semantics), so this only affects where the bridge roots its chain.
@@ -479,6 +510,7 @@ where
             sink: queue.clone(),
             bundle_size: 1..=usize::MAX,
             settlement_rx: Some(settlement_rx.clone()),
+            exits_tx: Some(exits_tx),
         },
         indexer,
     );
@@ -508,7 +540,7 @@ where
         covenant,
         shutdown.clone(),
     ));
-    Ok((node, (settler, shutdown), covenant_id))
+    Ok((node, (settler, shutdown), covenant_id, exits_rx))
 }
 
 /// Resolves the explicit block the bridge roots its fresh chain at, decoupled from the settler's

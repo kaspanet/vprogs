@@ -20,7 +20,7 @@ use std::{
 use kaspa_consensus_core::{network::NetworkId, subnets::SubnetworkId};
 use kaspa_hashes::Hash;
 use kaspa_wrpc_client::prelude::KaspaRpcClient;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use vprogs_core_atomics::AsyncQueue;
 use vprogs_l1_bridge::L1BridgeConfig;
 use vprogs_l1_types::SettlementInfo;
@@ -28,7 +28,9 @@ use vprogs_node_framework::{Node, NodeConfig};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Indexer, SchedulerState};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
-use vprogs_zk_aggregate_prover::{AggregateProverConfig, ScheduledBundle, SettlementArtifact};
+use vprogs_zk_aggregate_prover::{
+    AggregateProverConfig, ExitsForBundle, ScheduledBundle, SettlementArtifact,
+};
 use vprogs_zk_backend_risc0_api::{Backend, ProofType, Receipt};
 use vprogs_zk_batch_prover::BatchProverConfig;
 use vprogs_zk_vm::{ProvingPipeline, Vm};
@@ -132,6 +134,9 @@ pub struct ProvingParams {
     /// Receiver on the bridge's covenant `last_settlement` watch, cloned for the aggregate prover
     /// so it re-aggregates a superseded suffix, or `None` to run without re-forming.
     pub settlement_rx: Option<watch::Receiver<Option<SettlementInfo>>>,
+    /// Sender on the exit-leaf channel driving client Merkle-path proof generation, or `None` if
+    /// exit publishing is disabled.
+    pub exits_tx: Option<mpsc::UnboundedSender<Arc<ExitsForBundle>>>,
 }
 
 /// Builds and starts an execution-only [`RunnerNode`]: a zk `Vm` with no proving, the given store,
@@ -183,6 +188,7 @@ pub fn build_proving_node(
             settlement_queue: Some(proving.sink),
             settlement: proving.settlement_rx,
             bundle_size: proving.bundle_size,
+            exits: proving.exits_tx,
         },
     );
     let vm = Vm::new(backend, pipeline);
