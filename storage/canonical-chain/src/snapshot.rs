@@ -36,7 +36,10 @@ use std::sync::Arc;
 
 use vprogs_core_atomics::AtomicRing;
 
-use crate::{bucket::Bucket, hot_zone::HotZone};
+use crate::{
+    bucket::{Bucket, BucketWords},
+    hot_zone::HotZone,
+};
 
 /// A snapshot of the canonical bits, taken at publication.
 ///
@@ -49,6 +52,8 @@ use crate::{bucket::Bucket, hot_zone::HotZone};
 pub struct CanonicalChainSnapshot {
     /// Highest canonical id and the upper bound for reads. `0` means empty.
     pub(crate) tip: u64,
+    /// Highest id ever assigned, monotonic across rollbacks; `0` means no id was ever assigned.
+    pub(crate) high_water: u64,
     /// The recent, copy-on-write buckets (the tail and the last-sealed bucket).
     pub(crate) hot_zone: HotZone,
     /// Sealed buckets `0 ..= tail_bucket - 2`; a bucket pruned off the head reads as canonical.
@@ -63,20 +68,28 @@ impl CanonicalChainSnapshot {
             return false;
         }
 
-        // Locate the bucket and the bit within it.
+        // Read the stored bit; an absent (pruned-off, finalized) bucket reads canonical.
         let (bucket, bit) = Bucket::locate(id);
+        self.read_bucket(bucket, |sealed| sealed.get(bit)).unwrap_or(true)
+    }
 
-        // Hot zone: the tail and last-sealed buckets carry the live bits.
+    /// Returns the bucket's raw words, or `None` if the bucket sits below the body's base
+    /// (already pruned) or above the allocated hot zone.
+    pub fn bucket_words(&self, bucket: u64) -> Option<BucketWords> {
+        self.read_bucket(bucket, |sealed| sealed.words())
+    }
+
+    /// Reads through the bucket holding `bucket`'s bits: a hot-zone bucket directly, else the
+    /// body's sealed copy; `None` below the body's base.
+    fn read_bucket<R>(&self, bucket: u64, read: impl FnOnce(&Bucket) -> R) -> Option<R> {
         let hot = &self.hot_zone;
         if bucket == hot.tail_bucket {
-            return hot.tail.get(bit);
+            return Some(read(&hot.tail));
         }
         if hot.tail_bucket >= 1 && bucket == hot.tail_bucket - 1 {
-            return hot.last_sealed.get(bit);
+            return Some(read(&hot.last_sealed));
         }
-
-        // Body: read the sealed bit; an absent (pruned-off, finalized) bucket reads canonical.
-        self.body.with(bucket, |sealed| sealed.get(bit)).unwrap_or(true)
+        self.body.with(bucket, |sealed| read(sealed))
     }
 
     /// Returns the highest canonical id (the read bound).
@@ -84,8 +97,18 @@ impl CanonicalChainSnapshot {
         self.tip
     }
 
+    /// Returns whether the chain has ever assigned an id; unlike `tip`, this never reverts.
+    pub fn ever_assigned(&self) -> bool {
+        self.high_water > 0
+    }
+
     /// The empty view: no canonical ids.
     pub(crate) fn empty() -> Self {
-        Self { tip: 0, hot_zone: HotZone::empty(), body: Arc::new(AtomicRing::new(0)) }
+        Self {
+            tip: 0,
+            high_water: 0,
+            hot_zone: HotZone::empty(),
+            body: Arc::new(AtomicRing::new(0)),
+        }
     }
 }
