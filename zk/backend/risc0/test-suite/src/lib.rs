@@ -33,7 +33,7 @@ pub fn test_lane_key() -> Hash {
 }
 
 /// Runs the aggregator on a sequence of per-batch receipts and returns the resulting bundle
-/// receipt.
+/// receipt, or `Err` when its single prove attempt fails.
 ///
 /// The returned receipt's journal is a `vprogs_zk_abi::batch_aggregator::StateTransition`, ready
 /// for the settlement covenant.
@@ -43,7 +43,7 @@ pub async fn aggregate_batches(
     lane_key: &Hash,
     last_block_hash: Hash,
     batch_receipts: Vec<Receipt>,
-) -> Receipt {
+) -> Result<Receipt, String> {
     // Fetch the lane proof for the bundle's final block from L1. A failed fetch has no bundle to
     // defer (this helper proves exactly one bundle on demand), so fail loudly.
     let lane_proof = grpc_client

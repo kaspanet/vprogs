@@ -213,9 +213,9 @@ impl vprogs_zk_aggregate_prover::Backend for JournalBackend {
         &self,
         _inputs: &[u8],
         _batch_receipts: Vec<Self::Receipt>,
-    ) -> impl Future<Output = Self::Receipt> + Send + 'static {
+    ) -> impl Future<Output = Result<Self::Receipt, String>> + Send + 'static {
         AGGREGATOR_PROVE_CALLS.fetch_add(1, Ordering::SeqCst);
-        async { settlement_journal() }
+        async { Ok(settlement_journal()) }
     }
 
     fn aggregator_image_id(&self) -> &[u8; 32] {

@@ -9307,6 +9307,7 @@ dependencies = [
  "risc0-zkos-v1compat",
  "risc0-zkvm",
  "sha2",
+ "tokio",
  "vprogs-core-codec",
  "vprogs-core-hashing",
  "vprogs-core-macros",
