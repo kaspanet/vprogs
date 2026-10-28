@@ -134,9 +134,11 @@ impl<C: Config> Tree for RocksDbStore<C> {
     fn node(&self, key: &Key, max_version: u64, snapshot: &Self::Snapshot) -> Option<(u64, Node)> {
         let versions_tracked = snapshot.tip() > 0;
 
-        // Seek the latest canonical version below `max_version`.
-        let iter = self.prefix_iter(StateSpace::SmtNode, &key.encode_with_version(max_version));
-        for (raw_key, raw_value) in iter {
+        // Scan the key's version group from !max_version; the first canonical entry is the
+        // latest version <= `max_version`.
+        let start = key.encode_with_version(max_version);
+        let end = prefix_end(&key.encode()).expect("smt node key with no lexicographic successor");
+        for (raw_key, raw_value) in self.range_iter(StateSpace::SmtNode, &start, &end) {
             let version = Key::decode_version(&raw_key).expect("corrupted smt node key");
             if !versions_tracked || snapshot.is_canonical(version) {
                 let node = Node::decode(&mut raw_value.as_ref()).expect("corrupted smt node");
