@@ -23,8 +23,9 @@ impl HotZone {
     }
 
     /// Advances to `target`, sealing buckets left behind into `body`, and returns the new hot zone.
+    /// Panics if `target` is below the current tail bucket.
     pub(crate) fn roll_forward(&self, target: u64, body: &AtomicRing<Arc<Bucket>>) -> HotZone {
-        debug_assert!(target >= self.tail_bucket, "roll_forward must not move the tail backwards");
+        assert!(target >= self.tail_bucket, "roll_forward must not move the tail backwards");
 
         // Unchanged target: reuse the current hot buckets.
         if target == self.tail_bucket {
