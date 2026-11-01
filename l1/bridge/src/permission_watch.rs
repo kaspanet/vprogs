@@ -304,7 +304,7 @@ mod tests {
     fn check_claim_spend_partial_deduct() {
         let (leaf0, pk0) = test_leaf(1, 5_000);
         let (leaf1, _pk1) = test_leaf(2, 6_000);
-        let leaves = vec![leaf0.clone(), leaf1.clone()];
+        let leaves = vec![Some(leaf0.clone()), Some(leaf1.clone())];
         let tree = PermissionTreeView::from_leaves(&leaves);
 
         let covenant_id = [0xAA; 32];
@@ -327,8 +327,6 @@ mod tests {
             leaf_amount: 5_000,
             deduct,
             siblings: claim_siblings(&leaves, 0),
-            new_root: expected_new_root,
-            new_unclaimed: 2,
             delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(20), 1), deduct)],
             collateral_input: collateral_args().0,
             collateral_spk: collateral_args().1,
@@ -368,7 +366,7 @@ mod tests {
     fn check_claim_spend_full_deduct() {
         let (leaf0, _pk0) = test_leaf(1, 5_000);
         let (leaf1, _pk1) = test_leaf(2, 6_000);
-        let leaves = vec![leaf0.clone(), leaf1.clone()];
+        let leaves = vec![Some(leaf0.clone()), Some(leaf1.clone())];
         let tree = PermissionTreeView::from_leaves(&leaves);
 
         let covenant_id = [0xBB; 32];
@@ -390,8 +388,6 @@ mod tests {
             leaf_amount: 5_000,
             deduct,
             siblings: claim_siblings(&leaves, 0),
-            new_root: expected_new_root,
-            new_unclaimed: 1,
             delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(21), 1), deduct)],
             collateral_input: collateral_args().0,
             collateral_spk: collateral_args().1,
@@ -428,7 +424,7 @@ mod tests {
     #[test]
     fn check_claim_spend_full_deduct_all_claimed_clears_registry() {
         let (leaf0, _pk0) = test_leaf(3, 7_000);
-        let leaves = vec![leaf0.clone()];
+        let leaves = vec![Some(leaf0.clone())];
         let tree = PermissionTreeView::from_leaves(&leaves);
 
         let covenant_id = [0xCC; 32];
@@ -450,8 +446,6 @@ mod tests {
             leaf_amount: 7_000,
             deduct,
             siblings: claim_siblings(&leaves, 0),
-            new_root: expected_new_root,
-            new_unclaimed: 0,
             delegate_inputs: vec![(TransactionOutpoint::new(Hash::from_u64_word(22), 1), deduct)],
             collateral_input: collateral_args().0,
             collateral_spk: collateral_args().1,
@@ -484,7 +478,7 @@ mod tests {
     #[test]
     fn check_claim_spend_non_claim_tx_returns_none() {
         let (leaf0, _pk0) = test_leaf(1, 5_000);
-        let tree = PermissionTreeView::from_leaves(&[leaf0]);
+        let tree = PermissionTreeView::from_leaves(&[Some(leaf0)]);
 
         let perm_outpoint = TransactionOutpoint::new(Hash::from_u64_word(10), 0);
         let registry = RwLock::new(HashMap::from([(perm_outpoint, tree.root())]));
@@ -536,7 +530,7 @@ mod tests {
     fn check_claim_spend_mismatched_walks_returns_none() {
         let (leaf0, _pk0) = test_leaf(1, 5_000);
         let (leaf1, _pk1) = test_leaf(2, 6_000);
-        let leaves = vec![leaf0.clone(), leaf1.clone()];
+        let leaves = vec![Some(leaf0.clone()), Some(leaf1.clone())];
         let tree = PermissionTreeView::from_leaves(&leaves);
 
         let covenant_id = [0xAA; 32];

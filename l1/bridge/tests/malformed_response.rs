@@ -102,6 +102,11 @@ enum Tamper {
     /// Rewrite every successful lane-proof reply into an RPC error, the reply a node serves for
     /// an anchor it cannot answer the lane state at.
     FailLaneProof,
+    /// Pass the first `pass` successful lane-proof replies through, then rewrite every later one
+    /// into an RPC error. Unlike [`Tamper::FailLaneProof`] this counts every lane-proof reply,
+    /// passed or rewritten, into the shared counter, so a test can both place the failures after
+    /// an initial success and observe how often the worker re-runs the lookup.
+    FailLaneProofAfter(usize),
 }
 
 /// A field of a `GetVirtualChainFromBlockV2` response the worker reads.
@@ -287,7 +292,7 @@ fn tamper(bytes: &[u8], t: Tamper, elided: &AtomicUsize) -> Option<Message> {
     let message = BorshServerMessage::<RpcApiOps, Id64>::try_from(bytes).ok()?;
     let op = match t {
         Tamper::Elide(elide) => elide.op(),
-        Tamper::FailLaneProof => RpcApiOps::GetSeqCommitLaneProof,
+        Tamper::FailLaneProof | Tamper::FailLaneProofAfter(_) => RpcApiOps::GetSeqCommitLaneProof,
     };
     if !matches!(message.header.kind, ServerMessageKind::Success) || message.header.op != Some(op) {
         return None;
@@ -305,19 +310,29 @@ fn tamper(bytes: &[u8], t: Tamper, elided: &AtomicUsize) -> Option<Message> {
             );
             BorshServerMessage::new(header, &payload).try_to_vec().expect("frame must reserialize")
         }
+        Tamper::FailLaneProofAfter(pass) => {
+            // Every reply reaching here is a success; the first `pass` pass through untouched.
+            if elided.fetch_add(1, Ordering::Relaxed) < pass {
+                return None;
+            }
+            error_reply(message.header.id)
+        }
         Tamper::FailLaneProof => {
             elided.fetch_add(1, Ordering::Relaxed);
-            let error = borsh::to_vec(&ServerError::Text("lane proof unavailable".into()))
-                .expect("error must serialize");
-            let header = BorshServerMessageHeader::<RpcApiOps, Id64>::new(
-                message.header.id,
-                ServerMessageKind::Error,
-                None,
-            );
-            BorshServerMessage::new(header, &error).try_to_vec().expect("frame must reserialize")
+            error_reply(message.header.id)
         }
     };
     Some(Message::Binary(rewritten))
+}
+
+/// A lane-proof success reply rewritten into the RPC error a node serves for an anchor it cannot
+/// answer the lane state at.
+fn error_reply(id: Option<Id64>) -> Vec<u8> {
+    let error = borsh::to_vec(&ServerError::Text("lane proof unavailable".into()))
+        .expect("error must serialize");
+    let header =
+        BorshServerMessageHeader::<RpcApiOps, Id64>::new(id, ServerMessageKind::Error, None);
+    BorshServerMessage::new(header, &error).try_to_vec().expect("frame must reserialize")
 }
 
 // ============================================================================
@@ -544,6 +559,73 @@ async fn unanswerable_lane_seed_reports_fatal() {
     );
 
     h.node.shutdown().await;
+}
+
+/// A bridge whose seed block a reorg orphans re-anchors at the pruning point, and that re-anchor
+/// re-seeds the lane state at the new anchor. When the node cannot answer that second lookup, the
+/// bridge must not follow the re-anchored chain anyway: the re-anchored genesis carries the zero
+/// lane seed, `handle_sync_result` only logs the failure, and the next notification would follow
+/// the new anchor unseeded - the silent divergence connect-time seeding reports as `Fatal`. The
+/// failed re-seed restores the stale anchor instead, so every later notification re-runs the
+/// whole re-seed from it (each round exhausting the retry loop again).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reseed_lane_seed_failure_keeps_the_stale_anchor() {
+    let node1 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
+    let node0 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
+
+    // The bridge anchors at the seed chain's tip; the first lane-proof reply (connect) passes, so
+    // it reaches Connected, and every later one fails: the re-seed's lookup is unanswerable.
+    let seed_hashes = node1.mine_blocks(3).await;
+    let start_from = *seed_hashes.last().unwrap();
+
+    let proxy = TamperProxy::start(node1.wrpc_borsh_url(), Tamper::FailLaneProofAfter(1)).await;
+    let config = L1BridgeConfig::default()
+        .with_url(Some(proxy.url()))
+        .with_network_type(NetworkType::Simnet)
+        .with_connect_strategy(ConnectStrategy::Fallback)
+        .with_filter_half_life(Duration::ZERO)
+        .with_start_from(Some(start_from))
+        .with_subnetwork_id(Some(LANE_SUBNETWORK_ID));
+    let sink = RecordingSink::new();
+    let (api_tx, api_rx) = mpsc::channel(1);
+    let bridge = L1Bridge::new(config, sink.clone(), api_rx);
+    let _api = api_tx;
+    bridge.wait_for(TIMEOUT, |e| matches!(e, L1Event::Connected)).await;
+
+    // A longer divergent chain takes over, orphaning the seed block: the removals below the stale
+    // anchor put the worker on the re-seed path. Mining continues so notifications keep arriving,
+    // each one re-entering the failed re-seed (one round = LANE_PROOF_MAX_ATTEMPTS failures).
+    node0.mine_blocks(8).await;
+    node1.connect_to(&node0).await;
+    node0.mine_blocks(8).await;
+
+    // Two full retry rounds (2 x LANE_PROOF_MAX_ATTEMPTS x LANE_PROOF_RETRY_DELAY = 10s) plus
+    // slack for the reorg to propagate.
+    tokio::time::sleep(Duration::from_secs(15)).await;
+
+    assert_eq!(
+        sink.scheduled(),
+        0,
+        "the bridge scheduled the re-anchored chain while its lane seed was unanswerable; it \
+         followed the zero-seed genesis instead of restoring the stale anchor and re-running the \
+         re-seed",
+    );
+    // The one passed connect-time reply plus at least a second exhausted round: the worker
+    // re-runs the lookup, it does not drop the seed after the first failure.
+    assert!(
+        proxy.elided.load(Ordering::Relaxed) > 11,
+        "the lane-proof lookup ran only {} times; the worker never re-ran the re-seed after the \
+         first exhausted round",
+        proxy.elided.load(Ordering::Relaxed),
+    );
+    assert!(
+        !bridge.drain().into_iter().any(|e| matches!(e, L1Event::Fatal { .. })),
+        "the failed re-seed is a retryable sync error, not a terminal one",
+    );
+
+    bridge.shutdown();
+    node0.shutdown().await;
+    node1.shutdown().await;
 }
 
 // ============================================================================

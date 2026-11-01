@@ -99,10 +99,10 @@ pub trait Config: Send + Sync + 'static {
         })
     }
 
-    /// Options for the app-index column family; the data options carry over since index
-    /// keys are small, immutable, and never read by consensus paths.
+    /// Options for the app-index column family; index keys are app-defined with no shared
+    /// layout, so no prefix extractor applies.
     fn cf_index_opts() -> Options {
-        Self::cf_data_opts()
+        Options::default()
     }
 }
 

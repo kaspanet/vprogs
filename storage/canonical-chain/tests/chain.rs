@@ -115,6 +115,59 @@ fn deep_rollback_rewrites_a_sealed_bucket() {
 }
 
 #[test]
+fn returning_append_into_the_last_sealed_bucket_keeps_live_bits() {
+    // A reorg replay: fill three buckets, roll back into the last-sealed bucket, then re-append a
+    // seen block returning there. The append must slide the hot zone back carrying the live bits,
+    // not fabricate an empty tail over them.
+    let cap = BUCKET_CAPACITY;
+    let mut manager = CanonicalChainManager::default();
+    for i in 1..=3 * cap {
+        manager.append(i);
+    }
+
+    manager.rollback(cap + 10);
+    manager.append(cap + 50u64);
+
+    assert_eq!(manager.chain().tip(), cap + 50);
+    assert!(is_canon(&manager, cap + 5), "an id below the rollback target keeps its bit");
+    assert!(is_canon(&manager, cap + 50), "the returning id is canonical");
+    assert!(!is_canon(&manager, cap + 11), "a rolled-back id stays orphaned");
+    assert!(!is_canon(&manager, 3 * cap));
+    assert!(is_canon(&manager, cap), "the sealed body bucket is untouched");
+
+    // Extending past the boundary again re-seals the re-covered bucket with its bits.
+    manager.append(u64::MAX);
+    assert_eq!(manager.chain().tip(), 3 * cap + 1);
+    assert!(is_canon(&manager, cap + 5), "the slid-back bits survive the re-seal");
+    assert!(is_canon(&manager, 3 * cap + 1));
+}
+
+#[test]
+fn returning_append_below_the_hot_zone_keeps_body_bits() {
+    // The deep variant: roll back past the hot zone into the sealed body, then re-append a seen
+    // block returning there. The slide-back must read the body's live copy of the bucket instead
+    // of an empty one.
+    let cap = BUCKET_CAPACITY;
+    let mut manager = CanonicalChainManager::default();
+    for i in 1..=3 * cap {
+        manager.append(i);
+    }
+
+    manager.rollback(10);
+    manager.append(50u64);
+
+    assert_eq!(manager.chain().tip(), 50);
+    assert!(is_canon(&manager, 5), "an id below the rollback target keeps its bit");
+    assert!(is_canon(&manager, 50), "the returning id is canonical");
+    assert!(!is_canon(&manager, 100), "a rolled-back id stays orphaned");
+
+    manager.append(u64::MAX);
+    assert_eq!(manager.chain().tip(), 3 * cap + 1);
+    assert!(is_canon(&manager, 5), "the body bits survive the re-seal");
+    assert!(is_canon(&manager, 3 * cap + 1));
+}
+
+#[test]
 fn finalize_makes_pruned_gaps_read_canonical() {
     let mut manager = CanonicalChainManager::default();
     for i in 1..=10_000u64 {

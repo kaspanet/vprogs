@@ -1,9 +1,11 @@
 //! App-defined secondary indexes maintained inside the state write path.
 //!
-//! A [`ResourceIndexer`] decodes resource wire bytes and appends secondary-index
-//! entries into [`StateSpace::Index`], inside the same WriteBatch as the state itself, so
-//! index and state can never disagree on disk. Methods are no-ops by default: an indexer
-//! that does not recognize a resource kind simply writes nothing.
+//! A [`ResourceIndexer`] decodes resource wire bytes and appends secondary-index entries into
+//! [`StateSpace::Index`], inside the same WriteBatch as the state diff: entries land and revert
+//! with their state rows, and a committed batch's index never disagrees with its state. Visibility
+//! is not gated on the commit: entries for a batch become readable before it commits, and after a
+//! crash entries for a never-committed batch remain until a rollback crosses that checkpoint.
+//! Methods are no-ops by default: an indexer writes nothing for unrecognized resource kinds.
 
 use std::sync::Arc;
 

@@ -78,21 +78,17 @@ impl<C: Config> Store for RocksDbStore<C> {
 
     fn prefix_iter(&self, state_space: StateSpace, prefix: &[u8]) -> PrefixIterator<'_> {
         let cf = self.cf(&state_space);
-
-        // Empty prefix = full scan; the fixed-prefix CFs need total-order seek to span all keys.
-        if prefix.is_empty() {
-            let mut read_opts = rocksdb::ReadOptions::default();
-            read_opts.set_total_order_seek(true);
-            let iter = self.db.iterator_cf_opt(cf, read_opts, IteratorMode::Start);
-            return Box::new(RocksDbPrefixIter { inner: iter });
-        }
-
         let mut read_opts = rocksdb::ReadOptions::default();
-        // Ensure iteration stops when keys no longer share the prefix.
-        read_opts.set_prefix_same_as_start(true);
-
-        let mode = IteratorMode::From(prefix, Direction::Forward);
-        let iter = self.db.iterator_cf_opt(cf, read_opts, mode);
+        // Hard stop at the prefix: forward walking ends once keys leave it.
+        read_opts.set_iterate_lower_bound(prefix.to_vec());
+        if let Some(upper) = prefix_end(prefix) {
+            read_opts.set_iterate_upper_bound(upper);
+        }
+        // Total order: the fixed prefix extractors installed on the CFs would otherwise
+        // bound iteration by their slice, not our prefix.
+        read_opts.set_total_order_seek(true);
+        let iter =
+            self.db.iterator_cf_opt(cf, read_opts, IteratorMode::From(prefix, Direction::Forward));
         Box::new(RocksDbPrefixIter { inner: iter })
     }
 
@@ -140,9 +136,11 @@ impl<C: Config> Tree for RocksDbStore<C> {
         // genesis has, and its snapshot then orphans every version on disk.
         let versions_tracked = snapshot.ever_assigned();
 
-        // Seek the latest canonical version below `max_version`.
-        let iter = self.prefix_iter(StateSpace::SmtNode, &key.encode_with_version(max_version));
-        for (raw_key, raw_value) in iter {
+        // Scan the key's version group from !max_version; the first canonical entry is the
+        // latest version <= `max_version`.
+        let start = key.encode_with_version(max_version);
+        let end = prefix_end(&key.encode()).expect("smt node key with no lexicographic successor");
+        for (raw_key, raw_value) in self.range_iter(StateSpace::SmtNode, &start, &end) {
             let version = Key::decode_version(&raw_key).expect("corrupted smt node key");
             if !versions_tracked || snapshot.is_canonical(version) {
                 let node = Node::decode(&mut raw_value.as_ref()).expect("corrupted smt node");
