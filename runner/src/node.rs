@@ -28,7 +28,7 @@ use vprogs_node_framework::{Node, NodeConfig};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Indexer, SchedulerState};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
-use vprogs_zk_abi::withdrawal::ExitLeaf;
+use vprogs_zk_abi::withdrawal::ExitsForBatch;
 use vprogs_zk_aggregate_prover::{
     AggregateProverConfig, ExitsForBundle, ScheduledBundle, SettlementArtifact,
 };
@@ -158,7 +158,7 @@ pub fn build_exec_node(
     store: RunnerStore,
     params: BridgeParams,
     indexer: Option<Indexer>,
-    exits_tap: Option<mpsc::UnboundedSender<Vec<ExitLeaf>>>,
+    exits_tap: Option<mpsc::UnboundedSender<ExitsForBatch>>,
 ) -> RunnerNode {
     let backend = Backend::new(elfs.program, elfs.batch, elfs.aggregator, ProofType::Succinct);
     let vm = Vm::new(backend, ProvingPipeline::None);
