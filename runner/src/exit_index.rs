@@ -10,7 +10,7 @@ use kaspa_hashes::Hash;
 use tokio::sync::mpsc;
 use vprogs_l1_types::{PermissionSpend, SettlementInfo, SettlementMsg, SpendMsg};
 use vprogs_storage_types::{StateSpace, Store, WriteBatch};
-use vprogs_zk_abi::withdrawal::ExitLeaf;
+use vprogs_zk_abi::withdrawal::{ExitLeaf, ExitsForBatch};
 use vprogs_zk_aggregate_prover::ExitsForBundle;
 use vprogs_zk_backend_risc0_api::PermissionTreeAccumulator;
 
@@ -515,24 +515,27 @@ fn match_prefix(buf: &[ExitLeaf], commitment: [u8; 32]) -> Option<usize> {
 
 /// Background task joining the exec node's per-tx exit leaves with its observed L1 settlements.
 ///
-/// Buffers the Vm's exits tap in arrival order; per settlement with a non-zero
-/// [`SettlementInfo::permission_spk_hash`], emits the smallest matching leaf prefix as an
-/// [`ExitsForBundle`] onto `exits_tx` and drains it. A settlement whose prefix has not fully
-/// arrived yet parks as pending and is retried as leaves arrive (bridge and scheduler delivery
-/// order is not guaranteed); a newer settlement arriving while an older one is pending is a
-/// desync, logged (both named) but not fatal, and both still match once their leaves land.
+/// Buffers the Vm's exits tap in arrival order alongside each leaf's batch id; per settlement
+/// with a non-zero [`SettlementInfo::permission_spk_hash`], emits the smallest matching leaf
+/// prefix as an [`ExitsForBundle`] onto `exits_tx` and drains it. A settlement whose prefix has
+/// not fully arrived yet parks as pending and is retried as leaves arrive (bridge and scheduler
+/// delivery order is not guaranteed); a newer settlement arriving while an older one is pending
+/// is a desync, logged (both named) but not fatal, and both still match once their leaves land.
 /// Zero-commitment settlements emitted no exits and consume none. `settlement_fwd`, when wired,
 /// receives each matched settlement so a downstream [`run_exit_indexer`] can pair it with the
 /// emitted bundle; the bundle is sent first, matching the indexer's exits-first biased select.
-/// Rollback markers drop pending settlements above the floor and forward the marker downstream
-/// so the indexer reverts what it already paired.
+/// Rollback markers drop pending settlements and buffered leaves above the floor (the
+/// replacement blocks re-execute the orphaned txs and re-emit their leaves) and forward the
+/// marker downstream so the indexer reverts what it already paired.
 pub async fn run_exec_exits_joiner(
-    mut leaves_rx: mpsc::UnboundedReceiver<Vec<ExitLeaf>>,
+    mut leaves_rx: mpsc::UnboundedReceiver<ExitsForBatch>,
     mut settlement_rx: mpsc::UnboundedReceiver<SettlementMsg>,
     exits_tx: mpsc::UnboundedSender<Arc<ExitsForBundle>>,
     settlement_fwd: Option<mpsc::UnboundedSender<SettlementMsg>>,
 ) {
     let mut buf: Vec<ExitLeaf> = Vec::new();
+    // Batch id per buffered leaf, parallel to `buf`; every leaf of one tap message shares it.
+    let mut buf_ids: Vec<u64> = Vec::new();
     let mut pending: VecDeque<SettlementInfo> = VecDeque::new();
 
     /// Emits bundles for every pending settlement whose prefix is now complete.
@@ -562,8 +565,9 @@ pub async fn run_exec_exits_joiner(
         tokio::select! {
             biased;
             maybe_leaves = leaves_rx.recv() => match maybe_leaves {
-                Some(leaves) => {
-                    buf.extend(leaves);
+                Some(tap) => {
+                    buf.extend(tap.leaves);
+                    buf_ids.resize(buf.len(), tap.batch_id);
                     drain_pending(&mut pending, &mut buf, &exits_tx, &settlement_fwd);
                 }
                 None => break,
@@ -585,13 +589,26 @@ pub async fn run_exec_exits_joiner(
                         drain_pending(&mut pending, &mut buf, &exits_tx, &settlement_fwd);
                     }
                 }
-                // Pending settlements above the floor died with the reorg; forward the marker
-                // so the downstream indexer reverts what it already paired.
+                // Leaves above the floor died with the reorg; the replacement blocks
+                // re-execute those txs and re-emit their leaves, so a stale copy would
+                // duplicate every prefix the resubmitted settlement matches. Ids can
+                // interleave (batches execute concurrently), so filter by id rather than
+                // truncate. Forward the marker so the downstream indexer reverts what it
+                // already paired, then drain: a survivor's prefix may have been blocked only
+                // by pruned leaves.
                 Some(SettlementMsg::Rollback(floor)) => {
                     pending.retain(|settlement| settlement.chain_idx.get() <= floor);
+                    let mut i = 0;
+                    buf.retain(|_| {
+                        let keep = buf_ids[i] <= floor;
+                        i += 1;
+                        keep
+                    });
+                    buf_ids.retain(|&id| id <= floor);
                     if let Some(fwd) = &settlement_fwd {
                         let _ = fwd.send(SettlementMsg::Rollback(floor));
                     }
+                    drain_pending(&mut pending, &mut buf, &exits_tx, &settlement_fwd);
                 }
                 None => break,
             },
@@ -1697,7 +1714,7 @@ mod tests {
         tokio::spawn(run_exec_exits_joiner(leaves_rx, settlement_rx, exits_tx, Some(fwd_tx)));
 
         let leaves = vec![test_leaf(0x11, 100), test_leaf(0x22, 200)];
-        leaves_tx.send(leaves.clone()).unwrap();
+        leaves_tx.send(ExitsForBatch { batch_id: 1, leaves: leaves.clone() }).unwrap();
         let settlement = SettlementInfo {
             tx_id: Hash::from_bytes([0xaa; 32]),
             new_state: [0x51; 32],
@@ -1728,7 +1745,7 @@ mod tests {
         // Leaves land, then a no-exit settlement: nothing emitted, buffer retained (the following
         // exit settlement still claims the full prefix).
         let leaves = vec![test_leaf(0x33, 300), test_leaf(0x44, 400)];
-        leaves_tx.send(leaves.clone()).unwrap();
+        leaves_tx.send(ExitsForBatch { batch_id: 1, leaves: leaves.clone() }).unwrap();
         settlement_tx
             .send(SettlementMsg::Observed(SettlementInfo {
                 new_state: [0x61; 32],
@@ -1769,8 +1786,8 @@ mod tests {
         // Settlement first, then a partial prefix: no match possible (the only commitment sent
         // covers both leaves, so a premature 1-leaf bundle can never be emitted for it).
         settlement_tx.send(SettlementMsg::Observed(settlement)).unwrap();
-        leaves_tx.send(vec![leaves[0].clone()]).unwrap();
-        leaves_tx.send(vec![leaves[1].clone()]).unwrap();
+        leaves_tx.send(ExitsForBatch { batch_id: 1, leaves: vec![leaves[0].clone()] }).unwrap();
+        leaves_tx.send(ExitsForBatch { batch_id: 1, leaves: vec![leaves[1].clone()] }).unwrap();
 
         let bundle = exits_rx.recv().await.expect("pending settlement matched once leaves landed");
         assert_eq!(bundle.new_state, settlement.new_state);
@@ -1819,7 +1836,7 @@ mod tests {
 
         // B survives the rollback and still matches once its leaf lands; A's leaf lands to
         // silence (its settlement died with the reorg).
-        leaves_tx.send(leaves_b.clone()).unwrap();
+        leaves_tx.send(ExitsForBatch { batch_id: 1, leaves: leaves_b.clone() }).unwrap();
         let bundle = exits_rx.recv().await.expect("below-floor settlement still drains");
         assert_eq!(bundle.leaves.to_vec(), leaves_b);
         assert_eq!(
@@ -1827,12 +1844,155 @@ mod tests {
             SettlementMsg::Observed(settlement_b)
         );
 
-        leaves_tx.send(leaves_a).unwrap();
+        leaves_tx.send(ExitsForBatch { batch_id: 5, leaves: leaves_a }).unwrap();
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(150), exits_rx.recv())
                 .await
                 .is_err(),
             "above-floor settlement must not emit after the rollback"
         );
+    }
+
+    #[tokio::test]
+    async fn exec_joiner_rollback_prunes_buffered_leaves_above_the_floor() {
+        let (leaves_tx, leaves_rx) = mpsc::unbounded_channel();
+        let (settlement_tx, settlement_rx) = mpsc::unbounded_channel();
+        let (exits_tx, mut exits_rx) = mpsc::unbounded_channel();
+        let (fwd_tx, mut fwd_rx) = mpsc::unbounded_channel();
+
+        tokio::spawn(run_exec_exits_joiner(leaves_rx, settlement_rx, exits_tx, Some(fwd_tx)));
+
+        // Settlement A parks pending over [b, c] (its commitment covers both), so orphaned
+        // batch 6's leaf b stays buffered without matching.
+        let leaf_b = test_leaf(0x22, 200);
+        let leaf_c = test_leaf(0x33, 300);
+        let settlement_a = SettlementInfo {
+            tx_id: Hash::from_bytes([0xaa; 32]),
+            new_state: [0x51; 32],
+            permission_spk_hash: permission_commitment(&[leaf_b.clone(), leaf_c.clone()]),
+            chain_idx: 7u64.into(),
+            ..Default::default()
+        };
+        settlement_tx.send(SettlementMsg::Observed(settlement_a)).unwrap();
+        leaves_tx.send(ExitsForBatch { batch_id: 6, leaves: vec![leaf_b.clone()] }).unwrap();
+
+        // Reorg to floor 5: A and batch 6's buffered leaf die. Awaiting the forwarded marker
+        // pins the prune before the replacement leaves below are sent.
+        settlement_tx.send(SettlementMsg::Rollback(5)).unwrap();
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_millis(500), fwd_rx.recv())
+                .await
+                .expect("marker forwarded")
+                .expect("forward channel open"),
+            SettlementMsg::Rollback(5)
+        );
+
+        // The replacement chain re-executes b at batch 8, c lands at batch 9, and A's
+        // resubmission settles both.
+        leaves_tx.send(ExitsForBatch { batch_id: 8, leaves: vec![leaf_b.clone()] }).unwrap();
+        leaves_tx.send(ExitsForBatch { batch_id: 9, leaves: vec![leaf_c.clone()] }).unwrap();
+        let settlement_a2 = SettlementInfo {
+            tx_id: Hash::from_bytes([0xab; 32]),
+            new_state: [0x52; 32],
+            permission_spk_hash: permission_commitment(&[leaf_b.clone(), leaf_c.clone()]),
+            chain_idx: 10u64.into(),
+            ..Default::default()
+        };
+        settlement_tx.send(SettlementMsg::Observed(settlement_a2)).unwrap();
+
+        // Without the prune the stale batch-6 copy prefixes the buffer, so the smallest match
+        // emits [b, b] and strands c; with it the resubmitted settlement drains exactly [b, c].
+        let bundle =
+            exits_rx.recv().await.expect("resubmitted settlement matches the re-emitted prefix");
+        assert_eq!(bundle.new_state, settlement_a2.new_state);
+        assert_eq!(bundle.leaves.to_vec(), vec![leaf_b, leaf_c]);
+        assert!(exits_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn exec_joiner_rollback_keeps_below_floor_leaf_behind_an_above_floor_one() {
+        let (leaves_tx, leaves_rx) = mpsc::unbounded_channel();
+        let (settlement_tx, settlement_rx) = mpsc::unbounded_channel();
+        let (exits_tx, mut exits_rx) = mpsc::unbounded_channel();
+        let (fwd_tx, _fwd_rx) = mpsc::unbounded_channel();
+
+        tokio::spawn(run_exec_exits_joiner(leaves_rx, settlement_rx, exits_tx, Some(fwd_tx)));
+
+        // Concurrent batches interleave: the above-floor leaf (batch 7) buffers ahead of the
+        // below-floor one (batch 4), which parks its settlement's prefix behind it.
+        let leaf_hi = test_leaf(0x11, 100);
+        let leaves_lo = vec![test_leaf(0x22, 200)];
+        let settlement_lo = SettlementInfo {
+            tx_id: Hash::from_bytes([0xbb; 32]),
+            new_state: [0x52; 32],
+            permission_spk_hash: permission_commitment(&leaves_lo),
+            chain_idx: 3u64.into(),
+            ..Default::default()
+        };
+        settlement_tx.send(SettlementMsg::Observed(settlement_lo)).unwrap();
+        leaves_tx.send(ExitsForBatch { batch_id: 7, leaves: vec![leaf_hi] }).unwrap();
+        leaves_tx.send(ExitsForBatch { batch_id: 4, leaves: leaves_lo.clone() }).unwrap();
+
+        // The reorg to floor 5 drops only the batch-7 leaf: filtering by id leaves [lo] (a
+        // truncate at the first above-floor leaf would drop both), and the now-unblocked
+        // survivor drains without waiting for any further event.
+        settlement_tx.send(SettlementMsg::Rollback(5)).unwrap();
+        let bundle = tokio::time::timeout(std::time::Duration::from_millis(500), exits_rx.recv())
+            .await
+            .expect("survivor's prefix unblocked by the prune")
+            .expect("exits channel open");
+        assert_eq!(bundle.new_state, settlement_lo.new_state);
+        assert_eq!(bundle.leaves.to_vec(), leaves_lo);
+        assert!(exits_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn exec_joiner_deepening_rollbacks_prune_each_floor() {
+        let (leaves_tx, leaves_rx) = mpsc::unbounded_channel();
+        let (settlement_tx, settlement_rx) = mpsc::unbounded_channel();
+        let (exits_tx, mut exits_rx) = mpsc::unbounded_channel();
+        let (fwd_tx, _fwd_rx) = mpsc::unbounded_channel();
+
+        tokio::spawn(run_exec_exits_joiner(leaves_rx, settlement_rx, exits_tx, Some(fwd_tx)));
+
+        // Leaf a lands at batch 2; b's two leaves land as one tap message at batch 6.
+        let leaves_a = vec![test_leaf(0x11, 100)];
+        let leaves_b = vec![test_leaf(0x22, 200), test_leaf(0x33, 300)];
+        leaves_tx.send(ExitsForBatch { batch_id: 2, leaves: leaves_a.clone() }).unwrap();
+        leaves_tx.send(ExitsForBatch { batch_id: 6, leaves: leaves_b.clone() }).unwrap();
+
+        // The first marker (floor 8) keeps everything; the deeper floor 5 drops batch 6's
+        // message as a unit, so the per-leaf ids must survive the first prune.
+        settlement_tx.send(SettlementMsg::Rollback(8)).unwrap();
+        settlement_tx.send(SettlementMsg::Rollback(5)).unwrap();
+
+        let settlement_a = SettlementInfo {
+            tx_id: Hash::from_bytes([0xaa; 32]),
+            new_state: [0x51; 32],
+            permission_spk_hash: permission_commitment(&leaves_a),
+            chain_idx: 4u64.into(),
+            ..Default::default()
+        };
+        settlement_tx.send(SettlementMsg::Observed(settlement_a)).unwrap();
+        let bundle = exits_rx.recv().await.expect("surviving settlement drains [a] alone");
+        assert_eq!(bundle.new_state, settlement_a.new_state);
+        assert_eq!(bundle.leaves.to_vec(), leaves_a);
+
+        // The replacement chain re-executes b with a different pair (a merged child block adds
+        // a tx) at batch 7; a stale batch-6 copy would head the buffer and block the match.
+        let leaves_c = vec![test_leaf(0x44, 400), test_leaf(0x55, 500)];
+        leaves_tx.send(ExitsForBatch { batch_id: 7, leaves: leaves_c.clone() }).unwrap();
+        let settlement_c = SettlementInfo {
+            tx_id: Hash::from_bytes([0xcc; 32]),
+            new_state: [0x53; 32],
+            permission_spk_hash: permission_commitment(&leaves_c),
+            chain_idx: 6u64.into(),
+            ..Default::default()
+        };
+        settlement_tx.send(SettlementMsg::Observed(settlement_c)).unwrap();
+        let bundle = exits_rx.recv().await.expect("replacement pair matches from an empty buffer");
+        assert_eq!(bundle.new_state, settlement_c.new_state);
+        assert_eq!(bundle.leaves.to_vec(), leaves_c);
+        assert!(exits_rx.try_recv().is_err());
     }
 }

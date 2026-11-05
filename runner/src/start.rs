@@ -28,7 +28,7 @@ use vprogs_l1_types::SettlementInfo;
 use vprogs_l1_wallet::Wallet;
 use vprogs_node_framework::NodeApi;
 use vprogs_scheduling_scheduler::Indexer;
-use vprogs_zk_abi::withdrawal::ExitLeaf;
+use vprogs_zk_abi::withdrawal::ExitsForBatch;
 use vprogs_zk_aggregate_prover::ExitsForBundle;
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_settler::{
@@ -336,7 +336,7 @@ async fn start_exec<F>(
     // indexer, where prove mode leaves them unwired): attribution needs them.
     let (exits_tx, exits_rx) = mpsc::unbounded_channel::<Arc<ExitsForBundle>>();
     let (settlement_events_tx, settlement_events_rx) = mpsc::unbounded_channel();
-    let (tx_exits_tx, tx_exits_rx) = mpsc::unbounded_channel::<Vec<ExitLeaf>>();
+    let (tx_exits_tx, tx_exits_rx) = mpsc::unbounded_channel::<ExitsForBatch>();
 
     // Same exit-indexer wiring as prove mode: when an indexer is wired (and the covenant id is
     // non-zero) it owns the exits stream and the receiver handed to the caller is closed.
