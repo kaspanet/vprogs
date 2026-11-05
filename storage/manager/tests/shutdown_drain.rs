@@ -42,6 +42,60 @@ impl ReadCmd for NoRead {
     fn exec<S: vprogs_storage_types::ReadStore>(&self, _store: &S) {}
 }
 
+/// A read that records being served: the at-risk shape, since a read's receipt latch opens
+/// only once the worker executes it, so a read dropped at shutdown wedges its awaiter.
+struct TrackedRead {
+    /// Set by `exec`, standing in for the receipt latch.
+    served: Arc<AtomicBool>,
+}
+
+impl ReadCmd for TrackedRead {
+    fn exec<S: vprogs_storage_types::ReadStore>(&self, _store: &S) {
+        self.served.store(true, Ordering::Release);
+    }
+}
+
+/// A no-op write command; the drain under test never touches the write worker.
+struct NoWrite;
+
+impl WriteCmd for NoWrite {
+    fn exec<S: Store>(&self, _store: &S, batch: S::WriteBatch) -> S::WriteBatch {
+        batch
+    }
+
+    fn flush_now(&self) -> bool {
+        false
+    }
+
+    fn flushed(self) {}
+}
+
+/// Reads still queued when the worker exits must be served: the shutdown drain executes
+/// them, so the receipt latch every awaiter parks on always opens.
+#[test]
+fn reads_queued_before_shutdown_are_served() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let config = StorageConfig::default().with_store(RocksDbStore::open(dir.path()));
+    let manager = StorageManager::<RocksDbStore, TrackedRead, NoWrite>::new(config);
+
+    let reads: Vec<_> = (0..3)
+        .map(|_| {
+            let served = Arc::new(AtomicBool::new(false));
+            manager.submit_read(TrackedRead { served: served.clone() });
+            served
+        })
+        .collect();
+
+    manager.shutdown();
+
+    for (id, served) in reads.iter().enumerate() {
+        assert!(
+            served.load(Ordering::Acquire),
+            "read {id} queued before shutdown was never served",
+        );
+    }
+}
+
 /// Writes still queued or accumulated when the worker exits must commit: the shutdown drain
 /// flushes them, so both the stored value and the write's confirmation callback land. The batch
 /// thresholds sit far beyond the test's writes, so the drain is the only path to a commit.
