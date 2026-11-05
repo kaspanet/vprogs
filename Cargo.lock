@@ -9034,7 +9034,9 @@ version = "0.1.0"
 dependencies = [
  "crossbeam-queue",
  "crossbeam-utils",
+ "tempfile",
  "vprogs-core-macros",
+ "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
 ]
 
