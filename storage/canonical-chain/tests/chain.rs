@@ -3,6 +3,7 @@
 
 use std::{sync::Arc, thread};
 
+use vprogs_core_types::BatchMetadata;
 use vprogs_storage_canonical_chain::{BUCKET_CAPACITY, CanonicalChain, CanonicalChainManager};
 
 /// Whether `id` is canonical in a fresh snapshot of the manager's chain.
@@ -278,6 +279,14 @@ fn restore_replays_an_interior_id_gap() {
     assert!(manager.metadata(3).is_some());
 
     let mut manager = manager;
+    // Finalizing below the first live id above the hole drops only the covered entries: keying
+    // the pop loop on `base` would walk it past the hole and drop live id 3 as well.
+    manager.finalize(3);
+    assert!(manager.metadata(1).is_none(), "the finalized id below the hole drops");
+    assert!(manager.metadata(3).is_some(), "the first live id above the hole survives");
+    assert_eq!(manager.id(&3u64.block_hash()), Some(3), "its reverse-index key survives");
+    assert!(is_canon(&manager, 3), "the oracle still reads the surviving id as canonical");
+
     assert_eq!(manager.append(4u64).id, 4, "the next append allocates past the gap");
     assert!(manager.metadata(4).is_some());
 }
