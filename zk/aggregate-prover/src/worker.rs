@@ -308,13 +308,27 @@ where
                 // Aggregate the bundle: fetch the final block's lane proof, encode the aggregator
                 // inputs over the per-batch journals, and prove with the per-batch receipts as
                 // composition assumptions.
-                let lane_proof = self
-                    .lane_source
-                    .fetch_lane_proof(LaneProofRequest {
+                //
+                // Stay cancelable while fetching: the remote source retries a dead node for up to
+                // ~105s and each in-flight wRPC request holds the node's store Arc, so an
+                // uncanceled fetch would wedge the shutdown join and keep a restarting node from
+                // reopening its store. Dropping the fetch future aborts the request in
+                // milliseconds instead.
+                let lane_proof = tokio::select! {
+                    biased;
+                    () = self.prover.shutdown.wait() => {
+                        // Shutting down: the fetch was abandoned, so resolve the published handle
+                        // as a no-op (a consumer awaiting its artifact is released rather than
+                        // blocked on a latch that never opens) and drop the bundle, the same
+                        // discard-on-shutdown behavior as a proof abandoned mid-flight below.
+                        handle.publish_artifact(None);
+                        return;
+                    }
+                    proof = self.lane_source.fetch_lane_proof(LaneProofRequest {
                         block: block_prove_to,
                         lane_key: self.lane_key,
-                    })
-                    .await;
+                    }) => proof,
+                };
                 let inputs = AggregatorInputs::encode(
                     self.backend.batch_image_id(),
                     &lane_proof,
