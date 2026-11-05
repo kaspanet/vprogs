@@ -2290,6 +2290,567 @@ async fn warm_restart_splits_at_competitor_boundary() {
     l1.shutdown().await;
 }
 
+/// A warm-restart resume whose journal tail was never submitted: run 1 (bundle size 4) proves at
+/// least two pending bundles over a persistent store; its settler confirms one settlement at a
+/// time, so only the first is submitted before the prover is killed, leaving the last journaled
+/// but never submitted. The submitted settlement is mined in alone, so no part of the tail ever
+/// reached the mempool and run 1's leftover transactions cannot account for any post-restart
+/// chain growth. Run 2 reopens the store: the tail must re-feed and LAND as run 2's own
+/// submission, so the chain gains a link proving through the unsubmitted entry's own block,
+/// attributed to run 2's fresh key. Also asserts the no-fork invariant and that the pre-restart
+/// journal scope compacted away.
+#[tokio::test(flavor = "multi_thread")]
+async fn warm_restart_refeeds_unsubmitted_tail() {
+    if !dev_mode_enabled() {
+        eprintln!(
+            "skipping warm_restart_refeeds_unsubmitted_tail: RISC0_DEV_MODE!=1 - the warm \
+             restart runs dev stub proofs + the dev redeem on CPU",
+        );
+        return;
+    }
+    let _serial = serialize_settlement_test().await;
+
+    let l1 = L1Node::new(
+        NetworkId::new(NetworkType::Simnet),
+        Some(|p| {
+            p.blockrate.coinbase_maturity = 1;
+            p.block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+        }),
+    )
+    .await;
+    l1.mine_utxos(30).await;
+
+    let network_id = NetworkId::new(NetworkType::Simnet);
+    let lane_key = test_lane_key();
+
+    // === Bootstrap the dev covenant ===
+    let (bootstrap_redeem, bootstrap_spk) = dev_bootstrap_redeem(&lane_key, &Hash::default());
+    let (boot_tx, covenant_id) =
+        l1.build_covenant_bootstrap_transaction(&bootstrap_redeem, COVENANT_VALUE).await;
+    let boot_txid = boot_tx.id();
+    let block_deploy = l1.mine_block(&[boot_tx]).await;
+    l1.mine_blocks(1).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let bootstrap_outpoint = TransactionOutpoint::new(boot_txid, 0);
+    let bootstrap_state = CovenantState {
+        covenant_id,
+        state: EMPTY_HASH,
+        lane_tip: Hash::default(),
+        outpoint: bootstrap_outpoint,
+        spk: bootstrap_spk,
+        value: COVENANT_VALUE,
+        daa_score: 0,
+    };
+
+    let kp_a = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
+    let addr_a = prover_address(&kp_a, network_id);
+    l1.fund_address(&addr_a, FUND_VALUE, FUND_COUNT).await;
+
+    let tx_elf = transaction_processor_elf();
+    let batch_elf = batch_processor_elf();
+    let aggregator_elf = batch_aggregator_elf();
+    let elfs = Elfs { program: &tx_elf, batch: &batch_elf, aggregator: &aggregator_elf };
+    let params = Params::from(network_id);
+
+    // === Run 1: settle one range, then prove several pending 4-batch bundles. The settler
+    // submits only the first (it confirms one settlement at a time and nothing mines), so the
+    // journal's last entry is never submitted. ===
+    let db_dir = TempDir::new().expect("persistent store dir");
+    let prover_a1 = spawn_prover_over_store(
+        &l1,
+        "A1",
+        kp_a,
+        addr_a.clone(),
+        4..=4,
+        network_id,
+        &params,
+        lane_key,
+        covenant_id,
+        bootstrap_state.clone(),
+        elfs,
+        None,
+        Some(block_deploy),
+        db_dir.path(),
+    )
+    .await;
+
+    let mut settled;
+    for i in 0..10 {
+        drive_range(&l1).await;
+        settled = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+        eprintln!("refeed run1 driver: iteration {i}, covenant chain length {settled}");
+        if settled >= 1 {
+            break;
+        }
+    }
+    // Land any straggler settlement before building the tail, as in the sibling warm-restart
+    // tests, so the tail construction keys off the last landed tip.
+    await_mempool_settlement_free(&l1, covenant_id).await;
+    settled = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+    assert!(settled >= 1, "run 1 must land >=1 settlement before the tail setup, got {settled}");
+
+    // Eight carriers form at least two 4-batch bundles past whatever residual batches the drive
+    // loop left, so the journal holds a submitted predecessor plus the unsubmitted tail.
+    mine_lane_carriers(&l1, 8).await;
+    let chain = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await;
+    let tip_outpoint = TransactionOutpoint::new(chain.last().expect("run 1 settled tip").tx_id, 0);
+    await_mempool_spender(&l1, tip_outpoint).await;
+    // Drain before the kill, as in the split test: the aggregate receipt write must flush and the
+    // tail's batch commits must be durable for the restart's boundary mapping.
+    tokio::time::sleep(Duration::from_secs(6)).await;
+
+    prover_a1.shutdown.open();
+    let join_a1 = prover_a1.settler.await;
+    prover_a1.node.shutdown();
+    assert!(join_a1.is_ok(), "refeed run 1 settler panicked: {join_a1:?}");
+    // The eight-carrier wave leaves batch lifecycles mid-flight at the kill; let the trailing
+    // workers finish so the store lock is released before reopening.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // The unsubmitted tail is the journal's last entry: a 4-batch bundle whose settlement never
+    // reached the mempool, so only the restart's re-feed can ever land it.
+    let (tail_end, tail_prove_to) = {
+        let journal = StoreJournal::new(open_store_retrying(db_dir.path()));
+        let entries = journal.entries();
+        for (start, entry) in &entries {
+            eprintln!("refeed journal after run 1: bundle {start}..={}", entry.end_index);
+        }
+        assert!(
+            entries.len() >= 2,
+            "run 1 must journal a submitted predecessor plus the unsubmitted tail",
+        );
+        let (start, entry) = *entries.last().expect("checked non-empty");
+        assert_eq!(
+            entry.end_index,
+            start + 3,
+            "the unsubmitted tail must be one 4-batch bundle, got {start}..={}",
+            entry.end_index,
+        );
+        (entry.end_index, entry.block_prove_to)
+    };
+
+    // === Land run 1's one submitted settlement alone: it is the only settlement in the mempool,
+    // so a single mined block confirms it deterministically. ===
+    let pre_land = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+    l1.mine_blocks(1).await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let after_land = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+    assert_eq!(
+        after_land,
+        pre_land + 1,
+        "the single mined block must confirm run 1's one pending settlement",
+    );
+
+    // === Run 2 over the SAME store, driving NO new carriers: the re-fed tail is the first
+    // settleable work after the restart, so its landing is the resume's own submission. ===
+    let kp_a2 = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
+    let addr_a2 = prover_address(&kp_a2, network_id);
+    l1.fund_address(&addr_a2, FUND_VALUE, FUND_COUNT).await;
+    let store_a2 = open_store_retrying(db_dir.path());
+    let prover_a2 = spawn_prover_on_store(
+        &l1,
+        "A2",
+        kp_a2,
+        addr_a2.clone(),
+        4..=4,
+        network_id,
+        &params,
+        lane_key,
+        covenant_id,
+        bootstrap_state,
+        elfs,
+        None,
+        Some(block_deploy),
+        store_a2.clone(),
+        false,
+    )
+    .await;
+    let journal_a2 = StoreJournal::new(store_a2.clone());
+
+    let mut final_len = after_land;
+    for round in 0..60 {
+        l1.mine_blocks(1).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        final_len = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+        if round % 5 == 0 {
+            eprintln!("refeed run2 drain: round {round}, covenant chain length {final_len}");
+        }
+        if final_len > after_land {
+            break;
+        }
+    }
+    // Same eventual-compaction window as the split test: the tail's entry deletes on a later
+    // publication once its settlement lands, so wait for the deletion itself under a deadline
+    // while the node still runs, mining a block each round to force the publication.
+    let compaction_deadline = std::time::Instant::now() + Duration::from_secs(300);
+    while std::time::Instant::now() < compaction_deadline {
+        if journal_a2.entries().iter().all(|(_, entry)| entry.end_index > tail_end) {
+            break;
+        }
+        l1.mine_blocks(1).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    prover_a2.shutdown.open();
+    let join_a2 = prover_a2.settler.await;
+    prover_a2.node.shutdown();
+    assert!(join_a2.is_ok(), "refeed run 2 settler panicked: {join_a2:?}");
+
+    assert!(
+        final_len > after_land,
+        "the re-fed tail must settle past run 1's landed tip ({after_land} -> {final_len})",
+    );
+    let chain = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await;
+    let tail_link = chain
+        .iter()
+        .find(|link| link.block_prove_to == tail_prove_to)
+        .expect("the re-fed tail's own settlement must land on chain");
+    assert!(
+        tail_link.change_spks.contains(&pay_to_address_script(&addr_a2)),
+        "the re-fed tail's settlement must attribute to the resumed prover's own submission",
+    );
+    assert_no_fork(&l1, block_deploy, bootstrap_outpoint, covenant_id).await;
+
+    // The pre-restart journal scope compacted away (run 2 stragglers above the scope are
+    // tolerated, as in the sibling warm-restart tests).
+    let compacted = {
+        let entries = journal_a2.entries();
+        for (start, entry) in &entries {
+            eprintln!("refeed journal after run 2: bundle {start}..={}", entry.end_index);
+        }
+        entries.iter().all(|(_, entry)| entry.end_index > tail_end)
+    };
+    assert!(
+        compacted,
+        "the pre-restart journal scope (<= {tail_end}) must compact after the re-fed tail settles",
+    );
+
+    l1.shutdown().await;
+}
+
+/// A warm-restart resume into a competitor whose boundary lies ABOVE the journal's whole span:
+/// run 1 (bundle size 4) leaves a submitted predecessor plus an unsubmitted tail, and is killed
+/// while a PARTIAL bundle's batches sit committed past the journal tail (a committed gap), so the
+/// journal stays frozen below the committed frontier. Run 1's mempool leftovers are flushed, then
+/// a per-batch competitor settles through the gap batch, strictly past run 1's last journal
+/// entry. Run 2 reopens the store: the boundary resolves through the gap batch's metadata to an
+/// index above the journal span, so it covers every entry: the resume drops them instead of
+/// re-feeding the stale tail, and compaction deletes them. Asserts the boundary sits above the
+/// span, that new work settles onto the competitor's tip attributed to the resumed prover, no
+/// fork, and that the pre-restart journal scope compacted away.
+#[tokio::test(flavor = "multi_thread")]
+async fn warm_restart_after_competitor_settles_past_tail() {
+    if !dev_mode_enabled() {
+        eprintln!(
+            "skipping warm_restart_after_competitor_settles_past_tail: RISC0_DEV_MODE!=1 - the \
+             warm restart runs dev stub proofs + the dev redeem on CPU",
+        );
+        return;
+    }
+    let _serial = serialize_settlement_test().await;
+
+    let l1 = L1Node::new(
+        NetworkId::new(NetworkType::Simnet),
+        Some(|p| {
+            p.blockrate.coinbase_maturity = 1;
+            p.block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+        }),
+    )
+    .await;
+    l1.mine_utxos(30).await;
+
+    let network_id = NetworkId::new(NetworkType::Simnet);
+    let lane_key = test_lane_key();
+
+    // === Bootstrap the dev covenant ===
+    let (bootstrap_redeem, bootstrap_spk) = dev_bootstrap_redeem(&lane_key, &Hash::default());
+    let (boot_tx, covenant_id) =
+        l1.build_covenant_bootstrap_transaction(&bootstrap_redeem, COVENANT_VALUE).await;
+    let boot_txid = boot_tx.id();
+    let block_deploy = l1.mine_block(&[boot_tx]).await;
+    l1.mine_blocks(1).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let bootstrap_outpoint = TransactionOutpoint::new(boot_txid, 0);
+    let bootstrap_state = CovenantState {
+        covenant_id,
+        state: EMPTY_HASH,
+        lane_tip: Hash::default(),
+        outpoint: bootstrap_outpoint,
+        spk: bootstrap_spk,
+        value: COVENANT_VALUE,
+        daa_score: 0,
+    };
+
+    let kp_a = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
+    let kp_b = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
+    let addr_a = prover_address(&kp_a, network_id);
+    let addr_b = prover_address(&kp_b, network_id);
+    l1.fund_address(&addr_a, FUND_VALUE, FUND_COUNT).await;
+    l1.fund_address(&addr_b, FUND_VALUE, FUND_COUNT).await;
+
+    let tx_elf = transaction_processor_elf();
+    let batch_elf = batch_processor_elf();
+    let aggregator_elf = batch_aggregator_elf();
+    let elfs = Elfs { program: &tx_elf, batch: &batch_elf, aggregator: &aggregator_elf };
+    let params = Params::from(network_id);
+
+    // === Run 1 over a persistent store the test keeps a handle on, so the committed-gap poll
+    // below can read the journal and the batch frontier while the node runs. ===
+    let db_dir = TempDir::new().expect("persistent store dir");
+    let store_a1 = open_store_retrying(db_dir.path());
+    let prover_a1 = spawn_prover_on_store(
+        &l1,
+        "A1",
+        kp_a,
+        addr_a.clone(),
+        4..=4,
+        network_id,
+        &params,
+        lane_key,
+        covenant_id,
+        bootstrap_state.clone(),
+        elfs,
+        None,
+        Some(block_deploy),
+        store_a1.clone(),
+        false,
+    )
+    .await;
+    let journal_a1 = StoreJournal::new(store_a1.clone());
+
+    let mut settled;
+    for i in 0..10 {
+        drive_range(&l1).await;
+        settled = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+        eprintln!("past-tail run1 driver: iteration {i}, covenant chain length {settled}");
+        if settled >= 1 {
+            break;
+        }
+    }
+    await_mempool_settlement_free(&l1, covenant_id).await;
+    settled = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+    assert!(settled >= 1, "run 1 must land >=1 settlement before the tail setup, got {settled}");
+
+    // Eight carriers form the submitted predecessor plus the unsubmitted tail, as in the refeed
+    // test.
+    mine_lane_carriers(&l1, 8).await;
+    let chain = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await;
+    let tip_outpoint = TransactionOutpoint::new(chain.last().expect("run 1 settled tip").tx_id, 0);
+    await_mempool_spender(&l1, tip_outpoint).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Freeze the journal below the committed frontier: mine one carrier at a time until a
+    // PARTIAL bundle's batch commits past the journal tail, then kill. A bundle journals only
+    // once a full four batches commit past the tail, so a gap of one to three can never journal
+    // afterward (the journal span is frozen no matter how long the trailing workers drain),
+    // while the trailing commits can only widen the gap.
+    let mut gapped = false;
+    for round in 0..240 {
+        let journaled = journal_a1.entries().last().map(|(_, entry)| entry.end_index);
+        let committed = journal_a1.committed_tip().map(|(index, _)| index);
+        if let (Some(journaled), Some(committed)) = (journaled, committed) {
+            if committed > journaled && committed - journaled < 4 {
+                eprintln!(
+                    "past-tail gap: batch {committed} committed past journal tail {journaled} \
+                     (round {round})",
+                );
+                gapped = true;
+                break;
+            }
+        }
+        if round % 3 == 2 {
+            mine_lane_carriers(&l1, 1).await;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(gapped, "a partial bundle must commit past the journal tail within the bound");
+    prover_a1.shutdown.open();
+    let join_a1 = prover_a1.settler.await;
+    prover_a1.node.shutdown();
+    assert!(join_a1.is_ok(), "past-tail run 1 settler panicked: {join_a1:?}");
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // The frozen scope: every journal entry ends at or below the tail, and the first gap batch
+    // sits strictly above it, so a settlement through the gap batch's block maps above the whole
+    // journal span.
+    let (first_start, tail_end, gap_block) = {
+        let entries = journal_a1.entries();
+        for (start, entry) in &entries {
+            eprintln!("past-tail journal after run 1: bundle {start}..={}", entry.end_index);
+        }
+        assert!(
+            entries.len() >= 2,
+            "run 1 must journal a submitted predecessor plus the unsubmitted tail",
+        );
+        let first_start = entries.first().expect("checked non-empty").0;
+        let tail_end = entries.last().expect("checked non-empty").1.end_index;
+        let committed = journal_a1.committed_tip().expect("batches committed").0;
+        assert!(
+            committed > tail_end,
+            "the kill must leave committed batches above the frozen journal tail ({tail_end} < \
+             {committed})",
+        );
+        let gap_block =
+            journal_a1.batch_block(tail_end + 1).expect("the first gap batch carries metadata");
+        (first_start, tail_end, gap_block)
+    };
+
+    // Flush whatever run 1 left in the mempool (the gap loop's carrier blocks may already have
+    // confirmed it), so the competitor starts from a settled tip and every later settlement on
+    // the chain is its own.
+    await_mempool_settlement_free(&l1, covenant_id).await;
+    let after_land = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+
+    // === Competitor B (bundle size 1) settles through the gap batch while A stays down: its
+    // boundary lies strictly above run 1's journal span. ===
+    let (_redeem, catchup_spk) = dev_bootstrap_redeem(&lane_key, &Hash::default());
+    let catchup_covenant = CovenantState {
+        covenant_id,
+        state: EMPTY_HASH,
+        lane_tip: Hash::default(),
+        outpoint: bootstrap_outpoint,
+        spk: catchup_spk,
+        value: COVENANT_VALUE,
+        daa_score: 0,
+    };
+    let prover_b = spawn_prover(
+        &l1,
+        "B",
+        kp_b,
+        addr_b.clone(),
+        1..=1,
+        network_id,
+        &params,
+        lane_key,
+        covenant_id,
+        catchup_covenant,
+        elfs,
+        None,
+        Some(block_deploy),
+    )
+    .await;
+    await_mempool_proving_through(&l1, covenant_id, &[gap_block]).await;
+    prover_b.shutdown.open();
+    let join_b = prover_b.settler.await;
+    prover_b.node.shutdown();
+    assert!(join_b.is_ok(), "past-tail competitor B settler panicked: {join_b:?}");
+
+    // Land whatever B submitted, then pin the competitor's boundary on chain.
+    let mut after_b = after_land;
+    for round in 0..40 {
+        l1.mine_blocks(1).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        after_b = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+        if round % 5 == 0 {
+            eprintln!("past-tail competitor drain: round {round}, covenant chain length {after_b}");
+        }
+        if after_b > after_land {
+            break;
+        }
+    }
+    assert!(after_b > after_land, "the competitor's settlement past the gap batch must land",);
+    let chain = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await;
+    let b_link = chain.last().expect("competitor settlement link");
+    assert!(
+        b_link.change_spks.contains(&pay_to_address_script(&addr_b)),
+        "the settlement past the gap batch must attribute to the competitor",
+    );
+
+    // The boundary sits strictly above the journal's whole span, resolved through the frozen
+    // store's own batch metadata.
+    let committed = journal_a1.committed_tip().expect("batches committed").0;
+    let boundary = journal_a1
+        .checkpoint_of_block(b_link.block_prove_to, committed, first_start)
+        .expect("the competitor's boundary must resolve through the gap batch's metadata");
+    assert!(
+        boundary > tail_end,
+        "the competitor's boundary {boundary} must lie above the journal span (tail {tail_end})",
+    );
+
+    // === Run 2 over the SAME store: the covered entries drop instead of re-feeding, and new
+    // work settles onto the competitor's tip. ===
+    let kp_a2 = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
+    let addr_a2 = prover_address(&kp_a2, network_id);
+    l1.fund_address(&addr_a2, FUND_VALUE, FUND_COUNT).await;
+    let prover_a2 = spawn_prover_on_store(
+        &l1,
+        "A2",
+        kp_a2,
+        addr_a2.clone(),
+        4..=4,
+        network_id,
+        &params,
+        lane_key,
+        covenant_id,
+        bootstrap_state,
+        elfs,
+        None,
+        Some(block_deploy),
+        store_a1.clone(),
+        false,
+    )
+    .await;
+
+    let mut final_len = after_b;
+    for round in 0..60 {
+        mine_lane_carriers(&l1, 1).await;
+        l1.mine_blocks(1).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        final_len = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+        if round % 5 == 0 {
+            eprintln!("past-tail run2 drain: round {round}, covenant chain length {final_len}");
+        }
+        if final_len > after_b {
+            break;
+        }
+    }
+    // Same eventual-compaction window as the sibling tests: wait for the frozen scope's deletion
+    // itself under a deadline while the node still runs.
+    let compaction_deadline = std::time::Instant::now() + Duration::from_secs(300);
+    while std::time::Instant::now() < compaction_deadline {
+        if journal_a1.entries().iter().all(|(_, entry)| entry.end_index > tail_end) {
+            break;
+        }
+        l1.mine_blocks(1).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    prover_a2.shutdown.open();
+    let join_a2 = prover_a2.settler.await;
+    prover_a2.node.shutdown();
+    assert!(join_a2.is_ok(), "past-tail run 2 settler panicked: {join_a2:?}");
+
+    assert!(
+        final_len > after_b,
+        "the resumed prover must settle new work past the competitor ({after_b} -> {final_len})",
+    );
+    let chain = covenant_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await;
+    let new_link = chain.last().expect("post-restart settlement link");
+    assert!(
+        new_link.change_spks.contains(&pay_to_address_script(&addr_a2)),
+        "the post-restart settlement must attribute to the resumed prover",
+    );
+    assert_no_fork(&l1, block_deploy, bootstrap_outpoint, covenant_id).await;
+
+    // The frozen journal scope compacted away: the boundary above the span covers every entry,
+    // so none at or below the tail may survive (run 2 stragglers above it are tolerated).
+    let compacted = {
+        let entries = journal_a1.entries();
+        for (start, entry) in &entries {
+            eprintln!("past-tail journal after run 2: bundle {start}..={}", entry.end_index);
+        }
+        entries.iter().all(|(_, entry)| entry.end_index > tail_end)
+    };
+    assert!(
+        compacted,
+        "the frozen journal scope (<= {tail_end}) must compact against the boundary above it",
+    );
+
+    l1.shutdown().await;
+}
+
 /// A warm-restart resume whose own pending settlement LANDED during the downtime: run 1 leaves a
 /// settlement in the mempool and is killed; a mined block sweeps it in, so the chain has already
 /// spent the covenant input the journal still lists as pending when run 2 restarts. The restarted
