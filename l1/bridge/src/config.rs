@@ -9,14 +9,14 @@ use kaspa_consensus_core::{
 };
 use tokio::sync::{mpsc, watch};
 use vprogs_l1_types::{
-    ConnectStrategy, Hash, NetworkId, NetworkType, PermissionSpend, SettlementInfo,
+    ConnectStrategy, Hash, NetworkId, NetworkType, SettlementInfo, SettlementMsg, SpendMsg,
 };
 
 /// Hooks for watching and emitting permission-output spends.
 #[derive(Clone, Debug)]
 pub struct PermissionSpendHooks {
-    /// Channel sender for emitted permission spend events.
-    pub events: mpsc::UnboundedSender<PermissionSpend>,
+    /// Channel sender for the permission-spend stream (spends and rollback markers).
+    pub events: mpsc::UnboundedSender<SpendMsg>,
     /// Tracked permission outpoints mapped to their committed Merkle roots.
     pub registry: Arc<RwLock<HashMap<TransactionOutpoint, [u8; 32]>>>,
 }
@@ -65,8 +65,9 @@ pub struct L1BridgeConfig {
     /// Optional hooks for watching and emitting permission-output spends on accepted L1
     /// transactions.
     pub permission_spends: Option<PermissionSpendHooks>,
-    /// Optional channel sender the bridge publishes every observed settlement into.
-    pub settlement_events: Option<mpsc::UnboundedSender<SettlementInfo>>,
+    /// Optional channel sender the bridge publishes the settlement stream into (observations
+    /// and rollback markers, in per-channel FIFO order).
+    pub settlement_events: Option<mpsc::UnboundedSender<SettlementMsg>>,
 }
 
 impl Default for L1BridgeConfig {
@@ -194,11 +195,11 @@ impl L1BridgeConfig {
         self
     }
 
-    /// Sets the channel sender the bridge publishes every observed settlement into. `None`
-    /// disables publishing.
+    /// Sets the channel sender the bridge publishes the settlement stream into (observations
+    /// and rollback markers). `None` disables publishing.
     pub fn with_settlement_events(
         mut self,
-        settlement_events: Option<mpsc::UnboundedSender<SettlementInfo>>,
+        settlement_events: Option<mpsc::UnboundedSender<SettlementMsg>>,
     ) -> Self {
         self.settlement_events = settlement_events;
         self

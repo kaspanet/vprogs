@@ -186,6 +186,7 @@ async fn dropped_settlement_is_resubmitted_and_confirmed() {
         new_lane_tip: Hash::from_bytes([0x60; 32]),
         continuation_spk_hash: [0u8; 32],
         permission_spk_hash: [0u8; 32],
+        chain_idx: 0.into(),
     }));
 
     match task.await.expect("settle_one task") {
@@ -227,6 +228,7 @@ async fn drop_probe_fires_despite_settlement_watch_churn() {
                 new_lane_tip: Hash::from_bytes([0x44; 32]),
                 continuation_spk_hash: [0u8; 32],
                 permission_spk_hash: [0u8; 32],
+                chain_idx: 0.into(),
             }));
         }
     });

@@ -7,7 +7,7 @@ use vprogs_storage_types::Store;
 use vprogs_zk_abi::{
     Error, Result,
     transaction_processor::{Inputs, JournalEntries, OutputCommitment, Outputs},
-    withdrawal::ExitLeaf,
+    withdrawal::{ExitLeaf, ExitsForBatch},
 };
 
 use crate::{Backend, ProvingPipeline};
@@ -19,10 +19,11 @@ pub struct Vm<B: Backend, S: Store> {
     backend: B,
     /// Proving strategy (None, Transaction-only, or full Batch).
     proving_pipeline: Arc<ProvingPipeline<S, Self>>,
-    /// Optional sink for per-tx exit leaves extracted from tx journals. Wired only by the exec
-    /// node: the proving node's aggregate prover already publishes per-bundle exits, and a second
-    /// emission there would double-feed the exit indexer.
-    exits_tap: Option<mpsc::UnboundedSender<Vec<ExitLeaf>>>,
+    /// Optional sink for per-tx exit leaves extracted from tx journals, tagged with the executing
+    /// batch's id. Wired only by the exec node: the proving node's aggregate prover already
+    /// publishes per-bundle exits, and a second emission there would double-feed the exit
+    /// indexer.
+    exits_tap: Option<mpsc::UnboundedSender<ExitsForBatch>>,
 }
 
 impl<B: Backend, S: Store> Vm<B, S> {
@@ -32,19 +33,20 @@ impl<B: Backend, S: Store> Vm<B, S> {
     }
 
     /// Wires the per-tx exits tap, consuming and returning `self`.
-    pub fn with_exits_tap(mut self, tap: mpsc::UnboundedSender<Vec<ExitLeaf>>) -> Self {
+    pub fn with_exits_tap(mut self, tap: mpsc::UnboundedSender<ExitsForBatch>) -> Self {
         self.exits_tap = Some(tap);
         self
     }
 
-    /// Sends the tx journal's committed exits into the tap, when one is wired. A journal that
-    /// fails to decode drops that tx's exits with a warning instead of failing the tx: stdout
-    /// already validated the execution, so a malformed exit blob is a codebase mismatch the
-    /// downstream root attribution would surface anyway.
-    // ponytail: no reorg dedup; a rolled-back-and-replayed tx re-emits its leaves, root
-    // attribution blocks (never mis-attributes) on the duplicated prefix, dedup by tx id if a
+    /// Sends the tx journal's committed exits into the tap under `batch_id`, when a tap is
+    /// wired. A journal that fails to decode drops that tx's exits with a warning instead of
+    /// failing the tx: stdout already validated the execution, so a malformed exit blob is a
+    /// codebase mismatch the downstream root attribution would surface anyway.
+    // ponytail: no in-flight dedup; a leaf message already queued when the reorg marker lands
+    // keeps a stale copy that duplicates the replacement's re-emission (root attribution
+    // blocks, never mis-attributes) until a later marker prunes it; dedup by tx id if a
     // reorg-heavy lane ever needs it.
-    fn tap_exits(&self, journal_bytes: &[u8]) {
+    fn tap_exits(&self, batch_id: u64, journal_bytes: &[u8]) {
         let Some(tap) = &self.exits_tap else { return };
         let decoded = JournalEntries::decode(journal_bytes).and_then(|entries| {
             match entries.output_commitment {
@@ -63,7 +65,7 @@ impl<B: Backend, S: Store> Vm<B, S> {
         match decoded {
             Ok(leaves) if !leaves.is_empty() => {
                 // Receiver dropped means no consumer is listening; silently ignore.
-                let _ = tap.send(leaves);
+                let _ = tap.send(ExitsForBatch { batch_id, leaves });
             }
             Ok(_) => {}
             Err(e) => log::warn!("vm exits tap: undecodable tx journal exits: {e:?}"),
@@ -82,7 +84,7 @@ impl<B: Backend, S: Store> Processor<S> for Vm<B, S> {
 
         // Forward the journal's exits before applying storage ops; the decode borrows the journal
         // buffer and converts to owned leaves immediately.
-        self.tap_exits(&outcome.journal);
+        self.tap_exits(ctx.batch().checkpoint().index(), &outcome.journal);
 
         // Submit to proving pipeline (no-op if ProvingPipeline::None).
         self.proving_pipeline.submit_transaction(ctx.scheduled_tx(), input_bytes);
