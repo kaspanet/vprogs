@@ -50,13 +50,14 @@ enum GapOutcome {
     /// index.
     Covered(u64),
     /// No re-formable range: nothing committed past the journal tail, the on-chain tip already
-    /// covers it, or a deterministic metadata or receipt miss leaves it uncovered. Terminal, so
-    /// the caller never retries.
+    /// covers it, a rollback shrank the bound to the tail, or a deterministic metadata or
+    /// receipt miss leaves it uncovered. Terminal, so the caller never retries.
     Nothing,
     /// The final block's lane proof could not be fetched (a dead block or a stalled node; the
     /// error does not say which). Carries the committed tip this attempt was scoped to; the
-    /// caller retries on later loop wakes, re-bounded to it so the retry never grows over
-    /// batches committed after the restart (those belong to the live bundling path).
+    /// caller retries on later loop wakes with new-work bundling held, re-bounded to it so the
+    /// retry never grows over batches committed after the restart (those belong to the live
+    /// bundling path).
     Deferred(u64),
 }
 
@@ -187,8 +188,8 @@ where
         let mut gap_end = 0u64;
         // The committed tip a deferred gap pass stays bounded to (`None` when no retry is
         // pending). The startup pass runs unbounded; every retry re-runs against the same
-        // bound so it can only shrink (a boundary observed meanwhile splits the range) and
-        // never grow over post-restart commits.
+        // bound so it can only shrink (a boundary observed meanwhile splits the range, a
+        // rollback cuts it to the reorg target) and never grow over post-restart commits.
         let mut gap_bound: Option<u64> = None;
         let journal_holds_entries = self.journal.as_ref().is_some_and(|j| j.has_entries());
         if journal_holds_entries
@@ -258,7 +259,14 @@ where
             while let Some(cmd) = self.prover.inbox.pop() {
                 match cmd {
                     Command::Batch(batch) => self.queued.push_back(batch),
-                    Command::Rollback(target) => self.apply_rollback(target),
+                    Command::Rollback(target) => {
+                        self.apply_rollback(target);
+                        // A rollback proves every batch above its target dead, so it cuts a
+                        // pending gap bound back to the target: a target at or below the
+                        // journal tail ends the retry with the fork, and one inside the range
+                        // leaves only the surviving prefix to re-cover.
+                        gap_bound = gap_bound.map(|bound| bound.min(target));
+                    }
                 }
                 if self.prover.shutdown.is_open() {
                     return;
@@ -295,11 +303,11 @@ where
             // whenever the failure was the node: the same deferral a live bundle's dead lane
             // proof gets, retried on every wake (a new batch, a settlement advance, or
             // shutdown). The retry re-runs the whole pass against the current journal and
-            // tip, so a boundary that landed meanwhile splits the range, and it
-            // self-terminates without a fetch once the journal tail reaches the bound (the
-            // gap was covered, or new work settled past a genuinely dead block). Running
-            // before bundle formation keeps the recovered gap bundle ahead of new-work
-            // bundles on the settlement queue, the ordering the settler's skip path assumes.
+            // tip, and ends only on evidence: the pass covers the range, the on-chain
+            // boundary reaches the bound (settled), or a rollback cuts the bound to the
+            // journal tail (the range died with the fork). Running before bundle formation
+            // keeps the recovered gap bundle ahead of new-work bundles on the settlement
+            // queue, the ordering the settler's skip path assumes.
             if let Some(bound) = gap_bound {
                 let tip = self.settlement.as_ref().and_then(|rx| *rx.borrow());
                 match self.reform_committed_gap(tip.as_ref(), bound).await {
@@ -316,8 +324,11 @@ where
             }
 
             // Try to prove one bundle. Loop without parking while progress is made so back-to-back
-            // ready bundles drain promptly.
-            let made_progress = self.try_prove_one_bundle().await;
+            // ready bundles drain promptly. A pending gap retry holds bundle formation: a
+            // new-work bundle journaled past the uncovered range would advance the journal
+            // tail and silently end the retry, abandoning the gap.
+            let made_progress =
+                if gap_bound.is_none() { self.try_prove_one_bundle().await } else { false };
             if self.prover.shutdown.is_open() {
                 return;
             }
@@ -956,7 +967,7 @@ where
     /// Splits the journal entry a settlement boundary lands inside: re-aggregates its suffix
     /// strictly after `tip_index` from cached per-batch receipts, records the successor entry,
     /// and re-feeds it. Empty batches compose nothing; a missing receipt drops the entry with a
-    /// warning instead of wedging.
+    /// warning instead of wedging, and a failed lane-proof fetch keeps it for a later pass.
     async fn split_straddler(&mut self, start: u64, entry: JournalEntry, tip_index: u64) {
         let Some(journal) = self.journal.clone() else { return };
         let successor_start = tip_index + 1;
@@ -1005,12 +1016,17 @@ where
             ProveOutcome::Receipt(receipt) => receipt,
             ProveOutcome::Shutdown => return, // shutdown mid-proof; the next startup re-runs
             // the pass
+            // The fetch failure conflates a dead block with a stalled node, and this is the
+            // only resume path left holding the entry: with an entry above the straddler the
+            // suffix would otherwise be lost for good, since neither the gap pass (its lower
+            // edge is that tail entry) nor a restart re-forms the range below it. The entry
+            // stays unsplit for a later advance or the next startup to retry, and a dead
+            // block's entry compacts once new work settles past it.
             ProveOutcome::LaneProofFailed => {
                 log::warn!(
                     "aggregate-prover: resume split for bundle {start} has no live lane proof \
-                     (reorg during downtime); dropping it"
+                     (reorg during downtime); keeping it for a later pass"
                 );
-                journal.delete(start);
                 return;
             }
         };
