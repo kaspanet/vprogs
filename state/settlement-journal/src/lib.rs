@@ -99,7 +99,8 @@ impl<S: Store> StoreJournal<S> {
 
     /// Returns the checkpoint index whose batch block is `block`, searching from `upper` down to
     /// `lower` inclusive, or `None` when no batch in the window carries the block. Callers bound
-    /// the window by the journal's own span, never the whole chain.
+    /// the window by the unsettled span, the first journal entry through the committed tip,
+    /// never the whole chain.
     pub fn checkpoint_of_block(&self, block: Hash, upper: u64, lower: u64) -> Option<u64> {
         (lower..=upper).rev().find(|&i| self.batch_block(i) == Some(block))
     }
