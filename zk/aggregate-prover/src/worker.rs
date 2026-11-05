@@ -953,7 +953,7 @@ where
     /// Splits the journal entry a settlement boundary lands inside: re-aggregates its suffix
     /// strictly after `tip_index` from cached per-batch receipts, records the successor entry,
     /// and re-feeds it. Empty batches compose nothing; a missing receipt drops the entry with a
-    /// warning instead of wedging.
+    /// warning instead of wedging, and a failed lane-proof fetch keeps it for a later pass.
     async fn split_straddler(&mut self, start: u64, entry: JournalEntry, tip_index: u64) {
         let Some(journal) = self.journal.clone() else { return };
         let successor_start = tip_index + 1;
@@ -1002,12 +1002,17 @@ where
             ProveOutcome::Receipt(receipt) => receipt,
             ProveOutcome::Shutdown => return, // shutdown mid-proof; the next startup re-runs
             // the pass
+            // The fetch failure conflates a dead block with a stalled node, and this is the
+            // only resume path left holding the entry: with an entry above the straddler the
+            // suffix would otherwise be lost for good, since neither the gap pass (its lower
+            // edge is that tail entry) nor a restart re-forms the range below it. The entry
+            // stays unsplit for a later advance or the next startup to retry, and a dead
+            // block's entry compacts once new work settles past it.
             ProveOutcome::LaneProofFailed => {
                 log::warn!(
                     "aggregate-prover: resume split for bundle {start} has no live lane proof \
-                     (reorg during downtime); dropping it"
+                     (reorg during downtime); keeping it for a later pass"
                 );
-                journal.delete(start);
                 return;
             }
         };
