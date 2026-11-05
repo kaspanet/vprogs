@@ -602,20 +602,25 @@ where
         self.last_reformed_from = Some(suffix_from);
     }
 
-    /// Deletes journal entries the on-chain settlement `tip` fully covers. A boundary mapping to
-    /// no batch in the journal's span (a competitor's fork block outside our metadata) deletes
-    /// nothing and logs.
+    /// Deletes journal entries the on-chain settlement `tip` fully covers. The boundary resolves
+    /// over the committed span, `first_start..=committed_tip`: a competitor whose bundle ends
+    /// past our last journaled one maps above the journal's span and covers every entry, while a
+    /// boundary mapping to no batch at all (below our span, or a fork block outside our metadata)
+    /// keeps them.
     fn compact_journal(&self, tip: &SettlementInfo) {
         let Some(journal) = &self.journal else { return };
         let entries = journal.entries();
         let Some((first_start, _)) = entries.first() else { return };
         let Some((_, last)) = entries.last() else { return };
+        // Entries exist only over committed batches, so the committed tip never sits below the
+        // journal's last end.
+        let committed = journal.committed_tip().map_or(last.end_index, |(index, _)| index);
         let Some(tip_index) =
-            journal.checkpoint_of_block(tip.block_prove_to, last.end_index, *first_start)
+            journal.checkpoint_of_block(tip.block_prove_to, committed, *first_start)
         else {
             log::warn!(
-                "aggregate-prover: settlement {} boundary {} maps to no batch in the journal \
-                 span; keeping {} entries",
+                "aggregate-prover: settlement {} boundary {} maps to no batch below the committed \
+                 tip; keeping {} entries",
                 tip.tx_id,
                 tip.block_prove_to,
                 entries.len(),
@@ -631,8 +636,11 @@ where
 
     /// Resumes settlement after a restart: deletes journal entries the on-chain tip already
     /// covers, splits the one entry a competitor's boundary lands inside, and re-feeds every
-    /// surviving entry onto the settlement queue ahead of new work. Re-fed bundles chain exactly
-    /// like fresh ones; the settlement worker's adopt/skip/superseded paths land them.
+    /// surviving entry onto the settlement queue ahead of new work. The boundary resolves over
+    /// the committed span, so a competitor that settled past the whole scoped tail drops it
+    /// rather than re-feeding it; an unmapped boundary (behind, or off our chain) re-feeds the
+    /// scoped tail unchanged. Re-fed bundles chain exactly like fresh ones; the settlement
+    /// worker's adopt/skip/superseded paths land them.
     ///
     /// Scoped to entries with `end_index <= max_end`: startup snapshots the pre-restart journal
     /// tail, and each settlement-watch advance re-runs the pass against that snapshot until the
@@ -659,12 +667,16 @@ where
         };
         let first_start = entries.first().expect("checked non-empty").0;
         let last_end = entries.last().expect("checked non-empty").1.end_index;
+        // Resolve over the committed span, as compaction does: a boundary above the scoped tail
+        // (a competitor settled past our whole pending tail) covers every scoped entry, so the
+        // drop loop below empties the snapshot and nothing re-feeds.
+        let committed = journal.committed_tip().map_or(last_end, |(index, _)| index);
         let Some(tip_index) =
-            journal.checkpoint_of_block(tip.block_prove_to, last_end, first_start)
+            journal.checkpoint_of_block(tip.block_prove_to, committed, first_start)
         else {
             log::warn!(
-                "aggregate-prover: resume tip boundary {} maps to no batch in the journal span \
-                 ({} entries); re-feeding the tail unchanged",
+                "aggregate-prover: resume tip boundary {} maps to no batch below the committed \
+                 tip ({} entries); re-feeding the tail unchanged",
                 tip.block_prove_to,
                 entries.len(),
             );
