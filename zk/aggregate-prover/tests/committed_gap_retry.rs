@@ -1,10 +1,11 @@
 //! Pins the committed-gap pass's retry semantics: a lane-proof fetch that fails at startup (the
 //! node stalled while the worker booted) must defer the gap range and retry it on later loop
 //! wakes instead of leaving it uncovered for the life of the process, because nothing else ever
-//! re-schedules a committed batch. The recovered gap bundle must also land on the settlement
-//! queue ahead of new work. A genuinely dead gap block (reorged away during the downtime) must
-//! not wedge new work: its fetches stop once the journal tail settles past the gap, and bundles
-//! for live blocks keep emitting.
+//! re-schedules a committed batch. While the retry is pending, new-work bundling is held so the
+//! journal tail cannot advance past the uncovered range, and the recovered gap bundle lands on
+//! the settlement queue ahead of new work. A genuinely dead gap block (reorged away during the
+//! downtime) does not wedge the worker either: the reorg's rollback cuts the retry's bound to
+//! the journal tail, new work resumes, and bundles for live blocks keep emitting.
 
 // The backend traits return `impl Future + 'static`, which an `async fn` cannot satisfy: its future
 // borrows `&self`.
@@ -14,7 +15,7 @@ use std::{
     future::Future,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -134,10 +135,12 @@ impl vprogs_zk_aggregate_prover::Backend for SyntheticBackend {
     }
 }
 
-/// Lane source standing in for a node that stalls while the worker boots: the very first fetch
-/// fails the way a timing-out RPC does, every later fetch serves.
+/// Lane source standing in for a node that stalls while the worker boots: the first `failures`
+/// fetches fail the way timing-out RPCs do, every later fetch serves.
 struct StalledStartLaneSource {
-    /// Fetches attempted so far, shared with the test; fetch zero fails.
+    /// Fetches that must fail before the node recovers.
+    failures: usize,
+    /// Fetches attempted so far, shared with the test.
     fetches: Arc<AtomicUsize>,
 }
 
@@ -146,7 +149,35 @@ impl LaneProofSource for StalledStartLaneSource {
         &self,
         _req: LaneProofRequest,
     ) -> Result<GetSeqCommitLaneProofResponse, LaneProofError> {
-        if self.fetches.fetch_add(1, Ordering::SeqCst) == 0 {
+        if self.fetches.fetch_add(1, Ordering::SeqCst) < self.failures {
+            return Err(LaneProofError("request timed out".into()));
+        }
+        Ok(GetSeqCommitLaneProofResponse {
+            smt_proof: Vec::new(),
+            lane: None,
+            payload_and_ctx_digest: Hash::default(),
+            parent_seq_commit: Hash::default(),
+            inactivity_shortcut: Hash::default(),
+        })
+    }
+}
+
+/// Lane source standing in for a node that stays down until the test releases it: every fetch
+/// fails while `stalled` is set, every fetch serves once it clears.
+struct StalledNodeLaneSource {
+    /// Whether the node is still unreachable; the test flips it on recovery.
+    stalled: Arc<AtomicBool>,
+    /// Fetches attempted so far, shared with the test.
+    fetches: Arc<AtomicUsize>,
+}
+
+impl LaneProofSource for StalledNodeLaneSource {
+    async fn fetch_lane_proof(
+        &self,
+        _req: LaneProofRequest,
+    ) -> Result<GetSeqCommitLaneProofResponse, LaneProofError> {
+        self.fetches.fetch_add(1, Ordering::SeqCst);
+        if self.stalled.load(Ordering::SeqCst) {
             return Err(LaneProofError("request timed out".into()));
         }
         Ok(GetSeqCommitLaneProofResponse {
@@ -323,7 +354,7 @@ fn committed_gap_retries_after_a_transient_fetch_failure() {
             AggregateProverConfig {
                 lane_key: Hash::default(),
                 covenant_id: None,
-                lane_source: StalledStartLaneSource { fetches: fetches.clone() },
+                lane_source: StalledStartLaneSource { failures: 1, fetches: fetches.clone() },
                 settlement_queue: Some(settlement_queue.clone()),
                 settlement: Some(settlement_rx),
                 bundle_size: 1..=1,
@@ -372,9 +403,100 @@ fn committed_gap_retries_after_a_transient_fetch_failure() {
     }
 }
 
+/// Tests that new-work bundling is held while a committed-gap retry is pending: while the gap's
+/// fetch keeps failing no new-work handle is published, and once the node recovers the gap bundle
+/// settles first with the held work behind it, so nothing is ever journaled past an uncovered
+/// range.
+#[test]
+fn new_work_waits_for_a_pending_gap() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let journal = StoreJournal::new(storage.clone());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(PlainProcessor),
+            StorageConfig::default().with_store(storage),
+        );
+        commit_gap_batch(&mut scheduler, block(1, 0));
+
+        let settlement_queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Vec<u8>>>> =
+            AsyncQueue::new();
+        let (settlement_tx, settlement_rx) = watch::channel::<Option<SettlementInfo>>(None);
+        let stalled = Arc::new(AtomicBool::new(true));
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let prover = AggregateProver::new(
+            SyntheticBackend,
+            scheduler.state().receipt_store(),
+            Some(journal.clone()),
+            AggregateProverConfig {
+                lane_key: Hash::default(),
+                covenant_id: None,
+                lane_source: StalledNodeLaneSource {
+                    stalled: stalled.clone(),
+                    fetches: fetches.clone(),
+                },
+                settlement_queue: Some(settlement_queue.clone()),
+                settlement: Some(settlement_rx),
+                bundle_size: 1..=1,
+                exits: None,
+            },
+        );
+
+        // The startup fetch fails and defers the gap.
+        settlement_tx.send_replace(Some(unrelated_tip()));
+        wait_for_fetches(&fetches, 1);
+
+        // Block 2 arrives with the node still down: its wake retries the gap (as does the
+        // startup settlement's residual wake), every fetch fails, and block 2's bundle is held
+        // behind the pending gap.
+        commit_and_submit(&mut scheduler, &prover, block(2, 1));
+        wait_for_fetches(&fetches, 2);
+        assert!(
+            next_bundle(&settlement_queue, Duration::from_millis(500)).is_none(),
+            "no handle may arrive while the gap retry is pending",
+        );
+
+        // The node recovers and block 3 wakes the loop: the retry covers the gap first, then
+        // the held work settles behind it in order.
+        stalled.store(false, Ordering::SeqCst);
+        commit_and_submit(&mut scheduler, &prover, block(3, 2));
+        let gap = next_bundle(&settlement_queue, Duration::from_secs(10))
+            .expect("the recovered gap must settle first");
+        gap.wait_artifact_published_blocking();
+        assert_eq!(gap.block_prove_to(), block_hash(1), "the gap bundle covers block 1");
+        assert!(gap.artifact().is_some());
+
+        let held = next_bundle(&settlement_queue, Duration::from_secs(10))
+            .expect("the held new work settles behind the recovered gap");
+        held.wait_artifact_published_blocking();
+        assert_eq!(held.block_prove_to(), block_hash(2));
+        assert!(held.artifact().is_some());
+
+        let late = next_bundle(&settlement_queue, Duration::from_secs(10))
+            .expect("work that arrived after the recovery settles last");
+        late.wait_artifact_published_blocking();
+        assert_eq!(late.block_prove_to(), block_hash(3));
+        assert!(late.artifact().is_some());
+
+        assert!(
+            next_bundle(&settlement_queue, Duration::from_millis(500)).is_none(),
+            "no further handle may arrive",
+        );
+        assert_eq!(
+            journal.entries().len(),
+            3,
+            "the gap entry and both new-work entries are recorded",
+        );
+
+        prover.shutdown();
+        scheduler.shutdown();
+    }
+}
+
 /// Tests that a genuinely dead gap block (a reorg orphaned it before the restart) does not wedge
-/// the worker: no handle is ever published for it, new-work bundles keep settling, and the gap
-/// fetches stop once the journal tail settles past the gap's bound.
+/// the worker: no handle is ever published for it, new-work bundling is held while the gap retry
+/// is pending, and the reorg's rollback ends the retry by cutting its bound to the journal tail,
+/// so the replacement chain's bundles settle and the dead fetches stop.
 #[test]
 fn dead_gap_does_not_wedge_new_work() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
@@ -412,35 +534,49 @@ fn dead_gap_does_not_wedge_new_work() {
         settlement_tx.send_replace(Some(unrelated_tip()));
         wait_for_fetches(&dead_fetches, 1);
 
-        // Block 2 is live: its bundle must settle even though block 1's gap fetch keeps failing.
+        // Block 2 arrives while the gap keeps failing: its wake retries the fetch (proving the
+        // deferral loop runs) and its bundle is held behind the pending gap, so nothing settles.
         commit_and_submit(&mut scheduler, &prover, block(2, 1));
-        let second = next_bundle(&settlement_queue, Duration::from_secs(10))
-            .expect("new work past a dead gap must still settle");
-        second.wait_artifact_published_blocking();
-        assert_eq!(
-            second.block_prove_to(),
-            block_hash(2),
-            "the first handle is block 2's bundle: the dead gap block never settles",
+        wait_for_fetches(&dead_fetches, 2);
+        assert!(
+            next_bundle(&settlement_queue, Duration::from_millis(500)).is_none(),
+            "new work is held while the dead gap's retry is pending",
         );
-        assert!(second.artifact().is_some());
 
-        // Block 3 settles too, and the gap's retries stop once the journal tail (block 2's
-        // entry) passes the dead gap's bound: the startup fetch, at least one retry, and no
-        // fetch after the tail moved past.
-        commit_and_submit(&mut scheduler, &prover, block(3, 2));
-        let third = next_bundle(&settlement_queue, Duration::from_secs(10))
-            .expect("the worker must keep settling past the dead gap");
-        third.wait_artifact_published_blocking();
-        assert_eq!(third.block_prove_to(), block_hash(3));
-        assert!(third.artifact().is_some());
+        // The reorg reaches the prover the way the bridge delivers it: a rollback to genesis
+        // orphaning the dead block. It cuts the retry's bound to the journal tail, so the
+        // retry ends without another fetch and new work resumes from the replacement chain.
+        prover.rollback(0);
+
+        // The replacement chain the reorg settled on: its bundles settle in order.
+        commit_and_submit(&mut scheduler, &prover, block(3, 0));
+        let first = next_bundle(&settlement_queue, Duration::from_secs(10))
+            .expect("new work must settle once the rollback ended the dead gap's retry");
+        first.wait_artifact_published_blocking();
+        assert_eq!(
+            first.block_prove_to(),
+            block_hash(3),
+            "the first handle is the replacement's bundle: the dead gap block never settles",
+        );
+        assert!(first.artifact().is_some());
+
+        commit_and_submit(&mut scheduler, &prover, block(4, 3));
+        let second = next_bundle(&settlement_queue, Duration::from_secs(10))
+            .expect("the worker must keep settling past the ended retry");
+        second.wait_artifact_published_blocking();
+        assert_eq!(second.block_prove_to(), block_hash(4));
+        assert!(second.artifact().is_some());
 
         assert!(
             next_bundle(&settlement_queue, Duration::from_millis(500)).is_none(),
             "no further handle may arrive: the dead gap block settles nothing",
         );
-        assert!(
-            dead_fetches.load(Ordering::SeqCst) >= 2,
-            "the deferred gap must have been retried beyond the startup attempt",
+        let frozen = dead_fetches.load(Ordering::SeqCst);
+        thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            dead_fetches.load(Ordering::SeqCst),
+            frozen,
+            "the retry's fetches stop once the rollback cut the bound",
         );
 
         prover.shutdown();
