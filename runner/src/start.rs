@@ -870,7 +870,7 @@ fn bridge_params(
 /// it from the covenant's own state. A boundary mapping to no batch of ours (a competitor's fork
 /// block) has no rollback target; the re-form paths on the next settlement advance own that
 /// case.
-async fn run_covenant_reroot(
+pub async fn run_covenant_reroot(
     api: NodeApi<RunnerStore, RunnerVm>,
     mut re_root_rx: mpsc::UnboundedReceiver<SettlementInfo>,
 ) {
