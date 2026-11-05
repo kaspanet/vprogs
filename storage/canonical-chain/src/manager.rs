@@ -87,11 +87,13 @@ impl<M: BatchMetadata> CanonicalChainManager<M> {
         // Finalize the canonical bits below `below`.
         self.chain.finalize(below);
 
-        // Drop the now-finalized log entries and their reverse-index keys. `base` tracks the
-        // popped id plus one, which equals the next live id when the log is dense and simply
-        // names the gap floor when one sits below the next live entry.
-        while self.base < below {
-            let Some((id, metadata)) = self.entries.pop_front() else { break };
+        // Drop the now-finalized log entries and their reverse-index keys, keyed on the front
+        // entry's id: a restore can leave `base` below the front entry (an interior gap), and a
+        // `below` inside that gap would walk `base` past the hole and pop live entries too.
+        // `base` tracks the popped id plus one, which equals the next live id when the log is
+        // dense and simply names the gap floor when one sits below the next live entry.
+        while self.entries.front().is_some_and(|(id, _)| *id < below) {
+            let (id, metadata) = self.entries.pop_front().expect("front id checked above");
             self.index.remove(&metadata.block_hash());
             self.base = id + 1;
         }
