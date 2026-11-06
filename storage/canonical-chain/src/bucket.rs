@@ -9,13 +9,37 @@ use std::{
 /// Ids a bucket holds, one bit each.
 pub const CAPACITY: u64 = 128;
 
+/// 64-bit words per bucket.
+pub(crate) const WORDS: usize = (CAPACITY / 64) as usize;
+
+/// The raw canonical bits of one bucket.
+pub type BucketWords = [u64; WORDS];
+
+/// One bucket's frozen canonical bits, ready to persist at finalization and replay into restore.
+pub struct FrozenBits {
+    /// The bucket number the words belong to.
+    pub bucket: u64,
+    /// The bucket's canonical bits.
+    pub words: BucketWords,
+}
+
 /// A fixed-size run of canonical bits (`1` = canonical), covering [`CAPACITY`] ids.
-pub(crate) struct Bucket([AtomicU64; (CAPACITY / 64) as usize]);
+pub(crate) struct Bucket([AtomicU64; WORDS]);
 
 impl Bucket {
     /// Creates a bucket with no canonical bits set (every bit `0`).
     pub(crate) fn new() -> Self {
         Self(from_fn(|_| AtomicU64::new(0)))
+    }
+
+    /// Creates a bucket with every bit set (all ids canonical).
+    pub(crate) fn all_canonical() -> Self {
+        Self(from_fn(|_| AtomicU64::new(u64::MAX)))
+    }
+
+    /// Creates a bucket carrying exactly `words`.
+    pub(crate) fn from_words(words: BucketWords) -> Self {
+        Self(from_fn(|w| AtomicU64::new(words[w])))
     }
 
     /// Returns whether the within-bucket bit `bit` is set.
@@ -33,7 +57,7 @@ impl Bucket {
     /// Returns an independent copy with each `(bit, value)` in `ops` applied (copy-on-write).
     pub(crate) fn edited(&self, ops: &[(usize, bool)]) -> Arc<Bucket> {
         // Edit plain words; the copy is unshared until sealed, so no atomic RMW is needed.
-        let mut words = self.snapshot();
+        let mut words = self.words();
         for &(bit, value) in ops {
             debug_assert!(bit < CAPACITY as usize);
             let mask = 1u64 << (bit % 64);
@@ -54,8 +78,24 @@ impl Bucket {
         (zero_based / CAPACITY, (zero_based % CAPACITY) as usize)
     }
 
-    /// A plain (non-atomic) snapshot of the bucket's words.
-    fn snapshot(&self) -> [u64; (CAPACITY / 64) as usize] {
+    /// A plain (non-atomic) read of the bucket's words.
+    pub(crate) fn words(&self) -> BucketWords {
         from_fn(|w| self.0[w].load(Ordering::Relaxed))
     }
+}
+
+/// `words` with only the bits `[0, bit)` kept.
+pub(crate) fn sub_base_words(words: BucketWords, bit: usize) -> BucketWords {
+    let mut masked = [0u64; WORDS];
+    for w in 0..WORDS {
+        let keep = if w < bit / 64 {
+            u64::MAX
+        } else if w == bit / 64 {
+            (1u64 << (bit % 64)) - 1
+        } else {
+            0
+        };
+        masked[w] = words[w] & keep;
+    }
+    masked
 }

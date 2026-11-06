@@ -9,4 +9,5 @@ vprogs-core-atomics.workspace = true
 vprogs-core-types.workspace   = true
 
 [dev-dependencies]
-borsh.workspace = true
+borsh.workspace   = true
+vprogs-core-types = { workspace = true, features = ["test-utils"] }
