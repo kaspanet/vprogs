@@ -39,7 +39,7 @@ use arc_swap::ArcSwap;
 use vprogs_core_atomics::AtomicRing;
 
 use crate::{
-    bucket::{Bucket, FrozenBits, WORDS, sub_base_words},
+    bucket::{Bucket, FrozenBits, WORDS},
     hot_zone::HotZone,
     snapshot::CanonicalChainSnapshot,
 };
@@ -81,23 +81,7 @@ impl CanonicalChain {
     /// fully crosses, plus the sub-base words of the bucket holding `below`. Valid while the
     /// buckets are still live, before [`finalize`](Self::finalize) prunes them.
     pub fn frozen_bits(&self, below: u64) -> Vec<FrozenBits> {
-        // Read the current snapshot; crossed buckets must still be present in it.
-        let cur = self.current.load();
-        let (base_bucket, base_bit) = Bucket::locate(below);
-
-        // Full words for each bucket the step crosses below the new base bucket.
-        let mut frozen = Vec::new();
-        for bucket in cur.body.base()..base_bucket {
-            if let Some(words) = cur.bucket_words(bucket) {
-                frozen.push(FrozenBits { bucket, words });
-            }
-        }
-
-        // The sub-base range of the new base bucket: masked words, so still-live bits stay out.
-        if let Some(words) = cur.bucket_words(base_bucket) {
-            frozen.push(FrozenBits { bucket: base_bucket, words: sub_base_words(words, base_bit) });
-        }
-        frozen
+        self.current.load().frozen_bits(below)
     }
 
     /// Restores the `canonical` ids over `base..=tip` at startup, replaying `frozen` bits
@@ -154,7 +138,11 @@ impl CanonicalChain {
             .and_then(|below| frozen.iter().find(|row| row.bucket == below))
             .map_or_else(Bucket::all_canonical, |row| Bucket::from_words(row.words));
         let last_sealed = buckets.pop().map_or_else(|| Arc::new(fabricated), Arc::new);
-        let body = AtomicRing::new(base_bucket);
+        // A live ring's next-push slot sits at `tail_bucket - 1` (the invariant `roll_forward`
+        // holds), so start the restored ring there minus the body count. The single-bucket
+        // shape then keeps that slot at the fabricated `last_sealed`'s bucket, and the first
+        // roll seals it into the body instead of dropping it.
+        let body = AtomicRing::new(tail_bucket.saturating_sub(1) - buckets.len() as u64);
         for bucket in buckets {
             body.push(Arc::new(bucket));
         }
