@@ -71,7 +71,7 @@ impl RecordingSink {
         self.0.lock().unwrap().reorgs.clone()
     }
 
-    /// The `below` argument of each finalization the bridge drove.
+    /// The distinct `below` thresholds the bridge finalized, in order.
     fn finalized(&self) -> Vec<u64> {
         self.0.lock().unwrap().finalized.clone()
     }
@@ -143,7 +143,14 @@ impl ChainSink<ChainBlockMetadata, L1Transaction> for RecordingSink {
     fn finalize(&mut self, below: u64) {
         let mut inner = self.0.lock().unwrap();
         inner.manager.finalize(below);
-        inner.finalized.push(below);
+        // Finalization repeats on every batch past the window; the threshold never regresses.
+        assert!(
+            inner.finalized.last().is_none_or(|&last| below >= last),
+            "finalization threshold regressed to {below}"
+        );
+        if inner.finalized.last() != Some(&below) {
+            inner.finalized.push(below);
+        }
     }
 
     fn tip(&self) -> u64 {
