@@ -122,6 +122,8 @@ pub fn delegate_entry_spk_hash(covenant_id: &[u8; 32]) -> [u8; 32] {
 trait PermRedeemScript {
     /// Byte count of `emit_prefix`: `OpData32 | root(32) | OpData8 | unclaimed_count(8 LE)`.
     const PREFIX_LEN: usize = 42;
+    /// Byte count of `emit_input_index_pin`.
+    const INPUT_PIN_LEN: usize = 3;
     /// Byte count of `emit_stash`.
     const STASH_LEN: usize = 2;
     /// Byte count of `emit_validate_amounts`.
@@ -146,8 +148,8 @@ trait PermRedeemScript {
     /// Bytes emitted for the one self-referential `push_i64(PREFIX_LEN - total_len)` in
     /// `emit_verify_outputs`.
     ///
-    /// For every `depth` in `1..=PERM_MAX_DEPTH` the total script length lands in `[489, 1171]`, so
-    /// the pushed magnitude `total_len - 42` is in `[447, 1129]`, always two little-endian bytes
+    /// For every `depth` in `1..=PERM_MAX_DEPTH` the total script length lands in `[492, 1174]`, so
+    /// the pushed magnitude `total_len - 42` is in `[450, 1132]`, always two little-endian bytes
     /// with the high bit clear, so `push_i64` emits 1 length-prefix byte + 2 magnitude bytes = 3,
     /// with no sign byte. Past depth ~1450 the magnitude would need a sign byte and this constant
     /// would have to change.
@@ -155,6 +157,7 @@ trait PermRedeemScript {
 
     /// Depth-independent byte count of the redeem script, the sum of every fixed-size phase.
     const FIXED_LEN: usize = Self::PREFIX_LEN
+        + Self::INPUT_PIN_LEN
         + Self::STASH_LEN
         + Self::VALIDATE_AMOUNTS_LEN
         + Self::VERIFY_WITHDRAWAL_LEN
@@ -176,6 +179,8 @@ trait PermRedeemScript {
 
     /// Emits the embedded prefix: `OpData32 | root | OpData8 | unclaimed_count(8 LE)`.
     fn emit_prefix(&mut self, root: &[u8; 32], unclaimed_count: u64);
+    /// Pins the executing input to index 0.
+    fn emit_input_index_pin(&mut self);
     /// Stashes the embedded root + unclaimed_count to the alt stack.
     fn emit_stash(&mut self);
     /// Validates `deduct > 0` and `amount >= deduct`.
@@ -244,6 +249,16 @@ impl PermRedeemScript for Vec<u8> {
         self.extend_from_slice(root);
         self.push(0x08); // OpData8
         self.extend_from_slice(&unclaimed_count.to_le_bytes());
+    }
+
+    fn emit_input_index_pin(&mut self) {
+        // One permission input per spend, at index 0 (the builder's layout). Without the pin a
+        // second permission UTXO of the same covenant verifies at its own index: two identical
+        // trees spend over one payout/continuation, the second beneficiary goes unpaid, and the
+        // second rent rides out through the claimer's delegate change.
+        self.push(OP_TXINPUTINDEX);
+        self.push_i64(0);
+        self.push(OP_EQUALVERIFY);
     }
 
     fn emit_stash(&mut self) {
@@ -782,6 +797,7 @@ fn build_permission_redeem_bytes(
 ) -> Vec<u8> {
     let mut s: Vec<u8> = Vec::with_capacity(redeem_script_len.max(64) as usize);
     s.emit_prefix(root, unclaimed_count);
+    s.emit_input_index_pin();
     s.emit_stash();
     s.emit_validate_amounts();
     s.emit_verify_withdrawal();
@@ -836,9 +852,9 @@ mod tests {
 
     #[test]
     fn const_fn_length_is_linear_in_depth() {
-        // Closed form: 489 bytes at depth 1, +22 (two Merkle walks) per extra depth.
-        assert_eq!(perm_redeem_script_len(1), 489);
-        assert_eq!(perm_redeem_script_len(PERM_MAX_DEPTH), 489 + 22 * (PERM_MAX_DEPTH - 1));
+        // Closed form: 492 bytes at depth 1, +22 (two Merkle walks) per extra depth.
+        assert_eq!(perm_redeem_script_len(1), 492);
+        assert_eq!(perm_redeem_script_len(PERM_MAX_DEPTH), 492 + 22 * (PERM_MAX_DEPTH - 1));
         for depth in 1..PERM_MAX_DEPTH {
             assert_eq!(
                 perm_redeem_script_len(depth + 1) - perm_redeem_script_len(depth),
@@ -852,8 +868,8 @@ mod tests {
         // Proves it is genuinely a `const fn` (usable in const context, the whole point).
         const AT_MIN: usize = perm_redeem_script_len(1);
         const AT_MAX: usize = perm_redeem_script_len(PERM_MAX_DEPTH);
-        assert_eq!(AT_MIN, 489);
-        assert_eq!(AT_MAX, 1171); // 489 + 22 * 31
+        assert_eq!(AT_MIN, 492);
+        assert_eq!(AT_MAX, 1174); // 492 + 22 * 31
     }
 
     #[test]
