@@ -2816,3 +2816,117 @@ pub fn test_restore_smt_root_is_idempotent() {
         scheduler.shutdown();
     }
 }
+
+/// Commits block 1 carrying `payload` on a fresh store and returns the resulting `root(1)`.
+///
+/// The block is new rather than returning, so it takes the non-restored path and its commit folds
+/// `payload` into the SMT.
+fn fresh_root_at_1(payload: usize) -> [u8; 32] {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+    let mut scheduler = Scheduler::new(
+        ExecutionConfig::default().with_processor(Processor),
+        StorageConfig::default().with_store(storage),
+    );
+
+    let batch1 = scheduler.schedule(
+        1,
+        vec![SchedulerTransaction::new(
+            0,
+            vec![AccessMetadata::write(ResourceId::for_test(1))],
+            payload,
+        )],
+    );
+    batch1.wait_committed_blocking();
+    let root = scheduler.state().storage().store().root(1);
+    scheduler.shutdown();
+    root
+}
+
+/// Repro: the assertion in `test_restore_smt_root_is_idempotent` cannot fail.
+///
+/// That test's premise is that committing a restored batch re-runs `store.update` and rebuilds the
+/// same tree. `store.update` never re-runs: a restored batch skips it, so nothing writes the SMT at
+/// version 1 between the capture of `root_before` and the assertion, and `store.root(1)` is the
+/// original tree rather than a reconstruction.
+///
+/// This test is that test with the same assertion evaluated at the two points that bracket the
+/// restore. It already holds before the restored block is scheduled, and it still holds when the
+/// restored block carries a transaction whose bytes differ from the committed ones, which a re-run
+/// `store.update` would have folded into a different tree. Passing here is the finding: the
+/// assertion is insensitive to the restore and constrains nothing about it.
+///
+/// A control pins that insensitivity to the restore rather than to `root(1)`: on the non-restored
+/// path the same two payloads produce two distinct non-empty roots, so the assertion does
+/// discriminate payloads whenever `store.update` runs, and its passing across the restore is
+/// therefore evidence that `store.update` did not run.
+#[test]
+pub fn test_restore_smt_root_idempotence_assertion_is_vacuous() {
+    // The control: committed through the non-restored path, the payloads under test disagree.
+    // Without this, root(1) holding still across the restore would be equally explained by root(1)
+    // ignoring payloads altogether.
+    let fresh_100 = fresh_root_at_1(100);
+    let fresh_999 = fresh_root_at_1(999);
+    assert_ne!(fresh_100, EMPTY_HASH, "the committed root must not be the empty tree");
+    assert_ne!(fresh_100, fresh_999, "root(1) must discriminate payloads when store.update runs");
+
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(Processor),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // Commit block 1 and capture the resulting state root, exactly as the original test does.
+        let batch1 = scheduler.schedule(
+            1,
+            vec![SchedulerTransaction::new(
+                0,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+                100,
+            )],
+        );
+        batch1.wait_committed_blocking();
+        let root_before = scheduler.state().storage().store().root(1);
+        assert_eq!(root_before, fresh_100, "block 1 commits the tree the control predicts");
+
+        scheduler.rollback_to(0).expect("rollback should succeed");
+
+        // The assertion under test already holds with the restore not yet scheduled: a rollback to
+        // genesis hides the versioned SMT nodes below the restore base, and nothing re-derives
+        // them until the block re-enters the chain.
+        assert_eq!(
+            scheduler.state().storage().store().root(1),
+            EMPTY_HASH,
+            "root(1) is hidden after a rollback to genesis, before the restore"
+        );
+
+        // Restore the same block, but carrying 999 rather than the committed 100. A re-run
+        // store.update would fold 999 into the tree and move root(1).
+        let restored = scheduler.schedule(
+            1,
+            vec![SchedulerTransaction::new(
+                0,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+                999,
+            )],
+        );
+        restored.wait_committed_blocking();
+        assert!(restored.restored(), "the returning block must take the restore path");
+
+        // Unchanged, because store.update never ran. The original test's assertion passes for a
+        // reason unrelated to SMT determinism.
+        let root_after = scheduler.state().storage().store().root(1);
+        assert_eq!(
+            root_after, root_before,
+            "root(1) is insensitive to what the restored block carried"
+        );
+        assert_ne!(
+            root_after, fresh_999,
+            "a re-run store.update would have folded 999 in and moved root(1) to the control's root"
+        );
+
+        scheduler.shutdown();
+    }
+}
