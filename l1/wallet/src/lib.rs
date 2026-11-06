@@ -34,6 +34,19 @@ use vprogs_core_types::AccessMetadata;
 
 pub mod build;
 
+/// Why [`Wallet::prepare_settlement_excluding`] could not produce a funded settlement.
+#[derive(Debug, thiserror::Error)]
+pub enum PrepareError {
+    /// The spendable-UTXO fetch failed: a transient node error the caller may retry.
+    #[error("spendable-utxo fetch failed: {0}")]
+    Rpc(#[from] RpcError),
+    /// The funded layout's mass exceeds the node's per-tx admission limit: the settlement's
+    /// fixed witness leaves too little room under it for fee inputs. Retrying changes nothing
+    /// until the funding wallet's UTXOs are consolidated into fewer, larger ones.
+    #[error("fee inputs push the settlement mass to {mass}, above the per-tx limit {limit}")]
+    MassOverflow { mass: u64, limit: u64 },
+}
+
 /// A keypair-backed transaction issuer bound to an L1 node.
 pub struct Wallet<'a, C: RpcApi + ?Sized> {
     /// RPC client used to fetch UTXOs and submit transactions.
@@ -190,16 +203,18 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
             &std::collections::HashSet::new(),
         )
         .await
-        .expect("fetch spendable utxos")
+        .expect("settlement funding failed")
         .expect("no spendable UTXO can fund the settlement fee")
         .0
     }
 
     /// Like [`Wallet::prepare_settlement_transaction`], but funds the fee from spendable UTXOs
     /// **not** in `excluded`, and also returns the fee outpoints it spent. Returns `Ok(None)` when
-    /// every spendable UTXO is excluded, or the free ones cannot fund the fee, and the RPC error
-    /// when the spendable set cannot be fetched (a transient node timeout the caller retries,
-    /// rather than a hard failure).
+    /// every spendable UTXO is excluded, or the free ones cannot fund the fee; `Err` carries
+    /// either the transient spendable-fetch failure (a node timeout the caller retries, rather
+    /// than a hard failure) or the layout's [`PrepareError::MassOverflow`] (a funding dead-end
+    /// only wallet consolidation fixes, which the caller reports distinctly instead of retrying
+    /// silently).
     ///
     /// The node can reject a settlement as an orphan when its fee input references an output it has
     /// not yet accepted into its DAG. The caller re-prepares with that outpoint added to `excluded`
@@ -210,7 +225,7 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
         covenant_entry: UtxoEntry,
         covenant_compute_budget: ComputeBudget,
         excluded: &std::collections::HashSet<TransactionOutpoint>,
-    ) -> Result<Option<(Transaction, Vec<TransactionOutpoint>)>, RpcError> {
+    ) -> Result<Option<(Transaction, Vec<TransactionOutpoint>)>, PrepareError> {
         let utxos = self.fetch_spendable_utxos().await?;
         let fee_candidates: Vec<_> =
             utxos.into_iter().filter(|(outpoint, _)| !excluded.contains(outpoint)).collect();
@@ -218,7 +233,7 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
             return Ok(None);
         }
         let fee_policy = self.fee_policy().await;
-        Ok(build::settlement_transaction(build::SettlementTx {
+        match build::settlement_transaction(build::SettlementTx {
             settlement_tx,
             covenant_entry,
             covenant_compute_budget,
@@ -227,14 +242,20 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
             address: &self.address,
             fee_policy,
             params: self.params,
-        })
-        .inspect_err(|e| log::warn!("settlement fee funding failed: {e}"))
-        .ok()
-        .map(|tx| {
-            let fee_outpoints =
-                tx.inputs[1..].iter().map(|input| input.previous_outpoint).collect();
-            (tx, fee_outpoints)
-        }))
+        }) {
+            Ok(tx) => {
+                let fee_outpoints =
+                    tx.inputs[1..].iter().map(|input| input.previous_outpoint).collect();
+                Ok(Some((tx, fee_outpoints)))
+            }
+            Err(build::BuildError::MassOverflow { mass, limit }) => {
+                Err(PrepareError::MassOverflow { mass, limit })
+            }
+            Err(e) => {
+                log::warn!("settlement fee funding failed: {e}");
+                Ok(None)
+            }
+        }
     }
 
     /// Builds and signs (without submitting) a transaction paying `count` outputs of `value` sompi
