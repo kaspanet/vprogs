@@ -146,21 +146,32 @@ where
         batch.publish_artifact(Some(receipt));
 
         // Wait for this batch's commit so the next batch sees the committed prev_state, but stay
-        // shutdown-escapable so a wedged latch during teardown cannot hang the join.
+        // shutdown-escapable so a wedged latch during teardown cannot hang the join. On shutdown
+        // the commit may never land, so bail before the compare below: the checkpoint would
+        // still hold the pre-batch root, which the compare would misread as a divergence.
         tokio::select! {
             biased;
-            () = self.prover.shutdown.wait() => {}
+            () = self.prover.shutdown.wait() => return,
             () = batch.wait_committed() => {}
+        }
+
+        // `wait_committed` also resolves on cancellation, so the batch may have been canceled
+        // while its proof was in flight or rolled back right after its commit: the store then
+        // roots the checkpoint at an earlier state, which is not a divergence. A rollback can
+        // also land between the commit and the root read, so re-check after the read too (a
+        // rollback after it cannot change the value already read).
+        if batch.canceled() {
+            return;
+        }
+        let host_root = self.store.root(batch.checkpoint().index());
+        if batch.canceled() {
+            return;
         }
 
         // The receipt is proven and the host commit is final, so this is where the settled root
         // and the host root first become comparable. A disagreement is a guest/host state
         // divergence: continuing would let the next bundle's prev_state assert wedge the lane,
         // so fail loudly at the batch that caused it.
-        assert_eq!(
-            settled_root,
-            self.store.root(batch.checkpoint().index()),
-            "settled new_state diverges from the host store root"
-        );
+        assert_eq!(settled_root, host_root, "settled new_state diverges from the host store root");
     }
 }
