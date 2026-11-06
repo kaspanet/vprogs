@@ -109,8 +109,8 @@ pub(crate) struct BridgeWorker<T: ChainSink<ChainBlockMetadata, L1Transaction>> 
     /// continuation outpoint)` entry per detected spend. A rollback pops entries above the new
     /// tip newest-first and undoes each transition, keeping the watcher registry canonical.
     spend_journal: Vec<(u64, TransactionOutpoint, [u8; 32], Option<TransactionOutpoint>)>,
-    /// Pruning point whose finalization is already applied to the sink, or `None` before the
-    /// first confirmed candidate.
+    /// Pruning point whose advancement is already logged, or `None` before the first confirmed
+    /// candidate.
     finalized_pp: Option<Hash>,
     /// Optional channel sender the settlement stream is published into (observations and
     /// rollback markers).
@@ -775,13 +775,16 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
     }
 
     /// Finalizes the sink below the pruning point confirmed at the tip: the point cited by the
-    /// tip's recent blocks, once it has held across the confirmation window and differs from the
-    /// last finalized one.
+    /// tip's recent blocks, once it has held across the confirmation window.
     ///
     /// The candidate is derived from the sink's metadata rather than carried in worker state, so
     /// a reorg rollback resets it with the sink. A candidate that flips before the window passes
     /// is discarded simply by the next block citing the new point; a confirmed point below the
-    /// sink root (the seed anchor) leaves nothing to drop and only updates the marker.
+    /// sink root (the seed anchor) leaves nothing to drop.
+    ///
+    /// Finalization repeats on every batch past the window rather than only at the point's
+    /// first confirmation: the sink releases the log below the confirmed point in steps, as
+    /// far as its own pruning has advanced, so each repeat carries the release forward.
     fn finalize_confirmed_pp(&mut self) {
         if self.sink.tip() == 0 {
             return;
@@ -807,14 +810,18 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             }
         }
 
-        if run <= window || self.finalized_pp == Some(pp) {
+        if run <= window {
+            return;
+        }
+        let Some(below) = self.sink.id(&pp.as_bytes()) else {
+            return;
+        };
+        self.sink.finalize(below);
+        if self.finalized_pp == Some(pp) {
             return;
         }
         self.finalized_pp = Some(pp);
-        if let Some(below) = self.sink.id(&pp.as_bytes()) {
-            self.sink.finalize(below);
-            log::info!("L1 bridge: pruning point advanced to id {} (hash {})", below, pp);
-        }
+        log::info!("L1 bridge: pruning point advanced to id {} (hash {})", below, pp);
     }
 }
 /// Returns the next `(lane_tip, lane_blue_score, lane_expired)` for this block.
@@ -904,13 +911,20 @@ mod tests {
     #[derive(Default)]
     struct TestSink {
         blocks: Vec<ChainBlockMetadata>,
-        finalized: Vec<u64>,
+        finalize_calls: Vec<u64>,
     }
 
     impl TestSink {
-        /// The `below` argument of each finalization, in order.
+        /// The distinct thresholds finalized into the sink, in order.
         fn finalized(&self) -> Vec<u64> {
-            self.finalized.clone()
+            let mut distinct = self.finalize_calls.clone();
+            distinct.dedup();
+            distinct
+        }
+
+        /// The `finalize` calls the bridge drove, repeats included.
+        fn finalize_calls(&self) -> &[u64] {
+            &self.finalize_calls
         }
     }
 
@@ -927,7 +941,12 @@ mod tests {
             self.blocks.truncate(new_tip as usize);
         }
         fn finalize(&mut self, below: u64) {
-            self.finalized.push(below);
+            // Finalization repeats on every batch past the window; the threshold never regresses.
+            assert!(
+                self.finalize_calls.last().is_none_or(|&last| below >= last),
+                "finalization threshold regressed to {below}"
+            );
+            self.finalize_calls.push(below);
         }
         fn tip(&self) -> u64 {
             self.blocks.len() as u64
@@ -1257,8 +1276,8 @@ mod tests {
     }
 
     /// Finalization waits for the confirmation window: a pruning point cited by the tip's recent
-    /// blocks finalizes the sink only once the citation has held across the window, and a
-    /// confirmed point never finalizes twice.
+    /// blocks finalizes the sink only once the citation has held across the window. Once
+    /// confirmed, every batch re-finalizes below the same point without regressing the threshold.
     #[tokio::test]
     async fn pruning_point_finalization_waits_for_the_confirmation_window() {
         let (settlement_events_tx, _rx) = mpsc::unbounded_channel();
@@ -1290,11 +1309,14 @@ mod tests {
         let batch = pp_batch(vec![pp_block(Hash::from_bytes([0x04; 32]), 4, pp1)]);
         worker.fetch_chain_updates_tail(batch).await.unwrap();
         assert_eq!(worker.sink.finalized(), vec![1]);
+        assert_eq!(worker.sink.finalize_calls(), &[1]);
 
-        // Further blocks citing the same point finalize nothing new.
+        // Further batches citing the same point keep re-finalizing below it; the distinct
+        // thresholds stay put.
         let batch = pp_batch(vec![pp_block(Hash::from_bytes([0x05; 32]), 5, pp1)]);
         worker.fetch_chain_updates_tail(batch).await.unwrap();
         assert_eq!(worker.sink.finalized(), vec![1]);
+        assert_eq!(worker.sink.finalize_calls(), &[1, 1]);
     }
 
     /// A pruning point that flips before its window passes is discarded: the counter restarts at
