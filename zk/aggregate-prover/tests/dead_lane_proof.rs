@@ -123,8 +123,8 @@ impl vprogs_zk_aggregate_prover::Backend for SyntheticBackend {
         &self,
         _inputs: &[u8],
         _batch_receipts: Vec<Self::Receipt>,
-    ) -> impl Future<Output = Self::Receipt> + Send + 'static {
-        async { settlement_journal() }
+    ) -> impl Future<Output = Result<Self::Receipt, String>> + Send + 'static {
+        async { Ok(settlement_journal()) }
     }
 
     fn aggregator_image_id(&self) -> &[u8; 32] {

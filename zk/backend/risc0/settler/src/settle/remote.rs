@@ -138,6 +138,23 @@ impl RpcSink {
 }
 
 impl SettlementSink for RpcSink {
+    async fn anchor_beyond_depth(&self, boundary: Hash) -> bool {
+        // Mirrors the node rule the submission would hit: the redeem script's
+        // `OpChainblockSeqCommit(boundary)` resolves only while the anchor's blue score is within
+        // the finality window of the validating selected parent, and the node refuses the whole
+        // transaction otherwise. The sink's blue score lower-bounds that selected parent, so a
+        // gap meeting the threshold here implies the node's gap does too; anything marginal
+        // slips through to the submission, whose rejection classifies the same outcome. An
+        // unreadable depth (a stalled node, a pruned anchor header) also falls through to the
+        // submission for the same reason.
+        let (Ok(sink_blue_score), Ok(block)) =
+            (self.client.get_sink_blue_score().await, self.client.get_block(boundary, false).await)
+        else {
+            return false;
+        };
+        sink_blue_score.saturating_sub(block.header.blue_score) >= self.params.finality_depth()
+    }
+
     async fn submit(
         &self,
         tx: &Transaction,
@@ -172,6 +189,9 @@ impl SettlementSink for RpcSink {
                 // A competitor's settlement already spends our covenant outpoint in the mempool: no
                 // fee UTXO can rescue this submission.
                 RejectionClass::Superseded => SubmitOutcome::Superseded,
+                // The anchor block is beyond the seq-commit depth (or unresolvable at all), so
+                // this artifact can never land; the range needs a fresh, shallower boundary.
+                RejectionClass::AnchorTooDeep => SubmitOutcome::AnchorTooDeep,
                 // An orphan names no input, so the fee UTXO and the covenant input are both
                 // candidates. Re-poll the covenant to tell them apart: gone means a competitor
                 // landed first (superseded); still live means a fee orphan to retry.
@@ -239,6 +259,10 @@ enum RejectionClass {
     /// The covenant (state) input is already spent by a competitor's mempool settlement; this
     /// bundle is superseded and no fee UTXO can rescue it.
     Superseded,
+    /// The node refused to resolve the settlement's seq-commit anchor block: beyond the
+    /// verification depth ("is too deep"), pruned, or off the selected chain. All three are
+    /// permanent for the artifact, so the range must settle from a fresh boundary.
+    AnchorTooDeep,
     /// The node refused the settlement itself (the on-chain script); surface it.
     Fatal,
 }
@@ -247,17 +271,80 @@ enum RejectionClass {
 ///
 /// Returns [`Superseded`](RejectionClass::Superseded) when the message cites `covenant_outpoint`,
 /// [`FeeRetry`](RejectionClass::FeeRetry) when another input was already spent,
-/// [`Orphan`](RejectionClass::Orphan) for missing-input rejections that name no input, or
-/// [`Fatal`](RejectionClass::Fatal) for every other rejection. Matched on message text because the
-/// wRPC layer exposes no structured rejection reason.
+/// [`Orphan`](RejectionClass::Orphan) for missing-input rejections that name no input,
+/// [`AnchorTooDeep`](RejectionClass::AnchorTooDeep) when the node refused the seq-commit anchor
+/// block, or [`Fatal`](RejectionClass::Fatal) for every other rejection. Matched on message text
+/// because the wRPC layer exposes no structured rejection reason.
 fn classify_rejection(e: &RpcError, covenant_outpoint: TransactionOutpoint) -> RejectionClass {
     let msg = e.to_string().to_lowercase();
     let cites_covenant_input = msg.contains(&format!("{covenant_outpoint}").to_lowercase());
     if msg.contains("already spent") {
         if cites_covenant_input { RejectionClass::Superseded } else { RejectionClass::FeeRetry }
+    } else if msg.contains("is too deep")
+        || msg.contains("already pruned")
+        || msg.contains("not selected")
+    {
+        RejectionClass::AnchorTooDeep
     } else if msg.contains("orphan") {
         RejectionClass::Orphan
     } else {
         RejectionClass::Fatal
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use kaspa_consensus_core::tx::TransactionOutpoint;
+    use kaspa_hashes::Hash;
+    use kaspa_rpc_core::RpcError;
+
+    use super::{RejectionClass, classify_rejection};
+
+    /// The outpoint an unrelated fee input spent, standing in for the covenant input on the
+    /// supersede-class tests.
+    fn outpoint() -> TransactionOutpoint {
+        TransactionOutpoint::new(Hash::from_bytes([0x77; 32]), 0)
+    }
+
+    /// The live tn10 rejection that killed the settler: the node refused to resolve the bundle's
+    /// anchor block, deep in history during catch-up, as a script-verification failure. It must
+    /// classify as an unlandable anchor, not a fatal script refusal.
+    #[test]
+    fn deep_anchor_rejection_classifies_unlandable() {
+        let e = RpcError::RpcSubsystem(format!(
+            "Rejected transaction {}: failed to verify the signature script: block \
+             364516fd628daf4cf3192ce6f0b9d9a760540f6d241faa15a0b65c5716c24057 is too deep; stopping",
+            Hash::from_bytes([0xAA; 32]),
+        ));
+        assert!(matches!(classify_rejection(&e, outpoint()), RejectionClass::AnchorTooDeep));
+    }
+
+    /// The other two permanent anchor refusals (`OpChainblockSeqCommit`'s pruned and
+    /// off-selected-chain errors) classify the same way.
+    #[test]
+    fn pruned_and_unselected_anchor_rejections_classify_unlandable() {
+        for msg in ["block 0011 already pruned", "block 0011 not selected"] {
+            let e = RpcError::RpcSubsystem(format!("Rejected transaction x: {msg}"));
+            assert!(
+                matches!(classify_rejection(&e, outpoint()), RejectionClass::AnchorTooDeep),
+                "{msg} must classify unlandable"
+            );
+        }
+    }
+
+    /// The pre-existing classes keep their verdicts alongside the new one.
+    #[test]
+    fn prior_rejection_classes_are_unchanged() {
+        let cov = outpoint();
+        let spent = RpcError::RpcSubsystem(format!("rejected: {cov} already spent"));
+        assert!(matches!(classify_rejection(&spent, cov), RejectionClass::Superseded));
+        let fee_spent = RpcError::RpcSubsystem("rejected: 0011...:0 already spent".to_string());
+        assert!(matches!(classify_rejection(&fee_spent, cov), RejectionClass::FeeRetry));
+        let orphan = RpcError::RpcSubsystem("rejected: orphaned".to_string());
+        assert!(matches!(classify_rejection(&orphan, cov), RejectionClass::Orphan));
+        let script = RpcError::RpcSubsystem(
+            "rejected: false stack entry at end of script execution".to_string(),
+        );
+        assert!(matches!(classify_rejection(&script, cov), RejectionClass::Fatal));
     }
 }

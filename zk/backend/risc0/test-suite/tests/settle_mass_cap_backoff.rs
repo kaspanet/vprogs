@@ -167,6 +167,7 @@ async fn mass_capped_funding_is_recoverable_and_settles_on_retry() {
         SettleOutcome::Advanced(_) => panic!("expected FeeExhausted, got Advanced"),
         SettleOutcome::Superseded => panic!("expected FeeExhausted, got Superseded"),
         SettleOutcome::Shutdown => panic!("expected FeeExhausted, got Shutdown"),
+        SettleOutcome::AnchorTooDeep => panic!("expected FeeExhausted, got AnchorTooDeep"),
         SettleOutcome::Failed(_) => panic!("expected FeeExhausted, got Failed"),
     }
     assert_eq!(calls.load(Ordering::SeqCst), 1, "the dead-end funded exactly once");
@@ -195,6 +196,7 @@ async fn mass_capped_funding_is_recoverable_and_settles_on_retry() {
         SettleOutcome::FeeExhausted => panic!("expected Advanced, got FeeExhausted"),
         SettleOutcome::Superseded => panic!("expected Advanced, got Superseded"),
         SettleOutcome::Shutdown => panic!("expected Advanced, got Shutdown"),
+        SettleOutcome::AnchorTooDeep => panic!("expected Advanced, got AnchorTooDeep"),
         SettleOutcome::Failed(_) => panic!("expected Advanced, got Failed"),
     }
 }
