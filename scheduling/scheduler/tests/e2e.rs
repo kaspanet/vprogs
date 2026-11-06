@@ -631,6 +631,121 @@ pub fn test_rollback_to_zero() {
     }
 }
 
+/// A restart between a rollback and the winning fork's first commit must not resurrect the
+/// orphaned fork: rollback retains the orphaned batches' metadata rows (ids are never reused),
+/// so the restart replay must not take the log's last row as the canonical tip against the
+/// persisted last-committed checkpoint.
+#[test]
+pub fn test_restart_after_rollback_keeps_the_orphaned_fork_orphaned() {
+    use vprogs_storage_types::Store;
+
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    let (root1, root2);
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(Processor),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // Batch 1 writes R at version 1; batch 2 overwrites it at version 2.
+        scheduler.schedule(
+            1,
+            vec![SchedulerTransaction::new(
+                0,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+                0,
+            )],
+        );
+        scheduler
+            .schedule(
+                2,
+                vec![SchedulerTransaction::new(
+                    1,
+                    vec![AccessMetadata::write(ResourceId::for_test(1))],
+                    1,
+                )],
+            )
+            .wait_committed_blocking();
+
+        {
+            let store = scheduler.state().storage().store();
+            root1 = Tree::root(store.as_ref(), 1);
+            root2 = Tree::root(store.as_ref(), 2);
+        }
+        assert_ne!(root1, root2);
+
+        // A reorg rolls back to batch 1; batch 2's metadata row stays on disk, and the process
+        // stops before the winning fork commits anything.
+        scheduler.rollback_to(1).expect("rollback should succeed");
+        scheduler.shutdown();
+    }
+
+    // Restart: the replayed manager must honor the rollback, not the orphaned log tail.
+    let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+    let committed = StateMetadata::last_committed::<u64, RocksDbStore>(&storage);
+    let manager = storage.canonical_chain_manager::<u64>(committed.index());
+
+    assert_eq!(manager.chain().tip(), 1, "the replayed tip is the rollback target");
+    assert!(
+        !manager.chain().snapshot().is_canonical(2),
+        "the rolled-back batch must not read canonical"
+    );
+    assert_eq!(storage.root(2), root1, "a read at the orphaned version serves the surviving state");
+}
+
+/// A restart after a rollback to genesis must not resurrect any version: the persisted committed
+/// tip is index 0, every log entry sits above the cap, and the replay leaves the chain at
+/// genesis so all reads resolve to the empty state.
+#[test]
+pub fn test_restart_after_rollback_to_genesis_serves_the_empty_state() {
+    use vprogs_storage_types::Store;
+
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(Processor),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // Batch 1 writes R; batch 2 overwrites it.
+        scheduler.schedule(
+            1,
+            vec![SchedulerTransaction::new(
+                0,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+                0,
+            )],
+        );
+        scheduler
+            .schedule(
+                2,
+                vec![SchedulerTransaction::new(
+                    1,
+                    vec![AccessMetadata::write(ResourceId::for_test(1))],
+                    1,
+                )],
+            )
+            .wait_committed_blocking();
+
+        // A reorg rolls the whole chain back to genesis before the process stops.
+        scheduler.rollback_to(0).expect("rollback should succeed");
+        scheduler.shutdown();
+    }
+
+    // Restart: no entry sits at or below the capped tip, so the replayed chain stays at genesis.
+    let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+    let committed = StateMetadata::last_committed::<u64, RocksDbStore>(&storage);
+    assert_eq!(committed.index(), 0, "the persisted committed tip is genesis");
+    let manager = storage.canonical_chain_manager::<u64>(committed.index());
+
+    assert_eq!(manager.chain().tip(), 0, "the replayed chain stays at genesis");
+    assert!(!manager.chain().snapshot().is_canonical(1), "no rolled-back version reads canonical");
+    assert_eq!(storage.root(1), EMPTY_HASH, "a read at version 1 serves the empty state");
+    assert_eq!(storage.root(2), EMPTY_HASH, "a read at version 2 serves the empty state");
+}
+
 /// Tests multiple consecutive rollbacks without adding new batches in between. Verifies that
 /// consecutive rollbacks properly reduce state.
 #[test]

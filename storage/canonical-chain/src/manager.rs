@@ -20,27 +20,34 @@ pub struct CanonicalChainManager<M> {
 }
 
 impl<M: BatchMetadata> CanonicalChainManager<M> {
-    /// Creates a manager over `chain`, replaying persisted `(id, metadata)` entries in order.
-    /// The ids may skip interiors: a reorg-canceled batch keeps its allocated id but never
-    /// persists metadata, so the log carries holes that restore preserves.
+    /// Creates a manager over `chain`, replaying persisted `(id, metadata)` entries in order,
+    /// taking the last entry as the tip. The ids may skip interiors: a reorg-canceled batch
+    /// keeps its allocated id but never persists metadata, so the log carries holes that
+    /// restore preserves.
     pub fn new(chain: CanonicalChain, entries: impl IntoIterator<Item = (u64, M)>) -> Self {
-        Self::new_with_frozen(chain, entries, [])
+        Self::new_with_frozen(chain, entries, [], u64::MAX)
     }
 
     /// Creates a manager over `chain`, additionally replaying the frozen canonical bits
     /// persisted by earlier finalizations, so ids below the restored base keep their real bits
     /// instead of reading canonical throughout.
+    ///
+    /// `tip_cap` bounds the restored tip: entries above it stay in the log for id allocation but
+    /// read orphaned. The highest entry at or below the cap becomes the tip; none at or below
+    /// it leaves the chain at genesis.
     pub fn new_with_frozen(
         chain: CanonicalChain,
         entries: impl IntoIterator<Item = (u64, M)>,
         frozen: impl IntoIterator<Item = FrozenBits>,
+        tip_cap: u64,
     ) -> Self {
         // Claim the sole-writer role and start with an empty log.
         chain.claim_writer();
         let mut manager = Self { chain, base: 1, entries: VecDeque::new(), index: HashMap::new() };
         let frozen: Vec<FrozenBits> = frozen.into_iter().collect();
 
-        // Replay each persisted batch into the log; the first id sets the base, the last the tip.
+        // Replay each persisted batch into the log; the first id sets the base, the last one at
+        // or below the cap sets the tip.
         let mut tip = None;
         for (id, metadata) in entries {
             if manager.entries.is_empty() {
@@ -51,13 +58,24 @@ impl<M: BatchMetadata> CanonicalChainManager<M> {
                 "restore must be ascending"
             );
             manager.insert(id, metadata);
-            tip = Some(id);
+            if id <= tip_cap {
+                tip = Some(id);
+            }
         }
-        let Some(tip) = tip else { return manager };
+        // The highest id the log ever allocated; entries orphaned above the tip stay assigned.
+        let last_assigned = manager.entries.back().map_or(0, |&(last, _)| last);
+        let Some(tip) = tip else {
+            // Entries above the cap only: the chain was rolled back to genesis before the
+            // process stopped. Publish that state so reads keep filtering the assigned ids.
+            if last_assigned > 0 {
+                manager.chain.restore_genesis(last_assigned);
+            }
+            return manager;
+        };
 
         // Project the tip's canonical ancestry onto the oracle in a single publish.
         let canonical = manager.canonical_ancestry(tip);
-        manager.chain.restore(manager.base, tip, canonical, &frozen);
+        manager.chain.restore(manager.base, tip, last_assigned, canonical, &frozen);
         manager
     }
 
