@@ -1,5 +1,6 @@
 #[cfg(feature = "host")]
 use alloc::vec::Vec;
+use core::mem::size_of;
 
 use kaspa_hashes::Hash;
 #[cfg(feature = "host")]
@@ -9,6 +10,7 @@ use vprogs_core_codec::Reader;
 use vprogs_core_codec::Writer;
 #[cfg(feature = "host")]
 use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
+use vprogs_l1_utils::tx_id_v1;
 #[cfg(feature = "host")]
 use vprogs_scheduling_scheduler::{Processor, TransactionContext};
 #[cfg(feature = "host")]
@@ -16,7 +18,7 @@ use vprogs_storage_types::Store;
 
 use crate::{
     Result,
-    transaction_processor::{ExecutionInput, Transaction},
+    transaction_processor::{ExecutionInput, MergesetContext, Transaction},
 };
 
 /// Decoded transaction inputs. `execution_input` is present iff `version` is supported.
@@ -47,11 +49,28 @@ impl<'a> Inputs<'a> {
         })
     }
 
-    /// Decodes only the fixed header (`version`, `tx_id`, `merge_idx`); enough to attribute a
-    /// rejection when the full decode fails past the header.
-    pub fn decode_header(mut buf: &[u8]) -> Result<(u16, &Hash, u32)> {
-        let version = buf.le_u16("version")?;
-        Ok((version, buf.array_as::<Hash>("tx_id")?, buf.le_u32("merge_idx")?))
+    /// Decodes the header and derives the carrier's L1 tx id from the raw transaction blobs,
+    /// without decoding the payload. The derived id is checked against the header's, so a
+    /// decode rejection is only ever attributable to bytes whose id is the carrier's own.
+    ///
+    /// Structural truncation of the host-assembled buffer and a header id that disagrees with
+    /// the derived one have no honest host path and panic: only L1-authored payload content may
+    /// reject downstream.
+    pub fn decode_attribution(mut buf: &[u8]) -> (u16, Hash, u32) {
+        let version = buf.le_u16("version").expect("malformed host input header");
+        let header_tx_id = buf.array_as::<Hash>("tx_id").expect("malformed host input header");
+        let merge_idx = buf.le_u32("merge_idx").expect("malformed host input header");
+        if version != Transaction::V1 {
+            return (version, *header_tx_id, merge_idx);
+        }
+        // The execution input's mergeset context precedes the transaction blob.
+        buf.skip(size_of::<MergesetContext>(), "context").expect("malformed host input");
+        let mut tx_buf = buf.blob("tx").expect("malformed host input");
+        let payload = tx_buf.blob("payload").expect("malformed host input");
+        let rest_preimage = tx_buf.blob("rest_preimage").expect("malformed host input");
+        let derived = Hash::from_bytes(tx_id_v1(payload, rest_preimage));
+        assert_eq!(header_tx_id, &derived, "host tx_id does not match derived id");
+        (version, derived, merge_idx)
     }
 
     /// Encodes a scheduler [`TransactionContext`] into the ABI wire format (host-side only).
