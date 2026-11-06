@@ -14,6 +14,7 @@ use crate::{
     batch_processor::{BatchTransition, BatchTransitionArgs, Inputs},
     transaction_processor::{
         InputResourceCommitment, JournalEntries, OutputCommitment, OutputResourceCommitment,
+        Transaction,
     },
     withdrawal::ExitSink,
 };
@@ -205,17 +206,22 @@ impl<'a, V: FnMut(&[u8; 32], &[u8])> Verifier<'a, V> {
             assert!(entries.input_commitment.merge_idx > prev, "merge_idx not increasing");
         }
 
-        // Assert version-shape consistency (only rejections that never executed may omit the
-        // execution context: an unsupported version or malformed input).
+        // Assert context-shape consistency: an entry without an execution context is a rejection
+        // that never executed, and only the two shapes the guest produces are accepted: an
+        // unsupported version (VersionIncompatible) or, at the supported version, a decode
+        // rejection (the carrier's real version, so the activity leaf still matches L1).
         if entries.input_commitment.execution_context.is_none() {
             let OutputCommitment::Error(error) = &entries.output_commitment else {
                 panic!("missing execution_context with non-error output");
             };
-            let never_executed = match error {
-                Error::Guest(code) => *code == ErrorCode::VersionIncompatible as u32,
-                Error::Decode(_) => true,
+            let never_executed = match (entries.input_commitment.version, error) {
+                (version, Error::Guest(code)) => {
+                    version != Transaction::V1 && *code == ErrorCode::VersionIncompatible as u32
+                }
+                (Transaction::V1, Error::Decode(_)) => true,
+                _ => false,
             };
-            assert!(never_executed, "missing execution_context with a guest execution error");
+            assert!(never_executed, "missing execution_context with an executed output");
         }
 
         entries
