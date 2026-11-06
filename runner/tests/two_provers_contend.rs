@@ -40,7 +40,7 @@ use vprogs_l1_wallet::encode_activity_payload;
 use vprogs_node_test_utils::L1Node;
 use vprogs_runner::{
     BridgeObservers, BridgeParams, Elfs, PersistedState, ProvingParams, RunnerConfig, RunnerNode,
-    RunnerStore, SettlementQueue, StartMode, build_proving_node, start_runner,
+    RunnerStore, SettlementQueue, StartMode, build_proving_node, run_covenant_reroot, start_runner,
 };
 use vprogs_state_settlement_journal::StoreJournal;
 use vprogs_storage_types::{StateSpace, Store};
@@ -4203,6 +4203,11 @@ async fn spawn_prover_on_store(
     // The prover's own journal over its own store, matching the pre-threading wiring; the settler
     // below stays journal-free so this test's skip behavior is unchanged.
     let journal = StoreJournal::new(store.clone());
+    // Re-root channel, mirroring the production wiring: the aggregate prover publishes the
+    // covenant tip when it holds a fold whose window head enters off the tip's exit, and the
+    // drain task rolls execution back to the settlement boundary. Without it a held fold parks
+    // forever: the rollback it waits for never arrives, so no later bundle forms.
+    let (re_root_tx, re_root_rx) = tokio::sync::mpsc::unbounded_channel();
     let node = build_proving_node(
         elfs,
         store,
@@ -4236,11 +4241,13 @@ async fn spawn_prover_on_store(
             // settler reconciles against, so a bundle a shorter competitor superseded still
             // settles.
             settlement_rx: Some(watch_rx.clone()),
+            re_root: Some(re_root_tx),
             journal,
             exits_tx: None,
         },
         None,
     );
+    tokio::spawn(run_covenant_reroot(node.api().clone(), re_root_rx));
 
     // Backend is required by the settler config; in Dev mode it pins no image ids but the type is
     // still threaded through.
