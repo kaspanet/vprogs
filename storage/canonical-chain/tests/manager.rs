@@ -1,7 +1,7 @@
 //! Public-API tests for the canonical-chain manager.
 
 use vprogs_core_types::BatchMetadata;
-use vprogs_storage_canonical_chain::{CanonicalChain, CanonicalChainManager};
+use vprogs_storage_canonical_chain::{BUCKET_CAPACITY, CanonicalChain, CanonicalChainManager};
 
 // Most tests use `u64` as the metadata: its `block_hash` is the value zero-padded into a hash.
 
@@ -208,7 +208,7 @@ fn frozen_bits_replay_the_fabricated_last_sealed() {
     live.finalize(5_000);
     let entries = std::iter::once((5_000, Meta { tag: 5_000, parent: 4_999 }))
         .chain((5_001..=5_100).map(|id| (id, Meta { tag: id, parent: id - 1 })));
-    let restored =
+    let mut restored =
         CanonicalChainManager::new_with_frozen(CanonicalChain::default(), entries, frozen);
 
     assert!(!is_canon(&live, 4_992), "live keeps the fork's bit in the hot zone");
@@ -218,6 +218,48 @@ fn frozen_bits_replay_the_fabricated_last_sealed() {
         "the fabricated last_sealed replays bucket 38's persisted words"
     );
     assert!(is_canon(&restored, 4_900), "a canonical id of bucket 38 replays its bit");
+
+    // Roll both chains into bucket 40 (id 5_121): the restored ring must seal the fabricated
+    // `last_sealed` into the body, as live seals its real bucket 38, so the replayed orphan
+    // survives the roll instead of reading canonical from a dropped bucket.
+    for manager in [&mut live, &mut restored] {
+        for id in 5_101..=5_121 {
+            manager.append(Meta { tag: id, parent: id - 1 });
+        }
+    }
+    assert!(!is_canon(&live, 4_992), "live keeps the fork's bit through the roll");
+    assert_eq!(
+        is_canon(&restored, 4_992),
+        is_canon(&live, 4_992),
+        "the sealed fabricated bucket keeps bucket 38's replayed words"
+    );
+}
+
+/// A pruning pass pins its view before advancing the root, so a `finalize` racing into that
+/// window can only prune to the old root, whose buckets a previous pass already froze; the
+/// words for the newly crossed range must still come back whole from the pinned view.
+#[test]
+fn frozen_bits_from_a_pinned_view_survive_a_racing_finalize() {
+    // ids 1..=3 * BUCKET_CAPACITY live; the previous pass finalized below the old root, so
+    // bucket 0 is pruned already. This pass crosses into bucket 2 as its new base.
+    let mut manager = CanonicalChainManager::new(CanonicalChain::default(), []);
+    for id in 1..=3 * BUCKET_CAPACITY {
+        manager.append(Meta { tag: id, parent: id - 1 });
+    }
+    let old_root = BUCKET_CAPACITY + 1;
+    manager.finalize(old_root);
+
+    let view = manager.chain().snapshot();
+    // The racing finalize, pruning to the still-unmoved root.
+    manager.finalize(old_root);
+
+    let crossed: Vec<u64> =
+        view.frozen_bits(2 * BUCKET_CAPACITY + 1).iter().map(|row| row.bucket).collect();
+    assert_eq!(
+        crossed,
+        vec![1, 2],
+        "bucket 1's full words and bucket 2's sub-base words survive the racing finalize"
+    );
 }
 
 #[test]
