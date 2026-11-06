@@ -263,14 +263,22 @@ fn tip_through(hash: u8) -> SettlementInfo {
 fn fork_below_the_settlement_requests_a_reroot_instead_of_folding_unlandable_batches() {
     let mut harness = harness();
 
-    // The settled chain: batches 1..=3 over lane tips L1 -> L2 -> L3, one bundle each.
-    commit_and_submit(&mut harness.scheduler, &harness.prover, block(1, 0, Hash::default()));
-    commit_and_submit(&mut harness.scheduler, &harness.prover, block(2, 1, block_hash(1)));
-    commit_and_submit(&mut harness.scheduler, &harness.prover, block(3, 2, block_hash(2)));
-    for expected in 1..=3u8 {
+    // The settled chain: batches 1..=3 over lane tips L1 -> L2 -> L3, one bundle each. Each
+    // bundle is drained before the next block commits, so the fold window never holds two
+    // committed batches (`bundle_size` allows folding them into one bundle, which would leave
+    // no bundle proving to the middle block).
+    let mut prev_lane_tip = Hash::default();
+    for (id, parent_id) in [(1u8, 0u64), (2, 1), (3, 2)] {
+        commit_and_submit(
+            &mut harness.scheduler,
+            &harness.prover,
+            block(id, parent_id, prev_lane_tip),
+        );
+        prev_lane_tip = block_hash(id);
+
         let bundle = next_bundle(&harness.queue, Duration::from_secs(10)).expect("bundle forms");
         bundle.wait_artifact_published_blocking();
-        assert_eq!(bundle.block_prove_to(), block_hash(expected));
+        assert_eq!(bundle.block_prove_to(), block_hash(id));
     }
 
     // The covenant settles through block 3: the windows drain on the advance.
