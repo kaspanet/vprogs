@@ -37,7 +37,7 @@ use std::sync::Arc;
 use vprogs_core_atomics::AtomicRing;
 
 use crate::{
-    bucket::{Bucket, BucketWords},
+    bucket::{Bucket, BucketWords, FrozenBits, sub_base_words},
     hot_zone::HotZone,
 };
 
@@ -77,6 +77,30 @@ impl CanonicalChainSnapshot {
     /// (already pruned) or above the allocated hot zone.
     pub fn bucket_words(&self, bucket: u64) -> Option<BucketWords> {
         self.read_bucket(bucket, |sealed| sealed.words())
+    }
+
+    /// Returns the canonical bits frozen below `below`: full words for every bucket the range
+    /// fully crosses, plus the sub-base words of the bucket holding `below`.
+    ///
+    /// Buckets a concurrent finalize pruned below an earlier root read absent and are
+    /// skipped: their words were frozen when that range was pruned. Buckets crossed since
+    /// then stay present until the root advances past them.
+    pub fn frozen_bits(&self, below: u64) -> Vec<FrozenBits> {
+        let (base_bucket, base_bit) = Bucket::locate(below);
+
+        // Full words for each bucket the step crosses below the new base bucket.
+        let mut frozen = Vec::new();
+        for bucket in self.body.base()..base_bucket {
+            if let Some(words) = self.bucket_words(bucket) {
+                frozen.push(FrozenBits { bucket, words });
+            }
+        }
+
+        // The sub-base range of the new base bucket: masked words, so still-live bits stay out.
+        if let Some(words) = self.bucket_words(base_bucket) {
+            frozen.push(FrozenBits { bucket: base_bucket, words: sub_base_words(words, base_bit) });
+        }
+        frozen
     }
 
     /// Reads through the bucket holding `bucket`'s bits: a hot-zone bucket directly, else the

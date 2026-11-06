@@ -196,15 +196,17 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
             StoredBatchMetadata::get(store.as_ref(), upper_bound + 1),
         ));
 
-        // Advance root in memory before deleting so no observer sees root pointing to pruned data.
-        state.set_root(new_root.clone());
-
-        // Pin one canonical view for the whole pass so every reclaim decision is consistent.
+        // Pin one canonical view for the whole pass, and freeze the deleted range's real
+        // bits from it in the same commit as the deletions, so a crash cannot lose them.
+        // Both reads precede `set_root`: `Scheduler::finalize` prunes the chain to the
+        // root, so once the root advances, a racing finalize drops the crossed buckets
+        // before their words are read. Until then it only prunes to the old root, whose
+        // buckets the previous pass already froze.
         let view = store.canonical_chain().snapshot();
+        let frozen = view.frozen_bits(upper_bound + 1);
 
-        // Freeze the deleted range's real bits in the same commit, so a crash cannot delete
-        // the metadata rows but lose the bits they froze.
-        let frozen = store.canonical_chain().frozen_bits(upper_bound + 1);
+        // Advance root in memory before deleting so no observer sees root pointing at pruned data.
+        state.set_root(new_root.clone());
 
         // Commit all deletions and root update atomically.
         store.commit(store.write_batch().tap_mut(|wb| {
