@@ -1,12 +1,15 @@
 //! Pins the re-form of a retained suffix that survives a settlement the prover observes:
 //! a boundary matching window batches drains them and re-proves the remainder (the supersede
 //! convergence path), and a boundary matching nothing must still fall through to that re-form
-//! instead of returning early. The early return stranded the suffix whenever no later
-//! settlement ever matched again: the watch republishes the last settlement per block, so
-//! once that boundary's batches are drained every subsequent wake matched nothing and the
-//! surviving batches (and their exit leaves) waited for unrelated lane activity to be
-//! bundled again. The re-form guard keeps the fall-through idempotent under those
-//! republishes.
+//! instead of returning early, but only for a front the settler journal no longer names. The
+//! early return stranded the suffix whenever no later settlement ever matched again: the watch
+//! republishes the last settlement per block, so once that boundary's batches are drained
+//! every subsequent wake matched nothing and the surviving batches (and their exit leaves)
+//! waited for unrelated lane activity to be bundled again. The journal gate keeps the
+//! fall-through honest in both directions: a front whose bundle still sits in the settlement
+//! queue (the queue path's own emission) is left alone, while a front the settler dropped
+//! (its entry deleted on the supersede skip, or a drain's mid-bundle start that no entry ever
+//! named) re-forms exactly once.
 
 // The backend traits return `impl Future + 'static`, which an `async fn` cannot satisfy: its future
 // borrows `&self`.
@@ -25,7 +28,7 @@ use tokio::sync::watch;
 use vprogs_core_atomics::AsyncQueue;
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId, SchedulerTransaction};
-use vprogs_l1_types::{ChainBlockMetadata, SettlementInfo};
+use vprogs_l1_types::{ChainBlockMetadata, SettlementInfo, TransactionId};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler, TransactionContext};
 use vprogs_state_settlement_journal::StoreJournal;
 use vprogs_storage_manager::StorageConfig;
@@ -213,25 +216,34 @@ fn next_bundle(
     }
 }
 
-/// The on-chain settlement of a bundle proving through `block`.
+/// The on-chain settlement of a bundle proving through `block`, keyed to a distinct tx per
+/// block: each phase republishes a settlement the worker has already acted on once, and a
+/// shared tx would let the settlement dedupe swallow the later pass.
 fn tip_through(block: u8) -> SettlementInfo {
-    SettlementInfo { block_prove_to: block_hash(block), ..Default::default() }
+    SettlementInfo {
+        block_prove_to: block_hash(block),
+        tx_id: TransactionId::from_bytes([block; 32]),
+        ..Default::default()
+    }
 }
 
-/// Harness holding the live pieces a re-form test drives, plus the temp dir backing its store.
+/// Harness holding the live pieces a re-form test drives, plus the temp dir backing its store
+/// and the settlement journal the worker records into.
 struct Harness {
     _temp: TempDir,
     scheduler: Scheduler<RocksDbStore, PlainProcessor>,
     prover: AggregateProver<RocksDbStore, PlainProcessor>,
     queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Vec<u8>>>>,
     settlement_tx: watch::Sender<Option<SettlementInfo>>,
+    journal: StoreJournal<RocksDbStore>,
 }
 
-/// Builds the harness and emits one bundle per `blocks` entry, committing each batch, seeding
-/// its receipt, and submitting it, so every batch is proved and retained when the test's
-/// settlement arrives. The bundle cap leaves headroom for a re-formed suffix to span every
-/// batch at once.
-fn harness(blocks: &[(u8, u64)]) -> Harness {
+/// Builds the harness and commits one batch per `blocks` entry. With `one_bundle` the batches
+/// land in a single bundle spanning every block; otherwise each batch bundles on its own,
+/// leaving one journal entry per batch. Every batch is proved and retained when the test's
+/// settlement arrives, and the bundle cap leaves headroom for a re-formed suffix to span
+/// every batch at once.
+fn harness(blocks: &[(u8, u64)], one_bundle: bool) -> Harness {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
     let journal = StoreJournal::new(storage.clone());
@@ -244,7 +256,7 @@ fn harness(blocks: &[(u8, u64)]) -> Harness {
     let prover = AggregateProver::new(
         SyntheticBackend,
         scheduler.state().receipt_store(),
-        Some(journal),
+        Some(journal.clone()),
         AggregateProverConfig {
             lane_key: Hash::default(),
             covenant_id: None,
@@ -262,28 +274,53 @@ fn harness(blocks: &[(u8, u64)]) -> Harness {
     // would emit duplicate bundles unrelated to the behavior under test.
     thread::sleep(Duration::from_millis(300));
 
-    for &(hash, parent) in blocks {
-        let batch = scheduler.schedule(block(hash, parent), vec![lane_tx()]);
-        batch.wait_committed_blocking();
-        batch.write_batch_receipt(settlement_journal()).wait_blocking();
-        batch.publish_artifact(Some(settlement_journal()));
-        prover.submit(&batch);
-        let bundle = next_bundle(&queue, Duration::from_secs(10)).expect("the batch must bundle");
+    if one_bundle {
+        // Submit every batch while the worker parks on the first one's artifact, then publish
+        // the artifacts front-last: the parked wake fires only when the front publishes, and by
+        // then every follower's artifact is already out, so the greedy extend spans them all.
+        let mut batches = Vec::new();
+        for &(hash, parent) in blocks {
+            let batch = scheduler.schedule(block(hash, parent), vec![lane_tx()]);
+            batch.wait_committed_blocking();
+            batch.write_batch_receipt(settlement_journal()).wait_blocking();
+            batches.push(batch);
+        }
+        for batch in batches.iter().skip(1).rev() {
+            batch.publish_artifact(Some(settlement_journal()));
+        }
+        for batch in &batches {
+            prover.submit(batch);
+        }
+        batches[0].publish_artifact(Some(settlement_journal()));
+        let bundle = next_bundle(&queue, Duration::from_secs(10)).expect("the batches must bundle");
         bundle.wait_artifact_published_blocking();
-        assert_eq!(bundle.block_prove_to(), block_hash(hash));
+        assert_eq!(bundle.block_prove_to(), block_hash(blocks.last().unwrap().0));
+    } else {
+        for &(hash, parent) in blocks {
+            let batch = scheduler.schedule(block(hash, parent), vec![lane_tx()]);
+            batch.wait_committed_blocking();
+            batch.write_batch_receipt(settlement_journal()).wait_blocking();
+            batch.publish_artifact(Some(settlement_journal()));
+            prover.submit(&batch);
+            let bundle =
+                next_bundle(&queue, Duration::from_secs(10)).expect("the batch must bundle");
+            bundle.wait_artifact_published_blocking();
+            assert_eq!(bundle.block_prove_to(), block_hash(hash));
+        }
     }
 
-    Harness { _temp: temp_dir, scheduler, prover, queue, settlement_tx }
+    Harness { _temp: temp_dir, scheduler, prover, queue, settlement_tx, journal }
 }
 
-/// Tests that a settlement boundary matching a retained batch drains the covered prefix and
-/// re-proves the surviving suffix as one bundle, and that republishing the same settlement (the
-/// watch's per-block cadence) emits no duplicate.
+/// Tests that a settlement boundary draining into a formed bundle re-proves the surviving
+/// mid-bundle suffix (a front no journal entry names, so nothing is pending for it), and that
+/// republishing the same settlement (the watch's per-block cadence) emits no duplicate.
 #[test]
 fn matched_boundary_drains_and_reforms_the_suffix() {
-    let harness = harness(&[(1, 0), (2, 1)]);
+    let harness = harness(&[(1, 0), (2, 1)], true);
 
-    // The settlement of the block-1 bundle: drains batch 1 and re-forms the batch-2 suffix.
+    // A settlement through block 1 drains the bundle's first batch: the surviving front starts
+    // mid-bundle, no journal entry names it, and the suffix must re-form.
     harness.settlement_tx.send_replace(Some(tip_through(1)));
     let reformed =
         next_bundle(&harness.queue, Duration::from_secs(10)).expect("the suffix must re-form");
@@ -301,24 +338,41 @@ fn matched_boundary_drains_and_reforms_the_suffix() {
     harness.scheduler.shutdown();
 }
 
-/// Tests that a settlement boundary matching no window batch (a foreign boundary, or one whose
-/// batches an earlier pass already drained) still re-forms the surviving suffix instead of
-/// stranding it until unrelated lane activity arrives, while the guard keeps repeated
-/// republishes from re-proving it.
+/// Tests both sides of the unmatched-boundary gate: a boundary matching no window batch leaves
+/// a front whose journal entry still exists (its bundle pending in the settlement queue)
+/// untouched, and the same front re-forms exactly once once the settler's supersede skip
+/// deletes that entry, instead of waiting for unrelated lane activity.
 #[test]
-fn unmatched_boundary_still_reforms_the_suffix() {
-    let harness = harness(&[(1, 0), (2, 1)]);
+fn unmatched_boundary_reforms_only_a_front_the_settler_dropped() {
+    let harness = harness(&[(1, 0), (2, 1)], false);
 
-    // A settlement on a block no test batch carries: nothing drains, but both retained batches
-    // are still unsettled, so the suffix must re-form and reach the settlement queue.
+    // A settlement on a block no test batch carries: nothing drains, and the front's bundle is
+    // still pending in the settlement queue, so the fall-through must not re-prove it.
     harness.settlement_tx.send_replace(Some(tip_through(0xff)));
+    assert!(
+        next_bundle(&harness.queue, Duration::from_millis(500)).is_none(),
+        "a pending front must not be re-proved under an unmatched boundary",
+    );
+
+    // The settler's supersede skip resolves the front's bundle on chain and deletes its entry:
+    // the front is now stranded, and the next settlement (a fresh tx, so the dedupe lets it
+    // through) must re-form it.
+    let front = harness
+        .journal
+        .entries()
+        .first()
+        .map(|(start, _)| *start)
+        .expect("the queue path journaled the front");
+    harness.journal.delete(front);
+    harness.settlement_tx.send_replace(Some(tip_through(0xfe)));
     let reformed = next_bundle(&harness.queue, Duration::from_secs(10))
         .expect("the stranded suffix must re-form");
     reformed.wait_artifact_published_blocking();
     assert_eq!(reformed.block_prove_to(), block_hash(2));
 
-    // The republish is idempotent: the guard pins the suffix until something drains it.
-    harness.settlement_tx.send_replace(Some(tip_through(0xff)));
+    // The republish is idempotent: the re-form re-journaled the front, pinning the suffix
+    // until something drains it.
+    harness.settlement_tx.send_replace(Some(tip_through(0xfe)));
     assert!(
         next_bundle(&harness.queue, Duration::from_millis(500)).is_none(),
         "the re-formed suffix must not be re-proved under the republished tip",
