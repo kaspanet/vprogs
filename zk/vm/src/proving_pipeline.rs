@@ -114,6 +114,16 @@ impl<S: Store, P: Processor<S>> ProvingPipeline<S, P> {
         }
     }
 
+    /// Re-roots the provers past `target_index`: same window truncation as [`Self::rollback`],
+    /// but the aggregate prover keeps its settlement-progress state (the covenant tip did not
+    /// move, so a republished stale settlement must not re-drive it).
+    pub fn reroot(&self, target_index: u64) {
+        if let Self::Aggregate(_, batch_prover, agg_prover) = self {
+            batch_prover.rollback(target_index);
+            agg_prover.reroot(target_index);
+        }
+    }
+
     /// Shuts down the prover worker threads. No-op for `None`. Consumers are torn down before
     /// producers (aggregate before batch before transaction), so a downstream prover can't deadlock
     /// waiting on a receipt an already-stopped upstream will never publish.

@@ -202,6 +202,7 @@ struct Harness {
     queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Vec<u8>>>>,
     settlement_tx: watch::Sender<Option<SettlementInfo>>,
     re_root_rx: mpsc::UnboundedReceiver<SettlementInfo>,
+    journal: StoreJournal<RocksDbStore>,
 }
 
 fn harness() -> Harness {
@@ -218,7 +219,7 @@ fn harness() -> Harness {
     let prover = AggregateProver::new(
         SyntheticBackend,
         scheduler.state().receipt_store(),
-        Some(journal),
+        Some(journal.clone()),
         AggregateProverConfig {
             lane_key: Hash::default(),
             covenant_id: None,
@@ -234,7 +235,7 @@ fn harness() -> Harness {
     // Boot determinism: let the worker's committed-gap gate pass before the first commit.
     thread::sleep(Duration::from_millis(300));
 
-    Harness { _temp: temp_dir, scheduler, prover, queue, settlement_tx, re_root_rx }
+    Harness { _temp: temp_dir, scheduler, prover, queue, settlement_tx, re_root_rx, journal }
 }
 
 fn commit_and_submit(
@@ -312,6 +313,103 @@ fn fork_below_the_settlement_requests_a_reroot_instead_of_folding_unlandable_bat
     let bundle = next_bundle(&harness.queue, Duration::from_secs(10)).expect("bundle forms");
     bundle.wait_artifact_published_blocking();
     assert_eq!(bundle.block_prove_to(), block_hash(5));
+
+    harness.prover.shutdown();
+    harness.scheduler.shutdown();
+}
+
+/// A covenant tip whose boundary sits below the bundling front while our own chain still
+/// chains off the boundary's exit is covered catch-up (bundling lags a covenant chain behind
+/// the pending work, under contention against a competitor's shorter settlement), not a wedge:
+/// the fold must proceed and no re-root may fire. Pinning the settler's supersede skip with a
+/// journal delete leaves the front off the tip's exit with nothing journaled, the exact shape
+/// the coverage gate must release.
+#[test]
+fn boundary_below_a_chaining_front_keeps_bundling() {
+    let mut harness = harness();
+
+    // Batches 1-3 chain; each bundles on its own (the cap leaves the pair shape out).
+    let mut prev_lane_tip = Hash::default();
+    for (id, parent_id) in [(1u8, 0u64), (2, 1), (3, 2)] {
+        commit_and_submit(
+            &mut harness.scheduler,
+            &harness.prover,
+            block(id, parent_id, prev_lane_tip),
+        );
+        prev_lane_tip = block_hash(id);
+        let bundle = next_bundle(&harness.queue, Duration::from_secs(10)).expect("bundle forms");
+        bundle.wait_artifact_published_blocking();
+    }
+
+    // The covenant settles through block 2: the drain empties the windows below it and the
+    // compaction deletes the covered entries, leaving only bundle 3's.
+    harness.settlement_tx.send_replace(Some(tip_through(2)));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while harness.journal.entries().len() != 1 {
+        assert!(Instant::now() < deadline, "the covered entries must compact");
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    // The settler's supersede skip resolves bundle 3 on chain and deletes its entry: the
+    // journal is empty while the next batch still enters above the tip's exit.
+    let pending = harness.journal.entries()[0].0;
+    harness.journal.delete(pending);
+
+    // Batch 4 chains off batch 3 (off the tip's older exit, as any lagging front does): it
+    // must still fold, and the off-tip entry must not request a rollback.
+    commit_and_submit(&mut harness.scheduler, &harness.prover, block(4, 3, block_hash(3)));
+    let bundle = next_bundle(&harness.queue, Duration::from_secs(10))
+        .expect("a chaining front must keep bundling");
+    bundle.wait_artifact_published_blocking();
+    assert_eq!(bundle.block_prove_to(), block_hash(4));
+    assert!(
+        harness.re_root_rx.try_recv().is_err(),
+        "a boundary below a chaining front must not request a re-root",
+    );
+
+    harness.prover.shutdown();
+    harness.scheduler.shutdown();
+}
+
+/// A covenant tip proving through a block past everything we executed (a competitor settled
+/// ahead of our tip) leaves the chaining front off the tip's exit with nothing to map the
+/// boundary to: the fold must proceed, since the runner has no boundary of ours to roll back to
+/// and holding would park bundling until the front reaches the covenant's chain.
+#[test]
+fn boundary_ahead_of_execution_keeps_bundling() {
+    let mut harness = harness();
+
+    let mut prev_lane_tip = Hash::default();
+    for (id, parent_id) in [(1u8, 0u64), (2, 1)] {
+        commit_and_submit(
+            &mut harness.scheduler,
+            &harness.prover,
+            block(id, parent_id, prev_lane_tip),
+        );
+        prev_lane_tip = block_hash(id);
+        let bundle = next_bundle(&harness.queue, Duration::from_secs(10)).expect("bundle forms");
+        bundle.wait_artifact_published_blocking();
+    }
+
+    // The covenant settles through block 2 (draining and compacting both bundles), then
+    // through a block we never executed: batch 3 still enters at the settled exit.
+    harness.settlement_tx.send_replace(Some(tip_through(2)));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !harness.journal.entries().is_empty() {
+        assert!(Instant::now() < deadline, "the covered entries must compact");
+        thread::sleep(Duration::from_millis(20));
+    }
+    harness.settlement_tx.send_replace(Some(tip_through(9)));
+
+    commit_and_submit(&mut harness.scheduler, &harness.prover, block(3, 2, block_hash(2)));
+    let bundle = next_bundle(&harness.queue, Duration::from_secs(10))
+        .expect("a front below an ahead boundary must keep bundling");
+    bundle.wait_artifact_published_blocking();
+    assert_eq!(bundle.block_prove_to(), block_hash(3));
+    assert!(
+        harness.re_root_rx.try_recv().is_err(),
+        "a boundary mapping to no batch of ours must not request a re-root",
+    );
 
     harness.prover.shutdown();
     harness.scheduler.shutdown();
