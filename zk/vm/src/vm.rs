@@ -12,6 +12,19 @@ use vprogs_zk_abi::{
 
 use crate::{Backend, ProvingPipeline};
 
+/// One tx's committed exit leaves tagged with their journal position: the executing batch's
+/// sequential id and the tx's zero-based position within that batch. The pair totally orders
+/// leaves into journal order regardless of arrival order across worker threads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExitsForBatch {
+    /// Sequential batch id of the executing batch.
+    pub batch_id: u64,
+    /// Zero-based position of the tx within the batch.
+    pub tx_position: u32,
+    /// Leaves the tx's journal committed, in journal order.
+    pub leaves: Vec<ExitLeaf>,
+}
+
 /// ZK processor that executes programs and optionally coordinates proving via [`ProvingPipeline`].
 #[derive(Clone)]
 pub struct Vm<B: Backend, S: Store> {
@@ -22,7 +35,7 @@ pub struct Vm<B: Backend, S: Store> {
     /// Optional sink for per-tx exit leaves extracted from tx journals. Wired only by the exec
     /// node: the proving node's aggregate prover already publishes per-bundle exits, and a second
     /// emission there would double-feed the exit indexer.
-    exits_tap: Option<mpsc::UnboundedSender<Vec<ExitLeaf>>>,
+    exits_tap: Option<mpsc::UnboundedSender<ExitsForBatch>>,
 }
 
 impl<B: Backend, S: Store> Vm<B, S> {
@@ -32,19 +45,19 @@ impl<B: Backend, S: Store> Vm<B, S> {
     }
 
     /// Wires the per-tx exits tap, consuming and returning `self`.
-    pub fn with_exits_tap(mut self, tap: mpsc::UnboundedSender<Vec<ExitLeaf>>) -> Self {
+    pub fn with_exits_tap(mut self, tap: mpsc::UnboundedSender<ExitsForBatch>) -> Self {
         self.exits_tap = Some(tap);
         self
     }
 
-    /// Sends the tx journal's committed exits into the tap, when one is wired. A journal that
-    /// fails to decode drops that tx's exits with a warning instead of failing the tx: stdout
-    /// already validated the execution, so a malformed exit blob is a codebase mismatch the
-    /// downstream root attribution would surface anyway.
+    /// Sends the tx journal's committed exits into the tap under `(batch_id, tx_position)`,
+    /// when one is wired. A journal that fails to decode drops that tx's exits with a warning
+    /// instead of failing the tx: stdout already validated the execution, so a malformed exit
+    /// blob is a codebase mismatch the downstream root attribution would surface anyway.
     // ponytail: no reorg dedup; a rolled-back-and-replayed tx re-emits its leaves, root
     // attribution blocks (never mis-attributes) on the duplicated prefix, dedup by tx id if a
     // reorg-heavy lane ever needs it.
-    fn tap_exits(&self, journal_bytes: &[u8]) {
+    fn tap_exits(&self, batch_id: u64, tx_position: u32, journal_bytes: &[u8]) {
         let Some(tap) = &self.exits_tap else { return };
         let decoded = JournalEntries::decode(journal_bytes).and_then(|entries| {
             match entries.output_commitment {
@@ -63,7 +76,7 @@ impl<B: Backend, S: Store> Vm<B, S> {
         match decoded {
             Ok(leaves) if !leaves.is_empty() => {
                 // Receiver dropped means no consumer is listening; silently ignore.
-                let _ = tap.send(leaves);
+                let _ = tap.send(ExitsForBatch { batch_id, tx_position, leaves });
             }
             Ok(_) => {}
             Err(e) => log::warn!("vm exits tap: undecodable tx journal exits: {e:?}"),
@@ -82,7 +95,7 @@ impl<B: Backend, S: Store> Processor<S> for Vm<B, S> {
 
         // Forward the journal's exits before applying storage ops; the decode borrows the journal
         // buffer and converts to owned leaves immediately.
-        self.tap_exits(&outcome.journal);
+        self.tap_exits(ctx.batch().checkpoint().index(), ctx.batch_position(), &outcome.journal);
 
         // Submit to proving pipeline (no-op if ProvingPipeline::None).
         self.proving_pipeline.submit_transaction(ctx.scheduled_tx(), input_bytes);

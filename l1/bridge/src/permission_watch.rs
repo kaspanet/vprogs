@@ -240,7 +240,7 @@ pub(crate) fn check_claim_spend(
     // 9. Apply registry update.
     apply_registry_update(registry, matched_outpoint, txid_bytes, new_unclaimed, new_root);
 
-    // 10. Emit PermissionSpend event.
+    // 10. Emit PermissionSpend event with the matched outpoint and continuation presence.
     Some(PermissionSpend {
         covenant_id,
         old_root,
@@ -251,8 +251,10 @@ pub(crate) fn check_claim_spend(
         leaf_amount: amount,
         deduct,
         new_root,
+        spent_txid: matched_outpoint.transaction_id.as_bytes(),
+        spent_index: matched_outpoint.index,
         spend_txid: txid_bytes,
-        new_outpoint_index: 1,
+        new_outpoint_index: (new_unclaimed > 0).then_some(1),
     })
 }
 
@@ -342,7 +344,9 @@ mod tests {
         assert_eq!(spend.deduct, deduct);
         assert_eq!(spend.new_root, expected_new_root);
         assert_eq!(spend.spend_txid, txid_bytes);
-        assert_eq!(spend.new_outpoint_index, 1);
+        assert_eq!(spend.spent_txid, perm_outpoint.transaction_id.as_bytes());
+        assert_eq!(spend.spent_index, perm_outpoint.index);
+        assert_eq!(spend.new_outpoint_index, Some(1));
 
         let reg = registry.read().unwrap();
         assert!(!reg.contains_key(&perm_outpoint), "spent outpoint must be removed");
@@ -401,7 +405,9 @@ mod tests {
         assert_eq!(spend.deduct, deduct);
         assert_eq!(spend.new_root, expected_new_root);
         assert_eq!(spend.spend_txid, txid_bytes);
-        assert_eq!(spend.new_outpoint_index, 1);
+        assert_eq!(spend.spent_txid, perm_outpoint.transaction_id.as_bytes());
+        assert_eq!(spend.spent_index, perm_outpoint.index);
+        assert_eq!(spend.new_outpoint_index, Some(1));
 
         let reg = registry.read().unwrap();
         assert!(!reg.contains_key(&perm_outpoint), "spent outpoint must be removed");
@@ -456,6 +462,9 @@ mod tests {
         assert_eq!(spend.depth, 1);
         assert_eq!(spend.new_root, expected_new_root);
         assert_eq!(spend.spend_txid, txid_bytes);
+        assert_eq!(spend.spent_txid, perm_outpoint.transaction_id.as_bytes());
+        assert_eq!(spend.spent_index, perm_outpoint.index);
+        assert_eq!(spend.new_outpoint_index, None, "no continuation when all claimed");
 
         let reg = registry.read().unwrap();
         assert!(!reg.contains_key(&perm_outpoint), "spent outpoint must be removed");
