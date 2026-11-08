@@ -9453,6 +9453,7 @@ version = "0.1.0"
 dependencies = [
  "kaspa-hashes",
  "kaspa-rpc-core",
+ "log",
  "tap",
  "tempfile",
  "tokio",
@@ -9476,13 +9477,20 @@ name = "vprogs-zk-transaction-prover"
 version = "0.1.0"
 dependencies = [
  "borsh",
+ "kaspa-hashes",
+ "log",
  "tap",
+ "tempfile",
  "tokio",
  "vprogs-core-atomics",
  "vprogs-core-macros",
+ "vprogs-core-test-utils",
+ "vprogs-core-types",
  "vprogs-l1-types",
  "vprogs-scheduling-scheduler",
  "vprogs-state-proof-receipt",
+ "vprogs-storage-manager",
+ "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
 ]
 
