@@ -183,7 +183,7 @@ impl vprogs_zk_transaction_prover::Backend for JournalBackend {
     fn prove_transaction(
         &self,
         _input_bytes: Vec<u8>,
-    ) -> impl Future<Output = Self::Receipt> + Send + 'static {
+    ) -> impl Future<Output = Result<Self::Receipt, String>> + Send + 'static {
         async { unreachable!("the repro proves no transaction") }
     }
 
@@ -195,7 +195,7 @@ impl vprogs_zk_batch_prover::Backend for JournalBackend {
         &self,
         _inputs: &[u8],
         _receipts: Vec<Self::Receipt>,
-    ) -> impl Future<Output = Self::Receipt> + Send + 'static {
+    ) -> impl Future<Output = Result<Self::Receipt, String>> + Send + 'static {
         async { unreachable!("the repro publishes the batch receipt directly") }
     }
 

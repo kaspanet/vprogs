@@ -26,28 +26,6 @@ fn prove_timeout() -> Duration {
         .map_or(Duration::from_secs(1800), Duration::from_secs)
 }
 
-/// Proves `elf` under `image_id` with the default prover, retrying until a receipt verifies
-/// against it; see [`prove_with_prover`] for the attempt and retry contract.
-async fn prove_with_retries(
-    elf: Vec<u8>,
-    image_id: [u8; 32],
-    opts: ProverOpts,
-    inputs: Vec<u8>,
-    assumptions: Vec<Receipt>,
-) -> Receipt {
-    prove_with_prover(
-        |env, elf, opts| {
-            PROVER.with(|p| p.prove_with_opts(env, elf, opts)).map(|info| info.receipt)
-        },
-        elf,
-        image_id,
-        opts,
-        inputs,
-        assumptions,
-    )
-    .await
-}
-
 /// Runs one prove attempt: a fresh environment (an env is consumed by proving), the prove
 /// itself on the blocking pool under [`prove_timeout`], and verification of the resulting
 /// receipt against `image_id`. Returns the receipt, or the attempt's error: a prove error, a
@@ -88,48 +66,6 @@ where
     .map_err(|_| "prove timed out".to_owned())
     .and_then(|joined| joined.map_err(|err| format!("prove task failed: {err}")))
     .and_then(std::convert::identity)
-}
-
-/// Retry loop over [`prove_attempt`] for the prove paths that cannot hand a failure back to a
-/// caller: the transaction and batch proves. A failed attempt is logged with its count and retried;
-/// there is no attempt cap and no exhaustion panic. A deterministic failure retries identically and
-/// loudly until an operator's keepalive flags the stall; reset is the accepted recovery. Each
-/// attempt costs a real prove (minutes on CUDA), so the loop is naturally paced; no backoff knob. A
-/// "Guest panicked" error retries like any other failure.
-async fn prove_with_prover<F>(
-    prove: F,
-    elf: Vec<u8>,
-    image_id: [u8; 32],
-    opts: ProverOpts,
-    inputs: Vec<u8>,
-    assumptions: Vec<Receipt>,
-) -> Receipt
-where
-    F: Fn(ExecutorEnv<'_>, &[u8], &ProverOpts) -> risc0_zkvm::Result<Receipt>
-        + Send
-        + Sync
-        + Clone
-        + 'static,
-{
-    let mut attempt = 1u32;
-    loop {
-        let receipt = prove_attempt(
-            prove.clone(),
-            elf.clone(),
-            image_id,
-            opts.clone(),
-            inputs.clone(),
-            assumptions.clone(),
-        )
-        .await;
-        match receipt {
-            Ok(receipt) => return receipt,
-            Err(err) => {
-                log::warn!("proving attempt {attempt} failed ({err}); retrying");
-                attempt += 1;
-            }
-        }
-    }
 }
 
 /// RISC-0 backend for execution and proving.
@@ -212,13 +148,17 @@ impl vprogs_zk_transaction_prover::Backend for Backend {
         &self.transaction_processor.id
     }
 
+    /// One verified transaction attempt; the transaction prover's worker loop is the retry.
     fn prove_transaction(
         &self,
         input_bytes: Vec<u8>,
-    ) -> impl Future<Output = Receipt> + Send + 'static {
+    ) -> impl Future<Output = Result<Receipt, String>> + Send + 'static {
         let backend = self.clone();
         async move {
-            prove_with_retries(
+            prove_attempt(
+                |env, elf, opts| {
+                    PROVER.with(|p| p.prove_with_opts(env, elf, opts)).map(|info| info.receipt)
+                },
                 backend.transaction_processor.elf.clone(),
                 backend.transaction_processor.id,
                 ProverOpts::succinct(),
@@ -231,16 +171,20 @@ impl vprogs_zk_transaction_prover::Backend for Backend {
 }
 
 impl vprogs_zk_batch_prover::Backend for Backend {
+    /// One verified batch attempt; the batch prover's worker loop is the retry.
     fn prove_batch(
         &self,
         inputs: &[u8],
         receipts: Vec<Receipt>,
-    ) -> impl Future<Output = Receipt> + Send + 'static {
+    ) -> impl Future<Output = Result<Receipt, String>> + Send + 'static {
         // Per-batch receipts are always succinct; the aggregator composes them via assumptions.
         let backend = self.clone();
         let inputs = inputs.to_vec();
         async move {
-            prove_with_retries(
+            prove_attempt(
+                |env, elf, opts| {
+                    PROVER.with(|p| p.prove_with_opts(env, elf, opts)).map(|info| info.receipt)
+                },
                 backend.batch_processor.elf.clone(),
                 backend.batch_processor.id,
                 ProverOpts::succinct(),
@@ -295,8 +239,6 @@ impl vprogs_zk_aggregate_prover::Backend for Backend {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
     use risc0_zkvm::{FakeReceipt, InnerReceipt, Receipt, ReceiptClaim};
 
     use super::*;
@@ -307,93 +249,76 @@ mod tests {
         Receipt::new(InnerReceipt::Fake(FakeReceipt::new(claim)), journal)
     }
 
-    /// Four failures then a verified receipt: the loop must return the receipt, not panic. The
-    /// pre-simplification code panics on the third attempt, which is the red this test pins.
+    /// A prove error surfaces as the attempt's own error; the retry (the calling worker's loop)
+    /// decides what to do with it.
     #[test]
-    fn a_failing_sequence_retries_until_success() {
+    fn a_failed_attempt_returns_its_error() {
         const IMAGE_ID: [u8; 32] = [0x42; 32];
-        let calls = Arc::new(AtomicUsize::new(0));
-        let counted = calls.clone();
-        let receipt = tokio::runtime::Builder::new_current_thread()
+        let err = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("test runtime")
-            .block_on(prove_with_prover(
+            .block_on(prove_attempt(
                 move |_env, _elf, _opts| {
-                    if counted.fetch_add(1, Ordering::SeqCst) < 4 {
-                        Err(std::io::Error::other("prove error: synthetic").into())
-                    } else {
-                        Ok(fake_receipt(IMAGE_ID, vec![7]))
-                    }
+                    Err::<Receipt, _>(std::io::Error::other("prove error: synthetic").into())
                 },
                 Vec::new(),
                 IMAGE_ID,
                 ProverOpts::succinct(),
                 Vec::new(),
                 Vec::new(),
-            ));
-        assert_eq!(calls.load(Ordering::SeqCst), 5);
-        assert_eq!(receipt.journal.bytes, vec![7]);
+            ))
+            .expect_err("the attempt failed");
+        // The exact risc0 error rendering differs across feature sets (the prove client wraps
+        // io errors in its own "prove error:" layer); pin the mapping, not the inner display.
+        assert!(err.starts_with("prove error:"), "unexpected error: {err}");
+        assert!(err.contains("synthetic"), "unexpected error: {err}");
     }
 
     /// A receipt that fails verification against the image id is discarded inside the attempt and
-    /// the next attempt runs; the bad receipt is never returned.
+    /// surfaces as its error; the bad receipt is never returned or stored.
     #[test]
-    fn a_rejected_receipt_is_discarded_and_retried() {
+    fn a_rejected_receipt_is_discarded() {
         const IMAGE_ID: [u8; 32] = [0x42; 32];
-        let calls = Arc::new(AtomicUsize::new(0));
-        let counted = calls.clone();
-        let receipt = tokio::runtime::Builder::new_current_thread()
+        let err = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("test runtime")
-            .block_on(prove_with_prover(
-                move |_env, _elf, _opts| {
-                    if counted.fetch_add(1, Ordering::SeqCst) == 0 {
-                        Ok(fake_receipt([0x99; 32], vec![1]))
-                    } else {
-                        Ok(fake_receipt(IMAGE_ID, vec![2]))
-                    }
-                },
+            .block_on(prove_attempt(
+                move |_env, _elf, _opts| Ok(fake_receipt([0x99; 32], vec![1])),
                 Vec::new(),
                 IMAGE_ID,
                 ProverOpts::succinct(),
                 Vec::new(),
                 Vec::new(),
-            ));
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
-        assert_eq!(receipt.journal.bytes, vec![2]);
+            ))
+            .expect_err("the receipt is rejected against the image id");
+        assert!(err.starts_with("receipt rejected"), "unexpected error: {err}");
     }
 
-    /// Two hanging attempts then a good one: each hang is abandoned by its timeout and retried,
-    /// and the third attempt's receipt is returned. No panic remains to contain.
+    /// A hanging attempt is abandoned by its timeout and surfaces as its error instead of parking
+    /// the caller. No panic remains to contain.
     #[test]
-    fn a_hanging_prove_attempt_times_out_and_retries() {
+    fn a_hanging_attempt_times_out() {
         const IMAGE_ID: [u8; 32] = [0x42; 32];
         std::env::set_var("VPROGS_PROVE_TIMEOUT_SECS", "1");
-        let calls = Arc::new(AtomicUsize::new(0));
-        let counted = calls.clone();
-        let receipt = tokio::runtime::Builder::new_current_thread()
+        let err = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("test runtime")
-            .block_on(prove_with_prover(
+            .block_on(prove_attempt(
                 move |_env, _elf, _opts| {
-                    if counted.fetch_add(1, Ordering::SeqCst) < 2 {
-                        std::thread::sleep(Duration::from_secs(5));
-                        unreachable!("the timeout abandons this attempt long before it returns")
-                    } else {
-                        Ok(fake_receipt(IMAGE_ID, vec![3]))
-                    }
+                    std::thread::sleep(Duration::from_secs(5));
+                    unreachable!("the timeout abandons this attempt long before it returns")
                 },
                 Vec::new(),
                 IMAGE_ID,
                 ProverOpts::succinct(),
                 Vec::new(),
                 Vec::new(),
-            ));
+            ))
+            .expect_err("the attempt hangs and is timed out");
         std::env::remove_var("VPROGS_PROVE_TIMEOUT_SECS");
-        assert_eq!(calls.load(Ordering::SeqCst), 3);
-        assert_eq!(receipt.journal.bytes, vec![3]);
+        assert_eq!(err, "prove timed out");
     }
 }

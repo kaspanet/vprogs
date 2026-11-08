@@ -1,9 +1,13 @@
 //! Pins the funding-race robustness of the committed-gap recovery: a settlement that dies
 //! without landing leaves a journal entry chaining from a base the covenant never took, and the
 //! resume pass must drop that dead entry so the committed-gap pass re-covers its range as one
-//! fresh bundle chaining from the on-chain tip. A committed-gap range whose final block's lane
-//! proof is unobtainable (pruned lane history) must walk its end down to the live prefix
-//! instead of deferring the same dead-ended range on every wake.
+//! fresh bundle chaining from the on-chain tip. The drop is decided only on a pass whose tip
+//! transaction differs from the startup baseline (the bridge's pre-downtime publication, which
+//! trails the chain by the follow depth while the settler advances on a probe confirm): a live
+//! entry chaining from that still-unpublished settlement reads identically at the baseline and
+//! must be re-fed, not dropped. A committed-gap range whose final block's lane proof is
+//! unobtainable (pruned lane history) must walk its end down to the live prefix instead of
+//! deferring the same dead-ended range on every wake.
 
 #![allow(clippy::manual_async_fn)]
 
@@ -20,7 +24,7 @@ use tokio::sync::watch;
 use vprogs_core_atomics::AsyncQueue;
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId, SchedulerTransaction};
-use vprogs_l1_types::{ChainBlockMetadata, SettlementInfo};
+use vprogs_l1_types::{ChainBlockMetadata, SettlementInfo, TransactionId};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler, SchedulerState, TransactionContext};
 use vprogs_state_proof_receipt::{AggregatorKey, Prefix};
 use vprogs_state_settlement_journal::{JournalEntry, StoreJournal};
@@ -92,7 +96,7 @@ impl vprogs_zk_transaction_prover::Backend for SyntheticBackend {
     fn prove_transaction(
         &self,
         _input_bytes: Vec<u8>,
-    ) -> impl Future<Output = Self::Receipt> + Send + 'static {
+    ) -> impl Future<Output = Result<Self::Receipt, String>> + Send + 'static {
         async { unreachable!("the repro publishes batch receipts directly") }
     }
 
@@ -104,7 +108,7 @@ impl vprogs_zk_batch_prover::Backend for SyntheticBackend {
         &self,
         _inputs: &[u8],
         _receipts: Vec<Self::Receipt>,
-    ) -> impl Future<Output = Self::Receipt> + Send + 'static {
+    ) -> impl Future<Output = Result<Self::Receipt, String>> + Send + 'static {
         async { unreachable!("the repro publishes batch receipts directly") }
     }
 
@@ -256,9 +260,22 @@ fn tip_through(block: u8) -> SettlementInfo {
     SettlementInfo { block_prove_to: block_hash(block), ..Default::default() }
 }
 
-/// Encodes the settlement journal of a bundle that chains from a base the covenant never took:
-/// identical to [`settlement_journal`] except its proven `prev_state`, so the resume pass's
-/// tip-pins check rejects it.
+/// A settlement tip proving through `block` whose transaction id derives from the block byte
+/// (so an advance past the baseline tip is identifiable) and which settles `new_state` (the pin
+/// the resume's chaining check reads).
+fn tip_with(block: u8, new_state: [u8; 32]) -> SettlementInfo {
+    SettlementInfo {
+        tx_id: TransactionId::from_bytes([block; 32]),
+        block_prove_to: block_hash(block),
+        new_state,
+        ..Default::default()
+    }
+}
+
+/// Encodes the settlement journal of a bundle that chains from a base at state `[0xAA]`
+/// (whether that base is dead or merely unpublished is what the resume passes decide):
+/// identical to [`settlement_journal`] except its proven `prev_state`, so the tip-pins check
+/// rejects it against a tip that has not settled `[0xAA]`.
 fn stale_settlement_journal() -> Vec<u8> {
     let mut buf = Vec::new();
     StateTransition::encode(
@@ -280,57 +297,64 @@ fn stale_settlement_journal() -> Vec<u8> {
     buf
 }
 
+/// The pre-restart shape both resume tests build: block 1 settled, blocks 2 and 3 proved above
+/// it, one journal entry recorded above the settled tip whose stored receipt chains from a base
+/// at state `[0xAA]` (dead, or our own unpublished settlement; the resume passes decide), and
+/// the restart-side scheduler state over the same store.
+fn seeded_dead_shape(
+    temp_dir: &TempDir,
+) -> (StoreJournal<RocksDbStore>, SchedulerState<RocksDbStore, PlainProcessor>) {
+    let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+    let journal = StoreJournal::new(storage.clone());
+    let mut scheduler = Scheduler::new(
+        ExecutionConfig::default().with_processor(PlainProcessor),
+        StorageConfig::default().with_store(storage.clone()),
+    );
+    commit_batch_with_receipt(&mut scheduler, block(1, 0));
+    commit_batch_with_receipt(&mut scheduler, block(2, 1));
+    commit_batch_with_receipt(&mut scheduler, block(3, 2));
+    journal.record(
+        3,
+        &JournalEntry {
+            end_index: 3,
+            from_block: block_hash(3),
+            block_prove_to: block_hash(3),
+            seq_commit: seq_commit(),
+        },
+    );
+    scheduler.shutdown();
+
+    // The restart half: the entry's aggregate receipt is stored where a re-feed would reload it.
+    let state = SchedulerState::<RocksDbStore, PlainProcessor>::new(
+        StorageConfig::default().with_store(storage.clone()),
+    );
+    state
+        .receipt_store()
+        .write_agg_receipt(
+            AggregatorKey {
+                prefix: Prefix { checkpoint_index: 3.into() },
+                block_hash: block_hash(3).as_bytes(),
+                image_id: AGGREGATOR_IMAGE_ID,
+                seq_commit: seq_commit().as_bytes(),
+            },
+            stale_settlement_journal(),
+        )
+        .wait_blocking();
+    (journal, state)
+}
+
 /// Tests that a journal entry left by a settlement that died without landing (its proven
-/// transition chains from a base the covenant never took) is dropped by the resume pass rather
-/// than re-fed forever, and the committed-gap pass re-covers the range as one fresh bundle
-/// chaining from the on-chain tip. Re-feeding the dead entry instead wedges the settler: every
+/// transition chains from a base the covenant never took) survives the startup pass (whose
+/// baseline tip may merely trail the chain) and is dropped by the first advance past the
+/// baseline, after which the committed-gap pass re-covers the range as one fresh bundle chaining
+/// from the on-chain tip. Re-feeding the dead entry forever instead wedges the settler: every
 /// bundle re-folds from the stale base, the settler skips it as a base mismatch, and the entry
 /// never resolves.
 #[test]
 fn committed_gap_with_dead_settlement_entry_recovers() {
     let temp_dir = TempDir::new().expect("failed to create temp dir");
     {
-        // The pre-restart half: block 1 settled, blocks 2 and 3 proved above it, and one journal
-        // entry recorded above the settled tip whose receipt chains from a base the covenant
-        // never took (the shape a dead settlement leaves behind: the bundle below it never
-        // landed, so it chains from that bundle's end state, not the on-chain tip).
-        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-        let journal = StoreJournal::new(storage.clone());
-        let mut scheduler = Scheduler::new(
-            ExecutionConfig::default().with_processor(PlainProcessor),
-            StorageConfig::default().with_store(storage.clone()),
-        );
-        commit_batch_with_receipt(&mut scheduler, block(1, 0));
-        commit_batch_with_receipt(&mut scheduler, block(2, 1));
-        commit_batch_with_receipt(&mut scheduler, block(3, 2));
-        journal.record(
-            3,
-            &JournalEntry {
-                end_index: 3,
-                from_block: block_hash(3),
-                block_prove_to: block_hash(3),
-                seq_commit: seq_commit(),
-            },
-        );
-        scheduler.shutdown();
-
-        // The restart half: the dead entry's aggregate receipt is stored where the re-feed
-        // would reload it.
-        let state = SchedulerState::<RocksDbStore, PlainProcessor>::new(
-            StorageConfig::default().with_store(storage.clone()),
-        );
-        state
-            .receipt_store()
-            .write_agg_receipt(
-                AggregatorKey {
-                    prefix: Prefix { checkpoint_index: 3.into() },
-                    block_hash: block_hash(3).as_bytes(),
-                    image_id: AGGREGATOR_IMAGE_ID,
-                    seq_commit: seq_commit().as_bytes(),
-                },
-                stale_settlement_journal(),
-            )
-            .wait_blocking();
+        let (journal, state) = seeded_dead_shape(&temp_dir);
 
         let settlement_queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Vec<u8>>>> =
             AsyncQueue::new();
@@ -351,12 +375,24 @@ fn committed_gap_with_dead_settlement_entry_recovers() {
         );
 
         // The bridge's baseline tip proves through block 1 and carries the covenant's on-chain
-        // state, which the dead entry's receipt does not chain from.
+        // state, which the entry's receipt does not chain from. The baseline may trail the
+        // chain, so the startup pass defers the dead-entry decision and re-feeds the stored
+        // receipt unchanged instead of dropping the entry.
         settlement_tx.send_replace(Some(tip_through(1)));
+        let refeed = next_bundle(&settlement_queue, Duration::from_secs(10))
+            .expect("the deferred startup re-feed");
+        refeed.wait_artifact_published_blocking();
+        assert_eq!(
+            refeed.artifact().expect("the re-fed bundle carries its stored artifact").prev_state,
+            [0xAA; 32],
+            "the startup pass re-feeds the entry rather than deciding it against the baseline",
+        );
 
-        // The dead entry is dropped and the range re-covered as one fresh bundle chaining from
-        // the tip: the emitted artifact carries the fresh compose's prev_state, not the stored
-        // dead receipt's. A republication re-feed of the fresh entry may follow it.
+        // The bridge publishes a settlement the baseline did not carry: the advance pass is
+        // decisive, the entry still chains from nothing the tip carries, and it is dropped. The
+        // committed-gap retry then re-covers the range as one fresh bundle chaining from the
+        // tip. A republication re-feed of the fresh entry may follow the compose.
+        settlement_tx.send_replace(Some(tip_with(1, [0x00; 32])));
         let mut prev_states = Vec::new();
         loop {
             let timeout = if prev_states.is_empty() {
@@ -385,6 +421,73 @@ fn committed_gap_with_dead_settlement_entry_recovers() {
         let recorded: Vec<(u64, u64)> =
             journal.entries().into_iter().map(|(s, e)| (s, e.end_index)).collect();
         assert_eq!(recorded, vec![(2, 3)], "the re-covered entry replaces the dead one");
+
+        prover.shutdown();
+        state.storage().shutdown();
+    }
+}
+
+/// Tests the live side of the deferred decision: an entry chaining from our own settlement the
+/// bridge baseline has not published yet (the settler advanced on a probe confirm, the baseline
+/// trails by the follow depth, and the crash landed inside that window) must survive the
+/// startup pass and the advance that publishes the settlement: re-fed unchanged both times,
+/// never dropped and never re-composed from the stale base. The pre-fix behavior read it as
+/// dead at startup, dropped every entry, and paid one full aggregator re-proof of the range.
+#[test]
+fn a_live_entry_chaining_from_an_unpublished_settlement_survives_the_baseline_pass() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let (journal, state) = seeded_dead_shape(&temp_dir);
+
+        let settlement_queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Vec<u8>>>> =
+            AsyncQueue::new();
+        let (settlement_tx, settlement_rx) = watch::channel::<Option<SettlementInfo>>(None);
+        let prover = AggregateProver::new(
+            SyntheticBackend,
+            state.receipt_store(),
+            Some(journal.clone()),
+            AggregateProverConfig {
+                lane_key: Hash::default(),
+                covenant_id: None,
+                lane_source: ServeLaneProofs,
+                settlement_queue: Some(settlement_queue.clone()),
+                settlement: Some(settlement_rx),
+                bundle_size: 1..=1,
+                exits: None,
+            },
+        );
+
+        // The baseline tip proves through block 1 and carries state [0x00], which the entry
+        // (chaining from our probe-confirmed settlement at [0xAA]) does not chain from: the
+        // deferred startup pass re-feeds it unchanged.
+        settlement_tx.send_replace(Some(tip_through(1)));
+        let startup = next_bundle(&settlement_queue, Duration::from_secs(10))
+            .expect("the deferred startup re-feed");
+        startup.wait_artifact_published_blocking();
+        assert_eq!(
+            startup.artifact().expect("the re-fed bundle carries its stored artifact").prev_state,
+            [0xAA; 32],
+        );
+
+        // The bridge catches up and publishes our settlement (a new transaction id, settled
+        // state [0xAA]): the advance pass is decisive, the entry chains from the tip it carries,
+        // and the tail re-feeds unchanged again.
+        settlement_tx.send_replace(Some(tip_with(1, [0xAA; 32])));
+        let advance = next_bundle(&settlement_queue, Duration::from_secs(10))
+            .expect("the live tail re-feeds after the advance");
+        advance.wait_artifact_published_blocking();
+        assert_eq!(
+            advance.artifact().expect("the re-fed bundle carries its stored artifact").prev_state,
+            [0xAA; 32],
+        );
+        assert!(
+            next_bundle(&settlement_queue, Duration::from_millis(500)).is_none(),
+            "no fresh compose ever replaces the live entry",
+        );
+
+        let recorded: Vec<(u64, u64)> =
+            journal.entries().into_iter().map(|(s, e)| (s, e.end_index)).collect();
+        assert_eq!(recorded, vec![(3, 3)], "the live entry survives untouched");
 
         prover.shutdown();
         state.storage().shutdown();

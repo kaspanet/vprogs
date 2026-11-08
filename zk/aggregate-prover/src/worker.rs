@@ -102,7 +102,9 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend, L: LaneProofSour
     /// re-emitting it on every settlement wake. Reset by a rollback.
     last_reformed_from: Option<u64>,
     /// Transaction id of the settlement the advance passes last acted on; the bridge restamps the
-    /// last settlement per chain block, and those republications are skipped. Reset by a rollback.
+    /// last settlement per chain block, and those republications are skipped. The startup pass
+    /// marks the baseline publication it acts on, so its first restamp is skipped like any other.
+    /// Reset by a rollback.
     handled_settlement: Option<TransactionId>,
     /// Containing-block DAA score of the newest settlement the windows drained against; later
     /// settlements scoring below it (a reorg flip republishing an older one) drain nothing.
@@ -237,6 +239,11 @@ where
                     Ok(()) = settlement.changed() => {}
                 }
             };
+            // The startup passes below act on this publication; mark it handled so the main
+            // loop's advance arm does not re-run them on the bridge's first restamp of it.
+            if let Some(tip) = tip {
+                self.handled_settlement = Some(tip.tx_id);
+            }
             if journal_holds_entries {
                 resume_max_end = self
                     .journal
@@ -247,7 +254,7 @@ where
                     .expect("has_entries checked above")
                     .1
                     .end_index;
-                self.resume_pending(tip.as_ref(), resume_max_end).await;
+                self.resume_pending(tip.as_ref(), resume_max_end, false).await;
                 if self.prover.shutdown.is_open() {
                     return;
                 }
@@ -308,8 +315,19 @@ where
                         // no-op once the snapshot scope is empty or the journal is unwired. The
                         // scope extends to this run's gap entry (its end exceeds the snapshot),
                         // so a boundary the gap pass could not yet observe re-splits it in
-                        // process instead of wedging until the next restart.
-                        self.resume_pending(Some(tip), resume_max_end.max(gap_end)).await;
+                        // process instead of wedging until the next restart. A deferred
+                        // dead-entry drop that fires here lowers the journal tail below
+                        // committed work, so its range is handed to the committed-gap retry
+                        // below instead of waiting for the next restart.
+                        if let Some(dropped_end) =
+                            self.resume_pending(Some(tip), resume_max_end.max(gap_end), true).await
+                        {
+                            // Never shrink a deferred pass's bound: the dropped range and a
+                            // deferred gap can be pending together, and the retry must still
+                            // cover through the committed tip it was scoped to.
+                            gap_bound =
+                                Some(gap_bound.map_or(dropped_end, |bound| bound.max(dropped_end)));
+                        }
                     }
                     if self.prover.shutdown.is_open() {
                         return;
@@ -891,12 +909,28 @@ where
     /// `tip: None` (no settlement ever landed) re-feeds the scoped tail unchanged. An entry
     /// whose receipt cannot be reloaded is dropped with a warning; that range settles again only
     /// through new activity.
-    async fn resume_pending(&mut self, tip: Option<&SettlementInfo>, max_end: u64) {
-        let Some(journal) = self.journal.clone() else { return };
+    ///
+    /// Returns the end index of the dropped range when a pass drops dead entries (entries
+    /// chaining from a base the covenant never took), so the caller re-runs the committed-gap
+    /// pass over it: at startup the gap pass that follows this one covers it, and an advance
+    /// pass hands it to the gap retry. The drop is decided only where `decisive` holds (every
+    /// advance pass, whose tip transaction differs from the startup baseline): the baseline
+    /// trails the chain by the follow depth while the settler advances on a probe confirm well
+    /// before that, so a crash inside that window leaves a live first entry chaining from our
+    /// own latest settlement the baseline has not published yet. A startup pass re-feeds the
+    /// tail unchanged instead, and the first advance past the baseline (the bridge publishing
+    /// that newer settlement) decides it.
+    async fn resume_pending(
+        &mut self,
+        tip: Option<&SettlementInfo>,
+        max_end: u64,
+        decisive: bool,
+    ) -> Option<u64> {
+        let journal = self.journal.clone()?;
         let entries: Vec<(u64, JournalEntry)> =
             journal.entries().into_iter().filter(|(_, entry)| entry.end_index <= max_end).collect();
         if entries.is_empty() {
-            return;
+            return None;
         }
         let Some(tip) = tip else {
             log::info!(
@@ -905,7 +939,7 @@ where
                 entries.len()
             );
             self.refeed_all(entries).await;
-            return;
+            return None;
         };
         let first_start = entries.first().expect("checked non-empty").0;
         let last_end = entries.last().expect("checked non-empty").1.end_index;
@@ -922,8 +956,7 @@ where
             // funding-race double spend, a skipped base mismatch), which chain from a base the
             // covenant never took and would re-fold forever. The first entry's own receipt
             // tells them apart: it chains from the tip iff its proven transition starts at the
-            // tip's pins. Dead entries are dropped rather than re-fed, so the committed-gap
-            // pass re-covers their range as one bundle chaining from the tip.
+            // tip's pins.
             if self.entry_chains_from(tip, entries.first().expect("checked non-empty")).await {
                 log::warn!(
                     "aggregate-prover: resume tip boundary {} maps to no batch below the committed \
@@ -932,19 +965,38 @@ where
                     entries.len(),
                 );
                 self.refeed_all(entries).await;
-            } else {
-                for (start, _) in &entries {
-                    journal.delete(*start);
-                }
+                return None;
+            }
+            // The entries chain from a base the tip does not carry, but the startup baseline
+            // can trail the settler's probe-confirmed latest settlement by the follow depth: a
+            // live first entry chains from that unpublished settlement and reads as dead here,
+            // and dropping it would re-prove the whole range from the stale base. Only a
+            // decisive pass (one whose tip the bridge published after the baseline) drops;
+            // until then the tail re-feeds unchanged and the settler's adopt path lands it if
+            // the base is live after all.
+            if !decisive {
                 log::warn!(
                     "aggregate-prover: resume tip boundary {} maps to no batch in the journal \
-                     span and the {} entries chain from a base the covenant never took; dropping \
-                     them so the committed-gap pass re-covers their range from the tip",
+                     span and the {} entries chain from a base it does not carry; the baseline \
+                     may trail the chain, so re-feeding the tail unchanged until an advance \
+                     past it decides",
                     tip.block_prove_to,
                     entries.len(),
                 );
+                self.refeed_all(entries).await;
+                return None;
             }
-            return;
+            for (start, _) in &entries {
+                journal.delete(*start);
+            }
+            log::warn!(
+                "aggregate-prover: resume tip boundary {} maps to no batch in the journal span \
+                 and the {} entries chain from a base the covenant never took; dropping them so \
+                 the committed-gap pass re-covers their range from the tip",
+                tip.block_prove_to,
+                entries.len(),
+            );
+            return Some(last_end);
         };
 
         let mut pending: Vec<(u64, JournalEntry)> = Vec::new();
@@ -963,6 +1015,7 @@ where
             }
         }
         self.refeed_all(pending).await;
+        None
     }
 
     /// Returns whether `entry`'s reloaded receipt chains from `tip`: its proven transition
