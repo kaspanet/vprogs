@@ -290,9 +290,9 @@ impl<S: Store, P: Processor<S>> WriteCmd for Write<S, P> {
     }
 
     /// Whole-batch commands (commit, rollback) and receipt writes flush immediately; diffs
-    /// accumulate. A receipt write's latch is a durability barrier for its issuer (the proving
-    /// workers park on it before publishing the receipt as an artifact), so the write must reach
-    /// disk before the latch opens, exactly as a commit's does.
+    /// accumulate. A receipt's latch already implied a commit (`flushed` runs after one); flushing
+    /// with the write itself opens the latch at once instead of within the batch window, and a
+    /// crash inside that window can no longer drop the write.
     #[inline(always)]
     fn flush_now(&self) -> bool {
         matches!(self, Write::CommitBatch(_) | Write::Rollback(_) | Write::StoreReceipt(_))
@@ -363,9 +363,9 @@ mod tests {
         type Error = ();
     }
 
-    /// A receipt write classifies as flush-now: its issuer parks on the write latch before
-    /// publishing the receipt as an artifact, so a receipt left in the accumulating batch would
-    /// let a crash lose bytes the publisher already treated as durable.
+    /// A receipt write classifies as flush-now, committing at once: left to accumulate, its latch
+    /// would still open only after a commit, but only once the batch window elapsed, and a crash
+    /// inside that window drops the write.
     #[test]
     fn receipt_writes_flush_now() {
         let cmd: Write<RocksDbStore, StubProcessor> = Write::StoreReceipt(StoreReceipt::new(
