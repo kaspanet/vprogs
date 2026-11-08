@@ -698,8 +698,8 @@ where
         // below: a boundary whose batches were already drained (the watch republishes the
         // last settlement per block) leaves a surviving suffix that nothing else would ever
         // re-drive once the lane goes quiet, stranding its exits until unrelated activity
-        // arrives. The re-form chains off the retained front and the guard keeps the
-        // fall-through idempotent.
+        // arrives. The re-form chains off the retained front, and the settler journal gates
+        // it to the fronts nothing else drives.
         if queued_drain.is_none() && retained_drain.is_none() {
             log::debug!(
                 "aggregate-prover: settlement {} boundary {} matches no window block; nothing \
@@ -733,6 +733,19 @@ where
         let suffix: Vec<ScheduledBatch<S, P>> =
             self.retained.iter().take(suffix_len).cloned().collect();
         let suffix_from = suffix.first().unwrap().checkpoint().index();
+        // A journal entry starting at the suffix front is a bundle still pending in the
+        // settlement queue (the queue path's own emission, or a previous re-form); re-proving
+        // it would only hand the settler a superseded duplicate after every quiet spell. A
+        // front with no entry is the stranded one: the settler's supersede skip deleted it,
+        // or a drain left a mid-bundle start no entry ever named.
+        if self
+            .journal
+            .as_ref()
+            .is_some_and(|j| j.entries().iter().any(|(start, _)| *start == suffix_from))
+        {
+            return;
+        }
+        // The guard covers journal-unwired runs and no-op re-forms, which record no entry.
         if self.last_reformed_from == Some(suffix_from) {
             return;
         }
