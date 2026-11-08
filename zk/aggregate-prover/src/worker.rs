@@ -738,19 +738,20 @@ where
             // queued's), so the successor search and the drain walk the concatenation: only a
             // fully-drained `retained` may consume `queued`, whose batches chain above whatever
             // survived in `retained`.
-            // The concatenation is one contiguous index run (batches enter at the queued back
-            // and leave only from the fronts), so the successor's offset from the run's first
-            // index is the number of batches to drop.
-            let run_start =
-                self.retained.front().or(self.queued.front()).map(|b| b.checkpoint().index());
+            // The drain count is the successor's position in that walk, not an index difference:
+            // a rollback leaves a hole where the covered prefix meets the successor (a cancelled
+            // id is never reused, so the reorg's fork re-enters above every cancelled batch), and
+            // counting indexes would drain past the queued front or into the surviving suffix.
+            // The successor's index still keys the journal delete, which spans ids and is
+            // unaffected by the hole.
             let successor = self
                 .retained
                 .iter()
                 .chain(self.queued.iter())
-                .find(|b| b.checkpoint().metadata().prev_lane_tip == frontier)
-                .map(|b| b.checkpoint().index());
-            if let (Some(start), Some(front)) = (run_start, successor) {
-                let drain = (front - start) as usize;
+                .enumerate()
+                .find(|(_, b)| b.checkpoint().metadata().prev_lane_tip == frontier)
+                .map(|(position, b)| (position, b.checkpoint().index()));
+            if let Some((drain, front)) = successor {
                 let drain_retained = drain.min(self.retained.len());
                 self.retained.drain(..drain_retained);
                 self.queued.drain(..drain - drain_retained);
