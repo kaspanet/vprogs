@@ -28,13 +28,12 @@ use vprogs_node_framework::{Node, NodeConfig};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Indexer, SchedulerState};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
-use vprogs_zk_abi::withdrawal::ExitsForBatch;
 use vprogs_zk_aggregate_prover::{
     AggregateProverConfig, ExitsForBundle, ScheduledBundle, SettlementArtifact,
 };
 use vprogs_zk_backend_risc0_api::{Backend, ProofType, Receipt};
 use vprogs_zk_batch_prover::BatchProverConfig;
-use vprogs_zk_vm::{ProvingPipeline, Vm};
+use vprogs_zk_vm::{ExitsForBatch, ProvingPipeline, Vm};
 
 use crate::lane::RemoteLaneSource;
 
