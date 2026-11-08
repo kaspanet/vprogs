@@ -10,9 +10,10 @@ use kaspa_hashes::Hash;
 use tokio::sync::mpsc;
 use vprogs_l1_types::{PermissionSpend, SettlementInfo, SettlementMsg, SpendMsg};
 use vprogs_storage_types::{StateSpace, Store, WriteBatch};
-use vprogs_zk_abi::withdrawal::{ExitLeaf, ExitsForBatch};
+use vprogs_zk_abi::withdrawal::{ExitLeaf, StandardSpk};
 use vprogs_zk_aggregate_prover::ExitsForBundle;
 use vprogs_zk_backend_risc0_api::PermissionTreeAccumulator;
+use vprogs_zk_vm::ExitsForBatch;
 
 /// Prefix for permission outpoints in `StateSpace::Metadata`.
 pub const PERM_OUT_PREFIX: &[u8] = b"perm_out";
@@ -143,42 +144,29 @@ pub fn handle_settlement<S: Store>(
     Some((root, bundle))
 }
 
-/// Applies a permission spend: calls indexer, deletes spent metadata entry, puts continuation
-/// entry, and mirrors changes to in-memory registry. Returns the pre-spend anchor it advanced
-/// (`None` when no tracked root matched), for the caller's journal.
+/// Applies a permission spend: calls indexer, deletes the spent outpoint's metadata entry, and
+/// puts the continuation entry when one exists. The event carries the watcher-matched outpoint,
+/// so the mirror moves by exact key even when two tracked outpoints share a root; the watcher
+/// owns the in-memory registry and has already advanced it. Returns the pre-spend anchor the
+/// event named, for the caller's journal.
 pub fn handle_permission_spend<S: Store>(
     spend: &PermissionSpend,
     indexer: &dyn ExitIndexer,
     store: &S,
-    registry: &RwLock<HashMap<TransactionOutpoint, [u8; 32]>>,
 ) -> Option<TransactionOutpoint> {
     let mut wb = store.write_batch();
     indexer.on_permission_spent(spend, &mut wb);
 
-    let mut spent_outpoint = None;
-    for (key, val) in store.prefix_iter(StateSpace::Metadata, PERM_OUT_PREFIX) {
-        if let Ok(root) = borsh::from_slice::<[u8; 32]>(&val) {
-            if root == spend.old_root {
-                wb.delete(StateSpace::Metadata, &key);
-                spent_outpoint = parse_perm_out_key(&key);
-                break;
-            }
-        }
+    let spent_txid = Hash::from_bytes(spend.spent_txid);
+    wb.delete(StateSpace::Metadata, &perm_out_key(&spent_txid, spend.spent_index));
+    if let Some(index) = spend.new_outpoint_index {
+        let cont_txid = Hash::from_bytes(spend.spend_txid);
+        let cont_val = borsh::to_vec(&spend.new_root).expect("serialize root");
+        wb.put(StateSpace::Metadata, &perm_out_key(&cont_txid, index), &cont_val);
     }
-
-    let cont_txid = Hash::from_bytes(spend.spend_txid);
-    let cont_key = perm_out_key(&cont_txid, spend.new_outpoint_index);
-    let cont_val = borsh::to_vec(&spend.new_root).expect("serialize root");
-    wb.put(StateSpace::Metadata, &cont_key, &cont_val);
     store.commit(wb);
 
-    let mut guard = registry.write().expect("poisoned lock");
-    if let Some(spent) = spent_outpoint {
-        guard.remove(&spent);
-    }
-    let cont_outpoint = TransactionOutpoint::new(cont_txid, spend.new_outpoint_index);
-    guard.insert(cont_outpoint, spend.new_root);
-    spent_outpoint
+    Some(TransactionOutpoint::new(spent_txid, spend.spent_index))
 }
 
 /// Inverts [`handle_permission_spend`]: deletes the continuation entry, restores the pre-spend
@@ -194,7 +182,11 @@ pub fn revert_permission_spend<S: Store>(
 ) {
     let cont_txid = Hash::from_bytes(spend.spend_txid);
     let mut wb = store.write_batch();
-    wb.delete(StateSpace::Metadata, &perm_out_key(&cont_txid, spend.new_outpoint_index));
+    let mut cont_outpoint = None;
+    if let Some(index) = spend.new_outpoint_index {
+        wb.delete(StateSpace::Metadata, &perm_out_key(&cont_txid, index));
+        cont_outpoint = Some(TransactionOutpoint::new(cont_txid, index));
+    }
     let mut restored = None;
     if let Some(spent) = spent_outpoint {
         let val = borsh::to_vec(&spend.old_root).expect("serialize root");
@@ -205,7 +197,9 @@ pub fn revert_permission_spend<S: Store>(
     store.commit(wb);
 
     let mut guard = registry.write().expect("poisoned lock");
-    guard.remove(&TransactionOutpoint::new(cont_txid, spend.new_outpoint_index));
+    if let Some(cont) = cont_outpoint {
+        guard.remove(&cont);
+    }
     if let Some((spent, root)) = restored {
         guard.insert(spent, root);
     }
@@ -405,8 +399,7 @@ pub async fn run_exit_indexer<S: Store>(
             maybe_spend = spend_rx.recv() => {
                 match maybe_spend {
                     Some(SpendMsg::Spent(spend)) => {
-                        let spent_outpoint =
-                            handle_permission_spend(&spend, &*indexer, &store, &registry);
+                        let spent_outpoint = handle_permission_spend(&spend, &*indexer, &store);
                         reorg.journal.push(JournalEntry::Spend { spend, spent_outpoint });
                     }
                     Some(SpendMsg::Rollback(floor)) => {
@@ -449,35 +442,101 @@ fn match_prefix(buf: &[ExitLeaf], commitment: [u8; 32]) -> Option<usize> {
     (1..=buf.len()).find(|&k| permission_commitment(&buf[..k]) == commitment)
 }
 
+/// Prefix for the exec node's buffered exit-leaf entries in `StateSpace::Metadata`:
+/// `b"exec_exit" || batch_id(be u64) || tx_position(be u32)`, one entry per tap message.
+const EXEC_EXIT_PREFIX: &[u8] = b"exec_exit";
+
+/// Builds the metadata key for one tap message's buffered leaves.
+fn exec_exit_key(batch_id: u64, tx_position: u32) -> [u8; 21] {
+    let mut key = [0u8; 21];
+    key[..9].copy_from_slice(EXEC_EXIT_PREFIX);
+    key[9..17].copy_from_slice(&batch_id.to_be_bytes());
+    key[17..21].copy_from_slice(&tx_position.to_be_bytes());
+    key
+}
+
+/// Parses a tap message's `(batch_id, tx_position)` from its metadata key.
+fn parse_exec_exit_key(key: &[u8]) -> Option<(u64, u32)> {
+    if key.len() != 21 || !key.starts_with(EXEC_EXIT_PREFIX) {
+        return None;
+    }
+    let batch_id = u64::from_be_bytes(key[9..17].try_into().ok()?);
+    let tx_position = u32::from_be_bytes(key[17..21].try_into().ok()?);
+    Some((batch_id, tx_position))
+}
+
+/// Appends one leaf to a persisted tap-message blob: script length, script bytes, amount.
+fn encode_leaf(out: &mut Vec<u8>, leaf: &ExitLeaf) {
+    out.push(leaf.script_bytes().len() as u8);
+    out.extend_from_slice(leaf.script_bytes());
+    out.extend_from_slice(&leaf.amount.to_be_bytes());
+}
+
+/// Decodes a persisted tap-message blob back into leaves; `None` on any truncation or on a
+/// script the current code no longer recognizes.
+fn decode_leaves(bytes: &[u8]) -> Option<Vec<ExitLeaf>> {
+    let mut leaves = Vec::new();
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        let len = *rest.first()? as usize;
+        let spk = StandardSpk::from_script(rest.get(1..1 + len)?).ok()?;
+        let amount = u64::from_be_bytes(rest.get(1 + len..9 + len)?.try_into().ok()?);
+        leaves.push(ExitLeaf::from_pair(spk, amount));
+        rest = &rest[9 + len..];
+    }
+    Some(leaves)
+}
+
 /// Background task joining the exec node's per-tx exit leaves with its observed L1 settlements.
 ///
-/// Buffers the Vm's exits tap in arrival order alongside each leaf's batch id; per settlement
-/// with a non-zero [`SettlementInfo::permission_spk_hash`], emits the smallest matching leaf
-/// prefix as an [`ExitsForBundle`] onto `exits_tx` and drains it. A settlement whose prefix has
-/// not fully arrived yet parks as pending and is retried as leaves arrive (bridge and scheduler
-/// delivery order is not guaranteed); a newer settlement arriving while an older one is pending
-/// is a desync, logged (both named) but not fatal, and both still match once their leaves land.
-/// Zero-commitment settlements emitted no exits and consume none. `settlement_fwd`, when wired,
-/// receives each matched settlement so a downstream [`run_exit_indexer`] can pair it with the
-/// emitted bundle; the bundle is sent first, matching the indexer's exits-first biased select.
-/// Rollback markers drop pending settlements and buffered leaves above the floor (the
-/// replacement blocks re-execute the orphaned txs and re-emit their leaves) and forward the
-/// marker downstream so the indexer reverts what it already paired.
-pub async fn run_exec_exits_joiner(
+/// Buffers the Vm's exits tap in journal order (keyed by `(batch_id, tx_position)`, not
+/// arrival order, since worker threads deliver per-tx messages unordered) and persists every
+/// buffered message, so a settlement observed after a restart for a batch committed before it
+/// still finds its leaves: the bridge resumes from the restored sink tip and re-emits the
+/// settlement, while the tap never replays committed batches. Per settlement with a non-zero
+/// [`SettlementInfo::permission_spk_hash`], emits the smallest matching leaf prefix as an
+/// [`ExitsForBundle`] onto `exits_tx` and drains it, buffer and persisted entries together. A
+/// settlement whose prefix has not fully arrived yet parks as pending and is retried as leaves
+/// arrive (bridge and scheduler delivery order is not guaranteed); a newer settlement arriving
+/// while an older one is pending is a desync, logged (both named) but not fatal, and both still
+/// match once their leaves land. Zero-commitment settlements emitted no exits and consume none.
+/// `settlement_fwd`, when wired, receives each matched settlement so a downstream
+/// [`run_exit_indexer`] can pair it with the emitted bundle; the bundle is sent first, matching
+/// the indexer's exits-first biased select. Rollback markers drop pending settlements and
+/// buffered leaves above the floor (the replacement blocks re-execute the orphaned txs and
+/// re-emit their leaves) and forward the marker downstream so the indexer reverts what it
+/// already paired.
+pub async fn run_exec_exits_joiner<S: Store>(
+    store: S,
     mut leaves_rx: mpsc::UnboundedReceiver<ExitsForBatch>,
     mut settlement_rx: mpsc::UnboundedReceiver<SettlementMsg>,
     exits_tx: mpsc::UnboundedSender<Arc<ExitsForBundle>>,
     settlement_fwd: Option<mpsc::UnboundedSender<SettlementMsg>>,
 ) {
     let mut buf: Vec<ExitLeaf> = Vec::new();
-    // Batch id per buffered leaf, parallel to `buf`; every leaf of one tap message shares it.
-    let mut buf_ids: Vec<u64> = Vec::new();
+    // Journal position per buffered leaf, parallel to `buf`.
+    let mut buf_pos: Vec<(u64, u32)> = Vec::new();
+    // Undrained entries from before a restart, already in journal (key) order.
+    for (key, val) in store.prefix_iter(StateSpace::Metadata, EXEC_EXIT_PREFIX) {
+        match parse_exec_exit_key(&key)
+            .and_then(|pos| decode_leaves(&val).map(|leaves| (pos, leaves)))
+        {
+            Some((pos, leaves)) => {
+                buf_pos.extend(std::iter::repeat_n(pos, leaves.len()));
+                buf.extend(leaves);
+            }
+            None => log::warn!("undecodable buffered exit-leaf entry in metadata: {key:?}"),
+        }
+    }
     let mut pending: VecDeque<SettlementInfo> = VecDeque::new();
 
-    /// Emits bundles for every pending settlement whose prefix is now complete.
-    fn drain_pending(
+    /// Emits bundles for every pending settlement whose prefix is now complete, deleting the
+    /// drained prefix's persisted entries alongside the in-memory ones.
+    fn drain_pending<S: Store>(
         pending: &mut VecDeque<SettlementInfo>,
         buf: &mut Vec<ExitLeaf>,
+        buf_pos: &mut Vec<(u64, u32)>,
+        store: &S,
         exits_tx: &mpsc::UnboundedSender<Arc<ExitsForBundle>>,
         settlement_fwd: &Option<mpsc::UnboundedSender<SettlementMsg>>,
     ) {
@@ -492,7 +551,13 @@ pub async fn run_exec_exits_joiner(
             if let Some(fwd) = settlement_fwd {
                 let _ = fwd.send(SettlementMsg::Observed(*settlement));
             }
+            let mut wb = store.write_batch();
+            for pos in &buf_pos[..k] {
+                wb.delete(StateSpace::Metadata, &exec_exit_key(pos.0, pos.1));
+            }
+            store.commit(wb);
             buf.drain(..k);
+            buf_pos.drain(..k);
             pending.pop_front();
         }
     }
@@ -501,10 +566,21 @@ pub async fn run_exec_exits_joiner(
         tokio::select! {
             biased;
             maybe_leaves = leaves_rx.recv() => match maybe_leaves {
-                Some(tap) => {
-                    buf.extend(tap.leaves);
-                    buf_ids.resize(buf.len(), tap.batch_id);
-                    drain_pending(&mut pending, &mut buf, &exits_tx, &settlement_fwd);
+                Some(msg) => {
+                    let pos = (msg.batch_id, msg.tx_position);
+                    // Insert at the journal-order position: a settlement's commitment pins
+                    // journal order, so an out-of-order arrival must not displace it.
+                    let at = buf_pos.partition_point(|p| *p <= pos);
+                    let mut val = Vec::new();
+                    for leaf in &msg.leaves {
+                        encode_leaf(&mut val, leaf);
+                    }
+                    buf.splice(at..at, msg.leaves.iter().cloned());
+                    buf_pos.splice(at..at, std::iter::repeat_n(pos, msg.leaves.len()));
+                    let mut wb = store.write_batch();
+                    wb.put(StateSpace::Metadata, &exec_exit_key(pos.0, pos.1), &val);
+                    store.commit(wb);
+                    drain_pending(&mut pending, &mut buf, &mut buf_pos, &store, &exits_tx, &settlement_fwd);
                 }
                 None => break,
             },
@@ -522,7 +598,7 @@ pub async fn run_exec_exits_joiner(
                     }
                     if settlement.permission_spk_hash != [0u8; 32] {
                         pending.push_back(settlement);
-                        drain_pending(&mut pending, &mut buf, &exits_tx, &settlement_fwd);
+                        drain_pending(&mut pending, &mut buf, &mut buf_pos, &store, &exits_tx, &settlement_fwd);
                     }
                 }
                 // Leaves above the floor died with the reorg; the replacement blocks
@@ -534,17 +610,24 @@ pub async fn run_exec_exits_joiner(
                 // by pruned leaves.
                 Some(SettlementMsg::Rollback(floor)) => {
                     pending.retain(|settlement| settlement.chain_idx.get() <= floor);
+                    let mut wb = store.write_batch();
                     let mut i = 0;
                     buf.retain(|_| {
-                        let keep = buf_ids[i] <= floor;
+                        let pos = buf_pos[i];
                         i += 1;
-                        keep
+                        if pos.0 <= floor {
+                            true
+                        } else {
+                            wb.delete(StateSpace::Metadata, &exec_exit_key(pos.0, pos.1));
+                            false
+                        }
                     });
-                    buf_ids.retain(|&id| id <= floor);
+                    buf_pos.retain(|&(batch_id, _)| batch_id <= floor);
+                    store.commit(wb);
                     if let Some(fwd) = &settlement_fwd {
                         let _ = fwd.send(SettlementMsg::Rollback(floor));
                     }
-                    drain_pending(&mut pending, &mut buf, &exits_tx, &settlement_fwd);
+                    drain_pending(&mut pending, &mut buf, &mut buf_pos, &store, &exits_tx, &settlement_fwd);
                 }
                 None => break,
             },
@@ -558,7 +641,6 @@ mod tests {
 
     use tempfile::tempdir;
     use vprogs_storage_rocksdb_store::RocksDbStore;
-    use vprogs_zk_abi::withdrawal::StandardSpk;
     use vprogs_zk_backend_risc0_api::{
         PermissionTreeView, blake2b_script_hash, build_permission_redeem_script,
     };
@@ -744,7 +826,7 @@ mod tests {
     }
 
     #[test]
-    fn permission_spend_updates_registry_mirror_and_startup_loads() {
+    fn permission_spend_updates_metadata_mirror_and_startup_loads() {
         let dir = tempdir().unwrap();
         let store: RocksDbStore = RocksDbStore::open(dir.path());
         let indexer = Arc::new(FakeExitIndexer::new());
@@ -774,27 +856,32 @@ mod tests {
             leaf_amount: 100,
             deduct: 50,
             new_root: [0x33; 32],
+            spent_txid: initial_settlement.tx_id.as_bytes(),
+            spent_index: 1,
             spend_txid: [0xbb; 32],
-            new_outpoint_index: 1,
+            new_outpoint_index: Some(1),
             chain_idx: 0,
         };
 
-        let spent =
-            handle_permission_spend(&spend, &*indexer, &store, &registry).expect("anchor matched");
+        let spent = handle_permission_spend(&spend, &*indexer, &store).expect("anchor matched");
         assert_eq!(spent, TransactionOutpoint::new(initial_settlement.tx_id, 1));
         assert_eq!(indexer.spends.lock().unwrap().len(), 1);
 
-        // Old outpoint removed from registry and metadata.
-        let old_outpoint = TransactionOutpoint::new(initial_settlement.tx_id, 1);
-        assert!(!registry.read().unwrap().contains_key(&old_outpoint));
+        // The spent outpoint's metadata entry is gone; the registry is the watcher's and stays
+        // untouched by the mirror move.
         let old_key = perm_out_key(&initial_settlement.tx_id, 1);
         assert!(store.get(StateSpace::Metadata, &old_key).is_none());
+        assert!(
+            registry
+                .read()
+                .unwrap()
+                .contains_key(&TransactionOutpoint::new(initial_settlement.tx_id, 1))
+        );
 
-        // Continuation outpoint inserted in registry and metadata.
+        // Continuation entry written at the spend tx's outpoint.
         let cont_txid = Hash::from_bytes(spend.spend_txid);
-        let cont_outpoint = TransactionOutpoint::new(cont_txid, spend.new_outpoint_index);
-        assert_eq!(registry.read().unwrap().get(&cont_outpoint), Some(&[0x33; 32]));
-        let cont_key = perm_out_key(&cont_txid, spend.new_outpoint_index);
+        let cont_outpoint = TransactionOutpoint::new(cont_txid, 1);
+        let cont_key = perm_out_key(&cont_txid, 1);
         let val = store.get(StateSpace::Metadata, &cont_key).expect("continuation present");
         let decoded: [u8; 32] = borsh::from_slice(&val).unwrap();
         assert_eq!(decoded, [0x33; 32]);
@@ -803,6 +890,104 @@ mod tests {
         let recovered = load_registry(&store);
         assert_eq!(recovered.len(), 1);
         assert_eq!(recovered.get(&cont_outpoint), Some(&[0x33; 32]));
+    }
+
+    /// Two tracked outpoints may hold the same root (two settlements with identical leaf sets);
+    /// the event names the watcher-matched outpoint, so only that entry moves.
+    #[test]
+    fn permission_spend_deletes_only_the_event_named_outpoint() {
+        let dir = tempdir().unwrap();
+        let store: RocksDbStore = RocksDbStore::open(dir.path());
+        let indexer = Arc::new(FakeExitIndexer::new());
+        let registry = Arc::new(RwLock::new(HashMap::new()));
+
+        // Two pairings with identical leaves: same root, distinct settlement outpoints.
+        let leaves = vec![test_leaf(0x11, 100)];
+        let root = PermissionTreeView::from_leaves(&live(&leaves)).root();
+        let settlement_a = SettlementInfo {
+            tx_id: Hash::from_bytes([0xaa; 32]),
+            new_state: [0x11; 32],
+            ..Default::default()
+        };
+        let settlement_b = SettlementInfo {
+            tx_id: Hash::from_bytes([0xab; 32]),
+            new_state: [0x12; 32],
+            ..Default::default()
+        };
+        for settlement in [&settlement_a, &settlement_b] {
+            handle_pairing(
+                &Arc::new(ExitsForBundle {
+                    new_state: settlement.new_state,
+                    permission_spk_hash: permission_commitment(&leaves),
+                    leaves: Arc::new(leaves.clone()),
+                }),
+                settlement,
+                &*indexer,
+                &store,
+                &registry,
+            );
+        }
+        assert_eq!(registry.read().unwrap().len(), 2);
+
+        // The watcher matched settlement B's outpoint; the root-matching scan of the old shape
+        // would have deleted A's entry (first prefix-iteration hit) instead.
+        let spend = PermissionSpend {
+            covenant_id: [0x55; 32],
+            old_root: root,
+            new_root: [0x33; 32],
+            spent_txid: settlement_b.tx_id.as_bytes(),
+            spent_index: 1,
+            spend_txid: [0xbb; 32],
+            new_outpoint_index: Some(1),
+            ..Default::default()
+        };
+        handle_permission_spend(&spend, &*indexer, &store);
+
+        assert!(store.get(StateSpace::Metadata, &perm_out_key(&settlement_b.tx_id, 1)).is_none());
+        let survivor =
+            store.get(StateSpace::Metadata, &perm_out_key(&settlement_a.tx_id, 1)).unwrap();
+        assert_eq!(borsh::from_slice::<[u8; 32]>(&survivor).unwrap(), root);
+    }
+
+    /// A full claim leaves nothing unclaimed: the event carries no continuation and none is
+    /// written.
+    #[test]
+    fn full_claim_spend_writes_no_continuation_entry() {
+        let dir = tempdir().unwrap();
+        let store: RocksDbStore = RocksDbStore::open(dir.path());
+        let indexer = Arc::new(FakeExitIndexer::new());
+        let registry = Arc::new(RwLock::new(HashMap::new()));
+
+        let bundle = Arc::new(ExitsForBundle {
+            new_state: [0x11; 32],
+            permission_spk_hash: permission_commitment(&[test_leaf(0x77, 700)]),
+            leaves: Arc::new(vec![test_leaf(0x77, 700)]),
+        });
+        let settlement = SettlementInfo {
+            tx_id: Hash::from_bytes([0xaa; 32]),
+            new_state: [0x11; 32],
+            ..Default::default()
+        };
+        handle_pairing(&bundle, &settlement, &*indexer, &store, &registry);
+
+        let spend = PermissionSpend {
+            covenant_id: [0x55; 32],
+            old_root: [0x11; 32],
+            new_root: [0x33; 32],
+            spent_txid: settlement.tx_id.as_bytes(),
+            spent_index: 1,
+            spend_txid: [0xbb; 32],
+            new_outpoint_index: None,
+            ..Default::default()
+        };
+        handle_permission_spend(&spend, &*indexer, &store);
+
+        assert!(store.get(StateSpace::Metadata, &perm_out_key(&settlement.tx_id, 1)).is_none());
+        assert!(
+            store
+                .get(StateSpace::Metadata, &perm_out_key(&Hash::from_bytes(spend.spend_txid), 1))
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -865,23 +1050,33 @@ mod tests {
             leaf_amount: 100,
             deduct: 50,
             new_root: [0x33; 32],
+            spent_txid: settlement.tx_id.as_bytes(),
+            spent_index: 1,
             spend_txid: [0xbb; 32],
-            new_outpoint_index: 1,
+            new_outpoint_index: Some(1),
             chain_idx: 0,
         };
         spend_tx.send(SpendMsg::Spent(spend.clone())).unwrap();
 
+        // The spend moves the metadata mirror only; wait on the indexer hook, then assert the
+        // mirror landed and the registry (the watcher's) kept its pairing entry.
         let cont_txid = Hash::from_bytes(spend.spend_txid);
-        let cont_outpoint = TransactionOutpoint::new(cont_txid, spend.new_outpoint_index);
+        let cont_key = perm_out_key(&cont_txid, 1);
         for _ in 0..200 {
-            if registry.read().unwrap().contains_key(&cont_outpoint) {
+            if indexer.spends.lock().unwrap().len() == 1 {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
-        assert_eq!(registry.read().unwrap().get(&cont_outpoint), Some(&[0x33; 32]));
-        assert!(!registry.read().unwrap().contains_key(&outpoint));
-        assert_eq!(indexer.spends.lock().unwrap().len(), 1);
+        for _ in 0..200 {
+            if store.get(StateSpace::Metadata, &cont_key).is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert!(store.get(StateSpace::Metadata, &cont_key).is_some(), "continuation mirrored");
+        assert!(store.get(StateSpace::Metadata, &perm_out_key(&settlement.tx_id, 1)).is_none());
+        assert_eq!(registry.read().unwrap().get(&outpoint), Some(&root), "registry untouched");
 
         // 4. Shutdown channels.
         drop(exits_tx);
@@ -1008,38 +1203,52 @@ mod tests {
             covenant_id: [0x55; 32],
             old_root: root,
             new_root: [0x33; 32],
+            spent_txid: settlement.tx_id.as_bytes(),
+            spent_index: 1,
             spend_txid: [0xbb; 32],
-            new_outpoint_index: 1,
+            new_outpoint_index: Some(1),
             chain_idx: 5,
             ..Default::default()
         };
         h.spend_tx.send(SpendMsg::Spent(spend.clone())).unwrap();
-        let cont =
-            TransactionOutpoint::new(Hash::from_bytes(spend.spend_txid), spend.new_outpoint_index);
-        assert!(becomes_true(200, || registry.read().unwrap().contains_key(&cont)).await);
+        let cont = TransactionOutpoint::new(
+            Hash::from_bytes(spend.spend_txid),
+            spend.new_outpoint_index.expect("continuation"),
+        );
+        let cont_key = perm_out_key(&cont.transaction_id, cont.index);
+        assert!(
+            becomes_true(200, || store.get(StateSpace::Metadata, &cont_key).is_some()).await,
+            "continuation mirrored"
+        );
 
         // Floor 4 reverts the spend (idx 5) but keeps the pairing (idx 3).
         h.spend_tx.send(SpendMsg::Rollback(4)).unwrap();
+        let anchor_key = perm_out_key(&settlement.tx_id, 1);
         assert!(
             becomes_true(200, || {
-                let guard = registry.read().unwrap();
-                guard.contains_key(&anchor) && !guard.contains_key(&cont)
+                store.get(StateSpace::Metadata, &anchor_key).is_some()
+                    && store.get(StateSpace::Metadata, &cont_key).is_none()
             })
             .await
         );
 
         {
-            let guard = registry.read().unwrap();
-            assert_eq!(guard.get(&anchor), Some(&root), "pre-spend anchor restored");
-            assert!(!guard.contains_key(&cont), "continuation gone");
+            assert_eq!(
+                store.get(StateSpace::Metadata, &anchor_key),
+                Some(borsh::to_vec(&root).unwrap()),
+                "pre-spend anchor restored"
+            );
+            assert_eq!(store.get(StateSpace::Metadata, &cont_key), None, "continuation gone");
         }
-        let anchor_key = perm_out_key(&settlement.tx_id, 1);
         assert_eq!(
             store.get(StateSpace::Metadata, &anchor_key),
             Some(borsh::to_vec(&root).unwrap()),
             "metadata mirror restored"
         );
-        let cont_key = perm_out_key(&Hash::from_bytes(spend.spend_txid), spend.new_outpoint_index);
+        let cont_key = perm_out_key(
+            &Hash::from_bytes(spend.spend_txid),
+            spend.new_outpoint_index.expect("continuation"),
+        );
         assert_eq!(store.get(StateSpace::Metadata, &cont_key), None, "continuation deleted");
 
         assert_eq!(
@@ -1079,13 +1288,17 @@ mod tests {
             covenant_id: [0x55; 32],
             old_root: root,
             new_root: [0x33; 32],
+            spent_txid: settlement.tx_id.as_bytes(),
+            spent_index: 1,
             spend_txid: [0xbb; 32],
-            new_outpoint_index: 1,
+            new_outpoint_index: Some(1),
             chain_idx: 5,
             ..Default::default()
         };
-        let cont =
-            TransactionOutpoint::new(Hash::from_bytes(spend.spend_txid), spend.new_outpoint_index);
+        let cont = TransactionOutpoint::new(
+            Hash::from_bytes(spend.spend_txid),
+            spend.new_outpoint_index.expect("continuation"),
+        );
         h.spend_tx.send(SpendMsg::Spent(spend.clone())).unwrap();
         h.settlement_tx.send(SettlementMsg::Rollback(4)).unwrap();
         h.spend_tx.send(SpendMsg::Rollback(4)).unwrap();
@@ -1314,8 +1527,10 @@ mod tests {
             covenant_id: [0x55; 32],
             old_root: root0,
             new_root: [0x33; 32],
+            spent_txid: settlement.tx_id.as_bytes(),
+            spent_index: 1,
             spend_txid: [0xb0; 32],
-            new_outpoint_index: 1,
+            new_outpoint_index: Some(1),
             chain_idx: 4,
             ..Default::default()
         };
@@ -1323,30 +1538,41 @@ mod tests {
             covenant_id: [0x55; 32],
             old_root: [0x33; 32],
             new_root: [0x34; 32],
+            spent_txid: [0xb0; 32],
+            spent_index: 1,
             spend_txid: [0xb1; 32],
-            new_outpoint_index: 1,
+            new_outpoint_index: Some(1),
             chain_idx: 5,
             ..Default::default()
         };
         h.spend_tx.send(SpendMsg::Spent(spend0.clone())).unwrap();
         let cont0 = TransactionOutpoint::new(
             Hash::from_bytes(spend0.spend_txid),
-            spend0.new_outpoint_index,
+            spend0.new_outpoint_index.expect("continuation"),
         );
-        assert!(becomes_true(200, || registry.read().unwrap().contains_key(&cont0)).await);
+        let cont0_key = perm_out_key(&cont0.transaction_id, cont0.index);
+        assert!(
+            becomes_true(200, || store.get(StateSpace::Metadata, &cont0_key).is_some()).await,
+            "first continuation mirrored"
+        );
         h.spend_tx.send(SpendMsg::Spent(spend1.clone())).unwrap();
         let cont1 = TransactionOutpoint::new(
             Hash::from_bytes(spend1.spend_txid),
-            spend1.new_outpoint_index,
+            spend1.new_outpoint_index.expect("continuation"),
         );
-        assert!(becomes_true(200, || registry.read().unwrap().contains_key(&cont1)).await);
+        let cont1_key = perm_out_key(&cont1.transaction_id, cont1.index);
+        assert!(
+            becomes_true(200, || store.get(StateSpace::Metadata, &cont1_key).is_some()).await,
+            "second continuation mirrored"
+        );
 
         // Floor 3 reverts both spends, newest first, unwinding the chain back to root0.
         h.spend_tx.send(SpendMsg::Rollback(3)).unwrap();
+        let anchor_key = perm_out_key(&settlement.tx_id, 1);
         assert!(
             becomes_true(200, || {
-                let guard = registry.read().unwrap();
-                guard.len() == 1 && guard.get(&anchor) == Some(&root0)
+                store.get(StateSpace::Metadata, &anchor_key) == Some(borsh::to_vec(&root0).unwrap())
+                    && store.get(StateSpace::Metadata, &cont1_key).is_none()
             })
             .await
         );
@@ -1366,14 +1592,20 @@ mod tests {
         assert_eq!(
             store.get(
                 StateSpace::Metadata,
-                &perm_out_key(&Hash::from_bytes(spend0.spend_txid), spend0.new_outpoint_index)
+                &perm_out_key(
+                    &Hash::from_bytes(spend0.spend_txid),
+                    spend0.new_outpoint_index.expect("continuation"),
+                )
             ),
             None
         );
         assert_eq!(
             store.get(
                 StateSpace::Metadata,
-                &perm_out_key(&Hash::from_bytes(spend1.spend_txid), spend1.new_outpoint_index)
+                &perm_out_key(
+                    &Hash::from_bytes(spend1.spend_txid),
+                    spend1.new_outpoint_index.expect("continuation"),
+                )
             ),
             None
         );
@@ -1406,8 +1638,10 @@ mod tests {
             covenant_id: [0x55; 32],
             old_root: root0,
             new_root: [0x33; 32],
+            spent_txid: settlement.tx_id.as_bytes(),
+            spent_index: 1,
             spend_txid: [0xb0; 32],
-            new_outpoint_index: 1,
+            new_outpoint_index: Some(1),
             chain_idx: 5,
             ..Default::default()
         };
@@ -1415,36 +1649,47 @@ mod tests {
             covenant_id: [0x55; 32],
             old_root: [0x33; 32],
             new_root: [0x34; 32],
+            spent_txid: [0xb0; 32],
+            spent_index: 1,
             spend_txid: [0xb1; 32],
-            new_outpoint_index: 1,
+            new_outpoint_index: Some(1),
             chain_idx: 5,
             ..Default::default()
         };
         h.spend_tx.send(SpendMsg::Spent(spend0.clone())).unwrap();
         let cont0 = TransactionOutpoint::new(
             Hash::from_bytes(spend0.spend_txid),
-            spend0.new_outpoint_index,
+            spend0.new_outpoint_index.expect("continuation"),
         );
-        assert!(becomes_true(200, || registry.read().unwrap().contains_key(&cont0)).await);
+        let cont0_key = perm_out_key(&cont0.transaction_id, cont0.index);
+        assert!(
+            becomes_true(200, || store.get(StateSpace::Metadata, &cont0_key).is_some()).await,
+            "first continuation mirrored"
+        );
         h.spend_tx.send(SpendMsg::Spent(spend1.clone())).unwrap();
         let cont1 = TransactionOutpoint::new(
             Hash::from_bytes(spend1.spend_txid),
-            spend1.new_outpoint_index,
+            spend1.new_outpoint_index.expect("continuation"),
         );
-        assert!(becomes_true(200, || registry.read().unwrap().contains_key(&cont1)).await);
+        let cont1_key = perm_out_key(&cont1.transaction_id, cont1.index);
+        assert!(
+            becomes_true(200, || store.get(StateSpace::Metadata, &cont1_key).is_some()).await,
+            "second continuation mirrored"
+        );
 
         h.spend_tx.send(SpendMsg::Rollback(3)).unwrap();
+        let anchor_key = perm_out_key(&settlement.tx_id, 1);
         assert!(
             becomes_true(200, || {
-                let guard = registry.read().unwrap();
-                guard.len() == 1 && guard.get(&anchor) == Some(&root0)
+                store.get(StateSpace::Metadata, &anchor_key) == Some(borsh::to_vec(&root0).unwrap())
+                    && store.get(StateSpace::Metadata, &cont1_key).is_none()
             })
             .await
         );
         // Reverting spend1 first restores cont0, and reverting spend0 then deletes it; the
         // oldest-first order leaves cont0 behind, so this pins the tiebreak.
         assert!(
-            registry.read().unwrap().get(&cont0).is_none(),
+            store.get(StateSpace::Metadata, &cont0_key).is_none(),
             "no phantom continuation survives the unwind"
         );
         {
@@ -1461,7 +1706,10 @@ mod tests {
         assert_eq!(
             store.get(
                 StateSpace::Metadata,
-                &perm_out_key(&Hash::from_bytes(spend0.spend_txid), spend0.new_outpoint_index)
+                &perm_out_key(
+                    &Hash::from_bytes(spend0.spend_txid),
+                    spend0.new_outpoint_index.expect("continuation"),
+                )
             ),
             None,
             "spend0's continuation gone from the metadata mirror"
@@ -1498,17 +1746,47 @@ mod tests {
         assert_eq!(match_prefix(&[], manual_commitment(&leaves)), None);
     }
 
+    /// Spawns a joiner over a fresh tempdir store and returns its input senders and handle.
+    async fn joiner_harness(
+        dir: &tempfile::TempDir,
+    ) -> (
+        mpsc::UnboundedSender<ExitsForBatch>,
+        mpsc::UnboundedSender<SettlementMsg>,
+        mpsc::UnboundedReceiver<Arc<ExitsForBundle>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let store: RocksDbStore = RocksDbStore::open(dir.path());
+        let (leaves_tx, leaves_rx) = mpsc::unbounded_channel();
+        let (settlement_tx, settlement_rx) = mpsc::unbounded_channel();
+        let (exits_tx, exits_rx) = mpsc::unbounded_channel();
+        let handle =
+            tokio::spawn(run_exec_exits_joiner(store, leaves_rx, settlement_rx, exits_tx, None));
+        (leaves_tx, settlement_tx, exits_rx, handle)
+    }
+
+    fn tap_msg(batch_id: u64, tx_position: u32, leaves: Vec<ExitLeaf>) -> ExitsForBatch {
+        ExitsForBatch { batch_id, tx_position, leaves }
+    }
+
     #[tokio::test]
     async fn exec_joiner_leaves_then_settlement_emits_bundle_and_forwards() {
+        let dir = tempdir().unwrap();
+        let store: RocksDbStore = RocksDbStore::open(dir.path());
         let (leaves_tx, leaves_rx) = mpsc::unbounded_channel();
         let (settlement_tx, settlement_rx) = mpsc::unbounded_channel();
         let (exits_tx, mut exits_rx) = mpsc::unbounded_channel();
         let (fwd_tx, mut fwd_rx) = mpsc::unbounded_channel();
 
-        tokio::spawn(run_exec_exits_joiner(leaves_rx, settlement_rx, exits_tx, Some(fwd_tx)));
+        tokio::spawn(run_exec_exits_joiner(
+            store,
+            leaves_rx,
+            settlement_rx,
+            exits_tx,
+            Some(fwd_tx),
+        ));
 
         let leaves = vec![test_leaf(0x11, 100), test_leaf(0x22, 200)];
-        leaves_tx.send(ExitsForBatch { batch_id: 1, leaves: leaves.clone() }).unwrap();
+        leaves_tx.send(tap_msg(1, 0, leaves.clone())).unwrap();
         let settlement = SettlementInfo {
             tx_id: Hash::from_bytes([0xaa; 32]),
             new_state: [0x51; 32],
@@ -1528,18 +1806,89 @@ mod tests {
         assert!(exits_rx.try_recv().is_err());
     }
 
+    /// Worker threads deliver per-tx tap messages unordered: a later tx's (or a later batch's)
+    /// leaves may arrive first. The buffer orders by `(batch_id, tx_position)`, so the
+    /// settlement still matches its journal-order prefix.
+    #[tokio::test]
+    async fn exec_joiner_out_of_order_arrivals_match_in_journal_order() {
+        let dir = tempdir().unwrap();
+        let (leaves_tx, settlement_tx, mut exits_rx, _handle) = joiner_harness(&dir).await;
+
+        // Batch 2's leaf lands before batch 1's; inside batch 1, tx 1 lands before tx 0.
+        let leaves = vec![test_leaf(0x11, 100), test_leaf(0x22, 200), test_leaf(0x33, 300)];
+        leaves_tx.send(tap_msg(2, 0, vec![leaves[2].clone()])).unwrap();
+        leaves_tx.send(tap_msg(1, 1, vec![leaves[1].clone()])).unwrap();
+
+        let settlement = SettlementInfo {
+            tx_id: Hash::from_bytes([0xaa; 32]),
+            new_state: [0x51; 32],
+            permission_spk_hash: permission_commitment(&leaves),
+            ..Default::default()
+        };
+        settlement_tx.send(SettlementMsg::Observed(settlement)).unwrap();
+        // Arrival order [c, b] matches no prefix; the missing tx 0 is still pending.
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(150), exits_rx.recv())
+                .await
+                .is_err(),
+            "incomplete journal-order prefix must not match arrival order"
+        );
+
+        leaves_tx.send(tap_msg(1, 0, vec![leaves[0].clone()])).unwrap();
+        let bundle = exits_rx.recv().await.expect("journal-order prefix matched");
+        assert_eq!(bundle.new_state, settlement.new_state);
+        assert_eq!(bundle.leaves.to_vec(), leaves);
+        assert!(exits_rx.try_recv().is_err());
+    }
+
+    /// Buffered leaves persist: a joiner restarted over the same store still matches a
+    /// settlement for leaves a previous process buffered, and a drained prefix leaves nothing
+    /// behind to re-match.
+    #[tokio::test]
+    async fn exec_joiner_leaves_survive_restart_and_drain_cleans_store() {
+        let dir = tempdir().unwrap();
+
+        // First incarnation: buffer one batch's leaves, then shut down before any settlement.
+        let (leaves_tx, settlement_tx, _exits_rx, handle) = joiner_harness(&dir).await;
+        let leaves = vec![test_leaf(0x55, 500), test_leaf(0x66, 600)];
+        leaves_tx.send(tap_msg(7, 0, vec![leaves[0].clone()])).unwrap();
+        leaves_tx.send(tap_msg(7, 1, vec![leaves[1].clone()])).unwrap();
+        // Give the task a beat to persist, then close its channels (the store drops with it).
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        drop(leaves_tx);
+        drop(settlement_tx);
+        handle.await.unwrap();
+
+        // Second incarnation over the same data dir: the settlement arrives for a batch that
+        // committed before the restart and still pairs with the restored buffer.
+        let (leaves_tx2, settlement_tx2, mut exits_rx2, handle2) = joiner_harness(&dir).await;
+        let settlement = SettlementInfo {
+            tx_id: Hash::from_bytes([0xcc; 32]),
+            new_state: [0x71; 32],
+            permission_spk_hash: permission_commitment(&leaves),
+            ..Default::default()
+        };
+        settlement_tx2.send(SettlementMsg::Observed(settlement)).unwrap();
+        let bundle = exits_rx2.recv().await.expect("restored buffer matched the settlement");
+        assert_eq!(bundle.leaves.to_vec(), leaves);
+
+        // The drained prefix is gone from the store: a fresh incarnation buffers nothing.
+        drop(leaves_tx2);
+        drop(settlement_tx2);
+        handle2.await.unwrap();
+        let store: RocksDbStore = RocksDbStore::open(dir.path());
+        assert_eq!(store.prefix_iter(StateSpace::Metadata, EXEC_EXIT_PREFIX).count(), 0);
+    }
+
     #[tokio::test]
     async fn exec_joiner_zero_commitment_settlement_consumes_nothing() {
-        let (leaves_tx, leaves_rx) = mpsc::unbounded_channel();
-        let (settlement_tx, settlement_rx) = mpsc::unbounded_channel();
-        let (exits_tx, mut exits_rx) = mpsc::unbounded_channel();
-
-        tokio::spawn(run_exec_exits_joiner(leaves_rx, settlement_rx, exits_tx, None));
+        let dir = tempdir().unwrap();
+        let (leaves_tx, settlement_tx, mut exits_rx, _handle) = joiner_harness(&dir).await;
 
         // Leaves land, then a no-exit settlement: nothing emitted, buffer retained (the following
         // exit settlement still claims the full prefix).
         let leaves = vec![test_leaf(0x33, 300), test_leaf(0x44, 400)];
-        leaves_tx.send(ExitsForBatch { batch_id: 1, leaves: leaves.clone() }).unwrap();
+        leaves_tx.send(tap_msg(1, 0, leaves.clone())).unwrap();
         settlement_tx
             .send(SettlementMsg::Observed(SettlementInfo {
                 new_state: [0x61; 32],
@@ -1563,11 +1912,8 @@ mod tests {
 
     #[tokio::test]
     async fn exec_joiner_pending_settlement_matched_after_later_leaves_arrive() {
-        let (leaves_tx, leaves_rx) = mpsc::unbounded_channel();
-        let (settlement_tx, settlement_rx) = mpsc::unbounded_channel();
-        let (exits_tx, mut exits_rx) = mpsc::unbounded_channel();
-
-        tokio::spawn(run_exec_exits_joiner(leaves_rx, settlement_rx, exits_tx, None));
+        let dir = tempdir().unwrap();
+        let (leaves_tx, settlement_tx, mut exits_rx, _handle) = joiner_harness(&dir).await;
 
         let leaves = vec![test_leaf(0x55, 500), test_leaf(0x66, 600)];
         let settlement = SettlementInfo {
@@ -1580,8 +1926,8 @@ mod tests {
         // Settlement first, then a partial prefix: no match possible (the only commitment sent
         // covers both leaves, so a premature 1-leaf bundle can never be emitted for it).
         settlement_tx.send(SettlementMsg::Observed(settlement)).unwrap();
-        leaves_tx.send(ExitsForBatch { batch_id: 1, leaves: vec![leaves[0].clone()] }).unwrap();
-        leaves_tx.send(ExitsForBatch { batch_id: 1, leaves: vec![leaves[1].clone()] }).unwrap();
+        leaves_tx.send(tap_msg(1, 0, vec![leaves[0].clone()])).unwrap();
+        leaves_tx.send(tap_msg(1, 1, vec![leaves[1].clone()])).unwrap();
 
         let bundle = exits_rx.recv().await.expect("pending settlement matched once leaves landed");
         assert_eq!(bundle.new_state, settlement.new_state);
@@ -1596,7 +1942,15 @@ mod tests {
         let (exits_tx, mut exits_rx) = mpsc::unbounded_channel();
         let (fwd_tx, mut fwd_rx) = mpsc::unbounded_channel();
 
-        tokio::spawn(run_exec_exits_joiner(leaves_rx, settlement_rx, exits_tx, Some(fwd_tx)));
+        let dir = tempdir().unwrap();
+        let store: RocksDbStore = RocksDbStore::open(dir.path());
+        tokio::spawn(run_exec_exits_joiner(
+            store,
+            leaves_rx,
+            settlement_rx,
+            exits_tx,
+            Some(fwd_tx),
+        ));
 
         // Two settlements park pending: B at idx 1 (below the floor) over leaf b, A at idx 5
         // (above it) over leaf a.
@@ -1630,7 +1984,9 @@ mod tests {
 
         // B survives the rollback and still matches once its leaf lands; A's leaf lands to
         // silence (its settlement died with the reorg).
-        leaves_tx.send(ExitsForBatch { batch_id: 1, leaves: leaves_b.clone() }).unwrap();
+        leaves_tx
+            .send(ExitsForBatch { batch_id: 1, tx_position: 0, leaves: leaves_b.clone() })
+            .unwrap();
         let bundle = exits_rx.recv().await.expect("below-floor settlement still drains");
         assert_eq!(bundle.leaves.to_vec(), leaves_b);
         assert_eq!(
@@ -1638,7 +1994,7 @@ mod tests {
             SettlementMsg::Observed(settlement_b)
         );
 
-        leaves_tx.send(ExitsForBatch { batch_id: 5, leaves: leaves_a }).unwrap();
+        leaves_tx.send(ExitsForBatch { batch_id: 5, tx_position: 0, leaves: leaves_a }).unwrap();
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(150), exits_rx.recv())
                 .await
@@ -1654,7 +2010,15 @@ mod tests {
         let (exits_tx, mut exits_rx) = mpsc::unbounded_channel();
         let (fwd_tx, mut fwd_rx) = mpsc::unbounded_channel();
 
-        tokio::spawn(run_exec_exits_joiner(leaves_rx, settlement_rx, exits_tx, Some(fwd_tx)));
+        let dir = tempdir().unwrap();
+        let store: RocksDbStore = RocksDbStore::open(dir.path());
+        tokio::spawn(run_exec_exits_joiner(
+            store,
+            leaves_rx,
+            settlement_rx,
+            exits_tx,
+            Some(fwd_tx),
+        ));
 
         // Settlement A parks pending over [b, c] (its commitment covers both), so orphaned
         // batch 6's leaf b stays buffered without matching.
@@ -1668,7 +2032,9 @@ mod tests {
             ..Default::default()
         };
         settlement_tx.send(SettlementMsg::Observed(settlement_a)).unwrap();
-        leaves_tx.send(ExitsForBatch { batch_id: 6, leaves: vec![leaf_b.clone()] }).unwrap();
+        leaves_tx
+            .send(ExitsForBatch { batch_id: 6, tx_position: 0, leaves: vec![leaf_b.clone()] })
+            .unwrap();
 
         // Reorg to floor 5: A and batch 6's buffered leaf die. Awaiting the forwarded marker
         // pins the prune before the replacement leaves below are sent.
@@ -1683,8 +2049,12 @@ mod tests {
 
         // The replacement chain re-executes b at batch 8, c lands at batch 9, and A's
         // resubmission settles both.
-        leaves_tx.send(ExitsForBatch { batch_id: 8, leaves: vec![leaf_b.clone()] }).unwrap();
-        leaves_tx.send(ExitsForBatch { batch_id: 9, leaves: vec![leaf_c.clone()] }).unwrap();
+        leaves_tx
+            .send(ExitsForBatch { batch_id: 8, tx_position: 0, leaves: vec![leaf_b.clone()] })
+            .unwrap();
+        leaves_tx
+            .send(ExitsForBatch { batch_id: 9, tx_position: 0, leaves: vec![leaf_c.clone()] })
+            .unwrap();
         let settlement_a2 = SettlementInfo {
             tx_id: Hash::from_bytes([0xab; 32]),
             new_state: [0x52; 32],
@@ -1710,7 +2080,15 @@ mod tests {
         let (exits_tx, mut exits_rx) = mpsc::unbounded_channel();
         let (fwd_tx, _fwd_rx) = mpsc::unbounded_channel();
 
-        tokio::spawn(run_exec_exits_joiner(leaves_rx, settlement_rx, exits_tx, Some(fwd_tx)));
+        let dir = tempdir().unwrap();
+        let store: RocksDbStore = RocksDbStore::open(dir.path());
+        tokio::spawn(run_exec_exits_joiner(
+            store,
+            leaves_rx,
+            settlement_rx,
+            exits_tx,
+            Some(fwd_tx),
+        ));
 
         // Concurrent batches interleave: the above-floor leaf (batch 7) buffers ahead of the
         // below-floor one (batch 4), which parks its settlement's prefix behind it.
@@ -1724,8 +2102,12 @@ mod tests {
             ..Default::default()
         };
         settlement_tx.send(SettlementMsg::Observed(settlement_lo)).unwrap();
-        leaves_tx.send(ExitsForBatch { batch_id: 7, leaves: vec![leaf_hi] }).unwrap();
-        leaves_tx.send(ExitsForBatch { batch_id: 4, leaves: leaves_lo.clone() }).unwrap();
+        leaves_tx
+            .send(ExitsForBatch { batch_id: 7, tx_position: 0, leaves: vec![leaf_hi] })
+            .unwrap();
+        leaves_tx
+            .send(ExitsForBatch { batch_id: 4, tx_position: 0, leaves: leaves_lo.clone() })
+            .unwrap();
 
         // The reorg to floor 5 drops only the batch-7 leaf: filtering by id leaves [lo] (a
         // truncate at the first above-floor leaf would drop both), and the now-unblocked
@@ -1747,13 +2129,25 @@ mod tests {
         let (exits_tx, mut exits_rx) = mpsc::unbounded_channel();
         let (fwd_tx, _fwd_rx) = mpsc::unbounded_channel();
 
-        tokio::spawn(run_exec_exits_joiner(leaves_rx, settlement_rx, exits_tx, Some(fwd_tx)));
+        let dir = tempdir().unwrap();
+        let store: RocksDbStore = RocksDbStore::open(dir.path());
+        tokio::spawn(run_exec_exits_joiner(
+            store,
+            leaves_rx,
+            settlement_rx,
+            exits_tx,
+            Some(fwd_tx),
+        ));
 
         // Leaf a lands at batch 2; b's two leaves land as one tap message at batch 6.
         let leaves_a = vec![test_leaf(0x11, 100)];
         let leaves_b = vec![test_leaf(0x22, 200), test_leaf(0x33, 300)];
-        leaves_tx.send(ExitsForBatch { batch_id: 2, leaves: leaves_a.clone() }).unwrap();
-        leaves_tx.send(ExitsForBatch { batch_id: 6, leaves: leaves_b.clone() }).unwrap();
+        leaves_tx
+            .send(ExitsForBatch { batch_id: 2, tx_position: 0, leaves: leaves_a.clone() })
+            .unwrap();
+        leaves_tx
+            .send(ExitsForBatch { batch_id: 6, tx_position: 0, leaves: leaves_b.clone() })
+            .unwrap();
 
         // The first marker (floor 8) keeps everything; the deeper floor 5 drops batch 6's
         // message as a unit, so the per-leaf ids must survive the first prune.
@@ -1775,7 +2169,9 @@ mod tests {
         // The replacement chain re-executes b with a different pair (a merged child block adds
         // a tx) at batch 7; a stale batch-6 copy would head the buffer and block the match.
         let leaves_c = vec![test_leaf(0x44, 400), test_leaf(0x55, 500)];
-        leaves_tx.send(ExitsForBatch { batch_id: 7, leaves: leaves_c.clone() }).unwrap();
+        leaves_tx
+            .send(ExitsForBatch { batch_id: 7, tx_position: 0, leaves: leaves_c.clone() })
+            .unwrap();
         let settlement_c = SettlementInfo {
             tx_id: Hash::from_bytes([0xcc; 32]),
             new_state: [0x53; 32],
