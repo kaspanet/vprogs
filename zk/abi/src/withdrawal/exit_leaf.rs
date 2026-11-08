@@ -2,8 +2,6 @@
 //! cannot cross an `await` point or a `watch` channel; this is the owned mirror. The canonical
 //! leaf preimage stays `StandardSpk::to_script_bytes()`; `script_bytes` re-slices it verbatim.
 
-use alloc::vec::Vec;
-
 use crate::withdrawal::standard_spk::StandardSpk;
 
 /// Owned exit leaf pairing an on-chain destination script with a sompi payout amount.
@@ -36,15 +34,6 @@ impl ExitLeaf {
     pub fn to_standard_spk(&self) -> StandardSpk<'_> {
         StandardSpk::from_script(self.script_bytes()).expect("owned leaf decodes")
     }
-}
-
-/// One tx's tapped exits tagged with the batch (L1 chain-block) id that executed them.
-#[derive(Debug)]
-pub struct ExitsForBatch {
-    /// Sequential batch id of the executing batch; comparable to rollback floors.
-    pub batch_id: u64,
-    /// Leaves the tx's journal committed, in journal order.
-    pub leaves: Vec<ExitLeaf>,
 }
 
 #[cfg(test)]
