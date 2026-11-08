@@ -42,10 +42,14 @@ pub struct PermissionSpend {
     pub deduct: u64,
     /// Merkle root of the permission tree after this spend.
     pub new_root: [u8; 32],
+    /// Transaction id of the settlement that created the spent permission UTXO.
+    pub spent_txid: [u8; 32],
+    /// Output index of the spent permission UTXO in its creating settlement.
+    pub spent_index: u32,
     /// L1 transaction id of the spend.
     pub spend_txid: [u8; 32],
-    /// Output index of the continuation permission UTXO, if any.
-    pub new_outpoint_index: u32,
+    /// Output index of the continuation permission UTXO; `None` when nothing remains unclaimed.
+    pub new_outpoint_index: Option<u32>,
     /// Sink idx of the containing chain block; the bridge stamps it at append time so consumers
     /// can revert above a rollback floor.
     pub chain_idx: u64,
@@ -62,6 +66,8 @@ impl BorshSerialize for PermissionSpend {
         self.leaf_amount.serialize(writer)?;
         self.deduct.serialize(writer)?;
         self.new_root.serialize(writer)?;
+        self.spent_txid.serialize(writer)?;
+        self.spent_index.serialize(writer)?;
         self.spend_txid.serialize(writer)?;
         self.new_outpoint_index.serialize(writer)?;
         self.chain_idx.serialize(writer)
@@ -80,8 +86,10 @@ impl BorshDeserialize for PermissionSpend {
             leaf_amount: u64::deserialize_reader(reader)?,
             deduct: u64::deserialize_reader(reader)?,
             new_root: <[u8; 32]>::deserialize_reader(reader)?,
+            spent_txid: <[u8; 32]>::deserialize_reader(reader)?,
+            spent_index: u32::deserialize_reader(reader)?,
             spend_txid: <[u8; 32]>::deserialize_reader(reader)?,
-            new_outpoint_index: u32::deserialize_reader(reader)?,
+            new_outpoint_index: Option::<u32>::deserialize_reader(reader)?,
             chain_idx: u64::deserialize_reader(reader)?,
         })
     }
@@ -128,8 +136,10 @@ mod tests {
             leaf_amount: 50_000,
             deduct: 10_000,
             new_root: [0x33; 32],
+            spent_txid: [0x55; 32],
+            spent_index: 1,
             spend_txid: [0x44; 32],
-            new_outpoint_index: 1,
+            new_outpoint_index: Some(1),
             chain_idx: 5,
         };
         let bytes = borsh::to_vec(&spend).expect("serialize");

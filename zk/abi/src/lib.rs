@@ -21,7 +21,7 @@ pub mod withdrawal {
 
     pub use deposit_sink::DepositSink;
     pub use exit_accumulator::ExitAccumulator;
-    pub use exit_leaf::{ExitLeaf, ExitsForBatch};
+    pub use exit_leaf::ExitLeaf;
     pub use exit_sink::ExitSink;
     pub use exits::Exits;
     pub use exits_iter::ExitsIter;
