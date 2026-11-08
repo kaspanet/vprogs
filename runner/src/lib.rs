@@ -37,8 +37,9 @@ pub use node::{
 pub use persistence::PersistedState;
 pub use start::{RunnerHandles, StartError, start_runner};
 pub use vprogs_scheduling_scheduler::{Indexer, ResourceIndexer};
-pub use vprogs_zk_abi::withdrawal::{ExitLeaf, ExitsForBatch};
+pub use vprogs_zk_abi::withdrawal::ExitLeaf;
 pub use vprogs_zk_aggregate_prover::ExitsForBundle;
+pub use vprogs_zk_vm::ExitsForBatch;
 pub use wrpc::connect_wrpc;
 
 /// Top-level runner entry point for the binary: connect, load the guest ELFs named by `config`, and
