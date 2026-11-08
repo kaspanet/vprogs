@@ -589,21 +589,43 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
                 }
                 self.handle_reorg(&response)?;
             }
-            return self.fetch_chain_updates_tail(response).await;
+            if self.fetch_chain_updates_tail(response, from).await? {
+                continue;
+            }
+            return Ok(());
         }
     }
 
     /// Processes one fetched chain-update response into the sink and publishes the new tip.
+    /// Returns `true` when the response was dropped untouched because the tip moved from `from`
+    /// while the fetch was in flight, so the caller must refetch from the new tip.
     async fn fetch_chain_updates_tail(
         &mut self,
         response: GetVirtualChainFromBlockV2Response,
-    ) -> Result<()> {
+        from: Hash,
+    ) -> Result<bool> {
         // Emit log for progress tracing.
         if !response.chain_block_accepted_transactions.is_empty() {
             log::info!(
                 "L1 bridge: processing {} new chain blocks",
                 response.chain_block_accepted_transactions.len()
             );
+        }
+
+        // The additions chain from `from`, and each is threaded onto the live tip below. A
+        // rollback from outside this loop (the covenant re-root drain) can land while the fetch
+        // awaits holding nothing: appending these additions would pin them to the boundary's
+        // lane tip and seq commit as their parent pins, and the next fetch would start from the
+        // last of them, so the blocks between the boundary and `from` would never be re-fed -
+        // their transactions vanish from L2 and the lane-tip chain diverges, silently. Drop the
+        // response and let the caller refetch from the rolled-back tip. Removals are exempt:
+        // `handle_reorg` itself moved the tip to the fork point the additions chain from.
+        if response.removed_chain_block_hashes.is_empty() && self.tip_metadata().hash != from {
+            log::info!(
+                "L1 bridge: sink tip moved from {from} during the fetch; refetching from the \
+                 rolled-back tip"
+            );
+            return Ok(true);
         }
 
         // Schedule each new block, threading its parent from the current tip.
@@ -720,7 +742,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         self.publish_tip_daa();
         self.publish_settlement();
 
-        Ok(())
+        Ok(false)
     }
 
     /// Rolls the sink back to the surviving block, recording the reorg's depth in the filter.
@@ -1080,7 +1102,7 @@ mod tests {
             ]),
         };
 
-        worker.fetch_chain_updates_tail(batch1).await.unwrap();
+        worker.fetch_chain_updates_tail(batch1, worker.tip_metadata().hash).await.unwrap();
 
         // Exactly two events emitted in order; no coalescing.
         let SettlementMsg::Observed(e1) =
@@ -1116,7 +1138,7 @@ mod tests {
             }]),
         };
 
-        worker.fetch_chain_updates_tail(batch2).await.unwrap();
+        worker.fetch_chain_updates_tail(batch2, worker.tip_metadata().hash).await.unwrap();
 
         // No new settlement events emitted on settlement-less block; no flood.
         assert!(settlement_events_rx.try_recv().is_err());
@@ -1201,7 +1223,7 @@ mod tests {
             }]),
         };
 
-        worker.fetch_chain_updates_tail(batch).await.unwrap();
+        worker.fetch_chain_updates_tail(batch, worker.tip_metadata().hash).await.unwrap();
 
         // Both chain events carry the appended block's sink idx (the first block lands at 1).
         let SettlementMsg::Observed(settlement) =
@@ -1294,7 +1316,13 @@ mod tests {
         let pp1 = Hash::from_bytes([0x01; 32]);
 
         // The point block predates the advance, so it still cites the old point.
-        worker.fetch_chain_updates_tail(pp_batch(vec![pp_block(pp1, 1, pp0)])).await.unwrap();
+        worker
+            .fetch_chain_updates_tail(
+                pp_batch(vec![pp_block(pp1, 1, pp0)]),
+                worker.tip_metadata().hash,
+            )
+            .await
+            .unwrap();
         assert_eq!(worker.sink.finalized(), Vec::<u64>::new());
 
         // Two citing blocks sit one confirmation short of the window.
@@ -1302,19 +1330,19 @@ mod tests {
             pp_block(Hash::from_bytes([0x02; 32]), 2, pp1),
             pp_block(Hash::from_bytes([0x03; 32]), 3, pp1),
         ]);
-        worker.fetch_chain_updates_tail(batch).await.unwrap();
+        worker.fetch_chain_updates_tail(batch, worker.tip_metadata().hash).await.unwrap();
         assert_eq!(worker.sink.finalized(), Vec::<u64>::new());
 
         // The third citing block confirms: finalize below the point block's id.
         let batch = pp_batch(vec![pp_block(Hash::from_bytes([0x04; 32]), 4, pp1)]);
-        worker.fetch_chain_updates_tail(batch).await.unwrap();
+        worker.fetch_chain_updates_tail(batch, worker.tip_metadata().hash).await.unwrap();
         assert_eq!(worker.sink.finalized(), vec![1]);
         assert_eq!(worker.sink.finalize_calls(), &[1]);
 
         // Further batches citing the same point keep re-finalizing below it; the distinct
         // thresholds stay put.
         let batch = pp_batch(vec![pp_block(Hash::from_bytes([0x05; 32]), 5, pp1)]);
-        worker.fetch_chain_updates_tail(batch).await.unwrap();
+        worker.fetch_chain_updates_tail(batch, worker.tip_metadata().hash).await.unwrap();
         assert_eq!(worker.sink.finalized(), vec![1]);
         assert_eq!(worker.sink.finalize_calls(), &[1, 1]);
     }
@@ -1343,17 +1371,17 @@ mod tests {
             pp_block(pp2, 2, pp0),
             pp_block(Hash::from_bytes([0x03; 32]), 3, pp1),
         ]);
-        worker.fetch_chain_updates_tail(batch).await.unwrap();
+        worker.fetch_chain_updates_tail(batch, worker.tip_metadata().hash).await.unwrap();
         assert_eq!(worker.sink.finalized(), Vec::<u64>::new());
 
         // The citation flips to pp2 before pp1's window passes, discarding the pp1 run.
         let batch = pp_batch(vec![pp_block(Hash::from_bytes([0x04; 32]), 4, pp2)]);
-        worker.fetch_chain_updates_tail(batch).await.unwrap();
+        worker.fetch_chain_updates_tail(batch, worker.tip_metadata().hash).await.unwrap();
         assert_eq!(worker.sink.finalized(), Vec::<u64>::new());
 
         // One more pp2 citation confirms it; the pp1 candidate never finalizes.
         let batch = pp_batch(vec![pp_block(Hash::from_bytes([0x05; 32]), 5, pp2)]);
-        worker.fetch_chain_updates_tail(batch).await.unwrap();
+        worker.fetch_chain_updates_tail(batch, worker.tip_metadata().hash).await.unwrap();
         assert_eq!(worker.sink.finalized(), vec![2]);
     }
 
@@ -1380,7 +1408,7 @@ mod tests {
         // One confirmation short of the window when the reorg hits.
         let batch =
             pp_batch(vec![pp_block(pp1, 1, pp0), pp_block(x1, 2, pp1), pp_block(x2, 3, pp1)]);
-        worker.fetch_chain_updates_tail(batch).await.unwrap();
+        worker.fetch_chain_updates_tail(batch, worker.tip_metadata().hash).await.unwrap();
         assert_eq!(worker.sink.finalized(), Vec::<u64>::new());
 
         // Reorg both citing blocks away; the surviving tip is the point block citing pp0.
@@ -1393,7 +1421,7 @@ mod tests {
 
         // A fresh citing block starts the run from one again, not from the stale pre-reorg run.
         let batch = pp_batch(vec![pp_block(Hash::from_bytes([0x04; 32]), 4, pp1)]);
-        worker.fetch_chain_updates_tail(batch).await.unwrap();
+        worker.fetch_chain_updates_tail(batch, worker.tip_metadata().hash).await.unwrap();
         assert_eq!(worker.sink.finalized(), Vec::<u64>::new());
 
         // Two more citing blocks carry the fresh run through the window.
@@ -1401,7 +1429,7 @@ mod tests {
             pp_block(Hash::from_bytes([0x05; 32]), 5, pp1),
             pp_block(Hash::from_bytes([0x06; 32]), 6, pp1),
         ]);
-        worker.fetch_chain_updates_tail(batch).await.unwrap();
+        worker.fetch_chain_updates_tail(batch, worker.tip_metadata().hash).await.unwrap();
         assert_eq!(worker.sink.finalized(), vec![1]);
     }
 
@@ -1423,8 +1451,59 @@ mod tests {
             pp_block(Hash::from_bytes([0x01; 32]), 1, Hash::from_bytes([0xB0; 32])),
             pp_block(Hash::from_bytes([0x02; 32]), 2, Hash::from_bytes([0x01; 32])),
         ]);
-        worker.fetch_chain_updates_tail(batch).await.unwrap();
+        worker.fetch_chain_updates_tail(batch, worker.tip_metadata().hash).await.unwrap();
         assert_eq!(worker.sink.finalized(), vec![1]);
+    }
+
+    /// A rollback from outside the fetch loop (the covenant re-root drain) landing while a
+    /// fetched response was in flight must not thread the fetched blocks onto the rolled-back
+    /// tip: each would carry the boundary's lane tip and seq commit as its parent pins, and the
+    /// next fetch would continue from the last of them, so the blocks between the boundary and
+    /// the fetch point would never re-feed. The response is dropped for a refetch from the
+    /// rolled-back tip instead, and the refetch re-feeds the cancelled range.
+    #[tokio::test]
+    async fn mid_fetch_external_rollback_drops_the_response_instead_of_threading() {
+        let (settlement_events_tx, _rx) = mpsc::unbounded_channel();
+        let mut worker = test_worker(
+            TestSink::default(),
+            Hash::from_bytes([0xAA; 32]),
+            settlement_events_tx,
+            None,
+        );
+
+        // Two blocks append from the anchor; the next fetch runs from the second.
+        let b1 = Hash::from_bytes([0x01; 32]);
+        let b2 = Hash::from_bytes([0x02; 32]);
+        let b3 = Hash::from_bytes([0x03; 32]);
+        let pp = Hash::default();
+        let batch = pp_batch(vec![pp_block(b1, 1, pp), pp_block(b2, 2, pp)]);
+        worker.fetch_chain_updates_tail(batch, worker.tip_metadata().hash).await.unwrap();
+        assert_eq!(worker.sink.tip(), 2);
+
+        // The response fetched from b2 holds only the additions above it. While it was in
+        // flight, the re-root rolled the sink back to b1: the settlement boundary.
+        worker.sink.rollback(1);
+        let dropped =
+            worker.fetch_chain_updates_tail(pp_batch(vec![pp_block(b3, 3, pp)]), b2).await.unwrap();
+        assert!(dropped, "the response must be dropped for a refetch from the rolled-back tip");
+        assert_eq!(worker.sink.tip(), 1, "nothing may append onto the boundary");
+
+        // The refetch from the boundary re-feeds the cancelled range: both blocks append,
+        // threading onto the boundary's parent pins rather than skipping over it.
+        let appended = worker
+            .fetch_chain_updates_tail(
+                pp_batch(vec![pp_block(b2, 2, pp), pp_block(b3, 3, pp)]),
+                worker.tip_metadata().hash,
+            )
+            .await
+            .unwrap();
+        assert!(!appended);
+        assert_eq!(worker.sink.tip(), 3);
+        let boundary = worker.sink.metadata(1).expect("the boundary block");
+        let re_fed = worker.sink.metadata(2).expect("the re-fed block");
+        assert_eq!(re_fed.parent_id, 1);
+        assert_eq!(re_fed.prev_seq_commit, boundary.seq_commit);
+        assert_eq!(re_fed.prev_lane_tip, boundary.lane_tip);
     }
 
     /// `lane_state` anchors a lane re-activation at the parent seq commit whenever the lane holds
