@@ -33,6 +33,7 @@ use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_settler::{
     CovenantState, SettlementMode, SettlementWorkerConfig, bootstrap_dev_covenant,
     bootstrap_real_covenant, bootstrap_redeem, dev_bootstrap_redeem, run as run_settlement_worker,
+    settlement_tip_live,
 };
 use vprogs_zk_backend_risc0_test_suite::dev_mode_enabled;
 use vprogs_zk_vm::ExitsForBatch;
@@ -687,7 +688,12 @@ where
         },
         indexer,
     );
-    tokio::spawn(run_covenant_reroot(node.api().clone(), re_root_rx));
+    tokio::spawn(run_covenant_reroot(
+        node.api().clone(),
+        client.clone(),
+        params.clone(),
+        re_root_rx,
+    ));
     // Target the bridge replays toward: the node's virtual DAA captured before bootstrap. The
     // reporter loop only reads the tip atomic.
     spawn_sync_reporter(tip_daa_obs, tip_daa);
@@ -875,11 +881,29 @@ fn bridge_params(
 /// blocks arriving after the rollback execute from the boundary state (nothing re-appends the
 /// cancelled range). A boundary mapping to no batch of ours (a competitor's fork block) has no
 /// rollback target; the re-form paths on the next settlement advance own that case.
+///
+/// The settlement watch lags the covenant by the bridge's follow depth, and under contention
+/// the settler's supersede delete can empty the journal while the watch still shows a
+/// settlement a competitor already chain-spent: that tip would request a rollback to a boundary
+/// the covenant passed, cancelling live work and re-proving it in a loop until the watch
+/// catches up. Each request is therefore confirmed against the chain first (one UTXO read on
+/// the tip's continuation outpoint); a superseded tip resolves through the ordinary adoption
+/// paths once the watch publishes the spend.
 pub async fn run_covenant_reroot(
     api: NodeApi<RunnerStore, RunnerVm>,
+    client: KaspaRpcClient,
+    params: Params,
     mut re_root_rx: mpsc::UnboundedReceiver<SettlementInfo>,
 ) {
     while let Some(tip) = re_root_rx.recv().await {
+        if !settlement_tip_live(&client, &params, &tip).await {
+            log::info!(
+                "runner: covenant re-root for settlement {} skipped: its continuation is \
+                 spent, a later settlement owns the covenant",
+                tip.tx_id
+            );
+            continue;
+        }
         let boundary = tip.block_prove_to;
         let settlement = tip.tx_id;
         let result = api

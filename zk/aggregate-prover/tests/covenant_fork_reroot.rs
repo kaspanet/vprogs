@@ -480,3 +480,71 @@ fn off_tip_gap_recover_holds_and_requests_reroot() {
     prover.shutdown();
     scheduler.shutdown();
 }
+
+/// A receipt-less committed range above a boundary that resolves inside it is the same wedge
+/// the mismatch hold names: the batches were killed mid-prove above a settlement the covenant
+/// pinned, no cached artifact composes them, and only re-entering execution at the boundary
+/// rebuilds their receipts. The re-cover requests the re-root instead of silently abandoning
+/// the range to new-work bundling.
+#[test]
+fn killed_range_above_the_boundary_requests_reroot() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+    let journal = StoreJournal::new(storage.clone());
+    let mut scheduler = Scheduler::new(
+        ExecutionConfig::default().with_processor(PlainProcessor),
+        StorageConfig::default().with_store(storage),
+    );
+
+    // The covenant's boundary batch, committed with its receipt: the boundary resolves to it.
+    let boundary = scheduler.schedule(block(1, 0, Hash::default()), vec![lane_tx()]);
+    boundary.wait_committed_blocking();
+    boundary.write_batch_receipt(settlement_journal()).wait_blocking();
+    boundary.publish_artifact(Some(settlement_journal()));
+
+    // The killed range: committed past the boundary with no receipt cached (a kill between the
+    // batch's commit and its prove).
+    let killed = scheduler.schedule(block(2, 1, block_hash(1)), vec![lane_tx()]);
+    killed.wait_committed_blocking();
+
+    let queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Vec<u8>>>> = AsyncQueue::new();
+    let (settlement_tx, settlement_rx) = watch::channel::<Option<SettlementInfo>>(None);
+    let (re_root_tx, mut re_root_rx) = mpsc::unbounded_channel();
+    let prover = AggregateProver::new(
+        SyntheticBackend,
+        scheduler.state().receipt_store(),
+        Some(journal.clone()),
+        AggregateProverConfig {
+            lane_key: Hash::default(),
+            covenant_id: None,
+            lane_source: ServeLaneProofs,
+            settlement_queue: Some(queue.clone()),
+            settlement: Some(settlement_rx),
+            re_root: Some(re_root_tx),
+            bundle_size: 1..=1,
+            exits: None,
+        },
+    );
+
+    // The covenant tip settled through the boundary batch: its block resolves inside the
+    // committed range, above the (empty) journal tail.
+    settlement_tx.send_replace(Some(SettlementInfo {
+        block_prove_to: block_hash(1),
+        new_state: [0x11; 32],
+        new_lane_tip: block_hash(1),
+        ..Default::default()
+    }));
+
+    assert!(
+        next_bundle(&queue, Duration::from_millis(750)).is_none(),
+        "a killed range above the boundary must not reach the settlement queue",
+    );
+    let tip = re_root_rx
+        .try_recv()
+        .expect("the uncoverable range must request a rollback to the covenant boundary");
+    assert_eq!(tip.block_prove_to, block_hash(1));
+    assert!(journal.entries().is_empty(), "no unlandable entry may be journaled");
+
+    prover.shutdown();
+    scheduler.shutdown();
+}
