@@ -169,6 +169,33 @@ fn returning_append_below_the_hot_zone_keeps_body_bits() {
 }
 
 #[test]
+fn returning_append_far_below_the_hot_zone_reseals_refilled_buckets() {
+    // The far variant: five buckets put the ring's tip four slots above a returning append into
+    // bucket 0. Re-filling buckets 0 and 1 and extending through bucket 3 must re-seal them into
+    // the ring; the entries the slide leaves behind are the rollback's cleared copies, so an id
+    // re-appended in bucket 1 would read orphaned once its bucket leaves the hot zone.
+    let cap = BUCKET_CAPACITY;
+    let mut manager = CanonicalChainManager::default();
+    for i in 1..=5 * cap {
+        manager.append(i);
+    }
+
+    manager.rollback(10);
+    manager.append(50u64);
+    assert!(is_canon(&manager, 50), "the returning id is canonical");
+
+    // Re-fill bucket 1 with a seen id, then extend through bucket 3 in one jump.
+    manager.append(150u64);
+    manager.append(u64::MAX);
+    assert_eq!(manager.chain().tip(), 5 * cap + 1);
+    assert!(is_canon(&manager, 5), "the id below the rollback keeps its bit");
+    assert!(is_canon(&manager, 50), "the bucket-0 refill survives the re-seal");
+    assert!(is_canon(&manager, 150), "the bucket-1 refill survives the re-seal");
+    assert!(!is_canon(&manager, 100), "a rolled-back id stays orphaned");
+    assert!(is_canon(&manager, 5 * cap + 1), "the new tip is canonical");
+}
+
+#[test]
 fn finalize_makes_pruned_gaps_read_canonical() {
     let mut manager = CanonicalChainManager::default();
     for i in 1..=10_000u64 {
