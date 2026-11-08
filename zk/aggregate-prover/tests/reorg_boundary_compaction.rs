@@ -29,7 +29,7 @@ use vprogs_core_atomics::{AsyncQueue, AtomicAsyncLatch};
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId, SchedulerTransaction};
 use vprogs_l1_types::{ChainBlockMetadata, SettlementInfo, TransactionId};
-use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler, TransactionContext};
+use vprogs_scheduling_scheduler::{ExecutionConfig, ScheduledBatch, Scheduler, TransactionContext};
 use vprogs_state_proof_receipt::{AggregatorKey, Prefix, put as put_receipt};
 use vprogs_state_settlement_journal::{JournalEntry, StoreJournal};
 use vprogs_storage_manager::StorageConfig;
@@ -428,6 +428,27 @@ fn chained_block(hash: u8, prev_tip: Hash) -> ChainBlockMetadata {
     }
 }
 
+/// Schedules `blocks` as chained lane blocks, each carrying one gated transaction so nothing
+/// commits while the test drives the worker.
+fn schedule_gated(
+    scheduler: &mut Scheduler<RocksDbStore, GateProcessor>,
+    blocks: &[(u8, Hash)],
+) -> Vec<ScheduledBatch<RocksDbStore, GateProcessor>> {
+    blocks
+        .iter()
+        .map(|&(hash, prev_tip)| {
+            scheduler.schedule(
+                chained_block(hash, prev_tip),
+                vec![SchedulerTransaction::new(
+                    0,
+                    vec![AccessMetadata::write(ResourceId::for_test(hash.into()))],
+                    GATE_TX,
+                )],
+            )
+        })
+        .collect()
+}
+
 /// Tests that a settlement boundary mapping to no window block, no batch metadata row, and no
 /// journal entry still drains the covered prefix: the windows keep only batches chaining off the
 /// settlement's exit tip (`prev_lane_tip == new_lane_tip`), walking `retained` and `queued` as
@@ -458,25 +479,16 @@ fn unmapped_boundary_drains_the_covered_prefix_by_lane_tip() {
         // stays unpublished until the test releases it, so after the first bundle ([1..2], the
         // size cap) the worker parks with batch 3 queued: `retained` holds batches 1-2 and
         // `queued` holds 3, the split the drain must walk as one chain.
-        let batches: Vec<_> = [
-            (1u8, Hash::default()),
-            (2, block_hash(1)),
-            (3, block_hash(2)),
-            (4, block_hash(3)),
-            (5, block_hash(4)),
-        ]
-        .into_iter()
-        .map(|(hash, prev_tip)| {
-            scheduler.schedule(
-                chained_block(hash, prev_tip),
-                vec![SchedulerTransaction::new(
-                    0,
-                    vec![AccessMetadata::write(ResourceId::for_test(hash.into()))],
-                    GATE_TX,
-                )],
-            )
-        })
-        .collect();
+        let batches = schedule_gated(
+            &mut scheduler,
+            &[
+                (1u8, Hash::default()),
+                (2, block_hash(1)),
+                (3, block_hash(2)),
+                (4, block_hash(3)),
+                (5, block_hash(4)),
+            ],
+        );
         entered.wait_blocking();
 
         let settlement_queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Vec<u8>>>> =
@@ -599,6 +611,108 @@ fn unmapped_boundary_drains_the_covered_prefix_by_lane_tip() {
             ..Default::default()
         }));
         wait_for_entries(&journal, 0);
+
+        release.open();
+        prover.shutdown();
+        scheduler.shutdown();
+    }
+}
+
+/// Tests that the lane-tip drain counts the successor's position in the concatenated windows,
+/// not the difference of checkpoint indexes: a rollback leaves a hole in the id run exactly
+/// where the covered prefix meets its successor (a cancelled id is never reused, so the reorg's
+/// fork re-enters above every cancelled batch), and index arithmetic drains past the queued
+/// front (panicking the worker) or into the surviving suffix (discarding the queued work until a
+/// restart re-forms it). The position counts batches, so the drain stops on the successor even
+/// across a hole, while the journal delete below it stays keyed by the successor's index.
+#[test]
+fn unmapped_boundary_drain_counts_positions_not_indexes_across_a_rollback_hole() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let (processor, entered, release) = gate(1);
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let journal = StoreJournal::new(storage.clone());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(processor),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // The reorg timeline: batches 1-3 chain and the bundle over [1..2] proves and publishes,
+        // then a rollback to batch 1 cancels 2 and 3 (their ids are never reused) and the fork
+        // re-enters at batch 1's exit tip, its blocks taking ids 4 and 5. The worker holds
+        // `retained` [1] and `queued` [4]: a hole at 2-3 right where the covered prefix (batch 1)
+        // meets the successor (batch 4, entering at the settlement's exit tip).
+        let pre_reorg = schedule_gated(
+            &mut scheduler,
+            &[(1u8, Hash::default()), (2, block_hash(1)), (3, block_hash(2))],
+        );
+        entered.wait_blocking();
+
+        let settlement_queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Vec<u8>>>> =
+            AsyncQueue::new();
+        let (settlement_tx, settlement_rx) = watch::channel::<Option<SettlementInfo>>(None);
+        let prover = AggregateProver::new(
+            SyntheticBackend,
+            scheduler.state().receipt_store(),
+            Some(journal.clone()),
+            AggregateProverConfig {
+                lane_key: Hash::default(),
+                covenant_id: None,
+                lane_source: ServeLaneProofs,
+                settlement_queue: Some(settlement_queue.clone()),
+                settlement: Some(settlement_rx),
+                bundle_size: 2..=2,
+                exits: None,
+            },
+        );
+
+        for batch in &pre_reorg[..2] {
+            prover.submit(batch);
+            batch.write_batch_receipt(settlement_journal()).wait_blocking();
+            batch.publish_artifact(Some(settlement_journal()));
+        }
+        let bundle = next_bundle(&settlement_queue, Duration::from_secs(10))
+            .expect("the published pair must bundle");
+        bundle.wait_artifact_published_blocking();
+        assert_eq!(bundle.checkpoint_index(), 1);
+        wait_for_entries(&journal, 1);
+
+        prover.rollback(1);
+        let fork = schedule_gated(&mut scheduler, &[(4u8, block_hash(1)), (5, block_hash(4))]);
+
+        // The successor (4) waits alone below the bundle size, so the worker parks with the
+        // windows split by the hole while the settlement lands.
+        prover.submit(&fork[0]);
+        fork[0].write_batch_receipt(settlement_journal()).wait_blocking();
+        fork[0].publish_artifact(Some(settlement_journal()));
+
+        // The settlement's boundary maps to nothing and covers only batch 1: its exit tip is
+        // batch 1's, the first unsettled batch (4) enters there, and the drain must drop batch 1
+        // alone. Counting indexes instead would drain 4 - 1 = 3: past the one-batch queue
+        // (panicking the worker before the journal delete below it runs) or, with the whole fork
+        // queued, straight into the surviving suffix.
+        settlement_tx.send_replace(Some(SettlementInfo {
+            tx_id: TransactionId::from([0xaf; 32]),
+            block_prove_to: block_hash(0xaf),
+            new_lane_tip: block_hash(1),
+            daa_score: U64::new(10),
+            ..Default::default()
+        }));
+        // The covered entry [1..2] lies entirely below the successor's index and goes with the
+        // prefix.
+        wait_for_entries(&journal, 0);
+
+        // The survivor across the hole still bundles: batch 5 completes the pair, pinning that
+        // the drain stopped on the successor instead of consuming it.
+        prover.submit(&fork[1]);
+        fork[1].write_batch_receipt(settlement_journal()).wait_blocking();
+        fork[1].publish_artifact(Some(settlement_journal()));
+        let bundle = next_bundle(&settlement_queue, Duration::from_secs(10))
+            .expect("the surviving batches across the hole must bundle");
+        bundle.wait_artifact_published_blocking();
+        assert_eq!(bundle.checkpoint_index(), 4);
+        let starts: Vec<u64> = journal.entries().into_iter().map(|(start, _)| start).collect();
+        assert_eq!(starts, vec![4], "only the entry over the surviving fork remains");
 
         release.open();
         prover.shutdown();
