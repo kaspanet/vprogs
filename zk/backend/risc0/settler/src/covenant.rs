@@ -6,6 +6,7 @@ mod built_settlement;
 mod covenant_advance;
 mod covenant_state;
 
+pub(crate) use build::p2sh_spk_from_hash;
 pub use build::{
     DEV_COVENANT_BUDGET, bootstrap_dev_covenant, bootstrap_real_covenant, bootstrap_redeem,
     build_dev_settlement, build_settlement, build_settlement_for_mode, covenant_from_settlement,

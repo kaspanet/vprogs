@@ -1,8 +1,9 @@
 //! Residual RPC confirmation helpers: polling the node's utxoindex for an outpoint at its P2SH
 //! address. Steady-state settlement confirmation is notification-based (see
 //! [`Settler::settle_one`](crate::settle::Settler) awaiting the bridge's settlement `watch`); these
-//! helpers cover only the two cases that have no watch event: the one-time fresh-deploy bootstrap
-//! confirm, and the single liveness poll that disambiguates an orphan rejection.
+//! helpers cover only the cases that have no watch event: the one-time fresh-deploy bootstrap
+//! confirm, the single liveness poll that disambiguates an orphan rejection, and the tip-liveness
+//! read that confirms a decision made against the (lagging) watch.
 
 use std::time::Duration;
 
@@ -15,6 +16,9 @@ use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_txscript::standard::extract_script_pub_key_address;
 use kaspa_wrpc_client::prelude::KaspaRpcClient;
 use vprogs_core_atomics::AtomicAsyncLatch;
+use vprogs_l1_types::SettlementInfo;
+
+use crate::covenant::p2sh_spk_from_hash;
 
 /// Poll cadence and ceiling for waiting on a covenant UTXO to confirm on chain.
 const CONFIRM_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -123,4 +127,23 @@ pub(crate) async fn covenant_liveness(
         ConfirmOutcome::Timeout => CovenantLiveness::Spent,
         ConfirmOutcome::Shutdown => CovenantLiveness::Shutdown,
     }
+}
+
+/// Reads whether `tip` still marks the covenant's live position: the continuation outpoint the
+/// settlement created ((tx_id, 0) at the SPK its continuation hash pins) is still an unspent
+/// UTXO. The settlement watch lags the covenant by the bridge's follow depth, so a decision
+/// made against a watch value must confirm it here before acting: a spent continuation means a
+/// later settlement already superseded `tip` and owns the covenant.
+pub async fn settlement_tip_live(
+    client: &KaspaRpcClient,
+    params: &Params,
+    tip: &SettlementInfo,
+) -> bool {
+    let spk = p2sh_spk_from_hash(&tip.continuation_spk_hash);
+    let prefix = Prefix::from(params.net.network_type());
+    let address = extract_script_pub_key_address(&spk, prefix).expect("covenant P2SH address");
+    let utxos = client.get_utxos_by_addresses(vec![address]).await.expect("get_utxos_by_addresses");
+    utxos
+        .into_iter()
+        .any(|e| TransactionOutpoint::from(e.outpoint) == TransactionOutpoint::new(tip.tx_id, 0))
 }
