@@ -295,6 +295,18 @@ where
                         // leaves only the surviving prefix to re-cover.
                         gap_bound = gap_bound.map(|bound| bound.min(target));
                     }
+                    Command::Reroot(target) => {
+                        // A re-root's batches re-drive above the target, so the pending gap
+                        // bound stands: the retry re-covers the range once the re-drive
+                        // commits it. The truncation invalidates whatever the last-handled
+                        // settlement's passes consumed, so its dedupe resets and the
+                        // republished tip re-runs against the truncated windows. The DAA
+                        // floor survives: the covenant only moved forward through a re-root,
+                        // and a stale republished settlement re-arming the passes is what
+                        // oscillated the re-root against its own rollback.
+                        self.truncate_windows(target);
+                        self.handled_settlement = None;
+                    }
                 }
                 if self.prover.shutdown.is_open() {
                     return;
@@ -446,12 +458,32 @@ where
         // can restamp an older one, and honoring it would hold the fold against a tip the
         // covenant already passed. Gate on the same forward-only DAA floor the re-aggregation
         // drains against.
+        // A head off the covenant's exit is the wedge only when our own chain broke right
+        // above the boundary: the boundary is a committed batch below the head and the batch
+        // after it does not enter at the tip's exit. Everything else is covered catch-up
+        // (bundling lags a covenant chain at, ahead of, or below the front, under contention
+        // even against a competitor's boundary) and converges through the settler's supersede
+        // skip and the re-form paths; holding it would park bundling forever and every
+        // observed settlement would re-request a rollback to a flipping target, whose
+        // re-drives compose the first cross-lineage bundle the guest rejects.
         let off_tip = self
             .settlement
             .as_ref()
             .and_then(|rx| *rx.borrow())
             .filter(|tip| tip.daa_score.get() >= self.settlement_daa)
-            .filter(|tip| front.checkpoint().metadata().prev_lane_tip != tip.new_lane_tip);
+            .filter(|tip| front.checkpoint().metadata().prev_lane_tip != tip.new_lane_tip)
+            .filter(|tip| {
+                self.journal.as_ref().is_none_or(|j| {
+                    let front_index = front.checkpoint().index();
+                    j.checkpoint_of_block(tip.block_prove_to, front_index - 1, 1).is_some_and(
+                        |boundary| {
+                            boundary < front_index
+                                && j.batch_metadata(boundary + 1)
+                                    .is_some_and(|m| m.prev_lane_tip != tip.new_lane_tip)
+                        },
+                    )
+                })
+            });
         let held_off_tip =
             off_tip.filter(|_| self.journal.as_ref().is_none_or(|j| !j.has_entries()));
         if let Some(tip) = held_off_tip {
@@ -1365,18 +1397,25 @@ where
     }
 
     /// Drops queued and retained batches rolled back by a reorg, and resets the re-form guard so
-    /// the next settlement re-aggregates against the rolled-back retained suffix. The active
+    /// the next settlement re-aggregates against the rolled-back retained suffix. The reorg may
+    /// also have moved the covenant to an earlier settlement, so the settlement-progress guards
+    /// reset with it: the republished post-reorg tip must re-drive every pass. The active
     /// bundle's proof is awaited inline, so a rollback command is only applied between bundles
     /// and can never silently include a rolled-back suffix; aborting a proof already running on
     /// the GPU remains a TODO (same gap as the batch prover).
     fn apply_rollback(&mut self, target_index: u64) {
+        self.truncate_windows(target_index);
+        self.handled_settlement = None;
+        self.settlement_daa = 0;
+    }
+
+    /// Shared window truncation of a rollback: drop the batches beyond the target, reset the
+    /// re-form guard, and re-arm the re-root request (execution re-entered somewhere new, so the
+    /// next off-tip head is a fresh wedge to report).
+    fn truncate_windows(&mut self, target_index: u64) {
         self.queued.retain(|b| b.checkpoint().index() <= target_index);
         self.retained.retain(|b| b.checkpoint().index() <= target_index);
         self.last_reformed_from = None;
-        self.handled_settlement = None;
-        self.settlement_daa = 0;
-        // A rollback is the re-root request's resolution: execution re-entered somewhere new,
-        // so the next off-tip head is a fresh wedge to report.
         self.re_rooted_for = None;
     }
 }
