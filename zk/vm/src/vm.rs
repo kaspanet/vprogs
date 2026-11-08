@@ -134,6 +134,10 @@ impl<B: Backend, S: Store> Processor<S> for Vm<B, S> {
         self.proving_pipeline.rollback(target_index);
     }
 
+    fn on_reroot(&self, target_index: u64) {
+        self.proving_pipeline.reroot(target_index);
+    }
+
     fn on_shutdown(&self) {
         self.proving_pipeline.shutdown();
     }

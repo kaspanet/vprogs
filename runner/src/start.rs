@@ -871,11 +871,10 @@ fn bridge_params(
 /// Rolls execution back to a settlement's boundary when the aggregate prover holds a fold
 /// because its window head enters off the covenant tip's exit: the batches between the boundary
 /// and the head cannot chain onto the covenant (a receipt-less committed range, or a fork below
-/// the boundary), and only re-execution from the boundary re-enters at the tip's exit. The
-/// rollback re-drives the cancelled range through the scheduler, which re-proves and re-bundles
-/// it from the covenant's own state. A boundary mapping to no batch of ours (a competitor's fork
-/// block) has no rollback target; the re-form paths on the next settlement advance own that
-/// case.
+/// the boundary), and only re-entering execution at the boundary continues from the tip's exit;
+/// blocks arriving after the rollback execute from the boundary state (nothing re-appends the
+/// cancelled range). A boundary mapping to no batch of ours (a competitor's fork block) has no
+/// rollback target; the re-form paths on the next settlement advance own that case.
 pub async fn run_covenant_reroot(
     api: NodeApi<RunnerStore, RunnerVm>,
     mut re_root_rx: mpsc::UnboundedReceiver<SettlementInfo>,
@@ -886,9 +885,9 @@ pub async fn run_covenant_reroot(
         let result = api
             .with_scheduler(move |scheduler| match scheduler.id(&boundary.as_bytes()) {
                 Some(id) => scheduler
-                    .rollback_to(id)
+                    .reroot_to(id)
                     .map(|checkpoint| checkpoint.index())
-                    .map_err(|err| format!("rollback to batch {id} failed: {err}")),
+                    .map_err(|err| format!("re-root to batch {id} failed: {err}")),
                 None => Err("the boundary block maps to no batch of ours".to_owned()),
             })
             .await

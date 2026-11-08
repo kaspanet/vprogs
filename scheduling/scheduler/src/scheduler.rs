@@ -131,6 +131,27 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
         &mut self,
         target_index: u64,
     ) -> SchedulerResult<Checkpoint<P::BatchMetadata>> {
+        self.rollback_internal(target_index, false)
+    }
+
+    /// Rolls the runtime state back to the batch index of a settlement boundary, re-entering
+    /// execution there instead of at the rolled-back tip: unlike [`Self::rollback_to`] the chain
+    /// itself did not move, so processors hear the rollback as a re-root
+    /// ([`Processor::on_reroot`]) and keep whatever chain-progress state a plain rollback resets.
+    pub fn reroot_to(
+        &mut self,
+        target_index: u64,
+    ) -> SchedulerResult<Checkpoint<P::BatchMetadata>> {
+        self.rollback_internal(target_index, true)
+    }
+
+    /// Body shared by [`Self::rollback_to`] and [`Self::reroot_to`]; `reroot` selects which
+    /// processor notification the rollback completes with.
+    fn rollback_internal(
+        &mut self,
+        target_index: u64,
+        reroot: bool,
+    ) -> SchedulerResult<Checkpoint<P::BatchMetadata>> {
         // Determine the range of batches to roll back.
         let upper_bound = self.state.last_processed().index();
 
@@ -165,7 +186,11 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
             self.resources.clear();
 
             // Notify the processor of the rollback, allowing it to clear any internal caches.
-            self.processor.on_rollback(target_index);
+            if reroot {
+                self.processor.on_reroot(target_index);
+            } else {
+                self.processor.on_rollback(target_index);
+            }
 
             Ok(target)
         } else {
