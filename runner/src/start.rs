@@ -26,7 +26,6 @@ use vprogs_l1_bridge::{PermissionSpendHooks, lane_walk_reached_genesis};
 use vprogs_l1_types::SettlementInfo;
 use vprogs_l1_wallet::Wallet;
 use vprogs_scheduling_scheduler::Indexer;
-use vprogs_zk_abi::withdrawal::ExitsForBatch;
 use vprogs_zk_aggregate_prover::ExitsForBundle;
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_settler::{
@@ -34,6 +33,7 @@ use vprogs_zk_backend_risc0_settler::{
     bootstrap_real_covenant, bootstrap_redeem, dev_bootstrap_redeem, run as run_settlement_worker,
 };
 use vprogs_zk_backend_risc0_test_suite::dev_mode_enabled;
+use vprogs_zk_vm::ExitsForBatch;
 
 use crate::{
     config::{RunnerConfig, StartMode},
@@ -372,7 +372,13 @@ async fn start_exec<F>(
     // Attribution task runs in every exec configuration: with no indexer it feeds the caller's
     // live `exits_rx`; both of its input channels die with the node, so its exit shuts the
     // exits stream down in turn.
-    tokio::spawn(run_exec_exits_joiner(tx_exits_rx, settlement_events_rx, exits_tx, settle_fwd_tx));
+    tokio::spawn(run_exec_exits_joiner(
+        store.clone(),
+        tx_exits_rx,
+        settlement_events_rx,
+        exits_tx,
+        settle_fwd_tx,
+    ));
 
     let node = build_exec_node(
         elfs,
