@@ -98,7 +98,7 @@ impl vprogs_zk_transaction_prover::Backend for CannedBackend {
     fn prove_transaction(
         &self,
         _input_bytes: Vec<u8>,
-    ) -> impl Future<Output = Vec<u8>> + Send + 'static {
+    ) -> impl Future<Output = Result<Vec<u8>, String>> + Send + 'static {
         async { unreachable!("the processor publishes tx artifacts directly") }
     }
 }
@@ -108,14 +108,59 @@ impl vprogs_zk_batch_prover::Backend for CannedBackend {
         &self,
         _inputs: &[u8],
         _receipts: Vec<Vec<u8>>,
-    ) -> impl Future<Output = Vec<u8>> + Send + 'static {
+    ) -> impl Future<Output = Result<Vec<u8>, String>> + Send + 'static {
         let park = self.prove_park.clone();
         async move {
             if let Some((entered, release)) = park {
                 entered.open();
                 release.wait_blocking();
             }
-            canned_receipt()
+            Ok(canned_receipt())
+        }
+    }
+
+    fn journal_bytes(receipt: &Vec<u8>) -> Vec<u8> {
+        receipt.clone()
+    }
+
+    fn batch_image_id(&self) -> &[u8; 32] {
+        &BATCH_IMAGE_ID
+    }
+}
+
+/// Backend whose batch attempts always fail, counting every call so a test can observe the
+/// retry.
+#[derive(Clone)]
+struct FailingBackend {
+    /// Attempts run so far, shared with the worker's clone.
+    attempts: Arc<AtomicUsize>,
+}
+
+impl vprogs_zk_transaction_prover::Backend for FailingBackend {
+    type Receipt = Vec<u8>;
+
+    fn image_id(&self) -> &[u8; 32] {
+        &TX_IMAGE_ID
+    }
+
+    fn prove_transaction(
+        &self,
+        _input_bytes: Vec<u8>,
+    ) -> impl Future<Output = Result<Vec<u8>, String>> + Send + 'static {
+        async { unreachable!("the processor publishes tx artifacts directly") }
+    }
+}
+
+impl vprogs_zk_batch_prover::Backend for FailingBackend {
+    fn prove_batch(
+        &self,
+        _inputs: &[u8],
+        _receipts: Vec<Vec<u8>>,
+    ) -> impl Future<Output = Result<Vec<u8>, String>> + Send + 'static {
+        let attempts = self.attempts.clone();
+        async move {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            Err("synthetic prove failure".to_owned())
         }
     }
 
@@ -167,6 +212,85 @@ impl Processor<RocksDbStore> for GatedProcessor {
 /// Chain-block metadata whose only distinguishing fields are the block hash and its parent id.
 fn block(hash: u8, parent_id: u64) -> ChainBlockMetadata {
     ChainBlockMetadata { hash: Hash::from_bytes([hash; 32]), parent_id, ..Default::default() }
+}
+
+/// Polls `pred` every 10ms until it holds, panicking with `desc` once `timeout` elapses.
+fn wait_until(desc: &str, timeout: Duration, mut pred: impl FnMut() -> bool) {
+    let deadline = Instant::now() + timeout;
+    while !pred() {
+        if Instant::now() >= deadline {
+            panic!("timed out waiting for {desc}");
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// A persistent batch-prove failure keeps retrying under the shutdown latch, so the prover's
+/// shutdown join completes instead of waiting forever on the retry. Pre-fix, the backend's own
+/// infinite retry wedged the join, keeping a restarting node from tearing its GPU prover down.
+#[test]
+fn shutdown_exits_a_failing_prove_retry_loop() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let release = Arc::new(AtomicAsyncLatch::new());
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(GatedProcessor { release: release.clone() }),
+            StorageConfig::default().with_store(storage.clone()),
+        );
+
+        // A committed anchor below the victim.
+        let anchor = scheduler.schedule(block(1, 0), vec![]);
+        anchor.wait_committed_blocking();
+
+        // The victim commits and publishes its tx artifacts, so the worker reaches its batch
+        // prove, which fails on every attempt.
+        let victim = scheduler.schedule(
+            block(2, 1),
+            vec![SchedulerTransaction::new(
+                0,
+                vec![AccessMetadata::write(ResourceId::for_test(1))],
+                0,
+            )],
+        );
+        victim.wait_committed_blocking();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let prover = BatchProver::new(
+            FailingBackend { attempts: attempts.clone() },
+            storage,
+            BatchProverConfig {
+                lane_key: Hash::default(),
+                covenant_id: Hash::default(),
+                deposit_spk_hash: [0u8; 32],
+            },
+        );
+        prover.submit(&victim);
+        wait_until("the failing loop to retry at least twice", Duration::from_secs(10), || {
+            attempts.load(Ordering::SeqCst) >= 2
+        });
+
+        let done = Arc::new(AtomicAsyncLatch::new());
+        let joiner = {
+            let prover = prover.clone();
+            let done = done.clone();
+            thread::spawn(move || {
+                prover.shutdown();
+                done.open();
+            })
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done.is_open() {
+            assert!(
+                Instant::now() < deadline,
+                "shutdown must exit the failing retry loop promptly",
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        joiner.join().expect("the shutdown thread");
+
+        release.open();
+        scheduler.shutdown();
+    }
 }
 
 /// Polls `batch.artifact_published()` until it opens, failing with `msg` after five seconds. A

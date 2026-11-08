@@ -127,8 +127,31 @@ where
                     &journals,
                 );
 
-                // Compose the batch proof against those tx receipts.
-                let receipt = self.backend.prove_batch(&input_bytes, receipts).await;
+                // One attempt per iteration, awaited under the shutdown latch: a persistent
+                // failure retries with the worker escapable, so the prover's shutdown join never
+                // waits on an infinite retry. No attempt cap and no exhaustion panic; a
+                // deterministic failure retries identically and loudly until an operator's
+                // keepalive flags the stall. Each attempt costs a real prove, so the loop is
+                // naturally paced; a "Guest panicked" error retries like any other failure.
+                let mut attempt = 1u32;
+                let receipt = loop {
+                    let proved = tokio::select! {
+                        biased;
+                        () = self.prover.shutdown.wait() => return,
+                        proved = self.backend.prove_batch(&input_bytes, receipts.clone()) => {
+                            proved
+                        }
+                    };
+                    match proved {
+                        Ok(receipt) => break receipt,
+                        Err(err) => {
+                            log::warn!(
+                                "batch-prover: prove attempt {attempt} failed ({err}); retrying"
+                            );
+                            attempt += 1;
+                        }
+                    }
+                };
 
                 // Wait for the receipt to be durable before publishing the artifact, so a crash
                 // never leaves a consumed-but-uncached receipt.
