@@ -2268,6 +2268,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn exec_joiner_rollback_prunes_leaf_arriving_after_a_drain() {
+        let (leaves_tx, leaves_rx) = mpsc::unbounded_channel();
+        let (settlement_tx, settlement_rx) = mpsc::unbounded_channel();
+        let (exits_tx, mut exits_rx) = mpsc::unbounded_channel();
+        let (fwd_tx, mut fwd_rx) = mpsc::unbounded_channel();
+
+        let dir = tempdir().unwrap();
+        let store: RocksDbStore = RocksDbStore::open(dir.path());
+        tokio::spawn(run_exec_exits_joiner(
+            store,
+            leaves_rx,
+            settlement_rx,
+            exits_tx,
+            Some(fwd_tx),
+        ));
+
+        // Settlement A drains leaf a (batch 2) the moment it arrives, emptying the buffer; a
+        // journal-position vector that outlives its drained leaves would hand the next leaf a's
+        // position.
+        let leaves_a = vec![test_leaf(0x11, 100)];
+        let settlement_a = SettlementInfo {
+            tx_id: Hash::from_bytes([0xaa; 32]),
+            new_state: [0x51; 32],
+            permission_spk_hash: permission_commitment(&leaves_a),
+            chain_idx: 3u64.into(),
+            ..Default::default()
+        };
+        settlement_tx.send(SettlementMsg::Observed(settlement_a)).unwrap();
+        leaves_tx
+            .send(ExitsForBatch { batch_id: 2, tx_position: 0, leaves: leaves_a.clone() })
+            .unwrap();
+        let bundle = exits_rx.recv().await.expect("settlement A drains [a]");
+        assert_eq!(bundle.leaves.to_vec(), leaves_a);
+        assert_eq!(fwd_rx.recv().await, Some(SettlementMsg::Observed(settlement_a)));
+
+        // Leaf b (batch 8) buffers into the emptied buffer; the reorg to floor 5 must drop it
+        // by its own batch id, not the drained a's.
+        let leaf_b = test_leaf(0x22, 200);
+        leaves_tx
+            .send(ExitsForBatch { batch_id: 8, tx_position: 0, leaves: vec![leaf_b.clone()] })
+            .unwrap();
+        settlement_tx.send(SettlementMsg::Rollback(5)).unwrap();
+        assert_eq!(fwd_rx.recv().await, Some(SettlementMsg::Rollback(5)));
+
+        // The replacement re-executes b under the same id and c lands behind it; B's commitment
+        // covers both. A stale b surviving the floor would prefix the re-emitted pair ([b, b, c]
+        // has no prefix equal to [b, c]) and park B at the front of pending for good.
+        let leaf_c = test_leaf(0x33, 300);
+        leaves_tx
+            .send(ExitsForBatch { batch_id: 8, tx_position: 0, leaves: vec![leaf_b.clone()] })
+            .unwrap();
+        leaves_tx
+            .send(ExitsForBatch { batch_id: 9, tx_position: 0, leaves: vec![leaf_c.clone()] })
+            .unwrap();
+        let settlement_b = SettlementInfo {
+            tx_id: Hash::from_bytes([0xbb; 32]),
+            new_state: [0x52; 32],
+            permission_spk_hash: permission_commitment(&[leaf_b.clone(), leaf_c.clone()]),
+            chain_idx: 9u64.into(),
+            ..Default::default()
+        };
+        settlement_tx.send(SettlementMsg::Observed(settlement_b)).unwrap();
+        let bundle = tokio::time::timeout(std::time::Duration::from_millis(500), exits_rx.recv())
+            .await
+            .expect("re-emitted pair drains without the stale copy")
+            .expect("exits channel open");
+        assert_eq!(bundle.new_state, settlement_b.new_state);
+        assert_eq!(bundle.leaves.to_vec(), vec![leaf_b, leaf_c]);
+        assert!(exits_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn exec_joiner_rollback_keeps_below_floor_leaf_behind_an_above_floor_one() {
         let (leaves_tx, leaves_rx) = mpsc::unbounded_channel();
         let (settlement_tx, settlement_rx) = mpsc::unbounded_channel();
