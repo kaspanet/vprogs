@@ -150,9 +150,11 @@ impl<B: Backend, S: Store> Processor<S> for Vm<B, S> {
         *self.backend.batch_image_id()
     }
 
-    /// Restore is safe only without proving; any proving mode needs per-tx pre-images.
+    /// Restore is safe only without proving and without an exits tap: any proving mode needs
+    /// per-tx pre-images, and a restored block skips execution, so leaves a rollback pruned
+    /// never re-emit.
     fn supports_restore(&self) -> bool {
-        matches!(*self.proving_pipeline, ProvingPipeline::None)
+        self.exits_tap.is_none() && matches!(*self.proving_pipeline, ProvingPipeline::None)
     }
 
     type Transaction = L1Transaction;
