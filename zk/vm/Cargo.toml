@@ -6,6 +6,7 @@ version.workspace = true
 [dependencies]
 faster-hex.workspace                   = true
 log.workspace                          = true
+tokio.workspace                        = true
 vprogs-l1-types.workspace              = true
 vprogs-scheduling-scheduler.workspace  = true
 vprogs-storage-types.workspace         = true

@@ -32,6 +32,10 @@ pub struct SettlementInfo {
     /// bootstrap, and a prover whose ELFs differ must fail adoption checks loudly instead of
     /// building a settlement the node's P2SH hash check rejects.
     pub continuation_spk_hash: [u8; 32],
+    /// P2SH script-hash committed by the settlement's permission (exit) output (output 1), or
+    /// `[0u8; 32]` when this settlement emitted no exits (single-output layout). The aggregate
+    /// journal commits the same value (see `PermissionTreeAccumulator::finalize`).
+    pub permission_spk_hash: [u8; 32],
 }
 
 // Borsh is hand-rolled because the zerocopy `daa_score: U64` wrapper carries no Borsh impl; it is
@@ -44,7 +48,8 @@ impl BorshSerialize for SettlementInfo {
         self.block_prove_to.serialize(writer)?;
         self.new_state.serialize(writer)?;
         self.new_lane_tip.serialize(writer)?;
-        self.continuation_spk_hash.serialize(writer)
+        self.continuation_spk_hash.serialize(writer)?;
+        self.permission_spk_hash.serialize(writer)
     }
 }
 
@@ -58,6 +63,7 @@ impl BorshDeserialize for SettlementInfo {
             new_state: <[u8; 32]>::deserialize_reader(reader)?,
             new_lane_tip: Hash::deserialize_reader(reader)?,
             continuation_spk_hash: <[u8; 32]>::deserialize_reader(reader)?,
+            permission_spk_hash: <[u8; 32]>::deserialize_reader(reader)?,
         })
     }
 }
@@ -78,6 +84,7 @@ mod tests {
             new_state: [0x44; 32],
             new_lane_tip: Hash::from_bytes([0x55; 32]),
             continuation_spk_hash: [0x66; 32],
+            permission_spk_hash: [0x77; 32],
         };
         let bytes = borsh::to_vec(&info).expect("serialize");
         let decoded = SettlementInfo::try_from_slice(&bytes).expect("deserialize");

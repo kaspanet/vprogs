@@ -22,7 +22,7 @@ use kaspa_hashes::Hash;
 use kaspa_wrpc_client::prelude::KaspaRpcClient;
 use tokio::sync::{mpsc, watch};
 use vprogs_core_atomics::AsyncQueue;
-use vprogs_l1_bridge::L1BridgeConfig;
+use vprogs_l1_bridge::{L1BridgeConfig, PermissionSpendHooks};
 use vprogs_l1_types::SettlementInfo;
 use vprogs_node_framework::{Node, NodeConfig};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Indexer, SchedulerState};
@@ -33,7 +33,7 @@ use vprogs_zk_aggregate_prover::{
 };
 use vprogs_zk_backend_risc0_api::{Backend, ProofType, Receipt};
 use vprogs_zk_batch_prover::BatchProverConfig;
-use vprogs_zk_vm::{ProvingPipeline, Vm};
+use vprogs_zk_vm::{ExitsForBatch, ProvingPipeline, Vm};
 
 use crate::lane::RemoteLaneSource;
 
@@ -59,7 +59,7 @@ pub struct Elfs<'a> {
     pub aggregator: &'a [u8],
 }
 
-/// Optional observer handles the bridge publishes into as it follows the chain. Both default to
+/// Optional observer handles the bridge publishes into as it follows the chain. All default to
 /// `None`, which disables publishing.
 #[derive(Default)]
 pub struct BridgeObservers {
@@ -70,6 +70,11 @@ pub struct BridgeObservers {
     /// settler holds a [`watch::Receiver`](tokio::sync::watch::Receiver) subscribed to it
     /// (reader). `None` disables publishing.
     pub settlement: Option<watch::Sender<Option<SettlementInfo>>>,
+    /// Optional channel sender every observed covenant settlement is published into.
+    pub settlement_events: Option<mpsc::UnboundedSender<SettlementInfo>>,
+    /// Optional hooks for watching and emitting permission-output spends. `None` disables
+    /// watching.
+    pub permission_spends: Option<PermissionSpendHooks>,
 }
 
 /// Everything the bridge needs to follow our lane on the remote node.
@@ -143,14 +148,22 @@ pub struct ProvingParams {
 /// and a bridge pointed at the remote node's lane + covenant. [`Node::new`] immediately starts the
 /// bridge, scheduler, and event loop on a dedicated thread. The batch and aggregator ELFs are
 /// loaded only so the backend can pin their image ids; they are never executed in exec mode.
+/// `exits_tap`, when supplied, receives each executed tx's journal-committed exit leaves (see
+/// [`Vm::with_exits_tap`]); exec mode attributes them to observed settlements downstream, while
+/// proving mode leaves it unwired (its aggregate prover already publishes per-bundle exits).
 pub fn build_exec_node(
     elfs: Elfs,
     store: RunnerStore,
     params: BridgeParams,
     indexer: Option<Indexer>,
+    exits_tap: Option<mpsc::UnboundedSender<ExitsForBatch>>,
 ) -> RunnerNode {
     let backend = Backend::new(elfs.program, elfs.batch, elfs.aggregator, ProofType::Succinct);
     let vm = Vm::new(backend, ProvingPipeline::None);
+    let vm = match exits_tap {
+        Some(tap) => vm.with_exits_tap(tap),
+        None => vm,
+    };
     Node::new(base_config(vm, store, params, indexer))
 }
 
@@ -218,6 +231,8 @@ fn base_config(
                 .with_start_from(params.start_from)
                 .with_min_confirmations(params.min_confirmations)
                 .with_tip_daa_observer(params.observers.tip_daa)
-                .with_settlement_observer(params.observers.settlement),
+                .with_settlement_observer(params.observers.settlement)
+                .with_settlement_events(params.observers.settlement_events)
+                .with_permission_spends(params.observers.permission_spends),
         )
 }

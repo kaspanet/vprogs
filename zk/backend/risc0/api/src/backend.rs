@@ -4,6 +4,7 @@ use risc0_zkvm::{
     Executor, ExecutorEnv, Prover, ProverOpts, Receipt, default_executor, default_prover,
 };
 use vprogs_core_macros::smart_pointer;
+use vprogs_zk_vm::ExecOutcome;
 
 use crate::{ProofType, elf_binary::ElfBinary};
 
@@ -60,23 +61,25 @@ impl Backend {
 }
 
 impl vprogs_zk_vm::Backend for Backend {
-    fn execute_transaction(&self, wire_bytes: &[u8]) -> Vec<u8> {
+    fn execute_transaction(&self, wire_bytes: &[u8]) -> ExecOutcome {
         let mut execution_result = Vec::new();
 
-        EXECUTOR.with(|e| {
-            e.execute(
-                ExecutorEnv::builder()
-                    .write_slice(&[wire_bytes.len() as u32])
-                    .write_slice(wire_bytes)
-                    .stdout(&mut execution_result)
-                    .build()
-                    .expect("failed to build executor environment"),
-                &self.transaction_processor.elf,
-            )
-            .expect("executor failed");
+        let journal = EXECUTOR.with(|e| {
+            let session = e
+                .execute(
+                    ExecutorEnv::builder()
+                        .write_slice(&[wire_bytes.len() as u32])
+                        .write_slice(wire_bytes)
+                        .stdout(&mut execution_result)
+                        .build()
+                        .expect("failed to build executor environment"),
+                    &self.transaction_processor.elf,
+                )
+                .expect("executor failed");
+            session.journal.bytes
         });
 
-        execution_result
+        ExecOutcome { stdout: execution_result, journal }
     }
 }
 

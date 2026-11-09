@@ -16,10 +16,11 @@ mod command;
 mod config;
 mod error;
 mod event;
+mod permission_watch;
 mod reorg_filter;
 mod worker;
 
 pub use bridge::L1Bridge;
 pub use command::Command;
-pub use config::L1BridgeConfig;
+pub use config::{L1BridgeConfig, PermissionSpendHooks};
 pub use event::L1Event;
