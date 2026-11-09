@@ -176,39 +176,26 @@ pub fn handle_permission_spend<S: Store>(
 }
 
 /// Inverts [`handle_permission_spend`]: deletes the continuation entry, restores the pre-spend
-/// anchor (`spend.old_root` at `spent_outpoint`), notifies the indexer, and mirrors both changes
-/// in the in-memory registry. A spend that matched no tracked anchor (`None`) only drops its
-/// continuation entry.
+/// anchor (`spend.old_root` at `spent_outpoint`), and notifies the indexer. The watcher owns
+/// the in-memory registry and has already reverted it. A spend that matched no tracked anchor
+/// (`None`) only drops its continuation entry.
 pub fn revert_permission_spend<S: Store>(
     spend: &PermissionSpend,
     spent_outpoint: Option<&TransactionOutpoint>,
     indexer: &dyn ExitIndexer,
     store: &S,
-    registry: &RwLock<HashMap<TransactionOutpoint, [u8; 32]>>,
 ) {
     let cont_txid = Hash::from_bytes(spend.spend_txid);
     let mut wb = store.write_batch();
-    let mut cont_outpoint = None;
     if let Some(index) = spend.new_outpoint_index {
         wb.delete(StateSpace::Metadata, &perm_out_key(&cont_txid, index));
-        cont_outpoint = Some(TransactionOutpoint::new(cont_txid, index));
     }
-    let mut restored = None;
     if let Some(spent) = spent_outpoint {
         let val = borsh::to_vec(&spend.old_root).expect("serialize root");
         wb.put(StateSpace::Metadata, &perm_out_key(&spent.transaction_id, spent.index), &val);
         indexer.on_permission_spend_reverted(spend, spent, &mut wb);
-        restored = Some((*spent, spend.old_root));
     }
     store.commit(wb);
-
-    let mut guard = registry.write().expect("poisoned lock");
-    if let Some(cont) = cont_outpoint {
-        guard.remove(&cont);
-    }
-    if let Some((spent, root)) = restored {
-        guard.insert(spent, root);
-    }
 }
 
 /// Re-serves a reverted settlement family under its re-confirmed anchor: notifies the indexer
@@ -311,7 +298,6 @@ impl ReorgState {
         family: JournalFamily,
         indexer: &dyn ExitIndexer,
         store: &S,
-        registry: &RwLock<HashMap<TransactionOutpoint, [u8; 32]>>,
     ) {
         let mut above = Vec::new();
         for entry in std::mem::take(&mut self.journal) {
@@ -331,13 +317,7 @@ impl ReorgState {
         for entry in above {
             match entry {
                 JournalEntry::Spend { spend, spent_outpoint } => {
-                    revert_permission_spend(
-                        &spend,
-                        spent_outpoint.as_ref(),
-                        indexer,
-                        store,
-                        registry,
-                    );
+                    revert_permission_spend(&spend, spent_outpoint.as_ref(), indexer, store);
                 }
                 JournalEntry::Pairing { root, bundle, settlement } => {
                     let mut wb = store.write_batch();
@@ -440,13 +420,7 @@ pub async fn run_exit_indexer<S: Store>(
                         }
                     }
                     Some(SettlementMsg::Rollback(floor)) => {
-                        reorg.revert_above(
-                            floor,
-                            JournalFamily::Pairing,
-                            &*indexer,
-                            &store,
-                            &registry,
-                        );
+                        reorg.revert_above(floor, JournalFamily::Pairing, &*indexer, &store);
                     }
                     None => {
                         log::debug!("exit indexer: settlement channel closed");
@@ -461,13 +435,7 @@ pub async fn run_exit_indexer<S: Store>(
                         reorg.journal.push(JournalEntry::Spend { spend, spent_outpoint });
                     }
                     Some(SpendMsg::Rollback(floor)) => {
-                        reorg.revert_above(
-                            floor,
-                            JournalFamily::Spend,
-                            &*indexer,
-                            &store,
-                            &registry,
-                        );
+                        reorg.revert_above(floor, JournalFamily::Spend, &*indexer, &store);
                     }
                     None => {
                         log::debug!("exit indexer: spends channel closed");
@@ -526,8 +494,8 @@ fn parse_exec_exit_key(key: &[u8]) -> Option<(u64, u32)> {
 
 /// Prefix for drained-settlement records in `StateSpace::Metadata`:
 /// `b"drained_settle" || tx_id(32)`, one entry per settlement whose leaf prefix was already
-/// drained, valued at the settlement's chain idx so a rollback can drop the entries above
-/// its floor.
+/// drained, valued at the drained prefix's lowest batch id so a rollback drops only records
+/// whose every drained batch was orphaned above its floor.
 const DRAINED_SETTLE_PREFIX: &[u8] = b"drained_settle";
 
 /// Builds the metadata key recording one drained settlement by its tx id.
@@ -571,12 +539,13 @@ fn decode_leaves(bytes: &[u8]) -> Option<Vec<ExitLeaf>> {
 /// batch under the same id) replaces the buffered entry, and one re-sent at a position a
 /// settlement already drained (its first copy's leaves were consumed by a pending settlement
 /// before the batch committed) is dropped against the drained position's tombstone, valued
-/// at the draining settlement's chain idx so a rollback drops it with the settlement. Per
+/// at its own batch's id so a rollback drops it exactly when the batch re-executes. Per
 /// settlement with a non-zero
 /// [`SettlementInfo::permission_spk_hash`], emits the smallest matching leaf prefix as an
 /// [`ExitsForBundle`] onto `exits_tx` and drains it, buffer and persisted entries together,
 /// recording the settlement as drained alongside the tombstoning; a settlement re-delivered after
-/// the drain that recorded it is skipped. A settlement whose prefix has not fully arrived
+/// the drain that recorded it is skipped and forwarded, so a rollback-reverted pairing
+/// re-anchors on the re-confirmation. A settlement whose prefix has not fully arrived
 /// yet parks as pending and is retried as leaves arrive (bridge and scheduler delivery order
 /// is not guaranteed); a newer settlement arriving while an older one is pending is a desync,
 /// logged (both named) but not fatal, and both still match once their leaves land.
@@ -638,20 +607,23 @@ pub async fn run_exec_exits_joiner<S: Store>(
                 let _ = fwd.send(SettlementMsg::Observed(*settlement));
             }
             let mut wb = store.write_batch();
-            // The tombstone carries the draining settlement's chain idx: a restart
-            // re-executing one of these batches re-sends its tap and the tombstone tells the
-            // re-send its leaves are settled, while a rollback reads the idx to drop the
-            // tombstone when the settlement itself died in the reorg.
-            let tombstone = settlement.chain_idx.get().to_be_bytes();
+            // Each tombstone carries its own batch's id: a rollback drops it exactly when
+            // the batch is orphaned above the floor and re-executes, so the re-sent tap
+            // re-inserts its leaves instead of dying against a stale tombstone; a surviving
+            // batch's tombstone only guards the stop-restart re-send under the same id.
             for pos in &buf_pos[..k] {
-                wb.put(StateSpace::Metadata, &exec_exit_key(pos.0, pos.1), &tombstone);
+                wb.put(StateSpace::Metadata, &exec_exit_key(pos.0, pos.1), &pos.0.to_be_bytes());
             }
-            // Same batch as the tombstoning: recording the settlement apart from it would
-            // leave a restart re-delivering a settlement whose leaves are already gone.
+            // The record carries the drained prefix's lowest batch id: a re-delivery under
+            // the same txid proves blocks that stayed canonical, so its batches sit at or
+            // below the floor, never re-execute, and only the skip keeps the re-delivery
+            // from parking forever. Same write batch as the tombstoning: recording the
+            // settlement apart from it would leave a restart re-delivering a settlement
+            // whose leaves are already gone.
             wb.put(
                 StateSpace::Metadata,
                 &drained_settle_key(&settlement.tx_id),
-                &settlement.chain_idx.get().to_be_bytes(),
+                &buf_pos[0].0.to_be_bytes(),
             );
             store.commit(wb);
             buf.drain(..k);
@@ -669,8 +641,8 @@ pub async fn run_exec_exits_joiner<S: Store>(
                     // A re-executed batch whose leaves a settlement already drained re-sends
                     // its tap at a tombstoned position: those leaves are settled and their
                     // settlement is skipped on re-delivery, so re-inserting them would head
-                    // the buffer and block every later settlement's prefix. A tombstone is
-                    // the draining settlement's 8-byte chain idx; a live leaf blob is longer.
+                    // the buffer and block every later settlement's prefix. A tombstone is an
+                    // 8-byte batch id; a live leaf blob is longer.
                     if matches!(store.get(StateSpace::Metadata, &exec_exit_key(pos.0, pos.1)), Some(val) if val.len() == 8)
                     {
                         log::debug!(
@@ -712,6 +684,12 @@ pub async fn run_exec_exits_joiner<S: Store>(
                             "exec exits: skipping re-delivered settlement {} (already drained)",
                             settlement.tx_id
                         );
+                        // Forward anyway: a rollback marker already reverted the pairing
+                        // downstream, and this re-confirmation under the same txid is what
+                        // re-anchors the family.
+                        if let Some(fwd) = &settlement_fwd {
+                            let _ = fwd.send(SettlementMsg::Observed(settlement));
+                        }
                         continue;
                     }
                     if let Some(older) = pending.back() {
@@ -739,10 +717,11 @@ pub async fn run_exec_exits_joiner<S: Store>(
                 Some(SettlementMsg::Rollback(floor)) => {
                     pending.retain(|settlement| settlement.chain_idx.get() <= floor);
                     let mut wb = store.write_batch();
-                    // A drained settlement above the floor is resubmitted in the replacement
-                    // block (keeping its txid); dropping its record lets the re-delivery
-                    // re-match the re-executed leaves, and dropping its tombstones lets the
-                    // re-sent taps re-insert them.
+                    // Records and tombstones are valued at batch ids, so both die exactly
+                    // when their batches are orphaned above the floor: the re-executed
+                    // batches' re-sent taps re-insert through the dropped tombstones, and a
+                    // settlement whose drained batches died re-derives under a fresh txid its
+                    // old record can never skip.
                     for (key, val) in store.prefix_iter(StateSpace::Metadata, DRAINED_SETTLE_PREFIX)
                     {
                         match <[u8; 8]>::try_from(val.as_slice()).map(u64::from_be_bytes) {
@@ -1612,6 +1591,82 @@ mod tests {
         h.shutdown().await;
     }
 
+    /// The bridge restores the watcher-owned registry from its own journal during `handle_reorg`,
+    /// and the same response's tail re-accepts the replacement chain's claim before this task
+    /// dequeues the marker. The marker's revert owns only the metadata mirror and the indexer
+    /// notification: writing the registry here would swap the re-accepted continuation back for
+    /// its spent anchor with nothing left to re-advance it (the re-delivered `Spent` no longer
+    /// moves the registry), stalling every later claim in the family.
+    #[tokio::test]
+    async fn spend_rollback_marker_leaves_the_registry_to_the_bridge() {
+        let dir = tempdir().unwrap();
+        let store: RocksDbStore = RocksDbStore::open(dir.path());
+        let indexer = Arc::new(FakeExitIndexer::new());
+        let registry = Arc::new(RwLock::new(HashMap::new()));
+        let h = IndexerHarness::spawn(store.clone(), indexer.clone(), registry.clone());
+
+        let (bundle, root) = test_bundle([0x11; 32], 0x77, 700);
+        let settlement = SettlementInfo {
+            tx_id: Hash::from_bytes([0xaa; 32]),
+            new_state: [0x11; 32],
+            chain_idx: 3u64.into(),
+            ..Default::default()
+        };
+        h.pair(bundle, settlement).await;
+        let anchor = TransactionOutpoint::new(settlement.tx_id, 1);
+
+        let spend = PermissionSpend {
+            covenant_id: [0x55; 32],
+            old_root: root,
+            new_root: [0x33; 32],
+            spent_txid: settlement.tx_id.as_bytes(),
+            spent_index: 1,
+            spend_txid: [0xbb; 32],
+            new_outpoint_index: Some(1),
+            chain_idx: 5,
+            ..Default::default()
+        };
+        let cont = TransactionOutpoint::new(
+            Hash::from_bytes(spend.spend_txid),
+            spend.new_outpoint_index.expect("continuation"),
+        );
+        // The watcher already advanced the registry when its response's tail re-accepted the
+        // claim; the spent anchor's pairing entry stays (pairings never leave the registry).
+        registry.write().expect("poisoned lock").insert(cont, spend.new_root);
+
+        h.spend_tx.send(SpendMsg::Spent(spend.clone())).unwrap();
+        let cont_key = perm_out_key(&cont.transaction_id, cont.index);
+        assert!(
+            becomes_true(200, || store.get(StateSpace::Metadata, &cont_key).is_some()).await,
+            "continuation mirrored"
+        );
+
+        h.spend_tx.send(SpendMsg::Rollback(4)).unwrap();
+        let anchor_key = perm_out_key(&anchor.transaction_id, anchor.index);
+        assert!(
+            becomes_true(200, || {
+                store.get(StateSpace::Metadata, &anchor_key).is_some()
+                    && store.get(StateSpace::Metadata, &cont_key).is_none()
+            })
+            .await,
+            "metadata mirror reverted"
+        );
+
+        // The registry is the watcher's: the marker must not undo its re-accepted advance.
+        {
+            let guard = registry.read().unwrap();
+            assert_eq!(guard.get(&cont), Some(&spend.new_root), "bridge advance survives");
+            assert_eq!(guard.get(&anchor), Some(&root), "pairing entry kept");
+        }
+        assert_eq!(
+            indexer.spend_reverts.lock().unwrap().as_slice(),
+            &[(spend.clone(), anchor)],
+            "trait still saw the revert with the original outpoint"
+        );
+
+        h.shutdown().await;
+    }
+
     #[tokio::test]
     async fn fresh_pairing_between_markers_survives_delayed_spend_marker() {
         let dir = tempdir().unwrap();
@@ -2326,11 +2381,78 @@ mod tests {
     }
 
     /// A rollback drops drained-settlement records above its floor along with the pending
-    /// settlements and buffered leaves: the resubmitted settlement re-arrives (keeping its
-    /// txid) and must re-match the replacement blocks' re-executed leaves instead of being
-    /// skipped as already drained.
+    /// settlements and buffered leaves: the drained batch died in the reorg, so its
+    /// settlement re-derives under a fresh txid while the replacement block re-executes the
+    /// tx and re-emits its leaves, and the fresh settlement must re-match those leaves instead
+    /// of any record skipping it.
     #[tokio::test]
     async fn exec_joiner_rollback_drops_drained_records_above_floor() {
+        let (leaves_tx, leaves_rx) = mpsc::unbounded_channel();
+        let (settlement_tx, settlement_rx) = mpsc::unbounded_channel();
+        let (exits_tx, mut exits_rx) = mpsc::unbounded_channel();
+        let (fwd_tx, mut fwd_rx) = mpsc::unbounded_channel();
+        let dir = tempdir().unwrap();
+        let store: RocksDbStore = RocksDbStore::open(dir.path());
+        tokio::spawn(run_exec_exits_joiner(
+            store.clone(),
+            leaves_rx,
+            settlement_rx,
+            exits_tx,
+            Some(fwd_tx),
+        ));
+
+        let leaves = vec![test_leaf(0x55, 500)];
+        let drained_settlement = SettlementInfo {
+            tx_id: Hash::from_bytes([0xee; 32]),
+            new_state: [0x73; 32],
+            permission_spk_hash: permission_commitment(&leaves),
+            chain_idx: 6u64.into(),
+            ..Default::default()
+        };
+        leaves_tx.send(tap_msg(5, 0, leaves.clone())).unwrap();
+        settlement_tx.send(SettlementMsg::Observed(drained_settlement)).unwrap();
+        let bundle = exits_rx.recv().await.expect("settlement drained before the reorg");
+        assert_eq!(bundle.leaves.to_vec(), leaves);
+        assert_eq!(fwd_rx.recv().await, Some(SettlementMsg::Observed(drained_settlement)));
+
+        // The reorg orphans the drained batch (5 is above the floor): its tombstone and the
+        // record die with it, the replacement block re-executes the tx and re-emits its
+        // leaves, and the settler re-derives under a fresh txid. The replacement runs after
+        // the revert, so await the forwarded marker before re-sending the tap: a tap racing
+        // the marker would drop against the still-live tombstone.
+        settlement_tx.send(SettlementMsg::Rollback(3)).unwrap();
+        assert_eq!(fwd_rx.recv().await, Some(SettlementMsg::Rollback(3)));
+        assert_eq!(
+            store.prefix_iter(StateSpace::Metadata, DRAINED_SETTLE_PREFIX).count(),
+            0,
+            "record died with its batch"
+        );
+        leaves_tx.send(tap_msg(5, 0, leaves.clone())).unwrap();
+        settlement_tx
+            .send(SettlementMsg::Observed(SettlementInfo {
+                tx_id: Hash::from_bytes([0xef; 32]),
+                new_state: [0x73; 32],
+                permission_spk_hash: permission_commitment(&leaves),
+                chain_idx: 9u64.into(),
+                ..Default::default()
+            }))
+            .unwrap();
+        let bundle = tokio::time::timeout(std::time::Duration::from_millis(500), exits_rx.recv())
+            .await
+            .expect("re-derived settlement re-matched the re-executed leaves")
+            .expect("bundle received");
+        assert_eq!(bundle.leaves.to_vec(), leaves);
+    }
+
+    /// A settlement re-delivered under its own txid proves blocks that stayed canonical: its
+    /// leaves sit in batches at or below the rollback floor, never re-execute, and were
+    /// tombstoned at the drain. The record must survive the rollback (valued at the drained
+    /// prefix's lowest batch id, not the settlement's observation idx) so the re-delivery is
+    /// skipped instead of parking at the front of `pending` forever, and the skip forwards it:
+    /// the forwarded marker already reverted the pairing downstream, and this re-confirmation
+    /// re-anchors the family.
+    #[tokio::test]
+    async fn exec_joiner_rollback_keeps_drained_records_whose_batches_survive() {
         let (leaves_tx, leaves_rx) = mpsc::unbounded_channel();
         let (settlement_tx, settlement_rx) = mpsc::unbounded_channel();
         let (exits_tx, mut exits_rx) = mpsc::unbounded_channel();
@@ -2359,27 +2481,36 @@ mod tests {
         assert_eq!(bundle.leaves.to_vec(), leaves);
         assert_eq!(fwd_rx.recv().await, Some(SettlementMsg::Observed(drained_settlement)));
 
-        // The reorg rolls the drained settlement back; the replacement blocks re-execute the
-        // tx and re-emit their leaves, and the settler resubmits under the same txid. The
-        // replacement runs after the revert, so await the forwarded marker before re-sending
-        // the tap: a tap racing the marker would drop against the still-live tombstone.
+        // The reorg orphans only batches above 3: the drained batch 1 stayed canonical, so its
+        // tap never re-sends, while the settlement itself re-confirms on the replacement chain
+        // under the same txid (its proof covers blocks that never moved).
         settlement_tx.send(SettlementMsg::Rollback(3)).unwrap();
         assert_eq!(fwd_rx.recv().await, Some(SettlementMsg::Rollback(3)));
-        leaves_tx.send(tap_msg(1, 0, leaves.clone())).unwrap();
-        settlement_tx
-            .send(SettlementMsg::Observed(SettlementInfo {
-                tx_id: Hash::from_bytes([0xee; 32]),
-                new_state: [0x73; 32],
-                permission_spk_hash: permission_commitment(&leaves),
-                chain_idx: 9u64.into(),
-                ..Default::default()
-            }))
-            .unwrap();
+
+        let redelivered = SettlementInfo { chain_idx: 9u64.into(), ..drained_settlement };
+        settlement_tx.send(SettlementMsg::Observed(redelivered)).unwrap();
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_millis(500), fwd_rx.recv()).await,
+            Ok(Some(SettlementMsg::Observed(redelivered))),
+            "skipped re-delivery still forwards for the re-anchor"
+        );
+
+        // The skip must not park: a fresh settlement behind the skipped one still matches.
+        let fresh_leaves = vec![test_leaf(0x66, 600)];
+        leaves_tx.send(tap_msg(4, 0, fresh_leaves.clone())).unwrap();
+        let fresh = SettlementInfo {
+            tx_id: Hash::from_bytes([0xdd; 32]),
+            new_state: [0x74; 32],
+            permission_spk_hash: permission_commitment(&fresh_leaves),
+            chain_idx: 9u64.into(),
+            ..Default::default()
+        };
+        settlement_tx.send(SettlementMsg::Observed(fresh)).unwrap();
         let bundle = tokio::time::timeout(std::time::Duration::from_millis(500), exits_rx.recv())
             .await
-            .expect("resubmitted settlement re-matched the re-executed leaves")
+            .expect("skipped re-delivery did not block the fresh settlement")
             .expect("bundle received");
-        assert_eq!(bundle.leaves.to_vec(), leaves);
+        assert_eq!(bundle.leaves.to_vec(), fresh_leaves);
     }
 
     #[tokio::test]
