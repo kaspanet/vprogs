@@ -1520,7 +1520,6 @@ mod tests {
             ..Default::default()
         };
         h.pair(bundle, settlement).await;
-        let anchor = TransactionOutpoint::new(settlement.tx_id, 1);
 
         // Two chained spends: root0 -> root1 -> root2.
         let spend0 = PermissionSpend {
@@ -1631,7 +1630,6 @@ mod tests {
             ..Default::default()
         };
         h.pair(bundle, settlement).await;
-        let anchor = TransactionOutpoint::new(settlement.tx_id, 1);
 
         // root0 -> root1 -> root2, both spends journaled at idx 5.
         let spend0 = PermissionSpend {
