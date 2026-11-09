@@ -246,3 +246,24 @@ fn base_config(
                 .with_permission_spends(params.observers.permission_spends),
         )
 }
+
+#[cfg(test)]
+mod tests {
+    use vprogs_scheduling_scheduler::Processor;
+
+    use super::*;
+
+    /// Wiring an exits tap opts the exec vm out of restore: a restored block skips execution,
+    /// so leaves a reorg pruned would never re-emit and their settlement parks forever.
+    #[test]
+    fn exits_tap_disables_restore() {
+        let tx_elf = vprogs_zk_backend_risc0_test_suite::transaction_processor_elf();
+        let batch_elf = vprogs_zk_backend_risc0_test_suite::batch_processor_elf();
+        let aggregator_elf = vprogs_zk_backend_risc0_test_suite::batch_aggregator_elf();
+        let backend = Backend::new(&tx_elf, &batch_elf, &aggregator_elf, ProofType::Succinct);
+        let vm = RunnerVm::new(backend, ProvingPipeline::None);
+        assert!(Processor::supports_restore(&vm));
+        let (tap, _rx) = mpsc::unbounded_channel();
+        assert!(!Processor::supports_restore(&vm.with_exits_tap(tap)));
+    }
+}
