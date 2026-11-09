@@ -465,6 +465,20 @@ fn parse_exec_exit_key(key: &[u8]) -> Option<(u64, u32)> {
     Some((batch_id, tx_position))
 }
 
+/// Prefix for drained-settlement records in `StateSpace::Metadata`:
+/// `b"drained_settle" || tx_id(32)`, one entry per settlement whose leaf prefix was already
+/// drained, valued at the settlement's chain idx so a rollback can drop the entries above
+/// its floor.
+const DRAINED_SETTLE_PREFIX: &[u8] = b"drained_settle";
+
+/// Builds the metadata key recording one drained settlement by its tx id.
+fn drained_settle_key(tx_id: &Hash) -> [u8; 46] {
+    let mut key = [0u8; 46];
+    key[..14].copy_from_slice(DRAINED_SETTLE_PREFIX);
+    key[14..].copy_from_slice(&tx_id.as_bytes());
+    key
+}
+
 /// Appends one leaf to a persisted tap-message blob: script length, script bytes, amount.
 fn encode_leaf(out: &mut Vec<u8>, leaf: &ExitLeaf) {
     out.push(leaf.script_bytes().len() as u8);
@@ -493,19 +507,23 @@ fn decode_leaves(bytes: &[u8]) -> Option<Vec<ExitLeaf>> {
 /// arrival order, since worker threads deliver per-tx messages unordered) and persists every
 /// buffered message, so a settlement observed after a restart for a batch committed before it
 /// still finds its leaves: the bridge resumes from the restored sink tip and re-emits the
-/// settlement, while the tap never replays committed batches. Per settlement with a non-zero
+/// settlement, while the tap never replays committed batches. A tap re-sent under an id
+/// already buffered (a stop between a tx's execution and its batch commit re-executes the
+/// batch under the same id) replaces the buffered entry. Per settlement with a non-zero
 /// [`SettlementInfo::permission_spk_hash`], emits the smallest matching leaf prefix as an
-/// [`ExitsForBundle`] onto `exits_tx` and drains it, buffer and persisted entries together. A
-/// settlement whose prefix has not fully arrived yet parks as pending and is retried as leaves
-/// arrive (bridge and scheduler delivery order is not guaranteed); a newer settlement arriving
-/// while an older one is pending is a desync, logged (both named) but not fatal, and both still
-/// match once their leaves land. Zero-commitment settlements emitted no exits and consume none.
-/// `settlement_fwd`, when wired, receives each matched settlement so a downstream
-/// [`run_exit_indexer`] can pair it with the emitted bundle; the bundle is sent first, matching
-/// the indexer's exits-first biased select. Rollback markers drop pending settlements and
-/// buffered leaves above the floor (the replacement blocks re-execute the orphaned txs and
-/// re-emit their leaves) and forward the marker downstream so the indexer reverts what it
-/// already paired.
+/// [`ExitsForBundle`] onto `exits_tx` and drains it, buffer and persisted entries together,
+/// recording the settlement as drained alongside the delete; a settlement re-delivered after
+/// the drain that recorded it is skipped. A settlement whose prefix has not fully arrived
+/// yet parks as pending and is retried as leaves arrive (bridge and scheduler delivery order
+/// is not guaranteed); a newer settlement arriving while an older one is pending is a desync,
+/// logged (both named) but not fatal, and both still match once their leaves land.
+/// Zero-commitment settlements emitted no exits and consume none. `settlement_fwd`, when
+/// wired, receives each matched settlement so a downstream [`run_exit_indexer`] can pair it
+/// with the emitted bundle; the bundle is sent first, matching the indexer's exits-first
+/// biased select. Rollback markers drop pending settlements, buffered leaves, and
+/// drained-settlement records above the floor (the replacement blocks re-execute the
+/// orphaned txs and re-emit their leaves, and the resubmitted settlement re-arrives) and
+/// forward the marker downstream so the indexer reverts what it already paired.
 pub async fn run_exec_exits_joiner<S: Store>(
     store: S,
     mut leaves_rx: mpsc::UnboundedReceiver<ExitsForBatch>,
@@ -555,6 +573,13 @@ pub async fn run_exec_exits_joiner<S: Store>(
             for pos in &buf_pos[..k] {
                 wb.delete(StateSpace::Metadata, &exec_exit_key(pos.0, pos.1));
             }
+            // Same batch as the leaf deletes: recording the settlement apart from them would
+            // leave a restart re-delivering a settlement whose leaves are already gone.
+            wb.put(
+                StateSpace::Metadata,
+                &drained_settle_key(&settlement.tx_id),
+                &settlement.chain_idx.get().to_be_bytes(),
+            );
             store.commit(wb);
             buf.drain(..k);
             buf_pos.drain(..k);
@@ -569,14 +594,18 @@ pub async fn run_exec_exits_joiner<S: Store>(
                 Some(msg) => {
                     let pos = (msg.batch_id, msg.tx_position);
                     // Insert at the journal-order position: a settlement's commitment pins
-                    // journal order, so an out-of-order arrival must not displace it.
-                    let at = buf_pos.partition_point(|p| *p <= pos);
+                    // journal order, so an out-of-order arrival must not displace it. A
+                    // re-executed batch re-sends its tap under the same id (a stop between
+                    // execution and commit persisted the first copy), so the re-send
+                    // replaces the buffered entry instead of inserting a duplicate.
+                    let lo = buf_pos.partition_point(|p| *p < pos);
+                    let hi = buf_pos.partition_point(|p| *p <= pos);
                     let mut val = Vec::new();
                     for leaf in &msg.leaves {
                         encode_leaf(&mut val, leaf);
                     }
-                    buf.splice(at..at, msg.leaves.iter().cloned());
-                    buf_pos.splice(at..at, std::iter::repeat_n(pos, msg.leaves.len()));
+                    buf.splice(lo..hi, msg.leaves.iter().cloned());
+                    buf_pos.splice(lo..hi, std::iter::repeat_n(pos, msg.leaves.len()));
                     let mut wb = store.write_batch();
                     wb.put(StateSpace::Metadata, &exec_exit_key(pos.0, pos.1), &val);
                     store.commit(wb);
@@ -586,6 +615,18 @@ pub async fn run_exec_exits_joiner<S: Store>(
             },
             maybe_settlement = settlement_rx.recv() => match maybe_settlement {
                 Some(SettlementMsg::Observed(settlement)) => {
+                    // A re-delivered settlement's leaves were drained in a previous run and
+                    // the tap never replays committed batches, so parking it would block
+                    // every later settlement behind a match that can never complete.
+                    if store.get(StateSpace::Metadata, &drained_settle_key(&settlement.tx_id))
+                        .is_some()
+                    {
+                        log::debug!(
+                            "exec exits: skipping re-delivered settlement {} (already drained)",
+                            settlement.tx_id
+                        );
+                        continue;
+                    }
                     if let Some(older) = pending.back() {
                         log::error!(
                             "exec exits desync: settlement {} (new_state {:?}) arrived while {} \
@@ -611,6 +652,18 @@ pub async fn run_exec_exits_joiner<S: Store>(
                 Some(SettlementMsg::Rollback(floor)) => {
                     pending.retain(|settlement| settlement.chain_idx.get() <= floor);
                     let mut wb = store.write_batch();
+                    // A drained settlement above the floor is resubmitted in the replacement
+                    // block (keeping its txid); dropping its record lets the re-delivery
+                    // re-match the re-executed leaves.
+                    for (key, val) in store.prefix_iter(StateSpace::Metadata, DRAINED_SETTLE_PREFIX)
+                    {
+                        match <[u8; 8]>::try_from(val.as_slice()).map(u64::from_be_bytes) {
+                            Ok(idx) if idx > floor => {
+                                wb.delete(StateSpace::Metadata, &key);
+                            }
+                            _ => {}
+                        }
+                    }
                     let mut i = 0;
                     buf.retain(|_| {
                         let pos = buf_pos[i];
@@ -1876,6 +1929,149 @@ mod tests {
         handle2.await.unwrap();
         let store: RocksDbStore = RocksDbStore::open(dir.path());
         assert_eq!(store.prefix_iter(StateSpace::Metadata, EXEC_EXIT_PREFIX).count(), 0);
+    }
+
+    /// A stop between a tap's execution and its batch commit leaves the entry persisted while
+    /// the restart re-executes the batch under the same id, so the tap re-sends an identical
+    /// message. The re-send replaces the restored entry instead of inserting a duplicate: a
+    /// duplicate would leave the store holding one copy while the buffer holds two, and the
+    /// leftover leaf would corrupt every later settlement's prefix.
+    #[tokio::test]
+    async fn exec_joiner_reexecuted_tap_replaces_restored_entry() {
+        let dir = tempdir().unwrap();
+
+        // First incarnation: buffer one tx's leaves, then stop before the batch commits.
+        let (leaves_tx, settlement_tx, _exits_rx, handle) = joiner_harness(&dir).await;
+        let first = vec![test_leaf(0x11, 100)];
+        leaves_tx.send(tap_msg(1, 0, first.clone())).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        drop(leaves_tx);
+        drop(settlement_tx);
+        handle.await.unwrap();
+
+        // Second incarnation: the batch re-executes under the same id and re-sends its tap,
+        // then each of two settlements covers only its own batch's leaves.
+        let (leaves_tx2, settlement_tx2, mut exits_rx2, _handle2) = joiner_harness(&dir).await;
+        leaves_tx2.send(tap_msg(1, 0, first.clone())).unwrap();
+        settlement_tx2
+            .send(SettlementMsg::Observed(SettlementInfo {
+                tx_id: Hash::from_bytes([0xaa; 32]),
+                new_state: [0x51; 32],
+                permission_spk_hash: permission_commitment(&first),
+                ..Default::default()
+            }))
+            .unwrap();
+        let bundle = exits_rx2.recv().await.expect("first settlement drained its own leaves");
+        assert_eq!(bundle.leaves.to_vec(), first);
+
+        let second = vec![test_leaf(0x77, 700)];
+        leaves_tx2.send(tap_msg(2, 0, second.clone())).unwrap();
+        settlement_tx2
+            .send(SettlementMsg::Observed(SettlementInfo {
+                tx_id: Hash::from_bytes([0xbb; 32]),
+                new_state: [0x52; 32],
+                permission_spk_hash: permission_commitment(&second),
+                ..Default::default()
+            }))
+            .unwrap();
+        let bundle = tokio::time::timeout(std::time::Duration::from_millis(500), exits_rx2.recv())
+            .await
+            .expect("later settlement matched a clean buffer")
+            .expect("bundle received");
+        assert_eq!(bundle.leaves.to_vec(), second);
+        assert!(exits_rx2.try_recv().is_err());
+    }
+
+    /// Each drained settlement records its tx id in the same write batch as the deleted
+    /// leaves, so a settlement the bridge re-delivers after a restart (it emits events while
+    /// fetching, before the covering block is scheduled) is skipped instead of parking at the
+    /// front of `pending` with no leaves left to match, which would block every later
+    /// settlement.
+    #[tokio::test]
+    async fn exec_joiner_redelivered_settlement_skips_and_does_not_block() {
+        let dir = tempdir().unwrap();
+
+        // First incarnation: a full cycle drains the settlement and deletes its leaves.
+        let (leaves_tx, settlement_tx, mut exits_rx, handle) = joiner_harness(&dir).await;
+        let drained = vec![test_leaf(0x55, 500)];
+        leaves_tx.send(tap_msg(1, 0, drained.clone())).unwrap();
+        let settlement = SettlementInfo {
+            tx_id: Hash::from_bytes([0xcc; 32]),
+            new_state: [0x71; 32],
+            permission_spk_hash: permission_commitment(&drained),
+            ..Default::default()
+        };
+        settlement_tx.send(SettlementMsg::Observed(settlement)).unwrap();
+        let bundle = exits_rx.recv().await.expect("first cycle drained the settlement");
+        assert_eq!(bundle.leaves.to_vec(), drained);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        drop(leaves_tx);
+        drop(settlement_tx);
+        handle.await.unwrap();
+
+        // Second incarnation: the bridge replays the drained settlement first, then a fresh
+        // batch's leaves and settlement land.
+        let (leaves_tx2, settlement_tx2, mut exits_rx2, _handle2) = joiner_harness(&dir).await;
+        settlement_tx2.send(SettlementMsg::Observed(settlement)).unwrap();
+        let fresh = vec![test_leaf(0x66, 600)];
+        leaves_tx2.send(tap_msg(2, 0, fresh.clone())).unwrap();
+        settlement_tx2
+            .send(SettlementMsg::Observed(SettlementInfo {
+                tx_id: Hash::from_bytes([0xdd; 32]),
+                new_state: [0x72; 32],
+                permission_spk_hash: permission_commitment(&fresh),
+                ..Default::default()
+            }))
+            .unwrap();
+        let bundle = tokio::time::timeout(std::time::Duration::from_millis(500), exits_rx2.recv())
+            .await
+            .expect("replayed settlement skipped, later settlement still drained")
+            .expect("bundle received");
+        assert_eq!(bundle.leaves.to_vec(), fresh);
+        assert!(exits_rx2.try_recv().is_err());
+    }
+
+    /// A rollback drops drained-settlement records above its floor along with the pending
+    /// settlements and buffered leaves: the resubmitted settlement re-arrives (keeping its
+    /// txid) and must re-match the replacement blocks' re-executed leaves instead of being
+    /// skipped as already drained.
+    #[tokio::test]
+    async fn exec_joiner_rollback_drops_drained_records_above_floor() {
+        let dir = tempdir().unwrap();
+        let (leaves_tx, settlement_tx, mut exits_rx, _handle) = joiner_harness(&dir).await;
+
+        let leaves = vec![test_leaf(0x55, 500)];
+        leaves_tx.send(tap_msg(1, 0, leaves.clone())).unwrap();
+        settlement_tx
+            .send(SettlementMsg::Observed(SettlementInfo {
+                tx_id: Hash::from_bytes([0xee; 32]),
+                new_state: [0x73; 32],
+                permission_spk_hash: permission_commitment(&leaves),
+                chain_idx: 5u64.into(),
+                ..Default::default()
+            }))
+            .unwrap();
+        let bundle = exits_rx.recv().await.expect("settlement drained before the reorg");
+        assert_eq!(bundle.leaves.to_vec(), leaves);
+
+        // The reorg rolls the drained settlement back; the replacement blocks re-execute the
+        // tx and re-emit its leaves, and the settler resubmits under the same txid.
+        settlement_tx.send(SettlementMsg::Rollback(3)).unwrap();
+        leaves_tx.send(tap_msg(1, 0, leaves.clone())).unwrap();
+        settlement_tx
+            .send(SettlementMsg::Observed(SettlementInfo {
+                tx_id: Hash::from_bytes([0xee; 32]),
+                new_state: [0x73; 32],
+                permission_spk_hash: permission_commitment(&leaves),
+                chain_idx: 9u64.into(),
+                ..Default::default()
+            }))
+            .unwrap();
+        let bundle = tokio::time::timeout(std::time::Duration::from_millis(500), exits_rx.recv())
+            .await
+            .expect("resubmitted settlement re-matched the re-executed leaves")
+            .expect("bundle received");
+        assert_eq!(bundle.leaves.to_vec(), leaves);
     }
 
     #[tokio::test]
