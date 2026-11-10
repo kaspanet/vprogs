@@ -888,9 +888,9 @@ fn bridge_params(
 /// the covenant passed, cancelling live work and re-proving it in a loop until the watch
 /// catches up. Each request is therefore confirmed against the chain first (one UTXO read on
 /// the tip's continuation outpoint); a superseded tip resolves through the ordinary adoption
-/// paths once the watch publishes the spend. A probe that itself fails (a transient RPC error)
-/// skips its round without deciding liveness, so the drain keeps serving later requests instead
-/// of dying on the first network blip.
+/// paths once the watch publishes the spend. A probe that itself fails (an RPC error) skips its
+/// round without deciding liveness, so the drain keeps serving later requests instead of dying
+/// on the first network blip.
 pub async fn run_covenant_reroot(
     api: NodeApi<RunnerStore, RunnerVm>,
     client: KaspaRpcClient,
@@ -899,8 +899,8 @@ pub async fn run_covenant_reroot(
 ) {
     while let Some(tip) = re_root_rx.recv().await {
         match settlement_tip_live(&client, &params, &tip).await {
-            Some(true) => {}
-            Some(false) => {
+            Ok(true) => {}
+            Ok(false) => {
                 log::info!(
                     "runner: covenant re-root for settlement {} skipped: its continuation is \
                      spent, a later settlement owns the covenant",
@@ -908,10 +908,12 @@ pub async fn run_covenant_reroot(
                 );
                 continue;
             }
-            None => {
-                log::warn!(
+            // The fold this request came from parks behind a skipped round (its per-tip dedupe
+            // consumes the request), so surface the failure at error level with its cause.
+            Err(err) => {
+                log::error!(
                     "runner: covenant re-root for settlement {} skipped this round: the \
-                     tip-liveness probe failed (a transient RPC error)",
+                     tip-liveness probe failed: {err}",
                     tip.tx_id
                 );
                 continue;
