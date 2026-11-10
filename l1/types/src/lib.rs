@@ -50,6 +50,9 @@ pub struct PermissionSpend {
     pub spend_txid: [u8; 32],
     /// Output index of the continuation permission UTXO; `None` when nothing remains unclaimed.
     pub new_outpoint_index: Option<u32>,
+    /// Sink idx of the containing chain block; the bridge stamps it at append time so consumers
+    /// can revert above a rollback floor.
+    pub chain_idx: u64,
 }
 
 impl BorshSerialize for PermissionSpend {
@@ -66,7 +69,8 @@ impl BorshSerialize for PermissionSpend {
         self.spent_txid.serialize(writer)?;
         self.spent_index.serialize(writer)?;
         self.spend_txid.serialize(writer)?;
-        self.new_outpoint_index.serialize(writer)
+        self.new_outpoint_index.serialize(writer)?;
+        self.chain_idx.serialize(writer)
     }
 }
 
@@ -86,8 +90,32 @@ impl BorshDeserialize for PermissionSpend {
             spent_index: u32::deserialize_reader(reader)?,
             spend_txid: <[u8; 32]>::deserialize_reader(reader)?,
             new_outpoint_index: Option::<u32>::deserialize_reader(reader)?,
+            chain_idx: u64::deserialize_reader(reader)?,
         })
     }
+}
+
+/// Marker-carrying settlement stream: chain events in per-channel FIFO order.
+// The marker variant is deliberately thin against a 240-byte payload; boxing would tax every
+// consumer for one variant that rides the same channel a handful of times per reorg.
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SettlementMsg {
+    /// A covenant settlement observed in an appended chain block.
+    Observed(SettlementInfo),
+    /// The chain rolled back to the given sink idx; revert everything above it.
+    Rollback(u64),
+}
+
+/// Marker-carrying permission-spend stream: chain events in per-channel FIFO order.
+// Same deliberate thin-marker shape as [`SettlementMsg`].
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SpendMsg {
+    /// A tracked permission output was spent in an appended chain block.
+    Spent(PermissionSpend),
+    /// The chain rolled back to the given sink idx; revert everything above it.
+    Rollback(u64),
 }
 
 #[cfg(test)]
@@ -112,6 +140,7 @@ mod tests {
             spent_index: 1,
             spend_txid: [0x44; 32],
             new_outpoint_index: Some(1),
+            chain_idx: 5,
         };
         let bytes = borsh::to_vec(&spend).expect("serialize");
         let decoded = PermissionSpend::try_from_slice(&bytes).expect("deserialize");

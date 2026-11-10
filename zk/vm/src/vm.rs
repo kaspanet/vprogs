@@ -32,8 +32,9 @@ pub struct Vm<B: Backend, S: Store> {
     backend: B,
     /// Proving strategy (None, Transaction-only, or full Batch).
     proving_pipeline: Arc<ProvingPipeline<S, Self>>,
-    /// Optional sink for per-tx exit leaves extracted from tx journals. Wired only by the exec
-    /// node: the proving node's aggregate prover already publishes per-bundle exits, and a second
+    /// Optional sink for per-tx exit leaves extracted from tx journals, tagged with the
+    /// executing batch's id and the tx's position in it. Wired only by the exec node: the
+    /// proving node's aggregate prover already publishes per-bundle exits, and a second
     /// emission there would double-feed the exit indexer.
     exits_tap: Option<mpsc::UnboundedSender<ExitsForBatch>>,
 }
@@ -54,8 +55,9 @@ impl<B: Backend, S: Store> Vm<B, S> {
     /// when one is wired. A journal that fails to decode drops that tx's exits with a warning
     /// instead of failing the tx: stdout already validated the execution, so a malformed exit
     /// blob is a codebase mismatch the downstream root attribution would surface anyway.
-    // ponytail: no reorg dedup; a rolled-back-and-replayed tx re-emits its leaves, root
-    // attribution blocks (never mis-attributes) on the duplicated prefix, dedup by tx id if a
+    // ponytail: no in-flight dedup; a leaf message already queued when the reorg marker lands
+    // keeps a stale copy that duplicates the replacement's re-emission (root attribution
+    // blocks, never mis-attributes) until a later marker prunes it; dedup by tx id if a
     // reorg-heavy lane ever needs it.
     fn tap_exits(&self, batch_id: u64, tx_position: u32, journal_bytes: &[u8]) {
         let Some(tap) = &self.exits_tap else { return };
@@ -136,9 +138,11 @@ impl<B: Backend, S: Store> Processor<S> for Vm<B, S> {
         *self.backend.batch_image_id()
     }
 
-    /// Restore is safe only without proving; any proving mode needs per-tx pre-images.
+    /// Restore is safe only without proving and without an exits tap: any proving mode needs
+    /// per-tx pre-images, and a restored block skips execution, so leaves a rollback pruned
+    /// never re-emit.
     fn supports_restore(&self) -> bool {
-        matches!(*self.proving_pipeline, ProvingPipeline::None)
+        self.exits_tap.is_none() && matches!(*self.proving_pipeline, ProvingPipeline::None)
     }
 
     type Transaction = L1Transaction;
