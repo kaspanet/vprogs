@@ -134,16 +134,22 @@ pub(crate) async fn covenant_liveness(
 /// UTXO. The settlement watch lags the covenant by the bridge's follow depth, so a decision
 /// made against a watch value must confirm it here before acting: a spent continuation means a
 /// later settlement already superseded `tip` and owns the covenant.
+///
+/// Returns `None` when the probe itself failed (a transient RPC error): not a liveness
+/// answer, so the round is skipped rather than decided on it.
 pub async fn settlement_tip_live(
     client: &KaspaRpcClient,
     params: &Params,
     tip: &SettlementInfo,
-) -> bool {
+) -> Option<bool> {
     let spk = p2sh_spk_from_hash(&tip.continuation_spk_hash);
     let prefix = Prefix::from(params.net.network_type());
+    // Infallible for the standard P2SH SPK built from the continuation hash.
     let address = extract_script_pub_key_address(&spk, prefix).expect("covenant P2SH address");
-    let utxos = client.get_utxos_by_addresses(vec![address]).await.expect("get_utxos_by_addresses");
-    utxos
-        .into_iter()
-        .any(|e| TransactionOutpoint::from(e.outpoint) == TransactionOutpoint::new(tip.tx_id, 0))
+    let utxos = client.get_utxos_by_addresses(vec![address]).await.ok()?;
+    Some(
+        utxos.into_iter().any(|e| {
+            TransactionOutpoint::from(e.outpoint) == TransactionOutpoint::new(tip.tx_id, 0)
+        }),
+    )
 }

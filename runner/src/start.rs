@@ -888,7 +888,9 @@ fn bridge_params(
 /// the covenant passed, cancelling live work and re-proving it in a loop until the watch
 /// catches up. Each request is therefore confirmed against the chain first (one UTXO read on
 /// the tip's continuation outpoint); a superseded tip resolves through the ordinary adoption
-/// paths once the watch publishes the spend.
+/// paths once the watch publishes the spend. A probe that itself fails (a transient RPC error)
+/// skips its round without deciding liveness, so the drain keeps serving later requests instead
+/// of dying on the first network blip.
 pub async fn run_covenant_reroot(
     api: NodeApi<RunnerStore, RunnerVm>,
     client: KaspaRpcClient,
@@ -896,13 +898,24 @@ pub async fn run_covenant_reroot(
     mut re_root_rx: mpsc::UnboundedReceiver<SettlementInfo>,
 ) {
     while let Some(tip) = re_root_rx.recv().await {
-        if !settlement_tip_live(&client, &params, &tip).await {
-            log::info!(
-                "runner: covenant re-root for settlement {} skipped: its continuation is \
-                 spent, a later settlement owns the covenant",
-                tip.tx_id
-            );
-            continue;
+        match settlement_tip_live(&client, &params, &tip).await {
+            Some(true) => {}
+            Some(false) => {
+                log::info!(
+                    "runner: covenant re-root for settlement {} skipped: its continuation is \
+                     spent, a later settlement owns the covenant",
+                    tip.tx_id
+                );
+                continue;
+            }
+            None => {
+                log::warn!(
+                    "runner: covenant re-root for settlement {} skipped this round: the \
+                     tip-liveness probe failed (a transient RPC error)",
+                    tip.tx_id
+                );
+                continue;
+            }
         }
         let boundary = tip.block_prove_to;
         let settlement = tip.tx_id;
@@ -923,7 +936,9 @@ pub async fn run_covenant_reroot(
                  (settlement {settlement})"
             ),
             Err(err) => {
-                log::warn!("runner: covenant re-root for settlement {settlement} failed: {err}")
+                // The fold the request came from parks permanently behind a failed re-root
+                // (nothing retries the tip), so surface it at error level.
+                log::error!("runner: covenant re-root for settlement {settlement} failed: {err}")
             }
         }
     }
