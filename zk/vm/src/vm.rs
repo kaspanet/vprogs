@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
-use vprogs_l1_types::{ChainBlockMetadata, L1Transaction};
+use vprogs_l1_types::{ChainBlockMetadata, L1Transaction, TransactionId};
 use vprogs_scheduling_scheduler::{Processor, ScheduledBatch, TransactionContext};
 use vprogs_storage_types::Store;
 use vprogs_zk_abi::{
@@ -14,13 +14,17 @@ use crate::{Backend, ProvingPipeline};
 
 /// One tx's committed exit leaves tagged with their journal position: the executing batch's
 /// sequential id and the tx's zero-based position within that batch. The pair totally orders
-/// leaves into journal order regardless of arrival order across worker threads.
+/// leaves into journal order regardless of arrival order across worker threads. The L1 txid
+/// identifies the tx across re-executions: a reorg re-executes the same tx under a new batch
+/// id, and the txid is what tells the consumer the leaves are the same run re-sent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExitsForBatch {
     /// Sequential batch id of the executing batch.
     pub batch_id: u64,
     /// Zero-based position of the tx within the batch.
     pub tx_position: u32,
+    /// The executing L1 transaction's id.
+    pub l1_txid: TransactionId,
     /// Leaves the tx's journal committed, in journal order.
     pub leaves: Vec<ExitLeaf>,
 }
@@ -51,15 +55,18 @@ impl<B: Backend, S: Store> Vm<B, S> {
         self
     }
 
-    /// Sends the tx journal's committed exits into the tap under `(batch_id, tx_position)`,
-    /// when one is wired. A journal that fails to decode drops that tx's exits with a warning
-    /// instead of failing the tx: stdout already validated the execution, so a malformed exit
-    /// blob is a codebase mismatch the downstream root attribution would surface anyway.
-    // ponytail: no in-flight dedup; a leaf message already queued when the reorg marker lands
-    // keeps a stale copy that duplicates the replacement's re-emission (root attribution
-    // blocks, never mis-attributes) until a later marker prunes it; dedup by tx id if a
-    // reorg-heavy lane ever needs it.
-    fn tap_exits(&self, batch_id: u64, tx_position: u32, journal_bytes: &[u8]) {
+    /// Sends the tx journal's committed exits into the tap under `(batch_id, tx_position)`
+    /// and the tx's L1 id, when one is wired. A journal that fails to decode drops that tx's
+    /// exits with a warning instead of failing the tx: stdout already validated the execution,
+    /// so a malformed exit blob is a codebase mismatch the downstream root attribution would
+    /// surface anyway.
+    fn tap_exits(
+        &self,
+        batch_id: u64,
+        tx_position: u32,
+        l1_txid: &TransactionId,
+        journal_bytes: &[u8],
+    ) {
         let Some(tap) = &self.exits_tap else { return };
         let decoded = JournalEntries::decode(journal_bytes).and_then(|entries| {
             match entries.output_commitment {
@@ -78,7 +85,8 @@ impl<B: Backend, S: Store> Vm<B, S> {
         match decoded {
             Ok(leaves) if !leaves.is_empty() => {
                 // Receiver dropped means no consumer is listening; silently ignore.
-                let _ = tap.send(ExitsForBatch { batch_id, tx_position, leaves });
+                let _ =
+                    tap.send(ExitsForBatch { batch_id, tx_position, l1_txid: *l1_txid, leaves });
             }
             Ok(_) => {}
             Err(e) => log::warn!("vm exits tap: undecodable tx journal exits: {e:?}"),
@@ -97,7 +105,12 @@ impl<B: Backend, S: Store> Processor<S> for Vm<B, S> {
 
         // Forward the journal's exits before applying storage ops; the decode borrows the journal
         // buffer and converts to owned leaves immediately.
-        self.tap_exits(ctx.batch().checkpoint().index(), ctx.batch_position(), &outcome.journal);
+        self.tap_exits(
+            ctx.batch().checkpoint().index(),
+            ctx.batch_position(),
+            &ctx.scheduler_tx().tx.id(),
+            &outcome.journal,
+        );
 
         // Submit to proving pipeline (no-op if ProvingPipeline::None).
         self.proving_pipeline.submit_transaction(ctx.scheduled_tx(), input_bytes);
