@@ -64,6 +64,7 @@ impl Config {
             seed_depth: opt_u64("TN10_SEED_DEPTH", 500),
             min_confirmations: opt("TN10_MIN_CONFIRMATIONS")
                 .map(|s| s.parse().expect("TN10_MIN_CONFIRMATIONS must be a u64")),
+            adaptive_filter_disabled: opt("TN10_DISABLE_ADAPTIVE_FILTER").is_some_and(|s| s != "0"),
             prove: opt("TN10_SETTLE").is_some_and(|s| s != "0"),
             start_mode,
         };

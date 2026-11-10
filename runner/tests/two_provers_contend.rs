@@ -1734,6 +1734,7 @@ async fn fresh_deploy_pins_lane_tip_at_the_bridge_root() {
         start_from: None,
         seed_depth: 10,
         min_confirmations: None,
+        adaptive_filter_disabled: false,
         prove: true,
         start_mode: Some(StartMode::Fresh),
     };
@@ -1915,6 +1916,7 @@ async fn spawn_prover(
             finality_depth: params.finality_depth(),
             seed_depth: 0,
             min_confirmations: None,
+            adaptive_filter_disabled: false,
             start_from,
             observers: BridgeObservers {
                 tip_daa: None,
