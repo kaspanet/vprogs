@@ -268,11 +268,11 @@ fn harness(blocks: &[(u8, u64)], one_bundle: bool) -> Harness {
         },
     );
 
-    // Boot determinism: wait out the worker's startup so its committed-gap gate has passed
-    // (empty journal, nothing committed) before the first batch commits. A worker that boots
-    // after a commit treats the whole committed span as a restart gap and re-feeds it, which
-    // would emit duplicate bundles unrelated to the behavior under test.
-    thread::sleep(Duration::from_millis(300));
+    // Boot determinism: the committed-gap gate must see an empty journal before the first batch
+    // commits. A worker that boots after a commit treats the whole committed span as a restart
+    // gap and re-feeds it, which would emit duplicate bundles unrelated to the behavior under
+    // test.
+    prover.wait_booted();
 
     if one_bundle {
         // Submit every batch while the worker parks on the first one's artifact, then publish

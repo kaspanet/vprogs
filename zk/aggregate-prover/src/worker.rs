@@ -272,6 +272,10 @@ where
             }
         }
 
+        // Startup passes complete: the committed-gap gate has evaluated the journal, so commits
+        // after this point are new work rather than a restart gap.
+        self.prover.booted.store(1);
+
         // Wake-only clone of the settlement watch for the park arm below.
         let mut settlement_wake = self.settlement.clone();
 
