@@ -319,9 +319,9 @@ fn setup(failing: bool, succeed_from_len: usize) -> Harness {
         },
     );
 
-    // Boot determinism: wait out the worker's startup so its committed-gap gate has passed
-    // (empty journal, nothing committed) before the first batch commits.
-    thread::sleep(Duration::from_millis(300));
+    // Boot determinism: the committed-gap gate must see an empty journal before the first
+    // batch commits.
+    prover.wait_booted();
 
     let batch = scheduler.schedule(block(1, 0), vec![lane_tx()]);
     batch.wait_committed_blocking();
