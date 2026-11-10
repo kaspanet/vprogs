@@ -1170,8 +1170,8 @@ where
     /// feeds it after the journal tail, ahead of new work. Returns [`GapOutcome::Covered`] with
     /// the recorded entry's end index for the advance pass's scope, [`GapOutcome::Nothing`] when
     /// the range needs no cover, or [`GapOutcome::Deferred`] when the pass could not resolve the
-    /// range on this wake (a dead lane-proof fetch, or a pending re-root request) and the caller
-    /// should retry on later wakes.
+    /// range on this wake (a dead lane-proof fetch, a pending re-root request, or a covenant
+    /// boundary at or below a live journal tail) and the caller should retry on later wakes.
     ///
     /// `tip` bounds the range below: a settlement boundary landing inside it splits the range
     /// exactly as [`split_straddler`](Self::split_straddler) splits a journaled entry. `bound`
@@ -1282,6 +1282,26 @@ where
         // the settler skips it, and the entry re-poisons the journal the resume pass just
         // cleaned.
         if let Some(tip) = tip {
+            if !inside && tail_end > 0 {
+                // A boundary at or below a live journal tail leaves the watch tip trailing the
+                // tail's own chain, so it cannot name the re-cover's base: the tail is either
+                // still settling (the range legitimately chains from the tail's exit, which the
+                // tip trails by a whole bundle) or already superseded by a settlement the watch
+                // has not published yet. Composing on the first guess re-covers from a base the
+                // covenant may have passed, and pinning the tip and re-rooting on the second
+                // rolls execution back under live work while the re-drive re-commits the same
+                // hash-keyed batches from their cached receipts and the pin re-fires, parking
+                // the gap in a rollback/re-drive loop. Defer instead: the tail settling or
+                // being superseded advances the watch past the tail, and the retry decides with
+                // a tip that can pin the base.
+                log::debug!(
+                    "aggregate-prover: covenant boundary {} at or below the journal tail \
+                     {tail_end}; deferring the committed-gap re-cover until the watch advances \
+                     past the tail",
+                    tip.block_prove_to,
+                );
+                return GapOutcome::Deferred(bound);
+            }
             let journal = B::journal_bytes(&covered[0].2);
             let st = BatchTransition::ref_from_bytes(&journal).expect("batch journal");
             if st.prev_state != tip.new_state || st.prev_lane_tip != tip.new_lane_tip {
