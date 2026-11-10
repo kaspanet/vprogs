@@ -620,6 +620,9 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         // their transactions vanish from L2 and the lane-tip chain diverges, silently. Drop the
         // response and let the caller refetch from the rolled-back tip. Removals are exempt:
         // `handle_reorg` itself moved the tip to the fork point the additions chain from.
+        // Defense-in-depth: under the current wiring an external rollback lands in the
+        // api_requests arm between fetches, never during one, so this guard holds only if a
+        // future change runs fetches concurrently with rollback handling.
         if response.removed_chain_block_hashes.is_empty() && self.tip_metadata().hash != from {
             log::info!(
                 "L1 bridge: sink tip moved from {from} during the fetch; refetching from the \
