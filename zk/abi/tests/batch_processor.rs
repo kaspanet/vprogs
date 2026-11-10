@@ -68,6 +68,8 @@ struct Settled {
     prev_state: [u8; 32],
     /// `new_state` the batch settles to.
     new_state: [u8; 32],
+    /// Lane tip the batch derives.
+    new_lane_tip: [u8; 32],
     /// Total amount the batch's exits pay out.
     exits_paid: u64,
     /// Number of exits the batch pays out.
@@ -196,6 +198,85 @@ fn verifier_rejects_a_success_journal_with_more_outputs_than_input_resources() {
     );
 }
 
+/// A decode-rejected carrier journals its real version with no execution context; the lane must
+/// keep verifying the healthy traffic around it.
+#[test]
+fn a_decode_rejected_tx_keeps_the_batch_settleable() {
+    let (_dir, store) = funded_store();
+    let proof =
+        store.prove(&[ResourceId::from(ALICE_KEY), ResourceId::from(BOB_KEY)], VERSION).unwrap();
+
+    let context_hash = context_hash();
+    let healthy = tx_journal(
+        &Hash::from_bytes([0xE1; 32]),
+        5,
+        &context_hash,
+        &[(0, ALICE_KEY, ALICE_FUNDED)],
+        &[],
+        &[None],
+    );
+    let rejected = rejected_tx_journal(&Hash::from_bytes([0xE2; 32]), 9);
+
+    let settled = settle(&batch_inputs(&proof, &[healthy, rejected]))
+        .expect("batch with a decode-rejected carrier must settle");
+    assert_eq!(settled.exits_paid, 0);
+}
+
+/// A decode-rejected carrier folds into the activity leaf at its real version: the same batch
+/// with the rejection replaced by a successful execution of the same tx id, version, and
+/// merge_idx derives the same lane tip, so a batch holding the rejection still settles against
+/// the leaf L1 builds over the carrier.
+#[test]
+fn a_decode_rejected_tx_folds_into_the_activity_leaf_at_its_real_version() {
+    let (_dir, store) = funded_store();
+    let proof =
+        store.prove(&[ResourceId::from(ALICE_KEY), ResourceId::from(BOB_KEY)], VERSION).unwrap();
+
+    let context_hash = context_hash();
+    let healthy = tx_journal(
+        &Hash::from_bytes([0xE1; 32]),
+        5,
+        &context_hash,
+        &[(0, ALICE_KEY, ALICE_FUNDED)],
+        &[],
+        &[None],
+    );
+    let tx_id = Hash::from_bytes([0xE2; 32]);
+    let rejected = rejected_tx_journal(&tx_id, 9);
+    let executed = tx_journal(&tx_id, 9, &context_hash, &[], &[], &[]);
+
+    let with_rejection = settle(&batch_inputs(&proof, &[healthy.clone(), rejected]))
+        .expect("batch with a decode-rejected carrier must settle");
+    let with_execution = settle(&batch_inputs(&proof, &[healthy, executed]))
+        .expect("batch with the executed carrier must settle");
+    assert_eq!(with_rejection.new_lane_tip, with_execution.new_lane_tip);
+}
+
+/// The verifier accepts a v1 journal without an execution context only for a decode rejection:
+/// a v1 entry claiming a guest error would mean an executed tx whose context vanished.
+#[test]
+fn verifier_rejects_a_v1_rejection_journal_with_a_guest_error() {
+    let (_dir, store) = funded_store();
+    let proof =
+        store.prove(&[ResourceId::from(ALICE_KEY), ResourceId::from(BOB_KEY)], VERSION).unwrap();
+
+    let context_hash = context_hash();
+    let healthy = tx_journal(
+        &Hash::from_bytes([0xE1; 32]),
+        5,
+        &context_hash,
+        &[(0, ALICE_KEY, ALICE_FUNDED)],
+        &[],
+        &[None],
+    );
+    let version_incompatible =
+        rejection_tx_journal(&Hash::from_bytes([0xE2; 32]), 9, &vprogs_zk_abi::Error::Guest(1));
+
+    let err = settle(&batch_inputs(&proof, &[healthy, version_incompatible]))
+        .expect_err("a v1 guest-error journal without a context must not settle");
+    assert!(err.contains("missing execution_context"), "unexpected panic: {err}");
+}
+
 /// Opens a store holding Alice's funded account and Bob's account at [`VERSION`].
 fn funded_store() -> (TempDir, RocksDbStore) {
     let dir = TempDir::new().unwrap();
@@ -232,6 +313,7 @@ fn settle(input_bytes: &[u8]) -> Result<Settled, String> {
         Settled {
             prev_state: transition.prev_state,
             new_state: transition.new_state,
+            new_lane_tip: transition.new_lane_tip.into(),
             exits_paid: exits.iter().map(|&(_, amount)| amount).sum(),
             exit_count: exits.len(),
         }
@@ -306,10 +388,12 @@ fn tx_journal(
 ) -> Vec<u8> {
     let mut buf = Vec::new();
 
-    // Input commitment: version, tx_id, merge_idx, then the v1 execution context.
+    // Input commitment: version, tx_id, merge_idx, context-present flag, then the v1
+    // execution context.
     buf.extend_from_slice(&Transaction::V1.to_le_bytes());
     buf.extend_from_slice(tx_id.as_slice());
     buf.extend_from_slice(&merge_idx.to_le_bytes());
+    buf.push(1);
     buf.extend_from_slice(context_hash.as_slice());
     buf.extend_from_slice(&(resources.len() as u32).to_le_bytes());
     for (index, id, hash) in resources {
@@ -338,6 +422,25 @@ fn tx_journal(
         }
     }
 
+    buf
+}
+
+/// Encodes one decode-rejection tx journal: the carrier's real version, the tx id derived from
+/// its blobs, no execution context, and a Decode error output.
+fn rejected_tx_journal(tx_id: &Hash, merge_idx: u32) -> Vec<u8> {
+    rejection_tx_journal(tx_id, merge_idx, &vprogs_zk_abi::Error::Decode("malformed".into()))
+}
+
+/// Encodes one never-executed rejection tx journal over the given error shape: the carrier's
+/// real version, no execution context.
+fn rejection_tx_journal(tx_id: &Hash, merge_idx: u32, error: &vprogs_zk_abi::Error) -> Vec<u8> {
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&Transaction::V1.to_le_bytes());
+    buf.extend_from_slice(tx_id.as_slice());
+    buf.extend_from_slice(&merge_idx.to_le_bytes());
+    buf.push(0);
+    buf.push(OutputCommitment::ERROR);
+    error.encode(&mut buf);
     buf
 }
 
