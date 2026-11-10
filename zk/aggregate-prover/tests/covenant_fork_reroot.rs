@@ -232,8 +232,9 @@ fn harness() -> Harness {
         },
     );
 
-    // Boot determinism: let the worker's committed-gap gate pass before the first commit.
-    thread::sleep(Duration::from_millis(300));
+    // Boot determinism: the committed-gap gate must see an empty journal before the first
+    // commit.
+    prover.wait_booted();
 
     Harness { _temp: temp_dir, scheduler, prover, queue, settlement_tx, re_root_rx, journal }
 }
