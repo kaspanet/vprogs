@@ -24,9 +24,10 @@ use tokio::sync::{mpsc, watch};
 use vprogs_core_atomics::AsyncQueue;
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId, SchedulerTransaction};
-use vprogs_l1_types::{ChainBlockMetadata, SettlementInfo};
+use vprogs_l1_types::{ChainBlockMetadata, SettlementInfo, TransactionId};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler, TransactionContext};
-use vprogs_state_settlement_journal::StoreJournal;
+use vprogs_state_proof_receipt::{AggregatorKey, Prefix};
+use vprogs_state_settlement_journal::{JournalEntry, StoreJournal};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_abi::batch_aggregator::{StateTransition, StateTransitionArgs};
@@ -61,14 +62,34 @@ fn block(hash: u8, parent_id: u64, prev_lane_tip: Hash) -> ChainBlockMetadata {
 }
 
 fn settlement_journal() -> Vec<u8> {
+    transition(pins(&[0x00; 32], &Hash::default()), pins(&[0x11; 32], &Hash::default()))
+}
+
+/// One end of a synthetic transition: the state root and lane tip at it.
+struct Pins<'a> {
+    /// State root at this end of the transition.
+    state: &'a [u8; 32],
+    /// Lane tip at this end of the transition.
+    lane_tip: &'a Hash,
+}
+
+/// Builds [`Pins`] from a state root and lane tip.
+fn pins<'a>(state: &'a [u8; 32], lane_tip: &'a Hash) -> Pins<'a> {
+    Pins { state, lane_tip }
+}
+
+/// [`settlement_journal`] with explicit entry and exit pins, so a fixture can place a
+/// transition's two ends independently (the tail bundle's receipt exits where the killed gap
+/// batch's receipt enters).
+fn transition(entry: Pins<'_>, exit: Pins<'_>) -> Vec<u8> {
     let mut buf = Vec::new();
     StateTransition::encode(
         &mut buf,
         StateTransitionArgs {
-            prev_state: &[0x00; 32],
-            prev_lane_tip: &Hash::default(),
-            new_state: &[0x11; 32],
-            new_lane_tip: &Hash::default(),
+            prev_state: entry.state,
+            prev_lane_tip: entry.lane_tip,
+            new_state: exit.state,
+            new_lane_tip: exit.lane_tip,
             new_seq_commit: &seq_commit(),
             covenant_id: &[0u8; 32],
             tx_image_id: &TX_IMAGE_ID,
@@ -545,6 +566,130 @@ fn killed_range_above_the_boundary_requests_reroot() {
         .expect("the uncoverable range must request a rollback to the covenant boundary");
     assert_eq!(tip.block_prove_to, block_hash(1));
     assert!(journal.entries().is_empty(), "no unlandable entry may be journaled");
+
+    prover.shutdown();
+    scheduler.shutdown();
+}
+
+/// A journal tail above the covenant tip with a killed gap batch above the tail (a restart
+/// during ordinary settlement latency, the kill landing between a batch's proof and its
+/// journal record): the trailing tip cannot name the re-cover's base, so the pass must defer
+/// rather than act. Composing from the tail's exit re-covered from a base the covenant may
+/// have already passed (a competitor settling past the tail while the watch still published
+/// the stale tip), returned coverage, and disarmed the retry whose re-root was the only
+/// recovery for the receipt-less range; pinning the trailing tip and re-rooting instead rolled
+/// execution back under the live tail while the re-drive re-committed the same hash-keyed
+/// batches from their cached receipts and the pin re-fired, parking the gap in a
+/// rollback/re-drive loop. The deferral holds until the watch advances past the tail (the tail
+/// settling, or being superseded), and the retry then composes from a tip that can pin the
+/// base.
+#[test]
+fn gap_above_a_live_tail_defers_until_the_watch_passes_the_tail() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+    let journal = StoreJournal::new(storage.clone());
+    let mut scheduler = Scheduler::new(
+        ExecutionConfig::default().with_processor(PlainProcessor),
+        StorageConfig::default().with_store(storage),
+    );
+
+    // The live tail: batch 1 committed, proved and journaled, its bundle still settling. Its
+    // receipt enters at the covenant's pins (state 0x00, the zero lane tip) and exits at state
+    // 0x11, lane tip block 1.
+    let tail = scheduler.schedule(block(1, 0, Hash::default()), vec![lane_tx()]);
+    tail.wait_committed_blocking();
+    tail.write_batch_receipt(settlement_journal()).wait_blocking();
+    tail.publish_artifact(Some(settlement_journal()));
+    journal.record(
+        1,
+        &JournalEntry {
+            end_index: 1,
+            from_block: block_hash(1),
+            block_prove_to: block_hash(1),
+            seq_commit: seq_commit(),
+        },
+    );
+    scheduler
+        .state()
+        .receipt_store()
+        .write_agg_receipt(
+            AggregatorKey {
+                prefix: Prefix { checkpoint_index: 1.into() },
+                block_hash: block_hash(1).as_bytes(),
+                image_id: AGGREGATOR_IMAGE_ID,
+                seq_commit: seq_commit().as_bytes(),
+            },
+            transition(pins(&[0x00; 32], &Hash::default()), pins(&[0x11; 32], &block_hash(1))),
+        )
+        .wait_blocking();
+
+    // The killed gap batch: committed with its cached receipt entering at the tail's exit, but
+    // never journaled.
+    let gap_receipt =
+        transition(pins(&[0x11; 32], &block_hash(1)), pins(&[0x22; 32], &block_hash(2)));
+    let gap = scheduler.schedule(block(2, 1, block_hash(1)), vec![lane_tx()]);
+    gap.wait_committed_blocking();
+    gap.write_batch_receipt(gap_receipt.clone()).wait_blocking();
+    gap.publish_artifact(Some(gap_receipt));
+
+    let queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Vec<u8>>>> = AsyncQueue::new();
+    let (settlement_tx, settlement_rx) = watch::channel::<Option<SettlementInfo>>(None);
+    let (re_root_tx, mut re_root_rx) = mpsc::unbounded_channel();
+    let prover = AggregateProver::new(
+        SyntheticBackend,
+        scheduler.state().receipt_store(),
+        Some(journal.clone()),
+        AggregateProverConfig {
+            lane_key: Hash::default(),
+            covenant_id: None,
+            lane_source: ServeLaneProofs,
+            settlement_queue: Some(queue.clone()),
+            settlement: Some(settlement_rx),
+            re_root: Some(re_root_tx),
+            bundle_size: 1..=1,
+            exits: None,
+        },
+    );
+
+    // The covenant tip trails the tail: it settled through a block mapping to no committed
+    // batch, exiting at the pins batch 1 entered at.
+    settlement_tx.send_replace(Some(SettlementInfo {
+        tx_id: TransactionId::from_bytes([9; 32]),
+        block_prove_to: block_hash(9),
+        new_state: [0x00; 32],
+        new_lane_tip: Hash::default(),
+        ..Default::default()
+    }));
+
+    // The resume pass re-feeds the tail bundle; the re-cover defers on the trailing tip, so no
+    // gap bundle composes and no re-root may fire.
+    let refed = next_bundle(&queue, Duration::from_secs(10)).expect("the tail bundle re-feeds");
+    refed.wait_artifact_published_blocking();
+    assert_eq!(refed.block_prove_to(), block_hash(1));
+    assert!(
+        next_bundle(&queue, Duration::from_millis(750)).is_none(),
+        "a gap above a live tail must not compose while the tip trails the tail",
+    );
+    assert!(re_root_rx.try_recv().is_err(), "a trailing tip must not request a re-root",);
+
+    // The watch advances past the tail the way its landing would publish: a settlement through
+    // the tail's own block, exiting at the tail's pins. Compaction clears the tail entry, and
+    // the deferred retry composes the gap batch from the cached receipt chaining off that tip.
+    settlement_tx.send_replace(Some(SettlementInfo {
+        tx_id: TransactionId::from_bytes([1; 32]),
+        block_prove_to: block_hash(1),
+        new_state: [0x11; 32],
+        new_lane_tip: block_hash(1),
+        ..Default::default()
+    }));
+    let covered = next_bundle(&queue, Duration::from_secs(10))
+        .expect("the deferred gap must compose once the watch passes the tail");
+    covered.wait_artifact_published_blocking();
+    assert_eq!(covered.block_prove_to(), block_hash(2));
+    assert!(
+        re_root_rx.try_recv().is_err(),
+        "a gap chaining from the settled tip must not request a re-root",
+    );
 
     prover.shutdown();
     scheduler.shutdown();

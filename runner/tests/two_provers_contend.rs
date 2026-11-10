@@ -3996,14 +3996,15 @@ async fn reroot_drain_skips_superseded_tips() {
     let live = *infos.last().expect("two settlements checked");
 
     // The probe the drain gates on: the superseded tip's continuation is spent, the live tip's
-    // is the covenant's unspent position.
+    // is the covenant's unspent position. The test node answers, so a failed probe is a failure
+    // of the test itself, not a liveness answer to interpret.
     let client = connect_wrpc(&l1.wrpc_borsh_url(), network_id).await;
     assert!(
-        !settlement_tip_live(&client, &params, &superseded).await,
+        !settlement_tip_live(&client, &params, &superseded).await.expect("tip-liveness probe"),
         "a settlement whose continuation was spent must read as not live",
     );
     assert!(
-        settlement_tip_live(&client, &params, &live).await,
+        settlement_tip_live(&client, &params, &live).await.expect("tip-liveness probe"),
         "the chain's tip settlement must read as the live covenant position",
     );
 
