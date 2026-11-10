@@ -384,27 +384,30 @@ where
         }
     }
 
-    /// Forms the next bundle from the consecutively-ready prefix of the queue and proves it.
-    /// Returns `true` when progress was made (a bundle consumed, proved, no-op, or empty; a
-    /// canceled prefix evicted), `false` when there was nothing to do or the bundle's lane proof
-    /// was unavailable (deferred, its batches re-queued at the front).
+    /// Forms the next bundle from the consecutively-ready prefix of the queue and proves it,
+    /// consuming the prefix only once a handle is emitted. Returns `true` when progress was made
+    /// (a bundle consumed, proved, no-op, or empty; a canceled prefix evicted; a failed proof
+    /// attempt re-formed by the next pass), `false` when there was nothing to do, the front's
+    /// receipt is not published yet (the run loop parks on it), or the bundle's lane proof was
+    /// unavailable (deferred, its batches left queued at the front).
     async fn try_prove_one_bundle(&mut self) -> bool {
         let Some(front) = self.queued.front().cloned() else {
             return false;
         };
 
-        // Block on the first batch's receipt, but stay cancelable: on shutdown the batch prover may
-        // never publish a receipt we are waiting on, which would otherwise deadlock the join.
-        tokio::select! {
-            biased;
-            () = self.prover.shutdown.wait() => return false,
-            () = front.wait_artifact_published() => {}
+        // An unpublished front defers to the run loop's park instead of blocking here: parking
+        // inside the formation skipped the loop-top drain, so a batch submitted while parked
+        // (its inbox permit unobserved) missed the bundle that formed on the latch wake alone.
+        // The park's `next_queued_batch_published` arm wakes on exactly this publication. A
+        // canceled front is exempt (its wait would have returned immediately, latch open or
+        // not) and falls through to the eviction below.
+        if !front.artifact_published() && !front.canceled() {
+            return false;
         }
 
-        // A rollback may have canceled the front while we were parked: a canceled batch's wait
-        // returns immediately, and cancellation force-opens the artifact latch without a receipt.
-        // Evict the canceled prefix rather than bundle it (which would panic collecting a missing
-        // receipt). Returning progress re-drains the inbox, where the forthcoming
+        // A rollback may have canceled the front: a canceled batch never publishes its artifact,
+        // so evict the canceled prefix rather than bundle it (which would panic collecting a
+        // missing receipt). Returning progress re-drains the inbox, where the forthcoming
         // `Command::Rollback` truncates `retained`, resets the re-form guard, and re-runs this
         // eviction on `queued` idempotently.
         if front.canceled() {
