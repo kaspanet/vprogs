@@ -1,13 +1,12 @@
 //! Reproducers for the guest-entry rejection contract: `process_transaction` rejects malformed
 //! wire input through the journal instead of panicking.
 //!
-//! Every input fed here is a length-prefixed blob exactly like the one the executor writes to
-//! the guest: in production those bytes are assembled host-side, but the payload, access
-//! metadata, resource data, and tx id they embed all originate in an L1 transaction any user
-//! can author. A decode failure of that L1-authored content must surface as
-//! `OutputCommitment::Error` + `Outputs::ERR` (the unknown-version case proves that machinery
-//! works), never as a panic: a panic aborts the executor call for every carrier in the batch,
-//! not just the offending one.
+//! Every input fed here is a length-prefixed blob exactly like the one the executor writes to the
+//! guest: in production those bytes are assembled host-side, but the payload and access metadata
+//! they embed originate in an L1 transaction any user can author. A decode failure of that
+//! L1-authored content must surface as `OutputCommitment::Error` + `Outputs::ERR` (the
+//! unknown-version case proves that machinery works), never as a panic: a panic aborts the executor
+//! call for every carrier in the batch, not just the offending one.
 //!
 //! A decode-rejected V1 carrier journals its real version and the tx id derived from the raw
 //! carrier blobs (never the header's claim of either) with no execution context, so the
@@ -175,22 +174,6 @@ fn non_ascending_access_list_commits_error() {
     assert!(entries.input_commitment.execution_context.is_none());
 }
 
-/// A truncated resource section is rejected the same way: the carrier blobs still extract, so
-/// the rejection stays attributed to the derived tx id and the header's version and merge_idx.
-#[test]
-fn truncated_resource_section_commits_error() {
-    let (mut input, derived) =
-        wire(1, [0xFF; 32], 7, &[am([1; 32], false), am([2; 32], false)], &[]);
-    input.truncate(input.len() - 6);
-    let (host, journal) = run(input);
-    let entries = rejected(&host, &journal);
-    assert!(matches!(entries.output_commitment, OutputCommitment::Error(Error::Decode(_))));
-    assert_eq!(entries.input_commitment.version, 1);
-    assert_eq!(entries.input_commitment.tx_id, &Hash::from_bytes(derived));
-    assert_eq!(entries.input_commitment.merge_idx, 7);
-    assert!(entries.input_commitment.execution_context.is_none());
-}
-
 /// A header id that disagrees with the id derived from the carrier blobs has no honest host
 /// path (the host derives both from the same L1 tx), so the guest panics instead of journaling
 /// a rejection the bytes never produced.
@@ -248,4 +231,15 @@ fn truncated_tx_blob_panics() {
 fn short_header_panics() {
     let (input, _) = wire(1, [0xFF; 32], 0, &[am([1; 32], false)], &[]);
     run(input[..30].to_vec());
+}
+
+/// A truncated resource section is host assembly debris, not L1-authored content: the carrier blobs
+/// still extract, so a journaled rejection here would let any valid carrier be rejected by
+/// truncating its resources. It panics like every other broken host assembly.
+#[test]
+#[should_panic(expected = "malformed host input")]
+fn truncated_resource_section_panics() {
+    let (mut input, _) = wire(1, [0xFF; 32], 0, &[am([1; 32], false), am([2; 32], false)], &[]);
+    input.truncate(input.len() - 6);
+    run(input);
 }
