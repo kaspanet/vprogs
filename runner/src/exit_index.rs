@@ -411,9 +411,8 @@ fn match_prefix(buf: &[ExitLeaf], commitment: [u8; 32]) -> Option<usize> {
 }
 
 /// Prefix for the exec node's buffered exit-leaf entries in `StateSpace::Metadata`:
-/// `b"exec_exit" || batch_id(be u64) || tx_position(be u32)`, one entry per tap message. A
-/// drained settlement's entries persist as content: they are what a re-derived settlement
-/// (fresh txid, same exits) matches after a reorg, so nothing rewrites or deletes them.
+/// `b"exec_exit" || batch_id(be u64) || tx_position(be u32)`, one entry per tap message. An
+/// empty value tombstones a position a drained settlement already consumed.
 const EXEC_EXIT_PREFIX: &[u8] = b"exec_exit";
 
 /// Builds the metadata key for one tap message's buffered leaves.
@@ -435,18 +434,10 @@ fn parse_exec_exit_key(key: &[u8]) -> Option<(u64, u32)> {
     Some((batch_id, tx_position))
 }
 
-/// The journal positions a drained settlement consumed, in journal order. Drained prefixes
-/// are exact: a position inside the drained range need not be drained (a straggler tap can
-/// arrive after the drain), so the span lists its positions rather than bounding them.
-struct DrainedSpan {
-    positions: Vec<(u64, u32)>,
-}
-
 /// Prefix for drained-settlement records in `StateSpace::Metadata`:
-/// `b"drained_settle" || tx_id(32)`, one entry per settlement whose leaf prefix was drained,
-/// valued at the consumed positions. A rollback never drops a record: a settlement
-/// re-delivered under its own txid is skipped whatever the reorg did, and a re-derivation
-/// (fresh txid, same exits) matches the span's persisted content instead.
+/// `b"drained_settle" || tx_id(32)`, one entry per settlement whose leaf prefix was already
+/// drained, valued at the drained prefix's lowest batch id so a rollback drops only records
+/// whose every drained batch was orphaned above its floor.
 const DRAINED_SETTLE_PREFIX: &[u8] = b"drained_settle";
 
 /// Builds the metadata key recording one drained settlement by its tx id.
@@ -454,49 +445,6 @@ fn drained_settle_key(tx_id: &Hash) -> [u8; 46] {
     let mut key = [0u8; 46];
     key[..14].copy_from_slice(DRAINED_SETTLE_PREFIX);
     key[14..].copy_from_slice(&tx_id.as_bytes());
-    key
-}
-
-/// Encodes a drained span: position count then each `(batch_id, tx_position)` big-endian.
-fn encode_span(span: &DrainedSpan) -> Vec<u8> {
-    let mut out = Vec::with_capacity(4 + 12 * span.positions.len());
-    out.extend_from_slice(&(span.positions.len() as u32).to_be_bytes());
-    for (batch_id, tx_position) in &span.positions {
-        out.extend_from_slice(&batch_id.to_be_bytes());
-        out.extend_from_slice(&tx_position.to_be_bytes());
-    }
-    out
-}
-
-/// Decodes a drained-span record value; `None` on a wrong length or empty position list.
-fn decode_span(bytes: &[u8]) -> Option<DrainedSpan> {
-    let count = u32::from_be_bytes(bytes.get(..4)?.try_into().ok()?) as usize;
-    if count == 0 {
-        return None;
-    }
-    let rest = bytes.get(4..)?;
-    let mut positions = Vec::with_capacity(count);
-    for i in 0..count {
-        let chunk = rest.get(12 * i..12 * i + 12)?;
-        positions.push((
-            u64::from_be_bytes(chunk[..8].try_into().ok()?),
-            u32::from_be_bytes(chunk[8..].try_into().ok()?),
-        ));
-    }
-    Some(DrainedSpan { positions })
-}
-
-/// Prefix for drained-tx markers in `StateSpace::Metadata`: `b"drained_tx" || l1_txid(32)`,
-/// one entry per L1 tx whose exits a drained settlement consumed. The L1 txid survives both
-/// kinds of re-execution (a flapped-back block re-runs under its old id, a replacement block
-/// under a fresh one), so the marker drops a re-sent tap wherever it arrives from.
-const DRAINED_TX_PREFIX: &[u8] = b"drained_tx";
-
-/// Builds the metadata key marking one L1 tx's exits as consumed.
-fn drained_tx_key(l1_txid: &TransactionId) -> [u8; 42] {
-    let mut key = [0u8; 42];
-    key[..10].copy_from_slice(DRAINED_TX_PREFIX);
-    key[10..].copy_from_slice(&l1_txid.as_bytes());
     key
 }
 
@@ -522,13 +470,6 @@ fn decode_leaves(bytes: &[u8]) -> Option<Vec<ExitLeaf>> {
     Some(leaves)
 }
 
-/// Decodes a persisted tap-message entry (L1 txid then leaf blob) back into its txid and
-/// leaves; `None` on any truncation or unrecognized script.
-fn decode_entry(bytes: &[u8]) -> Option<(TransactionId, Vec<ExitLeaf>)> {
-    let txid = TransactionId::from(Hash::from_bytes(bytes.get(..32)?.try_into().ok()?));
-    Some((txid, decode_leaves(bytes.get(32..)?)?))
-}
-
 /// Background task joining the exec node's per-tx exit leaves with its observed L1 settlements.
 ///
 /// Buffers the Vm's exits tap in journal order (keyed by `(batch_id, tx_position)`, not
@@ -537,31 +478,27 @@ fn decode_entry(bytes: &[u8]) -> Option<(TransactionId, Vec<ExitLeaf>)> {
 /// still finds its leaves: the bridge resumes from the restored sink tip and re-emits the
 /// settlement, while the tap never replays committed batches. A tap re-sent under an id
 /// already buffered (a stop between a tx's execution and its batch commit re-executes the
-/// batch under the same id) replaces the buffered entry, and one re-sent for an L1 tx a
-/// drained settlement already consumed is dropped wherever it arrives from: a reorg
-/// re-executes the same tx under a flapped-back block's old id or a replacement block's
-/// fresh one, and the txid is what identifies the leaves as already attributed. Per
-/// settlement with a non-zero [`SettlementInfo::permission_spk_hash`], emits the smallest
-/// matching leaf prefix as an [`ExitsForBundle`] onto `exits_tx`, drains it from the buffer,
-/// and records the drain: the consumed positions under the settlement's txid and one marker
-/// per drained L1 txid. A settlement re-delivered after the drain that recorded it is
-/// skipped and forwarded, so a rollback-reverted pairing re-anchors on the re-confirmation.
-/// A reorg can orphan part of a drained span while the rest stays canonical: the surviving
-/// batches never re-execute, so a re-derivation (fresh txid, same exits, the settler
-/// re-proving the same transition over the deterministic re-execution) cannot match the
-/// buffer alone and drains off the recorded span's persisted content instead. A settlement
-/// whose prefix has not fully arrived yet parks as pending and is retried as leaves arrive
-/// (bridge and scheduler delivery order is not guaranteed); a newer settlement arriving
-/// while an older one is pending is a desync, logged (both named) but not fatal, and both
-/// still match once their leaves land. Zero-commitment settlements emitted no exits and
-/// consume none. `settlement_fwd`, when wired, receives each matched settlement so a
-/// downstream [`run_exit_indexer`] can pair it with the emitted bundle; the bundle is sent
-/// first, matching the indexer's exits-first biased select. Rollback markers drop pending
-/// settlements and live buffered leaves above the floor (their batches re-execute and
-/// re-send under fresh positions) and forward the marker downstream so the indexer reverts
-/// what it already paired; drained spans, their persisted content, and the drained-tx
-/// markers survive every rollback. Drained state is never pruned (it grows with the
-/// settlement and tx counts).
+/// batch under the same id) replaces the buffered entry, and one re-sent at a position a
+/// settlement already drained (its first copy's leaves were consumed by a pending settlement
+/// before the batch committed) is dropped against the drained position's tombstone, valued
+/// at its own batch's id so a rollback drops it exactly when the batch re-executes. Per
+/// settlement with a non-zero
+/// [`SettlementInfo::permission_spk_hash`], emits the smallest matching leaf prefix as an
+/// [`ExitsForBundle`] onto `exits_tx` and drains it, buffer and persisted entries together,
+/// recording the settlement as drained alongside the tombstoning; a settlement re-delivered after
+/// the drain that recorded it is skipped and forwarded, so a rollback-reverted pairing
+/// re-anchors on the re-confirmation. A settlement whose prefix has not fully arrived
+/// yet parks as pending and is retried as leaves arrive (bridge and scheduler delivery order
+/// is not guaranteed); a newer settlement arriving while an older one is pending is a desync,
+/// logged (both named) but not fatal, and both still match once their leaves land.
+/// Zero-commitment settlements emitted no exits and consume none. `settlement_fwd`, when
+/// wired, receives each matched settlement so a downstream [`run_exit_indexer`] can pair it
+/// with the emitted bundle; the bundle is sent first, matching the indexer's exits-first
+/// biased select. Rollback markers drop pending settlements, buffered leaves,
+/// drained-settlement records, and drained-position tombstones above the floor (the
+/// replacement blocks re-execute the orphaned txs and re-emit their leaves, and the
+/// resubmitted settlement re-arrives) and forward the marker downstream so the indexer
+/// reverts what it already paired.
 pub async fn run_exec_exits_joiner<S: Store>(
     store: S,
     mut leaves_rx: mpsc::UnboundedReceiver<ExitsForBatch>,
@@ -569,45 +506,119 @@ pub async fn run_exec_exits_joiner<S: Store>(
     exits_tx: mpsc::UnboundedSender<Arc<ExitsForBundle>>,
     settlement_fwd: Option<mpsc::UnboundedSender<SettlementMsg>>,
 ) {
-    let mut state = ExecExitsState::restore(&store);
+    let mut buf: Vec<ExitLeaf> = Vec::new();
+    // Journal position per buffered leaf, parallel to `buf`.
+    let mut buf_pos: Vec<(u64, u32)> = Vec::new();
+    // Undrained entries from before a restart, already in journal (key) order; an 8-byte
+    // value is a drained position's tombstone and buffers nothing.
+    for (key, val) in store.prefix_iter(StateSpace::Metadata, EXEC_EXIT_PREFIX) {
+        if val.len() == 8 {
+            continue;
+        }
+        match parse_exec_exit_key(&key)
+            .and_then(|pos| decode_leaves(&val).map(|leaves| (pos, leaves)))
+        {
+            Some((pos, leaves)) => {
+                buf_pos.extend(std::iter::repeat_n(pos, leaves.len()));
+                buf.extend(leaves);
+            }
+            None => log::warn!("undecodable buffered exit-leaf entry in metadata: {key:?}"),
+        }
+    }
+    let mut pending: VecDeque<SettlementInfo> = VecDeque::new();
+
+    /// Emits bundles for every pending settlement whose prefix is now complete, tombstoning
+    /// the drained prefix's persisted entries alongside the in-memory drain.
+    fn drain_pending<S: Store>(
+        pending: &mut VecDeque<SettlementInfo>,
+        buf: &mut Vec<ExitLeaf>,
+        buf_pos: &mut Vec<(u64, u32)>,
+        store: &S,
+        exits_tx: &mpsc::UnboundedSender<Arc<ExitsForBundle>>,
+        settlement_fwd: &Option<mpsc::UnboundedSender<SettlementMsg>>,
+    ) {
+        while let Some(settlement) = pending.front() {
+            let Some(k) = match_prefix(buf, settlement.permission_spk_hash) else { break };
+            // Receiver dropped means no consumer is listening; silently ignore.
+            let _ = exits_tx.send(Arc::new(ExitsForBundle {
+                new_state: settlement.new_state,
+                permission_spk_hash: settlement.permission_spk_hash,
+                leaves: Arc::new(buf[..k].to_vec()),
+            }));
+            if let Some(fwd) = settlement_fwd {
+                let _ = fwd.send(SettlementMsg::Observed(*settlement));
+            }
+            let mut wb = store.write_batch();
+            // Each tombstone carries its own batch's id: a rollback drops it exactly when
+            // the batch is orphaned above the floor and re-executes, so the re-sent tap
+            // re-inserts its leaves instead of dying against a stale tombstone; a surviving
+            // batch's tombstone only guards the stop-restart re-send under the same id.
+            for pos in &buf_pos[..k] {
+                wb.put(StateSpace::Metadata, &exec_exit_key(pos.0, pos.1), &pos.0.to_be_bytes());
+            }
+            // The record carries the drained prefix's lowest batch id: a re-delivery under
+            // the same txid proves blocks that stayed canonical, so its batches sit at or
+            // below the floor, never re-execute, and only the skip keeps the re-delivery
+            // from parking forever. Same write batch as the tombstoning: recording the
+            // settlement apart from it would leave a restart re-delivering a settlement
+            // whose leaves are already gone.
+            wb.put(
+                StateSpace::Metadata,
+                &drained_settle_key(&settlement.tx_id),
+                &buf_pos[0].0.to_be_bytes(),
+            );
+            store.commit(wb);
+            buf.drain(..k);
+            buf_pos.drain(..k);
+            pending.pop_front();
+        }
+    }
+
     loop {
         tokio::select! {
             biased;
             maybe_leaves = leaves_rx.recv() => match maybe_leaves {
                 Some(msg) => {
-                    // A re-sent tap for a tx a drained settlement already consumed: the
-                    // drain marked the txid, and re-execution keeps it (a flapped-back
-                    // block re-runs under its old position, a replacement block under a
-                    // fresh one), so the re-send is the same leaves again and re-inserting
-                    // them would head the buffer and block every later settlement's prefix.
-                    if store.get(StateSpace::Metadata, &drained_tx_key(&msg.l1_txid)).is_some() {
+                    let pos = (msg.batch_id, msg.tx_position);
+                    // A re-executed batch whose leaves a settlement already drained re-sends
+                    // its tap at a tombstoned position: those leaves are settled and their
+                    // settlement is skipped on re-delivery, so re-inserting them would head
+                    // the buffer and block every later settlement's prefix. A tombstone is an
+                    // 8-byte batch id; a live leaf blob is longer.
+                    if matches!(store.get(StateSpace::Metadata, &exec_exit_key(pos.0, pos.1)), Some(val) if val.len() == 8)
+                    {
                         log::debug!(
-                            "exec exits: dropping re-sent tap for drained tx {} (batch {} tx {})",
-                            msg.l1_txid,
-                            msg.batch_id,
-                            msg.tx_position,
+                            "exec exits: dropping tap for batch {} tx {} at a drained position",
+                            pos.0,
+                            pos.1,
                         );
                         continue;
                     }
-                    let mut val = Vec::with_capacity(32 + 9 * msg.leaves.len());
-                    val.extend_from_slice(&msg.l1_txid.as_bytes());
+                    // Insert at the journal-order position: a settlement's commitment pins
+                    // journal order, so an out-of-order arrival must not displace it. A
+                    // re-executed batch re-sends its tap under the same id (a stop between
+                    // execution and commit persisted the first copy), so the re-send
+                    // replaces the buffered entry instead of inserting a duplicate.
+                    let lo = buf_pos.partition_point(|p| *p < pos);
+                    let hi = buf_pos.partition_point(|p| *p <= pos);
+                    let mut val = Vec::new();
                     for leaf in &msg.leaves {
                         encode_leaf(&mut val, leaf);
                     }
+                    buf.splice(lo..hi, msg.leaves.iter().cloned());
+                    buf_pos.splice(lo..hi, std::iter::repeat_n(pos, msg.leaves.len()));
                     let mut wb = store.write_batch();
-                    wb.put(StateSpace::Metadata, &exec_exit_key(msg.batch_id, msg.tx_position), &val);
+                    wb.put(StateSpace::Metadata, &exec_exit_key(pos.0, pos.1), &val);
                     store.commit(wb);
-                    state.splice_tap(&msg);
-                    state.drain_pending(&store, &exits_tx, &settlement_fwd);
+                    drain_pending(&mut pending, &mut buf, &mut buf_pos, &store, &exits_tx, &settlement_fwd);
                 }
                 None => break,
             },
             maybe_settlement = settlement_rx.recv() => match maybe_settlement {
                 Some(SettlementMsg::Observed(settlement)) => {
-                    // A re-delivered settlement's leaves were drained in a previous run (or
-                    // drained before a reorg) and the tap never replays committed batches,
-                    // so parking it would block every later settlement behind a match that
-                    // can never complete.
+                    // A re-delivered settlement's leaves were drained in a previous run and
+                    // the tap never replays committed batches, so parking it would block
+                    // every later settlement behind a match that can never complete.
                     if store.get(StateSpace::Metadata, &drained_settle_key(&settlement.tx_id))
                         .is_some()
                     {
@@ -623,7 +634,7 @@ pub async fn run_exec_exits_joiner<S: Store>(
                         }
                         continue;
                     }
-                    if let Some(older) = state.pending.back() {
+                    if let Some(older) = pending.back() {
                         log::error!(
                             "exec exits desync: settlement {} (new_state {:?}) arrived while {} \
                              (new_state {:?}) is still pending",
@@ -634,212 +645,64 @@ pub async fn run_exec_exits_joiner<S: Store>(
                         );
                     }
                     if settlement.permission_spk_hash != [0u8; 32] {
-                        state.pending.push_back(settlement);
-                        state.drain_pending(&store, &exits_tx, &settlement_fwd);
+                        pending.push_back(settlement);
+                        drain_pending(&mut pending, &mut buf, &mut buf_pos, &store, &exits_tx, &settlement_fwd);
                     }
                 }
-                // Live leaves above the floor died with their batches: the replacement
-                // blocks re-execute those txs and re-send their taps under fresh positions,
-                // so stale copies are deleted rather than left to duplicate every later
-                // prefix. Ids can interleave (batches execute concurrently), so filter by
-                // id rather than truncate. Drained spans and markers survive: nothing
-                // re-executes a drained tx into the buffer, and a re-derivation matches the
-                // span's persisted content. Forward the marker so the downstream indexer
-                // reverts what it already paired, then drain: a survivor's prefix may have
-                // been blocked only by pruned leaves.
+                // Leaves above the floor died with the reorg; the replacement blocks
+                // re-execute those txs and re-emit their leaves, so a stale copy would
+                // duplicate every prefix the resubmitted settlement matches. Ids can
+                // interleave (batches execute concurrently), so filter by id rather than
+                // truncate. Forward the marker so the downstream indexer reverts what it
+                // already paired, then drain: a survivor's prefix may have been blocked only
+                // by pruned leaves.
                 Some(SettlementMsg::Rollback(floor)) => {
-                    state.pending.retain(|settlement| settlement.chain_idx.get() <= floor);
+                    pending.retain(|settlement| settlement.chain_idx.get() <= floor);
                     let mut wb = store.write_batch();
-                    state.prune_above(floor, &mut wb);
+                    // Records and tombstones are valued at batch ids, so both die exactly
+                    // when their batches are orphaned above the floor: the re-executed
+                    // batches' re-sent taps re-insert through the dropped tombstones, and a
+                    // settlement whose drained batches died re-derives under a fresh txid its
+                    // old record can never skip.
+                    for (key, val) in store.prefix_iter(StateSpace::Metadata, DRAINED_SETTLE_PREFIX)
+                    {
+                        match <[u8; 8]>::try_from(val.as_slice()).map(u64::from_be_bytes) {
+                            Ok(idx) if idx > floor => {
+                                wb.delete(StateSpace::Metadata, &key);
+                            }
+                            _ => {}
+                        }
+                    }
+                    for (key, val) in store.prefix_iter(StateSpace::Metadata, EXEC_EXIT_PREFIX) {
+                        if let Ok(idx) = <[u8; 8]>::try_from(val.as_slice()).map(u64::from_be_bytes)
+                        {
+                            if idx > floor {
+                                wb.delete(StateSpace::Metadata, &key);
+                            }
+                        }
+                    }
+                    let mut i = 0;
+                    buf.retain(|_| {
+                        let pos = buf_pos[i];
+                        i += 1;
+                        if pos.0 <= floor {
+                            true
+                        } else {
+                            wb.delete(StateSpace::Metadata, &exec_exit_key(pos.0, pos.1));
+                            false
+                        }
+                    });
+                    buf_pos.retain(|&(batch_id, _)| batch_id <= floor);
                     store.commit(wb);
                     if let Some(fwd) = &settlement_fwd {
                         let _ = fwd.send(SettlementMsg::Rollback(floor));
                     }
-                    state.drain_pending(&store, &exits_tx, &settlement_fwd);
+                    drain_pending(&mut pending, &mut buf, &mut buf_pos, &store, &exits_tx, &settlement_fwd);
                 }
                 None => break,
             },
         }
     }
-}
-
-/// The exec exits joiner's mutable state: the live leaf buffer with its parallel journal
-/// positions and draining txids, the pending settlements, and the drained spans.
-struct ExecExitsState {
-    /// Buffered leaves in journal order.
-    buf: Vec<ExitLeaf>,
-    /// Journal position per buffered leaf, parallel to `buf`.
-    buf_pos: Vec<(u64, u32)>,
-    /// Draining L1 txid per buffered leaf, parallel to `buf`.
-    buf_txid: Vec<TransactionId>,
-    /// Settlements waiting for their leaves.
-    pending: VecDeque<SettlementInfo>,
-    /// Spans consumed by drained settlements; a re-derivation matches a span's persisted
-    /// content when the buffer cannot serve it.
-    spans: Vec<DrainedSpan>,
-}
-
-impl ExecExitsState {
-    /// Restores the state from the store: drained spans first, then the live buffered
-    /// entries (already in journal key order), skipping a drained span's entries since they
-    /// are content for re-derivations, not live leaves.
-    fn restore<S: Store>(store: &S) -> Self {
-        let mut state = Self {
-            buf: Vec::new(),
-            buf_pos: Vec::new(),
-            buf_txid: Vec::new(),
-            pending: VecDeque::new(),
-            spans: store
-                .prefix_iter(StateSpace::Metadata, DRAINED_SETTLE_PREFIX)
-                .filter_map(|(_, val)| decode_span(&val))
-                .collect(),
-        };
-        for (key, val) in store.prefix_iter(StateSpace::Metadata, EXEC_EXIT_PREFIX) {
-            match parse_exec_exit_key(&key)
-                .and_then(|pos| decode_entry(&val).map(|(txid, leaves)| (pos, txid, leaves)))
-            {
-                Some((pos, txid, leaves))
-                    if !state.spans.iter().any(|s| s.positions.contains(&pos)) =>
-                {
-                    state.buf_pos.extend(std::iter::repeat_n(pos, leaves.len()));
-                    state.buf_txid.extend(std::iter::repeat_n(txid, leaves.len()));
-                    state.buf.extend(leaves);
-                }
-                Some(_) => {}
-                None => log::warn!("undecodable buffered exit-leaf entry in metadata: {key:?}"),
-            }
-        }
-        state
-    }
-
-    /// Inserts a tap message's leaves at its journal-order position: a settlement's
-    /// commitment pins journal order, so an out-of-order arrival must not displace it, and a
-    /// re-send under an id already buffered (a stop between a tx's execution and its batch
-    /// commit re-executes the batch under the same id) replaces the buffered entry instead
-    /// of inserting a duplicate.
-    fn splice_tap(&mut self, msg: &ExitsForBatch) {
-        let pos = (msg.batch_id, msg.tx_position);
-        let lo = self.buf_pos.partition_point(|p| *p < pos);
-        let hi = self.buf_pos.partition_point(|p| *p <= pos);
-        self.buf.splice(lo..hi, msg.leaves.iter().cloned());
-        self.buf_pos.splice(lo..hi, std::iter::repeat_n(pos, msg.leaves.len()));
-        self.buf_txid.splice(lo..hi, std::iter::repeat_n(msg.l1_txid, msg.leaves.len()));
-    }
-
-    /// Drops buffered leaves whose batch is above the floor, deleting their persisted
-    /// entries from `wb`.
-    fn prune_above(&mut self, floor: u64, wb: &mut impl WriteBatch) {
-        let mut kept_buf = Vec::with_capacity(self.buf.len());
-        let mut kept_pos = Vec::with_capacity(self.buf_pos.len());
-        let mut kept_txid = Vec::with_capacity(self.buf_txid.len());
-        for ((leaf, pos), txid) in
-            self.buf.drain(..).zip(self.buf_pos.drain(..)).zip(self.buf_txid.drain(..))
-        {
-            if pos.0 <= floor {
-                kept_buf.push(leaf);
-                kept_pos.push(pos);
-                kept_txid.push(txid);
-            } else {
-                wb.delete(StateSpace::Metadata, &exec_exit_key(pos.0, pos.1));
-            }
-        }
-        self.buf = kept_buf;
-        self.buf_pos = kept_pos;
-        self.buf_txid = kept_txid;
-    }
-
-    /// Emits bundles for every pending settlement whose leaves are complete: the buffer's
-    /// smallest matching prefix, or a recorded span's content for a re-derivation whose
-    /// drained batches died in a reorg.
-    fn drain_pending<S: Store>(
-        &mut self,
-        store: &S,
-        exits_tx: &mpsc::UnboundedSender<Arc<ExitsForBundle>>,
-        settlement_fwd: &Option<mpsc::UnboundedSender<SettlementMsg>>,
-    ) {
-        while let Some(settlement) = self.pending.front().copied() {
-            let k = match match_prefix(&self.buf, settlement.permission_spk_hash) {
-                Some(k) => k,
-                // A re-derivation re-proves the transition the span drained, so its
-                // commitment equals the span's full content; the orphaned part of the span
-                // never re-executes into the buffer, and the surviving part's txs are
-                // marked drained and never re-send.
-                None => {
-                    let mut matched = None;
-                    for span in self.spans.iter() {
-                        if let Some(leaves) = span_leaves(store, span) {
-                            if permission_commitment(&leaves) == settlement.permission_spk_hash {
-                                matched = Some((span, leaves));
-                                break;
-                            }
-                        }
-                    }
-                    let Some((span, leaves)) = matched else { break };
-                    // Receiver dropped means no consumer is listening; silently ignore.
-                    let _ = exits_tx.send(Arc::new(ExitsForBundle {
-                        new_state: settlement.new_state,
-                        permission_spk_hash: settlement.permission_spk_hash,
-                        leaves: Arc::new(leaves),
-                    }));
-                    if let Some(fwd) = settlement_fwd {
-                        let _ = fwd.send(SettlementMsg::Observed(settlement));
-                    }
-                    // The span's txids are already marked; only the fresh txid's record is
-                    // new, so a re-delivery of the re-derivation is skipped.
-                    record_drain(&settlement, span, std::iter::empty(), store);
-                    self.pending.pop_front();
-                    continue;
-                }
-            };
-            let _ = exits_tx.send(Arc::new(ExitsForBundle {
-                new_state: settlement.new_state,
-                permission_spk_hash: settlement.permission_spk_hash,
-                leaves: Arc::new(self.buf[..k].to_vec()),
-            }));
-            if let Some(fwd) = settlement_fwd {
-                let _ = fwd.send(SettlementMsg::Observed(settlement));
-            }
-            // The span lists the prefix's positions exactly: a straggler tap can arrive at a
-            // position inside the drained range after the drain, and it belongs to a later
-            // settlement, not this span's content.
-            let span = DrainedSpan { positions: self.buf_pos[..k].to_vec() };
-            record_drain(&settlement, &span, self.buf_txid[..k].iter().copied(), store);
-            self.spans.push(span);
-            self.buf.drain(..k);
-            self.buf_pos.drain(..k);
-            self.buf_txid.drain(..k);
-            self.pending.pop_front();
-        }
-    }
-}
-
-/// Records one drain: the consumed positions under the settlement's txid and one marker per
-/// drained L1 txid, in a single write batch.
-fn record_drain<S: Store>(
-    settlement: &SettlementInfo,
-    span: &DrainedSpan,
-    txids: impl Iterator<Item = TransactionId>,
-    store: &S,
-) {
-    let mut wb = store.write_batch();
-    wb.put(StateSpace::Metadata, &drained_settle_key(&settlement.tx_id), &encode_span(span));
-    for txid in txids {
-        wb.put(StateSpace::Metadata, &drained_tx_key(&txid), &[]);
-    }
-    store.commit(wb);
-}
-
-/// Reads a drained span's persisted leaf content in journal order; `None` when any listed
-/// position's entry is missing or undecodable.
-fn span_leaves<S: Store>(store: &S, span: &DrainedSpan) -> Option<Vec<ExitLeaf>> {
-    let mut leaves = Vec::new();
-    for (key, val) in store.prefix_iter(StateSpace::Metadata, EXEC_EXIT_PREFIX) {
-        let Some(pos) = parse_exec_exit_key(&key) else { continue };
-        if span.positions.contains(&pos) {
-            leaves.extend(decode_entry(&val)?.1);
-        }
-    }
-    Some(leaves)
 }
 
 #[cfg(test)]
@@ -2045,20 +1908,8 @@ mod tests {
         (leaves_tx, settlement_tx, exits_rx, handle)
     }
 
-    /// Builds a tap message whose L1 txid derives from its journal position: a re-send at the
-    /// same position is the same tx, matching how a re-executed batch re-sends under its old
-    /// position. Tests re-executing a tx under a NEW batch id construct the message directly
-    /// to keep the txid.
     fn tap_msg(batch_id: u64, tx_position: u32, leaves: Vec<ExitLeaf>) -> ExitsForBatch {
-        let mut id = [0u8; 32];
-        id[..8].copy_from_slice(&batch_id.to_be_bytes());
-        id[8..12].copy_from_slice(&tx_position.to_be_bytes());
-        ExitsForBatch {
-            batch_id,
-            tx_position,
-            l1_txid: TransactionId::from(Hash::from_bytes(id)),
-            leaves,
-        }
+        ExitsForBatch { batch_id, tx_position, leaves }
     }
 
     #[tokio::test]
@@ -2165,17 +2016,16 @@ mod tests {
         let bundle = exits_rx2.recv().await.expect("restored buffer matched the settlement");
         assert_eq!(bundle.leaves.to_vec(), leaves);
 
-        // The drained entries persist as the span's content, and a fresh incarnation buffers
-        // none of them: a re-delivery of the settlement is skipped, and a re-sent tap for a
-        // drained tx drops.
+        // The drained prefix leaves only tombstones: a fresh incarnation buffers nothing.
         drop(leaves_tx2);
         drop(settlement_tx2);
         handle2.await.unwrap();
-        let (leaves_tx3, settlement_tx3, mut exits_rx3, _handle3) = joiner_harness(&dir).await;
-        settlement_tx3.send(SettlementMsg::Observed(settlement)).unwrap();
-        assert!(exits_rx3.try_recv().is_err(), "restored span drained nothing new");
-        drop(leaves_tx3);
-        drop(settlement_tx3);
+        let store: RocksDbStore = RocksDbStore::open(dir.path());
+        assert!(
+            store
+                .prefix_iter(StateSpace::Metadata, EXEC_EXIT_PREFIX)
+                .all(|(_, val)| val.len() == 8)
+        );
     }
 
     /// A stop between a tap's execution and its batch commit leaves the entry persisted while
@@ -2330,12 +2180,13 @@ mod tests {
         assert!(exits_rx2.try_recv().is_err());
     }
 
-    /// A rollback that orphans a settlement's whole drained span: the record and the
-    /// drained-tx marker survive it, the replacement block's re-execution of the tx re-sends
-    /// under a fresh id and drops, and the settler's re-derivation (fresh txid, same exits)
-    /// drains off the recorded span's persisted content instead of the buffer.
+    /// A rollback drops drained-settlement records above its floor along with the pending
+    /// settlements and buffered leaves: the drained batch died in the reorg, so its
+    /// settlement re-derives under a fresh txid while the replacement block re-executes the
+    /// tx and re-emits its leaves, and the fresh settlement must re-match those leaves instead
+    /// of any record skipping it.
     #[tokio::test]
-    async fn exec_joiner_rollback_rederived_settlement_drains_off_the_recorded_span() {
+    async fn exec_joiner_rollback_drops_drained_records_above_floor() {
         let (leaves_tx, leaves_rx) = mpsc::unbounded_channel();
         let (settlement_tx, settlement_rx) = mpsc::unbounded_channel();
         let (exits_tx, mut exits_rx) = mpsc::unbounded_channel();
@@ -2364,39 +2215,31 @@ mod tests {
         assert_eq!(bundle.leaves.to_vec(), leaves);
         assert_eq!(fwd_rx.recv().await, Some(SettlementMsg::Observed(drained_settlement)));
 
-        // The reorg orphans the drained batch (5 is above the floor): the record and the
-        // drained-tx marker survive it, the replacement block re-executes the tx under a
-        // fresh id and its re-sent tap drops, and the settler re-derives under a fresh txid
-        // that the old record cannot skip. The re-derivation drains off the recorded span's
-        // content instead of the buffer. The replacement runs after the revert, so await the
-        // forwarded marker before re-sending the tap.
+        // The reorg orphans the drained batch (5 is above the floor): its tombstone and the
+        // record die with it, the replacement block re-executes the tx and re-emits its
+        // leaves, and the settler re-derives under a fresh txid. The replacement runs after
+        // the revert, so await the forwarded marker before re-sending the tap: a tap racing
+        // the marker would drop against the still-live tombstone.
         settlement_tx.send(SettlementMsg::Rollback(3)).unwrap();
         assert_eq!(fwd_rx.recv().await, Some(SettlementMsg::Rollback(3)));
-        assert!(
-            store
-                .get(StateSpace::Metadata, &drained_settle_key(&drained_settlement.tx_id))
-                .is_some(),
-            "record survives the rollback"
-        );
-        let mut replacement_tap = tap_msg(5, 0, leaves.clone());
-        replacement_tap.batch_id = 8;
-        leaves_tx.send(replacement_tap).unwrap();
-        let rederived = SettlementInfo {
-            tx_id: Hash::from_bytes([0xef; 32]),
-            new_state: [0x73; 32],
-            permission_spk_hash: permission_commitment(&leaves),
-            chain_idx: 9u64.into(),
-            ..Default::default()
-        };
-        settlement_tx.send(SettlementMsg::Observed(rederived)).unwrap();
         assert_eq!(
-            tokio::time::timeout(std::time::Duration::from_millis(500), fwd_rx.recv()).await,
-            Ok(Some(SettlementMsg::Observed(rederived))),
-            "re-derived settlement drained off the recorded span"
+            store.prefix_iter(StateSpace::Metadata, DRAINED_SETTLE_PREFIX).count(),
+            0,
+            "record died with its batch"
         );
+        leaves_tx.send(tap_msg(5, 0, leaves.clone())).unwrap();
+        settlement_tx
+            .send(SettlementMsg::Observed(SettlementInfo {
+                tx_id: Hash::from_bytes([0xef; 32]),
+                new_state: [0x73; 32],
+                permission_spk_hash: permission_commitment(&leaves),
+                chain_idx: 9u64.into(),
+                ..Default::default()
+            }))
+            .unwrap();
         let bundle = tokio::time::timeout(std::time::Duration::from_millis(500), exits_rx.recv())
             .await
-            .expect("re-derived settlement emitted the span's leaves")
+            .expect("re-derived settlement re-matched the re-executed leaves")
             .expect("bundle received");
         assert_eq!(bundle.leaves.to_vec(), leaves);
     }
@@ -2468,144 +2311,6 @@ mod tests {
             .expect("skipped re-delivery did not block the fresh settlement")
             .expect("bundle received");
         assert_eq!(bundle.leaves.to_vec(), fresh_leaves);
-    }
-
-    /// A settlement whose drained prefix spans batches on both sides of a rollback floor, with
-    /// the orphaned range replaced by fresh blocks: the surviving batches never re-execute, so
-    /// the re-derived settlement (fresh txid, same commitment, since the re-execution is
-    /// deterministic) can only match through what the drain recorded. It must drain off the
-    /// recorded span and emit, not park at the front of `pending` forever.
-    #[tokio::test]
-    async fn exec_joiner_mixed_span_replacement_drains_off_the_recorded_span() {
-        let (leaves_tx, leaves_rx) = mpsc::unbounded_channel();
-        let (settlement_tx, settlement_rx) = mpsc::unbounded_channel();
-        let (exits_tx, mut exits_rx) = mpsc::unbounded_channel();
-        let (fwd_tx, mut fwd_rx) = mpsc::unbounded_channel();
-        let dir = tempdir().unwrap();
-        let store: RocksDbStore = RocksDbStore::open(dir.path());
-        tokio::spawn(run_exec_exits_joiner(
-            store,
-            leaves_rx,
-            settlement_rx,
-            exits_tx,
-            Some(fwd_tx),
-        ));
-
-        // The drained prefix spans batches 2 (survives the floor) and 7 (orphaned by it).
-        let leaf_a = test_leaf(0x55, 500);
-        let leaf_b = test_leaf(0x66, 600);
-        let drained = vec![leaf_a.clone(), leaf_b.clone()];
-        let drained_settlement = SettlementInfo {
-            tx_id: Hash::from_bytes([0xee; 32]),
-            new_state: [0x73; 32],
-            permission_spk_hash: permission_commitment(&drained),
-            chain_idx: 6u64.into(),
-            ..Default::default()
-        };
-        leaves_tx.send(tap_msg(2, 0, vec![leaf_a.clone()])).unwrap();
-        leaves_tx.send(tap_msg(7, 0, vec![leaf_b.clone()])).unwrap();
-        settlement_tx.send(SettlementMsg::Observed(drained_settlement)).unwrap();
-        let bundle = exits_rx.recv().await.expect("settlement drained before the reorg");
-        assert_eq!(bundle.leaves.to_vec(), drained);
-        assert_eq!(fwd_rx.recv().await, Some(SettlementMsg::Observed(drained_settlement)));
-
-        // The reorg orphans batch 7 only; the replacement block re-executes the same tx under
-        // a fresh batch id, and the settler re-derives under a fresh txid.
-        settlement_tx.send(SettlementMsg::Rollback(5)).unwrap();
-        assert_eq!(fwd_rx.recv().await, Some(SettlementMsg::Rollback(5)));
-        let mut replacement_tap = tap_msg(7, 0, vec![leaf_b.clone()]);
-        replacement_tap.batch_id = 9;
-        leaves_tx.send(replacement_tap).unwrap();
-        let rederived = SettlementInfo {
-            tx_id: Hash::from_bytes([0xef; 32]),
-            new_state: [0x73; 32],
-            permission_spk_hash: permission_commitment(&drained),
-            chain_idx: 9u64.into(),
-            ..Default::default()
-        };
-        settlement_tx.send(SettlementMsg::Observed(rederived)).unwrap();
-
-        assert_eq!(
-            tokio::time::timeout(std::time::Duration::from_millis(500), fwd_rx.recv()).await,
-            Ok(Some(SettlementMsg::Observed(rederived))),
-            "re-derived settlement drained off the recorded span"
-        );
-        let bundle = tokio::time::timeout(std::time::Duration::from_millis(500), exits_rx.recv())
-            .await
-            .expect("re-derived settlement emitted the span's leaves")
-            .expect("bundle received");
-        assert_eq!(bundle.leaves.to_vec(), drained);
-        assert!(exits_rx.try_recv().is_err());
-    }
-
-    /// The same mixed-span drain with the orphaned range flapping back: the returning block
-    /// re-executes at its old position and re-sends its tap, but the tx's exits are already
-    /// recorded as drained, so the re-send must drop; the settlement re-confirms under its own
-    /// txid (skipped and forwarded for the re-anchor), and no stale copy of the drained leaves
-    /// may head the buffer and block a later settlement's match.
-    #[tokio::test]
-    async fn exec_joiner_mixed_span_flapback_drops_the_re_sent_tap() {
-        let (leaves_tx, leaves_rx) = mpsc::unbounded_channel();
-        let (settlement_tx, settlement_rx) = mpsc::unbounded_channel();
-        let (exits_tx, mut exits_rx) = mpsc::unbounded_channel();
-        let (fwd_tx, mut fwd_rx) = mpsc::unbounded_channel();
-        let dir = tempdir().unwrap();
-        let store: RocksDbStore = RocksDbStore::open(dir.path());
-        tokio::spawn(run_exec_exits_joiner(
-            store,
-            leaves_rx,
-            settlement_rx,
-            exits_tx,
-            Some(fwd_tx),
-        ));
-
-        let leaf_a = test_leaf(0x55, 500);
-        let leaf_b = test_leaf(0x66, 600);
-        let drained = vec![leaf_a.clone(), leaf_b.clone()];
-        let drained_settlement = SettlementInfo {
-            tx_id: Hash::from_bytes([0xee; 32]),
-            new_state: [0x73; 32],
-            permission_spk_hash: permission_commitment(&drained),
-            chain_idx: 6u64.into(),
-            ..Default::default()
-        };
-        leaves_tx.send(tap_msg(2, 0, vec![leaf_a])).unwrap();
-        leaves_tx.send(tap_msg(7, 0, vec![leaf_b.clone()])).unwrap();
-        settlement_tx.send(SettlementMsg::Observed(drained_settlement)).unwrap();
-        assert_eq!(exits_rx.recv().await.map(|b| b.leaves.to_vec()), Some(drained.clone()));
-        assert_eq!(fwd_rx.recv().await, Some(SettlementMsg::Observed(drained_settlement)));
-
-        // The reorg orphans batch 7; the same block flaps back and re-executes at its old
-        // position, re-sending its tap, and the settlement re-confirms under its own txid.
-        settlement_tx.send(SettlementMsg::Rollback(5)).unwrap();
-        assert_eq!(fwd_rx.recv().await, Some(SettlementMsg::Rollback(5)));
-        leaves_tx.send(tap_msg(7, 0, vec![leaf_b])).unwrap();
-        let reconfirmed = SettlementInfo { chain_idx: 9u64.into(), ..drained_settlement };
-        settlement_tx.send(SettlementMsg::Observed(reconfirmed)).unwrap();
-        assert_eq!(
-            fwd_rx.recv().await,
-            Some(SettlementMsg::Observed(reconfirmed)),
-            "re-confirmation skipped and forwarded for the re-anchor"
-        );
-
-        // The re-sent tap must not head the buffer: a fresh settlement still matches.
-        let fresh_leaves = vec![test_leaf(0x77, 700)];
-        leaves_tx.send(tap_msg(8, 0, fresh_leaves.clone())).unwrap();
-        settlement_tx
-            .send(SettlementMsg::Observed(SettlementInfo {
-                tx_id: Hash::from_bytes([0xdd; 32]),
-                new_state: [0x74; 32],
-                permission_spk_hash: permission_commitment(&fresh_leaves),
-                chain_idx: 9u64.into(),
-                ..Default::default()
-            }))
-            .unwrap();
-        let bundle = tokio::time::timeout(std::time::Duration::from_millis(500), exits_rx.recv())
-            .await
-            .expect("stale re-sent tap did not block the fresh settlement")
-            .expect("bundle received");
-        assert_eq!(bundle.leaves.to_vec(), fresh_leaves);
-        assert!(exits_rx.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -2712,7 +2417,9 @@ mod tests {
 
         // B survives the rollback and still matches once its leaf lands; A's leaf lands to
         // silence (its settlement died with the reorg).
-        leaves_tx.send(tap_msg(1, 0, leaves_b.clone())).unwrap();
+        leaves_tx
+            .send(ExitsForBatch { batch_id: 1, tx_position: 0, leaves: leaves_b.clone() })
+            .unwrap();
         let bundle = exits_rx.recv().await.expect("below-floor settlement still drains");
         assert_eq!(bundle.leaves.to_vec(), leaves_b);
         assert_eq!(
@@ -2720,7 +2427,7 @@ mod tests {
             SettlementMsg::Observed(settlement_b)
         );
 
-        leaves_tx.send(tap_msg(5, 0, leaves_a)).unwrap();
+        leaves_tx.send(ExitsForBatch { batch_id: 5, tx_position: 0, leaves: leaves_a }).unwrap();
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(150), exits_rx.recv())
                 .await
@@ -2758,7 +2465,9 @@ mod tests {
             ..Default::default()
         };
         settlement_tx.send(SettlementMsg::Observed(settlement_a)).unwrap();
-        leaves_tx.send(tap_msg(6, 0, vec![leaf_b.clone()])).unwrap();
+        leaves_tx
+            .send(ExitsForBatch { batch_id: 6, tx_position: 0, leaves: vec![leaf_b.clone()] })
+            .unwrap();
 
         // Reorg to floor 5: A and batch 6's buffered leaf die. Awaiting the forwarded marker
         // pins the prune before the replacement leaves below are sent.
@@ -2773,8 +2482,12 @@ mod tests {
 
         // The replacement chain re-executes b at batch 8, c lands at batch 9, and A's
         // resubmission settles both.
-        leaves_tx.send(tap_msg(8, 0, vec![leaf_b.clone()])).unwrap();
-        leaves_tx.send(tap_msg(9, 0, vec![leaf_c.clone()])).unwrap();
+        leaves_tx
+            .send(ExitsForBatch { batch_id: 8, tx_position: 0, leaves: vec![leaf_b.clone()] })
+            .unwrap();
+        leaves_tx
+            .send(ExitsForBatch { batch_id: 9, tx_position: 0, leaves: vec![leaf_c.clone()] })
+            .unwrap();
         let settlement_a2 = SettlementInfo {
             tx_id: Hash::from_bytes([0xab; 32]),
             new_state: [0x52; 32],
@@ -2822,7 +2535,9 @@ mod tests {
             ..Default::default()
         };
         settlement_tx.send(SettlementMsg::Observed(settlement_a)).unwrap();
-        leaves_tx.send(tap_msg(2, 0, leaves_a.clone())).unwrap();
+        leaves_tx
+            .send(ExitsForBatch { batch_id: 2, tx_position: 0, leaves: leaves_a.clone() })
+            .unwrap();
         let bundle = exits_rx.recv().await.expect("settlement A drains [a]");
         assert_eq!(bundle.leaves.to_vec(), leaves_a);
         assert_eq!(fwd_rx.recv().await, Some(SettlementMsg::Observed(settlement_a)));
@@ -2830,7 +2545,9 @@ mod tests {
         // Leaf b (batch 8) buffers into the emptied buffer; the reorg to floor 5 must drop it
         // by its own batch id, not the drained a's.
         let leaf_b = test_leaf(0x22, 200);
-        leaves_tx.send(tap_msg(8, 0, vec![leaf_b.clone()])).unwrap();
+        leaves_tx
+            .send(ExitsForBatch { batch_id: 8, tx_position: 0, leaves: vec![leaf_b.clone()] })
+            .unwrap();
         settlement_tx.send(SettlementMsg::Rollback(5)).unwrap();
         assert_eq!(fwd_rx.recv().await, Some(SettlementMsg::Rollback(5)));
 
@@ -2838,8 +2555,12 @@ mod tests {
         // covers both. A stale b surviving the floor would prefix the re-emitted pair ([b, b, c]
         // has no prefix equal to [b, c]) and park B at the front of pending for good.
         let leaf_c = test_leaf(0x33, 300);
-        leaves_tx.send(tap_msg(8, 0, vec![leaf_b.clone()])).unwrap();
-        leaves_tx.send(tap_msg(9, 0, vec![leaf_c.clone()])).unwrap();
+        leaves_tx
+            .send(ExitsForBatch { batch_id: 8, tx_position: 0, leaves: vec![leaf_b.clone()] })
+            .unwrap();
+        leaves_tx
+            .send(ExitsForBatch { batch_id: 9, tx_position: 0, leaves: vec![leaf_c.clone()] })
+            .unwrap();
         let settlement_b = SettlementInfo {
             tx_id: Hash::from_bytes([0xbb; 32]),
             new_state: [0x52; 32],
@@ -2886,8 +2607,12 @@ mod tests {
             ..Default::default()
         };
         settlement_tx.send(SettlementMsg::Observed(settlement_lo)).unwrap();
-        leaves_tx.send(tap_msg(7, 0, vec![leaf_hi])).unwrap();
-        leaves_tx.send(tap_msg(4, 0, leaves_lo.clone())).unwrap();
+        leaves_tx
+            .send(ExitsForBatch { batch_id: 7, tx_position: 0, leaves: vec![leaf_hi] })
+            .unwrap();
+        leaves_tx
+            .send(ExitsForBatch { batch_id: 4, tx_position: 0, leaves: leaves_lo.clone() })
+            .unwrap();
 
         // The reorg to floor 5 drops only the batch-7 leaf: filtering by id leaves [lo] (a
         // truncate at the first above-floor leaf would drop both), and the now-unblocked
@@ -2922,8 +2647,12 @@ mod tests {
         // Leaf a lands at batch 2; b's two leaves land as one tap message at batch 6.
         let leaves_a = vec![test_leaf(0x11, 100)];
         let leaves_b = vec![test_leaf(0x22, 200), test_leaf(0x33, 300)];
-        leaves_tx.send(tap_msg(2, 0, leaves_a.clone())).unwrap();
-        leaves_tx.send(tap_msg(6, 0, leaves_b.clone())).unwrap();
+        leaves_tx
+            .send(ExitsForBatch { batch_id: 2, tx_position: 0, leaves: leaves_a.clone() })
+            .unwrap();
+        leaves_tx
+            .send(ExitsForBatch { batch_id: 6, tx_position: 0, leaves: leaves_b.clone() })
+            .unwrap();
 
         // The first marker (floor 8) keeps everything; the deeper floor 5 drops batch 6's
         // message as a unit, so the per-leaf ids must survive the first prune.
@@ -2945,7 +2674,9 @@ mod tests {
         // The replacement chain re-executes b with a different pair (a merged child block adds
         // a tx) at batch 7; a stale batch-6 copy would head the buffer and block the match.
         let leaves_c = vec![test_leaf(0x44, 400), test_leaf(0x55, 500)];
-        leaves_tx.send(tap_msg(7, 0, leaves_c.clone())).unwrap();
+        leaves_tx
+            .send(ExitsForBatch { batch_id: 7, tx_position: 0, leaves: leaves_c.clone() })
+            .unwrap();
         let settlement_c = SettlementInfo {
             tx_id: Hash::from_bytes([0xcc; 32]),
             new_state: [0x53; 32],
