@@ -250,6 +250,10 @@ where
             }
         }
 
+        // Startup passes complete: the committed-gap gate has evaluated the journal, so commits
+        // after this point are new work rather than a restart gap.
+        self.prover.booted.store(1);
+
         // Wake-only clone of the settlement watch for the park arm below.
         let mut settlement_wake = self.settlement.clone();
 
@@ -366,27 +370,30 @@ where
         }
     }
 
-    /// Forms the next bundle from the consecutively-ready prefix of the queue and proves it.
-    /// Returns `true` when progress was made (a bundle consumed, proved, no-op, or empty; a
-    /// canceled prefix evicted), `false` when there was nothing to do or the bundle's lane proof
-    /// was unavailable (deferred, its batches re-queued at the front).
+    /// Forms the next bundle from the consecutively-ready prefix of the queue and proves it,
+    /// consuming the prefix only once a handle is emitted. Returns `true` when progress was made
+    /// (a bundle consumed, proved, no-op, or empty; a canceled prefix evicted; a failed proof
+    /// attempt re-formed by the next pass), `false` when there was nothing to do, the front's
+    /// receipt is not published yet (the run loop parks on it), or the bundle's lane proof was
+    /// unavailable (deferred, its batches left queued at the front).
     async fn try_prove_one_bundle(&mut self) -> bool {
         let Some(front) = self.queued.front().cloned() else {
             return false;
         };
 
-        // Block on the first batch's receipt, but stay cancelable: on shutdown the batch prover may
-        // never publish a receipt we are waiting on, which would otherwise deadlock the join.
-        tokio::select! {
-            biased;
-            () = self.prover.shutdown.wait() => return false,
-            () = front.wait_artifact_published() => {}
+        // An unpublished front defers to the run loop's park instead of blocking here: parking
+        // inside the formation skipped the loop-top drain, so a batch submitted while parked
+        // (its inbox permit unobserved) missed the bundle that formed on the latch wake alone.
+        // The park's `next_queued_batch_published` arm wakes on exactly this publication. A
+        // canceled front is exempt (its wait would have returned immediately, latch open or
+        // not) and falls through to the eviction below.
+        if !front.artifact_published() && !front.canceled() {
+            return false;
         }
 
-        // A rollback may have canceled the front while we were parked: a canceled batch's wait
-        // returns immediately, and cancellation force-opens the artifact latch without a receipt.
-        // Evict the canceled prefix rather than bundle it (which would panic collecting a missing
-        // receipt). Returning progress re-drains the inbox, where the forthcoming
+        // A rollback may have canceled the front: a canceled batch never publishes its artifact,
+        // so evict the canceled prefix rather than bundle it (which would panic collecting a
+        // missing receipt). Returning progress re-drains the inbox, where the forthcoming
         // `Command::Rollback` truncates `retained`, resets the re-form guard, and re-runs this
         // eviction on `queued` idempotently.
         if front.canceled() {
@@ -588,6 +595,10 @@ where
             if st.permission_spk_hash != [0u8; 32] {
                 let leaves =
                     Arc::new(extract_bundle_exits(&journals).expect("decode bundle exits"));
+                log::info!(
+                    "aggregate-prover: bundle through {block_prove_to} carries {} exit leaves",
+                    leaves.len(),
+                );
                 // Receiver dropped means no consumer is listening; silently ignore.
                 let _ = sender.send(Arc::new(ExitsForBundle {
                     new_state: st.new_state,
@@ -690,7 +701,12 @@ where
         // An unmatched boundary drops nothing: with no orderable relation between the boundary
         // and our window blocks we cannot tell "covered all" from "behind / not ours", and
         // dropping would risk discarding a still-unsettled suffix. Forward-only, under the
-        // single-miner / low-reorg assumption.
+        // single-miner / low-reorg assumption. The pass still falls through to the re-form
+        // below: a boundary whose batches were already drained (the watch republishes the
+        // last settlement per block) leaves a surviving suffix that nothing else would ever
+        // re-drive once the lane goes quiet, stranding its exits until unrelated activity
+        // arrives. The re-form chains off the retained front, and the settler journal gates
+        // it to the fronts nothing else drives.
         if queued_drain.is_none() && retained_drain.is_none() {
             log::debug!(
                 "aggregate-prover: settlement {} boundary {} matches no window block; nothing \
@@ -698,7 +714,6 @@ where
                 settlement.tx_id,
                 boundary,
             );
-            return;
         }
         if let Some(drain) = queued_drain {
             // The boundary sits above every retained batch (the windows hold one chain in
@@ -725,6 +740,19 @@ where
         let suffix: Vec<ScheduledBatch<S, P>> =
             self.retained.iter().take(suffix_len).cloned().collect();
         let suffix_from = suffix.first().unwrap().checkpoint().index();
+        // A journal entry starting at the suffix front is a bundle still pending in the
+        // settlement queue (the queue path's own emission, or a previous re-form); re-proving
+        // it would only hand the settler a superseded duplicate after every quiet spell. A
+        // front with no entry is the stranded one: the settler's supersede skip deleted it,
+        // or a drain left a mid-bundle start no entry ever named.
+        if self
+            .journal
+            .as_ref()
+            .is_some_and(|j| j.entries().iter().any(|(start, _)| *start == suffix_from))
+        {
+            return;
+        }
+        // The guard covers journal-unwired runs and no-op re-forms, which record no entry.
         if self.last_reformed_from == Some(suffix_from) {
             return;
         }
