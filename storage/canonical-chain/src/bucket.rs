@@ -23,6 +23,15 @@ pub struct FrozenBits {
     pub words: BucketWords,
 }
 
+impl FrozenBits {
+    /// Returns `id`'s canonical bit from this row's words, or `None` when `id` belongs to
+    /// another bucket.
+    pub fn bit(&self, id: u64) -> Option<bool> {
+        let (bucket, bit) = Bucket::locate(id);
+        (bucket == self.bucket).then(|| self.words[bit / 64] & (1 << (bit % 64)) != 0)
+    }
+}
+
 /// A fixed-size run of canonical bits (`1` = canonical), covering [`CAPACITY`] ids.
 pub(crate) struct Bucket([AtomicU64; WORDS]);
 
