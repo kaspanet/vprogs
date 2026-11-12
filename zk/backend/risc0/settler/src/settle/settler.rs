@@ -39,6 +39,12 @@ pub enum SettleOutcome {
     /// (fresh funds may later arrive at the funder), so the caller backs off and retries the same
     /// bundle rather than dropping it or stopping.
     FeeExhausted,
+    /// The bundle's seq-commit anchor block (`block_prove_to`) is beyond the node's script
+    /// verification depth: the node refuses every settlement anchored to it, and the block only
+    /// gets deeper, so this artifact is permanently unlandable. The caller drops the bundle and
+    /// deletes its journal entry so the range re-forms from the covenant tip over a later,
+    /// shallower boundary (a deep catch-up converges as the replay frontier nears the L1 tip).
+    AnchorTooDeep,
     /// The node hard-rejected the submission; retrying the same bundle cannot recover it. Carries a
     /// human-readable reason. The caller stops the settler rather than looping on a doomed
     /// submission.
@@ -91,6 +97,14 @@ impl<F: FeeSource, K: SettlementSink> Settler<F, K> {
         let covenant_entry = cov.utxo_entry();
         let covenant = OutpointAt { spk: &cov.spk, outpoint: cov.outpoint };
 
+        // Fail fast on an anchor the node cannot verify: a settlement whose `block_prove_to` is
+        // beyond the seq-commit depth is refused outright, so checking first skips the doomed
+        // funding and submission round-trips. A sink without depth visibility answers false and
+        // the submission's own rejection classifies the same outcome below.
+        if self.sink.anchor_beyond_depth(artifact.block_prove_to).await {
+            return SettleOutcome::AnchorTooDeep;
+        }
+
         // The network can reject a settlement for a transient reason that funding the fee from a
         // different UTXO resolves. Re-fund from another settled UTXO, excluding each rejected one,
         // until one is accepted or every spendable UTXO is exhausted. The last accepted funding is
@@ -139,6 +153,14 @@ impl<F: FeeSource, K: SettlementSink> Settler<F, K> {
                             cov.outpoint,
                         );
                         return SettleOutcome::Superseded;
+                    }
+                    SubmitOutcome::AnchorTooDeep => {
+                        log::warn!(
+                            "settlement-worker: anchor block {} beyond the node's seq-commit \
+                             verification depth; the node rejected the settlement",
+                            artifact.block_prove_to,
+                        );
+                        return SettleOutcome::AnchorTooDeep;
                     }
                     SubmitOutcome::Fatal(reason) => {
                         return SettleOutcome::Failed(format!(

@@ -112,7 +112,8 @@ async fn deposit_and_withdraw_settle_with_deposit_and_permission_commitments() {
         block_hashes[0],
         vec![batch_receipt],
     )
-    .await;
+    .await
+    .expect("aggregator proof");
 
     let journal = Backend::journal_bytes(&settlement_receipt);
     assert_eq!(journal.len(), JOURNAL_SIZE, "settlement journal must be {JOURNAL_SIZE} bytes");

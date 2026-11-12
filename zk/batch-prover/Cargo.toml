@@ -6,6 +6,7 @@ version.workspace = true
 [dependencies]
 kaspa-hashes.workspace                 = true
 kaspa-rpc-core.workspace               = true
+log.workspace                          = true
 tap.workspace                          = true
 tokio                                  = { workspace = true, features = ["rt"] }
 vprogs-core-atomics.workspace          = true
