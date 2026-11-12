@@ -52,6 +52,9 @@ jobs:
   test:
     name: Tests
     runs-on: ubuntu-latest
+    # The risc0 test-suite proves on CPU and dominates the run past the runner budget, so CI
+    # skips it; the full gate stays local: cargo test --workspace
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -68,4 +71,4 @@ jobs:
           shared-key: "rust-cache"
 
       - name: Tests
-        run: cargo test
+        run: cargo test --workspace --exclude vprogs-zk-backend-risc0-test-suite
