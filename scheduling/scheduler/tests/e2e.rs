@@ -1,18 +1,27 @@
-use std::{sync::mpsc, thread, time::Duration};
+use std::{
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread,
+    time::Duration,
+};
 
 use tempfile::TempDir;
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_hashing::Sha256;
-use vprogs_core_smt::{EMPTY_HASH, Tree, proving::Proof};
+use vprogs_core_smt::{EMPTY_HASH, Key, Node, Tree, WriteBatch, proving::Proof};
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, Checkpoint, ResourceId, SchedulerTransaction};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler, TransactionContext};
 use vprogs_scheduling_test_utils::{Processor, SchedulerExt};
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_version::StateVersion;
-use vprogs_storage_canonical_chain::BUCKET_CAPACITY;
+use vprogs_storage_canonical_chain::{BUCKET_CAPACITY, CanonicalChain, FrozenBits};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
+use vprogs_storage_types::{PrefixIterator, StateSpace, Store};
 
 /// The current global state root: the SMT root at the last committed version.
 fn state_root(scheduler: &Scheduler<RocksDbStore, Processor>) -> [u8; 32] {
@@ -2780,6 +2789,197 @@ pub fn test_finalize_past_orphan_bucket_keeps_predecessor() {
             .expect("bucket 0's frozen bits persist with the pruning commit");
         let word = u64::from_be_bytes(row.1[..8].try_into().unwrap());
         assert_eq!(word & 0b11, 0b01, "id 1 canonical, orphaned id 2 not");
+
+        scheduler.shutdown();
+    }
+}
+
+/// Holds the pruning thread inside its commit while the test thread runs a racing finalize,
+/// then releases it. [`reached`](RacingFinalizeGate::reached) signals the pruning pass has
+/// advanced the root and queued its frozen rows; [`release`](RacingFinalizeGate::release)
+/// lets the reclaim loop resume.
+struct RacingFinalizeGate {
+    /// True while the next frozen-bits write must hold for the injected finalize.
+    armed: AtomicBool,
+    /// Signals the test thread that the held write arrived.
+    reached: mpsc::Sender<()>,
+    /// The pruning thread waits on this pair until the racing finalize has run.
+    release: Arc<(Mutex<bool>, Condvar)>,
+}
+
+/// A [`Store`] whose frozen-bits write holds while its gate is armed, so a
+/// `Scheduler::finalize` from the test thread lands between the pruning pass's root move
+/// and its reclaim reads. Every operation delegates unchanged.
+#[derive(Clone)]
+struct RacingFinalizeStore {
+    /// The store every operation delegates to.
+    inner: RocksDbStore,
+    /// The injection's arming flag and handshake.
+    gate: Arc<RacingFinalizeGate>,
+}
+
+impl Store for RacingFinalizeStore {
+    type WriteBatch = <RocksDbStore as Store>::WriteBatch;
+
+    fn get(&self, state_space: StateSpace, key: &[u8]) -> Option<Vec<u8>> {
+        self.inner.get(state_space, key)
+    }
+
+    fn write_batch(&self) -> Self::WriteBatch {
+        self.inner.write_batch()
+    }
+
+    fn commit(&self, write_batch: Self::WriteBatch) {
+        self.inner.commit(write_batch)
+    }
+
+    fn prefix_iter(&self, state_space: StateSpace, prefix: &[u8]) -> PrefixIterator<'_> {
+        self.inner.prefix_iter(state_space, prefix)
+    }
+
+    fn prefix_iter_rev(&self, state_space: StateSpace, prefix: &[u8]) -> PrefixIterator<'_> {
+        self.inner.prefix_iter_rev(state_space, prefix)
+    }
+
+    fn range_iter(&self, state_space: StateSpace, start: &[u8], end: &[u8]) -> PrefixIterator<'_> {
+        self.inner.range_iter(state_space, start, end)
+    }
+
+    fn canonical_chain(&self) -> CanonicalChain {
+        self.inner.canonical_chain()
+    }
+
+    fn put_frozen_bits(&self, wb: &mut Self::WriteBatch, frozen: &[FrozenBits]) {
+        // Hold exactly the pass's frozen-bits write: it runs after the root has advanced
+        // but before the reclaim loop reads.
+        if self.gate.armed.swap(false, Ordering::SeqCst) {
+            self.gate.reached.send(()).expect("test thread is waiting");
+            let (released, signal) = &*self.gate.release;
+            let mut released = released.lock().expect("gate poisoned");
+            while !*released {
+                released = signal.wait(released).expect("gate poisoned");
+            }
+        }
+        self.inner.put_frozen_bits(wb, frozen)
+    }
+}
+
+impl Tree for RacingFinalizeStore {
+    type Hasher = <RocksDbStore as Tree>::Hasher;
+    type Snapshot = <RocksDbStore as Tree>::Snapshot;
+
+    fn snapshot(&self) -> Self::Snapshot {
+        self.inner.snapshot()
+    }
+
+    fn node(&self, key: &Key, max_version: u64, snapshot: &Self::Snapshot) -> Option<(u64, Node)> {
+        self.inner.node(key, max_version, snapshot)
+    }
+
+    fn prune(&self, wb: &mut impl WriteBatch, version: u64) {
+        self.inner.prune(wb, version)
+    }
+}
+
+/// A `Scheduler::finalize` landing between the pruning pass's root move and its reclaim
+/// reads prunes the crossed buckets out of the body ring the pass's pinned view shares, so
+/// answering the loop's `is_canonical` from that view would read every crossed orphan as
+/// canonical and reclaim its live predecessor instead of its own write. The pass must
+/// answer from the frozen rows captured before the root moved.
+///
+/// The interleaving is not a race: the store wrapper holds the pruning thread inside its
+/// commit - past `set_root`, before the reclaim loop - until the test thread has run the
+/// racing finalize, so the pruned ring is in place before the loop's first read.
+#[test]
+pub fn test_racing_finalize_mid_prune_keeps_orphan_reclaim() {
+    use std::time::Instant;
+
+    use vprogs_core_types::ChainSink;
+
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    let (reached_tx, reached_rx) = mpsc::channel();
+    let gate = Arc::new(RacingFinalizeGate {
+        armed: AtomicBool::new(false),
+        reached: reached_tx,
+        release: Arc::new((Mutex::new(false), Condvar::new())),
+    });
+    {
+        let storage = RacingFinalizeStore {
+            inner: RocksDbStore::open(temp_dir.path()),
+            gate: Arc::clone(&gate),
+        };
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(Processor),
+            StorageConfig::default().with_store(storage),
+        );
+
+        // Batch 1 writes R (version 1); batch 2 rewrites R, pointing back at version 1.
+        scheduler
+            .schedule(
+                1,
+                vec![SchedulerTransaction::new(
+                    0,
+                    vec![AccessMetadata::write(ResourceId::for_test(1))],
+                    0,
+                )],
+            )
+            .wait_committed_blocking();
+        scheduler
+            .schedule(
+                2,
+                vec![SchedulerTransaction::new(
+                    0,
+                    vec![AccessMetadata::write(ResourceId::for_test(1))],
+                    1,
+                )],
+            )
+            .wait_committed_blocking();
+
+        // Reorg batch 2 away: id 2 becomes an orphaned gap and R reverts to version 1.
+        scheduler.rollback_to(1).expect("rollback should succeed");
+
+        // Push the tip into the third bucket with empty fillers, so bucket 0 - holding the
+        // orphan - sinks into the body ring where the racing finalize can prune it.
+        let mut last = None;
+        for meta in 3..=2 * BUCKET_CAPACITY + 1 {
+            last = Some(scheduler.schedule(meta, vec![]));
+        }
+        last.expect("scheduled fillers").wait_committed_blocking();
+
+        // Arm the injection and start the pass: threshold 2 * CAPACITY + 1 prunes
+        // 1..=2 * CAPACITY with new root 2 * CAPACITY + 1.
+        gate.armed.store(true, Ordering::SeqCst);
+        scheduler.finalize(2 * BUCKET_CAPACITY + 1);
+
+        // The pass holds inside its commit once its frozen-bits write arrives.
+        reached_rx.recv_timeout(Duration::from_secs(60)).expect("pruning pass reached its commit");
+
+        // The racing finalize: prunes the body ring below the already-advanced root.
+        scheduler.finalize(2 * BUCKET_CAPACITY + 1);
+
+        // Release the pass and wait for its commit to land.
+        let (released, signal) = &*gate.release;
+        *released.lock().expect("gate poisoned") = true;
+        signal.notify_all();
+
+        let store = scheduler.state().storage().store();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while store.get(StateSpace::BatchMetadata, &(2 * BUCKET_CAPACITY).to_be_bytes()).is_some() {
+            assert!(Instant::now() < deadline, "pruning pass did not reclaim the range");
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        // The orphaned batch 2 must have reclaimed its own write and spared R's live
+        // version 1, the answer its frozen bit carries, not the pruned ring's canonical
+        // fallback.
+        assert!(
+            StateVersion::get(store.as_ref(), 1, &ResourceId::for_test(1)).is_some(),
+            "the racing finalize flipped the orphan to canonical and reclaimed R's live predecessor"
+        );
+        assert!(
+            StateVersion::get(store.as_ref(), 2, &ResourceId::for_test(1)).is_none(),
+            "the orphaned batch's own write must be reclaimed"
+        );
 
         scheduler.shutdown();
     }
