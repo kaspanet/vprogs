@@ -35,7 +35,7 @@ pub use node::{
     RunnerNode, RunnerStore, RunnerVm, SettlementQueue, build_exec_node, build_proving_node,
 };
 pub use persistence::PersistedState;
-pub use start::{RunnerHandles, StartError, start_runner};
+pub use start::{RunnerHandles, StartError, run_covenant_reroot, start_runner};
 pub use vprogs_scheduling_scheduler::{Indexer, ResourceIndexer};
 pub use vprogs_zk_abi::withdrawal::ExitLeaf;
 pub use vprogs_zk_aggregate_prover::ExitsForBundle;

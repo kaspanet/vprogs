@@ -17,8 +17,12 @@ use vprogs_scheduling_scheduler::{Processor, ScheduledBatch};
 use vprogs_state_proof_receipt::{AggregatorKey, BatchKey, Prefix};
 use vprogs_state_settlement_journal::{JournalEntry, StoreJournal};
 use vprogs_storage_types::Store;
-use vprogs_zk_abi::batch_aggregator::{Inputs as AggregatorInputs, StateTransition};
+use vprogs_zk_abi::{
+    batch_aggregator::{Inputs as AggregatorInputs, StateTransition},
+    batch_processor::BatchTransition,
+};
 use vprogs_zk_batch_prover::{LaneProofRequest, LaneProofSource};
+use zerocopy::FromBytes;
 
 use crate::{
     AggregateProver, AggregateProverConfig, Backend, BundleBlocks, ExitsForBundle, ScheduledBundle,
@@ -112,6 +116,12 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend, L: LaneProofSour
     /// Sender on the exit-leaf channel driving client Merkle-path proof generation, or `None` if
     /// exit publishing is disabled.
     exits: Option<mpsc::UnboundedSender<Arc<ExitsForBundle>>>,
+    /// Sender notified with the covenant tip on a held off-tip fold, or `None` to disable the
+    /// request.
+    re_root: Option<mpsc::UnboundedSender<SettlementInfo>>,
+    /// Settlement the current re-root request was sent for, deduplicating republications of
+    /// the same tip; reset by a rollback, which resolves the request.
+    re_rooted_for: Option<TransactionId>,
 }
 
 impl<S, P, B, L> Worker<S, P, B, L>
@@ -142,6 +152,7 @@ where
             lane_source,
             settlement_queue,
             settlement,
+            re_root,
             bundle_size,
             exits,
         } = config;
@@ -176,6 +187,8 @@ where
             handled_settlement: None,
             settlement_daa: 0,
             exits,
+            re_root,
+            re_rooted_for: None,
         };
         let runtime = Builder::new_current_thread().enable_all().build().expect("runtime");
         spawn(move || runtime.block_on(this.run()))
@@ -292,6 +305,18 @@ where
                         // journal tail ends the retry with the fork, and one inside the range
                         // leaves only the surviving prefix to re-cover.
                         gap_bound = gap_bound.map(|bound| bound.min(target));
+                    }
+                    Command::Reroot(target) => {
+                        // A re-root's batches re-drive above the target, so the pending gap
+                        // bound stands: the retry re-covers the range once the re-drive
+                        // commits it. The truncation invalidates whatever the last-handled
+                        // settlement's passes consumed, so its dedupe resets and the
+                        // republished tip re-runs against the truncated windows. The DAA
+                        // floor survives: the covenant only moved forward through a re-root,
+                        // and a stale republished settlement re-arming the passes is what
+                        // oscillated the re-root against its own rollback.
+                        self.truncate_windows(target);
+                        self.handled_settlement = None;
                     }
                 }
                 if self.prover.shutdown.is_open() {
@@ -440,6 +465,68 @@ where
                 self.queued.pop_front();
             }
             return true;
+        }
+
+        // With nothing unsettled in the journal, the window head is the batch the covenant tip
+        // waits on: it must enter at the tip's own exit, or the bundle folded from it starts
+        // mid-chain (a receipt-less committed range above the boundary) or on a lane the
+        // covenant never took (a fork below it). Either way the settler can only skip the
+        // bundle, no settlement ever advances, and the only drain trigger (the settlement-watch
+        // advance) never fires. Hold the fold and request a rollback of execution to the
+        // settlement boundary instead, so re-execution re-enters at the covenant's exit; the
+        // forthcoming rollback command clears the held batches. The head normally IS the tip's
+        // successor (its predecessor is the settlement's exit lane tip), so this fires only on
+        // the wedge. A journal holding entries keeps its own chain: its head bundles continue
+        // it, and the resume paths own the boundary.
+        // The watch carries the republished last settlement, not only advances: a reorg flip
+        // can restamp an older one, and honoring it would hold the fold against a tip the
+        // covenant already passed. Gate on the same forward-only DAA floor the re-aggregation
+        // drains against.
+        // A head off the covenant's exit is the wedge only when our own chain broke right
+        // above the boundary: the boundary is a committed batch below the head and the batch
+        // after it does not enter at the tip's exit. Everything else is covered catch-up
+        // (bundling lags a covenant chain at, ahead of, or below the front, under contention
+        // even against a competitor's boundary) and converges through the settler's supersede
+        // skip and the re-form paths; holding it would park bundling forever and every
+        // observed settlement would re-request a rollback to a flipping target, whose
+        // re-drives compose the first cross-lineage bundle the guest rejects.
+        let off_tip = self
+            .settlement
+            .as_ref()
+            .and_then(|rx| *rx.borrow())
+            .filter(|tip| tip.daa_score.get() >= self.settlement_daa)
+            .filter(|tip| front.checkpoint().metadata().prev_lane_tip != tip.new_lane_tip)
+            .filter(|tip| {
+                self.journal.as_ref().is_none_or(|j| {
+                    let front_index = front.checkpoint().index();
+                    j.checkpoint_of_block(tip.block_prove_to, front_index - 1, 1).is_some_and(
+                        |boundary| {
+                            boundary < front_index
+                                && j.batch_metadata(boundary + 1)
+                                    .is_some_and(|m| m.prev_lane_tip != tip.new_lane_tip)
+                        },
+                    )
+                })
+            });
+        let held_off_tip =
+            off_tip.filter(|_| self.journal.as_ref().is_none_or(|j| !j.has_entries()));
+        if let Some(tip) = held_off_tip {
+            if self.re_rooted_for.as_ref() != Some(&tip.tx_id) {
+                self.re_rooted_for = Some(tip.tx_id);
+                if let Some(re_root) = &self.re_root {
+                    let _ = re_root.send(tip);
+                }
+                log::info!(
+                    "aggregate-prover: holding the fold at batch {}: it enters at lane tip {} \
+                     but the covenant tip {} exited at {}; requesting a rollback to the \
+                     settlement boundary",
+                    front.checkpoint().index(),
+                    front.checkpoint().metadata().prev_lane_tip,
+                    tip.tx_id,
+                    tip.new_lane_tip,
+                );
+            }
+            return false;
         }
 
         // Greedily extend the bundle over the consecutively-ready prefix: include each following
@@ -1048,6 +1135,35 @@ where
         st.prev_state == tip.new_state && st.prev_lane_tip == tip.new_lane_tip
     }
 
+    /// Requests a rollback of execution to `tip`'s settlement boundary for the committed-gap
+    /// re-cover, deduplicated per tip (`log_new` runs only on the first request), and returns
+    /// the deferred outcome the caller should propagate: the range only composes after the
+    /// rollback re-drives it through the scheduler, whose re-execution rebuilds the receipts
+    /// from whatever state the restored checkpoint actually holds.
+    ///
+    /// Deferring, not dropping, is what lets a stale request resolve: the watch value may name a
+    /// settlement a later one already superseded (the watch lags the covenant by the bridge's
+    /// follow depth, and a reorg rolling the bridge back mid-replay regresses it further), which
+    /// the re-root drain confirms against the chain before acting. An honored request arrives as
+    /// `Command::Reroot` and the re-drive's rebuilt receipts let a later pass compose; a skipped
+    /// one resolves when the watch republishes the spending settlement and the re-run request
+    /// names the live tip.
+    fn request_gap_reroot(
+        &mut self,
+        tip: &SettlementInfo,
+        bound: u64,
+        log_new: impl FnOnce(),
+    ) -> GapOutcome {
+        if self.re_rooted_for.as_ref() != Some(&tip.tx_id) {
+            self.re_rooted_for = Some(tip.tx_id);
+            if let Some(re_root) = &self.re_root {
+                let _ = re_root.send(*tip);
+            }
+            log_new();
+        }
+        GapOutcome::Deferred(bound)
+    }
+
     /// Startup pass covering committed-but-unjournaled batches: a kill between a batch's commit
     /// and its bundle's journal record leaves a checkpoint range the scheduler never re-schedules,
     /// so every later bundle would prove from a state root the covenant never took and the settler
@@ -1055,8 +1171,9 @@ where
     /// range from persisted batch metadata and cached per-batch receipts, records its entry, and
     /// feeds it after the journal tail, ahead of new work. Returns [`GapOutcome::Covered`] with
     /// the recorded entry's end index for the advance pass's scope, [`GapOutcome::Nothing`] when
-    /// the range needs no cover, or [`GapOutcome::Deferred`] when the lane-proof fetch failed and
-    /// the caller should retry on later wakes.
+    /// the range needs no cover, or [`GapOutcome::Deferred`] when the pass could not resolve the
+    /// range on this wake (a dead lane-proof fetch, a pending re-root request, or a covenant
+    /// boundary at or below a live journal tail) and the caller should retry on later wakes.
     ///
     /// `tip` bounds the range below: a settlement boundary landing inside it splits the range
     /// exactly as [`split_straddler`](Self::split_straddler) splits a journaled entry. `bound`
@@ -1077,12 +1194,15 @@ where
         }
         // The boundary search covers only the gap range strictly above the journal tail; a
         // journal entry cannot resolve it, because every entry ends at or below the tail.
-        let boundary = match tip {
-            Some(tip) => journal
-                .checkpoint_of_block(tip.block_prove_to, committed_tip, tail_end + 1)
-                .map_or(tail_end, |index| index.max(tail_end)),
-            None => tail_end,
-        };
+        let resolved = tip.and_then(|tip| {
+            journal.checkpoint_of_block(tip.block_prove_to, committed_tip, tail_end + 1)
+        });
+        let boundary = resolved.map_or(tail_end, |index| index.max(tail_end));
+        // The covenant's boundary resolved strictly inside the range (above the journal tail):
+        // execution above it is pinned to whatever lineage the pinned batches carry, and no
+        // journal entry can cover it. Every uncoverable shape below then composes only after
+        // re-entering execution at the boundary, so each requests the re-root and defers.
+        let inside = resolved.is_some_and(|index| index > tail_end);
         // The on-chain tip already covers the whole range; new work chains from it directly.
         if boundary >= committed_tip {
             return GapOutcome::Nothing;
@@ -1093,7 +1213,16 @@ where
                 "aggregate-prover: committed batch {first} above the journal tail lacks metadata; \
                  leaving its range uncovered"
             );
-            return GapOutcome::Nothing;
+            return match tip.filter(|_| inside) {
+                Some(tip) => self.request_gap_reroot(tip, bound, || {
+                    log::info!(
+                        "aggregate-prover: committed batch {first} above the journal tail lacks \
+                         metadata with the covenant boundary pinned inside the range; requesting \
+                         a rollback to the settlement boundary"
+                    );
+                }),
+                None => GapOutcome::Nothing,
+            };
         };
         // The bundle covers the contiguously-durable prefix: an empty batch is durable as-is,
         // and the first non-empty batch without metadata or a receipt bounds the range. The
@@ -1133,9 +1262,64 @@ where
                  uncovered"
             );
         }
-        // No real work below the miss: nothing to compose, matching the live no-op path.
+        // No real work below the miss: nothing to compose, matching the live no-op path - unless
+        // the covenant's boundary sits strictly inside the range, when the miss is the
+        // receipt-less wedge itself (batches killed mid-prove above the boundary no cached
+        // artifact can compose) and only the re-root recovers.
         if covered.is_empty() {
-            return GapOutcome::Nothing;
+            return match tip.filter(|_| inside) {
+                Some(tip) => self.request_gap_reroot(tip, bound, || {
+                    log::info!(
+                        "aggregate-prover: nothing composes from batch {first} above the \
+                         covenant boundary pinned inside the committed range (a receipt-less \
+                         kill range); requesting a rollback to the settlement boundary"
+                    );
+                }),
+                None => GapOutcome::Nothing,
+            };
+        }
+        // The re-cover must chain from the covenant tip exactly like a folded bundle: its first
+        // covered receipt enters at the tip's exit, or the composed bundle proves from a base the
+        // covenant never took (a state fork below the boundary surviving in the cached receipts),
+        // the settler skips it, and the entry re-poisons the journal the resume pass just
+        // cleaned.
+        if let Some(tip) = tip {
+            if !inside && tail_end > 0 {
+                // A boundary at or below a live journal tail leaves the watch tip trailing the
+                // tail's own chain, so it cannot name the re-cover's base: the tail is either
+                // still settling (the range legitimately chains from the tail's exit, which the
+                // tip trails by a whole bundle) or already superseded by a settlement the watch
+                // has not published yet. Composing on the first guess re-covers from a base the
+                // covenant may have passed, and pinning the tip and re-rooting on the second
+                // rolls execution back under live work while the re-drive re-commits the same
+                // hash-keyed batches from their cached receipts and the pin re-fires, parking
+                // the gap in a rollback/re-drive loop. Defer instead: the tail settling or
+                // being superseded advances the watch past the tail, and the retry decides with
+                // a tip that can pin the base.
+                log::debug!(
+                    "aggregate-prover: covenant boundary {} at or below the journal tail \
+                     {tail_end}; deferring the committed-gap re-cover until the watch advances \
+                     past the tail",
+                    tip.block_prove_to,
+                );
+                return GapOutcome::Deferred(bound);
+            }
+            let journal = B::journal_bytes(&covered[0].2);
+            let st = BatchTransition::ref_from_bytes(&journal).expect("batch journal");
+            if st.prev_state != tip.new_state || st.prev_lane_tip != tip.new_lane_tip {
+                let first = covered[0].0;
+                return self.request_gap_reroot(tip, bound, || {
+                    log::info!(
+                        "aggregate-prover: holding the committed-gap re-cover at batch {first}: \
+                         it enters at state {} and lane tip {} but the covenant tip {} exited at \
+                         {}; requesting a rollback to the settlement boundary",
+                        Hash::from_bytes(st.prev_state),
+                        st.prev_lane_tip,
+                        tip.tx_id,
+                        tip.new_lane_tip,
+                    );
+                });
+            }
         }
         // The bundle's end walks down over dead final blocks: a block whose lane proof cannot
         // be fetched must not pin the range (the deferral's bound would retry the same dead
@@ -1341,16 +1525,26 @@ where
     }
 
     /// Drops queued and retained batches rolled back by a reorg, and resets the re-form guard so
-    /// the next settlement re-aggregates against the rolled-back retained suffix. The active
+    /// the next settlement re-aggregates against the rolled-back retained suffix. The reorg may
+    /// also have moved the covenant to an earlier settlement, so the settlement-progress guards
+    /// reset with it: the republished post-reorg tip must re-drive every pass. The active
     /// bundle's proof is awaited inline, so a rollback command is only applied between bundles
     /// and can never silently include a rolled-back suffix; aborting a proof already running on
     /// the GPU remains a TODO (same gap as the batch prover).
     fn apply_rollback(&mut self, target_index: u64) {
+        self.truncate_windows(target_index);
+        self.handled_settlement = None;
+        self.settlement_daa = 0;
+    }
+
+    /// Shared window truncation of a rollback: drop the batches beyond the target, reset the
+    /// re-form guard, and re-arm the re-root request (execution re-entered somewhere new, so the
+    /// next off-tip head is a fresh wedge to report).
+    fn truncate_windows(&mut self, target_index: u64) {
         self.queued.retain(|b| b.checkpoint().index() <= target_index);
         self.retained.retain(|b| b.checkpoint().index() <= target_index);
         self.last_reformed_from = None;
-        self.handled_settlement = None;
-        self.settlement_daa = 0;
+        self.re_rooted_for = None;
     }
 }
 

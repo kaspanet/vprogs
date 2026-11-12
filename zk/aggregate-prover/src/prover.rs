@@ -84,6 +84,12 @@ impl<S: Store, P: Processor<S>> AggregateProver<S, P> {
         self.booted.wait_until_blocking(|v| v != 0);
     }
 
+    /// Enqueues a re-root command so the worker discards queued batches beyond the target while
+    /// keeping its settlement-progress state.
+    pub fn reroot(&self, target_index: u64) {
+        self.inbox.push(Command::Reroot(target_index));
+    }
+
     /// Signals the worker to shut down and joins its thread, so the worker's GPU prover (and its
     /// tokio runtime) is torn down while the CUDA context is still alive. Without the join the
     /// detached worker races the process's CUDA atexit teardown and aborts ("driver shutting

@@ -263,6 +263,7 @@ fn harness(blocks: &[(u8, u64)], one_bundle: bool) -> Harness {
             lane_source: ServeLaneProofs,
             settlement_queue: Some(queue.clone()),
             settlement: Some(settlement_rx),
+            re_root: None,
             bundle_size: 1..=8,
             exits: None,
         },

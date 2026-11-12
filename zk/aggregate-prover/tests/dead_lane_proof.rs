@@ -270,6 +270,7 @@ fn dead_lane_proof_fetch_does_not_kill_the_worker() {
                 lane_source: DeadBlockLaneSource { dead: block_hash(DEAD_BLOCK as u8) },
                 settlement_queue: Some(settlement_queue.clone()),
                 settlement: None,
+                re_root: None,
                 bundle_size: 1..=1,
                 exits: None,
             },

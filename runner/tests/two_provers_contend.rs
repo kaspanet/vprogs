@@ -40,14 +40,14 @@ use vprogs_l1_wallet::encode_activity_payload;
 use vprogs_node_test_utils::L1Node;
 use vprogs_runner::{
     BridgeObservers, BridgeParams, Elfs, PersistedState, ProvingParams, RunnerConfig, RunnerNode,
-    RunnerStore, SettlementQueue, StartMode, build_proving_node, start_runner,
+    RunnerStore, SettlementQueue, StartMode, build_proving_node, run_covenant_reroot, start_runner,
 };
 use vprogs_state_settlement_journal::StoreJournal;
 use vprogs_storage_types::{StateSpace, Store};
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_settler::{
     AlternationPacer, CovenantState, SettlementMode, SettlementWorkerConfig, dev_bootstrap_redeem,
-    run as run_settlement_worker,
+    run as run_settlement_worker, settlement_tip_live,
 };
 use vprogs_zk_backend_risc0_test_suite::{
     TEST_SUBNETWORK_ID, batch_aggregator_elf, batch_processor_elf, dev_mode_enabled, test_lane_key,
@@ -3857,6 +3857,184 @@ async fn fresh_deploy_pins_lane_tip_at_the_bridge_root() {
     l1.shutdown().await;
 }
 
+/// Walks the selected-parent chain and threads the covenant's settlements from the bootstrap,
+/// returning each one's full [`SettlementInfo`] in covenant order (oldest first), with the
+/// bridge-stamped daa score and sink idx left at zero.
+async fn settlement_info_chain(
+    l1: &L1Node,
+    block_deploy: Hash,
+    bootstrap_outpoint: TransactionOutpoint,
+    covenant_id: Hash,
+) -> Vec<SettlementInfo> {
+    let mut by_input = HashMap::<TransactionOutpoint, SettlementInfo>::new();
+    let tip = l1.grpc_client().get_block_dag_info().await.expect("dag info").sink;
+    let mut cursor = tip;
+    loop {
+        let block = l1.grpc_client().get_block(cursor, true).await.expect("get_block");
+        for rpc_tx in &block.transactions {
+            let Ok(tx) = Transaction::try_from(rpc_tx.clone()) else { continue };
+            // The daa_score argument only stamps the returned info; the probe below reads the
+            // chain, not the stamp, so a zero score is fine here.
+            if let Some(info) = tx.settlement_info(covenant_id, cursor, 0) {
+                by_input
+                    .insert(tx.inputs.first().expect("settlement input").previous_outpoint, info);
+            }
+        }
+        if cursor == block_deploy {
+            break;
+        }
+        cursor = block.verbose_data.as_ref().expect("verbose data").selected_parent_hash;
+    }
+    let mut chain = Vec::new();
+    let mut next_input = bootstrap_outpoint;
+    while let Some(info) = by_input.remove(&next_input) {
+        next_input = TransactionOutpoint::new(info.tx_id, 0);
+        chain.push(info);
+    }
+    chain
+}
+
+/// The covenant re-root drain must not act on a superseded settlement: the settlement watch
+/// lags the covenant by the bridge's follow depth, and under contention a tip whose continuation
+/// a competitor already chain-spent would roll execution back to a boundary the covenant passed,
+/// cancelling live work and re-proving it in a loop until the watch catches up. The drain
+/// confirms each request against the chain (one UTXO read on the tip's continuation outpoint)
+/// and skips a spent one, leaving the committed frontier untouched.
+#[tokio::test(flavor = "multi_thread")]
+async fn reroot_drain_skips_superseded_tips() {
+    if !dev_mode_enabled() {
+        eprintln!(
+            "skipping reroot_drain_skips_superseded_tips: RISC0_DEV_MODE!=1 - the scenario runs \
+             dev stub proofs + the dev redeem on CPU",
+        );
+        return;
+    }
+    let _serial = serialize_settlement_test().await;
+
+    // === Step 0: simnet L1 (same config as two_provers_contend) ===
+    let l1 = L1Node::new(
+        NetworkId::new(NetworkType::Simnet),
+        Some(|p| {
+            p.blockrate.coinbase_maturity = 1;
+            p.block_mass_limits = BlockMassLimits::with_shared_limit(2_000_000);
+        }),
+    )
+    .await;
+    l1.mine_utxos(30).await;
+
+    let network_id = NetworkId::new(NetworkType::Simnet);
+    let lane_key = test_lane_key();
+
+    // === Bootstrap the dev covenant ===
+    let (bootstrap_redeem, bootstrap_spk) = dev_bootstrap_redeem(&lane_key, &Hash::default());
+    let (boot_tx, covenant_id) =
+        l1.build_covenant_bootstrap_transaction(&bootstrap_redeem, COVENANT_VALUE).await;
+    let boot_txid = boot_tx.id();
+    let block_deploy = l1.mine_block(&[boot_tx]).await;
+    l1.mine_blocks(1).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let bootstrap_outpoint = TransactionOutpoint::new(boot_txid, 0);
+    let bootstrap_state = CovenantState {
+        covenant_id,
+        state: EMPTY_HASH,
+        lane_tip: Hash::default(),
+        outpoint: bootstrap_outpoint,
+        spk: bootstrap_spk,
+        value: COVENANT_VALUE,
+        daa_score: 0,
+    };
+
+    let kp_a = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
+    let addr_a = prover_address(&kp_a, network_id);
+    l1.fund_address(&addr_a, FUND_VALUE, FUND_COUNT).await;
+
+    let tx_elf = transaction_processor_elf();
+    let batch_elf = batch_processor_elf();
+    let aggregator_elf = batch_aggregator_elf();
+    let elfs = Elfs { program: &tx_elf, batch: &batch_elf, aggregator: &aggregator_elf };
+    let params = Params::from(network_id);
+
+    // === One prover over a store the test reads the committed frontier through ===
+    let db_dir = TempDir::new().expect("persistent store dir");
+    let store_a = open_store_retrying(db_dir.path());
+    let prover_a = spawn_prover_on_store(
+        &l1,
+        "A",
+        kp_a,
+        addr_a.clone(),
+        1..=1,
+        network_id,
+        &params,
+        lane_key,
+        covenant_id,
+        bootstrap_state,
+        elfs,
+        None,
+        Some(block_deploy),
+        store_a.clone(),
+        false,
+    )
+    .await;
+    let journal_a = StoreJournal::new(store_a.clone());
+
+    // Land at least two settlements: the chain's tip stays live, the one below it is superseded.
+    let mut settled = 0;
+    for i in 0..20 {
+        drive_range(&l1).await;
+        settled =
+            settlement_info_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await.len();
+        eprintln!("reroot-skip driver: iteration {i}, covenant chain length {settled}");
+        if settled >= 2 {
+            break;
+        }
+    }
+    assert!(settled >= 2, "the prover must land >=2 settlements, got {settled}");
+
+    let infos = settlement_info_chain(&l1, block_deploy, bootstrap_outpoint, covenant_id).await;
+    let superseded = infos[infos.len() - 2];
+    let live = *infos.last().expect("two settlements checked");
+
+    // The probe the drain gates on: the superseded tip's continuation is spent, the live tip's
+    // is the covenant's unspent position. The test node answers, so a failed probe is a failure
+    // of the test itself, not a liveness answer to interpret.
+    let client = connect_wrpc(&l1.wrpc_borsh_url(), network_id).await;
+    assert!(
+        !settlement_tip_live(&client, &params, &superseded).await.expect("tip-liveness probe"),
+        "a settlement whose continuation was spent must read as not live",
+    );
+    assert!(
+        settlement_tip_live(&client, &params, &live).await.expect("tip-liveness probe"),
+        "the chain's tip settlement must read as the live covenant position",
+    );
+
+    // A superseded tip arriving on the re-root channel must not roll execution back: the
+    // committed frontier stays at or above where it was instead of truncating to the stale
+    // settlement's boundary.
+    let committed_before = journal_a.committed_tip().expect("batches committed").0;
+    let (re_root_tx, re_root_rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(run_covenant_reroot(
+        prover_a.node.api().clone(),
+        connect_wrpc(&l1.wrpc_borsh_url(), network_id).await,
+        params.clone(),
+        re_root_rx,
+    ));
+    re_root_tx.send(superseded).expect("send the superseded tip");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let committed_after = journal_a.committed_tip().expect("batches committed").0;
+    assert!(
+        committed_after >= committed_before,
+        "a superseded tip must not roll the committed frontier back ({committed_before} -> \
+         {committed_after})",
+    );
+
+    prover_a.shutdown.open();
+    let join_a = prover_a.settler.await;
+    prover_a.node.shutdown();
+    assert!(join_a.is_ok(), "reroot-skip settler panicked: {join_a:?}");
+    l1.shutdown().await;
+}
+
 /// Lane carriers mined per settlement range in the catch-up test (the bundle minimum).
 const CATCHUP_CARRIERS: usize = 2;
 
@@ -4203,11 +4381,16 @@ async fn spawn_prover_on_store(
     // The prover's own journal over its own store, matching the pre-threading wiring; the settler
     // below stays journal-free so this test's skip behavior is unchanged.
     let journal = StoreJournal::new(store.clone());
+    // Re-root channel, mirroring the production wiring: the aggregate prover publishes the
+    // covenant tip when it holds a fold whose window head enters off the tip's exit, and the
+    // drain task rolls execution back to the settlement boundary. Without it a held fold parks
+    // forever: the rollback it waits for never arrives, so no later bundle forms.
+    let (re_root_tx, re_root_rx) = tokio::sync::mpsc::unbounded_channel();
     let node = build_proving_node(
         elfs,
         store,
         BridgeParams {
-            url: wrpc_url,
+            url: wrpc_url.clone(),
             network_id,
             lane_subnet: LANE_SUBNET,
             covenant_id,
@@ -4236,11 +4419,18 @@ async fn spawn_prover_on_store(
             // settler reconciles against, so a bundle a shorter competitor superseded still
             // settles.
             settlement_rx: Some(watch_rx.clone()),
+            re_root: Some(re_root_tx),
             journal,
             exits_tx: None,
         },
         None,
     );
+    tokio::spawn(run_covenant_reroot(
+        node.api().clone(),
+        connect_wrpc(&wrpc_url, network_id).await,
+        params.clone(),
+        re_root_rx,
+    ));
 
     // Backend is required by the settler config; in Dev mode it pins no image ids but the type is
     // still threaded through.

@@ -22,15 +22,18 @@ use tokio::{
 };
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_smt::EMPTY_HASH;
+use vprogs_core_types::ChainSink;
 use vprogs_l1_bridge::{PermissionSpendHooks, lane_walk_reached_genesis};
 use vprogs_l1_types::SettlementInfo;
 use vprogs_l1_wallet::Wallet;
+use vprogs_node_framework::NodeApi;
 use vprogs_scheduling_scheduler::Indexer;
 use vprogs_zk_aggregate_prover::ExitsForBundle;
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_settler::{
     CovenantState, SettlementMode, SettlementWorkerConfig, bootstrap_dev_covenant,
     bootstrap_real_covenant, bootstrap_redeem, dev_bootstrap_redeem, run as run_settlement_worker,
+    settlement_tip_live,
 };
 use vprogs_zk_backend_risc0_test_suite::dev_mode_enabled;
 use vprogs_zk_vm::ExitsForBatch;
@@ -40,7 +43,7 @@ use crate::{
     exit_index::{ExitIndexer, load_registry, run_exec_exits_joiner, run_exit_indexer},
     node::{
         BridgeObservers, BridgeParams, CovenantIdBytes, DepositSpkHash, Elfs, ProvingParams,
-        RunnerNode, RunnerStore, SettlementQueue, build_exec_node, build_proving_node,
+        RunnerNode, RunnerStore, RunnerVm, SettlementQueue, build_exec_node, build_proving_node,
     },
     persistence::PersistedState,
     report::spawn_sync_reporter,
@@ -612,6 +615,10 @@ where
     // settlement here; the settler (reader) detects a competitor advancing past its in-memory
     // tip.
     let (settlement_tx, settlement_rx) = watch::channel(None::<SettlementInfo>);
+    // Re-root channel: the aggregate prover (writer) publishes the covenant tip when it holds a
+    // fold whose window head enters off the tip's exit; the drain task below (reader) rolls
+    // execution back to the settlement boundary.
+    let (re_root_tx, re_root_rx) = mpsc::unbounded_channel();
     let (exits_tx, exits_rx) = mpsc::unbounded_channel();
     let (settlement_events_tx, settlement_events_rx) = mpsc::unbounded_channel();
     // The bridge roots at `bridge_seed`, resolved once above at the same block the covenant pin
@@ -675,11 +682,18 @@ where
             sink: queue.clone(),
             bundle_size: 1..=usize::MAX,
             settlement_rx: Some(settlement_rx.clone()),
+            re_root: Some(re_root_tx),
             journal: journal.clone(),
             exits_tx: Some(exits_tx),
         },
         indexer,
     );
+    tokio::spawn(run_covenant_reroot(
+        node.api().clone(),
+        client.clone(),
+        params.clone(),
+        re_root_rx,
+    ));
     // Target the bridge replays toward: the node's virtual DAA captured before bootstrap. The
     // reporter loop only reads the tip atomic.
     spawn_sync_reporter(tip_daa_obs, tip_daa);
@@ -857,6 +871,78 @@ fn bridge_params(
         min_confirmations: cfg.min_confirmations,
         adaptive_filter_disabled: cfg.adaptive_filter_disabled,
         observers,
+    }
+}
+
+/// Rolls execution back to a settlement's boundary when the aggregate prover holds a fold
+/// because its window head enters off the covenant tip's exit: the batches between the boundary
+/// and the head cannot chain onto the covenant (a receipt-less committed range, or a fork below
+/// the boundary), and only re-entering execution at the boundary continues from the tip's exit;
+/// blocks arriving after the rollback execute from the boundary state (nothing re-appends the
+/// cancelled range). A boundary mapping to no batch of ours (a competitor's fork block) has no
+/// rollback target; the re-form paths on the next settlement advance own that case.
+///
+/// The settlement watch lags the covenant by the bridge's follow depth, and under contention
+/// the settler's supersede delete can empty the journal while the watch still shows a
+/// settlement a competitor already chain-spent: that tip would request a rollback to a boundary
+/// the covenant passed, cancelling live work and re-proving it in a loop until the watch
+/// catches up. Each request is therefore confirmed against the chain first (one UTXO read on
+/// the tip's continuation outpoint); a superseded tip resolves through the ordinary adoption
+/// paths once the watch publishes the spend. A probe that itself fails (an RPC error) skips its
+/// round without deciding liveness, so the drain keeps serving later requests instead of dying
+/// on the first network blip.
+pub async fn run_covenant_reroot(
+    api: NodeApi<RunnerStore, RunnerVm>,
+    client: KaspaRpcClient,
+    params: Params,
+    mut re_root_rx: mpsc::UnboundedReceiver<SettlementInfo>,
+) {
+    while let Some(tip) = re_root_rx.recv().await {
+        match settlement_tip_live(&client, &params, &tip).await {
+            Ok(true) => {}
+            Ok(false) => {
+                log::info!(
+                    "runner: covenant re-root for settlement {} skipped: its continuation is \
+                     spent, a later settlement owns the covenant",
+                    tip.tx_id
+                );
+                continue;
+            }
+            // The fold this request came from parks behind a skipped round (its per-tip dedupe
+            // consumes the request), so surface the failure at error level with its cause.
+            Err(err) => {
+                log::error!(
+                    "runner: covenant re-root for settlement {} skipped this round: the \
+                     tip-liveness probe failed: {err}",
+                    tip.tx_id
+                );
+                continue;
+            }
+        }
+        let boundary = tip.block_prove_to;
+        let settlement = tip.tx_id;
+        let result = api
+            .with_scheduler(move |scheduler| match scheduler.id(&boundary.as_bytes()) {
+                Some(id) => scheduler
+                    .reroot_to(id)
+                    .map(|checkpoint| checkpoint.index())
+                    .map_err(|err| format!("re-root to batch {id} failed: {err}")),
+                None => Err("the boundary block maps to no batch of ours".to_owned()),
+            })
+            .await
+            .map_err(|err| err.to_string())
+            .and_then(|outcome| outcome.map_err(|err| err.to_string()));
+        match result {
+            Ok(index) => log::info!(
+                "runner: covenant re-root rolled execution back to batch {index} \
+                 (settlement {settlement})"
+            ),
+            Err(err) => {
+                // The fold the request came from parks permanently behind a failed re-root
+                // (nothing retries the tip), so surface it at error level.
+                log::error!("runner: covenant re-root for settlement {settlement} failed: {err}")
+            }
+        }
     }
 }
 
