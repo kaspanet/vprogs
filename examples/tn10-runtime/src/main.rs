@@ -175,6 +175,7 @@ fn spawn_driver(
 
         // 2) Distribute KAS to each account's L1 address so it can fund its own deposit.
         let funding = cfg.deposit_amount + 50_000_000;
+        let fee_policy = wallet.fee_policy().await;
         for (i, account) in accounts.iter().enumerate() {
             let recipient = Wallet::new(&client, &params, account.l1).address().clone();
             let label = format!("distribution to account {i}");
@@ -186,6 +187,7 @@ fn spawn_driver(
                     count: 1,
                     keypair,
                     change_address: wallet.address(),
+                    fee_policy,
                     params: &params,
                 })
                 .inspect_err(|e| log::warn!("{label} funding failed: {e}"))
