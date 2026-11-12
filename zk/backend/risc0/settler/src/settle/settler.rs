@@ -160,11 +160,15 @@ impl<F: FeeSource, K: SettlementSink> Settler<F, K> {
 
             // Confirm by awaiting the settlement watch rather than polling: the observer
             // publishes the covenant's last settlement, so a change past `cov` is exactly the
-            // confirmation signal. The predicate (advanced state, DAA score at or past `cov`'s)
-            // keeps a stale handle one settlement behind from matching; the value is copied out
-            // of the `Ref` before any await, the current one checked first in case ours already
-            // landed.
+            // confirmation signal. The predicate (advanced state or lane tip, DAA score at or
+            // past `cov`'s) keeps a stale handle one settlement behind from matching: the
+            // previous settlement either equals `cov` on both pins or, once a probe-confirmed
+            // settle stamped a past score, sits in an ancestor block below it, while any
+            // genuinely new settlement differs on at least the lane tip (a state-neutral one
+            // differs exactly there); the value is copied out of the `Ref` before any await,
+            // the current one checked first in case ours already landed.
             let target_state = cov.state;
+            let target_lane_tip = cov.lane_tip;
             let min_daa = cov.daa_score;
             let mut rx = self.settlement.clone();
             // The confirm has no natural deadline (without a competitor nothing advances the
@@ -181,9 +185,10 @@ impl<F: FeeSource, K: SettlementSink> Settler<F, K> {
             tokio::pin!(warn_tick);
             let mut confirmed: Option<SettlementInfo> = None;
             while confirmed.is_none() {
-                if let Some(s) = (*rx.borrow())
-                    .filter(|s| s.new_state != target_state && s.daa_score.get() >= min_daa)
-                {
+                if let Some(s) = (*rx.borrow()).filter(|s| {
+                    (s.new_state != target_state || s.new_lane_tip != target_lane_tip)
+                        && s.daa_score.get() >= min_daa
+                }) {
                     confirmed = Some(s);
                     break;
                 }

@@ -216,8 +216,9 @@ async fn drop_probe_fires_despite_settlement_watch_churn() {
     use std::time::Duration;
 
     let (settlement_tx, settlement_rx) = watch::channel(None::<SettlementInfo>);
-    // Churn publisher: republish a never-matching settlement every second of virtual time
-    // (`new_state` equals the covenant's current state, so the confirm predicate never fires).
+    // Churn publisher: republish a never-matching settlement every second of virtual time (the
+    // covenant's own last settlement, equal to it on both pins, so the confirm predicate never
+    // fires no matter the score).
     let churn = tokio::spawn(async move {
         let mut daa = 1u64;
         loop {
@@ -229,7 +230,7 @@ async fn drop_probe_fires_despite_settlement_watch_churn() {
                 daa_score: daa.into(),
                 block_prove_to: Hash::from_bytes([0x43; 32]),
                 new_state: STATE,
-                new_lane_tip: Hash::from_bytes([0x44; 32]),
+                new_lane_tip: Hash::from_bytes(LANE_TIP),
                 continuation_spk_hash: [0u8; 32],
                 permission_spk_hash: [0u8; 32],
                 chain_idx: 0.into(),
