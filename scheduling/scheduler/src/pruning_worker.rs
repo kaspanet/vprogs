@@ -198,12 +198,14 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
 
         // Pin one canonical view for the whole pass, and freeze the deleted range's real
         // bits from it in the same commit as the deletions, so a crash cannot lose them.
-        // Both reads precede `set_root`: `Scheduler::finalize` prunes the chain to the
-        // root, so once the root advances, a racing finalize drops the crossed buckets
-        // before their words are read. Until then it only prunes to the old root, whose
-        // buckets the previous pass already froze.
-        let view = store.canonical_chain().snapshot();
-        let frozen = view.frozen_bits(upper_bound + 1);
+        // Both of the pass's canonical reads - the frozen rows and the reclaim loop's
+        // answers below - are captured here, before `set_root`: `Scheduler::finalize`
+        // prunes the chain to the root, and the pinned view shares the body ring, so
+        // once the root advances a racing finalize drops the crossed buckets mid-pass
+        // and their ids would read canonical from the pruned-bucket fallback. Until
+        // then it can only prune to the old root, whose buckets the previous pass
+        // already froze.
+        let frozen = store.canonical_chain().snapshot().frozen_bits(upper_bound + 1);
 
         // Advance root in memory before deleting so no observer sees root pointing at pruned data.
         state.set_root(new_root.clone());
@@ -214,8 +216,11 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
 
             // Walk batches from oldest to newest (order doesn't matter for pruning).
             for index in lower_bound..=upper_bound {
-                // Whether this finalized batch is on the canonical chain decides what to reclaim.
-                let is_canonical = view.is_canonical(index);
+                // Whether this finalized batch is on the canonical chain decides what to reclaim;
+                // answered from the frozen rows, which cover every bucket the range crosses. A
+                // bucket missing from them was frozen by an earlier pass and reads canonical,
+                // like the chain's own pruned-bucket fallback.
+                let is_canonical = frozen.iter().find_map(|row| row.bit(index)).unwrap_or(true);
 
                 for (resource_id, old_version) in
                     StatePtrRollback::iter_batch(store.as_ref(), index)
