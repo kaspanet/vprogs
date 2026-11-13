@@ -110,8 +110,8 @@ impl TestTree {
     fn siblings(&self, index: usize) -> Vec<[u8; 32]> {
         let mut out = Vec::with_capacity(self.depth);
         let mut idx = index;
-        for level in 0..self.depth {
-            out.push(self.nodes[level][idx ^ 1]);
+        for level in self.nodes.iter().take(self.depth) {
+            out.push(level[idx ^ 1]);
             idx /= 2;
         }
         out
