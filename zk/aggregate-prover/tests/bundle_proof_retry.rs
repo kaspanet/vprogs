@@ -1,7 +1,10 @@
 //! Pins the worker's bundle escalation over a failed aggregator proof attempt: an attempt that
 //! fails (a prove error or a receipt the image id rejects) consumes nothing and counts as
 //! run-loop progress, so the bundle is re-formed from the consecutively-ready prefix: strictly
-//! longer when batches arrived while attempts kept failing, identical when none did.
+//! longer when batches arrived while attempts kept failing, identical when none did. Also pins
+//! the shutdown join against a hung attempt: its abandoned blocking task lingers on the worker's
+//! single-threaded runtime, which is shut down in the background rather than dropped, so the
+//! join does not wait out the hang.
 
 // The backend traits return `impl Future + 'static`, which an `async fn` cannot satisfy: its future
 // borrows `&self`.
@@ -21,7 +24,7 @@ use kaspa_hashes::Hash;
 use kaspa_rpc_core::GetSeqCommitLaneProofResponse;
 use tempfile::TempDir;
 use tokio::sync::watch;
-use vprogs_core_atomics::AsyncQueue;
+use vprogs_core_atomics::{AsyncQueue, AtomicAsyncLatch};
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId, SchedulerTransaction};
 use vprogs_l1_types::{ChainBlockMetadata, SettlementInfo};
@@ -314,9 +317,11 @@ fn setup(failing: bool, succeed_from_len: usize) -> Harness {
             lane_source: ServeLaneProofs,
             settlement_queue: Some(queue.clone()),
             settlement: Some(settlement_rx),
-            re_root: None,
             bundle_size: 1..=8,
             exits: None,
+            re_root: None,
+            tip_daa: None,
+            follow_depth: 0,
         },
     );
 
@@ -385,4 +390,147 @@ fn a_failed_attempt_retries_the_same_span_when_nothing_arrived() {
     );
     harness.prover.shutdown();
     harness.scheduler.shutdown();
+}
+
+/// Backend with the real attempt shape: the aggregator prove runs on the blocking pool under a
+/// timeout, so a hanging attempt is abandoned while its blocking task lingers on the worker's
+/// runtime. Attempts are counted so the test can observe the abandoned retry.
+#[derive(Clone)]
+struct HangingBackend {
+    /// Attempts run so far, shared with the worker's clone.
+    attempts: Arc<AtomicUsize>,
+}
+
+impl vprogs_zk_transaction_prover::Backend for HangingBackend {
+    fn image_id(&self) -> &[u8; 32] {
+        &TX_IMAGE_ID
+    }
+
+    fn prove_transaction(
+        &self,
+        _input_bytes: Vec<u8>,
+    ) -> impl Future<Output = Result<Self::Receipt, String>> + Send + 'static {
+        async { unreachable!("the repro publishes batch receipts directly") }
+    }
+
+    type Receipt = Vec<u8>;
+}
+
+impl vprogs_zk_batch_prover::Backend for HangingBackend {
+    fn prove_batch(
+        &self,
+        _inputs: &[u8],
+        _receipts: Vec<Self::Receipt>,
+    ) -> impl Future<Output = Result<Self::Receipt, String>> + Send + 'static {
+        async { unreachable!("the repro publishes batch receipts directly") }
+    }
+
+    fn journal_bytes(receipt: &Self::Receipt) -> Vec<u8> {
+        receipt.clone()
+    }
+
+    fn batch_image_id(&self) -> &[u8; 32] {
+        &BATCH_IMAGE_ID
+    }
+}
+
+impl vprogs_zk_aggregate_prover::Backend for HangingBackend {
+    fn prove_aggregator(
+        &self,
+        _inputs: &[u8],
+        _batch_receipts: Vec<Self::Receipt>,
+    ) -> impl Future<Output = Result<Self::Receipt, String>> + Send + 'static {
+        let attempts = self.attempts.clone();
+        async move {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                tokio::task::spawn_blocking(|| {
+                    thread::sleep(Duration::from_secs(120));
+                    unreachable!("every attempt is abandoned long before it returns")
+                }),
+            )
+            .await
+            .map_err(|_| "prove timed out".to_owned())
+            .and_then(|joined| joined.map_err(|err| format!("prove task failed: {err}")))
+        }
+    }
+
+    fn aggregator_image_id(&self) -> &[u8; 32] {
+        &AGGREGATOR_IMAGE_ID
+    }
+}
+
+/// The shutdown join completes while an aggregator attempt's abandoned blocking task still
+/// lingers on the worker's runtime: the run loop exits on the latch, and the runtime is shut
+/// down in the background rather than dropped. Pre-fix, the join waited out the abandoned
+/// task's hang, keeping a restarting node from tearing its GPU prover down.
+#[test]
+fn shutdown_does_not_join_an_abandoned_hanging_attempt() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let journal = StoreJournal::new(storage.clone());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(PlainProcessor),
+            StorageConfig::default().with_store(storage),
+        );
+        let queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Vec<u8>>>> = AsyncQueue::new();
+        let (settlement_tx, settlement_rx) = watch::channel::<Option<SettlementInfo>>(None);
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let prover = AggregateProver::new(
+            HangingBackend { attempts: attempts.clone() },
+            scheduler.state().receipt_store(),
+            Some(journal),
+            AggregateProverConfig {
+                lane_key: Hash::default(),
+                covenant_id: None,
+                lane_source: ServeLaneProofs,
+                settlement_queue: Some(queue),
+                settlement: Some(settlement_rx),
+                bundle_size: 1..=8,
+                exits: None,
+                re_root: None,
+                tip_daa: None,
+                follow_depth: 0,
+            },
+        );
+
+        // Boot determinism: the committed-gap gate must see an empty journal before the first
+        // batch commits.
+        prover.wait_booted();
+
+        let batch = scheduler.schedule(block(1, 0), vec![lane_tx()]);
+        batch.wait_committed_blocking();
+        batch
+            .write_batch_receipt(batch_receipt_from(batch.checkpoint().metadata()))
+            .wait_blocking();
+        batch.publish_artifact(Some(settlement_journal()));
+        prover.submit(&batch);
+        wait_until("a hanging attempt to time out and retry", Duration::from_secs(10), || {
+            attempts.load(Ordering::SeqCst) >= 2
+        });
+
+        let done = Arc::new(AtomicAsyncLatch::new());
+        let joiner = {
+            let prover = prover.clone();
+            let done = done.clone();
+            thread::spawn(move || {
+                prover.shutdown();
+                done.open();
+            })
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done.is_open() {
+            assert!(
+                Instant::now() < deadline,
+                "shutdown must not wait out the abandoned prove attempt",
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        joiner.join().expect("the shutdown thread");
+
+        drop(settlement_tx);
+        scheduler.shutdown();
+    }
 }

@@ -1,4 +1,7 @@
-use std::{ops::RangeInclusive, sync::Arc};
+use std::{
+    ops::RangeInclusive,
+    sync::{Arc, atomic::AtomicU64},
+};
 
 use kaspa_hashes::Hash;
 use tokio::sync::{mpsc, watch};
@@ -42,4 +45,11 @@ pub struct AggregateProverConfig<L: LaneProofSource, R: Send + Sync + 'static> {
     /// Sender on the exit-leaf channel driving client Merkle-path proof generation, or `None` if
     /// exit publishing is disabled.
     pub exits: Option<mpsc::UnboundedSender<Arc<ExitsForBundle>>>,
+    /// Observer the bridge publishes its tip block's DAA score into, the depth clock for the
+    /// resume's deferred dead-entry drop on baseline restamps (see [`Self::follow_depth`]).
+    /// `None` leaves restamps indecisive.
+    pub tip_daa: Option<Arc<AtomicU64>>,
+    /// DAA window past the startup baseline after which a restamped baseline decides the
+    /// resume's deferred dead-entry drop. Inert without [`Self::tip_daa`].
+    pub follow_depth: u64,
 }

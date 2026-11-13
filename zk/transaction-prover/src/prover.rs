@@ -43,10 +43,11 @@ impl<S: Store, P: Processor<S>> TransactionProver<S, P> {
         self.inbox.push((tx.clone(), tx_inputs));
     }
 
-    /// Signals the worker to shut down and joins its thread, so the worker's GPU prover (and its
-    /// tokio runtime, which cancels any in-flight proof as it drops) is torn down while the CUDA
-    /// context is still alive. Without the join the detached worker races the process's CUDA atexit
-    /// teardown and aborts ("driver shutting down").
+    /// Signals the worker to shut down and joins its thread, which returns once the run loop
+    /// exits and the worker's tokio runtime is shut down in the background. A prove attempt
+    /// the timeout abandoned keeps running on its blocking thread, so the join never waits on
+    /// a hung proof; the process exit that follows races that abandoned attempt's CUDA use
+    /// rather than blocking the restart on it.
     pub fn shutdown(&self) {
         self.shutdown.open();
         let handle = self.worker.lock().expect("worker mutex").take();

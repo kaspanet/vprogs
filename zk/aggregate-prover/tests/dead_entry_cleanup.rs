@@ -13,6 +13,10 @@
 
 use std::{
     future::Future,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -391,9 +395,11 @@ fn committed_gap_with_dead_settlement_entry_recovers() {
                 lane_source: ServeLaneProofs,
                 settlement_queue: Some(settlement_queue.clone()),
                 settlement: Some(settlement_rx),
-                re_root: None,
                 bundle_size: 1..=1,
                 exits: None,
+                re_root: None,
+                tip_daa: None,
+                follow_depth: 0,
             },
         );
 
@@ -416,6 +422,103 @@ fn committed_gap_with_dead_settlement_entry_recovers() {
         // committed-gap retry then re-covers the range as one fresh bundle chaining from the
         // tip. A republication re-feed of the fresh entry may follow the compose.
         settlement_tx.send_replace(Some(tip_with(1, [0x00; 32])));
+        let mut prev_states = Vec::new();
+        loop {
+            let timeout = if prev_states.is_empty() {
+                Duration::from_secs(10)
+            } else {
+                Duration::from_millis(500)
+            };
+            let Some(bundle) = next_bundle(&settlement_queue, timeout) else { break };
+            bundle.wait_artifact_published_blocking();
+            let artifact =
+                bundle.artifact().expect("the re-covered bundle carries a real artifact");
+            assert_eq!(
+                bundle.block_prove_to(),
+                block_hash(3),
+                "the re-covered bundle spans the dead entry's whole range",
+            );
+            prev_states.push(artifact.prev_state);
+            assert!(prev_states.len() <= 2, "at most the compose and one republication re-feed");
+        }
+        assert_eq!(
+            prev_states.first(),
+            Some(&[0x00; 32]),
+            "the range is re-composed from the tip, not re-fed from the dead receipt",
+        );
+
+        let recorded: Vec<(u64, u64)> =
+            journal.entries().into_iter().map(|(s, e)| (s, e.end_index)).collect();
+        assert_eq!(recorded, vec![(2, 3)], "the re-covered entry replaces the dead one");
+
+        prover.shutdown();
+        state.storage().shutdown();
+    }
+}
+
+/// Tests the wedge the deferred decision otherwise leaves on a lane only we settle: every
+/// republication carries the baseline's transaction id (the settler skips every bundle chained
+/// on the dead base, so no new settlement ever lands and no advance ever changes the id), so the
+/// restamps themselves must decide. A restamp decides once the bridge tip has advanced the
+/// follow depth past the startup baseline: by then every settlement confirmed before the crash
+/// has surfaced under its own transaction id, so entries still chaining from a base the tip
+/// does not carry are dead, the entry is dropped, and the committed-gap retry re-covers its
+/// range from the tip. Restamps below the follow depth decide nothing.
+#[test]
+fn a_dead_entry_is_dropped_by_a_baseline_restamp_past_the_follow_depth() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let (journal, state) = seeded_dead_shape(&temp_dir);
+
+        let settlement_queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Vec<u8>>>> =
+            AsyncQueue::new();
+        let (settlement_tx, settlement_rx) = watch::channel::<Option<SettlementInfo>>(None);
+        let tip_daa = Arc::new(AtomicU64::new(0));
+        let prover = AggregateProver::new(
+            SyntheticBackend,
+            state.receipt_store(),
+            Some(journal.clone()),
+            AggregateProverConfig {
+                lane_key: Hash::default(),
+                covenant_id: None,
+                lane_source: ServeLaneProofs,
+                settlement_queue: Some(settlement_queue.clone()),
+                settlement: Some(settlement_rx),
+                bundle_size: 1..=1,
+                exits: None,
+                re_root: None,
+                tip_daa: Some(tip_daa.clone()),
+                follow_depth: 10,
+            },
+        );
+
+        // The bridge's baseline tip proves through block 1 at daa 0; the startup pass defers the
+        // dead-entry decision and re-feeds the stored receipt unchanged.
+        settlement_tx.send_replace(Some(tip_through(1)));
+        let refeed = next_bundle(&settlement_queue, Duration::from_secs(10))
+            .expect("the deferred startup re-feed");
+        refeed.wait_artifact_published_blocking();
+        assert_eq!(
+            refeed.artifact().expect("the re-fed bundle carries its stored artifact").prev_state,
+            [0xAA; 32],
+            "the startup pass re-feeds the entry rather than deciding it against the baseline",
+        );
+
+        // The baseline restamps (an identical settlement value; only the tip's daa moves) below
+        // the follow depth stay deferred: our settlement may merely be unpublished.
+        tip_daa.store(5, Ordering::Relaxed);
+        settlement_tx.send_replace(Some(tip_through(1)));
+        assert!(
+            next_bundle(&settlement_queue, Duration::from_millis(500)).is_none(),
+            "a restamp below the follow depth decides nothing",
+        );
+
+        // The tip reaches the follow depth past the baseline: nothing of ours surfaces (the
+        // lane settles alone), so the restamp is decisive, the entry is dropped, and the
+        // committed-gap retry re-covers the range as one fresh bundle chaining from the tip. A
+        // republication re-feed of the fresh entry may follow the compose.
+        tip_daa.store(10, Ordering::Relaxed);
+        settlement_tx.send_replace(Some(tip_through(1)));
         let mut prev_states = Vec::new();
         loop {
             let timeout = if prev_states.is_empty() {
@@ -475,9 +578,11 @@ fn a_live_entry_chaining_from_an_unpublished_settlement_survives_the_baseline_pa
                 lane_source: ServeLaneProofs,
                 settlement_queue: Some(settlement_queue.clone()),
                 settlement: Some(settlement_rx),
-                re_root: None,
                 bundle_size: 1..=1,
                 exits: None,
+                re_root: None,
+                tip_daa: None,
+                follow_depth: 0,
             },
         );
 
@@ -591,9 +696,11 @@ fn committed_gap_walks_end_down_over_a_dead_final_block() {
                 lane_source: DeadBlockLaneProofs { dead: block_hash(3) },
                 settlement_queue: Some(settlement_queue.clone()),
                 settlement: Some(settlement_rx),
-                re_root: None,
                 bundle_size: 1..=1,
                 exits: None,
+                re_root: None,
+                tip_daa: None,
+                follow_depth: 0,
             },
         );
 
