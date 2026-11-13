@@ -313,6 +313,8 @@ fn unmapped_boundary_still_compacts_the_journal() {
                 settlement: Some(settlement_rx),
                 bundle_size: 1..=1,
                 exits: None,
+                tip_daa: None,
+                follow_depth: 0,
             },
         );
 
@@ -400,6 +402,8 @@ fn unmapped_boundary_resume_does_not_refeed_the_settled_entry() {
                 settlement: Some(settlement_rx),
                 bundle_size: 1..=1,
                 exits: None,
+                tip_daa: None,
+                follow_depth: 0,
             },
         );
         settlement_tx.send_replace(Some(tip_through(1)));
@@ -506,6 +510,8 @@ fn unmapped_boundary_drains_the_covered_prefix_by_lane_tip() {
                 settlement: Some(settlement_rx),
                 bundle_size: 2..=2,
                 exits: None,
+                tip_daa: None,
+                follow_depth: 0,
             },
         );
 
@@ -663,6 +669,8 @@ fn unmapped_boundary_drain_counts_positions_not_indexes_across_a_rollback_hole()
                 settlement: Some(settlement_rx),
                 bundle_size: 2..=2,
                 exits: None,
+                tip_daa: None,
+                follow_depth: 0,
             },
         );
 

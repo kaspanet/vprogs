@@ -272,6 +272,8 @@ fn dead_lane_proof_fetch_does_not_kill_the_worker() {
                 settlement: None,
                 bundle_size: 1..=1,
                 exits: None,
+                tip_daa: None,
+                follow_depth: 0,
             },
         );
 

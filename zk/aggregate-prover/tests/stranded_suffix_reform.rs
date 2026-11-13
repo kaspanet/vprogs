@@ -265,6 +265,8 @@ fn harness(blocks: &[(u8, u64)], one_bundle: bool) -> Harness {
             settlement: Some(settlement_rx),
             bundle_size: 1..=8,
             exits: None,
+            tip_daa: None,
+            follow_depth: 0,
         },
     );
 

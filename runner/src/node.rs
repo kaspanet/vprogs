@@ -111,6 +111,13 @@ pub struct BridgeParams {
 /// program's deposit-address derivation.
 pub type CovenantIdBytes = [u8; 32];
 
+/// DAA slack added to the bridge's confirmation floor when deciding the resume's deferred
+/// dead-entry drop on baseline restamps: the settler probe-confirms a settlement as soon as its
+/// continuation outpoint is spendable, well before the bridge's next follow publishes it, so the
+/// floor alone (zero when `min_confirmations` is unset and the adaptive reorg filter starts
+/// empty) would let the first restamp decide inside that publication lag.
+const RESTAMP_DECISION_SLACK_DAA: u64 = 10;
+
 /// Script hash of the deposit address a depositing transaction must pay, or `[0u8; 32]` when the
 /// program credits no L1 deposits. Output of a program's deposit-address derivation, and the pin
 /// every batch in the bundle declares.
@@ -210,6 +217,10 @@ pub fn build_proving_node(
             settlement: proving.settlement_rx,
             bundle_size: proving.bundle_size,
             exits: proving.exits_tx,
+            // The bridge's tip observer and confirmation floor, deciding the resume's deferred
+            // dead-entry drop on baseline restamps.
+            tip_daa: bridge.observers.tip_daa.clone(),
+            follow_depth: bridge.min_confirmations.unwrap_or(0) + RESTAMP_DECISION_SLACK_DAA,
         },
         Some(proving.journal),
     );

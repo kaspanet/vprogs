@@ -236,6 +236,8 @@ fn canceled_batch_is_not_swept_into_a_bundle() {
                 settlement: None,
                 bundle_size: 1..=usize::MAX,
                 exits: None,
+                tip_daa: None,
+                follow_depth: 0,
             },
         );
         prover.submit(&front);
@@ -338,6 +340,8 @@ fn whole_canceled_queue_is_evicted() {
                 settlement: None,
                 bundle_size: 1..=usize::MAX,
                 exits: None,
+                tip_daa: None,
+                follow_depth: 0,
             },
         );
         prover.submit(&never_published);

@@ -368,6 +368,8 @@ fn bundle_advancing_only_the_lane_tip_is_settled() {
                 settlement: None,
                 bundle_size: 1..=usize::MAX,
                 exits: None,
+                tip_daa: None,
+                follow_depth: 0,
             },
         );
         prover.submit(&batch);

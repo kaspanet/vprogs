@@ -359,6 +359,8 @@ fn committed_gap_retries_after_a_transient_fetch_failure() {
                 settlement: Some(settlement_rx),
                 bundle_size: 1..=1,
                 exits: None,
+                tip_daa: None,
+                follow_depth: 0,
             },
         );
 
@@ -439,6 +441,8 @@ fn new_work_waits_for_a_pending_gap() {
                 settlement: Some(settlement_rx),
                 bundle_size: 1..=1,
                 exits: None,
+                tip_daa: None,
+                follow_depth: 0,
             },
         );
 
@@ -528,6 +532,8 @@ fn dead_gap_does_not_wedge_new_work() {
                 settlement: Some(settlement_rx),
                 bundle_size: 1..=1,
                 exits: None,
+                tip_daa: None,
+                follow_depth: 0,
             },
         );
 
