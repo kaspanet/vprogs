@@ -21,6 +21,7 @@ zerocopy.workspace                     = true
 
 [dev-dependencies]
 tempfile.workspace                     = true
+tokio                                  = { workspace = true, features = ["rt", "time"] }
 vprogs-core-test-utils.workspace       = true
 vprogs-core-types.workspace            = true
 vprogs-storage-manager.workspace       = true

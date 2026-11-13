@@ -41,7 +41,13 @@ where
     ) -> JoinHandle<()> {
         let this = Self { prover, backend, store, config };
         let runtime = Builder::new_current_thread().enable_all().build().expect("runtime");
-        spawn(move || runtime.block_on(this.run()))
+        spawn(move || {
+            runtime.block_on(this.run());
+            // A timed-out prove attempt's blocking task is abandoned, not joined: dropping the
+            // runtime would wait for it and the prover's shutdown join with it, so shut the
+            // runtime down in the background instead.
+            runtime.shutdown_background();
+        })
     }
 
     /// Main loop: drain commands and prove each scheduled batch in arrival order.

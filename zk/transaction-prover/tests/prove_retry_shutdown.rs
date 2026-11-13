@@ -194,3 +194,84 @@ fn shutdown_exits_a_failing_prove_retry_loop() {
         scheduler.shutdown();
     }
 }
+
+/// Backend with the real attempt shape: the prove runs on the blocking pool under a timeout, so
+/// a hanging prove is abandoned while its blocking task lingers on the worker's runtime.
+/// Attempts are counted so the test can observe the abandoned retry.
+#[derive(Clone)]
+struct HangingBackend {
+    /// Attempts run so far, shared with the worker's clone.
+    attempts: Arc<AtomicUsize>,
+}
+
+impl vprogs_zk_transaction_prover::Backend for HangingBackend {
+    type Receipt = Vec<u8>;
+
+    fn image_id(&self) -> &[u8; 32] {
+        &TX_IMAGE_ID
+    }
+
+    fn prove_transaction(
+        &self,
+        _input_bytes: Vec<u8>,
+    ) -> impl Future<Output = Result<Self::Receipt, String>> + Send + 'static {
+        let attempts = self.attempts.clone();
+        async move {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                tokio::task::spawn_blocking(|| {
+                    thread::sleep(Duration::from_secs(120));
+                    unreachable!("every attempt is abandoned long before it returns")
+                }),
+            )
+            .await
+            .map_err(|_| "prove timed out".to_owned())
+            .and_then(|joined| joined.map_err(|err| format!("prove task failed: {err}")))
+        }
+    }
+}
+
+/// The shutdown join completes while a prove attempt's abandoned blocking task still lingers on
+/// the worker's runtime: the run loop exits on the latch, and the runtime is shut down in the
+/// background rather than dropped. Pre-fix, the join waited out the abandoned task's hang,
+/// keeping a restarting node from tearing its GPU prover down.
+#[test]
+fn shutdown_does_not_join_an_abandoned_hanging_prove() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(PlainProcessor),
+            StorageConfig::default().with_store(storage.clone()),
+        );
+        let (_batch, tx) = committed_tx(&mut scheduler);
+        let backend = HangingBackend { attempts: Arc::new(AtomicUsize::new(0)) };
+        let prover = TransactionProver::new(backend.clone());
+        prover.submit(&tx, Vec::new());
+        wait_until("a hanging attempt to time out and retry", Duration::from_secs(10), || {
+            backend.attempts.load(Ordering::SeqCst) >= 2
+        });
+
+        let done = Arc::new(AtomicAsyncLatch::new());
+        let joiner = {
+            let prover = prover.clone();
+            let done = done.clone();
+            thread::spawn(move || {
+                prover.shutdown();
+                done.open();
+            })
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done.is_open() {
+            assert!(
+                Instant::now() < deadline,
+                "shutdown must not wait out the abandoned prove attempt",
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        joiner.join().expect("the shutdown thread");
+
+        scheduler.shutdown();
+    }
+}

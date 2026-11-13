@@ -253,6 +253,8 @@ fn build_exec(
                 // prefix short.
                 bundle_size: proof_bundle_size..=proof_bundle_size,
                 exits: None,
+                tip_daa: None,
+                follow_depth: 0,
             },
             None,
         );
