@@ -360,6 +360,8 @@ fn committed_gap_retries_after_a_transient_fetch_failure() {
                 re_root: None,
                 bundle_size: 1..=1,
                 exits: None,
+                tip_daa: None,
+                follow_depth: 0,
             },
         );
 
@@ -441,6 +443,8 @@ fn new_work_waits_for_a_pending_gap() {
                 re_root: None,
                 bundle_size: 1..=1,
                 exits: None,
+                tip_daa: None,
+                follow_depth: 0,
             },
         );
 
@@ -531,6 +535,8 @@ fn dead_gap_does_not_wedge_new_work() {
                 re_root: None,
                 bundle_size: 1..=1,
                 exits: None,
+                tip_daa: None,
+                follow_depth: 0,
             },
         );
 

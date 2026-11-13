@@ -266,6 +266,8 @@ fn harness(blocks: &[(u8, u64)], one_bundle: bool) -> Harness {
             re_root: None,
             bundle_size: 1..=8,
             exits: None,
+            tip_daa: None,
+            follow_depth: 0,
         },
     );
 

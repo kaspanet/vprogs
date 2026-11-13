@@ -25,7 +25,13 @@ where
     /// CUDA context released) before the process exits.
     pub(crate) fn spawn(prover: TransactionProver<S, P>, backend: B) -> JoinHandle<()> {
         let runtime = Builder::new_current_thread().enable_all().build().expect("runtime");
-        spawn(move || runtime.block_on(Self { prover, backend }.run()))
+        spawn(move || {
+            runtime.block_on(Self { prover, backend }.run());
+            // A timed-out prove attempt's blocking task is abandoned, not joined: dropping the
+            // runtime would wait for it and the prover's shutdown join with it, so shut the
+            // runtime down in the background instead.
+            runtime.shutdown_background();
+        })
     }
 
     /// Main loop: drains the inbox, dispatches proofs, and waits for new work or shutdown.

@@ -250,6 +250,8 @@ fn harness() -> Harness {
             re_root: Some(re_root_tx),
             bundle_size: 1..=8,
             exits: None,
+            tip_daa: None,
+            follow_depth: 0,
         },
     );
 
@@ -476,6 +478,8 @@ fn off_tip_gap_recover_holds_and_requests_reroot() {
             re_root: Some(re_root_tx),
             bundle_size: 1..=1,
             exits: None,
+            tip_daa: None,
+            follow_depth: 0,
         },
     );
 
@@ -545,6 +549,8 @@ fn killed_range_above_the_boundary_requests_reroot() {
             re_root: Some(re_root_tx),
             bundle_size: 1..=1,
             exits: None,
+            tip_daa: None,
+            follow_depth: 0,
         },
     );
 
@@ -648,6 +654,8 @@ fn gap_above_a_live_tail_defers_until_the_watch_passes_the_tail() {
             re_root: Some(re_root_tx),
             bundle_size: 1..=1,
             exits: None,
+            tip_daa: None,
+            follow_depth: 0,
         },
     );
 
