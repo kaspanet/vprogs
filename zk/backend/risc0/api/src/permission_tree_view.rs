@@ -68,8 +68,8 @@ impl PermissionTreeView {
         let depth = self.depth();
         let mut out = Vec::with_capacity(depth);
         let mut idx = index;
-        for level in 0..depth {
-            out.push(self.levels[level][idx ^ 1]);
+        for level in self.levels.iter().take(depth) {
+            out.push(level[idx ^ 1]);
             idx /= 2;
         }
         out
