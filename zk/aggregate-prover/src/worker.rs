@@ -932,10 +932,11 @@ where
             self.retained.iter().take(suffix_len).cloned().collect();
         let suffix_from = suffix.first().unwrap().checkpoint().index();
         // A journal entry starting at the suffix front is a bundle still pending in the
-        // settlement queue (the queue path's own emission, or a previous re-form); re-proving
-        // it would only hand the settler a superseded duplicate after every quiet spell. A
-        // front with no entry is the stranded one: the settler's supersede skip deleted it,
-        // or a drain left a mid-bundle start no entry ever named.
+        // settlement queue (the queue path's own emission, a previous re-form, or a superseded
+        // bundle the settler holds while the superseding spend is still mempool-only);
+        // re-proving it would only hand the settler a superseded duplicate after every quiet
+        // spell. A front with no entry is the stranded one: the settler's supersede skip
+        // deleted it, or a drain left a mid-bundle start no entry ever named.
         if self
             .journal
             .as_ref()

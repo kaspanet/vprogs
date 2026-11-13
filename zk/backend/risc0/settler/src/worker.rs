@@ -27,6 +27,22 @@ use crate::{
 /// this long (shutdown-interruptible) and retries rather than dropping the bundle or stopping.
 const FEE_EXHAUSTED_BACKOFF: Duration = Duration::from_secs(5);
 
+/// Backoff between retries of a bundle whose superseding spend is mempool-only. The competitor's
+/// transaction either confirms (the base outpoint disappears, the bundle resolves superseded) or
+/// is evicted (the retry submits cleanly), so the wait is bounded by the mempool's own resolution.
+const SUPERSEDED_HOLD_BACKOFF: Duration = Duration::from_secs(5);
+
+/// How a supersede resolved: whether the bundle terminates or stays held for another attempt.
+enum SupersedeResolution {
+    /// Terminate the bundle. Its journal entry is deleted only when the spend is chain-confirmed;
+    /// otherwise (no journal wired, shutdown mid-poll, or a confirmed settlement forking the
+    /// covenant past a still-live base) the entry stays and the restart resume re-feeds the range.
+    Resolved,
+    /// Hold the bundle and retry it: the base outpoint is still live and the artifact still chains
+    /// from the covenant, so the only racer is a mempool-only spend that may still vanish.
+    Retain,
+}
+
 /// Reconciles the covenant against a bundle whose proving base may no longer match it, adopting
 /// `latest` when it is ahead, and returns whether the artifact chains from the resulting position.
 fn reconcile<R>(
@@ -63,11 +79,14 @@ fn reconcile<R>(
 ///
 /// The delete is gated on [`covenant_liveness`], not the raw already-spent rejection: that
 /// rejection also fires while the competitor's settlement only sits in the mempool, where it can
-/// still be evicted or reorged and the range must stay queued, while an outpoint spent in a chain
-/// block cannot revert. `liveness` reads the covenant outpoint the bundle chains from, captured
-/// by the caller before this call's adoption (a post-adoption `cov` names the competitor's
-/// still-unspent continuation); it is injected as a closure so the resolution is testable
-/// without a node.
+/// still be evicted or reorged, while an outpoint spent in a chain block cannot revert. A
+/// mempool-only spend returns [`SupersedeResolution::Retain`] when the artifact still chains
+/// from the covenant, so the caller holds the bundle until the racer resolves instead of
+/// dropping it with its journal entry still present: the entry would then name a bundle nothing
+/// drives, and the aggregate prover's suffix gate would skip re-driving the range forever.
+/// `liveness` reads the covenant outpoint the bundle chains from, captured by the caller before
+/// this call's adoption (a post-adoption `cov` names the competitor's still-unspent
+/// continuation); it is injected as a closure so the resolution is testable without a node.
 async fn resolve_superseded<S, R, L, Fut>(
     cov: &mut CovenantState,
     artifact: &SettlementArtifact<R>,
@@ -75,26 +94,33 @@ async fn resolve_superseded<S, R, L, Fut>(
     journal: Option<&StoreJournal<S>>,
     latest: Option<SettlementInfo>,
     liveness: L,
-) where
+) -> SupersedeResolution
+where
     S: Store,
     L: FnOnce() -> Fut,
     Fut: std::future::Future<Output = CovenantLiveness>,
 {
     // Adoption first, on a fresh watch read; reconcile itself logs when it adopts.
-    let _ = reconcile(cov, artifact, latest);
-    let Some(journal) = journal else { return };
+    let chains = reconcile(cov, artifact, latest);
     match liveness().await {
         CovenantLiveness::Spent => {
-            let start = bundle.checkpoint_index();
-            journal.delete(start);
-            log::info!(
-                "settlement-worker: skipping superseded bundle {start}..={}; resolved on chain",
-                start + bundle.batches() as u64 - 1,
-            );
+            if let Some(journal) = journal {
+                let start = bundle.checkpoint_index();
+                journal.delete(start);
+                log::info!(
+                    "settlement-worker: skipping superseded bundle {start}..={}; resolved on chain",
+                    start + bundle.batches() as u64 - 1,
+                );
+            }
+            SupersedeResolution::Resolved
         }
-        // Unspent: the spend is mempool-only and may still vanish, so the entry stays queued.
-        // Shutdown: the loop unwinds and the next run's resume re-feeds the bundle.
-        CovenantLiveness::Unspent | CovenantLiveness::Shutdown => {}
+        // The spend is mempool-only and may still vanish, so the entry stays queued.
+        CovenantLiveness::Unspent if chains => SupersedeResolution::Retain,
+        // A still-live base that no longer chains means a confirmed settlement forked the
+        // covenant past it; the bundle cannot settle or retry, so it terminates with its entry
+        // left for the restart resume. Shutdown: the loop unwinds and the next run's resume
+        // re-feeds the bundle the same way.
+        CovenantLiveness::Unspent | CovenantLiveness::Shutdown => SupersedeResolution::Resolved,
     }
 }
 
@@ -218,137 +244,172 @@ pub async fn run<S: Store>(
         // the UTXO existed, and the rare case it was already spent by a reorg/race is caught at
         // settle time (the sink's `Superseded`), which skips the bundle.
         //
-        // The covenant UTXO this bundle chains from, captured before the reconcile below may
-        // adopt a competitor tip: the supersede resolution verifies the spend of THIS outpoint,
-        // never the adopted continuation's (which the competitor left unspent).
-        let base_spk = cov.spk.clone();
-        let base_outpoint = cov.outpoint;
-        let latest = *cfg.settlement.borrow();
-        if !reconcile(&mut cov, &artifact, latest) {
-            // The base still mismatches after adopting the tip, so a competitor already covered
-            // this bundle's range: it is superseded. Skip it rather than asserting in the
-            // builder; a later bundle chaining from the adopted tip settles. Resolve it on the
-            // way out, or the prover's resume re-feeds the same bundle on every pass with no
-            // settlement ever produced. The skip reason is not always a competitor: a bundle
-            // proving from a base the covenant never took (a wrong re-form, a stale
-            // continuation) mismatches the same way, so the log names both bases to tell the
-            // two apart.
-            log::info!(
-                "settlement-worker: skipping superseded bundle through {} (base mismatch: the \
-                 bundle chains from state {} and lane tip {}, the covenant tip is state {} and \
-                 lane tip {})",
-                artifact.block_prove_to,
-                Hash::from_bytes(artifact.prev_state),
-                artifact.prev_lane_tip,
-                Hash::from_bytes(cov.state),
-                cov.lane_tip,
-            );
+        // A resolution holding this bundle (`Retain`) re-runs the whole block on the same bundle
+        // after a backoff, so a supersede whose spend is only in the mempool neither drops the
+        // bundle nor leaves its journal entry naming an undriven range: the bundle settles once
+        // the competitor's transaction is evicted, or resolves on chain once it confirms.
+        'bundle: loop {
+            // The covenant UTXO this bundle chains from, captured before the reconcile below may
+            // adopt a competitor tip: the supersede resolution verifies the spend of THIS outpoint,
+            // never the adopted continuation's (which the competitor left unspent).
+            let base_spk = cov.spk.clone();
+            let base_outpoint = cov.outpoint;
             let latest = *cfg.settlement.borrow();
-            resolve_superseded(&mut cov, &artifact, &bundle, cfg.journal.as_ref(), latest, || {
-                covenant_liveness(
-                    &cfg.client,
-                    &cfg.params,
-                    OutpointAt { spk: &base_spk, outpoint: base_outpoint },
-                    &shutdown,
+            if !reconcile(&mut cov, &artifact, latest) {
+                // The base still mismatches after adopting the tip, so a competitor already covered
+                // this bundle's range: it is superseded. Skip it rather than asserting in the
+                // builder; a later bundle chaining from the adopted tip settles. Resolve it on the
+                // way out, or the prover's resume re-feeds the same bundle on every pass with no
+                // settlement ever produced. The skip reason is not always a competitor: a bundle
+                // proving from a base the covenant never took (a wrong re-form, a stale
+                // continuation) mismatches the same way, so the log names both bases to tell the
+                // two apart.
+                log::info!(
+                    "settlement-worker: skipping superseded bundle through {} (base mismatch: the \
+                     bundle chains from state {} and lane tip {}, the covenant tip is state {} and \
+                     lane tip {})",
+                    artifact.block_prove_to,
+                    Hash::from_bytes(artifact.prev_state),
+                    artifact.prev_lane_tip,
+                    Hash::from_bytes(cov.state),
+                    cov.lane_tip,
+                );
+                let latest = *cfg.settlement.borrow();
+                let resolution = resolve_superseded(
+                    &mut cov,
+                    &artifact,
+                    &bundle,
+                    cfg.journal.as_ref(),
+                    latest,
+                    || {
+                        covenant_liveness(
+                            &cfg.client,
+                            &cfg.params,
+                            OutpointAt { spk: &base_spk, outpoint: base_outpoint },
+                            &shutdown,
+                        )
+                    },
                 )
-            })
-            .await;
-            continue;
-        }
+                .await;
+                match resolution {
+                    SupersedeResolution::Resolved => continue 'outer,
+                    SupersedeResolution::Retain => {
+                        tokio::select! {
+                            biased;
+                            () = shutdown.wait() => break 'outer,
+                            () = tokio::time::sleep(SUPERSEDED_HOLD_BACKOFF) => {}
+                        }
+                        continue 'bundle;
+                    }
+                }
+            }
 
-        // Test-only: wait our turn so competing settlers alternate rather than one sweeping the
-        // ranges. Production leaves this `None` and settles as soon as a bundle is ready.
-        #[cfg(feature = "test-utils")]
-        if let Some((me, pacer)) = &cfg.alternation {
-            pacer.await_turn(*me, &shutdown).await;
-            if shutdown.is_open() {
-                break;
+            // Test-only: wait our turn so competing settlers alternate rather than one sweeping the
+            // ranges. Production leaves this `None` and settles as soon as a bundle is ready.
+            #[cfg(feature = "test-utils")]
+            if let Some((me, pacer)) = &cfg.alternation {
+                pacer.await_turn(*me, &shutdown).await;
+                if shutdown.is_open() {
+                    break;
+                }
             }
-        }
-        // Settle this bundle, retrying the same one while funding is temporarily exhausted: an
-        // empty fee set is recoverable (a later deposit to the funder lets it settle), so
-        // back off and retry rather than dropping the bundle. A node hard-reject is not
-        // recoverable, so stop.
-        let advanced = loop {
-            match settler.settle_one(&cov, &artifact, &shutdown).await {
-                SettleOutcome::Advanced(next) => break next,
-                // A competitor's settlement is already spending this covenant outpoint, so ours can
-                // never land. Hold `cov` and drop the bundle: once that settlement confirms in a
-                // chain block, the bridge publishes it to the settlement watch and the reconcile
-                // block above adopts it. Resolve the bundle on the way out: the outpoint settle
-                // just failed to spend is the one whose chain spend retires the range.
-                SettleOutcome::Superseded => {
-                    let spent_spk = cov.spk.clone();
-                    let spent_outpoint = cov.outpoint;
-                    let latest = *cfg.settlement.borrow();
-                    resolve_superseded(
-                        &mut cov,
-                        &artifact,
-                        &bundle,
-                        cfg.journal.as_ref(),
-                        latest,
-                        || {
-                            covenant_liveness(
-                                &cfg.client,
-                                &cfg.params,
-                                OutpointAt { spk: &spent_spk, outpoint: spent_outpoint },
-                                &shutdown,
-                            )
-                        },
-                    )
-                    .await;
-                    continue 'outer;
-                }
-                SettleOutcome::Shutdown => break 'outer,
-                // The bundle's anchor block is beyond the node's seq-commit verification depth
-                // (a deep catch-up proves through blocks far behind the L1 tip), so the
-                // artifact can never land: the anchor only gets deeper. Drop the bundle and
-                // delete its journal entry so the aggregate prover's committed-gap pass re-forms
-                // the range from the covenant tip over a later, shallower boundary; a competitor
-                // covering the range first resolves it through the usual adoption. Exit leaves
-                // ride along: the lane advances only through settlements covering every index,
-                // so whoever settles the range next pays its exits.
-                SettleOutcome::AnchorTooDeep => {
-                    log::warn!(
-                        "settlement-worker: dropping bundle through {} (anchor block beyond \
-                         the node's seq-commit verification depth); the range re-forms from \
-                         the tip",
-                        artifact.block_prove_to,
-                    );
-                    if let Some(journal) = cfg.journal.as_ref() {
-                        journal.delete(bundle.checkpoint_index());
+            // Settle this bundle, retrying the same one while funding is temporarily exhausted: an
+            // empty fee set is recoverable (a later deposit to the funder lets it settle), so
+            // back off and retry rather than dropping the bundle. A node hard-reject is not
+            // recoverable, so stop.
+            let advanced = loop {
+                match settler.settle_one(&cov, &artifact, &shutdown).await {
+                    SettleOutcome::Advanced(next) => break next,
+                    // A competitor's settlement is already spending this covenant outpoint, so ours
+                    // can never land. Resolve the bundle on the way out: the outpoint settle just
+                    // failed to spend is the one whose chain spend retires the range. A
+                    // mempool-only spend retains the bundle for another attempt after a backoff:
+                    // the racer either confirms (the base disappears, the bundle resolves on
+                    // chain) or is evicted (the retry submits cleanly).
+                    SettleOutcome::Superseded => {
+                        let spent_spk = cov.spk.clone();
+                        let spent_outpoint = cov.outpoint;
+                        let latest = *cfg.settlement.borrow();
+                        let resolution = resolve_superseded(
+                            &mut cov,
+                            &artifact,
+                            &bundle,
+                            cfg.journal.as_ref(),
+                            latest,
+                            || {
+                                covenant_liveness(
+                                    &cfg.client,
+                                    &cfg.params,
+                                    OutpointAt { spk: &spent_spk, outpoint: spent_outpoint },
+                                    &shutdown,
+                                )
+                            },
+                        )
+                        .await;
+                        match resolution {
+                            SupersedeResolution::Resolved => continue 'outer,
+                            SupersedeResolution::Retain => {
+                                tokio::select! {
+                                    biased;
+                                    () = shutdown.wait() => break 'outer,
+                                    () = tokio::time::sleep(SUPERSEDED_HOLD_BACKOFF) => {}
+                                }
+                                continue;
+                            }
+                        }
                     }
-                    continue 'outer;
-                }
-                // The node hard-rejected the submission; retrying the same bundle cannot recover
-                // it. Stop the settler with a logged reason rather than panicking
-                // the worker task.
-                SettleOutcome::Failed(reason) => {
-                    log::error!(
-                        "settlement-worker: unrecoverable settlement failure: {reason}; stopping"
-                    );
-                    break 'outer;
-                }
-                // Funding is exhausted right now but may be replenished; log and retry the same
-                // bundle after a backoff, staying interruptible so teardown is not held up.
-                SettleOutcome::FeeExhausted => {
-                    log::warn!(
-                        "settlement-worker: no spendable fee UTXO; backing off {}s and retrying \
+                    SettleOutcome::Shutdown => break 'outer,
+                    // The bundle's anchor block is beyond the node's seq-commit verification depth
+                    // (a deep catch-up proves through blocks far behind the L1 tip), so the
+                    // artifact can never land: the anchor only gets deeper. Drop the bundle and
+                    // delete its journal entry so the aggregate prover's committed-gap pass re-forms
+                    // the range from the covenant tip over a later, shallower boundary; a competitor
+                    // covering the range first resolves it through the usual adoption. Exit leaves
+                    // ride along: the lane advances only through settlements covering every index,
+                    // so whoever settles the range next pays its exits.
+                    SettleOutcome::AnchorTooDeep => {
+                        log::warn!(
+                            "settlement-worker: dropping bundle through {} (anchor block beyond \
+                             the node's seq-commit verification depth); the range re-forms from \
+                             the tip",
+                            artifact.block_prove_to,
+                        );
+                        if let Some(journal) = cfg.journal.as_ref() {
+                            journal.delete(bundle.checkpoint_index());
+                        }
+                        continue 'outer;
+                    }
+                    // The node hard-rejected the submission; retrying the same bundle cannot
+                    // recover it. Stop the settler with a logged reason rather
+                    // than panicking the worker task.
+                    SettleOutcome::Failed(reason) => {
+                        log::error!(
+                            "settlement-worker: unrecoverable settlement failure: {reason}; stopping"
+                        );
+                        break 'outer;
+                    }
+                    // Funding is exhausted right now but may be replenished; log and retry the same
+                    // bundle after a backoff, staying interruptible so teardown is not held up.
+                    SettleOutcome::FeeExhausted => {
+                        log::warn!(
+                            "settlement-worker: no spendable fee UTXO; backing off {}s and retrying \
                          (awaiting a deposit to the funder)",
-                        FEE_EXHAUSTED_BACKOFF.as_secs(),
-                    );
-                    tokio::select! {
-                        biased;
-                        () = shutdown.wait() => break 'outer,
-                        () = tokio::time::sleep(FEE_EXHAUSTED_BACKOFF) => {}
+                            FEE_EXHAUSTED_BACKOFF.as_secs(),
+                        );
+                        tokio::select! {
+                            biased;
+                            () = shutdown.wait() => break 'outer,
+                            () = tokio::time::sleep(FEE_EXHAUSTED_BACKOFF) => {}
+                        }
                     }
                 }
+            };
+            cov = advanced;
+            #[cfg(feature = "test-utils")]
+            if let Some((me, pacer)) = &cfg.alternation {
+                pacer.mark_settled(*me);
             }
-        };
-        cov = advanced;
-        #[cfg(feature = "test-utils")]
-        if let Some((me, pacer)) = &cfg.alternation {
-            pacer.mark_settled(*me);
+            break 'bundle;
         }
     }
     log::info!("settlement-worker: shut down");
@@ -363,7 +424,9 @@ mod tests {
     use vprogs_storage_rocksdb_store::RocksDbStore;
     use vprogs_zk_aggregate_prover::{BundleBlocks, ScheduledBundle};
 
-    use super::{CovenantState, SettlementArtifact, reconcile, resolve_superseded};
+    use super::{
+        CovenantState, SettlementArtifact, SupersedeResolution, reconcile, resolve_superseded,
+    };
     use crate::confirm::CovenantLiveness;
 
     /// State root every state-neutral settlement leaves unchanged: a lane range of guest-rejected
@@ -503,15 +566,15 @@ mod tests {
     }
 
     /// The chain-confirmed supersede: the covenant outpoint gone from the UTXO set means the
-    /// competitor's settlement is in a block, so the bundle's journal entry dies at its
-    /// checkpoint index and the resume path stops re-feeding the range.
+    /// competitor's settlement is in a block, so the bundle terminates and its journal entry dies
+    /// at its checkpoint index, stopping the resume path's re-feed of the range.
     #[tokio::test]
     async fn chain_spent_supersede_deletes_the_journal_entry() {
         let (_dir, journal) = recorded_journal();
         let mut cov = covenant(STATE, 1);
         let bundle = scheduled();
 
-        resolve_superseded(
+        let resolution = resolve_superseded(
             &mut cov,
             &artifact(STATE, 2),
             &bundle,
@@ -521,19 +584,21 @@ mod tests {
         )
         .await;
 
+        assert!(matches!(resolution, SupersedeResolution::Resolved));
         assert!(journal.entries().is_empty(), "entry deleted at the bundle's checkpoint index");
     }
 
-    /// A supersede whose spend is mempool-only (the covenant outpoint still unspent on chain)
-    /// deletes nothing: the competitor's settlement can be evicted or reorged, and the range must
-    /// stay queued.
+    /// A supersede whose spend is mempool-only (the covenant outpoint still unspent on chain, the
+    /// artifact still chaining from the covenant) retains the bundle with its journal entry in
+    /// place: the competitor's settlement can be evicted or reorged, and an entry naming a bundle
+    /// the settler no longer holds would strand the aggregate prover's suffix gate.
     #[tokio::test]
-    async fn mempool_only_supersede_deletes_nothing() {
+    async fn mempool_only_supersede_retains_the_bundle_for_retry() {
         let (_dir, journal) = recorded_journal();
-        let mut cov = covenant(STATE, 1);
+        let mut cov = covenant(STATE, 2);
         let bundle = scheduled();
 
-        resolve_superseded(
+        let resolution = resolve_superseded(
             &mut cov,
             &artifact(STATE, 2),
             &bundle,
@@ -543,7 +608,53 @@ mod tests {
         )
         .await;
 
+        assert!(matches!(resolution, SupersedeResolution::Retain));
         assert_eq!(journal.entries().len(), 1, "mempool spender may vanish");
+    }
+
+    /// A still-live base that no longer chains (a confirmed settlement forked the covenant past
+    /// it, adopted by the resolution's own reconcile) terminates the bundle without deleting its
+    /// entry: the range is neither pending nor chain-resolved, so the restart resume re-feeds it.
+    #[tokio::test]
+    async fn live_base_past_a_forked_tip_terminates_without_delete() {
+        let (_dir, journal) = recorded_journal();
+        let mut cov = covenant(STATE, 1);
+        let bundle = scheduled();
+
+        let resolution = resolve_superseded(
+            &mut cov,
+            &artifact(STATE, 2),
+            &bundle,
+            Some(&journal),
+            // A fork settlement adopting a tip the artifact does not chain from.
+            Some(settlement(OTHER_STATE, 3)),
+            || async { CovenantLiveness::Unspent },
+        )
+        .await;
+
+        assert!(matches!(resolution, SupersedeResolution::Resolved));
+        assert_eq!(journal.entries().len(), 1, "an unspent fork keeps the entry for the resume");
+    }
+
+    /// Shutdown mid-liveness terminates the bundle with its entry left for the next run's resume.
+    #[tokio::test]
+    async fn shutdown_during_liveness_terminates_without_delete() {
+        let (_dir, journal) = recorded_journal();
+        let mut cov = covenant(STATE, 1);
+        let bundle = scheduled();
+
+        let resolution = resolve_superseded(
+            &mut cov,
+            &artifact(STATE, 2),
+            &bundle,
+            Some(&journal),
+            None,
+            || async { CovenantLiveness::Shutdown },
+        )
+        .await;
+
+        assert!(matches!(resolution, SupersedeResolution::Resolved));
+        assert_eq!(journal.entries().len(), 1, "entry kept for the restart resume");
     }
 
     /// The resolution adopts a watch settlement ahead of `cov` even with no journal wired, so the
