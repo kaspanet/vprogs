@@ -76,6 +76,18 @@ pub enum StartError {
     /// Fresh bootstrap was requested but the data dir already holds a covenant identity.
     #[error("fresh bootstrap requested but {0} already holds persisted state; use resume instead")]
     DataDirNotClean(std::path::PathBuf),
+    /// Proving/settlement requires a private key to fund and sign settlement transactions.
+    #[error(
+        "proving/settlement requires private_key (set VPRUN_PRIVATE_KEY or --private-key); \
+         for keyless observer mode, unset prove"
+    )]
+    MissingKeyForProve,
+    /// Fresh covenant bootstrap requires a private key to fund and sign the bootstrap transaction.
+    #[error(
+        "fresh covenant bootstrap requires private_key (set VPRUN_PRIVATE_KEY or --private-key); \
+         for keyless observer mode, join an existing covenant via covenant_id and start_from"
+    )]
+    MissingKeyForFresh,
 }
 
 /// Resolves the effective start mode: explicit when set, else resume if the data dir already holds
@@ -96,8 +108,8 @@ struct StartContext<'a, F> {
     client: &'a KaspaRpcClient,
     /// Consensus params for the target network.
     params: &'a Params,
-    /// Fee / bootstrap keypair derived from `cfg.private_key`.
-    keypair: Keypair,
+    /// Fee / bootstrap keypair derived from `cfg.private_key`, if present.
+    keypair: Option<Keypair>,
     /// Lane subnetwork this runner routes onto.
     lane_subnet: SubnetworkId,
     /// Lane key derived from `lane_subnet`.
@@ -139,11 +151,20 @@ pub async fn start_runner<F>(
 where
     F: FnOnce(&CovenantIdBytes) -> DepositSpkHash,
 {
-    let keypair = Keypair::from_secret_key(secp256k1::SECP256K1, &cfg.private_key);
-
     // --- resolve lane id: storage > config > random ---
     let mut persisted = PersistedState::load(&cfg.data_dir);
     let mode = effective_mode(cfg, &persisted);
+
+    if cfg.prove && cfg.private_key.is_none() {
+        return Err(StartError::MissingKeyForProve);
+    }
+    if mode == StartMode::Fresh && cfg.private_key.is_none() {
+        return Err(StartError::MissingKeyForFresh);
+    }
+
+    let keypair =
+        cfg.private_key.as_ref().map(|sk| Keypair::from_secret_key(secp256k1::SECP256K1, sk));
+
     let lane_id = persisted.lane_id.or(cfg.lane_id).unwrap_or_else(|| fastrand::u32(1000..));
     persisted.lane_id = Some(lane_id);
     let lane_subnet = SubnetworkId::from_namespace(lane_id.to_be_bytes());
@@ -215,6 +236,7 @@ async fn start_exec<F>(ctx: StartContext<'_, F>) -> Result<(RunnerNode, Hash), S
             // Capture the node's selected tip before bootstrap: a real chain block at or just
             // before the deploy block, seeded so a later resume replays forward from
             // the deploy.
+            let keypair = keypair.expect("guarded by start_runner");
             let seed_block = client.get_block_dag_info().await.expect("get_block_dag_info").sink;
             let wallet = Wallet::new(client, params, keypair);
             // Pin the redeem the way `start_settlement` does: a later `--prove` restart of this
@@ -292,6 +314,7 @@ where
         persisted,
     } = ctx;
 
+    let keypair = keypair.expect("guarded by start_runner");
     let backend = Backend::new(elfs.program, elfs.batch, elfs.aggregator, ProofType::Succinct);
     let wallet = Wallet::new(client, params, keypair);
     // Under `RISC0_DEV_MODE` the prover emits stub receipts the production `OpZkPrecompile` would
@@ -574,6 +597,7 @@ fn bridge_params(
         finality_depth: params.finality_depth(),
         seed_depth: cfg.seed_depth,
         start_from: bridge_seed,
+        min_confirmations: cfg.min_confirmations,
         observers,
     }
 }
@@ -632,5 +656,73 @@ mod tests {
             resolve_bridge_seed(client, Some(deep_anchor), seed_depth, tip_daa).await,
             Some(deep_anchor),
         );
+    }
+
+    #[tokio::test]
+    async fn prove_without_key_fails_fast() {
+        let temp = tempfile::tempdir().unwrap();
+        let cfg = RunnerConfig {
+            wrpc_url: "ws://127.0.0.1:0".into(),
+            private_key: None,
+            network_id: NetworkId::new(NetworkType::Simnet),
+            program_elf: None,
+            batch_elf: None,
+            aggregator_elf: None,
+            data_dir: temp.path().to_path_buf(),
+            lane_id: None,
+            covenant_id: Some(Hash::default()),
+            bootstrap_txid: None,
+            start_from: Some(Hash::default()),
+            seed_depth: 500,
+            min_confirmations: None,
+            prove: true,
+            start_mode: Some(StartMode::Catchup),
+        };
+        let client = KaspaRpcClient::new_with_args(
+            kaspa_wrpc_client::prelude::WrpcEncoding::Borsh,
+            Some("ws://127.0.0.1:0"),
+            None,
+            Some(NetworkId::new(NetworkType::Simnet)),
+            None,
+        )
+        .unwrap();
+        let params = Params::from(NetworkId::new(NetworkType::Simnet));
+        let elfs = Elfs { program: &[], batch: &[], aggregator: &[] };
+        let res = start_runner(&cfg, &client, &params, elfs, |_| [0u8; 32]).await;
+        assert!(matches!(res, Err(StartError::MissingKeyForProve)));
+    }
+
+    #[tokio::test]
+    async fn fresh_bootstrap_without_key_fails_fast() {
+        let temp = tempfile::tempdir().unwrap();
+        let cfg = RunnerConfig {
+            wrpc_url: "ws://127.0.0.1:0".into(),
+            private_key: None,
+            network_id: NetworkId::new(NetworkType::Simnet),
+            program_elf: None,
+            batch_elf: None,
+            aggregator_elf: None,
+            data_dir: temp.path().to_path_buf(),
+            lane_id: None,
+            covenant_id: None,
+            bootstrap_txid: None,
+            start_from: None,
+            seed_depth: 500,
+            min_confirmations: None,
+            prove: false,
+            start_mode: Some(StartMode::Fresh),
+        };
+        let client = KaspaRpcClient::new_with_args(
+            kaspa_wrpc_client::prelude::WrpcEncoding::Borsh,
+            Some("ws://127.0.0.1:0"),
+            None,
+            Some(NetworkId::new(NetworkType::Simnet)),
+            None,
+        )
+        .unwrap();
+        let params = Params::from(NetworkId::new(NetworkType::Simnet));
+        let elfs = Elfs { program: &[], batch: &[], aggregator: &[] };
+        let res = start_runner(&cfg, &client, &params, elfs, |_| [0u8; 32]).await;
+        assert!(matches!(res, Err(StartError::MissingKeyForFresh)));
     }
 }

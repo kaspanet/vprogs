@@ -88,6 +88,9 @@ pub struct BridgeParams {
     /// catch-up node rebuilds state forward from there. Takes precedence over `seed_depth`. `None`
     /// defers to `seed_depth`.
     pub start_from: Option<Hash>,
+    /// Lower bound on the `min_confirmation_count` for the bridge's chain-follow queries; the
+    /// adaptive reorg filter may still exceed it. `None` uses the adaptive threshold alone.
+    pub min_confirmations: Option<u64>,
     /// Observer handles the bridge publishes progress into.
     pub observers: BridgeObservers,
 }
@@ -199,6 +202,7 @@ fn base_config(
                 .with_finality_depth(params.finality_depth)
                 .with_seed_depth(Some(params.seed_depth))
                 .with_start_from(params.start_from)
+                .with_min_confirmations(params.min_confirmations)
                 .with_tip_daa_observer(params.observers.tip_daa)
                 .with_settlement_observer(params.observers.settlement),
         )

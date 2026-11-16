@@ -434,6 +434,41 @@ is implementation of how the field is used, lives in the worker, and would
 need updating if the worker's loop shape changed. The link to
 `last_settlement` does the work.
 
+### Value docs state the meaning, not the derived consequences
+
+The verbose cousin of the rule above: alongside "when set, X happens" prose,
+watch for consequence narration, clauses explaining what *follows* from the
+value once its consumers act on it ("so reorgs shallower than it never
+surface", "every published settlement is at least this buried", "at startup
+the filter is empty, so the floor alone applies"). Consequences are computed
+by consumer logic that evolves independently of the value; when that logic
+changes, the comment silently rots. The value's identity (what it bounds,
+what unit the number carries, the `None`/default meaning) is stable.
+
+**Before**:
+```rust
+/// Lower bound on the `min_confirmation_count` for the chain-follow queries: the bridge
+/// processes blocks only once they are this many blue-score confirmations below the sink, so
+/// reorgs shallower than it never surface and every published settlement is at least this
+/// buried. The adaptive reorg filter may still raise the threshold above this floor after
+/// observed reorgs; at startup the filter is empty, so the floor alone applies. `None` uses
+/// the adaptive threshold alone.
+pub min_confirmations: Option<u64>,
+```
+
+**After**:
+```rust
+/// Lower bound on the `min_confirmation_count` for the chain-follow queries, in blue-score
+/// confirmations below the sink; the adaptive reorg filter may still raise the threshold
+/// above this floor. `None` uses the adaptive threshold alone.
+pub min_confirmations: Option<u64>,
+```
+
+Why: the After keeps the stable facts (what it bounds, the unit, the `None`
+case) plus the one clause that makes "lower bound" meaningful (the adaptive
+filter may exceed it). The burial guarantee belongs to the worker that
+derives it, not the config field.
+
 ### Extend existing iterations; don't split filtered loops into two passes
 
 When adding a new derived value alongside an existing iteration (filtering,
