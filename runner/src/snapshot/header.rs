@@ -79,6 +79,9 @@ impl SnapshotHeader {
         }
         let chain_block_metadata = ChainBlockMetadata::try_from_slice(rest)
             .map_err(|e| invalid(&format!("snapshot header chain_block_metadata: {e}")))?;
+        if chain_block_metadata.last_settlement.is_none() {
+            return Err(invalid("snapshot header carries no settlement"));
+        }
 
         Ok(SnapshotHeader {
             covenant_id: Hash::from_bytes(fixed.covenant_id),
@@ -89,7 +92,8 @@ impl SnapshotHeader {
         })
     }
 
-    /// The settlement this snapshot pins to (always `Some` for a valid snapshot).
+    /// The settlement this snapshot pins to; `decode` rejects a header whose metadata carries
+    /// none, so a decoded header always yields `Some`.
     pub fn settlement(&self) -> Option<SettlementInfo> {
         self.chain_block_metadata.last_settlement
     }
@@ -104,6 +108,7 @@ mod tests {
         let meta = ChainBlockMetadata {
             hash: Hash::from_bytes([9u8; 32]),
             blue_score: 123,
+            last_settlement: Some(SettlementInfo::default()),
             ..ChainBlockMetadata::default()
         };
         let header = SnapshotHeader {
@@ -130,7 +135,7 @@ mod tests {
 
     #[test]
     fn decode_rejects_cbm_len_mismatch() {
-        let meta = ChainBlockMetadata::default();
+        let meta = settlement_meta();
         let header = SnapshotHeader {
             covenant_id: Hash::from_bytes([1u8; 32]),
             lane_id: 5,
@@ -142,5 +147,31 @@ mod tests {
         bytes.pop(); // truncate the borsh region by one byte
         let err = SnapshotHeader::decode(&bytes).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    /// A snapshot exists to pin a settlement; a header whose metadata carries none would restore
+    /// a node with no settlement to resume from, so decode rejects it instead of letting every
+    /// consumer discover the missing field downstream.
+    #[test]
+    fn decode_rejects_a_settlement_free_header() {
+        let header = SnapshotHeader {
+            covenant_id: Hash::from_bytes([1u8; 32]),
+            lane_id: 5,
+            bootstrap_txid: Hash::from_bytes([2u8; 32]),
+            committed_index: 1,
+            chain_block_metadata: ChainBlockMetadata::default(),
+        };
+        let err = SnapshotHeader::decode(&header.encode()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    /// Metadata carrying the settlement every valid header pins to, for tests that decode
+    /// successfully.
+    fn settlement_meta() -> ChainBlockMetadata {
+        ChainBlockMetadata {
+            hash: Hash::from_bytes([9u8; 32]),
+            last_settlement: Some(SettlementInfo::default()),
+            ..ChainBlockMetadata::default()
+        }
     }
 }
