@@ -156,9 +156,7 @@ impl<'w, W: Write + Seek, H: Hasher, F: SnapshotFormat> SnapshotWriter<'w, W, H,
         let count_offset = hw.inner.stream_position()?;
         hw.inner.write_all(&0u64.to_le_bytes())?;
 
-        Ok(Self { hw,
-            count_offset,
-            prev_id: None, written: 0, _format: PhantomData })
+        Ok(Self { hw, count_offset, prev_id: None, written: 0, _format: PhantomData })
     }
 
     /// Appends one record (`id[32] | value_len:u32 | value`), folding it into the running digest.
@@ -499,8 +497,7 @@ mod tests {
     fn writer_rejects_oversized_header() {
         let mut buf = Vec::new();
         let header = vec![0u8; MAX_HEADER_LEN as usize + 1];
-        let result =
-            SnapshotWriter::<_, Sha256, TestFormat>::open(&mut buf, &header).map(|_| ());
+        let result = SnapshotWriter::<_, Sha256, TestFormat>::open(&mut buf, &header).map(|_| ());
         assert!(
             matches!(result, Err(SnapshotError::Malformed(_))),
             "expected Malformed, got {result:?}"

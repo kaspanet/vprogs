@@ -2,7 +2,7 @@
 //! self-verifying snapshot file.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     path::{Path, PathBuf},
 };
 
@@ -47,9 +47,12 @@ pub enum SaveError {
     /// The committed tip carries no settlement to pin the snapshot to.
     #[error("no settlement recorded in the committed state")]
     NoSettlement,
-    /// The settlement's `block_prove_to` block is older than the store's retained root; pruning
-    /// has already discarded the batch metadata needed to reconstruct that state.
-    #[error("settlement block is below the pruned root; snapshot a more recent state")]
+    /// The settlement's `block_prove_to` block is not retained as canonical by the store: either
+    /// pruning has already discarded it, or a reorg currently reports it orphaned. Snapshot a more
+    /// recent state.
+    #[error(
+        "settlement block is not retained as canonical (pruned or orphaned); snapshot a more recent state"
+    )]
     SettlementNotRetained,
     /// The reconstructed state root does not match the on-chain settlement root.
     #[error(
@@ -81,11 +84,6 @@ pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveErr
     let store = RocksDbStore::<DefaultConfig>::open_read_only(data_dir.join("db"))
         .map_err(SaveError::OpenStore)?;
 
-    // A fresh handle's canonical-chain oracle is empty, which reads every stored node version as
-    // canonical. Replay the persisted batch log into it, as a live node does at start-up, so the
-    // root check below steps over versions a reorg orphaned.
-    let _canonical = store.canonical_chain_manager::<ChainBlockMetadata>();
-
     // Identity comes from the JSON file, not the DB.
     let identity = PersistedState::load(data_dir);
     let covenant_id = identity.covenant_hash().ok_or(SaveError::NoIdentity)?;
@@ -94,26 +92,33 @@ pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveErr
 
     // Latest settlement is carried in the committed tip's metadata.
     let tip: Checkpoint<ChainBlockMetadata> = StateMetadata::last_committed(&store);
-    let root_cp: Checkpoint<ChainBlockMetadata> = StateMetadata::root(&store);
     let settlement: SettlementInfo =
         tip.metadata().last_settlement.ok_or(SaveError::NoSettlement)?;
 
+    // A fresh handle's canonical-chain oracle is empty, which reads every stored node version as
+    // canonical. Replay the persisted batch log into it, as a live node does at start-up, capped at
+    // the committed tip, so the anchor lookup, the root check, and the corrections loop below step
+    // over versions a reorg orphaned. The binding must stay alive for the whole save (`_canonical`,
+    // not `_`): dropping the manager releases the chain's single-writer claim, and a later replay
+    // in the same process would panic re-claiming it.
+    let _canonical = store.canonical_chain_manager::<ChainBlockMetadata>(tip.index());
+
     // Find N_S: the batch whose block is settlement.block_prove_to, NOT
     // settlement.containing_block (the later block the settlement transaction landed in).
-    // store.root(n_s) is the state root the settlement actually attests to. Walk down from the tip.
-    let mut n_s = tip.index();
-    let mut meta_at_s: ChainBlockMetadata;
-    loop {
-        let meta = StoredBatchMetadata::get::<ChainBlockMetadata, _>(&store, n_s);
-        if meta.hash == settlement.block_prove_to {
-            meta_at_s = meta;
-            break;
-        }
-        if n_s <= root_cp.index() {
-            return Err(SaveError::SettlementNotRetained);
-        }
-        n_s -= 1;
+    // store.root(n_s) is the state root the settlement actually attests to. The replayed chain
+    // index resolves the block hash in O(1); a hash it never saw was either pruned below the
+    // store's root or never part of this store's history.
+    let n_s = _canonical
+        .id(&settlement.block_prove_to.as_bytes())
+        .ok_or(SaveError::SettlementNotRetained)?;
+    // A settlement anchored at a block the chain currently reports orphaned cites an on-chain root
+    // this store would not rebuild from its records; report it rather than fall through to the
+    // root mismatch below.
+    if !_canonical.chain().snapshot().is_canonical(n_s) {
+        return Err(SaveError::SettlementNotRetained);
     }
+    let mut meta_at_s: ChainBlockMetadata =
+        StoredBatchMetadata::get::<ChainBlockMetadata, _>(&store, n_s);
     // n_s's own metadata naturally carries the PRIOR settlement (if any), not this one. A restored
     // node resumes from n_s and seeds the settler from this metadata's `last_settlement`, which
     // must be this settlement so the settler adopts the covenant tip the snapshot pins to.
@@ -130,17 +135,21 @@ pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveErr
 
     // Bounded-memory enumeration: `corrections` holds only resources changed after N_S (the churn
     // of a few post-settlement batches, never the full resource set); a resource absent here kept
-    // its current latest version back to N_S. `pinned` keeps each resource's first post-S touch,
-    // since that rollback entry is the version held right before that batch, i.e. its value at N_S.
+    // its current latest version back to N_S. The first touch wins (`entry().or_insert`): that
+    // rollback entry is the version held right before the oldest post-N_S batch that touched the
+    // resource, i.e. its value at N_S. Only canonical ids contribute: orphaned batches keep their
+    // rollback entries on disk until pruning, but they describe a fork this store rejected, not
+    // the state that superseded N_S.
+    let canonical = store.snapshot();
     let mut corrections: HashMap<ResourceId, u64> = HashMap::new();
-    let mut pinned: HashSet<ResourceId> = HashSet::new();
     for idx in (n_s + 1)..=tip.index() {
+        if !canonical.is_canonical(idx) {
+            continue;
+        }
         for (rid_bytes, old_version) in StatePtrRollback::iter_batch(&store, idx) {
             let rid: ResourceId =
                 borsh::from_slice(&rid_bytes).expect("corrupted rollback resource id");
-            if pinned.insert(rid) {
-                corrections.insert(rid, old_version);
-            }
+            corrections.entry(rid).or_insert(old_version);
         }
     }
 
@@ -313,6 +322,7 @@ mod tests {
             covenant_id: Some(Hash::from_bytes([7u8; 32]).to_string()),
             bootstrap_txid: Some(Hash::from_bytes([8u8; 32]).to_string()),
             bootstrap_block_hash: None,
+            pinned_lane_tip: None,
         }
         .save(dir.path());
 
@@ -402,6 +412,7 @@ mod tests {
             covenant_id: Some(Hash::from_bytes([7u8; 32]).to_string()),
             bootstrap_txid: Some(Hash::from_bytes([8u8; 32]).to_string()),
             bootstrap_block_hash: None,
+            pinned_lane_tip: None,
         }
         .save(dir.path());
 
@@ -431,7 +442,7 @@ mod tests {
     fn save_ignores_versions_orphaned_by_a_reorg() {
         let dir = tempfile::tempdir().unwrap();
         let store = RocksDbStore::<DefaultConfig>::open(dir.path().join("db"));
-        let mut chain = store.canonical_chain_manager::<ChainBlockMetadata>();
+        let mut chain = store.canonical_chain_manager::<ChainBlockMetadata>(u64::MAX);
 
         let r1 = ResourceId::from([1u8; 32]);
 
@@ -481,6 +492,7 @@ mod tests {
             covenant_id: Some(Hash::from_bytes([7u8; 32]).to_string()),
             bootstrap_txid: Some(Hash::from_bytes([8u8; 32]).to_string()),
             bootstrap_block_hash: None,
+            pinned_lane_tip: None,
         }
         .save(dir.path());
 
@@ -492,5 +504,115 @@ mod tests {
         assert_eq!(summary.committed_index, 3);
         assert_eq!(summary.settlement_new_state, root1);
         assert_eq!(summary.record_count, 1);
+    }
+
+    // The reviewer's returning-block geometry: batch 2 (block B) is reorged out, fork batch 3
+    // (block C) commits and is orphaned in turn, then B returns keeping its id and batch 4 extends
+    // it. A settlement proving to B pins n_s = 2 while C's rollback entry for r1 still sits on
+    // disk at id 3; reading orphaned entries would emit r1's pre-fork value instead of the value B
+    // committed, in a digest-valid file whose root check passes.
+    #[test]
+    fn save_ignores_orphaned_rollback_entries_above_the_settlement() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RocksDbStore::<DefaultConfig>::open(dir.path().join("db"));
+        let mut chain = store.canonical_chain_manager::<ChainBlockMetadata>(u64::MAX);
+
+        let r1 = ResourceId::from([1u8; 32]);
+
+        // Batch 1: r1 = alpha.
+        let m1 = ChainBlockMetadata {
+            hash: Hash::from_bytes([11u8; 32]),
+            ..ChainBlockMetadata::default()
+        };
+        chain.append(m1);
+        commit_batch(&store, 1, &[(r1, 1, b"alpha")], m1, true);
+
+        // Batch 2 = block B: r1 -> beta, rollback(2, r1) = 1.
+        let m2 = ChainBlockMetadata {
+            hash: Hash::from_bytes([22u8; 32]),
+            parent_id: 1,
+            ..ChainBlockMetadata::default()
+        };
+        chain.append(m2);
+        let repoint_latest = |store: &RocksDbStore<DefaultConfig>, version: u64| {
+            let mut wb = store.write_batch();
+            StatePtrLatest::put(&mut wb, &r1, version);
+            store.commit(wb);
+        };
+        {
+            let mut wb = store.write_batch();
+            StatePtrRollback::put(&mut wb, 2, &r1, 1);
+            store.commit(wb);
+        }
+        let root2 = commit_batch(&store, 2, &[(r1, 2, b"beta")], m2, false);
+
+        // Reorg to batch 1; B's rollback entry stays on disk.
+        chain.rollback(1);
+        repoint_latest(&store, 1);
+
+        // Fork batch 3 = block C: r1 -> gamma, rollback(3, r1) = 1, orphaned in turn.
+        let m3 = ChainBlockMetadata {
+            hash: Hash::from_bytes([33u8; 32]),
+            parent_id: 1,
+            ..ChainBlockMetadata::default()
+        };
+        chain.append(m3);
+        {
+            let mut wb = store.write_batch();
+            StatePtrRollback::put(&mut wb, 3, &r1, 1);
+            store.commit(wb);
+        }
+        commit_batch(&store, 3, &[(r1, 3, b"gamma")], m3, false);
+        chain.rollback(1);
+        repoint_latest(&store, 1);
+
+        // B returns (re-canonicalized at its original id 2) and batch 4 extends it, carrying the
+        // settlement that proves to B. The live node repoints r1's latest pointer to B's version.
+        let returning = chain.append(m2);
+        assert!(!returning.is_new, "a returning block keeps its id");
+        repoint_latest(&store, 2);
+        let settlement = SettlementInfo {
+            block_prove_to: m2.hash,
+            containing_block: Hash::from_bytes([44u8; 32]),
+            new_state: root2,
+            ..SettlementInfo::default()
+        };
+        let m4 = ChainBlockMetadata {
+            hash: Hash::from_bytes([44u8; 32]),
+            parent_id: 2,
+            last_settlement: Some(settlement),
+            ..ChainBlockMetadata::default()
+        };
+        chain.append(m4);
+        commit_batch(&store, 4, &[], m4, false);
+
+        PersistedState {
+            lane_id: Some(9),
+            covenant_id: Some(Hash::from_bytes([7u8; 32]).to_string()),
+            bootstrap_txid: Some(Hash::from_bytes([8u8; 32]).to_string()),
+            bootstrap_block_hash: None,
+            pinned_lane_tip: None,
+        }
+        .save(dir.path());
+
+        drop(chain);
+        drop(store);
+
+        let out = dir.path().join("snap.vpsnap");
+        let summary = save_snapshot(dir.path(), &out).expect("save should succeed");
+        assert_eq!(summary.committed_index, 2);
+        assert_eq!(summary.settlement_new_state, root2);
+        assert_eq!(summary.record_count, 1);
+
+        // r1 must carry B's committed value (beta), not the fork-cited pre-batch value (alpha).
+        let bytes = std::fs::read(&out).unwrap();
+        let (_hdr, mut reader) =
+            SnapshotReader::<_, Sha256, VpsnapFormat>::open(bytes.as_slice()).unwrap();
+        let mut records: Vec<([u8; 32], Vec<u8>)> = Vec::new();
+        while let Some(Record { id, value }) = reader.next().unwrap() {
+            records.push((*id, value.to_vec()));
+        }
+        reader.finish().unwrap();
+        assert_eq!(records, vec![([1u8; 32], b"beta".to_vec())]);
     }
 }
