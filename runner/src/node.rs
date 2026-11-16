@@ -25,7 +25,7 @@ use vprogs_core_atomics::AsyncQueue;
 use vprogs_l1_bridge::L1BridgeConfig;
 use vprogs_l1_types::SettlementInfo;
 use vprogs_node_framework::{Node, NodeConfig};
-use vprogs_scheduling_scheduler::{ExecutionConfig, SchedulerState};
+use vprogs_scheduling_scheduler::{ExecutionConfig, Indexer, SchedulerState};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_aggregate_prover::{AggregateProverConfig, ScheduledBundle, SettlementArtifact};
@@ -138,10 +138,15 @@ pub struct ProvingParams {
 /// and a bridge pointed at the remote node's lane + covenant. [`Node::new`] immediately starts the
 /// bridge, scheduler, and event loop on a dedicated thread. The batch and aggregator ELFs are
 /// loaded only so the backend can pin their image ids; they are never executed in exec mode.
-pub fn build_exec_node(elfs: Elfs, store: RunnerStore, params: BridgeParams) -> RunnerNode {
+pub fn build_exec_node(
+    elfs: Elfs,
+    store: RunnerStore,
+    params: BridgeParams,
+    indexer: Option<Indexer>,
+) -> RunnerNode {
     let backend = Backend::new(elfs.program, elfs.batch, elfs.aggregator, ProofType::Succinct);
     let vm = Vm::new(backend, ProvingPipeline::None);
-    Node::new(base_config(vm, store, params))
+    Node::new(base_config(vm, store, params, indexer))
 }
 
 /// Builds and starts a proving [`RunnerNode`]: a zk `Vm` driving the full proving stack
@@ -155,6 +160,7 @@ pub fn build_proving_node(
     store: RunnerStore,
     bridge: BridgeParams,
     proving: ProvingParams,
+    indexer: Option<Indexer>,
 ) -> RunnerNode {
     let backend = Backend::new(elfs.program, elfs.batch, elfs.aggregator, ProofType::Succinct);
     // Build the shared scheduler state first so the aggregate prover and the scheduler operate over
@@ -180,7 +186,7 @@ pub fn build_proving_node(
         },
     );
     let vm = Vm::new(backend, pipeline);
-    Node::with_state(base_config(vm, store, bridge), state)
+    Node::with_state(base_config(vm, store, bridge, indexer), state)
 }
 
 /// The bridge + execution + storage config shared by both node modes; the proving mode supplies a
@@ -189,10 +195,12 @@ fn base_config(
     vm: RunnerVm,
     store: RunnerStore,
     params: BridgeParams,
+    indexer: Option<Indexer>,
 ) -> NodeConfig<RunnerStore, RunnerVm> {
     NodeConfig::default()
         .with_execution_config(ExecutionConfig::default().with_processor(vm))
         .with_storage_config(StorageConfig::default().with_store(store))
+        .with_indexer(indexer)
         .with_l1_bridge_config(
             L1BridgeConfig::default()
                 .with_url(Some(params.url))

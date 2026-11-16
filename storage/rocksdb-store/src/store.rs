@@ -78,20 +78,42 @@ impl<C: Config> Store for RocksDbStore<C> {
 
     fn prefix_iter(&self, state_space: StateSpace, prefix: &[u8]) -> PrefixIterator<'_> {
         let cf = self.cf(&state_space);
-
-        // Empty prefix = full scan; the fixed-prefix CFs need total-order seek to span all keys.
-        if prefix.is_empty() {
-            let mut read_opts = rocksdb::ReadOptions::default();
-            read_opts.set_total_order_seek(true);
-            let iter = self.db.iterator_cf_opt(cf, read_opts, IteratorMode::Start);
-            return Box::new(RocksDbPrefixIter { inner: iter });
-        }
-
         let mut read_opts = rocksdb::ReadOptions::default();
-        // Ensure iteration stops when keys no longer share the prefix.
-        read_opts.set_prefix_same_as_start(true);
+        // Hard stop at the prefix: forward walking ends once keys leave it.
+        read_opts.set_iterate_lower_bound(prefix.to_vec());
+        if let Some(upper) = prefix_end(prefix) {
+            read_opts.set_iterate_upper_bound(upper);
+        }
+        // Total order: the fixed prefix extractors installed on the CFs would otherwise
+        // bound iteration by their slice, not our prefix.
+        read_opts.set_total_order_seek(true);
+        let iter =
+            self.db.iterator_cf_opt(cf, read_opts, IteratorMode::From(prefix, Direction::Forward));
+        Box::new(RocksDbPrefixIter { inner: iter })
+    }
 
-        let mode = IteratorMode::From(prefix, Direction::Forward);
+    fn prefix_iter_rev(&self, state_space: StateSpace, prefix: &[u8]) -> PrefixIterator<'_> {
+        let cf = self.cf(&state_space);
+        let mut read_opts = rocksdb::ReadOptions::default();
+        // Hard stop at the prefix: reverse walking ends once keys fall below it.
+        read_opts.set_iterate_lower_bound(prefix.to_vec());
+        if let Some(upper) = prefix_end(prefix) {
+            read_opts.set_iterate_upper_bound(upper);
+        }
+        // Total order: the u64 prefix extractor installed on the CFs would otherwise
+        // bound iteration by its 8-byte slice, not our prefix.
+        read_opts.set_total_order_seek(true);
+        let iter = self.db.iterator_cf_opt(cf, read_opts, IteratorMode::End);
+        Box::new(RocksDbPrefixIter { inner: iter })
+    }
+
+    fn range_iter(&self, state_space: StateSpace, start: &[u8], end: &[u8]) -> PrefixIterator<'_> {
+        let cf = self.cf(&state_space);
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_iterate_lower_bound(start.to_vec());
+        read_opts.set_iterate_upper_bound(end.to_vec());
+        read_opts.set_total_order_seek(true);
+        let mode = IteratorMode::From(start, Direction::Forward);
         let iter = self.db.iterator_cf_opt(cf, read_opts, mode);
         Box::new(RocksDbPrefixIter { inner: iter })
     }
@@ -112,9 +134,11 @@ impl<C: Config> Tree for RocksDbStore<C> {
     fn node(&self, key: &Key, max_version: u64, snapshot: &Self::Snapshot) -> Option<(u64, Node)> {
         let versions_tracked = snapshot.tip() > 0;
 
-        // Seek the latest canonical version below `max_version`.
-        let iter = self.prefix_iter(StateSpace::SmtNode, &key.encode_with_version(max_version));
-        for (raw_key, raw_value) in iter {
+        // Scan the key's version group from !max_version; the first canonical entry is the
+        // latest version <= `max_version`.
+        let start = key.encode_with_version(max_version);
+        let end = prefix_end(&key.encode()).expect("smt node key with no lexicographic successor");
+        for (raw_key, raw_value) in self.range_iter(StateSpace::SmtNode, &start, &end) {
             let version = Key::decode_version(&raw_key).expect("corrupted smt node key");
             if !versions_tracked || snapshot.is_canonical(version) {
                 let node = Node::decode(&mut raw_value.as_ref()).expect("corrupted smt node");
@@ -144,6 +168,19 @@ impl<C: Config> Clone for RocksDbStore<C> {
             _marker: PhantomData,
         }
     }
+}
+
+/// Returns the lexicographical upper bound for keys with the given prefix, or `None` if the prefix
+/// is all 0xFF bytes (in which case keys with that prefix extend to the end of the key space).
+fn prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
+    let mut end = prefix.to_vec();
+    while let Some(last) = end.pop() {
+        if last < 0xff {
+            end.push(last + 1);
+            return Some(end);
+        }
+    }
+    None
 }
 
 /// Wrapper around RocksDB's prefix iterator that unwraps Results into panics.
