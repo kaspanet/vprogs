@@ -5,12 +5,20 @@
 use rand::{RngCore, SeedableRng, rngs::StdRng};
 use secp256k1::{Keypair, Secp256k1};
 use simpa::simulator::miner::{Miner, MinerOptions, NativeLaneProducer};
+use vprogs_core_hashing::{Hasher, Sha256};
+use vprogs_core_smt::{StreamingBuilder, Tree};
+use vprogs_core_types::{Checkpoint, ResourceId};
+use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_sim::{
     config::{SimRate, sim_config_with_maturity},
-    driver::{DriverStats, L2Config, L2Driver},
+    driver::{DriverStats, L2Config, L2Driver, StoreHandle},
     l2_miner::L2Miner,
     network::{SimNetwork, SimTiming},
 };
+use vprogs_state_metadata::StateMetadata;
+use vprogs_state_version::StateVersion;
+use vprogs_storage_rocksdb_store::{DefaultConfig, RocksDbStore};
+use vprogs_storage_types::{StateSpace, Store};
 
 /// Parameters for a simulation run.
 struct SimParams {
@@ -35,6 +43,13 @@ struct SimParams {
 /// Drives a seeded simulation: miner 0 runs the L2 driver, miners 1.. are plain filler miners (DAG
 /// width + reorgs). Returns the driver's running totals.
 fn run_sim(p: SimParams) -> DriverStats {
+    run_sim_inner(p).0
+}
+
+/// Like [`run_sim`], but also returns a live [`StoreHandle`] to the driver's committed execution
+/// store. The returned store is the one the whole run executed against only when
+/// `enable_proving` and `enable_settlements` aren't both set (see `L2Driver::store_handle`).
+fn run_sim_inner(p: SimParams) -> (DriverStats, StoreHandle) {
     let SimParams {
         seed,
         num_miners,
@@ -56,6 +71,7 @@ fn run_sim(p: SimParams) -> DriverStats {
     let mut rng = StdRng::seed_from_u64(seed);
     let lane_id = 4444u32;
     let mut stats = None;
+    let mut store_handle = None;
 
     for i in 0..num_miners {
         let consensus = net.add_node(&config);
@@ -77,6 +93,7 @@ fn run_sim(p: SimParams) -> DriverStats {
                 &consensus,
             );
             stats = Some(handle);
+            store_handle = Some(driver.store_handle());
             let miner = L2Miner::new(
                 i,
                 bps,
@@ -116,7 +133,7 @@ fn run_sim(p: SimParams) -> DriverStats {
 
     let result = stats.unwrap().lock().unwrap().clone();
     net.shutdown();
-    result
+    (result, store_handle.unwrap())
 }
 
 #[test]
@@ -319,4 +336,68 @@ fn l2_flow_proof_settlement_chain() {
         "single miner: every issued settlement must land",
     );
     assert!(s.activity_executed > 0, "expected lane activity to be executed and proved");
+}
+
+/// Rebuilding the SMT root from the run's committed logical records (every latest-pointer
+/// resource, its current data, skipping tombstoned/empty values) through a fresh
+/// `StreamingBuilder` must reproduce the store's committed `state_root` exactly. The enumeration
+/// here is a second, independent one written in the test, so it validates the approach and the
+/// builder against a real seeded run with many resources and settlement churn (fixed seed),
+/// rather than a handful of hand-picked records; the runner's simnet save/restore round-trip
+/// test is what exercises the real save path.
+#[test]
+fn snapshot_reconstructs_committed_root() {
+    kaspa_core::log::try_init_logger("warn");
+    // Same params as `l2_flow_settlements_seed_2`: single miner (clean chain, no reorgs to
+    // complicate the churn) with settlements enabled, so the run produces real, chained state.
+    let (s, handle) = run_sim_inner(SimParams {
+        seed: 2,
+        num_miners: 1,
+        target_blocks: 400,
+        bps: 1.0,
+        delay: 0.1,
+        enable_settlements: true,
+        enable_proving: false,
+        coinbase_maturity: None,
+        bundle_size: 1,
+    });
+    assert!(s.settlements_accepted > 0, "expected the seeded run to settle");
+    let store = handle.store;
+
+    // Enumerate the committed latest state: every resource's current version, then its data,
+    // skipping empty values (an empty value means the resource has no leaf in the tree). The
+    // enumeration must itself be ascending by resource id (RocksDB byte order over the raw id
+    // keys, the same cursor order the save path relies on), the order
+    // `StreamingBuilder::feed` requires.
+    let leaves: Vec<(ResourceId, Vec<u8>)> = store
+        .prefix_iter(StateSpace::StatePtrLatest, &[])
+        .filter_map(|(key, value)| {
+            let id_bytes: [u8; 32] =
+                key.as_slice().try_into().expect("corrupted latest-ptr resource id");
+            let version_bytes: [u8; 8] =
+                value.as_slice().try_into().expect("corrupted latest-ptr version");
+            let id = ResourceId::from(id_bytes);
+            StateVersion::get(&store, u64::from_be_bytes(version_bytes), &id).map(|data| (id, data))
+        })
+        .filter(|(_, data)| !data.is_empty())
+        .collect();
+    assert!(
+        leaves.is_sorted_by_key(|(id, _)| *id),
+        "latest-ptr enumeration must yield ascending resource ids"
+    );
+
+    let recon_dir = tempfile::tempdir().unwrap();
+    let recon = RocksDbStore::<DefaultConfig>::open(recon_dir.path());
+    let mut wb = recon.write_batch();
+    let mut builder = StreamingBuilder::<Sha256>::new(1);
+    for (id, data) in &leaves {
+        builder.feed(&mut wb, *id, Sha256::hash(data));
+    }
+    let reconstructed = builder.finish(&mut wb);
+    recon.commit(wb);
+
+    // The committed root is the SMT root at the last committed batch index.
+    let last: Checkpoint<ChainBlockMetadata> = StateMetadata::last_committed(&store);
+    assert_eq!(reconstructed, store.root(last.index()));
+    assert_ne!(reconstructed, [0u8; 32], "a settled run has non-empty state");
 }

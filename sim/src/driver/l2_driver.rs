@@ -114,13 +114,26 @@ struct Exec {
     scheduler: Scheduler<Store, V>,
     /// Temp-backed state store the scheduler runs over.
     store: Store,
-    /// Temp directory backing the store, kept alive for the store's lifetime.
-    _db: TempDir,
+    /// Temp directory backing the store, kept alive for the store's lifetime. `Arc`-wrapped so a
+    /// caller of [`L2Driver::store_handle`] can hold the directory alive past this driver's drop
+    /// (the simulation drops the driver, and so a bare `TempDir`, once a run shuts down).
+    db: Arc<TempDir>,
     /// A clone of the processor (shares the proving pipeline) kept only so [`Drop`] can signal the
     /// batch-prover worker to shut down; the simulation drops the scheduler without calling
     /// `Scheduler::shutdown`, so the worker would otherwise loop forever. No-op when proving is
     /// off.
     proc_handle: V,
+}
+
+/// A live handle to a driver's execution store plus the temp directory backing it, as returned by
+/// [`L2Driver::store_handle`].
+pub struct StoreHandle {
+    /// Live handle to the driver's execution store.
+    pub store: Store,
+    /// Temp directory backing `store`: after the driver drops at shutdown, this is the only
+    /// reference keeping the backing files on disk, so hold the handle for as long as the store
+    /// is read.
+    pub db: Arc<TempDir>,
 }
 
 /// The L2 driver. Owns the execution stack + store and tracks the selected chain it has scheduled.
@@ -265,7 +278,7 @@ fn build_exec(
     let vm = Vm::new(backend.clone(), pipeline);
     let proc_handle = vm.clone();
     let scheduler = Scheduler::with_state(ExecutionConfig::default().with_processor(vm), state);
-    (Exec { scheduler, store, _db: db, proc_handle }, settlement_queue)
+    (Exec { scheduler, store, db: Arc::new(db), proc_handle }, settlement_queue)
 }
 
 impl L2Driver {
@@ -328,6 +341,16 @@ impl L2Driver {
             stats: stats.clone(),
         };
         (driver, stats, drained)
+    }
+
+    /// Returns a live [`StoreHandle`] to this driver's execution store.
+    ///
+    /// Stale after a `real_e2e` proving rebuild ([`Self::init_proving`] swaps in a fresh store once
+    /// the covenant bootstrap confirms); only meaningful for runs that never set `enable_proving`
+    /// together with `enable_settlements`, where the store captured here is the one used for the
+    /// whole run.
+    pub fn store_handle(&self) -> StoreHandle {
+        StoreHandle { store: self.exec.store.clone(), db: self.exec.db.clone() }
     }
 
     /// Rebuilds the execution stack with the real batch prover bound to the live covenant id, over

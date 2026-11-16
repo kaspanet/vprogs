@@ -2,8 +2,8 @@
 //! settlement point a restored node resumes from.
 //!
 //! On-wire layout: a zerocopy fixed prefix ([`HeaderFixed`]) followed by a length-delimited
-//! borsh-encoded [`ChainBlockMetadata`] region. `ChainBlockMetadata` carries an
-//! `Option<SettlementInfo>`, which has no zerocopy representation, so only the prefix is zerocopy.
+//! borsh-encoded tail of ([`ChainBlockMetadata`], [`Hash`]). The tail types have no zerocopy
+//! representation, so only the prefix is zerocopy.
 
 use borsh::BorshDeserialize;
 use vprogs_l1_types::{ChainBlockMetadata, Hash, SettlementInfo};
@@ -12,8 +12,8 @@ use zerocopy::{
     little_endian::{U32, U64},
 };
 
-/// Fixed-size, zerocopy prefix of an encoded [`SnapshotHeader`]. Followed by `cbm_len` bytes of
-/// borsh-encoded [`ChainBlockMetadata`].
+/// Fixed-size, zerocopy prefix of an encoded [`SnapshotHeader`]. Followed by `tail_len` bytes of
+/// the borsh-encoded `(ChainBlockMetadata, pinned_lane_tip)` tail.
 #[repr(C)]
 #[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 struct HeaderFixed {
@@ -25,8 +25,9 @@ struct HeaderFixed {
     lane_id: U32,
     /// Batch index the snapshot's records were reconstructed at.
     committed_index: U64,
-    /// Length in bytes of the borsh-encoded `ChainBlockMetadata` region following this prefix.
-    cbm_len: U32,
+    /// Length in bytes of the borsh-encoded `(ChainBlockMetadata, pinned_lane_tip)` region
+    /// following this prefix.
+    tail_len: U32,
 }
 
 /// Metadata that seeds a fresh node from a snapshot.
@@ -43,25 +44,27 @@ pub struct SnapshotHeader {
     /// Committed batch metadata at `committed_index`, with `last_settlement` overridden to the
     /// settlement this snapshot pins to. Becomes the restored node's `last_committed` metadata.
     pub chain_block_metadata: ChainBlockMetadata,
+    /// Lane tip the source node pinned at save time, or the zero hash if none was recorded.
+    pub pinned_lane_tip: Hash,
 }
 
 impl SnapshotHeader {
     /// Encodes the header for embedding in a snapshot container: the zerocopy [`HeaderFixed`]
-    /// prefix followed by the borsh-encoded `chain_block_metadata`.
+    /// prefix followed by the borsh-encoded `(chain_block_metadata, pinned_lane_tip)` tail.
     pub fn encode(&self) -> Vec<u8> {
-        let cbm = borsh::to_vec(&self.chain_block_metadata)
-            .expect("chain block metadata serialization is infallible");
-        let cbm_len: u32 =
-            cbm.len().try_into().expect("chain block metadata encodes to under 4 GiB");
+        let tail = borsh::to_vec(&(self.chain_block_metadata, self.pinned_lane_tip))
+            .expect("header tail serialization is infallible");
+        let tail_len: u32 =
+            tail.len().try_into().expect("chain block metadata encodes to under 4 GiB");
         let fixed = HeaderFixed {
             covenant_id: self.covenant_id.as_bytes(),
             bootstrap_txid: self.bootstrap_txid.as_bytes(),
             lane_id: U32::new(self.lane_id),
             committed_index: U64::new(self.committed_index),
-            cbm_len: U32::new(cbm_len),
+            tail_len: U32::new(tail_len),
         };
         let mut out = fixed.as_bytes().to_vec();
-        out.extend_from_slice(&cbm);
+        out.extend_from_slice(&tail);
         out
     }
 
@@ -73,12 +76,16 @@ impl SnapshotHeader {
         let (fixed, rest) = HeaderFixed::read_from_prefix(bytes)
             .map_err(|_| invalid("snapshot header shorter than the fixed prefix"))?;
 
-        let cbm_len = fixed.cbm_len.get() as usize;
-        if rest.len() != cbm_len {
-            return Err(invalid("snapshot header cbm_len does not match trailing bytes"));
+        let tail_len = fixed.tail_len.get() as usize;
+        if rest.len() != tail_len {
+            return Err(invalid("snapshot header tail_len does not match trailing bytes"));
         }
-        let chain_block_metadata = ChainBlockMetadata::try_from_slice(rest)
-            .map_err(|e| invalid(&format!("snapshot header chain_block_metadata: {e}")))?;
+        let (chain_block_metadata, pinned_lane_tip) =
+            <(ChainBlockMetadata, Hash)>::try_from_slice(rest).map_err(|e| {
+                invalid(&format!(
+                    "snapshot header tail (chain_block_metadata, pinned_lane_tip): {e}"
+                ))
+            })?;
         if chain_block_metadata.last_settlement.is_none() {
             return Err(invalid("snapshot header carries no settlement"));
         }
@@ -89,6 +96,7 @@ impl SnapshotHeader {
             bootstrap_txid: Hash::from_bytes(fixed.bootstrap_txid),
             committed_index: fixed.committed_index.get(),
             chain_block_metadata,
+            pinned_lane_tip,
         })
     }
 
@@ -117,6 +125,7 @@ mod tests {
             bootstrap_txid: Hash::from_bytes([2u8; 32]),
             committed_index: 4242,
             chain_block_metadata: meta,
+            pinned_lane_tip: Hash::from_bytes([7u8; 32]),
         };
         let bytes = header.encode();
         let back = SnapshotHeader::decode(&bytes).unwrap();
@@ -125,6 +134,7 @@ mod tests {
         assert_eq!(back.bootstrap_txid, header.bootstrap_txid);
         assert_eq!(back.committed_index, header.committed_index);
         assert_eq!(back.chain_block_metadata, header.chain_block_metadata);
+        assert_eq!(back.pinned_lane_tip, header.pinned_lane_tip);
     }
 
     #[test]
@@ -134,7 +144,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_rejects_cbm_len_mismatch() {
+    fn decode_rejects_tail_len_mismatch() {
         let meta = settlement_meta();
         let header = SnapshotHeader {
             covenant_id: Hash::from_bytes([1u8; 32]),
@@ -142,6 +152,7 @@ mod tests {
             bootstrap_txid: Hash::from_bytes([2u8; 32]),
             committed_index: 1,
             chain_block_metadata: meta,
+            pinned_lane_tip: Hash::default(),
         };
         let mut bytes = header.encode();
         bytes.pop(); // truncate the borsh region by one byte
@@ -160,6 +171,7 @@ mod tests {
             bootstrap_txid: Hash::from_bytes([2u8; 32]),
             committed_index: 1,
             chain_block_metadata: ChainBlockMetadata::default(),
+            pinned_lane_tip: Hash::default(),
         };
         let err = SnapshotHeader::decode(&header.encode()).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
