@@ -686,3 +686,86 @@ fn delegate_inputs_constant_matches_script() {
     // Sanity: the script is built for the protocol's fixed delegate-input cap.
     assert_eq!(MAX_DELEGATE_INPUTS, 8);
 }
+
+#[test]
+fn second_permission_input_in_one_tx_is_rejected() {
+    // Two identical permission trees, both at their last leaf, spent in one transaction over a
+    // single payout: without an input-index pin both scripts verify (each folds `deduct + own
+    // rent` into output 0, the second tree's exits are destroyed unpaid, and its rent rides to
+    // the claimer through the collateral change), so the redeem must reject any execution at an
+    // input index other than 0.
+    let leaves = vec![(test_spk(1), 1000)];
+    let tree = TestTree::new(leaves.clone());
+    let depth = tree.depth;
+    let (spk, amount) = leaves[0];
+    let deduct = amount; // terminal claim: single leaf, fully deducted
+
+    let redeem = build_permission_redeem_script(&tree.root(), 1, depth);
+    let perm_p2sh = pay_to_script_hash_script(&redeem);
+    let sig = permission_sig_script(&spk, amount, deduct, 0, &tree.siblings(0), &redeem);
+    let (delegate_spk, delegate_sig) = delegate_input();
+    let id = cov_id();
+
+    let collateral = DEFAULT_COLLATERAL;
+    let inputs = vec![
+        TransactionInput::new_with_compute_budget(
+            TransactionOutpoint::new(Hash::from_u64_word(1), 0),
+            sig.clone(),
+            0,
+            0,
+        ),
+        TransactionInput::new_with_compute_budget(
+            TransactionOutpoint::new(Hash::from_u64_word(2), 0),
+            sig,
+            0,
+            0,
+        ),
+        TransactionInput::new_with_compute_budget(
+            TransactionOutpoint::new(Hash::from_u64_word(3), 1),
+            delegate_sig,
+            0,
+            0,
+        ),
+        TransactionInput::new_with_compute_budget(
+            TransactionOutpoint::new(Hash::from_u64_word(4), 2),
+            vec![],
+            0,
+            10,
+        ),
+    ];
+    // One payout covering deduct + rent satisfies both scripts' terminal fold (each reads its
+    // own input's value, both PERM_RENT), and the overfunded delegates return their excess as
+    // the change the conservation check pins exact: the second tree's rent is the diverted
+    // value, carried out through the claimer's own delegate change.
+    let payout = TransactionOutput::with_covenant(
+        deduct + PERM_RENT,
+        ScriptPublicKey::new(0, spk.to_vec().into()),
+        None,
+    );
+    let delegate_change = TransactionOutput::with_covenant(PERM_RENT, delegate_spk.clone(), None);
+    let collateral_change = TransactionOutput::with_covenant(collateral, collateral_spk(), None);
+    let mut tx = Transaction::new(
+        TX_VERSION_TOCCATA,
+        inputs,
+        vec![payout, delegate_change, collateral_change],
+        0,
+        SUBNETWORK_ID_NATIVE,
+        0,
+        vec![],
+    );
+
+    let utxos = vec![
+        UtxoEntry::new(PERM_RENT, perm_p2sh.clone(), 0, false, Some(id)),
+        UtxoEntry::new(PERM_RENT, perm_p2sh, 0, false, Some(id)),
+        UtxoEntry::new(deduct + PERM_RENT, delegate_spk, 0, false, None),
+        UtxoEntry::new(collateral, collateral_spk(), 0, false, None),
+    ];
+    sign_collateral(&mut tx, &utxos);
+
+    run_input(&tx, &utxos, 0).expect("the input-0 permission script itself is honestly satisfied");
+    let result = run_input(&tx, &utxos, 1);
+    assert!(
+        result.is_err(),
+        "a permission script executing at input index 1 must be rejected; got {result:?}",
+    );
+}

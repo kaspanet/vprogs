@@ -28,12 +28,20 @@ pub struct ExecutionInput<'a> {
 }
 
 impl<'a> ExecutionInput<'a> {
-    /// Decodes an execution input from the wire buffer.
+    /// Decodes an execution input from the wire buffer. A decode failure of the transaction payload
+    /// propagates as `Err` (L1-authored content, journaled as a rejection); the resource section is
+    /// host-assembled, so a failure there panics instead.
     pub fn decode(mut buf: &'a mut [u8]) -> Result<Self> {
         let context = buf.array_as::<MergesetContext>("context")?;
         let tx = Transaction::decode(&mut buf)?;
-        let res_iter = tx.payload.access_metadata.iter().map(|am| Resource::decode(&mut buf, am));
-        Ok(Self { context, tx, resources: res_iter.collect::<Result<_>>()? })
+        // One host-assembled resource per access-metadata entry, in order: a journaled rejection
+        // here would be provable for a carrier whose bytes never produced it.
+        let res_iter = tx
+            .payload
+            .access_metadata
+            .iter()
+            .map(|am| Resource::decode(&mut buf, am).expect("malformed host input"));
+        Ok(Self { context, tx, resources: res_iter.collect() })
     }
 
     /// Encodes an execution input to the wire buffer.

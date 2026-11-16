@@ -4,7 +4,7 @@ use vprogs_core_hashing::Hasher;
 
 use crate::{
     Result,
-    transaction_processor::{ExecutionContext, Inputs, Transaction},
+    transaction_processor::{ExecutionContext, Inputs},
 };
 
 /// Decoded input commitment from a transaction processor journal.
@@ -27,7 +27,7 @@ impl<'a> InputCommitment<'a> {
             version,
             tx_id: buf.array_as::<Hash>("tx_id")?,
             merge_idx: buf.le_u32("merge_idx")?,
-            execution_context: if version == Transaction::V1 {
+            execution_context: if buf.bool("has_context")? {
                 Some(ExecutionContext::decode(buf)?)
             } else {
                 None
@@ -40,6 +40,9 @@ impl<'a> InputCommitment<'a> {
         w.write(&inputs.version.to_le_bytes());
         w.write(inputs.tx_id.as_slice());
         w.write(&inputs.merge_idx.to_le_bytes());
+        // Explicit presence flag: the version does not imply the context, so a decode-rejected
+        // carrier can journal its real version without one.
+        w.write(&[u8::from(inputs.execution_input.is_some())]);
         if let Some(execution_input) = &inputs.execution_input {
             ExecutionContext::encode::<H>(w, execution_input);
         }

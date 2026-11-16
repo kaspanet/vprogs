@@ -75,6 +75,9 @@ impl vprogs_zk_vm::Backend for Backend {
                         .expect("failed to build executor environment"),
                     &self.transaction_processor.elf,
                 )
+                // A guest abort on L1-authored bytes can only be fixed guest-side; kept loud
+                // because no journal exists to settle and the tx prover aborts on the same
+                // bytes anyway.
                 .expect("executor failed");
             session.journal.bytes
         });
