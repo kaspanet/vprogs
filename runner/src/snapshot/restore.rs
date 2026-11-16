@@ -59,8 +59,9 @@ pub enum RestoreError {
     /// The local L1 node's RPC failed or otherwise could not be used to confirm the snapshot.
     #[error("L1 validation failed: {0}")]
     L1(String),
-    /// The snapshot's resume point is pruned, unknown, or on a chain this node has not selected.
-    #[error("snapshot resume point is not an unpruned selected-chain block on this node")]
+    /// The snapshot's resume point is on a chain this node has not selected. A pruned or unknown
+    /// resume point surfaces as [`RestoreError::L1`] instead: the node rejects the query itself.
+    #[error("snapshot resume point is not a selected-chain block on this node")]
     ResumePointNotOnChain,
     /// The resume point checks out, but the containing block carries no covenant settlement
     /// committing this snapshot's root.
@@ -173,6 +174,9 @@ pub fn restore_into_store<R: Read, H: Hasher, F: SnapshotFormat>(
     // block the settlement transaction landed in. Harmless either way since `committed_index > 0`
     // makes the bridge skip seeding altogether; this just keeps the persisted seed meaningful.
     // No lane pin: this header format carries none, so the restored node re-derives its lane.
+    // TODO: the identity save panics on I/O failure (its own expects), so a disk failure at
+    // exactly this write aborts with the store already renamed into place; a fallible save shared
+    // with the start paths closes the class.
     PersistedState {
         lane_id: Some(header.lane_id),
         covenant_id: Some(header.covenant_id.to_string()),
@@ -229,23 +233,47 @@ pub async fn validate_against_l1<R: RpcApi>(
     // blocks on mainnet) is never paged. A `get_block` on the resume point would additionally
     // cross-check the header-derived `daa_score`/`blue_score`/`timestamp` the file supplies.
     loop {
-        if let Some(cb) = page
-            .chain_block_accepted_transactions
-            .iter()
-            .find(|cb| cb.chain_block_header.hash == Some(s.containing_block))
-        {
-            return if confirms_settlement(cb, header.covenant_id, &s) {
-                Ok(())
-            } else {
-                Err(RestoreError::SettlementNotAccepted)
-            };
+        match walk_step(&page, s.containing_block) {
+            WalkStep::Confirm(cb) => {
+                return if confirms_settlement(cb, header.covenant_id, &s) {
+                    Ok(())
+                } else {
+                    Err(RestoreError::SettlementNotAccepted)
+                };
+            }
+            WalkStep::Advance(cursor) => page = chain_page(client, cursor).await?,
+            WalkStep::Exhausted => return Err(RestoreError::SettlementNotAccepted),
         }
+    }
+}
 
-        // An empty page means the walk reached virtual without ever seeing the containing block.
-        let Some(cursor) = page.added_chain_block_hashes.last().copied() else {
-            return Err(RestoreError::SettlementNotAccepted);
-        };
-        page = chain_page(client, cursor).await?;
+/// The chain walk's next step given the current page and the settlement's containing block.
+enum WalkStep<'a> {
+    /// The page holds the containing block's view; the settlement is confirmed against it.
+    Confirm(&'a RpcChainBlockAcceptedTransactions),
+    /// Continue from the page's last added chain block.
+    Advance(Hash),
+    /// The walk reached virtual without ever seeing the containing block.
+    Exhausted,
+}
+
+/// Decides the walk's next step: the containing block if this page reaches it, otherwise the
+/// cursor for the next page (an empty added list means virtual was reached, so the settlement
+/// was never accepted on this chain).
+fn walk_step<'a>(
+    page: &'a GetVirtualChainFromBlockV2Response,
+    containing_block: Hash,
+) -> WalkStep<'a> {
+    if let Some(cb) = page
+        .chain_block_accepted_transactions
+        .iter()
+        .find(|cb| cb.chain_block_header.hash == Some(containing_block))
+    {
+        return WalkStep::Confirm(cb);
+    }
+    match page.added_chain_block_hashes.last().copied() {
+        Some(cursor) => WalkStep::Advance(cursor),
+        None => WalkStep::Exhausted,
     }
 }
 
@@ -328,9 +356,16 @@ pub async fn restore_snapshot(
     }
     let record_count = reader.record_count();
 
+    // Reject an occupied data dir before the expensive part: a retry (the common case) must fail
+    // instantly, not after the L1 walk. restore_into_store re-checks for its direct callers.
+    if data_dir.join("db").exists() || PersistedState::exists(data_dir) {
+        return Err(RestoreError::DataDirNotEmpty);
+    }
+
     // Independent L1 confirmation, then the streaming store population (which re-verifies the
     // root internally as it writes).
-    let client = crate::wrpc::connect_wrpc(wrpc_url, network).await;
+    let client =
+        crate::wrpc::try_connect_wrpc(wrpc_url, network).await.map_err(RestoreError::L1)?;
     validate_against_l1(&client, &header).await?;
     restore_into_store(data_dir, &header, reader)?;
 
@@ -882,5 +917,72 @@ mod tests {
         // from the file, so the settlement cannot be confirmed.
         let elided = chain_block_view(Some(cb_hash), None, std::slice::from_ref(&tx));
         assert!(!confirms_settlement(&elided, covenant_id, &genuine));
+    }
+
+    /// One chain page from its added and removed hashes plus the per-block accepted-tx views.
+    fn page(
+        added: &[Hash],
+        removed: &[Hash],
+        views: Vec<RpcChainBlockAcceptedTransactions>,
+    ) -> GetVirtualChainFromBlockV2Response {
+        GetVirtualChainFromBlockV2Response {
+            removed_chain_block_hashes: std::sync::Arc::new(removed.to_vec()),
+            added_chain_block_hashes: std::sync::Arc::new(added.to_vec()),
+            chain_block_accepted_transactions: std::sync::Arc::new(views),
+        }
+    }
+
+    /// The walk decision: a page reaching the containing block confirms against its view, a page
+    /// missing it advances from the last added hash (the next page's anchor), and an empty added
+    /// list means virtual was reached without the settlement ever landing on this chain.
+    #[test]
+    fn walk_step_confirms_advances_and_exhausts() {
+        let b1 = Hash::from_bytes([1u8; 32]);
+        let b2 = Hash::from_bytes([2u8; 32]);
+        let cb_hash = Hash::from_bytes([3u8; 32]);
+        let view = chain_block_view(Some(cb_hash), Some(12_345), &[]);
+
+        let confirm_page =
+            page(&[b1, cb_hash], &[], vec![chain_block_view(Some(b1), Some(1), &[]), view]);
+        let WalkStep::Confirm(cb) = walk_step(&confirm_page, cb_hash) else {
+            panic!("expected the containing block's view to confirm");
+        };
+        assert_eq!(cb.chain_block_header.hash, Some(cb_hash));
+
+        let WalkStep::Advance(cursor) = walk_step(&page(&[b1, b2], &[], vec![]), cb_hash) else {
+            panic!("expected an advance cursor");
+        };
+        assert_eq!(cursor, b2, "the cursor must be the page's LAST added hash");
+
+        let exhausted = page(&[], &[], vec![]);
+        assert!(matches!(walk_step(&exhausted, cb_hash), WalkStep::Exhausted));
+    }
+
+    /// An occupied data dir is rejected before the L1 dial: the common retry must fail instantly
+    /// instead of paying for the chain walk first.
+    #[tokio::test]
+    async fn restore_rejects_occupied_dir_before_dialing() {
+        use kaspa_consensus_core::network::NetworkType;
+
+        let header = settled_header(4242);
+        let bytes = write_test_snapshot(&header.encode(), &[]);
+        let dir = tempfile::tempdir().unwrap();
+        let snap = dir.path().join("snap.vpsnap");
+        std::fs::write(&snap, bytes).unwrap();
+        std::fs::create_dir_all(dir.path().join("data").join("db")).unwrap();
+
+        // The wrpc URL is never dialed: the occupied-dir check fires first.
+        let err = match restore_snapshot(
+            dir.path().join("data").as_path(),
+            &snap,
+            "wrpc://never.dialed",
+            NetworkId::new(NetworkType::Simnet),
+        )
+        .await
+        {
+            Err(e) => e,
+            Ok(_) => panic!("an occupied data dir must be rejected"),
+        };
+        assert!(matches!(err, RestoreError::DataDirNotEmpty));
     }
 }
