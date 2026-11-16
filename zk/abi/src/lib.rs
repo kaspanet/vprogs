@@ -11,6 +11,7 @@ mod read;
 pub mod withdrawal {
     pub(crate) mod deposit_sink;
     pub(crate) mod exit_accumulator;
+    pub(crate) mod exit_leaf;
     pub(crate) mod exit_sink;
     pub(crate) mod exits;
     pub(crate) mod exits_iter;
@@ -20,6 +21,7 @@ pub mod withdrawal {
 
     pub use deposit_sink::DepositSink;
     pub use exit_accumulator::ExitAccumulator;
+    pub use exit_leaf::ExitLeaf;
     pub use exit_sink::ExitSink;
     pub use exits::Exits;
     pub use exits_iter::ExitsIter;

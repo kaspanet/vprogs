@@ -67,6 +67,20 @@ impl<'a> StandardSpk<'a> {
         }
     }
 
+    /// Parses a standard script destination from on-chain script bytes.
+    pub fn from_script(s: &'a [u8]) -> Result<Self> {
+        if s.len() == 34 && s[0] == op::DATA_32 && s[33] == op::CHECK_SIG {
+            Ok(Self::PubKey(s[1..33].try_into().expect("len 32")))
+        } else if s.len() == 35 && s[0] == op::DATA_33 && s[34] == op::CHECK_SIG_ECDSA {
+            Ok(Self::PubKeyEcdsa(s[1..34].try_into().expect("len 33")))
+        } else if s.len() == 35 && s[0] == op::BLAKE2B && s[1] == op::DATA_32 && s[34] == op::EQUAL
+        {
+            Ok(Self::ScriptHash(s[2..34].try_into().expect("len 32")))
+        } else {
+            Err(ErrorCode::InvalidExitSpk.into())
+        }
+    }
+
     /// Returns the on-chain `script_public_key` bytes for this destination.
     pub fn to_script_bytes(&self) -> ScriptBytes {
         match self {
@@ -113,20 +127,7 @@ mod host {
             if spk.version() != STANDARD_SPK_VERSION {
                 return Err(ErrorCode::InvalidExitSpk.into());
             }
-            let s = spk.script();
-            if s.len() == 34 && s[0] == op::DATA_32 && s[33] == op::CHECK_SIG {
-                Ok(Self::PubKey(s[1..33].try_into().expect("len 32")))
-            } else if s.len() == 35 && s[0] == op::DATA_33 && s[34] == op::CHECK_SIG_ECDSA {
-                Ok(Self::PubKeyEcdsa(s[1..34].try_into().expect("len 33")))
-            } else if s.len() == 35
-                && s[0] == op::BLAKE2B
-                && s[1] == op::DATA_32
-                && s[34] == op::EQUAL
-            {
-                Ok(Self::ScriptHash(s[2..34].try_into().expect("len 32")))
-            } else {
-                Err(ErrorCode::InvalidExitSpk.into())
-            }
+            Self::from_script(spk.script())
         }
     }
 }

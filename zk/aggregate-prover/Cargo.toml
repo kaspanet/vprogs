@@ -20,6 +20,7 @@ vprogs-storage-types.workspace         = true
 vprogs-zk-abi                          = { workspace = true, features = ["host"] }
 vprogs-zk-batch-prover.workspace       = true
 vprogs-zk-transaction-prover.workspace = true
+zerocopy                               = { workspace = true, default-features = false }
 
 [dev-dependencies]
 tempfile.workspace                     = true
