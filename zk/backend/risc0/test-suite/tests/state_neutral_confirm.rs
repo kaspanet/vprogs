@@ -191,6 +191,7 @@ async fn state_neutral_landing_confirms_through_the_watch() {
         SettleOutcome::Superseded => panic!("expected Advanced, got Superseded"),
         SettleOutcome::Shutdown => panic!("expected Advanced, got Shutdown"),
         SettleOutcome::FeeExhausted => panic!("expected Advanced, got FeeExhausted"),
+        SettleOutcome::AnchorTooDeep => panic!("expected Advanced, got AnchorTooDeep"),
         SettleOutcome::Failed(_) => panic!("expected Advanced, got Failed"),
     }
 }

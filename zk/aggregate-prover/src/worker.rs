@@ -1,7 +1,10 @@
 use std::{
     collections::VecDeque,
     ops::RangeInclusive,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     thread::{JoinHandle, spawn},
 };
 
@@ -32,6 +35,25 @@ enum BundleOutcome {
     /// The lane-proof fetch failed; the caller re-queues the bundle and retries after the next
     /// wake. Nothing was emitted, so no settlement consumer is waiting on it.
     Deferred,
+    /// The proof attempt failed (a prove error or a receipt rejected against the image id);
+    /// nothing was consumed, emitted, journaled, or cached, so the caller counts it as
+    /// progress and re-forms the bundle from the consecutively-ready prefix: strictly longer
+    /// when batches arrived during the attempt, identical when none did.
+    AttemptFailed,
+}
+
+/// Outcome of a resume pass over the pre-restart tail.
+enum ResumeOutcome {
+    /// Dead entries were dropped; carries the dropped range's end so the caller re-covers it
+    /// through the committed-gap pass.
+    Dropped(u64),
+    /// The pass deferred the dead-entry decision: the baseline may trail the chain, so the
+    /// tail re-fed unchanged and only a decisive later pass (an advance, or a restamp of the
+    /// baseline past the follow depth) may drop it.
+    Deferred,
+    /// Nothing deferrable remains: the scope is empty, the entries settled or straddled the
+    /// tip, or they chain from the tip and re-fed as the live tail.
+    Decided,
 }
 
 /// Outcome of the prove-or-cache step inside one bundle attempt.
@@ -42,6 +64,8 @@ enum ProveOutcome<R> {
     Shutdown,
     /// The lane-proof fetch failed for the bundle's final block.
     LaneProofFailed,
+    /// The aggregator proof attempt failed; nothing was cached or emitted.
+    AttemptFailed,
 }
 
 /// Outcome of one committed-gap pass.
@@ -95,7 +119,9 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend, L: LaneProofSour
     /// re-emitting it on every settlement wake. Reset by a rollback.
     last_reformed_from: Option<u64>,
     /// Transaction id of the settlement the advance passes last acted on; the bridge restamps the
-    /// last settlement per chain block, and those republications are skipped. Reset by a rollback.
+    /// last settlement per chain block, and those republications are skipped. The startup pass
+    /// marks the baseline publication it acts on, so its first restamp is skipped like any other.
+    /// Reset by a rollback.
     handled_settlement: Option<TransactionId>,
     /// Containing-block DAA score of the newest settlement the windows drained against; later
     /// settlements scoring below it (a reorg flip republishing an older one) drain nothing.
@@ -103,6 +129,13 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend, L: LaneProofSour
     /// Sender on the exit-leaf channel driving client Merkle-path proof generation, or `None` if
     /// exit publishing is disabled.
     exits: Option<mpsc::UnboundedSender<Arc<ExitsForBundle>>>,
+    /// Observer the bridge publishes its tip block's DAA score into, the depth clock for the
+    /// resume's deferred dead-entry drop on baseline restamps; `None` leaves restamps
+    /// indecisive.
+    tip_daa: Option<Arc<AtomicU64>>,
+    /// DAA window past the startup baseline after which a restamped baseline decides the
+    /// deferred dead-entry drop. Inert without a [`Self::tip_daa`] observer.
+    follow_depth: u64,
 }
 
 impl<S, P, B, L> Worker<S, P, B, L>
@@ -135,6 +168,8 @@ where
             settlement,
             bundle_size,
             exits,
+            tip_daa,
+            follow_depth,
         } = config;
         // Bundle formation parks while `take` is below the range start and caps `take` at the range
         // end, so an empty range (start > end) would never form a bundle. Reject it up front rather
@@ -167,9 +202,17 @@ where
             handled_settlement: None,
             settlement_daa: 0,
             exits,
+            tip_daa,
+            follow_depth,
         };
         let runtime = Builder::new_current_thread().enable_all().build().expect("runtime");
-        spawn(move || runtime.block_on(this.run()))
+        spawn(move || {
+            runtime.block_on(this.run());
+            // A timed-out prove attempt's blocking task is abandoned, not joined: dropping the
+            // runtime would wait for it and the prover's shutdown join with it, so shut the
+            // runtime down in the background instead.
+            runtime.shutdown_background();
+        })
     }
 
     /// Main loop: drain commands into local state, prove every ready bundle in arrival order, and
@@ -200,6 +243,15 @@ where
         // rollback cuts it to the reorg target) and never grow over post-restart commits.
         let mut gap_bound: Option<u64> = None;
         let journal_holds_entries = self.journal.as_ref().is_some_and(|j| j.has_entries());
+        // The baseline publication's tip DAA, set once the gate below breaks on that publication;
+        // the depth a later restamp of the baseline is decided against (the observer publishes
+        // alongside the settlement, so the load pairs with it). `None` until then, and forever
+        // when no baseline ever comes, which pairs with a deferral that never sets.
+        let mut baseline_daa: Option<u64> = None;
+        // Whether the startup pass deferred the dead-entry decision (the baseline may trail the
+        // chain), leaving it to a decisive later pass: a baseline restamp past the follow
+        // depth, or an advance.
+        let mut deferred_dead_drop = false;
         if journal_holds_entries
             || self.journal.as_ref().is_some_and(|j| j.committed_tip().is_some())
         {
@@ -230,6 +282,12 @@ where
                     Ok(()) = settlement.changed() => {}
                 }
             };
+            // The startup passes below act on this publication; mark it handled so the main
+            // loop's advance arm does not re-run them on the bridge's first restamp of it.
+            if let Some(tip) = tip {
+                self.handled_settlement = Some(tip.tx_id);
+            }
+            baseline_daa = self.tip_daa.as_ref().map(|a| a.load(Ordering::Relaxed));
             if journal_holds_entries {
                 resume_max_end = self
                     .journal
@@ -240,7 +298,10 @@ where
                     .expect("has_entries checked above")
                     .1
                     .end_index;
-                self.resume_pending(tip.as_ref(), resume_max_end).await;
+                deferred_dead_drop = matches!(
+                    self.resume_pending(tip.as_ref(), resume_max_end, false).await,
+                    ResumeOutcome::Deferred
+                );
                 if self.prover.shutdown.is_open() {
                     return;
                 }
@@ -295,18 +356,47 @@ where
                 self.settlement.as_ref().is_some_and(|rx| rx.has_changed().unwrap_or(false));
             if changed {
                 let latest = *self.settlement.as_mut().expect("settlement").borrow_and_update();
-                if latest.map(|s| s.tx_id) != self.handled_settlement {
-                    self.handled_settlement = latest.map(|s| s.tx_id);
-                    self.reaggregate_superseded(latest).await;
+                let advanced = latest.map(|s| s.tx_id) != self.handled_settlement;
+                // A restamp of the settlement already acted on still decides a deferred
+                // dead-entry drop once the bridge tip has advanced the follow depth past the
+                // startup baseline: every settlement confirmed before the restart has by then
+                // surfaced under its own transaction id, so entries still chaining from a base
+                // the tip does not carry are dead. Without this a lane only we settle never
+                // decides (every republication carries the baseline's id, the settler skips
+                // every bundle chained on the dead base, so no new settlement ever lands) and
+                // the lane stays wedged until a covenant reset.
+                let restamp_decides =
+                    !advanced && deferred_dead_drop && self.tip_past_baseline(baseline_daa);
+                if advanced || restamp_decides {
+                    if advanced {
+                        self.handled_settlement = latest.map(|s| s.tx_id);
+                        self.reaggregate_superseded(latest).await;
+                    }
                     if let Some(tip) = &latest {
-                        self.compact_journal(tip);
+                        if advanced {
+                            self.compact_journal(tip);
+                        }
                         // The advance pass of the multi-pass resume: acts only while the
                         // pre-restart snapshot still holds unsettled entries, and self-gates to a
                         // no-op once the snapshot scope is empty or the journal is unwired. The
                         // scope extends to this run's gap entry (its end exceeds the snapshot),
                         // so a boundary the gap pass could not yet observe re-splits it in
-                        // process instead of wedging until the next restart.
-                        self.resume_pending(Some(tip), resume_max_end.max(gap_end)).await;
+                        // process instead of wedging until the next restart. A deferred
+                        // dead-entry drop that fires here lowers the journal tail below
+                        // committed work, so its range is handed to the committed-gap retry
+                        // below instead of waiting for the next restart.
+                        if let ResumeOutcome::Dropped(dropped_end) =
+                            self.resume_pending(Some(tip), resume_max_end.max(gap_end), true).await
+                        {
+                            // Never shrink a deferred pass's bound: the dropped range and a
+                            // deferred gap can be pending together, and the retry must still
+                            // cover through the committed tip it was scoped to.
+                            gap_bound =
+                                Some(gap_bound.map_or(dropped_end, |bound| bound.max(dropped_end)));
+                        }
+                        // The pass ran decisively: the deferred question is settled whether it
+                        // dropped, re-fed from the tip, or found the scope empty.
+                        deferred_dead_drop = false;
                     }
                     if self.prover.shutdown.is_open() {
                         return;
@@ -439,34 +529,38 @@ where
         if take < *self.bundle_size.start() {
             return false;
         }
-        let bundle: Vec<ScheduledBatch<S, P>> =
-            (0..take).map(|_| self.queued.pop_front().unwrap()).collect();
-
-        match self.prove_bundle(&bundle).await {
+        // Prove before consuming: a failed attempt leaves the formed prefix queued so the next
+        // formation re-covers it; longer when batches arrived during the attempt (each new
+        // command is drained at the run loop's top before this re-forms), identical when none
+        // did. Only an emitted bundle consumes its prefix. The prove runs over a cloned
+        // snapshot (a `VecDeque` prefix is not indexable as one slice), so it holds no borrow
+        // of the queue the consume below needs.
+        let bundle: Vec<ScheduledBatch<S, P>> = self.queued.iter().take(take).cloned().collect();
+        let outcome = self.prove_bundle(&bundle).await;
+        match outcome {
             BundleOutcome::Emitted => {
                 // Retain the consumed batches so a competitor settling a shorter range can
                 // re-aggregate the surviving suffix from them, but only when a settlement watch
                 // drives that re-aggregation: with no watch wired, `retained` is never read and
                 // would grow for the whole run. A shutdown-discard (the proof was abandoned
-                // mid-flight) skips retention, matching the discard-the-proved-bundle behavior in
-                // `prove_bundle`.
+                // mid-flight) skips retention, matching the discard-the-proved-bundle behavior
+                // in `prove_bundle`.
+                let consumed: Vec<_> = self.queued.drain(..take).collect();
                 if self.settlement.is_some() && !self.prover.shutdown.is_open() {
-                    self.retained.extend(bundle.iter().cloned());
+                    self.retained.extend(consumed);
                 }
                 true
             }
             BundleOutcome::Deferred => {
-                // Put the bundle back at the front and park: the next wake (a new batch from a
+                // The formed prefix stays queued; park until the next wake (a new batch from a
                 // live L1, the rollback command a reorg is about to deliver, or shutdown)
-                // re-drives formation against whatever the chain looks like then. Returning false
-                // parks the loop instead of busy-spinning the fetch. The retry cadence is bound
-                // to new L1 activity (inbox wakes) with no dedicated timer; add one only if a
-                // stalled node must be re-polled while the lane is otherwise idle.
-                for batch in bundle.iter().rev() {
-                    self.queued.push_front(batch.clone());
-                }
+                // re-drives formation against whatever the chain looks like then. Returning
+                // false parks the loop instead of busy-spinning the fetch. The retry cadence is
+                // bound to new L1 activity (inbox wakes) with no dedicated timer; add one only
+                // if a stalled node must be re-polled while the lane is otherwise idle.
                 false
             }
+            BundleOutcome::AttemptFailed => true,
         }
     }
 
@@ -475,7 +569,8 @@ where
     /// the committed transition unchanged. A bundle whose coordinate has proved before reuses its
     /// cached receipt instead of re-proving. The handle is emitted only once a receipt exists: a
     /// bundle whose lane-proof fetch fails is returned as [`BundleOutcome::Deferred`] with nothing
-    /// emitted, so no settlement consumer is left waiting on it.
+    /// emitted, so no settlement consumer is left waiting on it, and a failed proof attempt as
+    /// [`BundleOutcome::AttemptFailed`] with nothing emitted or cached either.
     async fn prove_bundle(&self, bundle: &[ScheduledBatch<S, P>]) -> BundleOutcome {
         let take = bundle.len();
         let last_checkpoint = bundle.last().unwrap().checkpoint();
@@ -533,6 +628,7 @@ where
             ProveOutcome::Shutdown | ProveOutcome::LaneProofFailed => {
                 return BundleOutcome::Deferred;
             }
+            ProveOutcome::AttemptFailed => return BundleOutcome::AttemptFailed,
         };
 
         // Publish the bundle handle now that its receipt exists, mirroring how the scheduler
@@ -628,9 +724,10 @@ where
 
     /// Proves (or reloads from cache) the aggregate receipt for a bundle proving through
     /// `block_prove_to` over the non-empty `receipts`, keying the cache at `agg_key`. Returns
-    /// [`ProveOutcome::Shutdown`] when shutdown races the proof (the caller discards the bundle)
-    /// or [`ProveOutcome::LaneProofFailed`] when the final block's lane proof cannot be fetched
-    /// (the caller defers or drops the bundle).
+    /// [`ProveOutcome::Shutdown`] when shutdown races the proof (the caller discards the bundle),
+    /// [`ProveOutcome::LaneProofFailed`] when the final block's lane proof cannot be fetched
+    /// (the caller defers or drops the bundle), or [`ProveOutcome::AttemptFailed`] when the one
+    /// proof attempt fails (the caller re-forms the bundle; nothing was cached or emitted).
     async fn prove_or_cache(
         &self,
         agg_key: AggregatorKey,
@@ -674,7 +771,17 @@ where
             &lane_proof,
             journals.iter().map(|j| j.as_slice()),
         );
-        let receipt = self.backend.prove_aggregator(&inputs, receipts).await;
+        let start = agg_key.prefix.checkpoint_index.get();
+        let receipt = match self.backend.prove_aggregator(&inputs, receipts).await {
+            Ok(receipt) => receipt,
+            Err(err) => {
+                log::warn!(
+                    "aggregate-prover: bundle {start} (through {block_prove_to}) proof attempt \
+                     failed ({err}); re-forming the bundle"
+                );
+                return ProveOutcome::AttemptFailed;
+            }
+        };
         if self.prover.shutdown.is_open() {
             return ProveOutcome::Shutdown;
         }
@@ -859,6 +966,19 @@ where
         }
     }
 
+    /// Returns whether the bridge tip has advanced the configured follow depth past the startup
+    /// baseline's DAA score. The follow depth is the bridge's confirmation floor; the adaptive
+    /// reorg filter may raise the real window above it, which only makes this decide early (the
+    /// dropped range re-covers from the tip and the next advance re-forms it) rather than wedge.
+    fn tip_past_baseline(&self, baseline_daa: Option<u64>) -> bool {
+        match (&self.tip_daa, baseline_daa) {
+            (Some(tip_daa), Some(baseline)) => {
+                tip_daa.load(Ordering::Relaxed).saturating_sub(baseline) >= self.follow_depth
+            }
+            _ => false,
+        }
+    }
+
     /// Resumes settlement after a restart: deletes journal entries the on-chain tip already
     /// covers, splits the one entry a competitor's boundary lands inside, and re-feeds every
     /// surviving entry onto the settlement queue ahead of new work. The boundary resolves over
@@ -874,12 +994,29 @@ where
     /// `tip: None` (no settlement ever landed) re-feeds the scoped tail unchanged. An entry
     /// whose receipt cannot be reloaded is dropped with a warning; that range settles again only
     /// through new activity.
-    async fn resume_pending(&mut self, tip: Option<&SettlementInfo>, max_end: u64) {
-        let Some(journal) = self.journal.clone() else { return };
+    ///
+    /// Dead entries (chaining from a base the covenant never took) are dropped only where
+    /// `decisive` holds (an advance pass, whose tip transaction differs from the startup
+    /// baseline, or a baseline restamp past the follow depth); the deferral exists because the
+    /// baseline trails the chain by the follow depth while the settler advances on a probe
+    /// confirm well before that, so a crash inside that window leaves a live first entry
+    /// chaining from our own latest settlement the baseline has not published yet. A startup
+    /// pass re-feeds the tail unchanged instead, and the first decisive pass (the bridge
+    /// publishing that newer settlement, or the tip outliving the follow depth without it)
+    /// decides it.
+    async fn resume_pending(
+        &mut self,
+        tip: Option<&SettlementInfo>,
+        max_end: u64,
+        decisive: bool,
+    ) -> ResumeOutcome {
+        let Some(journal) = self.journal.clone() else {
+            return ResumeOutcome::Decided;
+        };
         let entries: Vec<(u64, JournalEntry)> =
             journal.entries().into_iter().filter(|(_, entry)| entry.end_index <= max_end).collect();
         if entries.is_empty() {
-            return;
+            return ResumeOutcome::Decided;
         }
         let Some(tip) = tip else {
             log::info!(
@@ -888,7 +1025,7 @@ where
                 entries.len()
             );
             self.refeed_all(entries).await;
-            return;
+            return ResumeOutcome::Decided;
         };
         let first_start = entries.first().expect("checked non-empty").0;
         let last_end = entries.last().expect("checked non-empty").1.end_index;
@@ -900,14 +1037,52 @@ where
             .checkpoint_of_block(tip.block_prove_to, committed, first_start)
             .or_else(|| settled_entry_end(&entries, tip))
         else {
+            // The tip sits below the journal's span: either the normal pending tail (the first
+            // entry chains from the settled tip) or entries a dead settlement left behind (a
+            // funding-race double spend, a skipped base mismatch), which chain from a base the
+            // covenant never took and would re-fold forever. The first entry's own receipt
+            // tells them apart: it chains from the tip iff its proven transition starts at the
+            // tip's pins.
+            if self.entry_chains_from(tip, entries.first().expect("checked non-empty")).await {
+                log::warn!(
+                    "aggregate-prover: resume tip boundary {} maps to no batch below the committed \
+                     tip ({} entries); re-feeding the tail unchanged",
+                    tip.block_prove_to,
+                    entries.len(),
+                );
+                self.refeed_all(entries).await;
+                return ResumeOutcome::Decided;
+            }
+            // The entries chain from a base the tip does not carry, but the startup baseline
+            // can trail the settler's probe-confirmed latest settlement by the follow depth: a
+            // live first entry chains from that unpublished settlement and reads as dead here,
+            // and dropping it would re-prove the whole range from the stale base. Only a
+            // decisive pass (one whose tip the bridge published after the baseline, or a
+            // baseline restamp past the follow depth) drops; until then the tail re-feeds
+            // unchanged and the settler's adopt path lands it if the base is live after all.
+            if !decisive {
+                log::warn!(
+                    "aggregate-prover: resume tip boundary {} maps to no batch in the journal \
+                     span and the {} entries chain from a base it does not carry; the baseline \
+                     may trail the chain, so re-feeding the tail unchanged until a decisive \
+                     pass (an advance, or a restamp past the follow depth) decides",
+                    tip.block_prove_to,
+                    entries.len(),
+                );
+                self.refeed_all(entries).await;
+                return ResumeOutcome::Deferred;
+            }
+            for (start, _) in &entries {
+                journal.delete(*start);
+            }
             log::warn!(
-                "aggregate-prover: resume tip boundary {} maps to no batch below the committed \
-                 tip ({} entries); re-feeding the tail unchanged",
+                "aggregate-prover: resume tip boundary {} maps to no batch in the journal span \
+                 and the {} entries chain from a base the covenant never took; dropping them so \
+                 the committed-gap pass re-covers their range from the tip",
                 tip.block_prove_to,
                 entries.len(),
             );
-            self.refeed_all(entries).await;
-            return;
+            return ResumeOutcome::Dropped(last_end);
         };
 
         let mut pending: Vec<(u64, JournalEntry)> = Vec::new();
@@ -926,6 +1101,31 @@ where
             }
         }
         self.refeed_all(pending).await;
+        ResumeOutcome::Decided
+    }
+
+    /// Returns whether `entry`'s reloaded receipt chains from `tip`: its proven transition
+    /// starts at the tip's state and lane tip. An entry whose receipt cannot be reloaded
+    /// chains from nothing (the re-feed would drop it anyway).
+    async fn entry_chains_from(
+        &self,
+        tip: &SettlementInfo,
+        (start, entry): &(u64, JournalEntry),
+    ) -> bool {
+        let key = AggregatorKey {
+            prefix: Prefix { checkpoint_index: (*start).into() },
+            block_hash: entry.from_block.as_bytes(),
+            image_id: *self.backend.aggregator_image_id(),
+            seq_commit: entry.seq_commit.as_bytes(),
+        };
+        let Some(receipt) = self.prover.receipt_store.read_agg_receipt(key).resolve().await else {
+            return false;
+        };
+        let journal = B::journal_bytes(&receipt);
+        let st = (&mut &journal[..])
+            .array_as::<StateTransition>("state_transition")
+            .expect("aggregator journal");
+        st.prev_state == tip.new_state && st.prev_lane_tip == tip.new_lane_tip
     }
 
     /// Startup pass covering committed-but-unjournaled batches: a kill between a batch's commit
@@ -977,11 +1177,9 @@ where
         };
         // The bundle covers the contiguously-durable prefix: an empty batch is durable as-is,
         // and the first non-empty batch without metadata or a receipt bounds the range. The
-        // entry's end fields derive from the last covered batch's own metadata, as the live
-        // record derives them from the bundle's final batch.
-        let mut receipts: Vec<B::Receipt> = Vec::new();
-        let mut end_metadata = first_metadata;
-        let mut covered_end = first;
+        // covered non-empty batches carry their own metadata, from which each candidate end
+        // derives its fields.
+        let mut covered: Vec<(u64, ChainBlockMetadata, B::Receipt)> = Vec::new();
         let mut miss = None;
         for index in first..=committed_tip {
             let Some(metadata) = journal.batch_metadata(index) else {
@@ -1000,14 +1198,13 @@ where
                     miss = Some(index);
                     break;
                 };
-                receipts.push(receipt);
+                covered.push((index, metadata, receipt));
             }
-            end_metadata = metadata;
-            covered_end = index;
         }
         if let Some(miss) = miss {
-            // `covered_end` still sits at `first` when the miss IS the first index, so say
+            // The covered prefix still sits empty when the miss IS the first index, so say
             // "nothing" rather than claim coverage through an index the loop never reached.
+            let covered_end = covered.last().map_or(first, |(index, _, _)| *index);
             let covered =
                 if miss > first { format!("only through {covered_end}") } else { "nothing".into() };
             log::error!(
@@ -1017,28 +1214,47 @@ where
             );
         }
         // No real work below the miss: nothing to compose, matching the live no-op path.
-        if receipts.is_empty() {
+        if covered.is_empty() {
             return GapOutcome::Nothing;
         }
-        let agg_key = AggregatorKey {
-            prefix: Prefix { checkpoint_index: first.into() },
-            block_hash: first_metadata.hash.as_bytes(),
-            image_id: *self.backend.aggregator_image_id(),
-            seq_commit: end_metadata.seq_commit.as_bytes(),
-        };
-        let receipt = match self.prove_or_cache(agg_key, end_metadata.hash, receipts).await {
-            ProveOutcome::Receipt(receipt) => receipt,
-            // Shutdown raced the proof; the caller exits the loop and the next startup re-runs
-            // the pass.
-            ProveOutcome::Shutdown => return GapOutcome::Nothing,
-            ProveOutcome::LaneProofFailed => {
-                log::warn!(
-                    "aggregate-prover: committed-gap bundle through {} has no live lane proof \
-                     (a dead block or a stalled node); deferring the range to the next wake",
-                    end_metadata.hash
-                );
-                return GapOutcome::Deferred(committed_tip);
+        // The bundle's end walks down over dead final blocks: a block whose lane proof cannot
+        // be fetched must not pin the range (the deferral's bound would retry the same dead
+        // end forever), so each failed end retries through the previous non-empty batch until
+        // one proves. The still-dead suffix stays uncovered for a later pass, and the journal
+        // tail advancing past each covered prefix keeps the progress compounding.
+        let mut proven = None;
+        for pos in (0..covered.len()).rev() {
+            let (end_index, end_metadata, _) = covered[pos];
+            let receipts: Vec<B::Receipt> =
+                covered[..=pos].iter().map(|(_, _, receipt)| receipt.clone()).collect();
+            let agg_key = AggregatorKey {
+                prefix: Prefix { checkpoint_index: first.into() },
+                block_hash: first_metadata.hash.as_bytes(),
+                image_id: *self.backend.aggregator_image_id(),
+                seq_commit: end_metadata.seq_commit.as_bytes(),
+            };
+            match self.prove_or_cache(agg_key, end_metadata.hash, receipts).await {
+                ProveOutcome::Receipt(receipt) => {
+                    proven = Some((end_index, end_metadata, receipt));
+                    break;
+                }
+                // Shutdown raced the proof; the caller exits the loop and the next startup
+                // re-runs the pass.
+                ProveOutcome::Shutdown => return GapOutcome::Nothing,
+                ProveOutcome::LaneProofFailed => continue,
+                // A failed attempt consumed nothing, so this pass treats the end like a dead
+                // one and retries through the previous batch; if every end fails, the deferral
+                // below re-runs the whole range on later wakes.
+                ProveOutcome::AttemptFailed => continue,
             }
+        }
+        let Some((covered_end, end_metadata, receipt)) = proven else {
+            log::warn!(
+                "aggregate-prover: committed-gap range {first}..={committed_tip} has no live \
+                 final block (every lane-proof fetch failed; dead blocks or a stalled node); \
+                 deferring the range to the next wake"
+            );
+            return GapOutcome::Deferred(committed_tip);
         };
         let entry = JournalEntry {
             end_index: covered_end,
@@ -1107,6 +1323,9 @@ where
             ProveOutcome::Receipt(receipt) => receipt,
             ProveOutcome::Shutdown => return, // shutdown mid-proof; the next startup re-runs
             // the pass
+            // The attempt failed with nothing split or deleted, so the entry stays for the next
+            // resume pass to re-split.
+            ProveOutcome::AttemptFailed => return,
             // The fetch failure conflates a dead block with a stalled node, and this is the
             // only resume path left holding the entry: with an entry above the straddler the
             // suffix would otherwise be lost for good, since neither the gap pass (its lower

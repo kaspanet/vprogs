@@ -1030,7 +1030,8 @@ where
         block_acc_carrier,
         vec![batch_receipt.clone()],
     )
-    .await;
+    .await
+    .expect("aggregator proof");
     backend.verify_aggregator_receipt(&settlement_receipt);
     let journal_bytes = Backend::journal_bytes(&settlement_receipt);
     let parsed = (&mut &journal_bytes[..]).array_as::<StateTransition>("state_transition").unwrap();

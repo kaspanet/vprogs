@@ -38,6 +38,11 @@ pub enum SubmitOutcome {
     /// A competitor already spent this covenant outpoint, so this bundle can never land; the
     /// settler holds its covenant and waits to adopt the competitor's settlement.
     Superseded,
+    /// The settlement's seq-commit anchor block is beyond the node's script verification depth
+    /// (`OpChainblockSeqCommit` resolves an anchor only within the finality window), so the node
+    /// refused the settlement and this artifact can never land: the anchor only gets deeper. The
+    /// range must be re-proved from a later, shallower boundary.
+    AnchorTooDeep,
     /// The network refused the settlement itself; carries the reason.
     Fatal(String),
     /// `shutdown` opened while submitting (e.g. mid orphan-liveness poll); the settler stops.
@@ -69,6 +74,14 @@ pub trait SettlementSink {
         _continuation: OutpointAt<'_>,
     ) -> impl Future<Output = ConfirmProbe> {
         std::future::ready(ConfirmProbe::Pending)
+    }
+
+    /// Returns whether `boundary` sits beyond the node's seq-commit verification depth, so
+    /// submitting a settlement anchored to it cannot succeed and the submission can be skipped.
+    /// Sinks without node-side depth visibility keep the default and let the submission's own
+    /// rejection classify the outcome.
+    fn anchor_beyond_depth(&self, _boundary: Hash) -> impl Future<Output = bool> {
+        std::future::ready(false)
     }
 }
 

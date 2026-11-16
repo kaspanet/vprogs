@@ -183,7 +183,7 @@ impl vprogs_zk_transaction_prover::Backend for JournalBackend {
     fn prove_transaction(
         &self,
         _input_bytes: Vec<u8>,
-    ) -> impl Future<Output = Self::Receipt> + Send + 'static {
+    ) -> impl Future<Output = Result<Self::Receipt, String>> + Send + 'static {
         async { unreachable!("the repro proves no transaction") }
     }
 
@@ -195,7 +195,7 @@ impl vprogs_zk_batch_prover::Backend for JournalBackend {
         &self,
         _inputs: &[u8],
         _receipts: Vec<Self::Receipt>,
-    ) -> impl Future<Output = Self::Receipt> + Send + 'static {
+    ) -> impl Future<Output = Result<Self::Receipt, String>> + Send + 'static {
         async { unreachable!("the repro publishes the batch receipt directly") }
     }
 
@@ -213,9 +213,9 @@ impl vprogs_zk_aggregate_prover::Backend for JournalBackend {
         &self,
         _inputs: &[u8],
         _batch_receipts: Vec<Self::Receipt>,
-    ) -> impl Future<Output = Self::Receipt> + Send + 'static {
+    ) -> impl Future<Output = Result<Self::Receipt, String>> + Send + 'static {
         AGGREGATOR_PROVE_CALLS.fetch_add(1, Ordering::SeqCst);
-        async { settlement_journal() }
+        async { Ok(settlement_journal()) }
     }
 
     fn aggregator_image_id(&self) -> &[u8; 32] {
@@ -368,6 +368,8 @@ fn bundle_advancing_only_the_lane_tip_is_settled() {
                 settlement: None,
                 bundle_size: 1..=usize::MAX,
                 exits: None,
+                tip_daa: None,
+                follow_depth: 0,
             },
         );
         prover.submit(&batch);

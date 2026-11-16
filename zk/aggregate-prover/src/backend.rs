@@ -4,14 +4,19 @@ use std::future::Future;
 /// [`Backend`](vprogs_zk_batch_prover::Backend) with aggregator proving, composing a bundle of
 /// per-batch receipts into one settlement receipt.
 pub trait Backend: vprogs_zk_batch_prover::Backend {
-    /// Proves the aggregator from the encoded witness. `batch_receipts` are the per-batch receipts
-    /// the aggregator guest verifies via composition. The returned receipt's journal is a
+    /// Proves the aggregator from the encoded witness in exactly one attempt: a fresh
+    /// environment, the prove under the backend's per-attempt timeout, and verification of
+    /// the receipt against the aggregator image id. `batch_receipts` are the per-batch
+    /// receipts the aggregator guest verifies via composition. A failed attempt returns
+    /// `Err` carrying the attempt's error so the caller can re-form the span (longer when
+    /// entries arrived meanwhile) and retry; only a verified receipt is ever returned. The
+    /// returned receipt's journal is a
     /// [`StateTransition`](vprogs_zk_abi::batch_aggregator::StateTransition).
     fn prove_aggregator(
         &self,
         inputs: &[u8],
         batch_receipts: Vec<Self::Receipt>,
-    ) -> impl Future<Output = Self::Receipt> + Send + 'static;
+    ) -> impl Future<Output = Result<Self::Receipt, String>> + Send + 'static;
 
     /// Aggregator image id: the program identifier that keys a settlement (bundle) receipt in the
     /// proof-receipt store. The trusted batch image the aggregator verifies its composed batch

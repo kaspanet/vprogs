@@ -41,7 +41,13 @@ where
     ) -> JoinHandle<()> {
         let this = Self { prover, backend, store, config };
         let runtime = Builder::new_current_thread().enable_all().build().expect("runtime");
-        spawn(move || runtime.block_on(this.run()))
+        spawn(move || {
+            runtime.block_on(this.run());
+            // A timed-out prove attempt's blocking task is abandoned, not joined: dropping the
+            // runtime would wait for it and the prover's shutdown join with it, so shut the
+            // runtime down in the background instead.
+            runtime.shutdown_background();
+        })
     }
 
     /// Main loop: drain commands and prove each scheduled batch in arrival order.
@@ -127,8 +133,31 @@ where
                     &journals,
                 );
 
-                // Compose the batch proof against those tx receipts.
-                let receipt = self.backend.prove_batch(&input_bytes, receipts).await;
+                // One attempt per iteration, awaited under the shutdown latch: a persistent
+                // failure retries with the worker escapable, so the prover's shutdown join never
+                // waits on an infinite retry. No attempt cap and no exhaustion panic; a
+                // deterministic failure retries identically and loudly until an operator's
+                // keepalive flags the stall. Each attempt costs a real prove, so the loop is
+                // naturally paced; a "Guest panicked" error retries like any other failure.
+                let mut attempt = 1u32;
+                let receipt = loop {
+                    let proved = tokio::select! {
+                        biased;
+                        () = self.prover.shutdown.wait() => return,
+                        proved = self.backend.prove_batch(&input_bytes, receipts.clone()) => {
+                            proved
+                        }
+                    };
+                    match proved {
+                        Ok(receipt) => break receipt,
+                        Err(err) => {
+                            log::warn!(
+                                "batch-prover: prove attempt {attempt} failed ({err}); retrying"
+                            );
+                            attempt += 1;
+                        }
+                    }
+                };
 
                 // Wait for the receipt to be durable before publishing the artifact, so a crash
                 // never leaves a consumed-but-uncached receipt.

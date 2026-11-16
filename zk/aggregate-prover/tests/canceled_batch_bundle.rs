@@ -56,7 +56,7 @@ impl vprogs_zk_transaction_prover::Backend for NoopBackend {
     fn prove_transaction(
         &self,
         _input_bytes: Vec<u8>,
-    ) -> impl Future<Output = Self::Receipt> + Send + 'static {
+    ) -> impl Future<Output = Result<Self::Receipt, String>> + Send + 'static {
         async { unreachable!("the repro proves no transaction") }
     }
 
@@ -68,7 +68,7 @@ impl vprogs_zk_batch_prover::Backend for NoopBackend {
         &self,
         _inputs: &[u8],
         _receipts: Vec<Self::Receipt>,
-    ) -> impl Future<Output = Self::Receipt> + Send + 'static {
+    ) -> impl Future<Output = Result<Self::Receipt, String>> + Send + 'static {
         async { unreachable!("the repro proves no batch") }
     }
 
@@ -86,7 +86,7 @@ impl vprogs_zk_aggregate_prover::Backend for NoopBackend {
         &self,
         _inputs: &[u8],
         _batch_receipts: Vec<Self::Receipt>,
-    ) -> impl Future<Output = Self::Receipt> + Send + 'static {
+    ) -> impl Future<Output = Result<Self::Receipt, String>> + Send + 'static {
         async { unreachable!("the repro proves no bundle") }
     }
 
@@ -236,6 +236,8 @@ fn canceled_batch_is_not_swept_into_a_bundle() {
                 settlement: None,
                 bundle_size: 1..=usize::MAX,
                 exits: None,
+                tip_daa: None,
+                follow_depth: 0,
             },
         );
         prover.submit(&front);
@@ -338,6 +340,8 @@ fn whole_canceled_queue_is_evicted() {
                 settlement: None,
                 bundle_size: 1..=usize::MAX,
                 exits: None,
+                tip_daa: None,
+                follow_depth: 0,
             },
         );
         prover.submit(&never_published);

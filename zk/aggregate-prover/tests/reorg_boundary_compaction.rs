@@ -114,7 +114,7 @@ impl vprogs_zk_transaction_prover::Backend for SyntheticBackend {
     fn prove_transaction(
         &self,
         _input_bytes: Vec<u8>,
-    ) -> impl Future<Output = Self::Receipt> + Send + 'static {
+    ) -> impl Future<Output = Result<Self::Receipt, String>> + Send + 'static {
         async { unreachable!("the repro publishes batch receipts directly") }
     }
 
@@ -126,7 +126,7 @@ impl vprogs_zk_batch_prover::Backend for SyntheticBackend {
         &self,
         _inputs: &[u8],
         _receipts: Vec<Self::Receipt>,
-    ) -> impl Future<Output = Self::Receipt> + Send + 'static {
+    ) -> impl Future<Output = Result<Self::Receipt, String>> + Send + 'static {
         async { unreachable!("the repro publishes batch receipts directly") }
     }
 
@@ -144,8 +144,8 @@ impl vprogs_zk_aggregate_prover::Backend for SyntheticBackend {
         &self,
         _inputs: &[u8],
         _batch_receipts: Vec<Self::Receipt>,
-    ) -> impl Future<Output = Self::Receipt> + Send + 'static {
-        async { settlement_journal() }
+    ) -> impl Future<Output = Result<Self::Receipt, String>> + Send + 'static {
+        async { Ok(settlement_journal()) }
     }
 
     fn aggregator_image_id(&self) -> &[u8; 32] {
@@ -313,6 +313,8 @@ fn unmapped_boundary_still_compacts_the_journal() {
                 settlement: Some(settlement_rx),
                 bundle_size: 1..=1,
                 exits: None,
+                tip_daa: None,
+                follow_depth: 0,
             },
         );
 
@@ -400,6 +402,8 @@ fn unmapped_boundary_resume_does_not_refeed_the_settled_entry() {
                 settlement: Some(settlement_rx),
                 bundle_size: 1..=1,
                 exits: None,
+                tip_daa: None,
+                follow_depth: 0,
             },
         );
         settlement_tx.send_replace(Some(tip_through(1)));
@@ -506,6 +510,8 @@ fn unmapped_boundary_drains_the_covered_prefix_by_lane_tip() {
                 settlement: Some(settlement_rx),
                 bundle_size: 2..=2,
                 exits: None,
+                tip_daa: None,
+                follow_depth: 0,
             },
         );
 
@@ -663,6 +669,8 @@ fn unmapped_boundary_drain_counts_positions_not_indexes_across_a_rollback_hole()
                 settlement: Some(settlement_rx),
                 bundle_size: 2..=2,
                 exits: None,
+                tip_daa: None,
+                follow_depth: 0,
             },
         );
 
