@@ -143,10 +143,14 @@ pub async fn run<S: Store>(
     // empty bootstrap, and adopts the watch. A fresh deploy (`start_from` unset) has an unspent
     // bootstrap and confirms it directly, stamping its DAA score, so the first settlement can
     // spend it.
+    // The advance filter is two-pin, matching the loop's reconcile: a state-neutral settlement
+    // (identical root on both sides) still counts as an advance through its lane tip, while the
+    // settlement `cov` already holds stays ignored, on equal pins or below the stamped score.
     let initial = *cfg.settlement.borrow();
-    if let Some(s) =
-        initial.filter(|s| s.new_state != cov.state && s.daa_score.get() >= cov.daa_score)
-    {
+    if let Some(s) = initial.filter(|s| {
+        (s.new_state != cov.state || s.new_lane_tip != cov.lane_tip)
+            && s.daa_score.get() >= cov.daa_score
+    }) {
         *cov = covenant_from_settlement(&cov, &s);
         log::info!(
             "settlement-worker: starting covenant {} from live settlement {} (tip daa {})",
