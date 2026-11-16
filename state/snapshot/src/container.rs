@@ -752,6 +752,9 @@ mod tests {
         let count = records.len() as u64;
         body.extend_from_slice(&count.to_le_bytes());
 
+        // The codec folds the count after the records (the writer backpatches it), so the
+        // fixture must fold in the same order to produce a matching digest.
+        let count = records.len() as u64;
         let mut hasher = Sha256::incremental();
         hasher.update(&body[..8 + 2 + 4]); // magic, version, header_len; the count folds last
         for (id, value) in records {
