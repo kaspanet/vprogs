@@ -3,6 +3,7 @@
 
 use std::{
     collections::HashMap,
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -105,6 +106,29 @@ pub enum SaveError {
 /// is fail-safe, not corruption: the operator can retry, or snapshot a quiesced (stopped) node for
 /// a guaranteed-consistent view.
 pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveError> {
+    // Write to a sibling temp path and rename into place on success, so an I/O failure or a kill
+    // mid-stream never leaves a partial file at the operator's chosen path looking like a
+    // snapshot; a failed attempt removes the temp file.
+    let tmp = {
+        let mut name = out.as_os_str().to_os_string();
+        name.push(".tmp");
+        PathBuf::from(name)
+    };
+    match write_snapshot(data_dir, &tmp) {
+        Ok(mut summary) => {
+            std::fs::rename(&tmp, out)?;
+            summary.out_path = out.to_path_buf();
+            Ok(summary)
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
+/// Writes the snapshot to `out` (the caller-chosen final path or its temp sibling).
+fn write_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveError> {
     // Read-only open: see the staleness contract on `save_snapshot` above.
     let store = RocksDbStore::<DefaultConfig>::open_read_only(data_dir.join("db"))
         .map_err(SaveError::OpenStore)?;
@@ -194,9 +218,11 @@ pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveErr
         committed_index: n_s,
         chain_block_metadata: meta_at_s,
     };
-    let mut file = std::fs::File::create(out)?;
+    // Buffered so the three `write_all` calls per record coalesce into one syscall-ish burst.
+    let file = std::fs::File::create(out)?;
+    let mut buf = std::io::BufWriter::new(file);
     let mut writer = SnapshotWriter::<_, <crate::RunnerStore as Tree>::Hasher, VpsnapFormat>::open(
-        &mut file,
+        &mut buf,
         &header.encode(),
     )?;
 
@@ -252,6 +278,10 @@ pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveErr
         return Err(SaveError::RootMismatch { computed, settlement: settlement.new_state });
     }
     let record_count = writer.finish()?;
+    // The codec backpatches the count through the buffer's `Seek`, which flushes it; drain what
+    // remains so the caller's rename moves a complete file.
+    buf.flush()?;
+    drop(buf.into_inner().map_err(|e| SaveError::Io(e.into_error()))?);
 
     Ok(SaveSummary {
         covenant_id,
@@ -534,6 +564,10 @@ mod tests {
         assert!(
             matches!(err, SaveError::RootMismatch { computed, settlement } if computed != settlement)
         );
+        // The failure lands after the writer already opened its temp file: neither a partial file
+        // at the operator's path nor a leftover temp sibling may survive it.
+        assert!(!out.exists());
+        assert!(!dir.path().join("snap.vpsnap.tmp").exists());
     }
 
     // A latest pointer citing a version with no stored entry is corruption within the retained
