@@ -86,6 +86,10 @@ pub trait Store: Tree + Clone + Send + Sync + 'static {
             });
         CanonicalChainManager::new_with_frozen(self.canonical_chain(), entries, frozen, tip_cap)
     }
+
+    /// Iterate over every key-value pair in the given state space, in key order.
+    /// Unlike `prefix_iter`, this never bounds on a prefix; use it to enumerate a whole CF.
+    fn scan(&self, state_space: StateSpace) -> PrefixIterator<'_>;
 }
 
 /// Big-endian bytes of one bucket's words.

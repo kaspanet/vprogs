@@ -77,6 +77,10 @@ impl Store for GatedStore {
         self.inner.prefix_iter(state_space, prefix)
     }
 
+    fn scan(&self, state_space: StateSpace) -> PrefixIterator<'_> {
+        self.inner.scan(state_space)
+    }
+
     fn canonical_chain(&self) -> CanonicalChain {
         self.inner.canonical_chain()
     }

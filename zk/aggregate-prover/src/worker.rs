@@ -460,6 +460,12 @@ where
             // ready bundles drain promptly. A pending gap retry holds bundle formation: a
             // new-work bundle journaled past the uncovered range would advance the journal
             // tail and silently end the retry, abandoning the gap.
+            // TODO(#183): a deferred dead-entry drop needs the same hold, but only on a run with
+            // a tip-daa observer (the restamp decision that ends the deferral is bounded by the
+            // follow depth; without the observer only an advance decides, so holding would park
+            // proving unbounded). A new-work bundle journaled above the dead entries raises the
+            // journal tail to or past the dropped range's bound, and the committed-gap retry
+            // reads the range as covered and abandons it.
             let made_progress =
                 if gap_bound.is_none() { self.try_prove_one_bundle().await } else { false };
             if self.prover.shutdown.is_open() {

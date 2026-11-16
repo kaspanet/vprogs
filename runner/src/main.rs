@@ -5,16 +5,70 @@
 //! given guest program, and (with `--prove`) proves and settles each bundle. It never issues action
 //! transactions.
 //!
+//! With no subcommand, `vprun` runs the daemon directly from its flags (back-compat with earlier
+//! releases). `vprun snapshot save` exports the local node's L2 state to a file; `vprun snapshot
+//! restore` seeds a fresh data dir from one after confirming it against local L1.
+//!
 //! Supply the fee / bootstrap key through `VPRUN_PRIVATE_KEY` or the config file; `--private-key`
 //! leaks it into shell history and every `ps` listing, so keep that form for throwaway dev keys.
 
 use clap::Parser;
 use vprogs_runner::{RawConfig, RunnerConfig, StartMode, run};
 
-/// Follow a Kaspa L1 lane, execute a guest program over it, and optionally prove + settle.
+/// Follow a Kaspa L1 lane, execute a guest program over it, and optionally prove + settle. With no
+/// subcommand, runs the daemon from the flattened run flags below.
 #[derive(Parser)]
 #[command(name = "vprun", version, about)]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+    #[command(flatten)]
+    run: RunArgs,
+}
+
+/// Subcommands beyond the default daemon run.
+#[derive(clap::Subcommand)]
+enum Command {
+    /// Save or restore L2 state snapshots.
+    Snapshot {
+        #[command(subcommand)]
+        action: SnapshotAction,
+    },
+}
+
+/// Snapshot subcommand actions.
+#[derive(clap::Subcommand)]
+enum SnapshotAction {
+    /// Export L2 state at the latest settlement to a shareable file (opens the store read-only).
+    Save {
+        /// RocksDB + state-file directory of the source node.
+        #[arg(long)]
+        data_dir: std::path::PathBuf,
+        /// Path to write the snapshot file to.
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+    /// Restore L2 state from a snapshot file into a fresh data dir, validating against local L1.
+    Restore {
+        /// RocksDB + state-file directory to seed. Must not already hold a store or identity.
+        #[arg(long)]
+        data_dir: std::path::PathBuf,
+        /// Path to the snapshot file to restore from.
+        #[arg(long)]
+        snapshot: std::path::PathBuf,
+        /// Borsh wRPC URL of the local node to confirm the snapshot's settlement against.
+        #[arg(long)]
+        wrpc_url: String,
+        /// Kaspa network: `mainnet` | `testnet-N` | `tn10` | `devnet` | `simnet`.
+        #[arg(long, default_value = "testnet-10")]
+        network: String,
+    },
+}
+
+/// Flags for the default daemon run (flattened onto [`Cli`] so a bare `vprun --flag ...` invocation
+/// still parses with no subcommand).
+#[derive(clap::Args)]
+struct RunArgs {
     /// TOML config file. Any flag it sets is overridden by an explicit CLI flag or a `VPRUN_*` env
     /// var.
     #[arg(long)]
@@ -77,9 +131,9 @@ struct Cli {
     start_mode: Option<StartMode>,
 }
 
-impl Cli {
-    /// Splits the parsed CLI into the config-file path and the raw override layer (only flags the
-    /// operator actually set).
+impl RunArgs {
+    /// Splits the parsed run flags into the config-file path and the raw override layer (only
+    /// flags the operator actually set).
     fn into_layer(self) -> (Option<std::path::PathBuf>, RawConfig) {
         let raw = RawConfig {
             wrpc_url: self.wrpc_url,
@@ -111,7 +165,64 @@ async fn main() {
         "info,vprun=info,vprogs_node_framework=trace,vprogs_zk_vm=trace,risc0_zkvm=warn",
     );
 
-    let (config_path, cli_layer) = Cli::parse().into_layer();
+    let cli = Cli::parse();
+    match cli.command {
+        Some(Command::Snapshot { action: SnapshotAction::Save { data_dir, out } }) => {
+            match vprogs_runner::snapshot::save::save_snapshot(&data_dir, &out) {
+                Ok(s) => {
+                    eprintln!(
+                        "wrote snapshot: {} records, committed_index {}, root {} -> {}",
+                        s.record_count,
+                        s.committed_index,
+                        faster_hex::hex_string(&s.settlement_new_state),
+                        s.out_path.display()
+                    );
+                }
+                Err(e) => {
+                    eprintln!("snapshot save failed: {e}");
+                    std::process::exit(2);
+                }
+            }
+        }
+        Some(Command::Snapshot {
+            action: SnapshotAction::Restore { data_dir, snapshot, wrpc_url, network },
+        }) => {
+            let network_id = match vprogs_runner::parse_network(&network) {
+                Ok(n) => n,
+                Err(e) => {
+                    eprintln!("vprun: configuration error: {e}");
+                    std::process::exit(2);
+                }
+            };
+            match vprogs_runner::snapshot::restore::restore_snapshot(
+                &data_dir, &snapshot, &wrpc_url, network_id,
+            )
+            .await
+            {
+                Ok(s) => {
+                    eprintln!(
+                        "restored {} records at index {}; run `vprun --data-dir {} ...` to resume \
+                         from {}",
+                        s.record_count,
+                        s.committed_index,
+                        data_dir.display(),
+                        s.resume_from
+                    );
+                }
+                Err(e) => {
+                    eprintln!("snapshot restore failed: {e}");
+                    std::process::exit(2);
+                }
+            }
+        }
+        None => run_daemon(cli.run).await,
+    }
+}
+
+/// Runs the daemon (execution-only, or proving + settlement with `--prove`) from `run_args`'s
+/// flags until killed, or until the settler exits in proving mode.
+async fn run_daemon(run_args: RunArgs) {
+    let (config_path, cli_layer) = run_args.into_layer();
     let config = match RunnerConfig::load(cli_layer, config_path) {
         Ok(c) => c,
         Err(e) => {

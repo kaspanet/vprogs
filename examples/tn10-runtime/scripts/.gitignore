@@ -1,4 +1,6 @@
 # Scratch produced by run-demo.sh; never committed.
 dataA/
 dataB/
+dataC/
 log*.txt
+*.vpsnap

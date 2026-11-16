@@ -28,6 +28,7 @@ pub mod proving {
     pub(crate) use traversal::Traversal;
 }
 
+pub(crate) mod builder;
 pub(crate) mod commitment;
 pub(crate) mod empty_hash;
 pub(crate) mod hashed_node;
@@ -38,6 +39,7 @@ pub(crate) mod tree;
 pub(crate) mod updater;
 pub(crate) mod write_batch;
 
+pub use builder::{Leaf, StreamingBuilder, build_sorted};
 pub use commitment::Commitment;
 pub use empty_hash::EMPTY_HASH;
 pub use hashed_node::{EMPTY, HashedNode, INTERNAL, LEAF};

@@ -2837,6 +2837,10 @@ impl Store for RacingFinalizeStore {
         self.inner.prefix_iter(state_space, prefix)
     }
 
+    fn scan(&self, state_space: StateSpace) -> PrefixIterator<'_> {
+        self.inner.scan(state_space)
+    }
+
     fn prefix_iter_rev(&self, state_space: StateSpace, prefix: &[u8]) -> PrefixIterator<'_> {
         self.inner.prefix_iter_rev(state_space, prefix)
     }
