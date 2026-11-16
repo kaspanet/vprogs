@@ -54,8 +54,9 @@ pub enum SaveError {
     /// The source RocksDB directory could not be opened read-only.
     #[error("cannot open store read-only: {0}")]
     OpenStore(rocksdb::Error),
-    /// `vprun-state.json` is missing the covenant/lane identity a snapshot needs.
-    #[error("no vprun-state.json identity (covenant_id) in data dir")]
+    /// `vprun-state.json` is missing one of the identities a snapshot needs: the covenant id,
+    /// the lane id, or the bootstrap transaction id.
+    #[error("no vprun-state.json identity (covenant_id/lane_id/bootstrap_txid) in data dir")]
     NoIdentity,
     /// The committed tip carries no settlement to pin the snapshot to.
     #[error("no settlement recorded in the committed state")]
@@ -67,6 +68,14 @@ pub enum SaveError {
         "settlement block is not retained as canonical (pruned or orphaned); snapshot a more recent state"
     )]
     SettlementNotRetained,
+    /// The latest/rollback pointers cite a resource version with no stored value. Within the
+    /// retained window a live version is never pruned, so this is store corruption or a
+    /// reconstruction bug, not a droppable record.
+    #[error(
+        "state version {version} of resource {} is missing from the store",
+        faster_hex::hex_string(.resource)
+    )]
+    MissingVersion { resource: [u8; 32], version: u64 },
     /// The reconstructed state root does not match the on-chain settlement root.
     #[error(
         "reconstructed state root {} does not match settlement root {}",
@@ -74,6 +83,9 @@ pub enum SaveError {
         faster_hex::hex_string(.settlement)
     )]
     RootMismatch { computed: [u8; 32], settlement: [u8; 32] },
+    /// Failure raised by the snapshot container codec while framing the file.
+    #[error(transparent)]
+    Snapshot(#[from] vprogs_state_snapshot::SnapshotError),
     /// I/O failure while writing the snapshot file.
     #[error("snapshot io error: {0}")]
     Io(#[from] std::io::Error),
@@ -101,7 +113,7 @@ pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveErr
     let identity = PersistedState::load(data_dir);
     let covenant_id = identity.covenant_hash().ok_or(SaveError::NoIdentity)?;
     let lane_id = identity.lane_id.ok_or(SaveError::NoIdentity)?;
-    let bootstrap_txid = identity.bootstrap_txid().unwrap_or_else(|| Hash::from_bytes([0u8; 32]));
+    let bootstrap_txid = identity.bootstrap_txid().ok_or(SaveError::NoIdentity)?;
 
     // Latest settlement is carried in the committed tip's metadata.
     let tip: Checkpoint<ChainBlockMetadata> = StateMetadata::last_committed(&store);
@@ -186,19 +198,19 @@ pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveErr
     let mut writer = SnapshotWriter::<_, <crate::RunnerStore as Tree>::Hasher, VpsnapFormat>::open(
         &mut file,
         &header.encode(),
-    )
-    .map_err(|e| SaveError::Io(std::io::Error::other(e.to_string())))?;
+    )?;
 
     // Lazy, one value resident at a time: the raw cursor yields ids in ascending order (latest-ptr
     // keys are the raw 32-byte resource id, so RocksDB's byte order is resource_id order), exactly
     // the order `SnapshotWriter::write_record` requires, so no sort is needed. A resource is
     // emitted at its version as of N_S: `corrections` overrides the current latest for resources
     // touched after N_S, and a resource CREATED after N_S surfaces as a correction of exactly 0 and
-    // is skipped, since no version existed at N_S. A resource whose value at N_S is empty (or has
-    // no stored version) is skipped too: the live store keeps an empty value to mark a deletion
-    // and shadow the prior version, but a restore rebuilds a fresh tree where empty and absent
-    // coincide and the SMT already treats empty as absent, so the record would only bloat the
-    // file.
+    // is skipped, since no version existed at N_S. A resource whose value at N_S is empty is
+    // skipped: the live store keeps an empty value to mark a deletion and shadow the prior version,
+    // but a restore rebuilds a fresh tree where empty and absent coincide and the SMT already
+    // treats empty as absent, so the record would only bloat the file. A version the pointers cite
+    // with no stored entry at all is not skipped: within the retained window a live version is
+    // never pruned, so its absence is corruption and fails the save.
     let mut emit_cursor = store.raw_scan(StateSpace::StatePtrLatest);
     let mut rebuild = StreamingBuilder::<<crate::RunnerStore as Tree>::Hasher>::new(n_s);
     let mut discard = DiscardBatch;
@@ -218,15 +230,19 @@ pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveErr
             version_key[..8].copy_from_slice(&ver.to_be_bytes());
             version_key[8..].copy_from_slice(&id);
             let value = store.get_pinned(StateSpace::StateVersion, &version_key);
-            if let Some(value) = value.as_deref().filter(|v| !v.is_empty()) {
-                rebuild.feed(
-                    &mut discard,
-                    ResourceId::from(id),
-                    <crate::RunnerStore as Tree>::Hasher::hash(value),
-                );
-                writer
-                    .write_record(&id, value)
-                    .map_err(|e| SaveError::Io(std::io::Error::other(e.to_string())))?;
+            match value.as_deref() {
+                Some(value) if !value.is_empty() => {
+                    rebuild.feed(
+                        &mut discard,
+                        ResourceId::from(id),
+                        <crate::RunnerStore as Tree>::Hasher::hash(value),
+                    );
+                    writer.write_record(&id, value)?;
+                }
+                Some(_) => {}
+                None => {
+                    return Err(SaveError::MissingVersion { resource: id, version: ver });
+                }
             }
         }
         emit_cursor.next();
@@ -235,8 +251,7 @@ pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveErr
     if computed != settlement.new_state {
         return Err(SaveError::RootMismatch { computed, settlement: settlement.new_state });
     }
-    let record_count =
-        writer.finish().map_err(|e| SaveError::Io(std::io::Error::other(e.to_string())))?;
+    let record_count = writer.finish()?;
 
     Ok(SaveSummary {
         covenant_id,
@@ -519,6 +534,104 @@ mod tests {
         assert!(
             matches!(err, SaveError::RootMismatch { computed, settlement } if computed != settlement)
         );
+    }
+
+    // A latest pointer citing a version with no stored entry is corruption within the retained
+    // window (a live version is never pruned); the save must fail loudly instead of silently
+    // dropping the resource's record.
+    #[test]
+    fn save_rejects_a_missing_version_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RocksDbStore::<DefaultConfig>::open(dir.path().join("db"));
+
+        let r1 = ResourceId::from([1u8; 32]);
+
+        // One committed batch; then a corrupted latest pointer citing a version that was never
+        // written.
+        let mut wb = store.write_batch();
+        StateVersion::put(&mut wb, 1, &r1, b"alpha");
+        StatePtrLatest::put(&mut wb, &r1, 1);
+        let root1 = store.update(&mut wb, vec![Commitment::new(r1, Sha256::hash(b"alpha"))], 1);
+        let settlement = SettlementInfo {
+            block_prove_to: Hash::from_bytes([11u8; 32]),
+            containing_block: Hash::from_bytes([11u8; 32]),
+            new_state: root1,
+            ..SettlementInfo::default()
+        };
+        let m1 = ChainBlockMetadata {
+            hash: Hash::from_bytes([11u8; 32]),
+            last_settlement: Some(settlement),
+            ..ChainBlockMetadata::default()
+        };
+        let cp = Checkpoint::new(1, m1);
+        StoredBatchMetadata::set(&mut wb, 1, cp.metadata());
+        StateMetadata::set_last_committed(&mut wb, &cp);
+        StateMetadata::set_root(&mut wb, &cp);
+        StatePtrLatest::put(&mut wb, &r1, 2);
+        store.commit(wb);
+
+        PersistedState {
+            lane_id: Some(9),
+            covenant_id: Some(Hash::from_bytes([7u8; 32]).to_string()),
+            bootstrap_txid: Some(Hash::from_bytes([8u8; 32]).to_string()),
+            bootstrap_block_hash: None,
+            pinned_lane_tip: None,
+        }
+        .save(dir.path());
+
+        drop(store);
+
+        let out = dir.path().join("snap.vpsnap");
+        let err = save_snapshot(dir.path(), &out).expect_err("a dangling version must be rejected");
+        assert!(
+            matches!(err, SaveError::MissingVersion { resource, version: 2 } if resource == [1u8; 32])
+        );
+    }
+
+    // The bootstrap transaction id is as load-bearing as the covenant and lane ids (a restored
+    // node's settler resolves the covenant UTXO from it), so a state file without it is refused
+    // rather than written into the header as a zero hash.
+    #[test]
+    fn save_requires_the_bootstrap_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RocksDbStore::<DefaultConfig>::open(dir.path().join("db"));
+
+        let r1 = ResourceId::from([1u8; 32]);
+
+        let mut wb = store.write_batch();
+        StateVersion::put(&mut wb, 1, &r1, b"alpha");
+        StatePtrLatest::put(&mut wb, &r1, 1);
+        let root1 = store.update(&mut wb, vec![Commitment::new(r1, Sha256::hash(b"alpha"))], 1);
+        let settlement = SettlementInfo {
+            block_prove_to: Hash::from_bytes([11u8; 32]),
+            containing_block: Hash::from_bytes([11u8; 32]),
+            new_state: root1,
+            ..SettlementInfo::default()
+        };
+        let m1 = ChainBlockMetadata {
+            hash: Hash::from_bytes([11u8; 32]),
+            last_settlement: Some(settlement),
+            ..ChainBlockMetadata::default()
+        };
+        let cp = Checkpoint::new(1, m1);
+        StoredBatchMetadata::set(&mut wb, 1, cp.metadata());
+        StateMetadata::set_last_committed(&mut wb, &cp);
+        StateMetadata::set_root(&mut wb, &cp);
+        store.commit(wb);
+
+        PersistedState {
+            lane_id: Some(9),
+            covenant_id: Some(Hash::from_bytes([7u8; 32]).to_string()),
+            bootstrap_txid: None,
+            bootstrap_block_hash: None,
+            pinned_lane_tip: None,
+        }
+        .save(dir.path());
+
+        drop(store);
+
+        let out = dir.path().join("snap.vpsnap");
+        assert!(matches!(save_snapshot(dir.path(), &out), Err(SaveError::NoIdentity)));
     }
 
     // A reorg leaves orphaned node versions on disk below the settled batch. The save handle must
