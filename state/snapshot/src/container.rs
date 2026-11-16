@@ -74,8 +74,7 @@ pub enum SnapshotError {
     /// A field or call this codec refuses on its face, independent of how many bytes the stream
     /// actually holds: a length-prefixed field over its cap (`header_len > MAX_HEADER_LEN`,
     /// `value_len > MAX_VALUE_LEN`) on either side, records not in strictly ascending id order
-    /// on either side, a [`SnapshotWriter::finish`] whose written count disagrees with the
-    /// declared one, or a structurally invalid [`SnapshotReader::finish`] call (early finish,
+    /// on either side, or a structurally invalid [`SnapshotReader::finish`] call (early finish,
     /// or trailing bytes after the digest).
     #[error("snapshot malformed: {0}")]
     Malformed(&'static str),
@@ -189,8 +188,10 @@ impl<'w, W: Write + Seek, H: Hasher, F: SnapshotFormat> SnapshotWriter<'w, W, H,
         Ok(())
     }
 
-    /// Writes the trailing digest and backpatches the true `record_count`, completing the file.
-    /// Returns the number of records written.
+    /// Writes the trailing digest and backpatches the true `record_count`, completing the file,
+    /// and leaves the sink positioned at the file end. Returns the number of records written.
+    /// Does not flush the sink; a caller wrapping it in a `BufWriter` must flush before the bytes
+    /// are relied on at rest.
     pub fn finish(self) -> Result<u64, SnapshotError> {
         let count = self.written;
         let count_offset = self.count_offset;
@@ -203,6 +204,9 @@ impl<'w, W: Write + Seek, H: Hasher, F: SnapshotFormat> SnapshotWriter<'w, W, H,
         // straight to the sink without re-folding.
         inner.seek(SeekFrom::Start(count_offset))?;
         inner.write_all(&count.to_le_bytes())?;
+        // The backpatch leaves the sink at the count field; a caller reading `stream_position` as
+        // the file length (or appending) needs the end.
+        inner.seek(SeekFrom::End(0))?;
         Ok(count)
     }
 }
@@ -269,8 +273,12 @@ impl<R: Read, H: Hasher, F: SnapshotFormat> SnapshotReader<R, H, F> {
 
         // Read `record_count` without folding it: the writer folds it last (after the records), so
         // [`finish`](Self::finish) mirrors that by folding it just before comparing the digest.
+        // Only a genuine end of stream is `Truncated`; a failing reader stays an I/O error.
         let mut count_bytes = [0u8; 8];
-        r.read_exact(&mut count_bytes).map_err(|_| SnapshotError::Truncated)?;
+        r.read_exact(&mut count_bytes).map_err(|e| match e.kind() {
+            std::io::ErrorKind::UnexpectedEof => SnapshotError::Truncated,
+            _ => SnapshotError::Io(e),
+        })?;
         let record_count = u64::from_le_bytes(count_bytes);
 
         Ok((
@@ -572,6 +580,19 @@ mod tests {
         assert!(matches!(reader.finish(), Err(SnapshotError::DigestMismatch)));
     }
 
+    /// `finish` backpatches the count mid-file and must still leave the sink at the file end: a
+    /// caller reading `stream_position` as the file length, or appending after the snapshot,
+    /// would otherwise get a position inside the framing.
+    #[test]
+    fn finish_leaves_the_sink_at_the_file_end() {
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        let mut writer = SnapshotWriter::<_, Sha256, TestFormat>::open(&mut cursor, b"h").unwrap();
+        writer.write_record(&[1u8; 32], b"a").unwrap();
+        writer.write_record(&[2u8; 32], b"b").unwrap();
+        writer.finish().unwrap();
+        assert_eq!(cursor.stream_position().unwrap(), cursor.get_ref().len() as u64);
+    }
+
     #[test]
     fn bad_magic_is_rejected() {
         let buf = vec![0u8; 8];
@@ -721,17 +742,21 @@ mod tests {
     // -- Reader-side ordering and I/O-diagnosis coverage --
 
     /// Frames `records` in the given order with a correct trailing digest, bypassing the writer
-    /// so a digest-valid file can probe reader-side validation.
+    /// so a digest-valid file can probe reader-side validation. Mirrors the writer's fold order:
+    /// every byte in physical order except the count, which the codec folds after the records.
     fn digest_valid_body(records: &[([u8; 32], &[u8])]) -> Vec<u8> {
         let mut body = Vec::new();
         body.extend_from_slice(&TestFormat::MAGIC);
         body.extend_from_slice(&TestFormat::FORMAT_VERSION.to_le_bytes());
         body.extend_from_slice(&0u32.to_le_bytes()); // header_len = 0
+        let count = records.len() as u64;
+        body.extend_from_slice(&count.to_le_bytes());
 
+        // The codec folds the count after the records (the writer backpatches it), so the
+        // fixture must fold in the same order to produce a matching digest.
+        let count = records.len() as u64;
         let mut hasher = Sha256::incremental();
-        hasher.update(&body);
-        let count = (records.len() as u64).to_le_bytes();
-        body.extend_from_slice(&count);
+        hasher.update(&body[..8 + 2 + 4]); // magic, version, header_len; the count folds last
         for (id, value) in records {
             let value_len = value.len() as u32;
             body.extend_from_slice(id);
@@ -741,9 +766,7 @@ mod tests {
             hasher.update(&value_len.to_le_bytes());
             hasher.update(value);
         }
-        // Single-pass framing: the count sits in the header but is authenticated after the
-        // records, matching the writer's backpatch.
-        hasher.update(&count);
+        hasher.update(&count.to_le_bytes());
         body.extend_from_slice(&hasher.finalize());
         body
     }
@@ -839,6 +862,17 @@ mod tests {
             SnapshotReader::<_, Sha256, TestFormat>::open(&mut failing).unwrap();
         while reader.next().unwrap().is_some() {}
         let result = reader.finish();
+        assert!(matches!(result, Err(SnapshotError::Io(_))), "expected Io, got {result:?}");
+    }
+
+    /// And on the `record_count` read in `open`: a stream failing there reports I/O, not a
+    /// truncated (apparently corrupt) snapshot.
+    #[test]
+    fn open_maps_io_error_on_the_count_read_to_io_not_truncated() {
+        let good = digest_valid_body(&[]);
+        // Everything up to but excluding the 8 count bytes: magic, version, header_len.
+        let mut failing = FailingRead::new(good[..8 + 2 + 4].to_vec());
+        let result = SnapshotReader::<_, Sha256, TestFormat>::open(&mut failing).map(|_| ());
         assert!(matches!(result, Err(SnapshotError::Io(_))), "expected Io, got {result:?}");
     }
 

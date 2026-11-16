@@ -174,24 +174,27 @@ if [ "${DEMO_SNAPSHOT:-0}" = "1" ]; then
       echo "snapshot save failed (needs >=1 settlement; retry with a longer window or a quiesced A)"
     else
       echo "--- restore into fresh $DATA_C, confirming the settlement against the L1 node ---"
-      "$VPRUN" snapshot restore --data-dir "$DATA_C" --snapshot "$SNAP" \
-        --wrpc-url "$NODE_URL" --network testnet-10 || echo "restore failed"
-      echo "--- start C: follower from the restored dir (auto-resume, no covenant env) ---"
-      # No TN10RT_COVENANT_ID: the runner auto-resumes from the populated store (last_committed > 0)
-      # and fetches on top, never re-bootstrapping the pruned deploy.
-      RUST_LOG="$RUST_LOG_VAL" \
-      RISC0_DEV_MODE=1 \
-      TN10RT_SETTLE=1 \
-      TN10RT_ISSUE=0 \
-      TN10RT_WRPC_URL="$NODE_URL" \
-      TN10RT_PRIVATE_KEY="$TN10RT_KEY3" \
-      TN10RT_DATA_DIR="$DATA_C" \
-      TN10RT_SEED_DEPTH="$SEED_DEPTH" \
-        "$BIN" >>"$LOG_C" 2>&1 &
-      PIDC=$!
-      echo "C pid=$PIDC log=$LOG_C"
-      echo "=== monitor A vs snapshot-booted C for ${DURATION}s ==="
-      bash "$HERE/monitor.sh" "$LOG_A" "$LOG_C" "$DURATION" "$PIDA" "$PIDC"
+      if ! "$VPRUN" snapshot restore --data-dir "$DATA_C" --snapshot "$SNAP" \
+        --wrpc-url "$NODE_URL" --network testnet-10; then
+        echo "snapshot restore failed; not starting C on a partial or absent restore"
+      else
+        echo "--- start C: follower from the restored dir (auto-resume, no covenant env) ---"
+        # No TN10RT_COVENANT_ID: the runner auto-resumes from the populated store (last_committed > 0)
+        # and fetches on top, never re-bootstrapping the pruned deploy.
+        RUST_LOG="$RUST_LOG_VAL" \
+        RISC0_DEV_MODE=1 \
+        TN10RT_SETTLE=1 \
+        TN10RT_ISSUE=0 \
+        TN10RT_WRPC_URL="$NODE_URL" \
+        TN10RT_PRIVATE_KEY="$TN10RT_KEY3" \
+        TN10RT_DATA_DIR="$DATA_C" \
+        TN10RT_SEED_DEPTH="$SEED_DEPTH" \
+          "$BIN" >>"$LOG_C" 2>&1 &
+        PIDC=$!
+        echo "C pid=$PIDC log=$LOG_C"
+        echo "=== monitor A vs snapshot-booted C for ${DURATION}s ==="
+        bash "$HERE/monitor.sh" "$LOG_A" "$LOG_C" "$DURATION" "$PIDA" "$PIDC"
+      fi
     fi
   fi
 fi

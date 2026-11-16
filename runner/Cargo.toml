@@ -39,7 +39,7 @@ vprogs-state-metadata              = { workspace = true }
 vprogs-state-ptr-latest            = { workspace = true }
 vprogs-state-ptr-rollback          = { workspace = true }
 vprogs-state-settlement-journal    = { workspace = true }
-vprogs-state-snapshot              = { path = "../state/snapshot" }
+vprogs-state-snapshot              = { workspace = true }
 vprogs-state-version               = { workspace = true }
 vprogs-storage-manager             = { workspace = true }
 vprogs-storage-rocksdb-store       = { workspace = true }
@@ -72,7 +72,6 @@ rocksdb    = { workspace = true }
 secp256k1  = { workspace = true }
 serde      = { workspace = true }
 serde_json = { workspace = true }
-tempfile   = { workspace = true }
 thiserror  = { workspace = true }
 tokio      = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 zerocopy   = { workspace = true, features = ["derive"] }

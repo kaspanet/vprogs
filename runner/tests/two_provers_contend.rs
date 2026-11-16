@@ -41,7 +41,10 @@ use vprogs_node_test_utils::L1Node;
 use vprogs_runner::{
     BridgeObservers, BridgeParams, Elfs, PersistedState, ProvingParams, RunnerConfig, RunnerNode,
     RunnerStore, SettlementQueue, StartMode, build_proving_node, run_covenant_reroot,
-    snapshot::{restore::restore_snapshot, save::save_snapshot},
+    snapshot::{
+        restore::restore_snapshot,
+        save::{SaveError, save_snapshot},
+    },
     start_runner,
 };
 use vprogs_state_metadata::StateMetadata;
@@ -1603,10 +1606,11 @@ async fn snapshot_save_restore_resumes_and_settles() {
     assert!(pre >= 2, "prover A must land >=2 settlements before the snapshot, got {pre}");
 
     // === Step 4: save A's state while A is still running ===
-    // The read-only open sees only flushed + WAL data, so a just-landed settlement can be
-    // momentarily invisible or produce a torn cross-CF view (the documented staleness contract),
-    // which surfaces as a fail-safe error. Retry a few times, driving one more range each attempt
-    // to force additional writes/flushes, exactly as the operator retry the save routine describes.
+    // A read-only open replays the WAL, so every batch committed before the open is visible, and
+    // each batch commits through one WriteBatch, so the view cannot be torn; only writes A makes
+    // after the open are invisible. Retry only the two documented transient errors, driving one
+    // more range each attempt exactly as the operator retry the save routine describes; any other
+    // SaveError is a save bug and must fail the test instead of being retried away.
     let mut summary = None;
     for attempt in 0..6 {
         match save_snapshot(&data_dir_a, &snap) {
@@ -1614,10 +1618,11 @@ async fn snapshot_save_restore_resumes_and_settles() {
                 summary = Some(s);
                 break;
             }
-            Err(e) => {
-                eprintln!("snapshot save attempt {attempt} not yet consistent ({e}); driving on");
+            Err(e @ (SaveError::RootMismatch { .. } | SaveError::SettlementNotRetained)) => {
+                eprintln!("snapshot save attempt {attempt} transient ({e}); driving on");
                 drive_range(&l1).await;
             }
+            Err(e) => panic!("save_snapshot failed with a non-transient error: {e}"),
         }
     }
     let summary = summary
@@ -1626,6 +1631,11 @@ async fn snapshot_save_restore_resumes_and_settles() {
         summary.record_count >= 1,
         "snapshot must carry at least one resource record, got {}",
         summary.record_count,
+    );
+    assert!(
+        summary.committed_index >= 1,
+        "snapshot must pin a real mid-chain settlement (committed_index {})",
+        summary.committed_index,
     );
     eprintln!(
         "snapshot saved: covenant_index={} records={}",
@@ -1663,6 +1673,11 @@ async fn snapshot_save_restore_resumes_and_settles() {
         .await
         .expect("restore should validate against L1 and seed the fresh store");
     assert_eq!(restored.covenant_id, covenant_id, "restored covenant id must match A's");
+    assert!(
+        restored.committed_index >= 1,
+        "restore must seed the store at the snapshot's settlement (committed_index {})",
+        restored.committed_index,
+    );
     eprintln!(
         "snapshot restored into node-b at index {} ({} records)",
         restored.committed_index, restored.record_count,

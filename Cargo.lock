@@ -8957,7 +8957,6 @@ dependencies = [
  "vprogs-l1-wallet",
  "vprogs-scheduling-scheduler",
  "vprogs-state-metadata",
- "vprogs-state-ptr-latest",
  "vprogs-state-version",
  "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
@@ -9007,9 +9006,7 @@ name = "vprogs-state-ptr-latest"
 version = "0.1.0"
 dependencies = [
  "borsh",
- "tempfile",
  "vprogs-core-types",
- "vprogs-storage-rocksdb-store",
  "vprogs-storage-types",
 ]
 
