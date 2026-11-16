@@ -108,6 +108,7 @@ fn observed_settlement(leader_pins: &RedeemPins<'_>) -> SettlementInfo {
         new_lane_tip: adopted_lane_tip(),
         continuation_spk_hash: blake2b(&next_redeem),
         permission_spk_hash: [0u8; 32],
+        chain_idx: 0.into(),
     }
 }
 

@@ -23,7 +23,7 @@ use kaspa_wrpc_client::prelude::KaspaRpcClient;
 use tokio::sync::{mpsc, watch};
 use vprogs_core_atomics::AsyncQueue;
 use vprogs_l1_bridge::{L1BridgeConfig, PermissionSpendHooks};
-use vprogs_l1_types::SettlementInfo;
+use vprogs_l1_types::{SettlementInfo, SettlementMsg};
 use vprogs_node_framework::{Node, NodeConfig};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Indexer, SchedulerState};
 use vprogs_storage_manager::StorageConfig;
@@ -70,8 +70,9 @@ pub struct BridgeObservers {
     /// settler holds a [`watch::Receiver`](tokio::sync::watch::Receiver) subscribed to it
     /// (reader). `None` disables publishing.
     pub settlement: Option<watch::Sender<Option<SettlementInfo>>>,
-    /// Optional channel sender every observed covenant settlement is published into.
-    pub settlement_events: Option<mpsc::UnboundedSender<SettlementInfo>>,
+    /// Optional channel sender the settlement stream is published into (observations and
+    /// rollback markers, in per-channel FIFO order).
+    pub settlement_events: Option<mpsc::UnboundedSender<SettlementMsg>>,
     /// Optional hooks for watching and emitting permission-output spends. `None` disables
     /// watching.
     pub permission_spends: Option<PermissionSpendHooks>,
@@ -235,4 +236,25 @@ fn base_config(
                 .with_settlement_events(params.observers.settlement_events)
                 .with_permission_spends(params.observers.permission_spends),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use vprogs_scheduling_scheduler::Processor;
+
+    use super::*;
+
+    /// Wiring an exits tap opts the exec vm out of restore: a restored block skips execution,
+    /// so leaves a reorg pruned would never re-emit and their settlement parks forever.
+    #[test]
+    fn exits_tap_disables_restore() {
+        let tx_elf = vprogs_zk_backend_risc0_test_suite::transaction_processor_elf();
+        let batch_elf = vprogs_zk_backend_risc0_test_suite::batch_processor_elf();
+        let aggregator_elf = vprogs_zk_backend_risc0_test_suite::batch_aggregator_elf();
+        let backend = Backend::new(&tx_elf, &batch_elf, &aggregator_elf, ProofType::Succinct);
+        let vm = RunnerVm::new(backend, ProvingPipeline::None);
+        assert!(Processor::supports_restore(&vm));
+        let (tap, _rx) = mpsc::unbounded_channel();
+        assert!(!Processor::supports_restore(&vm.with_exits_tap(tap)));
+    }
 }
