@@ -763,6 +763,7 @@ mod tests {
             bootstrap_txid: Hash::from_bytes([8u8; 32]),
             committed_index,
             chain_block_metadata: meta,
+            pinned_lane_tip: Hash::default(),
         }
     }
 

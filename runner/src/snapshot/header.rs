@@ -171,6 +171,7 @@ mod tests {
             bootstrap_txid: Hash::from_bytes([2u8; 32]),
             committed_index: 1,
             chain_block_metadata: ChainBlockMetadata::default(),
+            pinned_lane_tip: Hash::default(),
         };
         let err = SnapshotHeader::decode(&header.encode()).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
