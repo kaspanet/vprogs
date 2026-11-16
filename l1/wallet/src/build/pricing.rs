@@ -45,9 +45,9 @@ pub fn min_fee(params: &Params, tx: &Transaction) -> u64 {
         params.storage_mass_parameter,
     );
     let masses = calc.calc_non_contextual_masses(tx);
-    // raw_post: the mempool prices standardness with the post-Toccata cofactors on every
-    // network, activation-independent (check_transaction_standard.rs).
-    let cofactors = params.block_mass_limits().raw_post().cofactors();
+    // The mempool prices standardness with the post-Toccata cofactors on every network,
+    // activation-independent (check_transaction_standard.rs).
+    let cofactors = params.block_mass_limits.cofactors();
     MIN_FEERATE_PER_GRAM * masses.compute_mass.max(masses.normalized_transient(&cofactors))
 }
 
@@ -83,7 +83,7 @@ pub(super) fn priority_mass(
         params.storage_mass_parameter,
     )
     .unwrap_or(u64::MAX);
-    let cofactors = params.block_mass_limits().raw_post().cofactors();
+    let cofactors = params.block_mass_limits.cofactors();
     Mass::new(non_contextual, ContextualMasses::new(storage)).normalized_max(&cofactors)
 }
 
@@ -134,7 +134,7 @@ pub(super) fn dropped_required_fee(
         params.storage_mass_parameter,
     )
     .unwrap_or(u64::MAX);
-    let cofactors = params.block_mass_limits().raw_post().cofactors();
+    let cofactors = params.block_mass_limits.cofactors();
     let pm = Mass::new(non_contextual, ContextualMasses::new(storage)).normalized_max(&cofactors);
     DroppedRequirement { floor, required: rate_fee(rate, floor, pm) }
 }

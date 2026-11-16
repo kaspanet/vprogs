@@ -1,8 +1,4 @@
-use kaspa_consensus_core::{
-    config::params::{ForkActivation, Params},
-    hashing::tx::id as kaspa_tx_id,
-    subnets::SubnetworkId,
-};
+use kaspa_consensus_core::{hashing::tx::id as kaspa_tx_id, subnets::SubnetworkId};
 use kaspa_hashes::Hash;
 use kaspa_seq_commit::{
     hashing::{
@@ -200,12 +196,6 @@ pub fn compute_section_lane_tip(
         activity_digest: &activity.finalize(),
         context_hash: &context_hash,
     })
-}
-
-/// Forces the Toccata fork active on `params`. The covenant flow is only valid where Toccata is
-/// live.
-pub fn force_covenant_forks(params: &mut Params) {
-    params.toccata_activation = ForkActivation::always();
 }
 
 /// Builds a scheduler over `processor` and `store` with default execution and storage config: the

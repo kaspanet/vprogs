@@ -23,8 +23,7 @@ use vprogs_zk_backend_risc0_covenant::{
     redeem_script_len,
 };
 use vprogs_zk_backend_risc0_test_suite::{
-    batch_aggregator_elf, batch_processor_elf, force_covenant_forks, test_lane_key,
-    transaction_processor_elf,
+    batch_aggregator_elf, batch_processor_elf, test_lane_key, transaction_processor_elf,
 };
 
 const TEST_COVENANT_VALUE: u64 = 100_000_000;
@@ -38,7 +37,6 @@ async fn covenant_bootstrap_is_accepted_on_simnet() {
         NetworkId::new(NetworkType::Simnet),
         Some(|p| {
             p.blockrate.coinbase_maturity = 1;
-            force_covenant_forks(p);
         }),
     )
     .await;
