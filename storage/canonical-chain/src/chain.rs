@@ -7,7 +7,10 @@
 //! * [`append`](CanonicalChain::append) sets the next bit in the `tail` bucket. When the new id
 //!   crosses into a fresh bucket the hot zone slides up by one: the old `tail` becomes the new
 //!   `last_sealed`, the old `last_sealed` is sealed into the body ring, and a fresh empty `tail` is
-//!   allocated (the sealing is done by [`HotZone::roll_forward`]).
+//!   allocated (the sealing is done by [`HotZone::roll_forward`]). A returning id below the hot
+//!   zone (a reorg replay after a rollback) instead slides the zone back to its bucket, carrying
+//!   the live bits of the buckets it re-covers, and forks the body ring truncated to the slid-back
+//!   zone so those buckets re-seal as the zone advances again.
 //! * [`rollback`](CanonicalChain::rollback) clears every bit above `new_tip`. A shallow rollback
 //!   rewrites only the copy-on-write hot buckets; a deep one that reaches a sealed bucket forks the
 //!   body ring first, so earlier snapshots are untouched.
@@ -174,8 +177,33 @@ impl CanonicalChain {
 
         // Append - advance hot zone, reuse shared ring and set tail bit in place, no copy.
         let (bucket, bit) = Bucket::locate(id);
-        let body = Arc::clone(&cur.body);
-        let hot_zone = cur.hot_zone.roll_forward(bucket, &body);
+        // A returning id after a rollback can land below the hot zone: the rollback leaves
+        // `tail_bucket` at its pre-rollback height, and `roll_forward` only advances, so sliding
+        // back must carry the live bits instead of fabricating empty buckets. The appended
+        // bucket's bits sit in `last_sealed` one below the old tail, else in the sealed body
+        // copy; its predecessor reads canonical where finalized, matching the restore-time
+        // fabrication.
+        let (body, hot_zone) = if bucket < cur.hot_zone.tail_bucket {
+            // The ring must rewind with the zone: its tip still sits at the old height, and the
+            // entries it holds there are the rollback's cleared copies, so buckets re-filled on
+            // replay would never re-seal. Fork and truncate, restoring the
+            // `next_index == tail_bucket - 1` invariant `roll_forward` seals by.
+            let body = Arc::new(cur.body.fork());
+            let tail = if bucket + 1 == cur.hot_zone.tail_bucket {
+                Arc::clone(&cur.hot_zone.last_sealed)
+            } else {
+                body.get(bucket).unwrap_or_else(|| Arc::new(Bucket::all_canonical()))
+            };
+            let last_sealed = if bucket == 0 {
+                Arc::new(Bucket::all_canonical())
+            } else {
+                body.get(bucket - 1).unwrap_or_else(|| Arc::new(Bucket::all_canonical()))
+            };
+            body.truncate_from(bucket.saturating_sub(1));
+            (body, HotZone { tail_bucket: bucket, tail, last_sealed })
+        } else {
+            (Arc::clone(&cur.body), cur.hot_zone.roll_forward(bucket, &cur.body))
+        };
         hot_zone.tail.set(bit);
 
         // Publish the extended snapshot.
