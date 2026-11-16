@@ -99,13 +99,12 @@ pub enum SaveError {
 /// index the settlement proves to (`block_prove_to`, not the later block the settlement
 /// transaction landed in).
 ///
-/// Staleness contract: the read-only handle only sees data already flushed to SST files at open
-/// time, not a live daemon's in-memory/WAL writes. Run against a running node, this can
-/// reconstruct a slightly older (but still on-chain-confirmed) settlement than the daemon's
-/// current tip, or observe a torn cross-CF view (some CFs flushed past a point, others not) that
-/// trips one of the root self-checks below and returns [`SaveError::RootMismatch`]. That failure
-/// is fail-safe, not corruption: the operator can retry, or snapshot a quiesced (stopped) node for
-/// a guaranteed-consistent view.
+/// Staleness contract: a read-only open replays the WAL into its memtables, so every batch
+/// committed before the open is visible in full, and since each batch commits through a single
+/// `WriteBatch`, a mid-commit torn cross-CF view cannot occur. Writes the daemon commits after
+/// the open are invisible, so a save against a running node pins an older (but still
+/// on-chain-confirmed) settlement than the daemon's current tip; snapshot a quiesced (stopped)
+/// node for the latest retained settlement.
 pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveError> {
     // Write to a sibling temp path and rename into place on success, so an I/O failure or a kill
     // mid-stream never leaves a partial file at the operator's chosen path looking like a
