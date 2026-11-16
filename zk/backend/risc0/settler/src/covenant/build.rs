@@ -292,7 +292,7 @@ pub fn covenant_from_settlement(cov: &CovenantState, s: &SettlementInfo) -> Cove
 /// Rebuilds the P2SH `ScriptPublicKey` a settlement's continuation output carried, from the
 /// redeem-script hash the bridge captured. Layout matches `pay_to_script_hash_script`:
 /// `OpBlake2b | OpData32 | hash(32) | OpEqual`.
-fn p2sh_spk_from_hash(hash: &[u8; 32]) -> ScriptPublicKey {
+pub(crate) fn p2sh_spk_from_hash(hash: &[u8; 32]) -> ScriptPublicKey {
     use kaspa_txscript::opcodes::codes::{OpBlake2b, OpData32, OpEqual};
     let mut script = Vec::with_capacity(35);
     script.extend_from_slice(&[OpBlake2b, OpData32]);

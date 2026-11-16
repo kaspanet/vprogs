@@ -20,6 +20,13 @@ pub trait Processor<S: Store>: Clone + Sized + Send + Sync + 'static {
         // Default implementation does nothing (override if needed).
     }
 
+    /// Called after a re-root rollback to `target_index` (runs in the scheduler's
+    /// single-threaded context): execution re-entered at a settlement boundary, while a plain
+    /// rollback additionally means the chain itself moved. Defaults to [`Self::on_rollback`].
+    fn on_reroot(&self, target_index: u64) {
+        self.on_rollback(target_index);
+    }
+
     /// Called when the scheduler is shutting down, after all execution workers have stopped.
     fn on_shutdown(&self) {
         // Default implementation does nothing (override if needed).

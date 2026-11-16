@@ -29,7 +29,7 @@ mod covenant;
 mod settle;
 mod worker;
 
-pub use confirm::OutpointAt;
+pub use confirm::{OutpointAt, settlement_tip_live};
 pub use covenant::{
     BuiltSettlement, CovenantAdvance, CovenantState, DEV_COVENANT_BUDGET, bootstrap_dev_covenant,
     bootstrap_real_covenant, bootstrap_redeem, build_dev_settlement, build_settlement,

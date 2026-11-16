@@ -84,6 +84,12 @@ impl<S: Store, P: Processor<S>> AggregateProver<S, P> {
         self.booted.wait_until_blocking(|v| v != 0);
     }
 
+    /// Enqueues a re-root command so the worker discards queued batches beyond the target while
+    /// keeping its settlement-progress state.
+    pub fn reroot(&self, target_index: u64) {
+        self.inbox.push(Command::Reroot(target_index));
+    }
+
     /// Signals the worker to shut down and joins its thread, which returns once the run loop
     /// exits and the worker's tokio runtime is shut down in the background. A prove attempt
     /// the timeout abandoned keeps running on its blocking thread, so the join never waits on

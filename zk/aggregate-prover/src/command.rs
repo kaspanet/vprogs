@@ -7,4 +7,7 @@ pub(crate) enum Command<S: Store, P: Processor<S>> {
     Batch(ScheduledBatch<S, P>),
     /// A rollback occurred; discard queued batches with index beyond the target.
     Rollback(u64),
+    /// A re-root rolled execution back to a settlement boundary; discard queued batches with
+    /// index beyond the target, keeping the settlement-progress state a reorg rollback resets.
+    Reroot(u64),
 }
