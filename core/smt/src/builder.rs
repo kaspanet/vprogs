@@ -8,10 +8,11 @@
 //!
 //! ## Guarantees
 //!
-//! - **Same tree as a direct commit.** The root hash and the full set of node writes (keys,
-//!   version, encoded nodes) are identical to committing the same leaf set into an empty store
-//!   through the normal update path. That equivalence lets a snapshot restore rebuild the
-//!   authenticated tree from untrusted records and check the result against a trusted root.
+//! - **Same tree as a direct commit.** For a non-empty stream, the root hash and the full set of
+//!   node writes (keys, version, encoded nodes) are identical to committing the same leaf set into
+//!   an empty store through the normal update path (an empty stream instead writes a root
+//!   tombstone; see [`StreamingBuilder::finish`]). That equivalence lets a snapshot restore rebuild
+//!   the authenticated tree from untrusted records and check the result against a trusted root.
 //! - **Bounded memory.** Peak working memory is bounded by the tree depth ([`DEPTH`]), not the leaf
 //!   count, so a restore can stream billions of leaves.
 //! - **Commit-safe.** The builder holds no borrow of the `WriteBatch` between calls, so a caller
