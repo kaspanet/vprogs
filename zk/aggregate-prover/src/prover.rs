@@ -3,7 +3,7 @@ use std::{
     thread::JoinHandle,
 };
 
-use vprogs_core_atomics::{AsyncQueue, AtomicAsyncLatch};
+use vprogs_core_atomics::{AsyncQueue, AtomicAsyncLatch, WaitCell};
 use vprogs_core_macros::smart_pointer;
 use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, ReceiptStore, ScheduledBatch};
@@ -27,6 +27,8 @@ pub struct AggregateProver<S: Store, P: Processor<S>> {
     pub(crate) inbox: AsyncQueue<Command<S, P>>,
     /// Opened to signal worker shutdown.
     pub(crate) shutdown: AtomicAsyncLatch,
+    /// Set once the worker has finished its startup passes (nonzero).
+    pub(crate) booted: WaitCell,
     /// Receipt-store handle the worker caches bundle settlement receipts through.
     pub(crate) receipt_store: ReceiptStore<S, P>,
     /// Worker thread handle, joined on shutdown so its GPU prover tears down before process exit.
@@ -57,6 +59,7 @@ impl<S: Store, P: Processor<S>> AggregateProver<S, P> {
         let prover = Self(Arc::new(AggregateProverData {
             inbox: AsyncQueue::new(),
             shutdown: AtomicAsyncLatch::new(),
+            booted: WaitCell::new(0),
             receipt_store,
             worker: Mutex::new(None),
         }));
@@ -73,6 +76,12 @@ impl<S: Store, P: Processor<S>> AggregateProver<S, P> {
     /// Enqueues a rollback command so the worker discards queued batches beyond the target.
     pub fn rollback(&self, target_index: u64) {
         self.inbox.push(Command::Rollback(target_index));
+    }
+
+    /// Blocks until the worker has finished its startup passes, so a first commit cannot race the
+    /// committed-gap gate's view of the journal.
+    pub fn wait_booted(&self) {
+        self.booted.wait_until_blocking(|v| v != 0);
     }
 
     /// Signals the worker to shut down and joins its thread, so the worker's GPU prover (and its
