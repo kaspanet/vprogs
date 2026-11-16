@@ -18,7 +18,7 @@ use kaspa_txscript::standard::pay_to_script_hash_script;
 use secp256k1::Keypair;
 use vprogs_l1_wallet::{
     Wallet,
-    build::{SignedCarrierTx, signed_carrier_transaction},
+    build::{FeePolicy, SignedCarrierTx, signed_carrier_transaction},
 };
 use vprogs_zk_backend_risc0_api::build_delegate_entry_script;
 
@@ -45,6 +45,8 @@ pub struct CarrierTxArgs<'a> {
     pub tx_version: u16,
     /// Consensus parameters for fee and storage mass calculation.
     pub params: &'a Params,
+    /// How the fee is priced.
+    pub fee_policy: FeePolicy,
     /// Extra outputs prepended before the change output (e.g. deposit outputs).
     pub extra_outputs: Vec<TransactionOutput>,
 }
@@ -77,6 +79,7 @@ pub fn signed_lane_action_tx(
         subnetwork_id: args.subnetwork_id,
         tx_version: args.tx_version,
         params: args.params,
+        fee_policy: args.fee_policy,
         extra_outputs: args.extra_outputs,
         finalize_payload: |rest: &[u8]| payload.finish(rest, &mut *sign_cell.borrow_mut()),
     })
@@ -94,6 +97,7 @@ pub fn signed_deposit_tx(args: CarrierTxArgs<'_>, payload: &LanePayload) -> Tran
         subnetwork_id: args.subnetwork_id,
         tx_version: args.tx_version,
         params: args.params,
+        fee_policy: args.fee_policy,
         extra_outputs: args.extra_outputs,
         finalize_payload: |_: &[u8]| payload.finish_unsigned(),
     })
@@ -201,6 +205,7 @@ mod tests {
                 subnetwork_id: SUBNETWORK_ID_NATIVE,
                 tx_version: TX_VERSION_TOCCATA,
                 params: &params,
+                fee_policy: FeePolicy::Floor,
                 extra_outputs: vec![deposit_output],
             },
             &payload,
@@ -253,6 +258,7 @@ mod tests {
                 subnetwork_id: SUBNETWORK_ID_NATIVE,
                 tx_version: TX_VERSION_TOCCATA,
                 params: &params,
+                fee_policy: FeePolicy::Floor,
                 extra_outputs: vec![],
             },
             &payload,

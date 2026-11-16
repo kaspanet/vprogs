@@ -61,19 +61,14 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
         &self.address
     }
 
-    /// The fee policy for a new build: [`build::FeePolicy::TargetFeerate`] at the node's
-    /// sub-minute (`normal_buckets[0]`) rate, falling back to the priority bucket if the vector
-    /// is unexpectedly empty, or to [`build::FeePolicy::Floor`] when the estimate RPC fails
-    /// (estimator unavailability must not stall issuance).
-    async fn fee_policy(&self) -> build::FeePolicy {
+    /// The fee policy for a new build: [`build::FeePolicy::TargetFeerate`] at the node's high
+    /// (`priority_bucket`) rate, because the normal and low buckets underprice under congestion
+    /// and an underpriced transaction is admitted but never mined, or to
+    /// [`build::FeePolicy::Floor`] when the estimate RPC fails (estimator unavailability must
+    /// not stall issuance).
+    pub async fn fee_policy(&self) -> build::FeePolicy {
         match self.client.get_fee_estimate().await {
-            Ok(estimate) => {
-                let feerate = estimate
-                    .normal_buckets
-                    .first()
-                    .map_or(estimate.priority_bucket.feerate, |bucket| bucket.feerate);
-                build::FeePolicy::TargetFeerate(feerate)
-            }
+            Ok(estimate) => build::FeePolicy::TargetFeerate(estimate_feerate(&estimate)),
             Err(e) => {
                 log::warn!("fee estimate fetch failed, falling back to the floor policy: {e}");
                 build::FeePolicy::Floor
@@ -144,6 +139,7 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
     ) -> Transaction {
         let utxos = self.fetch_spendable_utxos().await.expect("fetch spendable utxos");
         let (outpoint, entry) = utxos.into_iter().next().expect("no spendable UTXO for carrier");
+        let fee_policy = self.fee_policy().await;
         build::signed_carrier_transaction(build::SignedCarrierTx {
             outpoint,
             entry,
@@ -153,6 +149,7 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
             tx_version,
             params: self.params,
             extra_outputs,
+            fee_policy,
             finalize_payload,
         })
     }
@@ -252,6 +249,7 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
         count: usize,
     ) -> Transaction {
         let utxos = self.fetch_spendable_utxos().await.expect("fetch spendable utxos");
+        let fee_policy = self.fee_policy().await;
         build::pay_to_address_transaction(build::PayToAddressTx {
             candidates: utxos,
             recipient,
@@ -259,6 +257,7 @@ impl<'a, C: RpcApi + ?Sized> Wallet<'a, C> {
             count,
             keypair: self.keypair,
             change_address: &self.address,
+            fee_policy,
             params: self.params,
         })
         .expect("spendable UTXOs must fund the payout")
@@ -349,4 +348,37 @@ pub fn encode_activity_payload(meta: &[AccessMetadata], ix: &[u8]) -> Vec<u8> {
     buf.write_slice(meta);
     buf.write(ix);
     buf
+}
+
+/// The feerate a new build is priced at: the estimate's high (`priority_bucket`) rate, the one
+/// the node expects for sub-second inclusion. The normal and low buckets carry the sub-minute
+/// and sub-hour rates, which underprice under congestion: a transaction priced there is
+/// admitted to the mempool but never mined while any higher-feerate traffic exists.
+fn estimate_feerate(estimate: &kaspa_rpc_core::RpcFeeEstimate) -> f64 {
+    estimate.priority_bucket.feerate
+}
+
+#[cfg(test)]
+mod tests {
+    use kaspa_rpc_core::{RpcFeeEstimate, RpcFeerateBucket};
+
+    use super::*;
+
+    /// A bucket carrying `feerate` with an arbitrary inclusion estimate.
+    fn bucket(feerate: f64, estimated_seconds: f64) -> RpcFeerateBucket {
+        RpcFeerateBucket { feerate, estimated_seconds }
+    }
+
+    /// The high bucket must win over the normal and low buckets: pricing at
+    /// `normal_buckets[0]` (the sub-minute rate) admits a transaction under congestion but
+    /// never mines it.
+    #[test]
+    fn estimate_feerate_picks_the_priority_bucket_over_the_normal_and_low_buckets() {
+        let estimate = RpcFeeEstimate {
+            priority_bucket: bucket(3.0, 1.0),
+            normal_buckets: vec![bucket(2.0, 30.0)],
+            low_buckets: vec![bucket(1.0, 3_600.0)],
+        };
+        assert_eq!(estimate_feerate(&estimate), 3.0);
+    }
 }
