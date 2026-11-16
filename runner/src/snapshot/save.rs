@@ -249,6 +249,11 @@ fn write_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveError>
         bootstrap_txid,
         committed_index: n_s,
         chain_block_metadata: meta_at_s,
+        // TODO: a catch-up joiner's identity carries no pin (start.rs records it only on the
+        // fresh-deploy arm), so its snapshot bakes the zero tip and the restored node rebuilds
+        // the covenant SPK from zero. Harmless while every joiner's covenant was itself deployed
+        // with the zero pin (dev); once joiners can adopt a non-zero-pin covenant, refuse to save
+        // without a pin (or record the pin on the catch-up path in start.rs).
         pinned_lane_tip: identity.pinned_lane_tip().unwrap_or_default(),
     };
     // Buffered so the three `write_all` calls per record coalesce into one syscall-ish burst.
