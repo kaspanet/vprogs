@@ -356,6 +356,7 @@ fn bundle_advancing_only_the_lane_tip_is_settled() {
         let prover = AggregateProver::new(
             JournalBackend,
             scheduler.state().receipt_store(),
+            None,
             AggregateProverConfig {
                 lane_key: lane_key(),
                 covenant_id: Some(Hash::from_bytes(COVENANT_ID)),

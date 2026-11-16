@@ -3,7 +3,7 @@
 
 use std::{collections::HashSet, future::Future};
 
-use kaspa_consensus_core::tx::{ScriptPublicKey, Transaction, TransactionOutpoint, UtxoEntry};
+use kaspa_consensus_core::tx::{Transaction, TransactionOutpoint, UtxoEntry};
 use kaspa_hashes::Hash;
 use vprogs_core_atomics::AtomicAsyncLatch;
 
@@ -54,16 +54,37 @@ pub trait SettlementSink {
         shutdown: &AtomicAsyncLatch,
     ) -> impl Future<Output = SubmitOutcome>;
 
-    /// Diagnoses whether the node silently dropped a submitted settlement: gone from its mempool
-    /// and orphan pool while the covenant outpoint `spk`/`outpoint` describe is still unspent. The
-    /// confirm wait probes this periodically and resubmits the same transaction when it returns
-    /// `true`. Defaults to `false` (assume live) for sinks without node visibility.
-    fn dropped(
+    /// Diagnoses a submitted settlement from node state on the confirm-wait tick. `txid`
+    /// identifies the submitted transaction, `covenant` the outpoint it spends, and
+    /// `continuation` the covenant UTXO its output 0 mints. Still pending in the mempool, silently
+    /// dropped (gone from the pools over a still-unspent covenant outpoint, so the caller
+    /// resubmits), landed on chain (the covenant outpoint spent with the continuation UTXO live,
+    /// which resolves the wait without the settlement watch), or superseded (another settlement
+    /// spent the covenant outpoint). Defaults to [`ConfirmProbe::Pending`] (assume live) for sinks
+    /// without node visibility.
+    fn probe(
         &self,
         _txid: Hash,
-        _spk: ScriptPublicKey,
-        _outpoint: TransactionOutpoint,
-    ) -> impl Future<Output = bool> + '_ {
-        std::future::ready(false)
+        _covenant: OutpointAt<'_>,
+        _continuation: OutpointAt<'_>,
+    ) -> impl Future<Output = ConfirmProbe> {
+        std::future::ready(ConfirmProbe::Pending)
     }
+}
+
+/// What the confirm-wait probe learned about a submitted settlement, read from the node's mempool
+/// and the covenant address's UTXO set.
+pub enum ConfirmProbe {
+    /// The transaction is still pending in the mempool or orphan pool, or the probe could not read
+    /// the node: the wait keeps running exactly as without the probe.
+    Pending,
+    /// The transaction vanished from both pools while the covenant outpoint is still unspent: the
+    /// node dropped it, so the caller resubmits the same transaction.
+    Dropped,
+    /// The covenant outpoint is spent and the continuation UTXO this submission mints is live on
+    /// chain: the settlement landed. Carries that UTXO's block DAA score.
+    Landed(u64),
+    /// The covenant outpoint is spent and the continuation UTXO is not live: another settlement
+    /// won the spend, so this bundle is superseded.
+    Superseded,
 }

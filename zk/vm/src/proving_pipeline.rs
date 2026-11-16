@@ -1,5 +1,6 @@
 use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_scheduling_scheduler::{Processor, ReceiptStore, ScheduledBatch, ScheduledTransaction};
+use vprogs_state_settlement_journal::StoreJournal;
 use vprogs_storage_types::Store;
 use vprogs_zk_aggregate_prover::{AggregateProver, AggregateProverConfig};
 use vprogs_zk_batch_prover::{BatchProver, BatchProverConfig, LaneProofSource};
@@ -48,13 +49,15 @@ impl<S: Store, P: Processor<S>> ProvingPipeline<S, P> {
     /// Creates a full settlement proving pipeline: transaction + batch + aggregate provers. The
     /// aggregate prover bundles the per-batch receipts the batch prover produces and proves one
     /// settlement receipt per bundle, fetching each bundle's final-block lane proof from
-    /// `lane_source`.
+    /// `lane_source`. `journal` is the journal of proved-but-unsettled bundles enabling settlement
+    /// resume across restarts, or `None` on journal-free paths (exec/test runs).
     pub fn aggregate<B, L>(
         backend: B,
         store: S,
         receipt_store: ReceiptStore<S, P>,
         batch_config: BatchProverConfig,
         agg_config: AggregateProverConfig<L, B::Receipt>,
+        journal: Option<StoreJournal<S>>,
     ) -> Self
     where
         B: Backend + vprogs_zk_aggregate_prover::Backend,
@@ -70,7 +73,7 @@ impl<S: Store, P: Processor<S>> ProvingPipeline<S, P> {
         Self::Aggregate(
             TransactionProver::new(backend.clone()),
             BatchProver::new(backend.clone(), store, batch_config),
-            AggregateProver::new(backend, receipt_store, agg_config),
+            AggregateProver::new(backend, receipt_store, journal, agg_config),
         )
     }
 

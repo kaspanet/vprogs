@@ -8,6 +8,6 @@ mod effects;
 mod remote;
 mod settler;
 
-pub use effects::{FeeSource, FundedSettlement, SettlementSink, SubmitOutcome};
+pub use effects::{ConfirmProbe, FeeSource, FundedSettlement, SettlementSink, SubmitOutcome};
 pub use remote::{RpcSink, WalletFeeSource};
 pub use settler::{SettleOutcome, Settler};

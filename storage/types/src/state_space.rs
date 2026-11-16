@@ -18,4 +18,6 @@ pub enum StateSpace {
     ProofReceipt,
     /// App-defined secondary indexes over resources, written by the indexer hooks.
     Index,
+    /// Proved-but-unsettled bundle journal, keyed by bundle-start checkpoint index.
+    SettlementJournal,
 }

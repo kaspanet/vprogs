@@ -3,6 +3,7 @@
 
 use std::{collections::HashSet, time::Duration};
 
+use kaspa_consensus_core::tx::TransactionOutpoint;
 use tokio::sync::watch;
 use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_l1_types::SettlementInfo;
@@ -13,7 +14,7 @@ use crate::{
     SettlementMode,
     confirm::OutpointAt,
     covenant::{CovenantState, build_settlement_for_mode},
-    settle::effects::{FeeSource, FundedSettlement, SettlementSink, SubmitOutcome},
+    settle::effects::{ConfirmProbe, FeeSource, FundedSettlement, SettlementSink, SubmitOutcome},
 };
 
 /// How long a submitted settlement may stay unconfirmed before the confirm wait WARN-logs and keeps
@@ -148,6 +149,15 @@ impl<F: FeeSource, K: SettlementSink> Settler<F, K> {
                 artifact.block_prove_to,
             );
 
+            // The continuation UTXO this submission mints (its output 0 at the advance's SPK).
+            // The confirm-wait tick's chain probe identifies OUR landing by finding exactly this
+            // outpoint live on chain, so a settlement the chain already holds resolves from the
+            // submission's own data even when the watch never observes it.
+            let continuation = OutpointAt {
+                spk: built.advance.continuation_spk(),
+                outpoint: TransactionOutpoint::new(txid, 0),
+            };
+
             // Confirm by awaiting the settlement watch rather than polling: the observer
             // publishes the covenant's last settlement, so a change past `cov` is exactly the
             // confirmation signal. The predicate (advanced state, DAA score at or past `cov`'s)
@@ -158,11 +168,15 @@ impl<F: FeeSource, K: SettlementSink> Settler<F, K> {
             let min_daa = cov.daa_score;
             let mut rx = self.settlement.clone();
             // The confirm has no natural deadline (without a competitor nothing advances the
-            // covenant), so the tick WARNs every CONFIRM_WARN_INTERVAL and probes for a silent
-            // node drop, resubmitting the same transaction on one. The tick is pinned and
+            // covenant), so the tick WARNs every CONFIRM_WARN_INTERVAL and probes the node,
+            // resubmitting the same transaction on a silent drop. The tick is pinned and
             // self-resetting, not recreated per pass: the watch fires on every chain fetch (~1/s
             // on an active chain), and a fresh sleep would be reset by that churn before ever
-            // completing, starving the tick.
+            // completing, starving the tick. The same probe is the backstop for a watch that
+            // never advances past the bundle's base (the production wedge: the settlement mined
+            // and accepted while the observer stayed blind to it): a spent covenant outpoint
+            // with our continuation UTXO live confirms the wait without the watch, so the settler
+            // never again waits forever on a settlement the chain already holds.
             let warn_tick = tokio::time::sleep(CONFIRM_WARN_INTERVAL);
             tokio::pin!(warn_tick);
             let mut confirmed: Option<SettlementInfo> = None;
@@ -184,22 +198,46 @@ impl<F: FeeSource, K: SettlementSink> Settler<F, K> {
                     }
                     () = &mut warn_tick => {
                         waited += CONFIRM_WARN_INTERVAL;
-                        if self
-                            .sink
-                            .dropped(txid, cov.spk.clone(), cov.outpoint)
-                            .await
-                        {
-                            log::warn!(
-                                "settlement-worker: settlement {txid} dropped by the node; \
-                                 resubmitting"
-                            );
-                            continue 'settle;
+                        match self.sink.probe(txid, covenant, continuation).await {
+                            ConfirmProbe::Dropped => {
+                                log::warn!(
+                                    "settlement-worker: settlement {txid} dropped by the node; \
+                                     resubmitting"
+                                );
+                                continue 'settle;
+                            }
+                            ConfirmProbe::Landed(daa) => {
+                                log::info!(
+                                    "settlement-worker: settlement {txid} confirmed by the \
+                                     chain probe (daa {daa}); the settlement watch never \
+                                     observed it"
+                                );
+                                // Resolved from the submission's own data: only the tx id and
+                                // DAA score are consumed below, so the watch-observed fields
+                                // carry their defaults.
+                                confirmed = Some(SettlementInfo {
+                                    tx_id: txid,
+                                    daa_score: daa.into(),
+                                    block_prove_to: artifact.block_prove_to,
+                                    ..SettlementInfo::default()
+                                });
+                                break;
+                            }
+                            ConfirmProbe::Superseded => {
+                                log::info!(
+                                    "settlement-worker: covenant outpoint spent by another \
+                                     settlement while confirming {txid}; superseding this bundle"
+                                );
+                                return SettleOutcome::Superseded;
+                            }
+                            ConfirmProbe::Pending => {
+                                log::warn!(
+                                    "settlement-worker: settlement {txid} unconfirmed after \
+                                     {}s, still waiting",
+                                    waited.as_secs(),
+                                );
+                            }
                         }
-                        log::warn!(
-                            "settlement-worker: settlement {txid} unconfirmed after {}s, still \
-                             waiting",
-                            waited.as_secs(),
-                        );
                         warn_tick
                             .as_mut()
                             .reset(tokio::time::Instant::now() + CONFIRM_WARN_INTERVAL);

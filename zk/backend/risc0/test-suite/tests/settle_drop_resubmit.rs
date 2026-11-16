@@ -20,8 +20,8 @@ use vprogs_zk_backend_risc0_covenant::{
     DEFAULT_PERMISSION_OUTPUT_VALUE, build_dev_redeem_script, dev_redeem_script_len,
 };
 use vprogs_zk_backend_risc0_settler::{
-    CovenantState, FeeSource, FundedSettlement, SettleOutcome, SettlementMode, SettlementSink,
-    Settler, SubmitOutcome,
+    ConfirmProbe, CovenantState, FeeSource, FundedSettlement, SettleOutcome, SettlementMode,
+    SettlementSink, Settler, SubmitOutcome,
 };
 use vprogs_zk_backend_risc0_test_suite::{
     batch_aggregator_elf, batch_processor_elf, test_lane_key, transaction_processor_elf,
@@ -131,14 +131,18 @@ impl SettlementSink for DroppingSink {
         SubmitOutcome::Accepted(id)
     }
 
-    async fn dropped(
+    async fn probe(
         &self,
         _txid: Hash,
-        _spk: kaspa_consensus_core::tx::ScriptPublicKey,
-        _outpoint: kaspa_consensus_core::tx::TransactionOutpoint,
-    ) -> bool {
+        _covenant: vprogs_zk_backend_risc0_settler::OutpointAt<'_>,
+        _continuation: vprogs_zk_backend_risc0_settler::OutpointAt<'_>,
+    ) -> ConfirmProbe {
         // One silent drop, then live forever after.
-        self.report_drop_once.swap(false, Ordering::SeqCst)
+        if self.report_drop_once.swap(false, Ordering::SeqCst) {
+            ConfirmProbe::Dropped
+        } else {
+            ConfirmProbe::Pending
+        }
     }
 }
 
