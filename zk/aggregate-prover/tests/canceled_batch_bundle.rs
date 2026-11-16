@@ -30,7 +30,7 @@ use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_aggregate_prover::{
     AggregateProver, AggregateProverConfig, ScheduledBundle, SettlementArtifact,
 };
-use vprogs_zk_batch_prover::{LaneProofRequest, LaneProofSource};
+use vprogs_zk_batch_prover::{LaneProofError, LaneProofRequest, LaneProofSource};
 
 /// Transaction payload whose execution parks until the test releases it.
 const GATE_TX: usize = 100;
@@ -99,7 +99,10 @@ impl vprogs_zk_aggregate_prover::Backend for NoopBackend {
 struct NoLaneProofs;
 
 impl LaneProofSource for NoLaneProofs {
-    async fn fetch_lane_proof(&self, _req: LaneProofRequest) -> GetSeqCommitLaneProofResponse {
+    async fn fetch_lane_proof(
+        &self,
+        _req: LaneProofRequest,
+    ) -> Result<GetSeqCommitLaneProofResponse, LaneProofError> {
         unreachable!("the repro proves no bundle, so it fetches no lane proof")
     }
 }
