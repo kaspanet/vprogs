@@ -40,8 +40,9 @@ use vprogs_l1_wallet::encode_activity_payload;
 use vprogs_node_test_utils::L1Node;
 use vprogs_runner::{
     BridgeObservers, BridgeParams, Elfs, PersistedState, ProvingParams, RunnerConfig, RunnerNode,
-    RunnerStore, SettlementQueue, StartMode, build_proving_node, run_covenant_reroot, start_runner,
+    RunnerStore, SettlementQueue, StartMode, build_proving_node, run_covenant_reroot,
     snapshot::{restore::restore_snapshot, save::save_snapshot},
+    start_runner,
 };
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_settlement_journal::StoreJournal;
@@ -1822,21 +1823,24 @@ async fn warm_restart_settles_pending_tail() {
     // === Run 1 over a persistent store: settle a few ranges, then leave the last proved bundle
     // unconfirmed (no block mines after its submission) and kill the prover mid confirm-wait. ===
     let db_dir = TempDir::new().expect("persistent store dir");
-    let prover_a1 = spawn_prover_over_store(ProverSpec {
-l1: &l1,
-label: "A1",
-keypair: kp_a,
-address: addr_a.clone(),
-bundle_size: 2..=4,
-network_id,
-params: &params,
-lane_key,
-covenant_id,
-covenant: bootstrap_state.clone(),
-elfs,
-alternation: None,
-start_from: Some(block_deploy)
-    }, db_dir.path())
+    let prover_a1 = spawn_prover_over_store(
+        ProverSpec {
+            l1: &l1,
+            label: "A1",
+            keypair: kp_a,
+            address: addr_a.clone(),
+            bundle_size: 2..=4,
+            network_id,
+            params: &params,
+            lane_key,
+            covenant_id,
+            covenant: bootstrap_state.clone(),
+            elfs,
+            alternation: None,
+            start_from: Some(block_deploy),
+        },
+        db_dir.path(),
+    )
     .await;
 
     let mut settled;
@@ -1895,21 +1899,24 @@ start_from: Some(block_deploy)
     let kp_a2 = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
     let addr_a2 = prover_address(&kp_a2, network_id);
     l1.fund_address(&addr_a2, FUND_VALUE, FUND_COUNT).await;
-    let prover_a2 = spawn_prover_over_store(ProverSpec {
-l1: &l1,
-label: "A2",
-keypair: kp_a2,
-address: addr_a2.clone(),
-bundle_size: 2..=4,
-network_id,
-params: &params,
-lane_key,
-covenant_id,
-covenant: bootstrap_state,
-elfs,
-alternation: None,
-start_from: Some(block_deploy)
-    }, db_dir.path())
+    let prover_a2 = spawn_prover_over_store(
+        ProverSpec {
+            l1: &l1,
+            label: "A2",
+            keypair: kp_a2,
+            address: addr_a2.clone(),
+            bundle_size: 2..=4,
+            network_id,
+            params: &params,
+            lane_key,
+            covenant_id,
+            covenant: bootstrap_state,
+            elfs,
+            alternation: None,
+            start_from: Some(block_deploy),
+        },
+        db_dir.path(),
+    )
     .await;
 
     let mut final_len = 0usize;
@@ -2028,21 +2035,24 @@ async fn warm_restart_after_competitor_sweeps_tail() {
 
     // === Run 1 over a persistent store: settle a few ranges, then leave the pending tail. ===
     let db_dir = TempDir::new().expect("persistent store dir");
-    let prover_a1 = spawn_prover_over_store(ProverSpec {
-l1: &l1,
-label: "A1",
-keypair: kp_a,
-address: addr_a.clone(),
-bundle_size: 2..=4,
-network_id,
-params: &params,
-lane_key,
-covenant_id,
-covenant: bootstrap_state.clone(),
-elfs,
-alternation: None,
-start_from: Some(block_deploy)
-    }, db_dir.path())
+    let prover_a1 = spawn_prover_over_store(
+        ProverSpec {
+            l1: &l1,
+            label: "A1",
+            keypair: kp_a,
+            address: addr_a.clone(),
+            bundle_size: 2..=4,
+            network_id,
+            params: &params,
+            lane_key,
+            covenant_id,
+            covenant: bootstrap_state.clone(),
+            elfs,
+            alternation: None,
+            start_from: Some(block_deploy),
+        },
+        db_dir.path(),
+    )
     .await;
 
     let mut settled;
@@ -2100,19 +2110,19 @@ start_from: Some(block_deploy)
         daa_score: 0,
     };
     let prover_b = spawn_prover(ProverSpec {
-l1: &l1,
-label: "B",
-keypair: kp_b,
-address: addr_b.clone(),
-bundle_size: 2..=4,
-network_id,
-params: &params,
-lane_key,
-covenant_id,
-covenant: catchup_covenant,
-elfs,
-alternation: None,
-start_from: Some(block_deploy)
+        l1: &l1,
+        label: "B",
+        keypair: kp_b,
+        address: addr_b.clone(),
+        bundle_size: 2..=4,
+        network_id,
+        params: &params,
+        lane_key,
+        covenant_id,
+        covenant: catchup_covenant,
+        elfs,
+        alternation: None,
+        start_from: Some(block_deploy),
     })
     .await;
 
@@ -2140,21 +2150,24 @@ start_from: Some(block_deploy)
     let kp_a2 = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
     let addr_a2 = prover_address(&kp_a2, network_id);
     l1.fund_address(&addr_a2, FUND_VALUE, FUND_COUNT).await;
-    let prover_a2 = spawn_prover_over_store(ProverSpec {
-l1: &l1,
-label: "A2",
-keypair: kp_a2,
-address: addr_a2.clone(),
-bundle_size: 2..=4,
-network_id,
-params: &params,
-lane_key,
-covenant_id,
-covenant: bootstrap_state,
-elfs,
-alternation: None,
-start_from: Some(block_deploy)
-    }, db_dir.path())
+    let prover_a2 = spawn_prover_over_store(
+        ProverSpec {
+            l1: &l1,
+            label: "A2",
+            keypair: kp_a2,
+            address: addr_a2.clone(),
+            bundle_size: 2..=4,
+            network_id,
+            params: &params,
+            lane_key,
+            covenant_id,
+            covenant: bootstrap_state,
+            elfs,
+            alternation: None,
+            start_from: Some(block_deploy),
+        },
+        db_dir.path(),
+    )
     .await;
 
     let mut final_len = 0usize;
@@ -2299,21 +2312,24 @@ async fn warm_restart_splits_at_competitor_boundary() {
     // submits only the first (it confirms one settlement at a time and nothing mines), so the
     // journal's last entry, the straddler, is never submitted. ===
     let db_dir = TempDir::new().expect("persistent store dir");
-    let prover_a1 = spawn_prover_over_store(ProverSpec {
-l1: &l1,
-label: "A1",
-keypair: kp_a,
-address: addr_a.clone(),
-bundle_size: 4..=4,
-network_id,
-params: &params,
-lane_key,
-covenant_id,
-covenant: bootstrap_state.clone(),
-elfs,
-alternation: None,
-start_from: Some(block_deploy)
-    }, db_dir.path())
+    let prover_a1 = spawn_prover_over_store(
+        ProverSpec {
+            l1: &l1,
+            label: "A1",
+            keypair: kp_a,
+            address: addr_a.clone(),
+            bundle_size: 4..=4,
+            network_id,
+            params: &params,
+            lane_key,
+            covenant_id,
+            covenant: bootstrap_state.clone(),
+            elfs,
+            alternation: None,
+            start_from: Some(block_deploy),
+        },
+        db_dir.path(),
+    )
     .await;
 
     let mut settled;
@@ -2412,19 +2428,19 @@ start_from: Some(block_deploy)
         daa_score: 0,
     };
     let prover_b = spawn_prover(ProverSpec {
-l1: &l1,
-label: "B",
-keypair: kp_b,
-address: addr_b.clone(),
-bundle_size: 1..=1,
-network_id,
-params: &params,
-lane_key,
-covenant_id,
-covenant: catchup_covenant,
-elfs,
-alternation: None,
-start_from: Some(block_deploy)
+        l1: &l1,
+        label: "B",
+        keypair: kp_b,
+        address: addr_b.clone(),
+        bundle_size: 1..=1,
+        network_id,
+        params: &params,
+        lane_key,
+        covenant_id,
+        covenant: catchup_covenant,
+        elfs,
+        alternation: None,
+        start_from: Some(block_deploy),
     })
     .await;
     await_mempool_proving_through(&l1, covenant_id, &interior_blocks).await;
@@ -2481,21 +2497,25 @@ start_from: Some(block_deploy)
     let addr_a2 = prover_address(&kp_a2, network_id);
     l1.fund_address(&addr_a2, FUND_VALUE, FUND_COUNT).await;
     let store_a2 = open_store_retrying(db_dir.path());
-    let prover_a2 = spawn_prover_on_store(ProverSpec {
-l1: &l1,
-label: "A2",
-keypair: kp_a2,
-address: addr_a2.clone(),
-bundle_size: 4..=4,
-network_id,
-params: &params,
-lane_key,
-covenant_id,
-covenant: bootstrap_state,
-elfs,
-alternation: None,
-start_from: Some(block_deploy)
-    }, store_a2.clone(), false)
+    let prover_a2 = spawn_prover_on_store(
+        ProverSpec {
+            l1: &l1,
+            label: "A2",
+            keypair: kp_a2,
+            address: addr_a2.clone(),
+            bundle_size: 4..=4,
+            network_id,
+            params: &params,
+            lane_key,
+            covenant_id,
+            covenant: bootstrap_state,
+            elfs,
+            alternation: None,
+            start_from: Some(block_deploy),
+        },
+        store_a2.clone(),
+        false,
+    )
     .await;
     let journal_a2 = StoreJournal::new(store_a2.clone());
 
@@ -2630,21 +2650,24 @@ async fn warm_restart_refeeds_unsubmitted_tail() {
     // submits only the first (it confirms one settlement at a time and nothing mines), so the
     // journal's last entry is never submitted. ===
     let db_dir = TempDir::new().expect("persistent store dir");
-    let prover_a1 = spawn_prover_over_store(ProverSpec {
-l1: &l1,
-label: "A1",
-keypair: kp_a,
-address: addr_a.clone(),
-bundle_size: 4..=4,
-network_id,
-params: &params,
-lane_key,
-covenant_id,
-covenant: bootstrap_state.clone(),
-elfs,
-alternation: None,
-start_from: Some(block_deploy)
-    }, db_dir.path())
+    let prover_a1 = spawn_prover_over_store(
+        ProverSpec {
+            l1: &l1,
+            label: "A1",
+            keypair: kp_a,
+            address: addr_a.clone(),
+            bundle_size: 4..=4,
+            network_id,
+            params: &params,
+            lane_key,
+            covenant_id,
+            covenant: bootstrap_state.clone(),
+            elfs,
+            alternation: None,
+            start_from: Some(block_deploy),
+        },
+        db_dir.path(),
+    )
     .await;
 
     let mut settled;
@@ -2720,21 +2743,25 @@ start_from: Some(block_deploy)
     let addr_a2 = prover_address(&kp_a2, network_id);
     l1.fund_address(&addr_a2, FUND_VALUE, FUND_COUNT).await;
     let store_a2 = open_store_retrying(db_dir.path());
-    let prover_a2 = spawn_prover_on_store(ProverSpec {
-l1: &l1,
-label: "A2",
-keypair: kp_a2,
-address: addr_a2.clone(),
-bundle_size: 4..=4,
-network_id,
-params: &params,
-lane_key,
-covenant_id,
-covenant: bootstrap_state,
-elfs,
-alternation: None,
-start_from: Some(block_deploy)
-    }, store_a2.clone(), false)
+    let prover_a2 = spawn_prover_on_store(
+        ProverSpec {
+            l1: &l1,
+            label: "A2",
+            keypair: kp_a2,
+            address: addr_a2.clone(),
+            bundle_size: 4..=4,
+            network_id,
+            params: &params,
+            lane_key,
+            covenant_id,
+            covenant: bootstrap_state,
+            elfs,
+            alternation: None,
+            start_from: Some(block_deploy),
+        },
+        store_a2.clone(),
+        false,
+    )
     .await;
     let journal_a2 = StoreJournal::new(store_a2.clone());
 
@@ -2870,21 +2897,25 @@ async fn warm_restart_after_competitor_settles_past_tail() {
     // below can read the journal and the batch frontier while the node runs. ===
     let db_dir = TempDir::new().expect("persistent store dir");
     let store_a1 = open_store_retrying(db_dir.path());
-    let prover_a1 = spawn_prover_on_store(ProverSpec {
-l1: &l1,
-label: "A1",
-keypair: kp_a,
-address: addr_a.clone(),
-bundle_size: 4..=4,
-network_id,
-params: &params,
-lane_key,
-covenant_id,
-covenant: bootstrap_state.clone(),
-elfs,
-alternation: None,
-start_from: Some(block_deploy)
-    }, store_a1.clone(), false)
+    let prover_a1 = spawn_prover_on_store(
+        ProverSpec {
+            l1: &l1,
+            label: "A1",
+            keypair: kp_a,
+            address: addr_a.clone(),
+            bundle_size: 4..=4,
+            network_id,
+            params: &params,
+            lane_key,
+            covenant_id,
+            covenant: bootstrap_state.clone(),
+            elfs,
+            alternation: None,
+            start_from: Some(block_deploy),
+        },
+        store_a1.clone(),
+        false,
+    )
     .await;
     let journal_a1 = StoreJournal::new(store_a1.clone());
 
@@ -2984,19 +3015,19 @@ start_from: Some(block_deploy)
         daa_score: 0,
     };
     let prover_b = spawn_prover(ProverSpec {
-l1: &l1,
-label: "B",
-keypair: kp_b,
-address: addr_b.clone(),
-bundle_size: 1..=1,
-network_id,
-params: &params,
-lane_key,
-covenant_id,
-covenant: catchup_covenant,
-elfs,
-alternation: None,
-start_from: Some(block_deploy)
+        l1: &l1,
+        label: "B",
+        keypair: kp_b,
+        address: addr_b.clone(),
+        bundle_size: 1..=1,
+        network_id,
+        params: &params,
+        lane_key,
+        covenant_id,
+        covenant: catchup_covenant,
+        elfs,
+        alternation: None,
+        start_from: Some(block_deploy),
     })
     .await;
     await_mempool_proving_through(&l1, covenant_id, &[gap_block]).await;
@@ -3042,21 +3073,25 @@ start_from: Some(block_deploy)
     let kp_a2 = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
     let addr_a2 = prover_address(&kp_a2, network_id);
     l1.fund_address(&addr_a2, FUND_VALUE, FUND_COUNT).await;
-    let prover_a2 = spawn_prover_on_store(ProverSpec {
-l1: &l1,
-label: "A2",
-keypair: kp_a2,
-address: addr_a2.clone(),
-bundle_size: 4..=4,
-network_id,
-params: &params,
-lane_key,
-covenant_id,
-covenant: bootstrap_state,
-elfs,
-alternation: None,
-start_from: Some(block_deploy)
-    }, store_a1.clone(), false)
+    let prover_a2 = spawn_prover_on_store(
+        ProverSpec {
+            l1: &l1,
+            label: "A2",
+            keypair: kp_a2,
+            address: addr_a2.clone(),
+            bundle_size: 4..=4,
+            network_id,
+            params: &params,
+            lane_key,
+            covenant_id,
+            covenant: bootstrap_state,
+            elfs,
+            alternation: None,
+            start_from: Some(block_deploy),
+        },
+        store_a1.clone(),
+        false,
+    )
     .await;
 
     let mut final_len = after_b;
@@ -3190,21 +3225,24 @@ async fn warm_restart_after_own_settlement_lands() {
     // with a minimum of 2 an empty block pairing off with another empty one strands a lone real
     // batch below the bundle minimum forever, so the tail settlement never exists to await.
     let db_dir = TempDir::new().expect("persistent store dir");
-    let prover_a1 = spawn_prover_over_store(ProverSpec {
-l1: &l1,
-label: "A1",
-keypair: kp_a,
-address: addr_a.clone(),
-bundle_size: 1..=4,
-network_id,
-params: &params,
-lane_key,
-covenant_id,
-covenant: bootstrap_state.clone(),
-elfs,
-alternation: None,
-start_from: Some(block_deploy)
-    }, db_dir.path())
+    let prover_a1 = spawn_prover_over_store(
+        ProverSpec {
+            l1: &l1,
+            label: "A1",
+            keypair: kp_a,
+            address: addr_a.clone(),
+            bundle_size: 1..=4,
+            network_id,
+            params: &params,
+            lane_key,
+            covenant_id,
+            covenant: bootstrap_state.clone(),
+            elfs,
+            alternation: None,
+            start_from: Some(block_deploy),
+        },
+        db_dir.path(),
+    )
     .await;
 
     let mut settled;
@@ -3286,21 +3324,24 @@ start_from: Some(block_deploy)
     let kp_a2 = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
     let addr_a2 = prover_address(&kp_a2, network_id);
     l1.fund_address(&addr_a2, FUND_VALUE, FUND_COUNT).await;
-    let prover_a2 = spawn_prover_over_store(ProverSpec {
-l1: &l1,
-label: "A2",
-keypair: kp_a2,
-address: addr_a2.clone(),
-bundle_size: 1..=4,
-network_id,
-params: &params,
-lane_key,
-covenant_id,
-covenant: bootstrap_state,
-elfs,
-alternation: None,
-start_from: Some(block_deploy)
-    }, db_dir.path())
+    let prover_a2 = spawn_prover_over_store(
+        ProverSpec {
+            l1: &l1,
+            label: "A2",
+            keypair: kp_a2,
+            address: addr_a2.clone(),
+            bundle_size: 1..=4,
+            network_id,
+            params: &params,
+            lane_key,
+            covenant_id,
+            covenant: bootstrap_state,
+            elfs,
+            alternation: None,
+            start_from: Some(block_deploy),
+        },
+        db_dir.path(),
+    )
     .await;
 
     let mut final_len = after_land;
@@ -3418,21 +3459,25 @@ async fn warm_restart_covers_committed_gap() {
     // the kill-point loop below detects that journal growth and retries on a fresh window.
     let db_dir = TempDir::new().expect("persistent store dir");
     let store = RunnerStore::open(db_dir.path());
-    let prover_a1 = spawn_prover_on_store(ProverSpec {
-l1: &l1,
-label: "A1",
-keypair: kp_a,
-address: addr_a.clone(),
-bundle_size: 4..=4,
-network_id,
-params: &params,
-lane_key,
-covenant_id,
-covenant: bootstrap_state.clone(),
-elfs,
-alternation: None,
-start_from: Some(block_deploy)
-    }, store.clone(), false)
+    let prover_a1 = spawn_prover_on_store(
+        ProverSpec {
+            l1: &l1,
+            label: "A1",
+            keypair: kp_a,
+            address: addr_a.clone(),
+            bundle_size: 4..=4,
+            network_id,
+            params: &params,
+            lane_key,
+            covenant_id,
+            covenant: bootstrap_state.clone(),
+            elfs,
+            alternation: None,
+            start_from: Some(block_deploy),
+        },
+        store.clone(),
+        false,
+    )
     .await;
 
     let mut settled = 0usize;
@@ -3569,21 +3614,25 @@ start_from: Some(block_deploy)
     let kp_a2 = Keypair::new(secp256k1::SECP256K1, &mut secp256k1::rand::thread_rng());
     let addr_a2 = prover_address(&kp_a2, network_id);
     l1.fund_address(&addr_a2, FUND_VALUE, FUND_COUNT).await;
-    let prover_a2 = spawn_prover_on_store(ProverSpec {
-l1: &l1,
-label: "A2",
-keypair: kp_a2,
-address: addr_a2.clone(),
-bundle_size: 4..=4,
-network_id,
-params: &params,
-lane_key,
-covenant_id,
-covenant: bootstrap_state,
-elfs,
-alternation: None,
-start_from: Some(block_deploy)
-    }, open_store_retrying(db_dir.path()), false)
+    let prover_a2 = spawn_prover_on_store(
+        ProverSpec {
+            l1: &l1,
+            label: "A2",
+            keypair: kp_a2,
+            address: addr_a2.clone(),
+            bundle_size: 4..=4,
+            network_id,
+            params: &params,
+            lane_key,
+            covenant_id,
+            covenant: bootstrap_state,
+            elfs,
+            alternation: None,
+            start_from: Some(block_deploy),
+        },
+        open_store_retrying(db_dir.path()),
+        false,
+    )
     .await;
 
     let mut final_len = kill_len;
@@ -3697,21 +3746,25 @@ async fn settler_confirms_with_blind_settlement_watch() {
     // === The blind-watch prover: the settler's only confirmation path is the warn tick's chain
     // probe, exactly as in the incident. ===
     let db_dir = TempDir::new().expect("persistent store dir");
-    let prover = spawn_prover_on_store(ProverSpec {
-l1: &l1,
-label: "A",
-keypair: kp_a,
-address: addr_a.clone(),
-bundle_size: 1..=4,
-network_id,
-params: &params,
-lane_key,
-covenant_id,
-covenant: bootstrap_state,
-elfs,
-alternation: None,
-start_from: Some(block_deploy)
-    }, RunnerStore::open(db_dir.path()), true)
+    let prover = spawn_prover_on_store(
+        ProverSpec {
+            l1: &l1,
+            label: "A",
+            keypair: kp_a,
+            address: addr_a.clone(),
+            bundle_size: 1..=4,
+            network_id,
+            params: &params,
+            lane_key,
+            covenant_id,
+            covenant: bootstrap_state,
+            elfs,
+            alternation: None,
+            start_from: Some(block_deploy),
+        },
+        RunnerStore::open(db_dir.path()),
+        true,
+    )
     .await;
 
     // === Drive work and watch the covenant chain grow. With the watch blind, every confirmation
@@ -3864,19 +3917,19 @@ async fn prover_joins_live_lane() {
     // bootstrap outpoint IS unspent). No alternation partner, so the solo prover settles every
     // range it forms: deterministic, no spend race.
     let prover = spawn_prover(ProverSpec {
-l1: &l1,
-label: "P",
-keypair: kp,
-address: addr.clone(),
-bundle_size: 2..=4,
-network_id,
-params: &params,
-lane_key,
-covenant_id,
-covenant: initial_covenant,
-elfs,
-alternation: None,
-start_from: None
+        l1: &l1,
+        label: "P",
+        keypair: kp,
+        address: addr.clone(),
+        bundle_size: 2..=4,
+        network_id,
+        params: &params,
+        lane_key,
+        covenant_id,
+        covenant: initial_covenant,
+        elfs,
+        alternation: None,
+        start_from: None,
     })
     .await;
 
@@ -4216,21 +4269,25 @@ async fn reroot_drain_skips_superseded_tips() {
     // === One prover over a store the test reads the committed frontier through ===
     let db_dir = TempDir::new().expect("persistent store dir");
     let store_a = open_store_retrying(db_dir.path());
-    let prover_a = spawn_prover_on_store(ProverSpec {
-l1: &l1,
-label: "A",
-keypair: kp_a,
-address: addr_a.clone(),
-bundle_size: 1..=1,
-network_id,
-params: &params,
-lane_key,
-covenant_id,
-covenant: bootstrap_state,
-elfs,
-alternation: None,
-start_from: Some(block_deploy)
-    }, store_a.clone(), false)
+    let prover_a = spawn_prover_on_store(
+        ProverSpec {
+            l1: &l1,
+            label: "A",
+            keypair: kp_a,
+            address: addr_a.clone(),
+            bundle_size: 1..=1,
+            network_id,
+            params: &params,
+            lane_key,
+            covenant_id,
+            covenant: bootstrap_state,
+            elfs,
+            alternation: None,
+            start_from: Some(block_deploy),
+        },
+        store_a.clone(),
+        false,
+    )
     .await;
     let journal_a = StoreJournal::new(store_a.clone());
 

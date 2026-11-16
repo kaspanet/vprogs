@@ -249,7 +249,7 @@ fn write_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveError>
         bootstrap_txid,
         committed_index: n_s,
         chain_block_metadata: meta_at_s,
-        pinned_lane_tip: identity.pinned_lane_tip(),
+        pinned_lane_tip: identity.pinned_lane_tip().unwrap_or_default(),
     };
     // Buffered so the three `write_all` calls per record coalesce into one syscall-ish burst.
     let file = std::fs::File::create(out)?;

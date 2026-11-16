@@ -2,8 +2,8 @@
 //! settlement point a restored node resumes from.
 //!
 //! On-wire layout: a zerocopy fixed prefix ([`HeaderFixed`]) followed by a length-delimited
-//! borsh-encoded [`ChainBlockMetadata`] region. `ChainBlockMetadata` carries an
-//! `Option<SettlementInfo>`, which has no zerocopy representation, so only the prefix is zerocopy.
+//! borsh-encoded tail of ([`ChainBlockMetadata`], [`Hash`]). The tail types have no zerocopy
+//! representation, so only the prefix is zerocopy.
 
 use borsh::BorshDeserialize;
 use vprogs_l1_types::{ChainBlockMetadata, Hash, SettlementInfo};
@@ -12,8 +12,8 @@ use zerocopy::{
     little_endian::{U32, U64},
 };
 
-/// Fixed-size, zerocopy prefix of an encoded [`SnapshotHeader`]. Followed by `cbm_len` bytes of
-/// borsh-encoded [`ChainBlockMetadata`].
+/// Fixed-size, zerocopy prefix of an encoded [`SnapshotHeader`]. Followed by `tail_len` bytes of
+/// the borsh-encoded `(ChainBlockMetadata, pinned_lane_tip)` tail.
 #[repr(C)]
 #[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 struct HeaderFixed {
@@ -44,17 +44,16 @@ pub struct SnapshotHeader {
     /// Committed batch metadata at `committed_index`, with `last_settlement` overridden to the
     /// settlement this snapshot pins to. Becomes the restored node's `last_committed` metadata.
     pub chain_block_metadata: ChainBlockMetadata,
-    /// Lane tip the source node pinned at save time, carried so a restored node resumes with the
-    /// same pin instead of the zero tip (the fresh-lane deploy).
-    pub pinned_lane_tip: Option<Hash>,
+    /// Lane tip the source node pinned at save time, or the zero hash if none was recorded.
+    pub pinned_lane_tip: Hash,
 }
 
 impl SnapshotHeader {
     /// Encodes the header for embedding in a snapshot container: the zerocopy [`HeaderFixed`]
     /// prefix followed by the borsh-encoded `(chain_block_metadata, pinned_lane_tip)` tail.
     pub fn encode(&self) -> Vec<u8> {
-        let tail = borsh::to_vec(&(self.chain_block_metadata.clone(), self.pinned_lane_tip))
-            .expect("chain block metadata serialization is infallible");
+        let tail = borsh::to_vec(&(self.chain_block_metadata, self.pinned_lane_tip))
+            .expect("header tail serialization is infallible");
         let tail_len: u32 =
             tail.len().try_into().expect("chain block metadata encodes to under 4 GiB");
         let fixed = HeaderFixed {
@@ -82,7 +81,7 @@ impl SnapshotHeader {
             return Err(invalid("snapshot header tail_len does not match trailing bytes"));
         }
         let (chain_block_metadata, pinned_lane_tip) =
-            <(ChainBlockMetadata, Option<Hash>)>::try_from_slice(rest)
+            <(ChainBlockMetadata, Hash)>::try_from_slice(rest)
                 .map_err(|e| invalid(&format!("snapshot header chain_block_metadata: {e}")))?;
         if chain_block_metadata.last_settlement.is_none() {
             return Err(invalid("snapshot header carries no settlement"));
@@ -123,7 +122,7 @@ mod tests {
             bootstrap_txid: Hash::from_bytes([2u8; 32]),
             committed_index: 4242,
             chain_block_metadata: meta,
-            pinned_lane_tip: Some(Hash::from_bytes([7u8; 32])),
+            pinned_lane_tip: Hash::from_bytes([7u8; 32]),
         };
         let bytes = header.encode();
         let back = SnapshotHeader::decode(&bytes).unwrap();
@@ -132,6 +131,7 @@ mod tests {
         assert_eq!(back.bootstrap_txid, header.bootstrap_txid);
         assert_eq!(back.committed_index, header.committed_index);
         assert_eq!(back.chain_block_metadata, header.chain_block_metadata);
+        assert_eq!(back.pinned_lane_tip, header.pinned_lane_tip);
     }
 
     #[test]
@@ -141,7 +141,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_rejects_cbm_len_mismatch() {
+    fn decode_rejects_tail_len_mismatch() {
         let meta = settlement_meta();
         let header = SnapshotHeader {
             covenant_id: Hash::from_bytes([1u8; 32]),
@@ -149,7 +149,7 @@ mod tests {
             bootstrap_txid: Hash::from_bytes([2u8; 32]),
             committed_index: 1,
             chain_block_metadata: meta,
-            pinned_lane_tip: None,
+            pinned_lane_tip: Hash::default(),
         };
         let mut bytes = header.encode();
         bytes.pop(); // truncate the borsh region by one byte

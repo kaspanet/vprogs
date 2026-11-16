@@ -182,7 +182,8 @@ pub fn restore_into_store<R: Read, H: Hasher, F: SnapshotFormat>(
         covenant_id: Some(header.covenant_id.to_string()),
         bootstrap_txid: Some(header.bootstrap_txid.to_string()),
         bootstrap_block_hash: Some(header.chain_block_metadata.hash.to_string()),
-        pinned_lane_tip: None,
+        pinned_lane_tip: (header.pinned_lane_tip != Hash::default())
+            .then(|| header.pinned_lane_tip.to_string()),
     }
     .save(data_dir);
 
@@ -412,7 +413,7 @@ mod tests {
             bootstrap_txid: Hash::from_bytes([2u8; 32]),
             committed_index: 1,
             chain_block_metadata: ChainBlockMetadata::default(),
-            pinned_lane_tip: None,
+            pinned_lane_tip: Hash::default(),
         }
     }
 
@@ -542,7 +543,7 @@ mod tests {
             bootstrap_txid: Hash::from_bytes([8u8; 32]),
             committed_index: 4242,
             chain_block_metadata: meta,
-            pinned_lane_tip: None,
+            pinned_lane_tip: Hash::default(),
         };
 
         let bytes = write_test_snapshot(&header.encode(), &records);
@@ -608,7 +609,7 @@ mod tests {
             bootstrap_txid: Hash::from_bytes([8u8; 32]),
             committed_index: 4242,
             chain_block_metadata: meta,
-            pinned_lane_tip: None,
+            pinned_lane_tip: Hash::default(),
         };
 
         let bytes = write_test_snapshot(&header.encode(), &records);
@@ -621,8 +622,7 @@ mod tests {
 
         // Start-up replay: the ancestry walk stops at the anchor rather than at a live parent.
         let store = RocksDbStore::<DefaultConfig>::open(dir.path().join("db"));
-        let mut chain = store
-            .canonical_chain_manager::<ChainBlockMetadata>(
+        let mut chain = store.canonical_chain_manager::<ChainBlockMetadata>(
             StateMetadata::last_committed::<ChainBlockMetadata, _>(&store).index(),
         );
         assert_eq!(chain.chain().tip(), 4242);
@@ -693,7 +693,7 @@ mod tests {
             bootstrap_txid: Hash::from_bytes([8u8; 32]),
             committed_index: 4242,
             chain_block_metadata: meta,
-            pinned_lane_tip: None,
+            pinned_lane_tip: Hash::default(),
         };
 
         // ...but the file's actual records (tampered) hash to a different root.
