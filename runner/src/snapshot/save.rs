@@ -6,7 +6,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use vprogs_core_smt::Tree;
+use vprogs_core_hashing::Hasher;
+use vprogs_core_smt::{Key, Node, StaleNode, StreamingBuilder, Tree, WriteBatch as SmtWriteBatch};
 use vprogs_core_types::{Checkpoint, ResourceId};
 use vprogs_l1_types::{ChainBlockMetadata, Hash, SettlementInfo};
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
@@ -21,7 +22,19 @@ use crate::{
     snapshot::{VpsnapFormat, header::SnapshotHeader},
 };
 
+/// SMT write sink that drops every node: the save-time rebuild only needs the root the emitted
+/// records hash to, never the nodes along the way.
+struct DiscardBatch;
+
+impl SmtWriteBatch for DiscardBatch {
+    fn put_node(&mut self, _key: &Key, _version: u64, _data: &Node) {}
+    fn put_stale_node(&mut self, _stale: &StaleNode) {}
+    fn delete_node(&mut self, _key: &Key, _version: u64) {}
+    fn delete_stale_node(&mut self, _stale: &StaleNode) {}
+}
+
 /// Outcome of a successful [`save_snapshot`] call.
+#[derive(Debug)]
 pub struct SaveSummary {
     /// Covenant id the snapshot was taken from.
     pub covenant_id: Hash,
@@ -153,12 +166,15 @@ pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveErr
         }
     }
 
-    // Write the snapshot in a single streaming pass. The `store.root(n_s) == settlement.new_state`
-    // check above is the authoritative self-check: it is the same authenticated SMT root the
-    // records here are read back from, so no separate in-memory rebuild is needed. The record count
-    // is neither pre-scanned nor needed up front: `SnapshotWriter` reserves the count field,
-    // streams the records, then backpatches the true count, so nothing here ever holds the full
-    // resource set.
+    // Write the snapshot in a single streaming pass, self-checking it as it goes. The root check
+    // above authenticates the tree's own nodes; the records here are read from the pointer CFs,
+    // a different path that can diverge (a reconstruction bug, a store missing a version entry).
+    // Feeding every emitted record into a `StreamingBuilder` over a discard batch recomputes the
+    // root the file's records rebuild to and compares it against the settlement root, so any
+    // divergence class fails here, at save time, instead of at restore on a node that may no
+    // longer have the source. The record count is neither pre-scanned nor needed up front:
+    // `SnapshotWriter` reserves the count field, streams the records, then backpatches the true
+    // count, so nothing here ever holds the full resource set.
     let header = SnapshotHeader {
         covenant_id,
         lane_id,
@@ -184,6 +200,8 @@ pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveErr
     // coincide and the SMT already treats empty as absent, so the record would only bloat the
     // file.
     let mut emit_cursor = store.raw_scan(StateSpace::StatePtrLatest);
+    let mut rebuild = StreamingBuilder::<<crate::RunnerStore as Tree>::Hasher>::new(n_s);
+    let mut discard = DiscardBatch;
     while emit_cursor.valid() {
         let key = emit_cursor.key().expect("valid cursor has a key");
         let id: [u8; 32] = key.try_into().expect("corrupted latest-ptr resource id");
@@ -201,12 +219,21 @@ pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveErr
             version_key[8..].copy_from_slice(&id);
             let value = store.get_pinned(StateSpace::StateVersion, &version_key);
             if let Some(value) = value.as_deref().filter(|v| !v.is_empty()) {
+                rebuild.feed(
+                    &mut discard,
+                    ResourceId::from(id),
+                    <crate::RunnerStore as Tree>::Hasher::hash(value),
+                );
                 writer
                     .write_record(&id, value)
                     .map_err(|e| SaveError::Io(std::io::Error::other(e.to_string())))?;
             }
         }
         emit_cursor.next();
+    }
+    let computed = rebuild.finish(&mut discard);
+    if computed != settlement.new_state {
+        return Err(SaveError::RootMismatch { computed, settlement: settlement.new_state });
     }
     let record_count =
         writer.finish().map_err(|e| SaveError::Io(std::io::Error::other(e.to_string())))?;
@@ -433,6 +460,65 @@ mod tests {
         }
         reader.finish().unwrap();
         assert_eq!(ids, vec![[1u8; 32]]);
+    }
+
+    // The root check over the tree's own nodes cannot see a value that diverges from what the
+    // tree committed: the records are read from the version CF, a different path. The save-time
+    // rebuild must catch the divergence and fail instead of shipping a digest-valid file that
+    // only breaks at restore.
+    #[test]
+    fn save_rejects_records_diverging_from_the_settled_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RocksDbStore::<DefaultConfig>::open(dir.path().join("db"));
+
+        let r1 = ResourceId::from([1u8; 32]);
+
+        // One committed batch whose block is both tip and block_prove_to.
+        let mut wb = store.write_batch();
+        StateVersion::put(&mut wb, 1, &r1, b"alpha");
+        StatePtrLatest::put(&mut wb, &r1, 1);
+        let root1 = store.update(&mut wb, vec![Commitment::new(r1, Sha256::hash(b"alpha"))], 1);
+        let settlement = SettlementInfo {
+            block_prove_to: Hash::from_bytes([11u8; 32]),
+            containing_block: Hash::from_bytes([11u8; 32]),
+            new_state: root1,
+            ..SettlementInfo::default()
+        };
+        let m1 = ChainBlockMetadata {
+            hash: Hash::from_bytes([11u8; 32]),
+            last_settlement: Some(settlement),
+            ..ChainBlockMetadata::default()
+        };
+        let cp = Checkpoint::new(1, m1);
+        StoredBatchMetadata::set(&mut wb, 1, cp.metadata());
+        StateMetadata::set_last_committed(&mut wb, &cp);
+        StateMetadata::set_root(&mut wb, &cp);
+        store.commit(wb);
+
+        // Corrupt the version CF behind the tree's back: the latest pointer still names version
+        // 1, but its stored value no longer hashes to what the SMT committed.
+        {
+            let mut wb = store.write_batch();
+            StateVersion::put(&mut wb, 1, &r1, b"tampered");
+            store.commit(wb);
+        }
+
+        PersistedState {
+            lane_id: Some(9),
+            covenant_id: Some(Hash::from_bytes([7u8; 32]).to_string()),
+            bootstrap_txid: Some(Hash::from_bytes([8u8; 32]).to_string()),
+            bootstrap_block_hash: None,
+            pinned_lane_tip: None,
+        }
+        .save(dir.path());
+
+        drop(store);
+
+        let out = dir.path().join("snap.vpsnap");
+        let err = save_snapshot(dir.path(), &out).expect_err("diverging records must be rejected");
+        assert!(
+            matches!(err, SaveError::RootMismatch { computed, settlement } if computed != settlement)
+        );
     }
 
     // A reorg leaves orphaned node versions on disk below the settled batch. The save handle must
