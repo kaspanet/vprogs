@@ -14,7 +14,7 @@ use kaspa_consensus_core::{
     tx::{Transaction, UtxoEntry},
 };
 use kaspa_grpc_client::GrpcClient;
-use kaspa_rpc_core::{RpcTransaction, api::rpc::RpcApi};
+use kaspa_rpc_core::{RpcError, RpcTransaction, api::rpc::RpcApi};
 use kaspa_testing_integration::common::daemon::Daemon;
 use kaspa_wrpc_server::address::WrpcNetAddress;
 use kaspad_lib::args::Args;
@@ -215,7 +215,7 @@ impl L1Node {
         // coinbases, so spendable entries the wallet already holds (e.g. change from earlier
         // spends in the same test) cannot satisfy it while the freshly mined ones are still
         // unindexed.
-        let baseline = self.mature_coinbase_count().await;
+        let baseline = self.mature_coinbase_count().await.expect("baseline UTXO count");
 
         // +2 accounts for the genesis daa_score offset.
         let hashes = self
@@ -227,14 +227,16 @@ impl L1Node {
         // visible; otherwise a wallet build issued right after mining can find no candidates.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         loop {
+            // A failed poll reads as not-ready: the node is busiest indexing right after the
+            // mined blocks, and a transient RPC error must retry until the deadline, not panic.
             let coinbases = self.mature_coinbase_count().await;
-            if coinbases >= baseline + num_utxos {
+            if matches!(&coinbases, Ok(n) if *n >= baseline + num_utxos) {
                 break;
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
                 "timed out waiting for {num_utxos} new spendable coinbase UTXOs, \
-                 index reports {coinbases} (baseline {baseline})",
+                 index reports {coinbases:?} (baseline {baseline})",
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -243,15 +245,16 @@ impl L1Node {
     }
 
     /// The number of mature coinbase UTXOs the node's UTXO index currently reports for this
-    /// wallet's address.
-    async fn mature_coinbase_count(&self) -> usize {
-        self.wallet()
+    /// wallet's address. Propagates the RPC error: a transient node hiccup is a poll outcome,
+    /// not a test failure.
+    async fn mature_coinbase_count(&self) -> Result<usize, RpcError> {
+        Ok(self
+            .wallet()
             .fetch_spendable_utxos()
-            .await
-            .expect("fetch spendable utxos")
+            .await?
             .into_iter()
             .filter(|(_, entry)| entry.is_coinbase)
-            .count()
+            .count())
     }
 
     /// Disconnects the gRPC client. The daemon shuts down on drop.
