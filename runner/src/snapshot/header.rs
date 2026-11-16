@@ -81,8 +81,11 @@ impl SnapshotHeader {
             return Err(invalid("snapshot header tail_len does not match trailing bytes"));
         }
         let (chain_block_metadata, pinned_lane_tip) =
-            <(ChainBlockMetadata, Hash)>::try_from_slice(rest)
-                .map_err(|e| invalid(&format!("snapshot header chain_block_metadata: {e}")))?;
+            <(ChainBlockMetadata, Hash)>::try_from_slice(rest).map_err(|e| {
+                invalid(&format!(
+                    "snapshot header tail (chain_block_metadata, pinned_lane_tip): {e}"
+                ))
+            })?;
         if chain_block_metadata.last_settlement.is_none() {
             return Err(invalid("snapshot header carries no settlement"));
         }
