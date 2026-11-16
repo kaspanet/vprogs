@@ -2,19 +2,16 @@
 //! chain and executes them through the zk `Vm`, asserting every block that the decoded counter
 //! equals the number of lane transactions executed. A fixed seed makes any failure reproducible.
 
-use std::sync::Arc;
-
 use rand::{RngCore, SeedableRng, rngs::StdRng};
 use secp256k1::{Keypair, Secp256k1};
 use simpa::simulator::miner::{Miner, MinerOptions, NativeLaneProducer};
-use tempfile::TempDir;
 use vprogs_core_hashing::{Hasher, Sha256};
 use vprogs_core_smt::{StreamingBuilder, Tree};
 use vprogs_core_types::{Checkpoint, ResourceId};
 use vprogs_l1_types::ChainBlockMetadata;
 use vprogs_sim::{
     config::{SimRate, sim_config_with_maturity},
-    driver::{DriverStats, L2Config, L2Driver},
+    driver::{DriverStats, L2Config, L2Driver, StoreHandle},
     l2_miner::L2Miner,
     network::{SimNetwork, SimTiming},
 };
@@ -49,15 +46,10 @@ fn run_sim(p: SimParams) -> DriverStats {
     run_sim_inner(p).0
 }
 
-/// Like [`run_sim`], but also returns a live handle to the driver's committed execution store, plus
-/// the temp directory backing it. The caller must keep the directory alive for as long as it reads
-/// the store: the simulation drops the driver (and so its own copy of the directory) as part of
-/// `net.shutdown()`, and the caller's `Arc` clone is the only thing left keeping the backing files
-/// on disk.
-///
-/// The returned store is the one the whole run executed against only when `enable_proving` and
-/// `enable_settlements` aren't both set (see `L2Driver::store_handle`).
-fn run_sim_inner(p: SimParams) -> (DriverStats, RocksDbStore<DefaultConfig>, Arc<TempDir>) {
+/// Like [`run_sim`], but also returns a live [`StoreHandle`] to the driver's committed execution
+/// store. The returned store is the one the whole run executed against only when
+/// `enable_proving` and `enable_settlements` aren't both set (see `L2Driver::store_handle`).
+fn run_sim_inner(p: SimParams) -> (DriverStats, StoreHandle) {
     let SimParams {
         seed,
         num_miners,
@@ -141,8 +133,7 @@ fn run_sim_inner(p: SimParams) -> (DriverStats, RocksDbStore<DefaultConfig>, Arc
 
     let result = stats.unwrap().lock().unwrap().clone();
     net.shutdown();
-    let (store, dir) = store_handle.unwrap();
-    (result, store, dir)
+    (result, store_handle.unwrap())
 }
 
 #[test]
@@ -359,7 +350,7 @@ fn snapshot_reconstructs_committed_root() {
     kaspa_core::log::try_init_logger("warn");
     // Same params as `l2_flow_settlements_seed_2`: single miner (clean chain, no reorgs to
     // complicate the churn) with settlements enabled, so the run produces real, chained state.
-    let (s, store, _dir) = run_sim_inner(SimParams {
+    let (s, handle) = run_sim_inner(SimParams {
         seed: 2,
         num_miners: 1,
         target_blocks: 400,
@@ -371,11 +362,14 @@ fn snapshot_reconstructs_committed_root() {
         bundle_size: 1,
     });
     assert!(s.settlements_accepted > 0, "expected the seeded run to settle");
+    let store = handle.store;
 
     // Enumerate the committed latest state: every resource's current version, then its data,
-    // skipping empty values (an empty value means the resource has no leaf in the tree). Sorted
-    // ascending by resource id, the order `StreamingBuilder::feed` requires.
-    let mut leaves: Vec<(ResourceId, Vec<u8>)> = store
+    // skipping empty values (an empty value means the resource has no leaf in the tree). The
+    // enumeration must itself be ascending by resource id (RocksDB byte order over the raw id
+    // keys, the same cursor order the save path relies on), the order
+    // `StreamingBuilder::feed` requires.
+    let leaves: Vec<(ResourceId, Vec<u8>)> = store
         .prefix_iter(StateSpace::StatePtrLatest, &[])
         .filter_map(|(key, value)| {
             let id_bytes: [u8; 32] =
@@ -387,7 +381,10 @@ fn snapshot_reconstructs_committed_root() {
         })
         .filter(|(_, data)| !data.is_empty())
         .collect();
-    leaves.sort_by_key(|(id, _)| *id);
+    assert!(
+        leaves.is_sorted_by_key(|(id, _)| *id),
+        "latest-ptr enumeration must yield ascending resource ids"
+    );
 
     let recon_dir = tempfile::tempdir().unwrap();
     let recon = RocksDbStore::<DefaultConfig>::open(recon_dir.path());

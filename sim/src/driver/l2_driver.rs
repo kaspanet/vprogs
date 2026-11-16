@@ -125,6 +125,17 @@ struct Exec {
     proc_handle: V,
 }
 
+/// A live handle to a driver's execution store plus the temp directory backing it, as returned by
+/// [`L2Driver::store_handle`].
+pub struct StoreHandle {
+    /// Live handle to the driver's execution store.
+    pub store: Store,
+    /// Temp directory backing `store`: after the driver drops at shutdown, this is the only
+    /// reference keeping the backing files on disk, so hold the handle for as long as the store
+    /// is read.
+    pub db: Arc<TempDir>,
+}
+
 /// The L2 driver. Owns the execution stack + store and tracks the selected chain it has scheduled.
 pub struct L2Driver {
     /// Subnetwork id the driver's lane activity transactions carry.
@@ -332,18 +343,14 @@ impl L2Driver {
         (driver, stats, drained)
     }
 
-    /// Returns a live handle to this driver's execution store, plus the temp directory backing it.
-    ///
-    /// The caller must keep the returned directory alive for as long as it uses the store: the
-    /// simulation drops this driver (and so its own `TempDir`) once a run shuts down, and the
-    /// caller's `Arc` clone is the only thing left keeping the backing files on disk.
+    /// Returns a live [`StoreHandle`] to this driver's execution store.
     ///
     /// Stale after a `real_e2e` proving rebuild ([`Self::init_proving`] swaps in a fresh store once
     /// the covenant bootstrap confirms); only meaningful for runs that never set `enable_proving`
     /// together with `enable_settlements`, where the store captured here is the one used for the
     /// whole run.
-    pub fn store_handle(&self) -> (Store, Arc<TempDir>) {
-        (self.exec.store.clone(), self.exec.db.clone())
+    pub fn store_handle(&self) -> StoreHandle {
+        StoreHandle { store: self.exec.store.clone(), db: self.exec.db.clone() }
     }
 
     /// Rebuilds the execution stack with the real batch prover bound to the live covenant id, over

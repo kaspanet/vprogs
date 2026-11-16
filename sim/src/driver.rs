@@ -14,5 +14,5 @@ mod l2_driver;
 mod stats;
 
 pub use config::L2Config;
-pub use l2_driver::L2Driver;
+pub use l2_driver::{L2Driver, StoreHandle};
 pub use stats::DriverStats;
