@@ -5,7 +5,7 @@
 //! thread silently, stop the sink, and park `wait_and_pop` consumers forever with no indication.
 //!
 //! Each test drives a real L1 node through a proxy that elides exactly one field from every reply
-//! carrying it, then asserts the bridge reports the malformed response.
+//! carrying it (or fails one method's replies outright), then asserts the bridge reports it.
 
 use std::{
     panic,
@@ -18,7 +18,7 @@ use std::{
 
 use borsh::BorshDeserialize;
 use futures::{SinkExt, StreamExt};
-use kaspa_consensus_core::network::NetworkId;
+use kaspa_consensus_core::{network::NetworkId, subnets::SubnetworkId};
 use kaspa_rpc_core::{GetBlockResponse, GetVirtualChainFromBlockV2Response, api::ops::RpcApiOps};
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -92,6 +92,21 @@ enum Elide {
     Chain(ChainField),
     /// A block's `verbose_data`, read while seeding the genesis anchor below the sink.
     BlockVerboseData,
+}
+
+/// What the proxy does to the replies it forwards.
+#[derive(Clone, Copy, Debug)]
+enum Tamper {
+    /// Elide a single field from every reply carrying it.
+    Elide(Elide),
+    /// Rewrite every successful lane-proof reply into an RPC error, the reply a node serves for
+    /// an anchor it cannot answer the lane state at.
+    FailLaneProof,
+    /// Pass the first `pass` successful lane-proof replies through, then rewrite every later one
+    /// into an RPC error. Unlike [`Tamper::FailLaneProof`] this counts every lane-proof reply,
+    /// passed or rewritten, into the shared counter, so a test can both place the failures after
+    /// an initial success and observe how often the worker re-runs the lookup.
+    FailLaneProofAfter(usize),
 }
 
 /// A field of a `GetVirtualChainFromBlockV2` response the worker reads.
@@ -170,19 +185,18 @@ impl ChainField {
 
 /// A wRPC proxy between the bridge and a real L1 node.
 ///
-/// It forwards every frame verbatim except the successful replies carrying the tampered field, from
-/// which it elides that one field, and counts what it removed so a test can establish that the
-/// worker was actually served a malformed response.
+/// It forwards every frame verbatim except the replies [`Tamper`] rewrites, and counts the
+/// rewrites so a test can establish that the worker was actually served a tampered response.
 struct TamperProxy {
     /// URL the bridge connects to, standing in for the node's own wRPC URL.
     url: String,
-    /// Fields removed from responses so far.
+    /// Responses rewritten so far.
     elided: Arc<AtomicUsize>,
 }
 
 impl TamperProxy {
     /// Binds a proxy in front of `upstream` and serves connections until the test ends.
-    async fn start(upstream: String, elide: Elide) -> Self {
+    async fn start(upstream: String, tamper: Tamper) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("proxy failed to bind");
         let port = listener.local_addr().expect("proxy has no local address").port();
         let elided = Arc::new(AtomicUsize::new(0));
@@ -199,7 +213,7 @@ impl TamperProxy {
                     let (node, _) = tokio_tungstenite::connect_async(&upstream)
                         .await
                         .expect("proxy failed to reach the node");
-                    pump(downstream, node, elide, counter).await;
+                    pump(downstream, node, tamper, counter).await;
                 });
             }
         });
@@ -212,16 +226,16 @@ impl TamperProxy {
         self.url.clone()
     }
 
-    /// Waits until the proxy has removed a field from a response the node actually served.
+    /// Waits until the proxy has rewritten a response the node actually served.
     ///
     /// Every later assert is about how the worker handles that response, so reaching it without a
-    /// single elision would make those asserts say nothing about the sites they name.
+    /// single rewrite would make those asserts say nothing about the sites they name.
     async fn wait_for_elision(&self, timeout: Duration) {
         let start = Instant::now();
         while self.elided.load(Ordering::Relaxed) == 0 {
             assert!(
                 start.elapsed() <= timeout,
-                "the proxy elided no field, so no tampered response ever reached the worker and \
+                "the proxy rewrote no reply, so no tampered response ever reached the worker and \
                  this test would prove nothing about the site it names",
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -229,11 +243,11 @@ impl TamperProxy {
     }
 }
 
-/// Relays frames both ways, eliding a field from every response carrying it.
+/// Relays frames both ways, rewriting every response [`Tamper`] touches.
 async fn pump(
     downstream: WebSocketStream<TcpStream>,
     upstream: WebSocketStream<MaybeTlsStream<TcpStream>>,
-    elide: Elide,
+    t: Tamper,
     elided: Arc<AtomicUsize>,
 ) {
     let (mut down_tx, mut down_rx) = downstream.split();
@@ -250,7 +264,7 @@ async fn pump(
     let to_client = async move {
         while let Some(Ok(msg)) = up_rx.next().await {
             let msg = match &msg {
-                Message::Binary(bytes) => tamper(bytes, elide, &elided).unwrap_or(msg),
+                Message::Binary(bytes) => tamper(bytes, t, &elided).unwrap_or(msg),
                 _ => msg,
             };
             if down_tx.send(msg).await.is_err() {
@@ -270,25 +284,52 @@ type VccReply = Result<Serializable<GetVirtualChainFromBlockV2Response>, ServerE
 /// A `GetBlock` reply's payload, framed the same way.
 type BlockReply = Result<Serializable<GetBlockResponse>, ServerError>;
 
-/// Rewrites `bytes` with `elide`'s field removed, or `None` if the frame is not the successful
-/// reply carrying it.
-fn tamper(bytes: &[u8], elide: Elide, elided: &AtomicUsize) -> Option<Message> {
+/// Rewrites `bytes` per `t`, or `None` if the frame is not a successful reply `t` touches.
+fn tamper(bytes: &[u8], t: Tamper, elided: &AtomicUsize) -> Option<Message> {
     let message = BorshServerMessage::<RpcApiOps, Id64>::try_from(bytes).ok()?;
-    if !matches!(message.header.kind, ServerMessageKind::Success)
-        || message.header.op != Some(elide.op())
-    {
+    let op = match t {
+        Tamper::Elide(elide) => elide.op(),
+        Tamper::FailLaneProof | Tamper::FailLaneProofAfter(_) => RpcApiOps::GetSeqCommitLaneProof,
+    };
+    if !matches!(message.header.kind, ServerMessageKind::Success) || message.header.op != Some(op) {
         return None;
     }
 
-    // Only the `Ok` arm carries a response; an error reply is forwarded untouched.
-    let (payload, count) = elide.apply(message.payload)?;
-    elided.fetch_add(count, Ordering::Relaxed);
-
-    let header =
-        BorshServerMessageHeader::new(message.header.id, message.header.kind, message.header.op);
-    let rewritten =
-        BorshServerMessage::new(header, &payload).try_to_vec().expect("frame must reserialize");
+    let rewritten = match t {
+        Tamper::Elide(elide) => {
+            // Only the `Ok` arm carries a response; an error reply is forwarded untouched.
+            let (payload, count) = elide.apply(message.payload)?;
+            elided.fetch_add(count, Ordering::Relaxed);
+            let header = BorshServerMessageHeader::new(
+                message.header.id,
+                message.header.kind,
+                message.header.op,
+            );
+            BorshServerMessage::new(header, &payload).try_to_vec().expect("frame must reserialize")
+        }
+        Tamper::FailLaneProofAfter(pass) => {
+            // Every reply reaching here is a success; the first `pass` pass through untouched.
+            if elided.fetch_add(1, Ordering::Relaxed) < pass {
+                return None;
+            }
+            error_reply(message.header.id)
+        }
+        Tamper::FailLaneProof => {
+            elided.fetch_add(1, Ordering::Relaxed);
+            error_reply(message.header.id)
+        }
+    };
     Some(Message::Binary(rewritten))
+}
+
+/// A lane-proof success reply rewritten into the RPC error a node serves for an anchor it cannot
+/// answer the lane state at.
+fn error_reply(id: Option<Id64>) -> Vec<u8> {
+    let error = borsh::to_vec(&ServerError::Text("lane proof unavailable".into()))
+        .expect("error must serialize");
+    let header =
+        BorshServerMessageHeader::<RpcApiOps, Id64>::new(id, ServerMessageKind::Error, None);
+    BorshServerMessage::new(header, &error).try_to_vec().expect("frame must reserialize")
 }
 
 // ============================================================================
@@ -371,19 +412,24 @@ struct Harness {
     _api: ApiGuard,
 }
 
-/// Starts a node, a proxy eliding `elide`, and a bridge behind the proxy that anchors its fresh
-/// chain as `seed_depth` says.
-async fn spawn(elide: Elide, seed_depth: Option<u64>) -> Harness {
+/// Starts a node, a proxy applying `tamper`, and a bridge behind the proxy that anchors its fresh
+/// chain as `seed_depth` says and filters on `subnetwork` when set.
+async fn spawn(
+    tamper: Tamper,
+    seed_depth: Option<u64>,
+    subnetwork: Option<SubnetworkId>,
+) -> Harness {
     record_panics();
 
     let node = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
-    let proxy = TamperProxy::start(node.wrpc_borsh_url(), elide).await;
+    let proxy = TamperProxy::start(node.wrpc_borsh_url(), tamper).await;
 
     let config = L1BridgeConfig::default()
         .with_url(Some(proxy.url()))
         .with_network_type(NetworkType::Simnet)
         .with_connect_strategy(ConnectStrategy::Fallback)
-        .with_seed_depth(seed_depth);
+        .with_seed_depth(seed_depth)
+        .with_subnetwork_id(subnetwork);
 
     let sink = RecordingSink::new();
     let (api_tx, api_rx) = mpsc::channel(1);
@@ -395,7 +441,7 @@ async fn spawn(elide: Elide, seed_depth: Option<u64>) -> Harness {
 /// Spawns a harness anchored at the pruning point and waits for it to connect, leaving the sync
 /// path as the only place the elided field is read.
 async fn setup(elide: Elide) -> Harness {
-    let h = spawn(elide, None).await;
+    let h = spawn(Tamper::Elide(elide), None, None).await;
 
     // Drain `Connected` so a later `wait_and_pop` parks on the queue, as a consumer would.
     let events = h.bridge.wait_for(TIMEOUT, |e| matches!(e, L1Event::Connected)).await;
@@ -466,7 +512,7 @@ async fn elided_header_blue_score_reports_fatal() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn elided_block_verbose_data_reports_fatal() {
     // One step below the sink is enough: the walk's first `get_block` reply carries the field.
-    let h = spawn(Elide::BlockVerboseData, Some(1)).await;
+    let h = spawn(Tamper::Elide(Elide::BlockVerboseData), Some(1), None).await;
     h.proxy.wait_for_elision(TIMEOUT).await;
 
     let event = tokio::time::timeout(FATAL_TIMEOUT, h.bridge.wait_and_pop()).await;
@@ -477,6 +523,101 @@ async fn elided_block_verbose_data_reports_fatal() {
     );
 
     h.node.shutdown().await;
+}
+
+/// Lane the lane-seed test's bridge filters on. The value never reaches the wire; turning the
+/// filter on is what makes the worker seed its genesis lane state at the anchor.
+const LANE_SUBNETWORK_ID: SubnetworkId = SubnetworkId::from_namespace(4444u32.to_be_bytes());
+
+/// A bridge joining a lane whose tip lookup the node cannot answer must report `Fatal` instead of
+/// announcing `Connected` and following the chain on the unseeded genesis: the lookup is the only
+/// source of the authoritative tip, and a live lane followed from the zero seed anchors the first
+/// post-join carrier at the parent seq commit, diverging every derived tip from consensus. The
+/// consumer contract matches the elided fields': progress or a terminal event, never a silent
+/// divergence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unanswerable_lane_seed_reports_fatal() {
+    let h = spawn(Tamper::FailLaneProof, None, Some(LANE_SUBNETWORK_ID)).await;
+    h.proxy.wait_for_elision(TIMEOUT).await;
+
+    // The retries run out after LANE_PROOF_MAX_ATTEMPTS * LANE_PROOF_RETRY_DELAY, within this
+    // window.
+    let event = tokio::time::timeout(FATAL_TIMEOUT, h.bridge.wait_and_pop()).await;
+    assert!(
+        matches!(event, Ok(L1Event::Fatal { .. })),
+        "expected Fatal on the unanswerable lane seed, got {event:?}. The worker announced \
+         Connected and followed the chain on the unseeded zero genesis, and panicked at: {:?}",
+        bridge_panics(),
+    );
+
+    h.node.shutdown().await;
+}
+
+/// A bridge whose seed block a reorg orphans re-anchors at the pruning point, and that re-anchor
+/// re-seeds the lane state at the new anchor. When the node cannot answer that second lookup, the
+/// bridge must not follow the re-anchored chain anyway: the re-anchored genesis carries the zero
+/// lane seed, `handle_sync_result` only logs the failure, and the next notification would follow
+/// the new anchor unseeded - the silent divergence connect-time seeding reports as `Fatal`. The
+/// failed re-seed restores the stale anchor instead, so every later notification re-runs the
+/// whole re-seed from it (each round exhausting the retry loop again).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reseed_lane_seed_failure_keeps_the_stale_anchor() {
+    let node1 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
+    let node0 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
+
+    // The bridge anchors at the seed chain's tip; the first lane-proof reply (connect) passes, so
+    // it reaches Connected, and every later one fails: the re-seed's lookup is unanswerable.
+    let seed_hashes = node1.mine_blocks(3).await;
+    let start_from = *seed_hashes.last().unwrap();
+
+    let proxy = TamperProxy::start(node1.wrpc_borsh_url(), Tamper::FailLaneProofAfter(1)).await;
+    let config = L1BridgeConfig::default()
+        .with_url(Some(proxy.url()))
+        .with_network_type(NetworkType::Simnet)
+        .with_connect_strategy(ConnectStrategy::Fallback)
+        .with_filter_half_life(Duration::ZERO)
+        .with_start_from(Some(start_from))
+        .with_subnetwork_id(Some(LANE_SUBNETWORK_ID));
+    let sink = RecordingSink::new();
+    let (api_tx, api_rx) = mpsc::channel(1);
+    let bridge = L1Bridge::new(config, sink.clone(), api_rx);
+    let _api = api_tx;
+    bridge.wait_for(TIMEOUT, |e| matches!(e, L1Event::Connected)).await;
+
+    // A longer divergent chain takes over, orphaning the seed block: the removals below the stale
+    // anchor put the worker on the re-seed path. Mining continues so notifications keep arriving,
+    // each one re-entering the failed re-seed (one round = LANE_PROOF_MAX_ATTEMPTS failures).
+    node0.mine_blocks(8).await;
+    node1.connect_to(&node0).await;
+    node0.mine_blocks(8).await;
+
+    // Two full retry rounds (2 x LANE_PROOF_MAX_ATTEMPTS x LANE_PROOF_RETRY_DELAY = 10s) plus
+    // slack for the reorg to propagate.
+    tokio::time::sleep(Duration::from_secs(15)).await;
+
+    assert_eq!(
+        sink.scheduled(),
+        0,
+        "the bridge scheduled the re-anchored chain while its lane seed was unanswerable; it \
+         followed the zero-seed genesis instead of restoring the stale anchor and re-running the \
+         re-seed",
+    );
+    // The one passed connect-time reply plus at least a second exhausted round: the worker
+    // re-runs the lookup, it does not drop the seed after the first failure.
+    assert!(
+        proxy.elided.load(Ordering::Relaxed) > 11,
+        "the lane-proof lookup ran only {} times; the worker never re-ran the re-seed after the \
+         first exhausted round",
+        proxy.elided.load(Ordering::Relaxed),
+    );
+    assert!(
+        !bridge.drain().into_iter().any(|e| matches!(e, L1Event::Fatal { .. })),
+        "the failed re-seed is a retryable sync error, not a terminal one",
+    );
+
+    bridge.shutdown();
+    node0.shutdown().await;
+    node1.shutdown().await;
 }
 
 // ============================================================================

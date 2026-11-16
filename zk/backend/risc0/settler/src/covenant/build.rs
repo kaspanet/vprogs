@@ -23,14 +23,16 @@ use super::{BuiltSettlement, CovenantAdvance, CovenantState};
 use crate::worker::SettlementMode;
 
 /// Bootstraps a fresh production-pins covenant bound to `lane_key` and returns its initial state
-/// plus bootstrap txid.
+/// plus bootstrap txid. `initial_lane_tip` is the lane's authoritative tip at the deploy, which
+/// the first settlement must chain from; the zero tip for a lane with no live entry.
 pub async fn bootstrap_real_covenant<C: RpcApi + ?Sized>(
     wallet: &Wallet<'_, C>,
     backend: &Backend,
     lane_key: Hash,
+    initial_lane_tip: Hash,
     value: u64,
 ) -> (CovenantState, Hash) {
-    let (redeem, spk) = bootstrap_redeem(backend, &lane_key);
+    let (redeem, spk) = bootstrap_redeem(backend, &lane_key, &initial_lane_tip);
 
     let (tx, covenant_id) = wallet.build_covenant_bootstrap_transaction(&redeem, value).await;
     let txid = wallet.submit_transaction(&tx).await.expect("bootstrap submission failed");
@@ -38,7 +40,7 @@ pub async fn bootstrap_real_covenant<C: RpcApi + ?Sized>(
     let covenant = CovenantState {
         covenant_id,
         state: EMPTY_HASH,
-        lane_tip: Hash::default(),
+        lane_tip: initial_lane_tip,
         outpoint: TransactionOutpoint::new(txid, 0),
         spk,
         value,
@@ -47,25 +49,31 @@ pub async fn bootstrap_real_covenant<C: RpcApi + ?Sized>(
     (covenant, txid)
 }
 
-/// Returns the production redeem script and P2SH `ScriptPublicKey` for a fresh covenant.
-pub fn bootstrap_redeem(backend: &Backend, lane_key: &Hash) -> (Vec<u8>, ScriptPublicKey) {
+/// Returns the production redeem script and P2SH `ScriptPublicKey` for a fresh covenant whose
+/// lane starts at `initial_lane_tip`.
+pub fn bootstrap_redeem(
+    backend: &Backend,
+    lane_key: &Hash,
+    initial_lane_tip: &Hash,
+) -> (Vec<u8>, ScriptPublicKey) {
     let state = EMPTY_HASH;
-    let lane_tip = Hash::default();
     let pins = redeem_pins(backend, lane_key);
     let redeem_len = redeem_script_len(&state, &pins);
-    let redeem = build_redeem_script(&state, &lane_tip, redeem_len, &pins);
+    let redeem = build_redeem_script(&state, initial_lane_tip, redeem_len, &pins);
     let spk = pay_to_script_hash_script(&redeem);
     (redeem, spk)
 }
 
 /// Bootstraps a fresh dev-pins covenant bound to `lane_key` and returns its initial state plus
-/// bootstrap txid.
+/// bootstrap txid. `initial_lane_tip` is the lane's authoritative tip at the deploy, which the
+/// first settlement must chain from; the zero tip for a lane with no live entry.
 pub async fn bootstrap_dev_covenant<C: RpcApi + ?Sized>(
     wallet: &Wallet<'_, C>,
     lane_key: Hash,
+    initial_lane_tip: Hash,
     value: u64,
 ) -> (CovenantState, Hash) {
-    let (redeem, spk) = dev_bootstrap_redeem(&lane_key);
+    let (redeem, spk) = dev_bootstrap_redeem(&lane_key, &initial_lane_tip);
 
     let (tx, covenant_id) = wallet.build_covenant_bootstrap_transaction(&redeem, value).await;
     let txid = wallet.submit_transaction(&tx).await.expect("dev bootstrap submission failed");
@@ -73,7 +81,7 @@ pub async fn bootstrap_dev_covenant<C: RpcApi + ?Sized>(
     let covenant = CovenantState {
         covenant_id,
         state: EMPTY_HASH,
-        lane_tip: Hash::default(),
+        lane_tip: initial_lane_tip,
         outpoint: TransactionOutpoint::new(txid, 0),
         spk,
         value,
@@ -82,14 +90,17 @@ pub async fn bootstrap_dev_covenant<C: RpcApi + ?Sized>(
     (covenant, txid)
 }
 
-/// Returns the dev redeem script and P2SH `ScriptPublicKey` for a fresh covenant.
-pub fn dev_bootstrap_redeem(lane_key: &Hash) -> (Vec<u8>, ScriptPublicKey) {
+/// Returns the dev redeem script and P2SH `ScriptPublicKey` for a fresh covenant whose lane
+/// starts at `initial_lane_tip`.
+pub fn dev_bootstrap_redeem(
+    lane_key: &Hash,
+    initial_lane_tip: &Hash,
+) -> (Vec<u8>, ScriptPublicKey) {
     let state = EMPTY_HASH;
-    let lane_tip = Hash::default();
     let redeem_len = dev_redeem_script_len(&state, lane_key, DEFAULT_PERMISSION_OUTPUT_VALUE);
     let redeem = build_dev_redeem_script(
         &state,
-        &lane_tip,
+        initial_lane_tip,
         lane_key,
         redeem_len,
         DEFAULT_PERMISSION_OUTPUT_VALUE,

@@ -583,9 +583,9 @@ impl L2Driver {
         // (`bootstrap_redeem` / `dev_bootstrap_redeem`) so the first settlement's reconstructed
         // prev redeem matches this UTXO's SPK.
         let (redeem, spk) = if self.real_e2e && self.mode == SettlementMode::Production {
-            bootstrap_redeem(&self.backend, &self.lane_key)
+            bootstrap_redeem(&self.backend, &self.lane_key, &lane_tip)
         } else {
-            dev_bootstrap_redeem(&self.lane_key)
+            dev_bootstrap_redeem(&self.lane_key, &lane_tip)
         };
 
         let (tx, covenant_id) = build::covenant_bootstrap_transaction(
