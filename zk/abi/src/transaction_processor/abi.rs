@@ -42,14 +42,8 @@ pub fn process_transaction<H: Hasher>(
             assert_eq!(tx_id.as_slice(), exec.tx.id(), "host tx_id does not match derived id");
 
             // Run guest handler, bundling exits + deposit hash + resources into Effects on success.
-            let result = f(
-                &exec.tx,
-                merge_idx,
-                exec.context_hash,
-                &mut exec.resources,
-                &mut exits,
-                &mut deposit,
-            );
+            let result =
+                f(&exec.tx, merge_idx, exec.context, &mut exec.resources, &mut exits, &mut deposit);
             deposit_hash = deposit.get();
             result.map(|_| Effects {
                 exits: &exits,

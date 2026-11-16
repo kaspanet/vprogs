@@ -29,7 +29,6 @@ zerocopy = { version = "0.8", default-features = false, features = ["derive"] }
 # fork via `[patch.crates-io]` (e.g. risc0/RustCrypto-elliptic-curves) when wiring up
 # the docker build.
 k256 = { version = "0.13", default-features = false, features = ["schnorr"] }
-risc0-zkvm = { version = "3.0", default-features = false, features = ["std"] }
 signature = { version = "2", default-features = false }
 vprogs-core-codec = { path = "../../../../core/codec" }
 vprogs-core-types = { path = "../../../../core/types", default-features = false }
@@ -38,6 +37,15 @@ vprogs-zk-abi = { path = "../../../abi", default-features = false }
 vprogs-zk-backend-risc0-api = { path = "../api", default-features = false, features = [
   "guest",
 ] }
+
+# On the zkVM target keep risc0-zkvm featureless: the "std" feature drags the
+# host prover stack (tracing, ark-*) into the guest ELF and the link fails
+# (rv32im has no atomics). Host builds keep std.
+[target.'cfg(not(target_os = "zkvm"))'.dependencies]
+risc0-zkvm = { version = "3.0", default-features = false, features = ["std"] }
+
+[target.'cfg(target_os = "zkvm")'.dependencies]
+risc0-zkvm = { version = "3.0", default-features = false }
 
 [dev-dependencies]
 # Host-side dev-deps for the e2e test harness. We talk to risc0-zkvm directly
