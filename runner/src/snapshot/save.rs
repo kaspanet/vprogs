@@ -15,6 +15,7 @@ use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_state_metadata::StateMetadata;
 use vprogs_state_ptr_rollback::StatePtrRollback;
 use vprogs_state_snapshot::SnapshotWriter;
+use vprogs_state_version::StateVersion;
 use vprogs_storage_rocksdb_store::{DefaultConfig, RocksDbStore};
 use vprogs_storage_types::{StateSpace, Store};
 
@@ -249,12 +250,8 @@ fn write_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveError>
 
         let ver = corrections.get(&ResourceId::from(id)).copied().unwrap_or(latest);
         if ver != 0 {
-            // StateVersion key layout: version (u64 BE) || resource_id (borsh); `ResourceId`'s
-            // borsh encoding of its single `[u8; 32]` field is the field's bytes verbatim, so `id`
-            // doubles as the borsh-encoded key suffix with no re-encode.
-            let mut version_key = [0u8; 40];
-            version_key[..8].copy_from_slice(&ver.to_be_bytes());
-            version_key[8..].copy_from_slice(&id);
+            // The fixed-width key needs no re-encode of the cursor's raw id bytes.
+            let version_key = StateVersion::key(ver, &ResourceId::from(id));
             let value = store.get_pinned(StateSpace::StateVersion, &version_key);
             match value.as_deref() {
                 Some(value) if !value.is_empty() => {
