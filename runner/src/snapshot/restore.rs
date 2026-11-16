@@ -5,12 +5,14 @@
 //! [`restore_into_store`] streams the snapshot without ever buffering the whole file, and seals and
 //! checks the rebuilt state root against the pinned settlement before writing anything that would
 //! make the store look resumable. Any failure after the store is opened discards the freshly
-//! written data, so a rejected snapshot never leaves a partial store behind.
+//! written data, so a rejected snapshot never leaves a partial store behind; an interrupted run
+//! leaves at most a `db.restoring` staging dir that the next attempt discards.
 
 use std::{io::Read, path::Path};
 
 use kaspa_rpc_core::{
-    GetVirtualChainFromBlockV2Response, RpcDataVerbosityLevel::Full, api::rpc::RpcApi,
+    GetVirtualChainFromBlockV2Response, RpcChainBlockAcceptedTransactions,
+    RpcDataVerbosityLevel::Full, api::rpc::RpcApi,
 };
 use vprogs_core_hashing::{Hasher, Sha256};
 use vprogs_core_smt::StreamingBuilder;
@@ -23,6 +25,7 @@ use vprogs_state_snapshot::{Record, SnapshotFormat, SnapshotReader};
 use vprogs_state_version::StateVersion;
 use vprogs_storage_rocksdb_store::{DefaultConfig, RocksDbStore};
 use vprogs_storage_types::Store;
+use zerocopy::little_endian::U64;
 
 use crate::{
     persistence::PersistedState,
@@ -68,19 +71,21 @@ pub enum RestoreError {
     Io(#[from] std::io::Error),
 }
 
-/// Drops `store` and deletes the just-written `db_path`. The restore owns this fresh directory
-/// exclusively, so discarding it on failure never leaves a partial store behind and never clobbers
-/// a pre-existing one.
-fn discard_store(store: RocksDbStore<DefaultConfig>, db_path: &Path) {
+/// Drops `store` and deletes the just-written staging `path`. The restore owns this fresh
+/// directory exclusively, so discarding it on failure never leaves a partial store behind and
+/// never clobbers a pre-existing one.
+fn discard_store(store: RocksDbStore<DefaultConfig>, path: &Path) {
     drop(store);
-    let _ = std::fs::remove_dir_all(db_path);
+    let _ = std::fs::remove_dir_all(path);
 }
 
 /// Streams `reader`'s records into a fresh store at `data_dir`, verifies the rebuilt SMT root
 /// against `header`'s pinned settlement, and only then writes the cursor (batch metadata, `metas`,
 /// and identity) that makes the store look like a node already committed up to the settlement
-/// block. Caller MUST have validated the snapshot against L1 first; this function only re-confirms
-/// the file's own internal consistency.
+/// block. An interrupted run never leaves a half-populated `db` behind: at most a `db.restoring`
+/// staging dir survives, which nothing reads and the next attempt discards. Caller MUST have
+/// validated the snapshot against L1 first; this function only re-confirms the file's own
+/// internal consistency.
 ///
 /// Generic over the framing identity `F`: a caller pins a concrete [`SnapshotFormat`] (e.g.
 /// `VpsnapFormat`) when it builds the `SnapshotReader` passed in here.
@@ -93,16 +98,24 @@ pub fn restore_into_store<R: Read, H: Hasher, F: SnapshotFormat>(
     if db_path.exists() || PersistedState::exists(data_dir) {
         return Err(RestoreError::DataDirNotEmpty);
     }
+    // Build under a staging sibling and rename it into place only after the final commit: a kill
+    // mid-restore then leaves at most `db.restoring`, which nothing reads and the next attempt
+    // discards, instead of a torn `db` that a retry refuses (DataDirNotEmpty) while a plain
+    // `vprun` run would open it half-populated.
+    let staging = data_dir.join("db.restoring");
+    if staging.exists() {
+        let _ = std::fs::remove_dir_all(&staging);
+    }
     let settlement: SettlementInfo = header.settlement().ok_or(RestoreError::NoSettlement)?;
     let version = header.committed_index;
 
-    let store = RocksDbStore::<DefaultConfig>::open(&db_path);
+    let store = RocksDbStore::<DefaultConfig>::open(&staging);
 
     // Every record streams straight into `data` + `latest_ptr` and is fed to the SMT builder, all
-    // in the same write-batch, committed in bounded chunks. Record order is not checked here: a
-    // snapshot that reorders or duplicates records (the header pins the settlement root, not the
-    // ordering) rebuilds to a different root, which the `root == settlement.new_state` check below
-    // rejects, so the record order is verified transitively.
+    // in the same write-batch, committed in bounded chunks. The reader rejects a file whose
+    // records are not strictly ascending (duplicates included) at the record boundary, so a
+    // reordered or duplicated snapshot fails below as `BadSnapshot` before any record can act on
+    // the store.
     let mut builder = StreamingBuilder::<H>::new(version);
     let mut wb = store.write_batch();
     let mut pending = 0usize;
@@ -127,14 +140,14 @@ pub fn restore_into_store<R: Read, H: Hasher, F: SnapshotFormat>(
             }
             Ok(None) => break,
             Err(e) => {
-                discard_store(store, &db_path);
+                discard_store(store, &staging);
                 return Err(RestoreError::BadSnapshot(e.to_string()));
             }
         }
     }
 
     if let Err(e) = reader.finish() {
-        discard_store(store, &db_path);
+        discard_store(store, &staging);
         return Err(RestoreError::BadSnapshot(e.to_string()));
     }
 
@@ -142,7 +155,7 @@ pub fn restore_into_store<R: Read, H: Hasher, F: SnapshotFormat>(
     // cursor that would make the store look resumable.
     let root = builder.finish(&mut wb);
     if root != settlement.new_state {
-        discard_store(store, &db_path);
+        discard_store(store, &staging);
         return Err(RestoreError::RootMismatch { rebuilt: root, settlement: settlement.new_state });
     }
     let checkpoint = Checkpoint::new(version, header.chain_block_metadata);
@@ -151,14 +164,21 @@ pub fn restore_into_store<R: Read, H: Hasher, F: SnapshotFormat>(
     StateMetadata::set_root(&mut wb, &checkpoint); // root == last_committed: no backfill
     store.commit(wb);
 
+    // The store is complete and resumable; move it into place before writing the identity file
+    // that flips a later `vprun` run into resume mode.
+    drop(store);
+    std::fs::rename(&staging, &db_path)?;
+
     // Identity: the resume seed is `block_prove_to` (this header's own block), never the later
     // block the settlement transaction landed in. Harmless either way since `committed_index > 0`
     // makes the bridge skip seeding altogether; this just keeps the persisted seed meaningful.
+    // No lane pin: this header format carries none, so the restored node re-derives its lane.
     PersistedState {
         lane_id: Some(header.lane_id),
         covenant_id: Some(header.covenant_id.to_string()),
         bootstrap_txid: Some(header.bootstrap_txid.to_string()),
         bootstrap_block_hash: Some(header.chain_block_metadata.hash.to_string()),
+        pinned_lane_tip: None,
     }
     .save(data_dir);
 
@@ -167,9 +187,10 @@ pub fn restore_into_store<R: Read, H: Hasher, F: SnapshotFormat>(
 
 /// Confirms `header`'s pinned settlement against the local L1 node: the resume point
 /// (`block_prove_to`, this header's own block) is an unpruned selected-chain block, and a covenant
-/// settlement transaction committing `new_state` is among `containing_block`'s accepted
-/// transactions. Trust-minimized: a snapshot file that only self-verifies but was never actually
-/// confirmed by a settlement on this L1 fails here.
+/// settlement transaction carrying exactly the pinned settlement (state root, lane tip, prove-to
+/// block, redeem pins) is among `containing_block`'s accepted transactions. Trust-minimized: a
+/// snapshot file that only self-verifies but was never actually confirmed by a settlement on this
+/// L1 fails here.
 pub async fn validate_against_l1<R: RpcApi>(
     client: &R,
     header: &SnapshotHeader,
@@ -202,19 +223,22 @@ pub async fn validate_against_l1<R: RpcApi>(
     // Walk forward to the block the settlement transaction landed in. The node caps each response
     // at its own batch size, so that block routinely sits past the first page and a single call
     // cannot decide the question.
+    // TODO: page the short way instead. `get_block(containing_block)` yields `is_chain_block` and
+    // `selected_parent_hash`, and one page from that parent carries the containing block first, so
+    // the block_prove_to-to-containing_block gap (the proving latency: thousands of Full-verbosity
+    // blocks on mainnet) is never paged. A `get_block` on the resume point would additionally
+    // cross-check the header-derived `daa_score`/`blue_score`/`timestamp` the file supplies.
     loop {
         if let Some(cb) = page
             .chain_block_accepted_transactions
             .iter()
             .find(|cb| cb.chain_block_header.hash == Some(s.containing_block))
         {
-            let confirmed = cb.accepted_transactions.iter().any(|tx| {
-                L1Transaction::try_from(tx.clone()).is_ok_and(|l1tx| {
-                    l1tx.settlement_info(header.covenant_id, s.containing_block, s.daa_score.get())
-                        .is_some_and(|info| info.new_state == s.new_state && info.tx_id == s.tx_id)
-                })
-            });
-            return if confirmed { Ok(()) } else { Err(RestoreError::SettlementNotAccepted) };
+            return if confirms_settlement(cb, header.covenant_id, &s) {
+                Ok(())
+            } else {
+                Err(RestoreError::SettlementNotAccepted)
+            };
         }
 
         // An empty page means the walk reached virtual without ever seeing the containing block.
@@ -223,6 +247,27 @@ pub async fn validate_against_l1<R: RpcApi>(
         };
         page = chain_page(client, cursor).await?;
     }
+}
+
+/// Whether `cb`, the node's own view of the settlement's containing block, carries the exact
+/// settlement `pinned` claims. The containing-block hash and DAA score are stamped from the
+/// node's header, never from the file, and the whole decoded settlement is compared, so a header
+/// forging `daa_score`, `block_prove_to`, `new_lane_tip`, or either redeem-pin hash fails here
+/// instead of seeding the settler from file-supplied values. `chain_idx` is exempt: it is a
+/// sink-local stamp rather than on-chain data, so both sides are normalized to zero.
+fn confirms_settlement(
+    cb: &RpcChainBlockAcceptedTransactions,
+    covenant_id: Hash,
+    pinned: &SettlementInfo,
+) -> bool {
+    let mut expected = *pinned;
+    expected.chain_idx = U64::ZERO;
+    cb.chain_block_header.hash.zip(cb.chain_block_header.daa_score).is_some_and(|(hash, daa)| {
+        cb.accepted_transactions.iter().any(|tx| {
+            L1Transaction::try_from(tx.clone())
+                .is_ok_and(|l1tx| l1tx.settlement_info(covenant_id, hash, daa) == Some(expected))
+        })
+    })
 }
 
 /// One page of the selected chain after `start`, carrying each chain block's accepted transactions.
@@ -274,6 +319,13 @@ pub async fn restore_snapshot(
             "header block hash does not match settlement.block_prove_to".into(),
         ));
     }
+    // Index 0 is reserved as pre-genesis. Rejecting it here (before any store is opened) keeps a
+    // malformed header from tripping the store builder's own invariant later in the restore.
+    if header.committed_index == 0 {
+        return Err(RestoreError::BadSnapshot(
+            "committed index 0 is reserved as pre-genesis".into(),
+        ));
+    }
     let record_count = reader.record_count();
 
     // Independent L1 confirmation, then the streaming store population (which re-verifies the
@@ -292,10 +344,19 @@ pub async fn restore_snapshot(
 
 #[cfg(test)]
 mod tests {
-    use vprogs_core_hashing::Sha256;
+    use kaspa_consensus_core::{
+        constants::TX_VERSION_TOCCATA,
+        subnets::SUBNETWORK_ID_NATIVE,
+        tx::{
+            CovenantBinding, Transaction, TransactionInput, TransactionOutpoint, TransactionOutput,
+        },
+    };
+    use kaspa_rpc_core::RpcOptionalHeader;
+    use kaspa_txscript::standard::pay_to_script_hash_script;
+    use vprogs_core_hashing::{IncrementalHasher as _, Sha256};
     use vprogs_core_smt::{Commitment, Tree};
     use vprogs_core_types::{Checkpoint, ResourceId};
-    use vprogs_l1_types::{ChainBlockMetadata, Hash, SettlementInfo};
+    use vprogs_l1_types::{ChainBlockMetadata, Hash, L1TransactionCovenantExt, SettlementInfo};
     use vprogs_state_metadata::StateMetadata;
     use vprogs_state_snapshot::SnapshotWriter;
     use vprogs_state_version::StateVersion;
@@ -316,6 +377,79 @@ mod tests {
             bootstrap_txid: Hash::from_bytes([2u8; 32]),
             committed_index: 1,
             chain_block_metadata: ChainBlockMetadata::default(),
+        }
+    }
+
+    /// Encodes one data push using the canonical opcode for `data.len()`.
+    fn push(buf: &mut Vec<u8>, data: &[u8]) {
+        match data.len() {
+            0 => buf.push(0x00),
+            n if n <= 0x4b => {
+                buf.push(n as u8);
+                buf.extend_from_slice(data);
+            }
+            n if n <= 0xff => {
+                buf.push(0x4c);
+                buf.push(n as u8);
+                buf.extend_from_slice(data);
+            }
+            n if n <= 0xffff => {
+                buf.push(0x4d);
+                buf.extend_from_slice(&(n as u16).to_le_bytes());
+                buf.extend_from_slice(data);
+            }
+            n => {
+                buf.push(0x4e);
+                buf.extend_from_slice(&(n as u32).to_le_bytes());
+                buf.extend_from_slice(data);
+            }
+        }
+    }
+
+    /// One settlement tx of `covenant_id` on L1: output 0 bound to the covenant and paying the
+    /// next redeem's P2SH, input 0's sig_script ending in the settlement tail
+    /// `[new_lane_tip, new_state, block_prove_to, prev_redeem]`.
+    fn settlement_tx(covenant_id: Hash) -> L1Transaction {
+        const PREV_REDEEM: &[u8] = &[0xCC; 200];
+        let mut sig_script = Vec::new();
+        push(&mut sig_script, &[0x11; 32]); // new_lane_tip
+        push(&mut sig_script, &[0x22; 32]); // new_state
+        push(&mut sig_script, &[0x33; 32]); // block_prove_to
+        push(&mut sig_script, PREV_REDEEM);
+        Transaction::new(
+            TX_VERSION_TOCCATA,
+            vec![TransactionInput::new(
+                TransactionOutpoint::new(Hash::from_bytes([0x66; 32]), 0),
+                sig_script,
+                0,
+                0,
+            )],
+            vec![TransactionOutput::with_covenant(
+                100_000_000,
+                pay_to_script_hash_script(PREV_REDEEM),
+                Some(CovenantBinding::new(0, covenant_id)),
+            )],
+            0,
+            SUBNETWORK_ID_NATIVE,
+            0,
+            Vec::new(),
+        )
+    }
+
+    /// The node's per-block view: a `chain_block_header` carrying the block's own hash and DAA
+    /// score, plus `txs` among the block's accepted transactions.
+    fn chain_block_view(
+        hash: Option<Hash>,
+        daa: Option<u64>,
+        txs: &[L1Transaction],
+    ) -> RpcChainBlockAcceptedTransactions {
+        RpcChainBlockAcceptedTransactions {
+            chain_block_header: RpcOptionalHeader {
+                hash,
+                daa_score: daa,
+                ..RpcOptionalHeader::default()
+            },
+            accepted_transactions: txs.iter().map(|tx| tx.into()).collect(),
         }
     }
 
@@ -383,6 +517,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         restore_into_store(dir.path(), &header, reader).expect("restore should succeed");
 
+        // Success leaves the renamed store in place and no staging dir behind.
+        assert!(dir.path().join("db").exists());
+        assert!(!dir.path().join("db.restoring").exists());
+
         // Re-open the seeded store and assert it looks committed-up-to-the-settlement.
         let store = RocksDbStore::<DefaultConfig>::open(dir.path().join("db"));
         let last: Checkpoint<ChainBlockMetadata> = StateMetadata::last_committed(&store);
@@ -445,7 +583,9 @@ mod tests {
 
         // Start-up replay: the ancestry walk stops at the anchor rather than at a live parent.
         let store = RocksDbStore::<DefaultConfig>::open(dir.path().join("db"));
-        let mut chain = store.canonical_chain_manager::<ChainBlockMetadata>();
+        let mut chain = store.canonical_chain_manager::<ChainBlockMetadata>(
+            StateMetadata::last_committed::<ChainBlockMetadata, _>(&store).index(),
+        );
         assert_eq!(chain.chain().tip(), 4242);
         assert!(chain.chain().snapshot().is_canonical(4242));
         assert_eq!(store.root(4242), new_state);
@@ -459,12 +599,15 @@ mod tests {
         assert_eq!(chain.append(next).id, 4243);
         let mut wb = store.write_batch();
         StoredBatchMetadata::set(&mut wb, 4243, &next);
+        StateMetadata::set_last_committed(&mut wb, &Checkpoint::new(4243, next));
         store.commit(wb);
 
         // Restart with both entries: the anchor is still canonical, so a read at the newer batch
         // still resolves the nodes the snapshot wrote.
         drop(chain);
-        let chain = store.canonical_chain_manager::<ChainBlockMetadata>();
+        let chain = store.canonical_chain_manager::<ChainBlockMetadata>(
+            StateMetadata::last_committed::<ChainBlockMetadata, _>(&store).index(),
+        );
         let snapshot = chain.chain().snapshot();
         assert!(snapshot.is_canonical(4242));
         assert!(snapshot.is_canonical(4243));
@@ -526,5 +669,218 @@ mod tests {
             restore_into_store(dir.path(), &header, reader).expect_err("root should mismatch");
         assert!(matches!(err, RestoreError::RootMismatch { .. }));
         assert!(!dir.path().join("db").exists(), "a failed restore must not leave a db dir behind");
+        assert!(
+            !dir.path().join("db.restoring").exists(),
+            "a failed restore must not leave a staging dir behind"
+        );
+    }
+
+    /// Frames `records` (in the given order) with a correct digest, bypassing the writer so a
+    /// digest-valid file can probe restore-side rejection of framings the writer never produces.
+    fn raw_snapshot(header: &[u8], records: &[([u8; 32], Vec<u8>)]) -> Vec<u8> {
+        let mut prefix = Vec::new();
+        prefix.extend_from_slice(&VpsnapFormat::MAGIC);
+        prefix.extend_from_slice(&VpsnapFormat::FORMAT_VERSION.to_le_bytes());
+        prefix.extend_from_slice(&(header.len() as u32).to_le_bytes());
+        prefix.extend_from_slice(header);
+
+        let mut body = Vec::new();
+        for (id, value) in records {
+            body.extend_from_slice(id);
+            body.extend_from_slice(&(value.len() as u32).to_le_bytes());
+            body.extend_from_slice(value);
+        }
+
+        // Fold everything but the count in physical order, the count last (the codec's own
+        // backpatched-count layout), then append the count slot, body, and digest.
+        let mut hasher = Sha256::incremental();
+        hasher.update(&prefix);
+        hasher.update(&body);
+        hasher.update(&(records.len() as u64).to_le_bytes());
+
+        let mut out = prefix;
+        out.extend_from_slice(&(records.len() as u64).to_le_bytes());
+        out.extend_from_slice(&body);
+        out.extend_from_slice(&hasher.finalize());
+        out
+    }
+
+    /// A header carrying a settlement, for tests that reach the record stream.
+    fn settled_header(committed_index: u64) -> SnapshotHeader {
+        let block_prove_to = Hash::from_bytes([11u8; 32]);
+        let meta = ChainBlockMetadata {
+            hash: block_prove_to,
+            last_settlement: Some(SettlementInfo {
+                block_prove_to,
+                new_state: [0x22; 32],
+                ..SettlementInfo::default()
+            }),
+            ..ChainBlockMetadata::default()
+        };
+        SnapshotHeader {
+            covenant_id: Hash::from_bytes([7u8; 32]),
+            lane_id: 9,
+            bootstrap_txid: Hash::from_bytes([8u8; 32]),
+            committed_index,
+            chain_block_metadata: meta,
+        }
+    }
+
+    /// A snapshot whose digest is valid but whose records are out of order is rejected as a bad
+    /// snapshot at the record boundary: the trailing digest cannot catch a reordering (whoever
+    /// reorders the body recomputes it), so the reader's strictly-ascending contract is what
+    /// rejects the file before any record can act on the store.
+    #[test]
+    fn restore_rejects_unsorted_records() {
+        let header = settled_header(4242);
+        let unsorted = vec![rec(3, b"three"), rec(1, b"one")];
+        let bytes = raw_snapshot(&header.encode(), &unsorted);
+
+        let (header_bytes, reader) =
+            SnapshotReader::<_, Sha256, VpsnapFormat>::open(bytes.as_slice()).unwrap();
+        let header = SnapshotHeader::decode(&header_bytes).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let err = restore_into_store(dir.path(), &header, reader).expect_err("unsorted file");
+        assert!(
+            matches!(&err, RestoreError::BadSnapshot(msg) if msg.contains("not sorted")),
+            "expected a not-sorted BadSnapshot, got {err:?}"
+        );
+        assert!(!dir.path().join("db").exists());
+        assert!(!dir.path().join("db.restoring").exists());
+    }
+
+    /// The duplicate-id variant of the same forgery: strictly ascending excludes repeats, and a
+    /// duplicate record would otherwise overwrite the resource's first value while double-feeding
+    /// the tree builder.
+    #[test]
+    fn restore_rejects_duplicate_records() {
+        let header = settled_header(4242);
+        let duplicated = vec![rec(1, b"once"), rec(1, b"again")];
+        let bytes = raw_snapshot(&header.encode(), &duplicated);
+
+        let (header_bytes, reader) =
+            SnapshotReader::<_, Sha256, VpsnapFormat>::open(bytes.as_slice()).unwrap();
+        let header = SnapshotHeader::decode(&header_bytes).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let err = restore_into_store(dir.path(), &header, reader).expect_err("duplicate ids");
+        assert!(
+            matches!(&err, RestoreError::BadSnapshot(msg) if msg.contains("not sorted")),
+            "expected a not-sorted BadSnapshot, got {err:?}"
+        );
+    }
+
+    /// A header pinning batch index 0 (reserved as pre-genesis) is rejected by the header checks,
+    /// before any store is opened or any RPC dialed, instead of tripping the store builder's own
+    /// invariant with a store directory already created.
+    #[tokio::test]
+    async fn restore_rejects_zero_committed_index() {
+        use kaspa_consensus_core::network::NetworkType;
+
+        let header = settled_header(0);
+        let bytes = write_test_snapshot(&header.encode(), &[]);
+
+        let dir = tempfile::tempdir().unwrap();
+        let snap = dir.path().join("snap.vpsnap");
+        std::fs::write(&snap, bytes).unwrap();
+
+        // The wrpc URL is never dialed: the header check fires first.
+        let err = match restore_snapshot(
+            dir.path().join("data").as_path(),
+            &snap,
+            "wrpc://never.dialed",
+            NetworkId::new(NetworkType::Simnet),
+        )
+        .await
+        {
+            Err(e) => e,
+            Ok(_) => panic!("committed index 0 must be rejected"),
+        };
+        assert!(
+            matches!(&err, RestoreError::BadSnapshot(msg) if msg.contains("pre-genesis")),
+            "expected a pre-genesis BadSnapshot, got {err:?}"
+        );
+        assert!(!dir.path().join("data").join("db").exists());
+    }
+
+    /// A staging dir left by an interrupted earlier attempt never blocks a retry: it can only
+    /// originate from a previous restore into this fresh data dir, so the attempt discards it and
+    /// rebuilds.
+    #[test]
+    fn restore_discards_stale_staging_dir() {
+        let records = vec![rec(1, b"alpha")];
+        let mut header = settled_header(4242);
+        // The stream must rebuild to the pinned root, so pin the real root of the record set.
+        let mut s = header.chain_block_metadata.last_settlement.unwrap();
+        s.new_state = settlement_root(&records, 4242);
+        header.chain_block_metadata.last_settlement = Some(s);
+        let bytes = write_test_snapshot(&header.encode(), &records);
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("db.restoring")).unwrap();
+        std::fs::write(dir.path().join("db.restoring").join("torn"), b"leftover").unwrap();
+
+        let (header_bytes, reader) =
+            SnapshotReader::<_, Sha256, VpsnapFormat>::open(bytes.as_slice()).unwrap();
+        let header = SnapshotHeader::decode(&header_bytes).unwrap();
+        restore_into_store(dir.path(), &header, reader).expect("retry over stale staging");
+
+        assert!(dir.path().join("db").exists());
+        assert!(!dir.path().join("db.restoring").exists());
+    }
+
+    /// The containing block confirms only the exact settlement the header pins. Hash and DAA
+    /// score are stamped from the node's own header and the whole decoded settlement is compared,
+    /// so forging any file-supplied field fails instead of passing a genuine `new_state`/`tx_id`
+    /// pair while sneaking a different `daa_score`, `block_prove_to`, or `new_lane_tip` into the
+    /// seeded settler.
+    #[test]
+    fn containing_block_confirms_only_the_exact_pinned_settlement() {
+        let covenant_id = Hash::from_bytes([0xAA; 32]);
+        let tx = settlement_tx(covenant_id);
+        let cb_hash = Hash::from_bytes([0x44; 32]);
+        let cb_daa = 12_345;
+        let cb = chain_block_view(Some(cb_hash), Some(cb_daa), std::slice::from_ref(&tx));
+
+        let genuine = tx.settlement_info(covenant_id, cb_hash, cb_daa).expect("settlement tail");
+        assert!(confirms_settlement(&cb, covenant_id, &genuine));
+
+        // The bridge stamps `chain_idx` at append time; the on-chain decode always yields 0, so
+        // the comparison normalizes it rather than failing on a stamped pinned settlement.
+        let mut stamped = genuine;
+        stamped.chain_idx = 7u64.into();
+        assert!(confirms_settlement(&cb, covenant_id, &stamped));
+
+        let mut forged = genuine;
+        forged.daa_score = (cb_daa + 1).into();
+        assert!(!confirms_settlement(&cb, covenant_id, &forged), "forged daa_score");
+
+        let mut forged = genuine;
+        forged.new_lane_tip = Hash::from_bytes([0x99; 32]);
+        assert!(!confirms_settlement(&cb, covenant_id, &forged), "forged new_lane_tip");
+
+        let mut forged = genuine;
+        forged.block_prove_to = Hash::from_bytes([0x88; 32]);
+        assert!(!confirms_settlement(&cb, covenant_id, &forged), "forged block_prove_to");
+
+        let mut forged = genuine;
+        forged.new_state = [0x77; 32];
+        assert!(!confirms_settlement(&cb, covenant_id, &forged), "forged new_state");
+
+        let mut forged = genuine;
+        forged.containing_block = Hash::from_bytes([0x55; 32]);
+        assert!(!confirms_settlement(&cb, covenant_id, &forged), "forged containing_block");
+
+        // A settlement of a different covenant never matches, and a block carrying no settlement
+        // tx at all confirms nothing.
+        assert!(!confirms_settlement(&cb, Hash::from_bytes([0xBB; 32]), &genuine));
+        let empty = chain_block_view(Some(cb_hash), Some(cb_daa), &[]);
+        assert!(!confirms_settlement(&empty, covenant_id, &genuine));
+
+        // Below Full verbosity the node elides the header's DAA score; nothing can be stamped
+        // from the file, so the settlement cannot be confirmed.
+        let elided = chain_block_view(Some(cb_hash), None, std::slice::from_ref(&tx));
+        assert!(!confirms_settlement(&elided, covenant_id, &genuine));
     }
 }
