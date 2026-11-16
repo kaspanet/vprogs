@@ -59,9 +59,7 @@ tempfile   = { workspace = true }
 tokio      = { workspace = true, features = ["rt"] }
 
 [dev-dependencies]
-# The snapshot-reconstruction check enumerates the driver's committed state through these directly,
-# the same way a real snapshot save would.
-vprogs-core-hashing     = { workspace = true }
-vprogs-state-metadata   = { workspace = true }
-vprogs-state-ptr-latest = { workspace = true }
-vprogs-state-version    = { workspace = true }
+# The snapshot-reconstruction check reads the driver's committed state CFs directly.
+vprogs-core-hashing   = { workspace = true }
+vprogs-state-metadata = { workspace = true }
+vprogs-state-version  = { workspace = true }

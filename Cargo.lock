@@ -8957,7 +8957,6 @@ dependencies = [
  "vprogs-l1-wallet",
  "vprogs-scheduling-scheduler",
  "vprogs-state-metadata",
- "vprogs-state-ptr-latest",
  "vprogs-state-version",
  "vprogs-storage-manager",
  "vprogs-storage-rocksdb-store",
