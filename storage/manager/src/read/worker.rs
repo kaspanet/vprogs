@@ -50,6 +50,9 @@ impl<K: Store, R: ReadCmd> ReadWorker<K, R> {
         )
     }
 
+    /// Serves queued reads, parking while the queue is empty. On shutdown, serves everything
+    /// still queued: a read that is dropped instead of served never opens its receipt latch,
+    /// wedging any awaiter parked on it (the proving worker parks on its receipt reads).
     fn run(self) {
         while !self.is_shutdown() {
             match self.queue.pop() {
@@ -62,6 +65,14 @@ impl<K: Store, R: ReadCmd> ReadWorker<K, R> {
                 }
                 _ => self.park(),
             }
+        }
+
+        // Shutdown drain. Ceiling: producers are torn down before the storage manager shuts
+        // down (the node stops its workers, then its managers), so draining to an empty queue
+        // here cannot race a further submission; a producer still pushing after its manager
+        // shut down is a teardown-ordering bug elsewhere, not a lost-read case here.
+        while let (Some(cmd), _) = self.queue.pop() {
+            cmd.exec(self.store.deref());
         }
     }
 
