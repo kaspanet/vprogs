@@ -24,12 +24,12 @@ use vprogs_core_atomics::AtomicAsyncLatch;
 use vprogs_core_smt::EMPTY_HASH;
 use vprogs_core_types::ChainSink;
 use vprogs_l1_bridge::{PermissionSpendHooks, lane_walk_reached_genesis};
-use vprogs_l1_types::ChainBlockMetadata;
+use vprogs_l1_types::{ChainBlockMetadata, SettlementInfo};
 use vprogs_l1_wallet::Wallet;
 use vprogs_node_framework::NodeApi;
 use vprogs_scheduling_scheduler::Indexer;
-use vprogs_zk_aggregate_prover::ExitsForBundle;
 use vprogs_state_metadata::StateMetadata;
+use vprogs_zk_aggregate_prover::ExitsForBundle;
 use vprogs_zk_backend_risc0_api::{Backend, ProofType};
 use vprogs_zk_backend_risc0_settler::{
     CovenantState, SettlementMode, SettlementWorkerConfig, bootstrap_dev_covenant,
