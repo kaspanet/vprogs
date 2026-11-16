@@ -123,6 +123,14 @@ impl RunnerConfig {
     }
 }
 
+/// The data-dir field alone, extracted from the env/file layers by [`load_data_dir`] so an
+/// unrelated malformed setting (a bad `VPRUN_SEED_DEPTH`, say) cannot fail a subcommand that
+/// never reads it.
+#[derive(Default, Deserialize)]
+struct DataDirLayer {
+    data_dir: Option<PathBuf>,
+}
+
 /// Resolves just the data directory through the daemon's layering, for subcommands that need the
 /// store location but none of the daemon's required fields: `cli` (the subcommand's own
 /// `--data-dir`, else the top-level one), then `VPRUN_*` env vars, then the `--config` TOML
@@ -135,7 +143,7 @@ pub fn load_data_dir(
     if let Some(path) = config_path {
         figment = figment.merge(Toml::file(path));
     }
-    let layered: RawConfig = figment
+    let layered: DataDirLayer = figment
         .merge(Env::prefixed("VPRUN_"))
         .extract()
         .map_err(|e| ConfigError::Layering(Box::new(e)))?;
@@ -412,6 +420,13 @@ mod tests {
             // An explicit flag beats env and file.
             assert_eq!(
                 load_data_dir(Some("from-cli".into()), Some("dir.toml".into())).unwrap(),
+                PathBuf::from("from-cli")
+            );
+
+            // A malformed unrelated setting the save never reads does not fail the resolution.
+            jail.set_env("VPRUN_SEED_DEPTH", "soon");
+            assert_eq!(
+                load_data_dir(Some("from-cli".into()), None).unwrap(),
                 PathBuf::from("from-cli")
             );
             Ok(())

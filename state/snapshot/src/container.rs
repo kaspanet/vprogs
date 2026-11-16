@@ -74,8 +74,7 @@ pub enum SnapshotError {
     /// A field or call this codec refuses on its face, independent of how many bytes the stream
     /// actually holds: a length-prefixed field over its cap (`header_len > MAX_HEADER_LEN`,
     /// `value_len > MAX_VALUE_LEN`) on either side, records not in strictly ascending id order
-    /// on either side, a [`SnapshotWriter::finish`] whose written count disagrees with the
-    /// declared one, or a structurally invalid [`SnapshotReader::finish`] call (early finish,
+    /// on either side, or a structurally invalid [`SnapshotReader::finish`] call (early finish,
     /// or trailing bytes after the digest).
     #[error("snapshot malformed: {0}")]
     Malformed(&'static str),
@@ -274,8 +273,12 @@ impl<R: Read, H: Hasher, F: SnapshotFormat> SnapshotReader<R, H, F> {
 
         // Read `record_count` without folding it: the writer folds it last (after the records), so
         // [`finish`](Self::finish) mirrors that by folding it just before comparing the digest.
+        // Only a genuine end of stream is `Truncated`; a failing reader stays an I/O error.
         let mut count_bytes = [0u8; 8];
-        r.read_exact(&mut count_bytes).map_err(|_| SnapshotError::Truncated)?;
+        r.read_exact(&mut count_bytes).map_err(|e| match e.kind() {
+            std::io::ErrorKind::UnexpectedEof => SnapshotError::Truncated,
+            _ => SnapshotError::Io(e),
+        })?;
         let record_count = u64::from_le_bytes(count_bytes);
 
         Ok((
@@ -856,6 +859,17 @@ mod tests {
             SnapshotReader::<_, Sha256, TestFormat>::open(&mut failing).unwrap();
         while reader.next().unwrap().is_some() {}
         let result = reader.finish();
+        assert!(matches!(result, Err(SnapshotError::Io(_))), "expected Io, got {result:?}");
+    }
+
+    /// And on the `record_count` read in `open`: a stream failing there reports I/O, not a
+    /// truncated (apparently corrupt) snapshot.
+    #[test]
+    fn open_maps_io_error_on_the_count_read_to_io_not_truncated() {
+        let good = digest_valid_body(&[]);
+        // Everything up to but excluding the 8 count bytes: magic, version, header_len.
+        let mut failing = FailingRead::new(good[..8 + 2 + 4].to_vec());
+        let result = SnapshotReader::<_, Sha256, TestFormat>::open(&mut failing).map(|_| ());
         assert!(matches!(result, Err(SnapshotError::Io(_))), "expected Io, got {result:?}");
     }
 

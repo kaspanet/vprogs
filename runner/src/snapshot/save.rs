@@ -35,6 +35,38 @@ impl SmtWriteBatch for DiscardBatch {
     fn delete_stale_node(&mut self, _stale: &StaleNode) {}
 }
 
+/// Emits one record at `rid`'s version `ver`: a version of 0 (the resource did not exist at N_S)
+/// and an empty stored value (deletions read back as empty) skip, a version with no stored entry
+/// is corruption, and everything else goes to the file and the rebuild self-check.
+fn emit_record(
+    store: &RocksDbStore<DefaultConfig>,
+    writer: &mut SnapshotWriter<
+        '_,
+        std::io::BufWriter<std::fs::File>,
+        <crate::RunnerStore as Tree>::Hasher,
+        VpsnapFormat,
+    >,
+    rebuild: &mut StreamingBuilder<<crate::RunnerStore as Tree>::Hasher>,
+    discard: &mut DiscardBatch,
+    rid: ResourceId,
+    ver: u64,
+) -> Result<(), SaveError> {
+    if ver == 0 {
+        return Ok(());
+    }
+    let value = store.get_pinned(StateSpace::StateVersion, &StateVersion::key(ver, &rid));
+    match value.as_deref() {
+        Some(value) if !value.is_empty() => {
+            let id: &[u8; 32] = &rid;
+            rebuild.feed(discard, rid, <crate::RunnerStore as Tree>::Hasher::hash(value));
+            writer.write_record(id, value)?;
+            Ok(())
+        }
+        Some(_) => Ok(()),
+        None => Err(SaveError::MissingVersion { resource: *rid, version: ver }),
+    }
+}
+
 /// Outcome of a successful [`save_snapshot`] call.
 #[derive(Debug)]
 pub struct SaveSummary {
@@ -114,12 +146,12 @@ pub fn save_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveErr
         name.push(".tmp");
         PathBuf::from(name)
     };
-    match write_snapshot(data_dir, &tmp) {
-        Ok(mut summary) => {
-            std::fs::rename(&tmp, out)?;
-            summary.out_path = out.to_path_buf();
-            Ok(summary)
-        }
+    match write_snapshot(data_dir, &tmp).and_then(|mut summary| {
+        std::fs::rename(&tmp, out)?;
+        summary.out_path = out.to_path_buf();
+        Ok(summary)
+    }) {
+        Ok(summary) => Ok(summary),
         Err(e) => {
             let _ = std::fs::remove_file(&tmp);
             Err(e)
@@ -228,46 +260,63 @@ fn write_snapshot(data_dir: &Path, out: &Path) -> Result<SaveSummary, SaveError>
 
     // Lazy, one value resident at a time: the raw cursor yields ids in ascending order (latest-ptr
     // keys are the raw 32-byte resource id, so RocksDB's byte order is resource_id order), exactly
-    // the order `SnapshotWriter::write_record` requires, so no sort is needed. A resource is
-    // emitted at its version as of N_S: `corrections` overrides the current latest for resources
-    // touched after N_S, and a resource CREATED after N_S surfaces as a correction of exactly 0 and
-    // is skipped, since no version existed at N_S. A resource whose value at N_S is empty is
-    // skipped: the live store keeps an empty value to mark a deletion and shadow the prior version,
-    // but a restore rebuilds a fresh tree where empty and absent coincide and the SMT already
-    // treats empty as absent, so the record would only bloat the file. A version the pointers cite
-    // with no stored entry at all is not skipped: within the retained window a live version is
-    // never pruned, so its absence is corruption and fails the save.
+    // the order `SnapshotWriter::write_record` requires. A resource is emitted at its version as
+    // of N_S: `corrections` overrides the current latest for resources touched after N_S, and a
+    // resource CREATED after N_S surfaces as a correction of exactly 0 and is skipped, since no
+    // version existed at N_S. A resource DELETED after N_S has no latest pointer at all (the live
+    // writer removes it on the deleting batch's commit), so the ptr scan never visits it; its
+    // correction entry still names the pre-delete version, and those entries sit in a sorted
+    // pending list merged into the scan's ascending order. A resource whose value at N_S is empty
+    // is skipped: a restore rebuilds a fresh tree where empty and absent coincide and the SMT
+    // already treats empty as absent, so the record would only bloat the file. A version the
+    // pointers cite with no stored entry at all is not skipped: within the retained window a live
+    // version is never pruned, so its absence is corruption and fails the save.
+    let mut pending: Vec<(ResourceId, u64)> =
+        corrections.iter().filter(|&(_, &ver)| ver != 0).map(|(&rid, &ver)| (rid, ver)).collect();
+    pending.sort_by_key(|&(rid, _)| rid);
+    let mut next_pending = 0usize;
     let mut emit_cursor = store.raw_scan(StateSpace::StatePtrLatest);
     let mut rebuild = StreamingBuilder::<<crate::RunnerStore as Tree>::Hasher>::new(n_s);
     let mut discard = DiscardBatch;
     while emit_cursor.valid() {
         let key = emit_cursor.key().expect("valid cursor has a key");
         let id: [u8; 32] = key.try_into().expect("corrupted latest-ptr resource id");
+        let rid = ResourceId::from(id);
+        // Pending corrections below the scanned id name resources with no latest pointer (deleted
+        // after N_S); once the scan passes their id, they can never appear in it.
+        while next_pending < pending.len() && pending[next_pending].0 < rid {
+            emit_record(
+                &store,
+                &mut writer,
+                &mut rebuild,
+                &mut discard,
+                pending[next_pending].0,
+                pending[next_pending].1,
+            )?;
+            next_pending += 1;
+        }
+        if next_pending < pending.len() && pending[next_pending].0 == rid {
+            // The scanned entry carries this resource; its pending twin is redundant.
+            next_pending += 1;
+        }
         let value_bytes = emit_cursor.value().expect("valid cursor has a value");
         let latest =
             u64::from_be_bytes(value_bytes.try_into().expect("corrupted latest-ptr version"));
-
-        let ver = corrections.get(&ResourceId::from(id)).copied().unwrap_or(latest);
-        if ver != 0 {
-            // The fixed-width key needs no re-encode of the cursor's raw id bytes.
-            let version_key = StateVersion::key(ver, &ResourceId::from(id));
-            let value = store.get_pinned(StateSpace::StateVersion, &version_key);
-            match value.as_deref() {
-                Some(value) if !value.is_empty() => {
-                    rebuild.feed(
-                        &mut discard,
-                        ResourceId::from(id),
-                        <crate::RunnerStore as Tree>::Hasher::hash(value),
-                    );
-                    writer.write_record(&id, value)?;
-                }
-                Some(_) => {}
-                None => {
-                    return Err(SaveError::MissingVersion { resource: id, version: ver });
-                }
-            }
-        }
+        let ver = corrections.get(&rid).copied().unwrap_or(latest);
+        emit_record(&store, &mut writer, &mut rebuild, &mut discard, rid, ver)?;
         emit_cursor.next();
+    }
+    // Corrections above the last scanned id: deletions of the store's highest-id resources.
+    while next_pending < pending.len() {
+        emit_record(
+            &store,
+            &mut writer,
+            &mut rebuild,
+            &mut discard,
+            pending[next_pending].0,
+            pending[next_pending].1,
+        )?;
+        next_pending += 1;
     }
     let computed = rebuild.finish(&mut discard);
     if computed != settlement.new_state {
@@ -564,6 +613,145 @@ mod tests {
         // at the operator's path nor a leftover temp sibling may survive it.
         assert!(!out.exists());
         assert!(!dir.path().join("snap.vpsnap.tmp").exists());
+    }
+
+    // A canonical post-settlement batch deletes a resource by removing its latest pointer (the
+    // live writer's write_latest_ptr deletes on empty data). The ptr scan never visits the
+    // resource, but its rollback entry still names the pre-delete version, which is its value at
+    // N_S; the save must merge that entry into the emission instead of dropping the record and
+    // failing its own root self-check.
+    #[test]
+    fn save_emits_resources_deleted_after_the_settlement() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RocksDbStore::<DefaultConfig>::open(dir.path().join("db"));
+
+        let r1 = ResourceId::from([1u8; 32]); // deleted below the surviving scan ids
+        let r2 = ResourceId::from([2u8; 32]); // rewritten in the same batch
+        let r3 = ResourceId::from([3u8; 32]); // deleted above the surviving scan ids
+
+        // Batch 1 is block_prove_to: r1 = alpha, r2 = beta, r3 = gamma.
+        let m1 = ChainBlockMetadata {
+            hash: Hash::from_bytes([11u8; 32]),
+            ..ChainBlockMetadata::default()
+        };
+        let root1 = commit_batch(
+            &store,
+            1,
+            &[(r1, 1, b"alpha"), (r2, 1, b"beta"), (r3, 1, b"gamma")],
+            m1,
+            true,
+        );
+
+        // Batch 2 deletes r1 and r3 (the live writer removes their latest pointers) and rewrites
+        // r2, so only r2's id remains in the ptr scan and the two deletions exercise the merge
+        // from both sides of it.
+        let settlement = SettlementInfo {
+            block_prove_to: m1.hash,
+            containing_block: Hash::from_bytes([22u8; 32]),
+            new_state: root1,
+            ..SettlementInfo::default()
+        };
+        let m2 = ChainBlockMetadata {
+            hash: Hash::from_bytes([22u8; 32]),
+            parent_id: 1,
+            last_settlement: Some(settlement),
+            ..ChainBlockMetadata::default()
+        };
+        {
+            let mut wb = store.write_batch();
+            StatePtrRollback::put(&mut wb, 2, &r1, 1);
+            StatePtrRollback::put(&mut wb, 2, &r2, 1);
+            StatePtrRollback::put(&mut wb, 2, &r3, 1);
+            StatePtrLatest::delete(&mut wb, &r1);
+            StatePtrLatest::delete(&mut wb, &r3);
+            store.commit(wb);
+        }
+        commit_batch(&store, 2, &[(r2, 2, b"delta")], m2, false);
+
+        PersistedState {
+            lane_id: Some(9),
+            covenant_id: Some(Hash::from_bytes([7u8; 32]).to_string()),
+            bootstrap_txid: Some(Hash::from_bytes([8u8; 32]).to_string()),
+            bootstrap_block_hash: None,
+            pinned_lane_tip: None,
+        }
+        .save(dir.path());
+
+        drop(store);
+
+        let out = dir.path().join("snap.vpsnap");
+        let summary = save_snapshot(dir.path(), &out).expect("save should succeed");
+        assert_eq!(summary.committed_index, 1);
+        assert_eq!(summary.settlement_new_state, root1);
+        assert_eq!(summary.record_count, 3);
+
+        // All three reappear at their N_S values, in ascending id order.
+        let bytes = std::fs::read(&out).unwrap();
+        let (_hdr, mut reader) =
+            SnapshotReader::<_, Sha256, VpsnapFormat>::open(bytes.as_slice()).unwrap();
+        let mut records: Vec<([u8; 32], Vec<u8>)> = Vec::new();
+        while let Some(Record { id, value }) = reader.next().unwrap() {
+            records.push((*id, value.to_vec()));
+        }
+        reader.finish().unwrap();
+        assert_eq!(
+            records,
+            vec![
+                ([1u8; 32], b"alpha".to_vec()),
+                ([2u8; 32], b"beta".to_vec()),
+                ([3u8; 32], b"gamma".to_vec())
+            ]
+        );
+    }
+
+    // A rename into the operator's path can fail after the snapshot itself wrote cleanly (the
+    // path is a directory, permissions changed); the temp file must not survive that either.
+    #[test]
+    fn save_removes_the_temp_file_when_the_rename_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RocksDbStore::<DefaultConfig>::open(dir.path().join("db"));
+
+        let r1 = ResourceId::from([1u8; 32]);
+        let m1 = ChainBlockMetadata {
+            hash: Hash::from_bytes([11u8; 32]),
+            ..ChainBlockMetadata::default()
+        };
+        let root1 = commit_batch(&store, 1, &[(r1, 1, b"alpha")], m1, true);
+        let settlement = SettlementInfo {
+            block_prove_to: m1.hash,
+            containing_block: m1.hash,
+            new_state: root1,
+            ..SettlementInfo::default()
+        };
+        let m1 = ChainBlockMetadata {
+            hash: Hash::from_bytes([11u8; 32]),
+            last_settlement: Some(settlement),
+            ..ChainBlockMetadata::default()
+        };
+        {
+            let mut wb = store.write_batch();
+            let cp = Checkpoint::new(1, m1);
+            StoredBatchMetadata::set(&mut wb, 1, cp.metadata());
+            StateMetadata::set_last_committed(&mut wb, &cp);
+            store.commit(wb);
+        }
+
+        PersistedState {
+            lane_id: Some(9),
+            covenant_id: Some(Hash::from_bytes([7u8; 32]).to_string()),
+            bootstrap_txid: Some(Hash::from_bytes([8u8; 32]).to_string()),
+            bootstrap_block_hash: None,
+            pinned_lane_tip: None,
+        }
+        .save(dir.path());
+
+        drop(store);
+
+        // The destination exists as a directory: the write succeeds, the rename cannot.
+        let out = dir.path().join("occupied");
+        std::fs::create_dir(&out).unwrap();
+        assert!(save_snapshot(dir.path(), &out).is_err());
+        assert!(!dir.path().join("occupied.tmp").exists(), "no temp file may survive the rename");
     }
 
     // A latest pointer citing a version with no stored entry is corruption within the retained
