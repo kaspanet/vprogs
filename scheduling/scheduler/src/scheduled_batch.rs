@@ -19,8 +19,8 @@ use vprogs_state_proof_receipt::{BatchKey, Prefix};
 use vprogs_storage_types::{ReadStore, Store};
 
 use crate::{
-    CancellationContext, ReceiptRead, ResourceIndexer, ScheduledTransaction, Scheduler, StateDiff,
-    Write, cpu_task::ManagerTask, processor::Processor, state::SchedulerState,
+    CancellationContext, Read, ReceiptRead, ResourceIndexer, ScheduledTransaction, Scheduler,
+    StateDiff, Write, cpu_task::ManagerTask, processor::Processor, state::SchedulerState,
     storage_cmd::ReceiptLookup,
 };
 
@@ -358,8 +358,11 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
         let index = self.checkpoint.index();
         for tx in self.txs() {
             for access in tx.resources() {
-                if access.is_batch_tail() {
-                    access.restore_committed_data(store, index);
+                if access.is_batch_tail() && !access.restore_committed_data(store, index) {
+                    // A read-only access waits for its predecessor's written state; retry the
+                    // restore once it lands so no access resolves from a superseded value.
+                    self.state.storage().submit_read(Read::CommittedBatch(self.clone()));
+                    return;
                 }
             }
         }
