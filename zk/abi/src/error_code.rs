@@ -10,6 +10,8 @@ pub enum ErrorCode {
     InvalidExitSpkTag = 2,
     /// `ScriptPublicKey` is not one of the supported variants (Schnorr P2PK / ECDSA P2PK / P2SH).
     InvalidExitSpk = 3,
+    /// The transaction wrote a resource it declared `Read`.
+    ReadDeclaredWrite = 5,
 }
 
 impl From<ErrorCode> for Error {
