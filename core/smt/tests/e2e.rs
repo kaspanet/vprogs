@@ -299,6 +299,38 @@ fn orphaned_version_is_skipped() {
     assert_eq!(proof.root::<Sha256>().unwrap(), root1);
 }
 
+/// Canonical filtering at `tip == 0`: a rollback to genesis orphans every version, so no read may
+/// resolve to one. The store gates filtering on whether the chain ever assigned an id, which a
+/// rollback to genesis does not clear, so the oracle stays authoritative over a populated DB.
+#[test]
+fn rollback_to_genesis_still_hides_orphaned_versions() {
+    let dir = TempDir::new().unwrap();
+    let store = RocksDbStore::open(dir.path());
+    let mut versions = store.canonical_chain_manager::<u64>();
+
+    // A populated DB: two committed versions of one key, both currently canonical.
+    versions.append(1);
+    let root1 = commit(&store, 1, &[(test_key(1), test_value(1))]);
+    versions.append(2);
+    let root2 = commit(&store, 2, &[(test_key(1), test_value(2))]);
+    assert_ne!(root1, root2);
+
+    // Roll back to genesis: id 0 is the "no parent" sentinel, so this orphans both versions and
+    // publishes tip 0 over a DB whose nodes are all still on disk.
+    versions.rollback(0);
+    assert_eq!(versions.chain().tip(), 0);
+
+    // The oracle itself is unambiguous about both versions.
+    let snapshot = store.snapshot();
+    assert!(!snapshot.is_canonical(1), "the oracle orphans v1");
+    assert!(!snapshot.is_canonical(2), "the oracle orphans v2");
+
+    // With every version orphaned, both reads must resolve to the empty tree's root, not to
+    // any version stored on disk.
+    assert_eq!(store.root(2), EMPTY_HASH, "orphaned v2 must not be served");
+    assert_eq!(store.root(1), EMPTY_HASH, "orphaned v1 must not be served");
+}
+
 // -- Edge cases --
 
 /// Single-key tree: insert one key, prove it, delete it, verify the tree becomes empty.
