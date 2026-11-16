@@ -123,6 +123,25 @@ impl RunnerConfig {
     }
 }
 
+/// Resolves just the data directory through the daemon's layering, for subcommands that need the
+/// store location but none of the daemon's required fields: `cli` (the subcommand's own
+/// `--data-dir`, else the top-level one), then `VPRUN_*` env vars, then the `--config` TOML
+/// file, then the daemon's default.
+pub fn load_data_dir(
+    cli: Option<PathBuf>,
+    config_path: Option<PathBuf>,
+) -> Result<PathBuf, ConfigError> {
+    let mut figment = Figment::new();
+    if let Some(path) = config_path {
+        figment = figment.merge(Toml::file(path));
+    }
+    let layered: RawConfig = figment
+        .merge(Env::prefixed("VPRUN_"))
+        .extract()
+        .map_err(|e| ConfigError::Layering(Box::new(e)))?;
+    Ok(cli.or(layered.data_dir).unwrap_or_else(|| PathBuf::from("./vprun-data")))
+}
+
 /// The unresolved, all-optional shape shared by every config layer (CLI, env, TOML file). Every
 /// field is optional so a layer only overrides what it sets. Typed parsing and defaulting happen in
 /// [`RawConfig::resolve`].
@@ -363,6 +382,38 @@ mod tests {
             assert_eq!(flag_over_all.seed_depth, 3);
             // Unset flag fields still fall through to the file.
             assert_eq!(flag_over_all.wrpc_url, "ws://file");
+            Ok(())
+        });
+    }
+
+    // The snapshot subcommand resolves its source directory through the daemon's layering without
+    // requiring any of the daemon's other fields.
+    #[allow(clippy::result_large_err)]
+    #[test]
+    fn data_dir_layering_matches_the_daemon() {
+        figment::Jail::expect_with(|jail| {
+            // No sources: the daemon's default.
+            assert_eq!(load_data_dir(None, None).unwrap(), PathBuf::from("./vprun-data"));
+
+            // File only.
+            jail.create_file("dir.toml", "data_dir = \"from-file\"\n")?;
+            assert_eq!(
+                load_data_dir(None, Some("dir.toml".into())).unwrap(),
+                PathBuf::from("from-file")
+            );
+
+            // Env beats file.
+            jail.set_env("VPRUN_DATA_DIR", "from-env");
+            assert_eq!(
+                load_data_dir(None, Some("dir.toml".into())).unwrap(),
+                PathBuf::from("from-env")
+            );
+
+            // An explicit flag beats env and file.
+            assert_eq!(
+                load_data_dir(Some("from-cli".into()), Some("dir.toml".into())).unwrap(),
+                PathBuf::from("from-cli")
+            );
             Ok(())
         });
     }

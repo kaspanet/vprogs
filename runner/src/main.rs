@@ -12,7 +12,7 @@
 //! leaks it into shell history and every `ps` listing, so keep that form for throwaway dev keys.
 
 use clap::Parser;
-use vprogs_runner::{RawConfig, RunnerConfig, StartMode, run};
+use vprogs_runner::{RawConfig, RunnerConfig, StartMode, load_data_dir, run};
 
 /// Follow a Kaspa L1 lane, execute a guest program over it, and optionally prove + settle. With no
 /// subcommand, runs the daemon from the flattened run flags below.
@@ -40,9 +40,11 @@ enum Command {
 enum SnapshotAction {
     /// Export L2 state at the latest settlement to a shareable file (opens the store read-only).
     Save {
-        /// RocksDB + state-file directory of the source node.
+        /// RocksDB + state-file directory of the source node. Resolved through the daemon's
+        /// layering when omitted: the top-level `--data-dir`, then `VPRUN_DATA_DIR`, then the
+        /// `--config` file, then the daemon's default.
         #[arg(long)]
-        data_dir: std::path::PathBuf,
+        data_dir: Option<std::path::PathBuf>,
         /// Path to write the snapshot file to.
         #[arg(long)]
         out: std::path::PathBuf,
@@ -152,6 +154,17 @@ async fn main() {
     let cli = Cli::parse();
     match cli.command {
         Some(Command::Snapshot { action: SnapshotAction::Save { data_dir, out } }) => {
+            // The subcommand's own flag wins, then the top-level one, then the shared env/file
+            // layering, so operators with a config file (or a top-level --data-dir habit) need
+            // not repeat the path.
+            let cli_dir = data_dir.or_else(|| cli.run.data_dir.clone());
+            let data_dir = match load_data_dir(cli_dir, cli.run.config.clone()) {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("vprun: configuration error: {e}");
+                    std::process::exit(2);
+                }
+            };
             match vprogs_runner::snapshot::save::save_snapshot(&data_dir, &out) {
                 Ok(s) => {
                     eprintln!(
