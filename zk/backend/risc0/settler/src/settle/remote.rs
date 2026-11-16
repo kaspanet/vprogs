@@ -12,7 +12,7 @@ use kaspa_rpc_core::{RpcError, api::rpc::RpcApi};
 use kaspa_wrpc_client::prelude::KaspaRpcClient;
 use secp256k1::Keypair;
 use vprogs_core_atomics::AtomicAsyncLatch;
-use vprogs_l1_wallet::Wallet;
+use vprogs_l1_wallet::{PrepareError, Wallet};
 
 use crate::{
     confirm::{CovenantLiveness, OutpointAt, covenant_liveness},
@@ -62,13 +62,27 @@ impl FeeSource for WalletFeeSource {
                     return funded
                         .map(|(tx, fee_outpoints)| FundedSettlement { tx, fee_outpoints });
                 }
-                Err(e) if attempt < MAX_ATTEMPTS => {
+                // Recoverable without any node interaction, but not by retrying the funding
+                // search itself: the wallet holds enough value, spread across more UTXOs than
+                // the settlement's fixed witness leaves room for under the per-tx mass cap.
+                // Report it as fee exhaustion (the settler backs off and retries the same
+                // bundle) and say what actually has to happen: consolidate the funder.
+                Err(PrepareError::MassOverflow { mass, limit }) => {
+                    log::warn!(
+                        "settlement funding: fee inputs push the settlement to mass {mass}, \
+                         above the per-tx admission limit {limit}; the funder wallet is \
+                         fragmented, sweep its UTXOs into fewer, larger ones. Backing off and \
+                         retrying the bundle"
+                    );
+                    return None;
+                }
+                Err(PrepareError::Rpc(e)) if attempt < MAX_ATTEMPTS => {
                     log::warn!(
                         "settlement funding: spendable-utxo fetch failed (attempt {attempt}/{MAX_ATTEMPTS}, retrying): {e}"
                     );
                     tokio::time::sleep(RETRY_DELAY).await;
                 }
-                Err(e) => {
+                Err(PrepareError::Rpc(e)) => {
                     log::error!(
                         "settlement funding: spendable-utxo fetch failed after {MAX_ATTEMPTS} attempts: {e}"
                     );
