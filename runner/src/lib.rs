@@ -21,10 +21,13 @@ mod lane;
 mod node;
 mod persistence;
 mod report;
+pub mod snapshot;
 mod start;
 mod wrpc;
 
-pub use config::{ConfigError, OwnedElfs, RawConfig, RunnerConfig, StartMode, parse_network};
+pub use config::{
+    ConfigError, OwnedElfs, RawConfig, RunnerConfig, StartMode, load_data_dir, parse_network,
+};
 pub use exit_index::{
     ExitIndexer, handle_pairing, handle_permission_spend, handle_settlement, load_registry,
     parse_perm_out_key, perm_out_key, run_exec_exits_joiner, run_exit_indexer,

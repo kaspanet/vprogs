@@ -41,16 +41,15 @@ fn reconstructed_root_matches_independent_commit() {
     ref_store.commit(wb);
 
     // Round-trip through the streaming container.
-    let mut buf = Vec::new();
-    let mut writer =
-        SnapshotWriter::<_, Sha256, TestFormat>::open(&mut buf, b"hdr", records.len() as u64)
-            .unwrap();
+    let mut buf = std::io::Cursor::new(Vec::new());
+    let mut writer = SnapshotWriter::<_, Sha256, TestFormat>::open(&mut buf, b"hdr").unwrap();
     for (id, value) in &records {
         writer.write_record(id, value).unwrap();
     }
     writer.finish().unwrap();
 
-    let (_hdr, mut reader) = SnapshotReader::<_, Sha256, TestFormat>::open(buf.as_slice()).unwrap();
+    let (_hdr, mut reader) =
+        SnapshotReader::<_, Sha256, TestFormat>::open(buf.get_ref().as_slice()).unwrap();
 
     // Feed the non-empty records (an empty value means the resource is absent from the tree) in
     // ascending id order into a fresh streaming builder writing into a fresh store's write batch.

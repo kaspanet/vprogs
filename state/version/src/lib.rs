@@ -4,7 +4,6 @@ use tap::Tap;
 use vprogs_core_types::ResourceId;
 use vprogs_state_ptr_latest::StatePtrLatest;
 use vprogs_state_ptr_rollback::StatePtrRollback;
-use vprogs_storage_manager::concat_bytes;
 use vprogs_storage_types::{ReadStore, StateSpace, WriteBatch};
 
 #[derive(Clone, Debug)]
@@ -79,29 +78,43 @@ impl StateVersion {
     }
 
     /// Gets the data for a specific version of a resource.
-    ///
-    /// Key layout: `version (u64 BE) || resource_id (borsh)`
     pub fn get<S: ReadStore>(store: &S, version: u64, resource_id: &ResourceId) -> Option<Vec<u8>> {
-        let rid = borsh::to_vec(resource_id).expect("failed to serialize ResourceId");
-        let key = concat_bytes!(&version.to_be_bytes(), &rid);
-        store.get(StateSpace::StateVersion, &key)
+        store.get(StateSpace::StateVersion, &Self::key(version, resource_id))
     }
 
     /// Stores data for a specific version of a resource.
-    ///
-    /// Key layout: `version (u64 BE) || resource_id (borsh)`
     pub fn put<W: WriteBatch>(wb: &mut W, version: u64, resource_id: &ResourceId, data: &[u8]) {
-        let rid = borsh::to_vec(resource_id).expect("failed to serialize ResourceId");
-        let key = concat_bytes!(&version.to_be_bytes(), &rid);
-        wb.put(StateSpace::StateVersion, &key, data);
+        wb.put(StateSpace::StateVersion, &Self::key(version, resource_id), data);
     }
 
     /// Deletes data for a specific version of a resource.
-    ///
-    /// Key layout: `version (u64 BE) || resource_id (borsh)`
     pub fn delete<W: WriteBatch>(wb: &mut W, version: u64, resource_id: &ResourceId) {
-        let rid = borsh::to_vec(resource_id).expect("failed to serialize ResourceId");
-        let key = concat_bytes!(&version.to_be_bytes(), &rid);
-        wb.delete(StateSpace::StateVersion, &key);
+        wb.delete(StateSpace::StateVersion, &Self::key(version, resource_id));
+    }
+
+    /// The storage key for `(version, resource_id)`: `version (u64 BE) || resource_id (borsh)`.
+    /// `ResourceId`'s borsh encoding is its 32 bytes verbatim, so the layout is fixed-width.
+    pub fn key(version: u64, resource_id: &ResourceId) -> [u8; 40] {
+        let id: &[u8; 32] = resource_id;
+        let mut key = [0u8; 40];
+        key[..8].copy_from_slice(&version.to_be_bytes());
+        key[8..].copy_from_slice(id);
+        key
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The key layout is load-bearing for every consumer of the version CF; pin it byte-for-byte
+    /// so a change cannot slip in as a refactor.
+    #[test]
+    fn version_key_layout_is_version_then_resource_id() {
+        let id = ResourceId::from([0xAB; 32]);
+        let mut expected = [0u8; 40];
+        expected[..8].copy_from_slice(&7u64.to_be_bytes());
+        expected[8..].copy_from_slice(&[0xAB; 32]);
+        assert_eq!(StateVersion::key(7, &id), expected);
     }
 }
