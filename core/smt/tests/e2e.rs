@@ -275,7 +275,7 @@ fn prune_preserves_tree_integrity() {
 fn orphaned_version_is_skipped() {
     let dir = TempDir::new().unwrap();
     let store = RocksDbStore::open(dir.path());
-    let mut versions = store.canonical_chain_manager::<u64>();
+    let mut versions = store.canonical_chain_manager::<u64>(0);
 
     // Version 1: insert key.
     versions.append(1);
@@ -306,7 +306,7 @@ fn orphaned_version_is_skipped() {
 fn rollback_to_genesis_still_hides_orphaned_versions() {
     let dir = TempDir::new().unwrap();
     let store = RocksDbStore::open(dir.path());
-    let mut versions = store.canonical_chain_manager::<u64>();
+    let mut versions = store.canonical_chain_manager::<u64>(0);
 
     // A populated DB: two committed versions of one key, both currently canonical.
     versions.append(1);

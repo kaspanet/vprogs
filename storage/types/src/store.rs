@@ -67,7 +67,8 @@ pub trait Store: Tree + Clone + Send + Sync + 'static {
     }
 
     /// Restores a single-owner manager over this store's oracle, each id being its stored index.
-    fn canonical_chain_manager<M: BatchMetadata>(&self) -> CanonicalChainManager<M> {
+    /// `tip_cap` bounds the restored canonical tip; log entries above it replay orphaned.
+    fn canonical_chain_manager<M: BatchMetadata>(&self, tip_cap: u64) -> CanonicalChainManager<M> {
         // Decode each committed batch, taking its id from the storage key.
         let entries = self.prefix_iter(StateSpace::BatchMetadata, &[]).map(|(key, value)| {
             let id = u64::from_be_bytes(key[..8].try_into().expect("corrupted batch index key"));
@@ -83,7 +84,7 @@ pub trait Store: Tree + Clone + Send + Sync + 'static {
                 ),
                 words: decode_words(&value),
             });
-        CanonicalChainManager::new_with_frozen(self.canonical_chain(), entries, frozen)
+        CanonicalChainManager::new_with_frozen(self.canonical_chain(), entries, frozen, tip_cap)
     }
 }
 
