@@ -189,8 +189,10 @@ impl<'w, W: Write + Seek, H: Hasher, F: SnapshotFormat> SnapshotWriter<'w, W, H,
         Ok(())
     }
 
-    /// Writes the trailing digest and backpatches the true `record_count`, completing the file.
-    /// Returns the number of records written.
+    /// Writes the trailing digest and backpatches the true `record_count`, completing the file,
+    /// and leaves the sink positioned at the file end. Returns the number of records written.
+    /// Does not flush the sink; a caller wrapping it in a `BufWriter` must flush before the bytes
+    /// are relied on at rest.
     pub fn finish(self) -> Result<u64, SnapshotError> {
         let count = self.written;
         let count_offset = self.count_offset;
@@ -203,6 +205,9 @@ impl<'w, W: Write + Seek, H: Hasher, F: SnapshotFormat> SnapshotWriter<'w, W, H,
         // straight to the sink without re-folding.
         inner.seek(SeekFrom::Start(count_offset))?;
         inner.write_all(&count.to_le_bytes())?;
+        // The backpatch leaves the sink at the count field; a caller reading `stream_position` as
+        // the file length (or appending) needs the end.
+        inner.seek(SeekFrom::End(0))?;
         Ok(count)
     }
 }
@@ -481,7 +486,7 @@ mod tests {
     /// other ordering violation, in every build profile.
     #[test]
     fn writer_rejects_duplicate_records() {
-        let mut buf = Vec::new();
+        let mut buf = std::io::Cursor::new(Vec::new());
         let mut writer = SnapshotWriter::<_, Sha256, TestFormat>::open(&mut buf, b"h").unwrap();
         writer.write_record(&[1u8; 32], b"once").unwrap();
         assert!(matches!(
@@ -495,7 +500,7 @@ mod tests {
     /// only surviving copy of the state.
     #[test]
     fn writer_rejects_oversized_header() {
-        let mut buf = Vec::new();
+        let mut buf = std::io::Cursor::new(Vec::new());
         let header = vec![0u8; MAX_HEADER_LEN as usize + 1];
         let result = SnapshotWriter::<_, Sha256, TestFormat>::open(&mut buf, &header).map(|_| ());
         assert!(
@@ -508,7 +513,7 @@ mod tests {
     /// rather than shipped in a digest-valid file that every later restore rejects.
     #[test]
     fn writer_rejects_oversized_value() {
-        let mut buf = Vec::new();
+        let mut buf = std::io::Cursor::new(Vec::new());
         let mut writer = SnapshotWriter::<_, Sha256, TestFormat>::open(&mut buf, b"h").unwrap();
         let value = vec![0u8; MAX_VALUE_LEN as usize + 1];
         assert!(
@@ -570,6 +575,19 @@ mod tests {
         assert_eq!(reader.record_count(), 1);
         while reader.next().unwrap().is_some() {}
         assert!(matches!(reader.finish(), Err(SnapshotError::DigestMismatch)));
+    }
+
+    /// `finish` backpatches the count mid-file and must still leave the sink at the file end: a
+    /// caller reading `stream_position` as the file length, or appending after the snapshot,
+    /// would otherwise get a position inside the framing.
+    #[test]
+    fn finish_leaves_the_sink_at_the_file_end() {
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        let mut writer = SnapshotWriter::<_, Sha256, TestFormat>::open(&mut cursor, b"h").unwrap();
+        writer.write_record(&[1u8; 32], b"a").unwrap();
+        writer.write_record(&[2u8; 32], b"b").unwrap();
+        writer.finish().unwrap();
+        assert_eq!(cursor.stream_position().unwrap(), cursor.get_ref().len() as u64);
     }
 
     #[test]
@@ -721,16 +739,18 @@ mod tests {
     // -- Reader-side ordering and I/O-diagnosis coverage --
 
     /// Frames `records` in the given order with a correct trailing digest, bypassing the writer
-    /// so a digest-valid file can probe reader-side validation.
+    /// so a digest-valid file can probe reader-side validation. Mirrors the writer's fold order:
+    /// every byte in physical order except the count, which the codec folds after the records.
     fn digest_valid_body(records: &[([u8; 32], &[u8])]) -> Vec<u8> {
         let mut body = Vec::new();
         body.extend_from_slice(&TestFormat::MAGIC);
         body.extend_from_slice(&TestFormat::FORMAT_VERSION.to_le_bytes());
         body.extend_from_slice(&0u32.to_le_bytes()); // header_len = 0
-        body.extend_from_slice(&(records.len() as u64).to_le_bytes());
+        let count = records.len() as u64;
+        body.extend_from_slice(&count.to_le_bytes());
 
         let mut hasher = Sha256::incremental();
-        hasher.update(&body);
+        hasher.update(&body[..8 + 2 + 4]); // magic, version, header_len; the count folds last
         for (id, value) in records {
             let value_len = value.len() as u32;
             body.extend_from_slice(id);
@@ -740,6 +760,7 @@ mod tests {
             hasher.update(&value_len.to_le_bytes());
             hasher.update(value);
         }
+        hasher.update(&count.to_le_bytes());
         body.extend_from_slice(&hasher.finalize());
         body
     }
