@@ -8,7 +8,8 @@ pub mod payload;
 pub mod signer;
 
 pub use claim::{
-    PermissionSpendArgs, build_permission_spend, claim_siblings, permission_sig_script,
+    PermissionSpendArgs, PermissionTreeView, build_permission_spend, claim_siblings,
+    permission_sig_script,
 };
 pub use genesis::{dev_genesis_keypair, p2pk_address};
 pub use lane::{

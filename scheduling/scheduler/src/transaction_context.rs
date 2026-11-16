@@ -41,6 +41,11 @@ impl<'a, S: Store, P: Processor<S>> TransactionContext<'a, S, P> {
         self.batch
     }
 
+    /// Returns the zero-based position of this transaction within `batch.txs()`.
+    pub fn batch_position(&self) -> u32 {
+        self.batch_position
+    }
+
     /// Returns the scheduled transaction this context belongs to.
     pub fn scheduled_tx(&self) -> &ScheduledTransaction<S, P> {
         &self.batch.txs()[self.batch_position as usize]
