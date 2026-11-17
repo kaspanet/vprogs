@@ -56,7 +56,8 @@ enum ResumeOutcome {
     /// baseline past the follow depth) may drop it.
     Deferred,
     /// Nothing deferrable remains: the scope is empty, the entries settled or straddled the
-    /// tip, or they chain from the tip and re-fed as the live tail.
+    /// tip, they chain from the tip and re-fed as the live tail, or the re-feed dropped every
+    /// one of them as unreloadable.
     Decided,
 }
 
@@ -141,7 +142,7 @@ pub(crate) struct Worker<S: Store, P: Processor<S>, B: Backend, L: LaneProofSour
     re_rooted_for: Option<TransactionId>,
     /// Observer the bridge publishes its tip block's DAA score into, the depth clock for the
     /// resume's deferred dead-entry drop on baseline restamps; `None` leaves restamps
-    /// indecisive.
+    /// indecisive and bundle formation unheld while the drop is deferred.
     tip_daa: Option<Arc<AtomicU64>>,
     /// DAA window past the startup baseline after which a restamped baseline decides the
     /// deferred dead-entry drop. Inert without a [`Self::tip_daa`] observer.
@@ -263,7 +264,8 @@ where
         let mut baseline_daa: Option<u64> = None;
         // Whether the startup pass deferred the dead-entry decision (the baseline may trail the
         // chain), leaving it to a decisive later pass: a baseline restamp past the follow
-        // depth, or an advance.
+        // depth, or an advance. Bundle formation waits for that pass where a depth clock
+        // bounds the wait (see the hold in the main loop).
         let mut deferred_dead_drop = false;
         if journal_holds_entries
             || self.journal.as_ref().is_some_and(|j| j.committed_tip().is_some())
@@ -419,10 +421,13 @@ where
                             gap_bound =
                                 Some(gap_bound.map_or(dropped_end, |bound| bound.max(dropped_end)));
                         }
-                        // The pass ran decisively: the deferred question is settled whether it
-                        // dropped, re-fed from the tip, or found the scope empty.
-                        deferred_dead_drop = false;
                     }
+                    // The deferred question is settled either way. A decisive pass dropped,
+                    // re-fed from the tip, or found the scope empty. A watch that stopped
+                    // carrying a settlement leaves no tip to decide against, the state the
+                    // startup pass re-feeds as decided, and clearing the deferral there keeps
+                    // the bundle hold below from outliving the baseline it waits on.
+                    deferred_dead_drop = false;
                     if self.prover.shutdown.is_open() {
                         return;
                     }
@@ -459,9 +464,15 @@ where
             // Try to prove one bundle. Loop without parking while progress is made so back-to-back
             // ready bundles drain promptly. A pending gap retry holds bundle formation: a
             // new-work bundle journaled past the uncovered range would advance the journal
-            // tail and silently end the retry, abandoning the gap.
-            let made_progress =
-                if gap_bound.is_none() { self.try_prove_one_bundle().await } else { false };
+            // tail and silently end the retry, abandoning the gap. A deferred dead-entry
+            // decision holds it for the same reason: the drop it may still make hands its range
+            // to that retry, and a bundle journaled above the undecided entries meanwhile would
+            // end the retry before it covers the range. The hold lifts with the first decisive
+            // pass, which the follow depth bounds, or once the watch carries no settlement to
+            // decide against. It applies only with a depth clock wired: without one no restamp
+            // ever decides, and on a lane only we settle the hold would never lift.
+            let held = gap_bound.is_some() || (deferred_dead_drop && self.tip_daa.is_some());
+            let made_progress = if held { false } else { self.try_prove_one_bundle().await };
             if self.prover.shutdown.is_open() {
                 return;
             }
@@ -1157,7 +1168,12 @@ where
                     entries.len(),
                 );
                 self.refeed_all(entries).await;
-                return ResumeOutcome::Deferred;
+                // The re-feed drops every entry whose receipt cannot be reloaded. With none
+                // left there is nothing to decide, and reporting a deferral would hold new
+                // work for a decision that no longer exists.
+                let survived =
+                    journal.entries().iter().any(|(_, entry)| entry.end_index <= max_end);
+                return if survived { ResumeOutcome::Deferred } else { ResumeOutcome::Decided };
             }
             for (start, _) in &entries {
                 journal.delete(*start);
