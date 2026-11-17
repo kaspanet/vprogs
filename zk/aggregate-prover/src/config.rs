@@ -47,7 +47,9 @@ pub struct AggregateProverConfig<L: LaneProofSource, R: Send + Sync + 'static> {
     pub exits: Option<mpsc::UnboundedSender<Arc<ExitsForBundle>>>,
     /// Observer the bridge publishes its tip block's DAA score into, the depth clock for the
     /// resume's deferred dead-entry drop on baseline restamps (see [`Self::follow_depth`]).
-    /// `None` leaves restamps indecisive.
+    ///
+    /// With it wired, new-work bundling waits while that drop is deferred, so a later drop's
+    /// range is still re-covered. `None` leaves restamps indecisive and new work unheld.
     pub tip_daa: Option<Arc<AtomicU64>>,
     /// DAA window past the startup baseline after which a restamped baseline decides the
     /// resume's deferred dead-entry drop. Inert without [`Self::tip_daa`].

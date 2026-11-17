@@ -5,7 +5,11 @@
 //! transaction differs from the startup baseline (the bridge's pre-downtime publication, which
 //! trails the chain by the follow depth while the settler advances on a probe confirm): a live
 //! entry chaining from that still-unpublished settlement reads identically at the baseline and
-//! must be re-fed, not dropped. A committed-gap range whose final block's lane proof is
+//! must be re-fed, not dropped. New work arriving while that decision is deferred must wait for
+//! it: a bundle journaled above the undecided entries would move the journal tail past the range
+//! a later drop hands to the committed-gap pass, leaving it uncovered. The held work must resume
+//! once the decision is made either way: a hold that lifted only on a drop would stall all new
+//! proving behind a live entry. A committed-gap range whose final block's lane proof is
 //! unobtainable (pruned lane history) must walk its end down to the live prefix instead of
 //! deferring the same dead-ended range on every wake.
 
@@ -322,23 +326,16 @@ fn stale_settlement_journal() -> Vec<u8> {
     buf
 }
 
-/// The pre-restart shape both resume tests build: block 1 settled, blocks 2 and 3 proved above
-/// it (the first entering at the settled tip's pins, the way the re-cover composes), one
-/// journal entry recorded above the settled tip whose stored receipt chains from a base
-/// at state `[0xAA]` (dead, or our own unpublished settlement; the resume passes decide), and
-/// the restart-side scheduler state over the same store.
-fn seeded_dead_shape(
-    temp_dir: &TempDir,
-) -> (StoreJournal<RocksDbStore>, SchedulerState<RocksDbStore, PlainProcessor>) {
-    let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
-    let journal = StoreJournal::new(storage.clone());
-    let mut scheduler = Scheduler::new(
-        ExecutionConfig::default().with_processor(PlainProcessor),
-        StorageConfig::default().with_store(storage.clone()),
-    );
-    commit_batch_with_receipt(&mut scheduler, block(1, 0));
-    commit_tip_chained_batch(&mut scheduler, block(2, 1));
-    commit_batch_with_receipt(&mut scheduler, block(3, 2));
+/// Commits the pre-restart batches every resume test builds on and records their one journal
+/// entry: block 1 settled, blocks 2 and 3 proved above it (the first entering at the settled
+/// tip's pins, the way the re-cover composes), and the entry `3..=3` above the settled tip.
+fn commit_dead_shape(
+    scheduler: &mut Scheduler<RocksDbStore, PlainProcessor>,
+    journal: &StoreJournal<RocksDbStore>,
+) {
+    commit_batch_with_receipt(scheduler, block(1, 0));
+    commit_tip_chained_batch(scheduler, block(2, 1));
+    commit_batch_with_receipt(scheduler, block(3, 2));
     journal.record(
         3,
         &JournalEntry {
@@ -348,12 +345,14 @@ fn seeded_dead_shape(
             seq_commit: seq_commit(),
         },
     );
-    scheduler.shutdown();
+}
 
-    // The restart half: the entry's aggregate receipt is stored where a re-feed would reload it.
-    let state = SchedulerState::<RocksDbStore, PlainProcessor>::new(
-        StorageConfig::default().with_store(storage.clone()),
-    );
+/// Stores the aggregate receipt of the entry [`commit_dead_shape`] records where a re-feed
+/// reloads it.
+///
+/// The receipt chains from a base at state `[0xAA]` (dead, or our own unpublished settlement;
+/// the resume passes decide).
+fn store_stale_receipt(state: &SchedulerState<RocksDbStore, PlainProcessor>) {
     state
         .receipt_store()
         .write_agg_receipt(
@@ -366,6 +365,28 @@ fn seeded_dead_shape(
             stale_settlement_journal(),
         )
         .wait_blocking();
+}
+
+/// The pre-restart shape of the resume tests that feed no new work: the committed batches and
+/// journal entry of [`commit_dead_shape`], the entry's stale receipt, and the restart-side
+/// scheduler state over the same store.
+fn seeded_dead_shape(
+    temp_dir: &TempDir,
+) -> (StoreJournal<RocksDbStore>, SchedulerState<RocksDbStore, PlainProcessor>) {
+    let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+    let journal = StoreJournal::new(storage.clone());
+    let mut scheduler = Scheduler::new(
+        ExecutionConfig::default().with_processor(PlainProcessor),
+        StorageConfig::default().with_store(storage.clone()),
+    );
+    commit_dead_shape(&mut scheduler, &journal);
+    scheduler.shutdown();
+
+    // The restart half: the entry's aggregate receipt is stored where a re-feed would reload it.
+    let state = SchedulerState::<RocksDbStore, PlainProcessor>::new(
+        StorageConfig::default().with_store(storage.clone()),
+    );
+    store_stale_receipt(&state);
     (journal, state)
 }
 
@@ -550,6 +571,307 @@ fn a_dead_entry_is_dropped_by_a_baseline_restamp_past_the_follow_depth() {
 
         prover.shutdown();
         state.storage().shutdown();
+    }
+}
+
+/// Seeds the dead shape over a scheduler that stays live across the restart point, so a test can
+/// feed new work after the restart.
+///
+/// The entry's aggregate receipt is not stored; a test that needs it calls
+/// [`store_stale_receipt`].
+fn live_dead_shape(
+    temp_dir: &TempDir,
+) -> (Scheduler<RocksDbStore, PlainProcessor>, StoreJournal<RocksDbStore>) {
+    let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+    let journal = StoreJournal::new(storage.clone());
+    let mut scheduler = Scheduler::new(
+        ExecutionConfig::default().with_processor(PlainProcessor),
+        StorageConfig::default().with_store(storage),
+    );
+    commit_dead_shape(&mut scheduler, &journal);
+    (scheduler, journal)
+}
+
+/// A prover restarted over a live scheduler, with the handles a test drives it through.
+struct Restarted {
+    /// Scheduler kept live across the restart point, feeding the new work.
+    scheduler: Scheduler<RocksDbStore, PlainProcessor>,
+    /// Journal the prover resumed from.
+    journal: StoreJournal<RocksDbStore>,
+    /// The restarted prover.
+    prover: AggregateProver<RocksDbStore, PlainProcessor>,
+    /// Settlement watch the test publishes tips on.
+    settlement_tx: watch::Sender<Option<SettlementInfo>>,
+    /// Queue the prover emits its bundles onto.
+    settlement_queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Vec<u8>>>>,
+}
+
+/// Boots a prover over the seeded journal, which is the restart, with the given tip observer and
+/// a follow depth of 10, and publishes the bridge's baseline tip.
+///
+/// The baseline proves through block 1 and carries state `[0x00]`, which the journaled entry
+/// (chaining from a base at `[0xAA]`) does not chain from.
+fn restart(
+    scheduler: Scheduler<RocksDbStore, PlainProcessor>,
+    journal: StoreJournal<RocksDbStore>,
+    tip_daa: Option<Arc<AtomicU64>>,
+) -> Restarted {
+    let settlement_queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Vec<u8>>>> =
+        AsyncQueue::new();
+    let (settlement_tx, settlement_rx) = watch::channel::<Option<SettlementInfo>>(None);
+    let prover = AggregateProver::new(
+        SyntheticBackend,
+        scheduler.state().receipt_store(),
+        Some(journal.clone()),
+        AggregateProverConfig {
+            lane_key: Hash::default(),
+            covenant_id: None,
+            lane_source: ServeLaneProofs,
+            settlement_queue: Some(settlement_queue.clone()),
+            settlement: Some(settlement_rx),
+            bundle_size: 1..=1,
+            exits: None,
+            re_root: None,
+            tip_daa,
+            follow_depth: 10,
+        },
+    );
+    settlement_tx.send_replace(Some(tip_through(1)));
+    Restarted { scheduler, journal, prover, settlement_tx, settlement_queue }
+}
+
+/// Pops the startup pass's deferred re-feed: the stored receipt, unchanged.
+fn expect_deferred_refeed(setup: &Restarted) {
+    let refeed = next_bundle(&setup.settlement_queue, Duration::from_secs(10))
+        .expect("the deferred startup re-feed");
+    refeed.wait_artifact_published_blocking();
+    assert_eq!(
+        refeed.artifact().expect("the re-fed bundle carries its stored artifact").prev_state,
+        [0xAA; 32],
+        "the startup pass re-feeds the entry rather than deciding it against the baseline",
+    );
+}
+
+/// Pops the committed-gap re-cover of the entry's range: one fresh bundle through block 3 that
+/// chains from the tip.
+fn expect_re_cover(setup: &Restarted) {
+    let recovered = next_bundle(&setup.settlement_queue, Duration::from_secs(10))
+        .expect("the entry's range must be re-covered");
+    recovered.wait_artifact_published_blocking();
+    assert_eq!(
+        recovered.block_prove_to(),
+        block_hash(3),
+        "the re-covered bundle spans the entry's whole range",
+    );
+    assert_eq!(
+        recovered.artifact().expect("the re-covered bundle carries a real artifact").prev_state,
+        [0x00; 32],
+        "the range is re-composed from the tip, not re-fed from the stored receipt",
+    );
+}
+
+/// Feeds block 4 as new work once the startup passes are through.
+fn feed_block_4(setup: &mut Restarted) {
+    setup.prover.wait_booted();
+    let batch = commit_batch_with_receipt(&mut setup.scheduler, block(4, 3));
+    batch.publish_artifact(Some(batch_receipt(4)));
+    setup.prover.submit(&batch);
+}
+
+/// Pops the bundle of the new work [`feed_block_4`] fed, failing with `missing` when none
+/// arrives.
+fn expect_block_4_bundle(setup: &Restarted, missing: &str) {
+    let bundle = next_bundle(&setup.settlement_queue, Duration::from_secs(10)).expect(missing);
+    bundle.wait_artifact_published_blocking();
+    assert_eq!(bundle.block_prove_to(), block_hash(4), "the new work's bundle covers block 4");
+    assert!(bundle.artifact().is_some(), "the new work's bundle carries a real artifact");
+}
+
+/// Checks that no further bundle arrives and that the journal holds exactly `spans`.
+fn expect_settled(setup: &Restarted, spans: &[(u64, u64)], journal_shape: &str) {
+    assert!(
+        next_bundle(&setup.settlement_queue, Duration::from_millis(500)).is_none(),
+        "no further handle may arrive",
+    );
+    let recorded: Vec<(u64, u64)> =
+        setup.journal.entries().into_iter().map(|(s, e)| (s, e.end_index)).collect();
+    assert_eq!(recorded, spans, "{journal_shape}");
+}
+
+/// Builds the state the hold tests decide from: a prover with a tip observer restarted over the
+/// dead shape, whose startup pass deferred the decision and re-fed the entry, and block 4 fed as
+/// new work whose bundle is held.
+///
+/// Returns the tip observer alongside, still at the baseline's daa 0.
+fn held_new_work(temp_dir: &TempDir) -> (Restarted, Arc<AtomicU64>) {
+    let (scheduler, journal) = live_dead_shape(temp_dir);
+    store_stale_receipt(scheduler.state());
+    let tip_daa = Arc::new(AtomicU64::new(0));
+    let mut setup = restart(scheduler, journal, Some(tip_daa.clone()));
+    expect_deferred_refeed(&setup);
+
+    // Block 4 arrives with the decision still deferred: its bundle must wait rather than be
+    // journaled above the entry.
+    feed_block_4(&mut setup);
+    assert!(
+        next_bundle(&setup.settlement_queue, Duration::from_millis(500)).is_none(),
+        "new work must wait while the dead-entry decision is deferred",
+    );
+    (setup, tip_daa)
+}
+
+/// Tests that new work arriving while the dead-entry decision is deferred waits for it.
+///
+/// A bundle journaled above the undecided entry moves the journal tail past the range the later
+/// drop hands to the committed-gap retry, which then finds nothing above the tail and ends: the
+/// dropped range stays uncovered, every later bundle chains above it, and the settler skips
+/// them all. Held instead, the new work bundles only after the restamp decided, the entry
+/// dropped, and the retry re-covered its range from the tip, so it settles behind the re-cover.
+#[test]
+fn new_work_waits_for_a_deferred_dead_entry_decision() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let (setup, tip_daa) = held_new_work(&temp_dir);
+
+        // The tip reaches the follow depth past the baseline: the restamp decides, the entry
+        // is dropped, and the retry re-covers its range from the tip ahead of the held work.
+        tip_daa.store(10, Ordering::Relaxed);
+        setup.settlement_tx.send_replace(Some(tip_through(1)));
+        expect_re_cover(&setup);
+        expect_block_4_bundle(&setup, "the held new work settles behind the re-cover");
+        expect_settled(
+            &setup,
+            &[(2, 3), (4, 4)],
+            "the re-covered entry replaces the dead one, with the new work journaled above it",
+        );
+
+        setup.prover.shutdown();
+        setup.scheduler.shutdown();
+    }
+}
+
+/// Tests that the hold on new work lifts when the deferred decision keeps the entry.
+///
+/// The common restart shape: the entry chains from our own settlement the baseline has not
+/// published yet, so the decision is deferred and new work arriving meanwhile is held. Once
+/// the bridge publishes that settlement, the decisive pass re-feeds the live entry and the held
+/// work bundles behind it. A hold that lifted only on a drop would stall all new proving here.
+#[test]
+fn held_new_work_resumes_once_the_deferred_entry_proves_live() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let (setup, _tip_daa) = held_new_work(&temp_dir);
+
+        // The bridge catches up and publishes the settlement the entry chains from: ours,
+        // proving through block 2 under a new transaction id with settled state [0xAA]. The
+        // advance pass is decisive, the entry re-feeds unchanged, and the hold lifts. The tip
+        // observer never moves, so only this advance can decide.
+        setup.settlement_tx.send_replace(Some(tip_with(2, [0xAA; 32])));
+        let live = next_bundle(&setup.settlement_queue, Duration::from_secs(10))
+            .expect("the live tail re-feeds after the advance");
+        live.wait_artifact_published_blocking();
+        assert_eq!(live.block_prove_to(), block_hash(3), "the journaled entry re-feeds");
+        assert_eq!(
+            live.artifact().expect("the re-fed bundle carries its stored artifact").prev_state,
+            [0xAA; 32],
+            "the live entry is re-fed, not re-composed",
+        );
+        expect_block_4_bundle(&setup, "the held new work bundles once the decision kept the entry");
+        expect_settled(
+            &setup,
+            &[(3, 3), (4, 4)],
+            "the live entry survives, with the new work journaled above it",
+        );
+
+        setup.prover.shutdown();
+        setup.scheduler.shutdown();
+    }
+}
+
+/// Tests that the hold on new work lifts when the watch stops carrying a settlement.
+///
+/// A reorg that rolls the bridge past its last settlement publishes none, which leaves no tip
+/// to decide the deferred entry against. The hold must not outlive the baseline it waits on: on
+/// a lane only we settle the held work is the only source of a new settlement, so holding it
+/// would stall the prover until the next restart.
+#[test]
+fn held_new_work_resumes_once_the_watch_carries_no_settlement() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let (setup, _tip_daa) = held_new_work(&temp_dir);
+
+        // The bridge rolls back past the baseline settlement and publishes none: the entry
+        // stays undecided in the journal and the hold lifts.
+        setup.settlement_tx.send_replace(None);
+        expect_block_4_bundle(&setup, "the held new work bundles once no settlement is left");
+        expect_settled(
+            &setup,
+            &[(3, 3), (4, 4)],
+            "the undecided entry stays journaled, with the new work above it",
+        );
+
+        setup.prover.shutdown();
+        setup.scheduler.shutdown();
+    }
+}
+
+/// Tests that new work is not held during the deferral on a run without a tip observer.
+///
+/// Without the depth clock no restamp ever decides, so on a lane only we settle a hold would
+/// never lift. Such a run bundles new work during the deferral, as it did before the hold
+/// existed.
+#[test]
+fn new_work_is_not_held_without_a_tip_observer() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        let (scheduler, journal) = live_dead_shape(&temp_dir);
+        store_stale_receipt(scheduler.state());
+        let mut setup = restart(scheduler, journal, None);
+        expect_deferred_refeed(&setup);
+
+        // Block 4 arrives with the decision still deferred and nothing published since the
+        // baseline: its bundle forms right away.
+        feed_block_4(&mut setup);
+        expect_block_4_bundle(&setup, "new work bundles during the deferral without an observer");
+        expect_settled(
+            &setup,
+            &[(3, 3), (4, 4)],
+            "the undecided entry stays journaled, with the new work above it",
+        );
+
+        setup.prover.shutdown();
+        setup.scheduler.shutdown();
+    }
+}
+
+/// Tests that a startup re-feed which drops every entry leaves nothing deferred.
+///
+/// The entry's receipt is missing from the store, so the startup pass cannot tell whether it
+/// chains from the baseline and takes the deferring path, where the re-feed drops it as
+/// unreloadable. Nothing is left to decide: the committed-gap pass re-covers the range from the
+/// tip, and new work bundles behind it without waiting for a decisive pass.
+#[test]
+fn new_work_is_not_held_once_the_deferred_re_feed_dropped_every_entry() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        // No receipt is stored for the journaled entry, and the tip observer is wired, so a
+        // deferral would hold new work.
+        let (scheduler, journal) = live_dead_shape(&temp_dir);
+        let mut setup = restart(scheduler, journal, Some(Arc::new(AtomicU64::new(0))));
+        expect_re_cover(&setup);
+
+        // Block 4 arrives with nothing published since the baseline: its bundle forms right
+        // away, behind the re-cover.
+        feed_block_4(&mut setup);
+        expect_block_4_bundle(&setup, "new work bundles with nothing left to decide");
+        expect_settled(
+            &setup,
+            &[(2, 3), (4, 4)],
+            "the re-covered entry replaces the dropped one, with the new work journaled above it",
+        );
+
+        setup.prover.shutdown();
+        setup.scheduler.shutdown();
     }
 }
 
