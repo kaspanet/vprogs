@@ -120,7 +120,16 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
     /// Returns true if this batch was canceled by a rollback.
     #[inline(always)]
     pub fn canceled(&self) -> bool {
-        self.checkpoint.index() > self.cancellation.threshold()
+        self.rolled_back_below(self.checkpoint.index())
+    }
+
+    /// Returns true if a rollback since this batch was scheduled targeted an id below `index`.
+    ///
+    /// A canceled batch that was not rolled back below the id right before its own was only cut
+    /// off at its own position: nothing at or below that id can have changed.
+    #[inline(always)]
+    pub fn rolled_back_below(&self, index: u64) -> bool {
+        index > self.cancellation.threshold()
     }
 
     /// Returns true if this batch was restored from committed disk state rather than executed.

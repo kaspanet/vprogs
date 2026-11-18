@@ -713,11 +713,13 @@ where
         );
 
         // The bundle's `from -> to` coordinate (its start checkpoint + block, claimed tip
-        // commitment) proves to the same settlement receipt, so a replay (including a flip reorg
-        // back onto this fork) reuses the cached one instead of re-fetching the lane proof and
-        // re-proving. The key combines the bundle's own start coordinate, the claimed tip
-        // `seq_commit`, and the aggregator image id the backend proves with; the receipt store is
-        // the prover's own cache handle (bound by the scheduler at construction).
+        // commitment) proves to the same settlement receipt as long as it is composed from the
+        // same batch receipts, so a replay (including a flip reorg back onto this fork) reuses
+        // the cached one instead of re-fetching the lane proof and re-proving; `prove_or_cache`
+        // checks the cached receipt against the batch receipts before it does. The key combines
+        // the bundle's own start coordinate, the claimed tip `seq_commit`, and the aggregator
+        // image id the backend proves with; the receipt store is the prover's own cache handle
+        // (bound by the scheduler at construction).
         let seq_commit = last_metadata.seq_commit.as_bytes();
         let agg_key = handle.agg_key(*self.backend.aggregator_image_id(), seq_commit);
         let journals: Vec<Vec<u8>> = receipts.iter().map(|r| B::journal_bytes(r)).collect();
@@ -824,7 +826,8 @@ where
     }
 
     /// Proves (or reloads from cache) the aggregate receipt for a bundle proving through
-    /// `block_prove_to` over the non-empty `receipts`, keying the cache at `agg_key`. Returns
+    /// `block_prove_to` over the non-empty `receipts`, keying the cache at `agg_key`. A cached
+    /// receipt is reloaded only while it [`composes`](Self::composes) `receipts`. Returns
     /// [`ProveOutcome::Shutdown`] when shutdown races the proof (the caller discards the bundle),
     /// [`ProveOutcome::LaneProofFailed`] when the final block's lane proof cannot be fetched
     /// (the caller defers or drops the bundle), or [`ProveOutcome::AttemptFailed`] when the one
@@ -836,8 +839,23 @@ where
         receipts: Vec<B::Receipt>,
     ) -> ProveOutcome<B::Receipt> {
         let receipt_store = &self.prover.receipt_store;
-        if let Some(receipt) = receipt_store.read_agg_receipt(agg_key).resolve().await {
-            return ProveOutcome::Receipt(receipt);
+        let start = agg_key.prefix.checkpoint_index.get();
+        if let Some(cached) = receipt_store.read_agg_receipt(agg_key).resolve().await {
+            // The key names the bundle's range, not the batch receipts an aggregate was composed
+            // from. An aggregate proved over receipts that were replaced since (a re-root
+            // re-proved the range from another entry) is still a hit, and serving it would
+            // journal a bundle that enters where the covenant never was: the settler skips it
+            // and the current receipts are never composed. So a cached aggregate is reused only
+            // while it composes these receipts, and the fresh proof below replaces one that
+            // does not.
+            if Self::composes(&cached, &receipts) {
+                return ProveOutcome::Receipt(cached);
+            }
+            log::warn!(
+                "aggregate-prover: cached aggregate receipt for bundle {start} (through \
+                 {block_prove_to}) was not composed from the batch receipts of its range; \
+                 proving it afresh"
+            );
         }
         // Aggregate the bundle: fetch the final block's lane proof, encode the aggregator inputs
         // over the per-batch journals, and prove with the per-batch receipts as composition
@@ -872,7 +890,6 @@ where
             &lane_proof,
             journals.iter().map(|j| j.as_slice()),
         );
-        let start = agg_key.prefix.checkpoint_index.get();
         let receipt = match self.backend.prove_aggregator(&inputs, receipts).await {
             Ok(receipt) => receipt,
             Err(err) => {
@@ -891,6 +908,32 @@ where
         // leaves a consumed-but-uncached settlement receipt.
         receipt_store.write_agg_receipt(agg_key, receipt.clone()).wait().await;
         ProveOutcome::Receipt(receipt)
+    }
+
+    /// Returns true if `aggregate` enters where the first of `receipts` does and exits where the
+    /// last one does.
+    ///
+    /// That is the transition the aggregator guest commits for a bundle over `receipts`, so an
+    /// aggregate that runs between other ends was composed from other batch receipts. A journal
+    /// that does not decode composes nothing.
+    fn composes(aggregate: &B::Receipt, receipts: &[B::Receipt]) -> bool {
+        let (Some(first), Some(last)) = (receipts.first(), receipts.last()) else {
+            return false;
+        };
+        let (aggregate, first, last) =
+            (B::journal_bytes(aggregate), B::journal_bytes(first), B::journal_bytes(last));
+        let Ok(st) = (&mut &aggregate[..]).array_as::<StateTransition>("state_transition") else {
+            return false;
+        };
+        let (Ok(first), Ok(last)) =
+            (BatchTransition::ref_from_bytes(&first), BatchTransition::ref_from_bytes(&last))
+        else {
+            return false;
+        };
+        st.prev_state == first.prev_state
+            && st.prev_lane_tip == first.prev_lane_tip
+            && st.new_state == last.new_state
+            && st.new_lane_tip == last.new_lane_tip
     }
 
     /// Publishes a formed bundle's handle onto the settlement queue, if one is wired. With no queue
