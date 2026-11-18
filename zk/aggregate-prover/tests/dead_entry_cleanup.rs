@@ -1063,3 +1063,130 @@ fn committed_gap_walks_end_down_over_a_dead_final_block() {
         state.storage().shutdown();
     }
 }
+
+/// Tests that a gap deferred behind a dead journal tail stays bounded when the dead entry is
+/// dropped.
+///
+/// Batch 4 is committed but never journaled, above the dead entry `3..=3`, so the startup gap
+/// pass defers behind the tail. Block 5 arrives meanwhile and is held. The decisive advance
+/// drops the dead entry and hands its range to the same retry, which keeps the larger of the
+/// two bounds: that must stay the committed tip the startup pass saw. The re-cover then spans
+/// `2..=4`, and block 5 bundles once, from the queue.
+#[test]
+fn gap_behind_a_dead_tail_stays_bounded_across_the_drop() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        // The pre-restart half, over a scheduler that stays live so new work can be fed: block 1
+        // settled, blocks 2 and 3 proved above it with the dead entry `3..=3`, and block 4
+        // committed with its receipt but no journal entry.
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let journal = StoreJournal::new(storage.clone());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(PlainProcessor),
+            StorageConfig::default().with_store(storage),
+        );
+        commit_batch_with_receipt(&mut scheduler, block(1, 0));
+        commit_tip_chained_batch(&mut scheduler, block(2, 1));
+        commit_batch_with_receipt(&mut scheduler, block(3, 2));
+        commit_batch_with_receipt(&mut scheduler, block(4, 3));
+        journal.record(
+            3,
+            &JournalEntry {
+                end_index: 3,
+                from_block: block_hash(3),
+                block_prove_to: block_hash(3),
+                seq_commit: seq_commit(),
+            },
+        );
+        scheduler
+            .state()
+            .receipt_store()
+            .write_agg_receipt(
+                AggregatorKey {
+                    prefix: Prefix { checkpoint_index: 3.into() },
+                    block_hash: block_hash(3).as_bytes(),
+                    image_id: AGGREGATOR_IMAGE_ID,
+                    seq_commit: seq_commit().as_bytes(),
+                },
+                stale_settlement_journal(),
+            )
+            .wait_blocking();
+
+        let settlement_queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Vec<u8>>>> =
+            AsyncQueue::new();
+        let (settlement_tx, settlement_rx) = watch::channel::<Option<SettlementInfo>>(None);
+        let prover = AggregateProver::new(
+            SyntheticBackend,
+            scheduler.state().receipt_store(),
+            Some(journal.clone()),
+            AggregateProverConfig {
+                lane_key: Hash::default(),
+                covenant_id: None,
+                lane_source: ServeLaneProofs,
+                settlement_queue: Some(settlement_queue.clone()),
+                settlement: Some(settlement_rx),
+                bundle_size: 1..=1,
+                exits: None,
+                re_root: None,
+                tip_daa: None,
+                follow_depth: 0,
+            },
+        );
+
+        // The baseline tip proves through block 1: the startup pass defers the dead-entry
+        // decision and re-feeds the entry, and the gap pass defers behind that tail.
+        settlement_tx.send_replace(Some(tip_through(1)));
+        let refeed = next_bundle(&settlement_queue, Duration::from_secs(10))
+            .expect("the deferred startup re-feed");
+        refeed.wait_artifact_published_blocking();
+        assert_eq!(
+            refeed.artifact().expect("the re-fed bundle carries its stored artifact").prev_state,
+            [0xAA; 32],
+            "the startup pass re-feeds the entry rather than deciding it against the baseline",
+        );
+        prover.wait_booted();
+
+        // Block 5 arrives while the gap waits behind the tail and is held.
+        let batch = commit_batch_with_receipt(&mut scheduler, block(5, 4));
+        batch.publish_artifact(Some(batch_receipt(5)));
+        prover.submit(&batch);
+        assert!(
+            next_bundle(&settlement_queue, Duration::from_millis(500)).is_none(),
+            "new work is held while the gap waits behind the tail",
+        );
+
+        // The advance is decisive: the dead entry is dropped and its range joins the gap's. The
+        // re-cover runs from the tip through the committed tip the startup pass saw.
+        settlement_tx.send_replace(Some(tip_with(1, [0x00; 32])));
+        let gap = next_bundle(&settlement_queue, Duration::from_secs(10))
+            .expect("the dropped range and the gap must be re-covered");
+        gap.wait_artifact_published_blocking();
+        assert_eq!(gap.checkpoint_index(), 2, "the re-cover starts above the settled tip");
+        assert_eq!(
+            gap.block_prove_to(),
+            block_hash(4),
+            "the re-cover stops at the committed tip the startup pass saw",
+        );
+
+        // The held work follows, bundled once.
+        let held = next_bundle(&settlement_queue, Duration::from_secs(10))
+            .expect("the held new work bundles behind the re-cover");
+        held.wait_artifact_published_blocking();
+        assert_eq!(held.checkpoint_index(), 5, "the new work is bundled by the queue alone");
+        assert_eq!(held.block_prove_to(), block_hash(5));
+        assert!(
+            next_bundle(&settlement_queue, Duration::from_millis(500)).is_none(),
+            "no further handle may arrive",
+        );
+        let recorded: Vec<(u64, u64)> =
+            journal.entries().into_iter().map(|(s, e)| (s, e.end_index)).collect();
+        assert_eq!(
+            recorded,
+            vec![(2, 4), (5, 5)],
+            "the re-cover replaces the dead entry and the new work is journaled once above it",
+        );
+
+        prover.shutdown();
+        scheduler.shutdown();
+    }
+}
