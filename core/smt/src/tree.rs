@@ -13,8 +13,8 @@ pub const DEPTH: usize = 256;
 
 /// Versioned Sparse Merkle Tree with shortcut leaves, pruning, and multi-proofs.
 ///
-/// Implementors only need to provide `node` and `prune`; all tree operations (commits, proofs,
-/// root lookups) are default methods.
+/// Implementors only need to provide `snapshot`, `node`, `prune` and `prune_orphaned`; all tree
+/// operations (commits, proofs, root lookups) are default methods.
 pub trait Tree: Sized {
     /// The hash function used for node and leaf hashing.
     type Hasher: Hasher;
@@ -32,7 +32,22 @@ pub trait Tree: Sized {
     fn node(&self, key: &Key, max_version: u64, snapshot: &Self::Snapshot) -> Option<(u64, Node)>;
 
     /// Prunes stale nodes for the given version, deleting superseded nodes and their stale markers.
+    ///
+    /// The marker of a tombstone stands for the node it shadows as well: it deletes every node
+    /// at the tombstone's position up to the tombstone.
+    ///
+    /// Only for a canonical version. The markers of a version a rollback orphaned name nodes of
+    /// the history it branched from, see [`prune_orphaned`](Self::prune_orphaned).
     fn prune(&self, wb: &mut impl WriteBatch, version: u64);
+
+    /// Prunes a version that a rollback orphaned, deleting the nodes it wrote and its stale
+    /// markers.
+    ///
+    /// An update writes the root and, below every internal node it writes, the children that
+    /// changed, all at its own version. So the version's nodes are the ones reached from its
+    /// root through its own internal nodes. The nodes its markers name belong to the history it
+    /// branched from and are left alone.
+    fn prune_orphaned(&self, wb: &mut impl WriteBatch, version: u64);
 
     // -- Default methods --
 
