@@ -74,6 +74,7 @@ pub trait Tree: Sized {
     /// Proves the state of the given keys at a specific version.
     ///
     /// Returns the wire-encoded proof (see `Proof::decode()`) or an error for duplicates keys.
+    /// The proof recomputes to the root at `version` for any set of keys, including none.
     fn prove(&self, keys: &[ResourceId], version: u64) -> Result<Vec<u8>> {
         ProofBuilder::build(self, version, keys)
     }

@@ -34,13 +34,21 @@ pub(crate) struct ProofBuilder<'a, S: Tree> {
 
 impl<'a, S: Tree> ProofBuilder<'a, S> {
     /// Generates a multi-proof for the given keys at `version`.
+    ///
+    /// The proof recomputes to the tree's root for any set of keys, including none: without an
+    /// input key it carries the path to one leaf as a witness and no membership.
     pub(crate) fn build(tree: &'a S, version: u64, keys_input: &[ResourceId]) -> Result<Vec<u8>> {
         // Sort keys into canonical leaf order and capture the input -> sorted permutation.
         let (sorted_keys, sort_order) = keys_input.sort_unique()?;
 
-        // Construct the builder, walk the tree, and classify each member.
+        // Construct the builder, walk the tree, and classify each member. Without an input key
+        // the walk collects nothing, so the root is bound by a witness path instead.
         let mut this = Self::new(tree, version, keys_input);
-        this.collect(&Key::ROOT, &sorted_keys, 0);
+        if sorted_keys.is_empty() {
+            this.collect_root_witness(&Key::ROOT);
+        } else {
+            this.collect(&Key::ROOT, &sorted_keys, 0);
+        }
         let memberships = this.classify_memberships(&sort_order);
 
         // Encode the assembled proof.
@@ -102,6 +110,38 @@ impl<'a, S: Tree> ProofBuilder<'a, S> {
 
             // Internal node - split proof keys and recurse into children.
             Some((_, Node::Internal { .. })) => self.collect_internal(key, input_keys, offset),
+        }
+    }
+
+    /// Collects the path to one leaf of the subtree at `key`, as a witness no input key maps to.
+    ///
+    /// A proof without a leaf recomputes to the empty root whatever the tree holds, so a proof
+    /// over no key carries this path to bind the root. An empty tree needs none.
+    fn collect_root_witness(&mut self, key: &Key) {
+        match self.node(key) {
+            // Empty tree - a proof without leaves already recomputes to its root.
+            None | Some((_, Node::Empty)) => {}
+
+            // Shortcut leaf - the witness the path ends at.
+            Some((_, Node::Leaf { key: leaf_key, value_hash, .. })) => {
+                self.emit_leaf(*leaf_key, value_hash, key.level, 0..0);
+            }
+
+            // Internal node - descend into a non-empty child, the other one becomes a sibling.
+            Some((_, Node::Internal { .. })) => {
+                let left_child = key.left_child();
+                let right_child = key.right_child();
+                let left = self.child_summary(&left_child);
+
+                self.topology.push(false);
+                if left == HashedNode::EMPTY {
+                    self.siblings.push(left);
+                    self.collect_root_witness(&right_child);
+                } else {
+                    self.siblings.push(self.child_summary(&right_child));
+                    self.collect_root_witness(&left_child);
+                }
+            }
         }
     }
 

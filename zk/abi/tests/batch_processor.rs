@@ -14,7 +14,7 @@ use kaspa_hashes::Hash;
 use kaspa_seq_commit::{hashing::mergeset_context_hash, types::MergesetContext};
 use tempfile::TempDir;
 use vprogs_core_hashing::Sha256;
-use vprogs_core_smt::{Commitment, Tree};
+use vprogs_core_smt::{Commitment, EMPTY_HASH, Tree};
 use vprogs_core_types::ResourceId;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_storage_types::Store;
@@ -275,6 +275,29 @@ fn verifier_rejects_a_v1_rejection_journal_with_a_guest_error() {
     let err = settle(&batch_inputs(&proof, &[healthy, version_incompatible]))
         .expect_err("a v1 guest-error journal without a context must not settle");
     assert!(err.contains("missing execution_context"), "unexpected panic: {err}");
+}
+
+/// A batch whose transactions touch no resource settles the state it entered at.
+///
+/// Its proof queries no key. The proof still carries a witness path, so the verifier commits
+/// the store's root on both sides and not the empty root a proof without a leaf recomputes to.
+#[test]
+fn a_batch_touching_no_resource_settles_the_state_it_entered_at() {
+    let (_dir, store) = funded_store();
+    assert_ne!(store.root(VERSION), EMPTY_HASH, "the store holds a state");
+    let proof = store.prove(&[], VERSION).unwrap();
+
+    // The two journals of a transaction without resources: executed over an empty access list,
+    // and rejected at decode.
+    let journals = [
+        tx_journal(&Hash::from_bytes([0xE1; 32]), 5, &context_hash(), &[], &[], &[]),
+        rejected_tx_journal(&Hash::from_bytes([0xE2; 32]), 9),
+    ];
+
+    let settled = settle(&batch_inputs(&proof, &journals))
+        .expect("a batch of transactions without resources settles");
+    assert_eq!(settled.prev_state, store.root(VERSION));
+    assert_eq!(settled.new_state, store.root(VERSION));
 }
 
 /// Opens a store holding Alice's funded account and Bob's account at [`VERSION`].

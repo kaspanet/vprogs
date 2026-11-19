@@ -22,6 +22,7 @@ zerocopy.workspace                     = true
 [dev-dependencies]
 tempfile.workspace                       = true
 tokio                                    = { workspace = true, features = ["rt", "time"] }
+vprogs-core-hashing.workspace            = true
 vprogs-core-smt.workspace                = true
 vprogs-core-test-utils.workspace         = true
 vprogs-core-types.workspace              = true
