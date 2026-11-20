@@ -702,3 +702,356 @@ fn gap_above_a_live_tail_defers_until_the_watch_passes_the_tail() {
     prover.shutdown();
     scheduler.shutdown();
 }
+
+/// Tests that the re-cover of a receipt-less range stays bounded to the committed tip the first
+/// attempt saw, across the re-root it waits for.
+///
+/// Batch 2 sits above the settled boundary with no receipt cached (a kill between its commit
+/// and its prove), so the startup pass cannot compose it and defers behind a re-root request.
+/// The re-root rolls execution back to the boundary, the bridge re-feeds block 2 under its
+/// original batch id, and the receipt its re-execution proves lets the range compose. Block 3
+/// arrives meanwhile as new work, which the queue bundles, so the re-cover must not grow over
+/// it.
+#[test]
+fn gap_recover_after_a_reroot_never_covers_new_work() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+    let journal = StoreJournal::new(storage.clone());
+    let mut scheduler = Scheduler::new(
+        ExecutionConfig::default().with_processor(PlainProcessor),
+        StorageConfig::default().with_store(storage),
+    );
+
+    // The covenant's boundary batch, committed with its receipt, and the killed batch 2 above
+    // it: committed with no receipt cached.
+    let boundary = scheduler.schedule(block(1, 0, Hash::default()), vec![lane_tx()]);
+    boundary.wait_committed_blocking();
+    boundary.write_batch_receipt(settlement_journal()).wait_blocking();
+    boundary.publish_artifact(Some(settlement_journal()));
+    let killed = scheduler.schedule(block(2, 1, block_hash(1)), vec![lane_tx()]);
+    killed.wait_committed_blocking();
+
+    let queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Vec<u8>>>> = AsyncQueue::new();
+    let (settlement_tx, settlement_rx) = watch::channel::<Option<SettlementInfo>>(None);
+    let (re_root_tx, mut re_root_rx) = mpsc::unbounded_channel();
+    let prover = AggregateProver::new(
+        SyntheticBackend,
+        scheduler.state().receipt_store(),
+        Some(journal.clone()),
+        AggregateProverConfig {
+            lane_key: Hash::default(),
+            covenant_id: None,
+            lane_source: ServeLaneProofs,
+            settlement_queue: Some(queue.clone()),
+            settlement: Some(settlement_rx),
+            re_root: Some(re_root_tx),
+            bundle_size: 1..=1,
+            exits: None,
+            tip_daa: None,
+            follow_depth: 0,
+        },
+    );
+
+    // The covenant tip settled through the boundary batch, so the startup pass finds nothing it
+    // can compose above it and requests the re-root.
+    settlement_tx.send_replace(Some(SettlementInfo {
+        block_prove_to: block_hash(1),
+        new_state: [0x11; 32],
+        new_lane_tip: block_hash(1),
+        ..Default::default()
+    }));
+    prover.wait_booted();
+    re_root_rx.try_recv().expect("the receipt-less range must request a re-root");
+
+    // The runner honors the request: execution rolls back to the boundary and the prover hears
+    // the re-root. The re-root re-arms the request, so the retry it wakes asks again. Waiting
+    // for that second request pins the retry before the re-fed receipt exists; a retry that ran
+    // between the two commits below would compose block 2 on its own, bounded or not.
+    scheduler.reroot_to(1).expect("re-root to the boundary");
+    prover.reroot(1);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while re_root_rx.try_recv().is_err() {
+        assert!(Instant::now() < deadline, "the retry after the re-root never ran");
+        thread::sleep(Duration::from_millis(5));
+    }
+
+    // The bridge re-feeds block 2, which returns under its original batch id, and its
+    // re-execution proves the receipt it lacked, entering at the tip's exit. Block 3 arrives as
+    // new work. Both are committed with their receipts before either reaches the prover, so the
+    // retry their arrival wakes sees both.
+    let refed = scheduler.schedule(block(2, 1, block_hash(1)), vec![lane_tx()]);
+    refed.wait_committed_blocking();
+    assert_eq!(refed.checkpoint().index(), 2, "the re-fed block returns under its original id");
+    let refed_receipt =
+        transition(pins(&[0x11; 32], &block_hash(1)), pins(&[0x22; 32], &block_hash(2)));
+    refed.write_batch_receipt(refed_receipt.clone()).wait_blocking();
+    refed.publish_artifact(Some(refed_receipt));
+    let new_work = scheduler.schedule(block(3, 2, block_hash(2)), vec![lane_tx()]);
+    new_work.wait_committed_blocking();
+    let new_receipt =
+        transition(pins(&[0x22; 32], &block_hash(2)), pins(&[0x33; 32], &block_hash(3)));
+    new_work.write_batch_receipt(new_receipt.clone()).wait_blocking();
+    new_work.publish_artifact(Some(new_receipt));
+    prover.submit(&refed);
+    prover.submit(&new_work);
+
+    // The re-fed range is re-covered first, and the re-cover stops there.
+    let covered =
+        next_bundle(&queue, Duration::from_secs(10)).expect("the re-fed range must be re-covered");
+    covered.wait_artifact_published_blocking();
+    assert_eq!(covered.checkpoint_index(), 2, "the re-cover starts above the boundary");
+    assert_eq!(
+        covered.block_prove_to(),
+        block_hash(2),
+        "the re-cover stops at the committed tip the first attempt saw",
+    );
+
+    // The new work bundles on its own, once. The queue may emit the re-fed range a second
+    // time (it holds the re-fed batch too), so only handles through block 3 are counted.
+    let mut new_work_bundles = 0;
+    while let Some(bundle) = next_bundle(&queue, Duration::from_millis(500)) {
+        bundle.wait_artifact_published_blocking();
+        if bundle.block_prove_to() == block_hash(3) {
+            assert_eq!(bundle.checkpoint_index(), 3, "nothing covers the new work from below");
+            new_work_bundles += 1;
+        }
+    }
+    assert_eq!(new_work_bundles, 1, "the new work bundles exactly once");
+    let recorded: Vec<(u64, u64)> =
+        journal.entries().into_iter().map(|(s, e)| (s, e.end_index)).collect();
+    assert_eq!(
+        recorded,
+        vec![(2, 2), (3, 3)],
+        "the re-fed range and the new work are journaled as separate entries",
+    );
+
+    prover.shutdown();
+    scheduler.shutdown();
+}
+
+/// Chain-block metadata for a block without lane activity: the lane tip does not move, so its
+/// batch is empty and publishes no receipt.
+fn idle_block(hash: u8, parent_id: u64, lane_tip: Hash) -> ChainBlockMetadata {
+    ChainBlockMetadata {
+        hash: block_hash(hash),
+        parent_id,
+        seq_commit: seq_commit(),
+        prev_lane_tip: lane_tip,
+        lane_tip,
+        ..Default::default()
+    }
+}
+
+/// Tests that a range of only empty batches above the boundary needs no re-cover and no
+/// re-root.
+///
+/// The lane was idle at the kill: the last bundle settled, and the chain blocks committed after
+/// it carry no lane activity. Nothing composes from them and nothing is missing, so the pass
+/// must end without requesting a rollback, and new work that arrives afterwards bundles from
+/// the tip. Deferring behind a re-root instead holds bundle formation for a range that can
+/// never compose.
+#[test]
+fn idle_range_above_the_boundary_needs_no_reroot() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+    let journal = StoreJournal::new(storage.clone());
+    let mut scheduler = Scheduler::new(
+        ExecutionConfig::default().with_processor(PlainProcessor),
+        StorageConfig::default().with_store(storage),
+    );
+
+    // The covenant's boundary batch, settled and compacted out of the journal, followed by two
+    // chain blocks without lane activity.
+    let boundary = scheduler.schedule(block(1, 0, Hash::default()), vec![lane_tx()]);
+    boundary.wait_committed_blocking();
+    boundary.write_batch_receipt(settlement_journal()).wait_blocking();
+    boundary.publish_artifact(Some(settlement_journal()));
+    for hash in [2u8, 3] {
+        let idle = scheduler.schedule(idle_block(hash, u64::from(hash) - 1, block_hash(1)), vec![]);
+        idle.wait_committed_blocking();
+    }
+
+    let queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Vec<u8>>>> = AsyncQueue::new();
+    let (settlement_tx, settlement_rx) = watch::channel::<Option<SettlementInfo>>(None);
+    let (re_root_tx, mut re_root_rx) = mpsc::unbounded_channel();
+    let prover = AggregateProver::new(
+        SyntheticBackend,
+        scheduler.state().receipt_store(),
+        Some(journal.clone()),
+        AggregateProverConfig {
+            lane_key: Hash::default(),
+            covenant_id: None,
+            lane_source: ServeLaneProofs,
+            settlement_queue: Some(queue.clone()),
+            settlement: Some(settlement_rx),
+            re_root: Some(re_root_tx),
+            bundle_size: 1..=1,
+            exits: None,
+            tip_daa: None,
+            follow_depth: 0,
+        },
+    );
+
+    // The covenant tip settled through the boundary batch.
+    settlement_tx.send_replace(Some(SettlementInfo {
+        block_prove_to: block_hash(1),
+        new_state: [0x11; 32],
+        new_lane_tip: block_hash(1),
+        ..Default::default()
+    }));
+    prover.wait_booted();
+
+    // Block 4 arrives as new work, entering at the tip's exit: it bundles right away.
+    let receipt = transition(pins(&[0x11; 32], &block_hash(1)), pins(&[0x22; 32], &block_hash(4)));
+    let batch = scheduler.schedule(block(4, 3, block_hash(1)), vec![lane_tx()]);
+    batch.wait_committed_blocking();
+    batch.write_batch_receipt(receipt.clone()).wait_blocking();
+    batch.publish_artifact(Some(receipt));
+    prover.submit(&batch);
+    let bundle = next_bundle(&queue, Duration::from_secs(10))
+        .expect("new work must bundle above an idle range");
+    bundle.wait_artifact_published_blocking();
+    assert_eq!(bundle.checkpoint_index(), 4, "the bundle starts at the new work");
+    assert_eq!(bundle.block_prove_to(), block_hash(4));
+    assert!(re_root_rx.try_recv().is_err(), "an idle range must not request a re-root");
+
+    prover.shutdown();
+    scheduler.shutdown();
+}
+
+/// Tests that a settlement proving through a batch committed after the gap's bound was taken
+/// ends the retry.
+///
+/// The gap waits behind a pending tail, bounded to the committed tip the startup pass saw. A
+/// competitor then settles past the whole range, through a block that arrived meanwhile. The
+/// boundary lies above the bound, and the retry must still read it as covering the range. Left
+/// unresolved while the rows below the range still exist, the pass re-covers from the stale
+/// base, requests a re-root to the tip, and defers forever with bundle formation held.
+#[test]
+fn settlement_past_the_gap_bound_ends_the_retry() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+    let journal = StoreJournal::new(storage.clone());
+    let mut scheduler = Scheduler::new(
+        ExecutionConfig::default().with_processor(PlainProcessor),
+        StorageConfig::default().with_store(storage),
+    );
+
+    // The live tail (batch 1, journaled and still settling) and the killed gap batch above it
+    // (batch 2, committed with its receipt but never journaled).
+    let tail_receipt =
+        transition(pins(&[0x00; 32], &Hash::default()), pins(&[0x11; 32], &block_hash(1)));
+    let tail = scheduler.schedule(block(1, 0, Hash::default()), vec![lane_tx()]);
+    tail.wait_committed_blocking();
+    tail.write_batch_receipt(tail_receipt.clone()).wait_blocking();
+    journal.record(
+        1,
+        &JournalEntry {
+            end_index: 1,
+            from_block: block_hash(1),
+            block_prove_to: block_hash(1),
+            seq_commit: seq_commit(),
+        },
+    );
+    scheduler
+        .state()
+        .receipt_store()
+        .write_agg_receipt(
+            AggregatorKey {
+                prefix: Prefix { checkpoint_index: 1.into() },
+                block_hash: block_hash(1).as_bytes(),
+                image_id: AGGREGATOR_IMAGE_ID,
+                seq_commit: seq_commit().as_bytes(),
+            },
+            tail_receipt,
+        )
+        .wait_blocking();
+    let gap_receipt =
+        transition(pins(&[0x11; 32], &block_hash(1)), pins(&[0x22; 32], &block_hash(2)));
+    let gap = scheduler.schedule(block(2, 1, block_hash(1)), vec![lane_tx()]);
+    gap.wait_committed_blocking();
+    gap.write_batch_receipt(gap_receipt).wait_blocking();
+
+    let queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Vec<u8>>>> = AsyncQueue::new();
+    let (settlement_tx, settlement_rx) = watch::channel::<Option<SettlementInfo>>(None);
+    let (re_root_tx, mut re_root_rx) = mpsc::unbounded_channel();
+    let prover = AggregateProver::new(
+        SyntheticBackend,
+        scheduler.state().receipt_store(),
+        Some(journal.clone()),
+        AggregateProverConfig {
+            lane_key: Hash::default(),
+            covenant_id: None,
+            lane_source: ServeLaneProofs,
+            settlement_queue: Some(queue.clone()),
+            settlement: Some(settlement_rx),
+            re_root: Some(re_root_tx),
+            bundle_size: 1..=1,
+            exits: None,
+            tip_daa: None,
+            follow_depth: 0,
+        },
+    );
+
+    // The covenant tip trails the tail: the tail re-feeds and the gap defers behind it.
+    settlement_tx.send_replace(Some(SettlementInfo {
+        tx_id: TransactionId::from_bytes([9; 32]),
+        block_prove_to: block_hash(9),
+        new_state: [0x00; 32],
+        new_lane_tip: Hash::default(),
+        ..Default::default()
+    }));
+    let refed = next_bundle(&queue, Duration::from_secs(10)).expect("the tail bundle re-feeds");
+    assert_eq!(refed.block_prove_to(), block_hash(1));
+    prover.wait_booted();
+
+    // Block 3 arrives while the gap waits and is held behind it.
+    let held_receipt =
+        transition(pins(&[0x22; 32], &block_hash(2)), pins(&[0x33; 32], &block_hash(3)));
+    let held = scheduler.schedule(block(3, 2, block_hash(2)), vec![lane_tx()]);
+    held.wait_committed_blocking();
+    held.write_batch_receipt(held_receipt.clone()).wait_blocking();
+    held.publish_artifact(Some(held_receipt));
+    prover.submit(&held);
+    assert!(
+        next_bundle(&queue, Duration::from_millis(500)).is_none(),
+        "new work is held while the gap waits behind the pending tail",
+    );
+
+    // A competitor settles through block 3, past the tail, the gap and the held block.
+    settlement_tx.send_replace(Some(SettlementInfo {
+        tx_id: TransactionId::from_bytes([3; 32]),
+        block_prove_to: block_hash(3),
+        new_state: [0x33; 32],
+        new_lane_tip: block_hash(3),
+        ..Default::default()
+    }));
+
+    // Block 4 enters at the competitor's exit. With the retry ended it bundles right away.
+    let next_receipt =
+        transition(pins(&[0x33; 32], &block_hash(3)), pins(&[0x44; 32], &block_hash(4)));
+    let next = scheduler.schedule(block(4, 3, block_hash(3)), vec![lane_tx()]);
+    next.wait_committed_blocking();
+    next.write_batch_receipt(next_receipt.clone()).wait_blocking();
+    next.publish_artifact(Some(next_receipt));
+    prover.submit(&next);
+    let bundle = next_bundle(&queue, Duration::from_secs(10))
+        .expect("work above the competitor's settlement must bundle");
+    bundle.wait_artifact_published_blocking();
+    assert_eq!(bundle.checkpoint_index(), 4, "nothing below the settlement is re-covered");
+    assert_eq!(bundle.block_prove_to(), block_hash(4));
+    assert!(
+        next_bundle(&queue, Duration::from_millis(500)).is_none(),
+        "block 4 bundles once and nothing else is emitted",
+    );
+    let recorded: Vec<(u64, u64)> =
+        journal.entries().into_iter().map(|(s, e)| (s, e.end_index)).collect();
+    assert_eq!(recorded, vec![(4, 4)], "nothing below the settlement is journaled");
+    assert!(
+        re_root_rx.try_recv().is_err(),
+        "a range the tip already covers must not request a re-root",
+    );
+
+    prover.shutdown();
+    scheduler.shutdown();
+}

@@ -82,11 +82,12 @@ enum GapOutcome {
     /// covers it, a rollback shrank the bound to the tail, or a deterministic metadata or
     /// receipt miss leaves it uncovered. Terminal, so the caller never retries.
     Nothing,
-    /// The final block's lane proof could not be fetched (a dead block or a stalled node; the
-    /// error does not say which). Carries the committed tip this attempt was scoped to; the
-    /// caller retries on later loop wakes with new-work bundling held, re-bounded to it so the
-    /// retry never grows over batches committed after the restart (those belong to the live
-    /// bundling path).
+    /// The pass could not resolve the range on this wake: the final block's lane proof could
+    /// not be fetched (a dead block or a stalled node; the error does not say which), a
+    /// re-root request is pending, or the covenant boundary sits at or below a live journal
+    /// tail. Carries the committed tip this attempt was scoped to; the caller retries on later
+    /// loop wakes with new-work bundling held, re-bounded to it so the retry never grows over
+    /// batches committed after the restart (those belong to the live bundling path).
     Deferred(u64),
 }
 
@@ -356,14 +357,15 @@ where
                         gap_bound = gap_bound.map(|bound| bound.min(target));
                     }
                     Command::Reroot(target) => {
-                        // A re-root's batches re-drive above the target, so the pending gap
-                        // bound stands: the retry re-covers the range once the re-drive
-                        // commits it. The truncation invalidates whatever the last-handled
+                        // A re-root's batches re-drive above the target under their original
+                        // ids, so the pending gap bound stands and still spans them: the retry
+                        // re-covers the range once the re-drive has proved the receipts it
+                        // lacked. The truncation invalidates whatever the last-handled
                         // settlement's passes consumed, so its dedupe resets and the
-                        // republished tip re-runs against the truncated windows. The DAA
-                        // floor survives: the covenant only moved forward through a re-root,
-                        // and a stale republished settlement re-arming the passes is what
-                        // oscillated the re-root against its own rollback.
+                        // republished tip re-runs against the truncated windows. The DAA floor
+                        // survives: the covenant only moved forward through a re-root, and a
+                        // stale republished settlement re-arming the passes is what oscillated
+                        // the re-root against its own rollback.
                         self.truncate_windows(target);
                         self.handled_settlement = None;
                     }
@@ -441,9 +443,10 @@ where
             // whenever the failure was the node: the same deferral a live bundle's dead lane
             // proof gets, retried on every wake (a new batch, a settlement advance, or
             // shutdown). The retry re-runs the whole pass against the current journal and
-            // tip, and ends only on evidence: the pass covers the range, the on-chain
-            // boundary reaches the bound (settled), or a rollback cuts the bound to the
-            // journal tail (the range died with the fork). Running before bundle formation
+            // tip, and ends only on evidence: the pass covers the range or finds nothing
+            // left to compose in it, the on-chain boundary reaches or passes the bound on a
+            // canonical batch (settled), or a rollback cuts the bound to the journal tail (the
+            // range died with the fork). Running before bundle formation
             // keeps the recovered gap bundle ahead of new-work bundles on the settlement
             // queue, the ordering the settler's skip path assumes.
             if let Some(bound) = gap_bound {
@@ -1233,9 +1236,10 @@ where
 
     /// Requests a rollback of execution to `tip`'s settlement boundary for the committed-gap
     /// re-cover, deduplicated per tip (`log_new` runs only on the first request), and returns
-    /// the deferred outcome the caller should propagate: the range only composes after the
-    /// rollback re-drives it through the scheduler, whose re-execution rebuilds the receipts
-    /// from whatever state the restored checkpoint actually holds.
+    /// the deferred outcome the caller should propagate, bounded to `committed_tip` (the tip
+    /// the attempt was scoped to): the range only composes after the rollback re-drives it
+    /// through the scheduler, whose re-execution rebuilds the receipts from whatever state the
+    /// restored checkpoint actually holds.
     ///
     /// Deferring, not dropping, is what lets a stale request resolve: the watch value may name a
     /// settlement a later one already superseded (the watch lags the covenant by the bridge's
@@ -1247,7 +1251,7 @@ where
     fn request_gap_reroot(
         &mut self,
         tip: &SettlementInfo,
-        bound: u64,
+        committed_tip: u64,
         log_new: impl FnOnce(),
     ) -> GapOutcome {
         if self.re_rooted_for.as_ref() != Some(&tip.tx_id) {
@@ -1257,7 +1261,7 @@ where
             }
             log_new();
         }
-        GapOutcome::Deferred(bound)
+        GapOutcome::Deferred(committed_tip)
     }
 
     /// Startup pass covering committed-but-unjournaled batches: a kill between a batch's commit
@@ -1283,16 +1287,28 @@ where
     ) -> GapOutcome {
         let Some(journal) = self.journal.clone() else { return GapOutcome::Nothing };
         let tail_end = journal.entries().last().map_or(0, |(_, entry)| entry.end_index);
-        let Some((committed_tip, _)) = journal.committed_tip() else { return GapOutcome::Nothing };
-        let committed_tip = committed_tip.min(bound);
+        let Some((journal_tip, _)) = journal.committed_tip() else { return GapOutcome::Nothing };
+        // The tip this attempt is scoped to, which every deferral below hands back as the
+        // retry's bound: batches committed while the gap waits are new work the queue bundles,
+        // and a retry that grew over them would cover each of them twice.
+        let committed_tip = journal_tip.min(bound);
         if committed_tip <= tail_end {
             return GapOutcome::Nothing;
         }
-        // The boundary search covers only the gap range strictly above the journal tail; a
-        // journal entry cannot resolve it, because every entry ends at or below the tail.
-        let resolved = tip.and_then(|tip| {
-            journal.checkpoint_of_block(tip.block_prove_to, committed_tip, tail_end + 1)
-        });
+        // The boundary search starts strictly above the journal tail; a journal entry cannot
+        // resolve it, because every entry ends at or below the tail. It runs through the
+        // journal's own committed tip rather than the scoped one: a settlement proving through
+        // a batch committed after the bound was taken (a competitor settling past the range
+        // while the retry waited) must still read as covering the range, or the pass can
+        // re-cover from a base the covenant has passed and never end. Above the scoped tip a
+        // row counts only while its batch is canonical: a rollback cuts the bound but keeps the
+        // rows of the batches it orphaned, and a pre-reorg tip still on the watch would resolve
+        // to one of them and end the retry over a range the covenant no longer covers.
+        let resolved = tip
+            .and_then(|tip| {
+                journal.checkpoint_of_block(tip.block_prove_to, journal_tip, tail_end + 1)
+            })
+            .filter(|&index| index <= committed_tip || journal.is_canonical(index));
         let boundary = resolved.map_or(tail_end, |index| index.max(tail_end));
         // The covenant's boundary resolved strictly inside the range (above the journal tail):
         // execution above it is pinned to whatever lineage the pinned batches carry, and no
@@ -1310,7 +1326,7 @@ where
                  leaving its range uncovered"
             );
             return match tip.filter(|_| inside) {
-                Some(tip) => self.request_gap_reroot(tip, bound, || {
+                Some(tip) => self.request_gap_reroot(tip, committed_tip, || {
                     log::info!(
                         "aggregate-prover: committed batch {first} above the journal tail lacks \
                          metadata with the covenant boundary pinned inside the range; requesting \
@@ -1358,13 +1374,14 @@ where
                  uncovered"
             );
         }
-        // No real work below the miss: nothing to compose, matching the live no-op path - unless
-        // the covenant's boundary sits strictly inside the range, when the miss is the
-        // receipt-less wedge itself (batches killed mid-prove above the boundary no cached
-        // artifact can compose) and only the re-root recovers.
+        // Nothing composes: no real work below the miss, or none in the range at all, matching
+        // the live no-op path. A range of only empty batches needs nothing more, because new
+        // work chains from the tip across them. A miss with the covenant's boundary strictly
+        // inside the range is the receipt-less wedge itself (batches killed mid-prove above
+        // the boundary no cached artifact can compose), and only the re-root recovers that.
         if covered.is_empty() {
-            return match tip.filter(|_| inside) {
-                Some(tip) => self.request_gap_reroot(tip, bound, || {
+            return match tip.filter(|_| inside && miss.is_some()) {
+                Some(tip) => self.request_gap_reroot(tip, committed_tip, || {
                     log::info!(
                         "aggregate-prover: nothing composes from batch {first} above the \
                          covenant boundary pinned inside the committed range (a receipt-less \
@@ -1398,13 +1415,13 @@ where
                      past the tail",
                     tip.block_prove_to,
                 );
-                return GapOutcome::Deferred(bound);
+                return GapOutcome::Deferred(committed_tip);
             }
             let journal = B::journal_bytes(&covered[0].2);
             let st = BatchTransition::ref_from_bytes(&journal).expect("batch journal");
             if st.prev_state != tip.new_state || st.prev_lane_tip != tip.new_lane_tip {
                 let first = covered[0].0;
-                return self.request_gap_reroot(tip, bound, || {
+                return self.request_gap_reroot(tip, committed_tip, || {
                     log::info!(
                         "aggregate-prover: holding the committed-gap re-cover at batch {first}: \
                          it enters at state {} and lane tip {} but the covenant tip {} exited at \

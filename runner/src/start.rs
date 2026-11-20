@@ -877,10 +877,11 @@ fn bridge_params(
 /// Rolls execution back to a settlement's boundary when the aggregate prover holds a fold
 /// because its window head enters off the covenant tip's exit: the batches between the boundary
 /// and the head cannot chain onto the covenant (a receipt-less committed range, or a fork below
-/// the boundary), and only re-entering execution at the boundary continues from the tip's exit;
-/// blocks arriving after the rollback execute from the boundary state (nothing re-appends the
-/// cancelled range). A boundary mapping to no batch of ours (a competitor's fork block) has no
-/// rollback target; the re-form paths on the next settlement advance own that case.
+/// the boundary), and only re-entering execution at the boundary continues from the tip's exit.
+/// The bridge's next fetch then starts from the rolled-back tip and re-feeds the blocks above
+/// the boundary, which return under their original batch ids and re-execute from the boundary
+/// state. A boundary mapping to no batch of ours (a competitor's fork block) has no rollback
+/// target; the re-form paths on the next settlement advance own that case.
 ///
 /// The settlement watch lags the covenant by the bridge's follow depth, and under contention
 /// the settler's supersede delete can empty the journal while the watch still shows a

@@ -5,7 +5,9 @@
 //! journal tail cannot advance past the uncovered range, and the recovered gap bundle lands on
 //! the settlement queue ahead of new work. A genuinely dead gap block (reorged away during the
 //! downtime) does not wedge the worker either: the reorg's rollback cuts the retry's bound to
-//! the journal tail, new work resumes, and bundles for live blocks keep emitting.
+//! the journal tail, new work resumes, and bundles for live blocks keep emitting. A gap deferred
+//! behind a pending journal tail stays bounded to the committed tip the startup pass saw, so the
+//! retry never covers the new work that arrived while it waited.
 
 // The backend traits return `impl Future + 'static`, which an `async fn` cannot satisfy: its future
 // borrows `&self`.
@@ -28,9 +30,10 @@ use tokio::sync::watch;
 use vprogs_core_atomics::AsyncQueue;
 use vprogs_core_test_utils::ResourceIdExt;
 use vprogs_core_types::{AccessMetadata, ResourceId, SchedulerTransaction};
-use vprogs_l1_types::{ChainBlockMetadata, SettlementInfo};
+use vprogs_l1_types::{ChainBlockMetadata, SettlementInfo, TransactionId};
 use vprogs_scheduling_scheduler::{ExecutionConfig, Scheduler, TransactionContext};
-use vprogs_state_settlement_journal::StoreJournal;
+use vprogs_state_proof_receipt::{AggregatorKey, Prefix};
+use vprogs_state_settlement_journal::{JournalEntry, StoreJournal};
 use vprogs_storage_manager::StorageConfig;
 use vprogs_storage_rocksdb_store::RocksDbStore;
 use vprogs_zk_abi::batch_aggregator::{StateTransition, StateTransitionArgs};
@@ -587,6 +590,214 @@ fn dead_gap_does_not_wedge_new_work() {
             frozen,
             "the retry's fetches stop once the rollback cut the bound",
         );
+
+        prover.shutdown();
+        scheduler.shutdown();
+    }
+}
+
+/// Tests that a gap deferred behind a pending journal tail stays bounded to the committed tip
+/// the startup pass saw.
+///
+/// The tail is still settling, so the startup pass cannot name the re-cover's base and defers.
+/// Work that arrives while it waits is held in the queue. Once the tail settles, the retry must
+/// cover only the startup range: growing to the current committed tip would cover the queued
+/// batches inside the gap bundle, and the queue would then bundle each of them a second time,
+/// at one wasted aggregator proof apiece.
+#[test]
+fn gap_deferred_behind_a_pending_tail_never_covers_new_work() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        // The pre-restart half: block 1's bundle is journaled and still settling, blocks 2 and 3
+        // are committed with their receipts cached but no journal entry.
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let journal = StoreJournal::new(storage.clone());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(PlainProcessor),
+            StorageConfig::default().with_store(storage),
+        );
+        commit_gap_batch(&mut scheduler, block(1, 0));
+        commit_gap_batch(&mut scheduler, block(2, 1));
+        commit_gap_batch(&mut scheduler, block(3, 2));
+        journal.record(
+            1,
+            &JournalEntry {
+                end_index: 1,
+                from_block: block_hash(1),
+                block_prove_to: block_hash(1),
+                seq_commit: seq_commit(),
+            },
+        );
+        scheduler
+            .state()
+            .receipt_store()
+            .write_agg_receipt(
+                AggregatorKey {
+                    prefix: Prefix { checkpoint_index: 1.into() },
+                    block_hash: block_hash(1).as_bytes(),
+                    image_id: AGGREGATOR_IMAGE_ID,
+                    seq_commit: seq_commit().as_bytes(),
+                },
+                settlement_journal(),
+            )
+            .wait_blocking();
+
+        let settlement_queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Vec<u8>>>> =
+            AsyncQueue::new();
+        let (settlement_tx, settlement_rx) = watch::channel::<Option<SettlementInfo>>(None);
+        let prover = AggregateProver::new(
+            SyntheticBackend,
+            scheduler.state().receipt_store(),
+            Some(journal.clone()),
+            AggregateProverConfig {
+                lane_key: Hash::default(),
+                covenant_id: None,
+                lane_source: StalledStartLaneSource {
+                    failures: 0,
+                    fetches: Arc::new(AtomicUsize::new(0)),
+                },
+                settlement_queue: Some(settlement_queue.clone()),
+                settlement: Some(settlement_rx),
+                re_root: None,
+                bundle_size: 1..=1,
+                exits: None,
+                tip_daa: None,
+                follow_depth: 0,
+            },
+        );
+
+        // The baseline tip trails the tail: the startup pass re-feeds the tail's bundle, and the
+        // gap pass defers because the tip cannot name the base of a range above a pending tail.
+        settlement_tx.send_replace(Some(unrelated_tip()));
+        let tail = next_bundle(&settlement_queue, Duration::from_secs(10))
+            .expect("the pending tail re-feeds at startup");
+        assert_eq!(tail.block_prove_to(), block_hash(1), "the re-fed bundle is the tail's");
+        prover.wait_booted();
+
+        // Blocks 4 and 5 arrive while the gap waits: both are held behind it.
+        commit_and_submit(&mut scheduler, &prover, block(4, 3));
+        commit_and_submit(&mut scheduler, &prover, block(5, 4));
+        assert!(
+            next_bundle(&settlement_queue, Duration::from_millis(500)).is_none(),
+            "no handle may arrive while the gap waits behind the pending tail",
+        );
+
+        // The tail settles: the watch advances to a settlement through block 1, so the retry can
+        // pin the base. It covers the startup range and stops there.
+        settlement_tx.send_replace(Some(SettlementInfo {
+            tx_id: TransactionId::from_bytes([1; 32]),
+            block_prove_to: block_hash(1),
+            ..Default::default()
+        }));
+        let gap = next_bundle(&settlement_queue, Duration::from_secs(10))
+            .expect("the gap must be re-covered once the tail settled");
+        gap.wait_artifact_published_blocking();
+        assert_eq!(gap.checkpoint_index(), 2, "the gap bundle starts above the settled tail");
+        assert_eq!(
+            gap.block_prove_to(),
+            block_hash(3),
+            "the gap bundle stops at the committed tip the startup pass saw",
+        );
+
+        // The held work follows, one bundle per block, each formed once.
+        for hash in [4, 5] {
+            let held = next_bundle(&settlement_queue, Duration::from_secs(10))
+                .expect("the held new work settles behind the recovered gap");
+            held.wait_artifact_published_blocking();
+            assert_eq!(held.block_prove_to(), block_hash(hash), "new work bundles in order");
+            assert!(held.artifact().is_some(), "the new work's bundle carries a real artifact");
+        }
+        assert!(
+            next_bundle(&settlement_queue, Duration::from_millis(500)).is_none(),
+            "no further handle may arrive",
+        );
+        let recorded: Vec<(u64, u64)> =
+            journal.entries().into_iter().map(|(s, e)| (s, e.end_index)).collect();
+        assert_eq!(
+            recorded,
+            vec![(2, 3), (4, 4), (5, 5)],
+            "the gap entry covers the startup range and each new block is journaled once",
+        );
+
+        prover.shutdown();
+        scheduler.shutdown();
+    }
+}
+
+/// Tests that a tip proving through an orphaned block does not end a retry a rollback has cut.
+///
+/// A rollback cuts the retry's bound but keeps the metadata rows of the batches it orphaned,
+/// and the watch still carries the pre-reorg settlement until the bridge republishes. That
+/// settlement's block resolves to one of the orphaned rows, above the cut bound. Reading it as
+/// the covenant having passed the range would end the retry and leave the surviving range
+/// uncovered.
+///
+/// The fixture's pins are all default, so the retry composes the surviving batch right away.
+/// In production it would first fail the chaining check against the stale tip, which also
+/// requests a re-root for that tip (the runner's liveness probe skips it), and compose once the
+/// bridge republishes the post-reorg one.
+#[test]
+fn tip_through_an_orphaned_block_does_not_end_a_rollback_cut_retry() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    {
+        // Blocks 1 to 3 are committed with their receipts cached but no journal entry.
+        let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+        let journal = StoreJournal::new(storage.clone());
+        let mut scheduler = Scheduler::new(
+            ExecutionConfig::default().with_processor(PlainProcessor),
+            StorageConfig::default().with_store(storage),
+        );
+        commit_gap_batch(&mut scheduler, block(1, 0));
+        commit_gap_batch(&mut scheduler, block(2, 1));
+        commit_gap_batch(&mut scheduler, block(3, 2));
+
+        let settlement_queue: AsyncQueue<ScheduledBundle<SettlementArtifact<Vec<u8>>>> =
+            AsyncQueue::new();
+        let (settlement_tx, settlement_rx) = watch::channel::<Option<SettlementInfo>>(None);
+        let dead_fetches = Arc::new(AtomicUsize::new(0));
+        let prover = AggregateProver::new(
+            SyntheticBackend,
+            scheduler.state().receipt_store(),
+            Some(journal.clone()),
+            AggregateProverConfig {
+                lane_key: Hash::default(),
+                covenant_id: None,
+                lane_source: DeadGapLaneSource {
+                    dead: block_hash(3),
+                    dead_fetches: dead_fetches.clone(),
+                },
+                settlement_queue: Some(settlement_queue.clone()),
+                settlement: Some(settlement_rx),
+                re_root: None,
+                bundle_size: 1..=1,
+                exits: None,
+                tip_daa: None,
+                follow_depth: 0,
+            },
+        );
+
+        // The tip settled through block 2, so the gap is batch 3. Its lane proof cannot be
+        // fetched, and the pass defers bounded to batch 3.
+        settlement_tx.send_replace(Some(SettlementInfo {
+            tx_id: TransactionId::from_bytes([2; 32]),
+            block_prove_to: block_hash(2),
+            ..Default::default()
+        }));
+        wait_for_fetches(&dead_fetches, 1);
+
+        // A reorg orphans blocks 2 and 3: the rollback cuts the bound to batch 1. The watch
+        // still names the settlement through the orphaned block 2, whose row survives above the
+        // cut. The retry must not read that as coverage, so it re-covers the surviving batch.
+        scheduler.rollback_to(1).expect("rollback to batch 1");
+        prover.rollback(1);
+        let gap = next_bundle(&settlement_queue, Duration::from_secs(10))
+            .expect("the surviving range must be re-covered");
+        gap.wait_artifact_published_blocking();
+        assert_eq!(gap.checkpoint_index(), 1, "the re-cover starts at the surviving batch");
+        assert_eq!(gap.block_prove_to(), block_hash(1), "the re-cover ends at the rollback target");
+        let recorded: Vec<(u64, u64)> =
+            journal.entries().into_iter().map(|(s, e)| (s, e.end_index)).collect();
+        assert_eq!(recorded, vec![(1, 1)], "only the surviving range is journaled");
 
         prover.shutdown();
         scheduler.shutdown();

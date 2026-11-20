@@ -105,6 +105,15 @@ impl<S: Store> StoreJournal<S> {
         (lower..=upper).rev().find(|&i| self.batch_block(i) == Some(block))
     }
 
+    /// Returns whether the batch at `index` is on the canonical chain.
+    ///
+    /// A rollback keeps the metadata rows of the batches it orphans, so a row alone does not
+    /// say its batch is live. Reads `false` for every index until the scheduler has restored
+    /// the store's canonical chain.
+    pub fn is_canonical(&self, index: u64) -> bool {
+        self.store.canonical_chain().snapshot().is_canonical(index)
+    }
+
     /// Returns whether any entry is recorded.
     pub fn has_entries(&self) -> bool {
         !self.entries().is_empty()
