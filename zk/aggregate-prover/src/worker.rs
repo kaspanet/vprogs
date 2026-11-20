@@ -375,6 +375,12 @@ where
                 }
             }
 
+            // The batch whose publication the park below waits for, picked before the passes read
+            // what is published. If it publishes while they run, the wait returns at once and they
+            // run again. Picked at the park, a batch that published in between would be skipped as
+            // published and its publication would wake nothing.
+            let awaited = first_unpublished(&self.queued);
+
             // Re-aggregate a superseded suffix when the settlement watch advances. `has_changed`
             // errors only once the bridge dropped the sender (node teardown), not on a fresh
             // settlement; `borrow_and_update` clears the flag so each settlement is acted on once.
@@ -483,15 +489,17 @@ where
                 continue;
             }
 
-            // Nothing ready: park until a new command arrives, a queued batch behind the front
-            // publishes its receipt, a settlement advances, or shutdown. `pop` and the settlement
-            // check re-run at the top of the next iteration, so a signal between here and the drain
-            // is not missed. Shutdown is checked first so a teardown request is never starved by a
-            // busy watch and the worker's join never hangs. The batch-publication wake lets a
-            // configured minimum bundle size (`*bundle_size.start() > 1`) self-heal: the ready
-            // prefix grows past a parked point only when a batch behind the front publishes, which
-            // nothing else notifies the loop of. The settlement wake is low-priority (last): a
-            // pending re-aggregation is cheap and can wait behind real proving work.
+            // Nothing ready: park until a new command arrives, a queued batch publishes its
+            // receipt, a settlement advances, or shutdown. `pop` and the settlement check re-run at
+            // the top of the next iteration, so a signal between here and the drain is not missed.
+            // Shutdown is checked first so a teardown request is never starved by a busy watch and
+            // the worker's join never hangs. The batch-publication wake is what every pass waiting
+            // for a receipt relies on, whatever the bundle size: an unpublished front, a ready
+            // prefix short of the configured minimum, and a committed-gap retry waiting for a
+            // re-fed batch's fresh receipt. Nothing else notifies the loop of a publication. It
+            // waits for `awaited`, picked above before the passes ran, so a publication during them
+            // is not missed either. The settlement wake is low-priority (last): a pending
+            // re-aggregation is cheap and can wait behind real proving work.
             //
             // The settlement arm parks on a dedicated wake receiver: `changed()` marks its
             // receiver's value seen, so awaiting the worker's own receiver here would consume an
@@ -501,13 +509,12 @@ where
             // worker's own receiver.
             let shutdown = &self.prover.shutdown;
             let inbox = &self.prover.inbox;
-            let queued = &self.queued;
             let settlement = settlement_wake.as_mut();
             tokio::select! {
                 biased;
                 () = shutdown.wait() => break,
                 () = inbox.notified() => {}
-                () = next_queued_batch_published(queued) => {}
+                () = batch_published(awaited.as_ref()) => {}
                 () = settlement_changed(settlement) => {}
             }
         }
@@ -527,7 +534,7 @@ where
         // An unpublished front defers to the run loop's park instead of blocking here: parking
         // inside the formation skipped the loop-top drain, so a batch submitted while parked
         // (its inbox permit unobserved) missed the bundle that formed on the latch wake alone.
-        // The park's `next_queued_batch_published` arm wakes on exactly this publication. A
+        // The park's `batch_published` arm wakes on this publication. A
         // canceled front is exempt (its wait would have returned immediately, latch open or
         // not) and falls through to the eviction below.
         if !front.artifact_published() && !front.canceled() {
@@ -1704,16 +1711,24 @@ where
     }
 }
 
-/// Awaits the receipt publication of the first not-yet-published queued batch: the park arm
-/// that wakes the run loop when a min-size bundle's ready prefix can grow without a new command.
-/// Parks forever when every queued batch is already published or the queue is empty, leaving
-/// waking to the inbox arm.
-async fn next_queued_batch_published<S: Store, P: Processor<S>>(
+/// Returns the first queued batch whose receipt is not published yet: the one whose publication
+/// lets a ready prefix grow without a new command, and which the run loop's park waits for.
+///
+/// Canceled batches are skipped: their `wait_artifact_published` returns immediately, so awaiting
+/// one would busy-spin. The caller evicts a canceled front.
+fn first_unpublished<S: Store, P: Processor<S>>(
     queued: &VecDeque<ScheduledBatch<S, P>>,
-) {
-    // Canceled batches are skipped: their `wait_artifact_published` returns immediately, so
-    // awaiting one would busy-spin. The caller evicts a canceled front.
-    match queued.iter().find(|batch| !batch.artifact_published() && !batch.canceled()) {
+) -> Option<ScheduledBatch<S, P>> {
+    queued.iter().find(|batch| !batch.artifact_published() && !batch.canceled()).cloned()
+}
+
+/// Awaits the receipt publication of `batch`: the park arm that wakes the run loop when a ready
+/// prefix can grow without a new command.
+///
+/// Returns at once when the batch published or was canceled since it was picked, so the loop runs
+/// its passes again. Parks forever without a batch, leaving waking to the inbox arm.
+async fn batch_published<S: Store, P: Processor<S>>(batch: Option<&ScheduledBatch<S, P>>) {
+    match batch {
         Some(batch) => batch.wait_artifact_published().await,
         None => std::future::pending::<()>().await,
     }
