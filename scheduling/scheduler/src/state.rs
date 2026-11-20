@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use arc_swap::{ArcSwap, ArcSwapOption};
 use crossbeam_queue::SegQueue;
+use tokio::sync::Notify;
 use vprogs_core_macros::smart_pointer;
 use vprogs_core_types::{Checkpoint, ResourceId};
 use vprogs_state_metadata::StateMetadata;
@@ -21,6 +22,10 @@ pub struct SchedulerState<S: Store, P: Processor<S>> {
     root: ArcSwap<Checkpoint<P::BatchMetadata>>,
     /// Most recently committed batch. Advanced by `commit_done`, reset on rollback.
     last_committed: ArcSwap<Checkpoint<P::BatchMetadata>>,
+    /// Signalled whenever `last_committed` moves. The pruning worker waits on it: it never prunes
+    /// the last committed batch or anything above it, so a commit can give it work. The signal
+    /// wakes one waiter, and that worker is the only one.
+    commit_notify: Arc<Notify>,
     /// Most recently scheduled batch. Advanced by `next_checkpoint`, reset on rollback. Only
     /// mutated from `&mut Scheduler`.
     last_processed: ArcSwap<Checkpoint<P::BatchMetadata>>,
@@ -43,6 +48,7 @@ impl<S: Store, P: Processor<S>> SchedulerState<S, P> {
             eviction_queue: SegQueue::new(),
             root: ArcSwap::from_pointee(root),
             last_committed: ArcSwap::from_pointee(last_committed.clone()),
+            commit_notify: Arc::new(Notify::new()),
             last_processed: ArcSwap::from_pointee(last_committed),
             indexer: ArcSwapOption::empty(),
         }))
@@ -98,9 +104,15 @@ impl<S: Store, P: Processor<S>> SchedulerState<S, P> {
         self.root.store(checkpoint);
     }
 
-    /// Sets the most recently committed checkpoint.
+    /// Returns the signal that fires whenever the most recently committed checkpoint moves.
+    pub(crate) fn commit_notify(&self) -> &Arc<Notify> {
+        &self.commit_notify
+    }
+
+    /// Sets the most recently committed checkpoint and signals the change.
     pub(crate) fn set_last_committed(&self, checkpoint: Arc<Checkpoint<P::BatchMetadata>>) {
         self.last_committed.store(checkpoint);
+        self.commit_notify.notify_one();
     }
 
     /// Sets the most recently processed (scheduled) checkpoint.
