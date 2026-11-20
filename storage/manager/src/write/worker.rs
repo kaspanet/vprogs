@@ -77,15 +77,7 @@ impl<K: Store, W: WriteCmd> WriteWorker<K, W> {
             // Process the next command in order.
             match self.queue.pop() {
                 (Some(cmd), _) => {
-                    // Capture the commands flush-now flag and execute it against the write batch.
-                    let flush_now = cmd.flush_now();
-                    write_batch = cmd.exec(&*self.store, write_batch);
-                    batch_cmds.push(cmd);
-
-                    // Flush the batch immediately if the command requested it.
-                    if flush_now {
-                        (write_batch, created) = self.flush(write_batch, &mut batch_cmds);
-                    }
+                    (write_batch, created) = self.apply(cmd, write_batch, &mut batch_cmds, created)
                 }
                 _ => self.park(),
             }
@@ -94,13 +86,14 @@ impl<K: Store, W: WriteCmd> WriteWorker<K, W> {
         // Shutdown drain. Ceiling: producers are torn down before the storage manager shuts
         // down (the node stops its workers, then its managers), so draining to an empty queue
         // here cannot race a further submission; a producer still pushing after its manager
-        // shut down is a teardown-ordering bug elsewhere, not a data-loss case here.
+        // shut down is a teardown-ordering bug elsewhere, not a data-loss case here. Commands are
+        // applied as in the loop above, so a flush-now command is committed before the next one
+        // executes.
         loop {
             let mut drained_any = false;
             while let (Some(cmd), _) = self.queue.pop() {
                 drained_any = true;
-                write_batch = cmd.exec(&*self.store, write_batch);
-                batch_cmds.push(cmd);
+                (write_batch, created) = self.apply(cmd, write_batch, &mut batch_cmds, created);
             }
             if !drained_any {
                 break;
@@ -127,6 +120,26 @@ impl<K: Store, W: WriteCmd> WriteWorker<K, W> {
     #[inline(always)]
     fn batch_is_full(&self, batch_size: usize) -> bool {
         batch_size >= self.config.batch_size
+    }
+
+    /// Executes `cmd` against the batch and flushes at once if the command asks for it. Returns the
+    /// batch to continue with and the time it was started at.
+    ///
+    /// A command may compute what it writes from the store (a batch commit reads the tree the
+    /// commit before it wrote), and the store does not show what is still in the batch. So a
+    /// flush-now command is committed before the next command executes, in the shutdown drain as in
+    /// the run loop.
+    fn apply(
+        &self,
+        cmd: W,
+        write_batch: K::WriteBatch,
+        cmds: &mut Vec<W>,
+        created: Instant,
+    ) -> (K::WriteBatch, Instant) {
+        let flush_now = cmd.flush_now();
+        let write_batch = cmd.exec(&*self.store, write_batch);
+        cmds.push(cmd);
+        if flush_now { self.flush(write_batch, cmds) } else { (write_batch, created) }
     }
 
     /// Commits the batch, runs each command's flushed callback, and returns a fresh batch.
