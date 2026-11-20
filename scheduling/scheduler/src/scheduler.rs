@@ -4,7 +4,7 @@ use std::{
 };
 
 use tap::Tap;
-use vprogs_core_types::{ChainSink, Checkpoint, ResourceId, SchedulerTransaction};
+use vprogs_core_types::{ChainSink, Checkpoint, ResourceId, RollbackRefused, SchedulerTransaction};
 use vprogs_scheduling_execution_workers::ExecutionWorkers;
 use vprogs_state_batch_metadata::BatchMetadata as StoredBatchMetadata;
 use vprogs_storage_canonical_chain::CanonicalChainManager;
@@ -135,8 +135,9 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
     /// finishes executing, and the rollback returns after its commit. The caller must not be what
     /// the target's execution or commit waits for.
     ///
-    /// Returns [`SchedulerError::PruningConflict`] if pruning has advanced past the rollback target
-    /// and the required rollback pointers have been deleted.
+    /// Returns [`SchedulerError::PruningConflict`] if a pruning pass has reached the rollback
+    /// target, and [`SchedulerError::UnknownTarget`] if the target is not a batch on the canonical
+    /// chain. Nothing has changed in either case.
     pub fn rollback_to(
         &mut self,
         target_index: u64,
@@ -148,7 +149,8 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
     /// execution there instead of at the rolled-back tip: unlike [`Self::rollback_to`] the chain
     /// itself did not move, so processors hear the rollback as a re-root
     /// ([`Processor::on_reroot`]) and keep whatever chain-progress state a plain rollback resets.
-    /// Like [`Self::rollback_to`] it blocks until a target that is still in flight has committed.
+    /// Like [`Self::rollback_to`] it blocks until a target that is still in flight has committed,
+    /// and fails for the same targets.
     pub fn reroot_to(
         &mut self,
         target_index: u64,
@@ -168,7 +170,7 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
 
         // Only perform a rollback if there is state to revert.
         if upper_bound > target_index {
-            // Stop pruning entering the rollback range; false = it already passed the target.
+            // Stop pruning entering the rollback range; false = it already reached the target.
             if !self.pruning_worker.pause(target_index) {
                 return Err(SchedulerError::PruningConflict);
             }
@@ -176,8 +178,19 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
             // Capture the pre-rollback snapshot for a consistent view of what to revert.
             let snapshot = self.canonical_chain_manager.chain().snapshot();
 
-            // Look up target metadata, cancel in-flight batches, and update shared state.
-            let target = self.cancel_and_rollback(target_index);
+            // Resolve the target before anything changes. It has to be on the canonical chain: a
+            // batch that was reorged away keeps its id and its metadata, and the chain cannot end
+            // at it. Pruning is held off the target by now, so a canonical batch has its
+            // checkpoint.
+            let on_chain = target_index == 0 || snapshot.is_canonical(target_index);
+            let Some(target) = on_chain.then(|| self.lookup_checkpoint(target_index)).flatten()
+            else {
+                self.pruning_worker.unpause();
+                return Err(SchedulerError::UnknownTarget);
+            };
+
+            // Cancel in-flight batches and update shared state.
+            self.cancel_and_rollback(&target);
 
             // Wait until the target has committed, if it is still in flight. The batches above it
             // are canceled by now, so the last pending batch is the target or one below it, and
@@ -312,9 +325,9 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
         (checkpoint, restore)
     }
 
-    /// Cancels in-flight batches and rolls back shared state to the given index.
-    fn cancel_and_rollback(&mut self, target_index: u64) -> Checkpoint<P::BatchMetadata> {
-        let target = self.lookup_checkpoint(target_index);
+    /// Cancels in-flight batches and rolls back shared state to the given checkpoint.
+    fn cancel_and_rollback(&mut self, target: &Checkpoint<P::BatchMetadata>) {
+        let target_index = target.index();
 
         // Cancel in-flight batches first so commit_done() sees it before the state update.
         self.cancellation.rollback(target_index);
@@ -325,12 +338,10 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
         // Roll the canonical chain back to the target.
         self.canonical_chain_manager.rollback(target_index);
 
-        // Pop canceled entries from the tip (after lookup_checkpoint searches the pending queue).
+        // Pop canceled entries from the tip.
         while self.pending_batches.back().is_some_and(|b| b.checkpoint().index() > target_index) {
             self.pending_batches.pop_back();
         }
-
-        target
     }
 
     /// Drains committed entries from the front of the pending batch queue.
@@ -342,17 +353,19 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
     }
 
     /// Looks up a checkpoint by index, searching the pending batch queue first, then disk.
-    fn lookup_checkpoint(&self, index: u64) -> Checkpoint<P::BatchMetadata> {
+    ///
+    /// Returns `None` if no batch of that index is in flight or committed.
+    fn lookup_checkpoint(&self, index: u64) -> Option<Checkpoint<P::BatchMetadata>> {
         // Index 0 is the genesis state - no batch exists on disk for it.
         if index == 0 {
-            return Checkpoint::default();
+            return Some(Checkpoint::default());
         }
 
         // Search pending batch queue (sorted ascending by index).
         for batch in &self.pending_batches {
             let checkpoint = batch.checkpoint();
             if checkpoint.index() == index {
-                return checkpoint.clone();
+                return Some(checkpoint.clone());
             } else if checkpoint.index() > index {
                 break;
             }
@@ -360,7 +373,7 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
 
         // Fall back to disk for committed batches.
         let store = &**self.state.storage().store();
-        Checkpoint::new(index, StoredBatchMetadata::get(store, index))
+        StoredBatchMetadata::get(store, index).map(|metadata| Checkpoint::new(index, metadata))
     }
 }
 
@@ -373,8 +386,8 @@ impl<S: Store, P: Processor<S>> ChainSink<P::BatchMetadata, P::Transaction> for 
         self.schedule(metadata, txs).checkpoint().index()
     }
 
-    fn rollback(&mut self, new_tip: u64) {
-        self.rollback_to(new_tip).unwrap();
+    fn rollback(&mut self, new_tip: u64) -> Result<(), RollbackRefused> {
+        self.rollback_to(new_tip).map(drop).map_err(|_| RollbackRefused)
     }
 
     fn finalize(&mut self, below: u64) {

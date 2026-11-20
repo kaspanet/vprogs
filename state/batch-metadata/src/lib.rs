@@ -7,12 +7,11 @@ use vprogs_storage_types::{StateSpace, Store, WriteBatch};
 pub struct BatchMetadata;
 
 impl BatchMetadata {
-    /// Returns the deserialized metadata for a batch, or `M::default()` if not found.
-    pub fn get<M: BatchMetadataTrait, S: Store>(store: &S, batch_index: u64) -> M {
+    /// Returns the deserialized metadata for a batch, or `None` if the batch has no entry.
+    pub fn get<M: BatchMetadataTrait, S: Store>(store: &S, batch_index: u64) -> Option<M> {
         store
             .get(StateSpace::BatchMetadata, &batch_index.to_be_bytes())
             .map(|bytes| borsh::from_slice(&bytes).expect("corrupted store: unrecoverable"))
-            .unwrap_or_default()
     }
 
     /// Returns whether a batch has a metadata entry (committed and not yet pruned).

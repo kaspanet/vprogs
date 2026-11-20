@@ -32,11 +32,11 @@ pub struct PruningWorker<S: Store, P: Processor<S>> {
     /// rollback to prevent the pruning worker from pruning into the rollback range; cleared after
     /// the rollback completes.
     pause_ceiling: Arc<AtomicU64>,
-    /// Tracks the upper bound of the last completed (or in-flight) prune pass. Generally
-    /// increasing; temporarily restored on aborted passes. Forms a Dekker-style handshake with
-    /// `pause_ceiling` (both use `SeqCst`) so that `pause` can detect an in-flight or
-    /// already-completed prune that overlaps the rollback range.
-    pruning_cursor: Arc<AtomicU64>,
+    /// The first batch the last completed (or in-flight) prune pass leaves, batch 1 while nothing
+    /// was pruned. Generally increasing; temporarily restored on aborted passes. Forms a
+    /// Dekker-style handshake with `pause_ceiling` (both use `SeqCst`) so that `pause` can detect
+    /// an in-flight or already-completed prune that reaches the rollback target.
+    pruning_floor: Arc<AtomicU64>,
     /// Notification signal to wake up the worker when the threshold rises, `unpause` lifts the
     /// ceiling, or the last committed batch moves. It is the scheduler state's commit signal, so a
     /// commit wakes the worker as well.
@@ -68,18 +68,22 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
 
     /// Pauses pruning at or above the given index.
     ///
-    /// Called before a rollback to ensure the pruning worker does not delete state that the
-    /// rollback needs. The ceiling clamps the worker's upper bound, which is `min(threshold,
-    /// ceiling, last committed) - 1`.
+    /// Called before a rollback to the given index to ensure the pruning worker does not delete
+    /// state that the rollback needs: the rollback pointers of the batches above its target, and
+    /// the target's own metadata. The ceiling clamps the worker's upper bound, which is
+    /// `min(threshold, ceiling, last committed) - 1`.
     ///
-    /// Returns `true` if the pruning cursor is at or below the ceiling (no completed or in-flight
-    /// prune has deleted data the rollback needs), `false` otherwise. On failure the ceiling is
-    /// reset to `u64::MAX` so pruning is not permanently throttled. Both sides use `SeqCst`
+    /// Returns `true` if the pruning floor is at or below the ceiling (no completed or in-flight
+    /// prune has reached the rollback target), `false` otherwise. On failure the ceiling is reset
+    /// to `u64::MAX` so pruning is not permanently throttled. Both sides use `SeqCst`
     /// (Dekker-style) so at least one side detects the conflict: either the worker aborts its pass,
     /// or this method returns `false`.
     pub fn pause(&self, ceiling: u64) -> bool {
         self.pause_ceiling.store(ceiling, Ordering::SeqCst);
-        if self.pruning_cursor.load(Ordering::SeqCst) <= ceiling {
+
+        // Index 0 is the genesis state, which has no batch of its own: it stands as long as batch 1
+        // does.
+        if self.pruning_floor.load(Ordering::SeqCst) <= ceiling.max(1) {
             true
         } else {
             self.pause_ceiling.store(u64::MAX, Ordering::Release);
@@ -105,21 +109,21 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
         let root_index = state.root().index();
         let pruning_threshold = Arc::new(AtomicU64::new(root_index));
         let pause_ceiling = Arc::new(AtomicU64::new(u64::MAX));
-        let pruning_cursor = Arc::new(AtomicU64::new(root_index.saturating_sub(1)));
+        let pruning_floor = Arc::new(AtomicU64::new(root_index.max(1)));
         let notify = state.commit_notify().clone();
 
         let handle = Self::start(
             state.clone(),
             pruning_threshold.clone(),
             pause_ceiling.clone(),
-            pruning_cursor.clone(),
+            pruning_floor.clone(),
             notify.clone(),
         );
 
         Self {
             pruning_threshold,
             pause_ceiling,
-            pruning_cursor,
+            pruning_floor,
             notify,
             handle,
             _marker: PhantomData,
@@ -142,7 +146,7 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
         state: SchedulerState<S, P>,
         pruning_threshold: Arc<AtomicU64>,
         pause_ceiling: Arc<AtomicU64>,
-        pruning_cursor: Arc<AtomicU64>,
+        pruning_floor: Arc<AtomicU64>,
         notify: Arc<Notify>,
     ) -> JoinHandle<()> {
         thread::spawn(move || {
@@ -172,11 +176,11 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
 
                         // Check if there's pruning work to do.
                         if upper_bound >= lower_bound {
-                            // Advance cursor to signal our prune range (Dekker step 1).
-                            let prev = pruning_cursor.swap(upper_bound, Ordering::SeqCst);
+                            // Advance the floor past our prune range to signal it (Dekker step 1).
+                            let prev = pruning_floor.swap(upper_bound + 1, Ordering::SeqCst);
 
                             // Dekker step 2: evaluate the bound again; if a rollback lowered it
-                            // since our first read, restore the cursor and abort. A rollback lowers
+                            // since our first read, restore the floor and abort. A rollback lowers
                             // it through the ceiling while it runs, and through the last committed
                             // batch from its write on, which still holds after the ceiling is
                             // lifted. For that the bound has to load the ceiling before the last
@@ -184,12 +188,13 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
                             // ordered after the rollback's write, and so is the load of the last
                             // committed batch that follows it.
                             if eligible() < upper_bound {
-                                pruning_cursor.store(prev, Ordering::Release);
+                                pruning_floor.store(prev, Ordering::Release);
                                 continue;
                             }
 
                             // Execute pruning directly on the store.
-                            // The cursor stays at upper_bound - it now reflects completed progress.
+                            // The floor stays past upper_bound - it now reflects completed
+                            // progress.
                             Self::prune(&state, lower_bound, upper_bound);
                         } else if Arc::strong_count(&pruning_threshold) != 1 {
                             // No work to do, wait for notification.
@@ -211,10 +216,11 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
         // Get a direct reference to the store for this operation.
         let store = state.storage().store();
 
-        // New root is the first surviving batch after the pruned range.
+        // New root is the first surviving batch after the pruned range. An id whose batch was
+        // canceled before it committed has no metadata, and the root carries the default then.
         let new_root = Arc::new(Checkpoint::new(
             upper_bound + 1,
-            StoredBatchMetadata::get(store.as_ref(), upper_bound + 1),
+            StoredBatchMetadata::get(store.as_ref(), upper_bound + 1).unwrap_or_default(),
         ));
 
         // Pin one canonical view for the whole pass, and freeze the deleted range's real

@@ -10,7 +10,7 @@ use kaspa_consensus_core::{
 use kaspa_rpc_core::{GetBlockTemplateResponse, RpcTransaction, api::rpc::RpcApi};
 use kaspa_seq_commit::hashing::lane_key;
 use tokio::sync::mpsc;
-use vprogs_core_types::{ChainSink, SchedulerTransaction};
+use vprogs_core_types::{ChainSink, RollbackRefused, SchedulerTransaction};
 use vprogs_l1_bridge::{Command, L1Bridge, L1BridgeConfig, L1Event};
 use vprogs_l1_types::{ChainBlockMetadata, ConnectStrategy, Hash, L1Transaction, NetworkType};
 use vprogs_node_test_utils::{L1BridgeExt, L1Node};
@@ -134,10 +134,11 @@ impl ChainSink<ChainBlockMetadata, L1Transaction> for RecordingSink {
         id
     }
 
-    fn rollback(&mut self, new_tip: u64) {
+    fn rollback(&mut self, new_tip: u64) -> Result<(), RollbackRefused> {
         let mut inner = self.0.lock().unwrap();
         inner.manager.rollback(new_tip);
         inner.reorgs.push(new_tip);
+        Ok(())
     }
 
     fn finalize(&mut self, below: u64) {

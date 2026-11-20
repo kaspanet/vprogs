@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use crate::SchedulerTransaction;
+use crate::{RollbackRefused, SchedulerTransaction};
 
 /// A sink for a canonical chain.
 pub trait ChainSink<M, Tx> {
@@ -8,7 +8,10 @@ pub trait ChainSink<M, Tx> {
     fn append(&mut self, metadata: M, txs: Vec<SchedulerTransaction<Tx>>) -> u64;
 
     /// Rolls the chain back to `new_tip`, orphaning every id above it.
-    fn rollback(&mut self, new_tip: u64);
+    ///
+    /// Fails without changing anything if `new_tip` is not a block on the sink's canonical chain
+    /// that it can still roll back to.
+    fn rollback(&mut self, new_tip: u64) -> Result<(), RollbackRefused>;
 
     /// Finalizes canonical ids below `below`.
     fn finalize(&mut self, below: u64);

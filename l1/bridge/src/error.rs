@@ -13,8 +13,8 @@ pub(crate) enum Error {
     CheckpointLost(RpcError),
 
     /// A reorg's fork point sits below the sink root (the seed anchor or the finalized floor), so
-    /// there is no tracked block to roll back to.
-    #[error("reorg below the sink root: fork block {0} is not tracked")]
+    /// there is no block the sink can roll back to.
+    #[error("reorg below the sink root: no block to roll back to below fork block {0}")]
     ReorgBelowRoot(Hash),
 
     /// The peer elided a response field required at `Full` verbosity - retrying cannot help.
