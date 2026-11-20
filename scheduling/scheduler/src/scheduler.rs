@@ -30,8 +30,10 @@ pub struct Scheduler<S: Store, P: Processor<S>> {
     state: SchedulerState<S, P>,
     /// Shared cancellation state for in-flight batch detection.
     cancellation: CancellationContext,
-    /// Checkpoints for batches that have not yet committed, in index order.
-    pending_batches: VecDeque<Checkpoint<P::BatchMetadata>>,
+    /// Batches scheduled and not yet drained, in index order: the ones that have not committed,
+    /// and committed ones until the next `schedule` drains them. A rollback waits on the last one
+    /// for its target to commit.
+    pending_batches: VecDeque<ScheduledBatch<S, P>>,
     /// Maps resource IDs to their in-memory dependency chain heads.
     resources: HashMap<ResourceId, Resource<S, P>>,
     /// Background worker that processes batches through their lifecycle stages.
@@ -90,6 +92,9 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
             // Notify the processor, allowing it to initialize internal caches or buffers.
             self.processor.on_batch_scheduled(batch);
 
+            // Track the batch until it has committed.
+            self.pending_batches.push_back(batch.clone());
+
             // Push to the batch lifecycle worker for lifecycle progression.
             self.batch_lifecycle_worker.push(batch.clone());
 
@@ -125,6 +130,11 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
     /// Rolls back the runtime state to the given batch index, returning the target checkpoint. If
     /// the current state is already at or behind the target, returns the current checkpoint.
     ///
+    /// When there is something to roll back and the target is still in flight, the call blocks
+    /// until the target has committed: the batches above it are canceled at once, the target
+    /// finishes executing, and the rollback returns after its commit. The caller must not be what
+    /// the target's execution or commit waits for.
+    ///
     /// Returns [`SchedulerError::PruningConflict`] if pruning has advanced past the rollback target
     /// and the required rollback pointers have been deleted.
     pub fn rollback_to(
@@ -138,6 +148,7 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
     /// execution there instead of at the rolled-back tip: unlike [`Self::rollback_to`] the chain
     /// itself did not move, so processors hear the rollback as a re-root
     /// ([`Processor::on_reroot`]) and keep whatever chain-progress state a plain rollback resets.
+    /// Like [`Self::rollback_to`] it blocks until a target that is still in flight has committed.
     pub fn reroot_to(
         &mut self,
         target_index: u64,
@@ -167,6 +178,17 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
 
             // Look up target metadata, cancel in-flight batches, and update shared state.
             let target = self.cancel_and_rollback(target_index);
+
+            // Wait until the target has committed, if it is still in flight. The batches above it
+            // are canceled by now, so the last pending batch is the target or one below it, and
+            // batches commit in order: everything at or below the target is on disk once it has
+            // committed. The rest of the rollback builds on that. The resource chains are cleared
+            // below, and a batch scheduled afterwards reads its resources from disk. With the
+            // target still in flight it would read the state before the target and overwrite what
+            // the target writes.
+            if let Some(batch) = self.pending_batches.back() {
+                batch.wait_committed_blocking();
+            }
 
             // Submit the rollback command and wait for its completion.
             let done_signal = Default::default();
@@ -281,7 +303,6 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
         let outcome = self.canonical_chain_manager.append(metadata.clone());
         let checkpoint = Checkpoint::new(outcome.id, metadata);
         self.state.set_last_processed(Arc::new(checkpoint.clone()));
-        self.pending_batches.push_back(checkpoint.clone());
 
         // A returning id restores if the processor opts in and its state is already on disk.
         let restore = !outcome.is_new
@@ -305,7 +326,7 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
         self.canonical_chain_manager.rollback(target_index);
 
         // Pop canceled entries from the tip (after lookup_checkpoint searches the pending queue).
-        while self.pending_batches.back().is_some_and(|cp| cp.index() > target_index) {
+        while self.pending_batches.back().is_some_and(|b| b.checkpoint().index() > target_index) {
             self.pending_batches.pop_back();
         }
 
@@ -315,7 +336,7 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
     /// Drains committed entries from the front of the pending batch queue.
     fn drain_committed(&mut self) {
         let committed = self.state.last_committed().index();
-        while self.pending_batches.front().is_some_and(|cp| cp.index() <= committed) {
+        while self.pending_batches.front().is_some_and(|b| b.checkpoint().index() <= committed) {
             self.pending_batches.pop_front();
         }
     }
@@ -328,10 +349,11 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
         }
 
         // Search pending batch queue (sorted ascending by index).
-        for cp in &self.pending_batches {
-            if cp.index() == index {
-                return cp.clone();
-            } else if cp.index() > index {
+        for batch in &self.pending_batches {
+            let checkpoint = batch.checkpoint();
+            if checkpoint.index() == index {
+                return checkpoint.clone();
+            } else if checkpoint.index() > index {
                 break;
             }
         }

@@ -17,8 +17,10 @@ use crate::{Processor, state::SchedulerState};
 /// Walks the canonical batches from `upper_bound` down to `target.index() + 1` in reverse order,
 /// restoring each affected resource to the version it had before the batch was applied.
 pub struct Rollback<S: Store, P: Processor<S>> {
-    /// The checkpoint we're rolling back to. Its metadata is resolved by the scheduler from
-    /// in-memory state to avoid a disk read race condition.
+    /// The checkpoint we're rolling back to, committed by the time the rollback runs. The
+    /// scheduler looks it up before that, while the target may still be in flight, so it resolves
+    /// it from its pending batches first: the disk has no metadata for a batch in flight, and a
+    /// returning block keeps the metadata it was scheduled with.
     target: Checkpoint<P::BatchMetadata>,
     /// Upper bound of the batch index range to roll back (inclusive).
     upper_bound: u64,
@@ -54,11 +56,9 @@ impl<S: Store, P: Processor<S>> Rollback<S, P> {
         // Commit any existing changes so the rollback sees a consistent state.
         store.commit(write_batch);
 
-        // Update last_committed in memory only if target already committed; else commit_done does.
-        let target_committed = self.target.index() < self.state.last_committed().index();
-        if target_committed {
-            self.state.set_last_committed(Arc::new(self.target.clone()));
-        }
+        // The scheduler waits for the target to commit before it submits the rollback, so the
+        // target is the last committed batch from here on.
+        self.state.set_last_committed(Arc::new(self.target.clone()));
 
         // Commit the latest-pointer repoints atomically.
         store.commit(store.write_batch().tap_mut(|wb| {
@@ -92,11 +92,8 @@ impl<S: Store, P: Processor<S>> Rollback<S, P> {
                 }
             }
 
-            // Update last_committed on disk only if target already committed; else commit_done
-            // does.
-            if target_committed {
-                StateMetadata::set_last_committed(wb, &self.target);
-            }
+            // Persist the target as the last committed batch.
+            StateMetadata::set_last_committed(wb, &self.target);
         }));
 
         // Return a new empty write batch for further operations.
