@@ -24,7 +24,9 @@ pub struct Rollback<S: Store, P: Processor<S>> {
     upper_bound: u64,
     /// Canonical chain snapshot from before the rollback.
     snapshot: Arc<CanonicalChainSnapshot>,
-    /// Shared scheduler state. Used to update `last_committed` and `root` alongside disk writes.
+    /// Shared scheduler state. Used to update `last_committed` alongside disk writes. The root is
+    /// not touched: the batches a rollback orphans stay on disk at and above it until the pruning
+    /// worker reclaims them.
     state: SchedulerState<S, P>,
     /// Signal that resolves when the rollback operation is complete.
     done_signal: Arc<AtomicAsyncLatch>,
@@ -56,12 +58,6 @@ impl<S: Store, P: Processor<S>> Rollback<S, P> {
         let target_committed = self.target.index() < self.state.last_committed().index();
         if target_committed {
             self.state.set_last_committed(Arc::new(self.target.clone()));
-        }
-
-        // On rollback-to-genesis, reset root so next_checkpoint can re-initialize it.
-        let rollback_to_genesis = self.target.index() == 0;
-        if rollback_to_genesis {
-            self.state.set_root(Arc::new(self.target.clone()));
         }
 
         // Commit the latest-pointer repoints atomically.
@@ -100,11 +96,6 @@ impl<S: Store, P: Processor<S>> Rollback<S, P> {
             // does.
             if target_committed {
                 StateMetadata::set_last_committed(wb, &self.target);
-            }
-
-            // Persist root reset for crash-fault tolerance.
-            if rollback_to_genesis {
-                StateMetadata::set_root(wb, &self.target);
             }
         }));
 

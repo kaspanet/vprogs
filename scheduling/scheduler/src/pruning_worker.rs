@@ -95,8 +95,9 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
     /// Creates a new pruning worker with direct store access via the shared state.
     ///
     /// The `root` checkpoint (oldest surviving batch) is managed through the shared state for
-    /// atomic updates. The worker resumes from the persisted root. On a fresh database (root index
-    /// 0), no pruning occurs until the first batch commits and initializes root.
+    /// atomic updates, and a pruning pass is the only thing that moves it. The worker resumes from
+    /// the persisted root. A store that was never pruned has root index 0, and its first pass
+    /// starts at the first batch id.
     pub(crate) fn new(state: SchedulerState<S, P>) -> Self {
         let root_index = state.root().index();
         let pruning_threshold = Arc::new(AtomicU64::new(root_index));
@@ -147,7 +148,8 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
                     // Use strong_count to detect shutdown (when the outer struct is dropped).
                     while Arc::strong_count(&pruning_threshold) != 1 {
                         // Root is the oldest surviving batch - the first candidate for pruning.
-                        let lower_bound = state.root().index();
+                        // Index 0 means no pass ran yet, and batch ids start at 1.
+                        let lower_bound = state.root().index().max(1);
 
                         // Last eligible batch: min(threshold, ceiling) made inclusive;
                         // saturating_sub guards the threshold-0 fresh start.
@@ -157,7 +159,7 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
                             .saturating_sub(1);
 
                         // Check if there's pruning work to do.
-                        if upper_bound >= lower_bound && lower_bound > 0 {
+                        if upper_bound >= lower_bound {
                             // Advance cursor to signal our prune range (Dekker step 1).
                             let prev = pruning_cursor.swap(upper_bound, Ordering::SeqCst);
 

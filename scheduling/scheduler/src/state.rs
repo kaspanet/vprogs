@@ -17,7 +17,7 @@ pub struct SchedulerState<S: Store, P: Processor<S>> {
     storage: StorageManager<S, Read<S, P>, Write<S, P>>,
     /// Queue of resource IDs to potentially evict after their batches committed.
     eviction_queue: SegQueue<ResourceId>,
-    /// Oldest surviving batch. Advanced by pruning.
+    /// Oldest surviving batch. Only a pruning pass moves it; index 0 until the first one.
     root: ArcSwap<Checkpoint<P::BatchMetadata>>,
     /// Most recently committed batch. Advanced by `commit_done`, reset on rollback.
     last_committed: ArcSwap<Checkpoint<P::BatchMetadata>>,
@@ -74,7 +74,11 @@ impl<S: Store, P: Processor<S>> SchedulerState<S, P> {
         &self.eviction_queue
     }
 
-    /// Returns the root checkpoint (oldest surviving batch).
+    /// Returns the root checkpoint: the oldest batch no pruning pass has reclaimed.
+    ///
+    /// Its index is 0 on a store that was never pruned, where the oldest surviving batch is the
+    /// first one. A rollback does not move it: the batches it orphans stay on disk until they are
+    /// pruned.
     pub fn root(&self) -> Arc<Checkpoint<P::BatchMetadata>> {
         self.root.load_full()
     }
