@@ -104,16 +104,46 @@ where
             return;
         }
 
-        // The (checkpoint, block, batch-image) coordinate proves to the same per-batch receipt, so
-        // a replay (including a flip reorg back onto this fork) reuses the cached one instead of
-        // re-collecting the SMT proof and re-proving.
-        let receipt = match batch.read_batch_receipt().resolve().await {
+        // The (checkpoint, block, batch-image) coordinate normally proves to the same per-batch
+        // receipt, so a replay (including a flip reorg back onto this fork) reuses the cached one
+        // instead of re-collecting the SMT proof and re-proving. The coordinate does not name
+        // where the batch enters, though: a block returning under its batch id after a rollback
+        // or a re-root can find a receipt proved from another state root or lane tip. Publishing
+        // that one keeps the batch off the covenant tip for good (the re-root requested to
+        // rebuild it gets the same receipt back) and trips the root compare below when it also
+        // exits elsewhere, so a cached receipt is reused only while it enters where this batch
+        // does.
+        let prev_version = batch.checkpoint().index().saturating_sub(1);
+        let cached = batch.read_batch_receipt().resolve().await;
+        let mismatch = cached.as_ref().and_then(|r| self.entry_mismatch(&batch, prev_version, r));
+
+        let receipt = match cached.filter(|_| mismatch.is_none()) {
             Some(receipt) => receipt,
             None => {
                 // Collect SMT proof at the version preceding the batch's checkpoint.
-                let prev_version = batch.checkpoint().index().saturating_sub(1);
                 let proof_bytes =
                     self.store.prove(&batch.resource_ids(), prev_version).expect("proof");
+
+                // A rollback that reached below the version the entry was checked and the proof
+                // collected at can change what both read: the check then misreads a matching
+                // receipt, and the proof roots the batch in another lineage than its tx
+                // receipts, which the guest can reject on every retry. A rollback cancels its
+                // batches before it moves the canonical chain, so reads that finished without
+                // such a rollback saw the batch's own lineage. The bound is the version read
+                // at, not the batch's parent: below it a sibling fork can return under an id
+                // in between. A rollback to exactly that version (a re-root to the boundary
+                // when the batch has the next id) cancels the batch but leaves what it read
+                // intact, and its proof still serves the block's return.
+                if batch.rolled_back_below(prev_version) {
+                    return;
+                }
+                if let Some(field) = mismatch {
+                    log::warn!(
+                        "batch-prover: cached receipt for batch {} does not enter where the \
+                         batch does ({field}); proving it afresh",
+                        batch.checkpoint().index(),
+                    );
+                }
 
                 // One pass: per-tx journal bytes (inputs) + receipt clones (proof composition).
                 let (journals, receipts): (Vec<_>, Vec<_>) =
@@ -202,5 +232,35 @@ where
         // divergence: continuing would let the next bundle's prev_state assert wedge the lane,
         // so fail loudly at the batch that caused it.
         assert_eq!(settled_root, host_root, "settled new_state diverges from the host store root");
+    }
+
+    /// Returns the first entry field in which the cached `receipt` differs from `batch`, or `None`
+    /// when the receipt enters exactly where the batch does.
+    ///
+    /// The entry is what a fresh proof of the batch commits as its starting point: the state
+    /// root at `prev_version` and the lane pins the block's metadata carries. A receipt whose
+    /// journal does not decode enters nowhere.
+    fn entry_mismatch(
+        &self,
+        batch: &ScheduledBatch<S, P>,
+        prev_version: u64,
+        receipt: &B::Receipt,
+    ) -> Option<&'static str> {
+        let journal = B::journal_bytes(receipt);
+        let Ok(transition) = BatchTransition::ref_from_bytes(&journal) else {
+            return Some("undecodable journal");
+        };
+        let metadata = batch.checkpoint().metadata();
+        if transition.prev_state != self.store.root(prev_version) {
+            Some("state root")
+        } else if transition.prev_lane_tip != metadata.prev_lane_tip {
+            Some("lane tip")
+        } else if transition.prev_lane_blue_score.get() != metadata.prev_lane_blue_score {
+            Some("lane blue score")
+        } else if (transition.lane_expired != 0) != metadata.lane_expired {
+            Some("lane expiry")
+        } else {
+            None
+        }
     }
 }

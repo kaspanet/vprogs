@@ -339,3 +339,111 @@ async fn batch_proofs_chain_across_batches() {
     scheduler.shutdown();
     l1.shutdown().await;
 }
+
+/// Replays a proved batch through the real guests, once unchanged and once with its lane pins
+/// re-threaded.
+///
+/// A re-root re-executes a block under the batch id and block hash it already had, which is the
+/// coordinate its per-batch receipt is cached at. Replayed unchanged, the batch publishes the
+/// transition it published before. Replayed with another entering lane tip (the bridge deriving
+/// the lane pins from another base), the cached receipt no longer proves the batch: it must be
+/// proved afresh, from the transaction receipts it already has, and the lane keeps proving on
+/// top of it.
+#[tokio::test(flavor = "multi_thread")]
+async fn replayed_batch_is_proved_afresh_once_its_lane_pins_change() {
+    let transaction_elf = transaction_processor_elf();
+    let batch_elf = batch_processor_elf();
+    let aggregator_elf = batch_aggregator_elf();
+
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+
+    let backend = Backend::new(&transaction_elf, &batch_elf, &aggregator_elf, ProofType::Succinct);
+
+    let l1 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
+    let block_hashes = l1.mine_blocks(3).await;
+
+    let lane_key = test_lane_key();
+    let config = BatchProverConfig {
+        lane_key,
+        covenant_id: Hash::default(),
+        // No deposits in this flow; every batch commits the no-deposit sentinel.
+        deposit_spk_hash: [0u8; 32],
+    };
+    let proving = ProvingPipeline::batch(backend.clone(), storage.clone(), config);
+    let vm = Vm::new(backend.clone(), proving);
+    let mut scheduler = Scheduler::new(
+        ExecutionConfig::default().with_processor(vm),
+        StorageConfig::default().with_store(storage.clone()),
+    );
+
+    // One counter bump per batch, all on the same resource.
+    let bump = |ix_data: &[u8]| {
+        L1Transaction::for_l2_test(&[AccessMetadata::write(ResourceId::for_test(1))], ix_data)
+    };
+    let (tx_1, tx_2, tx_3) = (bump(&[1, 2, 3]), bump(&[4, 5, 6]), bump(&[7, 8, 9]));
+
+    // The boundary batch, and the batch above it that the replays re-execute.
+    let metadata_1 = metadata_for_block(&l1, block_hashes[0]).await;
+    let batch_1 = scheduler.schedule(metadata_1, vec![tx_1.clone().into_scheduler_tx(0)]);
+    let mut metadata_2 = metadata_for_block(&l1, block_hashes[1]).await;
+    metadata_2.prev_lane_tip = compute_section_lane_tip(&metadata_1, &[(0, &tx_1)], &lane_key);
+    metadata_2.prev_lane_blue_score = metadata_1.blue_score;
+    let batch_2 = scheduler.schedule(metadata_2, vec![tx_2.clone().into_scheduler_tx(0)]);
+    batch_1.wait_committed_blocking();
+    batch_2.wait_committed_blocking();
+    batch_2.wait_artifact_published_blocking();
+    let first_journal = Backend::journal_bytes(&batch_2.artifact());
+
+    // Replayed unchanged, the block returns under its batch id and publishes the same
+    // transition.
+    scheduler.reroot_to(1).expect("re-root to the boundary");
+    let unchanged = scheduler.schedule(metadata_2, vec![tx_2.clone().into_scheduler_tx(0)]);
+    unchanged.wait_committed_blocking();
+    unchanged.wait_artifact_published_blocking();
+    assert_eq!(unchanged.checkpoint().index(), 2, "the replayed block keeps its batch id");
+    assert_eq!(
+        Backend::journal_bytes(&unchanged.artifact()),
+        first_journal,
+        "an unchanged replay publishes the transition it published before",
+    );
+
+    // Replayed entering at another lane tip, the receipt cached at the block's coordinate no
+    // longer proves the batch.
+    scheduler.reroot_to(1).expect("re-root to the boundary");
+    let mut rethreaded_metadata = metadata_2;
+    rethreaded_metadata.prev_lane_tip = Hash::from_bytes([0x99; 32]);
+    let rethreaded =
+        scheduler.schedule(rethreaded_metadata, vec![tx_2.clone().into_scheduler_tx(0)]);
+    rethreaded.wait_committed_blocking();
+    rethreaded.wait_artifact_published_blocking();
+    assert_eq!(rethreaded.checkpoint().index(), 2, "the replayed block keeps its batch id");
+    let journal = Backend::journal_bytes(&rethreaded.artifact());
+    let transition = BatchTransition::ref_from_bytes(&journal).expect("decode BatchTransition");
+    assert_eq!(
+        transition.prev_lane_tip, rethreaded_metadata.prev_lane_tip,
+        "the published receipt enters at the lane tip the replayed block names",
+    );
+    assert_eq!(
+        transition.new_lane_tip,
+        compute_section_lane_tip(&rethreaded_metadata, &[(0, &tx_2)], &lane_key),
+        "the published receipt exits at the lane tip derived from the re-threaded entry",
+    );
+    assert_eq!(transition.prev_state, storage.root(1), "the state entry is the boundary's root");
+    assert_eq!(transition.new_state, storage.root(2), "the state exit is the batch's root");
+
+    // The lane keeps proving on top of the re-threaded batch.
+    let mut metadata_3 = metadata_for_block(&l1, block_hashes[2]).await;
+    metadata_3.prev_lane_tip = transition.new_lane_tip;
+    metadata_3.prev_lane_blue_score = rethreaded_metadata.blue_score;
+    let batch_3 = scheduler.schedule(metadata_3, vec![tx_3.into_scheduler_tx(0)]);
+    batch_3.wait_committed_blocking();
+    batch_3.wait_artifact_published_blocking();
+    let journal_3 = Backend::journal_bytes(&batch_3.artifact());
+    let transition_3 = BatchTransition::ref_from_bytes(&journal_3).expect("decode BatchTransition");
+    assert_eq!(transition_3.prev_state, transition.new_state, "batch 3 chains its state entry");
+    assert_eq!(transition_3.prev_lane_tip, transition.new_lane_tip, "batch 3 chains its lane tip");
+
+    scheduler.shutdown();
+    l1.shutdown().await;
+}
