@@ -25,7 +25,7 @@ use kaspa_seq_commit::{
 use kaspa_wrpc_client::prelude::*;
 use tokio::sync::{Notify, mpsc, watch};
 use vprogs_core_atomics::AtomicAsyncLatch;
-use vprogs_core_types::{AccessMetadata, ChainSink, SchedulerTransaction};
+use vprogs_core_types::{AccessMetadata, ChainSink, RollbackRefused, SchedulerTransaction};
 use vprogs_l1_types::{
     ChainBlockMetadata, Hash, L1Transaction, L1TransactionCovenantExt, PermissionSpend,
     SettlementInfo, SettlementMsg, SpendMsg,
@@ -354,7 +354,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
 
     /// Seeds the genesis anchor `depth` chain-blocks below the sink to start near the tip.
     ///
-    /// `depth` is the reorg head-room; a deeper reorg panics in `rollback`.
+    /// `depth` is the reorg head-room; a deeper reorg is fatal.
     async fn seed_from_recent(&mut self, depth: u64) -> Result<()> {
         let sink = self.client.get_block_dag_info().await?.sink;
 
@@ -387,8 +387,7 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
     /// the first emitted block lands at index 1. Used to start replay at a known historical
     /// block (a covenant's deploy block) so a catch-up node rebuilds state forward from there.
     /// The block must be at or before the covenant bootstrap, or the bridge misses the
-    /// bootstrap's settlements; a reorg below it panics in `rollback`, same as
-    /// `seed_from_recent`.
+    /// bootstrap's settlements; a reorg below it is fatal, same as `seed_from_recent`.
     async fn seed_from_block(&mut self, hash: Hash) -> Result<()> {
         let block = self.client.get_block(hash, false).await?;
         self.genesis = (&block.header).into();
@@ -763,7 +762,8 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
         let blue_score_depth = old_blue.saturating_sub(new_blue);
         self.reorg_filter.record(blue_score_depth);
 
-        // Perform sink rollback.
+        // Perform sink rollback. The sink refuses a tip it can no longer roll back to: the
+        // surviving block sits below its root.
         log::info!(
             "L1 bridge: reorg detected, {} blocks removed, rolling back to id {} \
              (blue score depth: {}, filter threshold: {:?})",
@@ -772,7 +772,9 @@ impl<T: ChainSink<ChainBlockMetadata, L1Transaction>> BridgeWorker<T> {
             blue_score_depth,
             self.reorg_filter.threshold(),
         );
-        self.sink.rollback(new_tip);
+        self.sink
+            .rollback(new_tip)
+            .map_err(|RollbackRefused| Error::ReorgBelowRoot(*fork_child_hash))?;
 
         // Mark both event streams at the surviving tip: the duplicate idx across the channels,
         // combined with per-channel FIFO, lets consumers revert everything above it and
@@ -922,7 +924,7 @@ mod tests {
     use kaspa_wrpc_client::prelude::{KaspaRpcClient, WrpcEncoding};
     use tokio::sync::{Notify, mpsc};
     use vprogs_core_atomics::AtomicAsyncLatch;
-    use vprogs_core_types::{ChainSink, SchedulerTransaction};
+    use vprogs_core_types::{ChainSink, RollbackRefused, SchedulerTransaction};
     use vprogs_l1_types::{ChainBlockMetadata, Hash, L1Transaction, SettlementMsg, SpendMsg};
     use vprogs_zk_abi::withdrawal::{ExitLeaf, StandardSpk};
     use vprogs_zk_backend_risc0_api::PermissionTreeView;
@@ -937,6 +939,8 @@ mod tests {
     struct TestSink {
         blocks: Vec<ChainBlockMetadata>,
         finalize_calls: Vec<u64>,
+        /// The lowest id the sink still rolls back to.
+        root: u64,
     }
 
     impl TestSink {
@@ -962,8 +966,12 @@ mod tests {
             self.blocks.push(metadata);
             self.blocks.len() as u64
         }
-        fn rollback(&mut self, new_tip: u64) {
+        fn rollback(&mut self, new_tip: u64) -> std::result::Result<(), RollbackRefused> {
+            if new_tip < self.root {
+                return Err(RollbackRefused);
+            }
             self.blocks.truncate(new_tip as usize);
+            Ok(())
         }
         fn finalize(&mut self, below: u64) {
             // Finalization repeats on every batch past the window; the threshold never regresses.
@@ -1436,6 +1444,41 @@ mod tests {
         assert_eq!(worker.sink.finalized(), vec![1]);
     }
 
+    /// A reorg that removes the lowest block the sink still holds is fatal: the fork child is
+    /// tracked, but the block below it is not, and only the sink can tell. The bridge must not
+    /// go on as if the rollback had happened.
+    #[tokio::test]
+    async fn reorg_onto_a_block_the_sink_no_longer_holds_is_fatal() {
+        let (settlement_events_tx, mut settlement_events_rx) = mpsc::unbounded_channel();
+        let mut worker = test_worker(
+            TestSink::default(),
+            Hash::from_bytes([0xAA; 32]),
+            settlement_events_tx,
+            None,
+        );
+
+        let b1 = Hash::from_bytes([0x01; 32]);
+        let b2 = Hash::from_bytes([0x02; 32]);
+        let pp = Hash::default();
+        let batch = pp_batch(vec![pp_block(b1, 1, pp), pp_block(b2, 2, pp)]);
+        worker.fetch_chain_updates_tail(batch, worker.tip_metadata().hash).await.unwrap();
+
+        // The sink has finalized below b2, and the reorg removes b2.
+        worker.sink.root = 2;
+        let reorg = GetVirtualChainFromBlockV2Response {
+            removed_chain_block_hashes: Arc::new(vec![b2]),
+            added_chain_block_hashes: Arc::new(vec![]),
+            chain_block_accepted_transactions: Arc::new(vec![]),
+        };
+        let err = worker.handle_reorg(&reorg).expect_err("the sink refuses the rollback");
+        assert!(matches!(err, Error::ReorgBelowRoot(hash) if hash == b2), "got {err}");
+        assert!(err.is_fatal());
+
+        // Nothing was rolled back, and no consumer was told of a rollback.
+        assert_eq!(worker.sink.tip(), 2);
+        assert!(!matches!(settlement_events_rx.try_recv(), Ok(SettlementMsg::Rollback(_))));
+    }
+
     /// Without a window (no floor, adaptive filter empty) the first citation confirms: consensus
     /// itself only advances the node's pruning point past finality, so the window is purely
     /// reorg-flap defense.
@@ -1485,7 +1528,7 @@ mod tests {
 
         // The response fetched from b2 holds only the additions above it. While it was in
         // flight, the re-root rolled the sink back to b1: the settlement boundary.
-        worker.sink.rollback(1);
+        worker.sink.rollback(1).expect("the sink holds the boundary");
         let dropped =
             worker.fetch_chain_updates_tail(pp_batch(vec![pp_block(b3, 3, pp)]), b2).await.unwrap();
         assert!(dropped, "the response must be dropped for a refetch from the rolled-back tip");

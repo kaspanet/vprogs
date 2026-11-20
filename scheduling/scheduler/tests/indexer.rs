@@ -479,7 +479,7 @@ fn chain_sink_reorg_competing_forks_and_returning_blocks() {
 
     // Stage 2: reorg at the split point (id 1). The multi-version walk reverts r1's rewrites
     // (v3 -> v2 -> v1, inverse diffs composing) and r2's creation.
-    scheduler.rollback(1);
+    scheduler.rollback(1).expect("rollback to the split point");
     assert_eq!(scheduler.tip(), 1);
     let oracle = storage.canonical_chain().snapshot();
     assert!(oracle.is_canonical(1));
@@ -511,7 +511,7 @@ fn chain_sink_reorg_competing_forks_and_returning_blocks() {
 
     // Stage 4: reorg back to the split point; fork B's committed batches revert (the walk
     // hits 5 then 4, skipping the already-orphaned 3 and 2), reproducing stage 2 exactly.
-    scheduler.rollback(1);
+    scheduler.rollback(1).expect("rollback to the split point");
     assert_eq!(scheduler.tip(), 1);
     let oracle = storage.canonical_chain().snapshot();
     assert!(!oracle.is_canonical(4), "orphaned fork B version must not be canonical");

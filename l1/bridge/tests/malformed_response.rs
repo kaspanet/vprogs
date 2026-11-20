@@ -25,7 +25,7 @@ use tokio::{
     sync::mpsc,
 };
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, tungstenite::Message};
-use vprogs_core_types::{ChainSink, SchedulerTransaction};
+use vprogs_core_types::{ChainSink, RollbackRefused, SchedulerTransaction};
 use vprogs_l1_bridge::{Command, L1Bridge, L1BridgeConfig, L1Event};
 use vprogs_l1_types::{ChainBlockMetadata, ConnectStrategy, L1Transaction, NetworkType};
 use vprogs_node_test_utils::{L1BridgeExt, L1Node};
@@ -376,8 +376,9 @@ impl ChainSink<ChainBlockMetadata, L1Transaction> for RecordingSink {
         id
     }
 
-    fn rollback(&mut self, new_tip: u64) {
+    fn rollback(&mut self, new_tip: u64) -> Result<(), RollbackRefused> {
         self.0.lock().expect("sink poisoned").manager.rollback(new_tip);
+        Ok(())
     }
 
     fn finalize(&mut self, below: u64) {

@@ -8,6 +8,7 @@ mod batch_metadata;
 mod chain_sink;
 mod checkpoint;
 mod resource_id;
+mod rollback_refused;
 mod scheduler_transaction;
 
 pub use access_metadata::AccessMetadata;
@@ -16,4 +17,5 @@ pub use batch_metadata::BatchMetadata;
 pub use chain_sink::ChainSink;
 pub use checkpoint::Checkpoint;
 pub use resource_id::ResourceId;
+pub use rollback_refused::RollbackRefused;
 pub use scheduler_transaction::SchedulerTransaction;
