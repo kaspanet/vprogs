@@ -447,3 +447,84 @@ async fn replayed_batch_is_proved_afresh_once_its_lane_pins_change() {
     scheduler.shutdown();
     l1.shutdown().await;
 }
+
+/// Proves a batch whose only transaction touches no resource, on top of a non-empty state.
+///
+/// The batch's proof queries no key. Without a leaf it would carry no state root, and the batch
+/// guest would commit the empty root as both `prev_state` and `new_state`. The proof binds the
+/// root through a witness path instead, so the batch settles the state it entered at, the
+/// worker's root compare holds, and the lane keeps proving on top of it.
+#[tokio::test(flavor = "multi_thread")]
+async fn batch_touching_no_resource_settles_the_state_it_entered_at() {
+    let transaction_elf = transaction_processor_elf();
+    let batch_elf = batch_processor_elf();
+    let aggregator_elf = batch_aggregator_elf();
+
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    let storage: RocksDbStore = RocksDbStore::open(temp_dir.path());
+
+    let backend = Backend::new(&transaction_elf, &batch_elf, &aggregator_elf, ProofType::Succinct);
+
+    let l1 = L1Node::new(NetworkId::new(NetworkType::Simnet), None).await;
+    let block_hashes = l1.mine_blocks(3).await;
+
+    let lane_key = test_lane_key();
+    let config = BatchProverConfig {
+        lane_key,
+        covenant_id: Hash::default(),
+        // No deposits in this flow; every batch commits the no-deposit sentinel.
+        deposit_spk_hash: [0u8; 32],
+    };
+    let proving = ProvingPipeline::batch(backend.clone(), storage.clone(), config);
+    let vm = Vm::new(backend.clone(), proving);
+    let mut scheduler = Scheduler::new(
+        ExecutionConfig::default().with_processor(vm),
+        StorageConfig::default().with_store(storage.clone()),
+    );
+
+    let bump = |ix_data: &[u8]| {
+        L1Transaction::for_l2_test(&[AccessMetadata::write(ResourceId::for_test(1))], ix_data)
+    };
+    let (tx_1, tx_3) = (bump(&[1, 2, 3]), bump(&[7, 8, 9]));
+    // A lane transaction that declares no resource, which is also what the bridge makes of a
+    // payload whose access list does not decode.
+    let tx_2 = L1Transaction::for_l2_test(&[], &[4, 5, 6]);
+
+    // Batch 1 gives the lane a state. Batch 2 holds only the resource-less transaction.
+    let metadata_1 = metadata_for_block(&l1, block_hashes[0]).await;
+    let batch_1 = scheduler.schedule(metadata_1, vec![tx_1.clone().into_scheduler_tx(0)]);
+    let mut metadata_2 = metadata_for_block(&l1, block_hashes[1]).await;
+    metadata_2.prev_lane_tip = compute_section_lane_tip(&metadata_1, &[(0, &tx_1)], &lane_key);
+    metadata_2.prev_lane_blue_score = metadata_1.blue_score;
+    let batch_2 = scheduler.schedule(metadata_2, vec![tx_2.clone().into_scheduler_tx(0)]);
+    batch_1.wait_committed_blocking();
+    batch_2.wait_committed_blocking();
+    batch_2.wait_artifact_published_blocking();
+
+    let journal_2 = Backend::journal_bytes(&batch_2.artifact());
+    let transition_2 = BatchTransition::ref_from_bytes(&journal_2).expect("decode BatchTransition");
+    assert_ne!(storage.root(1), EMPTY_HASH, "batch 1 left the lane with a state");
+    assert_eq!(transition_2.prev_state, storage.root(1), "batch 2 enters at the lane's state");
+    assert_eq!(transition_2.new_state, storage.root(1), "and leaves it unchanged");
+    assert_eq!(
+        transition_2.new_lane_tip,
+        compute_section_lane_tip(&metadata_2, &[(0, &tx_2)], &lane_key),
+        "its transaction still counts as lane activity",
+    );
+
+    // The lane keeps proving on top of it: the worker survived the root compare and batch 3
+    // chains from batch 2.
+    let mut metadata_3 = metadata_for_block(&l1, block_hashes[2]).await;
+    metadata_3.prev_lane_tip = transition_2.new_lane_tip;
+    metadata_3.prev_lane_blue_score = metadata_2.blue_score;
+    let batch_3 = scheduler.schedule(metadata_3, vec![tx_3.into_scheduler_tx(0)]);
+    batch_3.wait_committed_blocking();
+    batch_3.wait_artifact_published_blocking();
+    let journal_3 = Backend::journal_bytes(&batch_3.artifact());
+    let transition_3 = BatchTransition::ref_from_bytes(&journal_3).expect("decode BatchTransition");
+    assert_eq!(transition_3.prev_state, transition_2.new_state, "batch 3 chains its state entry");
+    assert_eq!(transition_3.new_state, storage.root(3), "and settles its own root");
+
+    scheduler.shutdown();
+    l1.shutdown().await;
+}

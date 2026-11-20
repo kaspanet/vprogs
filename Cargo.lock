@@ -9458,6 +9458,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "vprogs-core-atomics",
+ "vprogs-core-hashing",
  "vprogs-core-macros",
  "vprogs-core-smt",
  "vprogs-core-test-utils",
