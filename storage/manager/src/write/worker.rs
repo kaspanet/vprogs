@@ -83,12 +83,12 @@ impl<K: Store, W: WriteCmd> WriteWorker<K, W> {
             }
         }
 
-        // Shutdown drain. Ceiling: producers are torn down before the storage manager shuts
-        // down (the node stops its workers, then its managers), so draining to an empty queue
-        // here cannot race a further submission; a producer still pushing after its manager
-        // shut down is a teardown-ordering bug elsewhere, not a data-loss case here. Commands are
-        // applied as in the loop above, so a flush-now command is committed before the next one
-        // executes.
+        // Shutdown drain. Ceiling: producers are torn down before the storage manager shuts down
+        // (the node stops its workers, then its managers), and the manager stops its own readers
+        // before this worker, since a read can submit a write. So draining to an empty queue here
+        // cannot race a further submission; a producer still pushing after its manager shut down is
+        // a teardown-ordering bug elsewhere, not a data-loss case here. Commands are applied as in
+        // the loop above, so a flush-now command is committed before the next one executes.
         loop {
             let mut drained_any = false;
             while let (Some(cmd), _) = self.queue.pop() {
