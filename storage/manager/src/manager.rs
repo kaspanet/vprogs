@@ -1,7 +1,4 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::Arc;
 
 use vprogs_core_macros::smart_pointer;
 use vprogs_storage_types::Store;
@@ -17,21 +14,17 @@ pub struct StorageManager<S: Store, R: ReadCmd, W: WriteCmd> {
     reader: ReadManager<S, R>,
     /// Write worker for write commands.
     writer: WriteManager<W>,
-    /// Set on shutdown to stop both workers.
-    is_shutdown: Arc<AtomicBool>,
 }
 
 impl<S: Store, R: ReadCmd, W: WriteCmd> StorageManager<S, R, W> {
     /// Opens the store and spawns the read and write workers.
     pub fn new(config: StorageConfig<S>) -> Self {
         let store = Arc::new(config.store.expect("StorageConfig requires a store"));
-        let is_shutdown = Arc::new(AtomicBool::new(false));
 
         Self(Arc::new(StorageManagerData {
-            reader: ReadManager::new(config.read_config, &store, &is_shutdown),
-            writer: WriteManager::new(config.write_config, &store, &is_shutdown),
+            reader: ReadManager::new(config.read_config, &store),
+            writer: WriteManager::new(config.write_config, &store),
             store,
-            is_shutdown,
         }))
     }
 
@@ -53,10 +46,14 @@ impl<S: Store, R: ReadCmd, W: WriteCmd> StorageManager<S, R, W> {
         &self.store
     }
 
-    /// Signals shutdown and waits for both workers to finish.
+    /// Stops the read workers, then the write worker, and waits for each to finish.
+    ///
+    /// Meant to be called once: a second caller at the same time does not wait for the readers the
+    /// first one is joining.
     pub fn shutdown(&self) {
-        // Flag shutdown before waking the workers so their loops observe it and exit.
-        self.is_shutdown.store(true, Ordering::Release);
+        // The write worker is told to stop only after the readers are joined: a read served in
+        // their drain can still submit a write, and the write worker has to be running to take it.
+        // A write left in the queue would never execute, and it would keep alive whatever it holds.
         self.reader.shutdown();
         self.writer.shutdown();
     }

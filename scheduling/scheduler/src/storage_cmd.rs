@@ -268,7 +268,10 @@ impl<S: Store, P: Processor<S>> ReadCmd for Read<S, P> {
 /// Commands dispatched to the storage managers write worker.
 pub enum Write<S: Store, P: Processor<S>> {
     /// Persist a resource's versioned data and rollback pointer.
-    StateDiff(StateDiff<S, P>),
+    ///
+    /// Carries the diff's batch: the diff reaches it only weakly, and a canceled batch gets no
+    /// commit that would keep it alive until the diff is written.
+    StateDiff(ScheduledBatch<S, P>, StateDiff<S, P>),
     /// Finalize a batch by writing latest pointers and batch metadata.
     CommitBatch(ScheduledBatch<S, P>),
     /// Revert all batches after a target checkpoint.
@@ -281,7 +284,7 @@ impl<S: Store, P: Processor<S>> WriteCmd for Write<S, P> {
     /// Applies the variant's write to the batch and returns it.
     fn exec<ST: Store>(&self, store: &ST, mut wb: ST::WriteBatch) -> ST::WriteBatch {
         match self {
-            Write::StateDiff(state_diff) => state_diff.write(&mut wb),
+            Write::StateDiff(batch, state_diff) => state_diff.write(batch, &mut wb),
             Write::CommitBatch(batch) => batch.commit(store, &mut wb),
             Write::Rollback(rollback) => return rollback.execute(store, wb),
             Write::StoreReceipt(receipt) => receipt.write(&mut wb),

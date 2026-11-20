@@ -179,8 +179,9 @@ fn commits_drained_at_shutdown_build_on_each_other() {
             scheduler.schedule(index, batch_txs(index)).wait_processed_blocking();
         }
 
-        // The lifecycle worker submitted each commit when its batch was processed. Shutdown
-        // stops it, then flags the storage manager and waits for the held write worker.
+        // The lifecycle worker submitted each commit when its batch was processed. Shutdown stops
+        // it, then the storage manager: its idle readers first, then the held write worker, which
+        // it flags and waits for.
         let shutdown = thread::spawn(move || scheduler.shutdown());
         thread::sleep(Duration::from_millis(250));
         gate.open();

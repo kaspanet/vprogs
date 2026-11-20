@@ -8,7 +8,7 @@ use vprogs_core_types::ResourceId;
 use vprogs_state_version::StateVersion;
 use vprogs_storage_types::{Store, WriteBatch};
 
-use crate::{ScheduledBatchRef, Write, processor::Processor};
+use crate::{ScheduledBatch, ScheduledBatchRef, Write, processor::Processor};
 
 /// Tracks the state change for a single resource within a batch.
 ///
@@ -81,16 +81,17 @@ impl<S: Store, P: Processor<S>> StateDiff<S, P> {
     pub(crate) fn set_written_state(&self, state: Arc<StateVersion>) {
         self.written_state.store(Some(state));
         if let Some(batch) = self.batch.upgrade().filter(|batch| !batch.restored()) {
-            batch.submit_write(Write::StateDiff(self.clone()));
+            batch.submit_write(Write::StateDiff(batch.clone(), self.clone()));
         }
     }
 
     /// Persists the new version and rollback pointer if the resource's version advanced.
-    pub(crate) fn write<W: WriteBatch>(&self, wb: &mut W) {
-        // The batch and both states must be resolved by the time the worker writes this diff.
-        let Some(batch) = self.batch.upgrade() else {
-            panic!("batch must be known at write time");
-        };
+    ///
+    /// `batch` is the diff's batch, handed in by the queued write that holds it.
+    pub(crate) fn write<W: WriteBatch>(&self, batch: &ScheduledBatch<S, P>, wb: &mut W) {
+        debug_assert!(self.batch == batch.downgrade(), "a diff is written with its own batch");
+
+        // Both states must be resolved by the time the worker writes this diff.
         let Some(read_state) = &*self.read_state.load() else {
             panic!("read_state must be known at write time");
         };

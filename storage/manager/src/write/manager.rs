@@ -1,4 +1,7 @@
-use std::sync::{Arc, atomic::AtomicBool};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use vprogs_storage_types::Store;
 
@@ -16,17 +19,21 @@ pub struct WriteManager<W: WriteCmd> {
     queue: CmdQueue<W>,
     /// Handle to wake and join the worker thread.
     worker: WorkerHandle,
+    /// Set on shutdown to stop the worker.
+    is_shutdown: Arc<AtomicBool>,
 }
 
 impl<W: WriteCmd> WriteManager<W> {
     /// Creates the queue, spawns the worker, and returns the manager.
-    pub fn new<K: Store>(
-        config: WriteConfig,
-        store: &Arc<K>,
-        is_shutdown: &Arc<AtomicBool>,
-    ) -> Self {
+    pub fn new<K: Store>(config: WriteConfig, store: &Arc<K>) -> Self {
         let queue = CmdQueue::new();
-        Self { worker: WriteWorker::spawn(&config, &queue, store, is_shutdown), queue, config }
+        let is_shutdown = Arc::new(AtomicBool::new(false));
+        Self {
+            worker: WriteWorker::spawn(&config, &queue, store, &is_shutdown),
+            queue,
+            config,
+            is_shutdown,
+        }
     }
 
     /// Queues a write and wakes a parked worker when it must act on it now.
@@ -41,8 +48,10 @@ impl<W: WriteCmd> WriteManager<W> {
         }
     }
 
-    /// Wakes the worker and blocks until its thread finishes.
+    /// Flags shutdown, wakes the worker and blocks until its thread finishes.
     pub fn shutdown(&self) {
+        // Flag shutdown before waking the worker so its loop observes it and exits.
+        self.is_shutdown.store(true, Ordering::Release);
         self.worker.wake();
         if let Some(handle) = self.worker.take_join() {
             handle.join().expect("write worker panicked");
