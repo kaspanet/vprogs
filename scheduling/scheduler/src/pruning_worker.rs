@@ -185,7 +185,8 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
     ///
     /// Runs on the dedicated pruning thread. Root is advanced in memory first so observers never
     /// see root pointing to already-pruned data. The disk write is committed atomically with the
-    /// deletions for crash-fault tolerance.
+    /// deletions for crash-fault tolerance. Only the tree nodes and stale markers of orphaned
+    /// batches go earlier, in a commit of their own before the root advances.
     fn prune(state: &SchedulerState<S, P>, lower_bound: u64, upper_bound: u64) {
         // Get a direct reference to the store for this operation.
         let store = state.storage().store();
@@ -207,6 +208,29 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
         // already froze.
         let frozen = store.canonical_chain().snapshot().frozen_bits(upper_bound + 1);
 
+        // Whether a finalized batch is on the canonical chain decides what to reclaim; answered
+        // from the frozen rows, which cover every bucket the range crosses. A bucket missing
+        // from them was frozen by an earlier pass and reads canonical, like the chain's own
+        // pruned-bucket fallback.
+        let is_canonical =
+            |index: u64| frozen.iter().find_map(|row| row.bit(index)).unwrap_or(true);
+
+        // The tree nodes of an orphaned batch go first, with its stale markers, in a commit of
+        // their own. Once the root has advanced, a racing finalize can drop the bucket of the
+        // batch's id, and from then on its nodes read canonical to every tree read. Until then
+        // no reader sees them, so nothing observes that they are gone. A crash between the two
+        // commits leaves the rest of the batch for the next pass, which finds no tree nodes of
+        // it left.
+        let orphaned: Vec<u64> =
+            (lower_bound..=upper_bound).filter(|index| !is_canonical(*index)).collect();
+        if !orphaned.is_empty() {
+            store.commit(store.write_batch().tap_mut(|wb| {
+                for index in &orphaned {
+                    store.prune_orphaned(wb, *index);
+                }
+            }));
+        }
+
         // Advance root in memory before deleting so no observer sees root pointing at pruned data.
         state.set_root(new_root.clone());
 
@@ -216,11 +240,7 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
 
             // Walk batches from oldest to newest (order doesn't matter for pruning).
             for index in lower_bound..=upper_bound {
-                // Whether this finalized batch is on the canonical chain decides what to reclaim;
-                // answered from the frozen rows, which cover every bucket the range crosses. A
-                // bucket missing from them was frozen by an earlier pass and reads canonical,
-                // like the chain's own pruned-bucket fallback.
-                let is_canonical = frozen.iter().find_map(|row| row.bit(index)).unwrap_or(true);
+                let is_canonical = is_canonical(index);
 
                 for (resource_id, old_version) in
                     StatePtrRollback::iter_batch(store.as_ref(), index)
@@ -252,8 +272,12 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
                     &Prefix { checkpoint_index: index.into() },
                 );
 
-                // Prune stale SMT nodes for this version.
-                store.prune(wb, index);
+                // Prune stale SMT nodes for this version. An orphaned batch's markers are not
+                // followed: the nodes it replaced belong to the history it branched from. Its
+                // own nodes and its markers went before the root advanced.
+                if is_canonical {
+                    store.prune(wb, index);
+                }
             }
 
             // Advance root on disk.

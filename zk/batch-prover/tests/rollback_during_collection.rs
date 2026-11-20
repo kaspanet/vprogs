@@ -146,6 +146,10 @@ impl Tree for ParkingStore {
     fn prune(&self, wb: &mut impl SmtWriteBatch, version: u64) {
         self.inner.prune(wb, version)
     }
+
+    fn prune_orphaned(&self, wb: &mut impl SmtWriteBatch, version: u64) {
+        self.inner.prune_orphaned(wb, version)
+    }
 }
 
 /// A batch receipt entering at `prev_state` and settling `new_state`, with the default lane

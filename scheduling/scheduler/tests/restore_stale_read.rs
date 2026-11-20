@@ -105,6 +105,10 @@ impl Tree for GatedStore {
     fn prune(&self, wb: &mut impl SmtWriteBatch, version: u64) {
         self.inner.prune(wb, version)
     }
+
+    fn prune_orphaned(&self, wb: &mut impl SmtWriteBatch, version: u64) {
+        self.inner.prune_orphaned(wb, version)
+    }
 }
 
 /// Repro: a restored batch's read-only access resolves against the disk latest pointer, not the

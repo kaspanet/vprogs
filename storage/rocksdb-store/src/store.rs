@@ -155,7 +155,48 @@ impl<C: Config> Tree for RocksDbStore<C> {
             let node_key = StaleNode::decode_key(&raw_key).expect("corrupted stale key");
             let node_version = StaleNode::decode_value(&raw_value).expect("corrupted stale value");
 
-            wb.delete_node(&node_key, node_version);
+            if node_version == version {
+                // A node written at the version it went stale at is a tombstone. Its marker
+                // stands for every node at the position up to the tombstone, also for a node
+                // deleted at this version, whose own marker it replaced. Left behind, the
+                // newest of them would be the position's latest node again once the tombstone
+                // is gone.
+                let start = node_key.encode_with_version(node_version);
+                let end = prefix_end(&node_key.encode())
+                    .expect("smt node key with no lexicographic successor");
+                for (raw_row_key, _) in self.range_iter(StateSpace::SmtNode, &start, &end) {
+                    let row_version =
+                        Key::decode_version(&raw_row_key).expect("corrupted smt node key");
+                    wb.delete_node(&node_key, row_version);
+                }
+            } else {
+                wb.delete_node(&node_key, node_version);
+            }
+            wb.delete_stale_node(&StaleNode::new(version, node_key, node_version));
+        }
+    }
+
+    fn prune_orphaned(&self, wb: &mut impl SmtWriteBatch, version: u64) {
+        // The version's own nodes: its root and, below every internal node it wrote, the
+        // children it wrote with it. A child it left unchanged has no node at this version, which
+        // ends the walk on that side.
+        let mut positions = vec![Key::ROOT];
+        while let Some(key) = positions.pop() {
+            let Some(raw_node) = self.get(StateSpace::SmtNode, &key.encode_with_version(version))
+            else {
+                continue;
+            };
+            wb.delete_node(&key, version);
+            let node = Node::decode(&mut raw_node.as_ref()).expect("corrupted smt node");
+            if let Node::Internal { .. } = node {
+                positions.extend([key.left_child(), key.right_child()]);
+            }
+        }
+
+        // Its markers name nodes of the history it branched from, which stay.
+        for (raw_key, raw_value) in self.prefix_iter(StateSpace::SmtStale, &version.to_be_bytes()) {
+            let node_key = StaleNode::decode_key(&raw_key).expect("corrupted stale key");
+            let node_version = StaleNode::decode_value(&raw_value).expect("corrupted stale value");
             wb.delete_stale_node(&StaleNode::new(version, node_key, node_version));
         }
     }

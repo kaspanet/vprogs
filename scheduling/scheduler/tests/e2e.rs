@@ -2720,7 +2720,9 @@ pub fn test_pruning_removed_resource_zero_footprint() {
 }
 
 /// Pruning must treat a reorg-orphaned id below the finalization point as orphaned - despite
-/// finalized ids defaulting to canonical - so it spares the orphan's still-live predecessor.
+/// finalized ids defaulting to canonical - so it spares the orphan's still-live predecessor:
+/// the version row it replaced and the tree nodes it replaced. The orphan's own tree nodes go
+/// instead.
 #[test]
 pub fn test_finalize_past_orphan_bucket_keeps_predecessor() {
     use vprogs_core_types::ChainSink;
@@ -2745,7 +2747,12 @@ pub fn test_finalize_past_orphan_bucket_keeps_predecessor() {
             )
             .wait_committed_blocking();
 
-        // Batch 2 rewrites R, so its rollback pointer for R points back at version 1.
+        // The tree batch 1 leaves, which is the canonical one again once batch 2 is reorged away.
+        let root_1 = scheduler.state().storage().store().root(1);
+        assert_ne!(root_1, EMPTY_HASH, "batch 1 gave the tree a root");
+
+        // Batch 2 rewrites R, so its rollback pointer for R points back at version 1, and its
+        // stale markers name the tree nodes batch 1 wrote.
         scheduler
             .schedule(
                 2,
@@ -2780,6 +2787,13 @@ pub fn test_finalize_past_orphan_bucket_keeps_predecessor() {
             "finalizing past the orphan's pruned bucket reclaimed R's canonical predecessor"
         );
 
+        // Nor the tree nodes it had replaced: batch 1's root node is still there.
+        assert_eq!(
+            store.root(1),
+            root_1,
+            "pruning the orphan followed its stale markers to the canonical tree's nodes"
+        );
+
         // The pruning commit also froze bucket 0's real bits: id 1 canonical, the orphaned
         // id 2 not.
         use vprogs_storage_types::{StateSpace, Store};
@@ -2789,6 +2803,16 @@ pub fn test_finalize_past_orphan_bucket_keeps_predecessor() {
             .expect("bucket 0's frozen bits persist with the pruning commit");
         let word = u64::from_be_bytes(row.1[..8].try_into().unwrap());
         assert_eq!(word & 0b11, 0b01, "id 1 canonical, orphaned id 2 not");
+
+        // The orphan's own tree nodes are gone. A further finalize, now that the root moved,
+        // drops bucket 0 from the ring, so id 2 reads canonical from here on: the tree at the
+        // tip is still the one batch 1 left.
+        scheduler.finalize(BUCKET_CAPACITY + 1);
+        assert_eq!(
+            scheduler.state().storage().store().root(scheduler.tip()),
+            root_1,
+            "the orphaned batch's root node is served as canonical"
+        );
 
         scheduler.shutdown();
     }
@@ -2879,13 +2903,18 @@ impl Tree for RacingFinalizeStore {
     fn prune(&self, wb: &mut impl WriteBatch, version: u64) {
         self.inner.prune(wb, version)
     }
+
+    fn prune_orphaned(&self, wb: &mut impl WriteBatch, version: u64) {
+        self.inner.prune_orphaned(wb, version)
+    }
 }
 
 /// A `Scheduler::finalize` landing between the pruning pass's root move and its reclaim
 /// reads prunes the crossed buckets out of the body ring the pass's pinned view shares, so
 /// answering the loop's `is_canonical` from that view would read every crossed orphan as
 /// canonical and reclaim its live predecessor instead of its own write. The pass must
-/// answer from the frozen rows captured before the root moved.
+/// answer from the frozen rows captured before the root moved. The orphan's tree nodes read
+/// canonical from that finalize on as well, so the pass must have deleted them by then.
 ///
 /// The interleaving is not a race: the store wrapper holds the pruning thread inside its
 /// commit - past `set_root`, before the reclaim loop - until the test thread has run the
@@ -2924,6 +2953,7 @@ pub fn test_racing_finalize_mid_prune_keeps_orphan_reclaim() {
                 )],
             )
             .wait_committed_blocking();
+        let root_1 = scheduler.state().storage().store().root(1);
         scheduler
             .schedule(
                 2,
@@ -2956,6 +2986,14 @@ pub fn test_racing_finalize_mid_prune_keeps_orphan_reclaim() {
 
         // The racing finalize: prunes the body ring below the already-advanced root.
         scheduler.finalize(2 * BUCKET_CAPACITY + 1);
+
+        // Id 2 reads canonical from here on, while the pass's commit is still held. Its tree
+        // nodes are gone already: the tree at the tip is the one batch 1 left.
+        assert_eq!(
+            scheduler.state().storage().store().root(scheduler.tip()),
+            root_1,
+            "the racing finalize exposed the orphaned batch's root node"
+        );
 
         // Release the pass and wait for its commit to land.
         let (released, signal) = &*gate.release;

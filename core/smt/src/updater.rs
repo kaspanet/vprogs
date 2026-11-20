@@ -39,7 +39,7 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
             }
         });
 
-        // Apply from the root; update_subtree marks the old root stale, so no separate call here.
+        // Apply from the root; update_subtree marks the root, so no separate call here.
         match &ctx.update_subtree(&Key::ROOT, &commitments) {
             // Tree drained: write a tombstone so reads don't fall back to the stale prior root.
             None => {
@@ -58,7 +58,8 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
         self.tree.node(key, self.version - 1, &self.snapshot)
     }
 
-    /// Recursive update for a sorted sub-slice of leaf mutations at `key`.
+    /// Recursive update for a sorted sub-slice of leaf mutations at `key`, a position of the
+    /// tree at the prior version: the root, or a child of an internal node.
     ///
     /// Returns `None` for empty subtrees or the node at this position. Returned `Leaf` nodes are
     /// not written here - they bubble up so the caller can decide where to place them (enables
@@ -71,32 +72,36 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
             return self.node(key).map(|(_, data)| data).filter(exists);
         }
 
-        // Look up existing node at this position to determine the update strategy.
-        match self.node(key).map(|(_, data)| data) {
-            // Empty subtree: resolve commitments into leaves directly.
-            None => self.resolve_leaves(key, commitments),
+        // Look up the existing node at this position; whatever it holds goes stale with this
+        // update.
+        let existing = self.node(key);
+        if let Some((node_version, _)) = &existing {
+            self.mark(key, *node_version);
+        }
 
-            // Tombstone: mark stale and resolve commitments into leaves directly.
-            Some(Node::Empty) => {
-                self.mark_stale(key);
-                self.resolve_leaves(key, commitments)
-            }
+        // The existing node determines the update strategy.
+        match existing.map(|(_, data)| data) {
+            // Empty subtree or tombstone: build the subtree from the commitments.
+            None | Some(Node::Empty) => self.build_subtree(key, commitments),
 
             // Existing shortcut leaf: may need to split if keys differ.
             Some(Node::Leaf { key: existing_key, value_hash: existing_vh, .. }) => {
                 self.update_at_leaf(key, commitments, existing_key, existing_vh)
             }
 
-            // Existing internal node: mark stale and recurse into children.
-            Some(Node::Internal { .. }) => {
-                self.mark_stale(key);
-                self.split_and_recurse(key, commitments)
-            }
+            // Existing internal node: recurse into its children.
+            Some(Node::Internal { .. }) => self.split_and_recurse(key, commitments),
         }
     }
 
-    /// Resolves leaf commitments into a shortcut leaf (single live entry) or splits and recurses.
-    fn resolve_leaves(&mut self, key: &Key, commitments: &[Commitment]) -> Option<Node> {
+    /// Builds the subtree at `key` from `commitments` alone: a shortcut leaf for a single live
+    /// entry, an internal node over the two halves for more.
+    ///
+    /// Nothing below the position is part of the tree at the prior version: it held a leaf, a
+    /// tombstone or no node, or lies below such a position. So nothing stored below it is taken
+    /// into the tree. A position down there can still hold a node that a deleted or promoted
+    /// subtree left behind, and reading it as a child would bring that node back.
+    fn build_subtree(&mut self, key: &Key, commitments: &[Commitment]) -> Option<Node> {
         // Filter to live (non-deletion) commitments.
         let mut live = commitments.iter().filter(|u| u.value_hash != EMPTY_HASH);
 
@@ -108,8 +113,21 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
             return Some(Node::leaf::<S::Hasher>(first.key, first.value_hash));
         }
 
-        // Multiple live entries - must split by the current bit and recurse.
-        self.split_and_recurse(key, commitments)
+        // Multiple live entries - split by the current bit and build both halves.
+        assert!((key.level as usize) < DEPTH, "exceeded tree depth");
+        let mid = commitments.partition_point(|u| !u.key.get_msb(key.level as usize));
+        let (left, right) = commitments.split_at(mid);
+        let left_child = key.left_child();
+        let right_child = key.right_child();
+        let left_result = self.build_subtree(&left_child, left);
+        let right_result = self.build_subtree(&right_child, right);
+
+        // Two live entries make an internal node: each half holds one, or one half holds both
+        // and is an internal node itself, which never bubbles up.
+        Some(Node::internal::<S::Hasher>(
+            &self.write_child(&left_result, &left_child, false),
+            &self.write_child(&right_result, &right_child, false),
+        ))
     }
 
     /// Handles commitments at a position that currently holds a shortcut leaf.
@@ -120,9 +138,6 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
         existing_key: ResourceId,
         existing_vh: [u8; 32],
     ) -> Option<Node> {
-        // The existing leaf is being superseded regardless of outcome.
-        self.mark_stale(key);
-
         // Fast path: single update replaces the existing leaf in-place.
         if commitments.len() == 1 && commitments[0].key == existing_key {
             let new_vh = commitments[0].value_hash;
@@ -132,23 +147,24 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
             return Some(Node::leaf::<S::Hasher>(existing_key, new_vh));
         }
 
-        // General case: merge the existing leaf into the update set and resolve.
+        // General case: merge the existing leaf into the update set and build the subtree.
         let pos = commitments.partition_point(|u| u.key < existing_key);
         if commitments.get(pos).is_some_and(|u| u.key == existing_key) {
-            // Existing key is already in the update set - resolve directly.
-            self.resolve_leaves(key, commitments)
+            // Existing key is already in the update set - build directly.
+            self.build_subtree(key, commitments)
         } else {
-            // Existing key not in commitments - insert at the correct sorted position and resolve.
+            // Existing key not in commitments - insert at the correct sorted position and build.
             let existing = Commitment::new(existing_key, existing_vh);
             let mut merged = Vec::with_capacity(commitments.len() + 1);
             merged.extend_from_slice(&commitments[..pos]);
             merged.push(existing);
             merged.extend_from_slice(&commitments[pos..]);
-            self.resolve_leaves(key, &merged)
+            self.build_subtree(key, &merged)
         }
     }
 
-    /// Splits commitments by the current bit and recurses into both children.
+    /// Splits commitments by the current bit and recurses into both children of the internal
+    /// node at `key`.
     fn split_and_recurse(&mut self, key: &Key, commitments: &[Commitment]) -> Option<Node> {
         assert!((key.level as usize) < DEPTH, "exceeded tree depth");
 
@@ -169,27 +185,59 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
             // Both children empty - this subtree is empty.
             (None, None) => None,
 
-            // One child a leaf, the other empty: bubble it up (shortcut, no internal node).
-            (Some(Node::Leaf { .. }), None) => left_result,
-            (None, Some(Node::Leaf { .. })) => right_result,
+            // One child a leaf, the other empty: bubble it up (shortcut, no internal node). A
+            // leaf that got no commitment is read from its position and leaves that node
+            // behind, which goes stale with the move.
+            (Some(Node::Leaf { .. }), None) => {
+                if left.is_empty() {
+                    self.mark_stale(&left_child);
+                }
+                left_result
+            }
+            (None, Some(Node::Leaf { .. })) => {
+                if right.is_empty() {
+                    self.mark_stale(&right_child);
+                }
+                right_result
+            }
 
             // Otherwise (both non-empty, or one Internal): write children, make an Internal node.
+            // A child that got no commitment is unchanged.
             _ => Some(Node::internal::<S::Hasher>(
-                &self.write_child(&left_result, &left_child),
-                &self.write_child(&right_result, &right_child),
+                &self.write_child(&left_result, &left_child, left.is_empty()),
+                &self.write_child(&right_result, &right_child, right.is_empty()),
             )),
         }
     }
 
-    /// Writes a child node to the tree and returns its [`HashedNode`] summary.
-    fn write_child(&mut self, child: &Option<Node>, key: &Key) -> HashedNode {
+    /// Returns the [`HashedNode`] summary of a child node, writing the child to the tree unless
+    /// it is `unchanged`.
+    ///
+    /// Every node an update writes below the root is written here, as a child of an internal
+    /// node built at the same version. Pruning an orphaned version relies on that to find the
+    /// version's nodes.
+    ///
+    /// An unchanged child is the node its position already stores, and that row stays in use.
+    /// Storing the node again at this version would leave the previous row behind without a
+    /// stale marker: one more write and one more row for every sibling an update passes, and
+    /// nothing to reclaim the row by.
+    fn write_child(&mut self, child: &Option<Node>, key: &Key, unchanged: bool) -> HashedNode {
+        if unchanged {
+            return child.as_ref().map_or(HashedNode::EMPTY, HashedNode::from);
+        }
+
         match child {
             None => {
-                // Tombstone an emptied position so a later read can't resurface the deleted node.
+                // Tombstone an empty position that still holds a node, so a later read can't
+                // resurface it: the node deleted by this update, or below a rebuilt position
+                // one that a deleted or promoted subtree left behind. A marker is keyed by
+                // version and position, so the tombstone's replaces the one this update put
+                // at the position of a node it deleted. That one marker reclaims both: pruning
+                // a tombstone removes every node at its position up to the tombstone.
                 let exists = |(_, node)| !matches!(node, Node::Empty);
                 if self.node(key).is_some_and(exists) {
                     self.wb.put_node(key, self.version, &Node::Empty);
-                    self.wb.put_stale_node(&StaleNode::new(self.version, *key, self.version));
+                    self.mark(key, self.version);
                 }
                 HashedNode::EMPTY
             }
@@ -200,10 +248,15 @@ impl<'a, S: Tree, W: WriteBatch> Updater<'a, S, W> {
         }
     }
 
-    /// Marks an existing node at the given position as stale (if it exists).
+    /// Marks the node at the given position stale at this version, if the position holds one.
     fn mark_stale(&mut self, node_key: &Key) {
-        if let Some((old_version, _)) = self.node(node_key) {
-            self.wb.put_stale_node(&StaleNode::new(self.version, *node_key, old_version));
+        if let Some((node_version, _)) = self.node(node_key) {
+            self.mark(node_key, node_version);
         }
+    }
+
+    /// Marks the node at `node_version` at the given position stale at this version.
+    fn mark(&mut self, node_key: &Key, node_version: u64) {
+        self.wb.put_stale_node(&StaleNode::new(self.version, *node_key, node_version));
     }
 }

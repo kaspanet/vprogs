@@ -9,7 +9,8 @@ use crate::{EMPTY, EMPTY_HASH, HashedNode, INTERNAL, LEAF};
 /// Data stored at a tree position.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Node {
-    /// Empty-subtree tombstone written at `Key::ROOT` to mark a drained tree.
+    /// Empty-subtree tombstone written at an emptied position, so a read does not fall back to
+    /// the node the position held before.
     Empty,
     /// Two-child node storing only the combined hash.
     Internal {
