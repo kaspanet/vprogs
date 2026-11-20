@@ -447,12 +447,6 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
 
             // Record the last-committed pointer.
             StateMetadata::set_last_committed(wb, &self.checkpoint);
-
-            // Persist root on first commit for crash-fault tolerance. Root was already set
-            // in-memory when this batch was scheduled (see next_checkpoint).
-            if self.checkpoint.index() == self.state.root().index() {
-                StateMetadata::set_root(wb, &self.checkpoint);
-            }
         }
     }
 

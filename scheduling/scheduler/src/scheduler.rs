@@ -283,12 +283,6 @@ impl<S: Store, P: Processor<S>> Scheduler<S, P> {
         self.state.set_last_processed(Arc::new(checkpoint.clone()));
         self.pending_batches.push_back(checkpoint.clone());
 
-        // Initialize root on the first batch; default index 0 on a fresh DB or
-        // post-genesis-rollback.
-        if self.state.root().index() == 0 {
-            self.state.set_root(Arc::new(checkpoint.clone()));
-        }
-
         // A returning id restores if the processor opts in and its state is already on disk.
         let restore = !outcome.is_new
             && self.processor.supports_restore()

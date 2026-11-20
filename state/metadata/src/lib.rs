@@ -16,11 +16,13 @@ mod keys {
 pub struct StateMetadata;
 
 impl StateMetadata {
-    /// Returns the root checkpoint (oldest surviving batch), or defaults if no batches have been
-    /// committed yet.
+    /// Returns the root checkpoint (oldest surviving batch), or defaults if no batch has been
+    /// pruned yet.
     ///
-    /// The root is initialized when the first batch commits and advances forward as pruning deletes
-    /// older batches. A default (index 0) indicates a fresh database with no commits.
+    /// The root advances forward as pruning deletes older batches, and nothing else writes it. A
+    /// default (index 0) indicates a database that was never pruned, where the oldest surviving
+    /// batch is the first one. A database written by an earlier version holds its first batch here
+    /// instead, which means the same.
     pub fn root<M: BatchMetadata, S>(store: &S) -> Checkpoint<M>
     where
         S: ReadStore,
