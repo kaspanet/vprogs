@@ -26,7 +26,7 @@ use crate::{Processor, state::SchedulerState};
 /// path.
 pub struct PruningWorker<S: Store, P: Processor<S>> {
     /// The batch index up to which pruning is allowed (exclusive). Batches with index < threshold
-    /// can be pruned.
+    /// can be pruned once a later batch has committed.
     pruning_threshold: Arc<AtomicU64>,
     /// Upper bound on effective pruning threshold. `u64::MAX` means unconstrained. Set before a
     /// rollback to prevent the pruning worker from pruning into the rollback range; cleared after
@@ -37,7 +37,9 @@ pub struct PruningWorker<S: Store, P: Processor<S>> {
     /// `pause_ceiling` (both use `SeqCst`) so that `pause` can detect an in-flight or
     /// already-completed prune that overlaps the rollback range.
     pruning_cursor: Arc<AtomicU64>,
-    /// Notification signal to wake up the worker when the threshold changes.
+    /// Notification signal to wake up the worker when the threshold rises, `unpause` lifts the
+    /// ceiling, or the last committed batch moves. It is the scheduler state's commit signal, so a
+    /// commit wakes the worker as well.
     notify: Arc<Notify>,
     /// Handle to the background worker thread.
     handle: JoinHandle<()>,
@@ -49,8 +51,9 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
     /// Sets the pruning threshold.
     ///
     /// Batches with index < threshold become eligible for pruning. The actual pruning happens
-    /// asynchronously in the background worker. Setting a threshold lower than the current value
-    /// has no effect (pruning only moves forward).
+    /// asynchronously in the background worker, and never reaches the last committed batch: a batch
+    /// below the threshold that has not committed yet is pruned once a later one has. Setting a
+    /// threshold lower than the current value has no effect (pruning only moves forward).
     pub fn set_threshold(&self, threshold: u64) {
         // Only update if the new threshold is higher (pruning is monotonic).
         if self.pruning_threshold.fetch_max(threshold, Ordering::AcqRel) < threshold {
@@ -66,8 +69,8 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
     /// Pauses pruning at or above the given index.
     ///
     /// Called before a rollback to ensure the pruning worker does not delete state that the
-    /// rollback needs. The ceiling clamps the worker's upper bound as `upper_bound =
-    /// threshold.min(ceiling) - 1`.
+    /// rollback needs. The ceiling clamps the worker's upper bound, which is `min(threshold,
+    /// ceiling, last committed) - 1`.
     ///
     /// Returns `true` if the pruning cursor is at or below the ceiling (no completed or in-flight
     /// prune has deleted data the rollback needs), `false` otherwise. On failure the ceiling is
@@ -103,7 +106,7 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
         let pruning_threshold = Arc::new(AtomicU64::new(root_index));
         let pause_ceiling = Arc::new(AtomicU64::new(u64::MAX));
         let pruning_cursor = Arc::new(AtomicU64::new(root_index.saturating_sub(1)));
-        let notify = Arc::new(Notify::new());
+        let notify = state.commit_notify().clone();
 
         let handle = Self::start(
             state.clone(),
@@ -151,21 +154,36 @@ impl<S: Store, P: Processor<S>> PruningWorker<S, P> {
                         // Index 0 means no pass ran yet, and batch ids start at 1.
                         let lower_bound = state.root().index().max(1);
 
-                        // Last eligible batch: min(threshold, ceiling) made inclusive;
-                        // saturating_sub guards the threshold-0 fresh start.
-                        let upper_bound = pruning_threshold
-                            .load(Ordering::Acquire)
-                            .min(pause_ceiling.load(Ordering::Acquire))
-                            .saturating_sub(1);
+                        // Last eligible batch: min(threshold, ceiling, last committed) made
+                        // inclusive; saturating_sub guards the threshold-0 fresh start. The last
+                        // committed batch bounds the pass because an id above it belongs to a batch
+                        // that is still in flight, or that a re-root rolled back and the bridge is
+                        // about to feed again: pruned now, its rows would land below the root when
+                        // it commits, where no pass returns. The last committed batch itself is
+                        // kept too, so the metadata log never runs empty.
+                        let eligible = || {
+                            pruning_threshold
+                                .load(Ordering::Acquire)
+                                .min(pause_ceiling.load(Ordering::SeqCst))
+                                .min(state.last_committed().index())
+                                .saturating_sub(1)
+                        };
+                        let upper_bound = eligible();
 
                         // Check if there's pruning work to do.
                         if upper_bound >= lower_bound {
                             // Advance cursor to signal our prune range (Dekker step 1).
                             let prev = pruning_cursor.swap(upper_bound, Ordering::SeqCst);
 
-                            // Dekker step 2: re-read the ceiling; if set since our first read,
-                            // restore the cursor and abort.
-                            if pause_ceiling.load(Ordering::SeqCst) <= upper_bound {
+                            // Dekker step 2: evaluate the bound again; if a rollback lowered it
+                            // since our first read, restore the cursor and abort. A rollback lowers
+                            // it through the ceiling while it runs, and through the last committed
+                            // batch from its write on, which still holds after the ceiling is
+                            // lifted. For that the bound has to load the ceiling before the last
+                            // committed batch: a load that sees the ceiling `unpause` lifted is
+                            // ordered after the rollback's write, and so is the load of the last
+                            // committed batch that follows it.
+                            if eligible() < upper_bound {
                                 pruning_cursor.store(prev, Ordering::Release);
                                 continue;
                             }
