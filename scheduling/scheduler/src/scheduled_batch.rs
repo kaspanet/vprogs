@@ -376,6 +376,15 @@ impl<S: Store, P: Processor<S>> ScheduledBatch<S, P> {
             }
         }
 
+        // The tails found their predecessors through the links to the previous accesses, which are
+        // not needed any more. Release them: a run of restored batches would stay linked back to
+        // its first access and be freed in one go.
+        for tx in self.txs() {
+            for access in tx.resources() {
+                access.release_prev();
+            }
+        }
+
         // Nothing executed, so drive the counters down and open the done-latches directly.
         self.pending_txs.store(0, Ordering::Release);
         self.processed.open();
