@@ -13,11 +13,13 @@ use vprogs_storage_types::{ReadStore, Store};
 
 use crate::{Read, ScheduledTransactionRef, StateDiff, Write, processor::Processor};
 
-/// A single resource access within a transaction, forming a linked chain across the batch.
+/// A single resource access within a transaction, forming a linked chain across the batches.
 ///
-/// Each `ResourceAccess` represents one transaction's claim on a resource. Within a batch, accesses
-/// to the same resource are linked via `prev`/`next` pointers so that write results flow forward to
-/// dependent reads. Derefs to the inner `AccessMetadata`.
+/// Each `ResourceAccess` represents one transaction's claim on a resource. Accesses to the same
+/// resource are linked via `prev`/`next` pointers, within a batch and from one batch in flight to
+/// the next, so that write results flow forward to dependent reads. The links are released as the
+/// state passes: a chain that stayed linked would be freed by one nested drop per access. Derefs to
+/// the inner `AccessMetadata`.
 #[smart_pointer(deref(access_metadata))]
 pub struct ResourceAccess<S: Store, P: Processor<S>> {
     /// The access metadata (deref target).
@@ -34,9 +36,11 @@ pub struct ResourceAccess<S: Store, P: Processor<S>> {
     read_state: ArcSwapOption<StateVersion>,
     /// Resource state after this access (set on commit or forwarded from read for reads).
     written_state: ArcSwapOption<StateVersion>,
-    /// Previous access to the same resource in this batch (cleared once read state resolves).
+    /// Previous access to the same resource (cleared once the read state resolves, or once the
+    /// batch is restored).
     prev: ArcSwapOption<Self>,
-    /// Next access to the same resource in this batch (cleared once written state propagates).
+    /// Next access to the same resource, set while this access has not left its state yet (cleared
+    /// once the written state propagates).
     next: ArcSwapOption<Self>,
 }
 
@@ -99,8 +103,20 @@ impl<S: Store, P: Processor<S>> ResourceAccess<S, P> {
     pub(crate) fn connect(&self, storage: &StorageManager<S, Read<S, P>, Write<S, P>>) {
         match &*self.prev.load() {
             Some(prev) => {
+                // A predecessor that has left its state already hands it over at once.
+                if let Some(written_state) = prev.written_state.load_full() {
+                    return self.set_read_state(written_state);
+                }
+
+                // Otherwise link up behind it, so that it hands its state on once it has one. It
+                // may have left its state in between. Then take the state here, and take the link
+                // back: left in place, it would keep this access alive for as long as the
+                // predecessor lives. The predecessor may have followed the link as well, in which
+                // case both sides resolve this access, and the compare-and-swap of the read state
+                // lets only one of them go on.
                 prev.next.store(Some(self.0.clone()));
                 if let Some(written_state) = prev.written_state.load_full() {
+                    drop(prev.next.swap(None));
                     self.set_read_state(written_state);
                 }
             }
@@ -179,6 +195,14 @@ impl<S: Store, P: Processor<S>> ResourceAccess<S, P> {
         Some(Self(prev))
     }
 
+    /// Releases the link to the previous access, for an access of a restored batch.
+    ///
+    /// Nothing executes in a restored batch, so its accesses never resolve a read state, which is
+    /// what releases the link otherwise.
+    pub(crate) fn release_prev(&self) {
+        drop(self.prev.swap(None));
+    }
+
     pub(crate) fn tx(&self) -> &ScheduledTransactionRef<S, P> {
         &self.tx
     }
@@ -192,33 +216,62 @@ impl<S: Store, P: Processor<S>> ResourceAccess<S, P> {
         self.state_diff.committed()
     }
 
+    /// Resolves the state this access reads, and hands it down the run of reads that follows.
     pub(crate) fn set_read_state(&self, state: Arc<StateVersion>) {
-        if self.read_state.compare_and_swap(&None::<Arc<_>>, Some(state.clone())).is_none() {
-            drop(self.prev.swap(None)); // drop the previous reference to allow cleanup
-
-            if self.is_batch_head() {
-                self.state_diff.set_read_state(state.clone());
-            }
-
-            if self.access_type == AccessType::Read {
-                self.set_written_state(state);
-            }
-
-            if let Some(tx) = self.tx.upgrade() {
-                tx.decrease_pending_resources();
-            }
+        // A read leaves the state as it is, so the next access reads the same one. The run of reads
+        // is walked in a loop: it can span every transaction that waits for the resource, in this
+        // batch and in the batches after it, and a call per read would overflow the stack.
+        let mut reader = self.resolve_read(&state);
+        while let Some(access) = reader {
+            reader = access.resolve_read(&state);
         }
     }
 
+    /// Resolves the state this access leaves, and hands it to the next access as its read state.
     pub(crate) fn set_written_state(&self, state: Arc<StateVersion>) {
-        if self.written_state.compare_and_swap(&None::<Arc<_>>, Some(state.clone())).is_none() {
-            if self.is_batch_tail() {
-                self.state_diff.set_written_state(state.clone());
-            }
-
-            if let Some(next) = self.next.swap(None) {
-                Self(next).set_read_state(state)
-            }
+        if let Some(next) = self.resolve_written(&state) {
+            next.set_read_state(state);
         }
+    }
+
+    /// Resolves this access's read state and returns the access to go on with, if there is one.
+    ///
+    /// A read leaves the state as it is, so its written state is resolved as well and the next
+    /// access, which reads the same state, is returned.
+    fn resolve_read(&self, state: &Arc<StateVersion>) -> Option<Self> {
+        if self.read_state.compare_and_swap(&None::<Arc<_>>, Some(state.clone())).is_some() {
+            return None;
+        }
+        drop(self.prev.swap(None)); // drop the previous reference to allow cleanup
+
+        if self.is_batch_head() {
+            self.state_diff.set_read_state(state.clone());
+        }
+
+        let next = match self.access_type {
+            AccessType::Read => self.resolve_written(state),
+            AccessType::Write => None,
+        };
+
+        // The transaction may start from here on, while the rest of the run is still being walked:
+        // it depends on nothing further down the chain.
+        if let Some(tx) = self.tx.upgrade() {
+            tx.decrease_pending_resources();
+        }
+
+        next
+    }
+
+    /// Resolves this access's written state and detaches the next access, which reads it.
+    fn resolve_written(&self, state: &Arc<StateVersion>) -> Option<Self> {
+        if self.written_state.compare_and_swap(&None::<Arc<_>>, Some(state.clone())).is_some() {
+            return None;
+        }
+
+        if self.is_batch_tail() {
+            self.state_diff.set_written_state(state.clone());
+        }
+
+        self.next.swap(None).map(Self)
     }
 }
